@@ -150,7 +150,7 @@ export interface CompactionSettings {
 
 export const DEFAULT_RESERVE_TOKENS = 16384;
 
-export const MAX_SUMMARY_TOKENS = DEFAULT_RESERVE_TOKENS;
+const MAX_SUMMARY_TOKENS = DEFAULT_RESERVE_TOKENS;
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,

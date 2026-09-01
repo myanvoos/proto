@@ -260,7 +260,146 @@ fn observe_comment(node: Node, code: &str, pending: &mut Pending) {
 				pending.notes.push(note.to_string());
 			}
 		}
+		return;
 	}
+	// `#`-comment languages (Python, Ruby, ...): `#@` margin notes, `#@?`
+	// questions.
+	if let Some(rest) = trimmed.strip_prefix("#@?") {
+		let note = rest.trim();
+		if !note.is_empty() {
+			pending.asks.push(note.to_string());
+		}
+		return;
+	}
+	if let Some(rest) = trimmed.strip_prefix("#@") {
+		let note = rest.trim();
+		if !note.is_empty() {
+			pending.notes.push(note.to_string());
+		}
+	}
+}
+
+/// First meaningful line of a leading docstring statement, quotes and prefixes
+/// stripped.
+fn docstring_text(statement: Node, code: &str) -> Option<String> {
+	if statement.kind() != "expression_statement" {
+		return None;
+	}
+	let expression = named_iter(statement).next()?;
+	if expression.kind() != "string" {
+		return None;
+	}
+	let raw = text_of(expression, code);
+	let body = raw
+		.trim()
+		.trim_start_matches(['r', 'R', 'b', 'B', 'u', 'U', 'f', 'F']);
+	let inner = [("\"\"\"", "\"\"\""), ("'''", "'''"), ("\"", "\""), ("'", "'")]
+		.into_iter()
+		.find_map(|(open, close)| {
+			body
+				.strip_prefix(open)
+				.and_then(|rest| rest.strip_suffix(close))
+		})?;
+	let first_line = inner.lines().map(str::trim).find(|line| !line.is_empty())?;
+	Some(first_line.to_string())
+}
+
+/// Walk a Python `_suite` block into `entry.children`, optionally lifting a
+/// leading docstring into `entry.doc` instead of an expr child.
+fn fill_python_body(
+	entry: &mut OutlineEntry,
+	suite: Node,
+	code: &str,
+	lang: SupportLang,
+	extract_doc: bool,
+) {
+	let mut pending = Pending::default();
+	let mut children: Vec<OutlineEntry> = Vec::new();
+	let mut iter = named_iter(suite).peekable();
+	if extract_doc
+		&& let Some(&first) = iter.peek()
+		&& let Some(doc) = docstring_text(first, code)
+	{
+		entry.doc.get_or_insert(doc);
+		iter.next();
+	}
+	for child in iter {
+		walk_statement(child, code, lang, &mut pending, &mut children);
+	}
+	entry.children = children;
+}
+
+fn python_function_entry(
+	node: Node,
+	code: &str,
+	lang: SupportLang,
+	pending: &mut Pending,
+) -> OutlineEntry {
+	let line = node.start_position().row as u32 + 1;
+	let mut entry = new_entry(
+		if async_token(node) {
+			"async def"
+		} else {
+			"def"
+		},
+		line,
+	);
+	let name = node
+		.child_by_field_name("name")
+		.map(|name| text_of(name, code))
+		.unwrap_or_default();
+	entry.name = Some(format!("{name}({})", summarize_params(parameters_of(node), code)));
+	entry.detail = node
+		.child_by_field_name("return_type")
+		.and_then(|annotation| summarized(annotation, code, 40))
+		.map(|text| format!("→ {text}"));
+	if let Some(body) = node.child_by_field_name("body") {
+		fill_python_body(&mut entry, body, code, lang, true);
+	}
+	pending.attach(&mut entry);
+	entry
+}
+
+fn python_class_entry(
+	node: Node,
+	code: &str,
+	lang: SupportLang,
+	pending: &mut Pending,
+) -> OutlineEntry {
+	let line = node.start_position().row as u32 + 1;
+	let mut entry = new_entry("class", line);
+	entry.name = node
+		.child_by_field_name("name")
+		.map(|name| text_of(name, code));
+	entry.detail = node
+		.child_by_field_name("superclasses")
+		.and_then(|superclasses| summarized(superclasses, code, 48));
+	if let Some(body) = node.child_by_field_name("body") {
+		fill_python_body(&mut entry, body, code, lang, true);
+	}
+	pending.attach(&mut entry);
+	entry
+}
+
+fn python_elif_entry(node: Node, code: &str, lang: SupportLang) -> OutlineEntry {
+	let line = node.start_position().row as u32 + 1;
+	let mut entry = new_entry("elif", line);
+	entry.detail = node
+		.child_by_field_name("condition")
+		.and_then(|condition| condition_text(condition, code, CAP_COND));
+	if let Some(consequence) = node.child_by_field_name("consequence") {
+		fill_python_body(&mut entry, consequence, code, lang, false);
+	}
+	entry
+}
+
+fn python_else_entry(node: Node, code: &str, lang: SupportLang) -> OutlineEntry {
+	let line = node.start_position().row as u32 + 1;
+	let mut entry = new_entry("else", line);
+	if let Some(body) = node.child_by_field_name("body") {
+		fill_python_body(&mut entry, body, code, lang, false);
+	}
+	entry
 }
 
 fn collect_body(node: Node, code: &str, lang: SupportLang, out: &mut Vec<OutlineEntry>) {
@@ -832,6 +971,324 @@ fn walk_statement(
 ) {
 	match node.kind() {
 		"comment" => observe_comment(node, code, pending),
+		// --- Python (guarded arms intercept shared kind names before the JS arms) ---
+		"function_definition" if lang == SupportLang::Python => {
+			let entry = python_function_entry(node, code, lang, pending);
+			out.push(entry);
+		},
+		"class_definition" if lang == SupportLang::Python => {
+			let entry = python_class_entry(node, code, lang, pending);
+			out.push(entry);
+		},
+		"decorated_definition" if lang == SupportLang::Python => {
+			for child in named_iter(node) {
+				if child.kind() == "decorator" {
+					pending.decor.push(cap(&text_of(child, code), 48));
+				} else {
+					walk_statement(child, code, lang, pending, out);
+				}
+			}
+		},
+		"if_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry("if", line);
+			entry.detail = node
+				.child_by_field_name("condition")
+				.and_then(|condition| condition_text(condition, code, CAP_COND));
+			if let Some(consequence) = node.child_by_field_name("consequence") {
+				fill_python_body(&mut entry, consequence, code, lang, false);
+			}
+			for child in named_iter(node) {
+				match child.kind() {
+					"elif_clause" => entry.children.push(python_elif_entry(child, code, lang)),
+					"else_clause" => entry.children.push(python_else_entry(child, code, lang)),
+					_ => {},
+				}
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"for_statement" if lang == SupportLang::Python => {
+			let kind = if async_token(node) {
+				"async for"
+			} else {
+				"for"
+			};
+			let mut entry = new_entry(kind, node.start_position().row as u32 + 1);
+			entry.name = node
+				.child_by_field_name("left")
+				.and_then(|left| summarized(left, code, 40));
+			entry.detail = node
+				.child_by_field_name("right")
+				.and_then(|right| summarized(right, code, CAP_COND));
+			if let Some(body) = node.child_by_field_name("body") {
+				fill_python_body(&mut entry, body, code, lang, false);
+			}
+			for child in named_iter(node) {
+				if child.kind() == "else_clause" {
+					entry.children.push(python_else_entry(child, code, lang));
+				}
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"while_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry("while", line);
+			entry.detail = node
+				.child_by_field_name("condition")
+				.and_then(|condition| condition_text(condition, code, CAP_COND));
+			if let Some(body) = node.child_by_field_name("body") {
+				fill_python_body(&mut entry, body, code, lang, false);
+			}
+			for child in named_iter(node) {
+				if child.kind() == "else_clause" {
+					entry.children.push(python_else_entry(child, code, lang));
+				}
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"try_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry("try", line);
+			if let Some(body) = node.child_by_field_name("body") {
+				fill_python_body(&mut entry, body, code, lang, false);
+			}
+			for child in named_iter(node) {
+				match child.kind() {
+					"except_clause" => {
+						let mut clause = new_entry("except", child.start_position().row as u32 + 1);
+						let value = child
+							.child_by_field_name("value")
+							.and_then(|value| summarized(value, code, 48));
+						let alias = child
+							.child_by_field_name("alias")
+							.map(|alias| text_of(alias, code));
+						clause.detail = match (value, alias) {
+							(Some(value), Some(alias)) => Some(format!("{value} as {alias}")),
+							(value, None) => value,
+							(None, Some(alias)) => Some(alias),
+						};
+						if let Some(body) = child_of_kind(child, &["block"]) {
+							fill_python_body(&mut clause, body, code, lang, false);
+						}
+						entry.children.push(clause);
+					},
+					"else_clause" => entry.children.push(python_else_entry(child, code, lang)),
+					"finally_clause" => {
+						let mut clause = new_entry("finally", child.start_position().row as u32 + 1);
+						if let Some(body) = child_of_kind(child, &["block"]) {
+							fill_python_body(&mut clause, body, code, lang, false);
+						}
+						entry.children.push(clause);
+					},
+					_ => {},
+				}
+			}
+			out.push(entry);
+		},
+		"with_statement" if lang == SupportLang::Python => {
+			let kind = if async_token(node) {
+				"async with"
+			} else {
+				"with"
+			};
+			let mut entry = new_entry(kind, node.start_position().row as u32 + 1);
+			let items: Vec<String> = child_of_kind(node, &["with_clause"])
+				.map(|clause| {
+					named_iter(clause)
+						.filter(|item| item.kind() == "with_item")
+						.map(|item| cap(&text_of(item, code), 48))
+						.collect()
+				})
+				.unwrap_or_default();
+			if !items.is_empty() {
+				entry.detail = Some(items.join(", "));
+			}
+			if let Some(body) = node.child_by_field_name("body") {
+				fill_python_body(&mut entry, body, code, lang, false);
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"match_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry("match", line);
+			let subjects: Vec<String> = named_iter(node)
+				.filter(|child| child.kind() != "block")
+				.map(|child| text_of(child, code))
+				.collect();
+			if !subjects.is_empty() {
+				entry.detail = Some(cap(&subjects.join(", "), CAP_COND));
+			}
+			if let Some(body) = child_of_kind(node, &["block"]) {
+				let mut children: Vec<OutlineEntry> = Vec::new();
+				for child in named_iter(body) {
+					if child.kind() != "case_clause" {
+						continue;
+					}
+					let mut case = new_entry("case", child.start_position().row as u32 + 1);
+					let parts: Vec<String> = named_iter(child)
+						.filter(|part| part.kind() != "block")
+						.map(|part| text_of(part, code))
+						.collect();
+					if !parts.is_empty() {
+						case.detail = Some(cap(&parts.join(" "), CAP_COND));
+					}
+					if let Some(consequence) = child_of_kind(child, &["block"]) {
+						fill_python_body(&mut case, consequence, code, lang, false);
+					}
+					children.push(case);
+				}
+				entry.children = children;
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"import_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry("import", line);
+			let bindings: Vec<String> = named_iter(node).map(|child| text_of(child, code)).collect();
+			if !bindings.is_empty() {
+				entry.name = Some(cap(&bindings.join(", "), CAP_IMPORT));
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"import_from_statement" | "future_import_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry("from-import", line);
+			let module = node.child_by_field_name("module_name");
+			entry.name = Some(
+				module
+					.map(|module| text_of(module, code))
+					.unwrap_or_else(|| "__future__".to_string()),
+			);
+			let bindings: Vec<String> = named_iter(node)
+				.filter(|child| Some(child.id()) != module.map(|module| module.id()))
+				.map(|child| text_of(child, code))
+				.collect();
+			if !bindings.is_empty() {
+				entry.detail = Some(cap(&bindings.join(", "), CAP_IMPORT));
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"raise_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry("raise", line);
+			let cause = node.child_by_field_name("cause");
+			let parts: Vec<String> = named_iter(node)
+				.filter(|child| Some(child.id()) != cause.map(|cause| cause.id()))
+				.map(|child| text_of(child, code))
+				.collect();
+			let mut detail = parts.join(", ");
+			if let Some(cause) = cause {
+				let cause_text = text_of(cause, code);
+				detail = if detail.is_empty() {
+					format!("from {cause_text}")
+				} else {
+					format!("{detail} from {cause_text}")
+				};
+			}
+			if !detail.is_empty() {
+				entry.detail = Some(cap(&detail, 56));
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"assert_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry("assert", line);
+			let parts: Vec<String> = named_iter(node)
+				.map(|child| cap(&text_of(child, code), 48))
+				.collect();
+			if !parts.is_empty() {
+				entry.detail = Some(parts.join(", "));
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"delete_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry("del", line);
+			entry.detail = named_iter(node)
+				.next()
+				.and_then(|value| summarized(value, code, CAP_VALUE));
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"pass_statement" | "break_statement" | "continue_statement"
+			if lang == SupportLang::Python =>
+		{
+			let kind = match node.kind() {
+				"pass_statement" => "pass",
+				"break_statement" => "break",
+				_ => "continue",
+			};
+			let mut entry = new_entry(kind, node.start_position().row as u32 + 1);
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"global_statement" | "nonlocal_statement" if lang == SupportLang::Python => {
+			let kind = if node.kind() == "global_statement" {
+				"global"
+			} else {
+				"nonlocal"
+			};
+			let line = node.start_position().row as u32 + 1;
+			let mut entry = new_entry(kind, line);
+			let names: Vec<String> = named_iter(node).map(|child| text_of(child, code)).collect();
+			if !names.is_empty() {
+				entry.detail = Some(names.join(", "));
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+		},
+		"expression_statement" if lang == SupportLang::Python => {
+			let line = node.start_position().row as u32 + 1;
+			if let Some(expression) = named_iter(node).next() {
+				if expression.kind() == "assignment" {
+					let mut entry = new_entry("assign", line);
+					entry.name = expression
+						.child_by_field_name("left")
+						.and_then(|left| summarized(left, code, 40));
+					let annotation = expression
+						.child_by_field_name("type")
+						.and_then(|annotation| summarized(annotation, code, 40));
+					let value = expression
+						.child_by_field_name("right")
+						.and_then(|right| summarized(right, code, CAP_VALUE));
+					entry.detail = match (annotation, value) {
+						(Some(annotation), Some(value)) => Some(format!("{annotation} ← {value}")),
+						(Some(annotation), None) => Some(annotation),
+						(None, value) => value,
+					};
+					pending.attach(&mut entry);
+					out.push(entry);
+					return;
+				}
+				if expression.kind() == "augmented_assignment" {
+					if let Some(operator) = expression.child_by_field_name("operator") {
+						let mut entry = new_entry(operator.kind(), line);
+						entry.name = expression
+							.child_by_field_name("left")
+							.and_then(|left| summarized(left, code, 40));
+						entry.detail = expression
+							.child_by_field_name("right")
+							.and_then(|right| summarized(right, code, CAP_VALUE));
+						pending.attach(&mut entry);
+						out.push(entry);
+						return;
+					}
+				}
+				let mut entry = new_entry("expr", line);
+				entry.detail = summarized(expression, code, CAP_EXPR);
+				pending.attach(&mut entry);
+				out.push(entry);
+			}
+		},
 		"import_statement" => {
 			let mut entry = import_entry(node, code, node.start_position().row as u32 + 1);
 			pending.attach(&mut entry);
@@ -1046,10 +1503,10 @@ fn walk_statement(
 				}
 			}
 		},
-		other => {
+		_other => {
 			let line = node.start_position().row as u32 + 1;
 			let mut entry = new_entry("expr", line);
-			entry.detail = Some(cap(other, CAP_EXPR));
+			entry.detail = summarized(node, code, CAP_EXPR);
 			pending.attach(&mut entry);
 			out.push(entry);
 		},
@@ -1115,6 +1572,7 @@ fn resolve_outline_language(lang: Option<&str>, path: Option<&str>) -> Option<Su
 	match alias.to_ascii_lowercase().as_str() {
 		"js" | "jsx" | "javascript" | "mjs" | "cjs" => Some(SupportLang::JavaScript),
 		"ts" | "tsx" | "typescript" | "mts" | "cts" => Some(SupportLang::Tsx),
+		"py" | "py3" | "pyi" | "python" => Some(SupportLang::Python),
 		_ => None,
 	}
 }

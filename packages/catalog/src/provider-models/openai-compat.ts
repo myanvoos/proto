@@ -12,13 +12,11 @@ import { FIREWORKS_FAST_SUFFIX, toFireworksPublicModelId } from "../fireworks-mo
 import { getBundledModelReferenceIndex } from "../identity/bundled";
 import {
 	anthropicModelSupportsThinking,
-	isGlm53ReasoningEffortModelId,
 	isGlmVisionModelId,
 	isGrokReasoningEffortCapable,
 	isKimiK3ModelId,
 	isKimiModelId,
 	isMuseSparkModelId,
-	isQwen38PlusTemplateEffortModelId,
 	isReasoningGlmModelId,
 } from "../identity/family";
 import { resolveModelReference } from "../identity/reference";

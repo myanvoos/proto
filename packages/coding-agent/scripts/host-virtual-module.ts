@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils/fs-error";
 
-export const HOST_MODULES_SPECIFIER = "proto-host-modules";
+const HOST_MODULES_SPECIFIER = "proto-host-modules";
 
 const VIRTUAL_NAMESPACE = "proto-host-modules-build";
 const packageDir = path.resolve(import.meta.dir, "..");
@@ -25,7 +25,7 @@ const BUNDLED_PACKAGES: readonly BundledPackage[] = [
 const SKIPPED_WILDCARD_BASENAMES = new Set(["index"]);
 const MAIN_THREAD_UNSAFE_WILDCARD_BASENAMES = new Set(["worker-entry"]);
 
-export interface BundledHostEntry {
+interface BundledHostEntry {
 	readonly key: string;
 
 	readonly binding: string;
@@ -82,7 +82,7 @@ function exportImportTarget(value: unknown): string | null {
 	return null;
 }
 
-export async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
+async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 	const entries: BundledHostEntry[] = [];
 	const seenKeys = new Set<string>();
 	const seenBindings = new Set<string>();
@@ -153,7 +153,7 @@ export async function collectBundledHostEntries(): Promise<BundledHostEntry[]> {
 	return entries;
 }
 
-export function __renderHostVirtualModule(entries: readonly BundledHostEntry[]): string {
+function __renderHostVirtualModule(entries: readonly BundledHostEntry[]): string {
 	const loaders = entries.map(
 		entry => `const ${entry.binding} = () => import(${JSON.stringify(entry.importSpecifier)});`,
 	);

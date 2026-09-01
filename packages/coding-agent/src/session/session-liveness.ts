@@ -49,8 +49,7 @@ function writeLiveMarker(sessionFile: string, streaming: boolean): void {
 		logger.debug("Failed to write session live marker", { sessionFile, error: String(error) });
 		try {
 			fs.rmSync(tmpPath, { force: true });
-		} catch {
-		}
+		} catch {}
 	}
 }
 

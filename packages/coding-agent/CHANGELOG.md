@@ -47,6 +47,7 @@
 - Removed the `/agents` hub dashboard (`AgentsHubComponent`) and its per-agent model/prewalk/advisor surface; agent model roles remain available through `/model`. Removed the TUI info/delete/pin branches of `/session` (still available over ACP/text) and the now-unused `handleSessionCommand`/`showSessionPinSelector` context methods.
 
 ### Changed
+- Kernel Python cells now render their AST outline preview with the shared tree-sitter outline engine (`codeOutline`) instead of a hand-rolled tokenizer/parser: decorators, docstrings, `match`/`case`, `elif`/`except`/`finally` clauses, async clauses, annotated assignments and `#@` margin notes all come from the same structural parse as JS cells (raw code on expand is unchanged).
 - Kernel/eval cell transcripts now render file-edit diffs in full — every hunk of every write/edit/delete event stays visible in both collapsed and expanded views, with no "… N more hunks" truncation (the only remaining trim is the producer-side large-diff guard, disclosed as "… diff truncated"); only non-file status noise stays collapsed behind "… N earlier".
 
 - The bash tool is model-facing again for the main agent (`bash.enabled` still gates it); the kernel remains the default work surface and subagents stay kernel-first.
@@ -81,6 +82,7 @@
 - Removed the setup wizard's post-setup "Setup saved" outro screen; the wizard closes as soon as the last scene finishes (Ctrl+C also exits immediately).
 
 ### Fixed
+- Declared the missing `diff` dependency (schema diffing read it via hoisting, which breaks isolated installs).
 - Kernel blocks no longer duplicate in the transcript after streaming a large Status diff: a still-running cell now windows its Status/agent-progress sections (and shares the code preview budget with them) so the live block stays inside the viewport instead of committing to native scrollback mid-stream and re-emitting in full when the header settles; finalized cells keep complete diffs. Ctrl+O expansion on a still-streaming cell (or the streaming call phase) is deferred for the same reason — a dim note marks it and the expanded view applies once the cell settles.
 - Kernel cells no longer show the same file hunk twice in the Status section when a `write()` (or `files:` materialization) is followed by a raw `open()`/`os.*` mutation of the same file within one cell: the end-of-cell flush now diffs from the content the cell already reported instead of the pre-cell snapshot (Python and JS kernels).
 - Transcript rebuilds (Esc-cancelled submission, dropped-prompt restore, auto-compaction) no longer leave a stuck duplicate "running" block for a tool call that was executing during the rebuild.

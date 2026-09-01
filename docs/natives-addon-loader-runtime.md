@@ -6,7 +6,7 @@ This page documents `packages/natives/native/loader-state.js`, the runtime betwe
 
 - `native/index.js` calls `loadNative()` at module evaluation and exposes the generated root API.
 - `native/desktop.js` and `native/clipboard.js` import the loader but call it only inside their public wrappers.
-- Pure loader helpers are exported for focused tests and do not perform detection or filesystem probing until `loadNative()` or `initLoaderContext()` is called.
+- Pure loader helpers stay module-internal and perform no detection or filesystem probing until `loadNative()` is called.
 
 A successful call is not memoized by JS. Repeated calls rely on the runtime's `require(...)` module cache, while post-load setup is idempotent or best-effort.
 

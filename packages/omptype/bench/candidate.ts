@@ -1,8 +1,8 @@
 import type { Def } from "./ir";
 
-export type SchemaFn = (value: unknown) => unknown;
+type SchemaFn = (value: unknown) => unknown;
 
-export type CheckFn = (value: unknown) => boolean;
+type CheckFn = (value: unknown) => boolean;
 
 export interface Candidate {
 	name: string;

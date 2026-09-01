@@ -1,4 +1,4 @@
-export type ProtoScalarType =
+type ProtoScalarType =
 	| "bool"
 	| "bytes"
 	| "double"
@@ -33,17 +33,17 @@ const PROTO_SCALAR_TYPES: Record<string, true> = {
 	string: true,
 };
 
-export interface ProtoOption {
+interface ProtoOption {
 	name: string;
 	value: unknown;
 }
 
-export interface ProtoImport {
+interface ProtoImport {
 	path: string;
 	kind: "standard" | "public" | "weak";
 }
 
-export interface ProtoEnumValue {
+interface ProtoEnumValue {
 	name: string;
 	number: number;
 	comment?: string;
@@ -59,7 +59,7 @@ export interface ProtoEnum {
 	parentMessage?: string;
 }
 
-export interface ProtoBaseField {
+interface ProtoBaseField {
 	name: string;
 	jsonName: string;
 	number: number;
@@ -68,24 +68,24 @@ export interface ProtoBaseField {
 	options: ProtoOption[];
 }
 
-export interface ProtoScalarField extends ProtoBaseField {
+interface ProtoScalarField extends ProtoBaseField {
 	kind: "scalar";
 	scalarType: ProtoScalarType;
 }
 
-export interface ProtoMessageField extends ProtoBaseField {
+interface ProtoMessageField extends ProtoBaseField {
 	kind: "message";
 	typeName: string;
 	resolvedTypeName?: string;
 }
 
-export interface ProtoEnumField extends ProtoBaseField {
+interface ProtoEnumField extends ProtoBaseField {
 	kind: "enum";
 	typeName: string;
 	resolvedTypeName?: string;
 }
 
-export interface ProtoMapField extends ProtoBaseField {
+interface ProtoMapField extends ProtoBaseField {
 	kind: "map";
 	keyType: string;
 	valueType: string;
@@ -95,7 +95,7 @@ export interface ProtoMapField extends ProtoBaseField {
 
 export type ProtoField = ProtoScalarField | ProtoMessageField | ProtoEnumField | ProtoMapField;
 
-export interface ProtoOneof {
+interface ProtoOneof {
 	name: string;
 	comment?: string;
 	fields: (ProtoScalarField | ProtoMessageField | ProtoEnumField)[];
@@ -114,7 +114,7 @@ export interface ProtoMessage {
 	parentMessage?: string;
 }
 
-export interface ProtoRpc {
+interface ProtoRpc {
 	name: string;
 	comment?: string;
 	requestType: string;
@@ -124,7 +124,7 @@ export interface ProtoRpc {
 	options: ProtoOption[];
 }
 
-export interface ProtoService {
+interface ProtoService {
 	name: string;
 	fullName: string;
 	comment?: string;

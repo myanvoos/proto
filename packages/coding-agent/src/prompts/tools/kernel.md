@@ -29,7 +29,7 @@ write("src/routes.py", SCRIPT)
 </prelude>
 
 <critical>
-Prior top-level names survive into the next call — reuse; NEVER re-import/re-declare. Re-read only if file changed since last read — `StaleWriteError` from write()/edit() is the signal that it did. On error, fix and re-run only the failing step. Don't rebind helper names (`output`, `env`, `log`, `write`, …) as variables; if you did, `del name` restores the helper. File write/edit content with string escapes or nested brackets MUST go through `#@embed`/`files` verbatim — never hand-escaped literals.
+Prior top-level names survive into the next call — reuse; NEVER re-import/re-declare. Re-read only if file changed since last read — `StaleWriteError` from write()/edit() is the signal that it did. Targeted file edits go through `edit(path, old, new)`, never manual `str.replace` surgery. On error, fix and re-run only the failing step. Don't rebind helper names (`output`, `env`, `log`, `write`, …) as variables; if you did, `del name` restores the helper. File write/edit content with string escapes or nested brackets MUST go through `#@embed`/`files` verbatim — never hand-escaped literals.
 </critical>
 
 {{#if autoBackgroundEnabled}}Long calls may auto-background and deliver later; kernel stays busy until the cell finishes. `timeout: 0` disables the cell deadline.{{/if}}

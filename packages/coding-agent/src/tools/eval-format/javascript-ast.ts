@@ -1,4 +1,4 @@
-import { codeOutline, supportsLanguage } from "@oh-my-pi/pi-natives";
+import { codeOutline, type OutlineEntry, supportsLanguage } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../../modes/theme/theme";
 import { type OutlineNode, renderOutlineLines } from "./outline-render";
@@ -45,28 +45,14 @@ const JS_AUG_KINDS = new Set([
 	">>>=",
 ]);
 
-function toOutlineNode(entry: {
-	kind: string;
-	modifier?: string | null;
-	name?: string | null;
-	detail?: string | null;
-	doc?: string | null;
-	notes?: Array<string> | null;
-	asks?: Array<string> | null;
-	line: number;
-	children: Array<Record<string, unknown>> | null;
-}): OutlineNode {
-	const node: OutlineNode = {
-		kind: entry.kind,
-		line: entry.line,
-		children: (entry.children ?? []).map(child => toOutlineNode(child as Parameters<typeof toOutlineNode>[0])),
-	};
+function toOutlineNode(entry: OutlineEntry): OutlineNode {
+	const node: OutlineNode = { kind: entry.kind, line: entry.line, children: entry.children.map(toOutlineNode) };
 	if (entry.modifier) node.modifier = entry.modifier;
 	if (entry.name) node.name = entry.name;
 	if (entry.detail) node.detail = entry.detail;
 	if (entry.doc) node.doc = entry.doc;
-	if (entry.notes && entry.notes.length > 0) node.notes = entry.notes;
-	if (entry.asks && entry.asks.length > 0) node.questions = entry.asks;
+	if (entry.notes.length > 0) node.notes = entry.notes;
+	if (entry.asks.length > 0) node.questions = entry.asks;
 	return node;
 }
 

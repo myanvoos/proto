@@ -38,13 +38,19 @@ import {
 } from "./render-utils";
 export const EVAL_DEFAULT_PREVIEW_LINES = 10;
 
-// Per-section row cap for cells that are still executing. A running cell
-// re-renders inside the terminal's live region; if the block outgrows the
-// viewport its top rows scroll off and are committed to native scrollback
-// mid-stream. The finalized render then differs from that committed prefix
-// (spinner header → done header, trimmed output), which forces a re-emit of
-// the whole block — duplicating it in scrollback. Finalized cells stay
-// uncapped, so the committed transcript keeps complete diffs.
+// Per-section row cap for cells rendered while the tool call is still
+// partial. A live block re-renders inside the terminal's live region; if it
+// outgrows the viewport its top rows scroll off and are committed to native
+// scrollback mid-stream. The finalized render then differs from that
+// committed prefix (spinner header → done header, trimmed output), which
+// forces a re-emit of the whole block — duplicating it in scrollback.
+//
+// Diff hunks are withheld entirely while the result is partial — even for
+// cells that already completed (a cell can finish executing while later args
+// still stream; its full hunk would land in the live region, overflow, and
+// re-emit on settle, printing the hunk twice). Live renders show only the
+// per-file ⟦+N/-M⟧ stats line; hunks appear once the call settles, so the
+// committed transcript keeps complete diffs exactly once.
 const EVAL_STREAMING_SECTION_LINES = 12;
 
 // Ctrl+O expansion is deferred for the same reason: an expanded live block
@@ -469,7 +475,13 @@ function isFileOpEvent(event: EvalStatusEvent): boolean {
 	return event.op === "write" || event.op === "delete";
 }
 
-function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean, width: number): string[] {
+function renderStatusEvents(
+	events: EvalStatusEvent[],
+	theme: Theme,
+	expanded: boolean,
+	width: number,
+	options: { suppressDiffs?: boolean } = {},
+): string[] {
 	if (events.length === 0) return [];
 
 	const nonFileOpIndexes: number[] = [];
@@ -498,7 +510,9 @@ function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: b
 			expanded && !withDiff ? formatStatusEventExpanded(event, theme) : [formatStatusEvent(event, theme)];
 		pushText(`${branch} ${head}`);
 		for (const line of rest) pushText(`${cont}${line}`);
-		if (!withDiff) continue;
+		// The head line already carries the ⟦+N/-M⟧ stats; the hunk body is
+		// deferred until the call settles (see EVAL_STREAMING_SECTION_LINES).
+		if (!withDiff || options.suppressDiffs) continue;
 		for (const diffLine of renderEventDiff(event, theme)) {
 			for (const row of wrapCodeFrameLine(diffLine, bodyWidth)) {
 				lines.push(`${cont}${row}`);
@@ -696,13 +710,19 @@ export const evalToolRenderer = {
 							EVAL_STREAMING_SECTION_LINES,
 							Math.max(3, Math.floor(liveWindow / 2)),
 						);
+						// Diff hunks and section overflow are suppressed for EVERY cell
+						// while the call is partial — a completed cell's rows still sit
+						// in the live region until the call settles, so a big hunk there
+						// would commit to scrollback mid-stream and print again on
+						// finish (see EVAL_STREAMING_SECTION_LINES).
 						let statusLines = renderStatusEvents(
 							otherEvents,
 							uiTheme,
 							cellExpanded,
 							outputBlockContentWidth(width),
+							{ suppressDiffs: isPartialResult },
 						);
-						if (cellLive) {
+						if (isPartialResult) {
 							statusLines = capPreviewLines(statusLines, uiTheme, { max: liveSectionCap });
 						}
 						const outputContent = formatCellOutputLines(cell, cellExpanded, previewLines, uiTheme, width);
@@ -716,7 +736,7 @@ export const evalToolRenderer = {
 							agentEvents.length > 0
 								? renderAgentProgressEvents(agentEvents, uiTheme, options.spinnerFrame)
 								: [];
-						if (cellLive) {
+						if (isPartialResult) {
 							agentLines = capPreviewLines(agentLines, uiTheme, { max: liveSectionCap });
 						}
 						const codeMaxLines = cellLive
@@ -804,7 +824,9 @@ export const evalToolRenderer = {
 			return widthAwareText(width => {
 				const lines = [
 					uiTheme.fg("dim", "Status"),
-					...renderStatusEvents(statusEvents, uiTheme, expandedStatus, width),
+					...renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, {
+						suppressDiffs: isPartialResult,
+					}),
 					timeoutLine,
 					noticeLine,
 					asyncLine,
@@ -820,7 +842,9 @@ export const evalToolRenderer = {
 				.map(line => uiTheme.fg("toolOutput", line))
 				.join("\n");
 			return widthAwareText(width => {
-				const statusLines = renderStatusEvents(statusEvents, uiTheme, expandedStatus, width);
+				const statusLines = renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, {
+					suppressDiffs: isPartialResult,
+				});
 				const lines = [
 					styledOutput,
 					...(statusLines.length > 0 ? [uiTheme.fg("dim", "Status"), ...statusLines] : []),
@@ -868,7 +892,9 @@ export const evalToolRenderer = {
 				}
 				outputLines.push(...cachedLines);
 				if (hasStatusEvents) {
-					const statusLines = renderStatusEvents(statusEvents, uiTheme, expandedStatus, width);
+					const statusLines = renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, {
+						suppressDiffs: isPartialResult,
+					});
 					outputLines.push(uiTheme.fg("dim", "Status"));
 					outputLines.push(...statusLines);
 				}

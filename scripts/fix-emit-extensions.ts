@@ -7,7 +7,7 @@ const SPECIFIER_RE = /(\b(?:from|import|module)\b\s*(?:\(\s*)?)("|')(\.[^"']*)(\
 
 export type EmitExt = ".d.ts" | ".js";
 
-export async function resolveEmitSpecifier(fromDir: string, spec: string, ext: EmitExt): Promise<string | null> {
+async function resolveEmitSpecifier(fromDir: string, spec: string, ext: EmitExt): Promise<string | null> {
 	if (/\.(js|json|mjs|cjs)$/.test(spec)) return null;
 	if (/\.d\.ts$/.test(spec)) return `${spec.slice(0, -".d.ts".length)}.js`;
 
@@ -29,7 +29,7 @@ async function exists(p: string): Promise<boolean> {
 	}
 }
 
-export async function fixEmitFile(filePath: string, ext: EmitExt): Promise<number> {
+async function fixEmitFile(filePath: string, ext: EmitExt): Promise<number> {
 	const source = await Bun.file(filePath).text();
 	const fromDir = path.dirname(filePath);
 	let changed = 0;

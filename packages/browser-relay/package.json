@@ -15,8 +15,7 @@
 		"fmt": "biome format --write ."
 	},
 	"devDependencies": {
-		"@types/bun": "catalog:",
-		"puppeteer-core": "catalog:"
+		"@types/bun": "catalog:"
 	},
 	"engines": {
 		"bun": ">=1.3.14"

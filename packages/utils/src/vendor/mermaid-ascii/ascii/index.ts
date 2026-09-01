@@ -139,6 +139,3 @@ export function renderMermaidASCII(
     }
   }
 }
-
-
-export const renderMermaidAscii = renderMermaidASCII

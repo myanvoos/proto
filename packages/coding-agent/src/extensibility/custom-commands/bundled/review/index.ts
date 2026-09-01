@@ -633,5 +633,3 @@ async function getRecentCommits(api: CustomCommandAPI, count: number): Promise<s
 		return [];
 	}
 }
-
-export default ReviewCommand;

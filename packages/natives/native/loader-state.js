@@ -43,7 +43,7 @@ function resolveLeafPackageDir(platformTag) {
 
 
 
-export function detectCompiledBinary({ embeddedAddon, env, importMetaUrl }) {
+function detectCompiledBinary({ embeddedAddon, env, importMetaUrl }) {
 	if (embeddedAddon) return true;
 	if (env && env.PI_COMPILED) return true;
 	if (typeof importMetaUrl === "string") {
@@ -54,7 +54,7 @@ export function detectCompiledBinary({ embeddedAddon, env, importMetaUrl }) {
 	return false;
 }
 
-export function getAddonFilenames({ tag, arch, variant }) {
+function getAddonFilenames({ tag, arch, variant }) {
 	const defaultFilename = `pi_natives.${tag}.node`;
 	if (arch !== "x64" || !variant) return [defaultFilename];
 	const baselineFilename = `pi_natives.${tag}-baseline.node`;
@@ -66,7 +66,7 @@ export function getAddonFilenames({ tag, arch, variant }) {
 }
 
 
-export function resolveLoaderCandidates({
+function resolveLoaderCandidates({
 	addonFilenames,
 	isCompiledBinary,
 	nativeDir,
@@ -119,14 +119,14 @@ function isOlderReleaseVersion(candidate, current) {
 const NATIVE_CACHE_CLEANUP_GRACE_MS = 10 * 60_000;
 
 
-export function prepareNativeVersionDir(versionedDir) {
+function prepareNativeVersionDir(versionedDir) {
 	fs.mkdirSync(versionedDir, { recursive: true });
 	const now = new Date();
 	fs.utimesSync(versionedDir, now, now);
 }
 
 
-export function cleanupStaleNativeVersions({ nativesDir, currentVersion }) {
+function cleanupStaleNativeVersions({ nativesDir, currentVersion }) {
 	const removed = [];
 	let entries;
 	try {
@@ -217,7 +217,7 @@ function detectAvx2Support() {
 }
 
 
-export function selectCpuVariant({ arch, override, env, detectAvx2 }) {
+function selectCpuVariant({ arch, override, env, detectAvx2 }) {
 	if (arch !== "x64") return { variant: null, source: "non-x64" };
 	if (override === "modern" || override === "baseline") {
 		return { variant: override, source: "override" };
@@ -322,7 +322,7 @@ function writeEmbeddedAddonFile(targetPath, content) {
 	}
 }
 
-export function extractEmbeddedAddonArchive({ archivePath, files, targetDir }) {
+function extractEmbeddedAddonArchive({ archivePath, files, targetDir }) {
 	const pending = new Map();
 	for (const file of files) {
 		if (!isSafeEmbeddedAddonFilename(file.filename)) {
@@ -450,7 +450,7 @@ function isCompatiblePreSentinelNativeAddon(bindings, diskHasExpectedSentinel) {
 	);
 }
 
-export function validateLoadedBindings(ctx, bindings, candidate) {
+function validateLoadedBindings(ctx, bindings, candidate) {
 
 
 
@@ -538,7 +538,7 @@ function buildHelpMessage(ctx) {
 
 
 
-export function initLoaderContext(overrides = {}) {
+function initLoaderContext(overrides = {}) {
 	const platform = overrides.platform ?? process.platform;
 	const platformTag = `${platform}-${process.arch}`;
 	const packageVersion = packageJson.version;

@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gzipSync } from "node:zlib";
 import { Glob } from "bun";
 
 const packageDir = path.resolve(import.meta.dir, "..");
@@ -9,15 +9,6 @@ export interface DocsIndexPayload {
 	readonly files: readonly string[];
 	readonly bodies: readonly string[];
 	readonly payload: string;
-}
-
-export interface DecodedDocsIndexPayload {
-	readonly files: readonly string[];
-	readonly bodies: readonly string[];
-}
-
-function isStringArray(value: unknown): value is string[] {
-	return Array.isArray(value) && value.every(item => typeof item === "string");
 }
 
 export async function buildDocsIndexPayload(): Promise<DocsIndexPayload> {
@@ -35,22 +26,4 @@ export async function buildDocsIndexPayload(): Promise<DocsIndexPayload> {
 		bodies,
 		payload: `${JSON.stringify(files)}\n${bodiesB64}`,
 	};
-}
-
-export function decodeDocsIndexPayload(embed: string): DecodedDocsIndexPayload | null {
-	const newline = embed.indexOf("\n");
-	if (newline === -1) return null;
-
-	const filenames: unknown = JSON.parse(embed.slice(0, newline));
-	if (!isStringArray(filenames)) {
-		throw new Error("Embedded docs index filename line is not a JSON string array.");
-	}
-
-	const inflated = gunzipSync(Buffer.from(embed.slice(newline + 1), "base64"));
-	const bodies: unknown = JSON.parse(inflated.toString("utf8"));
-	if (!isStringArray(bodies)) {
-		throw new Error("Embedded docs index body blob is not a JSON string array.");
-	}
-
-	return { files: filenames, bodies };
 }
