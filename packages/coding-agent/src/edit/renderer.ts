@@ -3,20 +3,16 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { sliceWithWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { errorMessage, formatMoreLines, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import type { FileDiagnosticsResult } from "../lsp";
 import { renderDiff as renderDiffColored } from "../modes/components/diff";
 import type { Theme } from "../modes/theme/theme-class";
 import type { OutputMeta } from "../tools/output-meta";
 import {
 	cachedRenderedString,
 	createRenderedStringCache,
-	formatDiagnostics,
 	formatDiffTruncationHint,
 	formatStatusIcon,
 	getDiffStats,
-	getLspBatchRequest,
 	invalidateRenderedStringCache,
-	type LspBatchRequest,
 	PREVIEW_LIMITS,
 	previewWindowRows,
 	type RenderedStringCache,
@@ -41,13 +37,10 @@ import { type ApplyPatchEntry, expandApplyPatchToEntries, expandApplyPatchToPrev
 import type { Operation } from "./modes/patch";
 import type { PerFileDiffPreview } from "./streaming";
 
-export { getLspBatchRequest, type LspBatchRequest };
-
 export interface EditToolPerFileResult {
 	path: string;
 	diff: string;
 	firstChangedLine?: number;
-	diagnostics?: FileDiagnosticsResult;
 	op?: Operation;
 	move?: string;
 	isError?: boolean;
@@ -69,8 +62,6 @@ export interface EditToolDetails {
 	diff: string;
 
 	firstChangedLine?: number;
-
-	diagnostics?: FileDiagnosticsResult;
 
 	op?: Operation;
 
@@ -725,7 +716,7 @@ function renderSingleFileResult(
 			(result.content?.find(c => c.type === "text")?.text ?? "")
 		: "";
 
-	if (!isError && !details?.diff && !details?.diagnostics && (op === "delete" || rename)) {
+	if (!isError && !details?.diff && (op === "delete" || rename)) {
 		const linkPath = details && "path" in details ? details.path : undefined;
 		return renderInlineEditRow(uiTheme, { op, rename, rawPath, linkPath, pending: false });
 	}
@@ -777,12 +768,6 @@ function renderSingleFileResult(
 			else if (editDiffPreview.diff)
 				body = renderDiffSection(editDiffPreview.diff, rawPath, expanded, uiTheme, renderDiffFn, diffSectionCache);
 		}
-		if (details?.diagnostics) {
-			body += formatDiagnostics(details.diagnostics, expanded, uiTheme, (fp: string) =>
-				uiTheme.getLangIcon(getLanguageFromPath(fp)),
-			);
-		}
-
 		const innerWidth = Math.max(1, width - 2);
 		const bodyLines = body.length > 0 ? body.split("\n").flatMap(line => wrapCodeFrameLine(line, innerWidth)) : [];
 		while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();

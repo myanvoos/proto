@@ -3,16 +3,10 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { atomicWriteFilePreservingMode, clampLow, errorMessage, isEnoent } from "@oh-my-pi/pi-utils";
-import {
-	type FileDiagnosticsResult,
-	flushLspWritethroughBatch,
-	type WritethroughCallback,
-	type WritethroughDeferredHandle,
-} from "../../lsp";
-import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFile } from "../../tools/auto-generated-guard";
+import { writeFileWithFallback } from "../../tools/file-write-fallback";
 import {
 	invalidateFsScanAfterDelete,
 	invalidateFsScanAfterRename,
@@ -51,7 +45,7 @@ import {
 	stripBom,
 } from "../normalize";
 import { readEditFileText, serializeEditFileText } from "../read-file";
-import type { EditToolDetails, LspBatchRequest } from "../renderer";
+import type { EditToolDetails } from "../renderer";
 import { pruneOversizedEditSnapshots } from "../snapshot-details";
 
 export type Operation = "create" | "delete" | "update";
@@ -1546,26 +1540,19 @@ export interface ExecutePatchSingleOptions {
 	path: string;
 	params: PatchEditEntry;
 	signal?: AbortSignal;
-	batchRequest?: LspBatchRequest;
 	allowFuzzy: boolean;
 	fuzzyThreshold: number;
 
 	allowCreateOverwrite?: boolean;
-	writethrough: WritethroughCallback;
-	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
 }
 
-class LspFileSystem implements FileSystem {
-	#lastDiagnostics: FileDiagnosticsResult | undefined;
+class PatchFileSystem implements FileSystem {
 	#fileCache: Record<string, Bun.BunFile> = {};
 
 	constructor(
 		private readonly session: ToolSession,
 		private readonly requestedPath: string,
-		private readonly writethrough: WritethroughCallback,
 		private readonly signal?: AbortSignal,
-		private readonly batchRequest?: LspBatchRequest,
-		private readonly deferredForPath?: (path: string) => WritethroughDeferredHandle,
 	) {}
 
 	#getFile(path: string): Bun.BunFile {
@@ -1598,76 +1585,22 @@ class LspFileSystem implements FileSystem {
 		}
 
 		const file = this.#getFile(path);
-		const deferredForPath = this.deferredForPath;
-		const result = await this.writethrough(
-			path,
-			finalContent,
-			this.signal,
-			file,
-			this.batchRequest,
-			deferredForPath ? (dst: string) => deferredForPath(dst) : undefined,
-		);
-		if (result) {
-			this.#lastDiagnostics = result;
-		}
+		await writeFileWithFallback(path, finalContent, file);
 	}
 
 	async delete(path: string): Promise<void> {
 		await this.#getFile(path).unlink();
-		if (this.session.enableLsp ?? true) {
-			await notifyWorkspaceWatchedFiles(
-				this.session.cwd,
-				[{ filePath: path, type: FileChangeType.Deleted }],
-				this.signal,
-			);
-		}
 	}
 
 	async mkdir(path: string): Promise<void> {
 		await fs.promises.mkdir(path, { recursive: true });
 	}
-
-	getDiagnostics(): FileDiagnosticsResult | undefined {
-		return this.#lastDiagnostics;
-	}
-}
-
-function mergeDiagnosticsWithWarnings(
-	diagnostics: FileDiagnosticsResult | undefined,
-	warnings: string[],
-): FileDiagnosticsResult | undefined {
-	if (warnings.length === 0) return diagnostics;
-	const warningMessages = warnings.map(warning => `patch: ${warning}`);
-	if (!diagnostics) {
-		return {
-			server: "patch",
-			messages: warningMessages,
-			summary: `Patch warnings: ${warnings.length}`,
-			errored: false,
-		};
-	}
-	return {
-		...diagnostics,
-		messages: [...warningMessages, ...diagnostics.messages],
-		summary: `${diagnostics.summary}; Patch warnings: ${warnings.length}`,
-	};
 }
 
 export async function executePatchSingle(
 	options: ExecutePatchSingleOptions,
 ): Promise<AgentToolResult<EditToolDetails, typeof patchEditEntrySchema>> {
-	const {
-		session,
-		path,
-		params,
-		signal,
-		batchRequest,
-		allowFuzzy,
-		fuzzyThreshold,
-		allowCreateOverwrite,
-		writethrough,
-		beginDeferredDiagnosticsForPath,
-	} = options;
+	const { session, path, params, signal, allowFuzzy, fuzzyThreshold, allowCreateOverwrite } = options;
 	const { op: rawOp, rename, diff } = params;
 
 	const op: Operation = rawOp === "create" || rawOp === "delete" ? rawOp : "update";
@@ -1688,14 +1621,7 @@ export async function executePatchSingle(
 	}
 
 	const input: PatchInput = { path: resolvedPath, op, rename: resolvedRename, diff };
-	const patchFileSystem = new LspFileSystem(
-		session,
-		path,
-		writethrough,
-		signal,
-		batchRequest,
-		beginDeferredDiagnosticsForPath,
-	);
+	const patchFileSystem = new PatchFileSystem(session, path, signal);
 	const result = await applyPatch(input, {
 		cwd: session.cwd,
 		fs: patchFileSystem,
@@ -1770,15 +1696,7 @@ export async function executePatchSingle(
 			break;
 	}
 
-	let diagnostics = patchFileSystem.getDiagnostics();
-	if (op === "delete" && batchRequest?.flush) {
-		const flushedDiagnostics = await flushLspWritethroughBatch(batchRequest.id, session.cwd, signal);
-		diagnostics ??= flushedDiagnostics;
-	}
-	const mergedDiagnostics = mergeDiagnosticsWithWarnings(diagnostics, result.warnings ?? []);
-	const meta = outputMeta()
-		.diagnostics(mergedDiagnostics?.summary ?? "", mergedDiagnostics?.messages ?? [])
-		.get();
+	const meta = outputMeta().get();
 
 	const oldText = result.change.type !== "create" ? result.change.oldContent : undefined;
 	const newText = result.change.type !== "delete" ? result.change.newContent : undefined;
@@ -1790,7 +1708,6 @@ export async function executePatchSingle(
 
 			path: result.change.newPath ?? resolvedPath,
 			firstChangedLine: diffResult.firstChangedLine,
-			diagnostics: mergedDiagnostics,
 			op,
 			move: effectiveRename,
 			sourcePath: result.change.newPath ? resolvedPath : undefined,

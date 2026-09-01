@@ -175,7 +175,6 @@ export type SymbolKey =
 	| "tool.edit"
 	| "tool.bash"
 	| "tool.ssh"
-	| "tool.lsp"
 	| "tool.gh"
 	| "tool.webSearch"
 	| "tool.exa"
@@ -392,7 +391,6 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.edit": "✎",
 	"tool.bash": ">",
 	"tool.ssh": "⇄",
-	"tool.lsp": "",
 	"tool.gh": "◈",
 	"tool.webSearch": "⌕",
 	"tool.exa": "",

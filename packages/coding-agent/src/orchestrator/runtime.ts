@@ -1341,7 +1341,6 @@ export class OrchestratorRuntime {
 			sessionFile,
 			persistArtifacts: Boolean(sessionFile),
 			artifactsDir,
-			enableLsp: (session.enableLsp ?? true) && session.settings.get("orchestrator.enableLsp"),
 			signal,
 			eventBus: session.eventBus,
 			onProgress,

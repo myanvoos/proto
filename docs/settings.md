@@ -479,7 +479,7 @@ computer:
 
 Computer settings are captured when the desktop controller is created. A model switch that crosses the coordinate-safe sizing boundary recreates the controller and resnapshots those settings; changing config alone does not, so start a new session after a settings change. Every call must name `desktop` or a numeric id from the preceding window list. Switching targets invalidates the prior coordinate frame, so capture the new target before pointer input. Grant platform permissions before enabling input. See [Window-scoped computer use](computer-use.md).
 
-### Shell, eval, and LSP
+### Shell and eval
 
 ```yaml
 bash:
@@ -495,13 +495,6 @@ eval:
 python:
   kernelMode: session # session, per-call
   interpreter: ""
-
-lsp:
-  enabled: true
-  lazy: true
-  diagnosticsOnWrite: true
-  diagnosticsOnEdit: false
-  formatOnWrite: false
 ```
 
 | Key                               | Type    | Default   | Notes                                                                                                                                                       |
@@ -514,13 +507,6 @@ lsp:
 | `eval.js`                         | boolean | `true`    | JavaScript eval backend. `PI_JS=0` disables for the process.                                                                                                |
 | `python.kernelMode`               | enum    | `session` | `session` (persistent kernel) or `per-call`.                                                                                                                |
 | `python.interpreter`              | string  | `""`      | Path to a Python interpreter; empty = auto-detect.                                                                                                          |
-| `lsp.enabled`                     | boolean | `true`    | Language-server integration. `--no-lsp` disables for the run.                                                                                               |
-| `lsp.lazy`                        | boolean | `true`    | Start servers on demand.                                                                                                                                    |
-| `lsp.shared`                      | boolean | `true`    | Share one language server per project across local `proto` processes through the daemon broker; falls back to private servers when the broker is unavailable. |
-| `lsp.diagnosticsOnWrite`          | boolean | `true`    | Run diagnostics after a write.                                                                                                                              |
-| `lsp.diagnosticsOnEdit`           | boolean | `false`   | Run diagnostics after an edit.                                                                                                                              |
-| `lsp.formatOnWrite`               | boolean | `false`   | Format files on write.                                                                                                                                      |
-| `lsp.diagnosticsDeduplicate`      | boolean | `true`    | Collapse duplicate diagnostics.                                                                                                                             |
 | `shellPath`                       | string  | _(unset)_ | Override the shell binary used by bash.                                                                                                                     |
 
 ### Files: editing and reading

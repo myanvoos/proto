@@ -385,6 +385,5 @@ These exist in our fork but not upstream. **Never overwrite:**
 - Multi-credential auth with session affinity
 - Capability-based discovery system (`defineCapability`, `registerProvider`, `loadCapability`, `skillCapability`, etc.)
 - MCP/Exa/SSH integrations
-- LSP writethrough for format-on-save
 - Bash interception (`checkBashInterception`)
 - Fuzzy path suggestions in read tool

@@ -74,7 +74,6 @@ If omitted, it resolves:
 - skills/rules/context files/prompt templates/slash commands/extensions/custom TS commands
 - built-in tools via `createTools(...)`
 - MCP tools (enabled by default; Exa MCP servers are folded into native Exa integration, and browser automation MCP servers are filtered when the built-in browser tool is enabled)
-- LSP integration (enabled by default)
 - `eventBus`: new `EventBus()` unless supplied
 
 ### Required vs optional inputs
@@ -296,7 +295,7 @@ Only after work capable of appending session entries has settled does disposal c
   default; by itself it is **not** an allowlist.
 - Set `restrictToolNames: true` to limit the session to the names in
   `toolNames`. Restricted sessions disable ambient MCP, extensions, custom
-  commands, and LSP by default.
+  commands by default.
 - In a restricted session, SDK-supplied `customTools` are excluded unless
   `allowRestrictedCustomTools: true` and their names also appear in
   `toolNames`.
@@ -367,12 +366,6 @@ type CreateAgentSessionResult = {
   setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
   mcpManager?: MCPManager;
   modelFallbackMessage?: string;
-  lspServers?: Array<{
-    name: string;
-    status: "connecting" | "ready" | "error" | "available";
-    fileTypes: string[];
-    error?: string;
-  }>;
   eventBus: EventBus;
 };
 ```
@@ -381,15 +374,9 @@ Use `setToolUIContext(...)` only if your embedder provides UI capabilities that 
 
 ## Startup performance
 
-`createAgentSession()` runs two background optimizations to overlap I/O with the rest of session setup:
+`createAgentSession()` runs one background optimization to overlap I/O with the rest of session setup:
 
 - **Model-host preconnect.** As soon as the model is resolved, the SDK fires a best-effort `fetch.preconnect(model.baseUrl)` so DNS + TCP + TLS + HTTP/2 to the provider's host happens in parallel with extension/skill load, tool registry build, and system-prompt assembly. The first real `fetch(...)` then reuses the warm connection, saving 100–300 ms on transcontinental hops (e.g. residential IP → `api.anthropic.com`). Implementation lives in `preconnectModelHost()` in `packages/coding-agent/src/sdk.ts`. If `fetch.preconnect` is unavailable (non-Bun runtime) or the call throws, the optimization is silently skipped — never a hard dependency. Applies to every mode (interactive, print, RPC, ACP).
-- **Conditional LSP warmup.** Startup LSP servers (those returned by `discoverStartupLspServers(cwd)`) are only warmed when **all** of these hold:
-  - `enableLsp !== false` on the session options, **and**
-  - `options.hasUI === true` (interactive TUI), **and**
-  - the `lsp.lazy` setting is disabled (it defaults to `true`).
-
-  With `lsp.lazy` enabled — the default — no language servers are launched at startup at all; each server cold-starts on first use, i.e. when the agent invokes the `lsp` tool or an edit/write touches a file whose extension matches the server's `fileTypes`. Print / script / RPC / ACP invocations (`hasUI=false`) skip the warmup regardless of the setting: they don't render the warmup status indicator and typically finish before the language servers would stabilize, so warming them just spends CPU parsing big `initialize` responses concurrently with the LLM stream consumer and jitters perceived latency. Tools that actually need an LSP server still spin one up on demand through `getOrCreateClient()` — only the _startup_ warmup is skipped. The returned `lspServers` field in `CreateAgentSessionResult` is still populated for UI sessions in lazy mode — recognized servers are discovered (no processes spawned) and reported with status `"available"` so the welcome screen and `/status` can list them; it is `undefined` only when `enableLsp === false` or `hasUI === false`.
 
 ## Minimal controlled embed example
 
@@ -418,7 +405,6 @@ const { session } = await createAgentSession({
   sessionManager: SessionManager.inMemory(),
   toolNames: ["read", "grep", "glob", "edit", "write"],
   enableMCP: false,
-  enableLsp: true,
 });
 
 session.subscribe((event) => {

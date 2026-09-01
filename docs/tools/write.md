@@ -10,7 +10,6 @@
   - `packages/coding-agent/src/tools/sqlite-reader.ts` — detect SQLite paths and perform row insert/update/delete.
   - `packages/coding-agent/src/tools/conflict-detect.ts` — parse `conflict://` URIs, register/validate regions, and expand side tokens.
   - `packages/coding-agent/src/internal-urls/router.ts` / `packages/coding-agent/src/tools/xdev.ts` — writable internal resources and `xd://` tool-device dispatch.
-  - `packages/coding-agent/src/lsp/index.ts` — format-on-write and diagnostics writethrough.
   - `packages/coding-agent/src/tools/auto-generated-guard.ts` — block overwriting generated files.
   - `packages/coding-agent/src/tools/fs-cache-invalidation.ts` — invalidate shared FS scan caches after writes.
 
@@ -49,7 +48,7 @@ Single-shot result.
 - During execution, `onUpdate` may emit `Writing <chars> bytes to <path>...`; `xd://` forwards the mounted tool's updates.
 - If hashline prefixes were copied from `read` output and stripped first, the first text block gets an extra note.
 - In hashline display mode, plain file writes (including ACP bridge writes) and conflict resolutions prepend a fresh `[<relative-path>#TAG]` header so the next `edit` has a current snapshot tag without an extra `read`. Bulk conflict resolutions append a `Snapshots:` block listing one header per successfully written file.
-- Plain file writes may also return `details.diagnostics` plus `details.meta.diagnostics` when LSP diagnostics-on-write is enabled, and `details.madeExecutable` when a newly written shebang file is chmodded executable.
+- Plain file writes return `details.madeExecutable` when a newly written shebang file is chmodded executable.
 - Plain/archive/conflict results set `details.resolvedPath` when backed by a file. SQLite writes additionally set `details.meta.source` to the database file through `sourcePath(...)`. Internal URL writes return empty `details`; device dispatch sets `details.xdev`.
 
 ## Flow
@@ -75,9 +74,9 @@ Single-shot result.
 10. Otherwise it treats `path` as a plain filesystem file.
    - It rejects high-confidence mis-dispatched read targets: a missing selector-shaped filename with empty content, or a missing semicolon-joined list of selector paths. Existing literal paths win; non-empty content is the escape hatch for a single deliberate selector-shaped filename.
    - Plan-mode policy and path resolution run before mutation. Existing files pass the generated-file guard.
-   - ACP bridge `writeTextFile` is tried first when available; otherwise the session writethrough writes the content. LSP settings may format, synchronize, and diagnose the write.
+   - ACP bridge `writeTextFile` is tried first when available; otherwise the session writethrough writes the content.
    - A leading shebang may add execute bits. The filesystem scan cache is invalidated.
-11. The tool returns text plus optional diagnostics, executable, resolved-path, or device-dispatch metadata.
+11. The tool returns text plus optional executable, resolved-path, or device-dispatch metadata.
 
 ## Modes / Variants
 ### Plain file path
@@ -163,20 +162,18 @@ content: ""
 - Subprocesses / native bindings
   - Uses Bun SQLite bindings via `bun:sqlite`.
   - Uses the unified archive utilities: Bun Archive for tar serialization/indexing and `node:zlib`-backed framing for ZIP.
-  - May talk to configured LSP servers through `packages/coding-agent/src/lsp/index.ts`.
 - Session state
   - Invalidates shared filesystem scan cache entries through `invalidateFsScanAfterWrite()`.
   - Updates file mutation/snapshot state for plain files and conflict resolutions; resolved conflict ids are invalidated.
   - `xd://` dispatches a mounted tool and may therefore have that tool's documented side effects.
 - Background work / cancellation
   - Marks the tool `concurrency = "exclusive"` in `WriteTool`.
-  - The write body is wrapped with `untilAborted`; LSP writethrough can schedule deferred diagnostics fetches after a timeout.
+  - The write body is wrapped with `untilAborted`.
 
 ## Limits & Caps
 - Plain/internal file content has no tool-level byte cap beyond in-memory handling. Archive rewrites inherit archive utility caps: tar/tgz input `256 MiB`, each existing member `64 MiB`, and ZIP output must fit non-ZIP64 32-bit entry/count/offset limits.
 - Generated-file detection reads at most `CHECK_BYTE_COUNT = 1024` bytes and `HEADER_LINE_LIMIT = 40` header lines from an existing file in `packages/coding-agent/src/tools/auto-generated-guard.ts`.
 - SQLite writes set `PRAGMA busy_timeout = 3000`.
-- LSP writethrough uses a `5_000` ms operation timeout in `runLspWritethrough()` and may schedule a deferred diagnostics fetch with `AbortSignal.timeout(25_000)` in `scheduleDeferredDiagnosticsFetch()`.
 - Shebang executable handling depends on host filesystem chmod support.
 
 ## Errors
@@ -195,7 +192,6 @@ content: ""
 - Empty writes to missing selector-shaped targets and semicolon-joined selector lists are rejected as likely read/write mis-dispatches.
 - Conflict scope writes are read-only; invalid/stale ids, malformed bulk directives, missing `@base`, and stale marker locations surface `ToolError`.
 - Archive read/write failures and unexpected SQLite exceptions are wrapped in `ToolError(error.message)`.
-- If no LSP server matches or LSP formatting/diagnostics times out, file writes still complete; diagnostics may be omitted.
 
 ## Notes
 - Archive path detection runs before SQLite detection. A path that matches an archive selector is never treated as SQLite.

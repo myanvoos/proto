@@ -128,7 +128,7 @@ Streaming/UI behavior:
   - `attach`: explicit `adapter` wins; otherwise remote `port` prefers `debugpy`, then native debuggers, then first available adapter.
 - **Custom adapter config**
   - Debug adapters can be added or overridden with `dap.json`, `.dap.json`, `dap.yaml`, `.dap.yaml`, `dap.yml`, or `.dap.yml`.
-  - Search order mirrors LSP config: project root, project config dirs (`.proto/`, `.claude/`, `.codex/`, `.gemini/`), user config dirs (`~/.proto/agent/`, `~/.claude/`, `~/.codex/`, `~/.gemini/`), plugin roots, then home-root fallback. Files are merged from lowest to highest priority.
+  - Search order: project root, project config dirs (`.proto/`, `.claude/`, `.codex/`, `.gemini/`), user config dirs (`~/.proto/agent/`, `~/.claude/`, `~/.codex/`, `~/.gemini/`), plugin roots, then home-root fallback. Files are merged from lowest to highest priority.
   - Config shape may be either `{ "adapters": { ... } }` or a top-level adapter map.
   - Adapter fields:
     - `command`: executable name or path. Required.

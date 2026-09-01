@@ -8,53 +8,30 @@ import {
 	type WriteResult,
 } from "@oh-my-pi/hashline";
 import { atomicWriteFilePreservingMode, isEnoent } from "@oh-my-pi/pi-utils";
-import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
-import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
+import { writeFileWithFallback } from "../../tools/file-write-fallback";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { isInternalUrlPath } from "../../tools/path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
 import { isNotebookPath } from "../notebook";
 import { readEditFileText, serializeEditFileText } from "../read-file";
-import type { LspBatchRequest } from "../renderer";
 
 export interface HashlineFilesystemOptions {
 	session: ToolSession;
-	writethrough: WritethroughCallback;
-	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
 	signal?: AbortSignal;
-
-	batchRequest?: LspBatchRequest;
 }
 
 export class HashlineFilesystem extends Filesystem {
 	readonly session: ToolSession;
-	readonly #writethrough: WritethroughCallback;
-	readonly #beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
 	readonly #signal: AbortSignal | undefined;
-	#batchRequest: LspBatchRequest | undefined;
-	#diagnosticsByPath = new Map<string, FileDiagnosticsResult | undefined>();
 
 	constructor(options: HashlineFilesystemOptions) {
 		super();
 		this.session = options.session;
-		this.#writethrough = options.writethrough;
-		this.#beginDeferredDiagnosticsForPath = options.beginDeferredDiagnosticsForPath;
 		this.#signal = options.signal;
-		this.#batchRequest = options.batchRequest;
-	}
-
-	setBatchRequest(batchRequest: LspBatchRequest | undefined): void {
-		this.#batchRequest = batchRequest;
-	}
-
-	consumeDiagnostics(path: string): FileDiagnosticsResult | undefined {
-		const value = this.#diagnosticsByPath.get(path);
-		this.#diagnosticsByPath.delete(path);
-		return value;
 	}
 
 	resolveAbsolute(relativePath: string): string {
@@ -123,13 +100,6 @@ export class HashlineFilesystem extends Filesystem {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
 			throw error;
 		}
-		if (this.session.enableLsp ?? true) {
-			await notifyWorkspaceWatchedFiles(
-				this.session.cwd,
-				[{ filePath: absolutePath, type: FileChangeType.Deleted }],
-				this.#signal,
-			);
-		}
 		invalidateFsScanAfterWrite(absolutePath);
 	}
 
@@ -145,16 +115,6 @@ export class HashlineFilesystem extends Filesystem {
 		} else {
 			await fs.rename(fromAbsolute, toAbsolute);
 		}
-		if (this.session.enableLsp ?? true) {
-			await notifyWorkspaceWatchedFiles(
-				this.session.cwd,
-				[
-					{ filePath: fromAbsolute, type: FileChangeType.Deleted },
-					{ filePath: toAbsolute, type: FileChangeType.Created },
-				],
-				this.#signal,
-			);
-		}
 		invalidateFsScanAfterWrite(fromAbsolute);
 		invalidateFsScanAfterWrite(toAbsolute);
 	}
@@ -165,20 +125,11 @@ export class HashlineFilesystem extends Filesystem {
 		const finalContent = await serializeEditFileText(absolutePath, relativePath, content);
 
 		if (await routeWriteThroughBridge(this.session, relativePath, absolutePath, finalContent, this.#signal)) {
-			this.#diagnosticsByPath.set(relativePath, undefined);
 			return { text: finalContent };
 		}
 
-		const diagnostics = await this.#writethrough(
-			absolutePath,
-			finalContent,
-			this.#signal,
-			Bun.file(absolutePath),
-			this.#batchRequest,
-			dst => (dst === absolutePath ? this.#beginDeferredDiagnosticsForPath(absolutePath) : undefined),
-		);
+		await writeFileWithFallback(absolutePath, finalContent, Bun.file(absolutePath));
 		invalidateFsScanAfterWrite(absolutePath);
-		this.#diagnosticsByPath.set(relativePath, diagnostics);
 		return { text: finalContent };
 	}
 

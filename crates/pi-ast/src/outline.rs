@@ -23,7 +23,7 @@ pub struct OutlineEntry {
 	pub notes:    Vec<String>,
 	pub asks:     Vec<String>,
 	pub line:     u32,
-	pub children: Vec<OutlineEntry>,
+	pub children: Vec<Self>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -108,7 +108,7 @@ fn summarized(node: Node, code: &str, limit: usize) -> Option<String> {
 	}
 }
 
-fn named_iter<'tree>(node: Node<'tree>) -> impl Iterator<Item = Node<'tree>> {
+fn named_iter(node: Node<'_>) -> impl Iterator<Item = Node<'_>> {
 	(0..node.named_child_count()).filter_map(move |index| node.named_child(index))
 }
 
@@ -151,7 +151,7 @@ fn generator_token(node: Node) -> bool {
 	has_anonymous_token(node, "*")
 }
 
-fn parameters_of<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
+fn parameters_of(node: Node<'_>) -> Option<Node<'_>> {
 	node
 		.child_by_field_name("parameters")
 		.or_else(|| child_of_kind(node, &["formal_parameters"]))
@@ -198,10 +198,10 @@ impl Pending {
 			entry.doc = self.doc.take();
 		}
 		if !self.notes.is_empty() {
-			entry.notes.extend(self.notes.drain(..));
+			entry.notes.append(&mut self.notes);
 		}
 		if !self.asks.is_empty() {
-			entry.asks.extend(self.asks.drain(..));
+			entry.asks.append(&mut self.asks);
 		}
 		if !self.decor.is_empty() {
 			let prefix = self.decor.join(" ");
@@ -443,11 +443,11 @@ fn import_entry(node: Node, code: &str, line: u32) -> OutlineEntry {
 			_ => {},
 		}
 	}
-	if bindings.is_empty() {
-		if let Some(module) = module_text.clone() {
-			entry.detail = Some(cap(&module, CAP_IMPORT));
-			return entry;
-		}
+	if bindings.is_empty()
+		&& let Some(module) = module_text.clone()
+	{
+		entry.detail = Some(cap(&module, CAP_IMPORT));
+		return entry;
 	}
 	if !bindings.is_empty() {
 		entry.name = Some(cap(&bindings.join(", "), CAP_IMPORT));
@@ -566,13 +566,12 @@ fn class_entry(
 		}
 		pending.attach(&mut entry);
 		// Body-level pending leftovers attach to the class entry itself.
-		if member_pending.doc.is_some()
+		if (member_pending.doc.is_some()
 			|| !member_pending.notes.is_empty()
-			|| !member_pending.asks.is_empty()
+			|| !member_pending.asks.is_empty())
+			&& let Some(first) = children.first_mut()
 		{
-			if let Some(first) = children.first_mut() {
-				member_pending.attach(first);
-			}
+			member_pending.attach(first);
 		}
 		entry.children = children;
 		return entry;
@@ -612,10 +611,8 @@ fn method_definition_entry(
 	};
 	entry.name = Some(format!("{joined}({})", summarize_params(parameters, code)));
 	entry.detail = return_type_detail(node, code);
-	if with_body {
-		if let Some(body) = node.child_by_field_name("body") {
-			walk_block_into(body, code, lang, &mut entry);
-		}
+	if with_body && let Some(body) = node.child_by_field_name("body") {
+		walk_block_into(body, code, lang, &mut entry);
 	}
 	entry
 }
@@ -716,32 +713,31 @@ fn declarators_entries(
 		let annotation = annotation.map(|text| strip_type_annotation(&text).to_string());
 		let value_node = declarator.child_by_field_name("value");
 
-		if let Some(value) = value_node {
-			if matches!(
+		if let Some(value) = value_node
+			&& matches!(
 				value.kind(),
 				"arrow_function" | "function" | "function_expression" | "function_signature"
 			) {
-				let mut entry = new_entry("fn", line);
-				let params = summarize_params(parameters_of(value), code);
-				entry.name = Some(format!("{target}({params})"));
-				if async_token(value) {
-					entry.modifier = Some("async".to_string());
-				}
-				match value.child_by_field_name("body") {
-					Some(body) if body.kind() == "statement_block" => {
-						entry.detail = Some("=> …".to_string());
-						walk_block_into(body, code, lang, &mut entry);
-					},
-					Some(body) => {
-						entry.detail =
-							Some(format!("=> {}", summarized(body, code, CAP_VALUE).unwrap_or_default()))
-					},
-					None => entry.detail = Some("=> …".to_string()),
-				}
-				pending.attach(&mut entry);
-				out.push(entry);
-				continue;
+			let mut entry = new_entry("fn", line);
+			let params = summarize_params(parameters_of(value), code);
+			entry.name = Some(format!("{target}({params})"));
+			if async_token(value) {
+				entry.modifier = Some("async".to_string());
 			}
+			match value.child_by_field_name("body") {
+				Some(body) if body.kind() == "statement_block" => {
+					entry.detail = Some("=> …".to_string());
+					walk_block_into(body, code, lang, &mut entry);
+				},
+				Some(body) => {
+					entry.detail =
+						Some(format!("=> {}", summarized(body, code, CAP_VALUE).unwrap_or_default()));
+				},
+				None => entry.detail = Some("=> …".to_string()),
+			}
+			pending.attach(&mut entry);
+			out.push(entry);
+			continue;
 		}
 
 		let mut entry = new_entry("assign", line);
@@ -800,34 +796,30 @@ fn append_statement_body(statement: Node, code: &str, lang: SupportLang, entry: 
 fn for_entry(node: Node, code: &str, lang: SupportLang, kind: &str) -> OutlineEntry {
 	let line = node.start_position().row as u32 + 1;
 	let mut entry = new_entry(kind, line);
-	match node.kind() {
-		"for_statement" => {
-			let raw = text_of(node, code);
-			let header_end = node
-				.child_by_field_name("body")
-				.map(|body| body.start_byte() - node.start_byte())
-				.unwrap_or(raw.len());
-			let header = unwrap_parens(
-				raw[..header_end]
-					.trim()
-					.strip_prefix("for")
-					.unwrap_or("")
-					.trim(),
-			);
-			if !header.is_empty() {
-				entry.detail = Some(cap(header, CAP_COND));
-			}
-		},
-		_ => {
-			let target = node
-				.child_by_field_name("left")
-				.map(|n| text_of(n, code))
-				.unwrap_or_default();
-			entry.name = Some(cap(target.trim(), 40));
-			entry.detail = node
-				.child_by_field_name("right")
-				.and_then(|right| summarized(right, code, CAP_COND));
-		},
+	if node.kind() == "for_statement" {
+		let raw = text_of(node, code);
+		let header_end = node
+			.child_by_field_name("body")
+			.map_or(raw.len(), |body| body.start_byte() - node.start_byte());
+		let header = unwrap_parens(
+			raw[..header_end]
+				.trim()
+				.strip_prefix("for")
+				.unwrap_or("")
+				.trim(),
+		);
+		if !header.is_empty() {
+			entry.detail = Some(cap(header, CAP_COND));
+		}
+	} else {
+		let target = node
+			.child_by_field_name("left")
+			.map(|n| text_of(n, code))
+			.unwrap_or_default();
+		entry.name = Some(cap(target.trim(), 40));
+		entry.detail = node
+			.child_by_field_name("right")
+			.and_then(|right| summarized(right, code, CAP_COND));
 	}
 	if let Some(body) = node.child_by_field_name("body") {
 		append_statement_body(body, code, lang, &mut entry);
@@ -839,14 +831,12 @@ fn switch_case_entry(node: Node, code: &str, lang: SupportLang) -> OutlineEntry 
 	let line = node.start_position().row as u32 + 1;
 	let is_default = node.kind() == "switch_default";
 	let mut entry = new_entry(if is_default { "default" } else { "case" }, line);
-	if !is_default {
-		if let Some(value) = named_iter(node).next() {
-			entry.detail = summarized(value, code, CAP_COND);
-		}
+	if !is_default && let Some(value) = named_iter(node).next() {
+		entry.detail = summarized(value, code, CAP_COND);
 	}
 	let mut pending = Pending::default();
 	let mut children = Vec::new();
-	for child in named_iter(node).skip(if is_default { 0 } else { 1 }) {
+	for child in named_iter(node).skip(usize::from(!is_default)) {
 		walk_statement(child, code, lang, &mut pending, &mut children);
 	}
 	entry.children = children;
@@ -1160,11 +1150,8 @@ fn walk_statement(
 			let line = node.start_position().row as u32 + 1;
 			let mut entry = new_entry("from-import", line);
 			let module = node.child_by_field_name("module_name");
-			entry.name = Some(
-				module
-					.map(|module| text_of(module, code))
-					.unwrap_or_else(|| "__future__".to_string()),
-			);
+			entry.name =
+				Some(module.map_or_else(|| "__future__".to_string(), |module| text_of(module, code)));
 			let bindings: Vec<String> = named_iter(node)
 				.filter(|child| Some(child.id()) != module.map(|module| module.id()))
 				.map(|child| text_of(child, code))
@@ -1269,19 +1256,19 @@ fn walk_statement(
 					out.push(entry);
 					return;
 				}
-				if expression.kind() == "augmented_assignment" {
-					if let Some(operator) = expression.child_by_field_name("operator") {
-						let mut entry = new_entry(operator.kind(), line);
-						entry.name = expression
-							.child_by_field_name("left")
-							.and_then(|left| summarized(left, code, 40));
-						entry.detail = expression
-							.child_by_field_name("right")
-							.and_then(|right| summarized(right, code, CAP_VALUE));
-						pending.attach(&mut entry);
-						out.push(entry);
-						return;
-					}
+				if expression.kind() == "augmented_assignment"
+					&& let Some(operator) = expression.child_by_field_name("operator")
+				{
+					let mut entry = new_entry(operator.kind(), line);
+					entry.name = expression
+						.child_by_field_name("left")
+						.and_then(|left| summarized(left, code, 40));
+					entry.detail = expression
+						.child_by_field_name("right")
+						.and_then(|right| summarized(right, code, CAP_VALUE));
+					pending.attach(&mut entry);
+					out.push(entry);
+					return;
 				}
 				let mut entry = new_entry("expr", line);
 				entry.detail = summarized(expression, code, CAP_EXPR);
@@ -1308,7 +1295,7 @@ fn walk_statement(
 			out.push(entry);
 		},
 		"lexical_declaration" | "variable_declaration" => {
-			declarators_entries(node, code, lang, pending, out)
+			declarators_entries(node, code, lang, pending, out);
 		},
 		"if_statement" => {
 			let line = node.start_position().row as u32 + 1;
@@ -1542,29 +1529,26 @@ pub fn code_outline(options: OutlineOptions) -> Result<OutlineResult> {
 
 	// JS cells routinely carry TS syntax (Bun executes both), so fall back to the
 	// TSX grammar — a superset that also covers JSX — when the JS grammar errors.
-	let mut result = parse_with(lang, &source)?;
-	if lang == SupportLang::JavaScript {
-		let errored = parse_cached(&source, lang)?
-			.map(|tree| tree.root_node().has_error())
-			.unwrap_or(true);
-		if errored {
-			if let Ok(Some(tsx_result)) = parse_with(SupportLang::Tsx, &source) {
-				result = Some(tsx_result);
-			}
-		}
-	}
+	let fallback = parse_with(lang, &source)?;
+	let result = if lang == SupportLang::JavaScript
+		&& parse_cached(&source, lang)?.is_none_or(|tree| tree.root_node().has_error())
+		&& let Ok(Some(tsx_result)) = parse_with(SupportLang::Tsx, &source)
+	{
+		Some(tsx_result)
+	} else {
+		fallback
+	};
 
 	Ok(result.unwrap_or(OutlineResult { language: None, parsed: false, entries: Vec::new() }))
 }
 
 fn resolve_outline_language(lang: Option<&str>, path: Option<&str>) -> Option<SupportLang> {
 	let extension;
-	let alias: &str = match lang.map(str::trim).filter(|lang| !lang.is_empty()) {
-		Some(lang) => lang,
-		None => {
-			extension = path.map(extension_of).unwrap_or_default();
-			extension.as_str()
-		},
+	let alias: &str = if let Some(lang) = lang.map(str::trim).filter(|lang| !lang.is_empty()) {
+		lang
+	} else {
+		extension = path.map(extension_of).unwrap_or_default();
+		extension.as_str()
 	};
 	if alias.is_empty() {
 		return None;

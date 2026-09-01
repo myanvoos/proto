@@ -256,7 +256,6 @@ export class MarketplaceManager {
 		try {
 			version = await this.#resolvePluginVersion(pluginEntry, sourcePath);
 			cachePath = await cachePlugin(sourcePath, this.#opts.pluginsCacheDir, marketplace, name, version);
-			await this.#writeEmbeddedLspConfig(pluginEntry, cachePath);
 			await this.#writeEmbeddedDapConfig(pluginEntry, cachePath);
 		} finally {
 			if (tempCloneRoot) {
@@ -313,24 +312,6 @@ export class MarketplaceManager {
 
 		logger.debug("Plugin installed", { pluginId, version, cachePath });
 		return installedEntry;
-	}
-
-	async #writeEmbeddedLspConfig(entry: MarketplacePluginEntry, cachePath: string): Promise<void> {
-		const lspServers = entry.lspServers;
-		if (!lspServers) return;
-
-		const targetPath = path.join(cachePath, ".lsp.json");
-		if (typeof lspServers === "string") {
-			const sourcePath = path.resolve(cachePath, lspServers);
-			if (!pathIsWithin(cachePath, sourcePath)) {
-				throw new Error(`Plugin "${entry.name}" lspServers path escapes the plugin directory`);
-			}
-			const content = await Bun.file(sourcePath).text();
-			await Bun.write(targetPath, content);
-			return;
-		}
-
-		await Bun.write(targetPath, `${JSON.stringify({ servers: lspServers }, null, 2)}\n`);
 	}
 
 	async #writeEmbeddedDapConfig(entry: MarketplacePluginEntry, cachePath: string): Promise<void> {

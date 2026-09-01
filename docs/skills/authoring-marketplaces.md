@@ -75,7 +75,6 @@ The catalog file lives at either `.proto-plugin/marketplace.json` or `.claude-pl
 | `license` | no | License string |
 | `strict` | no | Boolean metadata flag; preserved but not used by install/runtime logic |
 | `commands`, `agents`, `hooks`, `mcpServers` | no | Catalog metadata preserved by the parser; runtime discovery comes from the installed plugin tree and manifests |
-| `lspServers` | no | Inline server map or path inside the plugin; installation writes `.lsp.json` |
 | `dapAdapters` | no | Inline adapter map or JSON/YAML path inside the plugin; installation writes `.dap.json`, `.dap.yaml`, or `.dap.yml` |
 
 ### Full catalog example
@@ -239,7 +238,7 @@ Install and discovery details:
 
 - Invalid plugin entries are logged and skipped; invalid JSON or required top-level fields reject the catalog.
 - `skills/` and `commands/` may be remapped with `.claude-plugin/plugin.json`. Declared skill paths normally add to the default; for a plugin whose catalog source is exactly `"./"`, they replace it. Declared `commands` (preferred) or `slash-commands` replace the default unless `./commands` is included explicitly. Paths outside the plugin root are ignored with a warning.
-- Catalog `lspServers` and `dapAdapters` values are materialized during install. Catalog `commands`, `agents`, `hooks`, and `mcpServers` are otherwise metadata; they do not remap runtime discovery.
+- Catalog `dapAdapters` values are materialized during install. Catalog `commands`, `agents`, `hooks`, and `mcpServers` are otherwise metadata; they do not remap runtime discovery.
 
 ## Naming rules
 

@@ -80,7 +80,6 @@ Warnings:
 - `details` is `EditToolDetails` from `packages/coding-agent/src/edit/renderer.ts`:
   - `diff`: unified diff string
   - `firstChangedLine`: first changed post-edit line
-  - `diagnostics`: LSP/format result if available
   - `op`: `"create"` or `"update"` for hashline mode
   - `meta`: output metadata
   - `perFileResults`: present for multi-section input

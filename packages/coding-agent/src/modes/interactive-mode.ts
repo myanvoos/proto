@@ -52,7 +52,6 @@ import type { Skill } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState } from "../goals/state";
-import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
 import {
 	formatMCPConnectionStatusMessage,
@@ -76,7 +75,6 @@ import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-pro
 import { formatWorkerId, workerTypeBadge } from "../task/display";
 import { labelEchoesHandle } from "../task/label";
 import { tinyTitleClient } from "../tiny/title-client";
-import type { LspStartupServerInfo } from "../tools";
 import { formatMoreItems, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import {
@@ -111,7 +109,6 @@ import type { HookSelectorComponent, HookSelectorSlider } from "./components/hoo
 import { StatusLineComponent } from "./components/status-line";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
-import type { LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
 import { buildComposerShortcuts, COMPOSER_PLACEHOLDER, Composer, ComposerShortcutsBar } from "./composer";
 import { writeComposerWelcomeCache } from "./composer-cache";
 import { CommandController } from "./controllers/command-controller";
@@ -468,7 +465,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	#goalTurnHadToolCalls = false;
 	#goalContinuationTurnInFlight = false;
 	#goalSuppressNextContinuation = false;
-	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
@@ -568,7 +564,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		version: string,
 		startupChangelog: StartupChangelogSelection | undefined = undefined,
 		setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void = () => {},
-		lspServers: LspStartupServerInfo[] | undefined = undefined,
 		mcpManager?: MCPManager,
 		eventBus?: EventBus,
 		composer?: Composer,
@@ -596,11 +591,6 @@ export class InteractiveMode implements InteractiveModeContext {
 					version,
 					modelName: session.model?.name ?? "Unknown",
 					providerName: session.model?.provider ?? "Unknown",
-					lspServers: lspServers?.map(server => ({
-						name: server.name,
-						status: server.status,
-						fileTypes: server.fileTypes,
-					})),
 				},
 			});
 		this.composer.setPreferences(preferences);
@@ -615,19 +605,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#version = version;
 		this.#startupChangelog = startupChangelog;
 		this.#toolUiContextSetter = setToolUIContext;
-		this.lspServers = lspServers;
 		this.mcpManager = mcpManager;
 		this.mcpManager?.setAuthHandler((serverName, challenge) =>
 			new MCPCommandController(this).handleMCPAuthChallenge(serverName, challenge),
 		);
 		this.#eventBus = eventBus;
 		if (eventBus) {
-			this.#eventBusUnsubscribers.push(
-				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
-					if (this.settings.get("startup.quiet")) return;
-					this.#handleLspStartupEvent(data as LspStartupEvent);
-				}),
-			);
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(MCP_CONNECTION_STATUS_EVENT_CHANNEL, data => {
 					if (!isMcpConnectionStatusEvent(data)) {
@@ -835,7 +818,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			modelName,
 			providerName,
 			recentSessions,
-			lspServers: this.#getWelcomeLspServers(),
 		});
 		this.#persistComposerWelcome(modelName, providerName);
 		const headerBefore: Component[] = [];
@@ -2780,39 +2762,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers.showWarning(message, options);
 	}
 
-	#handleLspStartupEvent(event: LspStartupEvent): void {
-		this.#updateWelcomeLspServers();
-
-		if (event.type === "failed") {
-			this.showWarning(`LSP startup failed: ${event.error}. It will retry lazily on write.`);
-			return;
-		}
-
-		const failedServers = event.servers.filter(server => server.status === "error");
-
-		if (failedServers.length === 1) {
-			const failedServer = failedServers[0];
-			const detail = failedServer.error ? `: ${failedServer.error}` : "";
-			this.showWarning(`LSP startup failed for ${failedServer.name}${detail}. It will retry lazily on write.`);
-			return;
-		}
-
-		if (failedServers.length > 1) {
-			const failedNames = failedServers.map(server => server.name).join(", ");
-			this.showWarning(`LSP startup failed for ${failedNames}. It will retry lazily on write.`);
-		}
-	}
-
-	#getWelcomeLspServers(): WelcomeLspServerInfo[] {
-		return (
-			this.lspServers?.map(server => ({
-				name: server.name,
-				status: server.status,
-				fileTypes: server.fileTypes,
-			})) ?? []
-		);
-	}
-
 	#updateWelcomeModel(): void {
 		const modelName = this.session.model?.name ?? "Unknown";
 		const providerName = this.session.model?.provider ?? "Unknown";
@@ -2825,10 +2774,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		void writeComposerWelcomeCache(this.sessionManager.getCwd(), { modelName, providerName }).catch(error => {
 			logger.debug("composer welcome cache write failed", { error });
 		});
-	}
-
-	#updateWelcomeLspServers(): void {
-		this.composer.updateWelcome({ lspServers: this.#getWelcomeLspServers() });
 	}
 
 	ensureLoadingAnimation(): void {

@@ -11,7 +11,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../config/keybindings";
 import { CustomEditor } from "./components/custom-editor";
-import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./components/welcome";
+import { type RecentSession, WelcomeComponent } from "./components/welcome";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
 
 export const COMPOSER_PLACEHOLDER = "ask anything · / for commands";
@@ -49,7 +49,6 @@ export interface ComposerWelcomeUpdate {
 	readonly modelName?: string;
 	readonly providerName?: string;
 	readonly recentSessions?: readonly RecentSession[];
-	readonly lspServers?: readonly LspServerInfo[];
 }
 
 interface ComposerOptions {
@@ -119,7 +118,6 @@ export class Composer {
 	#modelName = "";
 	#providerName = "";
 	#recentSessions: RecentSession[] = [];
-	#lspServers: LspServerInfo[] = [];
 	#headerBefore: readonly Component[] = [];
 	#headerAfter: readonly Component[] = [];
 	#runtimeChildren: readonly Component[] = [];
@@ -241,7 +239,6 @@ export class Composer {
 			welcome.setModel(this.#modelName, this.#providerName);
 		}
 		if (update.recentSessions !== undefined) welcome.setRecentSessions(this.#recentSessions);
-		if (update.lspServers !== undefined) welcome.setLspServers(this.#lspServers);
 		this.ui.requestRender();
 	}
 
@@ -343,17 +340,10 @@ export class Composer {
 		if (update.modelName !== undefined) this.#modelName = update.modelName;
 		if (update.providerName !== undefined) this.#providerName = update.providerName;
 		if (update.recentSessions !== undefined) this.#recentSessions = [...update.recentSessions];
-		if (update.lspServers !== undefined) this.#lspServers = [...update.lspServers];
 	}
 
 	#ensureWelcome(): void {
-		this.#welcome ??= new WelcomeComponent(
-			this.#version,
-			this.#modelName,
-			this.#providerName,
-			this.#recentSessions,
-			this.#lspServers,
-		);
+		this.#welcome ??= new WelcomeComponent(this.#version, this.#modelName, this.#providerName, this.#recentSessions);
 	}
 
 	#rebuildHeader(): void {

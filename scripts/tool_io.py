@@ -20,7 +20,7 @@ DEFAULT_SESSIONS_DIR = Path.home() / ".proto" / "agent" / "sessions"
 
 TOOL_GROUPS: dict[str, tuple[str, ...]] = {
     "edits": ("edit", "ast_edit"),
-    "reads": ("read", "grep", "find", "ast_grep", "lsp"),
+    "reads": ("read", "grep", "find", "ast_grep"),
     "writes": ("edit", "ast_edit", "write"),
 }
 

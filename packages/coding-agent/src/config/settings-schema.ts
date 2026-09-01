@@ -110,7 +110,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Git",
 	],
 	context: ["General", "Compaction", "Rules (TTSR)", "Auto-Learn", "Experimental"],
-	files: ["Editing", "Reading", "Read Summaries", "LSP"],
+	files: ["Editing", "Reading", "Read Summaries"],
 	shell: ["Bash", "Eval & Runtimes"],
 	tools: [
 		"Available Tools",
@@ -2657,85 +2657,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"lsp.enabled": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "files",
-			group: "LSP",
-			label: "LSP",
-			description: "Enable the lsp tool for code intelligence (definitions, references, diagnostics, rename)",
-		},
-	},
-
-	"lsp.lazy": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "files",
-			group: "LSP",
-			label: "Lazy LSP Startup",
-			description:
-				"Start language servers on first use (lsp tool or editing a matching file type) instead of at session startup",
-		},
-	},
-
-	"lsp.shared": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "files",
-			group: "LSP",
-			label: "Shared Language Servers",
-			description:
-				"Share one language server per project across proto instances via the daemon broker (falls back to private servers when unavailable)",
-		},
-	},
-
-	"lsp.formatOnWrite": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "files",
-			group: "LSP",
-			label: "Format on Write",
-			description: "Automatically format code files using LSP after writing",
-		},
-	},
-
-	"lsp.diagnosticsOnWrite": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "files",
-			group: "LSP",
-			label: "Diagnostics on Write",
-			description: "Return LSP diagnostics after writing code files",
-		},
-	},
-
-	"lsp.diagnosticsOnEdit": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "files",
-			group: "LSP",
-			label: "Diagnostics on Edit",
-			description: "Return LSP diagnostics after editing code files",
-		},
-	},
-
-	"lsp.diagnosticsDeduplicate": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "files",
-			group: "LSP",
-			label: "Deduplicate Diagnostics",
-			description: "Suppress post-edit LSP diagnostics already shown for a file; only surface new or changed ones",
-		},
-	},
-
 	"bash.enabled": {
 		type: "boolean",
 		default: true,
@@ -3630,18 +3551,6 @@ export const SETTINGS_SCHEMA = {
 				{ value: "32", label: "32 workers" },
 				{ value: "64", label: "64 workers" },
 			],
-		},
-	},
-
-	"orchestrator.enableLsp": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tasks",
-			group: "Workers",
-			label: "LSP in Workers",
-			description:
-				"Allow workers spawned via orchestrate_spawn to use the lsp tool. Off by default to keep workers cheap; enable when LSP-aware delegation is worth the extra tokens.",
 		},
 	},
 

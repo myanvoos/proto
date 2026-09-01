@@ -64,11 +64,6 @@ export class ToolResultBuilder<TDetails extends DetailsWithMeta> {
 		return this;
 	}
 
-	diagnostics(summary: string, messages: string[]): this {
-		this.#meta.diagnostics(summary, messages);
-		return this;
-	}
-
 	error(value = true): this {
 		this.#isError = value;
 		return this;

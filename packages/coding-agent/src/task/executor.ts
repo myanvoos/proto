@@ -336,7 +336,6 @@ export interface ExecutorOptions {
 	maxRuntimeMs?: number;
 
 	enableIrc?: boolean;
-	enableLsp?: boolean;
 
 	enableMCP?: boolean;
 
@@ -2243,7 +2242,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		modelRole,
 		thinkingLevel,
 		outputSchema,
-		enableLsp,
 		signal,
 		onProgress,
 	} = options;
@@ -2358,7 +2356,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				? "*"
 				: agent.spawns.join(",");
 
-	const lspEnabled = enableLsp ?? true;
 	const skipPythonPreflight = Array.isArray(toolNames) && !toolNames.includes("eval");
 
 	const monitor = createSubagentRunMonitor({
@@ -2665,7 +2662,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				agentId: id,
 				agentDisplayName: agent.name,
 				expectedAgentRef,
-				enableLsp: lspEnabled,
 				enableIrc: options.enableIrc,
 				skipPythonPreflight,
 				enableMCP,

@@ -189,6 +189,7 @@
 - Removed the shutdown exit banner: the sunset field art and its "the sun sets on this session" caption no longer print on quit.
 - Removed the shimmer highlight animation from the working/loading message text and the streaming reasoning tail; both now render in static theme colors.
 - Removed the `glob`, `grep`, `ast_grep`, `ast_edit`, and `debug` agent tools along with their settings (`glob.enabled`, `grep.enabled`, `grep.contextBefore`, `grep.contextAfter`, `astGrep.enabled`, `astEdit.enabled`, `debug.enabled`) and the DAP-based debug tooling they backed.
+- Removed the LSP language-server integration: the `lsp` tool, diagnostics/format-on-write passthrough on edit and write results, the lspmux daemon and shared-server transport, `--no-lsp` flag, `proto.lsp.mux` worker mode, the `lsp.*`/`orchestrator.enableLsp` settings, per-project `lsp.json`/plugin `lspServers` config discovery, the welcome-screen server list, and the `@oh-my-pi/pi-coding-agent/lsp*` export paths. Edit and write tool results no longer carry diagnostics.
 
 ## [18.0.0] - 2026-08-22
 

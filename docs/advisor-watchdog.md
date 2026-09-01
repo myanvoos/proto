@@ -98,7 +98,7 @@ Every advisor has the `advise` tool for surfacing notes into the primary transcr
 - `grep`
 - `glob`
 
-A `WATCHDOG.yml` roster entry may select any subset of built-ins that were actually constructed for the session (a factory that returned `null`, such as unavailable `lsp`, is absent). An explicit empty `tools: []` grants no investigative tools; `advise` remains available. Unknown-only lists are dropped with a warning and currently fall back to the default subset. Grantable names include mutating tools such as `edit`, `write`, `bash`, `eval`, `browser`, `debug`, `ast_edit`, `orchestrate_spawn`, and `fleet`.
+A `WATCHDOG.yml` roster entry may select any subset of built-ins that were actually constructed for the session (a factory that returned `null` is absent). An explicit empty `tools: []` grants no investigative tools; `advise` remains available. Unknown-only lists are dropped with a warning and currently fall back to the default subset. Grantable names include mutating tools such as `edit`, `write`, `bash`, `eval`, `browser`, `debug`, `ast_edit`, `orchestrate_spawn`, and `fleet`.
 
 Advisor tools are built against the isolated advisor `ToolSession` and wrapped with `ExtensionToolWrapper`, just like registry tools. Cursor's server-side exec bridge gates on the same advisor grants and only exposes delete/edit/search capabilities when the corresponding advisor grant exists.
 

@@ -15,7 +15,7 @@ In the TUI, `/marketplace` with no arguments opens the interactive plugin browse
 
 A **marketplace** is a Git repository (or local directory) containing a catalog file at `.proto-plugin/marketplace.json` (preferred) or `.claude-plugin/marketplace.json` (Claude Code-compatible fallback). The catalog lists available plugins with their sources, descriptions, and metadata.
 
-A **plugin** is a directory containing Claude/PROTO plugin content such as skills, commands, agents, hooks, tools, MCP servers, or LSP servers. Marketplace installs also load extension modules declared by `package.json` `proto.extensions`: installation symlinks the cached plugin into the scope's `node_modules` tree and records it in `proto-plugins.lock.json`, the same runtime surfaces used by npm-installed and `proto plugin link`ed plugins. Plugins are identified by `name@marketplace` (e.g. `code-review@claude-plugins-official`).
+A **plugin** is a directory containing Claude/PROTO plugin content such as skills, commands, agents, hooks, tools, MCP servers. Marketplace installs also load extension modules declared by `package.json` `proto.extensions`: installation symlinks the cached plugin into the scope's `node_modules` tree and records it in `proto-plugins.lock.json`, the same runtime surfaces used by npm-installed and `proto plugin link`ed plugins. Plugins are identified by `name@marketplace` (e.g. `code-review@claude-plugins-official`).
 
 **Scopes**: marketplace plugins can be installed at two scopes:
 
@@ -150,7 +150,6 @@ Top-level `metadata.description`, `metadata.version`, and `metadata.pluginRoot` 
 | `agents`      | no       | Agent metadata; preserved but not consumed by marketplace installation                         |
 | `hooks`       | no       | Hook metadata; preserved but runtime hooks are discovered from the installed plugin tree       |
 | `mcpServers`  | no       | MCP metadata; preserved here; runtime MCP configuration comes from the plugin manifest/tree    |
-| `lspServers`  | no       | Inline map or in-plugin path; copied to `.lsp.json` during installation                        |
 | `dapAdapters` | no       | Inline map or in-plugin JSON/YAML path; copied to `.dap.json`, `.dap.yaml`, or `.dap.yml`      |
 
 ### Plugin source formats

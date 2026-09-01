@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
-import type { LspServerInfo, RecentSession } from "./components/welcome";
+import type { RecentSession } from "./components/welcome";
 import type { ComposerPreferences } from "./composer";
 
 const CACHE_VERSION = 1;
@@ -22,7 +22,6 @@ interface ComposerStartupCache {
 	readonly theme?: ComposerThemePreferences;
 	readonly welcome?: ComposerWelcomeCache;
 	readonly recentSessions: RecentSession[];
-	readonly lspServers: LspServerInfo[];
 }
 
 function projectCacheDir(cwd: string): string {
@@ -61,38 +60,6 @@ function readRecentSessions(file: string): RecentSession[] {
 		if (sessions.length === 4) break;
 	}
 	return sessions;
-}
-
-function readLspServers(file: string): LspServerInfo[] {
-	const content = readFile(file);
-	if (!content) return [];
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
-	} catch {
-		return [];
-	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
-	if (field(parsed, "version") !== CACHE_VERSION) return [];
-	const values = field(parsed, "servers");
-	if (!Array.isArray(values)) return [];
-	const servers: LspServerInfo[] = [];
-	for (const value of values) {
-		if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
-		const name = field(value, "name");
-		const status = field(value, "status");
-		const fileTypes = field(value, "fileTypes");
-		if (
-			typeof name !== "string" ||
-			(status !== "ready" && status !== "error" && status !== "connecting" && status !== "available") ||
-			!Array.isArray(fileTypes) ||
-			!fileTypes.every(item => typeof item === "string")
-		) {
-			continue;
-		}
-		servers.push({ name, status, fileTypes });
-	}
-	return servers;
 }
 
 function readWelcome(file: string): ComposerWelcomeCache | undefined {
@@ -193,7 +160,6 @@ export function readComposerStartupCache(cwd: string): ComposerStartupCache {
 		theme: ui?.theme,
 		welcome: readWelcome(path.join(dir, "welcome.json")),
 		recentSessions: readRecentSessions(path.join(dir, "recent-sessions.jsonl")),
-		lspServers: readLspServers(path.join(dir, "lsp-servers.json")),
 	};
 }
 
@@ -221,11 +187,4 @@ export async function writeComposerRecentSessionsCache(cwd: string, sessions: re
 		.map(session => JSON.stringify(session))
 		.join("\n");
 	await Bun.write(path.join(projectCacheDir(cwd), "recent-sessions.jsonl"), content ? `${content}\n` : "");
-}
-
-export async function writeComposerLspCache(cwd: string, servers: readonly LspServerInfo[]): Promise<void> {
-	await Bun.write(
-		path.join(projectCacheDir(cwd), "lsp-servers.json"),
-		JSON.stringify({ version: CACHE_VERSION, servers }),
-	);
 }

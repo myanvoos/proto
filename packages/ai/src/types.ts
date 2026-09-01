@@ -5,8 +5,6 @@ import type { Type } from "@oh-my-pi/omptype";
 import type {
 	DeleteArgs,
 	DeleteResult,
-	DiagnosticsArgs,
-	DiagnosticsResult,
 	GrepArgs,
 	GrepResult,
 	LsArgs,
@@ -767,7 +765,6 @@ export interface CursorExecHandlers {
 		args: ShellArgs,
 		callbacks: CursorShellStreamCallbacks,
 	) => Promise<CursorExecHandlerResult<ShellResult>>;
-	diagnostics?: (args: DiagnosticsArgs) => Promise<CursorExecHandlerResult<DiagnosticsResult>>;
 	mcp?: (call: CursorMcpCall) => Promise<CursorExecHandlerResult<McpResult>>;
 
 	mcpApprovalPreflight?: (call: CursorMcpCall) => Promise<boolean>;

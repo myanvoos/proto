@@ -20,7 +20,7 @@ pub struct OutlineEntry {
 	pub notes:    Vec<String>,
 	pub asks:     Vec<String>,
 	pub line:     u32,
-	pub children: Vec<OutlineEntry>,
+	pub children: Vec<Self>,
 }
 
 #[napi(object)]

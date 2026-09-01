@@ -422,15 +422,6 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		return createToolResultMessage(toolCallId, toolName, result, isError);
 	}
 
-	async diagnostics(args: Parameters<NonNullable<ICursorExecHandlers["diagnostics"]>>[0]) {
-		const toolCallId = decodeToolCallId(args.toolCallId);
-		const toolResultMessage = await executeTool(this.options, "lsp", toolCallId, {
-			action: "diagnostics",
-			file: args.path,
-		});
-		return toolResultMessage;
-	}
-
 	async piRead(call: Parameters<NonNullable<ICursorExecHandlers["piRead"]>>[0]) {
 		const { path: readPath, offset, limit } = call.args;
 		const composed = piReadPath(readPath, offset, limit);

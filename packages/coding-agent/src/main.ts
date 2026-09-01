@@ -53,7 +53,6 @@ import { ExtensionRunner } from "./extensibility/extensions/runner";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
-import { discoverStartupLspServers } from "./lsp/servers";
 import type { MCPManager } from "./mcp";
 import { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
@@ -64,7 +63,6 @@ import type { SetupScene } from "./modes/setup-wizard";
 import {
 	applyStartupComposerPreferences,
 	type ComposerLease,
-	setStartupComposerLspServers,
 	stopPendingStartupComposer,
 	takeStartupComposerLease,
 } from "./modes/startup-composer";
@@ -96,7 +94,6 @@ import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prom
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { parseThinkingLevel } from "./thinking";
-import type { LspStartupServerInfo } from "./tools";
 import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
 
@@ -411,7 +408,6 @@ async function runInteractiveMode(
 	versionCheckPromise: Promise<string | undefined>,
 	initialMessages: string[],
 	setExtensionUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
-	lspServers: LspStartupServerInfo[] | undefined,
 	mcpManager: MCPManager | undefined,
 	resuming: boolean,
 	forceSetupWizard: boolean,
@@ -427,7 +423,6 @@ async function runInteractiveMode(
 			version,
 			startupChangelog,
 			setExtensionUIContext,
-			lspServers,
 			mcpManager,
 			eventBus,
 			startupLease?.composer,
@@ -1044,10 +1039,6 @@ export async function buildSessionOptions(
 		options.toolNames = parsed.tools;
 	}
 
-	if (parsed.noLsp) {
-		options.enableLsp = false;
-	}
-
 	if (parsed.noSkills) {
 		options.skills = [];
 	} else if (parsed.skills && parsed.skills.length > 0) {
@@ -1244,7 +1235,6 @@ export async function runRootCommand(
 				lightTheme: settingsInstance.get("theme.light"),
 			},
 		});
-		setStartupComposerLspServers(discoverStartupLspServers(cwd, "connecting"));
 
 		let scopedModels = await logger.time(
 			"resolveModelScope",
@@ -1531,7 +1521,7 @@ export async function runRootCommand(
 					)
 				: undefined;
 
-			const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager } = await createSession({
+			const { session, setToolUIContext, modelFallbackMessage, mcpManager } = await createSession({
 				...sessionOptions,
 				eventBus,
 				preloadedExtensions: extensionsResult,
@@ -1550,7 +1540,6 @@ export async function runRootCommand(
 					authStorage,
 					modelRegistry,
 					settings: settingsInstance,
-					enableLsp: sessionOptions.enableLsp ?? true,
 					eventBus,
 				}),
 				Math.trunc(Number(settingsInstance.get("orchestrator.agentIdleTtlMs") ?? 420_000) || 0),
@@ -1624,7 +1613,6 @@ export async function runRootCommand(
 						versionCheckPromise,
 						initialArgs.messages,
 						setToolUIContext,
-						lspServers,
 						mcpManager,
 						Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource),
 						deps.forceSetupWizard === true,

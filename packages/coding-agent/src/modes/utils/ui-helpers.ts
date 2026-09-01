@@ -19,10 +19,6 @@ import { CustomMessageComponent } from "../../modes/components/custom-message";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import {
-	type LateDiagnosticsFile,
-	LateDiagnosticsMessageComponent,
-} from "../../modes/components/late-diagnostics-message";
-import {
 	groupedReadUsageCallIds,
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
@@ -42,7 +38,6 @@ import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion"
 import {
 	BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
-	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
 } from "../../session/messages";
@@ -210,17 +205,6 @@ export class UiHelpers {
 				if (message.display) {
 					if (message.customType === "async-result") {
 						const component = buildAsyncResultBlock(message);
-						this.ctx.chatContainer.addChild(component);
-						break;
-					}
-					if (message.customType === LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE) {
-						const details = (
-							message as CustomMessage<{
-								files?: LateDiagnosticsFile[];
-							}>
-						).details;
-						const component = new LateDiagnosticsMessageComponent(details?.files ?? []);
-						component.setExpanded(this.ctx.toolOutputExpanded);
 						this.ctx.chatContainer.addChild(component);
 						break;
 					}

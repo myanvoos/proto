@@ -1,6 +1,6 @@
 # proto
 
-An experimental agent harness with the IDE wired in — forked from [OMP](https://github.com/can1357/oh-my-pi) (oh-my-pi). A terminal-first coding agent: LSP and a real debugger on every write, native in-process tools, subagents, and role-based routing across 60+ model providers.
+An experimental agent harness with the IDE wired in — forked from [OMP](https://github.com/can1357/oh-my-pi) (oh-my-pi). A terminal-first coding agent: a real debugger on every write, native in-process tools, subagents, and role-based routing across 60+ model providers.
 
 ## Install
 
@@ -12,7 +12,7 @@ Downloads a prebuilt binary (macOS / Linux, glibc and musl) from GitHub Releases
 
 ## Highlights
 
-- **31 built-in tools** — files, hashline/AST edits, bash plus persistent Python/JS eval, grep, LSP, DAP debugging, browser, desktop control, web search.
+- **30 built-in tools** — files, hashline/AST edits, bash plus persistent Python/JS eval, grep, DAP debugging, browser, desktop control, web search.
 - **In-process Rust core** — embedded bash with sessions, ripgrep-style search, tree-sitter AST, PTY, image and clipboard: no fork/exec on the hot path.
 - **60+ providers, role-based routing** — ten model roles (`default`, `smol`, `slow`, …), fallback chains, custom OpenAI-compatible providers via `~/.proto/agent/models.yml`.
 - **Subagents and extensibility** — parallel workers with typed results, extensions and skills, sessions with branching and checkpoints.

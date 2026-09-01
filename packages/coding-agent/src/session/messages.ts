@@ -37,7 +37,6 @@ import { formatOutputNotice } from "../tools/output-meta";
 import { titleTextFromSkillPrompt } from "./skill-title-input";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
-export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
 export const BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE = "background-tan-dispatch";
 export const PREWALK_PLAN_MESSAGE_TYPE = "prewalk-plan";
 
@@ -230,12 +229,6 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 					? {
 							truncation: normalizeProviderReplayValue(message.meta.truncation),
 							limits: normalizeProviderReplayValue(message.meta.limits),
-							diagnostics: message.meta.diagnostics
-								? normalizeProviderReplayValue({
-										summary: message.meta.diagnostics.summary,
-										messages: message.meta.diagnostics.messages,
-									})
-								: undefined,
 						}
 					: undefined,
 				excludeFromContext: message.excludeFromContext,
@@ -251,12 +244,6 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 					? {
 							truncation: normalizeProviderReplayValue(message.meta.truncation),
 							limits: normalizeProviderReplayValue(message.meta.limits),
-							diagnostics: message.meta.diagnostics
-								? normalizeProviderReplayValue({
-										summary: message.meta.diagnostics.summary,
-										messages: message.meta.diagnostics.messages,
-									})
-								: undefined,
 						}
 					: undefined,
 				excludeFromContext: message.excludeFromContext,

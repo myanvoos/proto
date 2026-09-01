@@ -310,22 +310,6 @@
       "types": "./src/eval/py/*.ts",
       "import": "./src/eval/py/*.ts"
     },
-    "./lsp": {
-      "types": "./src/lsp/index.ts",
-      "import": "./src/lsp/index.ts"
-    },
-    "./lsp/*": {
-      "types": "./src/lsp/*.ts",
-      "import": "./src/lsp/*.ts"
-    },
-    "./lsp/clients": {
-      "types": "./src/lsp/clients/index.ts",
-      "import": "./src/lsp/clients/index.ts"
-    },
-    "./lsp/clients/*": {
-      "types": "./src/lsp/clients/*.ts",
-      "import": "./src/lsp/clients/*.ts"
-    },
     "./markit": {
       "types": "./src/markit/index.ts",
       "import": "./src/markit/index.ts"

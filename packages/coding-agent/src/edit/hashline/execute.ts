@@ -10,13 +10,12 @@ import {
 } from "@oh-my-pi/hashline";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { formatCount } from "@oh-my-pi/pi-utils";
-import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import type { ToolSession } from "../../tools";
 import { outputMeta } from "../../tools/output-meta";
 import { ToolError } from "../../tools/tool-errors";
 import { generateDiffString } from "../diff";
 import { getFileSnapshotStore } from "../file-snapshot-store";
-import type { EditToolDetails, EditToolPerFileResult, LspBatchRequest } from "../renderer";
+import type { EditToolDetails, EditToolPerFileResult } from "../renderer";
 import { pruneOversizedEditSnapshots } from "../snapshot-details";
 import { nativeBlockResolver } from "./block-resolver";
 import { HashlineFilesystem } from "./filesystem";
@@ -27,9 +26,6 @@ export interface ExecuteHashlineSingleOptions {
 	session: ToolSession;
 	input: string;
 	signal?: AbortSignal;
-	batchRequest?: LspBatchRequest;
-	writethrough: WritethroughCallback;
-	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
 }
 
 function noChangeDiagnostic(path: string): string {
@@ -51,11 +47,6 @@ function noChangeLoopDiagnostic(path: string, count: number): string {
 	);
 }
 
-function narrowBatchRequest(outer: LspBatchRequest | undefined, isLast: boolean): LspBatchRequest | undefined {
-	if (!outer) return undefined;
-	return { id: outer.id, flush: isLast && outer.flush };
-}
-
 interface RenderedSection {
 	toolResult: AgentToolResult<EditToolDetails, typeof hashlineEditParamsSchema>;
 	perFileResult: EditToolPerFileResult;
@@ -70,11 +61,7 @@ function formatBlockResolution(resolution: BlockResolution): string {
 	return `${op} ${resolution.anchorLine} → resolved ${span} (${formatCount("line", lines)})${suffix}`;
 }
 
-function renderSection(
-	result: PatchSectionResult,
-	diagnostics: FileDiagnosticsResult | undefined,
-	sourcePath: string,
-): RenderedSection {
+function renderSection(result: PatchSectionResult, sourcePath: string): RenderedSection {
 	if (result.op === "delete") {
 		const toolResult: AgentToolResult<EditToolDetails, typeof hashlineEditParamsSchema> = {
 			content: [{ type: "text", text: `Deleted ${result.path}` }],
@@ -110,9 +97,7 @@ function renderSection(
 
 	const diff = generateDiffString(result.before, result.after, undefined, { path: result.path });
 	const preview = buildCompactDiffPreview(diff.diff);
-	const meta = outputMeta()
-		.diagnostics(diagnostics?.summary ?? "", diagnostics?.messages ?? [])
-		.get();
+	const meta = outputMeta().get();
 
 	const warningsBlock = result.warnings.length > 0 ? `\n\nWarnings:\n${result.warnings.join("\n")}` : "";
 	const previewBlock = preview.preview ? `\n${preview.preview}` : "";
@@ -133,7 +118,6 @@ function renderSection(
 			details: pruneOversizedEditSnapshots({
 				diff: diff.diff,
 				firstChangedLine,
-				diagnostics,
 				op: result.op,
 				move: result.moveDest,
 				path: result.moveDest ?? result.path,
@@ -147,7 +131,6 @@ function renderSection(
 			path: result.moveDest ?? result.path,
 			diff: diff.diff,
 			firstChangedLine,
-			diagnostics,
 			op: result.op,
 			move: result.moveDest,
 			sourcePath: result.moveDest ? sourcePath : undefined,
@@ -167,17 +150,13 @@ export async function executeHashlineSingle(
 
 	const fs = new HashlineFilesystem({
 		session: options.session,
-		writethrough: options.writethrough,
-		beginDeferredDiagnosticsForPath: options.beginDeferredDiagnosticsForPath,
 		signal: options.signal,
-		batchRequest: options.batchRequest,
 	});
 	const snapshots = getFileSnapshotStore(options.session);
 	const patcher = new Patcher({ fs, snapshots, blockResolver: nativeBlockResolver });
 
 	const inputHash = hashPatchInput(options.input);
 	if (patch.sections.length === 1) {
-		fs.setBatchRequest(narrowBatchRequest(options.batchRequest, true));
 		const prepared = await patcher.prepare(patch.sections[0]);
 		const sectionResult = await patcher.commit(prepared);
 		if (sectionResult.op === "noop") {
@@ -185,10 +164,10 @@ export async function executeHashlineSingle(
 			if (escalate) {
 				throw new ToolError(noChangeLoopDiagnostic(sectionResult.path, count));
 			}
-			return renderSection(sectionResult, undefined, prepared.section.path).toolResult;
+			return renderSection(sectionResult, prepared.section.path).toolResult;
 		}
 		resetNoopEdit(options.session, sectionResult.canonicalPath);
-		return renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), prepared.section.path).toolResult;
+		return renderSection(sectionResult, prepared.section.path).toolResult;
 	}
 
 	const prepared: PreparedSection[] = [];
@@ -205,8 +184,6 @@ export async function executeHashlineSingle(
 
 	const rendered: RenderedSection[] = [];
 	for (let i = 0; i < prepared.length; i++) {
-		const isLast = i === prepared.length - 1;
-		fs.setBatchRequest(narrowBatchRequest(options.batchRequest, isLast));
 		const sectionResult = await patcher.commit(prepared[i]);
 		if (sectionResult.op === "noop") {
 			const { count, escalate } = recordNoopEdit(options.session, sectionResult.canonicalPath, inputHash);
@@ -215,7 +192,7 @@ export async function executeHashlineSingle(
 				: new ToolError(noChangeDiagnostic(sectionResult.path));
 		}
 		resetNoopEdit(options.session, sectionResult.canonicalPath);
-		rendered.push(renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), prepared[i].section.path));
+		rendered.push(renderSection(sectionResult, prepared[i].section.path));
 	}
 
 	return {

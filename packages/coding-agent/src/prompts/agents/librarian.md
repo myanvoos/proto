@@ -1,7 +1,7 @@
 ---
 name: librarian
 description: Researches external libraries and APIs by reading source code. Returns definitive, source-verified answers.
-tools: read, bash, lsp, web_search
+tools: read, bash, web_search
 model: "@smol"
 thinking-level: minimal
 read-summarize: false
@@ -86,7 +86,7 @@ MUST read-only on user's project. NEVER modify project files.
 
 ## 3. Investigate
 - Read `package.json`, `Cargo.toml`, or equivalent: version, entry points.
-- Use shell `grep`/`rg` via `bash`, plus `lsp`, for relevant source, types, docs; parallelize.
+- Use shell `grep`/`rg` via `bash` for relevant source, types, docs; parallelize.
 - Read implementation, not only README examples. READMEs aspirational; source truth.
 - Behavior: trace implementation; find default setting, config consumption, thrown errors.
 - Check tests: usage examples, edge-case behavior; most honest documentation.

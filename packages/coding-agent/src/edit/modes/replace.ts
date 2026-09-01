@@ -1,8 +1,8 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
+import { writeFileWithFallback } from "../../tools/file-write-fallback";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
 import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
@@ -10,7 +10,7 @@ import { generateDiffString, replaceText } from "../diff";
 import { EditMatchError, findMatch, formatOccurrenceError } from "../match";
 import { detectLineEnding, normalizeToLF, restoreLineEndings } from "../normalize";
 import { readEditFileTextWithBom, serializeEditFileText } from "../read-file";
-import type { EditToolDetails, LspBatchRequest } from "../renderer";
+import type { EditToolDetails } from "../renderer";
 import { pruneOversizedEditSnapshots } from "../snapshot-details";
 
 export const replaceEditEntrySchema = type({
@@ -32,27 +32,14 @@ export interface ExecuteReplaceSingleOptions {
 	path: string;
 	params: ReplaceEditEntry;
 	signal?: AbortSignal;
-	batchRequest?: LspBatchRequest;
 	allowFuzzy: boolean;
 	fuzzyThreshold: number;
-	writethrough: WritethroughCallback;
-	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
 }
 
 export async function executeReplaceSingle(
 	options: ExecuteReplaceSingleOptions,
 ): Promise<AgentToolResult<EditToolDetails, ReplaceEditEntry>> {
-	const {
-		session,
-		path,
-		params,
-		signal,
-		batchRequest,
-		allowFuzzy,
-		fuzzyThreshold,
-		writethrough,
-		beginDeferredDiagnosticsForPath,
-	} = options;
+	const { session, path, params, signal, allowFuzzy, fuzzyThreshold } = options;
 	const { old_text, new_text, all } = params;
 
 	enforcePlanModeWrite(session, path);
@@ -102,12 +89,10 @@ export async function executeReplaceSingle(
 		bom + restoreLineEndings(result.content, originalEnding),
 	);
 
-	let diagnostics: FileDiagnosticsResult | undefined;
 	if (await routeWriteThroughBridge(session, path, absolutePath, finalContent, signal)) {
+		// written through the client bridge
 	} else {
-		diagnostics = await writethrough(absolutePath, finalContent, signal, Bun.file(absolutePath), batchRequest, dst =>
-			dst === absolutePath ? beginDeferredDiagnosticsForPath(absolutePath) : undefined,
-		);
+		await writeFileWithFallback(absolutePath, finalContent, Bun.file(absolutePath));
 		invalidateFsScanAfterWrite(absolutePath);
 	}
 
@@ -117,9 +102,7 @@ export async function executeReplaceSingle(
 			? `Successfully replaced ${result.count} occurrences in ${path}.`
 			: `Successfully replaced text in ${path}.`;
 
-	const meta = outputMeta()
-		.diagnostics(diagnostics?.summary ?? "", diagnostics?.messages ?? [])
-		.get();
+	const meta = outputMeta().get();
 
 	return {
 		content: [{ type: "text", text: resultText }],
@@ -127,7 +110,6 @@ export async function executeReplaceSingle(
 			diff: diffResult.diff,
 			path: absolutePath,
 			firstChangedLine: diffResult.firstChangedLine,
-			diagnostics,
 			meta,
 			oldText: content,
 			newText: finalContent,

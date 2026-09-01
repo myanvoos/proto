@@ -68,7 +68,6 @@ ${chalk.bold("Available Tools (default-enabled unless noted):")}
   write         - Write files (creates/overwrites)
   grep          - Search file contents
   glob          - Find files by glob pattern
-  lsp           - Language server protocol (code intelligence)
   python        - Execute Python code (requires: ${BINARY_NAME} setup python)
   notebook      - Edit Jupyter notebooks
   inspect_media - Analyze images, audio, or video with a capable model

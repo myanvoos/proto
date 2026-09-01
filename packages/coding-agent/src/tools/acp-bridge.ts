@@ -1,4 +1,3 @@
-import { FileChangeType, notifyWorkspaceWatchedFiles } from "../lsp/client";
 import type { ToolSession } from ".";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { isInternalUrlPath, targetsLocalSandbox } from "./path-utils";
@@ -30,16 +29,11 @@ export async function routeWriteThroughBridge(
 	const bridge = session.getClientBridge?.();
 	if (!bridge?.capabilities.writeTextFile || !bridge.writeTextFile) return undefined;
 
-	const changeType = (await Bun.file(absolutePath).exists()) ? FileChangeType.Changed : FileChangeType.Created;
-
 	signal?.throwIfAborted();
 	try {
 		await bridge.writeTextFile({ path: absolutePath, content });
 	} catch (error) {
 		throw new ToolError(error instanceof Error ? error.message : String(error));
-	}
-	if (session.enableLsp ?? true) {
-		await notifyWorkspaceWatchedFiles(session.cwd, [{ filePath: absolutePath, type: changeType }], signal);
 	}
 	invalidateFsScanAfterWrite(absolutePath);
 	session.bumpFileMutationVersion?.(absolutePath);

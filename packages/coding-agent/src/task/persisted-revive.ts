@@ -21,8 +21,6 @@ interface PersistedSubagentReviveContext {
 	modelRegistry: ModelRegistry;
 	settings: Settings;
 
-	enableLsp: boolean;
-
 	eventBus?: EventBus;
 }
 
@@ -100,7 +98,6 @@ export function createPersistedSubagentReviverFactory(
 
 				spawns: init.spawns ?? "",
 				hasUI: false,
-				enableLsp: restrictToolNames ? false : ctx.enableLsp,
 				...(restrictToolNames
 					? {
 							enableIrc: false,

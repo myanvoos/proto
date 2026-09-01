@@ -8,7 +8,6 @@ import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion"
 import {
 	BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
-	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
 } from "../../session/messages";
@@ -33,7 +32,6 @@ import { detectCacheInvalidation } from "./cache-invalidation-marker";
 import { BranchSummaryMessageComponent, CompactionSummaryMessageComponent } from "./compaction-summary-message";
 import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
-import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
 import { ToolExecutionComponent } from "./tool-execution";
@@ -427,13 +425,6 @@ export class ChatTranscriptBuilder {
 		if (!message.display) return;
 		if (message.customType === "async-result") {
 			const component = buildAsyncResultBlock(message);
-			this.container.addChild(component);
-			return;
-		}
-		if (message.customType === LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE) {
-			const details = (message as CustomMessage<{ files?: LateDiagnosticsFile[] }>).details;
-			const component = new LateDiagnosticsMessageComponent(details?.files ?? []);
-			this.#trackExpandable(component);
 			this.container.addChild(component);
 			return;
 		}

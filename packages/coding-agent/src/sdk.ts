@@ -114,8 +114,6 @@ import {
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
-import { setSharedLspEnabled } from "./lsp/client";
-import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import {
 	deduplicateMCPToolsByName,
 	discoverAndLoadMCPTools,
@@ -129,7 +127,6 @@ import {
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
 import { type OrchestratorParent, OrchestratorRuntime } from "./orchestrator/runtime";
 import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
-import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
 import {
@@ -148,7 +145,6 @@ import { createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
 import {
 	type CustomMessage,
 	convertToLlm,
-	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	replaceLlmImagesWithText,
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
@@ -186,16 +182,13 @@ import {
 	BashTool,
 	BUILTIN_TOOLS,
 	createTools,
-	type DeferredDiagnosticsEntry,
 	DISABLED_TOOL_NAMES,
 	defaultLoadModeForToolName,
-	discoverStartupLspServers,
 	EditTool,
 	EvalTool,
 	getSearchTools,
 	HIDDEN_TOOLS,
 	isMountableUnderXdev,
-	type LspStartupServerInfo,
 	listXdevTools,
 	ORCHESTRATE_TOOL_NAMES,
 	ReadTool,
@@ -206,7 +199,6 @@ import {
 	type ToolSession,
 	WebSearchTool,
 	WriteTool,
-	warmupLspServers,
 	xdevDocsAll,
 	xdevEntries,
 } from "./tools";
@@ -230,42 +222,6 @@ type McpNotificationEntry = {
 	serverName: string;
 	uri: string;
 };
-
-type LateDiagnosticsDetails = {
-	files: Array<{ path: string; summary: string; errored: boolean; messages: string[] }>;
-};
-
-function buildLateDiagnosticsBatchMessage(
-	entries: DeferredDiagnosticsEntry[],
-): CustomMessage<LateDiagnosticsDetails> | null {
-	if (entries.length === 0) return null;
-	const files = entries.map(entry => ({
-		path: entry.path,
-		summary: entry.summary,
-		messages: entry.messages,
-		errored: entry.errored,
-	}));
-	const details: LateDiagnosticsDetails = {
-		files: files.map(file => ({
-			path: file.path,
-			summary: file.summary,
-			errored: file.errored,
-			messages: file.messages,
-		})),
-	};
-	return {
-		role: "custom",
-		customType: LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
-		content: prompt.render(lateDiagnosticTemplate, {
-			multiple: files.length > 1,
-			files,
-		}),
-		display: true,
-		attribution: "agent",
-		details,
-		timestamp: Date.now(),
-	};
-}
 
 function buildMcpNotificationBatchMessage(entries: McpNotificationEntry[]): AgentMessage | null {
 	const resources: McpNotificationEntry[] = [];
@@ -425,10 +381,6 @@ export interface CreateAgentSessionOptions {
 
 	mcpManager?: MCPManager;
 
-	enableLsp?: boolean;
-
-	lspReadOnly?: boolean;
-
 	enableIrc?: boolean;
 
 	skipPythonPreflight?: boolean;
@@ -490,8 +442,6 @@ export interface CreateAgentSessionResult {
 	mcpManager?: MCPManager;
 
 	modelFallbackMessage?: string;
-
-	lspServers?: LspStartupServerInfo[];
 
 	eventBus: EventBus;
 }
@@ -1295,8 +1245,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let hasSession = false;
 	let hasRegistered = false;
 	const restrictToolNames = options.restrictToolNames === true;
-	const enableLsp = options.enableLsp ?? !restrictToolNames;
-	const lspReadOnly = options.lspReadOnly ?? restrictToolNames;
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
 
 	const asyncJobManager =
@@ -1353,8 +1301,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get additionalDirectories() {
 				return sessionManager.getAdditionalDirectories();
 			},
-			enableLsp,
-			lspReadOnly,
 			enableIrc: restrictToolNames ? false : options.enableIrc,
 			restrictToolNames,
 			get hasEditTool() {
@@ -1408,7 +1354,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getTurnBudget: () => sessionManager.getTurnBudget(),
 			recordEvalSubagentUsage: output => sessionManager.recordEvalSubagentOutput(output),
 			getClientBridge: () => session?.clientBridge,
-			queueDeferredDiagnostics: entry => session?.yieldQueue.enqueue(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, entry),
 			queueLaunchCompletion: notification =>
 				session?.queueLaunchCompletion(notification) ??
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
@@ -2936,11 +2881,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		session.yieldQueue.register<McpNotificationEntry>("mcp-notification", {
 			build: buildMcpNotificationBatchMessage,
 		});
-		session.yieldQueue.register<DeferredDiagnosticsEntry>(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, {
-			build: buildLateDiagnosticsBatchMessage,
-			isStale: entry => entry.isStale(),
-		});
-
 		if (
 			!registeredAgentRef ||
 			!agentRegistry.attachSession(
@@ -3032,47 +2972,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							provider: codexModel.provider,
 							model: codexModel.id,
 						});
-					}
-				})();
-			}
-		}
-
-		setSharedLspEnabled(enableLsp && settings.get("lsp.shared"));
-
-		let lspServers: CreateAgentSessionResult["lspServers"];
-		if (enableLsp && options.hasUI && settings.get("lsp.lazy")) {
-			lspServers = discoverStartupLspServers(cwd, "available");
-		} else if (enableLsp && options.hasUI) {
-			lspServers = discoverStartupLspServers(cwd);
-			if (lspServers.length > 0) {
-				void (async () => {
-					try {
-						const result = await logger.time("warmupLspServers", warmupLspServers, cwd);
-						const serversByName = new Map(result.servers.map(server => [server.name, server] as const));
-						for (const server of lspServers ?? []) {
-							const next = serversByName.get(server.name);
-							if (!next) continue;
-							server.status = next.status;
-							server.fileTypes = next.fileTypes;
-							server.error = next.error;
-						}
-						const event: LspStartupEvent = {
-							type: "completed",
-							servers: result.servers,
-						};
-						if (!startupQuiet) eventBus.emit(LSP_STARTUP_EVENT_CHANNEL, event);
-					} catch (error) {
-						const errorMessage = error instanceof Error ? error.message : String(error);
-						logger.warn("LSP server warmup failed", { cwd, error: errorMessage });
-						for (const server of lspServers ?? []) {
-							server.status = "error";
-							server.error = errorMessage;
-						}
-						const event: LspStartupEvent = {
-							type: "failed",
-							error: errorMessage,
-						};
-						if (!startupQuiet) eventBus.emit(LSP_STARTUP_EVENT_CHANNEL, event);
 					}
 				})();
 			}
@@ -3206,7 +3105,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setToolUIContext,
 			mcpManager,
 			modelFallbackMessage,
-			lspServers,
 			eventBus,
 		};
 	} catch (error) {

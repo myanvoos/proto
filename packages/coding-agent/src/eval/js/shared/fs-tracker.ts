@@ -60,7 +60,8 @@ const WRITE_FLAGS =
 	constants.O_CREAT |
 	constants.O_TRUNC |
 	constants.O_APPEND |
-	(constants.O_TMPFILE ?? 0);
+	// O_TMPFILE is Linux-only and missing from the fs constant typings.
+	((constants as typeof constants & { O_TMPFILE?: number }).O_TMPFILE ?? 0);
 
 interface TouchedRecord {
 	existed: boolean;

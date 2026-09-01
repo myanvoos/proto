@@ -147,9 +147,9 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 
 	report_tool_issue: {
 		label: "Report Tool Issue",
-		streamingArgs: { tool: "lsp" },
+		streamingArgs: { tool: "edit" },
 		args: {
-			tool: "lsp",
+			tool: "edit",
 			report: "Rename returned no edit for an exported symbol that has 12 references",
 		},
 		result: { content: [{ type: "text", text: "Noted, thanks!" }] },

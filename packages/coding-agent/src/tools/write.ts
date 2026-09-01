@@ -21,9 +21,6 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
 import { couldBecomeXdUrl, parseXdUrl } from "../internal-urls/xd-protocol";
-import { createLspWritethrough, type FileDiagnosticsResult, type WritethroughCallback, writethroughNoop } from "../lsp";
-import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
-import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 import { getLanguageFromPath, highlightCode, type Theme } from "../modes/theme/theme";
 import writeDescription from "../prompts/tools/write.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -40,8 +37,9 @@ import {
 	parseConflictUri,
 	spliceConflict,
 } from "./conflict-detect";
+import { writeFileWithFallback } from "./file-write-fallback";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
-import { type OutputMeta, outputMeta } from "./output-meta";
+import type { OutputMeta } from "./output-meta";
 import {
 	formatPathRelativeToCwd,
 	peelWriteUrlSelector,
@@ -54,12 +52,10 @@ import {
 	cachedRenderedString,
 	createRenderedStringCache,
 	Ellipsis,
-	formatDiagnostics,
 	formatErrorDetail,
 	formatExpandHint,
 	formatMoreItems,
 	formatStatusIcon,
-	getLspBatchRequest,
 	type RenderedStringCache,
 	replaceTabs,
 	shortenPath,
@@ -226,7 +222,6 @@ const writeSchema = type({
 export type WriteToolInput = typeof writeSchema.infer;
 
 interface WriteToolDetails {
-	diagnostics?: FileDiagnosticsResult;
 	meta?: OutputMeta;
 
 	madeExecutable?: boolean;
@@ -391,25 +386,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		return typeof content === "string" ? content : undefined;
 	}
 
-	readonly #writethrough: WritethroughCallback;
-	readonly #deferredDiagnostics: DeferredDiagnostics | undefined;
-
 	constructor(private readonly session: ToolSession) {
-		const enableLsp = session.enableLsp ?? true;
-		const enableFormat = enableLsp && session.settings.get("lsp.formatOnWrite");
-		const enableDiagnostics = enableLsp && session.settings.get("lsp.diagnosticsOnWrite");
-		const dedup = enableDiagnostics && session.settings.get("lsp.diagnosticsDeduplicate");
-		this.#deferredDiagnostics =
-			enableDiagnostics && session.queueDeferredDiagnostics ? new DeferredDiagnostics(session, dedup) : undefined;
-		this.#writethrough = enableLsp
-			? createLspWritethrough(session.cwd, {
-					enableFormat,
-					enableDiagnostics,
-					transformDiagnostics: dedup
-						? (path, result) => getDiagnosticsLedger(session).reduce(path, result)
-						: undefined,
-				})
-			: writethroughNoop;
 		this.description = prompt.render(writeDescription);
 	}
 
@@ -641,7 +618,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		entry: ConflictEntry,
 		replacementContent: string,
 		stripped: boolean,
-		signal: AbortSignal | undefined,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		const absolutePath = entry.absolutePath;
 		if (!(await fs.exists(absolutePath))) {
@@ -653,7 +629,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const splice = spliceConflict(originalText, entry, expanded);
 		const newContent = splice.text;
 
-		await writethroughNoop(absolutePath, newContent, signal);
+		await writeFileWithFallback(absolutePath, newContent);
 		invalidateFsScanAfterWrite(absolutePath);
 		this.session.bumpFileMutationVersion?.(absolutePath);
 		this.session.fileSnapshotStore?.invalidate(absolutePath);
@@ -696,7 +672,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		id: number,
 		replacementContent: string,
 		stripped: boolean,
-		signal: AbortSignal | undefined,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		const entry = getConflictHistory(this.session).get(id);
 		if (!entry) {
@@ -704,13 +679,12 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				`Conflict #${id} not found. Conflict ids are registered when \`read\` surfaces a marker block; re-read the file to get a current id.`,
 			);
 		}
-		return this.#resolveConflict(entry, replacementContent, stripped, signal);
+		return this.#resolveConflict(entry, replacementContent, stripped);
 	}
 
 	async #resolveAllConflicts(
 		replacementContent: string,
 		stripped: boolean,
-		signal: AbortSignal | undefined,
 		rawContent: string = replacementContent,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		const history = getConflictHistory(this.session);
@@ -799,7 +773,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				continue;
 			}
 
-			await writethroughNoop(absolutePath, text, signal);
+			await writeFileWithFallback(absolutePath, text);
 			invalidateFsScanAfterWrite(absolutePath);
 			this.session.bumpFileMutationVersion?.(absolutePath);
 			this.session.fileSnapshotStore?.invalidate(absolutePath);
@@ -953,8 +927,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				emitWriteProgress(onUpdate, cleanContent, path);
 				const result =
 					conflictUri.id === "*"
-						? await this.#resolveAllConflicts(cleanContent, stripped, signal, content)
-						: await this.#resolveSingleConflictById(conflictUri.id, cleanContent, stripped, signal);
+						? await this.#resolveAllConflicts(cleanContent, stripped, content)
+						: await this.#resolveSingleConflictById(conflictUri.id, cleanContent, stripped);
 				if (conflictUri.recoveredPrefix !== undefined) {
 					appendNoteToResult(
 						result,
@@ -1004,7 +978,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			await assertNotReadSelectorMisfire(path, cleanContent, this.session.cwd);
 			const absolutePath = resolveAuthoredPath(this.session, path);
-			const batchRequest = getLspBatchRequest(context?.toolCall);
 
 			if (await fs.exists(absolutePath)) {
 				await assertEditableFile(absolutePath, path, this.session.settings);
@@ -1031,18 +1004,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				};
 			}
 
-			const diagnostics = await this.#writethrough(
-				absolutePath,
-				cleanContent,
-				signal,
-				undefined,
-				batchRequest,
-				dst => this.#deferredDiagnostics?.begin(dst),
-			);
+			await writeFileWithFallback(absolutePath, cleanContent);
 			invalidateFsScanAfterWrite(absolutePath);
-			if (!this.#deferredDiagnostics || batchRequest?.flush === false) {
-				this.session.bumpFileMutationVersion?.(absolutePath);
-			}
+			this.session.bumpFileMutationVersion?.(absolutePath);
 			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
 
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
@@ -1054,23 +1018,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (madeExecutable) {
 				resultText += `\n${EXECUTABLE_NOTICE}`;
 			}
-			if (!diagnostics) {
-				return {
-					content: [{ type: "text", text: resultText }],
-					details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
-				};
-			}
-
 			return {
 				content: [{ type: "text", text: resultText }],
-				details: {
-					resolvedPath: absolutePath,
-					diagnostics,
-					madeExecutable: madeExecutable || undefined,
-					meta: outputMeta()
-						.diagnostics(diagnostics.summary, diagnostics.messages ?? [])
-						.get(),
-				},
+				details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
 			};
 		});
 	}
@@ -1379,8 +1329,6 @@ export const writeToolRenderer = {
 			},
 			uiTheme,
 		);
-		const diagnostics = result.details?.diagnostics;
-
 		const previewCache = createRenderedStringCache();
 		return framedBlock(uiTheme, width => {
 			const { expanded } = options;
@@ -1392,16 +1340,6 @@ export const writeToolRenderer = {
 					Ellipsis.Unicode,
 				);
 				body = `${uiTheme.fg("muted", safeProgressText)}${body ? `\n${body}` : ""}`;
-			}
-			if (!isPartial && diagnostics) {
-				const diagText = formatDiagnostics(diagnostics, expanded, uiTheme, fp =>
-					uiTheme.getLangIcon(getLanguageFromPath(fp)),
-				);
-				if (diagText.trim()) {
-					const diagLines = diagText.split("\n");
-					const firstNonEmpty = diagLines.findIndex(line => line.trim());
-					if (firstNonEmpty >= 0) body += `\n${diagLines.slice(firstNonEmpty).join("\n")}`;
-				}
 			}
 			const bodyLines = body.split("\n");
 			while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();

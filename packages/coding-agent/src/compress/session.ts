@@ -48,7 +48,6 @@ export async function createCompressSession(options: {
 		disableExtensionDiscovery: true,
 		enableMCP: false,
 		enableIrc: false,
-		enableLsp: false,
 		hasUI: false,
 		agentId: options.agentId ?? "Compress",
 		agentDisplayName: "compress",

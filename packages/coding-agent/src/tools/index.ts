@@ -13,7 +13,6 @@ import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { DaemonCompletionNotification } from "../launch/protocol";
-import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
@@ -58,7 +57,6 @@ import { YieldTool } from "./yield";
 
 export * from "../edit";
 export * from "../goals";
-export * from "../lsp";
 export * from "../session/streaming-output";
 export * from "../task";
 export * from "../web/search";
@@ -104,18 +102,6 @@ export type ImageAttachmentEntry = {
 	sourcePath: string;
 };
 
-export interface DeferredDiagnosticsEntry {
-	path: string;
-
-	summary: string;
-
-	messages: string[];
-
-	errored: boolean;
-
-	isStale(): boolean;
-}
-
 export interface ToolSession {
 	cwd: string;
 
@@ -148,10 +134,6 @@ export interface ToolSession {
 	extensionPaths?: string[];
 
 	customToolPaths?: ToolPathWithSource[];
-
-	enableLsp?: boolean;
-
-	lspReadOnly?: boolean;
 
 	enableIrc?: boolean;
 
@@ -281,8 +263,6 @@ export interface ToolSession {
 
 	conflictHistory?: import("./conflict-detect").ConflictHistory;
 
-	diagnosticsLedger?: import("../lsp/diagnostics-ledger").DiagnosticsLedger;
-
 	noopLoopGuard?: import("../edit/hashline/noop-loop-guard").NoopLoopGuard;
 
 	queueDeferredMessage?(message: CustomMessage): void;
@@ -292,8 +272,6 @@ export interface ToolSession {
 	registerDisposeCallback?(callback: () => void): (() => void) | void;
 
 	registerSessionChangeCallback?(callback: () => void): (() => void) | void;
-
-	queueDeferredDiagnostics?(entry: DeferredDiagnosticsEntry): void;
 
 	bumpFileMutationVersion?(path: string): number;
 
@@ -318,7 +296,6 @@ export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read" | "edit" | "w
 	ask: AskTool.createIf,
 	kernel: KernelTool.createIf,
 	github: GithubTool.createIf,
-	lsp: LspTool.createIf,
 	inspect_media: s => new InspectMediaTool(s),
 	browser: s => new BrowserTool(s),
 	computer: s => new ComputerTool(s),
@@ -346,7 +323,6 @@ export type ToolName = BuiltinToolName;
 export async function createTools(session: ToolSession, toolNames?: string[]): Promise<Tool[]> {
 	const restrictToolNames = session.restrictToolNames === true;
 	const includeYield = session.requireYieldTool === true;
-	const enableLsp = session.enableLsp ?? true;
 	const requestedTools = restrictToolNames
 		? normalizeToolNames(toolNames ?? [])
 		: toolNames && toolNames.length > 0
@@ -409,7 +385,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			if (goalState?.goal.status === "verifying") return false;
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
-		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "kernel") return effectivePythonAllowed;
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");

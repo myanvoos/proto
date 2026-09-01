@@ -6,7 +6,6 @@ export const BUILTIN_TOOL_NAMES = [
 	"eval",
 	"kernel",
 	"github",
-	"lsp",
 	"inspect_media",
 	"browser",
 	"computer",

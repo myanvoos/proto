@@ -2,7 +2,6 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { editToolRenderer } from "../edit/renderer";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { goalToolRenderer } from "../goals/tools/goal-tool";
-import { lspToolRenderer } from "../lsp/render";
 import type { Theme } from "../modes/theme/theme";
 import { webSearchToolRenderer } from "../web/search/render";
 import { askToolRenderer } from "./ask";
@@ -53,7 +52,6 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	kernel: evalToolRenderer as ToolRenderer,
 	edit: editToolRenderer as ToolRenderer,
 	apply_patch: editToolRenderer as ToolRenderer,
-	lsp: lspToolRenderer as ToolRenderer,
 	inspect_media: inspectMediaToolRenderer as ToolRenderer,
 
 	get fleet(): ToolRenderer {

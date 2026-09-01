@@ -24,7 +24,6 @@ import { extractProfileFlags } from "./cli/profile-bootstrap";
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
-import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
 import rootLicense from "./tools/browser/relay/extension-assets/LICENSE.txt" with { type: "text" };
 import thirdPartyNotices from "./tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt" with { type: "text" };
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
@@ -92,11 +91,6 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === DAEMON_BROKER_WORKER_ARG) {
 		const { startDaemonBrokerFromEnvironment } = await import("./launch/broker");
 		await startDaemonBrokerFromEnvironment();
-		return true;
-	}
-	if (arg === LSP_MUX_WORKER_ARG) {
-		const { startLspMuxFromEnvironment } = await import("./lsp/mux/server");
-		await startLspMuxFromEnvironment();
 		return true;
 	}
 	if (arg === BLOB_BROKER_WORKER_ARG) {

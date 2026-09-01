@@ -7,12 +7,6 @@ export interface RecentSession {
 	timeAgo: string;
 }
 
-export interface LspServerInfo {
-	name: string;
-	status: "ready" | "error" | "connecting" | "available";
-	fileTypes: string[];
-}
-
 const VALUE_LINE = "A coding agent with the IDE wired in.";
 
 const SILVER_STOPS: ReadonlyArray<readonly [number, number, number]> = [
@@ -79,7 +73,6 @@ export class WelcomeComponent implements Component {
 		private modelName: string,
 		private providerName: string,
 		private recentSessions: RecentSession[] = [],
-		_lspServers: LspServerInfo[] = [],
 	) {}
 
 	invalidate(): void {
@@ -107,8 +100,6 @@ export class WelcomeComponent implements Component {
 		this.recentSessions = sessions;
 		this.invalidate();
 	}
-
-	setLspServers(_servers: LspServerInfo[]): void {}
 
 	render(termWidth: number): readonly string[] {
 		if (this.#cachedLines && this.#cachedWidth === termWidth) {

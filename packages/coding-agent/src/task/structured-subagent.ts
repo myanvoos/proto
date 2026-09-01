@@ -86,8 +86,6 @@ export interface StructuredSubagentRequest {
 
 	shareEvalSession?: boolean;
 
-	enableLsp?: boolean;
-
 	enableIrc?: boolean;
 
 	maxRuntimeMs?: number;
@@ -108,7 +106,6 @@ interface EffectiveSubagentPolicy {
 	isIsolated: boolean;
 	mergeMode: "patch" | "branch";
 	applyChanges: boolean;
-	enableLsp: boolean;
 	enableIrc: boolean;
 }
 
@@ -254,9 +251,6 @@ export async function resolveEffectiveSubagentPolicy(
 		applyChanges:
 			request.isolation?.apply ??
 			(request.invocationKind === "worker" ? request.session.settings.get("orchestrator.isolation.apply") : true),
-		enableLsp:
-			request.enableLsp ??
-			((request.session.enableLsp ?? true) && request.session.settings.get("orchestrator.enableLsp")),
 		enableIrc:
 			request.enableIrc ??
 			(request.session.enableIrc !== false &&
@@ -354,7 +348,6 @@ function buildExecutorOptions(
 		sessionFile: lease.sessionFile,
 		persistArtifacts: !lease.temporary,
 		artifactsDir: lease.artifactsDir,
-		enableLsp: policy.enableLsp,
 		enableIrc: policy.enableIrc,
 		maxRuntimeMs: request.maxRuntimeMs,
 		restrictToolNames,

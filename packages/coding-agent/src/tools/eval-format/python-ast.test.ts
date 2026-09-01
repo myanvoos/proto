@@ -1,3 +1,5 @@
+import { expect, test } from "bun:test";
+
 import { initThemeSync, theme } from "../../modes/theme/theme";
 import { renderPythonAstLines } from "./python-ast";
 

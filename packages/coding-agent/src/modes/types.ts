@@ -22,7 +22,6 @@ import type { ForeignSessionSource } from "../session/foreign-session-store";
 import type { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
-import type { LspStartupServerInfo } from "../tools";
 import type { EventBus } from "../utils/event-bus";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
@@ -131,7 +130,7 @@ export interface InteractiveModeContext {
 	agent: AgentSession["agent"];
 	historyStorage?: HistoryStorage;
 	mcpManager?: MCPManager;
-	lspServers?: LspStartupServerInfo[];
+
 	eventController: EventController;
 	eventBus?: EventBus;
 

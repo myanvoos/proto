@@ -3,12 +3,11 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { getRecentSessions } from "../session/session-listing";
 import { computeDefaultSessionDir } from "../session/session-paths";
 import { FileSessionStorage } from "../session/session-storage";
-import type { LspServerInfo, RecentSession } from "./components/welcome";
+import type { RecentSession } from "./components/welcome";
 import { COMPOSER_DEFAULTS, Composer, type ComposerPreferences, type ComposerWelcomeUpdate } from "./composer";
 import {
 	type ComposerThemePreferences,
 	readComposerStartupCache,
-	writeComposerLspCache,
 	writeComposerRecentSessionsCache,
 	writeComposerUiCache,
 } from "./composer-cache";
@@ -70,7 +69,6 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 				theme: undefined,
 				welcome: undefined,
 				recentSessions: [],
-				lspServers: [],
 			};
 	const theme = { ...cached.theme, ...options.theme };
 	initThemeSync(theme.colorBlindMode, theme.darkTheme, theme.lightTheme);
@@ -80,7 +78,6 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 		modelName: cached.welcome?.modelName,
 		providerName: cached.welcome?.providerName,
 		recentSessions: cached.recentSessions,
-		lspServers: cached.lspServers,
 	};
 	const composer = new Composer({
 		terminal: options.terminal,
@@ -134,17 +131,6 @@ export function applyStartupComposerPreferences(update: PrepaintComposerPreferen
 	if (pending.cache) {
 		void writeComposerUiCache(pending.cwd, preferences, update.theme).catch(error => {
 			logger.debug("composer UI cache write failed", { error });
-		});
-	}
-}
-
-export function setStartupComposerLspServers(servers: LspServerInfo[]): void {
-	const pending = pendingComposer;
-	if (!pending) return;
-	pending.composer.updateWelcome({ lspServers: servers });
-	if (pending.cache) {
-		void writeComposerLspCache(pending.cwd, servers).catch(error => {
-			logger.debug("composer LSP cache write failed", { error });
 		});
 	}
 }

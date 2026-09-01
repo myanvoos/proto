@@ -466,9 +466,9 @@ Two details matter when the destination is outside what the host allows:
   parent as a separate step before writing; that `mkdir` tolerates a denial when a
   fallback is registered, so the write still reaches the handler.)
 - **A hashline `MV`.** `edit`'s move writes its destination directly rather than
-  through the LSP writethrough. It is routed to the same handlers, and the source
-  unlink goes to the delete seam below, so a move out of a directory you cannot
-  write completes too.
+  through the write tool's normal pipeline. It is routed to the same handlers, and
+  the source unlink goes to the delete seam below, so a move out of a directory you
+  cannot write completes too.
 
 This is deliberately not an interception of every write the agent can make. A
 permission error from these surfaces as it does today, with no handler consulted:
@@ -480,9 +480,6 @@ permission error from these surfaces as it does today, with no handler consulted
   row operation inside the database engine with no byte payload at all. Brokering
   either needs a different request shape than "these bytes belong at this path".
 - The ACP bridge's `writeTextFile`, which hands the write to a remote client.
-- The `lsp` tool's own writes: applying a workspace edit or code action, and the
-  Biome formatter, which writes the buffer and then shells out to `biome format
-  --write` — a subprocess write no in-process seam can reach.
 
 ### File delete fallback (`registerFileDeleteFallback`)
 

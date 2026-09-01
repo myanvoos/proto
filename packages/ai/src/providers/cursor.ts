@@ -38,9 +38,7 @@ import {
 	DeleteResultSchema,
 	DeleteSuccessSchema,
 	DiagnosticsErrorSchema,
-	DiagnosticsRejectedSchema,
 	DiagnosticsResultSchema,
-	DiagnosticsSuccessSchema,
 	ExecClientControlMessageSchema,
 	type ExecClientMessage,
 	ExecClientMessageSchema,
@@ -1672,22 +1670,12 @@ async function handleExecServerMessage(
 			return;
 		}
 		case "diagnosticsArgs": {
-			const args = execMsg.message.value;
-			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
-
-			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "lsp", {
-				action: "diagnostics",
-				file: args.path,
+			const execResult = create(DiagnosticsResultSchema, {
+				result: {
+					case: "error",
+					value: create(DiagnosticsErrorSchema, { error: "Not implemented" }),
+				},
 			});
-			const { execResult } = await resolveExecHandler(
-				args,
-				execHandlers?.diagnostics?.bind(execHandlers),
-				onToolResult,
-				toolResult => buildDiagnosticsResultFromToolResult(args.path, toolResult),
-				reason => buildDiagnosticsRejectedResult(args.path, reason),
-				error => buildDiagnosticsErrorResult(args.path, error),
-				{ toolCallId: args.toolCallId, toolName: "lsp" },
-			);
 			sendExecClientMessage(h2Request, execMsg, "diagnosticsResult", execResult);
 			return;
 		}
@@ -2847,41 +2835,6 @@ export function emptyGrepPatternRejection(pattern: string | undefined, glob: str
 		);
 	}
 	return "grep pattern is required (received an empty pattern).";
-}
-
-function buildDiagnosticsResultFromToolResult(path: string, toolResult: ToolResultMessage) {
-	const text = toolResultToText(toolResult);
-	if (toolResult.isError) {
-		return buildDiagnosticsErrorResult(path, text || "Diagnostics failed");
-	}
-	return create(DiagnosticsResultSchema, {
-		result: {
-			case: "success",
-			value: create(DiagnosticsSuccessSchema, {
-				path,
-				diagnostics: [],
-				totalDiagnostics: 0,
-			}),
-		},
-	});
-}
-
-function buildDiagnosticsErrorResult(_path: string, error: string) {
-	return create(DiagnosticsResultSchema, {
-		result: {
-			case: "error",
-			value: create(DiagnosticsErrorSchema, { error }),
-		},
-	});
-}
-
-function buildDiagnosticsRejectedResult(path: string, reason: string) {
-	return create(DiagnosticsResultSchema, {
-		result: {
-			case: "rejected",
-			value: create(DiagnosticsRejectedSchema, { path, reason }),
-		},
-	});
 }
 
 function parseToolArgsJson(text: string): unknown {
