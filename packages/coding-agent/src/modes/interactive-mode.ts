@@ -168,7 +168,7 @@ import type {
 	TodoItem,
 	TodoPhase,
 } from "./types";
-import { UiHelpers } from "./utils/ui-helpers";
+import { resolvePreservedLiveToolCallIds, UiHelpers } from "./utils/ui-helpers";
 
 const STILL_CLOSING_DELAY_MS = 3_000;
 
@@ -1601,34 +1601,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		const context = this.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: settings.get("display.collapseCompacted"),
 		});
-		const preservedLiveToolCallIds = new Set<string>();
-
-		for (const message of context.messages) {
-			if (message.role !== "toolResult") continue;
-			const resolved = livePendingTools.get(message.toolCallId);
-			if (!resolved) continue;
-
-			const details = message.details as { async?: { state?: string } } | undefined;
-			if (details?.async?.state === "running") {
-				preservedLiveToolCallIds.add(message.toolCallId);
-				continue;
-			}
-			livePendingTools.delete(message.toolCallId);
-
-			let stillShared = false;
-			for (const other of livePendingTools.values()) {
-				if (other === resolved) {
-					stillShared = true;
-					break;
-				}
-			}
-			if (stillShared) {
-				preservedLiveToolCallIds.add(message.toolCallId);
-				continue;
-			}
-			const index = liveComponents.indexOf(resolved as unknown as Component);
-			if (index >= 0) liveComponents.splice(index, 1);
-		}
+		const preservedLiveToolCallIds = resolvePreservedLiveToolCallIds({
+			livePendingTools,
+			liveComponents,
+			messages: context.messages,
+		});
 
 		const retained = new WeakMap<AgentMessage, Component>();
 		for (const message of context.messages) {

@@ -9,7 +9,7 @@ The kernel namespace persists across calls, and the prelude already ships the co
 ## Before defining a helper
 
 - Run `defs()` — functions and classes defined in earlier cells are still bound; reuse them, and only re-define to change them.
-- Reach for the prelude API instead of raw file plumbing: `write()`, `edit()`, `block_range()`, `symbols()`, `display()`, `env()`, `output()`, `tool.<name>()`, `agent()`, `completion()`, `parallel()`/`pipeline()`.
+- Reach for the prelude API instead of raw file plumbing: `write()`, `block_range()`, `symbols()`, `display()`, `env()`, `output()`, `tool.<name>()`, `agent()`, `completion()`, `parallel()`/`pipeline()`.
 
 ## Never shadow prelude names
 
@@ -25,6 +25,5 @@ def write_report(path, content):
 
 ## Hand-rolled patterns to drop
 
-- Manual find-and-replace over file text → `edit(path, old, new, count=1)`.
-- Anchor-slicing file text in Python to rewrite a region → `edit(path, span=(start, end), new)`.
+- Manual find-and-replace or anchor-slicing over file text to rewrite a region → read the file, modify the text, `write(path, text, overwrite=True)`.
 - Scanning files for declarations → `symbols(path)`.

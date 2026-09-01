@@ -8,6 +8,13 @@ import * as util from "node:util";
 
 import * as logger from "@oh-my-pi/pi-utils/logger";
 
+import {
+	flushFileTracking,
+	installBunWriteTracking,
+	maybeTrackedModule,
+	resetFileTracking,
+	trackedFsModule,
+} from "./fs-tracker";
 import { createHelpers, type HelperBundle } from "./helpers";
 import { awaitMaybePromise, indirectEval } from "./indirect-eval";
 import { LocalModuleLoader } from "./local-module-loader";
@@ -52,6 +59,9 @@ export interface RuntimeOptions {
 	extraGlobals?: Record<string, unknown>;
 
 	localRoots?: Record<string, string>;
+
+	/** Dedicated-process runtimes only: patches Bun.write for mutation tracking. */
+	trackFileWrites?: boolean;
 }
 
 const BASE64_STRICT_RE = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -166,6 +176,7 @@ export class JsRuntime {
 			localRoots: () => this.#localRoots,
 			emitStatus: event => this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event }),
 		});
+		if (opts.trackFileWrites) installBunWriteTracking();
 		this.#install(opts.extraGlobals);
 	}
 
@@ -203,6 +214,7 @@ export class JsRuntime {
 			finalExpressionSet: false,
 			finalExpressionValue: undefined,
 		};
+		resetFileTracking();
 		try {
 			return await this.#als.run(context, async () => {
 				const wrapped = await wrapCode(code);
@@ -221,6 +233,7 @@ export class JsRuntime {
 			});
 		} finally {
 			leaveRun();
+			flushFileTracking(event => hooks.onDisplay({ type: "status", event }));
 		}
 	}
 
@@ -273,7 +286,14 @@ export class JsRuntime {
 	}
 
 	#activeRequire(moduleUrlOrPath?: string): NodeJS.Require {
-		return this.#moduleLoader.requireForFile(moduleUrlOrPath, this.#activeCwd());
+		const requireFn = this.#moduleLoader.requireForFile(moduleUrlOrPath, this.#activeCwd());
+		const wrappedRequire = ((id: string) => maybeTrackedModule(id, requireFn(id))) as NodeJS.Require;
+		return new Proxy(wrappedRequire, {
+			get(_target, prop) {
+				const value = Reflect.get(requireFn, prop, requireFn);
+				return typeof value === "function" ? (value as () => unknown).bind(requireFn) : value;
+			},
+		});
 	}
 
 	#moduleFilename(moduleUrlOrPath?: string): string {
@@ -314,13 +334,15 @@ export class JsRuntime {
 				const resolved = await this.#moduleLoader.resolveForRun(this.#activeCwd(), source);
 				if (resolved.mode === "local") return resolved.value;
 				const target = resolved.target;
-				return options !== undefined ? await import(target, options) : await import(target);
+				const imported = options !== undefined ? await import(target, options) : await import(target);
+				return maybeTrackedModule(target, imported);
 			},
 			__proto_import_from__: async (moduleUrl: string, source: string, options?: ImportCallOptions) => {
 				const resolved = await this.#moduleLoader.resolveForModule(moduleUrl, source, this.#activeCwd());
 				if (resolved.mode === "local") return resolved.value;
 				const target = resolved.target;
-				return options !== undefined ? await import(target, options) : await import(target);
+				const imported = options !== undefined ? await import(target, options) : await import(target);
+				return maybeTrackedModule(target, imported);
 			},
 			__proto_get_require__: (moduleUrl?: string) => this.#activeRequire(moduleUrl),
 			__proto_get_filename__: (moduleUrl?: string) => this.#moduleFilename(moduleUrl),
@@ -362,7 +384,7 @@ export class JsRuntime {
 
 			require: this.#buildDynamicRequire(),
 			createRequire,
-			fs,
+			fs: trackedFsModule(fs),
 		};
 
 		const allGlobalKeys = new Set<string>([

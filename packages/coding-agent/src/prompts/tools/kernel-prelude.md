@@ -1,10 +1,9 @@
 {{#ifAll py js}}Python: sync, kwargs. JS: async, ONE trailing object literal, never positional.{{else}}{{#if py}}Sync; kwargs.{{/if}}{{#if js}}Async; ONE trailing object literal, never positional.{{/if}}{{/ifAll}}
 ```
 display(value) → None        print(value, ...) → None
-{{#if py}}edit(path, old, new, count?=1, expect?=None, span?=(start,end)) → Path    refuses unless file holds exactly `count` occurrences of `old` (count=None: all); `expect` pins whole file too; whole-file update = pass full content as `old`; `span`=(start,end) replaces that 0-based char range instead of matching `old` (old=None → blind replace; old given → stale guard on range; no count)
-symbols(path) → str    tree-sitter outline, bodies elided
+{{#if py}}symbols(path) → str    tree-sitter outline, bodies elided
 defs() → dict    kernel-defined names → cell number
-{{/if}}{{#if py}}write(path, content, overwrite?=False) → Path    refuses an existing file unless overwrite=True; updates go through edit{{/if}}{{#if js}}write(path, content) → str{{/if}}
+{{/if}}{{#if py}}write(path, content, overwrite?=False) → Path    the written file's path, not content; refuses an existing file unless overwrite=True{{/if}}{{#if js}}write(path, content) → str{{/if}}
 {{#if py}}block_range(path, line) → (start, end) | None
 {{/if}}env(key?=None, value?=None) → str | None | dict
 output(*ids, format?="raw", query?=None, offset?=None, limit?=None) → str | dict | list[dict]

@@ -100,6 +100,53 @@ function imageLinksForMessage(
 	return materializeImageReferenceLinksSync(images, putBlobSync);
 }
 
+/**
+ * Decide which live tool-call components a transcript rebuild must preserve
+ * instead of letting the replay re-create them. Mutates `livePendingTools` and
+ * `liveComponents` to drop entries the replay will settle from persisted
+ * results. Calls with no persisted result yet (still executing) are preserved:
+ * the replay would otherwise create a second, never-settled component for the
+ * same call while the live component is re-appended below it.
+ */
+export function resolvePreservedLiveToolCallIds(params: {
+	livePendingTools: Map<string, ToolExecutionHandle>;
+	liveComponents: Component[];
+	messages: readonly AgentMessage[];
+}): Set<string> {
+	const { livePendingTools, liveComponents, messages } = params;
+	const preserved = new Set<string>();
+	for (const message of messages) {
+		if (message.role !== "toolResult") continue;
+		const resolved = livePendingTools.get(message.toolCallId);
+		if (!resolved) continue;
+
+		const details = message.details as { async?: { state?: string } } | undefined;
+		if (details?.async?.state === "running") {
+			preserved.add(message.toolCallId);
+			continue;
+		}
+		livePendingTools.delete(message.toolCallId);
+
+		let stillShared = false;
+		for (const other of livePendingTools.values()) {
+			if (other === resolved) {
+				stillShared = true;
+				break;
+			}
+		}
+		if (stillShared) {
+			preserved.add(message.toolCallId);
+			continue;
+		}
+		const index = liveComponents.indexOf(resolved as unknown as Component);
+		if (index >= 0) liveComponents.splice(index, 1);
+	}
+	for (const id of livePendingTools.keys()) {
+		preserved.add(id);
+	}
+	return preserved;
+}
+
 export class UiHelpers {
 	constructor(private ctx: InteractiveModeContext) {}
 

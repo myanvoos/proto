@@ -8,7 +8,6 @@ __all__ = [
     "display",
     "env",
     "write",
-    "edit",
     "block_range",
     "symbols",
     "output",
@@ -31,7 +30,7 @@ __all__ = [
 if "__proto_prelude_loaded__" not in globals():
     __proto_prelude_loaded__ = True
     from pathlib import Path
-    import os, json, math, re, hashlib
+    import os, json, math, re, hashlib, stat, sys, threading
     from urllib.parse import unquote
 
     INTENT_FIELD = "i"
@@ -68,6 +67,187 @@ if "__proto_prelude_loaded__" not in globals():
         _proto_display({"application/x-proto-status": {"op": op, **data}}, raw=True)
 
     _MAX_DIFF_CHARS = 32000
+
+    # --- filesystem mutation tracking ----------------------------------------
+    # The host diffs cell-time filesystem changes with a walker rooted at the
+    # session cwd (eval/cell-file-diff.ts), so mutations made with anything
+    # other than the write() helper were invisible outside that root. A
+    # CPython audit hook sees every in-process mutation (open() with write
+    # flags, os.remove/rename/truncate); the prelude snapshots each touched
+    # path's pre-mutation content and flushes per-cell status events carrying
+    # the same hunk diffs helper writes emit. Helper events also record the
+    # content they already showed a diff for, and the flush diffs from that
+    # last-reported content so it never re-prints hunks the cell has seen.
+    # State lives on the sys module so a prelude re-exec reuses the
+    # already-installed hook's records.
+    _FS_DIFF_MAX_BYTES = 8 * 1024 * 1024
+    # Aggregate budget for cached helper-write contents kept as flush diff
+    # bases; past it the flush falls back to pre-cell snapshots.
+    _FS_REPORT_TEXT_BUDGET = 32 * 1024 * 1024
+    _FS_MAX_EVENTS = 50
+    # Cache/build noise by directory-name component; mirrors PRUNED_DIRS in
+    # eval/cell-file-diff.ts.
+    _FS_PRUNED_DIRS = frozenset({
+        ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
+        ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".cache",
+        ".cargo", ".rustup", ".bun", ".npm", ".local", "target", "build",
+        "dist", ".next", ".nuxt", ".output", ".turbo", ".parcel-cache",
+        "coverage",
+    })
+    _FS_SKIPPED_SUFFIXES = (".pyc", ".pyo")
+    _FS_WRITE_FLAGS = (
+        getattr(os, "O_WRONLY", 0)
+        | getattr(os, "O_RDWR", 0)
+        | getattr(os, "O_CREAT", 0)
+        | getattr(os, "O_TRUNC", 0)
+        | getattr(os, "O_APPEND", 0)
+        | getattr(os, "O_TMPFILE", 0)
+    )
+
+    _FS_STATE = getattr(sys, "_proto_fs_state", None)
+    if _FS_STATE is None:
+        _FS_STATE = {
+            "touched": {},
+            "reported": {},
+            "reported_text_bytes": 0,
+            "lock": threading.Lock(),
+            "tls": threading.local(),
+        }
+        sys._proto_fs_state = _FS_STATE
+    _FS_STATE.setdefault("reported_text_bytes", 0)
+
+    def _fs_record(path) -> None:
+        """Snapshot a path's pre-mutation state the first time the cell touches it."""
+        tls = _FS_STATE["tls"]
+        if getattr(tls, "recording", False):
+            return
+        try:
+            sp = os.fsdecode(path)
+        except (TypeError, ValueError):
+            return
+        if not sp:
+            return
+        ap = os.path.abspath(sp)
+        touched = _FS_STATE["touched"]
+        if ap in touched or ap.endswith(_FS_SKIPPED_SUFFIXES):
+            return
+        if any(part in _FS_PRUNED_DIRS for part in ap.split(os.sep)[:-1]):
+            return
+        try:
+            st = os.stat(ap)
+        except OSError:
+            # not there yet (O_CREAT pre-create): the flush decides from
+            # post-cell state whether anything was actually created
+            with _FS_STATE["lock"]:
+                touched.setdefault(ap, {"existed": False, "key": None, "before": None, "before_sha": None})
+            return
+        if not stat.S_ISREG(st.st_mode):
+            return
+        record = {"existed": True, "key": (st.st_mtime_ns, st.st_size), "before": None, "before_sha": None}
+        if st.st_size <= _FS_DIFF_MAX_BYTES:
+            tls.recording = True
+            try:
+                with open(ap, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                data = None
+            finally:
+                tls.recording = False
+            if data is not None and b"\x00" not in data[:8192]:
+                record["before"] = data.decode("utf-8", errors="replace")
+                record["before_sha"] = hashlib.sha256(data).hexdigest()[:16]
+        with _FS_STATE["lock"]:
+            touched.setdefault(ap, record)
+
+    def _fs_audit(event, args) -> None:
+        if getattr(_FS_STATE["tls"], "recording", False):
+            return
+        try:
+            if event == "open":
+                flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
+                mode = args[1] if len(args) > 1 and isinstance(args[1], str) else ""
+                if not (flags & _FS_WRITE_FLAGS or any(c in mode for c in "wax+")):
+                    return
+                _fs_record(args[0])
+            elif event == "os.remove":
+                _fs_record(args[0])
+            elif event == "os.rename":  # os.replace audits under the same name
+                _fs_record(args[0])
+                _fs_record(args[1])
+            elif event == "os.truncate":
+                _fs_record(args[0])
+        except Exception:
+            pass  # an audit hook must never break the operation it observes
+
+    if not getattr(sys, "_proto_fs_audit_installed", False):
+        try:
+            sys.addaudithook(_fs_audit)
+            sys._proto_fs_audit_installed = True
+        except Exception:
+            pass
+
+    def _flush_fs_status() -> None:
+        """Report filesystem mutations made without a helper API as status
+        events (same shape as write()'s). Called by the runner after the
+        cell's user code settles, before the done frame."""
+        state = _FS_STATE
+        with state["lock"]:
+            paths = sorted(state["touched"])
+            pending = {ap: state["touched"].pop(ap) for ap in paths}
+        emitted = 0
+        truncated = False
+        for ap in paths:
+            if emitted >= _FS_MAX_EVENTS:
+                truncated = True
+                break
+            rec = pending[ap]
+            try:
+                st = os.stat(ap)
+                regular = stat.S_ISREG(st.st_mode)
+            except OSError:
+                st = None
+                regular = False
+            if not regular:
+                if not rec["existed"]:
+                    continue
+                data = {"op": "delete", "path": ap}
+                if rec["before"] is not None:
+                    rows, _ = _capped_numbered_diff(rec["before"], "")
+                    if rows:
+                        data["diff"] = "\n".join(rows)
+                _emit_status(data.pop("op"), **data)
+                emitted += 1
+                continue
+            if rec["key"] is not None and (st.st_mtime_ns, st.st_size) == rec["key"]:
+                continue  # opened but never written
+            try:
+                with open(ap, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            sha = hashlib.sha256(data).hexdigest()[:16]
+            reported = state["reported"].get(ap)
+            if rec["before_sha"] == sha or (reported is not None and reported["sha"] == sha):
+                continue
+            if len(data) <= _FS_DIFF_MAX_BYTES and b"\x00" not in data[:8192]:
+                before = reported["text"] if reported is not None else None
+                if before is None:
+                    before = rec["before"] if rec["existed"] else ""
+                _emit_file_status("write", ap, before=before, after=data.decode("utf-8", errors="replace"))
+            else:
+                _emit_status("write", path=ap, bytes=st.st_size, sha=sha)
+            emitted += 1
+        if truncated:
+            _emit_status("files", count=len(paths) - emitted, action="truncated")
+        state["reported"].clear()
+        state["reported_text_bytes"] = 0
+
+    def _reset_fs_status() -> None:
+        """Drop records left by runner machinery between requests so they are
+        never attributed to the next cell."""
+        _FS_STATE["touched"].clear()
+        _FS_STATE["reported"].clear()
+        _FS_STATE["reported_text_bytes"] = 0
 
     def _numbered_diff(before: str, after: str, context: int = 2) -> list[str]:
         """Numbered hunk rows ('-12|old', '+12|new', ' 13|ctx') in the edit tool's canonical diff format."""
@@ -145,15 +325,20 @@ if "__proto_prelude_loaded__" not in globals():
             used += len(row) + 1
         return kept, True
 
-    def _emit_file_status(op: str, path, *, before: str | None, after: str, action: str | None = None) -> None:
+    def _emit_file_status(op: str, path, *, before: str | None, after: str) -> None:
         """Emit a file-op status event, attaching a capped hunk diff when content changed."""
         data: dict = {
             "path": str(path),
             "chars": len(after),
             "sha": hashlib.sha256(after.encode()).hexdigest()[:16],
         }
-        if action is not None:
-            data["action"] = action
+        state = getattr(sys, "_proto_fs_state", None)
+        if state is not None:
+            entry = {"sha": data["sha"], "text": None}
+            if len(after) <= _FS_DIFF_MAX_BYTES and state["reported_text_bytes"] <= _FS_REPORT_TEXT_BUDGET:
+                entry["text"] = after
+                state["reported_text_bytes"] += len(after)
+            state["reported"][str(path)] = entry
         if before is not None and before != after:
             rows, truncated = _capped_numbered_diff(before, after)
             if rows:
@@ -161,30 +346,6 @@ if "__proto_prelude_loaded__" not in globals():
                 if truncated:
                     data["diffTruncated"] = True
         _emit_status(op, **data)
-
-    def _first_divergence(current: str, expected: str) -> str:
-        """Describe where two contents first differ, for guard-failure messages.
-
-        A bare "changed since grounding" leaves the caller unable to tell a
-        real concurrent edit from a mis-transcribed expectation.
-        """
-        if current.rstrip() == expected.rstrip():
-            return "only trailing whitespace differs"
-        cur_lines = current.split("\n")
-        exp_lines = expected.split("\n")
-        for i, (a, b) in enumerate(zip(cur_lines, exp_lines), 1):
-            if a != b:
-                return f"first difference at line {i}: current {a[:80]!r}, expected {b[:80]!r}"
-        return (
-            f"identical through line {min(len(cur_lines), len(exp_lines))}; "
-            f"current has {len(cur_lines)} lines, expected {len(exp_lines)}"
-        )
-
-    def _stale_guard(p, current: str, expect: str) -> RuntimeError:
-        return RuntimeError(
-            f"stale guard: {p} does not match expect= (current {len(current)} chars, "
-            f"expected {len(expect)}); {_first_divergence(current, expect)}. Re-read the file and retry."
-        )
 
     def env(key: str | None = None, value: str | None = None):
         """Get/set environment variables."""
@@ -212,7 +373,7 @@ if "__proto_prelude_loaded__" not in globals():
         paths are made absolute against the kernel cwd so the status events
         helpers emit can be matched against filesystem snapshots by the host
         (relative paths there would defeat its already-reported dedupe and
-        duplicate every edit as a write event); any other `scheme://` is
+        duplicate every write as a walker event); any other `scheme://` is
         rejected."""
         if not isinstance(path, str):
             return Path(os.path.abspath(path))
@@ -242,16 +403,15 @@ if "__proto_prelude_loaded__" not in globals():
     def write(path: str | Path, content: str, *, overwrite: bool = False) -> Path:
         """Create a file with content (parents auto-created).
 
-        Refuses to overwrite an existing file unless overwrite=True; guarded
-        updates go through edit().
+        Refuses to overwrite an existing file unless overwrite=True; for a
+        guarded update, read the file, modify the text, and write it back.
         """
         p = _resolve_proto_path(path)
         before: str | None = ""
         if p.exists():
             if not overwrite:
                 raise RuntimeError(
-                    f"write() refusing to overwrite existing {p}; pass overwrite=True to replace it wholesale, "
-                    "or use edit(path, old, new) for a guarded update"
+                    f"write() refusing to overwrite existing {p}; pass overwrite=True to replace it wholesale"
                 )
             try:
                 before = p.read_text(encoding="utf-8")
@@ -277,74 +437,6 @@ if "__proto_prelude_loaded__" not in globals():
         """Syntactic block extent (start, end) containing 1-based `line`, resolved by tree-sitter."""
         p = _resolve_proto_path(path)
         return _block_range_on(str(p), p.read_text(encoding="utf-8"), line)
-
-    def edit(
-        path: str | Path,
-        old: str | None,
-        new: str,
-        count: int | None = 1,
-        expect: str | None = None,
-        span: tuple[int, int] | None = None,
-    ) -> Path:
-        """Count-checked replacement: replace ``old`` with ``new`` in a file.
-
-        Refuses unless the file currently equals ``expect`` (when given) and
-        contains exactly ``count`` occurrences of ``old``; ``count=None``
-        replaces every occurrence. ``span=(start, end)`` replaces that 0-based
-        character range instead of searching for ``old``: pass ``old=None``
-        for a blind range replace, or pass ``old`` too and it must match the
-        current range exactly (stale guard against drifted offsets). ``count``
-        applies to ``old`` matching only and is ignored with ``span``.
-        Returns the path.
-        """
-        if not isinstance(new, str):
-            raise TypeError(f"edit: `new` must be str, got {type(new).__name__}")
-        if span is not None:
-            if (
-                not isinstance(span, tuple)
-                or len(span) != 2
-                or not all(isinstance(bound, int) and not isinstance(bound, bool) for bound in span)
-            ):
-                raise ValueError("edit: `span` must be a (start, end) tuple of ints")
-        elif not isinstance(old, str) or not old:
-            raise ValueError("edit: `old` must be a non-empty str (or pass span=(start, end) with old=None)")
-        p = _resolve_proto_path(path)
-        if not p.exists():
-            raise RuntimeError(f"stale guard: {p} does not exist")
-        content = p.read_text(encoding="utf-8")
-        if expect is not None and content != expect:
-            raise _stale_guard(p, content, expect)
-        if span is not None:
-            span_start, span_end = span
-            if not 0 <= span_start <= span_end <= len(content):
-                raise RuntimeError(
-                    f"edit: span {(span_start, span_end)} out of bounds for {p} ({len(content)} chars). "
-                    "Re-read the file and retry."
-                )
-            if old is not None and content[span_start:span_end] != old:
-                raise RuntimeError(
-                    f"edit: stale span guard: {p}[{span_start}:{span_end}] does not match old= "
-                    f"({len(old)} chars given, {len(content[span_start:span_end])} current). "
-                    "Re-read the file and retry."
-                )
-            result = content[:span_start] + new + content[span_end:]
-        else:
-            assert old is not None
-            occurrences = content.count(old)
-            if occurrences == 0:
-                if "\n" in old:
-                    raise RuntimeError(
-                        f"edit: {old[:60]!r} not found in {p}; {_first_divergence(content, old)}. Re-read the file and retry."
-                    )
-                raise RuntimeError(f"edit: {old[:60]!r} not found in {p}")
-            if count is not None and occurrences != count:
-                raise RuntimeError(
-                    f"edit: expected {count} occurrence(s) of {old[:60]!r} in {p}, found {occurrences}"
-                )
-            result = content.replace(old, new) if count is None else content.replace(old, new, count)
-        p.write_text(result, encoding="utf-8")
-        _emit_file_status("edit", p, before=content, after=result, action="replace")
-        return p
 
     def symbols(path: str | Path) -> str:
         """Structural outline of a code file: declarations with bodies elided."""

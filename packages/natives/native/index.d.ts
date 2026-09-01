@@ -268,6 +268,8 @@ export interface ClipboardImage {
   mimeType: string
 }
 
+export declare function codeOutline(options: OutlineOptions): OutlineResult
+
 export interface ContextLine {
   lineNumber: number
   line: string
@@ -695,6 +697,30 @@ export interface NodeSpan {
   startLine: number
   endLine: number
   kind: string
+}
+
+export interface OutlineEntry {
+  kind: string
+  modifier?: string
+  name?: string
+  detail?: string
+  doc?: string
+  notes: Array<string>
+  asks: Array<string>
+  line: number
+  children: Array<OutlineEntry>
+}
+
+export interface OutlineOptions {
+  code: string
+  lang?: string
+  path?: string
+}
+
+export interface OutlineResult {
+  language?: string
+  parsed: boolean
+  entries: Array<OutlineEntry>
 }
 
 export interface ParsedKittyResult {

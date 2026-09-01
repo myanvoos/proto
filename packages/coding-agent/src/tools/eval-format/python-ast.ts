@@ -1,17 +1,5 @@
 import type { Theme } from "../../modes/theme/theme";
-import { truncateToWidth } from "../render-utils";
-
-export interface PyAstNode {
-	kind: string;
-	name?: string;
-	detail?: string;
-	doc?: string;
-	notes?: string[];
-	questions?: string[];
-	rawString?: string;
-	line: number;
-	children: PyAstNode[];
-}
+import { type OutlineNode, outlineNode, renderOutlineLines } from "./outline-render";
 
 const NOTE_PREFIX = "#@";
 const NOTE_QUESTION_PREFIX = "#@?";
@@ -371,10 +359,6 @@ function clauseReceptive(parentKind: string, clauseKind: string): boolean {
 	return false;
 }
 
-function node(kind: string, line: number, name?: string, detail?: string): PyAstNode {
-	return { kind, name, detail, line, children: [] };
-}
-
 function joinTokens(tokens: Token[]): string {
 	let out = "";
 	for (const t of tokens) {
@@ -726,7 +710,7 @@ function scanAssign(tokens: Token[]): AssignScan {
 	return { assign: 0, augment: 0 };
 }
 
-function buildSimpleNode(text: string, line: number): PyAstNode | null {
+function buildSimpleNode(text: string, line: number): OutlineNode | null {
 	const tokens = tokenize(text);
 	if (tokens.length === 0) return null;
 	const first = tokens[0];
@@ -738,57 +722,57 @@ function buildSimpleNode(text: string, line: number): PyAstNode | null {
 			case "from":
 				return buildImport(rest, line, true);
 			case "return":
-				return node("return", line, undefined, summarize(rest));
+				return outlineNode("return", line, undefined, summarize(rest));
 			case "raise": {
 				const cause = splitNameOp(rest, "from");
 				const detail = cause ? `${summarize(cause[0], 56)} from ${joinTokens(cause[1])}` : summarize(rest);
-				return node("raise", line, undefined, detail);
+				return outlineNode("raise", line, undefined, detail);
 			}
 			case "assert": {
 				const parts = splitTop(rest, ",")
 					.map(part => summarize(part, 48))
 					.filter(p => p.length > 0);
-				return node("assert", line, undefined, parts.join(", "));
+				return outlineNode("assert", line, undefined, parts.join(", "));
 			}
 			case "del":
-				return node("del", line, undefined, summarize(rest));
+				return outlineNode("del", line, undefined, summarize(rest));
 			case "global":
 			case "nonlocal":
-				return node(first.value, line, undefined, renderTokens(rest));
+				return outlineNode(first.value, line, undefined, renderTokens(rest));
 			default:
-				return node(first.value, line);
+				return outlineNode(first.value, line);
 		}
 	}
 	const scan = scanAssign(tokens);
 	if (scan.augment > 0) {
 		const target = summarize(tokens.slice(0, scan.augment), 40);
 		const value = summarize(tokens.slice(scan.augment + 1), 56);
-		return node(tokens[scan.augment].value, line, target, value);
+		return outlineNode(tokens[scan.augment].value, line, target, value);
 	}
 	if (scan.assign > 0) {
 		const targets = splitTop(tokens.slice(0, scan.assign), ",").map(part => summarize(part, 40));
 		const value = summarize(tokens.slice(scan.assign + 1), 64);
-		return node("assign", line, targets.join(", "), value);
+		return outlineNode("assign", line, targets.join(", "), value);
 	}
 	if (tokens.length >= 3 && isOp(tokens[1], ":")) {
 		const eqIndex = tokens.findIndex((t, i) => i > 1 && isOp(t, "=") && !isOp(tokens[i - 1], "="));
 		const typeEnd = eqIndex > 0 ? eqIndex : tokens.length;
 		const typeSummary = summarize(tokens.slice(2, typeEnd), 40);
 		const value = eqIndex > 0 ? summarize(tokens.slice(eqIndex + 1), 48) : "";
-		return node("assign", line, tokens[0].value, value ? `${typeSummary} ← ${value}` : typeSummary);
+		return outlineNode("assign", line, tokens[0].value, value ? `${typeSummary} ← ${value}` : typeSummary);
 	}
-	const exprNode = node("expr", line, undefined, summarize(tokens, 80));
+	const exprNode = outlineNode("expr", line, undefined, summarize(tokens, 80));
 	if (tokens.length === 1 && tokens[0].type === "string") {
 		exprNode.rawString = tokens[0].value;
 	}
 	return exprNode;
 }
 
-function buildImport(rest: Token[], line: number, fromForm: boolean): PyAstNode {
+function buildImport(rest: Token[], line: number, fromForm: boolean): OutlineNode {
 	if (!fromForm) {
 		const detail = rest.length > 1 ? joinTokens(rest) : undefined;
 		const name = detail ? undefined : rest[0]?.value;
-		return node("import", line, name, detail);
+		return outlineNode("import", line, name, detail);
 	}
 	const importIndex = rest.findIndex(t => t.type === "name" && t.value === "import");
 	const module = rest
@@ -796,7 +780,7 @@ function buildImport(rest: Token[], line: number, fromForm: boolean): PyAstNode 
 		.map(t => t.value)
 		.join("");
 	const names = importIndex >= 0 ? rest.slice(importIndex + 1) : [];
-	return node("from-import", line, module, cap(joinTokens(names), 56));
+	return outlineNode("from-import", line, module, cap(joinTokens(names), 56));
 }
 
 function summarizeParam(tokens: Token[]): string {
@@ -807,9 +791,9 @@ function summarizeParam(tokens: Token[]): string {
 	return `${name}: ${ann}`;
 }
 
-function buildHeaderNode(match: HeaderMatch, tokens: Token[], line: number, decorators: string[]): PyAstNode {
+function buildHeaderNode(match: HeaderMatch, tokens: Token[], line: number, decorators: string[]): OutlineNode {
 	const rest = match.rest;
-	let result: PyAstNode;
+	let result: OutlineNode;
 	switch (match.kind) {
 		case "def":
 		case "async def": {
@@ -828,7 +812,7 @@ function buildHeaderNode(match: HeaderMatch, tokens: Token[], line: number, deco
 					detail = `→ ${summarize(tokens.slice(arrow + 1, match.colonIndex), 40)}`;
 				}
 			}
-			result = node(match.kind, line, label, detail);
+			result = outlineNode(match.kind, line, label, detail);
 			break;
 		}
 		case "class": {
@@ -838,14 +822,14 @@ function buildHeaderNode(match: HeaderMatch, tokens: Token[], line: number, deco
 			if (paren >= 0) {
 				label = `${name}(${summarize(rest.slice(paren + 1, rest.length - 1), 48)})`;
 			}
-			result = node("class", line, label);
+			result = outlineNode("class", line, label);
 			break;
 		}
 		case "for": {
 			const inIndex = rest.findIndex((t, i) => t.type === "name" && t.value === "in" && depthUpTo(rest, i) === 0);
 			const target = inIndex >= 0 ? cap(joinTokens(rest.slice(0, inIndex)), 40) : summarize(rest, 40);
 			const iter = inIndex >= 0 ? summarize(rest.slice(inIndex + 1), 48) : "";
-			result = node("for", line, target, iter);
+			result = outlineNode("for", line, target, iter);
 			break;
 		}
 		case "with": {
@@ -854,17 +838,17 @@ function buildHeaderNode(match: HeaderMatch, tokens: Token[], line: number, deco
 				if (binding) return `${summarize(binding[0], 40)} as ${joinTokens(binding[1])}`;
 				return summarize(part, 48);
 			});
-			result = node("with", line, undefined, parts.join(", "));
+			result = outlineNode("with", line, undefined, parts.join(", "));
 			break;
 		}
 		case "except": {
 			const binding = splitNameOp(rest, "as");
 			const detail = binding ? `${summarize(binding[0], 48)} as ${joinTokens(binding[1])}` : summarize(rest, 64);
-			result = node("except", line, undefined, detail);
+			result = outlineNode("except", line, undefined, detail);
 			break;
 		}
 		default: {
-			result = node(match.kind, line, undefined, summarize(rest, 64));
+			result = outlineNode(match.kind, line, undefined, summarize(rest, 64));
 		}
 	}
 	if (decorators.length > 0) {
@@ -875,7 +859,7 @@ function buildHeaderNode(match: HeaderMatch, tokens: Token[], line: number, deco
 
 const posHolder = { i: 0 };
 
-function parsePyOutline(source: string): PyAstNode | null {
+function parsePyOutline(source: string): OutlineNode | null {
 	let lines: LogicalLine[];
 	try {
 		lines = assembleLogicalLines(source);
@@ -884,13 +868,13 @@ function parsePyOutline(source: string): PyAstNode | null {
 		return null;
 	}
 	if (lines.length === 0) return null;
-	const root = node("Module", 1);
-	const stack: Array<{ node: PyAstNode; indent: number }> = [{ node: root, indent: -1 }];
+	const root = outlineNode("Module", 1);
+	const stack: Array<{ node: OutlineNode; indent: number }> = [{ node: root, indent: -1 }];
 	let decorators: string[] = [];
 	let pendingNotes: string[] = [];
 	let pendingQuestions: string[] = [];
 
-	const attachNotes = (target: PyAstNode) => {
+	const attachNotes = (target: OutlineNode) => {
 		if (pendingNotes.length > 0) target.notes = [...(target.notes ?? []), ...pendingNotes];
 		if (pendingQuestions.length > 0) target.questions = [...(target.questions ?? []), ...pendingQuestions];
 		pendingNotes = [];
@@ -956,7 +940,7 @@ function parsePyOutline(source: string): PyAstNode | null {
 	return root;
 }
 
-function extractDocstrings(tree: PyAstNode): void {
+function extractDocstrings(tree: OutlineNode): void {
 	for (const child of tree.children) {
 		if ((child.kind === "def" || child.kind === "async def" || child.kind === "class") && child.children.length > 0) {
 			const first = child.children[0];
@@ -970,7 +954,7 @@ function extractDocstrings(tree: PyAstNode): void {
 	}
 }
 
-function firstDocLine(child: PyAstNode): string | null {
+function firstDocLine(child: OutlineNode): string | null {
 	if (child.kind !== "expr") return null;
 	const source = child.rawString ?? child.detail;
 	if (!source) return null;
@@ -1009,9 +993,9 @@ function splitTopLevelText(text: string): string[] {
 	return parts.map(p => p.trim()).filter(p => p.length > 0);
 }
 
-const outlineMemo = new Map<string, PyAstNode | null>();
+const outlineMemo = new Map<string, OutlineNode | null>();
 
-function parseMemoized(source: string): PyAstNode | null {
+function parseMemoized(source: string): OutlineNode | null {
 	const hit = outlineMemo.get(source);
 	if (hit !== undefined) return hit;
 	const result = parsePyOutline(source);
@@ -1020,51 +1004,7 @@ function parseMemoized(source: string): PyAstNode | null {
 	return result;
 }
 
-function countLeaves(children: PyAstNode[]): number {
-	let count = 0;
-	for (const child of children) {
-		count += 1 + countLeaves(child.children);
-	}
-	return count;
-}
-
-export function renderPythonAstLines(source: string, theme: Theme, width: number): string[] | null {
-	const root = parseMemoized(source);
-	if (!root || root.children.length === 0) return null;
-	const total = countLeaves(root.children);
-	const lines: string[] = [`${theme.fg("dim", "Module")} ${theme.fg("dim", `· ${total} nodes`)}`];
-	const walk = (children: PyAstNode[], prefix: string) => {
-		children.forEach((child, index) => {
-			const last = index === children.length - 1;
-			const connector = `${prefix}${last ? "└─ " : "├─ "}`;
-			for (const note of child.notes ?? []) {
-				lines.push(formatNoteLine(note, connector, theme, width, "accent"));
-			}
-			for (const question of child.questions ?? []) {
-				lines.push(formatNoteLine(question, connector, theme, width, "warning"));
-			}
-			lines.push(formatAstLine(child, connector, theme, width));
-			if (child.children.length > 0) {
-				walk(child.children, `${prefix}${last ? "   " : "│  "}`);
-			}
-		});
-	};
-	walk(root.children, "");
-	return lines;
-}
-
-function formatNoteLine(
-	note: string,
-	connector: string,
-	theme: Theme,
-	width: number,
-	color: "accent" | "warning",
-): string {
-	const body = truncateToWidth(note, Math.max(24, width - connector.length - 8));
-	return `${connector}${theme.fg(color, `▌ ${body}`)}`;
-}
-
-const HEADER_KINDS = new Set([
+const PY_HEADER_KINDS = new Set([
 	"def",
 	"async def",
 	"class",
@@ -1083,35 +1023,8 @@ const HEADER_KINDS = new Set([
 	"async with",
 ]);
 
-function isAugKind(kind: string): boolean {
-	return AUG_OPS.has(kind);
-}
-
-function formatAstLine(child: PyAstNode, connector: string, theme: Theme, width: number): string {
-	const name = child.name && child.name.length > 0 ? child.name : "";
-	const detail = child.detail && child.detail.length > 0 ? child.detail : "";
-	let core: string;
-	if (child.kind === "assign") {
-		core = detail
-			? `${theme.fg("toolTitle", name)} ${theme.fg("dim", "←")} ${theme.fg("toolOutput", detail)}`
-			: theme.fg("toolTitle", name);
-	} else if (isAugKind(child.kind)) {
-		core = `${theme.fg("toolTitle", name)} ${theme.fg("dim", child.kind)} ${theme.fg("toolOutput", detail)}`;
-	} else if (child.kind === "expr") {
-		core = theme.fg("toolOutput", detail);
-	} else {
-		const parts: string[] = [theme.fg("dim", child.kind)];
-		if (name.length > 0) parts.push(theme.fg("toolTitle", name));
-		if (detail.length > 0) parts.push(theme.fg("toolOutput", detail));
-		core = parts.join(" ");
-	}
-	if (child.doc && child.doc.length > 0) {
-		core += ` ${theme.fg("dim", `— ${child.doc}`)}`;
-	}
-	let line = `${connector}${core}`;
-	if (HEADER_KINDS.has(child.kind)) {
-		line += theme.fg("dim", ` ·L${child.line}`);
-	}
-	const bodyWidth = Math.max(24, width - connector.length - 8);
-	return truncateToWidth(line, bodyWidth);
+export function renderPythonAstLines(source: string, theme: Theme, width: number): string[] | null {
+	const root = parseMemoized(source);
+	if (!root || root.children.length === 0) return null;
+	return renderOutlineLines(root, theme, width, { headerKinds: PY_HEADER_KINDS, augKinds: AUG_OPS });
 }

@@ -1316,6 +1316,31 @@ def __proto_display(value: Any, *, raw: bool = False, kind: str = "display") -> 
 # ---------------------------------------------------------------------------
 
 
+def _prelude_fn(name: str):
+    """Fetch a private prelude helper by name (prelude ns first, then the
+    legacy user-ns layout)."""
+    fn = None
+    if _STATE.prelude_ns is not None:
+        fn = _STATE.prelude_ns.get(name)
+    if fn is None:
+        fn = _STATE.user_ns.get(name)
+    return fn if callable(fn) else None
+
+
+def _flush_fs_status() -> None:
+    """Emit status events for filesystem mutations made without a helper API."""
+    fn = _prelude_fn("_flush_fs_status")
+    if fn is not None:
+        fn()
+
+
+def _reset_fs_status() -> None:
+    """Drop mutation records left by runner machinery between requests."""
+    fn = _prelude_fn("_reset_fs_status")
+    if fn is not None:
+        fn()
+
+
 def _flush_matplotlib_figures() -> None:
     plt = sys.modules.get("matplotlib.pyplot")
     if plt is None:
@@ -1739,6 +1764,10 @@ async def _handle_request_async(req: dict) -> None:
     _STATE.user_ns["__proto_run_id__"] = rid
     _STATE.cancel_requested = False
     _STATE.execution_count += 1
+    try:
+        _reset_fs_status()
+    except Exception:
+        pass
     execution_count = _STATE.execution_count
     _emit({"type": "started", "id": rid})
 
@@ -1809,6 +1838,10 @@ async def _handle_request_async(req: dict) -> None:
             _emit_error(rid, exc)
         finally:
             _end_exec_sigint()
+            try:
+                _flush_fs_status()
+            except Exception:
+                pass
             try:
                 _flush_matplotlib_figures()
             except Exception:

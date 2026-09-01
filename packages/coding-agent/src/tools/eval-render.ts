@@ -10,6 +10,7 @@ import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import { markFramedBlockComponent, outputBlockContentWidth, renderCodeCell } from "../tui";
 import { formatEvalCodeForDisplay } from "./eval-format";
+import { renderJavaScriptAstLines } from "./eval-format/javascript-ast";
 import { renderPythonAstLines } from "./eval-format/python-ast";
 import {
 	JSON_TREE_MAX_DEPTH_COLLAPSED,
@@ -22,6 +23,7 @@ import {
 } from "./json-tree";
 import { formatStyledTruncationWarning, stripOutputNotice } from "./output-meta";
 import {
+	capPreviewLines,
 	formatBadge,
 	formatDuration,
 	formatStatusIcon,
@@ -35,6 +37,19 @@ import {
 	wrapCodeFrameLine,
 } from "./render-utils";
 export const EVAL_DEFAULT_PREVIEW_LINES = 10;
+
+// Per-section row cap for cells that are still executing. A running cell
+// re-renders inside the terminal's live region; if the block outgrows the
+// viewport its top rows scroll off and are committed to native scrollback
+// mid-stream. The finalized render then differs from that committed prefix
+// (spinner header → done header, trimmed output), which forces a re-emit of
+// the whole block — duplicating it in scrollback. Finalized cells stay
+// uncapped, so the committed transcript keeps complete diffs.
+const EVAL_STREAMING_SECTION_LINES = 12;
+
+// Ctrl+O expansion is deferred for the same reason: an expanded live block
+// would outgrow the viewport again. The toggle sticks and applies on settle.
+const EXPANSION_DEFERRED_NOTE = "… expanded view once the cell settles";
 
 function languageForHighlighter(language: EvalLanguage | undefined): "python" | "javascript" {
 	if (language === "js") return "javascript";
@@ -220,7 +235,7 @@ function formatDiffStatsSuffix(diff: string, theme: Theme): string {
 }
 
 function hasEventDiff(event: EvalStatusEvent): boolean {
-	return (event.op === "write" || event.op === "edit") && typeof event.diff === "string" && event.diff.length > 0;
+	return event.op === "write" && typeof event.diff === "string" && event.diff.length > 0;
 }
 
 function renderEventDiff(event: EvalStatusEvent, theme: Theme): string[] {
@@ -278,7 +293,6 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 			if (data.path) parts.push(`from ${shortenPath(String(data.path))}`);
 			break;
 		case "write":
-		case "edit":
 			if (typeof data.diff === "string" && data.diff.length > 0) {
 				if (data.path) parts.push(shortenPath(String(data.path)));
 			} else {
@@ -452,7 +466,7 @@ const STATUS_COLLAPSED_MAX_EVENTS = 3;
 const STATUS_TREE_INDENT = 3;
 
 function isFileOpEvent(event: EvalStatusEvent): boolean {
-	return event.op === "write" || event.op === "edit" || event.op === "delete";
+	return event.op === "write" || event.op === "delete";
 }
 
 function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: boolean, width: number): string[] {
@@ -531,8 +545,9 @@ function formatCellOutputLines(
 }
 
 function astPreviewLines(code: string, language: string, theme: Theme, width: number): string[] | undefined {
-	if (language !== "python") return undefined;
-	return renderPythonAstLines(code, theme, width) ?? undefined;
+	if (language === "python") return renderPythonAstLines(code, theme, width) ?? undefined;
+	if (language === "js") return renderJavaScriptAstLines(code, theme, width) ?? undefined;
+	return undefined;
 }
 
 export const evalToolRenderer = {
@@ -556,12 +571,13 @@ export const evalToolRenderer = {
 					return cached.result;
 				}
 
+				// The call phase is always live (mergeCallAndResult replaces it once a
+				// result arrives), so expansion is deferred here too: the streaming
+				// block must stay within the viewport (see EVAL_STREAMING_SECTION_LINES).
 				const lines: string[] = [];
 				for (let i = 0; i < cells.length; i++) {
 					const cell = cells[i];
-					const astLines = options.expanded
-						? undefined
-						: astPreviewLines(cell.code, cell.language, uiTheme, width);
+					const astLines = astPreviewLines(cell.code, cell.language, uiTheme, width);
 					const cellLines = renderCodeCell(
 						{
 							code: cell.code,
@@ -576,13 +592,16 @@ export const evalToolRenderer = {
 
 							codeTail: true,
 							codeMaxLines: previewWindowRows(),
-							expanded: options.expanded,
+							expanded: false,
 							preRenderedCodeLines: astLines,
 							codeVariant: astLines ? "ast" : undefined,
 						},
 						uiTheme,
 					);
 					lines.push(...cellLines);
+					if (options.expanded) {
+						lines.push(uiTheme.fg("dim", EXPANSION_DEFERRED_NOTE));
+					}
 					if (i < cells.length - 1) {
 						lines.push("");
 					}
@@ -603,6 +622,9 @@ export const evalToolRenderer = {
 		_args?: EvalRenderArgs,
 	): Component {
 		const details = result.details;
+		// Captured at build time; every isPartial flip rebuilds this component
+		// (tool-execution keys its display on isPartial), so this stays accurate.
+		const isPartialResult = options.isPartial === true;
 
 		const rawOutput =
 			options.renderContext?.output ?? (result.content?.find(c => c.type === "text")?.text ?? "").trimEnd();
@@ -662,20 +684,45 @@ export const evalToolRenderer = {
 						const allEvents = cell.statusEvents ?? [];
 						const agentEvents = allEvents.filter(e => e.op === "agent");
 						const otherEvents = agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents;
-						const statusLines = renderStatusEvents(
+						// Keep a still-executing cell inside the viewport (see
+						// EVAL_STREAMING_SECTION_LINES): cap Status/agent sections and
+						// let the code window absorb the remainder of the live budget.
+						// Ctrl+O expansion is deferred for live cells for the same
+						// reason — it takes effect once the cell settles.
+						const cellLive = isPartialResult && (cell.status === "running" || cell.status === "pending");
+						const cellExpanded = expanded && !cellLive;
+						const liveWindow = previewWindowRows();
+						const liveSectionCap = Math.min(
+							EVAL_STREAMING_SECTION_LINES,
+							Math.max(3, Math.floor(liveWindow / 2)),
+						);
+						let statusLines = renderStatusEvents(
 							otherEvents,
 							uiTheme,
-							expanded,
+							cellExpanded,
 							outputBlockContentWidth(width),
 						);
-						const outputContent = formatCellOutputLines(cell, expanded, previewLines, uiTheme, width);
+						if (cellLive) {
+							statusLines = capPreviewLines(statusLines, uiTheme, { max: liveSectionCap });
+						}
+						const outputContent = formatCellOutputLines(cell, cellExpanded, previewLines, uiTheme, width);
 						const outputLines = [...outputContent.lines];
-						if (!expanded && outputContent.hiddenCount > 0) {
+						if (!cellExpanded && outputContent.hiddenCount > 0) {
 							outputLines.push(
 								uiTheme.fg("dim", `… ${outputContent.hiddenCount} more lines (ctrl+o to expand)`),
 							);
 						}
-						const astLines = expanded ? undefined : astPreviewLines(code, language, uiTheme, width);
+						let agentLines =
+							agentEvents.length > 0
+								? renderAgentProgressEvents(agentEvents, uiTheme, options.spinnerFrame)
+								: [];
+						if (cellLive) {
+							agentLines = capPreviewLines(agentLines, uiTheme, { max: liveSectionCap });
+						}
+						const codeMaxLines = cellLive
+							? Math.max(3, liveWindow - statusLines.length - outputLines.length - agentLines.length)
+							: liveWindow;
+						const astLines = cellExpanded ? undefined : astPreviewLines(code, language, uiTheme, width);
 						const cellLines = renderCodeCell(
 							{
 								code,
@@ -695,8 +742,8 @@ export const evalToolRenderer = {
 										: undefined,
 
 								codeTail: true,
-								codeMaxLines: previewWindowRows(),
-								expanded,
+								codeMaxLines,
+								expanded: cellExpanded,
 								width,
 								preRenderedCodeLines: astLines,
 								codeVariant: astLines ? "ast" : undefined,
@@ -704,8 +751,11 @@ export const evalToolRenderer = {
 							uiTheme,
 						);
 						lines.push(...cellLines);
-						if (agentEvents.length > 0) {
-							lines.push(...renderAgentProgressEvents(agentEvents, uiTheme, options.spinnerFrame));
+						if (agentLines.length > 0) {
+							lines.push(...agentLines);
+						}
+						if (expanded && cellLive) {
+							lines.push(uiTheme.fg("dim", EXPANSION_DEFERRED_NOTE));
 						}
 						if (i < cellResults.length - 1) {
 							lines.push("");

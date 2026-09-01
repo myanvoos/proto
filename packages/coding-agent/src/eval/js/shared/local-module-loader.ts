@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as vm from "node:vm";
+import { maybeTrackedModule } from "./fs-tracker";
 import { collectModuleSourceSpecifiers, stripTypeScriptSyntax } from "./rewrite-imports";
 
 interface LocalModuleEntry {
@@ -202,13 +203,13 @@ export class LocalModuleLoader {
 		const existing = this.#externalModules.get(target);
 		if (existing) return await existing;
 		const loadPromise = (async () => {
-			const namespace = await import(target);
+			const namespace = maybeTrackedModule(target, await import(target)) as Record<string, unknown>;
 			const exportNames = Object.keys(namespace);
 			const module = new vm.SyntheticModule(
 				exportNames,
 				function () {
 					for (const name of exportNames) {
-						this.setExport(name, namespace[name as keyof typeof namespace]);
+						this.setExport(name, namespace[name]);
 					}
 				},
 				{ context: this.#context, identifier: target },

@@ -198,6 +198,7 @@ export class WorkerCore {
 			initialCwd: snapshot.cwd,
 			sessionId: snapshot.sessionId,
 			localRoots: snapshot.localRoots,
+			trackFileWrites: true,
 		});
 		return this.#runtime;
 	}

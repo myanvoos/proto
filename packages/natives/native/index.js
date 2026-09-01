@@ -23,6 +23,7 @@ export const astEdit = nativeBindings.astEdit;
 export const astGrep = nativeBindings.astGrep;
 export const astMatch = nativeBindings.astMatch;
 export const blockRangeAt = nativeBindings.blockRangeAt;
+export const codeOutline = nativeBindings.codeOutline;
 export const copyToClipboard = nativeBindings.copyToClipboard;
 export const cosineSimilarityPairs = nativeBindings.cosineSimilarityPairs;
 export const countTokens = nativeBindings.countTokens;

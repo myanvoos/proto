@@ -1,6 +1,7 @@
 import * as path from "node:path";
-
+import { capEventDiff } from "../../../edit/diff";
 import { ToolError } from "../../../tools/tool-errors";
+import { noteReported, shaOfBytes, snapshotBeforeText } from "./fs-tracker";
 import type { JsStatusEvent } from "./types";
 
 export interface HelperContext {
@@ -25,12 +26,23 @@ export function createHelpers(ctx: HelperContext): HelperBundle {
 				throw new ToolError("write() expects string, Blob, ArrayBuffer, or TypedArray data");
 			}
 			const filePath = resolveHelperPath(ctx, rawPath);
-			if (typeof data === "string" || data instanceof Blob || data instanceof ArrayBuffer) {
-				await Bun.write(filePath, data);
+			const before = snapshotBeforeText(filePath);
+			const bytes = await writeDataBytes(data);
+			await Bun.write(filePath, bytes);
+			const sha = shaOfBytes(bytes);
+			const event: JsStatusEvent = { op: "write", path: filePath, sha };
+			if (typeof data === "string") {
+				event.chars = data.length;
+				const capped = before !== null ? capEventDiff(before, data) : undefined;
+				if (capped) {
+					event.diff = capped.diff;
+					if (capped.diffTruncated) event.diffTruncated = true;
+				}
 			} else {
-				await Bun.write(filePath, new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+				event.bytes = bytes.byteLength;
 			}
-			ctx.emitStatus({ op: "write", path: filePath, bytes: getDataSize(data) });
+			ctx.emitStatus(event);
+			noteReported(filePath, sha, typeof data === "string" ? data : undefined);
 			return filePath;
 		},
 		env: (key, value) => {
@@ -101,11 +113,11 @@ function resolveUnderRoot(scheme: string, root: string, rawRelative: string, raw
 	return resolved;
 }
 
-function getDataSize(data: string | Blob | ArrayBuffer | ArrayBufferView): number {
-	if (typeof data === "string") return utf8Encoder.encode(data).byteLength;
-	if (data instanceof Blob) return data.size;
-	if (data instanceof ArrayBuffer) return data.byteLength;
-	return data.byteLength;
+async function writeDataBytes(data: string | Blob | ArrayBuffer | ArrayBufferView): Promise<Uint8Array> {
+	if (typeof data === "string") return utf8Encoder.encode(data);
+	if (data instanceof Blob) return new Uint8Array(await data.arrayBuffer());
+	if (data instanceof ArrayBuffer) return new Uint8Array(data);
+	return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 }
 
 function isWriteData(value: unknown): value is string | Blob | ArrayBuffer | ArrayBufferView {

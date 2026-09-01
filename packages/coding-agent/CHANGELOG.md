@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+- Removed the kernel Python prelude `edit()` helper: Python cells change files via `write()` (read, modify, `write(..., overwrite=True)`).
 - Merged `/btw` and `/tan` into a single `/side` command: `/side <question>` asks an ephemeral side question answered in the floating panel (formerly `/btw`), and `/side --agent <work>` dispatches a full background agent on tangential work (formerly `/tan`); `/btw` and `/tan` no longer exist.
 - Removed the legacy Pi specifier shim for extensions and plugins: old third-party package names (`@badlogic/pi-*` and other pre-rename scopes) are no longer aliased, while current `@oh-my-pi/*` imports continue to resolve to the running host's modules; extensions must import current package names.
 - Dropped Windows support: no Windows binary, npm artifact, or installer is published anymore (`install.ps1` removed), and Windows-only code paths are gone — TUI console/codepage and ConPTY input handling, Windows spawn/console-probe options, `ProjFS`/`block-clone` isolation backends, PowerShell profile detection for `proto profile`, and Windows case-insensitive path/env special-casing. SSH remotes are POSIX-only: the `--compat` flag on `ssh` targets, Windows host detection, and `cmd`/`powershell` remote shells are removed, and `proto profile --alias` no longer targets PowerShell. Linux and macOS behavior is unchanged.
@@ -24,6 +25,8 @@
 - Redesigned the kernel prelude edit family to two mutators: `write(path, content, overwrite?=False)` creates (refuses an existing file unless `overwrite=True`) and `edit(path, old, new, count?=1, expect?=None)` performs every guarded update — count-checked snippet replacement, or whole-file update by passing the full content as `old` (a multiline mismatch names the first differing line); `replace()` and `edit_block()` are removed — locate blocks with `symbols()`/`block_range()` and edit their text.
 
 ### Added
+- Kernel JS cells now render an AST outline preview like Python cells: collapsed JS/TS cells show a tree of imports, declarations, control flow and margin notes parsed with tree-sitter (falling back to the TSX grammar for TS syntax), powered by a new `codeOutline` pi-natives op instead of raw source text.
+- Kernel cells surface a hunk diff for every filesystem mutation they make, not just `write()`: the Python kernel uses a CPython audit hook (`open()`/`os.*`/`shutil`) and the JavaScript kernel wraps `fs`/`node:fs/promises`/`Bun.write`; pre-mutation content of any touched path (including outside the working directory) is diffed in the cell Status, deletes are reported too, and cache/build dirs (`__pycache__`, `.cache`, …) plus `.pyc` writes stay unreported. Kernel `write()` now also carries the hunk diff on JavaScript cells.
 - Kernel `edit()` accepts `span=(start, end)` to replace a character range directly, with optional `old` as a stale guard against drifted offsets.
 - Environment context lists installed search tools (`rg`, `fd`) with versions so agents reach for them instead of `grep`/`find`.
 
@@ -78,6 +81,9 @@
 - Removed the setup wizard's post-setup "Setup saved" outro screen; the wizard closes as soon as the last scene finishes (Ctrl+C also exits immediately).
 
 ### Fixed
+- Kernel blocks no longer duplicate in the transcript after streaming a large Status diff: a still-running cell now windows its Status/agent-progress sections (and shares the code preview budget with them) so the live block stays inside the viewport instead of committing to native scrollback mid-stream and re-emitting in full when the header settles; finalized cells keep complete diffs. Ctrl+O expansion on a still-streaming cell (or the streaming call phase) is deferred for the same reason — a dim note marks it and the expanded view applies once the cell settles.
+- Kernel cells no longer show the same file hunk twice in the Status section when a `write()` (or `files:` materialization) is followed by a raw `open()`/`os.*` mutation of the same file within one cell: the end-of-cell flush now diffs from the content the cell already reported instead of the pre-cell snapshot (Python and JS kernels).
+- Transcript rebuilds (Esc-cancelled submission, dropped-prompt restore, auto-compaction) no longer leave a stuck duplicate "running" block for a tool call that was executing during the rebuild.
 - Agents view: nested subagents without a live registry entry (kernel `agent()` runs after completion, agents still booting, transcripts from other processes) now nest under their real parent in the agents view and double-right-tap drill-down instead of appearing as top-level main-session agents; seeded child sessions also refresh their liveness so finished agents no longer linger as stuck "running" rows.
 - Fixed `async: true` (and background jobs) reporting "job manager unavailable" in sessions created after another session in the same process had already initialized the async job manager.
 - Kernel cells interrupted by a kernel crash or shutdown now release their per-cell timers and abort-signal listeners immediately instead of holding them until the cell timeout fires.

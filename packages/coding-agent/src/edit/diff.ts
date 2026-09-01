@@ -196,6 +196,29 @@ function addMatchingBracketContextRows(
 	normalizeDiffGapRows(rows);
 }
 
+const MAX_EVENT_DIFF_CHARS = 32000;
+
+/**
+ * Generate the numbered hunk diff for an eval status event and cap it to a
+ * character budget. Shared by the host cell walker (eval/cell-file-diff.ts)
+ * and the JS kernel's fs tracker (eval/js/shared/fs-tracker.ts); the Python
+ * prelude keeps its own copy across the process boundary.
+ */
+export function capEventDiff(before: string, after: string): { diff: string; diffTruncated?: true } | undefined {
+	const rows = generateDiffString(before, after, 2)
+		.diff.split("\n")
+		.filter(row => row.length > 0);
+	if (rows.length === 0) return undefined;
+	const kept: string[] = [];
+	let used = 0;
+	for (const row of rows) {
+		if (used + row.length + 1 > MAX_EVENT_DIFF_CHARS) break;
+		kept.push(row);
+		used += row.length + 1;
+	}
+	return kept.length < rows.length ? { diff: kept.join("\n"), diffTruncated: true } : { diff: kept.join("\n") };
+}
+
 export function generateDiffString(
 	oldContent: string,
 	newContent: string,

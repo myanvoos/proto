@@ -1,17 +1,18 @@
 import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { generateDiffString } from "../edit/diff";
+import { capEventDiff } from "../edit/diff";
 import * as git from "../utils/git";
 import type { EvalStatusEvent } from "./types";
 
 const SHA_LENGTH = 16;
 const MAX_WALK_FILES = 20000;
-const MAX_DIFF_CHARS = 32000;
 const MAX_EVENTS_PER_CELL = 50;
 const MAX_CACHE_ENTRIES = 512;
 const MAX_CACHE_CONTENT_BYTES = 16 * 1024 * 1024;
 const MAX_CAPTURE_CONTENT_BYTES = 16 * 1024 * 1024;
+const SKIPPED_FILE_SUFFIXES = [".pyc", ".pyo"];
+
 const PRUNED_DIRS = new Set([
 	".git",
 	".hg",
@@ -75,21 +76,6 @@ function looksBinaryText(text: string): boolean {
 	return text.slice(0, 8192).includes("\u0000");
 }
 
-export function capEventDiff(before: string, after: string): { diff: string; diffTruncated?: true } | undefined {
-	const rows = generateDiffString(before, after, 2)
-		.diff.split("\n")
-		.filter(row => row.length > 0);
-	if (rows.length === 0) return undefined;
-	const kept: string[] = [];
-	let used = 0;
-	for (const row of rows) {
-		if (used + row.length + 1 > MAX_DIFF_CHARS) break;
-		kept.push(row);
-		used += row.length + 1;
-	}
-	return kept.length < rows.length ? { diff: kept.join("\n"), diffTruncated: true } : { diff: kept.join("\n") };
-}
-
 function alreadyReported(
 	events: readonly EvalStatusEvent[] | undefined,
 	absPath: string,
@@ -97,14 +83,15 @@ function alreadyReported(
 	root: string,
 ): boolean {
 	if (!events) return false;
-	return events.some(
-		event =>
-			(event.op === "write" || event.op === "edit") &&
-			typeof event.path === "string" &&
-			path.resolve(root, event.path) === absPath &&
-			typeof event.sha === "string" &&
-			event.sha === afterSha,
-	);
+	// Dedupes walker findings against events the cell already reported (write()
+	// helpers, and the prelude's audit-hook flush for non-helper mutations).
+	// Writes match on path + final sha; deletes have no sha to compare, so the
+	// resolved path is the identity.
+	return events.some(event => {
+		if (typeof event.path !== "string" || path.resolve(root, event.path) !== absPath) return false;
+		if (event.op === "delete") return true;
+		return event.op === "write" && typeof event.sha === "string" && event.sha === afterSha;
+	});
 }
 
 function parsePorcelainZ(stdout: string, repoRoot: string): Set<string> {
@@ -241,6 +228,7 @@ export class CellFsTracker {
 					continue;
 				}
 				if (!dirent.isFile() || ignored?.files.has(abs)) continue;
+				if (SKIPPED_FILE_SUFFIXES.some(suffix => abs.endsWith(suffix))) continue;
 				try {
 					const st = await fs.stat(abs);
 					stats.set(abs, { mtimeMs: st.mtimeMs, size: st.size });
@@ -312,8 +300,9 @@ export class CellFsTracker {
 			const cachedBefore = this.#validCachedBefore(absPath, beforeStat);
 			if (deleted.includes(absPath)) {
 				this.#content.delete(absPath);
-				if (cachedBefore && alreadyReported(options.reportedEvents, absPath, cachedBefore.sha, before.root))
-					continue;
+				// Path-only match: delete events carry no sha, and the audit-hook
+				// flush reports them even when nothing was cached pre-cell.
+				if (alreadyReported(options.reportedEvents, absPath, cachedBefore?.sha ?? "", before.root)) continue;
 				let beforeText = cachedBefore?.content;
 				if (
 					beforeText === undefined &&

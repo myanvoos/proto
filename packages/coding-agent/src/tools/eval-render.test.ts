@@ -38,7 +38,7 @@ function render(statusEvents: EvalStatusEvent[], options: { expanded: boolean; o
 }
 
 function diffEvent(path: string, before: string, after: string): EvalStatusEvent {
-	return { op: "edit", path, chars: after.length, sha: "0", diff: generateDiffString(before, after, 2).diff };
+	return { op: "write", path, chars: after.length, sha: "0", diff: generateDiffString(before, after, 2).diff };
 }
 
 test("kernel diff rows that wrap keep continuation rows under the gutter", () => {
@@ -87,7 +87,7 @@ test("file event diffs render every hunk even in the collapsed transcript", () =
 	const lines = render(events, { expanded: false });
 	const diffRows = lines.filter(line => /[+-]\s*\d+│/.test(line));
 	const expectedRows = events.reduce(
-		(sum, event) => sum + (event.diff ?? "").split("\n").filter(row => /^[+-]\d+\|/.test(row)).length,
+		(sum, event) => sum + String(event.diff ?? "").split("\n").filter((row: string) => /^[+-]\d+\|/.test(row)).length,
 		0,
 	);
 	expect(diffRows.length, "every hunk row of every file event is rendered").toBe(expectedRows);
@@ -131,6 +131,123 @@ test("collapsed status keeps file events visible even when they fall outside the
 			`step ${i} hidden`,
 		).toBe(false);
 	}
+});
+
+function renderCells(
+	cells: EvalToolDetails["cells"],
+	options: { expanded: boolean; isPartial: boolean },
+): string[] {
+	const details: EvalToolDetails = { language: "python", cells };
+	const component = evalToolRenderer.renderResult(
+		{ content: [{ type: "text", text: "" }], details },
+		{ expanded: options.expanded, isPartial: options.isPartial },
+		theme,
+	);
+	return component.render(WIDTH).map(strip);
+}
+
+test("a running cell's streaming render stays within the live preview window", () => {
+	const big = (seed: string) => `${Array.from({ length: 60 }, (_, i) => `${seed} line ${i}`).join("\n")}\n`;
+	const cells: EvalToolDetails["cells"] = [
+		{
+			index: 0,
+			title: "cell",
+			code: "pass",
+			language: "python",
+			output: "running…",
+			status: "running",
+			statusEvents: [diffEvent(FILE, big("old"), big("new"))],
+		},
+	];
+	const partial = renderCells(cells, { expanded: false, isPartial: true });
+	// Streaming Status section is capped to a tail window instead of every diff row.
+	expect(partial.some(line => line.includes("earlier line"))).toBe(true);
+	const diffRows = partial.filter(line => /[+-]\s*\d+│/.test(line));
+	expect(diffRows.length, "streaming diff is windowed").toBeLessThan(20);
+	// The whole live block must fit a viewport-sized window (previewWindowRows + frame overhead).
+	expect(partial.length).toBeLessThan(30);
+
+	// Once the cell settles, the finalized render keeps the complete diff.
+	const final = renderCells(
+		cells.map(cell => ({ ...cell, status: "complete" as const, durationMs: 5 })),
+		{ expanded: false, isPartial: false },
+	);
+	const finalDiffRows = final.filter(line => /[+-]\s*\d+│/.test(line));
+	expect(finalDiffRows.length).toBeGreaterThan(diffRows.length);
+});
+
+test("ctrl+o expansion is deferred while a cell still streams", () => {
+	const big = (seed: string) => `${Array.from({ length: 60 }, (_, i) => `${seed} line ${i}`).join("\n")}\n`;
+	const cells: EvalToolDetails["cells"] = [
+		{
+			index: 0,
+			title: "cell",
+			code: "pass",
+			language: "python",
+			output: "running…",
+			status: "running",
+			statusEvents: [diffEvent(FILE, big("old"), big("new"))],
+		},
+	];
+	const lines = renderCells(cells, { expanded: true, isPartial: true });
+	// Expanded live cells render like collapsed ones — capped and windowed —
+	// with a note that the expansion applies on settle.
+	const diffRows = lines.filter(line => /[+-]\s*\d+│/.test(line));
+	expect(diffRows.length, "expanded live diff stays windowed").toBeLessThan(20);
+	expect(lines.length).toBeLessThan(30);
+	expect(lines.some(line => line.includes("expanded view once the cell settles"))).toBe(true);
+
+	// Once settled, the same expanded toggle shows everything with no note.
+	const settled = renderCells(
+		cells.map(cell => ({ ...cell, status: "complete" as const, durationMs: 5 })),
+		{ expanded: true, isPartial: false },
+	);
+	expect(settled.some(line => line.includes("expanded view once the cell settles"))).toBe(false);
+	expect(settled.filter(line => /[+-]\s*\d+│/.test(line)).length).toBeGreaterThan(diffRows.length);
+});
+
+test("call-phase expansion is deferred while args stream", () => {
+	const code = Array.from({ length: 80 }, (_, i) => `x${i} = ${i}`).join("\n");
+	const component = evalToolRenderer.renderCall(
+		{ code, language: "python" },
+		{ expanded: true, isPartial: true, spinnerFrame: 0 },
+		theme,
+	);
+	const lines = component.render(WIDTH).map(strip);
+	expect(lines.length, "streaming call block stays windowed").toBeLessThan(30);
+	expect(lines.some(line => line.includes("expanded view once the cell settles"))).toBe(true);
+});
+
+test("completed cells keep full diffs even while a later cell still streams", () => {
+	const big = (seed: string) => `${Array.from({ length: 60 }, (_, i) => `${seed} line ${i}`).join("\n")}\n`;
+	const done: NonNullable<EvalToolDetails["cells"]>[number] = {
+		index: 0,
+		title: "done",
+		code: "pass",
+		language: "python",
+		output: "ok",
+		status: "complete",
+		durationMs: 5,
+		statusEvents: [diffEvent(FILE, big("old"), big("new"))],
+	};
+	const running: NonNullable<EvalToolDetails["cells"]>[number] = {
+		index: 1,
+		title: "live",
+		code: "pass",
+		language: "python",
+		output: "running…",
+		status: "running",
+		statusEvents: [diffEvent(FILE.replace("x.py", "y.py"), big("old"), big("new"))],
+	};
+	const lines = renderCells([done, running], { expanded: false, isPartial: true });
+	const doneDiffRows = String(done.statusEvents?.[0]?.diff ?? "")
+		.split("\n")
+		.filter((row: string) => /^[+-]\d+\|/.test(row)).length;
+	const diffRows = lines.filter(line => /[+-]\s*\d+│/.test(line));
+	// The settled cell renders every diff row (its committed rows must never change),
+	// while the running cell's diff is windowed.
+	expect(diffRows.length).toBeGreaterThanOrEqual(doneDiffRows);
+	expect(diffRows.length).toBeLessThan(doneDiffRows * 2);
 });
 
 test("status events render under their own label even when the cell has no output", () => {
