@@ -37,6 +37,11 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
 			},
 			splitting: true,
+			// Bun's default chunk naming (chunk-[hash]) collides when distinct chunks share a
+			// hash (observed with same-named modules like discovery/ssh.ts and capability/ssh.ts
+			// reached via both static and dynamic imports) — see oven-sh/bun#17674. Adding
+			// [name] keeps chunk output paths unique.
+			naming: { chunk: "./chunk-[name]-[hash].[ext]" },
 			minify: {
 				identifiers: options.minifyIdentifiers ?? true,
 				whitespace: true,
