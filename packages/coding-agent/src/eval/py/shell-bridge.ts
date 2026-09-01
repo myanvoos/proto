@@ -1,0 +1,182 @@
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { logger } from "@oh-my-pi/pi-utils";
+import type { Socket, TCPSocketListener } from "bun";
+import type { ToolSession } from "../../tools";
+import { isEvalTimeoutControlEvent } from "../bridge-timeout";
+import { formatDisplayOutputsForText } from "../display-text";
+import { fsObservationLedgerFor, recordMutationEvents } from "../fs-observations";
+import { defaultEvalSessionId } from "../session-id";
+import type { EvalStatusEvent } from "../types";
+import pythonBackend from "./index";
+
+export interface PyShellBridgeHandle {
+	env: Record<string, string>;
+	drainImages(): ImageContent[];
+	dispose(): void;
+}
+
+interface RunContext {
+	session: ToolSession;
+	images: ImageContent[];
+	active: Set<AbortController>;
+}
+
+interface SocketState {
+	buffer: Buffer;
+	started: boolean;
+	abort?: AbortController;
+}
+
+interface CellRequest {
+	token: string;
+	code: string;
+	cwd?: string;
+}
+
+const runs = new Map<string, RunContext>();
+let listener: TCPSocketListener<SocketState> | undefined;
+
+export function registerPyShellRun(session: ToolSession): PyShellBridgeHandle {
+	const server = ensureListener();
+	const token = crypto.randomUUID();
+	const context: RunContext = { session, images: [], active: new Set() };
+	runs.set(token, context);
+	return {
+		env: { PI_PYSH_ADDR: `127.0.0.1:${server.port}`, PI_PYSH_TOKEN: token },
+		drainImages: () => context.images.splice(0),
+		dispose: () => {
+			runs.delete(token);
+			for (const abort of context.active) abort.abort();
+		},
+	};
+}
+
+function ensureListener(): TCPSocketListener<SocketState> {
+	if (listener) return listener;
+	listener = Bun.listen<SocketState>({
+		hostname: "127.0.0.1",
+		port: 0,
+		socket: {
+			open(socket) {
+				socket.data = { buffer: Buffer.alloc(0), started: false };
+			},
+			data(socket, data) {
+				socket.data.buffer = Buffer.concat([socket.data.buffer, data]);
+				pump(socket);
+			},
+			close(socket) {
+				socket.data.abort?.abort();
+			},
+			error(socket) {
+				socket.data.abort?.abort();
+			},
+		},
+	});
+	return listener;
+}
+
+function pump(socket: Socket<SocketState>): void {
+	while (true) {
+		const newline = socket.data.buffer.indexOf(0x0a);
+		if (newline < 0) return;
+		const line = socket.data.buffer.subarray(0, newline).toString("utf-8");
+		socket.data.buffer = socket.data.buffer.subarray(newline + 1);
+		if (!socket.data.started) {
+			socket.data.started = true;
+			void handleRequest(socket, line);
+			continue;
+		}
+		if (parseLine(line)?.t === "c") socket.data.abort?.abort();
+	}
+}
+
+function parseLine(line: string): Record<string, unknown> | undefined {
+	try {
+		const parsed = JSON.parse(line);
+		return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function send(socket: Socket<SocketState>, frame: Record<string, unknown>): void {
+	try {
+		socket.write(`${JSON.stringify(frame)}\n`);
+	} catch {}
+}
+
+function finish(socket: Socket<SocketState>, frame: Record<string, unknown>): void {
+	send(socket, frame);
+	try {
+		socket.end();
+	} catch {}
+}
+
+function parseRequest(line: string): CellRequest | undefined {
+	const parsed = parseLine(line);
+	if (!parsed || typeof parsed.token !== "string" || typeof parsed.code !== "string") return undefined;
+	return {
+		token: parsed.token,
+		code: parsed.code,
+		cwd: typeof parsed.cwd === "string" && parsed.cwd.length > 0 ? parsed.cwd : undefined,
+	};
+}
+
+function formatStatusLine(event: EvalStatusEvent): string | undefined {
+	if ((event.op !== "write" && event.op !== "delete") || typeof event.path !== "string") return undefined;
+	let line = `[${event.op} ${event.path}]`;
+	if (typeof event.diff === "string" && event.diff.length > 0) line += `\n${event.diff}`;
+	return `${line}\n`;
+}
+
+async function handleRequest(socket: Socket<SocketState>, line: string): Promise<void> {
+	const request = parseRequest(line);
+	const context = request ? runs.get(request.token) : undefined;
+	if (!request || !context) {
+		finish(socket, { t: "f" });
+		return;
+	}
+	if (!(await pythonBackend.isAvailable(context.session).catch(() => false))) {
+		finish(socket, { t: "f" });
+		return;
+	}
+
+	const session = context.session;
+	const abort = new AbortController();
+	socket.data.abort = abort;
+	context.active.add(abort);
+	const statusEvents: EvalStatusEvent[] = [];
+	try {
+		const result = await pythonBackend.execute(request.code, {
+			cwd: session.cwd,
+			runCwd: request.cwd,
+			sessionId: session.getEvalSessionId?.() ?? defaultEvalSessionId(session),
+			sessionFile: session.getSessionFile?.() ?? undefined,
+			kernelOwnerId: session.getEvalKernelOwnerId?.() ?? undefined,
+			signal: abort.signal,
+			session,
+			reset: false,
+			onChunk: chunk => send(socket, { t: "o", d: chunk }),
+			onStatus: event => {
+				if (isEvalTimeoutControlEvent(event)) return;
+				statusEvents.push(event);
+				const rendered = formatStatusLine(event);
+				if (rendered) send(socket, { t: "o", d: rendered });
+			},
+		});
+		for (const output of result.displayOutputs) {
+			if (output.type === "image")
+				context.images.push({ type: "image", data: output.data, mimeType: output.mimeType });
+		}
+		const displayText = formatDisplayOutputsForText(result.displayOutputs);
+		if (displayText) send(socket, { t: "o", d: `${displayText}\n` });
+		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, statusEvents);
+		finish(socket, { t: "x", c: result.cancelled ? 130 : (result.exitCode ?? 0) });
+	} catch (err) {
+		logger.warn("python shell bridge cell failed", { error: err instanceof Error ? err.message : String(err) });
+		send(socket, { t: "e", d: `${err instanceof Error ? err.message : String(err)}\n` });
+		finish(socket, { t: "x", c: 1 });
+	} finally {
+		context.active.delete(abort);
+	}
+}

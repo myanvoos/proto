@@ -4,6 +4,7 @@ import type { EvalDisplayOutput, EvalLanguage, EvalStatusEvent } from "./types";
 
 export interface ExecutorBackendExecOptions {
 	cwd: string;
+	runCwd?: string;
 	sessionId: string;
 	sessionFile: string | undefined;
 	kernelOwnerId: string | undefined;

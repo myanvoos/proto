@@ -40,6 +40,8 @@ export type PythonKernelMode = "session" | "per-call";
 export interface PythonExecutorOptions {
 	cwd?: string;
 
+	runCwd?: string;
+
 	timeoutMs?: number;
 
 	deadlineMs?: number;

@@ -15,6 +15,7 @@ type KernelEnvPatch = Record<string, string | null | undefined>;
 
 interface KernelExecutorBaseOptions {
 	cwd?: string;
+	runCwd?: string;
 	timeoutMs?: number;
 	deadlineMs?: number;
 	idleTimeoutMs?: number;
@@ -441,7 +442,7 @@ export async function executeWithKernelBase<
 		}
 
 		const result = await kernel.execute(code, {
-			cwd: options?.cwd,
+			cwd: options?.runCwd ?? options?.cwd,
 			env: buildKernelEnvPatch(options ?? ({} as TOptions)),
 			fsObservations: options?.fsObservations,
 			id: runId,

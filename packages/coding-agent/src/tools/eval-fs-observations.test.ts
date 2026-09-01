@@ -17,7 +17,7 @@ function stubSession(cwd: string): ToolSession {
 	const settings = new Map<string, unknown>();
 	return {
 		cwd,
-		settings: { get: (key: string) => settings.get(key) },
+		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
 		getEvalSessionId: () => `eval-fs-observations-test:${cwd}`,
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
 	} as unknown as ToolSession;

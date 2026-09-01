@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
@@ -12,6 +13,7 @@ import {
 } from "../async";
 import type { Settings } from "../config/settings";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
+import { type PyShellBridgeHandle, registerPyShellRun } from "../eval/py/shell-bridge";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -26,6 +28,8 @@ import type {
 import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
+import { webpExclusionForModel } from "../utils/image-loading";
+import { resizeImage } from "../utils/image-resize";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
@@ -320,6 +324,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			hasLaunch: isToolActive("fleet", this.session.settings.get("launch.enabled")),
 			hasEval: isToolActive("eval", evalBackends.python || evalBackends.js),
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
+			hasPyKernelBridge: !shellBuiltinsDisabled(this.session.settings) && evalBackends.python,
 		});
 	}
 	readonly parameters: BashToolSchema;
@@ -369,6 +374,24 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 	}
 
+	#pyShellBridge(): PyShellBridgeHandle | undefined {
+		if (shellBuiltinsDisabled(this.session.settings)) return undefined;
+		if (!resolveEvalBackends(this.session).python) return undefined;
+		return registerPyShellRun(this.session);
+	}
+
+	async #drainBridgeImages(bridge: PyShellBridgeHandle | undefined): Promise<ImageContent[]> {
+		const raw = bridge?.drainImages() ?? [];
+		if (raw.length === 0) return [];
+		const excludeWebP = webpExclusionForModel(this.session.getActiveModel?.());
+		const images: ImageContent[] = [];
+		for (const image of raw) {
+			const resized = await resizeImage(image, { excludeWebP });
+			images.push({ type: "image", data: resized.data, mimeType: resized.mimeType });
+		}
+		return images;
+	}
+
 	#recordFsObservations(result: BashResult | BashInteractiveResult): void {
 		if (!("fsObservations" in result) || !result.fsObservations?.length) return;
 		fsObservationLedgerFor(this.session).recordAll(
@@ -389,6 +412,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			notices?: readonly string[];
 			terminalId?: string;
 			wallTimeMs?: number;
+			images?: readonly ImageContent[];
 		} = {},
 	): Promise<AgentToolResult<BashToolDetails>> {
 		const exitCode = result.exitCode;
@@ -454,9 +478,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		const cappedOutputText = await enforceInlineByteCap(outputText, inlineCap);
 
-		const resultBuilder = toolResult(details)
-			.text(cappedOutputText)
-			.truncationFromSummary(result, { direction: "tail" });
+		const resultBuilder = toolResult(details).truncationFromSummary(result, { direction: "tail" });
+		if (options.images?.length) {
+			resultBuilder.content([{ type: "text", text: cappedOutputText }, ...options.images]);
+		} else {
+			resultBuilder.text(cappedOutputText);
+		}
 		if (failedExit) resultBuilder.error();
 		return resultBuilder.done();
 	}
@@ -526,13 +553,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 				const wallTimeStart = performance.now();
+				const pyBridge = this.#pyShellBridge();
 				try {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
 						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
-						env: options.resolvedEnv,
+						env: pyBridge ? { ...options.resolvedEnv, ...pyBridge.env } : options.resolvedEnv,
 						artifactPath,
 						artifactId,
 						onChunk: chunk => {
@@ -548,6 +576,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						requestedTimeoutSec: options.requestedTimeoutSec,
 						notices: options.notices ?? [],
 						wallTimeMs,
+						images: await this.#drainBridgeImages(pyBridge),
 					});
 					const finalText = this.#extractTextResult(finalResult);
 					latestText = finalText;
@@ -564,6 +593,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					completion.resolve({ kind: "failed", error });
 					await reportProgress(message, { async: { state: "failed", jobId, type: "bash" } });
 					throw error;
+				} finally {
+					pyBridge?.dispose();
 				}
 			},
 			{
@@ -1020,27 +1051,34 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			pendingNotices.push("pty requested but unavailable in this environment; ran without a terminal");
 		}
 		const wallTimeStart = performance.now();
-		const result: BashResult | BashInteractiveResult = interactiveUi
-			? await runInteractiveBashPty(interactiveUi, {
-					command: backendPreflight?.command ?? command,
-					cwd: commandCwd,
-					timeoutMs,
-					signal,
-					env: backendPreflight?.env ?? resolvedEnv,
-					artifactPath,
-					artifactId,
-				})
-			: await executeBash(command, {
-					cwd: commandCwd,
-					sessionKey: this.session.getSessionId?.() ?? undefined,
-					timeout: timeoutMs ?? 0,
-					signal,
-					env: resolvedEnv,
-					artifactPath,
-					artifactId,
-					onChunk: streamTailUpdates(tailBuffer, onUpdate),
-					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
-				});
+		const pyBridge = interactiveUi ? undefined : this.#pyShellBridge();
+		let result: BashResult | BashInteractiveResult;
+		try {
+			result = interactiveUi
+				? await runInteractiveBashPty(interactiveUi, {
+						command: backendPreflight?.command ?? command,
+						cwd: commandCwd,
+						timeoutMs,
+						signal,
+						env: backendPreflight?.env ?? resolvedEnv,
+						artifactPath,
+						artifactId,
+					})
+				: await executeBash(command, {
+						cwd: commandCwd,
+						sessionKey: this.session.getSessionId?.() ?? undefined,
+						timeout: timeoutMs ?? 0,
+						signal,
+						env: pyBridge ? { ...resolvedEnv, ...pyBridge.env } : resolvedEnv,
+						artifactPath,
+						artifactId,
+						onChunk: streamTailUpdates(tailBuffer, onUpdate),
+						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
+					});
+		} catch (error) {
+			pyBridge?.dispose();
+			throw error;
+		}
 		this.#recordFsObservations(result);
 		const wallTimeMs = performance.now() - wallTimeStart;
 		if (result.cancelled) {
@@ -1059,11 +1097,16 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				throw new ToolError(message);
 			}
 		}
-		return this.#buildCompletedResult(result, timeoutSec, {
-			requestedTimeoutSec,
-			notices: pendingNotices,
-			wallTimeMs,
-		});
+		try {
+			return await this.#buildCompletedResult(result, timeoutSec, {
+				requestedTimeoutSec,
+				notices: pendingNotices,
+				wallTimeMs,
+				images: await this.#drainBridgeImages(pyBridge),
+			});
+		} finally {
+			pyBridge?.dispose();
+		}
 	}
 }
 
