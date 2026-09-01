@@ -1093,7 +1093,7 @@ enum CountResult {
 fn word_count_from_input(input: &Input, settings: &Settings, host: &mut Host) -> CountResult {
 	let (total, maybe_err) = match input {
 		Input::Stdin(_) => word_count_from_reader(&mut host.stdin, settings),
-		Input::Path(path) => match File::open(host.resolve(path)) {
+		Input::Path(path) => match host.open_read(path) {
 			Ok(file) => word_count_from_reader(file, settings),
 			Err(error) => return CountResult::Failure(error),
 		},

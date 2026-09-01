@@ -1341,7 +1341,12 @@ fn process_file<M: Matcher, W: Write>(
 			.and_then(|file| process_reader(matcher, searcher, file, display, opts, stats, out))
 	};
 	match result {
-		Ok(any_match) => Ok(SearchOutcome { any_match, had_error: false }),
+		Ok(any_match) => {
+			if any_match {
+				host.note_read(path);
+			}
+			Ok(SearchOutcome { any_match, had_error: false })
+		},
 		Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(error),
 		Err(error) => Ok(SearchOutcome {
 			any_match: false,

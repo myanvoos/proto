@@ -1084,8 +1084,10 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 			let path = file.as_path();
 			let file =
 				read::load_file(path).map_err(|e| Error::Io(Some(path.display().to_string()), e))?;
+			host.note_read(path);
 			let inputs = read::slice(cli, &file);
 			if cli.in_place {
+				host.note_write(path);
 
 
 

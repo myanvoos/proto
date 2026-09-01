@@ -46,6 +46,7 @@ use parking_lot::Mutex;
 use brush_core::{
 	Error, ExecutionContext, ExecutionResult, ShellExtensions,
 	builtins::{self, Registration},
+	fsobserve::FsObservationLog,
 	openfiles::{self, OpenFile, OpenFiles},
 };
 
@@ -106,6 +107,7 @@ pub(crate) struct Host {
 	cancel:                Arc<AtomicBool>,
 	exit_code:             i32,
 	stdin_is_search_input: bool,
+	observations:          FsObservationLog,
 
 
 	merged_out:            Option<Arc<Mutex<StreamWriter>>>,
@@ -144,6 +146,27 @@ impl Host {
 		} else {
 			self.cwd.join(path)
 		}
+	}
+
+	pub fn open_read(&self, path: impl AsRef<Path>) -> io::Result<std::fs::File> {
+		let resolved = self.resolve(path);
+		let file = std::fs::File::open(&resolved)?;
+		if let Ok(metadata) = file.metadata() {
+			self.observations.record_read_of(resolved, &metadata);
+		}
+		Ok(file)
+	}
+
+	pub fn note_read(&self, path: impl AsRef<Path>) {
+		self.observations.record_read(self.resolve(path));
+	}
+
+	pub fn note_write(&self, path: impl AsRef<Path>) {
+		self.observations.record_write(self.resolve(path));
+	}
+
+	pub fn observations(&self) -> &FsObservationLog {
+		&self.observations
 	}
 
 
@@ -892,6 +915,7 @@ fn build_host<SE: ShellExtensions>(
 		cancel,
 		exit_code: 0,
 		stdin_is_search_input,
+		observations: context.shell.fs_observations().clone(),
 		merged_out,
 	})
 }

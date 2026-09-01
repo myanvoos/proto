@@ -25,5 +25,5 @@ def write_report(path, content):
 
 ## Hand-rolled patterns to drop
 
-- Manual find-and-replace or anchor-slicing over file text to rewrite a region → read the file, modify the text, `write(path, text, overwrite=True)`.
+- Manual find-and-replace or anchor-slicing over file text to rewrite a region → read the file, modify the text, `write(path, text)`.
 - Scanning files for declarations → `symbols(path)`.

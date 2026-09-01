@@ -151,21 +151,18 @@ test("write() stale guard trips after an external mutation, guard=False bypasses
 	try {
 		const target = path.join(dir, "stale.txt");
 		await Bun.write(target, "original content\n");
-		const readCell = await runCell(dir, `text = read_text(${JSON.stringify(target)})\nprint(len(text))`);
+		const readCell = await runCell(dir, `text = Path(${JSON.stringify(target)}).read_text()\nprint(len(text))`);
 		expect(readCell.status).toBe("complete");
 
 		await Bun.write(target, "externally rewritten while the kernel held the old text\n");
 
-		const clobber = await runCell(dir, `write(${JSON.stringify(target)}, text + "kernel-edit\\n", overwrite=True)`);
+		const clobber = await runCell(dir, `write(${JSON.stringify(target)}, text + "kernel-edit\\n")`);
 		expect(clobber.status).toBe("error");
 		expect(clobber.output).toContain("StaleWriteError");
 		expect(clobber.output).toContain("changed on disk");
 		expect(await Bun.file(target).text()).toBe("externally rewritten while the kernel held the old text\n");
 
-		const forced = await runCell(
-			dir,
-			`write(${JSON.stringify(target)}, "forced content\\n", overwrite=True, guard=False)`,
-		);
+		const forced = await runCell(dir, `write(${JSON.stringify(target)}, "forced content\\n", guard=False)`);
 		expect(forced.status).toBe("complete");
 		expect(await Bun.file(target).text()).toBe("forced content\n");
 	} finally {
@@ -201,43 +198,16 @@ test("the kernel's own writes never trip the guard; untracked new files are unaf
 			[
 				`p = ${JSON.stringify(target)}`,
 				'write(p, "v1\\n")',
-				"text = read_text(p)",
-				'write(p, text + "v2\\n", overwrite=True)',
+				"text = Path(p).read_text()",
+				'write(p, text + "v2\\n")',
 				'edit(p, "v2", "v2-edited")',
-				'write(p, "v3\\n", overwrite=True)',
+				'write(p, "v3\\n")',
 				'print("all-writes-ok")',
 			].join("\n"),
 		);
 		expect(cell.status).toBe("complete");
 		expect(cell.output).toContain("all-writes-ok");
 		expect(await Bun.file(target).text()).toBe("v3\n");
-	} finally {
-		await fs.rm(dir, { recursive: true, force: true });
-	}
-});
-
-test("read_text() slices 1-indexed inclusive and numbers lines in diff format", async () => {
-	const dir = await makeDir();
-	try {
-		const target = path.join(dir, "sliced.txt");
-		await Bun.write(target, "l1\nl2\nl3\nl4\nl5\n");
-		const cell = await runCell(
-			dir,
-			[
-				`p = ${JSON.stringify(target)}`,
-				"print(repr(read_text(p, start=2, end=4)))",
-				"print(read_text(p, start=4, numbered=True))",
-				"print(repr(read_text(p)))",
-			].join("\n"),
-		);
-		expect(cell.status).toBe("complete");
-		expect(cell.output).toContain("'l2\\nl3\\nl4'");
-		expect(cell.output).toContain("4|l4\n5|l5");
-		expect(cell.output).toContain("'l1\\nl2\\nl3\\nl4\\nl5\\n'");
-
-		const beyond = await runCell(dir, "read_text(p, start=99)");
-		expect(beyond.status).toBe("error");
-		expect(beyond.output).toContain("start line 99 is beyond end of file (5 lines)");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

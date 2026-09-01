@@ -3627,6 +3627,7 @@ pub mod matchers {
 
 	fn get_or_create_file(path: &str, host: &Host) -> Result<File, Box<dyn Error>> {
 		let file = File::create(host.resolve(path))?;
+		host.note_write(path);
 		Ok(file)
 	}
 

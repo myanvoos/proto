@@ -817,6 +817,12 @@ fn run_uniq(matches: &ArgMatches, host: &mut Host) -> PortResult<()> {
 
 	let input_path = operand_path(host, in_file_name);
 	let output_path = operand_path(host, out_file_name);
+	if let Some(path) = &input_path {
+		host.note_read(path);
+	}
+	if let Some(path) = &output_path {
+		host.note_write(path);
+	}
 
 	let input_file = input_path
 		.as_ref()

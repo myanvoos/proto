@@ -992,7 +992,12 @@ fn search_file_path<M: Matcher, W: Write>(
 		Ok(file) => {
 			let display = display_path.as_os_str().as_encoded_bytes();
 			match process_reader(matcher, searcher, file, display, opts, out) {
-				Ok(matched) => Ok(matched),
+				Ok(matched) => {
+					if matched {
+						host.note_read(path);
+					}
+					Ok(matched)
+				},
 
 
 				Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(error),

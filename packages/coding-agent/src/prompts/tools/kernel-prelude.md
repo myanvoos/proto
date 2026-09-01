@@ -3,8 +3,7 @@
 display(value) → None        print(value, ...) → None
 {{#if py}}symbols(path?, code?=None, lang?=None) → str    tree-sitter outline, bodies elided; code= outlines an in-memory string (validate structure BEFORE write; lang= required without a path)
 defs() → dict    kernel-defined names → cell number
-{{/if}}{{#if py}}read_text(path, start?=1, end?=None, numbered?=False) → str    tracked read (arms the stale-write guard); start/end = 1-indexed inclusive line slice; numbered → "N|line" rows for edit anchors (views only — never write a slice back)
-write(path, content, overwrite?=False, guard?=True) → Path    the written file's path, not content; refuses an existing file unless overwrite=True; StaleWriteError if the file changed on disk since your last read (guard=False overrides)
+{{/if}}{{#if py}}write(path, content, guard?=True) → Path    the written file's path, not content; wholly replaces an existing file; StaleWriteError if the file changed on disk since you last read it through any tool (guard=False overrides)
 edit(path, old, new, count?=1, guard?=True) → dict    anchored in-place edit: old is an EXACT literal substring, count = required occurrence count (None = replace all); mismatch → AnchorNotFoundError/AmbiguousAnchorError with line numbers, nothing written. edit(path, [(old, new), …]) = multi-hunk, atomic (all anchors resolve on the original text or nothing is written){{/if}}{{#if js}}write(path, content) → str{{/if}}
 {{#if py}}block_range(path, line) → (start, end) | None
 {{/if}}env(key?=None, value?=None) → str | None | dict

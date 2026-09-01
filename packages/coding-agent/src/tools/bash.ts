@@ -11,6 +11,7 @@ import {
 	resolveAutoBackgroundWaitMs,
 } from "../async";
 import type { Settings } from "../config/settings";
+import { fsObservationLedgerFor } from "../eval/fs-observations";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -368,6 +369,18 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 	}
 
+	#recordFsObservations(result: BashResult | BashInteractiveResult): void {
+		if (!("fsObservations" in result) || !result.fsObservations?.length) return;
+		fsObservationLedgerFor(this.session).recordAll(
+			result.fsObservations.map(observation => ({
+				path: observation.path,
+				kind: observation.kind,
+				mtimeNs: observation.mtimeNs ?? null,
+				size: observation.size ?? null,
+			})),
+		);
+	}
+
 	async #buildCompletedResult(
 		result: BashResult | BashInteractiveResult,
 		timeoutSec: number | undefined,
@@ -529,6 +542,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					});
+					this.#recordFsObservations(result);
 					const wallTimeMs = performance.now() - wallTimeStart;
 					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
 						requestedTimeoutSec: options.requestedTimeoutSec,
@@ -1027,6 +1041,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					onChunk: streamTailUpdates(tailBuffer, onUpdate),
 					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 				});
+		this.#recordFsObservations(result);
 		const wallTimeMs = performance.now() - wallTimeStart;
 		if (result.cancelled) {
 			const isTimeout = result.timedOut === true;

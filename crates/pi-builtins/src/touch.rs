@@ -481,6 +481,9 @@ fn touch_file(
 ) -> Result<(), TouchError> {
 	let filename = if is_stdout { OsStr::new("-") } else { path.as_os_str() };
 	let resolved = host.resolve(path);
+	if !is_stdout {
+		host.note_write(&resolved);
+	}
 
 	let metadata_result =
 		if opts.no_deref { resolved.symlink_metadata() } else { resolved.metadata() };

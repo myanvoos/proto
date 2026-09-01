@@ -12,7 +12,7 @@ import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
 import { writeFileWithFallback } from "../../tools/file-write-fallback";
-import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
+import { noteFileDeleted, noteFileRenamed, noteFileWritten } from "../../tools/fs-mutation";
 import { isInternalUrlPath } from "../../tools/path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
@@ -100,7 +100,7 @@ export class HashlineFilesystem extends Filesystem {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
 			throw error;
 		}
-		invalidateFsScanAfterWrite(absolutePath);
+		await noteFileDeleted(this.session, absolutePath);
 	}
 
 	override async move(fromRelative: string, toRelative: string, content?: string): Promise<void> {
@@ -115,8 +115,7 @@ export class HashlineFilesystem extends Filesystem {
 		} else {
 			await fs.rename(fromAbsolute, toAbsolute);
 		}
-		invalidateFsScanAfterWrite(fromAbsolute);
-		invalidateFsScanAfterWrite(toAbsolute);
+		await noteFileRenamed(this.session, fromAbsolute, toAbsolute);
 	}
 
 	async writeText(relativePath: string, content: string): Promise<WriteResult> {
@@ -129,7 +128,7 @@ export class HashlineFilesystem extends Filesystem {
 		}
 
 		await writeFileWithFallback(absolutePath, finalContent, Bun.file(absolutePath));
-		invalidateFsScanAfterWrite(absolutePath);
+		await noteFileWritten(this.session, absolutePath);
 		return { text: finalContent };
 	}
 

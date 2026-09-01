@@ -109,6 +109,10 @@ export const FileType = {
 	Dir: 2,
 	Symlink: 3,
 };
+export const FsObservationKind = {
+	Read: "read",
+	Write: "write",
+};
 export const GrepOutputMode = {
 	Content: "content",
 	Count: "count",

@@ -7,6 +7,7 @@ use napi::{
 };
 use napi_derive::napi;
 use pi_shell::{
+	FsObservation as CoreFsObservation, FsObservationKind as CoreFsObservationKind,
 	MinimizerResult as CoreMinimizerResult, Shell as CoreShell,
 	ShellExecuteOptions as CoreShellExecuteOptions, ShellOptions as CoreShellOptions,
 	ShellRunOptions as CoreShellRunOptions, ShellRunResult as CoreShellRunResult,
@@ -126,6 +127,47 @@ impl From<CoreMinimizerResult> for MinimizerResult {
 	}
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[napi(string_enum)]
+pub enum FsObservationKind {
+	#[napi(value = "read")]
+	Read,
+
+	#[napi(value = "write")]
+	Write,
+}
+
+impl From<CoreFsObservationKind> for FsObservationKind {
+	fn from(value: CoreFsObservationKind) -> Self {
+		match value {
+			CoreFsObservationKind::Read => Self::Read,
+			CoreFsObservationKind::Write => Self::Write,
+		}
+	}
+}
+
+#[napi(object)]
+pub struct FsObservation {
+	pub path: String,
+
+	pub kind: FsObservationKind,
+
+	pub mtime_ns: Option<String>,
+
+	pub size: Option<f64>,
+}
+
+impl From<CoreFsObservation> for FsObservation {
+	fn from(value: CoreFsObservation) -> Self {
+		Self {
+			path:     value.path,
+			kind:     value.kind.into(),
+			mtime_ns: value.mtime_ns.map(|mtime_ns| mtime_ns.to_string()),
+			size:     value.size.map(|size| size as f64),
+		}
+	}
+}
+
 #[napi(object)]
 pub struct ShellRunResult {
 	pub exit_code: Option<i32>,
@@ -137,16 +179,19 @@ pub struct ShellRunResult {
 	pub minimized: Option<MinimizerResult>,
 
 	pub working_dir: Option<String>,
+
+	pub fs_observations: Vec<FsObservation>,
 }
 
 impl From<CoreShellRunResult> for ShellRunResult {
 	fn from(value: CoreShellRunResult) -> Self {
 		Self {
-			exit_code:   value.exit_code,
-			cancelled:   value.cancelled,
-			timed_out:   value.timed_out,
-			minimized:   value.minimized.map(Into::into),
-			working_dir: value.working_dir,
+			exit_code:       value.exit_code,
+			cancelled:       value.cancelled,
+			timed_out:       value.timed_out,
+			minimized:       value.minimized.map(Into::into),
+			working_dir:     value.working_dir,
+			fs_observations: value.fs_observations.into_iter().map(Into::into).collect(),
 		}
 	}
 }

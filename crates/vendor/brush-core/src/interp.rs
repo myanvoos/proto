@@ -2039,6 +2039,13 @@ pub(crate) async fn setup_redirect(
 							)
 						})?;
 
+					match kind {
+						ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::DuplicateInput => {
+							shell.fs_observations().record_read(&expanded_file_path);
+						},
+						_ => shell.fs_observations().record_write(&expanded_file_path),
+					}
+
 					params.open_files.set_fd(fd_num, opened_file);
 				},
 
@@ -2221,6 +2228,7 @@ fn setup_redirect_output_and_error_to(
 		})?;
 
 	let stderr_file = stdout_file.try_clone()?;
+	shell.fs_observations().record_write(&abs_file_path);
 
 	params.open_files.set_fd(OpenFiles::STDOUT_FD, stdout_file);
 	params.open_files.set_fd(OpenFiles::STDERR_FD, stderr_file);

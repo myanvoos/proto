@@ -7,7 +7,7 @@ pub use shell_builder::State as ShellBuilderState;
 use super::Shell;
 use crate::{
 	ProfileLoadBehavior, RcLoadBehavior, ShellFd, ShellVariable, builtins, callstack, completion,
-	env, error, extensions, functions, jobs, openfiles, options, pathcache,
+	env, error, extensions, fsobserve, functions, jobs, openfiles, options, pathcache,
 	shell::KeyBindingsHelper, traps,
 };
 
@@ -265,6 +265,7 @@ impl<SE: extensions::ShellExtensions> Default for Shell<SE> {
 			last_stopwatch_offset: 0,
 			parser_impl: crate::parser::ParserImpl::default(),
 			key_bindings: None,
+			fs_observations: fsobserve::FsObservationLog::default(),
 			history: None,
 		}
 	}

@@ -331,8 +331,7 @@ fn tac(
 				},
 			}
 		} else {
-			let path = host.resolve(filename);
-			let mut file = match File::open(path) {
+			let mut file = match host.open_read(filename) {
 				Ok(file) => file,
 				Err(error) => {
 					show(host, &TacError::Open(filename.clone(), error));

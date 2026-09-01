@@ -944,6 +944,8 @@ fn rename(
 	{
 		rename_with_fallback(host, from, to, display_manager, opts.verbose, None, None)?;
 	}
+	host.note_write(&from_fs);
+	host.note_write(&to_fs);
 
 
 	if opts.verbose {

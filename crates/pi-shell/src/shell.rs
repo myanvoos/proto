@@ -13,6 +13,7 @@ use brush_core::{
 	ProcessGroupPolicy, ProfileLoadBehavior, RcLoadBehavior, Shell as BrushShell, ShellValue,
 	ShellVariable, SourceInfo, SpawnObserver,
 	env::EnvironmentScope,
+	fsobserve,
 	openfiles::{self, OpenFile, OpenFiles},
 };
 use bytes::Bytes;
@@ -114,13 +115,95 @@ pub struct MinimizerResult {
 	pub output_bytes:  u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FsObservationKind {
+	Read,
+	Write,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FsObservation {
+	pub path:     String,
+	pub kind:     FsObservationKind,
+	pub mtime_ns: Option<i64>,
+	pub size:     Option<u64>,
+}
+
+impl From<fsobserve::FsObservation> for FsObservation {
+	fn from(value: fsobserve::FsObservation) -> Self {
+		Self {
+			path:     value.path.to_string_lossy().into_owned(),
+			kind:     match value.kind {
+				fsobserve::FsObservationKind::Read => FsObservationKind::Read,
+				fsobserve::FsObservationKind::Write => FsObservationKind::Write,
+			},
+			mtime_ns: value.stamp.map(|stamp| stamp.mtime_ns),
+			size:     value.stamp.map(|stamp| stamp.size),
+		}
+	}
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShellRunResult {
-	pub exit_code:   Option<i32>,
-	pub cancelled:   bool,
-	pub timed_out:   bool,
-	pub minimized:   Option<MinimizerResult>,
-	pub working_dir: Option<String>,
+	pub exit_code:       Option<i32>,
+	pub cancelled:       bool,
+	pub timed_out:       bool,
+	pub minimized:       Option<MinimizerResult>,
+	pub working_dir:     Option<String>,
+	pub fs_observations: Vec<FsObservation>,
+}
+
+struct CommandOutcome {
+	exec:            ExecutionResult,
+	minimized:       Option<MinimizerResult>,
+	working_dir:     Option<String>,
+	fs_observations: Vec<FsObservation>,
+}
+
+impl CommandOutcome {
+	fn collect(
+		session: &ShellSessionCore,
+		exec: ExecutionResult,
+		minimized: Option<MinimizerResult>,
+	) -> Self {
+		Self {
+			exec,
+			minimized,
+			working_dir: Some(session.shell.working_dir().to_string_lossy().into_owned()),
+			fs_observations: session
+				.shell
+				.fs_observations()
+				.drain()
+				.into_iter()
+				.map(Into::into)
+				.collect(),
+		}
+	}
+
+	fn into_result(self) -> ShellRunResult {
+		ShellRunResult {
+			exit_code:       Some(exit_code(&self.exec)),
+			cancelled:       false,
+			timed_out:       false,
+			minimized:       self.minimized,
+			working_dir:     self.working_dir,
+			fs_observations: self.fs_observations,
+		}
+	}
+}
+
+impl ShellRunResult {
+	fn aborted(reason: AbortReason) -> Self {
+		Self {
+			exit_code:       None,
+			cancelled:       matches!(reason, AbortReason::Signal),
+			timed_out:       matches!(reason, AbortReason::Timeout),
+			minimized:       None,
+			working_dir:     None,
+			fs_observations: Vec::new(),
+		}
+	}
 }
 
 #[derive(Debug, Clone, Default)]
@@ -319,13 +402,7 @@ async fn run_shell_session(
 				*guard = None;
 			}
 			let _ = process_cancel_bridge.await;
-			return Ok(ShellRunResult {
-				exit_code:   None,
-				cancelled:   matches!(reason, AbortReason::Signal),
-				timed_out:   matches!(reason, AbortReason::Timeout),
-				minimized:   None,
-				working_dir: None,
-			});
+			return Ok(ShellRunResult::aborted(reason));
 		}
 	};
 	let res =
@@ -334,18 +411,13 @@ async fn run_shell_session(
 	let _ = process_cancel_bridge.await;
 	abort_state.clear().await;
 
-	let keepalive = res.as_ref().is_ok_and(|(exec, ..)| session_keepalive(exec));
+	let keepalive = res
+		.as_ref()
+		.is_ok_and(|outcome| session_keepalive(&outcome.exec));
 	if !keepalive {
 		*session.lock().await = None;
 	}
-	let (exec, minimized, working_dir) = res?;
-	Ok(ShellRunResult {
-		exit_code: Some(exit_code(&exec)),
-		cancelled: false,
-		timed_out: false,
-		working_dir,
-		minimized,
-	})
+	Ok(res?.into_result())
 }
 
 async fn run_shell_oneshot(
@@ -389,13 +461,7 @@ async fn run_shell_oneshot(
 				let _ = task.await;
 			}
 			let _ = process_cancel_bridge.await;
-			return Ok(ShellExecuteResult {
-				exit_code:   None,
-				cancelled:   matches!(reason, AbortReason::Signal),
-				timed_out:   matches!(reason, AbortReason::Timeout),
-				minimized:   None,
-				working_dir: None,
-			});
+			return Ok(ShellExecuteResult::aborted(reason));
 		},
 	};
 
@@ -403,14 +469,7 @@ async fn run_shell_oneshot(
 	let _ = process_cancel_bridge.await;
 	let res = run_result
 		.unwrap_or_else(|err| Err(Error::msg(format!("Shell execution task failed: {err}"))));
-	let (exec, minimized, working_dir) = res?;
-	Ok(ShellExecuteResult {
-		exit_code: Some(exit_code(&exec)),
-		cancelled: false,
-		timed_out: false,
-		working_dir,
-		minimized,
-	})
+	Ok(res?.into_result())
 }
 
 async fn run_shell_oneshot_streams(
@@ -455,13 +514,7 @@ async fn run_shell_oneshot_streams(
 				let _ = task.await;
 			}
 			let _ = process_cancel_bridge.await;
-			return Ok(ShellExecuteResult {
-				exit_code: None,
-				cancelled: matches!(reason, AbortReason::Signal),
-				timed_out: matches!(reason, AbortReason::Timeout),
-				minimized: None,
-				working_dir: None,
-			});
+			return Ok(ShellExecuteResult::aborted(reason));
 		},
 	};
 
@@ -469,14 +522,7 @@ async fn run_shell_oneshot_streams(
 	let _ = process_cancel_bridge.await;
 	let res = run_result
 		.unwrap_or_else(|err| Err(Error::msg(format!("Shell execution task failed: {err}"))));
-	let (exec, working_dir) = res?;
-	Ok(ShellExecuteResult {
-		exit_code: Some(exit_code(&exec)),
-		cancelled: false,
-		timed_out: false,
-		working_dir,
-		minimized: None,
-	})
+	Ok(res?.into_result())
 }
 
 fn null_file() -> Result<OpenFile> {
@@ -680,7 +726,7 @@ async fn run_shell_command(
 	on_chunk: Option<Sender<String>>,
 	cancel_token: CancellationToken,
 	spawn_registry: Arc<process::SpawnRegistry>,
-) -> Result<(ExecutionResult, Option<MinimizerResult>, Option<String>)> {
+) -> Result<CommandOutcome> {
 	if let Some(cwd) = options.cwd.as_deref() {
 		set_shell_working_dir_if_changed(&mut session.shell, cwd)?;
 	}
@@ -719,10 +765,7 @@ async fn run_shell_command(
 			.map_err(|err| Error::msg(format!("Failed to pop env scope: {err}")))?;
 	}
 
-	result.map(|(exec, minimized)| {
-		let working_dir = Some(session.shell.working_dir().to_string_lossy().into_owned());
-		(exec, minimized, working_dir)
-	})
+	result.map(|(exec, minimized)| CommandOutcome::collect(session, exec, minimized))
 }
 
 async fn run_shell_command_single(
@@ -1054,7 +1097,7 @@ async fn run_shell_command_streams(
 	streams: StreamSinks,
 	cancel_token: CancellationToken,
 	spawn_registry: Arc<process::SpawnRegistry>,
-) -> Result<(ExecutionResult, Option<String>)> {
+) -> Result<CommandOutcome> {
 	if let Some(cwd) = options.cwd.as_deref() {
 		set_shell_working_dir_if_changed(&mut session.shell, cwd)?;
 	}
@@ -1177,8 +1220,7 @@ async fn run_shell_command_streams(
 	let _ = cancel_bridge.await;
 
 	let result = result.map_err(|err| Error::msg(format!("Shell execution failed: {err}")))?;
-	let working_dir = Some(session.shell.working_dir().to_string_lossy().into_owned());
-	Ok((result, working_dir))
+	Ok(CommandOutcome::collect(session, result, None))
 }
 
 async fn read_output_bytes(

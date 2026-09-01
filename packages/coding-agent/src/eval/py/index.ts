@@ -11,6 +11,7 @@ import {
 	readInterpreterSetting as sharedReadInterpreterSetting,
 	toExecutorBackendResult,
 } from "../backend-helpers";
+import { fsObservationLedgerFor } from "../fs-observations";
 import { executePython, type PythonExecutorOptions } from "./executor";
 import { checkPythonKernelAvailability } from "./kernel";
 
@@ -50,6 +51,7 @@ export default {
 			onChunk: opts.onChunk,
 			onStatus: opts.onStatus,
 			toolSession: opts.session,
+			fsObservations: fsObservationLedgerFor(opts.session).drain(),
 		};
 		const result = await executePython(code, executorOptions);
 		return toExecutorBackendResult(result);

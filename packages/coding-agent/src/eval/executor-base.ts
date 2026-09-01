@@ -4,6 +4,7 @@ import { OutputSink } from "../session/streaming-output";
 import type { ToolSession } from "../tools";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP, isEvalTimeoutControlEvent } from "./bridge-timeout";
+import type { FsObservation } from "./fs-observations";
 import type { JsStatusEvent } from "./js/shared/types";
 import type { KernelDisplayOutput } from "./py/display";
 import { registerPyToolBridge } from "./py/tool-bridge";
@@ -25,6 +26,7 @@ interface KernelExecutorBaseOptions {
 	bridgeSessionId?: string;
 	artifactId?: string;
 	artifactPath?: string;
+	fsObservations?: FsObservation[];
 }
 
 interface KernelExecutionResult {
@@ -47,6 +49,7 @@ export interface GenericKernel<TEnv> {
 		options: {
 			cwd?: string;
 			env?: TEnv;
+			fsObservations?: FsObservation[];
 			id: string;
 			signal?: AbortSignal;
 			timeoutMs?: number;
@@ -440,6 +443,7 @@ export async function executeWithKernelBase<
 		const result = await kernel.execute(code, {
 			cwd: options?.cwd,
 			env: buildKernelEnvPatch(options ?? ({} as TOptions)),
+			fsObservations: options?.fsObservations,
 			id: runId,
 			signal: abortShield.signal,
 			timeoutMs: executionTimeoutMs,

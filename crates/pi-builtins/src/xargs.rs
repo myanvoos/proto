@@ -6,7 +6,6 @@ use std::{
 	error::Error,
 	ffi::{OsStr, OsString},
 	fmt::Display,
-	fs,
 	io::{self, Read, Write},
 	process::Command,
 };
@@ -1007,12 +1006,12 @@ fn do_xargs(matches: &ArgMatches, host: &mut Host) -> Result<CommandResult, Xarg
 
 	let args: Box<dyn ArgumentReader> = match (&options.arg_file, delimiter) {
 		(Some(path), Some(delimiter)) => {
-			let file = fs::File::open(host.resolve(path))
+			let file = host.open_read(path)
 				.map_err(|e| format!("Failed to open {path}: {e}"))?;
 			Box::new(ByteDelimitedArgumentReader::new(file, delimiter))
 		},
 		(Some(path), None) => {
-			let file = fs::File::open(host.resolve(path))
+			let file = host.open_read(path)
 				.map_err(|e| format!("Failed to open {path}: {e}"))?;
 			Box::new(WhitespaceDelimitedArgumentReader::new(file))
 		},

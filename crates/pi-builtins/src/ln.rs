@@ -532,6 +532,7 @@ fn link(host: &mut Host, src: &Path, dst: &Path, settings: &Settings) -> LnResul
 		return Err(e);
 	}
 
+	host.note_write(&dst_fs);
 	if settings.verbose {
 
 		let out = &mut host.stdout;

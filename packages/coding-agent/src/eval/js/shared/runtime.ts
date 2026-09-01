@@ -233,7 +233,7 @@ export class JsRuntime {
 			});
 		} finally {
 			leaveRun();
-			flushFileTracking(event => hooks.onDisplay({ type: "status", event }));
+			await flushFileTracking(event => hooks.onDisplay({ type: "status", event }));
 		}
 	}
 

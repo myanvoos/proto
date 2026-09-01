@@ -20,7 +20,9 @@ pub struct OutlineEntry {
 	pub notes:    Vec<String>,
 	pub asks:     Vec<String>,
 	pub line:     u32,
-	pub children: Vec<Self>,
+	// Spelled out rather than `Vec<Self>`: napi-rs copies the field type name
+	// into index.d.ts verbatim, and `Array<Self>` is not a TypeScript type.
+	pub children: Vec<OutlineEntry>,
 }
 
 #[napi(object)]

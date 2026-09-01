@@ -260,6 +260,11 @@ impl Utility for Comm {
 		}
 		let path1 = host.resolve(name1);
 		let path2 = host.resolve(name2);
+		for (name, path) in [(name1, &path1), (name2, &path2)] {
+			if name != OsStr::new("-") {
+				host.note_read(path);
+			}
+		}
 		let delimiters: Vec<_> = self
 			.matches
 			.get_many::<String>(options::DELIMITER)

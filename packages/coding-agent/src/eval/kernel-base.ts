@@ -1,5 +1,6 @@
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
+import type { FsObservation } from "./fs-observations";
 import { type KernelDisplayOutput, renderKernelDisplay } from "./py/display";
 
 export type KernelRuntimeEnv = Record<string, string | null>;
@@ -10,6 +11,7 @@ export interface KernelExecuteOptions {
 	cwd?: string;
 
 	env?: Record<string, string | undefined> | Record<string, string | null>;
+	fsObservations?: FsObservation[];
 	signal?: AbortSignal;
 	onChunk?: (text: string) => Promise<void> | void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;

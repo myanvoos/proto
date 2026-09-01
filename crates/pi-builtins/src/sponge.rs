@@ -54,6 +54,7 @@ impl Utility for Sponge {
 		};
 
 		let target = host.resolve(file);
+		host.note_write(&target);
 		let result = if self.matches.get_flag(OPT_APPEND) {
 			append_to(&target, &buffer)
 		} else {

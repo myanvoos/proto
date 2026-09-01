@@ -38,7 +38,7 @@ import {
 	spliceConflict,
 } from "./conflict-detect";
 import { writeFileWithFallback } from "./file-write-fallback";
-import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
+import { noteFileWritten } from "./fs-mutation";
 import type { OutputMeta } from "./output-meta";
 import {
 	formatPathRelativeToCwd,
@@ -475,7 +475,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			throw new ToolError(error instanceof Error ? error.message : String(error));
 		}
 
-		invalidateFsScanAfterWrite(resolvedArchivePath.absolutePath);
+		await noteFileWritten(this.session, resolvedArchivePath.absolutePath);
 		const outputPath = `${formatPathRelativeToCwd(resolvedArchivePath.absolutePath, this.session.cwd)}:${
 			resolvedArchivePath.archiveSubPath
 		}`;
@@ -596,7 +596,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				}
 			}
 
-			invalidateFsScanAfterWrite(resolvedSqlitePath.absolutePath);
+			await noteFileWritten(this.session, resolvedSqlitePath.absolutePath);
 			return toolResult<WriteToolDetails>({ resolvedPath: resolvedSqlitePath.absolutePath })
 				.text(resultText)
 				.sourcePath(resolvedSqlitePath.absolutePath)
@@ -630,7 +630,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const newContent = splice.text;
 
 		await writeFileWithFallback(absolutePath, newContent);
-		invalidateFsScanAfterWrite(absolutePath);
+		await noteFileWritten(this.session, absolutePath);
 		this.session.bumpFileMutationVersion?.(absolutePath);
 		this.session.fileSnapshotStore?.invalidate(absolutePath);
 		const history = this.session.conflictHistory;
@@ -774,7 +774,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			}
 
 			await writeFileWithFallback(absolutePath, text);
-			invalidateFsScanAfterWrite(absolutePath);
+			await noteFileWritten(this.session, absolutePath);
 			this.session.bumpFileMutationVersion?.(absolutePath);
 			this.session.fileSnapshotStore?.invalidate(absolutePath);
 			for (const entry of resolvedEntries) history.invalidate(entry.id);
@@ -1005,7 +1005,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			}
 
 			await writeFileWithFallback(absolutePath, cleanContent);
-			invalidateFsScanAfterWrite(absolutePath);
+			await noteFileWritten(this.session, absolutePath);
 			this.session.bumpFileMutationVersion?.(absolutePath);
 			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
 

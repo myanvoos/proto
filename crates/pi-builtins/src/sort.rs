@@ -4478,6 +4478,9 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 		});
 	}
 
+	for file in files.iter().filter(|file| file.as_os_str() != OsStr::new(STDIN_FILE)) {
+		host.note_read(file);
+	}
 	materialize_stdin(host, &mut files, &mut tmp_dir)?;
 
 
@@ -4489,6 +4492,9 @@ fn uu_sort(host: &mut Host, matches: &ArgMatches, legacy_warnings: &[LegacyKeyWa
 	let output_path = matches
 		.get_one::<OsString>(options::OUTPUT)
 		.map(|path| host.resolve(path).into_os_string());
+	if let Some(path) = &output_path {
+		host.note_write(path);
+	}
 	let output = Output::new(output_path.as_ref(), Some(host.stdout_clone()))?;
 
 	if settings.debug {

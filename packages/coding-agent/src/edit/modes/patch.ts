@@ -7,11 +7,7 @@ import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFile } from "../../tools/auto-generated-guard";
 import { writeFileWithFallback } from "../../tools/file-write-fallback";
-import {
-	invalidateFsScanAfterDelete,
-	invalidateFsScanAfterRename,
-	invalidateFsScanAfterWrite,
-} from "../../tools/fs-cache-invalidation";
+import { noteFileDeleted, noteFileRenamed, noteFileWritten } from "../../tools/fs-mutation";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd } from "../../tools/path-utils";
 import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
@@ -1656,11 +1652,11 @@ export async function executePatchSingle(
 	}
 
 	if (resolvedRename) {
-		invalidateFsScanAfterRename(resolvedPath, resolvedRename);
+		await noteFileRenamed(session, resolvedPath, resolvedRename);
 	} else if (result.change.type === "delete") {
-		invalidateFsScanAfterDelete(resolvedPath);
+		await noteFileDeleted(session, resolvedPath);
 	} else {
-		invalidateFsScanAfterWrite(resolvedPath);
+		await noteFileWritten(session, resolvedPath);
 	}
 	const effectiveRename = result.change.newPath ? rename : undefined;
 

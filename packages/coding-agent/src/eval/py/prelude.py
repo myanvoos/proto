@@ -8,7 +8,6 @@ __all__ = [
     "display",
     "env",
     "write",
-    "read_text",
     "edit",
     "AnchorNotFoundError",
     "AmbiguousAnchorError",
@@ -89,9 +88,14 @@ if "__proto_prelude_loaded__" not in globals():
     # Aggregate budget for cached helper-write contents kept as flush diff
     # bases; past it the flush falls back to pre-cell snapshots.
     _FS_REPORT_TEXT_BUDGET = 32 * 1024 * 1024
+    # Aggregate budget for pre-mutation snapshots kept per cell (mirrors
+    # MAX_CAPTURE_CONTENT_BYTES in eval/cell-file-diff.ts); past it
+    # _fs_record stores only the content sha — dedupe still works and the
+    # flush emits the write without a diff.
+    _FS_CAPTURE_TEXT_BUDGET = 16 * 1024 * 1024
     _FS_MAX_EVENTS = 50
-    # Cache/build noise by directory-name component; mirrors PRUNED_DIRS in
-    # eval/cell-file-diff.ts.
+    # Cache/build noise by directory-name component; cross-language mirror
+    # of PRUNED_DIRS in eval/fs-policy.ts (update in the same change).
     _FS_PRUNED_DIRS = frozenset({
         ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
         ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".cache",
@@ -115,21 +119,32 @@ if "__proto_prelude_loaded__" not in globals():
             "touched": {},
             "reported": {},
             "reported_text_bytes": 0,
+            "captured_text_bytes": 0,
             "lock": threading.Lock(),
             "tls": threading.local(),
         }
         sys._proto_fs_state = _FS_STATE
     _FS_STATE.setdefault("reported_text_bytes", 0)
-    # Stale-write guard: realpath -> (st_mtime_ns, st_size) at the kernel's
-    # last read of the file. Armed by any read-mode open the audit hook sees
-    # (so plain `open(p).read()` counts, not just read_text()); disarmed by
-    # this process's own write-mode opens/renames/removes (the kernel is
-    # managing the file directly); NEVER cleared between cells — staleness is
-    # about what the model last saw, which spans cells. External writers don't
-    # run our audit hook, so only they leave a mismatched record behind for
-    # write()/edit() to trip on.
+    _FS_STATE.setdefault("captured_text_bytes", 0)
+    # Stale-write guard: abspath -> (st_mtime_ns, st_size) at the agent's
+    # last observation of the file. Armed by any read-mode open the audit hook
+    # sees (`open(p).read()`, `Path(p).read_text()`, imports, ...) and by
+    # host-side observations the runner forwards before each cell (shell
+    # builtins and redirects, the read tool); re-armed to the post-write state
+    # by this process's own writes and by host-side writes (shell, edit/write
+    # tools); NEVER cleared between cells — staleness is about what the agent
+    # last saw, which spans cells. Only writers outside all of those paths
+    # leave a mismatched record behind for write()/edit() to trip on.
     _FS_STATE.setdefault("read_seen", {})
     _FS_READ_SEEN_MAX = 8192
+
+    def _fs_sha_file(ap: str) -> str:
+        """Short sha256 of a file streamed in 1 MiB chunks (never loads it whole)."""
+        h = hashlib.sha256()
+        with open(ap, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()[:16]
 
     def _fs_record(path) -> None:
         """Snapshot a path's pre-mutation state the first time the cell touches it."""
@@ -160,6 +175,8 @@ if "__proto_prelude_loaded__" not in globals():
             return
         record = {"existed": True, "key": (st.st_mtime_ns, st.st_size), "before": None, "before_sha": None}
         if st.st_size <= _FS_DIFF_MAX_BYTES:
+            with _FS_STATE["lock"]:
+                under_budget = _FS_STATE["captured_text_bytes"] < _FS_CAPTURE_TEXT_BUDGET
             tls.recording = True
             try:
                 with open(ap, "rb") as fh:
@@ -169,8 +186,14 @@ if "__proto_prelude_loaded__" not in globals():
             finally:
                 tls.recording = False
             if data is not None and b"\x00" not in data[:8192]:
-                record["before"] = data.decode("utf-8", errors="replace")
+                # The sha is kept even past the capture budget so the flush
+                # can still dedupe content-identical rewrites; only the text
+                # is dropped, and the flush then emits the write with no diff.
                 record["before_sha"] = hashlib.sha256(data).hexdigest()[:16]
+                if under_budget:
+                    record["before"] = data.decode("utf-8", errors="replace")
+                    with _FS_STATE["lock"]:
+                        _FS_STATE["captured_text_bytes"] += len(record["before"])
         with _FS_STATE["lock"]:
             touched.setdefault(ap, record)
 
@@ -189,21 +212,47 @@ if "__proto_prelude_loaded__" not in globals():
             return None
         return ap
 
+    def _fs_remember_seen(ap: str, key: tuple[int, int]) -> None:
+        seen = _FS_STATE["read_seen"]
+        with _FS_STATE["lock"]:
+            if len(seen) >= _FS_READ_SEEN_MAX and ap not in seen:
+                seen.pop(next(iter(seen)), None)
+            seen.pop(ap, None)
+            seen[ap] = key
+
     def _fs_note_read(path) -> None:
         """Record the file state the kernel last read (arms the stale-write guard)."""
         ap = _fs_norm_path(path)
         if ap is None:
             return
-        seen = _FS_STATE["read_seen"]
         try:
             st = os.stat(ap)
         except OSError:
             return
         if not stat.S_ISREG(st.st_mode):
             return
-        if len(seen) >= _FS_READ_SEEN_MAX and ap not in seen:
-            return
-        seen[ap] = (st.st_mtime_ns, st.st_size)
+        _fs_remember_seen(ap, (st.st_mtime_ns, st.st_size))
+
+    def _fs_note_observed(observations) -> None:
+        """Arm or disarm the stale-write guard from host-side observations
+        (shell builtins, redirects, and host tools) of files the agent read or
+        wrote outside the kernel. A missing stamp means the file is gone."""
+        for entry in observations:
+            if not isinstance(entry, dict):
+                continue
+            ap = _fs_norm_path(entry.get("path"))
+            if ap is None:
+                continue
+            mtime_ns = entry.get("mtimeNs")
+            size = entry.get("size")
+            if mtime_ns is None or size is None:
+                with _FS_STATE["lock"]:
+                    _FS_STATE["read_seen"].pop(ap, None)
+                continue
+            try:
+                _fs_remember_seen(ap, (int(mtime_ns), int(size)))
+            except (TypeError, ValueError):
+                continue
 
     def _fs_forget_read(path) -> None:
         """Disarm the stale-write guard for a path this process is mutating itself."""
@@ -252,12 +301,15 @@ if "__proto_prelude_loaded__" not in globals():
         with state["lock"]:
             paths = sorted(state["touched"])
             pending = {ap: state["touched"].pop(ap) for ap in paths}
+            state["captured_text_bytes"] = 0
         emitted = 0
+        processed = 0
         truncated = False
         for ap in paths:
             if emitted >= _FS_MAX_EVENTS:
                 truncated = True
                 break
+            processed += 1
             rec = pending[ap]
             try:
                 st = os.stat(ap)
@@ -281,26 +333,35 @@ if "__proto_prelude_loaded__" not in globals():
             tls = state["tls"]
             tls.recording = True  # machinery read: must not arm the stale-write guard
             try:
-                with open(ap, "rb") as fh:
-                    data = fh.read()
+                if st.st_size > _FS_DIFF_MAX_BYTES:
+                    # Past the diff cap only the sha is needed (walker dedupe);
+                    # stream it so a multi-GB write never lands in memory.
+                    data = None
+                    sha = _fs_sha_file(ap)
+                else:
+                    with open(ap, "rb") as fh:
+                        data = fh.read()
+                    sha = hashlib.sha256(data).hexdigest()[:16]
             except OSError:
                 continue
             finally:
                 tls.recording = False
-            sha = hashlib.sha256(data).hexdigest()[:16]
             reported = state["reported"].get(ap)
             if rec["before_sha"] == sha or (reported is not None and reported["sha"] == sha):
                 continue
-            if len(data) <= _FS_DIFF_MAX_BYTES and b"\x00" not in data[:8192]:
+            if data is not None and len(data) <= _FS_DIFF_MAX_BYTES and b"\x00" not in data[:8192]:
                 before = reported["text"] if reported is not None else None
                 if before is None:
-                    before = rec["before"] if rec["existed"] else ""
+                    # An existed file whose pre-mutation content was not
+                    # captured (over budget, or the snapshot read failed)
+                    # gets no diff rather than a fake one diffed against "".
+                    before = rec["before"] if rec["before"] is not None else ("" if not rec["existed"] else None)
                 _emit_file_status("write", ap, before=before, after=data.decode("utf-8", errors="replace"))
             else:
                 _emit_status("write", path=ap, bytes=st.st_size, sha=sha)
             emitted += 1
         if truncated:
-            _emit_status("files", count=len(paths) - emitted, action="truncated")
+            _emit_status("files", count=len(paths) - processed, action="truncated")
         state["reported"].clear()
         state["reported_text_bytes"] = 0
 
@@ -310,6 +371,7 @@ if "__proto_prelude_loaded__" not in globals():
         _FS_STATE["touched"].clear()
         _FS_STATE["reported"].clear()
         _FS_STATE["reported_text_bytes"] = 0
+        _FS_STATE["captured_text_bytes"] = 0
 
     def _numbered_diff(before: str, after: str, context: int = 2) -> list[str]:
         """Numbered hunk rows ('-12|old', '+12|new', ' 13|ctx') in the edit tool's canonical diff format."""
@@ -500,7 +562,7 @@ if "__proto_prelude_loaded__" not in globals():
             f"{op}({p}): file changed on disk since the kernel last read it "
             f"(read at mtime {_format_mtime(rec[0])}, {rec[1]} bytes; now mtime "
             f"{_format_mtime(st.st_mtime_ns)}, {st.st_size} bytes). "
-            f"Re-read the file (read_text) and redo the change, or pass guard=False to overwrite anyway."
+            f"Re-read the file and redo the change, or pass guard=False to overwrite anyway."
         )
 
     def _rearm_read_guard(p: Path) -> None:
@@ -511,21 +573,16 @@ if "__proto_prelude_loaded__" not in globals():
             return
         _FS_STATE["read_seen"][str(p)] = (st.st_mtime_ns, st.st_size)
 
-    def write(path: str | Path, content: str, *, overwrite: bool = False, guard: bool = True) -> Path:
-        """Create a file with content (parents auto-created).
+    def write(path: str | Path, content: str, *, guard: bool = True) -> Path:
+        """Create or wholly replace a file with content (parents auto-created).
 
-        Refuses to overwrite an existing file unless overwrite=True; for a
-        targeted change to an existing file prefer edit(). Raises
+        For a targeted change to an existing file prefer edit(). Raises
         StaleWriteError if the file changed on disk since the kernel last read
         it (guard=False bypasses).
         """
         p = _resolve_proto_path(path)
         before: str | None = ""
         if p.exists():
-            if not overwrite:
-                raise RuntimeError(
-                    f"write() refusing to overwrite existing {p}; pass overwrite=True to replace it wholesale"
-                )
             _check_stale(p, guard, "write")
             try:
                 before = p.read_text(encoding="utf-8")
@@ -536,35 +593,6 @@ if "__proto_prelude_loaded__" not in globals():
         _rearm_read_guard(p)
         _emit_file_status("write", p, before=before, after=content)
         return p
-
-    def read_text(path: str | Path, *, start: int = 1, end: int | None = None, numbered: bool = False) -> str:
-        """Read a text file and arm the stale-write guard for write()/edit().
-
-        With no kwargs returns the file verbatim (round-trip safe). `start`/`end`
-        select a 1-indexed inclusive line slice; `numbered=True` prefixes each
-        line with `N|` (the hunk-diff line format) for citing edit() anchors.
-        Sliced/numbered output is a view — never write() it back.
-        """
-        if not isinstance(start, int) or isinstance(start, bool) or start < 1:
-            raise ValueError(f"read_text() start must be an integer >= 1, got {start!r}")
-        if end is not None and (not isinstance(end, int) or isinstance(end, bool) or end < start):
-            raise ValueError(f"read_text() end must be an integer >= start ({start}), got {end!r}")
-        p = _resolve_proto_path(path)
-        text = p.read_text(encoding="utf-8")
-        _fs_note_read(p)  # post-read stat: tighter than the audit hook's open-time record
-        if start == 1 and end is None and not numbered:
-            return text
-        lines = text.split("\n")
-        if lines and lines[-1] == "":
-            lines.pop()
-        total = len(lines)
-        if start > total:
-            raise ValueError(f"read_text({p}): start line {start} is beyond end of file ({total} lines)")
-        stop = total if end is None else min(end, total)
-        selected = lines[start - 1 : stop]
-        if numbered:
-            selected = [f"{n}|{line}" for n, line in enumerate(selected, start=start)]
-        return "\n".join(selected)
 
     def _anchor_label(anchor: str) -> str:
         """First line of an anchor, repr-quoted and truncated for error messages."""

@@ -315,6 +315,7 @@ fn read_operand(
 		Operand::File(resolved) => {
 			let bytes = fs::read(resolved)
 				.map_err(|err| format!("{}: {}", name.display(), io_msg(&err)))?;
+			host.note_read(resolved);
 			let mtime = fs::metadata(resolved).ok().and_then(|meta| meta.modified().ok());
 			Ok((bytes, mtime))
 		},
@@ -808,6 +809,8 @@ fn diff_dirs(
 					.map_err(|err| format!("{}: {}", child_name_a.display(), io_msg(&err)))?;
 				let bytes_b = fs::read(&child_res_b)
 					.map_err(|err| format!("{}: {}", child_name_b.display(), io_msg(&err)))?;
+				host.note_read(&child_res_a);
+				host.note_read(&child_res_b);
 				let prefix = pair_prefix(&child_name_a, &child_name_b, opts);
 				differed |= diff_pair(
 					&child_name_a,
@@ -831,6 +834,7 @@ fn diff_dirs(
 					};
 					let bytes = fs::read(present_res)
 						.map_err(|err| format!("{}: {}", present_name.display(), io_msg(&err)))?;
+					host.note_read(present_res);
 					let prefix = pair_prefix(&child_name_a, &child_name_b, opts);
 					let present_mtime = meta.modified().ok();
 					let epoch = Some(SystemTime::UNIX_EPOCH);

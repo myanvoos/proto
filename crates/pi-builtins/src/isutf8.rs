@@ -19,7 +19,6 @@
 
 use std::{
 	ffi::{OsStr, OsString},
-	fs::File,
 	io::{self, Read, Write},
 	sync::{
 		Arc,
@@ -92,7 +91,7 @@ impl Utility for Isutf8 {
 				let result = if name == "-" {
 					validate(&mut host.stdin, &cancel)
 				} else {
-					File::open(host.resolve(name)).and_then(|mut file| validate(&mut file, &cancel))
+					host.open_read(name).and_then(|mut file| validate(&mut file, &cancel))
 				};
 				let verdict = match result {
 					Err(err) => {

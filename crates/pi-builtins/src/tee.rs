@@ -103,7 +103,10 @@ fn tee(options: &Options, host: &mut Host) -> io::Result<()> {
 			continue;
 		}
 		match open(name, &host.resolve(name), options.append) {
-			Ok(writer) => writers.push(writer),
+			Ok(writer) => {
+				host.note_write(name);
+				writers.push(writer);
+			},
 			Err(err) => {
 				let _ = writeln!(host.stderr, "tee: {}: {err}", name.maybe_quote());
 				had_open_errors = true;

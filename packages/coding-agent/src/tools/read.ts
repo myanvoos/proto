@@ -23,6 +23,7 @@ import {
 } from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
 import { isNotebookPath, readEditableNotebookText } from "../edit/notebook";
+import { fsObservationLedgerFor } from "../eval/fs-observations";
 import { InternalUrlRouter, resolveLocalUrlToFile } from "../internal-urls";
 import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls/artifact-protocol";
 import { parseInternalUrl } from "../internal-urls/parse";
@@ -1237,6 +1238,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					.sourcePath(absolutePath)
 					.done();
 			}
+			await fsObservationLedgerFor(this.session).recordRead(absolutePath);
 
 			const buffered = wholeFileBytes ? deriveBufferedFileText(wholeFileBytes) : undefined;
 

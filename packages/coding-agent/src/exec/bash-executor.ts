@@ -1,5 +1,5 @@
 import { ExponentialYield } from "@oh-my-pi/pi-agent-core/utils/yield";
-import { type MinimizerOptions, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
+import { type FsObservation, type MinimizerOptions, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
 import { isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings, type ShellMinimizerSettings } from "../config/settings";
 import { OutputSink } from "../session/streaming-output";
@@ -44,6 +44,7 @@ export interface BashResult {
 	outputBytes: number;
 	artifactId?: string;
 	workingDir?: string;
+	fsObservations?: FsObservation[];
 }
 
 const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -493,6 +494,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			exitCode: winner.result.exitCode,
 			cancelled: false,
 			workingDir: winner.result.workingDir,
+			fsObservations: winner.result.fsObservations,
 			...(await sink.dump()),
 		};
 	} catch (err) {

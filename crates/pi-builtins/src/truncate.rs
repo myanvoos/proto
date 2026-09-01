@@ -239,7 +239,10 @@ fn file_truncate(
 
 	let create = !no_create;
 	let file = match OpenOptions::new().write(true).create(create).open(&resolved) {
-		Ok(file) => file,
+		Ok(file) => {
+			host.note_write(&resolved);
+			file
+		},
 		Err(error) if error.kind() == ErrorKind::NotFound && !create => return Ok(()),
 		Err(error) => {
 			return Err(format!("cannot open {} for writing: {error}", filename.quote()));

@@ -102,7 +102,7 @@ async function probePythonKernelAvailability(cwd: string, interpreter?: string):
 }
 
 export class PythonKernel extends BaseKernel {
-	private constructor(id: string) {
+	constructor(id: string) {
 		super(id, {
 			languageName: "Python",
 			traceIpc: TRACE_IPC,
@@ -115,6 +115,7 @@ export class PythonKernel extends BaseKernel {
 					code,
 					cwd: opts?.cwd,
 					env: opts?.env,
+					fsObservations: opts?.fsObservations,
 					silent: opts?.silent ?? false,
 					storeHistory: opts?.storeHistory ?? !(opts?.silent ?? false),
 					...(opts?.prelude ? { prelude: true } : {}),

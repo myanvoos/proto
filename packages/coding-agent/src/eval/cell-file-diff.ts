@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { capEventDiff } from "../edit/diff";
 import * as git from "../utils/git";
+import { PRUNED_DIRS, SKIPPED_SUFFIXES as SKIPPED_FILE_SUFFIXES } from "./fs-policy";
 import type { EvalStatusEvent } from "./types";
 
 const SHA_LENGTH = 16;
@@ -11,37 +12,10 @@ const MAX_EVENTS_PER_CELL = 50;
 const MAX_CACHE_ENTRIES = 512;
 const MAX_CACHE_CONTENT_BYTES = 16 * 1024 * 1024;
 const MAX_CAPTURE_CONTENT_BYTES = 16 * 1024 * 1024;
-const SKIPPED_FILE_SUFFIXES = [".pyc", ".pyo"];
-
-const PRUNED_DIRS = new Set([
-	".git",
-	".hg",
-	".svn",
-	"node_modules",
-	"__pycache__",
-	".venv",
-	"venv",
-	".tox",
-	".mypy_cache",
-	".pytest_cache",
-	".ruff_cache",
-	".cache",
-	".cargo",
-	".rustup",
-	".bun",
-	".npm",
-	".local",
-	"target",
-	"build",
-	"dist",
-	".next",
-	".nuxt",
-	".output",
-	".turbo",
-	".parcel-cache",
-	"coverage",
-]);
-
+// Files past this size are never loaded or decoded: they get a streamed sha
+// and a bytes-only write event (mirrors _FS_DIFF_MAX_BYTES in the prelude and
+// DIFF_MAX_BYTES in the JS tracker).
+const MAX_DIFF_FILE_BYTES = 8 * 1024 * 1024;
 interface StatEntry {
 	mtimeMs: number;
 	size: number;
@@ -69,6 +43,12 @@ export interface FsSnapshot {
 export function sha256Prefix(bytes: Uint8Array): string {
 	const hasher = new Bun.CryptoHasher("sha256");
 	hasher.update(bytes);
+	return hasher.digest("hex").slice(0, SHA_LENGTH);
+}
+
+async function sha256PrefixOfFile(absPath: string): Promise<string> {
+	const hasher = new Bun.CryptoHasher("sha256");
+	for await (const chunk of Bun.file(absPath).stream()) hasher.update(chunk);
 	return hasher.digest("hex").slice(0, SHA_LENGTH);
 }
 
@@ -195,7 +175,7 @@ export class CellFsTracker {
 				if (budget <= 0) break;
 				const stat = walked.stats.get(abs);
 				if (!stat || this.#content.has(abs)) continue;
-				const entry = await this.#readAfter(abs);
+				const entry = await this.#readAfter(abs, stat.size);
 				if (entry.content !== undefined && entry.content.length <= budget) {
 					budget -= entry.content.length;
 					this.#remember(abs, stat.mtimeMs, stat.size, entry);
@@ -238,14 +218,18 @@ export class CellFsTracker {
 		return { root, stats, truncated };
 	}
 
-	async #readAfter(absPath: string): Promise<ContentEntry> {
+	async #readAfter(absPath: string, size: number): Promise<ContentEntry> {
+		if (size > MAX_DIFF_FILE_BYTES) {
+			return { sha: await sha256PrefixOfFile(absPath) };
+		}
 		const bytes = new Uint8Array(await Bun.file(absPath).arrayBuffer());
-		const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 		const sha = sha256Prefix(bytes);
-		if (looksBinaryText(text)) {
+		// NUL sniff on the raw bytes before decoding, so a binary file is never
+		// materialized as a string only to be discarded.
+		if (bytes.subarray(0, 8192).includes(0)) {
 			return { sha };
 		}
-		return { sha, content: text };
+		return { sha, content: new TextDecoder("utf-8", { fatal: false }).decode(bytes) };
 	}
 
 	#remember(absPath: string, mtimeMs: number, size: number, entry: ContentEntry): void {
@@ -290,12 +274,14 @@ export class CellFsTracker {
 		deleted.sort();
 
 		let emitted = 0;
+		let processed = 0;
 		const pending = [...deleted, ...candidates];
 		for (const absPath of pending) {
 			if (emitted >= MAX_EVENTS_PER_CELL) {
-				onStatus({ op: "files", count: pending.length - emitted, action: "truncated" });
+				onStatus({ op: "files", count: pending.length - processed, action: "truncated" });
 				break;
 			}
+			processed += 1;
 			const beforeStat = before.stats.get(absPath);
 			const cachedBefore = this.#validCachedBefore(absPath, beforeStat);
 			if (deleted.includes(absPath)) {
@@ -331,7 +317,7 @@ export class CellFsTracker {
 				continue;
 			}
 			const afterStat = after.stats.get(absPath)!;
-			const afterEntry = await this.#readAfter(absPath);
+			const afterEntry = await this.#readAfter(absPath, afterStat.size);
 			this.#remember(absPath, afterStat.mtimeMs, afterStat.size, afterEntry);
 			if (
 				cachedBefore?.sha === afterEntry.sha ||

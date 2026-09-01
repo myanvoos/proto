@@ -1,7 +1,9 @@
 import { constants, readFileSync, statSync } from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { capEventDiff } from "../../../edit/diff";
+import { PRUNED_DIRS, SKIPPED_SUFFIXES } from "../../fs-policy";
 import type { JsStatusEvent } from "./types";
 
 /**
@@ -23,37 +25,13 @@ import type { JsStatusEvent } from "./types";
 const DIFF_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_EVENTS = 50;
 const SHA_LENGTH = 16;
-// Cache/build noise by directory-name component; mirrors PRUNED_DIRS in
-// eval/cell-file-diff.ts and the Python prelude tracker.
-const PRUNED_DIRS = new Set([
-	".git",
-	".hg",
-	".svn",
-	"node_modules",
-	"__pycache__",
-	".venv",
-	"venv",
-	".tox",
-	".mypy_cache",
-	".pytest_cache",
-	".ruff_cache",
-	".cache",
-	".cargo",
-	".rustup",
-	".bun",
-	".npm",
-	".local",
-	"target",
-	"build",
-	"dist",
-	".next",
-	".nuxt",
-	".output",
-	".turbo",
-	".parcel-cache",
-	"coverage",
-]);
-const SKIPPED_SUFFIXES = [".pyc", ".pyo"];
+// Aggregate budget for pre-mutation snapshots kept per cell (mirrors
+// MAX_CAPTURE_CONTENT_BYTES in eval/cell-file-diff.ts); past it noteTouched
+// stores only the sha and the flush emits writes without diffs.
+const CAPTURE_TEXT_BUDGET = 16 * 1024 * 1024;
+// Aggregate budget for cached helper-write contents kept as flush diff bases
+// (mirrors _FS_REPORT_TEXT_BUDGET in eval/py/prelude.py).
+const REPORT_TEXT_BUDGET = 32 * 1024 * 1024;
 const WRITE_FLAGS =
 	constants.O_WRONLY |
 	constants.O_RDWR |
@@ -77,6 +55,8 @@ interface ReportedContent {
 
 const touched = new Map<string, TouchedRecord>();
 const reported = new Map<string, ReportedContent>();
+let capturedTextBytes = 0;
+let reportedTextBytes = 0;
 const wrappedModules = new WeakMap<object, unknown>();
 const wrappedFunctions = new WeakMap<(...args: unknown[]) => unknown, (...args: unknown[]) => unknown>();
 
@@ -108,6 +88,8 @@ function looksPruned(absPath: string): boolean {
 	return false;
 }
 
+// Synchronous by design: called inside the sync mutation wrappers, where the
+// pre-mutation snapshot must be captured before the wrapped call runs.
 function readContent(absPath: string): { text: string | null; sha: string | null } {
 	try {
 		const bytes = readFileSync(absPath);
@@ -116,6 +98,31 @@ function readContent(absPath: string): { text: string | null; sha: string | null
 		return { text: new TextDecoder("utf-8", { fatal: false }).decode(bytes), sha };
 	} catch {
 		return { text: null, sha: null };
+	}
+}
+
+// Async counterpart of readContent for the cell-end flush, which runs outside
+// any sync wrapper and must not block the event loop on per-file reads.
+async function readContentAsync(absPath: string): Promise<{ text: string | null; sha: string | null }> {
+	try {
+		const bytes = new Uint8Array(await Bun.file(absPath).arrayBuffer());
+		const sha = new Bun.CryptoHasher("sha256").update(bytes).digest("hex").slice(0, SHA_LENGTH);
+		if (bytes.subarray(0, 8192).includes(0)) return { text: null, sha };
+		return { text: new TextDecoder("utf-8", { fatal: false }).decode(bytes), sha };
+	} catch {
+		return { text: null, sha: null };
+	}
+}
+
+// Sha-only path for files past DIFF_MAX_BYTES: streamed so a multi-GB write
+// never lands in memory just to compute the walker-dedupe sha.
+async function shaOfFileAsync(absPath: string): Promise<string | null> {
+	try {
+		const hasher = new Bun.CryptoHasher("sha256");
+		for await (const chunk of Bun.file(absPath).stream()) hasher.update(chunk);
+		return hasher.digest("hex").slice(0, SHA_LENGTH);
+	} catch {
+		return null;
 	}
 }
 
@@ -140,39 +147,52 @@ export function noteTouched(rawPath: unknown): void {
 		beforeSha: null,
 	};
 	if (stat.size <= DIFF_MAX_BYTES) {
+		// The sha is kept even past the capture budget so the flush can still
+		// dedupe content-identical rewrites; only the text is dropped, and the
+		// flush then emits the write with no diff (mirrors prelude.py _fs_record).
 		const pre = readContent(absPath);
-		record.before = pre.text;
 		record.beforeSha = pre.sha;
+		if (pre.text !== null && capturedTextBytes < CAPTURE_TEXT_BUDGET) {
+			record.before = pre.text;
+			capturedTextBytes += pre.text.length;
+		}
 	}
 	touched.set(absPath, record);
 }
 
 export function noteReported(absPath: string, sha: string, text?: string): void {
-	reported.set(path.resolve(absPath), {
-		sha,
-		text: typeof text === "string" && text.length <= DIFF_MAX_BYTES ? text : null,
-	});
+	const retained =
+		typeof text === "string" && text.length <= DIFF_MAX_BYTES && reportedTextBytes <= REPORT_TEXT_BUDGET
+			? text
+			: null;
+	if (retained !== null) reportedTextBytes += retained.length;
+	reported.set(path.resolve(absPath), { sha, text: retained });
 }
 
 export function resetFileTracking(): void {
 	touched.clear();
+	capturedTextBytes = 0;
 	reported.clear();
+	reportedTextBytes = 0;
 }
 
-export function flushFileTracking(emit: (event: JsStatusEvent) => void): void {
+export async function flushFileTracking(emit: (event: JsStatusEvent) => void): Promise<void> {
 	if (touched.size > 0) {
 		const entries = [...touched.entries()].sort(([a], [b]) => a.localeCompare(b));
 		touched.clear();
+		capturedTextBytes = 0;
 		let emitted = 0;
+		let processed = 0;
 		let truncated = false;
 		for (const [absPath, record] of entries) {
 			if (emitted >= MAX_EVENTS) {
 				truncated = true;
 				break;
 			}
+			processed += 1;
 			let stat: { mtimeMs: number; size: number; isFile: boolean } | null = null;
 			try {
-				const s = statSync(absPath);
+				const s = await fs.stat(absPath);
 				stat = { mtimeMs: s.mtimeMs, size: s.size, isFile: s.isFile() };
 			} catch {
 				stat = null;
@@ -192,7 +212,10 @@ export function flushFileTracking(emit: (event: JsStatusEvent) => void): void {
 				continue;
 			}
 			if (record.key !== null && record.key === `${stat.mtimeMs}:${stat.size}`) continue;
-			const { text, sha } = readContent(absPath);
+			const { text, sha } =
+				stat.size > DIFF_MAX_BYTES
+					? { text: null, sha: await shaOfFileAsync(absPath) }
+					: await readContentAsync(absPath);
 			const seen = reported.get(absPath);
 			if ((record.beforeSha !== null && record.beforeSha === sha) || seen?.sha === sha) continue;
 			if (text !== null) {
@@ -212,10 +235,11 @@ export function flushFileTracking(emit: (event: JsStatusEvent) => void): void {
 			emitted += 1;
 		}
 		if (truncated) {
-			emit({ op: "files", count: entries.length - emitted, action: "truncated" });
+			emit({ op: "files", count: entries.length - processed, action: "truncated" });
 		}
 	}
 	reported.clear();
+	reportedTextBytes = 0;
 }
 
 function isWriteIntentFlags(flags: unknown): boolean {
@@ -300,6 +324,12 @@ export function installBunWriteTracking(): void {
 		try {
 			if (typeof destination === "string") noteTouched(destination);
 			else if (destination instanceof URL) noteTouched(destination.pathname);
+			// Bun.write(Bun.file(path), …): a path-backed BunFile carries its path
+			// as `name`; fd-backed files (Bun.stdout, Bun.file(fd)) have none.
+			else if (destination !== null && typeof destination === "object") {
+				const name = (destination as { name?: unknown }).name;
+				if (typeof name === "string") noteTouched(name);
+			}
 		} catch {
 			// tracking must never break the write
 		}

@@ -3,7 +3,7 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { writeFileWithFallback } from "../../tools/file-write-fallback";
-import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
+import { noteFileWritten } from "../../tools/fs-mutation";
 import { outputMeta } from "../../tools/output-meta";
 import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
 import { generateDiffString, replaceText } from "../diff";
@@ -93,7 +93,7 @@ export async function executeReplaceSingle(
 		// written through the client bridge
 	} else {
 		await writeFileWithFallback(absolutePath, finalContent, Bun.file(absolutePath));
-		invalidateFsScanAfterWrite(absolutePath);
+		await noteFileWritten(session, absolutePath);
 	}
 
 	const diffResult = generateDiffString(normalizedContent, result.content, undefined, { path });

@@ -219,6 +219,9 @@ fn compare(matches: &ArgMatches, host: &mut Host) -> Result<i32, String> {
 	};
 	let path1 = (name1 != OsStr::new("-")).then(|| host.resolve(name1));
 	let path2 = (name2 != OsStr::new("-")).then(|| host.resolve(name2));
+	for path in [&path1, &path2].into_iter().flatten() {
+		host.note_read(path);
+	}
 	let cancel = host.cancel_flag();
 
 	if name1 == OsStr::new("-") {

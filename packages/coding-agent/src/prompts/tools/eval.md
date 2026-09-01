@@ -5,7 +5,7 @@ Work incrementally: imports → define → test → use, each its own cell; re-r
 
 {{#if py}}Top-level `await` works; `asyncio.run(…)` errors.
 
-File edits MUST use the kernel helpers: `edit()` for targeted changes (exact-literal anchors, asserted counts, atomic multi-hunk — NEVER hand-roll `open()` + `assert old in src` + `str.replace` + write surgery; `edit()` does that assertion with line-numbered diagnostics and writes atomically or not at all), `write()` for new or wholly-replaced files, `read_text()` to read (arms the stale-write guard protecting both).{{/if}}
+File edits MUST use the kernel helpers: `edit()` for targeted changes (exact-literal anchors, asserted counts, atomic multi-hunk — NEVER hand-roll `open()` + `assert old in src` + `str.replace` + write surgery; `edit()` does that assertion with line-numbered diagnostics and writes atomically or not at all), `write()` for new or wholly-replaced files. Every read — in-kernel, the `read` tool, or shell builtins (`cat`, `rg`, `sed`, …) — arms the stale-write guard protecting both; only reads by external programs run from the shell don't.{{/if}}
 {{#if js}}JS runs under **Bun**: globals (`Bun.file`, `Bun.write`, `Bun.$`, `fetch`, `Buffer`) available; top-level `await`/`return` work.{{/if}}
 
 <prelude>

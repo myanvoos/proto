@@ -1,5 +1,5 @@
 import type { ToolSession } from ".";
-import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
+import { noteFileWritten } from "./fs-mutation";
 import { isInternalUrlPath, targetsLocalSandbox } from "./path-utils";
 import { ToolError } from "./tool-errors";
 
@@ -35,7 +35,7 @@ export async function routeWriteThroughBridge(
 	} catch (error) {
 		throw new ToolError(error instanceof Error ? error.message : String(error));
 	}
-	invalidateFsScanAfterWrite(absolutePath);
+	await noteFileWritten(session, absolutePath);
 	session.bumpFileMutationVersion?.(absolutePath);
 
 	let actualText = content;

@@ -13,6 +13,7 @@ import { jsBackend, pythonBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
 import { CellFsTracker, sha256Prefix } from "../eval/cell-file-diff";
+import { type FsObservationLedger, fsObservationLedgerFor } from "../eval/fs-observations";
 import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
@@ -732,6 +733,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 							logger.debug("cell file-diff emission failed", { cellIndex: cell.index });
 						}
 					}
+					await recordCellMutations(fsObservationLedgerFor(session), session.cwd, cellResult.statusEvents);
 				}
 				const durationMs = Date.now() - startTime;
 
@@ -882,6 +884,18 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					await finalizeOutput();
 				} catch {}
 			}
+		}
+	}
+}
+
+async function recordCellMutations(
+	ledger: FsObservationLedger,
+	cwd: string,
+	events: readonly EvalStatusEvent[] | undefined,
+): Promise<void> {
+	for (const event of events ?? []) {
+		if ((event.op === "write" || event.op === "delete") && typeof event.path === "string") {
+			await ledger.recordWrite(path.resolve(cwd, event.path));
 		}
 	}
 }

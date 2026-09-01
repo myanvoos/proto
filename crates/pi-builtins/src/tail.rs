@@ -2390,7 +2390,7 @@ fn reverse_main(settings: &Settings, all_lines: bool, host: &mut Host) -> TailRe
 				);
 				continue;
 			}
-			match File::open(path) {
+			match host.open_read(path) {
 				Ok(mut file) => {
 					printer.print_input(input, &mut stdout);
 					file.read_to_end(&mut data)?;
@@ -2582,6 +2582,7 @@ fn tail_file(
 		match open_result {
 			Ok(mut file) => {
 				let st = file.metadata()?;
+				host.observations().record_read_of(&fs_path, &st);
 				let blksize_limit = uucore::fs::sane_blksize::sane_blksize_from_metadata(&st);
 				header_printer.print_input(input, &mut observer.stdout);
 				let mut reader;

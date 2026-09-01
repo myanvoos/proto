@@ -146,6 +146,9 @@ pub struct Shell<SE: extensions::ShellExtensions = extensions::DefaultShellExten
 	#[cfg_attr(feature = "serde", serde(skip))]
 	key_bindings: Option<KeyBindingsHelper>,
 
+	#[cfg_attr(feature = "serde", serde(skip))]
+	fs_observations: crate::fsobserve::FsObservationLog,
+
 
 	history: Option<crate::history::History>,
 }
@@ -185,6 +188,7 @@ impl<SE: extensions::ShellExtensions> Clone for Shell<SE> {
 			last_stopwatch_offset: self.last_stopwatch_offset,
 			parser_impl: self.parser_impl,
 			key_bindings: self.key_bindings.clone(),
+			fs_observations: self.fs_observations.clone(),
 			history: self.history.clone(),
 			depth: self.depth + 1,
 		}
@@ -355,6 +359,10 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 
 	pub(crate) const fn last_exit_status_change_count(&self) -> usize {
 		self.last_exit_status_change_count
+	}
+
+	pub fn fs_observations(&self) -> &crate::fsobserve::FsObservationLog {
+		&self.fs_observations
 	}
 }
 

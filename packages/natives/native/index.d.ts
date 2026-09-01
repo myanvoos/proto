@@ -420,6 +420,18 @@ export declare enum FileType {
   Symlink = 3
 }
 
+export interface FsObservation {
+  path: string
+  kind: FsObservationKind
+  mtimeNs?: string
+  size?: number
+}
+
+export declare enum FsObservationKind {
+  Read = 'read',
+  Write = 'write'
+}
+
 export declare function fuzzyFind(options: FuzzyFindOptions): Promise<FuzzyFindResult>
 
 export interface FuzzyFindMatch {
@@ -862,6 +874,7 @@ export interface ShellRunResult {
   timedOut: boolean
   minimized?: MinimizerResult
   workingDir?: string
+  fsObservations: Array<FsObservation>
 }
 
 export interface SliceResult {

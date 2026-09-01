@@ -13,6 +13,7 @@ import {
 	isTimedOutCancellation,
 	waitForPromiseWithCancellation,
 } from "../executor-base";
+import type { FsObservation } from "../fs-observations";
 import type { JsStatusEvent } from "../js/shared/types";
 import {
 	createKernelSessionRegistry,
@@ -77,6 +78,8 @@ export interface PythonExecutorOptions {
 	bridgeSessionId?: string;
 
 	bridge?: { url: string; token: string };
+
+	fsObservations?: FsObservation[];
 }
 
 export interface PythonKernelExecutor {

@@ -165,6 +165,7 @@ pub fn safe_remove_file(host: &mut Host,
 
 	match dir_fd.unlink_at(file_name, false) {
 		Ok(_) => {
+			host.note_write(path);
 
 			if let Some(pb) = progress_bar {
 				pb.inc(1);
@@ -260,6 +261,7 @@ fn handle_unlink(host: &mut Host,
 		if is_dir {
 			verbose_removed_directory(host, entry_path, options);
 		} else {
+			host.note_write(entry_path);
 			verbose_removed_file(host, entry_path, options);
 		}
 		false
@@ -1269,6 +1271,7 @@ fn remove_file(host: &mut Host, path: &Path, options: &Options, progress_bar: Op
 
 		match fs::remove_file(host.resolve(path)) {
 			Ok(_) => {
+				host.note_write(path);
 				verbose_removed_file(host, path, options);
 			},
 			Err(e) => {

@@ -7,6 +7,7 @@ pub use pi_builtins::{
 	panic_scope_active, rayon_global_pool_available, set_rayon_global_pool_available,
 };
 pub use shell::{
-	MinimizerResult, Shell, ShellExecuteOptions, ShellExecuteResult, ShellOptions, ShellRunOptions,
-	ShellRunResult, StreamSinks, execute_shell, execute_shell_streams,
+	FsObservation, FsObservationKind, MinimizerResult, Shell, ShellExecuteOptions,
+	ShellExecuteResult, ShellOptions, ShellRunOptions, ShellRunResult, StreamSinks, execute_shell,
+	execute_shell_streams,
 };

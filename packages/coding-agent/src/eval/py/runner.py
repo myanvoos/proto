@@ -1645,6 +1645,12 @@ def _apply_request_runtime(req: dict) -> None:
             elif value is None:
                 os.environ.pop(key, None)
 
+    observations = req.get("fsObservations")
+    if isinstance(observations, list) and observations:
+        note_observed = _prelude_fn("_fs_note_observed")
+        if note_observed is not None:
+            note_observed(observations)
+
 
 def _start_parent_watchdog() -> None:
     """Self-terminate when the host process dies.
