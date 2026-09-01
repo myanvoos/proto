@@ -25,12 +25,14 @@ export function runEvalAst(args: unknown, _options: EvalAstBridgeOptions): EvalA
 	if (record.op === "symbols") {
 		const symbolsCode = record.code;
 		const symbolsPath = record.path;
+		const symbolsLang = record.lang;
 		if (typeof symbolsCode !== "string") {
-			throw new Error("symbols expects { code: string } and optional path: string");
+			throw new Error("symbols expects { code: string } and optional path/lang: string");
 		}
 		return summarizeCode({
 			code: symbolsCode,
 			...(typeof symbolsPath === "string" && symbolsPath.length > 0 ? { path: symbolsPath } : {}),
+			...(typeof symbolsLang === "string" && symbolsLang.length > 0 ? { lang: symbolsLang } : {}),
 		});
 	}
 	if (record.op !== "block_range") {

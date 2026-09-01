@@ -8,6 +8,11 @@ __all__ = [
     "display",
     "env",
     "write",
+    "read_text",
+    "edit",
+    "AnchorNotFoundError",
+    "AmbiguousAnchorError",
+    "StaleWriteError",
     "block_range",
     "symbols",
     "output",
@@ -115,6 +120,16 @@ if "__proto_prelude_loaded__" not in globals():
         }
         sys._proto_fs_state = _FS_STATE
     _FS_STATE.setdefault("reported_text_bytes", 0)
+    # Stale-write guard: realpath -> (st_mtime_ns, st_size) at the kernel's
+    # last read of the file. Armed by any read-mode open the audit hook sees
+    # (so plain `open(p).read()` counts, not just read_text()); disarmed by
+    # this process's own write-mode opens/renames/removes (the kernel is
+    # managing the file directly); NEVER cleared between cells — staleness is
+    # about what the model last saw, which spans cells. External writers don't
+    # run our audit hook, so only they leave a mismatched record behind for
+    # write()/edit() to trip on.
+    _FS_STATE.setdefault("read_seen", {})
+    _FS_READ_SEEN_MAX = 8192
 
     def _fs_record(path) -> None:
         """Snapshot a path's pre-mutation state the first time the cell touches it."""
@@ -159,6 +174,43 @@ if "__proto_prelude_loaded__" not in globals():
         with _FS_STATE["lock"]:
             touched.setdefault(ap, record)
 
+    def _fs_norm_path(path) -> str | None:
+        """Decode + absolutize an audit-event path, applying the shared skip filters."""
+        try:
+            sp = os.fsdecode(path)
+        except (TypeError, ValueError):
+            return None
+        if not sp:
+            return None
+        ap = os.path.abspath(sp)
+        if ap.endswith(_FS_SKIPPED_SUFFIXES):
+            return None
+        if any(part in _FS_PRUNED_DIRS for part in ap.split(os.sep)[:-1]):
+            return None
+        return ap
+
+    def _fs_note_read(path) -> None:
+        """Record the file state the kernel last read (arms the stale-write guard)."""
+        ap = _fs_norm_path(path)
+        if ap is None:
+            return
+        seen = _FS_STATE["read_seen"]
+        try:
+            st = os.stat(ap)
+        except OSError:
+            return
+        if not stat.S_ISREG(st.st_mode):
+            return
+        if len(seen) >= _FS_READ_SEEN_MAX and ap not in seen:
+            return
+        seen[ap] = (st.st_mtime_ns, st.st_size)
+
+    def _fs_forget_read(path) -> None:
+        """Disarm the stale-write guard for a path this process is mutating itself."""
+        ap = _fs_norm_path(path)
+        if ap is not None:
+            _FS_STATE["read_seen"].pop(ap, None)
+
     def _fs_audit(event, args) -> None:
         if getattr(_FS_STATE["tls"], "recording", False):
             return
@@ -167,15 +219,21 @@ if "__proto_prelude_loaded__" not in globals():
                 flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
                 mode = args[1] if len(args) > 1 and isinstance(args[1], str) else ""
                 if not (flags & _FS_WRITE_FLAGS or any(c in mode for c in "wax+")):
+                    _fs_note_read(args[0])
                     return
                 _fs_record(args[0])
+                _fs_forget_read(args[0])
             elif event == "os.remove":
                 _fs_record(args[0])
+                _fs_forget_read(args[0])
             elif event == "os.rename":  # os.replace audits under the same name
                 _fs_record(args[0])
                 _fs_record(args[1])
+                _fs_forget_read(args[0])
+                _fs_forget_read(args[1])
             elif event == "os.truncate":
                 _fs_record(args[0])
+                _fs_forget_read(args[0])
         except Exception:
             pass  # an audit hook must never break the operation it observes
 
@@ -220,11 +278,15 @@ if "__proto_prelude_loaded__" not in globals():
                 continue
             if rec["key"] is not None and (st.st_mtime_ns, st.st_size) == rec["key"]:
                 continue  # opened but never written
+            tls = state["tls"]
+            tls.recording = True  # machinery read: must not arm the stale-write guard
             try:
                 with open(ap, "rb") as fh:
                     data = fh.read()
             except OSError:
                 continue
+            finally:
+                tls.recording = False
             sha = hashlib.sha256(data).hexdigest()[:16]
             reported = state["reported"].get(ap)
             if rec["before_sha"] == sha or (reported is not None and reported["sha"] == sha):
@@ -400,11 +462,62 @@ if "__proto_prelude_loaded__" not in globals():
             raise ValueError(f"{scheme}:// path escapes its root: {path}")
         return Path(resolved)
 
-    def write(path: str | Path, content: str, *, overwrite: bool = False) -> Path:
+    class EditError(RuntimeError):
+        """Base for edit()/write() anchor and staleness failures."""
+
+    class AnchorNotFoundError(EditError):
+        """edit() anchor matched fewer occurrences than expected."""
+
+    class AmbiguousAnchorError(EditError):
+        """edit() anchor matched more occurrences than expected."""
+
+    class StaleWriteError(RuntimeError):
+        """The file changed on disk after the kernel's last read of it."""
+
+    def _format_mtime(mtime_ns: int) -> str:
+        import datetime
+
+        return datetime.datetime.fromtimestamp(mtime_ns / 1e9).strftime("%H:%M:%S.%f")
+
+    def _check_stale(p: Path, guard: bool, op: str) -> None:
+        """Raise StaleWriteError if `p` changed on disk since the kernel's last read.
+
+        Only guards paths with a tracked read (see _fs_note_read); new files and
+        never-read paths pass untouched. Call BEFORE any helper-internal read of
+        the file — those reads refresh the tracker via the audit hook."""
+        if not guard:
+            return
+        rec = _FS_STATE["read_seen"].get(str(p))
+        if rec is None:
+            return
+        try:
+            st = os.stat(p)
+        except OSError:
+            return  # deleted/moved externally; the write itself will surface it
+        if (st.st_mtime_ns, st.st_size) == rec:
+            return
+        raise StaleWriteError(
+            f"{op}({p}): file changed on disk since the kernel last read it "
+            f"(read at mtime {_format_mtime(rec[0])}, {rec[1]} bytes; now mtime "
+            f"{_format_mtime(st.st_mtime_ns)}, {st.st_size} bytes). "
+            f"Re-read the file (read_text) and redo the change, or pass guard=False to overwrite anyway."
+        )
+
+    def _rearm_read_guard(p: Path) -> None:
+        """Refresh the read tracker after a helper write so the kernel's own writes never trip the guard."""
+        try:
+            st = os.stat(p)
+        except OSError:
+            return
+        _FS_STATE["read_seen"][str(p)] = (st.st_mtime_ns, st.st_size)
+
+    def write(path: str | Path, content: str, *, overwrite: bool = False, guard: bool = True) -> Path:
         """Create a file with content (parents auto-created).
 
         Refuses to overwrite an existing file unless overwrite=True; for a
-        guarded update, read the file, modify the text, and write it back.
+        targeted change to an existing file prefer edit(). Raises
+        StaleWriteError if the file changed on disk since the kernel last read
+        it (guard=False bypasses).
         """
         p = _resolve_proto_path(path)
         before: str | None = ""
@@ -413,14 +526,171 @@ if "__proto_prelude_loaded__" not in globals():
                 raise RuntimeError(
                     f"write() refusing to overwrite existing {p}; pass overwrite=True to replace it wholesale"
                 )
+            _check_stale(p, guard, "write")
             try:
                 before = p.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError, ValueError):
                 before = None
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
+        _rearm_read_guard(p)
         _emit_file_status("write", p, before=before, after=content)
         return p
+
+    def read_text(path: str | Path, *, start: int = 1, end: int | None = None, numbered: bool = False) -> str:
+        """Read a text file and arm the stale-write guard for write()/edit().
+
+        With no kwargs returns the file verbatim (round-trip safe). `start`/`end`
+        select a 1-indexed inclusive line slice; `numbered=True` prefixes each
+        line with `N|` (the hunk-diff line format) for citing edit() anchors.
+        Sliced/numbered output is a view — never write() it back.
+        """
+        if not isinstance(start, int) or isinstance(start, bool) or start < 1:
+            raise ValueError(f"read_text() start must be an integer >= 1, got {start!r}")
+        if end is not None and (not isinstance(end, int) or isinstance(end, bool) or end < start):
+            raise ValueError(f"read_text() end must be an integer >= start ({start}), got {end!r}")
+        p = _resolve_proto_path(path)
+        text = p.read_text(encoding="utf-8")
+        _fs_note_read(p)  # post-read stat: tighter than the audit hook's open-time record
+        if start == 1 and end is None and not numbered:
+            return text
+        lines = text.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        total = len(lines)
+        if start > total:
+            raise ValueError(f"read_text({p}): start line {start} is beyond end of file ({total} lines)")
+        stop = total if end is None else min(end, total)
+        selected = lines[start - 1 : stop]
+        if numbered:
+            selected = [f"{n}|{line}" for n, line in enumerate(selected, start=start)]
+        return "\n".join(selected)
+
+    def _anchor_label(anchor: str) -> str:
+        """First line of an anchor, repr-quoted and truncated for error messages."""
+        first = anchor.split("\n", 1)[0]
+        label = repr(first[:80])
+        if len(first) > 80 or "\n" in anchor:
+            label += "…"
+        return label
+
+    def _find_anchor(text: str, old: str) -> list[int]:
+        """Byte offsets of every non-overlapping occurrence of `old` in `text`."""
+        hits: list[int] = []
+        idx = text.find(old)
+        while idx >= 0:
+            hits.append(idx)
+            idx = text.find(old, idx + len(old))
+        return hits
+
+    def _offset_line(text: str, offset: int) -> int:
+        return text.count("\n", 0, offset) + 1
+
+    def edit(path, old, new=None, *, count: int | None = 1, guard: bool = True) -> dict:
+        """Anchor-asserted in-place file edit; every anchor is an exact literal substring.
+
+        Two forms:
+          edit(path, old, new, count=1)   — `old` must occur exactly `count`
+              times (count=None → any number >= 1); all occurrences replaced.
+          edit(path, replacements)        — replacements is a sequence of
+              (old, new) pairs or a mapping {old: new}; each anchor must occur
+              exactly once. ATOMIC: all anchors resolve against the original
+              text or nothing is written.
+
+        Fewer matches than expected → AnchorNotFoundError; more →
+        AmbiguousAnchorError listing match line numbers. The file is re-read
+        fresh, and StaleWriteError raises first if it changed on disk since the
+        kernel's last read (guard=False bypasses).
+        """
+        p = _resolve_proto_path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"edit({p}): file does not exist")
+
+        if isinstance(old, str):
+            if not isinstance(new, str):
+                raise TypeError(f"edit({p}): new must be a str when old is a str, got {type(new).__name__}")
+            if count is not None and (not isinstance(count, int) or isinstance(count, bool) or count < 1):
+                raise ValueError(f"edit({p}): count must be an integer >= 1 or None (replace all), got {count!r}")
+            pairs = [(old, new)]
+            single = True
+        else:
+            if new is not None:
+                raise TypeError(f"edit({p}): pass replacements as ONE sequence/mapping argument, without `new`")
+            if count != 1:
+                raise ValueError(f"edit({p}): count applies to the single-anchor form only")
+            items = old.items() if hasattr(old, "items") else old
+            pairs = [(o, n) for o, n in items]
+            if not pairs:
+                raise ValueError(f"edit({p}): empty replacements")
+            single = False
+        for o, n in pairs:
+            if not isinstance(o, str) or not isinstance(n, str):
+                raise TypeError(f"edit({p}): anchors and replacements must be str")
+            if o == "":
+                raise ValueError(f"edit({p}): empty anchor")
+            if o == n:
+                raise ValueError(f"edit({p}): anchor and replacement are identical: {_anchor_label(o)}")
+
+        _check_stale(p, guard, "edit")
+        text = p.read_text(encoding="utf-8")
+
+        # Locate every hunk on the ORIGINAL text; nothing is written unless all resolve.
+        expected = count if single else 1
+        splices: list[tuple[int, int, str, str]] = []  # (start, end, new, anchor)
+        for o, n in pairs:
+            hits = _find_anchor(text, o)
+            found = len(hits)
+            lines = ", ".join(str(_offset_line(text, h)) for h in hits)
+            if found == 0:
+                raise AnchorNotFoundError(
+                    f"edit({p}): anchor not found: {_anchor_label(o)}"
+                    + (f" (expected {expected} occurrence(s))" if expected not in (None, 1) else "")
+                    + "; re-read the file — the anchor must match the current content exactly, whitespace included"
+                )
+            if expected is not None and found < expected:
+                raise AnchorNotFoundError(
+                    f"edit({p}): anchor {_anchor_label(o)} found {found} time(s) at line(s) {lines}, "
+                    f"expected {expected}"
+                )
+            if expected is not None and found > expected:
+                raise AmbiguousAnchorError(
+                    f"edit({p}): anchor {_anchor_label(o)} matches {found} times at lines {lines}, "
+                    f"expected {expected}; enlarge the anchor to make it unique, or pass count={found} "
+                    f"(or count=None) to replace every occurrence"
+                )
+            for h in hits:
+                splices.append((h, h + len(o), n, o))
+
+        splices.sort(key=lambda s: s[0])
+        for (a_start, a_end, _, a_old), (b_start, _, _, b_old) in zip(splices, splices[1:]):
+            if b_start < a_end:
+                raise ValueError(
+                    f"edit({p}): overlapping anchors {_anchor_label(a_old)} (line "
+                    f"{_offset_line(text, a_start)}) and {_anchor_label(b_old)} (line "
+                    f"{_offset_line(text, b_start)})"
+                )
+
+        hunks = []
+        parts: list[str] = []
+        cursor = 0
+        for s_start, s_end, s_new, s_old in splices:
+            parts.append(text[cursor:s_start])
+            parts.append(s_new)
+            cursor = s_end
+            hunks.append({"line": _offset_line(text, s_start), "anchor": _anchor_label(s_old)})
+        parts.append(text[cursor:])
+        result = "".join(parts)
+
+        p.write_text(result, encoding="utf-8")
+        _rearm_read_guard(p)
+        _emit_file_status("write", p, before=text, after=result)
+        return {
+            "path": str(p),
+            "replacements": len(splices),
+            "hunks": hunks,
+            "chars_before": len(text),
+            "chars_after": len(result),
+        }
 
     def _block_range_on(path_str: str, code: str, line: int):
         """Resolve a syntactic block extent via the host ast bridge (1-based lines)."""
@@ -438,18 +708,39 @@ if "__proto_prelude_loaded__" not in globals():
         p = _resolve_proto_path(path)
         return _block_range_on(str(p), p.read_text(encoding="utf-8"), line)
 
-    def symbols(path: str | Path) -> str:
-        """Structural outline of a code file: declarations with bodies elided."""
-        p = _resolve_proto_path(path)
-        result = _bridge_call("__ast__", {"op": "symbols", "path": str(p), "code": p.read_text(encoding="utf-8")})
+    def symbols(path: str | Path | None = None, *, code: str | None = None, lang: str | None = None) -> str:
+        """Structural outline (declarations, bodies elided) of a file or a code string.
+
+        symbols(path)                 — outline a file on disk.
+        symbols(code=src, lang="py")  — outline an in-memory string, e.g. to
+            validate structure BEFORE write(); lang ("py", "ts", ...) is
+            required when there's no path to infer it from.
+        """
+        if (path is None) == (code is None):
+            raise ValueError("symbols() takes exactly one of `path` or `code=`")
+        args: dict = {"op": "symbols"}
+        if path is not None:
+            p = _resolve_proto_path(path)
+            args["path"] = str(p)
+            args["code"] = p.read_text(encoding="utf-8")
+            label = str(p)
+        else:
+            if not isinstance(code, str):
+                raise TypeError(f"symbols() code must be a str, got {type(code).__name__}")
+            args["code"] = code
+            label = f"<code lang={lang}>" if lang else "<code>"
+        if lang is not None:
+            args["lang"] = lang
+        result = _bridge_call("__ast__", args)
         segments = result.get("segments") if isinstance(result, dict) else None
         if not segments:
-            return f"<no symbols parsed for {p}>"
+            hint = "" if path is not None or lang is not None else ' (pass lang=, e.g. lang="python")'
+            return f"<no symbols parsed for {label}{hint}>"
         lines = []
         for seg in segments:
             text = (seg.get("text") or "").strip()
-            label = text if text else f"<{seg.get('kind', 'segment')}>"
-            lines.append(f"{seg.get('startLine')}-{seg.get('endLine')}: {label}")
+            seg_label = text if text else f"<{seg.get('kind', 'segment')}>"
+            lines.append(f"{seg.get('startLine')}-{seg.get('endLine')}: {seg_label}")
         return "\n".join(lines)
 
     def output(
