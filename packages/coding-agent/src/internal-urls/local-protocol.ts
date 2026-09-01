@@ -20,7 +20,7 @@ function parseLocalUrl(input: string): InternalUrl {
 
 function ensureWithinRoot(targetPath: string, rootPath: string): void {
 	if (targetPath !== rootPath && !targetPath.startsWith(`${rootPath}${path.sep}`)) {
-		throw new Error("local:// URL escapes local root");
+		throw new Error("internal URL escapes its root");
 	}
 }
 
@@ -254,8 +254,31 @@ export function resolveLocalUrlToPath(input: string | InternalUrl, options: Loca
 	return resolved;
 }
 
+export function resolveFleetRoot(options: LocalProtocolOptions): string {
+	const artifactsDir = options.getArtifactsDir?.();
+	if (artifactsDir) {
+		return path.resolve(artifactsDir, "fleet");
+	}
+
+	return path.join(os.tmpdir(), "proto-fleet", safeSessionId(options));
+}
+
+export function resolveFleetUrlToPath(input: string | InternalUrl, options: LocalProtocolOptions): string {
+	const url = typeof input === "string" ? parseInternalUrl(input) : input;
+	const fleetRoot = path.resolve(resolveFleetRoot(options));
+	const relativePath = extractRelativePath(url);
+
+	if (!relativePath) {
+		return fleetRoot;
+	}
+
+	const resolved = path.resolve(fleetRoot, relativePath);
+	ensureWithinRoot(resolved, fleetRoot);
+	return resolved;
+}
+
 export function buildEvalUrlRoots(options: LocalProtocolOptions): Record<string, string> {
-	return { local: resolveLocalRoot(options) };
+	return { local: resolveLocalRoot(options), fleet: resolveFleetRoot(options) };
 }
 
 const LOCAL_WRITE_NOTE = "Use write path local://<file> to persist large intermediate artifacts across turns.";

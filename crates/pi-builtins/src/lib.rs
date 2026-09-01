@@ -72,6 +72,10 @@ mod printf;
 mod pushd;
 #[cfg(feature = "builtin.pwd")]
 mod pwd;
+#[cfg(all(any(feature = "util.python", feature = "util.node"), unix))]
+mod kernel_cell;
+#[cfg(all(feature = "util.node", unix))]
+mod node;
 #[cfg(all(feature = "util.python", unix))]
 mod python;
 #[cfg(feature = "builtin.read")]

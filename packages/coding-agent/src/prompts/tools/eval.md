@@ -13,7 +13,7 @@ File edits MUST use the kernel helpers: `edit()` for targeted changes (exact-lit
 </prelude>
 {{#if spawns}}
 <dag>
-Acyclic waves via `agent(…, handle=true)` + `pipeline`/`parallel`: name nodes (capture `handle` + `output`), wire edges (upstream handles in downstream prompts; bulk via `write("local://<name>.md", …)`). `pipeline` = staged waves with barriers; `parallel` = one wave. Wrap risky nodes in try/except. Acyclic only.
+Acyclic waves via `agent(…, handle=true)` + `pipeline`/`parallel`: name nodes (capture `handle` + `output`), wire edges (upstream handles in downstream prompts; bulk via `write("local://<name>.md", …)`). `pipeline` = staged waves with barriers; `parallel` = one wave. Wrap risky nodes in try/except. Acyclic only. Default flow: author the orchestration as a script at `fleet://<name>.py`, then run `python fleet://<name>.py` in bash — fleet scripts execute in this same kernel.
 </dag>
 {{/if}}
 

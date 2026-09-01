@@ -315,6 +315,7 @@ base = [
 "util.pkill" = ["util.proc-match"]
 
 "util.proc-match" = ["builtin.kill", "util.procs"]
+"util.node" = []
 "util.python" = []
 
 "util.procs" = []
@@ -388,6 +389,7 @@ utils = [
   "util.pgrep",
   "util.pidwait",
   "util.pkill",
+  "util.node",
   "util.proc-match",
   "util.procs",
   "util.python",

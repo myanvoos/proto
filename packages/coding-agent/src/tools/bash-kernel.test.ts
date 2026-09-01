@@ -8,14 +8,15 @@ import type { ToolSession } from ".";
 import { BashTool } from "./bash";
 import { EvalTool } from "./eval";
 
-const KERNEL_OWNER = `bash-python-kernel-test:${process.pid}`;
+const KERNEL_OWNER = `bash-kernel-test:${process.pid}`;
 
 function stubSession(cwd: string): ToolSession {
 	const settings = new Map<string, unknown>();
 	return {
 		cwd,
 		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
-		getEvalSessionId: () => `bash-python-kernel-test:${cwd}`,
+		getArtifactsDir: () => path.join(cwd, "artifacts"),
+		getEvalSessionId: () => `bash-kernel-test:${cwd}`,
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
 	} as unknown as ToolSession;
 }
@@ -131,6 +132,93 @@ test("bash timeout interrupts the cell while the kernel survives with state", as
 		expect(performance.now() - started).toBeLessThan(15000);
 		const after = await bash.execute("check", { command: "python -c 'print(\"still\", survivor)'" });
 		expect(textOf(after)).toContain("still 7");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
+test("heredoc node routes to the JS kernel and state persists across bash calls", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-state-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		await bash.execute("set", { command: "node <<'EOF'\nglobalThis.jsProbe = 41;\nconsole.log('set-ok');\nEOF" });
+		const second = await bash.execute("use", { command: "node -e 'console.log(\"value\", jsProbe + 1)'" });
+		expect(textOf(second)).toContain("value 42");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
+test("bash node shares the eval tool's JS kernel session", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-shared-"));
+	try {
+		const session = stubSession(dir);
+		const bash = new BashTool(session);
+		const evalTool = new EvalTool(session);
+		const evalResult = await evalTool.execute("eval", {
+			language: "js",
+			code: "globalThis.jsShared = 'from-eval-js'",
+			timeout: 60,
+		});
+		expect(evalResult.details?.cells?.[0]?.status).toBe("complete");
+		const bashResult = await bash.execute("bash", { command: "node -e 'console.log(\"marker:\", jsShared)'" });
+		expect(textOf(bashResult)).toContain("marker: from-eval-js");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
+test("node script paths fall through to the real node with argv", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-script-"));
+	try {
+		await Bun.write(path.join(dir, "prog.js"), "console.log('argv', process.argv[2]);\n");
+		const bash = new BashTool(stubSession(dir));
+		expect(textOf(await bash.execute("script", { command: "node prog.js hello" }))).toContain("argv hello");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
+test("fleet python scripts execute as kernel orchestration", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-py-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		const writeScript = [
+			"cat > fleet://plan.py <<'EOF'",
+			"results = parallel([lambda i=i: i * i for i in range(4)])",
+			"write('out.txt', ','.join(str(value) for value in results) + '\\n')",
+			"print('orchestrated', sum(results))",
+			"EOF",
+		].join("\n");
+		const wrote = await bash.execute("write", { command: writeScript });
+		expect(wrote.isError ?? false).toBe(false);
+		expect(await Bun.file(path.join(dir, "artifacts", "fleet", "plan.py")).exists()).toBe(true);
+
+		const run = await bash.execute("run", { command: "python fleet://plan.py" });
+		expect(textOf(run)).toContain("orchestrated 14");
+		expect(await Bun.file(path.join(dir, "out.txt")).text()).toBe("0,1,4,9\n");
+
+		const after = await bash.execute("after", { command: "python -c 'print(\"kept\", results)'" });
+		expect(textOf(after)).toContain("kept [0, 1, 4, 9]");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
+test("fleet js scripts execute in the JS kernel", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-js-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		const writeScript = [
+			"cat > fleet://plan.mjs <<'EOF'",
+			"await write('js-out.txt', 'from-node-fleet\\n');",
+			"console.log('js-fleet-done');",
+			"EOF",
+		].join("\n");
+		await bash.execute("write", { command: writeScript });
+		const run = await bash.execute("run", { command: "node fleet://plan.mjs" });
+		expect(textOf(run)).toContain("js-fleet-done");
+		expect(await Bun.file(path.join(dir, "js-out.txt")).text()).toBe("from-node-fleet\n");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

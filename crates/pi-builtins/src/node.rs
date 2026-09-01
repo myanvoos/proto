@@ -9,20 +9,20 @@ use crate::{
 };
 
 const SPEC: KernelLang = KernelLang {
-	lang:             "py",
-	code_flag:        "-c",
-	passthrough:      &["-u"],
-	fleet_extensions: &[".py"],
+	lang:             "js",
+	code_flag:        "-e",
+	passthrough:      &[],
+	fleet_extensions: &[".js", ".mjs", ".cjs", ".ts"],
 };
 
-pub(crate) struct Python {
+pub(crate) struct Node {
 	matches: ArgMatches,
 }
 
-matches_parser!(Python, app);
+matches_parser!(Node, app);
 
-impl Utility for Python {
-	const NAME: &'static str = "python";
+impl Utility for Node {
+	const NAME: &'static str = "node";
 
 	fn run(self, host: &mut Host) -> i32 {
 		let argv: Vec<OsString> = self
@@ -36,9 +36,9 @@ impl Utility for Python {
 }
 
 fn app() -> ClapCommand {
-	kernel_lang_app(Python::NAME)
+	kernel_lang_app(Node::NAME)
 }
 
-pub(crate) fn python_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Python, SE>()
+pub(crate) fn node_builtin<SE: ShellExtensions>() -> Registration<SE> {
+	util::<Node, SE>()
 }

@@ -13,7 +13,7 @@ import {
 } from "../async";
 import type { Settings } from "../config/settings";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
-import { type PyShellBridgeHandle, registerPyShellRun } from "../eval/py/shell-bridge";
+import { type KernelShellBridgeHandle, registerKernelShellRun } from "../eval/shell-bridge";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -324,7 +324,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			hasLaunch: isToolActive("fleet", this.session.settings.get("launch.enabled")),
 			hasEval: isToolActive("eval", evalBackends.python || evalBackends.js),
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
-			hasPyKernelBridge: !shellBuiltinsDisabled(this.session.settings) && evalBackends.python,
+			hasKernelBridge: !shellBuiltinsDisabled(this.session.settings) && (evalBackends.python || evalBackends.js),
 		});
 	}
 	readonly parameters: BashToolSchema;
@@ -374,13 +374,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 	}
 
-	#pyShellBridge(): PyShellBridgeHandle | undefined {
+	#kernelShellBridge(): KernelShellBridgeHandle | undefined {
 		if (shellBuiltinsDisabled(this.session.settings)) return undefined;
-		if (!resolveEvalBackends(this.session).python) return undefined;
-		return registerPyShellRun(this.session);
+		const backends = resolveEvalBackends(this.session);
+		if (!backends.python && !backends.js) return undefined;
+		return registerKernelShellRun(this.session);
 	}
 
-	async #drainBridgeImages(bridge: PyShellBridgeHandle | undefined): Promise<ImageContent[]> {
+	async #drainBridgeImages(bridge: KernelShellBridgeHandle | undefined): Promise<ImageContent[]> {
 		const raw = bridge?.drainImages() ?? [];
 		if (raw.length === 0) return [];
 		const excludeWebP = webpExclusionForModel(this.session.getActiveModel?.());
@@ -553,7 +554,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 				const wallTimeStart = performance.now();
-				const pyBridge = this.#pyShellBridge();
+				const pyBridge = this.#kernelShellBridge();
 				try {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
@@ -1051,7 +1052,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			pendingNotices.push("pty requested but unavailable in this environment; ran without a terminal");
 		}
 		const wallTimeStart = performance.now();
-		const pyBridge = interactiveUi ? undefined : this.#pyShellBridge();
+		const pyBridge = interactiveUi ? undefined : this.#kernelShellBridge();
 		let result: BashResult | BashInteractiveResult;
 		try {
 			result = interactiveUi

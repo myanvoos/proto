@@ -7,6 +7,7 @@ import { glob } from "@oh-my-pi/pi-natives";
 import { hasFsCode, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils";
 import {
 	type LocalProtocolOptions,
+	resolveFleetUrlToPath,
 	resolveLocalRoot,
 	resolveLocalUrlToPath,
 	resolveVaultUrlToPath,
@@ -52,6 +53,7 @@ const TOP_LEVEL_INTERNAL_URL_PREFIXES = [
 	"skill://",
 	"rule://",
 	"local://",
+	"fleet://",
 	"mcp://",
 	"ssh://",
 	"vault://",
@@ -746,6 +748,7 @@ export async function findUniqueWorkspaceSuffix(
 
 const VAULT_SCHEME_PREFIX = "vault:";
 const LOCAL_SCHEME_PREFIX = "local:";
+const FLEET_SCHEME_PREFIX = "fleet:";
 const HL_TRAILING_TAG_RE = new RegExp(`${HL_FILE_HASH_SEP}[0-9A-Fa-f]{${HL_FILE_HASH_LENGTH}}$`);
 
 function sessionLocalProtocolOptions(session: ToolSession): LocalProtocolOptions {
@@ -816,6 +819,10 @@ export function resolveAuthoredPath(session: ToolSession, targetPath: string): s
 	const normalized = normalizeLocalScheme(unwrapped);
 	if (normalized.startsWith(LOCAL_SCHEME_PREFIX)) {
 		return resolveLocalUrlToPath(normalized, sessionLocalProtocolOptions(session));
+	}
+
+	if (normalized.startsWith(FLEET_SCHEME_PREFIX)) {
+		return resolveFleetUrlToPath(normalized, sessionLocalProtocolOptions(session));
 	}
 
 	if (normalized.startsWith(VAULT_SCHEME_PREFIX)) {

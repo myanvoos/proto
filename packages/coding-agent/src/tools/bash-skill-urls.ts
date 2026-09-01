@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { resolveContainedPathSync } from "../discovery/contained-path";
 import type { Skill } from "../extensibility/skills";
-import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
+import { type LocalProtocolOptions, resolveFleetUrlToPath, resolveLocalUrlToPath } from "../internal-urls";
 import { validateRelativePath } from "../internal-urls/skill-protocol";
 import type { InternalResource, ResolveContext } from "../internal-urls/types";
 import type { ImageAttachmentEntry } from ".";
@@ -12,9 +12,18 @@ import { ToolError } from "./tool-errors";
 const SKILL_URL_PATTERN = /'skill:\/\/[^'\s")`\\]+'|"skill:\/\/[^"\s')`\\]+"|skill:\/\/[^\s'")`\\;&|<>($]+/g;
 
 const INTERNAL_URL_PATTERN_INCLUDING_NORMALIZED_LOCAL =
-	/'(?:skill|agent|artifact|memory|rule|local|attachment):\/\/[^'\s")`\\]+'|"(?:skill|agent|artifact|memory|rule|local|attachment):\/\/[^"\s')`\\]+"|(?:skill|agent|artifact|memory|rule|local|attachment):\/\/[^\s'")`\\;&|<>($]+|'local:\/[^'\s")`\\]+'|"local:\/[^"\s')`\\]+"|(?<![./\\\\\w-])local:\/[^\s'")`\\;&|<>($]+/g;
+	/'(?:skill|agent|artifact|memory|rule|local|fleet|attachment):\/\/[^'\s")`\\]+'|"(?:skill|agent|artifact|memory|rule|local|fleet|attachment):\/\/[^"\s')`\\]+"|(?:skill|agent|artifact|memory|rule|local|fleet|attachment):\/\/[^\s'")`\\;&|<>($]+|'local:\/[^'\s")`\\]+'|"local:\/[^"\s')`\\]+"|(?<![./\\\\\w-])local:\/[^\s'")`\\;&|<>($]+/g;
 
-const SUPPORTED_INTERNAL_SCHEMES = ["skill", "agent", "artifact", "memory", "rule", "local", "attachment"] as const;
+const SUPPORTED_INTERNAL_SCHEMES = [
+	"skill",
+	"agent",
+	"artifact",
+	"memory",
+	"rule",
+	"local",
+	"fleet",
+	"attachment",
+] as const;
 
 type SupportedInternalScheme = (typeof SUPPORTED_INTERNAL_SCHEMES)[number];
 
@@ -238,17 +247,18 @@ async function resolveInternalUrlToPath(
 		return path.resolve(attachment.sourcePath);
 	}
 
-	if (scheme === "local") {
+	if (scheme === "local" || scheme === "fleet") {
 		if (!localOptions) {
 			throw new ToolError(
-				"Cannot resolve local:// URL in bash command: local protocol options are unavailable for this session.",
+				`Cannot resolve ${scheme}:// URL in bash command: local protocol options are unavailable for this session.`,
 			);
 		}
-		const resolvedLocalPath = resolveLocalUrlToPath(url, localOptions);
+		const resolved =
+			scheme === "fleet" ? resolveFleetUrlToPath(url, localOptions) : resolveLocalUrlToPath(url, localOptions);
 		if (ensureLocalParentDirs) {
-			await fs.mkdir(path.dirname(resolvedLocalPath), { recursive: true });
+			await fs.mkdir(path.dirname(resolved), { recursive: true });
 		}
-		return resolvedLocalPath;
+		return resolved;
 	}
 
 	if (!internalRouter?.canHandle(url)) {

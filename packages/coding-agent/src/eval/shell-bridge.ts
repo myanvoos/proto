@@ -1,15 +1,18 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Socket, TCPSocketListener } from "bun";
-import type { ToolSession } from "../../tools";
-import { isEvalTimeoutControlEvent } from "../bridge-timeout";
-import { formatDisplayOutputsForText } from "../display-text";
-import { fsObservationLedgerFor, recordMutationEvents } from "../fs-observations";
-import { defaultEvalSessionId } from "../session-id";
-import type { EvalStatusEvent } from "../types";
-import pythonBackend from "./index";
+import { resolveFleetRoot } from "../internal-urls";
+import type { ToolSession } from "../tools";
+import { resolveEvalBackends } from "../tools/eval-backends";
+import { isEvalTimeoutControlEvent } from "./bridge-timeout";
+import { formatDisplayOutputsForText } from "./display-text";
+import { fsObservationLedgerFor, recordMutationEvents } from "./fs-observations";
+import jsBackend from "./js";
+import pythonBackend from "./py";
+import { defaultEvalSessionId } from "./session-id";
+import type { EvalStatusEvent } from "./types";
 
-export interface PyShellBridgeHandle {
+export interface KernelShellBridgeHandle {
 	env: Record<string, string>;
 	drainImages(): ImageContent[];
 	dispose(): void;
@@ -30,19 +33,29 @@ interface SocketState {
 interface CellRequest {
 	token: string;
 	code: string;
+	lang: "py" | "js";
 	cwd?: string;
 }
 
 const runs = new Map<string, RunContext>();
 let listener: TCPSocketListener<SocketState> | undefined;
 
-export function registerPyShellRun(session: ToolSession): PyShellBridgeHandle {
+export function registerKernelShellRun(session: ToolSession): KernelShellBridgeHandle {
 	const server = ensureListener();
 	const token = crypto.randomUUID();
 	const context: RunContext = { session, images: [], active: new Set() };
 	runs.set(token, context);
 	return {
-		env: { PI_PYSH_ADDR: `127.0.0.1:${server.port}`, PI_PYSH_TOKEN: token },
+		env: {
+			PI_KERNEL_BRIDGE_ADDR: `127.0.0.1:${server.port}`,
+			PI_KERNEL_BRIDGE_TOKEN: token,
+			PI_KERNEL_FLEET_ROOT: resolveFleetRoot(
+				session.localProtocolOptions ?? {
+					getArtifactsDir: () => session.getArtifactsDir?.() ?? null,
+					getSessionId: () => session.getSessionId?.() ?? null,
+				},
+			),
+		},
 		drainImages: () => context.images.splice(0),
 		dispose: () => {
 			runs.delete(token);
@@ -115,9 +128,11 @@ function finish(socket: Socket<SocketState>, frame: Record<string, unknown>): vo
 function parseRequest(line: string): CellRequest | undefined {
 	const parsed = parseLine(line);
 	if (!parsed || typeof parsed.token !== "string" || typeof parsed.code !== "string") return undefined;
+	if (parsed.lang !== "py" && parsed.lang !== "js") return undefined;
 	return {
 		token: parsed.token,
 		code: parsed.code,
+		lang: parsed.lang,
 		cwd: typeof parsed.cwd === "string" && parsed.cwd.length > 0 ? parsed.cwd : undefined,
 	};
 }
@@ -136,7 +151,10 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 		finish(socket, { t: "f" });
 		return;
 	}
-	if (!(await pythonBackend.isAvailable(context.session).catch(() => false))) {
+	const backend = request.lang === "js" ? jsBackend : pythonBackend;
+	const backends = resolveEvalBackends(context.session);
+	const enabled = request.lang === "js" ? backends.js : backends.python;
+	if (!enabled || !(await backend.isAvailable(context.session).catch(() => false))) {
 		finish(socket, { t: "f" });
 		return;
 	}
@@ -147,7 +165,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 	context.active.add(abort);
 	const statusEvents: EvalStatusEvent[] = [];
 	try {
-		const result = await pythonBackend.execute(request.code, {
+		const result = await backend.execute(request.code, {
 			cwd: session.cwd,
 			runCwd: request.cwd,
 			sessionId: session.getEvalSessionId?.() ?? defaultEvalSessionId(session),
@@ -173,7 +191,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, statusEvents);
 		finish(socket, { t: "x", c: result.cancelled ? 130 : (result.exitCode ?? 0) });
 	} catch (err) {
-		logger.warn("python shell bridge cell failed", { error: err instanceof Error ? err.message : String(err) });
+		logger.warn("kernel shell bridge cell failed", { error: err instanceof Error ? err.message : String(err) });
 		send(socket, { t: "e", d: `${err instanceof Error ? err.message : String(err)}\n` });
 		finish(socket, { t: "x", c: 1 });
 	} finally {

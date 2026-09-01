@@ -240,6 +240,8 @@ pub fn utility_builtins<SE: brush_core::ShellExtensions>()
 	m.push(("isutf8", isutf8::isutf8_builtin::<SE>()));
 	#[cfg(feature = "util.jq")]
 	m.push(("jq", jq::jq_builtin::<SE>()));
+	#[cfg(all(feature = "util.node", unix))]
+	m.push(("node", node::node_builtin::<SE>()));
 	#[cfg(all(feature = "util.python", unix))]
 	{
 		m.push(("python", python::python_builtin::<SE>()));
