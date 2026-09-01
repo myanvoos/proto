@@ -1,4 +1,4 @@
-Persistent Python kernel — do all work here; state (variables, imports, functions, parsed results, running tasks) survives across calls.
+Persistent Python kernel — do all work here; state (variables, imports, functions, parsed results, running tasks) survives across calls. Bash `python` with code on stdin or `-c` runs in this same kernel; `python fleet://<name>.py` executes a saved script here too (the default for `agent()`/`parallel()`/`pipeline()` orchestration: write the script to `fleet://`, run it from bash).
 
 Every file mutation a cell makes — `write()`, plain `open()`, `os.*`, `shutil` — is tracked and shown as a hunk diff in the cell Status, including paths outside the working directory.
 

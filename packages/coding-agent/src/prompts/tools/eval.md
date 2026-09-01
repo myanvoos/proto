@@ -1,4 +1,4 @@
-Run one step of code in a persistent kernel. State persists across calls and workers.
+Run one step of code in a persistent kernel. State persists across calls and workers; bash `python`/`node` with code on stdin or `-c`/`-e` run in these same kernels.
 {{#if spawns}}Eval `agent()` children use independent kernels.{{/if}}
 
 Work incrementally: imports → define → test → use, each its own cell; re-run setup ONLY after `reset`/crash. Parallelize within a cell via `parallel(thunks)`, not by batching. On error, fix and re-run only the failing step.
