@@ -558,7 +558,7 @@ function formatCellOutputLines(
 	return { lines: visualLines, hiddenCount: skippedCount };
 }
 
-function astPreviewLines(code: string, language: string, theme: Theme, width: number): string[] | undefined {
+export function astPreviewLines(code: string, language: string, theme: Theme, width: number): string[] | undefined {
 	if (language === "python") return renderPythonAstLines(code, theme, width) ?? undefined;
 	if (language === "js") return renderJavaScriptAstLines(code, theme, width) ?? undefined;
 	return undefined;

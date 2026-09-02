@@ -20,6 +20,8 @@ import { InternalUrlRouter } from "../internal-urls";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
+import { resolveSpawnPolicy } from "../task/spawn-policy";
+import "./kernel-prelude";
 import type {
 	ClientBridgeTerminalExitStatus,
 	ClientBridgeTerminalHandle,
@@ -34,9 +36,11 @@ import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
+import { detectBashKernelCell } from "./bash-kernel-cell";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
+import { astPreviewLines } from "./eval-render";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import {
 	formatStyledTruncationWarning,
@@ -322,6 +326,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	get description(): string {
 		const evalBackends = resolveEvalBackends(this.session);
 		const isToolActive = (name: string, fallback: boolean): boolean => this.session.isToolActive?.(name) ?? fallback;
+		const bridge = kernelBridgeAvailable(this.session);
+		const spawnPolicy = resolveSpawnPolicy(this.session.getSessionSpawns?.() ?? "*");
 		return prompt.render(bashDescription, {
 			asyncEnabled: this.#asyncEnabled,
 			autoBackgroundEnabled: this.#autoBackgroundEnabled,
@@ -330,7 +336,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			hasLaunch: isToolActive("fleet", this.session.settings.get("launch.enabled")),
 			hasEval: isToolActive("eval", evalBackends.python || evalBackends.js),
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
-			hasKernelBridge: kernelBridgeAvailable(this.session),
+			hasKernelBridge: bridge,
+			py: bridge && evalBackends.python,
+			js: bridge && evalBackends.js,
+			spawns: spawnPolicy.enabled,
+			spawnDefaultAgent: spawnPolicy.defaultAgent,
+			spawnAllowedAgentsText: spawnPolicy.allowedPromptText,
 		});
 	}
 	readonly parameters: BashToolSchema;
@@ -1156,7 +1167,7 @@ function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unknown> | u
 	return args.env ?? partialEnv;
 }
 
-function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] {
+function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme, kernelPreview?: { width: number }): string[] {
 	const command = replaceTabs(args.command || "…");
 	const cwd = getProjectDir();
 	const displayWorkdir = formatToolWorkingDirectory(args.cwd, cwd);
@@ -1165,9 +1176,24 @@ function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] 
 	if (displayWorkdir) prefixParts.push(`cd ${displayWorkdir} &&`);
 	if (envAssignments) prefixParts.push(envAssignments);
 	const prefix = uiTheme.fg("dim", `${prefixParts.join(" ")} `);
-	const highlightedLines = highlightCode(command, "bash");
-	if (highlightedLines.length === 0) return [prefix.trimEnd()];
-	return highlightedLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+	const withPrefix = (lines: string[]): string[] =>
+		lines.length === 0 ? [prefix.trimEnd()] : lines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+
+	// Collapsed view of a kernel-routed `python`/`node` cell: highlight the
+	// invocation header, then preview the embedded code's AST outline exactly
+	// like an eval cell (expanded view falls through to the raw command).
+	if (kernelPreview && args.command) {
+		const cell = detectBashKernelCell(args.command);
+		if (cell) {
+			const headerLines = withPrefix(highlightCode(replaceTabs(cell.header), "bash"));
+			const body =
+				astPreviewLines(cell.code, cell.language, uiTheme, kernelPreview.width) ??
+				highlightCode(replaceTabs(cell.code), cell.language === "python" ? "python" : "javascript");
+			return [...headerLines, ...body.map(line => `  ${line}`)];
+		}
+	}
+
+	return withPrefix(highlightCode(command, "bash"));
 }
 
 function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererConfig<TArgs>): BashRenderArgs {
@@ -1183,10 +1209,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 	return {
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
-			const cmdLines = formatBashCommandLines(renderArgs, uiTheme);
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
+					const cmdLines = formatBashCommandLines(renderArgs, uiTheme, options.expanded ? undefined : { width });
 					const header =
 						config.showHeader === false
 							? undefined
@@ -1225,7 +1251,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			args?: TArgs,
 		): Component {
 			const renderArgs = toBashRenderArgs(args, config);
-			const cmdLines = args ? formatBashCommandLines(renderArgs, uiTheme) : undefined;
 			const isError = result.isError === true;
 			const isPartial = options.isPartial === true;
 			const success = !isPartial && !isError;
@@ -1373,6 +1398,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					if (timeoutLine) outputLines.push(timeoutLine);
 					if (warningLine) outputLines.push(warningLine);
 
+					const cmdLines = args
+						? formatBashCommandLines(renderArgs, uiTheme, expanded ? undefined : { width })
+						: undefined;
 					const framed = outputBlock.render(
 						{
 							header,
