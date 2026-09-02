@@ -8,7 +8,7 @@ test("quoted heredoc python", () => {
 });
 test("python3 - heredoc with cd prefix", () => {
 	const c = detectBashKernelCell("cd sub && python3 - <<EOF\nx = 1\nEOF");
-	expect(c).toEqual({ language: "python", code: "x = 1", header: "cd sub && python3 - <<EOF" });
+	expect(c).toEqual({ language: "python", code: "x = 1" });
 });
 test("node heredoc", () => {
 	expect(detectBashKernelCell("node <<'JS'\nconsole.log(1)\nJS")?.code).toBe("console.log(1)");

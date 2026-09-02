@@ -1,7 +1,6 @@
 export interface BashKernelCell {
 	language: "python" | "js";
 	code: string;
-	header: string;
 }
 
 const LANG_BY_CMD: Record<string, "python" | "js"> = {
@@ -17,7 +16,7 @@ const PASSTHROUGH_BEFORE_STDIN = /^(?:\s|-u|-)*$/;
  * command, mirroring the routing in crates/pi-builtins kernel_cell.rs: code on
  * stdin (heredoc) or a bare `-c`/`-e CODE` runs in the persistent kernel, while
  * `python file.py`, `-m`, or extra argv run a real interpreter. Display-only —
- * returns the embedded cell so the renderer can preview its AST like an eval
+ * returns the embedded cell so the renderer can render it like an eval
  * cell; returns undefined when the command would spawn a real interpreter or
  * can't be parsed confidently.
  */
@@ -43,7 +42,7 @@ function detectHeredocCell(command: string): BashKernelCell | undefined {
 	const close = rest.match(closeRe);
 	const code = close ? rest.slice(0, close.index) : rest.replace(/\n?$/, "");
 	if (code.trim().length === 0) return undefined;
-	return { language, code, header: command.slice(0, bodyStart).replace(/\n$/, "") };
+	return { language, code };
 }
 
 function detectFlagCell(command: string): BashKernelCell | undefined {
@@ -60,8 +59,7 @@ function detectFlagCell(command: string): BashKernelCell | undefined {
 	// Extra argv after the code means the real interpreter runs (argv semantics);
 	// only treat it as a cell when the code is the final token.
 	if (parsed.rest.trim().length > 0) return undefined;
-	const header = command.slice(0, m.index! + m[0].length - m[4].length).replace(/\s+$/, "");
-	return { language, code: parsed.word, header };
+	return { language, code: parsed.word };
 }
 
 /** Parse the first shell word (single/double-quoted or bare) and the remainder. */

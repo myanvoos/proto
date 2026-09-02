@@ -2,7 +2,7 @@ import type { EvalDisplayOutput } from "./types";
 
 const MAX_DISPLAY_TEXT_BYTES = 8000;
 
-export function formatDisplayJsonForText(value: unknown): string {
+function formatDisplayJsonForText(value: unknown): string {
 	let text: string;
 	try {
 		text = JSON.stringify(value, null, 2) ?? String(value);

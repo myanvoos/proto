@@ -475,7 +475,7 @@ function isFileOpEvent(event: EvalStatusEvent): boolean {
 	return event.op === "write" || event.op === "delete";
 }
 
-export function renderStatusEvents(
+function renderStatusEvents(
 	events: EvalStatusEvent[],
 	theme: Theme,
 	expanded: boolean,
@@ -558,7 +558,7 @@ function formatCellOutputLines(
 	return { lines: visualLines, hiddenCount: skippedCount };
 }
 
-export function astPreviewLines(code: string, language: string, theme: Theme, width: number): string[] | undefined {
+function astPreviewLines(code: string, language: string, theme: Theme, width: number): string[] | undefined {
 	if (language === "python") return renderPythonAstLines(code, theme, width) ?? undefined;
 	if (language === "js") return renderJavaScriptAstLines(code, theme, width) ?? undefined;
 	return undefined;
