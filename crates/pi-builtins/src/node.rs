@@ -13,6 +13,7 @@ const SPEC: KernelLang = KernelLang {
 	code_flag:        "-e",
 	passthrough:      &[],
 	fleet_extensions: &[".js", ".mjs", ".cjs", ".ts"],
+	interpreters:     &["node"],
 };
 
 pub(crate) struct Node {

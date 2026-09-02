@@ -26,6 +26,7 @@ interface RunContext {
 	statusEvents: EvalStatusEvent[];
 	jsonOutputs: unknown[];
 	active: Set<AbortController>;
+	onStatusEvent?: (event: EvalStatusEvent) => void;
 }
 
 interface SocketState {
@@ -44,10 +45,20 @@ interface CellRequest {
 const runs = new Map<string, RunContext>();
 let listener: TCPSocketListener<SocketState> | undefined;
 
-export function registerKernelShellRun(session: ToolSession): KernelShellBridgeHandle {
+export function registerKernelShellRun(
+	session: ToolSession,
+	onStatusEvent?: (event: EvalStatusEvent) => void,
+): KernelShellBridgeHandle {
 	const server = ensureListener();
 	const token = crypto.randomUUID();
-	const context: RunContext = { session, images: [], statusEvents: [], jsonOutputs: [], active: new Set() };
+	const context: RunContext = {
+		session,
+		images: [],
+		statusEvents: [],
+		jsonOutputs: [],
+		active: new Set(),
+		onStatusEvent,
+	};
 	runs.set(token, context);
 	return {
 		env: {
@@ -182,6 +193,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 				if (isEvalTimeoutControlEvent(event)) return;
 				cellStatusEvents.push(event);
 				context.statusEvents.push(event);
+				context.onStatusEvent?.(event);
 			},
 		});
 		for (const output of result.displayOutputs) {

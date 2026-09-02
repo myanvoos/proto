@@ -28,7 +28,7 @@ import type {
 	ClientBridgeTerminalHandle,
 	ClientBridgeTerminalOutput,
 } from "../session/client-bridge";
-import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
+import { DEFAULT_MAX_BYTES, enforceInlineByteCap, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
 import { webpExclusionForModel } from "../utils/image-loading";
@@ -394,9 +394,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 	}
 
-	#kernelShellBridge(): KernelShellBridgeHandle | undefined {
+	#kernelShellBridge(onStatusEvent?: (event: EvalStatusEvent) => void): KernelShellBridgeHandle | undefined {
 		if (!kernelBridgeAvailable(this.session)) return undefined;
-		return registerKernelShellRun(this.session);
+		return registerKernelShellRun(this.session, onStatusEvent);
 	}
 
 	async #drainBridgeImages(bridge: KernelShellBridgeHandle | undefined): Promise<ImageContent[]> {
@@ -1080,7 +1080,22 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			pendingNotices.push("pty requested but unavailable in this environment; ran without a terminal");
 		}
 		const wallTimeStart = performance.now();
-		const pyBridge = interactiveUi ? undefined : this.#kernelShellBridge();
+		// Stream kernel-cell status events (write/edit hunks) into the live view
+		// so a running `python`/`node` cell shows its Status section like an eval
+		// cell — hunks are withheld while partial, revealed on settle.
+		const liveStatusEvents: EvalStatusEvent[] = [];
+		const pushLiveUpdate = (): void => {
+			onUpdate?.({
+				content: [{ type: "text", text: tailBuffer.text() }],
+				details: liveStatusEvents.length > 0 ? { statusEvents: [...liveStatusEvents] } : {},
+			});
+		};
+		const pyBridge = interactiveUi
+			? undefined
+			: this.#kernelShellBridge(event => {
+					liveStatusEvents.push(event);
+					pushLiveUpdate();
+				});
 		let result: BashResult | BashInteractiveResult;
 		try {
 			result = interactiveUi
@@ -1101,7 +1116,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						env: pyBridge ? { ...resolvedEnv, ...pyBridge.env } : resolvedEnv,
 						artifactPath,
 						artifactId,
-						onChunk: streamTailUpdates(tailBuffer, onUpdate),
+						onChunk: chunk => {
+							tailBuffer.append(chunk);
+							pushLiveUpdate();
+						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					});
 		} catch (error) {

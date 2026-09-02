@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { capEventDiff } from "../../../edit/diff";
+import { expandTilde } from "../../../tools/path-utils";
 import { ToolError } from "../../../tools/tool-errors";
 import { noteReported, shaOfBytes, snapshotBeforeText } from "./fs-tracker";
 import type { JsStatusEvent } from "./types";
@@ -75,8 +76,11 @@ function getMergedEnv(ctx: HelperContext): Record<string, string> {
 const INTERNAL_URL_RE = /^([a-z][a-z0-9+.-]*):\/\/(.*)$/i;
 
 function resolvePath(ctx: HelperContext, value: string): string {
-	if (path.isAbsolute(value)) return path.normalize(value);
-	return path.resolve(ctx.cwd(), value);
+	// `~` follows the kernel's own env — an `env("HOME", …)` override wins, as
+	// os.environ does for the Python prelude's expanduser.
+	const expanded = expandTilde(value, ctx.env.get("HOME") ?? Bun.env.HOME);
+	if (path.isAbsolute(expanded)) return path.normalize(expanded);
+	return path.resolve(ctx.cwd(), expanded);
 }
 
 function resolveHelperPath(ctx: HelperContext, rawPath: string): string {

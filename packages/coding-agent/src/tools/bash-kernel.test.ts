@@ -78,6 +78,33 @@ test("script paths, --version, and -c with argv fall through to a real interpret
 	}
 }, 60000);
 
+test("`python` script paths fall through to python3 on hosts without a `python` binary", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-py3only-"));
+	try {
+		const realPython3 = Bun.which("python3");
+		if (!realPython3) return;
+		const bin = path.join(dir, "bin");
+		await fs.mkdir(bin);
+		await fs.symlink(realPython3, path.join(bin, "python3"));
+		await Bun.write(path.join(dir, "prog.py"), "import sys\nprint('argv', sys.argv[1])\n");
+		const bash = new BashTool(stubSession(dir));
+		const ran = await bash.execute("py3only", {
+			command: `(export PATH=${JSON.stringify(bin)}; python prog.py hello; echo rc=$?)`,
+		});
+		expect(textOf(ran)).toContain("argv hello");
+		expect(textOf(ran)).toContain("rc=0");
+		const empty = path.join(dir, "empty");
+		await fs.mkdir(empty);
+		const missing = await bash.execute("none", {
+			command: `(export PATH=${JSON.stringify(empty)}; python prog.py hello; echo rc=$?)`,
+		});
+		expect(textOf(missing)).toContain("no python or python3 on PATH");
+		expect(textOf(missing)).toContain("rc=127");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
 test("routed python composes in pipelines and reports errors with real exit codes", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-pipe-"));
 	try {

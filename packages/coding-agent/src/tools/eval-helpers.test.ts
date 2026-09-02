@@ -259,3 +259,37 @@ test("symbols(path) equals symbols(code=) for the same content", async () => {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
+
+test("write()/edit() expand a leading ~ like the shell and the read tool do", async () => {
+	const dir = await makeDir();
+	try {
+		const home = path.join(dir, "home");
+		await fs.mkdir(home);
+		const cell = await runCell(
+			dir,
+			[
+				"import os",
+				"_home = os.environ.get('HOME')",
+				`os.environ['HOME'] = ${JSON.stringify(home)}`,
+				"try:",
+				"    print(write('~/tilde.txt', 'one\\n'))",
+				"    edit('~/tilde.txt', 'one', 'two')",
+				"finally:",
+				"    if _home is None:",
+				"        os.environ.pop('HOME', None)",
+				"    else:",
+				"        os.environ['HOME'] = _home",
+			].join("\n"),
+		);
+		expect(cell.status).toBe("complete");
+		expect(cell.output).toContain(path.join(home, "tilde.txt"));
+		expect(await Bun.file(path.join(home, "tilde.txt")).text()).toBe("two\n");
+		const literalTilde = await fs.access(path.join(dir, "~")).then(
+			() => true,
+			() => false,
+		);
+		expect(literalTilde, "no literal ~/ directory under the kernel cwd").toBe(false);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});

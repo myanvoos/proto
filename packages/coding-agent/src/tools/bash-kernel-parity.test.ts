@@ -85,6 +85,48 @@ async function assertParity(label: string, code: string): Promise<void> {
 	}
 }
 
+test("running kernel cell streams status events live (hunks withheld until settle)", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-"));
+	try {
+		await Bun.write(path.join(dir, "f.txt"), "a\nb\n");
+		const command =
+			"python <<'PYEOF'\nfrom pathlib import Path\np = Path('f.txt')\np.write_text(p.read_text().replace('b', 'B'))\nprint('done')\nPYEOF";
+		const updates: Array<{ statusEvents?: unknown[] }> = [];
+		await new BashTool(stub(dir)).execute(
+			"live",
+			{ command } as never,
+			undefined,
+			(u: { details?: { statusEvents?: unknown[] } }) => {
+				updates.push(u.details ?? {});
+			},
+		);
+		const streamed = updates.filter(u => (u.statusEvents?.length ?? 0) > 0);
+		expect(streamed.length, "status events reach the live update stream").toBeGreaterThan(0);
+
+		// The partial render shows the Status head (⟦+N/-M⟧ stats) but withholds the
+		// hunk body — exactly the eval tool's partial behavior.
+		const partial = strip(
+			bashRenderer
+				.renderResult(
+					{
+						content: [{ type: "text", text: "done\n" }],
+						details: { statusEvents: streamed.at(-1)?.statusEvents },
+					},
+					{ isPartial: true },
+					theme,
+					{ command },
+				)
+				.render(90)
+				.join("\n"),
+		);
+		expect(partial).toContain("Status");
+		expect(/⟦[+-]/.test(partial), "partial shows +N/-M stats").toBe(true);
+		expect(/\+│/.test(partial), "partial withholds the hunk body").toBe(false);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
 test("python-in-bash renderResult is identical to the eval/kernel tool", async () => {
 	await assertParity("code+print", "def greet(n):\n    return n\n\nprint('hi', greet('x'))");
 	await assertParity("json-display", "display({'k': [1, 2, 3], 'nested': {'x': 1}})");

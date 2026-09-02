@@ -494,16 +494,17 @@ if "__proto_prelude_loaded__" not in globals():
         `local://`, via PI_EVAL_LOCAL_ROOTS) is rewritten under that root so it
         lands where `read local://…` resolves — not a literal `local:/`
         directory under the cwd (which `Path("local://x")` collapses to). Plain
-        paths are made absolute against the kernel cwd so the status events
+        paths get a leading `~` expanded (as the shell and the `read` tool do)
+        and are made absolute against the kernel cwd so the status events
         helpers emit can be matched against filesystem snapshots by the host
         (relative paths there would defeat its already-reported dedupe and
         duplicate every write as a walker event); any other `scheme://` is
         rejected."""
         if not isinstance(path, str):
-            return Path(os.path.abspath(path))
+            return Path(os.path.abspath(os.path.expanduser(path)))
         match = _PROTO_INTERNAL_URL_RE.match(path)
         if not match:
-            return Path(os.path.abspath(path))
+            return Path(os.path.abspath(os.path.expanduser(path)))
         scheme = match.group(1).lower()
         try:
             roots = json.loads(os.environ.get("PI_EVAL_LOCAL_ROOTS") or "{}")

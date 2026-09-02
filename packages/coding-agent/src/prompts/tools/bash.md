@@ -3,7 +3,7 @@ Runs commands in a persistent shell.
 - Set `cwd` instead of `cd`; `env: { NAME: "…" }` for multiline/quote-heavy values. `pty: true` only for terminal interaction (`sudo`, `ssh`).
 - Order-dependent commands: `&&` in one call; independent calls may run concurrently.
 - Internal URIs (`skill://`, `agent://`, …) auto-resolve to paths.
-{{#if hasShellBuiltins}}- Many aux utils on PATH (mkdir, jq, sed, xargs, sha256sum, mktemp, … incl. `errno`) — no need to check availability.{{/if}}
+{{#if hasShellBuiltins}}- Many aux utils on PATH (mkdir, jq, sed, xargs, sha256sum, mktemp, … incl. `errno`) — no need to check availability. `fd`/`rg` skip dotfiles and gitignored paths by default (`fd -u`, `rg -uu` lift both).{{/if}}
 {{#if asyncEnabled}}- `async: true` defers a finite command's result; does not extend `timeout`.{{/if}}
 
 Avoid `head`/`tail`/redirection: output is captured, truncated, linked as `artifact://<id>`. No truncation footer → displayed output is complete.

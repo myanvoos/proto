@@ -13,6 +13,7 @@ const SPEC: KernelLang = KernelLang {
 	code_flag:        "-c",
 	passthrough:      &["-u"],
 	fleet_extensions: &[".py"],
+	interpreters:     &["python3", "python"],
 };
 
 pub(crate) struct Python {

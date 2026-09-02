@@ -306,6 +306,39 @@ test("js kernel flush diffs from last reported content after helper writes", asy
 	}
 });
 
+test("js kernel write() expands a leading ~ like the Python helpers do", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-tilde-"));
+	try {
+		const home = path.join(dir, "home");
+		await fs.mkdir(home);
+		const tool = new EvalTool(stubSession(dir));
+		const code = [
+			'const prevHome = await env("HOME");',
+			`await env("HOME", ${JSON.stringify(home)});`,
+			"try {",
+			'  print(await write("~/tilde.txt", "from js\\n"));',
+			"} finally {",
+			'  if (prevHome !== undefined) await env("HOME", prevHome);',
+			"}",
+		].join("\n");
+		const result = await tool.execute("eval-js-tilde-test", {
+			language: "js",
+			code,
+			title: "js tilde write",
+			timeout: 60,
+		});
+		expect(result.details?.cells?.[0]?.status).toBe("complete");
+		expect(await Bun.file(path.join(home, "tilde.txt")).text()).toBe("from js\n");
+		const literalTilde = await fs.access(path.join(dir, "~")).then(
+			() => true,
+			() => false,
+		);
+		expect(literalTilde, "no literal ~/ directory under the kernel cwd").toBe(false);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("js kernel fs tracker reports deletes once with diff", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-delete-"));
 	const outside = path.join(os.tmpdir(), `eval-js-delete-${process.pid}-${Date.now()}.txt`);

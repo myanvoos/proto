@@ -24,6 +24,10 @@ pub(crate) struct KernelLang {
 	pub code_flag:        &'static str,
 	pub passthrough:      &'static [&'static str],
 	pub fleet_extensions: &'static [&'static str],
+	/// PATH names to try, in order, when the invocation falls through to a real
+	/// interpreter (the invoked builtin name is always tried first). Lets
+	/// `python file.py` find `python3` on hosts that ship no `python`.
+	pub interpreters:     &'static [&'static str],
 }
 
 pub(crate) fn kernel_lang_app(name: &'static str) -> ClapCommand {
@@ -44,9 +48,9 @@ pub(crate) fn run_kernel_lang(spec: &KernelLang, argv: &[OsString], host: &mut H
 	match plan(spec, argv, host) {
 		Plan::Cell { code, stdin_body } => match run_kernel_cell(spec, host, &code) {
 			CellOutcome::Exit(code) => code,
-			CellOutcome::FallThrough => spawn_external(host, argv, stdin_body),
+			CellOutcome::FallThrough => spawn_external(spec, host, argv, stdin_body),
 		},
-		Plan::External => spawn_external(host, argv, None),
+		Plan::External => spawn_external(spec, host, argv, None),
 	}
 }
 
@@ -269,10 +273,11 @@ fn handle_frame(host: &mut Host, line: &[u8], streamed: &mut bool) -> FrameOutco
 	}
 }
 
-fn spawn_external(host: &mut Host, argv: &[OsString], stdin_body: Option<Vec<u8>>) -> i32 {
+fn spawn_external(spec: &KernelLang, host: &mut Host, argv: &[OsString], stdin_body: Option<Vec<u8>>) -> i32 {
 	let program = host.name().to_string();
-	let Some(resolved) = resolve_on_path(host, &program) else {
-		host.error(format!("{program}: command not found"), 127);
+	let Some(resolved) = interpreter_candidates(spec, &program).find_map(|name| resolve_on_path(host, name)) else {
+		let tried = interpreter_candidates(spec, &program).collect::<Vec<_>>().join(" or ");
+		host.error(format!("{program}: command not found (no {tried} on PATH)"), 127);
 		return 127;
 	};
 	let mut command = ProcessCommand::new(resolved);
@@ -337,6 +342,11 @@ fn stdio_of(file: &OpenFile) -> Option<Stdio> {
 	let fd = file.try_borrow_as_fd().ok()?;
 	let owned = fd.try_clone_to_owned().ok()?;
 	Some(Stdio::from(owned))
+}
+
+/// The invoked name first, then the spec's alternates (`python` → `python3`).
+fn interpreter_candidates<'a>(spec: &'a KernelLang, program: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+	std::iter::once(program).chain(spec.interpreters.iter().copied().filter(move |name| *name != program))
 }
 
 fn resolve_on_path(host: &Host, program: &str) -> Option<PathBuf> {
