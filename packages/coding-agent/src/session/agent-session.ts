@@ -80,7 +80,12 @@ import {
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
 import { reset as resetCapabilities } from "../capability";
-import { type ConductorCommissionOutcome, type ConductorStats, SessionConductor } from "../conductor";
+import {
+	type ConductorCommissionOutcome,
+	type ConductorStats,
+	loadConductorTranscriptCost,
+	SessionConductor,
+} from "../conductor";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
@@ -1265,6 +1270,7 @@ export class AgentSession {
 			},
 			{
 				enabled: this.settings.get("conductor.enabled"),
+				initialCost: config.initialConductorCost,
 				toolsFactory: config.conductorToolsFactory,
 				createEditTool: config.advisorCreateEditTool,
 				getToolContext: config.advisorGetToolContext,
@@ -6167,7 +6173,7 @@ export class AgentSession {
 
 			if (switchingToDifferentSession) {
 				this.#advisors.restoreCost(await loadAdvisorTranscriptCosts(this.sessionFile));
-				this.#conductor.clearCost();
+				this.#conductor.restoreCost(await loadConductorTranscriptCost(this.sessionFile));
 			}
 			this.#bash.finishSessionTransition(bashTransition, true);
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {

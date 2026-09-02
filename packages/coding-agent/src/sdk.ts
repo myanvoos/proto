@@ -53,6 +53,7 @@ import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/con
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
+import { loadConductorTranscriptCost } from "./conductor";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -2671,7 +2672,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const ownedMcpManager = options.mcpManager ? undefined : mcpManager;
 
-		const initialAdvisorCosts = await loadAdvisorTranscriptCosts(sessionManager.getSessionFile());
+		const sessionFile = sessionManager.getSessionFile();
+		const initialAdvisorCosts = await loadAdvisorTranscriptCosts(sessionFile);
+		const initialConductorCost = await loadConductorTranscriptCost(sessionFile);
 		session = new AgentSession({
 			codeModeState,
 			advisorWatchdogPrompt,
@@ -2687,6 +2690,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			initialAdvisorCosts,
+			initialConductorCost,
 			settings,
 			scoutAllowedBySpawnPolicy: isScoutSpawnable(undefined, options.spawns ?? "*"),
 			evalKernelOwnerId,

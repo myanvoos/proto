@@ -14,6 +14,7 @@ import {
 import type { Settings } from "../config/settings";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
 import { type KernelShellBridgeHandle, registerKernelShellRun } from "../eval/shell-bridge";
+import type { EvalStatusEvent } from "../eval/types";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -40,7 +41,7 @@ import { detectBashKernelCell } from "./bash-kernel-cell";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
-import { astPreviewLines } from "./eval-render";
+import { astPreviewLines, renderStatusEvents } from "./eval-render";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import {
 	formatStyledTruncationWarning,
@@ -130,6 +131,7 @@ export interface BashToolInput {
 
 export interface BashToolDetails {
 	meta?: OutputMeta;
+	statusEvents?: EvalStatusEvent[];
 	timeoutSeconds?: number;
 	requestedTimeoutSeconds?: number;
 	timeoutDisabled?: boolean;
@@ -429,6 +431,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			terminalId?: string;
 			wallTimeMs?: number;
 			images?: readonly ImageContent[];
+			statusEvents?: readonly EvalStatusEvent[];
 		} = {},
 	): Promise<AgentToolResult<BashToolDetails>> {
 		const exitCode = result.exitCode;
@@ -464,6 +467,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 		if (options.wallTimeMs !== undefined) {
 			details.wallTimeMs = options.wallTimeMs;
+		}
+		if (options.statusEvents?.length) {
+			details.statusEvents = [...options.statusEvents];
 		}
 		if (failedExit) {
 			details.exitCode = exitCode;
@@ -593,6 +599,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						notices: options.notices ?? [],
 						wallTimeMs,
 						images: await this.#drainBridgeImages(pyBridge),
+						statusEvents: pyBridge?.drainStatusEvents(),
 					});
 					const finalText = this.#extractTextResult(finalResult);
 					latestText = finalText;
@@ -1119,6 +1126,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				notices: pendingNotices,
 				wallTimeMs,
 				images: await this.#drainBridgeImages(pyBridge),
+				statusEvents: pyBridge?.drainStatusEvents(),
 			});
 		} finally {
 			pyBridge?.dispose();
@@ -1206,7 +1214,15 @@ function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererC
 }
 
 export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
+	// Kernel-routed `python`/`node` cells animate their preview while running,
+	// matching the eval tool (plain shell commands keep the default behavior).
+	const isKernelCellArgs = (args: unknown): boolean => {
+		const command = config.resolveCommand?.(args as TArgs);
+		return typeof command === "string" && detectBashKernelCell(command) !== undefined;
+	};
 	return {
+		animatedPendingPreview: isKernelCellArgs,
+		animatedPartialResult: isKernelCellArgs,
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
 			const outputBlock = new CachedOutputBlock();
@@ -1401,6 +1417,13 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const cmdLines = args
 						? formatBashCommandLines(renderArgs, uiTheme, expanded ? undefined : { width })
 						: undefined;
+					// Kernel-cell status events (write/delete hunks, …) render like an
+					// eval cell; hunks are withheld while the result is still partial.
+					const statusEvents = details?.statusEvents ?? [];
+					const statusLines =
+						statusEvents.length > 0
+							? renderStatusEvents(statusEvents, uiTheme, expanded, width, { suppressDiffs: isPartial })
+							: [];
 					const framed = outputBlock.render(
 						{
 							header,
@@ -1409,6 +1432,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								{
 									lines: capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),
 								},
+								...(statusLines.length > 0
+									? [{ label: uiTheme.fg("toolTitle", "Status"), lines: statusLines }]
+									: []),
 								{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
 							],
 							width,

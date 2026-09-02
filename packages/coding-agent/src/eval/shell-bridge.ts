@@ -15,12 +15,14 @@ import type { EvalStatusEvent } from "./types";
 export interface KernelShellBridgeHandle {
 	env: Record<string, string>;
 	drainImages(): ImageContent[];
+	drainStatusEvents(): EvalStatusEvent[];
 	dispose(): void;
 }
 
 interface RunContext {
 	session: ToolSession;
 	images: ImageContent[];
+	statusEvents: EvalStatusEvent[];
 	active: Set<AbortController>;
 }
 
@@ -43,7 +45,7 @@ let listener: TCPSocketListener<SocketState> | undefined;
 export function registerKernelShellRun(session: ToolSession): KernelShellBridgeHandle {
 	const server = ensureListener();
 	const token = crypto.randomUUID();
-	const context: RunContext = { session, images: [], active: new Set() };
+	const context: RunContext = { session, images: [], statusEvents: [], active: new Set() };
 	runs.set(token, context);
 	return {
 		env: {
@@ -57,6 +59,7 @@ export function registerKernelShellRun(session: ToolSession): KernelShellBridgeH
 			),
 		},
 		drainImages: () => context.images.splice(0),
+		drainStatusEvents: () => context.statusEvents.splice(0),
 		dispose: () => {
 			runs.delete(token);
 			for (const abort of context.active) abort.abort();
@@ -137,13 +140,6 @@ function parseRequest(line: string): CellRequest | undefined {
 	};
 }
 
-function formatStatusLine(event: EvalStatusEvent): string | undefined {
-	if ((event.op !== "write" && event.op !== "delete") || typeof event.path !== "string") return undefined;
-	let line = `[${event.op} ${event.path}]`;
-	if (typeof event.diff === "string" && event.diff.length > 0) line += `\n${event.diff}`;
-	return `${line}\n`;
-}
-
 async function handleRequest(socket: Socket<SocketState>, line: string): Promise<void> {
 	const request = parseRequest(line);
 	const context = request ? runs.get(request.token) : undefined;
@@ -163,7 +159,11 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 	const abort = new AbortController();
 	socket.data.abort = abort;
 	context.active.add(abort);
-	const statusEvents: EvalStatusEvent[] = [];
+	// Status events (write/delete hunks, env, agent, …) are surfaced structurally
+	// to the bash tool (drainStatusEvents → rendered like an eval cell), not
+	// flattened into the stdout byte stream — matching the eval tool, whose
+	// model-facing text is stdout only and whose hunks are a TUI affordance.
+	const cellStatusEvents: EvalStatusEvent[] = [];
 	try {
 		const result = await backend.execute(request.code, {
 			cwd: session.cwd,
@@ -177,9 +177,8 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 			onChunk: chunk => send(socket, { t: "o", d: chunk }),
 			onStatus: event => {
 				if (isEvalTimeoutControlEvent(event)) return;
-				statusEvents.push(event);
-				const rendered = formatStatusLine(event);
-				if (rendered) send(socket, { t: "o", d: rendered });
+				cellStatusEvents.push(event);
+				context.statusEvents.push(event);
 			},
 		});
 		for (const output of result.displayOutputs) {
@@ -188,7 +187,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 		}
 		const displayText = formatDisplayOutputsForText(result.displayOutputs);
 		if (displayText) send(socket, { t: "o", d: `${displayText}\n` });
-		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, statusEvents);
+		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, cellStatusEvents);
 		finish(socket, { t: "x", c: result.cancelled ? 130 : (result.exitCode ?? 0) });
 	} catch (err) {
 		logger.warn("kernel shell bridge cell failed", { error: err instanceof Error ? err.message : String(err) });

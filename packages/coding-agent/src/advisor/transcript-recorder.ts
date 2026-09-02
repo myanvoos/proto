@@ -22,6 +22,35 @@ export function isAdvisorTranscriptName(name: string): boolean {
 	);
 }
 
+/**
+ * Sums assistant-message cost across one reviewer transcript file. A missing, malformed, or unreadable file
+ * contributes 0 — cost restore is best-effort by contract.
+ */
+export async function loadReviewerTranscriptCost(transcriptFile: string): Promise<number> {
+	let total = 0;
+	let validHeader: boolean | undefined;
+	try {
+		await visitEntriesFromFileStream(transcriptFile, entry => {
+			const isObject = typeof entry === "object" && entry !== null;
+			if (validHeader === undefined) {
+				validHeader = isObject && entry.type === "session" && typeof entry.id === "string";
+				return;
+			}
+
+			if (!validHeader || !isObject || entry.type !== "message") return;
+			const message = entry.message;
+			if (!message || typeof message !== "object" || message.role !== "assistant") return;
+
+			const total_ = message.usage?.cost?.total;
+			if (typeof total_ === "number" && Number.isFinite(total_)) total += total_;
+		});
+	} catch (err) {
+		logger.debug("advisor transcript cost read failed", { file: transcriptFile, err: String(err) });
+		return 0;
+	}
+	return total;
+}
+
 export async function loadAdvisorTranscriptCosts(sessionFile: string | undefined): Promise<Map<string, number>> {
 	const costs = new Map<string, number>();
 	if (!sessionFile?.endsWith(JSONL_SUFFIX)) return costs;
@@ -33,27 +62,7 @@ export async function loadAdvisorTranscriptCosts(sessionFile: string | undefined
 			dirent.name === ADVISOR_TRANSCRIPT_FILENAME
 				? ""
 				: dirent.name.slice(`${ADVISOR_TRANSCRIPT_STEM}.`.length, -JSONL_SUFFIX.length);
-		let total = 0;
-		let validHeader: boolean | undefined;
-		try {
-			await visitEntriesFromFileStream(path.join(directory, dirent.name), entry => {
-				const isObject = typeof entry === "object" && entry !== null;
-				if (validHeader === undefined) {
-					validHeader = isObject && entry.type === "session" && typeof entry.id === "string";
-					return;
-				}
-
-				if (!validHeader || !isObject || entry.type !== "message") return;
-				const message = entry.message;
-				if (!message || typeof message !== "object" || message.role !== "assistant") return;
-
-				const total_ = message.usage?.cost?.total;
-				if (typeof total_ === "number" && Number.isFinite(total_)) total += total_;
-			});
-		} catch (err) {
-			logger.debug("advisor transcript cost read failed", { file: dirent.name, err: String(err) });
-			continue;
-		}
+		const total = await loadReviewerTranscriptCost(path.join(directory, dirent.name));
 		if (total > 0) costs.set(slug, total);
 	}
 	return costs;

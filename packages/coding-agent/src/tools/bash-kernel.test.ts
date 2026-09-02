@@ -114,7 +114,9 @@ test("kernel cells honor the shell cwd and surface write events", async () => {
 			command: "cd sub && python <<'EOF'\nwrite('rel.txt', 'from-kernel\\n')\nprint('wrote')\nEOF",
 		});
 		expect(await Bun.file(path.join(dir, "sub", "rel.txt")).text()).toBe("from-kernel\n");
-		expect(textOf(result)).toContain("[write");
+		const writes = (result.details?.statusEvents ?? []).filter(event => event.op === "write");
+		expect(writes.length, "write event surfaced as structured status, not stdout text").toBe(1);
+		expect(textOf(result)).not.toContain("[write");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

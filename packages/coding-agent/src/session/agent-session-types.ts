@@ -140,6 +140,9 @@ export interface AgentSessionConfig {
 
 	initialAdvisorCosts?: ReadonlyMap<string, number>;
 
+	/** Restored conductor spend for the session being loaded (see `loadConductorTranscriptCost`). */
+	initialConductorCost?: number;
+
 	preferWebsockets?: boolean;
 
 	codexResetCoordinator?: CodexAutoRedeemCoordinator;

@@ -167,6 +167,7 @@ export class SessionConductor {
 	#cost = 0;
 
 	#pendingGoalId: string | undefined;
+	#pendingGoalUpdatedAt: number | undefined;
 	#rejectionGoalId: string | undefined;
 	#rejectionCount = 0;
 	#gateTimer: NodeJS.Timeout | undefined;
@@ -232,8 +233,18 @@ export class SessionConductor {
 			this.#clearGate();
 			return;
 		}
-		if (this.#pendingGoalId === goal.id && (this.#startWhenIdle || this.#verificationInFlight)) return;
+		// The gate owns one pend at a time, keyed on id + updatedAt: a rejected goal re-pends under the same id
+		// with a fresh updatedAt, and that re-pend is a new claim that must be re-armed and re-audited — the
+		// in-flight verification for the previous pend has its ruling discarded as stale.
+		if (
+			this.#pendingGoalId === goal.id &&
+			this.#pendingGoalUpdatedAt === goal.updatedAt &&
+			(this.#startWhenIdle || this.#verificationInFlight)
+		) {
+			return;
+		}
 		this.#pendingGoalId = goal.id;
+		this.#pendingGoalUpdatedAt = goal.updatedAt;
 		if (this.#escalated) return;
 		this.#armGate();
 		this.#startWhenIdle = true;
@@ -274,7 +285,32 @@ export class SessionConductor {
 	#clearGate(): void {
 		this.#clearGateTimer();
 		this.#pendingGoalId = undefined;
+		this.#pendingGoalUpdatedAt = undefined;
 		this.#startWhenIdle = false;
+	}
+
+	/**
+	 * Restores gate tracking for a goal whose completion is still pended. Called when the conductor (re)gains the
+	 * ability to verify — `/conduct on` after an escalation or `/conduct off`, a conductor model-role change, a
+	 * conversation boundary reset, or a verification turn settling over a re-pend. Without this the claim strands:
+	 * `#pendCompletion` refuses a second pend, and no `goal_updated` fires to re-arm the gate. Deliberate parks
+	 * (quota exhausted, turn error, no model) stay parked — only an explicit re-enable clears those.
+	 */
+	#rearmPendedVerification(): void {
+		if (!this.#enabled || this.#host.isDisposed()) return;
+		if (this.#verificationInFlight || this.#commissioningInFlight || this.#escalated) return;
+		if (this.#status !== "running") return;
+		const goal = this.#host.currentGoal();
+		if (goal?.status !== "verifying") return;
+		const tracked =
+			this.#pendingGoalId === goal.id &&
+			this.#pendingGoalUpdatedAt === goal.updatedAt &&
+			this.#gateTimer !== undefined;
+		this.#pendingGoalId = goal.id;
+		this.#pendingGoalUpdatedAt = goal.updatedAt;
+		this.#startWhenIdle = true;
+		if (!tracked) this.#armGate();
+		if (!this.#host.agent.state.isStreaming) this.#startVerification();
 	}
 
 	/**
@@ -295,18 +331,27 @@ export class SessionConductor {
 	// ---------------------------------------------------------------- verification turn
 
 	#startVerification(): void {
-		if (!this.#startWhenIdle || this.#verificationInFlight || this.#escalated) return;
+		if (!this.#enabled || !this.#startWhenIdle || this.#verificationInFlight || this.#escalated) return;
 		// The single transport slot is built for one turn kind at a time; a commissioning turn in flight owns it.
 		if (this.#commissioningInFlight) return;
 		if (this.#host.isDisposed()) return;
 		const goal = this.#host.currentGoal();
-		if (goal?.status !== "verifying" || goal.id !== this.#pendingGoalId) return;
+		if (
+			goal?.status !== "verifying" ||
+			goal.id !== this.#pendingGoalId ||
+			goal.updatedAt !== this.#pendingGoalUpdatedAt
+		) {
+			return;
+		}
 		this.#startWhenIdle = false;
 		this.#verificationInFlight = true;
 		void this.#runVerification(goal)
 			.catch(error => logger.warn("conductor verification failed", { err: String(error) }))
 			.finally(() => {
 				this.#verificationInFlight = false;
+				// A claim pended (or re-pended) while this turn ran was parked behind it; re-arm the gate for it and
+				// start now that the slot is free — still never mid-primary-turn. Deliberate parks stay parked.
+				this.#rearmPendedVerification();
 			});
 	}
 
@@ -346,7 +391,7 @@ export class SessionConductor {
 			this.#escalate("The conductor returned no verdict after repeated attempts.");
 			return;
 		}
-		await this.#applyRuling(ruling);
+		await this.#applyRuling(goal, ruling);
 	}
 
 	// ---------------------------------------------------------------- commissioning turn
@@ -390,8 +435,8 @@ export class SessionConductor {
 			// the `bash` grant that commissioning deliberately does not hold. Gate state is untouched.
 			this.#disposeInstance();
 			// A verdict that pended while this turn ran (the user can still `/goal set` by hand mid-commission) was
-			// parked by `#startVerification`; start it now that the slot is free, still never mid-primary-turn.
-			if (!this.#host.agent.state.isStreaming) this.#startVerification();
+			// parked behind it; re-arm the gate and start it now that the slot is free, still never mid-primary-turn.
+			this.#rearmPendedVerification();
 		}
 	}
 
@@ -500,7 +545,23 @@ export class SessionConductor {
 		return false;
 	}
 
-	async #applyRuling(ruling: ConductorRuling): Promise<void> {
+	async #applyRuling(goal: Goal, ruling: ConductorRuling): Promise<void> {
+		// The audit graded a snapshot; the claim it pended may have been paused, re-pended, or replaced while the
+		// turn was in flight. A ruling may only resolve the exact pend it audited — anything else is stale and
+		// discarded (the gate re-arms for the current claim when the turn settles).
+		const current = this.#host.currentGoal();
+		if (
+			!current ||
+			current.id !== goal.id ||
+			current.updatedAt !== goal.updatedAt ||
+			current.status !== "verifying"
+		) {
+			logger.debug("conductor discarded a stale ruling; the pended claim changed during the audit", {
+				auditedGoalId: goal.id,
+				currentGoalId: current?.id,
+			});
+			return;
+		}
 		this.#clearGateTimer();
 		const runtime = this.#host.goalRuntime();
 		if (!runtime) return;
@@ -512,7 +573,7 @@ export class SessionConductor {
 
 		if (ruling.verdict === "accept") {
 			try {
-				await runtime.acceptCompletion();
+				await runtime.acceptCompletion(goal.updatedAt);
 			} catch (error) {
 				logger.warn("conductor accept failed", { err: String(error) });
 				return;
@@ -534,7 +595,7 @@ export class SessionConductor {
 		}
 
 		try {
-			await runtime.rejectCompletion();
+			await runtime.rejectCompletion(goal.updatedAt);
 		} catch (error) {
 			logger.warn("conductor reject failed", { err: String(error) });
 			return;
@@ -542,6 +603,7 @@ export class SessionConductor {
 		this.#rejectionCount++;
 		this.#startWhenIdle = false;
 		this.#pendingGoalId = undefined;
+		this.#pendingGoalUpdatedAt = undefined;
 
 		// `deliverAs` only matters while the primary is streaming; verification always runs at a settled turn
 		// boundary, so this lands on the idle branch and drives one fresh turn. That turn's `agent_end` is what
@@ -758,6 +820,9 @@ export class SessionConductor {
 		this.#escalated = false;
 		this.#ruling = undefined;
 		this.#proposal = undefined;
+		// The pending verdict was invalidated with the conversation boundary; if the goal is still pended, re-arm
+		// the gate so the claim is audited again instead of stranding.
+		this.#rearmPendedVerification();
 		const instance = this.#instance;
 		if (!instance) return;
 		instance.resetForConversationBoundary();
@@ -780,6 +845,8 @@ export class SessionConductor {
 		const current = this.#instance?.agent.state.model;
 		if (current && formatModelString(current) !== formatModelString(selection.model)) this.stopRuntime();
 		if (this.#status === "no_model") this.#status = "running";
+		// A swap mid-verification drops the pended claim with the old slot; re-arm it under the new model.
+		this.#rearmPendedVerification();
 	}
 
 	refreshProviderIdentity(): void {
@@ -810,6 +877,11 @@ export class SessionConductor {
 		this.#cost = 0;
 	}
 
+	/** Replaces the accumulated spend; session switches restore it from the conductor transcript. */
+	restoreCost(cost: number): void {
+		this.#cost = cost;
+	}
+
 	// ---------------------------------------------------------------- command surface
 
 	setEnabled(enabled: boolean): boolean {
@@ -827,6 +899,9 @@ export class SessionConductor {
 		this.#rejectionCount = 0;
 		this.#rejectionGoalId = undefined;
 		this.#status = this.#resolveModelSelection() ? "running" : "no_model";
+		// A claim pended before the conductor was halted or disabled is still waiting; re-arm it so the promise in
+		// the escalation notice holds. Parks rooted in quota/error clear here too — re-enabling is the retry.
+		this.#rearmPendedVerification();
 		return this.#status === "running";
 	}
 

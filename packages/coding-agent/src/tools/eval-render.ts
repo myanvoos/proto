@@ -475,7 +475,7 @@ function isFileOpEvent(event: EvalStatusEvent): boolean {
 	return event.op === "write" || event.op === "delete";
 }
 
-function renderStatusEvents(
+export function renderStatusEvents(
 	events: EvalStatusEvent[],
 	theme: Theme,
 	expanded: boolean,

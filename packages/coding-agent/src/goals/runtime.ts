@@ -532,11 +532,14 @@ export class GoalRuntime {
 		});
 	}
 
-	async acceptCompletion(): Promise<Goal> {
+	async acceptCompletion(expectedUpdatedAt?: number): Promise<Goal> {
 		return await this.#withAccounting(async () => {
 			const state = this.#getStateClone();
 			if (state?.goal.status !== "verifying") {
 				throw new Error("no completion is pending verification");
+			}
+			if (expectedUpdatedAt !== undefined && state.goal.updatedAt !== expectedUpdatedAt) {
+				throw new Error("the pended completion changed while the verdict was being applied");
 			}
 			state.enabled = false;
 			state.goal.status = "complete";
@@ -550,11 +553,14 @@ export class GoalRuntime {
 		});
 	}
 
-	async rejectCompletion(): Promise<GoalModeState> {
+	async rejectCompletion(expectedUpdatedAt?: number): Promise<GoalModeState> {
 		return await this.#withAccounting(async () => {
 			const state = this.#getStateClone();
 			if (state?.goal.status !== "verifying") {
 				throw new Error("no completion is pending verification");
+			}
+			if (expectedUpdatedAt !== undefined && state.goal.updatedAt !== expectedUpdatedAt) {
+				throw new Error("the pended completion changed while the verdict was being applied");
 			}
 			state.enabled = true;
 			state.goal.status = "active";
