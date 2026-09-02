@@ -7,9 +7,11 @@ import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
 import { renderDefaultToolExecution } from "./default-renderer";
-import type { Tool } from "./index";
+import type { Tool, ToolSession } from "./index";
 import { replaceTabs } from "./render-utils";
 import type { ToolRenderer } from "./renderers";
+import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
+import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
 import { renderError, ToolAbortError, ToolError } from "./tool-errors";
 
 export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
@@ -18,7 +20,7 @@ export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 	web_search: true,
 };
 
-const XDEV_TRANSPORT_TOOLS: Record<string, true> = { read: true, write: true };
+const XDEV_TRANSPORT_TOOLS: Record<string, true> = { read: true, bash: true };
 
 type XdevDocsMode = "inline" | "builtins" | "catalog";
 
@@ -63,7 +65,7 @@ function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string 
 		"```ts",
 		`type Args = ${schema};`,
 		"```",
-		`Execute by writing JSON to ${XD_URL_PREFIX}${inst.name}.`,
+		`Execute from bash: \`xd ${inst.name} '<json>'\` (or \`xd ${inst.name} ?\` for these docs).`,
 	].join("\n");
 }
 
@@ -204,7 +206,7 @@ export function xdevListing(state: XdevState): string {
 		`${XD_URL_PREFIX} ${state.mountedNames.size} mounted tool devices.`,
 		...rows,
 		"",
-		`Read ${XD_URL_PREFIX}<tool> for docs + JSON schema; write the JSON args object to ${XD_URL_PREFIX}<tool> to execute. Active top-level tools accept the same dispatch.`,
+		`Read ${XD_URL_PREFIX}<tool> for docs + JSON schema; run \`xd <tool> '<json>'\` in bash to execute. Active top-level tools accept the same dispatch.`,
 	].join("\n");
 }
 
@@ -343,6 +345,59 @@ export async function dispatchXdevTool(
 			xdev,
 		};
 	}
+}
+
+export type XdBashDispatch = { kind: "listing" } | { kind: "device"; name: string; content: string };
+
+export function parseXdBashCommand(argv: readonly string[]): XdBashDispatch | undefined {
+	if (argv.length === 0 || argv[0] !== "xd") return undefined;
+	const rest = argv.slice(1);
+	if (rest.length === 0 || (rest.length === 1 && HELP_CONTENT_RE.test(rest[0]))) return { kind: "listing" };
+	const [name, ...args] = rest;
+	if (isResolutionDeviceName(name) || name === REPORT_ISSUE_DEVICE_NAME) {
+		return { kind: "device", name, content: args.join(" ") };
+	}
+	if (args.length === 0) return { kind: "device", name, content: "" };
+	if (args.length === 1) return { kind: "device", name, content: args[0] };
+	return undefined;
+}
+
+export async function dispatchXdTarget(
+	session: ToolSession,
+	name: string | undefined,
+	content: string,
+	options: {
+		toolCallId: string;
+		signal?: AbortSignal;
+		onUpdate?: AgentToolUpdateCallback;
+		context?: AgentToolContext;
+	},
+): Promise<AgentToolResult<unknown>> {
+	if (name === REPORT_ISSUE_DEVICE_NAME) {
+		const { result, xdev } = await dispatchReportIssueDevice(session, content);
+		return { ...result, details: { xdev } };
+	}
+	if (name !== undefined && isResolutionDeviceName(name)) {
+		const { result, xdev } = await dispatchResolutionDevice(session, name, content);
+		return { ...result, details: { xdev } };
+	}
+	const xdev = session.xdev;
+	if (!xdev) {
+		throw new ToolError("xd:// is not mounted in this session.");
+	}
+	if (!name) {
+		throw new ToolError(`Cannot dispatch to ${XD_URL_PREFIX} itself — pick a device:\n${xdevListing(xdev)}`);
+	}
+	const { result, xdev: dispatch } = await dispatchXdevTool(
+		xdev,
+		name,
+		content,
+		options.toolCallId,
+		options.signal,
+		options.onUpdate,
+		options.context,
+	);
+	return { ...result, details: { xdev: dispatch } };
 }
 
 function resolveDeviceRenderer(

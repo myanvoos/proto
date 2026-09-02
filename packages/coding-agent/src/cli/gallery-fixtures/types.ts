@@ -1,5 +1,3 @@
-import type { EditMode } from "../../edit";
-
 export interface GalleryResult {
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 	details?: unknown;
@@ -10,8 +8,6 @@ export type GalleryFixtureState = "streaming" | "progress" | "success" | "error"
 
 export interface GalleryFixture {
 	label?: string;
-
-	editMode?: EditMode;
 
 	renderState?: (
 		state: GalleryFixtureState,

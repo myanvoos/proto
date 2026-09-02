@@ -212,7 +212,7 @@ Run `proto <command> --help` for each command's own flags and examples.
 | `config` | Manage configuration settings. | [config usage](./config-usage.md), [settings](./settings.md) |
 | `dry-balance` | Dry-run OAuth account balancing across random session ids. | |
 | `gc` | Run storage garbage collection. | |
-| `grep` | Test the grep tool from the CLI. (The [`grep` tool](./tools/grep.md) is a separate agent tool.) | |
+| `grep` | Search files with the native grep engine. | |
 | `gallery` | Preview tool renderers across streaming, in-progress, success, and failure states. | |
 | `grievances` | View, clean, or push reported tool issues (auto-QA grievances). | |
 | `install` | Install or link an extension package (alias of `plugin install` / `plugin link`). | [extensions](./extensions.md) |

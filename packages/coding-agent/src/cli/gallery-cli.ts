@@ -1,6 +1,5 @@
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { TUI } from "@oh-my-pi/pi-tui";
-import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { ToolExecutionComponent } from "../modes/components/tool-execution";
 import { initTheme, theme } from "../modes/theme/theme";
@@ -75,8 +74,8 @@ const GENERIC_ERROR: GalleryResult = {
 };
 
 function fakeToolFor(name: string, fixture: GalleryFixture | undefined): AgentTool | undefined {
-	if (!fixture?.label && !fixture?.editMode && !fixture?.customRendered) return undefined;
-	const tool: Record<string, unknown> = { name, label: fixture.label ?? name, mode: fixture.editMode };
+	if (!fixture?.label && !fixture?.customRendered) return undefined;
+	const tool: Record<string, unknown> = { name, label: fixture.label ?? name };
 	if (fixture.customRendered) {
 		const renderer = toolRenderers[fixture.renderer ?? name] as
 			| { renderCall?: unknown; renderResult?: unknown; mergeCallAndResult?: unknown; inline?: unknown }
@@ -123,7 +122,6 @@ export async function renderGalleryState(
 		{ showImages: false, useBuiltInRenderer: !fixture.customRendered },
 		tool,
 		ui,
-		getProjectDir(),
 	);
 	component.setExpanded(expanded);
 
@@ -136,8 +134,6 @@ export async function renderGalleryState(
 	} else if (state === "error") {
 		component.updateResult(fixture.errorResult ?? GENERIC_ERROR, false);
 	}
-
-	await component.whenPreviewSettled();
 
 	const lines = component.render(width);
 	component.stopAnimation();

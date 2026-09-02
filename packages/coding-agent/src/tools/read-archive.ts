@@ -190,14 +190,12 @@ export async function readArchive(
 					sourcePath: resolvedArchivePath.absolutePath,
 					entityLabel: "archive entry",
 					raw,
-					immutable: true,
 				})
 			: buildInMemoryTextResult(session, text, selToOffsetLimit(sel).offset, selToOffsetLimit(sel).limit, {
 					details,
 					sourcePath: resolvedArchivePath.absolutePath,
 					entityLabel: "archive entry",
 					raw,
-					immutable: true,
 				});
 	const firstText = result.content.find((content): content is TextContent => content.type === "text");
 	if (firstText) {

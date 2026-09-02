@@ -2,7 +2,7 @@
   "type": "module",
   "name": "@oh-my-pi/pi-coding-agent",
   "version": "18.0.0",
-  "description": "Coding agent CLI with read, bash, edit, write tools and session management",
+  "description": "Coding agent CLI with bash, read tools and session management",
   "homepage": "https://proto.sh",
   "author": "Stencil Labs, Inc.",
   "contributors": [
@@ -38,7 +38,6 @@
   },
   "dependencies": {
     "@babel/parser": "catalog:",
-    "@oh-my-pi/hashline": "catalog:",
     "@oh-my-pi/omptype": "catalog:",
     "@oh-my-pi/pi-agent-core": "catalog:",
     "@oh-my-pi/pi-ai": "catalog:",
@@ -205,18 +204,6 @@
     "./discovery/*": {
       "types": "./src/discovery/*.ts",
       "import": "./src/discovery/*.ts"
-    },
-    "./edit": {
-      "types": "./src/edit/index.ts",
-      "import": "./src/edit/index.ts"
-    },
-    "./edit/*": {
-      "types": "./src/edit/*.ts",
-      "import": "./src/edit/*.ts"
-    },
-    "./edit/modes/*": {
-      "types": "./src/edit/modes/*.ts",
-      "import": "./src/edit/modes/*.ts"
     },
     "./exa": {
       "types": "./src/exa/index.ts",

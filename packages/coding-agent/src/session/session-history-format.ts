@@ -100,17 +100,6 @@ function formatToolCallPrimaryArg(name: string, args: Record<string, unknown> | 
 		if (note) return oneLine(note);
 		if (severity) return oneLine(severity);
 	}
-	if (name === "grep") {
-		const pattern = primaryArgValue(args.pattern);
-		const paths = primaryArgValue(args.path) || primaryArgValue(args.paths);
-		if (pattern && paths) return oneLine(`${pattern} @ ${paths}`);
-		if (pattern) return oneLine(pattern);
-		if (paths) return oneLine(paths);
-	}
-	if (name === "glob") {
-		const paths = primaryArgValue(args.path) || primaryArgValue(args.paths);
-		if (paths) return oneLine(paths);
-	}
 	for (const key of PRIMARY_ARG_KEYS) {
 		const value = args[key];
 		const summary = primaryArgValue(value);

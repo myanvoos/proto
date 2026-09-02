@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+- Removed `supportsHashlineEdits` and `isStep37FlashModelId` from `@oh-my-pi/pi-catalog/identity`: the hashline edit mode they gated no longer exists. Kimi/MiMo/DeepSeek-V4-Flash classifiers are unchanged.
+
 ### Added
 - `Model.input` modality list now admits `audio` and `video` alongside `text` and `image`, so discovered models can advertise media input.
 

@@ -20,7 +20,6 @@ import {
 	matchesSelectUp,
 } from "../../modes/utils/keybinding-matchers";
 import type { SessionTreeNode } from "../../session/session-entries";
-import { toPathList } from "../../tools/path-utils";
 import { shortenPath } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
@@ -680,14 +679,6 @@ class TreeList implements Component {
 				}
 				return `[read: ${display}]`;
 			}
-			case "write": {
-				const path = shortenPath(String(args.path || args.file_path || ""));
-				return `[write: ${path}]`;
-			}
-			case "edit": {
-				const path = shortenPath(String(args.path || args.file_path || ""));
-				return `[edit: ${path}]`;
-			}
 			case "bash": {
 				const rawCmd = String(args.command || "");
 				const cmd = rawCmd
@@ -695,29 +686,6 @@ class TreeList implements Component {
 					.trim()
 					.slice(0, 50);
 				return `[bash: ${cmd}${rawCmd.length > 50 ? "..." : ""}]`;
-			}
-			case "grep": {
-				const pattern = String(args.pattern || "");
-				const searchPathsInput =
-					typeof args.paths === "string" || Array.isArray(args.paths)
-						? args.paths
-						: typeof args.path === "string"
-							? args.path
-							: undefined;
-				const paths = toPathList(searchPathsInput);
-				const scope = paths.length > 0 ? paths.join(", ") : ".";
-				return `[grep: /${pattern}/ in ${shortenPath(scope)}]`;
-			}
-			case "glob": {
-				const globInput =
-					typeof args.path === "string"
-						? args.path
-						: typeof args.paths === "string" || Array.isArray(args.paths)
-							? args.paths
-							: undefined;
-				const paths = toPathList(globInput);
-				const scope = paths.length > 0 ? paths.join(", ") : ".";
-				return `[glob: ${shortenPath(scope)}]`;
 			}
 			case "ls": {
 				const path = shortenPath(String(args.path || "."));

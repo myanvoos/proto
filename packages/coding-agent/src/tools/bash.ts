@@ -59,10 +59,13 @@ import {
 	previewWindowRows,
 	replaceTabs,
 } from "./render-utils";
-import { extractLeadingCdTarget } from "./shell-tokenize";
+import { REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
+import { isResolutionDeviceName } from "./resolve";
+import { extractLeadingCdTarget, tokenizeShellSegments } from "./shell-tokenize";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
+import { dispatchXdTarget, parseXdBashCommand, xdevListing } from "./xdev";
 
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
 
@@ -130,6 +133,7 @@ export interface BashToolInput {
 }
 
 export interface BashToolDetails {
+	xdev?: unknown;
 	meta?: OutputMeta;
 	statusEvents?: EvalStatusEvent[];
 	jsonOutputs?: unknown[];
@@ -366,6 +370,34 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			),
 		);
 		this.parameters = this.#asyncEnabled ? bashSchemaWithAsync : bashSchemaBase;
+	}
+
+	async #dispatchXdBash(
+		command: string,
+		toolCallId: string,
+		signal: AbortSignal | undefined,
+		onUpdate: AgentToolUpdateCallback<BashToolDetails> | undefined,
+		ctx: AgentToolContext | undefined,
+	): Promise<AgentToolResult<BashToolDetails> | undefined> {
+		const segments = tokenizeShellSegments(command);
+		if (segments.length !== 1) return undefined;
+		const parsed = parseXdBashCommand(segments[0]);
+		if (!parsed) return undefined;
+		if (parsed.kind === "listing") {
+			const xdev = this.session.xdev;
+			const text = xdev
+				? xdevListing(xdev)
+				: "xd:// is not mounted in this session. Enable tools.xdev to mount discoverable tools as xd:// devices.";
+			return { content: [{ type: "text", text }], details: {} };
+		}
+		const special = parsed.name === REPORT_ISSUE_DEVICE_NAME || isResolutionDeviceName(parsed.name);
+		if (!special && this.session.xdev === undefined) return undefined;
+		return (await dispatchXdTarget(this.session, parsed.name, parsed.content, {
+			toolCallId,
+			signal,
+			onUpdate: onUpdate as AgentToolUpdateCallback | undefined,
+			context: ctx,
+		})) as AgentToolResult<BashToolDetails>;
 	}
 
 	#formatResultOutput(result: BashResult | BashInteractiveResult): string {
@@ -688,6 +720,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				}
 			}
 		}
+
+		const xdResult = await this.#dispatchXdBash(command, _toolCallId, signal, onUpdate, ctx);
+		if (xdResult) return xdResult;
 
 		const internalUrlOptions: InternalUrlExpansionOptions = {
 			skills: this.session.skills ?? [],

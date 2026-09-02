@@ -28,7 +28,6 @@ interface AgentTranscriptViewerDeps {
 
 	isBuiltInTool?: (name: string) => boolean;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
-	cwd: string;
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
 	expandKeys: KeyId[];
@@ -134,7 +133,6 @@ export class AgentTranscriptViewer implements Component {
 			getTool: deps.getTool,
 			isBuiltInTool: deps.isBuiltInTool,
 			getMessageRenderer: deps.getMessageRenderer,
-			cwd: deps.cwd,
 			hideThinkingBlock: deps.hideThinkingBlock,
 			proseOnlyThinking: deps.proseOnlyThinking,
 			requestRender: deps.requestRender,

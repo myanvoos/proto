@@ -1,7 +1,6 @@
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isPromise } from "node:util/types";
-import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import {
 	type AfterToolCallContext,
 	type AfterToolCallResult,
@@ -99,7 +98,6 @@ import {
 	onModelRolesChanged,
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
-import { getFileSnapshotStore } from "../edit/file-snapshot-store";
 import type { PythonResult } from "../eval/py/executor";
 import type { BashResult } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
@@ -131,7 +129,6 @@ import type { CompactOptions, ContextUsage } from "../extensibility/extensions/t
 import type { HookCommandContext } from "../extensibility/hooks/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
-import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility/tool-event-input";
 import { GoalRuntime } from "../goals/runtime";
 import type { GoalModeState } from "../goals/state";
 import type { LocalProtocolOptions } from "../internal-urls";
@@ -168,8 +165,6 @@ import { buildResolveReminderMessage, isPreviewResolutionToolCall } from "../too
 import { supportsExternalThinking } from "../tools/think";
 import type { TodoPhase } from "../tools/todo";
 import { parseCommandArgs } from "../utils/command-args";
-import type { EditMode } from "../utils/edit-mode";
-import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
 import type { InspectMediaMode } from "../utils/inspect-media-mode";
@@ -307,7 +302,7 @@ export type { AdvisorStats, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
 
-import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
+import { LoopGuards, type StreamGuardsHost } from "./stream-guards";
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
@@ -405,7 +400,6 @@ export class AgentSession {
 
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	readonly yieldQueue: YieldQueue;
-	fileSnapshotStore?: InMemorySnapshotStore;
 
 	#powerAssertion: MacOSPowerAssertion | undefined;
 
@@ -540,7 +534,6 @@ export class AgentSession {
 	#postPromptTasksResolve: (() => void) | undefined = undefined;
 	#postPromptTasksAbortController = new AbortController();
 
-	readonly #streamingEditGuard: StreamingEditGuard;
 	readonly #loopGuards: LoopGuards;
 	#promptInFlightCount = 0;
 	#abortInProgress = false;
@@ -843,8 +836,7 @@ export class AgentSession {
 			model: () => this.model,
 			sessionId: () => this.sessionId,
 			promptGeneration: () => this.#promptGeneration,
-			resolveActiveEditMode: () => this.#tools.resolveActiveEditMode(),
-			syncAfterModelChange: previousEditMode => this.#tools.syncAfterModelChange(previousEditMode),
+			syncAfterModelChange: () => this.#tools.syncAfterModelChange(),
 			setModelWithProviderSessionReset: model => this.#setModelWithProviderSessionReset(model),
 			clearActiveRetryFallback: () => this.#recovery.clearActiveRetryFallback(),
 			clearInheritedProviderPromptCacheKey: () => this.#clearInheritedProviderPromptCacheKey(),
@@ -881,7 +873,6 @@ export class AgentSession {
 			isStreaming: () => this.isStreaming,
 			isCompacting: () => this.isCompacting,
 			abortInProgress: () => this.#abortInProgress,
-			streamingEditAbortTriggered: () => this.#streamingEditGuard.abortTriggered,
 			promptGeneration: () => this.#promptGeneration,
 			sessionId: () => this.sessionId,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
@@ -1064,7 +1055,6 @@ export class AgentSession {
 			mcpManagerToolNames: config.mcpManagerToolNames,
 			presentationPinnedToolNames: config.presentationPinnedToolNames,
 			requiredToolNames: config.requiredToolNames,
-			ensureWriteRegistered: config.ensureWriteRegistered,
 			rebuildSystemPrompt: config.rebuildSystemPrompt,
 			getMcpServerInstructions: config.getMcpServerInstructions,
 			xdev: config.xdev,
@@ -1107,16 +1097,13 @@ export class AgentSession {
 			agent: this.agent,
 			settings: this.settings,
 			sessionManager: this.sessionManager,
-			obfuscator: this.#obfuscator,
 			model: () => this.model,
 			isDisposed: () => this.#isDisposed,
 			promptGeneration: () => this.#promptGeneration,
-			localProtocolOptions: () => this.#localProtocolOptions(),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			schedulePostPromptTask: task => this.#schedulePostPromptTask(task),
 			discardAssistantTurn: message => this.#recovery.discardAssistantTurn(message),
 		};
-		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
@@ -1136,13 +1123,6 @@ export class AgentSession {
 			});
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
-			const event: AgentEvent = {
-				type: "message_update",
-				message,
-				assistantMessageEvent,
-			};
-			this.#streamingEditGuard.preCache(event);
-			this.#streamingEditGuard.maybeAbort(event);
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
 		});
 
@@ -1250,7 +1230,6 @@ export class AgentSession {
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: this.settings.get("advisor.enabled"),
 			tools: config.advisorTools,
-			createEditTool: config.advisorCreateEditTool,
 			getToolContext: config.advisorGetToolContext,
 			mcpResources: config.advisorMcpResources,
 			watchdogPrompt: config.advisorWatchdogPrompt,
@@ -1272,7 +1251,6 @@ export class AgentSession {
 				enabled: this.settings.get("conductor.enabled"),
 				initialCost: config.initialConductorCost,
 				toolsFactory: config.conductorToolsFactory,
-				createEditTool: config.advisorCreateEditTool,
 				getToolContext: config.advisorGetToolContext,
 				mcpResources: config.advisorMcpResources,
 				contextPrompt: config.advisorContextPrompt,
@@ -1387,7 +1365,7 @@ export class AgentSession {
 				soft: true,
 				id: head.id,
 
-				toolName: "write",
+				toolName: "bash",
 				satisfies: isPreviewResolutionToolCall,
 				reminder: [buildResolveReminderMessage(head.sourceToolName)],
 			};
@@ -2056,7 +2034,6 @@ export class AgentSession {
 		}
 
 		if (event.type === "turn_start") {
-			this.#streamingEditGuard.reset();
 			this.#ttsr.onTurnStart();
 		}
 
@@ -2079,22 +2056,6 @@ export class AgentSession {
 		}
 
 		if (await this.#ttsr.checkMessageUpdate(event)) return;
-
-		if (
-			event.type === "message_update" &&
-			(event.assistantMessageEvent.type === "toolcall_start" ||
-				event.assistantMessageEvent.type === "toolcall_delta" ||
-				event.assistantMessageEvent.type === "toolcall_end")
-		) {
-			this.#streamingEditGuard.preCache(event);
-		}
-
-		if (
-			event.type === "message_update" &&
-			(event.assistantMessageEvent.type === "toolcall_end" || event.assistantMessageEvent.type === "toolcall_delta")
-		) {
-			this.#streamingEditGuard.maybeAbort(event);
-		}
 
 		if (event.type === "message_end") {
 			const persistMessageEnd = () => this.#persistMessageEnd(event.message);
@@ -2163,10 +2124,6 @@ export class AgentSession {
 				const semanticResult = semanticToolResult(toolName, event.message);
 				const semanticDetails = isRecord(semanticResult?.details) ? semanticResult.details : undefined;
 
-				const editedPath = details ? stringProperty(details, "path") : undefined;
-				if (toolName === "edit" && editedPath) {
-					this.#streamingEditGuard.invalidate(editedPath);
-				}
 				if (toolName === "todo" && !isError && details && this.#todo.onTodoResultDetails(details, toolCallId)) {
 					this.#scheduleReplanTitleRefresh();
 				}
@@ -2692,7 +2649,7 @@ export class AgentSession {
 				type: "tool_call",
 				toolName: ctx.tool.name,
 				toolCallId: ctx.toolCall.id,
-				input: normalizeToolEventInput(ctx.tool.name, resolveToolEventInput(ctx.tool, eventArgs)),
+				input: eventArgs,
 			},
 			signal,
 		);
@@ -3527,10 +3484,6 @@ export class AgentSession {
 		return this.#tools.getMountedXdevToolNames();
 	}
 
-	get hasEditTool(): boolean {
-		return this.#tools.hasEditTool;
-	}
-
 	getToolByName(name: string): AgentTool | undefined {
 		return this.#tools.getToolByName(name);
 	}
@@ -3585,14 +3538,6 @@ export class AgentSession {
 
 	getAllToolInfos(): ToolInfo[] {
 		return this.#tools.getAllToolInfos();
-	}
-
-	#resolveActiveEditMode(): EditMode {
-		return this.#tools.resolveActiveEditMode();
-	}
-
-	#syncAfterModelChange(previousEditMode: EditMode): Promise<void> {
-		return this.#tools.syncAfterModelChange(previousEditMode);
 	}
 
 	getSelectedMCPToolNames(): string[] {
@@ -4296,8 +4241,6 @@ export class AgentSession {
 			if (fileMentions.length > 0) {
 				const fileMentionMessages = await generateFileMentionMessages(fileMentions, this.sessionManager.getCwd(), {
 					autoResizeImages: this.settings.get("images.autoResize"),
-					useHashLines: resolveFileDisplayMode(this).hashLines,
-					snapshotStore: getFileSnapshotStore(this),
 				});
 				for (const fileMentionMessage of fileMentionMessages) {
 					messages.push(await this.#normalizeAgentMessageImages(fileMentionMessage));

@@ -4,7 +4,6 @@ import type { ImageContent, Message, Model, TextContent } from "@oh-my-pi/pi-ai"
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
-import type { EditToolDetails } from "../../edit";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type * as PiCodingAgent from "../../index";
 import type { Theme } from "../../modes/theme/theme";
@@ -182,27 +181,12 @@ export interface ReadToolResultEvent extends ToolResultEventBase {
 	details: ReadToolDetails | undefined;
 }
 
-export interface EditToolResultEvent extends ToolResultEventBase {
-	toolName: "edit";
-	details: EditToolDetails | undefined;
-}
-
-export interface WriteToolResultEvent extends ToolResultEventBase {
-	toolName: "write";
-	details: undefined;
-}
-
 export interface CustomToolResultEvent extends ToolResultEventBase {
 	toolName: string;
 	details: unknown;
 }
 
-export type ToolResultEvent =
-	| BashToolResultEvent
-	| ReadToolResultEvent
-	| EditToolResultEvent
-	| WriteToolResultEvent
-	| CustomToolResultEvent;
+export type ToolResultEvent = BashToolResultEvent | ReadToolResultEvent | CustomToolResultEvent;
 
 export type HookEvent =
 	| SessionEvent

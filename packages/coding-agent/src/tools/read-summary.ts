@@ -92,8 +92,7 @@ export function renderSummary(
 	elidedLines: number;
 } {
 	const displayMode = resolveFileDisplayMode(session);
-	const shouldAddHashLines = displayMode.hashLines;
-	const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
+	const shouldAddLineNumbers = displayMode.lineNumbers;
 
 	type Unit =
 		| { kind: "line"; line: number; text: string }
@@ -162,7 +161,6 @@ export function renderSummary(
 				unit.endLine,
 				unit.headText,
 				unit.tailText,
-				shouldAddHashLines,
 				shouldAddLineNumbers,
 			);
 			modelParts.push(formatted.model);
@@ -173,7 +171,7 @@ export function renderSummary(
 			elidedLines += Math.max(0, unit.endLine - unit.startLine - 1);
 			continue;
 		}
-		modelParts.push(formatSingleLine(unit.line, unit.text, shouldAddHashLines, shouldAddLineNumbers));
+		modelParts.push(formatSingleLine(unit.line, unit.text, shouldAddLineNumbers));
 		displayParts.push(unit.text);
 	}
 

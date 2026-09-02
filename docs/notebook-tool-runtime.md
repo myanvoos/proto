@@ -27,7 +27,7 @@ The critical distinction: **notebook support is file conversion/editing, not not
 - The edit pipeline round-trips virtual text back to notebook JSON through `serializeEditedNotebookText(...)`.
 - Existing notebook metadata is preserved when a marker references an existing unused `cell:N`; new cells get fresh empty metadata.
 - A missing notebook passed to the serializer starts from an empty nbformat 4.5 notebook.
-- The standalone `write` tool is not notebook-aware: it replaces the file with the supplied bytes. Use it only with valid notebook JSON, not the virtual marker representation.
+- Shell-level writes (`bash`, kernel `write()`) are not notebook-aware: they replace the file with the supplied bytes. Use them only with valid notebook JSON, not the virtual marker representation.
 
 No kernel lifecycle exists in this path:
 

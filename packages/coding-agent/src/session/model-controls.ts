@@ -27,7 +27,6 @@ import {
 	shouldDisableReasoning,
 	toReasoningEffort,
 } from "../thinking";
-import type { EditMode } from "../utils/edit-mode";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycleResult } from "./agent-session-types";
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
@@ -43,8 +42,7 @@ export interface ModelControlsHost {
 	model(): Model | undefined;
 	sessionId(): string;
 	promptGeneration(): number;
-	resolveActiveEditMode(): EditMode;
-	syncAfterModelChange(previousEditMode: EditMode): Promise<void>;
+	syncAfterModelChange(): Promise<void>;
 	setModelWithProviderSessionReset(model: Model): Promise<void>;
 	clearActiveRetryFallback(): void;
 	clearInheritedProviderPromptCacheKey(): void;
@@ -156,7 +154,6 @@ export class ModelControls {
 			persist?: boolean;
 		},
 	): Promise<{ switched: boolean }> {
-		const previousEditMode = this.#host.resolveActiveEditMode();
 		if (!this.#host.modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -183,7 +180,7 @@ export class ModelControls {
 		this.#host.settings.getStorage()?.recordModelUsage(`${targetModel.provider}/${targetModel.id}`);
 
 		this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
-		await this.#host.syncAfterModelChange(previousEditMode);
+		await this.#host.syncAfterModelChange();
 		return { switched: true };
 	}
 
@@ -192,7 +189,6 @@ export class ModelControls {
 		thinkingLevel?: ThinkingLevel,
 		options?: { ephemeral?: boolean },
 	): Promise<void> {
-		const previousEditMode = this.#host.resolveActiveEditMode();
 		if (!this.#host.modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -213,7 +209,7 @@ export class ModelControls {
 		} else {
 			this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
 		}
-		await this.#host.syncAfterModelChange(previousEditMode);
+		await this.#host.syncAfterModelChange();
 	}
 
 	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
@@ -313,7 +309,6 @@ export class ModelControls {
 	}
 
 	async #cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-		const previousEditMode = this.#host.resolveActiveEditMode();
 		const scopedModels = await this.#getScopedModelsWithApiKey();
 		if (scopedModels.length <= 1) return undefined;
 
@@ -332,13 +327,12 @@ export class ModelControls {
 		this.#host.settings.getStorage()?.recordModelUsage(`${next.model.provider}/${next.model.id}`);
 
 		this.setThinkingLevel(next.thinkingLevel);
-		await this.#host.syncAfterModelChange(previousEditMode);
+		await this.#host.syncAfterModelChange();
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
 	async #cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-		const previousEditMode = this.#host.resolveActiveEditMode();
 		const availableModels = this.#host.modelRegistry.getAvailable();
 		if (availableModels.length <= 1) return undefined;
 
@@ -362,7 +356,7 @@ export class ModelControls {
 		this.#host.settings.getStorage()?.recordModelUsage(`${nextModel.provider}/${nextModel.id}`);
 
 		this.#reapplyThinkingLevel();
-		await this.#host.syncAfterModelChange(previousEditMode);
+		await this.#host.syncAfterModelChange();
 
 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: false };
 	}

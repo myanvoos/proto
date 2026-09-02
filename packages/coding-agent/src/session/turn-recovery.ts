@@ -106,7 +106,6 @@ export interface TurnRecoveryHost {
 	isStreaming(): boolean;
 	isCompacting(): boolean;
 	abortInProgress(): boolean;
-	streamingEditAbortTriggered(): boolean;
 	promptGeneration(): number;
 	sessionId(): string;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
@@ -845,8 +844,7 @@ export class TurnRecovery {
 			(message.stopReason !== "aborted" && message.stopReason !== "error") ||
 			message.content.length !== 0 ||
 			this.#host.abortInProgress() ||
-			this.#host.isDisposed() ||
-			this.#host.streamingEditAbortTriggered()
+			this.#host.isDisposed()
 		) {
 			return false;
 		}
@@ -928,7 +926,6 @@ export class TurnRecovery {
 			(message.stopReason === "aborted" || message.stopReason === "error") &&
 			!this.#host.abortInProgress() &&
 			!this.#host.isDisposed() &&
-			!this.#host.streamingEditAbortTriggered() &&
 			((message.stopReason === "aborted" && AIError.is(id, AIError.Flag.Abort)) || genericAbort);
 		const errorMessage = message.errorMessage ?? "";
 		const streamStall =
@@ -938,16 +935,14 @@ export class TurnRecovery {
 			HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) &&
 			AIError.retriable(id) &&
 			!this.#host.abortInProgress() &&
-			!this.#host.isDisposed() &&
-			!this.#host.streamingEditAbortTriggered();
+			!this.#host.isDisposed();
 
 		const prematureClose =
 			message.stopReason === "error" &&
 			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) &&
 			AIError.retriable(id) &&
 			!this.#host.abortInProgress() &&
-			!this.#host.isDisposed() &&
-			!this.#host.streamingEditAbortTriggered();
+			!this.#host.isDisposed();
 		if (!reasonlessAbort && !streamStall && !transportReset && !prematureClose) return undefined;
 		if (reasonlessAbort && genericAbort) message.errorId = AIError.create(AIError.Flag.Abort);
 

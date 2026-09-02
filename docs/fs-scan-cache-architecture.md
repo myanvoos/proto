@@ -92,13 +92,13 @@ The TUI `@`-mention autocomplete opts into cached `fuzzyFind`. Coding-agent's gr
 
 Relative paths resolve against cwd. Invalidation canonicalizes the target; when it no longer exists, it attempts to canonicalize the parent and reattach the filename. This supports create, delete, and rename invalidation.
 
-Coding-agent helpers:
+Coding-agent helpers (in `packages/coding-agent/src/tools/fs-mutation.ts`):
 
-- `invalidateFsScanAfterWrite(path)`
-- `invalidateFsScanAfterDelete(path)`
-- `invalidateFsScanAfterRename(oldPath, newPath)` — invalidates both sides when different
+- `noteFileWritten(session, path)`
+- `noteFileDeleted(session, path)`
+- `noteFileRenamed(session, oldPath, newPath)` — invalidates both sides when different
 
-Current write, hashline, patch, and replace mutation paths call these helpers after successful changes. Any new filesystem mutation path must do the same.
+Each helper also records the mutation in the eval FS-observation ledger. Current write and ACP-bridge write paths call these helpers after successful changes. Any new filesystem mutation path must do the same.
 
 ## Adding a cache consumer
 

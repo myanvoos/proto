@@ -1,113 +1,40 @@
-import * as path from "node:path";
-import {
-	formatHashlineHeader,
-	formatNumberedLine,
-	formatNumberedLines,
-	splitAddressableFileLines,
-} from "@oh-my-pi/hashline";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { truncateHeadBytes } from "@oh-my-pi/pi-utils";
-import { canonicalSnapshotKey, getFileSnapshotStore, recordSeenLines } from "../edit/file-snapshot-store";
-import { normalizeToLF } from "../edit/normalize";
 import { isMarkdownPath } from "../modes/theme/theme";
 import type { ToolSession } from "../sdk";
 import { DEFAULT_MAX_BYTES, noTruncResult, type TruncationResult, truncateHead } from "../session/streaming-output";
 import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainText } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
-import { formatPathRelativeToCwd, type LineRange } from "./path-utils";
+import type { LineRange } from "./path-utils";
 import type { ReadToolDetails } from "./read";
-import { formatBytes, shortenPath } from "./render-utils";
-import { ToolError } from "./tool-errors";
+import { formatBytes } from "./render-utils";
 import { toolResult } from "./tool-result";
+
+export function splitAddressableFileLines(text: string): string[] {
+	const lines = text.split("\n");
+	if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+	return lines;
+}
 
 function prependLineNumbers(text: string, startNum: number): string {
 	const textLines = text.split("\n");
 	return textLines.map((line, i) => `${startNum + i}|${line}`).join("\n");
 }
 
-export interface HashlineHeaderContext {
-	header: string;
-	tag: string;
-	fullText?: string;
-}
-
-export function formatReadHashlineHeader(displayPath: string, tag: string): string {
-	const anchor = path.isAbsolute(displayPath) ? shortenPath(displayPath) : displayPath;
-	return formatHashlineHeader(anchor, tag);
-}
-
-function recordFullHashlineContext(
-	session: ToolSession,
-	absolutePath: string | undefined,
-	displayPath: string,
-	fullText: string,
-): HashlineHeaderContext | undefined {
-	if (!absolutePath || !path.isAbsolute(absolutePath)) return undefined;
-	const normalized = normalizeToLF(fullText);
-	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
-	return {
-		header: formatReadHashlineHeader(displayPath, tag),
-		tag,
-		fullText: normalized,
-	};
-}
-
-export async function readHashlineHeaderContext(
-	session: ToolSession,
-	absolutePath: string,
-	cwd: string,
-): Promise<HashlineHeaderContext> {
-	return hashlineHeaderContextForText(session, absolutePath, cwd, await Bun.file(absolutePath).text());
-}
-
-export function hashlineHeaderContextForText(
-	session: ToolSession,
-	absolutePath: string,
-	cwd: string,
-	fullText: string,
-): HashlineHeaderContext {
-	const context = recordFullHashlineContext(
-		session,
-		absolutePath,
-		formatPathRelativeToCwd(absolutePath, cwd),
-		fullText,
-	);
-	if (!context) throw new ToolError(`Cannot record hashline snapshot for non-absolute path: ${absolutePath}`);
-	return context;
-}
-
-export function hashlineHeaderContext(displayPath: string, tag: string): HashlineHeaderContext {
-	return { header: formatReadHashlineHeader(displayPath, tag), tag };
-}
-
-export function prependHashlineHeader(text: string, context: HashlineHeaderContext | undefined): string {
-	return context ? `${context.header}\n${text}` : text;
-}
-
-export function formatTextWithMode(
-	text: string,
-	startNum: number,
-	shouldAddHashLines: boolean,
-	shouldAddLineNumbers: boolean,
-): string {
-	if (shouldAddHashLines) return formatNumberedLines(text, startNum);
+export function formatTextWithMode(text: string, startNum: number, shouldAddLineNumbers: boolean): string {
 	if (shouldAddLineNumbers) return prependLineNumbers(text, startNum);
 	return text;
 }
 
 export const BRACKET_CONTEXT_ELLIPSIS = "…";
 
-function formatLineEntryWithMode(entry: LineEntry, shouldAddHashLines: boolean, shouldAddLineNumbers: boolean): string {
+function formatLineEntryWithMode(entry: LineEntry, shouldAddLineNumbers: boolean): string {
 	if (entry.kind === "ellipsis") return BRACKET_CONTEXT_ELLIPSIS;
-	return formatSingleLine(entry.lineNumber, entry.text, shouldAddHashLines, shouldAddLineNumbers);
+	return formatSingleLine(entry.lineNumber, entry.text, shouldAddLineNumbers);
 }
 
-export function formatLineEntriesWithMode(
-	entries: readonly LineEntry[],
-	shouldAddHashLines: boolean,
-	shouldAddLineNumbers: boolean,
-): string {
-	return entries.map(entry => formatLineEntryWithMode(entry, shouldAddHashLines, shouldAddLineNumbers)).join("\n");
+export function formatLineEntriesWithMode(entries: readonly LineEntry[], shouldAddLineNumbers: boolean): string {
+	return entries.map(entry => formatLineEntryWithMode(entry, shouldAddLineNumbers)).join("\n");
 }
 
 const BRACE_PAIRS: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
@@ -123,13 +50,7 @@ export function canMergeBracePair(headLine: string, tailLine: string): boolean {
 	return BRACE_TAIL_TRAILING_RE.test(tail.slice(closer.length));
 }
 
-export function formatSingleLine(
-	line: number,
-	text: string,
-	shouldAddHashLines: boolean,
-	shouldAddLineNumbers: boolean,
-): string {
-	if (shouldAddHashLines) return formatNumberedLine(line, text);
+export function formatSingleLine(line: number, text: string, shouldAddLineNumbers: boolean): string {
 	if (shouldAddLineNumbers) return `${line}|${text}`;
 	return text;
 }
@@ -139,13 +60,9 @@ export function formatMergedBraceLine(
 	endLine: number,
 	headText: string,
 	tailText: string,
-	shouldAddHashLines: boolean,
 	shouldAddLineNumbers: boolean,
 ): { model: string; display: string } {
 	const merged = `${headText.trimEnd()} … ${tailText.trim()}`;
-	if (shouldAddHashLines) {
-		return { model: `${startLine}-${endLine}:${merged}`, display: merged };
-	}
 	if (shouldAddLineNumbers) {
 		return { model: `${startLine}-${endLine}|${merged}`, display: merged };
 	}
@@ -158,38 +75,6 @@ export function countTextLines(text: string): number {
 	let lines = 1;
 	for (let i = 0; i < text.length; i++) {
 		if (text.charCodeAt(i) === 10) lines++;
-	}
-	return lines;
-}
-
-export function contiguousLineNumbers(startLine: number, count: number): number[] {
-	const lines: number[] = [];
-	for (let offset = 0; offset < count; offset++) lines.push(startLine + offset);
-	return lines;
-}
-
-export function lineNumbersFromSpans(spans: readonly { startLine: number; endLine: number }[]): number[] {
-	const lines: number[] = [];
-	for (const span of spans) {
-		for (let line = span.startLine; line <= span.endLine; line++) lines.push(line);
-	}
-	return lines;
-}
-
-function recordInMemorySeenLines(
-	session: ToolSession,
-	absolutePath: string | undefined,
-	fullText: string,
-	seenLines: readonly number[] | undefined,
-): void {
-	if (!absolutePath || !path.isAbsolute(absolutePath) || !seenLines || seenLines.length === 0) return;
-	getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalizeToLF(fullText), seenLines);
-}
-
-function lineNumbersFromEntries(entries: readonly LineEntry[]): number[] {
-	const lines: number[] = [];
-	for (const entry of entries) {
-		if (entry.kind === "line") lines.push(entry.lineNumber);
 	}
 	return lines;
 }
@@ -247,10 +132,9 @@ export function buildInMemoryTextResult(
 		entityLabel: string;
 		ignoreResultLimits?: boolean;
 		raw?: boolean;
-		immutable?: boolean;
 	},
 ): AgentToolResult<ReadToolDetails> {
-	const displayMode = resolveFileDisplayMode(session, { raw: options.raw, immutable: options.immutable });
+	const displayMode = resolveFileDisplayMode(session, { raw: options.raw });
 	const details = options.details ?? {};
 	const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
 	const totalLines = allLines.length;
@@ -300,20 +184,7 @@ export function buildInMemoryTextResult(
 	const userLimitedLines = limit !== undefined ? endLine - startLine : undefined;
 	const truncation = ignoreResultLimits ? noTruncResult(selectedContent) : truncateHead(selectedContent);
 
-	const shouldAddHashLines = displayMode.hashLines;
-	const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
-	const hashContext =
-		shouldAddHashLines && options.sourcePath
-			? recordFullHashlineContext(
-					session,
-					options.sourcePath,
-					formatPathRelativeToCwd(options.sourcePath, session.cwd),
-					text,
-				)
-			: undefined;
-	let emittedHashlineHeader = false;
-	let seenLines: number[] | undefined;
-	let rawSeenLines: number[] | undefined;
+	const shouldAddLineNumbers = displayMode.lineNumbers;
 	const formatText = (content: string, startNum: number): string => {
 		const lineCount = countTextLines(content);
 		details.displayContent = {
@@ -321,11 +192,7 @@ export function buildInMemoryTextResult(
 			startLine: startNum,
 			lineNumbers: Array.from({ length: lineCount }, (_, i) => startNum + i),
 		};
-		if (shouldAddHashLines) seenLines = contiguousLineNumbers(startNum, lineCount);
-		const formatted = formatTextWithMode(content, startNum, shouldAddHashLines, shouldAddLineNumbers);
-		if (!hashContext || emittedHashlineHeader) return formatted;
-		emittedHashlineHeader = true;
-		return prependHashlineHeader(formatted, hashContext);
+		return formatTextWithMode(content, startNum, shouldAddLineNumbers);
 	};
 	const formatLineEntries = (entries: readonly LineEntry[], startNum: number): string => {
 		const firstLine = entries.find(entry => entry.kind === "line");
@@ -334,11 +201,7 @@ export function buildInMemoryTextResult(
 			startLine: firstLine?.kind === "line" ? firstLine.lineNumber : startNum,
 			lineNumbers: entries.map(entry => (entry.kind === "line" ? entry.lineNumber : null)),
 		};
-		if (shouldAddHashLines) seenLines = lineNumbersFromEntries(entries);
-		const formatted = formatLineEntriesWithMode(entries, shouldAddHashLines, shouldAddLineNumbers);
-		if (!hashContext || emittedHashlineHeader) return formatted;
-		emittedHashlineHeader = true;
-		return prependHashlineHeader(formatted, hashContext);
+		return formatLineEntriesWithMode(entries, shouldAddLineNumbers);
 	};
 	const buildLineEntries = (endLineDisplay: number): LineEntry[] =>
 		buildLineEntriesWithBlockContext(allLines, [{ startLine: startLineDisplay, endLine: endLineDisplay }], {
@@ -356,13 +219,7 @@ export function buildInMemoryTextResult(
 		const firstLineBytes = Buffer.byteLength(firstLine, "utf-8");
 		const snippet = truncateHeadBytes(firstLine, DEFAULT_MAX_BYTES);
 
-		if (shouldAddHashLines) {
-			outputText = `[Line ${startLineDisplay} is ${formatBytes(
-				firstLineBytes,
-			)}, exceeds ${formatBytes(DEFAULT_MAX_BYTES)} limit. Hashline output requires full lines; cannot emit an editable numbered preview for a truncated line.]`;
-		} else {
-			outputText = formatText(snippet.text, startLineDisplay);
-		}
+		outputText = formatText(snippet.text, startLineDisplay);
 
 		if (snippet.text.length === 0) {
 			outputText = `[Line ${startLineDisplay} is ${formatBytes(
@@ -379,7 +236,6 @@ export function buildInMemoryTextResult(
 		const outputLines = truncation.outputLines ?? countTextLines(truncation.content);
 		const endLineDisplay = startLineDisplay + Math.max(0, outputLines - 1);
 		if (options.raw === true) {
-			rawSeenLines = contiguousLineNumbers(startLineDisplay, outputLines);
 			outputText = formatText(truncation.content, startLineDisplay);
 		} else {
 			outputText = formatLineEntries(buildLineEntries(endLineDisplay), startLineDisplay);
@@ -394,7 +250,6 @@ export function buildInMemoryTextResult(
 		const nextOffset = startLine + userLimitedLines + 1;
 
 		if (options.raw === true) {
-			rawSeenLines = contiguousLineNumbers(startLineDisplay, userLimitedLines);
 			outputText = formatText(selectedContent, startLineDisplay);
 		} else {
 			outputText = formatLineEntries(buildLineEntries(endLine), startLineDisplay);
@@ -402,19 +257,12 @@ export function buildInMemoryTextResult(
 		outputText += `\n\n[${remaining} more lines in ${options.entityLabel}. Use :${nextOffset} to continue]`;
 	} else {
 		if (options.raw === true) {
-			rawSeenLines = contiguousLineNumbers(startLineDisplay, endLine - startLine);
 			outputText = formatText(truncation.content, startLineDisplay);
 		} else {
 			outputText = formatLineEntries(buildLineEntries(endLine), startLineDisplay);
 		}
 	}
 
-	if (hashContext?.tag && options.sourcePath && seenLines) {
-		recordSeenLines(session, options.sourcePath, hashContext.tag, seenLines);
-	}
-	if (options.raw === true && options.sourcePath && options.immutable !== true && rawSeenLines) {
-		recordInMemorySeenLines(session, options.sourcePath, text, rawSeenLines);
-	}
 	resultBuilder.text(outputText);
 	if (truncationInfo) {
 		resultBuilder.truncation(truncationInfo.result, truncationInfo.options);
@@ -433,28 +281,15 @@ export function buildInMemoryMultiRangeResult(
 		sourceInternal?: string;
 		entityLabel: string;
 		raw?: boolean;
-		immutable?: boolean;
 	},
 ): AgentToolResult<ReadToolDetails> {
-	const displayMode = resolveFileDisplayMode(session, { raw: options.raw, immutable: options.immutable });
+	const displayMode = resolveFileDisplayMode(session, { raw: options.raw });
 	const details = options.details ?? {};
 	const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
 	const totalLines = allLines.length;
 	details.totalLines = totalLines;
-	const shouldAddHashLines = displayMode.hashLines;
-	const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
-	const hashContext =
-		shouldAddHashLines && options.sourcePath
-			? recordFullHashlineContext(
-					session,
-					options.sourcePath,
-					formatPathRelativeToCwd(options.sourcePath, session.cwd),
-					text,
-				)
-			: undefined;
-	let emittedHashlineHeader = false;
+	const shouldAddLineNumbers = displayMode.lineNumbers;
 
-	let seenLines: number[] | undefined;
 	const resultBuilder = toolResult(details);
 	if (options.sourcePath) resultBuilder.sourcePath(options.sourcePath);
 	if (options.sourceUrl) resultBuilder.sourceUrl(options.sourceUrl);
@@ -480,7 +315,6 @@ export function buildInMemoryMultiRangeResult(
 		outputText = rawParts.length > 0 ? rawParts.join("\n\n…\n\n") : "";
 	} else if (visibleSpans.length > 0) {
 		const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, { path: options.sourcePath, text });
-		if (shouldAddHashLines) seenLines = lineNumbersFromEntries(entries);
 		const firstLine = entries.find(entry => entry.kind === "line");
 		if (firstLine?.kind === "line") {
 			details.displayContent = {
@@ -489,9 +323,7 @@ export function buildInMemoryMultiRangeResult(
 				lineNumbers: entries.map(entry => (entry.kind === "line" ? entry.lineNumber : null)),
 			};
 		}
-		const formatted = formatLineEntriesWithMode(entries, shouldAddHashLines, shouldAddLineNumbers);
-		outputText = hashContext && !emittedHashlineHeader ? prependHashlineHeader(formatted, hashContext) : formatted;
-		if (hashContext) emittedHashlineHeader = true;
+		outputText = formatLineEntriesWithMode(entries, shouldAddLineNumbers);
 	}
 	const notices: string[] = [];
 	for (const range of outOfBounds) {
@@ -500,15 +332,10 @@ export function buildInMemoryMultiRangeResult(
 	}
 	const finalText =
 		notices.length > 0 ? (outputText ? `${outputText}\n${notices.join("\n")}` : notices.join("\n")) : outputText;
-	if (hashContext?.tag && options.sourcePath && seenLines) {
-		recordSeenLines(session, options.sourcePath, hashContext.tag, seenLines);
-	}
-	if (options.raw === true && options.sourcePath && options.immutable !== true && visibleSpans.length > 0) {
-		recordInMemorySeenLines(session, options.sourcePath, text, lineNumbersFromSpans(visibleSpans));
-	}
 	resultBuilder.text(finalText);
 	return resultBuilder.done();
 }
+
 export function decodeUtf8Text(bytes: Uint8Array): string | null {
 	if (bytes.indexOf(0) !== -1) return null;
 

@@ -25,7 +25,6 @@ import { execCommand } from "../../exec/exec";
 
 import * as PiCodingAgent from "../../index";
 import type { CustomMessagePayload } from "../../session/messages";
-import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
 import { EventBus } from "../../utils/event-bus";
 import { installHostModuleResolution, loadHostModule } from "../plugins/host-module-compat";
 import { getAllPluginExtensionPaths } from "../plugins/loader";
@@ -170,14 +169,6 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		for (const listener of this.extension.toolRegistrationListeners ?? []) listener(tool.name);
 	}
 
-	registerFileWriteFallback(handler: FileWriteFallbackHandler): void {
-		this.extension.fileWriteFallbackHandlers.push(handler);
-	}
-
-	registerFileDeleteFallback(handler: FileDeleteFallbackHandler): void {
-		this.extension.fileDeleteFallbackHandlers.push(handler);
-	}
-
 	registerCommand(
 		name: string,
 		options: {
@@ -312,8 +303,6 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		tools: new Map(),
 		toolRegistrationListeners: new Set(),
 		assistantThinkingRenderers: [],
-		fileWriteFallbackHandlers: [],
-		fileDeleteFallbackHandlers: [],
 		messageRenderers: new Map(),
 		commands: new Map(),
 		flags: new Map(),

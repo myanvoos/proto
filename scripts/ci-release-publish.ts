@@ -94,7 +94,6 @@ export const packages: PublishPackage[] = [
 	{ dir: "packages/ai", kind: "typescript" },
 	{ dir: "packages/natives", kind: "native" },
 	{ dir: "packages/tui", kind: "typescript" },
-	{ dir: "packages/hashline", kind: "typescript" },
 	{ dir: "packages/agent", kind: "typescript" },
 	{ dir: "packages/coding-agent", kind: "typescript", publishBin: { proto: "dist/cli.js" } },
 ];

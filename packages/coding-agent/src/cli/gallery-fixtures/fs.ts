@@ -3,37 +3,18 @@ import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
 import type { GalleryFixture, GalleryFixtureState, GalleryResult } from "./types";
 
 const readSnippet = [
-	"export const globToolRenderer = {",
-	"\tinline: true,",
-	"\trenderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {",
-	"\t\tconst meta: string[] = [];",
-	"\t\tif (args.limit !== undefined) meta.push(`limit:${args.limit}`);",
-	"",
-	"\t\tconst text = renderStatusLine(",
-	'\t\t\t{ icon: "pending", title: "Glob", description: formatGlobRenderPaths(args.paths) || "*", meta },',
-	"\t\t\tuiTheme,",
-	"\t\t);",
-	"\t\treturn new Text(text, 0, 0);",
+	"export function tokenizeShellSegments(command: string): string[][] {",
+	"\tconst segments: string[][] = [];",
+	"\tlet current: string[] = [];",
+	'\tlet buffer = "";',
+	"\tlet inSingle = false;",
+	"\tlet inDouble = false;",
+	"\tconst pushBuffer = () => {",
+	"\t\tif (buffer.length > 0) {",
+	"\t\t\tcurrent.push(buffer);",
+	'\t\t\tbuffer = "";',
+	"\t\t}",
 	"\t},",
-].join("\n");
-
-const writtenContent = [
-	'import { describe, expect, it } from "bun:test";',
-	'import { parseSel } from "../src/tools/read";',
-	"",
-	'describe("parseSel", () => {',
-	'\tit("parses a single line range", () => {',
-	'\t\texpect(parseSel("42-58")).toEqual({',
-	'\t\t\tkind: "lines",',
-	"\t\t\tranges: [{ startLine: 42, endLine: 58 }],",
-	"\t\t});",
-	"\t});",
-	"",
-	'\tit("treats raw as a verbatim selector", () => {',
-	'\t\texpect(parseSel("raw")).toEqual({ kind: "raw" });',
-	"\t});",
-	"});",
-	"",
 ].join("\n");
 
 const groupedReadTargets = [
@@ -122,32 +103,32 @@ export const fsFixtures: Record<string, GalleryFixture> = {
 	read: {
 		label: "Read",
 
-		streamingArgs: { path: "packages/coding-agent/src/tools/glob" },
-		args: { path: "packages/coding-agent/src/tools/glob.ts:437-448" },
+		streamingArgs: { path: "packages/coding-agent/src/tools/shell-tokenize" },
+		args: { path: "packages/coding-agent/src/tools/shell-tokenize.ts:1-12" },
 		result: {
 			content: [
 				{
 					type: "text",
 					text: [
-						"[packages/coding-agent/src/tools/glob.ts#E48E]",
-						"437:export const globToolRenderer = {",
-						"438:\tinline: true,",
-						"439:\trenderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {",
-						"440:\t\tconst meta: string[] = [];",
-						"441:\t\tif (args.limit !== undefined) meta.push(`limit:${args.limit}`);",
-						"442:",
-						"443:\t\tconst text = renderStatusLine(",
-						'444:\t\t\t{ icon: "pending", title: "Glob", description: formatGlobRenderPaths(args.paths) || "*", meta },',
-						"445:\t\t\tuiTheme,",
-						"446:\t\t);",
-						"447:\t\treturn new Text(text, 0, 0);",
-						"448:\t},",
+						"[packages/coding-agent/src/tools/shell-tokenize.ts#E48E]",
+						"1:export function tokenizeShellSegments(command: string): string[][] {",
+						"2:\tconst segments: string[][] = [];",
+						"3:\tlet current: string[] = [];",
+						'4:\tlet buffer = "";',
+						"5:\tlet inSingle = false;",
+						"6:\tlet inDouble = false;",
+						"7:\tconst pushBuffer = () => {",
+						"8:\t\tif (buffer.length > 0) {",
+						"9:\t\t\tcurrent.push(buffer);",
+						'10:\t\t\tbuffer = "";',
+						"11:\t\t}",
+						"12:\t},",
 					].join("\n"),
 				},
 			],
 			details: {
 				kind: "file",
-				resolvedPath: "/Users/dev/Projects/pi/packages/coding-agent/src/tools/glob.ts",
+				resolvedPath: "/Users/dev/Projects/pi/packages/coding-agent/src/tools/shell-tokenize.ts",
 				contentType: "text/typescript",
 				displayContent: { text: readSnippet, startLine: 437 },
 			},
@@ -157,7 +138,7 @@ export const fsFixtures: Record<string, GalleryFixture> = {
 			content: [
 				{
 					type: "text",
-					text: "Error: ENOENT: no such file or directory, open 'packages/coding-agent/src/tools/glob.ts'",
+					text: "Error: ENOENT: no such file or directory, open 'packages/coding-agent/src/tools/shell-tokenize.ts'",
 				},
 			],
 		},
@@ -169,37 +150,6 @@ export const fsFixtures: Record<string, GalleryFixture> = {
 		result: textResult("Rendered grouped read calls."),
 		errorResult: textResult("Rendered grouped read errors.", undefined, true),
 		renderState: renderReadGroupFixtureState,
-	},
-
-	write: {
-		label: "Write",
-
-		streamingArgs: {
-			path: "packages/coding-agent/test/parse-sel.test.ts",
-			content: 'import { describe, expect, it } from "bun:test";\nimport { parseSel } from "../src/tools/read";\n',
-		},
-		args: {
-			path: "packages/coding-agent/test/parse-sel.test.ts",
-			content: writtenContent,
-		},
-		result: {
-			content: [
-				{
-					type: "text",
-					text: "Created packages/coding-agent/test/parse-sel.test.ts (17 lines, 412 bytes).",
-				},
-			],
-			details: {},
-		},
-		errorResult: {
-			isError: true,
-			content: [
-				{
-					type: "text",
-					text: "Error: EACCES: permission denied, open 'packages/coding-agent/test/parse-sel.test.ts'",
-				},
-			],
-		},
 	},
 
 	glob: {

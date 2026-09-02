@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { generateDiffString } from "../edit/diff";
 import type { EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import { initThemeSync, theme } from "../modes/theme/theme";
+import { generateDiffString } from "../utils/diff";
 import { evalToolRenderer } from "./eval-render";
 
 initThemeSync();

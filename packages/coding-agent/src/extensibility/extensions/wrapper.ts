@@ -8,8 +8,6 @@ import type {
 import type { ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import type { Theme } from "../../modes/theme/theme";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
-import { withFileMutationSession } from "../../tools/file-write-fallback";
-import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
 import { applyToolProxy } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
 import type { RegisteredTool, ToolCallEventResult } from "./types";
@@ -127,10 +125,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 						type: "tool_call",
 						toolName: this.tool.name,
 						toolCallId,
-						input: normalizeToolEventInput(
-							this.tool.name,
-							resolveToolEventInput(this.tool, toolEventArgs(params, context)),
-						),
+						input: toolEventArgs(params, context),
 					},
 					signal,
 				)) as ToolCallEventResult | undefined;
@@ -155,9 +150,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		let executionError: Error | undefined;
 
 		try {
-			result = await withFileMutationSession(this.runner.sessionId, () =>
-				this.tool.execute(toolCallId, effectiveParams, signal, onUpdate, context),
-			);
+			result = await this.tool.execute(toolCallId, effectiveParams, signal, onUpdate, context);
 		} catch (err) {
 			executionError = err instanceof Error ? err : new Error(String(err));
 			result = {
@@ -171,10 +164,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				type: "tool_result",
 				toolName: this.tool.name,
 				toolCallId,
-				input: normalizeToolEventInput(
-					this.tool.name,
-					resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
-				),
+				input: toolEventArgs(effectiveParams, context),
 				content: result.content,
 				details: result.details,
 				isError: !!executionError,

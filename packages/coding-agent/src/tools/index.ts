@@ -1,4 +1,3 @@
-import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentOptions, AgentTelemetryConfig, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -55,7 +54,6 @@ import { type TodoPhase, TodoTool } from "./todo";
 import { isMountableUnderXdev, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
-export * from "../edit";
 export * from "../goals";
 export * from "../session/streaming-output";
 export * from "../task";
@@ -69,7 +67,6 @@ export * from "./computer/supervisor";
 export * from "./essential-tools";
 export * from "./eval";
 export * from "./eval-backends";
-export * from "./file-write-fallback";
 export * from "./fleet";
 export * from "./gh";
 export * from "./image-gen";
@@ -82,7 +79,6 @@ export * from "./report-tool-issue";
 export * from "./resolve";
 export * from "./think";
 export * from "./todo";
-export * from "./write";
 export * from "./xdev";
 export * from "./yield";
 
@@ -138,8 +134,6 @@ export interface ToolSession {
 	enableIrc?: boolean;
 
 	enableMCP?: boolean;
-
-	hasEditTool?: boolean;
 
 	eventBus?: EventBus;
 
@@ -259,11 +253,7 @@ export interface ToolSession {
 
 	getLastCompletedRewind?: () => CompletedRewindState | undefined;
 
-	fileSnapshotStore?: InMemorySnapshotStore;
-
 	conflictHistory?: import("./conflict-detect").ConflictHistory;
-
-	noopLoopGuard?: import("../edit/hashline/noop-loop-guard").NoopLoopGuard;
 
 	queueDeferredMessage?(message: CustomMessage): void;
 
@@ -286,12 +276,10 @@ type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
 
 export const DISABLED_TOOL_NAMES: Record<string, true> = {
 	read: true,
-	edit: true,
-	write: true,
 	eval: true,
 };
 
-export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read" | "edit" | "write" | "eval">, ToolFactory> = {
+export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read" | "eval">, ToolFactory> = {
 	bash: s => new BashTool(s),
 	ask: AskTool.createIf,
 	kernel: KernelTool.createIf,
@@ -465,7 +453,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	}
 
 	const xdevEnabled =
-		!restrictToolNames && session.settings.get("tools.xdev") && tools.some(tool => tool.name === "write");
+		!restrictToolNames && session.settings.get("tools.xdev") && tools.some(tool => tool.name === "bash");
 	const mountBuiltinTools = requestedTools === undefined;
 	if (xdevEnabled) {
 		const mountedNames = new Set<string>();

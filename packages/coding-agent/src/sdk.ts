@@ -75,7 +75,6 @@ import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { buildServiceTierByFamily } from "./config/service-tier";
 import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "./cursor";
-import { createBridgeEditTool } from "./cursor-bridge-tools";
 import "./discovery";
 import { createImageUrlServiceFromSettings } from "./blob-broker/service";
 import { wrapStreamFnWithBlobUrlFallback } from "./blob-broker/stream-fallback";
@@ -185,7 +184,6 @@ import {
 	createTools,
 	DISABLED_TOOL_NAMES,
 	defaultLoadModeForToolName,
-	EditTool,
 	EvalTool,
 	getSearchTools,
 	HIDDEN_TOOLS,
@@ -199,7 +197,6 @@ import {
 	type Tool,
 	type ToolSession,
 	WebSearchTool,
-	WriteTool,
 	xdevDocsAll,
 	xdevEntries,
 } from "./tools";
@@ -476,18 +473,7 @@ export { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-re
 export type { Tool } from "./tools";
 export { buildDirectoryTree, buildWorkspaceTree, type DirectoryTree, type WorkspaceTree } from "./workspace-tree";
 
-export {
-	BashTool,
-	BUILTIN_TOOLS,
-	createTools,
-	EditTool,
-	EvalTool,
-	HIDDEN_TOOLS,
-	ReadTool,
-	type ToolSession,
-	WebSearchTool,
-	WriteTool,
-};
+export { BashTool, BUILTIN_TOOLS, createTools, EvalTool, HIDDEN_TOOLS, ReadTool, type ToolSession, WebSearchTool };
 
 export async function discoverAuthStorage(agentDir: string = getAgentDir()): Promise<AuthStorage> {
 	return discoverAuthStorageFromConfig(agentDir);
@@ -1304,12 +1290,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			enableIrc: restrictToolNames ? false : options.enableIrc,
 			restrictToolNames,
-			get hasEditTool() {
-				const requestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
-				return restrictToolNames
-					? requestedToolNames?.includes("edit") === true
-					: !requestedToolNames || requestedToolNames.includes("edit");
-			},
 			skipPythonPreflight: options.skipPythonPreflight,
 			contextFiles,
 			workspaceTree: resolvedWorkspaceTree,
@@ -2124,22 +2104,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			toolRegistry.set(tool.name, new ExtensionToolWrapper(tool, extensionRunner));
 		}
 
-		const editWasGranted = toolRegistry.has("edit");
-
-		let cursorBridgeEditTool: AgentTool | undefined;
-		const getCursorBridgeEditTool = (): AgentTool | undefined => {
-			if (!editWasGranted) return undefined;
-			cursorBridgeEditTool ??= createBridgeEditTool(toolSession, extensionRunner);
-			return cursorBridgeEditTool;
-		};
-
-		const cursorCanMutateFiles = editWasGranted || toolRegistry.has("write");
-
-		const ensureWriteRegistered = (): Promise<boolean> => {
-			if ("write" in DISABLED_TOOL_NAMES) return Promise.resolve(false);
-			return Promise.resolve(toolRegistry.has("write") && builtInRegistryToolNames.has("write"));
-		};
-
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
 
 		const resolveDeviceTool = (name: string): AgentTool | undefined => {
@@ -2163,7 +2127,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			tools: toolRegistry,
 			getExecutableTool: resolveDeviceTool,
 
-			getEditReplaceTool: getCursorBridgeEditTool,
 			getToolContext: () => toolContextStore.getContext(),
 			mcpResources: cursorMcpResources,
 			emitEvent: event => cursorEventEmitter?.(event),
@@ -2171,7 +2134,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setTodoPhases: phases => session.setTodoPhases(phases),
 			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
 
-			allowDirectFileMutation: cursorCanMutateFiles,
+			allowDirectFileMutation: false,
 		});
 
 		const inlineToolDescriptors = shouldInlineToolDescriptors(settings.get("inlineToolDescriptors"), model?.id);
@@ -2331,9 +2294,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const xdevReadAvailable =
 			builtInRegistryToolNames.has("read") &&
 			(explicitlyRequestedToolNameSet === undefined || explicitlyRequestedToolNameSet.has("read"));
-		const xdevWriteAvailable =
-			builtInRegistryToolNames.has("write") &&
-			(explicitlyRequestedToolNameSet === undefined || explicitlyRequestedToolNameSet.has("write"));
+		const xdevExecAvailable =
+			builtInRegistryToolNames.has("bash") &&
+			(explicitlyRequestedToolNameSet === undefined || explicitlyRequestedToolNameSet.has("bash"));
 		const initialRequestedActiveToolNames = options.toolNames
 			? requestedActiveToolNames
 			: requestedActiveToolNames.filter(name => !defaultInactiveToolNames.has(name));
@@ -2382,14 +2345,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			for (const name of initialToolNames) {
 				const tool = toolRegistry.get(name);
 				const explicitlyRequested = explicitlyRequestedToolNameSet?.has(name) === true;
-				if (tool && xdevReadAvailable && xdevWriteAvailable && !explicitlyRequested && isMountableUnderXdev(tool))
+				if (tool && xdevReadAvailable && xdevExecAvailable && !explicitlyRequested && isMountableUnderXdev(tool))
 					mountedNames.push(name);
 				else topLevelToolNames.push(name);
 			}
 			toolSession.xdev.mountedNames.clear();
 			for (const name of mountedNames) toolSession.xdev.mountedNames.add(name);
 			initialToolNames = topLevelToolNames;
-			if (mountedNames.length > 0 && !initialToolNames.includes("write")) initialToolNames.push("write");
 		}
 
 		setSessionActiveToolNames(initialToolNames);
@@ -2602,7 +2564,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get cwd() {
 				return sessionManager.getCwd();
 			},
-			hasEditTool: true,
 			requireYieldTool: false,
 			getSessionId: () => {
 				const id = sessionManager.getSessionId?.();
@@ -2636,7 +2597,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					get cwd() {
 						return sessionManager.getCwd();
 					},
-					hasEditTool: true,
 					requireYieldTool: false,
 					getSessionId: () => {
 						const id = sessionManager.getSessionId?.();
@@ -2731,7 +2691,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			presentationPinnedToolNames: explicitlyRequestedToolNameSet,
 			requiredToolNames: !restrictToolNames && agentKind === "main" ? new Set(ORCHESTRATE_TOOL_NAMES) : undefined,
 			setActiveToolNames: setSessionActiveToolNames,
-			ensureWriteRegistered,
 			getMcpServerInstructions: mcpManager
 				? () => {
 						const raw = mcpManager.getServerInstructions();
@@ -2755,8 +2714,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			providerPromptCacheKeySource,
 			parentEvalSessionId: options.parentEvalSessionId,
 			advisorTools,
-
-			advisorCreateEditTool: () => createBridgeEditTool(advisorToolSession, extensionRunner),
 
 			advisorGetToolContext: () => toolContextStore.getContext(),
 
@@ -2841,9 +2798,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						!explicitlyRequested &&
 						toolSession.xdev !== undefined &&
 						builtInRegistryToolNames.has("read") &&
-						builtInRegistryToolNames.has("write") &&
+						builtInRegistryToolNames.has("bash") &&
 						enabled.includes("read") &&
-						enabled.includes("write") &&
+						enabled.includes("bash") &&
 						isMountableUnderXdev(liveTool);
 					const nextMounted = shouldMount
 						? mounted.includes(name)

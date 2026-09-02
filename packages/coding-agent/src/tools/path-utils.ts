@@ -2,17 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
-import { HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX } from "@oh-my-pi/hashline";
 import { glob } from "@oh-my-pi/pi-natives";
 import { hasFsCode, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils";
-import {
-	type LocalProtocolOptions,
-	resolveFleetUrlToPath,
-	resolveLocalRoot,
-	resolveLocalUrlToPath,
-	resolveVaultUrlToPath,
-} from "../internal-urls";
-import type { ToolSession } from "./index";
 import { ToolAbortError, ToolError } from "./tool-errors";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
@@ -288,17 +279,6 @@ export function splitInternalUrlSel(rawPath: string): { path: string; sel?: stri
 	return { path, sel: chunks.join(":") };
 }
 
-export function peelWriteUrlSelector(rawPath: string): string {
-	const { path, sel } = splitInternalUrlSel(rawPath);
-	if (sel === undefined) return rawPath;
-
-	if (/^(?:raw|conflicts)$/i.test(sel)) return path;
-	throw new ToolError(
-		`write does not accept the trailing selector ":${sel}" — it writes a whole file. ` +
-			`Remove ":${sel}", or if the filename truly ends with it, percent-encode the ":" as %3A.`,
-	);
-}
-
 function assertNotInternalUrl(expanded: string, original: string): void {
 	for (const prefix of TOP_LEVEL_INTERNAL_URL_PREFIXES) {
 		if (expanded.startsWith(prefix)) {
@@ -394,46 +374,6 @@ function isSymlink(target: string): boolean {
 	}
 }
 
-export async function resolveSyscallTarget(filePath: string, followFinal: boolean): Promise<string | null> {
-	const target = path.resolve(filePath);
-	if (followFinal) {
-		const real = await tryRealpathAsync(target);
-		if (real !== null) return real;
-
-		if (!(await isProvenNotSymlink(target))) return null;
-	}
-
-	const tail: string[] = [path.basename(target)];
-	let ancestor = path.dirname(target);
-	for (;;) {
-		const real = await tryRealpathAsync(ancestor);
-		if (real !== null) return path.join(real, ...tail.reverse());
-
-		if (!(await isProvenNotSymlink(ancestor))) return null;
-		const parent = path.dirname(ancestor);
-
-		if (parent === ancestor) return null;
-		tail.push(path.basename(ancestor));
-		ancestor = parent;
-	}
-}
-
-async function tryRealpathAsync(target: string): Promise<string | null> {
-	try {
-		return await fs.promises.realpath(target);
-	} catch {
-		return null;
-	}
-}
-
-async function isProvenNotSymlink(target: string): Promise<boolean> {
-	try {
-		return !(await fs.promises.lstat(target)).isSymbolicLink();
-	} catch (error) {
-		return isEnoent(error);
-	}
-}
-
 function normalizePosixPath(filePath: string): string {
 	return filePath.replace(/\\/g, "/");
 }
@@ -470,28 +410,6 @@ function normalizePathSeparators(input: string): string {
 
 export function normalizePathLikeInput(input: string): string {
 	return stripOuterDoubleQuotes(input.trim());
-}
-
-function parseStringEncodedPathArray(input: string): string[] | null {
-	const trimmed = input.trim();
-	if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(trimmed);
-	} catch {
-		return null;
-	}
-
-	if (!Array.isArray(parsed) || parsed.some(entry => typeof entry !== "string")) {
-		return null;
-	}
-	return parsed;
-}
-
-export function toPathList(input: string | string[] | undefined): string[] {
-	if (typeof input === "string") return parseStringEncodedPathArray(input) ?? [input];
-	return input ?? [];
 }
 
 const GLOB_PATH_CHARS = ["*", "?", "[", "{"] as const;
@@ -744,90 +662,4 @@ export async function findUniqueWorkspaceSuffix(
 	signal?: AbortSignal,
 ): Promise<{ absolutePath: string; displayPath: string } | null> {
 	return findUniqueWorkspaceSuffixWithGlob(rawPath, cwd, signal, glob);
-}
-
-const VAULT_SCHEME_PREFIX = "vault:";
-const LOCAL_SCHEME_PREFIX = "local:";
-const FLEET_SCHEME_PREFIX = "fleet:";
-const HL_TRAILING_TAG_RE = new RegExp(`${HL_FILE_HASH_SEP}[0-9A-Fa-f]{${HL_FILE_HASH_LENGTH}}$`);
-
-function sessionLocalProtocolOptions(session: ToolSession): LocalProtocolOptions {
-	return (
-		session.localProtocolOptions ?? {
-			getArtifactsDir: () => session.getArtifactsDir?.() ?? null,
-			getSessionId: () => session.getSessionId?.() ?? null,
-		}
-	);
-}
-
-function sessionSandboxRoot(session: ToolSession): string | null {
-	try {
-		return path.resolve(resolveLocalRoot(sessionLocalProtocolOptions(session)));
-	} catch {
-		return null;
-	}
-}
-
-function isWithinRoot(absolutePath: string, root: string): boolean {
-	if (absolutePath === root) return true;
-	const sep = `${root}${path.sep}`;
-	return absolutePath.startsWith(sep);
-}
-
-export function unwrapHashlineHeaderPath(targetPath: string): string {
-	const trimmed = targetPath.trimEnd();
-	if (
-		trimmed.length < HL_FILE_PREFIX.length + HL_FILE_SUFFIX.length ||
-		trimmed[0] !== HL_FILE_PREFIX ||
-		trimmed[trimmed.length - 1] !== HL_FILE_SUFFIX
-	) {
-		return targetPath;
-	}
-	const inner = trimmed.slice(HL_FILE_PREFIX.length, trimmed.length - HL_FILE_SUFFIX.length);
-	const tagMatch = HL_TRAILING_TAG_RE.exec(inner);
-	const pathPart = tagMatch ? inner.slice(0, tagMatch.index) : inner;
-
-	if (pathPart.length === 0 || pathPart.includes(HL_FILE_HASH_SEP)) return targetPath;
-	return pathPart;
-}
-
-export function targetsLocalSandbox(session: ToolSession, targetPath: string): boolean {
-	const root = sessionSandboxRoot(session);
-	if (!root) return false;
-	let resolved: string;
-	try {
-		resolved = resolveAuthoredPath(session, targetPath);
-	} catch {
-		return false;
-	}
-	if (!path.isAbsolute(resolved)) return false;
-	const absolute = path.resolve(resolved);
-	if (isWithinRoot(absolute, root)) return true;
-
-	try {
-		const realRoot = fs.realpathSync.native(root);
-		if (isWithinRoot(absolute, realRoot)) return true;
-		const realParent = fs.realpathSync.native(path.dirname(absolute));
-		return isWithinRoot(path.join(realParent, path.basename(absolute)), realRoot);
-	} catch {
-		return false;
-	}
-}
-
-export function resolveAuthoredPath(session: ToolSession, targetPath: string): string {
-	const unwrapped = unwrapHashlineHeaderPath(targetPath);
-	const normalized = normalizeLocalScheme(unwrapped);
-	if (normalized.startsWith(LOCAL_SCHEME_PREFIX)) {
-		return resolveLocalUrlToPath(normalized, sessionLocalProtocolOptions(session));
-	}
-
-	if (normalized.startsWith(FLEET_SCHEME_PREFIX)) {
-		return resolveFleetUrlToPath(normalized, sessionLocalProtocolOptions(session));
-	}
-
-	if (normalized.startsWith(VAULT_SCHEME_PREFIX)) {
-		return resolveVaultUrlToPath(normalized);
-	}
-
-	return resolveToCwd(normalized, session.cwd);
 }

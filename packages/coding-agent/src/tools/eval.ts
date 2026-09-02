@@ -8,7 +8,6 @@ import {
 	raceJobSettlement,
 	resolveAutoBackgroundWaitMs,
 } from "../async";
-import { capEventDiff } from "../edit/diff";
 import { jsBackend, pythonBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
@@ -19,6 +18,7 @@ import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
+import { capEventDiff } from "../utils/diff";
 import "./kernel-prelude";
 import * as path from "node:path";
 import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };

@@ -252,7 +252,7 @@ After rule discovery in `createAgentSession` (`sdk.ts`), `bucketRules(...)` appl
 ### `condition`, `astCondition`, `scope`, and `interruptMode`
 
 - `condition` is the regex TTSR trigger field; legacy `ttsr_trigger` / `ttsrTrigger` are accepted as fallback inputs during parsing. A leading `(?i)`, `(?m)`, or `(?s)` inline flag group is translated to the equivalent JavaScript `RegExp` flags.
-- `astCondition` is the ast-grep trigger field: a string or YAML sequence of structural patterns, kept verbatim (no glob inference). It only matches on edit/write tool streams, where the language is inferred from the file path. A rule may set `condition`, `astCondition`, or both.
+- `astCondition` is the ast-grep trigger field: a string or YAML sequence of structural patterns, kept verbatim (no glob inference). It only matches on bash tool streams, where the language is inferred from the file path. A rule may set `condition`, `astCondition`, or both.
 - `scope` narrows TTSR matching to an allowlist of stream surfaces. It accepts either a comma-separated YAML string or a YAML sequence. Omitting it watches assistant prose (`text`) and all tool arguments (`tool`), but not thinking.
 
   ```yaml

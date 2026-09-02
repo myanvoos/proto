@@ -413,8 +413,8 @@ pi.registerTool({
 
 ### File write fallback (`registerFileWriteFallback`)
 
-`write`, `edit` and `apply_patch` perform the real byte-write to an ordinary file
-path through one shared primitive
+`write` performs the real byte-write to an ordinary file path through one shared
+primitive
 (`file ? file.write(content) : Bun.write(dst, content)`). When that primitive fails
 with a permission error (`EPERM`/`EACCES`/`EROFS` — every other error, such as
 `EISDIR`, is unaffected), the coding agent consults handlers registered
@@ -434,8 +434,7 @@ pi.registerFileWriteFallback(writeThroughBroker);
 
 Handlers run in registration order; the first one to resolve `true` counts as the
 bytes being durably on disk, and the native tool continues exactly as if its own
-write had succeeded — including recording its file snapshot under the real
-destination path, so a later hashline `edit` on that path keeps working. A
+write had succeeded. A
 throwing handler is logged and skipped in favor of the next one — per handler, so a
 later handler registered by the same extension still runs; if every handler
 returns `false` (or none are registered), the original error is rethrown
@@ -462,14 +461,7 @@ Two details matter when the destination is outside what the host allows:
   explicitly to recover the real errno, so this still reaches a handler — with
   `req.cause` set to the `mkdir` denial. In that case `req.dst`'s parent does not
   exist yet and the handler is responsible for creating it. An `ENOENT` with a
-  genuinely creatable or invalid parent is not diverted. (`apply_patch` creates the
-  parent as a separate step before writing; that `mkdir` tolerates a denial when a
-  fallback is registered, so the write still reaches the handler.)
-- **A hashline `MV`.** `edit`'s move writes its destination directly rather than
-  through the write tool's normal pipeline. It is routed to the same handlers, and
-  the source unlink goes to the delete seam below, so a move out of a directory you
-  cannot write completes too.
-
+  genuinely creatable or invalid parent is not diverted.
 This is deliberately not an interception of every write the agent can make. A
 permission error from these surfaces as it does today, with no handler consulted:
 
@@ -492,13 +484,12 @@ pi.registerFileDeleteFallback(async (req, ctx) => {
 });
 ```
 
-It covers `edit`'s `REM`, the source side of a hashline `MV`, and `apply_patch`'s
-delete op, and follows the same rules as the write seam: same permission codes, first
+It follows the same rules as the write seam: same permission codes, first
 `true` wins, a throwing handler is skipped, the original error is rethrown if none
 succeed, and nothing happens at all when no handler is registered. Two differences:
 
 - **`ENOENT` is never diverted.** Nothing is created on the way to an unlink, so a
-  missing file genuinely is missing — `REM` turns it into a not-found error.
+  missing file genuinely is missing — the unlink turns it into a not-found error.
 - **A handler must unlink, never remove recursively.** `unlink` on a directory reports
   `EPERM` on macOS, which is indistinguishable from a sandbox denial by error code
   alone, so the seam `lstat`s the target and refuses to divert a directory. But when

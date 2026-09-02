@@ -55,9 +55,9 @@ With no explicit `scope`, a rule monitors assistant text and all tool arguments,
 
 ### AST conditions (`astCondition`)
 
-AST conditions only evaluate on tool-argument streams for tools that expose a reconstructed `matcherDigest` or per-file `matcherEntries`, and only when a candidate path supplies a usable file extension for language inference. Built-in edit/write tools provide these surfaces, but the coordinator resolves them generically from the active tool.
+AST conditions only evaluate on tool-argument streams for tools that expose a reconstructed `matcherDigest` or per-file `matcherEntries`, and only when a candidate path supplies a usable file extension for language inference. Built-in write and kernel tools provide these surfaces, but the coordinator resolves them generically from the active tool.
 
-The snapshot is source-bearing payload, not the whole prospective file: pre-existing target content is invisible unless the call repeats it. Current edit modes expose `new_string` for replace, added lines for JSON patch, hashline, and apply-patch forms, and full content for create forms; write exposes its entire `content`. Multi-file hashline/apply-patch calls are split into separate `{ path, digest }` entries, so AST language, path scope/globs, buffers, and matching are evaluated per file. Matching is in-memory through native `astMatch` with Smart strictness.
+The snapshot is source-bearing payload, not the whole prospective file: pre-existing target content is invisible unless the call repeats it. `write` exposes its entire `content` as the snapshot digest, and the kernel tool exposes each Python cell as a `cell.py` entry whose digest is the cell code; both surfaces are resolved generically from the active tool. Matching is in-memory through native `astMatch` with Smart strictness.
 
 ### Setting gating
 

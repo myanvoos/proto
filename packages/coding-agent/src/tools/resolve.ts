@@ -3,14 +3,16 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import { parseXdUrl, XD_URL_PREFIX } from "../internal-urls/xd-protocol";
+import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import type { Theme } from "../modes/theme/theme";
 import resolveReminderPrompt from "../prompts/system/resolve-device-reminder.md" with { type: "text" };
 import { Ellipsis, padToWidth, renderStatusLine, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
 import { replaceTabs } from "./render-utils";
+import { tokenizeShellSegments } from "./shell-tokenize";
 import { ToolError } from "./tool-errors";
 import type { XdevDispatch } from "./xdev";
+import { parseXdBashCommand } from "./xdev";
 
 export const RESOLVE_DEVICE_NAME = "resolve";
 export const REJECT_DEVICE_NAME = "reject";
@@ -27,27 +29,24 @@ export function isResolutionDeviceName(name: string): name is ResolutionDeviceNa
 export function resolutionDeviceUsage(device: ResolutionDeviceName): string {
 	switch (device) {
 		case RESOLVE_DEVICE_NAME:
-			return `Write a one-sentence reason as plain text to ${RESOLVE_DEVICE_PATH} to APPLY the pending staged action (e.g. a tool preview).`;
+			return `Run \`xd resolve <reason>\` (bash) with a one-sentence plain-text reason to APPLY the pending staged action (e.g. a tool preview).`;
 		case REJECT_DEVICE_NAME:
-			return `Write a one-sentence reason as plain text to ${REJECT_DEVICE_PATH} to DISCARD the pending staged action (e.g. a tool preview).`;
+			return `Run \`xd reject <reason>\` (bash) with a one-sentence plain-text reason to DISCARD the pending staged action (e.g. a tool preview).`;
 	}
 }
 
-function toolCallWritePath(toolCall: { name: string; arguments?: Record<string, unknown> }): string | undefined {
-	if (toolCall.name !== "write") return undefined;
-	const args = toolCall.arguments;
-	return typeof args?.path === "string" ? args.path : typeof args?.file_path === "string" ? args.file_path : undefined;
-}
-
 export function isPreviewResolutionToolCall(toolCall: { name: string; arguments?: Record<string, unknown> }): boolean {
-	const path = toolCallWritePath(toolCall);
-	if (path === undefined) return false;
-	const device = parseXdUrl(path)?.name;
-	return device === RESOLVE_DEVICE_NAME || device === REJECT_DEVICE_NAME;
+	if (toolCall.name !== "bash") return false;
+	const command = toolCall.arguments?.command;
+	if (typeof command !== "string") return false;
+	const segments = tokenizeShellSegments(command);
+	if (segments.length !== 1) return false;
+	const parsed = parseXdBashCommand(segments[0]);
+	return parsed?.kind === "device" && isResolutionDeviceName(parsed.name);
 }
 
 export function writeDeviceDispatch(toolName: string, result: unknown): XdevDispatch | undefined {
-	if (toolName !== "write") return undefined;
+	if (toolName !== "bash") return undefined;
 	if (!result || typeof result !== "object" || !("details" in result)) return undefined;
 	const details = result.details;
 	if (!details || typeof details !== "object" || !("xdev" in details)) return undefined;

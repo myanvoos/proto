@@ -9,7 +9,9 @@ import type {
 import { parseXdUrl } from "../../internal-urls/xd-protocol";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { resolveToCwd } from "../../tools/path-utils";
+import { tokenizeShellSegments } from "../../tools/shell-tokenize";
 import type { TodoStatus } from "../../tools/todo";
+import { parseXdBashCommand } from "../../tools/xdev";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 
 interface MessageProgress {
@@ -125,10 +127,20 @@ interface TextMessageLike {
 const ACP_TEXT_LIMIT = 4_000;
 
 function xdevDispatchDevice(toolName: string, args: unknown): string | undefined {
-	if (toolName !== "write" && toolName !== "read") return undefined;
-	const path = extractStringProperty<PathContainer>(args, "path");
-	if (!path) return undefined;
-	return parseXdUrl(path)?.name ?? undefined;
+	if (toolName === "read") {
+		const path = extractStringProperty<PathContainer>(args, "path");
+		if (!path) return undefined;
+		return parseXdUrl(path)?.name ?? undefined;
+	}
+	if (toolName === "bash") {
+		const command = extractStringProperty<{ command?: string }>(args, "command");
+		if (!command) return undefined;
+		const segments = tokenizeShellSegments(command);
+		if (segments.length !== 1) return undefined;
+		const parsed = parseXdBashCommand(segments[0]);
+		return parsed?.kind === "device" ? parsed.name : undefined;
+	}
+	return undefined;
 }
 
 function isInternalFleetMessageTool(toolName: string, args: unknown): boolean {
@@ -137,7 +149,15 @@ function isInternalFleetMessageTool(toolName: string, args: unknown): boolean {
 		if (xdevDispatchDevice(toolName, args) !== "fleet" || typeof args !== "object" || args === null) {
 			return false;
 		}
-		const content = Reflect.get(args, "content");
+		let content: unknown;
+		if (toolName === "bash") {
+			const command = extractStringProperty<{ command?: string }>(args, "command");
+			const segments = command ? tokenizeShellSegments(command) : [];
+			const parsed = segments.length === 1 ? parseXdBashCommand(segments[0]) : undefined;
+			content = parsed?.kind === "device" ? parsed.content : undefined;
+		} else {
+			content = Reflect.get(args, "content");
+		}
 		if (typeof content !== "string") return false;
 		try {
 			hubArgs = JSON.parse(content);
@@ -160,14 +180,10 @@ function isInternalFleetMessageTool(toolName: string, args: unknown): boolean {
 	}
 }
 
-function mapToolKind(toolName: string, args?: unknown): ToolKind {
-	if (toolName === "write" && xdevDispatchDevice(toolName, args)) return "execute";
+function mapToolKind(toolName: string): ToolKind {
 	switch (toolName) {
 		case "read":
 			return "read";
-		case "write":
-		case "edit":
-			return "edit";
 		case "delete":
 			return "delete";
 		case "move":
@@ -177,9 +193,6 @@ function mapToolKind(toolName: string, args?: unknown): ToolKind {
 		case "exec":
 		case "eval":
 			return "execute";
-		case "grep":
-		case "glob":
-			return "search";
 		case "web_search":
 			return "fetch";
 		case "todo":
@@ -467,7 +480,7 @@ export function buildToolCallStartUpdate(input: {
 		sessionUpdate: "tool_call",
 		toolCallId: input.toolCallId,
 		title: buildToolTitle(input.toolName, input.args, input.intent),
-		kind: mapToolKind(input.toolName, input.args),
+		kind: mapToolKind(input.toolName),
 		status: input.status ?? "pending",
 		rawInput: input.args,
 	};

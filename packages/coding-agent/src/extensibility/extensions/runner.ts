@@ -15,7 +15,6 @@ import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
-import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { ManagedTimers } from "./managed-timers";
 import { createExtensionModelQuery } from "./model-api";
@@ -338,7 +337,6 @@ export async function emitSessionShutdownEvent(extensionRunner: ExtensionRunner 
 		});
 		return true;
 	} finally {
-		extensionRunner.disposeFileFallbacks();
 		extensionRunner.clearManagedTimers();
 	}
 }
@@ -409,8 +407,6 @@ export class ExtensionRunner {
 	#managedTimers = new ManagedTimers((event, error, stack) =>
 		this.emitError({ extensionPath: "<timer>", event, error, stack }),
 	);
-
-	#fileFallbackDisposers: Array<() => void> = [];
 
 	#emittedToolCalls = new Set<string>();
 
@@ -541,48 +537,6 @@ export class ExtensionRunner {
 		this.#uiContext = uiContext ?? noOpUIContext;
 		this.#mode = mode;
 		this.#initialized = true;
-
-		this.disposeFileFallbacks();
-		for (const ext of this.extensions) {
-			if (ext.fileWriteFallbackHandlers.length === 0 && ext.fileDeleteFallbackHandlers.length === 0) continue;
-
-			if (ext.fileWriteFallbackHandlers.length > 0) {
-				this.#fileFallbackDisposers.push(
-					addFileWriteFallback(async req => {
-						const ctx = this.createContext();
-						for (const handler of ext.fileWriteFallbackHandlers) {
-							try {
-								if (await handler(req, ctx)) return true;
-							} catch (error) {
-								logger.warn("Extension file write fallback handler threw; trying next handler", {
-									extension: ext.path,
-									error: error instanceof Error ? error.message : String(error),
-								});
-							}
-						}
-						return false;
-					}),
-				);
-			}
-			if (ext.fileDeleteFallbackHandlers.length > 0) {
-				this.#fileFallbackDisposers.push(
-					addFileDeleteFallback(async req => {
-						const ctx = this.createContext();
-						for (const handler of ext.fileDeleteFallbackHandlers) {
-							try {
-								if (await handler(req, ctx)) return true;
-							} catch (error) {
-								logger.warn("Extension file delete fallback handler threw; trying next handler", {
-									extension: ext.path,
-									error: error instanceof Error ? error.message : String(error),
-								});
-							}
-						}
-						return false;
-					}),
-				);
-			}
-		}
 
 		const pending = this.#pendingCredentialDisabled.splice(0);
 		queueMicrotask(() => {
@@ -928,10 +882,6 @@ export class ExtensionRunner {
 
 	clearManagedTimers(): void {
 		this.#managedTimers.clearAll();
-	}
-
-	disposeFileFallbacks(): void {
-		for (const dispose of this.#fileFallbackDisposers.splice(0)) dispose();
 	}
 
 	createCommandContext(): ExtensionCommandContext {

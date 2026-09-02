@@ -128,8 +128,6 @@ export interface AgentSessionConfig {
 
 	setActiveToolNames?: (names: Iterable<string>) => void;
 
-	ensureWriteRegistered?: () => Promise<boolean>;
-
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 
 	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
@@ -194,7 +192,6 @@ export interface AgentSessionConfig {
 
 	advisorTools?: AgentTool[];
 
-	advisorCreateEditTool?(): AgentTool | undefined;
 	advisorGetToolContext?: () => AgentToolContext | undefined;
 
 	advisorMcpResources?: CursorMcpResourceAdapter;

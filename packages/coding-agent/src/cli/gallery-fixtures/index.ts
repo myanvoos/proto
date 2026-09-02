@@ -1,6 +1,5 @@
 import { agenticFixtures } from "./agentic";
 import { codeintelFixtures } from "./codeintel";
-import { editFixtures } from "./edit";
 import { fsFixtures } from "./fs";
 import { interactionFixtures } from "./interaction";
 import { miscFixtures } from "./misc";
@@ -14,7 +13,6 @@ export const galleryFixtures = {
 	...interactionFixtures,
 	...shellFixtures,
 	...fsFixtures,
-	...editFixtures,
 	...agenticFixtures,
 	...webFixtures,
 	...codeintelFixtures,

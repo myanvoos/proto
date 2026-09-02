@@ -40,7 +40,6 @@ import type {
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { KeybindingsManager } from "../../config/keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
-import type { EditToolDetails } from "../../edit";
 import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
@@ -52,8 +51,7 @@ import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { CompactMode } from "../../session/compact-modes";
 import type { CustomMessage, CustomMessagePayload } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
-import type { BashToolDetails, BashToolInput, ReadToolDetails, ReadToolInput, WriteToolInput } from "../../tools";
-import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
+import type { BashToolDetails, BashToolInput, ReadToolDetails, ReadToolInput } from "../../tools";
 import type { EventBus } from "../../utils/event-bus";
 import type {
 	AgentEndEvent,
@@ -615,27 +613,12 @@ interface ReadToolCallEvent extends ToolCallEventBase {
 	input: ReadToolInput;
 }
 
-interface EditToolCallEvent extends ToolCallEventBase {
-	toolName: "edit";
-	input: Record<string, unknown>;
-}
-
-export interface WriteToolCallEvent extends ToolCallEventBase {
-	toolName: "write";
-	input: WriteToolInput;
-}
-
 interface CustomToolCallEvent extends ToolCallEventBase {
 	toolName: string;
 	input: Record<string, unknown>;
 }
 
-export type ToolCallEvent =
-	| BashToolCallEvent
-	| ReadToolCallEvent
-	| EditToolCallEvent
-	| WriteToolCallEvent
-	| CustomToolCallEvent;
+export type ToolCallEvent = BashToolCallEvent | ReadToolCallEvent | CustomToolCallEvent;
 
 interface ToolResultEventBase {
 	type: "tool_result";
@@ -655,32 +638,15 @@ export interface ReadToolResultEvent extends ToolResultEventBase {
 	details: ReadToolDetails | undefined;
 }
 
-export interface EditToolResultEvent extends ToolResultEventBase {
-	toolName: "edit";
-	details: EditToolDetails | undefined;
-}
-
-export interface WriteToolResultEvent extends ToolResultEventBase {
-	toolName: "write";
-	details: undefined;
-}
-
 export interface CustomToolResultEvent extends ToolResultEventBase {
 	toolName: string;
 	details: unknown;
 }
 
-export type ToolResultEvent =
-	| BashToolResultEvent
-	| ReadToolResultEvent
-	| EditToolResultEvent
-	| WriteToolResultEvent
-	| CustomToolResultEvent;
+export type ToolResultEvent = BashToolResultEvent | ReadToolResultEvent | CustomToolResultEvent;
 
 export function isToolCallEventType(toolName: "bash", event: ToolCallEvent): event is BashToolCallEvent;
 export function isToolCallEventType(toolName: "read", event: ToolCallEvent): event is ReadToolCallEvent;
-export function isToolCallEventType(toolName: "edit", event: ToolCallEvent): event is EditToolCallEvent;
-export function isToolCallEventType(toolName: "write", event: ToolCallEvent): event is WriteToolCallEvent;
 export function isToolCallEventType<TName extends string, TInput extends Record<string, unknown>>(
 	toolName: TName,
 	event: ToolCallEvent,
@@ -867,10 +833,6 @@ export interface ExtensionAPI {
 	on(event: "mcp_notification", handler: ExtensionHandler<McpNotificationEvent>): void;
 
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void;
-
-	registerFileWriteFallback(handler: FileWriteFallbackHandler): void;
-
-	registerFileDeleteFallback(handler: FileDeleteFallbackHandler): void;
 
 	registerCommand(
 		name: string,
@@ -1133,8 +1095,6 @@ export interface Extension {
 	tools: Map<string, RegisteredTool<any, any>>;
 	toolRegistrationListeners?: Set<ToolRegistrationListener>;
 	assistantThinkingRenderers: AssistantThinkingRenderer[];
-	fileWriteFallbackHandlers: FileWriteFallbackHandler[];
-	fileDeleteFallbackHandlers: FileDeleteFallbackHandler[];
 	messageRenderers: Map<string, MessageRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

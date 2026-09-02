@@ -1030,7 +1030,6 @@ export class AgentsViewComponent implements Component {
 			getTool: this.#deps.getTool,
 			isBuiltInTool: this.#deps.isBuiltInTool,
 			getMessageRenderer: this.#deps.getMessageRenderer,
-			cwd: this.#deps.cwd,
 			hideThinkingBlock: this.#deps.hideThinkingBlock,
 			proseOnlyThinking: this.#deps.proseOnlyThinking,
 			expandKeys: this.#deps.expandKeys ?? ["ctrl+o"],

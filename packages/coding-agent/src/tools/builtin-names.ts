@@ -1,7 +1,6 @@
 export const BUILTIN_TOOL_NAMES = [
 	"read",
 	"bash",
-	"edit",
 	"ask",
 	"eval",
 	"kernel",
@@ -19,7 +18,6 @@ export const BUILTIN_TOOL_NAMES = [
 	"fleet",
 	"todo",
 	"web_search",
-	"write",
 	"manage_skill",
 ] as const;
 

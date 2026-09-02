@@ -4,7 +4,6 @@ import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
 import { INTENT_FIELD, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
-import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
 import {
@@ -45,7 +44,7 @@ const MAX_LIVE_IRC_CARDS = 4;
 const IDLE_RECAP_MIN_SECONDS = 1;
 const IDLE_RECAP_MAX_SECONDS = 3600;
 
-const RAW_PARTIAL_JSON_RENDERERS: Record<string, true> = { bash: true, edit: true, apply_patch: true };
+const RAW_PARTIAL_JSON_RENDERERS: Record<string, true> = { bash: true };
 
 function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknown): boolean {
 	if (rawInput) return true;
@@ -806,15 +805,10 @@ export class EventController {
 						renderArgs,
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
-							snapshots: getFileSnapshotStore(this.ctx.viewSession),
 							showImages: settings.get("terminal.showImages"),
-							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
-							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 						},
 						tool,
 						this.ctx.ui,
-						this.ctx.sessionManager.getCwd(),
-						content.id,
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.chatContainer.addChild(component);
@@ -1010,16 +1004,11 @@ export class EventController {
 				event.args,
 				{
 					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(event.toolName),
-					snapshots: getFileSnapshotStore(this.ctx.viewSession),
 					showImages: settings.get("terminal.showImages"),
-					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
-					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 					liveRegion: this.ctx.chatContainer,
 				},
 				tool,
 				this.ctx.ui,
-				this.ctx.sessionManager.getCwd(),
-				event.toolCallId,
 			);
 			component.setArgsComplete(event.toolCallId);
 			component.setExecutionStarted(event.toolCallId);

@@ -1,16 +1,8 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import {
-	formatHashlineHeader,
-	formatNumberedLines,
-	type SnapshotStore,
-	splitAddressableFileLines,
-} from "@oh-my-pi/hashline";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { formatAge, formatBytes, isProbablyBinary, readImageMetadata, truncateHeadBytes } from "@oh-my-pi/pi-utils";
-import { canonicalSnapshotKey } from "../edit/file-snapshot-store";
-import { normalizeToLF } from "../edit/normalize";
 import type { FileMentionMessage } from "../session/messages";
 import { DEFAULT_MAX_BYTES, formatHeadTruncationNotice, truncateHead } from "../session/streaming-output";
 import { resolveReadPath } from "../tools/path-utils";
@@ -168,7 +160,7 @@ export function extractFileMentions(text: string): string[] {
 export async function generateFileMentionMessages(
 	filePaths: string[],
 	cwd: string,
-	options?: { autoResizeImages?: boolean; useHashLines?: boolean; snapshotStore?: SnapshotStore },
+	options?: { autoResizeImages?: boolean },
 ): Promise<AgentMessage[]> {
 	if (filePaths.length === 0) return [];
 
@@ -249,14 +241,7 @@ export async function generateFileMentionMessages(
 			}
 
 			const content = await Bun.file(absolutePath).text();
-			const snapshotStore = options?.useHashLines ? options.snapshotStore : undefined;
-			const normalized = snapshotStore ? normalizeToLF(content) : content;
-			const displayText = snapshotStore ? splitAddressableFileLines(normalized).join("\n") : normalized;
-			let { output, lineCount } = buildTextOutput(displayText);
-			if (snapshotStore) {
-				const tag = snapshotStore.record(canonicalSnapshotKey(absolutePath), normalized);
-				output = `${formatHashlineHeader(resolvedPath, tag)}\n${formatNumberedLines(output)}`;
-			}
+			const { output, lineCount } = buildTextOutput(content);
 			files.push({ path: resolvedPath, content: output, lineCount });
 		} catch {}
 	}

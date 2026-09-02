@@ -316,11 +316,11 @@ async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<
 	const filePath = args.filePath ?? (args.file && args.file !== STDIN_MARKER ? path.resolve(args.file) : undefined);
 	const source: TtsrMatchSource =
 		args.source ?? (filePath && SOURCE_FILE_EXT.test(path.extname(filePath)) ? "tool" : "text");
-	const tool = args.tool ?? (source === "tool" ? "edit" : undefined);
+	const tool = args.tool ?? (source === "tool" ? "bash" : undefined);
 
 	const inferenceNote =
 		!args.source && filePath && source === "text"
-			? `inferred --source text from '${path.extname(filePath) || filePath}' (not in the source-file extension set); pass --source tool --tool edit to evaluate tool-scoped rules`
+			? `inferred --source text from '${path.extname(filePath) || filePath}' (not in the source-file extension set); pass --source tool --tool bash to evaluate tool-scoped rules`
 			: undefined;
 
 	const context: TtsrMatchContext = {
@@ -596,7 +596,7 @@ function scanRulePlanMatchesToolScope(plan: ScanRulePlan, filePaths: string[]): 
 		if (scope.pathGlob && !matchesScanGlob(scope.pathGlob, filePaths)) {
 			continue;
 		}
-		if (!scope.toolName || scope.toolName === "edit" || scope.toolName === "write") {
+		if (!scope.toolName || scope.toolName === "bash") {
 			return true;
 		}
 	}

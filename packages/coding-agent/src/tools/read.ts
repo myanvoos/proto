@@ -1,6 +1,5 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { splitAddressableFileLines } from "@oh-my-pi/hashline";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
@@ -14,15 +13,6 @@ import {
 	readImageMetadata,
 	truncateHeadBytes,
 } from "@oh-my-pi/pi-utils";
-import {
-	canonicalSnapshotKey,
-	getFileSnapshotStore,
-	recordFileSnapshot,
-	recordSeenLinesFromBody,
-	SNAPSHOT_MAX_BYTES,
-} from "../edit/file-snapshot-store";
-import { normalizeToLF } from "../edit/normalize";
-import { isNotebookPath, readEditableNotebookText } from "../edit/notebook";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
 import { InternalUrlRouter, resolveLocalUrlToFile } from "../internal-urls";
 import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls/artifact-protocol";
@@ -49,6 +39,7 @@ import {
 import { isInspectMediaToolActive } from "../utils/inspect-media-mode";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 import { isSampleProfilePath, renderSampleProfile } from "../utils/sample-profile";
+import { normalizeToLF, stripBom } from "../utils/text";
 import { buildDirectoryTree, type DirectoryTree } from "../workspace-tree";
 import {
 	type ConflictEntry,
@@ -62,6 +53,7 @@ import {
 	scanFileForConflicts,
 } from "./conflict-detect";
 import { executeReadUrl, fetchReadUrl, parseReadUrlTarget } from "./fetch";
+import { isNotebookPath, readEditableNotebookText } from "./notebook";
 import { type OutputMeta, resolveOutputMaxColumns } from "./output-meta";
 import {
 	expandPath,
@@ -79,23 +71,16 @@ import {
 	BRACKET_CONTEXT_ELLIPSIS,
 	buildInMemoryMultiRangeResult,
 	buildInMemoryTextResult,
-	contiguousLineNumbers,
 	countTextLines,
 	formatLineEntriesWithMode,
-	formatReadHashlineHeader,
 	formatSummaryElisionFooter,
 	formatTextWithMode,
-	type HashlineHeaderContext,
-	hashlineHeaderContext,
-	hashlineHeaderContextForText,
-	lineNumbersFromSpans,
 	markMarkdownContentType,
-	prependHashlineHeader,
 	prependSuffixResolutionNotice,
 	RANGE_LEADING_CONTEXT_LINES,
 	RANGE_TRAILING_CONTEXT_LINES,
 	READ_CHUNK_SIZE,
-	readHashlineHeaderContext,
+	splitAddressableFileLines,
 } from "./read-format";
 import {
 	findSuffixMatchCached,
@@ -117,6 +102,7 @@ import { xdevDocs, xdevListing } from "./xdev";
 export { readToolRenderer } from "./read-renderer";
 
 const MAX_PROFILE_SUMMARY_BYTES = 32 * 1024 * 1024;
+const MAX_BUFFERED_READ_BYTES = 4 * 1024 * 1024;
 const MAX_ARTIFACT_RAW_INLINE_BYTES = DEFAULT_MAX_BYTES;
 
 const LF_BYTE = 0x0a;
@@ -147,17 +133,11 @@ async function readWholeFile(absolutePath: string): Promise<Buffer | undefined> 
 
 function deriveBufferedFileText(bytes: Buffer): BufferedFileText {
 	const rawText = bytes.toString("utf-8");
-	const strippedText = rawText.charCodeAt(0) === 0xfeff ? rawText.slice(1) : rawText;
+	const { text: strippedText } = stripBom(rawText);
 
 	const normalizedText = strippedText.includes("\r") ? normalizeToLF(strippedText) : strippedText;
 	const rawSegments = rawText.split("\n");
-	let addressableLines: readonly string[];
-	if (normalizedText === rawText) {
-		const last = rawSegments.length - 1;
-		addressableLines = last > 0 && rawSegments[last] === "" ? rawSegments.slice(0, last) : rawSegments;
-	} else {
-		addressableLines = splitAddressableFileLines(normalizedText);
-	}
+	const addressableLines = splitAddressableFileLines(normalizedText);
 	return {
 		bytes,
 		rawText,
@@ -528,7 +508,7 @@ function appendRepeatReadHint(session: ToolSession, path: string, result: AgentT
 	}
 	entry.count++;
 	if (entry.count < REPEAT_READ_HINT_THRESHOLD) return;
-	block.text += `\n\n[You have received this identical output ${entry.count} times. Re-reading '${path}' will not change it — use a narrower selector (path:A-B), or proceed with the edit.]`;
+	block.text += `\n\n[You have received this identical output ${entry.count} times. Re-reading '${path}' will not change it — use a narrower selector (path:A-B), or proceed.]`;
 }
 
 export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
@@ -556,12 +536,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	}
 
 	#renderDescription(): string {
-		const displayMode = resolveFileDisplayMode(this.session);
 		return prompt.render(readDescription, {
 			DEFAULT_LIMIT: String(this.#defaultLimit),
 			DEFAULT_MAX_LINES: String(DEFAULT_MAX_LINES),
-			IS_HL_MODE: displayMode.hashLines,
-			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
 			INSPECT_MEDIA_ENABLED: this.#inspectMediaActive,
 		});
 	}
@@ -737,7 +714,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		fileSize: number,
 		buffered: BufferedFileText | undefined,
 		parsed: ParsedSelector,
-		displayMode: { hashLines: boolean; lineNumbers: boolean },
+		displayMode: { lineNumbers: boolean },
 		suffixResolution: { from: string; to: string } | undefined,
 		signal: AbortSignal | undefined,
 		allowBridge = true,
@@ -774,8 +751,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 		}
 
-		const shouldAddHashLines = !rawSelector && displayMode.hashLines;
-		const shouldAddLineNumbers = rawSelector ? false : shouldAddHashLines ? false : displayMode.lineNumbers;
+		const shouldAddLineNumbers = rawSelector ? false : displayMode.lineNumbers;
 		const maxColumns = resolveOutputMaxColumns(this.session.settings);
 
 		const blocks: string[] = [];
@@ -802,7 +778,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					? collectLineWindowFromBuffer(buffered, rangeStart, maxLines, maxBytesForRead, maxLines, rawSelector)
 					: await streamLinesFromFile(absolutePath, rangeStart, maxLines, maxBytesForRead, maxLines, signal, {
 							includeTerminalNewline: rawSelector,
-							stopScanAfterCollect: fileSize > SNAPSHOT_MAX_BYTES,
+							stopScanAfterCollect: fileSize > MAX_BUFFERED_READ_BYTES,
 						});
 				totalFileLines = window.totalFileLines;
 				collectedLines = window.lines;
@@ -835,7 +811,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				}
 				if (!fullLines || rawSelector) {
 					const blockText = displayLines.join("\n");
-					blocks.push(formatTextWithMode(blockText, range.startLine, shouldAddHashLines, shouldAddLineNumbers));
+					blocks.push(formatTextWithMode(blockText, range.startLine, shouldAddLineNumbers));
 				}
 			}
 		}
@@ -865,31 +841,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				startLine: firstLine?.kind === "line" ? firstLine.lineNumber : (visibleSpans[0]?.startLine ?? 1),
 				lineNumbers: entries.map(entry => (entry.kind === "line" ? entry.lineNumber : null)),
 			};
-			outputText = formatLineEntriesWithMode(entries, shouldAddHashLines, shouldAddLineNumbers);
+			outputText = formatLineEntriesWithMode(entries, shouldAddLineNumbers);
 		} else {
 			outputText = blocks.join("\n\n…\n\n");
-		}
-		if (shouldAddHashLines && outputText) {
-			const tag = buffered
-				? getFileSnapshotStore(this.session).record(canonicalSnapshotKey(absolutePath), buffered.normalizedText)
-				: await recordFileSnapshot(this.session, absolutePath);
-			if (tag) {
-				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText);
-				outputText = `${formatReadHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
-			}
-		} else if (rawSelector && visibleSpans.length > 0) {
-			const rawSeenLines = lineNumbersFromSpans(visibleSpans);
-			if (rawSeenLines.length > 0) {
-				if (buffered) {
-					getFileSnapshotStore(this.session).record(
-						canonicalSnapshotKey(absolutePath),
-						buffered.normalizedText,
-						rawSeenLines,
-					);
-				} else {
-					await recordFileSnapshot(this.session, absolutePath, rawSeenLines);
-				}
-			}
 		}
 		if (notices.length > 0) {
 			outputText = outputText ? `${outputText}\n${notices.join("\n")}` : notices.join("\n");
@@ -960,7 +914,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					sourceUrl: entry.details.finalUrl,
 					entityLabel: "URL output",
 					raw: urlRaw,
-					immutable: true,
 				});
 			}
 			const urlOffset = parsedUrlTarget.offset;
@@ -974,7 +927,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					sourceUrl: entry.details.finalUrl,
 					entityLabel: "URL output",
 					raw: urlRaw,
-					immutable: true,
 				});
 			}
 			return executeReadUrl(this.session, { path: parsedUrlTarget.path, raw: urlRaw }, signal);
@@ -1220,7 +1172,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				content = [{ type: "text", text: `[Cannot read ${ext} file: conversion failed]` }];
 			}
 		} else {
-			const wholeFileBytes = fileSize <= SNAPSHOT_MAX_BYTES ? await readWholeFile(absolutePath) : undefined;
+			const wholeFileBytes = fileSize <= MAX_BUFFERED_READ_BYTES ? await readWholeFile(absolutePath) : undefined;
 
 			const looksBinary =
 				!isRawSelector(parsed) &&
@@ -1255,21 +1207,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						renderedSummary.elidedRanges,
 						renderedSummary.elidedLines,
 					);
-					const summaryHashContext = displayMode.hashLines
-						? buffered
-							? hashlineHeaderContextForText(
-									this.session,
-									absolutePath,
-									this.session.cwd,
-									buffered.normalizedText,
-								)
-							: await readHashlineHeaderContext(this.session, absolutePath, this.session.cwd)
-						: undefined;
-					const bodyText = footer ? `${renderedSummary.text}\n\n${footer}` : renderedSummary.text;
-					const modelText = prependHashlineHeader(bodyText, summaryHashContext);
-					if (summaryHashContext?.tag) {
-						recordSeenLinesFromBody(this.session, absolutePath, summaryHashContext.tag, renderedSummary.text);
-					}
+					const modelText = footer ? `${renderedSummary.text}\n\n${footer}` : renderedSummary.text;
 					details = {
 						displayContent: { text: renderedSummary.displayText, startLine: 1 },
 						summary: {
@@ -1363,7 +1301,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 								maxBytesForRead,
 								selectedLineLimit,
 								undefined,
-								{ includeTerminalNewline: rawSelector, stopScanAfterCollect: fileSize > SNAPSHOT_MAX_BYTES },
+								{
+									includeTerminalNewline: rawSelector,
+									stopScanAfterCollect: fileSize > MAX_BUFFERED_READ_BYTES,
+								},
 							);
 
 					const {
@@ -1374,7 +1315,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						firstLinePreview,
 						firstLineByteLength,
 						reachedEof,
-						hasTrailingNewline,
 					} = lineWindow;
 
 					if (requestedStart >= totalFileLines) {
@@ -1432,31 +1372,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						firstLineExceedsLimit,
 					};
 
-					const shouldAddHashLines = !rawSelector && displayMode.hashLines;
-					const shouldAddLineNumbers = rawSelector ? false : shouldAddHashLines ? false : displayMode.lineNumbers;
-					let hashContext: HashlineHeaderContext | undefined;
-					if (shouldAddHashLines && collectedLines.length > 0 && !firstLineExceedsLimit) {
-						const isWholeFile = offset === undefined && limit === undefined && !wasTruncated;
-						const tag = buffered
-							? getFileSnapshotStore(this.session).record(
-									canonicalSnapshotKey(absolutePath),
-									buffered.normalizedText,
-								)
-							: isWholeFile
-								? getFileSnapshotStore(this.session).record(
-										canonicalSnapshotKey(absolutePath),
-										normalizeToLF(`${collectedLines.join("\n")}${hasTrailingNewline ? "\n" : ""}`),
-									)
-								: await recordFileSnapshot(this.session, absolutePath);
-						if (tag) {
-							hashContext = hashlineHeaderContext(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag);
-						}
-					}
+					const shouldAddLineNumbers = rawSelector ? false : displayMode.lineNumbers;
 
 					let capturedDisplayContent:
 						| { text: string; startLine: number; lineNumbers?: Array<number | null> }
 						| undefined;
-					let emittedHashlineHeader = false;
 					const formatText = (text: string, startNum: number): string => {
 						const lineCount = countTextLines(text);
 						capturedDisplayContent = {
@@ -1464,10 +1384,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							startLine: startNum,
 							lineNumbers: Array.from({ length: lineCount }, (_, i) => startNum + i),
 						};
-						const formatted = formatTextWithMode(text, startNum, shouldAddHashLines, shouldAddLineNumbers);
-						if (!hashContext || emittedHashlineHeader) return formatted;
-						emittedHashlineHeader = true;
-						return prependHashlineHeader(formatted, hashContext);
+						return formatTextWithMode(text, startNum, shouldAddLineNumbers);
 					};
 					const formatBracketAwareText = (): string | undefined => {
 						if (!bracketContextFullLines) return undefined;
@@ -1494,10 +1411,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							startLine: firstLine?.kind === "line" ? firstLine.lineNumber : startLineDisplay,
 							lineNumbers: entries.map(entry => (entry.kind === "line" ? entry.lineNumber : null)),
 						};
-						const formatted = formatLineEntriesWithMode(entries, shouldAddHashLines, shouldAddLineNumbers);
-						if (!hashContext || emittedHashlineHeader) return formatted;
-						emittedHashlineHeader = true;
-						return prependHashlineHeader(formatted, hashContext);
+						return formatLineEntriesWithMode(entries, shouldAddLineNumbers);
 					};
 
 					let outputText: string;
@@ -1506,13 +1420,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						const firstLineBytes = firstLineByteLength ?? 0;
 						const snippet = firstLinePreview ?? { text: "", bytes: 0 };
 
-						if (shouldAddHashLines) {
-							outputText = `[Line ${startLineDisplay} is ${formatBytes(
-								firstLineBytes,
-							)}, exceeds ${formatBytes(maxBytesForRead)} limit. Hashline output requires full lines; cannot emit an editable numbered preview for a truncated line.]`;
-						} else {
-							outputText = formatText(snippet.text, startLineDisplay);
-						}
+						outputText = formatText(snippet.text, startLineDisplay);
 						if (snippet.text.length === 0) {
 							outputText = `[Line ${startLineDisplay} is ${formatBytes(
 								firstLineBytes,
@@ -1555,22 +1463,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						sourcePath = absolutePath;
 					}
 					if (reachedEof) details.totalLines = totalFileLines;
-
-					if (hashContext?.tag) {
-						recordSeenLinesFromBody(this.session, absolutePath, hashContext.tag, outputText);
-					}
-					if (rawSelector && !firstLineExceedsLimit && collectedLines.length > 0) {
-						const seenLines = contiguousLineNumbers(startLineDisplay, collectedLines.length);
-						if (buffered) {
-							getFileSnapshotStore(this.session).record(
-								canonicalSnapshotKey(absolutePath),
-								buffered.normalizedText,
-								seenLines,
-							);
-						} else {
-							await recordFileSnapshot(this.session, absolutePath, seenLines);
-						}
-					}
 
 					if (capturedDisplayContent) {
 						details.displayContent = capturedDisplayContent;
@@ -1645,17 +1537,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		const region = renderConflictRegion(entry, scope);
-		const displayMode = resolveFileDisplayMode(this.session);
-		const shouldAddHashLines = displayMode.hashLines;
-		const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
+		const shouldAddLineNumbers = resolveFileDisplayMode(this.session).lineNumbers;
 
 		const rawText = region.lines.join("\n");
-		const tag = shouldAddHashLines ? await recordFileSnapshot(this.session, entry.absolutePath) : undefined;
-		const hashContext = tag
-			? hashlineHeaderContext(formatPathRelativeToCwd(entry.absolutePath, this.session.cwd), tag)
-			: undefined;
-		const formattedBody = formatTextWithMode(rawText, region.startLine, shouldAddHashLines, shouldAddLineNumbers);
-		const formattedText = prependHashlineHeader(formattedBody, hashContext);
+		const formattedText = formatTextWithMode(rawText, region.startLine, shouldAddLineNumbers);
 
 		const details: ReadToolDetails = {
 			resolvedPath: entry.absolutePath,
@@ -1733,9 +1618,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		const rawSelector = isRawSelector(parsedSel);
-		const displayMode = resolveFileDisplayMode(this.session, { raw: rawSelector, immutable: true });
+		const displayMode = resolveFileDisplayMode(this.session, { raw: rawSelector });
 		if (isMultiRange(parsedSel) && parsedSel.kind === "lines") {
-			const artifactBytes = artifact.size <= SNAPSHOT_MAX_BYTES ? await readWholeFile(artifact.path) : undefined;
+			const artifactBytes =
+				artifact.size <= MAX_BUFFERED_READ_BYTES ? await readWholeFile(artifact.path) : undefined;
 			const buffered = artifactBytes ? deriveBufferedFileText(artifactBytes) : undefined;
 			const read = await this.#readLocalFileMultiRange(
 				artifact.path,
@@ -1784,7 +1670,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			maxBytesForRead,
 			selectedLineLimit,
 			signal,
-			{ includeTerminalNewline: rawSelector, stopScanAfterCollect: artifact.size > SNAPSHOT_MAX_BYTES },
+			{ includeTerminalNewline: rawSelector, stopScanAfterCollect: artifact.size > MAX_BUFFERED_READ_BYTES },
 		);
 		const {
 			lines: collectedLines,
@@ -1808,7 +1694,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				.done();
 		}
 
-		const shouldAddLineNumbers = rawSelector ? false : displayMode.hashLines ? false : displayMode.lineNumbers;
+		const shouldAddLineNumbers = rawSelector ? false : displayMode.lineNumbers;
 		const selectedContent = collectedLines.join("\n");
 		const totalSelectedLines = totalFileLines - startLine;
 		const wasTruncated = collectedLines.length < totalSelectedLines || stoppedByByteLimit;
@@ -1833,7 +1719,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				startLine: startNum,
 				lineNumbers: Array.from({ length: lineCount }, (_, i) => startNum + i),
 			};
-			return formatTextWithMode(text, startNum, false, shouldAddLineNumbers);
+			return formatTextWithMode(text, startNum, shouldAddLineNumbers);
 		};
 
 		let outputText: string;
@@ -1953,7 +1839,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				sourcePath: resource.sourcePath,
 				sourceInternal: url,
 				entityLabel: "resource",
-				immutable: resource.immutable,
 				raw,
 			});
 		}
@@ -1965,7 +1850,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			sourceInternal: url,
 			entityLabel: "resource",
 			ignoreResultLimits: scheme === "skill",
-			immutable: resource.immutable,
 			raw,
 		});
 	}

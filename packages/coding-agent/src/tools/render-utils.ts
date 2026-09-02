@@ -4,7 +4,7 @@ import type { Ellipsis } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { getKeybindings, replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { SGR_FG_RESET } from "@oh-my-pi/pi-tui/ansi";
-import { formatMoreLines, pluralize } from "@oh-my-pi/pi-utils";
+import { pluralize } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
@@ -228,14 +228,6 @@ export function wrapCodeFrameLine(line: string, width: number): string[] {
 	);
 }
 
-export function formatDiffTruncationHint(hiddenHunks: number, hiddenLines: number, theme: Theme): string | undefined {
-	const remainder: string[] = [];
-	if (hiddenHunks > 0) remainder.push(`${hiddenHunks} more ${pluralize("hunk", hiddenHunks)}`);
-	if (hiddenLines > 0) remainder.push(formatMoreLines(hiddenLines));
-	if (remainder.length === 0) return undefined;
-	return theme.fg("toolOutput", `… (${remainder.join(", ")}) ${formatExpandHint(theme)}`);
-}
-
 export type ToolUIStatus = "success" | "done" | "error" | "warning" | "info" | "pending" | "running" | "aborted";
 export type ToolUIColor = "success" | "error" | "warning" | "accent" | "muted";
 
@@ -279,176 +271,6 @@ export function getDiffStats(diffText: string): DiffStats {
 	}
 
 	return { added, removed, hunks, lines: lines.length };
-}
-
-interface DiffSegment {
-	lines: string[];
-	isChange: boolean;
-	isEllipsis: boolean;
-}
-
-function parseDiffSegments(lines: string[]): DiffSegment[] {
-	const segments: DiffSegment[] = [];
-	let current: DiffSegment | null = null;
-
-	for (const line of lines) {
-		const isChange = line.startsWith("+") || line.startsWith("-");
-		const isEllipsis = line.trimStart().startsWith("...") || line.trim().length === 0;
-
-		if (isEllipsis) {
-			if (current) segments.push(current);
-			segments.push({ lines: [line], isChange: false, isEllipsis: true });
-			current = null;
-		} else if (!current || current.isChange !== isChange) {
-			if (current) segments.push(current);
-			current = { lines: [line], isChange, isEllipsis: false };
-		} else {
-			current.lines.push(line);
-		}
-	}
-
-	if (current) segments.push(current);
-	return segments;
-}
-
-export function truncateDiffByHunk(
-	diffText: string,
-	maxHunks: number,
-	maxLines: number,
-	options?: { fromTail?: boolean },
-): { text: string; hiddenHunks: number; hiddenLines: number } {
-	if (options?.fromTail) {
-		const reversed = (diffText ?? "").split("\n").reverse().join("\n");
-		const result = truncateDiffByHunk(reversed, maxHunks, maxLines);
-		return {
-			text: result.text.split("\n").reverse().join("\n"),
-			hiddenHunks: result.hiddenHunks,
-			hiddenLines: result.hiddenLines,
-		};
-	}
-	const lines = diffText ? diffText.split("\n") : [];
-	const totalStats = getDiffStats(diffText);
-
-	if (lines.length <= maxLines && totalStats.hunks <= maxHunks) {
-		return { text: diffText, hiddenHunks: 0, hiddenLines: 0 };
-	}
-
-	const segments = parseDiffSegments(lines);
-
-	const changeSegments = segments.filter(s => s.isChange);
-	const changeLineCount = changeSegments.reduce((sum, s) => sum + s.lines.length, 0);
-
-	if (changeLineCount > maxLines) {
-		const kept: string[] = [];
-		let keptHunks = 0;
-
-		for (const seg of segments) {
-			if (kept.length >= maxLines) break;
-			if (seg.isChange) {
-				if (keptHunks >= maxHunks) break;
-				keptHunks++;
-			}
-			const take = Math.min(seg.lines.length, maxLines - kept.length);
-			for (let i = 0; i < take; i++) {
-				kept.push(seg.lines[i]!);
-			}
-		}
-
-		return {
-			text: kept.join("\n"),
-			hiddenHunks: Math.max(0, totalStats.hunks - keptHunks),
-			hiddenLines: Math.max(0, lines.length - kept.length),
-		};
-	}
-
-	const contextBudget = maxLines - changeLineCount;
-	const contextSegments = segments.filter(s => !s.isChange);
-	const totalContextLines = contextSegments.reduce((sum, s) => sum + s.lines.length, 0);
-
-	const kept: string[] = [];
-	let keptHunks = 0;
-	let keptSourceLines = 0;
-
-	if (totalContextLines <= contextBudget) {
-		for (const seg of segments) {
-			if (seg.isChange) {
-				if (keptHunks >= maxHunks) break;
-				keptHunks++;
-			}
-			kept.push(...seg.lines);
-			keptSourceLines += seg.lines.length;
-		}
-	} else {
-		const contextRatio = totalContextLines > 0 ? contextBudget / totalContextLines : 0;
-		let remainingContextBudget = contextBudget;
-
-		for (let i = 0; i < segments.length; i++) {
-			const seg = segments[i];
-
-			if (seg.isChange) {
-				if (keptHunks >= maxHunks) break;
-				keptHunks++;
-				kept.push(...seg.lines);
-				keptSourceLines += seg.lines.length;
-				continue;
-			}
-			if (remainingContextBudget <= 0) continue;
-
-			const allowedLines = Math.min(
-				remainingContextBudget,
-				Math.max(1, Math.floor(seg.lines.length * contextRatio)),
-			);
-			const outputStart = kept.length;
-			let sourceLinesAdded = 0;
-
-			if (seg.isEllipsis || seg.lines.length <= allowedLines) {
-				for (let j = 0; j < allowedLines; j++) {
-					kept.push(seg.lines[j]!);
-				}
-				sourceLinesAdded = allowedLines;
-			} else {
-				const isBeforeChange = segments[i + 1]?.isChange;
-				const isAfterChange = segments[i - 1]?.isChange;
-
-				if (isBeforeChange && isAfterChange) {
-					if (allowedLines >= 3) {
-						const sourceBudget = allowedLines - 1;
-						const firstCount = Math.ceil(sourceBudget / 2);
-						const lastCount = sourceBudget - firstCount;
-						kept.push(...seg.lines.slice(0, firstCount));
-						kept.push("");
-						if (lastCount > 0) kept.push(...seg.lines.slice(-lastCount));
-						sourceLinesAdded = sourceBudget;
-					} else {
-						const firstCount = Math.ceil(allowedLines / 2);
-						const lastCount = allowedLines - firstCount;
-						kept.push(...seg.lines.slice(0, firstCount));
-						if (lastCount > 0) kept.push(...seg.lines.slice(-lastCount));
-						sourceLinesAdded = allowedLines;
-					}
-				} else if (isBeforeChange) {
-					kept.push(...seg.lines.slice(-allowedLines));
-					sourceLinesAdded = allowedLines;
-				} else if (isAfterChange) {
-					kept.push(...seg.lines.slice(0, allowedLines));
-					sourceLinesAdded = allowedLines;
-				} else {
-					const take = Math.min(allowedLines, 2);
-					kept.push(...seg.lines.slice(0, take));
-					sourceLinesAdded = take;
-				}
-			}
-
-			keptSourceLines += sourceLinesAdded;
-			remainingContextBudget -= kept.length - outputStart;
-		}
-	}
-
-	return {
-		text: kept.join("\n"),
-		hiddenHunks: Math.max(0, totalStats.hunks - keptHunks),
-		hiddenLines: Math.max(0, lines.length - keptSourceLines),
-	};
 }
 
 export function shortenPath(filePath: unknown, homeDir?: string): string {
@@ -511,37 +333,6 @@ export function formatScreenshot(opts: {
 
 export function wrapBrackets(text: string, theme: Theme): string {
 	return `${theme.format.bracketLeft}${text}${theme.format.bracketRight}`;
-}
-
-export const PARSE_ERRORS_LIMIT = 20;
-
-export function dedupeParseErrors(errors: string[] | undefined): string[] {
-	if (!errors || errors.length === 0) return [];
-	const seen = new Set<string>();
-	const deduped: string[] = [];
-	for (const error of errors) {
-		if (seen.has(error)) continue;
-		seen.add(error);
-		deduped.push(error);
-	}
-	return deduped;
-}
-
-export function formatParseErrors(errors: string[], total?: number): string[] {
-	const deduped = dedupeParseErrors(errors);
-	if (deduped.length === 0) return [];
-	const fullCount = total ?? deduped.length;
-	const capped = deduped.slice(0, PARSE_ERRORS_LIMIT);
-	const header = fullCount > capped.length ? `Parse issues (${capped.length} / ${fullCount}):` : "Parse issues:";
-	return [header, ...capped.map(err => `- ${err}`)];
-}
-
-export function capParseErrors(
-	errors: string[] | undefined,
-	limit: number = PARSE_ERRORS_LIMIT,
-): { errors: string[]; total: number } {
-	const deduped = dedupeParseErrors(errors);
-	return { errors: deduped.slice(0, limit), total: deduped.length };
 }
 
 export function createCachedComponent(

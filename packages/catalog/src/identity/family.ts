@@ -70,10 +70,6 @@ export const isMimoModelIdOrName = memo((value: string): boolean => {
 	return value.toLowerCase().includes("mimo");
 });
 
-export const isStep37FlashModelId = memo((modelId: string): boolean => {
-	return modelId.toLowerCase().includes("step-3.7-flash");
-});
-
 export const isGeminiModelId = memo((modelId: string): boolean => {
 	return /(^|\/)gemini[-.]?/i.test(modelId);
 });
@@ -233,15 +229,6 @@ export const hasOpus47ApiRestrictions = memo((modelId: string): boolean => {
 export const supportsMidConversationSystemMessages = memo((modelId: string): boolean => {
 	const parsed = parseAnthropicModel(bareModelId(modelId));
 	return parsed !== null && isAnthropicAdaptiveGenAtLeast(parsed, "4.8");
-});
-
-export const supportsHashlineEdits = memo((modelId: string): boolean => {
-	return !(
-		isKimiModelId(modelId) ||
-		isMimoModelIdOrName(modelId) ||
-		isDeepseekV4FlashModelId(modelId) ||
-		isStep37FlashModelId(modelId)
-	);
 });
 
 export const isAnthropicFableOrMythosModel = memo((modelId: string): boolean => {

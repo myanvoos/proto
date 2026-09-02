@@ -11,13 +11,6 @@ export function parseXdUrl(input: string): { name: string | null } | null {
 	return { name };
 }
 
-export function couldBecomeXdUrl(partialPath: string): boolean {
-	if (partialPath.length <= XD_URL_PREFIX.length) {
-		return XD_URL_PREFIX.startsWith(partialPath.toLowerCase());
-	}
-	return partialPath.toLowerCase().startsWith(XD_URL_PREFIX);
-}
-
 export class XdProtocolHandler implements ProtocolHandler {
 	readonly scheme = "xd";
 	readonly immutable = true;

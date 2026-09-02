@@ -1,7 +1,7 @@
 import * as path from "node:path";
-import { capEventDiff } from "../../../edit/diff";
 import { expandTilde } from "../../../tools/path-utils";
 import { ToolError } from "../../../tools/tool-errors";
+import { capEventDiff } from "../../../utils/diff";
 import { noteReported, shaOfBytes, snapshotBeforeText } from "./fs-tracker";
 import type { JsStatusEvent } from "./types";
 

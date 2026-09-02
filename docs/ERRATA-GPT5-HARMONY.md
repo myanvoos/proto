@@ -26,14 +26,13 @@ Current behavior is implemented in
   byte offset where a structurally valid tool parse ended. The main agent loop
   does not currently supply that boundary, avoiding false aborts on legitimate
   tool data that discusses the protocol.
-- Recovery support exists for bounded free-form `eval` input and the current
-  hashline `edit` DSL (input beginning with `@`): it truncates at the
-  contaminated line and appends `*** Abort`. Apply-patch envelopes and
-  JSON-schema edit inputs are not recovery-eligible and use abort/retry when a
-  bounded detection is available.
+- Recovery support exists for bounded free-form `eval` input: it truncates at
+  the contaminated line and appends `*** Abort`. The recovery registry still
+  carries a legacy `edit` entry keyed by tool name, but the `edit` tool has
+  been removed, so `eval` is the only recovery-eligible surface today.
 
 The corpus tables below describe the historical input formats present in that
-snapshot; they are not a list of the current `edit` tool's accepted syntaxes.
+snapshot; they are not a list of the removed `edit` tool's accepted syntaxes.
 
 ## 1. The problem
 

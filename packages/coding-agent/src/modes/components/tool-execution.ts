@@ -1,4 +1,3 @@
-import type { SnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
 	Box,
@@ -14,47 +13,22 @@ import {
 	Text,
 	type TUI,
 } from "@oh-my-pi/pi-tui";
-import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
-import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "../../edit";
+import { isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
 import { isWaitingPollDetails } from "../../tools/fleet";
-import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../../tools/render-utils";
+import { replaceTabs, resolveImageOptions } from "../../tools/render-utils";
 import { type FirstResultViewportRepaint, type ToolRenderer, toolRenderers } from "../../tools/renderers";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import type { XdevState } from "../../tools/xdev";
-import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../../tui";
+import { isFramedBlockComponent, markFramedBlockComponent, WidthAwareText } from "../../tui";
 import { convertImageToPng } from "../../utils/image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
-import { renderDiff } from "./diff";
 
 const COMPOSER_INSET_COLS = 2;
-
-function stripTrailingUnbalancedRemoval(diff: string | undefined): string | undefined {
-	if (!diff) return diff;
-	const lines = diff.split("\n");
-	let lastAddIdx = -1;
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (lines[i].startsWith("+")) {
-			lastAddIdx = i;
-			break;
-		}
-	}
-	let hasTrailingUnbalanced = false;
-	for (let i = lastAddIdx + 1; i < lines.length; i++) {
-		const line = lines[i];
-		if (line.startsWith("-") || line.startsWith("@@")) {
-			hasTrailingUnbalanced = true;
-			break;
-		}
-	}
-	if (!hasTrailingUnbalanced) return diff;
-	if (lastAddIdx === -1) return "";
-	return lines.slice(0, lastAddIdx + 1).join("\n");
-}
 
 type DisplaceableToolName = "fleet" | "todo";
 
@@ -97,28 +71,6 @@ function isFleetWaitArgs(args: unknown): boolean {
 	return isRecord(args) && args.op === "wait";
 }
 
-function stabilizeStreamingPreviews(previews: PerFileDiffPreview[]): PerFileDiffPreview[] {
-	let changed = false;
-	const next = previews.map(preview => {
-		if (!preview.diff) return preview;
-		const trimmed = stripTrailingUnbalancedRemoval(preview.diff);
-		if (trimmed === preview.diff) return preview;
-		changed = true;
-		return { ...preview, diff: trimmed ?? "" };
-	});
-	return changed ? next : previews;
-}
-
-function isEditLikeToolName(toolName: string): boolean {
-	return toolName === "edit" || toolName === "apply_patch";
-}
-
-function resolveEditModeForTool(toolName: string, tool: AgentTool | undefined): EditMode | undefined {
-	if (toolName === "apply_patch") return "apply_patch";
-	if (toolName !== "edit") return undefined;
-	return (tool as { mode?: EditMode } | undefined)?.mode;
-}
-
 function rawTextInputFromPartialJson(partialJson: unknown): string | undefined {
 	if (typeof partialJson !== "string") return undefined;
 	if (partialJson.length === 0) return undefined;
@@ -128,12 +80,6 @@ function rawTextInputFromPartialJson(partialJson: unknown): string | undefined {
 
 	if (first === "{" || first === '"') return undefined;
 	return partialJson;
-}
-
-function partialJsonOf(args: unknown): string | undefined {
-	if (args == null || typeof args !== "object" || !("__partialJson" in args)) return undefined;
-	const value = args.__partialJson;
-	return typeof value === "string" ? value : undefined;
 }
 
 function getArgsWithStreamedTextInput(args: unknown): unknown {
@@ -221,12 +167,9 @@ export interface ToolExecutionUi {
 }
 
 interface ToolExecutionOptions {
-	snapshots?: SnapshotStore;
 	showImages?: boolean;
 
 	useBuiltInRenderer?: boolean;
-	editFuzzyThreshold?: number;
-	editAllowFuzzy?: boolean;
 
 	liveRegion?: TranscriptLiveRegionProbe;
 }
@@ -298,7 +241,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#contentText: WidthAwareText;
 
 	#usesContentBox = false;
-	#multiFileBoxes: (Box | Spacer)[] = [];
 	#imageComponents: Image[] = [];
 	#imageSpacers: Spacer[] = [];
 	readonly #instanceId = ++toolExecutionInstanceSeq;
@@ -308,9 +250,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#expanded = false;
 	#toolActivityVisible = true;
 	#showImages: boolean;
-	#editFuzzyThreshold: number | undefined;
-	#editAllowFuzzy: boolean | undefined;
-	#snapshots?: SnapshotStore;
 	#isPartial = true;
 	#resultVersion = 0;
 
@@ -325,21 +264,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#tool?: AgentTool;
 	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
-	#cwd: string;
 	#result?: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 		isError?: boolean;
 		details?: any;
 	};
-
-	#editMode?: EditMode;
-	#editDiffPreview?: PerFileDiffPreview[];
-	#editDiffAbort?: AbortController;
-	#editDiffLastArgsKey?: string;
-
-	#editDiffInFlight?: Promise<void>;
-
-	#editDiffDirty = false;
 
 	#convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 
@@ -379,23 +308,16 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		options: ToolExecutionOptions = {},
 		tool: AgentTool | undefined,
 		ui: ToolExecutionUi,
-		cwd: string = getProjectDir(),
-		_toolCallId?: string,
 	) {
 		super();
 		this.#toolName = toolName;
 		this.#toolLabel = tool?.label ?? toolName;
 		this.#renderer = options.useBuiltInRenderer === false ? undefined : toolRenderers[toolName];
 		this.#showImages = options.showImages ?? true;
-		this.#editFuzzyThreshold = options.editFuzzyThreshold;
-		this.#editAllowFuzzy = options.editAllowFuzzy;
-		this.#snapshots = options.snapshots;
 		this.#liveRegion = options.liveRegion;
 		this.#tool = tool;
 		this.#ui = ui;
-		this.#cwd = cwd;
 		this.#args = args;
-		this.#editMode = resolveEditModeForTool(toolName, tool);
 
 		this.#contentBox = new Box(COMPOSER_INSET_COLS, 1);
 		this.#contentText = new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 1, 1);
@@ -412,7 +334,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 		this.#updateSpinnerAnimation();
 		this.#updateDisplay();
-		this.#schedulePreviewDiff();
 	}
 
 	updateArgs(args: any, _toolCallId?: string): void {
@@ -420,7 +341,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#args = args;
 		this.#displayInputVersion++;
 		this.#updateSpinnerAnimation();
-		this.#schedulePreviewDiff();
 		this.#updateDisplay();
 	}
 
@@ -428,7 +348,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		const alreadyComplete = this.#argsComplete;
 		this.#argsComplete = true;
 		this.#updateSpinnerAnimation();
-		this.#schedulePreviewDiff();
 		if (alreadyComplete) return;
 		this.#displayInputVersion++;
 		this.#updateDisplay();
@@ -439,90 +358,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#executionStarted = true;
 		this.#argsComplete = true;
 		this.#updateSpinnerAnimation();
-		this.#schedulePreviewDiff();
 		this.#displayInputVersion++;
 		this.#updateDisplay();
-	}
-
-	async whenPreviewSettled(): Promise<void> {
-		await this.#editDiffInFlight;
-	}
-
-	#schedulePreviewDiff(): void {
-		if (!this.#editMode) return;
-		this.#editDiffDirty = true;
-		if (this.#editDiffInFlight) return;
-		this.#editDiffInFlight = this.#drainPreviewDiff().finally(() => {
-			this.#editDiffInFlight = undefined;
-		});
-	}
-
-	async #drainPreviewDiff(): Promise<void> {
-		await undefined;
-		while (this.#editDiffDirty) {
-			this.#editDiffDirty = false;
-			await this.#computePreviewDiff();
-		}
-	}
-
-	#previewDiffSettled(): boolean {
-		const result = this.#result;
-		return result !== undefined && !this.#isPartial && (result.isError === true || result.details != null);
-	}
-	async #computePreviewDiff(): Promise<void> {
-		if (this.#previewDiffSettled()) return;
-		const editMode = this.#editMode;
-		if (!editMode) return;
-		const strategy = EDIT_MODE_STRATEGIES[editMode];
-		if (!strategy) return;
-
-		const args = this.#args;
-		if (args == null || typeof args !== "object") return;
-
-		const previewArgs = getArgsWithStreamedTextInput(args);
-		const partialJson = partialJsonOf(previewArgs);
-		const isStreaming = !this.#argsComplete;
-		let effectiveArgs: unknown;
-		try {
-			effectiveArgs = strategy.extractCompleteEdits(previewArgs, partialJson);
-		} catch {
-			effectiveArgs = previewArgs;
-		}
-
-		const streamingState = this.#argsComplete ? "final" : "stream";
-		let argsKey: string;
-		try {
-			argsKey = `${streamingState}:${Bun.hash(JSON.stringify(effectiveArgs))}`;
-		} catch {
-			argsKey = `${streamingState}:partial:${Bun.hash(partialJson ?? "")}`;
-		}
-		if (argsKey === this.#editDiffLastArgsKey) return;
-		this.#editDiffLastArgsKey = argsKey;
-
-		const controller = new AbortController();
-		this.#editDiffAbort = controller;
-
-		try {
-			if (editMode === "hashline" && !this.#snapshots) return;
-			const previews = await strategy.computeDiffPreview(effectiveArgs, {
-				cwd: this.#cwd,
-				signal: controller.signal,
-				snapshots: this.#snapshots!,
-				fuzzyThreshold: this.#editFuzzyThreshold,
-				allowFuzzy: this.#editAllowFuzzy,
-				isStreaming,
-			});
-			if (controller.signal.aborted) return;
-			if (previews) {
-				this.#editDiffPreview = isStreaming ? stabilizeStreamingPreviews(previews) : previews;
-				this.#displayInputVersion++;
-				this.#updateDisplay();
-				this.#ui.requestRender();
-			}
-		} catch (err) {
-			if (controller.signal.aborted) return;
-			logger.warn("Edit preview diff failed", { tool: this.#toolName, error: String(err) });
-		}
 	}
 
 	updateResult(
@@ -548,10 +385,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 		if (!isPartial) {
 			this.#argsComplete = true;
-		}
-		if (this.#editMode && this.#previewDiffSettled()) {
-			this.#editDiffDirty = false;
-			this.#editDiffAbort?.abort();
 		}
 		this.#updateSpinnerAnimation();
 		this.#updateTodoStrikeAnimation();
@@ -600,7 +433,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	}
 
 	#updateSpinnerAnimation(): void {
-		const isStreamingArgs = !this.#argsComplete && (isEditLikeToolName(this.#toolName) || this.#toolName === "write");
 		const isBackgroundAsyncRunning =
 			(this.#result?.details as { async?: { state?: string } } | undefined)?.async?.state === "running";
 		const renderer = this.#renderer;
@@ -625,7 +457,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.#toolName !== "todo" &&
 			!isBackgroundAsyncRunning &&
 			(pendingCallConsumesSpinner || partialResultConsumesSpinner);
-		const needsSpinner = isStreamingArgs || isLivePartialTool || this.#displaceableByToolName === "fleet";
+		const needsSpinner = isLivePartialTool || this.#displaceableByToolName === "fleet";
 		if (needsSpinner && !this.#spinnerActive) {
 			const frameCount = theme.spinnerFrames.length;
 			const frame = sharedSpinnerFrame(frameCount);
@@ -741,10 +573,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.#spinnerFrame = undefined;
 			this.#renderState.spinnerFrame = undefined;
 		}
-		this.#editDiffAbort?.abort();
-		this.#editDiffAbort = undefined;
-
-		this.#editDiffDirty = false;
 	}
 
 	override dispose(): void {
@@ -914,127 +742,61 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		} else if (this.#renderer) {
 			const renderer = this.#renderer;
 
-			for (const box of this.#multiFileBoxes) {
-				this.removeChild(box);
+			this.#contentBox.setBgFn(undefined);
+			this.#contentBox.clear();
+
+			const renderContext = this.#buildRenderContext();
+			this.#renderState.renderContext = renderContext;
+
+			const shouldRenderCall = !this.#result || !renderer.mergeCallAndResult;
+			if (shouldRenderCall) {
+				try {
+					const callArgs = this.#getCallArgsForRender();
+					const callComponent = renderer.renderCall(callArgs, this.#renderState, theme);
+					if (callComponent) {
+						this.#contentBox.addChild(
+							new SafeToolRendererComponent(
+								this.#toolName,
+								"call",
+								callComponent,
+								() => new Text(theme.fg("toolTitle", theme.bold(this.#toolLabel)), 0, 0),
+							),
+						);
+					}
+				} catch (err) {
+					logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
+
+					this.#contentBox.addChild(new Text(theme.fg("toolTitle", theme.bold(this.#toolLabel)), 0, 0));
+				}
 			}
-			this.#multiFileBoxes = [];
 
-			const perFileResults = this.#result?.details?.perFileResults as
-				| Array<{ path: string; isError?: boolean }>
-				| undefined;
-			if (perFileResults && perFileResults.length > 1) {
-				this.#contentBox.setBgFn(undefined);
-				this.#contentBox.clear();
-
-				const renderContext = this.#buildRenderContext();
-				this.#renderState.renderContext = renderContext;
-
-				for (let i = 0; i < perFileResults.length; i++) {
-					const fileResult = perFileResults[i];
-					if (i > 0) {
-						const spacer = new Spacer(1);
-						this.#multiFileBoxes.push(spacer);
-						this.addChild(spacer);
-					}
-					const fileBox = new Box(COMPOSER_INSET_COLS, 0);
-					try {
-						const resultComponent = renderer.renderResult(
-							{ content: [], details: fileResult, isError: fileResult.isError },
-							this.#renderState,
-							theme,
-						);
-						if (resultComponent) {
-							fileBox.addChild(
-								new SafeToolRendererComponent(this.#toolName, "result", resultComponent, () => undefined),
-							);
-						}
-					} catch (err) {
-						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
-					}
-					this.#multiFileBoxes.push(fileBox);
-					this.addChild(fileBox);
-				}
-
-				const totalFiles = this.#args?.edits
-					? new Set((this.#args.edits as any[]).map((e: any) => e?.path).filter(Boolean)).size
-					: 0;
-				const remaining = Math.max(0, totalFiles - perFileResults.length);
-				if (remaining > 0 && this.#isPartial) {
-					const pendingSpacer = new Spacer(1);
-					this.#multiFileBoxes.push(pendingSpacer);
-					this.addChild(pendingSpacer);
-					const pendingBox = new Box(COMPOSER_INSET_COLS, 0);
-					const spinner =
-						this.#spinnerFrame !== undefined ? formatStatusIcon("running", theme, this.#spinnerFrame) : "";
-					const pendingText = renderStatusLine(
+			if (this.#result) {
+				try {
+					const resultComponent = renderer.renderResult(
 						{
-							iconOverride: spinner,
-							title: "Edit",
-							description: theme.fg("dim", `${remaining} more file${remaining > 1 ? "s" : ""} pending…`),
+							content: this.#result.content as any,
+							details: this.#result.details,
+							isError: this.#result.isError,
 						},
+						this.#renderState,
 						theme,
+						this.#getCallArgsForRender(),
 					);
-					pendingBox.addChild(new Text(pendingText, 0, 0));
-					this.#multiFileBoxes.push(pendingBox);
-					this.addChild(pendingBox);
-				}
-			} else {
-				this.#contentBox.setBgFn(undefined);
-				this.#contentBox.clear();
-
-				const renderContext = this.#buildRenderContext();
-				this.#renderState.renderContext = renderContext;
-
-				const shouldRenderCall = !this.#result || !renderer.mergeCallAndResult;
-				if (shouldRenderCall) {
-					try {
-						const callArgs = this.#getCallArgsForRender();
-						const callComponent = renderer.renderCall(callArgs, this.#renderState, theme);
-						if (callComponent) {
-							this.#contentBox.addChild(
-								new SafeToolRendererComponent(
-									this.#toolName,
-									"call",
-									callComponent,
-									() => new Text(theme.fg("toolTitle", theme.bold(this.#toolLabel)), 0, 0),
-								),
-							);
-						}
-					} catch (err) {
-						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
-
-						this.#contentBox.addChild(new Text(theme.fg("toolTitle", theme.bold(this.#toolLabel)), 0, 0));
-					}
-				}
-
-				if (this.#result) {
-					try {
-						const resultComponent = renderer.renderResult(
-							{
-								content: this.#result.content as any,
-								details: this.#result.details,
-								isError: this.#result.isError,
-							},
-							this.#renderState,
-							theme,
-							this.#getCallArgsForRender(),
+					if (resultComponent) {
+						this.#contentBox.addChild(
+							new SafeToolRendererComponent(this.#toolName, "result", resultComponent, () => {
+								const output = this.#getTextOutput();
+								if (!output) return undefined;
+								return new Text(theme.fg("toolOutput", replaceTabs(output)), 0, 0);
+							}),
 						);
-						if (resultComponent) {
-							this.#contentBox.addChild(
-								new SafeToolRendererComponent(this.#toolName, "result", resultComponent, () => {
-									const output = this.#getTextOutput();
-									if (!output) return undefined;
-									return new Text(theme.fg("toolOutput", replaceTabs(output)), 0, 0);
-								}),
-							);
-						}
-					} catch (err) {
-						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
+					}
+				} catch (err) {
+					logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
 
-						const output = this.#getTextOutput();
-						if (output) {
-							this.#contentBox.addChild(new Text(theme.fg("toolOutput", replaceTabs(output)), 0, 0));
-						}
+					const output = this.#getTextOutput();
+					if (output) {
+						this.#contentBox.addChild(new Text(theme.fg("toolOutput", replaceTabs(output)), 0, 0));
 					}
 				}
 			}
@@ -1084,20 +846,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	}
 
 	#getCallArgsForRender(): any {
-		const renderArgs = getArgsWithStreamedTextInput(this.#args);
-		if (!isEditLikeToolName(this.#toolName)) {
-			return renderArgs;
-		}
-		const previews = this.#editDiffPreview;
-		if (!previews || previews.length === 0) {
-			return renderArgs;
-		}
-
-		const first = previews[0];
-		if (!first?.diff) {
-			return renderArgs;
-		}
-		return { ...(renderArgs as Record<string, unknown>), previewDiff: first.diff };
+		return getArgsWithStreamedTextInput(this.#args);
 	}
 
 	#buildRenderContext(): Record<string, unknown> {
@@ -1115,39 +864,17 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			context.expanded = this.#expanded;
 			context.previewLines = BASH_DEFAULT_PREVIEW_LINES;
 			context.timeout = normalizeTimeoutSeconds(this.#args?.timeout, 3600);
+			const bashTool = this.#tool as { session?: { xdev?: XdevState } } | undefined;
+			const xdev = bashTool?.session?.xdev;
+			if (xdev) {
+				context.resolveXdevMounted = (name: string) =>
+					xdev.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+			}
 		} else if (this.#toolName === "eval" && this.#result) {
 			const output = this.#getTextOutput().trimEnd();
 			context.output = output;
 			context.expanded = this.#expanded;
 			context.previewLines = EVAL_DEFAULT_PREVIEW_LINES;
-		} else if (isEditLikeToolName(this.#toolName)) {
-			context.editMode = this.#editMode;
-			const previews = this.#editDiffPreview;
-			if (previews && previews.length > 0) {
-				const first = previews[0];
-				if (first?.diff || first?.error) {
-					context.editDiffPreview = first.error
-						? { error: first.error }
-						: { diff: first.diff ?? "", firstChangedLine: first.firstChangedLine };
-				}
-				if (previews.length > 1) {
-					context.perFileDiffPreview = previews;
-				}
-			}
-			if (!previews?.some(preview => preview.diff)) {
-				const editMode = this.#editMode;
-				const strategy = editMode ? EDIT_MODE_STRATEGIES[editMode] : undefined;
-				const fallback = strategy?.renderStreamingFallback(getArgsWithStreamedTextInput(this.#args), theme);
-				if (fallback) context.editStreamingFallback = fallback;
-			}
-			context.renderDiff = renderDiff;
-		} else if (this.#toolName === "write") {
-			const writeTool = this.#tool as { session?: { xdev?: XdevState } } | undefined;
-			const xdev = writeTool?.session?.xdev;
-			if (xdev) {
-				context.resolveXdevMounted = (name: string) =>
-					xdev.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
-			}
 		}
 
 		return context;
@@ -1208,10 +935,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.#contentText.invalidate();
 			return;
 		}
-		for (const box of this.#multiFileBoxes) {
-			this.removeChild(box);
-		}
-		this.#multiFileBoxes = [];
 		this.#contentBox.setPaddingX(COMPOSER_INSET_COLS);
 		this.#contentBox.setBgFn(undefined);
 		this.#contentBox.clear();

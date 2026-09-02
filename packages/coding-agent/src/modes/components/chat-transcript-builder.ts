@@ -45,7 +45,6 @@ interface ChatTranscriptBuilderDeps {
 
 	isBuiltInTool?: (name: string) => boolean;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
-	cwd: string;
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
 	requestRender: () => void;
@@ -359,14 +358,10 @@ export class ChatTranscriptBuilder {
 					useBuiltInRenderer: this.deps.isBuiltInTool?.(content.name) ?? true,
 
 					showImages: settings.get("terminal.showImages"),
-					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
-					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 					liveRegion: this.container,
 				},
 				this.deps.getTool?.(content.name),
 				this.deps.ui,
-				this.deps.cwd,
-				content.id,
 			);
 			this.#trackExpandable(component);
 			this.container.addChild(component);

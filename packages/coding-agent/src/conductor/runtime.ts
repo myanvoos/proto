@@ -32,13 +32,13 @@ import { CONDUCTOR_TRANSCRIPT_FILENAME } from "./transcript";
  * Investigative grant for a verification turn. `bash` is included because the objective's "## Verification"
  * commands are the whitelist there (prompt-enforced in v0). No mutating grants, ever.
  */
-export const CONDUCTOR_TOOL_NAMES: readonly string[] = ["read", "grep", "glob", "bash"];
+export const CONDUCTOR_TOOL_NAMES: readonly string[] = ["read", "bash"];
 
 /**
  * Commissioning is strictly read-only: the contract has to be reproducible by the working agent and the auditor,
  * so nothing the commissioner could only learn by executing may enter it.
  */
-export const CONDUCTOR_COMMISSION_TOOL_NAMES: readonly string[] = ["read", "grep", "glob"];
+export const CONDUCTOR_COMMISSION_TOOL_NAMES: readonly string[] = ["read"];
 
 export type ConductorStatus = AdvisorRuntimeStatus | "off";
 
@@ -109,7 +109,6 @@ export interface SessionConductorOptions {
 	 * conductor's isolated tools — a disabled conductor never constructs a `ToolSession` or a tool pool.
 	 */
 	toolsFactory?: () => Promise<AgentTool[]>;
-	createEditTool?(): AgentTool | undefined;
 	getToolContext?: () => AgentToolContext | undefined;
 	mcpResources?: CursorMcpResourceAdapter;
 	contextPrompt?: string;
@@ -742,7 +741,6 @@ export class SessionConductor {
 			adviseTool,
 			toolNames: [...(commissioning ? CONDUCTOR_COMMISSION_TOOL_NAMES : CONDUCTOR_TOOL_NAMES)],
 			toolPool,
-			createEditTool: this.#options.createEditTool,
 			getToolContext: this.#options.getToolContext,
 			mcpResources: this.#options.mcpResources,
 

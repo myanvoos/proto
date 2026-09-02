@@ -17,24 +17,13 @@ import type {
 	CursorExecHandlers as ICursorExecHandlers,
 	ToolResultMessage,
 } from "@oh-my-pi/pi-ai";
-import {
-	omitUndefinedArgs,
-	piEscapeRegexLiteral,
-	piGrepSkip,
-	piJoinPath,
-	piLsPath,
-	piReadPath,
-	piTimeout,
-} from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
+import { omitUndefinedArgs, piLsPath, piReadPath, piTimeout } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
-import { cursorMcpPrefersReplaceEdit, normalizeCursorReplaceArgs } from "./cursor-bridge-tools";
 import type { MCPResourceReadResult } from "./mcp/types";
 import { confineToWorkspace, resolveToCwd } from "./tools/path-utils";
 import type { TodoPhase, TodoStatus } from "./tools/todo";
 
 const CURSOR_TODO_PHASE = "Tasks";
-
-type CursorBridgeTool = AgentTool<any, any, any>;
 
 export interface CursorMcpResourceAdapter {
 	serverNames(): string[];
@@ -51,7 +40,6 @@ interface CursorExecBridgeOptions {
 
 	getExecutableTool?: (name: string) => AgentTool | undefined;
 
-	getEditReplaceTool?: () => CursorBridgeTool | undefined;
 	getToolContext?: () => AgentToolContext | undefined;
 	emitEvent?: (event: AgentEvent) => void;
 
@@ -124,9 +112,8 @@ async function executeTool(
 	toolName: string,
 	toolCallId: string,
 	args: Record<string, unknown>,
-	overrideTool?: CursorBridgeTool,
 ): Promise<ToolResultMessage> {
-	const tool = overrideTool ?? options.getExecutableTool?.(toolName) ?? options.tools.get(toolName);
+	const tool = options.getExecutableTool?.(toolName) ?? options.tools.get(toolName);
 	if (!tool) {
 		const result = buildToolErrorResult(`Tool "${toolName}" not available`);
 		return createToolResultMessage(toolCallId, toolName, result, true);
@@ -286,28 +273,6 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		return toolResultMessage;
 	}
 
-	async grep(args: Parameters<NonNullable<ICursorExecHandlers["grep"]>>[0]) {
-		const toolCallId = decodeToolCallId(args.toolCallId);
-		const searchPath = args.glob ? `${args.path || "."}/${args.glob}` : args.path || ".";
-		const toolResultMessage = await executeTool(this.options, "grep", toolCallId, {
-			pattern: args.pattern,
-			path: searchPath,
-			case: args.caseInsensitive === true ? false : undefined,
-			skip: piGrepSkip(args.offset),
-		});
-		return toolResultMessage;
-	}
-
-	async write(args: Parameters<NonNullable<ICursorExecHandlers["write"]>>[0]) {
-		const toolCallId = decodeToolCallId(args.toolCallId);
-		const content = args.fileText ?? new TextDecoder().decode(args.fileBytes ?? new Uint8Array());
-		const toolResultMessage = await executeTool(this.options, "write", toolCallId, {
-			path: args.path,
-			content,
-		});
-		return toolResultMessage;
-	}
-
 	async delete(args: Parameters<NonNullable<ICursorExecHandlers["delete"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
 		const toolResultMessage = await executeDelete(this.options, args.path, toolCallId);
@@ -439,29 +404,6 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		});
 	}
 
-	async piEdit(call: Parameters<NonNullable<ICursorExecHandlers["piEdit"]>>[0]) {
-		const edits = call.args.edits.map(edit => ({ old_string: edit.oldText, new_string: edit.newText }));
-		const args = edits.length === 1 ? { path: call.args.path, ...edits[0] } : { path: call.args.path, edits };
-		return await executeTool(this.options, "edit", call.toolCallId, args, this.options.getEditReplaceTool?.());
-	}
-
-	async piWrite(call: Parameters<NonNullable<ICursorExecHandlers["piWrite"]>>[0]) {
-		return await executeTool(this.options, "write", call.toolCallId, {
-			path: call.args.path,
-			content: call.args.content,
-		});
-	}
-
-	async piGrep(call: Parameters<NonNullable<ICursorExecHandlers["piGrep"]>>[0]) {
-		const { pattern, path, glob, ignoreCase, literal } = call.args;
-
-		return await executeTool(this.options, "grep", call.toolCallId, {
-			pattern: literal === true ? piEscapeRegexLiteral(pattern) : pattern,
-			path: glob ? piJoinPath(path, glob) : path || ".",
-			case: ignoreCase === true ? false : undefined,
-		});
-	}
-
 	async piLs(call: Parameters<NonNullable<ICursorExecHandlers["piLs"]>>[0]) {
 		return await executeTool(this.options, "read", call.toolCallId, { path: piLsPath(call.args.path) });
 	}
@@ -498,7 +440,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 	}): Promise<CursorMcpResourceContent | null> {
 		if (downloadPath) {
 			if (this.options.allowDirectFileMutation === false) {
-				throw new Error('Tool "write" not available: this session cannot download resources to disk.');
+				throw new Error("Cannot download resources to disk: no file-write tool in this session.");
 			}
 		}
 		const mcp = this.options.mcpResources;
@@ -582,15 +524,6 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		const toolName = call.toolName || call.name;
 		const toolCallId = decodeToolCallId(call.toolCallId);
 		const args = Object.keys(call.args ?? {}).length > 0 ? call.args : decodeMcpArgs(call.rawArgs ?? {});
-		if (cursorMcpPrefersReplaceEdit(toolName, args)) {
-			const replaceTool = this.options.getEditReplaceTool?.();
-			if (!replaceTool) {
-				const availableTools = Array.from(this.options.tools.keys()).filter(name => name.startsWith("mcp__"));
-				const message = formatMcpToolErrorMessage(toolName, availableTools);
-				return createToolResultMessage(toolCallId, toolName, buildToolErrorResult(message), true);
-			}
-			return await executeTool(this.options, "edit", toolCallId, normalizeCursorReplaceArgs(args), replaceTool);
-		}
 		const tool = this.options.getExecutableTool?.(toolName) ?? this.options.tools.get(toolName);
 		if (!tool) {
 			const availableTools = Array.from(this.options.tools.keys()).filter(name => name.startsWith("mcp__"));

@@ -747,9 +747,9 @@ a message or fall back to `content` for textual error surfacing:
 
 ### Constraints
 
-- The agent's `edit` tool does not target host URIs. Hosts that want to
-  mutate virtual files expose `write` and let the model use the `write` tool
-  with replacement content.
+- Agent file tools do not target host URIs. Hosts that want to mutate virtual
+  files handle the write operation for their registered schemes (see
+  `set_host_uri_schemes`); mutations flow over the RPC connection.
 - Schemes are global to the process; `set_host_uri_schemes` replaces the
   previous set, unregistering anything not in the new list.
 - Schemes are normalized to lowercase before registration.

@@ -5,7 +5,6 @@ import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { settings } from "../../config/settings";
-import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { createBackgroundSideDispatchBlock } from "../../modes/components/background-side-dispatch";
@@ -528,16 +527,11 @@ export class UiHelpers {
 						renderArgs,
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
-							snapshots: getFileSnapshotStore(this.ctx.viewSession),
 							showImages: settings.get("terminal.showImages"),
-							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
-							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 							liveRegion: this.ctx.chatContainer,
 						},
 						tool,
 						this.ctx.ui,
-						this.ctx.viewSession.sessionManager.getCwd(),
-						content.id,
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.chatContainer.addChild(component);

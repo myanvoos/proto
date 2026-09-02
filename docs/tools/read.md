@@ -7,15 +7,14 @@
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/read.md`
 - Key collaborators:
   - `packages/coding-agent/src/tools/path-utils.ts` — split `path` from trailing selectors; prefer literal filenames; normalize local paths and recover accidental delimited path lists.
-  - `packages/coding-agent/src/utils/zip.ts` — unified ZIP/tar wrapper: detect `archive.ext:inner/path`, index archives, list/read entries.
+  - `packages/utils/src/ar/zip.ts` — unified ZIP/tar wrapper: detect `archive.ext:inner/path`, index archives, list/read entries.
   - `packages/coding-agent/src/tools/sqlite-reader.ts` — detect SQLite targets, parse selectors, render tables.
   - `packages/coding-agent/src/tools/fetch.ts` — URL parsing, fetch/render pipeline, URL cache/artifacts.
   - `packages/coding-agent/src/internal-urls/router.ts` — built-in internal-resource registry, including `ssh://` and `xd://`; MCP may advertise additional schemes.
-  - `packages/coding-agent/src/edit/notebook.ts` — convert `.ipynb` to editable `# %% [...] cell:N` text.
+  - `packages/coding-agent/src/tools/notebook.ts` — convert `.ipynb` to editable `# %% [...] cell:N` text.
   - `packages/coding-agent/src/utils/cpuprofile.ts` / `sample-profile.ts` — summarize recognized profiler reports.
-  - `packages/coding-agent/src/utils/file-display-mode.ts` — decide hashline vs line-number vs raw display.
+  - `packages/coding-agent/src/utils/file-display-mode.ts` — decide line-number vs raw display.
   - `packages/coding-agent/src/workspace-tree.ts` — render directory trees.
-  - `packages/coding-agent/src/edit/file-snapshot-store.ts` — stores read lines for later hashline edit verification/recovery.
   - `packages/coding-agent/src/tools/index.ts` — registers `read: s => new ReadTool(s)`.
 
 ## Inputs
@@ -97,8 +96,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
    - structural summary for parseable code/prose
    - streamed text/line-range read
 10. Local text reads are streamed by `streamLinesFromFile()` rather than loading the whole file. A single bounded non-raw text range adds `1` leading and `3` trailing context lines on constrained sides; raw and multi-range reads remain exact.
-11. Hashline-eligible local reads record a file snapshot into the session snapshot store for later hashline edit verification/recovery. Files over the snapshot byte cap are not snapshotted.
-12. If suffix resolution happened, the first text block is prefixed with `[Path '...' not found; resolved to '...' via suffix match]`.
+11. If suffix resolution happened, the first text block is prefixed with `[Path '...' not found; resolved to '...' via suffix match]`.
 
 ## Modes / Variants
 
@@ -111,12 +109,8 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 - Explicit selector or summarization miss: streamed text read.
   - Default open-ended limit is `read.defaultLimit = 300`, clamped to `[1, DEFAULT_MAX_LINES]`.
   - Single bounded non-raw text ranges add `RANGE_LEADING_CONTEXT_LINES = 1` / `RANGE_TRAILING_CONTEXT_LINES = 3` on constrained sides. Raw and multi-range reads are exact; directory listing selectors slice rendered entries without context.
-  - Non-raw output uses `resolveFileDisplayMode()`:
-    - hashline numbered output when edit mode is hashline, read is not raw, source is mutable, and the edit tool exists
-    - otherwise optional line numbers when `readLineNumbers === true`
-    - raw mode suppresses both
-- Prefix format in hashline mode is a `[PATH#TAG]` header followed by `LINE:TEXT`, e.g. `[src/foo.ts#0A1B]` and `41:def alpha():`, from the session snapshot store plus `formatNumberedLine()` / `formatHashlineHeader()`.
-- The `edit`/hashline path consumes that header plus bare line numbers later; the four-hex tag is a content-derived hash of the whole normalized file, resolvable through the session snapshot store that recorded it. Immutable sources and `:raw` intentionally suppress hashline headers.
+  - Non-raw output uses `resolveFileDisplayMode()`: line numbers are prepended only when the `readLineNumbers` setting is `true`; `:raw` reads never get them.
+- With `readLineNumbers` enabled, output is plain text where each line is prefixed with its 1-indexed line number and a `|` separator, e.g. `41|def alpha():` (`prependLineNumbers()` in `packages/coding-agent/src/tools/read-format.ts`).
 
 ### Directory listings
 - `#readDirectory()` calls `buildDirectoryTree()` with:
@@ -264,7 +258,6 @@ Notes: ...
   - Uses `Bun.Archive` for tar/tgz; ZIP is framed in `packages/coding-agent/src/utils/zip.ts` over the `node:zlib` DEFLATE codec.
   - URL HTML rendering can delegate into site handlers and HTML-to-text backends from `packages/coding-agent/src/tools/fetch.ts`.
 - Session state
-  - Records whole-file snapshots of local text reads into `session.fileSnapshotStore` for later stale-anchor recovery.
   - Passes session `cwd`, `settings`, and `localProtocolOptions` into the process-global `InternalUrlRouter.instance().resolve()` for internal URLs.
   - Uses `session.allocateOutputArtifact()` for cached/truncated URL output.
 - Background work / cancellation
@@ -296,7 +289,6 @@ Notes: ...
   - source bytes cap `20 MiB`
   - post-resize inline output cap `300 KiB`
 - Unique suffix auto-resolution glob timeout: `5000` ms.
-- File snapshot store holds `256` paths with up to `4` versions each (`DEFAULT_MAX_PATHS` / `DEFAULT_MAX_VERSIONS_PER_PATH` in `packages/hashline/src/snapshots.ts`); files over `4 MiB` (`SNAPSHOT_MAX_BYTES`) are not snapshotted.
 - An unbounded `artifact://<id>:raw` read is refused when the artifact exceeds `50 KiB`; use a bounded `:raw:N-M` range.
 
 ## Errors
@@ -318,11 +310,9 @@ Notes: ...
 - Large unbounded raw artifact reads return a workflow notice rather than loading the artifact into memory.
 
 ## Notes
-- Hashline anchors are suppressed for raw reads and immutable internal resources because there is no editable backing target for later `edit` consumption.
 - `splitPathAndSel()` intentionally treats unknown trailing `:...` as part of the path so `archive.zip:inner/file` and `db.sqlite:table:key` still work.
 - `resolveReadPath()` contains macOS-specific filename fallbacks for screenshot timestamps, NFD Unicode normalization, and curly apostrophes.
 - A bare `/` resolves to the session cwd, not the filesystem root.
 - URL cache keys are session-scoped and normalized by requested URL + raw/rendered mode; both requested URL and final redirected URL are cached.
 - URL line-range reads request `ensureArtifact: true, preferCached: true` so a later paginated read can reopen the same rendered body from artifact storage.
 - Raw SQLite `q=` execution is not keyword-restricted beyond “no bound parameters”; the read tool relies on the surrounding contract to keep it read-only.
-- The file snapshot store is not a read acceleration cache. It exists to verify and recover hashline edits when the file changed after the read.

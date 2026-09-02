@@ -29,15 +29,7 @@ const noop = () => {};
 const stubUi = { requestRender: noop, requestComponentRender: noop, resetDisplay: noop, imageBudget: undefined };
 const spinnerComponents: ToolExecutionComponent[] = [];
 function makeLiveComponent(): ToolExecutionComponent {
-	const component = new ToolExecutionComponent(
-		"kernel",
-		ARGS,
-		{ useBuiltInRenderer: true },
-		fakeTool,
-		stubUi as any,
-		"/tmp",
-		CALL_ID,
-	);
+	const component = new ToolExecutionComponent("kernel", ARGS, { useBuiltInRenderer: true }, fakeTool, stubUi as any);
 	spinnerComponents.push(component);
 	return component;
 }

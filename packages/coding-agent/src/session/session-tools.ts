@@ -21,7 +21,6 @@ import { computerExposureMode } from "../tools/computer/exposure";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { supportsExternalThinking } from "../tools/think";
 import { isMountableUnderXdev, listXdevTools, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
-import { type EditMode, resolveEditMode } from "../utils/edit-mode";
 import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspect-media-mode";
 import { buildToolNamespacesInfo, resolveCodeMode, type ToolNamespacesInfo } from "./code-mode";
 import type { CustomMessage } from "./messages";
@@ -61,7 +60,6 @@ interface SessionToolsOptions {
 	requiredToolNames?: ReadonlySet<string>;
 
 	mcpManagerToolNames?: Iterable<string>;
-	ensureWriteRegistered?: () => Promise<boolean>;
 	rebuildSystemPrompt?: (
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
@@ -190,7 +188,6 @@ export class SessionTools {
 	#rebuildSystemPrompt: SessionToolsOptions["rebuildSystemPrompt"];
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
 	#setActiveToolNames: SessionToolsOptions["setActiveToolNames"];
-	#ensureWriteRegistered: SessionToolsOptions["ensureWriteRegistered"];
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
@@ -216,7 +213,6 @@ export class SessionTools {
 		}
 		this.#presentationPinnedToolNames = options.presentationPinnedToolNames;
 		this.#requiredToolNames = options.requiredToolNames ?? new Set();
-		this.#ensureWriteRegistered = options.ensureWriteRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
 		this.#xdev = options.xdev;
@@ -286,10 +282,6 @@ export class SessionTools {
 
 	getMountedXdevToolNames(): string[] {
 		return [...(this.#xdev?.mountedNames ?? [])];
-	}
-
-	get hasEditTool(): boolean {
-		return this.#toolRegistry.has("edit");
 	}
 
 	getToolByName(name: string): AgentTool | undefined {
@@ -413,20 +405,6 @@ export class SessionTools {
 		return extensionRunner ? new ExtensionToolWrapper(wrapped, extensionRunner) : wrapped;
 	}
 
-	#getEditModeSession() {
-		return {
-			settings: this.#host.settings,
-			getActiveModelString: () => {
-				const model = this.#host.model();
-				return model ? formatModelString(model) : undefined;
-			},
-		} as const;
-	}
-
-	resolveActiveEditMode(): EditMode {
-		return resolveEditMode(this.#getEditModeSession());
-	}
-
 	#currentPromptModelKey(): string | undefined {
 		const activeModel = this.#host.model();
 		const model = activeModel ? formatModelString(activeModel) : undefined;
@@ -444,12 +422,9 @@ export class SessionTools {
 		});
 	}
 
-	async syncAfterModelChange(previousEditMode: EditMode): Promise<void> {
-		const currentEditMode = this.resolveActiveEditMode();
-		const editModeChanged = previousEditMode !== currentEditMode && this.getActiveToolNames().includes("edit");
-
+	async syncAfterModelChange(): Promise<void> {
 		const modelChanged = this.#currentPromptModelKey() !== this.#promptModelKey;
-		if (editModeChanged || modelChanged) {
+		if (modelChanged) {
 			await this.refreshBaseSystemPrompt();
 		}
 		const computerExpected = this.#host.settings.get("computer.enabled");
@@ -535,25 +510,19 @@ export class SessionTools {
 			enabledToolNames: toolNames,
 			evalTransportAvailable: this.#hasCodeModeEvalTransport(),
 		});
-		let builtInWriteAvailable = this.#builtInToolNames.has("write");
-		if (toolNames.includes("write") && !builtInWriteAvailable) {
-			const writeRegistration = this.#ensureWriteRegistered?.();
-			builtInWriteAvailable = writeRegistration ? (await untilAborted(signal, writeRegistration)) === true : false;
-			if (builtInWriteAvailable) this.#builtInToolNames.add("write");
-		}
 		const selectedTools = toolNames.flatMap(name => {
 			const tool = this.#toolRegistry.get(name);
 			return tool ? [{ name, tool }] : [];
 		});
 		const xdevReadAvailable = this.#builtInToolNames.has("read") && selectedTools.some(({ name }) => name === "read");
-		const xdevWriteAvailable = builtInWriteAvailable && selectedTools.some(({ name }) => name === "write");
+		const xdevExecAvailable = selectedTools.some(({ name }) => name === "bash");
 		const isPresentationPinned = (name: string): boolean =>
 			this.#presentationPinnedToolNames?.has(name) === true || this.#runtimeSelectedToolNames?.has(name) === true;
 		const mountCandidates = selectedTools.filter(
 			({ name, tool }) =>
 				this.#xdev !== undefined &&
 				xdevReadAvailable &&
-				xdevWriteAvailable &&
+				xdevExecAvailable &&
 				!isPresentationPinned(name) &&
 				isMountableUnderXdev(tool),
 		);
@@ -568,29 +537,8 @@ export class SessionTools {
 			validToolNames.push(name);
 		}
 
-		const pinnedWrite = isPresentationPinned("write");
 		const activeDeferrableTool = tools.some(tool => tool.deferrable === true);
 		const transportNeeded = mountNames.size > 0 || activeDeferrableTool;
-		if (transportNeeded && !builtInWriteAvailable) {
-			const writeRegistration = this.#ensureWriteRegistered?.();
-			builtInWriteAvailable = writeRegistration ? (await untilAborted(signal, writeRegistration)) === true : false;
-			if (builtInWriteAvailable) this.#builtInToolNames.add("write");
-		}
-		if (transportNeeded && builtInWriteAvailable) {
-			const write = this.#toolRegistry.get("write");
-			if (write && !validToolNames.includes("write")) {
-				tools.push(write);
-				validToolNames.push("write");
-			}
-		} else if (
-			!pinnedWrite &&
-			(this.#presentationPinnedToolNames !== undefined || this.#runtimeSelectedToolNames !== undefined)
-		) {
-			const writeNameIndex = validToolNames.indexOf("write");
-			if (writeNameIndex >= 0 && this.#builtInToolNames.has("write")) validToolNames.splice(writeNameIndex, 1);
-			const writeToolIndex = tools.findIndex(tool => tool.name === "write" && this.#builtInToolNames.has("write"));
-			if (writeToolIndex >= 0) tools.splice(writeToolIndex, 1);
-		}
 
 		let appliedTools = tools;
 		let appliedNames = validToolNames;
@@ -598,7 +546,7 @@ export class SessionTools {
 		if (codeMode.active) {
 			for (const name of this.#requiredToolNames) codeMode.directToolNames.add(name);
 
-			if (transportNeeded && validToolNames.includes("write")) codeMode.directToolNames.add("write");
+			if (transportNeeded) codeMode.directToolNames.add("bash");
 			appliedTools = tools.filter(tool => codeMode.directToolNames.has(tool.name));
 			appliedNames = validToolNames.filter(name => codeMode.directToolNames.has(name));
 			nextCodeModeNamespacesInfo = buildToolNamespacesInfo({
@@ -833,11 +781,7 @@ export class SessionTools {
 		return this.runToolRegistryMutation(async () => {
 			const normalized = normalizeToolNames(toolNames);
 
-			await this.#applyToolPresentation(
-				normalized,
-				this.#xdev?.mountedNames ?? new Set(),
-				this.getActiveToolNames().includes("write"),
-			);
+			await this.#applyToolPresentation(normalized, this.#xdev?.mountedNames ?? new Set());
 		});
 	}
 
@@ -853,7 +797,6 @@ export class SessionTools {
 			await this.#applyToolPresentation(
 				normalized,
 				new Set(normalizeToolNames(mountedToolNames)),
-				normalized.includes("write"),
 				forcePromptRefresh,
 				signal,
 			);
@@ -863,19 +806,11 @@ export class SessionTools {
 	async #applyToolPresentation(
 		normalized: string[],
 		mounted: ReadonlySet<string>,
-		writeSelected: boolean,
 		forcePromptRefresh = false,
 		signal?: AbortSignal,
 	): Promise<void> {
-		const transportWriteActive =
-			writeSelected &&
-			this.#builtInToolNames.has("write") &&
-			this.#presentationPinnedToolNames?.has("write") !== true &&
-			mounted.size > 0;
 		const previousRuntimeSelectedToolNames = this.#runtimeSelectedToolNames;
-		this.#runtimeSelectedToolNames = new Set(
-			normalized.filter(name => !mounted.has(name) && !(name === "write" && transportWriteActive)),
-		);
+		this.#runtimeSelectedToolNames = new Set(normalized.filter(name => !mounted.has(name)));
 		try {
 			await this.#applyActiveToolsByName(normalized, forcePromptRefresh, signal);
 		} catch (error) {

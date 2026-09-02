@@ -1,7 +1,7 @@
 import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { capEventDiff } from "../edit/diff";
+import { capEventDiff } from "../utils/diff";
 import * as git from "../utils/git";
 import { PRUNED_DIRS, SKIPPED_SUFFIXES as SKIPPED_FILE_SUFFIXES } from "./fs-policy";
 import type { EvalStatusEvent } from "./types";

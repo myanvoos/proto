@@ -27,7 +27,6 @@ import { isLightTheme, setAutoThemeMapping, setColorBlindMode } from "../modes/t
 import { AgentStorage } from "../session/agent-storage";
 import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-methods";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
-import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { INSPECT_MEDIA_MODES } from "../utils/inspect-media-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import {
@@ -243,11 +242,6 @@ function modelRoleValueFromUnknown(value: unknown): string | undefined {
 	return entries.length === value.length ? entries.join(",") : undefined;
 }
 
-type EditVariantEntry = {
-	patternLower: string;
-	mode: EditMode;
-};
-
 function resolvePathScopedStringArray(settingPath: SettingPath, value: unknown, cwd: string): string[] | undefined {
 	if (!PATH_SCOPED_ARRAY_SETTINGS.has(settingPath) || !Array.isArray(value)) return undefined;
 
@@ -313,7 +307,6 @@ export class Settings {
 	#merged: RawSettings = {};
 
 	#resolvedCache = new Map<SettingPath, unknown>();
-	#editVariantCache: readonly EditVariantEntry[] | undefined;
 
 	#modified = new Set<string>();
 
@@ -657,46 +650,6 @@ export class Settings {
 			}
 		}
 		return result as unknown as GroupTypeMap[G];
-	}
-
-	getEditVariantForModel(model: string | undefined): EditMode | null {
-		if (!model) return null;
-		const variants = this.#getEditVariantEntries();
-		if (variants.length === 0) return null;
-
-		const modelLower = model.toLowerCase();
-
-		for (let i = 0; i < variants.length; i++) {
-			const variant = variants[i];
-			if (modelLower.includes(variant.patternLower)) {
-				return variant.mode;
-			}
-		}
-		return null;
-	}
-
-	#getEditVariantEntries(): readonly EditVariantEntry[] {
-		if (this.#editVariantCache !== undefined) return this.#editVariantCache;
-
-		const value = getByPath(this.#merged, ["edit", "modelVariants"]);
-		if (!isRecord(value)) {
-			this.#editVariantCache = [];
-			return this.#editVariantCache;
-		}
-
-		const variants: EditVariantEntry[] = [];
-		for (const pattern in value) {
-			if (!Object.hasOwn(value, pattern)) continue;
-			const rawMode = value[pattern];
-			if (typeof rawMode !== "string") continue;
-			const mode = normalizeEditMode(rawMode);
-			if (mode) {
-				variants.push({ patternLower: pattern.toLowerCase(), mode });
-			}
-		}
-
-		this.#editVariantCache = variants;
-		return variants;
 	}
 
 	getBashInterceptorRules(): BashInterceptorRule[] {
@@ -1313,24 +1266,6 @@ export class Settings {
 			}
 		}
 
-		const editObj = raw.edit as Record<string, unknown> | undefined;
-		if (editObj) {
-			if (editObj.mode === "atom" || editObj.mode === "vim") {
-				editObj.mode = "hashline";
-			}
-			const modelVariants = editObj.modelVariants as Record<string, unknown> | undefined;
-			if (modelVariants && typeof modelVariants === "object" && !Array.isArray(modelVariants)) {
-				for (const [pattern, variant] of Object.entries(modelVariants)) {
-					if (variant === "atom" || variant === "vim") {
-						modelVariants[pattern] = "hashline";
-					}
-				}
-			}
-		}
-		if (raw["edit.mode"] === "atom" || raw["edit.mode"] === "vim") {
-			raw["edit.mode"] = "hashline";
-		}
-
 		const compactionObj = isRecord(raw.compaction) ? raw.compaction : undefined;
 		const configuredMethodOrder = compactionObj?.methodOrder ?? raw["compaction.methodOrder"];
 		const legacyStrategy = compactionObj?.strategy ?? raw["compaction.strategy"];
@@ -1439,8 +1374,6 @@ export class Settings {
 			delete raw["power.declareUserActive"];
 			delete raw["power.preventDisplaySleep"];
 		}
-
-		delete raw.readHashLines;
 
 		const tierObj = isRecord(raw.tier) ? raw.tier : {};
 		let tierTouched = false;
@@ -1881,7 +1814,6 @@ export class Settings {
 		this.#merged = this.#deepMerge(this.#merged, this.#configOverlay);
 		this.#merged = this.#deepMerge(this.#merged, this.#overrides);
 		this.#resolvedCache.clear();
-		this.#editVariantCache = undefined;
 	}
 
 	#fireAllHooks(): void {
@@ -1999,7 +1931,6 @@ const CODE_MODE_SIGNAL_PATHS: readonly SettingPath[] = [
 	"providers.openai-codex.codeMode",
 	"providers.openai-codex.codeModeDirectTools",
 	"eval.js",
-	"edit.mode",
 ];
 
 export const onCodeModeChanged = (cb: () => void) => codeModeSignal.on(cb);

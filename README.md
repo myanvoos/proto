@@ -12,7 +12,7 @@ Downloads a prebuilt binary (macOS / Linux, glibc and musl) from GitHub Releases
 
 ## Highlights
 
-- **30 built-in tools** — files, hashline/AST edits, bash plus persistent Python/JS eval, grep, DAP debugging, browser, desktop control, web search.
+- **30 built-in tools** — files, bash plus persistent Python/JS eval with kernel `edit()`/`write()`, grep, DAP debugging, browser, desktop control, web search.
 - **In-process Rust core** — embedded bash with sessions, ripgrep-style search, tree-sitter AST, PTY, image and clipboard: no fork/exec on the hot path.
 - **60+ providers, role-based routing** — ten model roles (`default`, `smol`, `slow`, …), fallback chains, custom OpenAI-compatible providers via `~/.proto/agent/models.yml`.
 - **Subagents and extensibility** — parallel workers with typed results, extensions and skills, sessions with branching and checkpoints.
@@ -41,7 +41,6 @@ bun dev
 | **[@oh-my-pi/pi-natives](packages/natives)**     | N-API bindings for grep, shell, image, text, syntax highlighting, and more  |
 | **[@oh-my-pi/omptype](packages/omptype)**        | ArkType-compatible schema validation with lazy JIT compilation              |
 | **[@oh-my-pi/pi-utils](packages/utils)**         | Shared utilities (logging, streams, dirs/env/process helpers)               |
-| **[@oh-my-pi/hashline](packages/hashline)**      | Line-anchored patch language and applier behind the `edit` tool             |
 | **[@oh-my-pi/browser-relay](packages/browser-relay)** | Chrome extension that lets the browser tool drive your existing tabs   |
 
 ### Rust crates

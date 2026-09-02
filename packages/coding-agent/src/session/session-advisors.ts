@@ -116,8 +116,6 @@ interface SessionAdvisorsOptions {
 	enabled: boolean;
 	tools?: AgentTool[];
 
-	createEditTool?(): AgentTool | undefined;
-
 	getToolContext?: () => AgentToolContext | undefined;
 
 	mcpResources?: CursorMcpResourceAdapter;
@@ -198,7 +196,6 @@ export class SessionAdvisors {
 	readonly #host: SessionAdvisorsHost;
 	#advisorEnabled: boolean;
 	#advisorTools: AgentTool[] | undefined;
-	#advisorCreateEditTool: SessionAdvisorsOptions["createEditTool"];
 	#advisorGetToolContext: SessionAdvisorsOptions["getToolContext"];
 	#advisorMcpResources: SessionAdvisorsOptions["mcpResources"];
 	#advisorWatchdogPrompt: string | undefined;
@@ -223,7 +220,6 @@ export class SessionAdvisors {
 		this.#host = host;
 		this.#advisorEnabled = options.enabled;
 		this.#advisorTools = options.tools;
-		this.#advisorCreateEditTool = options.createEditTool;
 		this.#advisorGetToolContext = options.getToolContext;
 		this.#advisorMcpResources = options.mcpResources;
 		this.#advisorWatchdogPrompt = options.watchdogPrompt;
@@ -566,7 +562,6 @@ export class SessionAdvisors {
 				adviseTool,
 				toolNames: config.tools,
 				toolPool: this.#advisorTools,
-				createEditTool: this.#advisorCreateEditTool,
 				getToolContext: this.#advisorGetToolContext,
 				mcpResources: this.#advisorMcpResources,
 

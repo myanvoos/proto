@@ -1,8 +1,6 @@
 import { defineCapability } from ".";
 import type { SourceMeta } from "./types";
 
-const CONDITION_GLOB_SCOPE_TOOLS = ["edit", "write"] as const;
-
 export const BUILTIN_DEFAULTS_PROVIDER_ID = "builtin-defaults";
 
 export interface RuleFrontmatter {
@@ -155,23 +153,6 @@ function normalizeScopeField(value: unknown): string[] | undefined {
 	return Array.from(new Set(tokens));
 }
 
-function isLikelyFileGlob(value: string): boolean {
-	const token = value.trim();
-	if (token.length === 0) {
-		return false;
-	}
-	if (/[\\^$+|()]/.test(token)) {
-		return false;
-	}
-	if (!/[?*[\]{}]/.test(token)) {
-		return false;
-	}
-	if (token.includes("/")) {
-		return true;
-	}
-	return /^\*\.[^\s/]+$/.test(token);
-}
-
 export function parseRuleConditionAndScope(
 	frontmatter: RuleFrontmatter,
 ): Pick<Rule, "condition" | "astCondition" | "scope"> {
@@ -180,23 +161,12 @@ export function parseRuleConditionAndScope(
 	const astCondition = normalizeRuleField(frontmatter.astCondition);
 	const parsedScope = normalizeScopeField(frontmatter.scope);
 
-	const inferredScope: string[] = [];
 	const condition: string[] = [];
 	for (const token of parsedCondition ?? []) {
-		if (isLikelyFileGlob(token)) {
-			for (const toolName of CONDITION_GLOB_SCOPE_TOOLS) {
-				inferredScope.push(`tool:${toolName}(${token})`);
-			}
-			continue;
-		}
 		condition.push(token);
 	}
 
-	if (condition.length === 0 && inferredScope.length > 0) {
-		condition.push(".*");
-	}
-
-	const scope = [...(parsedScope ?? []), ...inferredScope];
+	const scope = [...(parsedScope ?? [])];
 	return {
 		condition: condition.length > 0 ? Array.from(new Set(condition)) : undefined,
 		astCondition,

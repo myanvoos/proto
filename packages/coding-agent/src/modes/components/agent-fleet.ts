@@ -11,7 +11,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
-import { formatAge, formatNumber, getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import { formatAge, formatNumber, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { Settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
@@ -95,8 +95,6 @@ export interface AgentFleetDeps {
 
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 
-	cwd?: string;
-
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
 
@@ -171,7 +169,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 	#getTool: ((name: string) => AgentTool | undefined) | undefined;
 	#isBuiltInTool: ((name: string) => boolean) | undefined;
 	#getMessageRenderer: ((customType: string) => MessageRenderer | undefined) | undefined;
-	#cwd: string;
 	#sessionFile: string | null | undefined;
 	#hideThinkingBlock: (() => boolean) | undefined;
 	#proseOnlyThinking: (() => boolean) | undefined;
@@ -202,7 +199,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		this.#getTool = deps.getTool;
 		this.#isBuiltInTool = deps.isBuiltInTool;
 		this.#getMessageRenderer = deps.getMessageRenderer;
-		this.#cwd = deps.cwd ?? getProjectDir();
 		this.#sessionFile = deps.sessionFile;
 		this.#hideThinkingBlock = deps.hideThinkingBlock;
 		this.#proseOnlyThinking = deps.proseOnlyThinking;
@@ -303,7 +299,6 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			getTool: this.#getTool,
 			isBuiltInTool: this.#isBuiltInTool,
 			getMessageRenderer: this.#getMessageRenderer,
-			cwd: this.#cwd,
 			hideThinkingBlock: this.#hideThinkingBlock,
 			proseOnlyThinking: this.#proseOnlyThinking,
 			expandKeys: this.#expandKeys,

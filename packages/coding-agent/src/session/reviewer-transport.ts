@@ -50,7 +50,6 @@ import type { ModelRegistry } from "../config/model-registry";
 import { formatModelString, formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "../cursor";
-import { bridgeToolMap } from "../cursor-bridge-tools";
 import { estimateToolSchemaTokens } from "../modes/utils/context-usage";
 import { resolveThinkingLevelForModel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
@@ -168,7 +167,6 @@ export interface ReviewerTransportOptions {
 	generatedTextExtractor?: ReviewerGeneratedTextExtractor;
 	/** Omitted keeps `quarantineAdvisorUnsafeOutput`'s own default prefix. */
 	quarantinePrefix?: string;
-	createEditTool?(): AgentTool | undefined;
 	getToolContext?: () => AgentToolContext | undefined;
 	mcpResources?: CursorMcpResourceAdapter;
 
@@ -260,13 +258,12 @@ export class ReviewerTransport implements ReviewerInstance {
 
 		const advisorPromptCacheKey = this.#host.agent.promptCacheKey ?? advisorProviderSessionId;
 
-		const advisorCanMutateFiles = advisorToolMap.has("write") || advisorToolMap.has("edit");
-		if (advisorCanMutateFiles) availableAdvisorToolNames.add("delete");
+		const advisorCanMutateFiles = false;
 
 		const advisorCursorExecHandlers = new CursorExecHandlers({
 			cwd: this.#host.sessionManager.getCwd(),
 			getCwd: () => this.#host.sessionManager.getCwd(),
-			tools: bridgeToolMap(advisorToolMap, options.createEditTool),
+			tools: advisorToolMap,
 
 			getToolContext: options.getToolContext,
 			allowDirectFileMutation: advisorCanMutateFiles,
