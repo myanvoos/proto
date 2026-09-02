@@ -71,9 +71,15 @@ export function wrapShellLineForClientTerminal(
 	return { command: shellConfig.shell, args: [...shellConfig.args, finalLine] };
 }
 
-function shellBuiltinsDisabled(settings: Settings): boolean {
+export function shellBuiltinsDisabled(settings: Settings): boolean {
 	const raw = settings.getShellConfig().env?.PI_DISABLE_UUTILS_BUILTINS ?? Bun.env.PI_DISABLE_UUTILS_BUILTINS;
 	return !!raw && raw !== "0" && raw.toLowerCase() !== "false";
+}
+
+export function kernelBridgeAvailable(session: ToolSession): boolean {
+	if (shellBuiltinsDisabled(session.settings)) return false;
+	const backends = resolveEvalBackends(session);
+	return backends.python || backends.js;
 }
 
 async function saveBashOriginalArtifact(session: ToolSession, originalText: string): Promise<string | undefined> {
@@ -324,7 +330,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			hasLaunch: isToolActive("fleet", this.session.settings.get("launch.enabled")),
 			hasEval: isToolActive("eval", evalBackends.python || evalBackends.js),
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
-			hasKernelBridge: !shellBuiltinsDisabled(this.session.settings) && (evalBackends.python || evalBackends.js),
+			hasKernelBridge: kernelBridgeAvailable(this.session),
 		});
 	}
 	readonly parameters: BashToolSchema;
@@ -375,9 +381,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	}
 
 	#kernelShellBridge(): KernelShellBridgeHandle | undefined {
-		if (shellBuiltinsDisabled(this.session.settings)) return undefined;
-		const backends = resolveEvalBackends(this.session);
-		if (!backends.python && !backends.js) return undefined;
+		if (!kernelBridgeAvailable(this.session)) return undefined;
 		return registerKernelShellRun(this.session);
 	}
 

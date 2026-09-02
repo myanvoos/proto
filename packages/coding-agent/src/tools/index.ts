@@ -30,7 +30,7 @@ import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspec
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
-import { BashTool } from "./bash";
+import { BashTool, kernelBridgeAvailable } from "./bash";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
@@ -340,7 +340,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const skipEvalPreflight = session.skipPythonPreflight === true;
 
 	let pythonAvailable = true;
-	const kernelRequested = requestedTools === undefined || requestedTools.includes("kernel");
+	const bashAllowedForSession = (session.taskDepth ?? 0) === 0 && !!session.settings.get("bash.enabled");
+	const bridgeServesKernel = bashAllowedForSession && kernelBridgeAvailable(session);
+	const kernelRequested = !bridgeServesKernel && (requestedTools === undefined || requestedTools.includes("kernel"));
 	if (!skipEvalPreflight && allowPython && kernelRequested) {
 		const availability = await logger.time(
 			"createTools:pythonCheck",
@@ -385,7 +387,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			if (goalState?.goal.status === "verifying") return false;
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
-		if (name === "kernel") return effectivePythonAllowed;
+		if (name === "kernel") return effectivePythonAllowed && !bridgeServesKernel;
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");
 		if (name === "github") return session.settings.get("github.enabled");
