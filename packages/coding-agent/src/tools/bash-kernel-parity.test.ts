@@ -23,56 +23,69 @@ function stub(cwd: string): ToolSession {
 	} as unknown as ToolSession;
 }
 
-// Normalize the two volatile bits (duration ms, tmp-dir names, truncated line
-// counts) so the comparison is about structure/formatting, not wall clock.
+const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+// Normalize the volatile bits (duration ms, tmp-dir names, truncated line
+// counts) so the settled comparison is about structure/formatting, not wall clock.
 const norm = (s: string) =>
-	s
-		.replace(/\x1b\[[0-9;]*m/g, "")
+	strip(s)
 		.replace(/\(\d+ms\)/g, "(Nms)")
 		.replace(/\/tmp\/[a-zA-Z]+-[\w]+/g, "/tmp/DIR")
 		.replace(/… \d+ more lines/g, "… N more lines");
 
-const rEval = (res: unknown, code: string) =>
-	norm(
-		(
-			toolRenderers.kernel as never as {
-				renderResult: (r: unknown, o: unknown, t: unknown, a: unknown) => { render: (w: number) => string[] };
-			}
-		)
-			.renderResult(res, { expanded: false }, theme, { code, title: "t" })
-			.render(90)
-			.join("\n"),
-	);
-const rBash = (res: unknown, command: string) =>
-	norm(
-		(
-			toolRenderers.bash as never as {
-				renderResult: (r: unknown, o: unknown, t: unknown, a: unknown) => { render: (w: number) => string[] };
-			}
-		)
-			.renderResult(res, { expanded: false }, theme, { command })
-			.render(90)
-			.join("\n"),
-	);
+type Renderer = {
+	renderCall: (a: unknown, o: unknown, t: unknown) => { render: (w: number) => string[] };
+	renderResult: (r: unknown, o: unknown, t: unknown, a: unknown) => { render: (w: number) => string[] };
+};
+const bashRenderer = toolRenderers.bash as never as Renderer;
+const kernelRenderer = toolRenderers.kernel as never as Renderer;
+
+const renderBashCall = (command: string) =>
+	strip(bashRenderer.renderCall({ command }, { expanded: false }, theme).render(100).join("\n"));
+const renderKernelResult = (res: unknown, code: string) =>
+	norm(kernelRenderer.renderResult(res, { expanded: false }, theme, { code, title: "t" }).render(90).join("\n"));
+const renderBashResult = (res: unknown, command: string) =>
+	norm(bashRenderer.renderResult(res, { expanded: false }, theme, { command }).render(90).join("\n"));
 
 afterAll(async () => {
 	await disposeKernelSessionsByOwner(OWNER);
 });
 
+// The live/pending phase (renderCall) has no eval result to compare against, so
+// assert the eval-style running cell directly (header meta + AST outline).
+test("kernel-cell bash renderCall shows the eval-style running cell with AST outline", () => {
+	const py = renderBashCall("python <<'EOF'\ndef greet(name):\n    return name\n\nclass Widget:\n    pass\nEOF");
+	expect(py).toContain("· ast");
+	expect(py).toContain("Module");
+	expect(py).toContain("greet(name)");
+	expect(py).toContain("Widget");
+	expect(renderBashCall("node <<'JS'\nfunction f(){ return 1 }\nJS")).toContain("f");
+	expect(renderBashCall('python -c \'edit("a","b","c")\'')).toContain("edit");
+});
+
+test("plain shell commands keep the normal $ command rendering (no AST)", () => {
+	const plain = renderBashCall("rg -n foo src");
+	expect(plain).toContain("rg");
+	expect(plain).toContain("foo");
+	expect(plain).not.toContain("· ast");
+	expect(plain).not.toContain("Module");
+});
+
+// The settled phase (renderResult) is compared byte-for-byte against the eval
+// tool rendering the same code, so the two can never drift.
 async function assertParity(label: string, code: string): Promise<void> {
 	const dirE = await fs.mkdtemp(path.join(os.tmpdir(), "pE-"));
 	const dirB = await fs.mkdtemp(path.join(os.tmpdir(), "pB-"));
 	try {
 		const er = await new EvalTool(stub(dirE)).execute(`e-${label}`, { language: "py", code, timeout: 60 });
 		const br = await new BashTool(stub(dirB)).execute(`b-${label}`, { command: `python <<'PYEOF'\n${code}\nPYEOF` });
-		expect(rBash(br, `python <<'PYEOF'\n${code}\nPYEOF`), label).toBe(rEval(er, code));
+		expect(renderBashResult(br, `python <<'PYEOF'\n${code}\nPYEOF`), label).toBe(renderKernelResult(er, code));
 	} finally {
 		await fs.rm(dirE, { recursive: true, force: true });
 		await fs.rm(dirB, { recursive: true, force: true });
 	}
 }
 
-test("python-in-bash renders identically to the eval/kernel tool", async () => {
+test("python-in-bash renderResult is identical to the eval/kernel tool", async () => {
 	await assertParity("code+print", "def greet(n):\n    return n\n\nprint('hi', greet('x'))");
 	await assertParity("json-display", "display({'k': [1, 2, 3], 'nested': {'x': 1}})");
 	await assertParity("edit-hunks", "write('f.txt', 'a\\nb\\n')\nedit('f.txt', 'b', 'B')");
