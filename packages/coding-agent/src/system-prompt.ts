@@ -436,7 +436,7 @@ export async function loadSystemPromptFiles(options: LoadContextFilesOptions = {
 	return userLevel?.content ?? null;
 }
 
-export const DEFAULT_SYSTEM_PROMPT_TOOL_NAMES = ["read", "bash", "kernel"] as const;
+export const DEFAULT_SYSTEM_PROMPT_TOOL_NAMES = ["read", "bash"] as const;
 
 export interface SystemPromptToolMetadata {
 	label: string;
@@ -836,7 +836,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 				}),
 			);
 
-	const hasRead = toolNames.includes("read") || toolNames.includes("kernel");
+	const hasRead = toolNames.includes("read");
 	const filteredSkills = hasRead ? skills.filter(skill => skill.hide !== true) : [];
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [

@@ -87,14 +87,14 @@ Write JSON args as `content` to `xd://<tool>` via `write()`. Invalid args return
 {{#if intentTracing}}- Most tools take `{{intentField}}`: capitalized 2–6-word present-participle intent; no period.{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
 {{#has tools "inspect_media"}}- Media tasks (image/audio/video): prefer `{{toolRefs.inspect_media}}` (spares context).{{/has}}
-{{#has tools "kernel"}}- File/dir/command work → `{{toolRefs.kernel}}` (persistent Python kernel; its prompt has the API).{{else}}{{#has tools "bash"}}- Persistent compute → run `python`/`node` in `{{toolRefs.bash}}` (heredoc, or `-c`/`-e CODE`): they execute in the eval kernels — state survives across calls, `write`/`edit`/`agent` helpers available, same as if you called an `eval` tool. `python fleet://<name>.py` runs a saved orchestration script there.{{/has}}{{/has}}
+{{#has tools "kernel"}}- Persistent compute → `{{toolRefs.kernel}}` (persistent Python kernel; its prompt has the API).{{else}}{{#has tools "bash"}}- Persistent compute → run `python`/`node` in `{{toolRefs.bash}}` (heredoc, or `-c`/`-e CODE`): they execute in the eval kernels — state survives across calls, `write`/`edit`/`agent` helpers available, same as if you called an `eval` tool. `python fleet://<name>.py` runs a saved orchestration script there.{{/has}}{{/has}}
 - NEVER open files hoping; read sections, not whole files.
 {{#if autoQaEnabled}}
-{{#ifAny (includes tools "kernel") (includes tools "write")}}
+{{#if (includes tools "kernel")}}
 <critical>
 `write()` to `xd://report_issue`: automated QA. Tool output inconsistent with described behavior → write plain `<tool>: <concise description>` there. False positives fine.
 </critical>
-{{/ifAny}}
+{{/if}}
 {{/if}}
 
 {{#has tools "orchestrate_spawn"}}
