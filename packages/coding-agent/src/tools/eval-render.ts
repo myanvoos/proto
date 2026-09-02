@@ -564,6 +564,90 @@ export function astPreviewLines(code: string, language: string, theme: Theme, wi
 	return undefined;
 }
 
+/**
+ * Render one kernel cell (header + AST preview + output + Status hunks + JSON
+ * display trees) exactly as the eval tool's per-cell path does. Shared so the
+ * bash `python`/`node` bridge renders a routed cell identically to the `eval`
+ * tool — same primitives, so the two can never drift.
+ */
+export function renderKernelCellLines(
+	cell: EvalCellResult,
+	jsonOutputs: readonly unknown[],
+	theme: Theme,
+	opts: { expanded: boolean; isPartial: boolean; spinnerFrame?: number; previewLines: number; width: number },
+): string[] {
+	const { expanded, isPartial, spinnerFrame, previewLines, width } = opts;
+	const language = cell.language ?? "python";
+	const code = formatEvalCodeForDisplay(cell.code, language);
+	const allEvents = cell.statusEvents ?? [];
+	const agentEvents = allEvents.filter(e => e.op === "agent");
+	const otherEvents = agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents;
+	const cellLive = isPartial && (cell.status === "running" || cell.status === "pending");
+	const cellExpanded = expanded && !cellLive;
+	const liveWindow = previewWindowRows();
+	const liveSectionCap = Math.min(EVAL_STREAMING_SECTION_LINES, Math.max(3, Math.floor(liveWindow / 2)));
+
+	let statusLines = renderStatusEvents(otherEvents, theme, cellExpanded, outputBlockContentWidth(width), {
+		suppressDiffs: isPartial,
+	});
+	if (isPartial) statusLines = capPreviewLines(statusLines, theme, { max: liveSectionCap });
+
+	const outputContent = formatCellOutputLines(cell, cellExpanded, previewLines, theme, width);
+	const outputLines = [...outputContent.lines];
+	if (!cellExpanded && outputContent.hiddenCount > 0) {
+		outputLines.push(theme.fg("dim", `… ${outputContent.hiddenCount} more lines (ctrl+o to expand)`));
+	}
+
+	let agentLines = agentEvents.length > 0 ? renderAgentProgressEvents(agentEvents, theme, spinnerFrame) : [];
+	if (isPartial) agentLines = capPreviewLines(agentLines, theme, { max: liveSectionCap });
+
+	const codeMaxLines = cellLive
+		? Math.max(3, liveWindow - statusLines.length - outputLines.length - agentLines.length)
+		: liveWindow;
+	const astLines = cellExpanded ? undefined : astPreviewLines(code, language, theme, width);
+
+	const cellLines = renderCodeCell(
+		{
+			code,
+			language: languageForHighlighter(language),
+			showLanguage: true,
+			index: 0,
+			total: 1,
+			title: cell.title,
+			status: cell.status,
+			spinnerFrame,
+			duration: cell.durationMs,
+			output: outputLines.length > 0 ? outputLines.join("\n") : undefined,
+			outputMaxLines: outputLines.length,
+			extraSections:
+				statusLines.length > 0 ? [{ label: theme.fg("toolTitle", "Status"), lines: statusLines }] : undefined,
+			codeTail: true,
+			codeMaxLines,
+			expanded: cellExpanded,
+			width,
+			preRenderedCodeLines: astLines,
+			codeVariant: astLines ? "ast" : undefined,
+		},
+		theme,
+	);
+
+	const lines = [...cellLines, ...agentLines];
+	const treeDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
+	const treeLineCap = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
+	const treeScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
+	const labelOutputs = jsonOutputs.length > 1;
+	const jsonLines = jsonOutputs.flatMap((value, index) => {
+		const tree = renderJsonTreeLines(value, theme, treeDepth, treeLineCap, treeScalarLen);
+		const body = tree.truncated ? [...tree.lines, theme.fg("dim", "…")] : tree.lines;
+		return labelOutputs ? [theme.fg("dim", `display[${index + 1}]`), ...body] : body;
+	});
+	if (jsonLines.length > 0) {
+		if (lines.length > 0) lines.push("");
+		lines.push(...jsonLines);
+	}
+	return lines;
+}
+
 export const evalToolRenderer = {
 	animatedPendingPreview: true,
 	animatedPartialResult: true,

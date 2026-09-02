@@ -14,7 +14,7 @@ import {
 import type { Settings } from "../config/settings";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
 import { type KernelShellBridgeHandle, registerKernelShellRun } from "../eval/shell-bridge";
-import type { EvalStatusEvent } from "../eval/types";
+import type { EvalCellResult, EvalStatusEvent } from "../eval/types";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -37,11 +37,11 @@ import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
-import { detectBashKernelCell } from "./bash-kernel-cell";
+import { type BashKernelCell, detectBashKernelCell } from "./bash-kernel-cell";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
-import { astPreviewLines, renderStatusEvents } from "./eval-render";
+import { EVAL_DEFAULT_PREVIEW_LINES, renderKernelCellLines } from "./eval-render";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import {
 	formatStyledTruncationWarning,
@@ -132,6 +132,7 @@ export interface BashToolInput {
 export interface BashToolDetails {
 	meta?: OutputMeta;
 	statusEvents?: EvalStatusEvent[];
+	jsonOutputs?: unknown[];
 	timeoutSeconds?: number;
 	requestedTimeoutSeconds?: number;
 	timeoutDisabled?: boolean;
@@ -432,6 +433,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			wallTimeMs?: number;
 			images?: readonly ImageContent[];
 			statusEvents?: readonly EvalStatusEvent[];
+			jsonOutputs?: readonly unknown[];
 		} = {},
 	): Promise<AgentToolResult<BashToolDetails>> {
 		const exitCode = result.exitCode;
@@ -470,6 +472,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 		if (options.statusEvents?.length) {
 			details.statusEvents = [...options.statusEvents];
+		}
+		if (options.jsonOutputs?.length) {
+			details.jsonOutputs = [...options.jsonOutputs];
 		}
 		if (failedExit) {
 			details.exitCode = exitCode;
@@ -600,6 +605,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						wallTimeMs,
 						images: await this.#drainBridgeImages(pyBridge),
 						statusEvents: pyBridge?.drainStatusEvents(),
+						jsonOutputs: pyBridge?.drainJsonOutputs(),
 					});
 					const finalText = this.#extractTextResult(finalResult);
 					latestText = finalText;
@@ -1127,6 +1133,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				wallTimeMs,
 				images: await this.#drainBridgeImages(pyBridge),
 				statusEvents: pyBridge?.drainStatusEvents(),
+				jsonOutputs: pyBridge?.drainJsonOutputs(),
 			});
 		} finally {
 			pyBridge?.dispose();
@@ -1175,7 +1182,7 @@ function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unknown> | u
 	return args.env ?? partialEnv;
 }
 
-function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme, kernelPreview?: { width: number }): string[] {
+function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] {
 	const command = replaceTabs(args.command || "…");
 	const cwd = getProjectDir();
 	const displayWorkdir = formatToolWorkingDirectory(args.cwd, cwd);
@@ -1184,24 +1191,44 @@ function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme, kernelPrev
 	if (displayWorkdir) prefixParts.push(`cd ${displayWorkdir} &&`);
 	if (envAssignments) prefixParts.push(envAssignments);
 	const prefix = uiTheme.fg("dim", `${prefixParts.join(" ")} `);
-	const withPrefix = (lines: string[]): string[] =>
-		lines.length === 0 ? [prefix.trimEnd()] : lines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+	const highlightedLines = highlightCode(command, "bash");
+	if (highlightedLines.length === 0) return [prefix.trimEnd()];
+	return highlightedLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+}
 
-	// Collapsed view of a kernel-routed `python`/`node` cell: highlight the
-	// invocation header, then preview the embedded code's AST outline exactly
-	// like an eval cell (expanded view falls through to the raw command).
-	if (kernelPreview && args.command) {
-		const cell = detectBashKernelCell(args.command);
-		if (cell) {
-			const headerLines = withPrefix(highlightCode(replaceTabs(cell.header), "bash"));
-			const body =
-				astPreviewLines(cell.code, cell.language, uiTheme, kernelPreview.width) ??
-				highlightCode(replaceTabs(cell.code), cell.language === "python" ? "python" : "javascript");
-			return [...headerLines, ...body.map(line => `  ${line}`)];
-		}
-	}
-
-	return withPrefix(highlightCode(command, "bash"));
+// A kernel-routed `python`/`node` bash cell renders identically to an `eval`
+// cell (header, AST preview, output, Status hunks, JSON display trees) by
+// building an EvalCellResult and handing it to the shared renderKernelCellLines.
+function kernelCellLines(
+	kernelCell: BashKernelCell,
+	uiTheme: Theme,
+	opts: {
+		output: string;
+		status: "running" | "complete" | "error";
+		details: BashToolDetails | undefined;
+		expanded: boolean;
+		isPartial: boolean;
+		spinnerFrame?: number;
+		previewLines: number;
+		width: number;
+	},
+): string[] {
+	const cell: EvalCellResult = {
+		index: 0,
+		code: kernelCell.code,
+		language: kernelCell.language === "js" ? "js" : "python",
+		output: opts.output,
+		status: opts.status,
+		statusEvents: opts.details?.statusEvents,
+		durationMs: opts.details?.wallTimeMs !== undefined ? Math.round(opts.details.wallTimeMs) : undefined,
+	};
+	return renderKernelCellLines(cell, opts.details?.jsonOutputs ?? [], uiTheme, {
+		expanded: opts.expanded,
+		isPartial: opts.isPartial,
+		spinnerFrame: opts.spinnerFrame,
+		previewLines: opts.previewLines,
+		width: opts.width,
+	});
 }
 
 function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererConfig<TArgs>): BashRenderArgs {
@@ -1225,10 +1252,23 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		animatedPartialResult: isKernelCellArgs,
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
+			const kernelCell = renderArgs.command ? detectBashKernelCell(renderArgs.command) : undefined;
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
-					const cmdLines = formatBashCommandLines(renderArgs, uiTheme, options.expanded ? undefined : { width });
+					if (kernelCell) {
+						return kernelCellLines(kernelCell, uiTheme, {
+							output: "",
+							status: "running",
+							details: undefined,
+							expanded: options.expanded === true,
+							isPartial: true,
+							spinnerFrame: options.spinnerFrame,
+							previewLines: EVAL_DEFAULT_PREVIEW_LINES,
+							width,
+						});
+					}
+					const cmdLines = formatBashCommandLines(renderArgs, uiTheme);
 					const header =
 						config.showHeader === false
 							? undefined
@@ -1267,6 +1307,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			args?: TArgs,
 		): Component {
 			const renderArgs = toBashRenderArgs(args, config);
+			const kernelCell = renderArgs.command ? detectBashKernelCell(renderArgs.command) : undefined;
 			const isError = result.isError === true;
 			const isPartial = options.isPartial === true;
 			const success = !isPartial && !isError;
@@ -1335,6 +1376,28 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const rawOutputArtifact = stripRawOutputArtifactNotice(withoutWall);
 					const output = rawOutputArtifact.text;
 					const displayOutput = output.trimEnd();
+
+					if (kernelCell) {
+						const lines = kernelCellLines(kernelCell, uiTheme, {
+							output: displayOutput,
+							status: isPartial ? "running" : isError ? "error" : "complete",
+							details,
+							expanded,
+							isPartial,
+							spinnerFrame: options.spinnerFrame,
+							previewLines: EVAL_DEFAULT_PREVIEW_LINES,
+							width,
+						});
+						cachedWidth = width;
+						cachedPreviewLines = previewLines;
+						cachedExpanded = expanded;
+						cachedRawOutput = rawOutput;
+						cachedIsPartial = isPartial;
+						cachedPreviewWindow = previewWindow;
+						cachedLines = lines;
+						return lines;
+					}
+
 					const showingFullOutput = expanded && renderContext?.isFullOutput === true;
 
 					const timeoutDisabled = details?.timeoutDisabled === true || renderContext?.timeout === 0;
@@ -1414,16 +1477,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					if (timeoutLine) outputLines.push(timeoutLine);
 					if (warningLine) outputLines.push(warningLine);
 
-					const cmdLines = args
-						? formatBashCommandLines(renderArgs, uiTheme, expanded ? undefined : { width })
-						: undefined;
-					// Kernel-cell status events (write/delete hunks, …) render like an
-					// eval cell; hunks are withheld while the result is still partial.
-					const statusEvents = details?.statusEvents ?? [];
-					const statusLines =
-						statusEvents.length > 0
-							? renderStatusEvents(statusEvents, uiTheme, expanded, width, { suppressDiffs: isPartial })
-							: [];
+					const cmdLines = args ? formatBashCommandLines(renderArgs, uiTheme) : undefined;
 					const framed = outputBlock.render(
 						{
 							header,
@@ -1432,9 +1486,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								{
 									lines: capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),
 								},
-								...(statusLines.length > 0
-									? [{ label: uiTheme.fg("toolTitle", "Status"), lines: statusLines }]
-									: []),
 								{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
 							],
 							width,

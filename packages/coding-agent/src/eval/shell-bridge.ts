@@ -16,6 +16,7 @@ export interface KernelShellBridgeHandle {
 	env: Record<string, string>;
 	drainImages(): ImageContent[];
 	drainStatusEvents(): EvalStatusEvent[];
+	drainJsonOutputs(): unknown[];
 	dispose(): void;
 }
 
@@ -23,6 +24,7 @@ interface RunContext {
 	session: ToolSession;
 	images: ImageContent[];
 	statusEvents: EvalStatusEvent[];
+	jsonOutputs: unknown[];
 	active: Set<AbortController>;
 }
 
@@ -45,7 +47,7 @@ let listener: TCPSocketListener<SocketState> | undefined;
 export function registerKernelShellRun(session: ToolSession): KernelShellBridgeHandle {
 	const server = ensureListener();
 	const token = crypto.randomUUID();
-	const context: RunContext = { session, images: [], statusEvents: [], active: new Set() };
+	const context: RunContext = { session, images: [], statusEvents: [], jsonOutputs: [], active: new Set() };
 	runs.set(token, context);
 	return {
 		env: {
@@ -60,6 +62,7 @@ export function registerKernelShellRun(session: ToolSession): KernelShellBridgeH
 		},
 		drainImages: () => context.images.splice(0),
 		drainStatusEvents: () => context.statusEvents.splice(0),
+		drainJsonOutputs: () => context.jsonOutputs.splice(0),
 		dispose: () => {
 			runs.delete(token);
 			for (const abort of context.active) abort.abort();
@@ -182,8 +185,11 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 			},
 		});
 		for (const output of result.displayOutputs) {
-			if (output.type === "image")
+			if (output.type === "image") {
 				context.images.push({ type: "image", data: output.data, mimeType: output.mimeType });
+			} else if (output.type === "json") {
+				context.jsonOutputs.push(output.data);
+			}
 		}
 		const displayText = formatDisplayOutputsForText(result.displayOutputs);
 		if (displayText) send(socket, { t: "o", d: `${displayText}\n` });
