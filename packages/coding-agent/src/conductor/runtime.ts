@@ -64,6 +64,26 @@ const extractConductorGeneratedText: ReviewerGeneratedTextExtractor = call => {
 	return parts;
 };
 
+/**
+ * One-line description of how the conductor's most recent assistant turn ended. Degraded models tend to stop
+ * after a thinking block without ever calling the turn's single-shot channel (`program`/`cue`); retry
+ * diagnostics and failure notices should say that instead of reporting an opaque "no contract".
+ */
+function describeLastAssistantTurn(instance: ReviewerTransport): string {
+	const messages = instance.agent.state.messages;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.role !== "assistant") continue;
+		const toolCalls = message.content.filter(block => block.type === "toolCall").length;
+		const produced =
+			toolCalls > 0
+				? `${toolCalls} tool call${toolCalls === 1 ? "" : "s"}`
+				: message.content.map(block => block.type).join("+") || "no content";
+		return `${produced}, stop=${message.stopReason}, ${message.usage.output} output tokens`;
+	}
+	return "no assistant turn";
+}
+
 export const CONDUCTOR_VERIFICATION_MESSAGE_TYPE = "conductor-verification";
 
 export interface ConductorMessageDeliveryOptions {
@@ -366,6 +386,7 @@ export class SessionConductor {
 
 		const promptText = renderVerifyPrompt(goal);
 		let ruling: ConductorRuling | undefined;
+		let lastTurn = "no assistant turn";
 		for (let attempt = 0; attempt < MAX_VERIFICATION_ATTEMPTS; attempt++) {
 			if (this.#host.isDisposed()) return;
 			this.#ruling = undefined;
@@ -384,11 +405,17 @@ export class SessionConductor {
 			ruling = this.#ruling;
 			this.#ruling = undefined;
 			if (ruling) break;
-			logger.debug("conductor verification turn produced no ruling; retrying");
+			// Mirror commissioning: a turn without a `cue` call carries nothing worth keeping, so the next attempt
+			// starts from a clean context instead of stacking failed turns into the prompt.
+			lastTurn = describeLastAssistantTurn(instance);
+			logger.warn("conductor verification turn produced no verdict", { attempt: attempt + 1, turn: lastTurn });
+			if (attempt + 1 < MAX_VERIFICATION_ATTEMPTS) facade.reset();
 		}
 
 		if (!ruling) {
-			this.#escalate("The conductor returned no verdict after repeated attempts.");
+			this.#escalate(
+				`The conductor returned no verdict after ${MAX_VERIFICATION_ATTEMPTS} attempts; every turn ended without a \`cue\` call (last: ${lastTurn}).`,
+			);
 			return;
 		}
 		await this.#applyRuling(goal, ruling);
@@ -459,6 +486,7 @@ export class SessionConductor {
 
 		try {
 			let proposal: ConductorProposal | undefined;
+			let lastTurn = "no assistant turn";
 			for (let attempt = 0; attempt < MAX_COMMISSIONING_ATTEMPTS; attempt++) {
 				if (this.#host.isDisposed()) return { status: "unavailable", reason: "The session is shutting down." };
 				this.#proposal = undefined;
@@ -481,11 +509,19 @@ export class SessionConductor {
 				proposal = this.#proposal;
 				this.#proposal = undefined;
 				if (proposal) break;
-				logger.debug("conductor commissioning turn produced no contract; retrying");
+				// A turn that ends without a `program` call carries nothing worth keeping: retrying against the same
+				// conversation stacks degenerate thinking-only stops (the failure this loop exists to survive) and
+				// grows the prompt for no corrective value. Start the next attempt clean, like the quarantine path.
+				lastTurn = describeLastAssistantTurn(instance);
+				logger.warn("conductor commissioning turn produced no contract", { attempt: attempt + 1, turn: lastTurn });
+				if (attempt + 1 < MAX_COMMISSIONING_ATTEMPTS) facade.reset();
 			}
 
 			if (!proposal) {
-				return { status: "failed", reason: "The conductor proposed no contract after repeated attempts." };
+				return {
+					status: "failed",
+					reason: `The conductor proposed no contract after ${MAX_COMMISSIONING_ATTEMPTS} attempts; every turn ended without a \`program\` call (last: ${lastTurn}).`,
+				};
 			}
 			return proposal.tokenBudget === undefined
 				? { status: "proposed", objective: proposal.objective }

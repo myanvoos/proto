@@ -166,6 +166,37 @@ async function createHarness(): Promise<Harness> {
 	};
 }
 
+function programPropose() {
+	return {
+		content: [
+			{
+				type: "toolCall" as const,
+				name: "program",
+				arguments: {
+					op: "create",
+					objective: [
+						"## Objective",
+						"Add a greeting endpoint.",
+						"",
+						"## Success criteria",
+						"1. `bun test` passes.",
+						"",
+						"## Verification",
+						"`bun test`",
+						"",
+						"## Boundaries",
+						"`src/` only.",
+						"",
+						"## Stop conditions",
+						"3 attempts.",
+					].join("\n"),
+				},
+			},
+		],
+		usage: { input: 10, output: 5, cost: { total: 0.01 } },
+	};
+}
+
 function cueAccept() {
 	return {
 		content: [
@@ -347,6 +378,79 @@ describe("SessionConductor gate", () => {
 			const advisorCosts = await loadAdvisorTranscriptCosts(h.sessionFile);
 			expect(advisorCosts.size).toBe(0);
 			expect(await loadConductorTranscriptCost(h.sessionFile)).toBeCloseTo(0.02, 5);
+		} finally {
+			await h.cleanup();
+		}
+	});
+});
+
+describe("SessionConductor no-call retries", () => {
+	test("commissioning retries from a clean context after a turn without a program call", async () => {
+		const h = await createHarness();
+		try {
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) {
+					// Degenerate turn: the model stops without ever calling `program`.
+					return { content: ["still investigating"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+				}
+				if (calls === 2) return programPropose();
+				// Post-tool continuation: one plain stop ends the turn.
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			const outcome = await h.conductor.commission("add a greeting endpoint");
+
+			expect(outcome.status).toBe("proposed");
+			// Attempt 1 (degenerate) + attempt 2 (program) + the post-tool continuation round.
+			expect(calls).toBeGreaterThanOrEqual(3);
+			// Attempt 2 must not see attempt 1's failed turn: a clean context, not a stacked history.
+			expect(h.model.calls[1]?.context.messages.map(message => message.role)).toEqual(["user"]);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("commissioning failure reason describes the turns that produced no contract", async () => {
+		const h = await createHarness();
+		try {
+			h.script.current = () => ({
+				content: ["still investigating"],
+				usage: { input: 10, output: 5, cost: { total: 0.01 } },
+			});
+
+			const outcome = await h.conductor.commission("add a greeting endpoint");
+
+			expect(outcome.status).toBe("failed");
+			if (outcome.status !== "failed") throw new Error("expected a failed commissioning outcome");
+			expect(outcome.reason).toContain("after 3 attempts");
+			expect(outcome.reason).toContain("without a `program` call");
+			expect(outcome.reason).toContain("stop=stop");
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("verification retries from a clean context after a turn without a cue call", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) {
+					return { content: ["still investigating"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+				}
+				if (calls === 2) return cueAccept();
+				// Post-tool continuation: one plain stop ends the turn.
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => h.goalState.goal?.status === "complete", "goal accepted after clean-context retry");
+			expect(h.model.calls[1]?.context.messages.map(message => message.role)).toEqual(["user"]);
+			expect(h.notices.filter(n => n.message.includes("Conductor verified the completion claim"))).toHaveLength(1);
 		} finally {
 			await h.cleanup();
 		}
