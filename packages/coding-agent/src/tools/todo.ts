@@ -711,7 +711,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			call: { op: "append", phase: "Auth", items: ["Handle retries", "Run tests"] },
 		},
 	];
-	readonly loadMode = "discoverable";
+	readonly loadMode = "essential";
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(todoDescription);
 	}

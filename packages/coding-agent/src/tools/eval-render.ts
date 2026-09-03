@@ -1,6 +1,6 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Markdown, Text, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
-import { formatNumber } from "@oh-my-pi/pi-utils";
+import { formatNumber, pluralize } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -26,6 +26,7 @@ import {
 	capPreviewLines,
 	formatBadge,
 	formatDuration,
+	formatExpandHint,
 	formatStatusIcon,
 	formatTitle,
 	getDiffStats,
@@ -45,13 +46,23 @@ export const EVAL_DEFAULT_PREVIEW_LINES = 10;
 // committed prefix (spinner header → done header, trimmed output), which
 // forces a re-emit of the whole block — duplicating it in scrollback.
 //
-// Diff hunks are withheld entirely while the result is partial — even for
-// cells that already completed (a cell can finish executing while later args
-// still stream; its full hunk would land in the live region, overflow, and
-// re-emit on settle, printing the hunk twice). Live renders show only the
-// per-file ⟦+N/-M⟧ stats line; hunks appear once the call settles, so the
-// committed transcript keeps complete diffs exactly once.
+// So while the result is partial the whole block must fit the live window.
+// Everything else (code preview, output, agent lines) gets a reserved floor
+// and the leftover rows go to the Status section, which reveals diff hunks
+// for write events as soon as they are delivered — a write's ⟦+N/-M⟧ stats
+// and its hunk appear together, instead of the hunk waiting for the entire
+// call to settle. Hunks that don't fit show their tail plus a marker, and
+// every hunk renders in full on settle, so the committed transcript keeps
+// complete diffs exactly once.
 const EVAL_STREAMING_SECTION_LINES = 12;
+
+// Rows reserved for a cell's code preview while streaming (3 tail lines plus
+// the "… N earlier lines" hint) when a hunk wants the space.
+const EVAL_LIVE_CODE_FLOOR_ROWS = 4;
+
+// Fudge for rows the budget math doesn't model exactly (wrapping overflow,
+// blank separators between cells, expansion-deferred notes, extra sections).
+const EVAL_LIVE_SLACK_ROWS = 4;
 
 // Ctrl+O expansion is deferred for the same reason: an expanded live block
 // would outgrow the viewport again. The toggle sticks and applies on settle.
@@ -242,17 +253,6 @@ function formatDiffStatsSuffix(diff: string, theme: Theme): string {
 
 function hasEventDiff(event: EvalStatusEvent): boolean {
 	return event.op === "write" && typeof event.diff === "string" && event.diff.length > 0;
-}
-
-function renderEventDiff(event: EvalStatusEvent, theme: Theme): string[] {
-	const diff = typeof event.diff === "string" ? event.diff : "";
-	if (!diff) return [];
-	const filePath = typeof event.path === "string" ? event.path : undefined;
-	const lines = renderDiffColored(diff, { filePath }).split("\n");
-	if (event.diffTruncated === true) {
-		lines.push(theme.fg("dim", "… diff truncated"));
-	}
-	return lines;
 }
 
 function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
@@ -475,12 +475,54 @@ function isFileOpEvent(event: EvalStatusEvent): boolean {
 	return event.op === "write" || event.op === "delete";
 }
 
+interface EventHunkRows {
+	rows: string[];
+	// Row index where each logical diff line's wrapped row group starts; a
+	// tail truncation cuts between groups, never mid-line.
+	groupStarts: number[];
+}
+
+// Wrapped hunk rows are memoized per event object: streaming updates re-spread
+// the status event array on every output chunk while the event objects stay
+// identical, and re-rendering a capped 32k-char diff per chunk would dominate
+// stream latency. Entries die with their event.
+const eventHunkRowCache = new WeakMap<EvalStatusEvent, { width: number; hunk: EventHunkRows }>();
+
+function renderEventHunkRows(event: EvalStatusEvent, theme: Theme, width: number): EventHunkRows {
+	const cached = eventHunkRowCache.get(event);
+	if (cached && cached.width === width) return cached.hunk;
+
+	const diff = typeof event.diff === "string" ? event.diff : "";
+	const rows: string[] = [];
+	const groupStarts: number[] = [];
+	if (diff) {
+		const filePath = typeof event.path === "string" ? event.path : undefined;
+		for (const diffLine of renderDiffColored(diff, { filePath }).split("\n")) {
+			groupStarts.push(rows.length);
+			rows.push(...wrapCodeFrameLine(diffLine, width));
+		}
+		if (event.diffTruncated === true) {
+			groupStarts.push(rows.length);
+			rows.push(theme.fg("dim", "… diff truncated"));
+		}
+	}
+	const hunk = { rows, groupStarts };
+	eventHunkRowCache.set(event, { width, hunk });
+	return hunk;
+}
+
+interface StatusRenderOptions {
+	suppressDiffs?: boolean;
+	sectionRowBudget?: number;
+	headCap?: number;
+}
+
 function renderStatusEvents(
 	events: EvalStatusEvent[],
 	theme: Theme,
 	expanded: boolean,
 	width: number,
-	options: { suppressDiffs?: boolean } = {},
+	options: StatusRenderOptions = {},
 ): string[] {
 	if (events.length === 0) return [];
 
@@ -493,31 +535,105 @@ function renderStatusEvents(
 	const visible = events.filter((_, i) => !hiddenIndexes.has(i));
 	const bodyWidth = Math.max(1, width - STATUS_TREE_INDENT);
 
-	const lines: string[] = [];
-	const pushText = (line: string): void => {
-		lines.push(...wrapTextWithAnsi(line, width));
-	};
-	if (hiddenCount > 0) {
-		pushText(`${theme.fg("dim", theme.tree.branch)} ${theme.fg("dim", `… ${hiddenCount} earlier`)}`);
+	// Budgeted mode is the streaming path: `sectionRowBudget` bounds the whole
+	// section (head lines + hunk bodies) so the live block stays inside the
+	// viewport and nothing commits to scrollback mid-stream. Unbudgeted calls
+	// are settled renders — full heads, full hunks.
+	const budgeted = options.sectionRowBudget !== undefined;
+	const allowHunks = budgeted || !options.suppressDiffs;
+
+	interface EventBlock {
+		event: EvalStatusEvent;
+		cont: string;
+		headRows: string[];
+		withDiff: boolean;
+		hunkRows?: string[];
+		hiddenHunkLines?: number;
 	}
+
+	const blocks: EventBlock[] = [];
 	for (let i = 0; i < visible.length; i++) {
-		const event = visible[i];
+		const event = visible[i]!;
 		const isLast = i === visible.length - 1;
 		const branch = theme.fg("dim", isLast ? theme.tree.last : theme.tree.branch);
 		const cont = isLast ? " ".repeat(STATUS_TREE_INDENT) : `${theme.fg("dim", theme.tree.vertical)}  `;
 		const withDiff = hasEventDiff(event);
 		const [head, ...rest] =
 			expanded && !withDiff ? formatStatusEventExpanded(event, theme) : [formatStatusEvent(event, theme)];
-		pushText(`${branch} ${head}`);
-		for (const line of rest) pushText(`${cont}${line}`);
-		// The head line already carries the ⟦+N/-M⟧ stats; the hunk body is
-		// deferred until the call settles (see EVAL_STREAMING_SECTION_LINES).
-		if (!withDiff || options.suppressDiffs) continue;
-		for (const diffLine of renderEventDiff(event, theme)) {
-			for (const row of wrapCodeFrameLine(diffLine, bodyWidth)) {
-				lines.push(`${cont}${row}`);
+		const headRows = [...wrapTextWithAnsi(`${branch} ${head}`, width)];
+		for (const line of rest) headRows.push(...wrapTextWithAnsi(`${cont}${line}`, width));
+		blocks.push({ event, cont, headRows, withDiff });
+	}
+
+	if (budgeted) {
+		// Cap head rows at event granularity — drop whole earliest events over
+		// the cap, mirroring capPreviewLines' "… N earlier" marker. Hunk bodies
+		// then get whatever rows remain, latest event first: when several
+		// writes race for space, the newest hunk is the one being watched.
+		const headCap = Math.max(1, options.headCap ?? Number.POSITIVE_INFINITY);
+		const totalHeadRows = blocks.reduce((sum, block) => sum + block.headRows.length, 0);
+		if (totalHeadRows > headCap) {
+			let hiddenRows = 0;
+			let dropFrom = 0;
+			while (dropFrom < blocks.length && totalHeadRows - hiddenRows > headCap) {
+				hiddenRows += blocks[dropFrom]!.headRows.length;
+				dropFrom++;
 			}
+			const marker = `… ${hiddenRows} earlier ${pluralize("line", hiddenRows)} ${formatExpandHint(theme, false, true)}`;
+			blocks.splice(0, dropFrom, {
+				event: blocks[0]!.event,
+				cont: "",
+				headRows: [theme.fg("dim", marker.trimEnd())],
+				withDiff: false,
+			});
 		}
+	}
+
+	let budget = options.sectionRowBudget ?? Number.POSITIVE_INFINITY;
+	if (budgeted) {
+		const headRowsTotal = blocks.reduce((sum, block) => sum + block.headRows.length, 0);
+		budget = Math.max(0, budget - headRowsTotal);
+	}
+
+	for (let i = blocks.length - 1; i >= 0 && budget > 0; i--) {
+		const block = blocks[i]!;
+		if (!block.withDiff || !allowHunks) continue;
+		const hunk = renderEventHunkRows(block.event, theme, bodyWidth);
+		if (hunk.rows.length === 0) continue;
+		if (!budgeted || hunk.rows.length <= budget) {
+			block.hunkRows = hunk.rows;
+			budget -= hunk.rows.length;
+			continue;
+		}
+		// The hunk exceeds the remaining budget: tail-truncate at a logical-line
+		// boundary so no diff line renders as a severed fragment, and count the
+		// hidden lines in a marker. The full hunk renders once the call settles.
+		const cutRow = hunk.rows.length - budget;
+		const cutAt = hunk.groupStarts.find(start => start >= cutRow);
+		if (cutAt === undefined) break;
+		block.hunkRows = hunk.rows.slice(cutAt);
+		block.hiddenHunkLines = hunk.groupStarts.indexOf(cutAt);
+		budget -= hunk.rows.length - cutAt;
+	}
+
+	const lines: string[] = [];
+	if (hiddenCount > 0) {
+		lines.push(
+			...wrapTextWithAnsi(
+				`${theme.fg("dim", theme.tree.branch)} ${theme.fg("dim", `… ${hiddenCount} earlier`)}`,
+				width,
+			),
+		);
+	}
+	for (const block of blocks) {
+		for (const row of block.headRows) lines.push(row);
+		if (!block.hunkRows) continue;
+		if (block.hiddenHunkLines && block.hiddenHunkLines > 0) {
+			lines.push(
+				`${block.cont}${theme.fg("dim", `… ${block.hiddenHunkLines} earlier diff ${pluralize("line", block.hiddenHunkLines)}`)}`,
+			);
+		}
+		for (const row of block.hunkRows) lines.push(`${block.cont}${row}`);
 	}
 
 	return lines;
@@ -574,7 +690,15 @@ export function renderKernelCellLines(
 	cell: EvalCellResult,
 	jsonOutputs: readonly unknown[],
 	theme: Theme,
-	opts: { expanded: boolean; isPartial: boolean; spinnerFrame?: number; previewLines: number; width: number },
+	opts: {
+		expanded: boolean;
+		isPartial: boolean;
+		spinnerFrame?: number;
+		previewLines: number;
+		width: number;
+		index?: number;
+		total?: number;
+	},
 ): string[] {
 	const { expanded, isPartial, spinnerFrame, previewLines, width } = opts;
 	const language = cell.language ?? "python";
@@ -587,11 +711,6 @@ export function renderKernelCellLines(
 	const liveWindow = previewWindowRows();
 	const liveSectionCap = Math.min(EVAL_STREAMING_SECTION_LINES, Math.max(3, Math.floor(liveWindow / 2)));
 
-	let statusLines = renderStatusEvents(otherEvents, theme, cellExpanded, outputBlockContentWidth(width), {
-		suppressDiffs: isPartial,
-	});
-	if (isPartial) statusLines = capPreviewLines(statusLines, theme, { max: liveSectionCap });
-
 	const outputContent = formatCellOutputLines(cell, cellExpanded, previewLines, theme, width);
 	const outputLines = [...outputContent.lines];
 	if (!cellExpanded && outputContent.hiddenCount > 0) {
@@ -601,7 +720,43 @@ export function renderKernelCellLines(
 	let agentLines = agentEvents.length > 0 ? renderAgentProgressEvents(agentEvents, theme, spinnerFrame) : [];
 	if (isPartial) agentLines = capPreviewLines(agentLines, theme, { max: liveSectionCap });
 
-	const codeMaxLines = cellLive
+	const treeDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
+	const treeLineCap = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
+	const treeScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
+	const labelOutputs = jsonOutputs.length > 1;
+	const jsonLines = jsonOutputs.flatMap((value, index) => {
+		const tree = renderJsonTreeLines(value, theme, treeDepth, treeLineCap, treeScalarLen);
+		const body = tree.truncated ? [...tree.lines, theme.fg("dim", "…")] : tree.lines;
+		return labelOutputs ? [theme.fg("dim", `display[${index + 1}]`), ...body] : body;
+	});
+
+	// While the call streams, the whole block must stay inside the live window
+	// (see EVAL_STREAMING_SECTION_LINES): reserve rows for everything else and
+	// hand the remainder to the Status section, which reveals hunk bodies for
+	// delivered write events instead of withholding them until settle. A small
+	// window reserves nothing and the section degrades to the summary line.
+	let statusLines: string[];
+	if (isPartial) {
+		const reserve =
+			1 /* cell header */ +
+			1 /* Status label */ +
+			(outputLines.length > 0 ? 1 : 0) /* Output label */ +
+			EVAL_LIVE_CODE_FLOOR_ROWS +
+			outputLines.length +
+			agentLines.length +
+			jsonLines.length +
+			EVAL_LIVE_SLACK_ROWS;
+		statusLines = renderStatusEvents(otherEvents, theme, cellExpanded, outputBlockContentWidth(width), {
+			sectionRowBudget: Math.max(0, liveWindow - reserve),
+			headCap: liveSectionCap,
+		});
+	} else {
+		statusLines = renderStatusEvents(otherEvents, theme, cellExpanded, outputBlockContentWidth(width));
+	}
+
+	// While streaming the code window absorbs whatever the section didn't use
+	// (floor 3 + hint); settled cells keep the full window.
+	const codeMaxLines = isPartial
 		? Math.max(3, liveWindow - statusLines.length - outputLines.length - agentLines.length)
 		: liveWindow;
 	const astLines = cellExpanded ? undefined : astPreviewLines(code, language, theme, width);
@@ -611,8 +766,8 @@ export function renderKernelCellLines(
 			code,
 			language: languageForHighlighter(language),
 			showLanguage: true,
-			index: 0,
-			total: 1,
+			index: opts.index ?? 0,
+			total: opts.total ?? 1,
 			title: cell.title,
 			status: cell.status,
 			spinnerFrame,
@@ -632,15 +787,11 @@ export function renderKernelCellLines(
 	);
 
 	const lines = [...cellLines, ...agentLines];
-	const treeDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
-	const treeLineCap = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
-	const treeScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
-	const labelOutputs = jsonOutputs.length > 1;
-	const jsonLines = jsonOutputs.flatMap((value, index) => {
-		const tree = renderJsonTreeLines(value, theme, treeDepth, treeLineCap, treeScalarLen);
-		const body = tree.truncated ? [...tree.lines, theme.fg("dim", "…")] : tree.lines;
-		return labelOutputs ? [theme.fg("dim", `display[${index + 1}]`), ...body] : body;
-	});
+	// Ctrl+O expansion is deferred for live cells — an expanded block could
+	// outgrow the viewport again. The toggle sticks and applies on settle.
+	if (expanded && cellLive) {
+		lines.push(theme.fg("dim", EXPANSION_DEFERRED_NOTE));
+	}
 	if (jsonLines.length > 0) {
 		if (lines.length > 0) lines.push("");
 		lines.push(...jsonLines);
@@ -758,10 +909,9 @@ export const evalToolRenderer = {
 
 		const cellResults = details?.cells;
 		if (cellResults && cellResults.length > 0) {
-			const displayCells = cellResults.map(cell => {
-				const language = cell.language ?? details?.language ?? "python";
-				return { cell, code: formatEvalCodeForDisplay(cell.code, language), language };
-			});
+			const displayCells = cellResults.map(cell => ({
+				cell: { ...cell, language: (cell.language ?? details?.language ?? "python") as EvalLanguage },
+			}));
 			let cached: { key: string; width: number; result: string[] } | undefined;
 
 			return markFramedBlockComponent({
@@ -778,89 +928,22 @@ export const evalToolRenderer = {
 
 					const lines: string[] = [];
 					for (let i = 0; i < displayCells.length; i++) {
-						const { cell, code, language } = displayCells[i];
-						const allEvents = cell.statusEvents ?? [];
-						const agentEvents = allEvents.filter(e => e.op === "agent");
-						const otherEvents = agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents;
-						// Keep a still-executing cell inside the viewport (see
-						// EVAL_STREAMING_SECTION_LINES): cap Status/agent sections and
-						// let the code window absorb the remainder of the live budget.
-						// Ctrl+O expansion is deferred for live cells for the same
-						// reason — it takes effect once the cell settles.
-						const cellLive = isPartialResult && (cell.status === "running" || cell.status === "pending");
-						const cellExpanded = expanded && !cellLive;
-						const liveWindow = previewWindowRows();
-						const liveSectionCap = Math.min(
-							EVAL_STREAMING_SECTION_LINES,
-							Math.max(3, Math.floor(liveWindow / 2)),
-						);
-						// Diff hunks and section overflow are suppressed for EVERY cell
-						// while the call is partial — a completed cell's rows still sit
-						// in the live region until the call settles, so a big hunk there
-						// would commit to scrollback mid-stream and print again on
-						// finish (see EVAL_STREAMING_SECTION_LINES).
-						let statusLines = renderStatusEvents(
-							otherEvents,
-							uiTheme,
-							cellExpanded,
-							outputBlockContentWidth(width),
-							{ suppressDiffs: isPartialResult },
-						);
-						if (isPartialResult) {
-							statusLines = capPreviewLines(statusLines, uiTheme, { max: liveSectionCap });
-						}
-						const outputContent = formatCellOutputLines(cell, cellExpanded, previewLines, uiTheme, width);
-						const outputLines = [...outputContent.lines];
-						if (!cellExpanded && outputContent.hiddenCount > 0) {
-							outputLines.push(
-								uiTheme.fg("dim", `… ${outputContent.hiddenCount} more lines (ctrl+o to expand)`),
-							);
-						}
-						let agentLines =
-							agentEvents.length > 0
-								? renderAgentProgressEvents(agentEvents, uiTheme, options.spinnerFrame)
-								: [];
-						if (isPartialResult) {
-							agentLines = capPreviewLines(agentLines, uiTheme, { max: liveSectionCap });
-						}
-						const codeMaxLines = cellLive
-							? Math.max(3, liveWindow - statusLines.length - outputLines.length - agentLines.length)
-							: liveWindow;
-						const astLines = cellExpanded ? undefined : astPreviewLines(code, language, uiTheme, width);
-						const cellLines = renderCodeCell(
-							{
-								code,
-								language: languageForHighlighter(language),
-								showLanguage: true,
+						const { cell } = displayCells[i];
+						// Shared with the bash kernel bridge so the two surfaces can
+						// never drift. The streaming budget keeps each cell inside the
+						// live window and reveals delivered hunk bodies immediately
+						// (see EVAL_STREAMING_SECTION_LINES).
+						lines.push(
+							...renderKernelCellLines(cell, [], uiTheme, {
+								expanded,
+								isPartial: isPartialResult,
+								spinnerFrame: options.spinnerFrame,
+								previewLines,
+								width,
 								index: i,
 								total: cellResults.length,
-								title: cell.title,
-								status: cell.status,
-								spinnerFrame: options.spinnerFrame,
-								duration: cell.durationMs,
-								output: outputLines.length > 0 ? outputLines.join("\n") : undefined,
-								outputMaxLines: outputLines.length,
-								extraSections:
-									statusLines.length > 0
-										? [{ label: uiTheme.fg("toolTitle", "Status"), lines: statusLines }]
-										: undefined,
-
-								codeTail: true,
-								codeMaxLines,
-								expanded: cellExpanded,
-								width,
-								preRenderedCodeLines: astLines,
-								codeVariant: astLines ? "ast" : undefined,
-							},
-							uiTheme,
+							}),
 						);
-						lines.push(...cellLines);
-						if (agentLines.length > 0) {
-							lines.push(...agentLines);
-						}
-						if (expanded && cellLive) {
-							lines.push(uiTheme.fg("dim", EXPANSION_DEFERRED_NOTE));
-						}
 						if (i < cellResults.length - 1) {
 							lines.push("");
 						}
@@ -898,6 +981,14 @@ export const evalToolRenderer = {
 		const statusEvents = details?.statusEvents ?? [];
 		const hasStatusEvents = statusEvents.length > 0;
 		const expandedStatus = options.renderContext?.expanded ?? options.expanded;
+		// Top-level (non-cell) status events get the same streaming treatment as
+		// cell events: budget the section so the live block stays in the window.
+		const statusSectionOptions = (): StatusRenderOptions => {
+			if (!isPartialResult) return {};
+			const liveWindow = previewWindowRows();
+			const liveSectionCap = Math.min(EVAL_STREAMING_SECTION_LINES, Math.max(3, Math.floor(liveWindow / 2)));
+			return { sectionRowBudget: Math.max(0, liveWindow - 1 - EVAL_LIVE_SLACK_ROWS), headCap: liveSectionCap };
+		};
 
 		if (!combinedOutput && !hasStatusEvents) {
 			const lines = [timeoutLine, noticeLine, asyncLine, warningLine].filter(Boolean) as string[];
@@ -908,9 +999,7 @@ export const evalToolRenderer = {
 			return widthAwareText(width => {
 				const lines = [
 					uiTheme.fg("dim", "Status"),
-					...renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, {
-						suppressDiffs: isPartialResult,
-					}),
+					...renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, statusSectionOptions()),
 					timeoutLine,
 					noticeLine,
 					asyncLine,
@@ -927,7 +1016,10 @@ export const evalToolRenderer = {
 				.join("\n");
 			return widthAwareText(width => {
 				const statusLines = renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, {
-					suppressDiffs: isPartialResult,
+					...statusSectionOptions(),
+					sectionRowBudget: isPartialResult
+						? Math.max(0, previewWindowRows() - styledOutput.split("\n").length - 1 - EVAL_LIVE_SLACK_ROWS)
+						: undefined,
 				});
 				const lines = [
 					styledOutput,
@@ -977,7 +1069,10 @@ export const evalToolRenderer = {
 				outputLines.push(...cachedLines);
 				if (hasStatusEvents) {
 					const statusLines = renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, {
-						suppressDiffs: isPartialResult,
+						...statusSectionOptions(),
+						sectionRowBudget: isPartialResult
+							? Math.max(0, previewWindowRows() - outputLines.length - 1 - EVAL_LIVE_SLACK_ROWS)
+							: undefined,
 					});
 					outputLines.push(uiTheme.fg("dim", "Status"));
 					outputLines.push(...statusLines);

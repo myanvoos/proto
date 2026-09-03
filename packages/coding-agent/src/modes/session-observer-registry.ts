@@ -4,7 +4,7 @@ import type { EventBus } from "../utils/event-bus";
 
 export interface ObservableSession {
 	id: string;
-	kind: "main" | "subagent";
+	kind: "main" | "subagent" | "conductor";
 	label: string;
 	agent?: string;
 	description?: string;
@@ -20,6 +20,9 @@ export interface ObservableSession {
 }
 
 export type SessionObserverChangeKind = "main" | "reset" | "lifecycle" | "progress";
+
+/** The single observable id the conductor's live display slot occupies. */
+export const CONDUCTOR_SESSION_ID = "conductor";
 
 const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 	started: "active",
@@ -105,6 +108,24 @@ export class SessionObserverRegistry {
 			return this.#getStableOrder(a) - this.#getStableOrder(b);
 		});
 		return sessions;
+	}
+
+	/**
+	 * Upserts the conductor's live display session (`undefined` removes it). The conductor is a single slot, so
+	 * one id is reused across runs; a terminal status keeps the row (like settled subagents) while the HUD
+	 * filters on `"active"`.
+	 */
+	setConductor(session: ObservableSession | undefined): void {
+		if (!session) {
+			const existing = this.#sessions.get(CONDUCTOR_SESSION_ID);
+			if (!existing) return;
+			this.#sessions.delete(CONDUCTOR_SESSION_ID);
+			this.#notifyListeners("progress");
+			return;
+		}
+		this.#ensureSortOrder(session.id);
+		this.#sessions.set(session.id, session);
+		this.#notifyListeners("progress");
 	}
 
 	getActiveSubagentCount(): number {

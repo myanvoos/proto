@@ -836,7 +836,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 				}),
 			);
 
-	const hasRead = toolNames.includes("read");
+	// toolNames is native-only; mounted xd:// devices still provide the capability (skill:// and
+	// file reads dispatch through `xd read`), so count them for the skills gate.
+	const hasRead = toolNames.includes("read") || xdevToolNames.has("read");
 	const filteredSkills = hasRead ? skills.filter(skill => skill.hide !== true) : [];
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [
@@ -890,7 +892,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
 	const systemPrompt = [rendered];
-	if (toolNames.includes("computer")) {
+	if (toolNames.includes("computer") || xdevToolNames.has("computer")) {
 		systemPrompt.push(computerSafetyPrompt.trim());
 	}
 

@@ -7,10 +7,7 @@ from __future__ import annotations
 __all__ = [
     "display",
     "env",
-    "write",
-    "edit",
-    "AnchorNotFoundError",
-    "AmbiguousAnchorError",
+    "proto_path",
     "StaleWriteError",
     "block_range",
     "symbols",
@@ -74,12 +71,13 @@ if "__proto_prelude_loaded__" not in globals():
 
     # --- filesystem mutation tracking ----------------------------------------
     # The host diffs cell-time filesystem changes with a walker rooted at the
-    # session cwd (eval/cell-file-diff.ts), so mutations made with anything
-    # other than the write() helper were invisible outside that root. A
-    # CPython audit hook sees every in-process mutation (open() with write
-    # flags, os.remove/rename/truncate); the prelude snapshots each touched
-    # path's pre-mutation content and flushes per-cell status events carrying
-    # the same hunk diffs helper writes emit. Helper events also record the
+    # session cwd (eval/cell-file-diff.ts). A CPython audit hook sees every
+    # in-process mutation (open() with write flags, os.remove/rename/truncate);
+    # the prelude snapshots each touched path's pre-mutation content and
+    # flushes per-cell status events carrying the hunk diffs for every write.
+    # The stale-write guard aborts write-mode opens of paths that changed since
+    # the kernel last read them (see _fs_check_stale_raw). Tracked events also
+    # record the
     # content they already showed a diff for, and the flush diffs from that
     # last-reported content so it never re-prints hunks the cell has seen.
     # State lives on the sys module so a prelude re-exec reuses the
@@ -134,7 +132,7 @@ if "__proto_prelude_loaded__" not in globals():
     # by this process's own writes and by host-side writes (shell, edit/write
     # tools); NEVER cleared between cells — staleness is about what the agent
     # last saw, which spans cells. Only writers outside all of those paths
-    # leave a mismatched record behind for write()/edit() to trip on.
+    # leave a mismatched record behind for the raw-write guard to trip on.
     _FS_STATE.setdefault("read_seen", {})
     _FS_READ_SEEN_MAX = 8192
 
@@ -260,19 +258,54 @@ if "__proto_prelude_loaded__" not in globals():
         if ap is not None:
             _FS_STATE["read_seen"].pop(ap, None)
 
+    def _fs_check_stale_raw(path) -> None:
+        """Abort a write-mode open of a path that changed since the kernel last
+        read it by raising StaleWriteError — before the open can truncate
+        anything. Paths with no armed read record pass untouched (new files,
+        never-read files); stat failures pass (the open itself surfaces them).
+        The raise deliberately propagates out of the audited open()."""
+        ap = _fs_norm_path(path)
+        if ap is None:
+            return
+        rec = _FS_STATE["read_seen"].get(ap)
+        if rec is None:
+            return
+        try:
+            st = os.stat(ap)
+        except OSError:
+            return  # deleted/moved externally; the open itself will surface it
+        if (st.st_mtime_ns, st.st_size) == rec:
+            return
+        raise StaleWriteError(
+            f"write to {ap}: file changed on disk since the kernel last read it "
+            f"(read at mtime {_format_mtime(rec[0])}, {rec[1]} bytes; now mtime "
+            f"{_format_mtime(st.st_mtime_ns)}, {st.st_size} bytes). "
+            f"Re-read the file (any read re-arms the guard) and redo the change."
+        )
+
     def _fs_audit(event, args) -> None:
         if getattr(_FS_STATE["tls"], "recording", False):
             return
-        try:
-            if event == "open":
-                flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
-                mode = args[1] if len(args) > 1 and isinstance(args[1], str) else ""
-                if not (flags & _FS_WRITE_FLAGS or any(c in mode for c in "wax+")):
+        if event == "open":
+            flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
+            mode = args[1] if len(args) > 1 and isinstance(args[1], str) else ""
+            if not (flags & _FS_WRITE_FLAGS or any(c in mode for c in "wax+")):
+                try:
                     _fs_note_read(args[0])
-                    return
+                except Exception:
+                    pass  # tracking must never break the read it observes
+                return
+            # The stale-write guard aborts the operation on purpose; everything
+            # else in tracking must never break the mutation it observes.
+            _fs_check_stale_raw(args[0])
+            try:
                 _fs_record(args[0])
                 _fs_forget_read(args[0])
-            elif event == "os.remove":
+            except Exception:
+                pass
+            return
+        try:
+            if event == "os.remove":
                 _fs_record(args[0])
                 _fs_forget_read(args[0])
             elif event == "os.rename":  # os.replace audits under the same name
@@ -295,7 +328,7 @@ if "__proto_prelude_loaded__" not in globals():
 
     def _flush_fs_status() -> None:
         """Report filesystem mutations made without a helper API as status
-        events (same shape as write()'s). Called by the runner after the
+        events (same shape as a helper write's). Called by the runner after the
         cell's user code settles, before the done frame."""
         state = _FS_STATE
         with state["lock"]:
@@ -487,16 +520,19 @@ if "__proto_prelude_loaded__" not in globals():
 
     _PROTO_INTERNAL_URL_RE = re.compile(r"^([a-z][a-z0-9+.-]*)://(.*)$", re.IGNORECASE)
 
-    def _resolve_proto_path(path: str | Path) -> Path:
-        """Map a helper path to a real filesystem Path.
+    def proto_path(path: str | Path) -> Path:
+        """Resolve a kernel path (plain, `~/…`, or scheme URLs) to a real filesystem Path.
 
-        A `scheme://…` whose scheme has an injected on-disk root (e.g.
+        Raw file APIs (`open`, `Path`, `os.*`) only speak real paths, so pass
+        `proto_path("fleet://x.py")` first when a path uses a kernel scheme;
+        writes through the resolved path are tracked and guarded like any
+        other. A `scheme://…` whose scheme has an injected on-disk root (e.g.
         `local://`, via PI_EVAL_LOCAL_ROOTS) is rewritten under that root so it
         lands where `read local://…` resolves — not a literal `local:/`
         directory under the cwd (which `Path("local://x")` collapses to). Plain
         paths get a leading `~` expanded (as the shell and the `read` tool do)
         and are made absolute against the kernel cwd so the status events
-        helpers emit can be matched against filesystem snapshots by the host
+        the tracker emits match filesystem snapshots by the host
         (relative paths there would defeat its already-reported dedupe and
         duplicate every write as a walker event); any other `scheme://` is
         rejected."""
@@ -512,7 +548,7 @@ if "__proto_prelude_loaded__" not in globals():
             roots = {}
         root = roots.get(scheme) if isinstance(roots, dict) else None
         if not root:
-            raise ValueError(f"Protocol paths are not supported by this helper: {path}")
+            raise ValueError(f"Protocol paths are not supported by this scheme: {path}")
         relative = unquote(match.group(2).replace("\\", "/"))
         root_path = os.path.abspath(root)
         if relative == "":
@@ -525,201 +561,16 @@ if "__proto_prelude_loaded__" not in globals():
             raise ValueError(f"{scheme}:// path escapes its root: {path}")
         return Path(resolved)
 
-    class EditError(RuntimeError):
-        """Base for edit()/write() anchor and staleness failures."""
-
-    class AnchorNotFoundError(EditError):
-        """edit() anchor matched fewer occurrences than expected."""
-
-    class AmbiguousAnchorError(EditError):
-        """edit() anchor matched more occurrences than expected."""
-
     class StaleWriteError(RuntimeError):
-        """The file changed on disk after the kernel's last read of it."""
+        """The file changed on disk after the kernel's last read of it.
+
+        Raised before any raw write-mode open truncates a guarded path; any
+        re-read of the file re-arms the guard."""
 
     def _format_mtime(mtime_ns: int) -> str:
         import datetime
 
         return datetime.datetime.fromtimestamp(mtime_ns / 1e9).strftime("%H:%M:%S.%f")
-
-    def _check_stale(p: Path, guard: bool, op: str) -> None:
-        """Raise StaleWriteError if `p` changed on disk since the kernel's last read.
-
-        Only guards paths with a tracked read (see _fs_note_read); new files and
-        never-read paths pass untouched. Call BEFORE any helper-internal read of
-        the file — those reads refresh the tracker via the audit hook."""
-        if not guard:
-            return
-        rec = _FS_STATE["read_seen"].get(str(p))
-        if rec is None:
-            return
-        try:
-            st = os.stat(p)
-        except OSError:
-            return  # deleted/moved externally; the write itself will surface it
-        if (st.st_mtime_ns, st.st_size) == rec:
-            return
-        raise StaleWriteError(
-            f"{op}({p}): file changed on disk since the kernel last read it "
-            f"(read at mtime {_format_mtime(rec[0])}, {rec[1]} bytes; now mtime "
-            f"{_format_mtime(st.st_mtime_ns)}, {st.st_size} bytes). "
-            f"Re-read the file and redo the change, or pass guard=False to overwrite anyway."
-        )
-
-    def _rearm_read_guard(p: Path) -> None:
-        """Refresh the read tracker after a helper write so the kernel's own writes never trip the guard."""
-        try:
-            st = os.stat(p)
-        except OSError:
-            return
-        _FS_STATE["read_seen"][str(p)] = (st.st_mtime_ns, st.st_size)
-
-    def write(path: str | Path, content: str, *, guard: bool = True) -> Path:
-        """Create or wholly replace a file with content (parents auto-created).
-
-        For a targeted change to an existing file prefer edit(). Raises
-        StaleWriteError if the file changed on disk since the kernel last read
-        it (guard=False bypasses).
-        """
-        p = _resolve_proto_path(path)
-        before: str | None = ""
-        if p.exists():
-            _check_stale(p, guard, "write")
-            try:
-                before = p.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError, ValueError):
-                before = None
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-        _rearm_read_guard(p)
-        _emit_file_status("write", p, before=before, after=content)
-        return p
-
-    def _anchor_label(anchor: str) -> str:
-        """First line of an anchor, repr-quoted and truncated for error messages."""
-        first = anchor.split("\n", 1)[0]
-        label = repr(first[:80])
-        if len(first) > 80 or "\n" in anchor:
-            label += "…"
-        return label
-
-    def _find_anchor(text: str, old: str) -> list[int]:
-        """Byte offsets of every non-overlapping occurrence of `old` in `text`."""
-        hits: list[int] = []
-        idx = text.find(old)
-        while idx >= 0:
-            hits.append(idx)
-            idx = text.find(old, idx + len(old))
-        return hits
-
-    def _offset_line(text: str, offset: int) -> int:
-        return text.count("\n", 0, offset) + 1
-
-    def edit(path, old, new=None, *, count: int | None = 1, guard: bool = True) -> dict:
-        """Anchor-asserted in-place file edit; every anchor is an exact literal substring.
-
-        Two forms:
-          edit(path, old, new, count=1)   — `old` must occur exactly `count`
-              times (count=None → any number >= 1); all occurrences replaced.
-          edit(path, replacements)        — replacements is a sequence of
-              (old, new) pairs or a mapping {old: new}; each anchor must occur
-              exactly once. ATOMIC: all anchors resolve against the original
-              text or nothing is written.
-
-        Fewer matches than expected → AnchorNotFoundError; more →
-        AmbiguousAnchorError listing match line numbers. The file is re-read
-        fresh, and StaleWriteError raises first if it changed on disk since the
-        kernel's last read (guard=False bypasses).
-        """
-        p = _resolve_proto_path(path)
-        if not p.exists():
-            raise FileNotFoundError(f"edit({p}): file does not exist")
-
-        if isinstance(old, str):
-            if not isinstance(new, str):
-                raise TypeError(f"edit({p}): new must be a str when old is a str, got {type(new).__name__}")
-            if count is not None and (not isinstance(count, int) or isinstance(count, bool) or count < 1):
-                raise ValueError(f"edit({p}): count must be an integer >= 1 or None (replace all), got {count!r}")
-            pairs = [(old, new)]
-            single = True
-        else:
-            if new is not None:
-                raise TypeError(f"edit({p}): pass replacements as ONE sequence/mapping argument, without `new`")
-            if count != 1:
-                raise ValueError(f"edit({p}): count applies to the single-anchor form only")
-            items = old.items() if hasattr(old, "items") else old
-            pairs = [(o, n) for o, n in items]
-            if not pairs:
-                raise ValueError(f"edit({p}): empty replacements")
-            single = False
-        for o, n in pairs:
-            if not isinstance(o, str) or not isinstance(n, str):
-                raise TypeError(f"edit({p}): anchors and replacements must be str")
-            if o == "":
-                raise ValueError(f"edit({p}): empty anchor")
-            if o == n:
-                raise ValueError(f"edit({p}): anchor and replacement are identical: {_anchor_label(o)}")
-
-        _check_stale(p, guard, "edit")
-        text = p.read_text(encoding="utf-8")
-
-        # Locate every hunk on the ORIGINAL text; nothing is written unless all resolve.
-        expected = count if single else 1
-        splices: list[tuple[int, int, str, str]] = []  # (start, end, new, anchor)
-        for o, n in pairs:
-            hits = _find_anchor(text, o)
-            found = len(hits)
-            lines = ", ".join(str(_offset_line(text, h)) for h in hits)
-            if found == 0:
-                raise AnchorNotFoundError(
-                    f"edit({p}): anchor not found: {_anchor_label(o)}"
-                    + (f" (expected {expected} occurrence(s))" if expected not in (None, 1) else "")
-                    + "; re-read the file — the anchor must match the current content exactly, whitespace included"
-                )
-            if expected is not None and found < expected:
-                raise AnchorNotFoundError(
-                    f"edit({p}): anchor {_anchor_label(o)} found {found} time(s) at line(s) {lines}, "
-                    f"expected {expected}"
-                )
-            if expected is not None and found > expected:
-                raise AmbiguousAnchorError(
-                    f"edit({p}): anchor {_anchor_label(o)} matches {found} times at lines {lines}, "
-                    f"expected {expected}; enlarge the anchor to make it unique, or pass count={found} "
-                    f"(or count=None) to replace every occurrence"
-                )
-            for h in hits:
-                splices.append((h, h + len(o), n, o))
-
-        splices.sort(key=lambda s: s[0])
-        for (a_start, a_end, _, a_old), (b_start, _, _, b_old) in zip(splices, splices[1:]):
-            if b_start < a_end:
-                raise ValueError(
-                    f"edit({p}): overlapping anchors {_anchor_label(a_old)} (line "
-                    f"{_offset_line(text, a_start)}) and {_anchor_label(b_old)} (line "
-                    f"{_offset_line(text, b_start)})"
-                )
-
-        hunks = []
-        parts: list[str] = []
-        cursor = 0
-        for s_start, s_end, s_new, s_old in splices:
-            parts.append(text[cursor:s_start])
-            parts.append(s_new)
-            cursor = s_end
-            hunks.append({"line": _offset_line(text, s_start), "anchor": _anchor_label(s_old)})
-        parts.append(text[cursor:])
-        result = "".join(parts)
-
-        p.write_text(result, encoding="utf-8")
-        _rearm_read_guard(p)
-        _emit_file_status("write", p, before=text, after=result)
-        return {
-            "path": str(p),
-            "replacements": len(splices),
-            "hunks": hunks,
-            "chars_before": len(text),
-            "chars_after": len(result),
-        }
 
     def _block_range_on(path_str: str, code: str, line: int):
         """Resolve a syntactic block extent via the host ast bridge (1-based lines)."""
@@ -734,7 +585,7 @@ if "__proto_prelude_loaded__" not in globals():
 
     def block_range(path: str | Path, line: int) -> tuple[int, int] | None:
         """Syntactic block extent (start, end) containing 1-based `line`, resolved by tree-sitter."""
-        p = _resolve_proto_path(path)
+        p = proto_path(path)
         return _block_range_on(str(p), p.read_text(encoding="utf-8"), line)
 
     def symbols(path: str | Path | None = None, *, code: str | None = None, lang: str | None = None) -> str:
@@ -742,14 +593,14 @@ if "__proto_prelude_loaded__" not in globals():
 
         symbols(path)                 — outline a file on disk.
         symbols(code=src, lang="py")  — outline an in-memory string, e.g. to
-            validate structure BEFORE write(); lang ("py", "ts", ...) is
+            validate structure BEFORE writing; lang ("py", "ts", ...) is
             required when there's no path to infer it from.
         """
         if (path is None) == (code is None):
             raise ValueError("symbols() takes exactly one of `path` or `code=`")
         args: dict = {"op": "symbols"}
         if path is not None:
-            p = _resolve_proto_path(path)
+            p = proto_path(path)
             args["path"] = str(p)
             args["code"] = p.read_text(encoding="utf-8")
             label = str(p)

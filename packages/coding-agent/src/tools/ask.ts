@@ -740,7 +740,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	];
 
 	readonly concurrency = "exclusive";
-	readonly loadMode = "discoverable";
+	readonly loadMode = "essential";
 
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(askDescription);

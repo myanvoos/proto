@@ -122,7 +122,7 @@ test("a bash read arms the kernel stale-write guard", async () => {
 		const out = await runPy(
 			evalTool,
 			"eval-write",
-			`${GUARD_PROBE}\nprint("WRITE", check(write, "guarded.txt", "kernel\\n"))`,
+			`${GUARD_PROBE}\nprint("WRITE", check(lambda: open("guarded.txt", "w").write("kernel\\n")))`,
 		);
 		expect(out).toContain("WRITE StaleWriteError");
 		expect(await Bun.file(target).text()).toBe("externally changed\n");
@@ -148,7 +148,7 @@ test("a bash write re-arms the guard so the kernel's next edit passes", async ()
 		const out = await runPy(
 			evalTool,
 			"eval-edit",
-			`${GUARD_PROBE}\nprint("EDIT", check(edit, "guarded.txt", "shell-edited", "kernel-edited"))`,
+			`${GUARD_PROBE}\nprint("EDIT", check(lambda: open("guarded.txt", "w").write("kernel-edited\\n")))`,
 		);
 		expect(out).toContain("EDIT ok");
 		expect(await Bun.file(target).text()).toBe("kernel-edited\n");
@@ -172,7 +172,7 @@ test("a read-tool read arms the kernel stale-write guard", async () => {
 		const out = await runPy(
 			evalTool,
 			"eval-write",
-			`${GUARD_PROBE}\nprint("WRITE", check(write, "guarded.txt", "kernel\\n"))`,
+			`${GUARD_PROBE}\nprint("WRITE", check(lambda: open("guarded.txt", "w").write("kernel\\n")))`,
 		);
 		expect(out).toContain("WRITE StaleWriteError");
 	} finally {

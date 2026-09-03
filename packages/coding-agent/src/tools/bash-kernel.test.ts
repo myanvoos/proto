@@ -138,7 +138,7 @@ test("kernel cells honor the shell cwd and surface write events", async () => {
 		await fs.mkdir(path.join(dir, "sub"));
 		const bash = new BashTool(stubSession(dir));
 		const result = await bash.execute("write", {
-			command: "cd sub && python <<'EOF'\nwrite('rel.txt', 'from-kernel\\n')\nprint('wrote')\nEOF",
+			command: "cd sub && python <<'EOF'\nopen('rel.txt', 'w').write('from-kernel\\n')\nprint('wrote')\nEOF",
 		});
 		expect(await Bun.file(path.join(dir, "sub", "rel.txt")).text()).toBe("from-kernel\n");
 		const writes = (result.details?.statusEvents ?? []).filter(event => event.op === "write");
@@ -215,7 +215,7 @@ test("fleet python scripts execute as kernel orchestration", async () => {
 		const writeScript = [
 			"cat > fleet://plan.py <<'EOF'",
 			"results = parallel([lambda i=i: i * i for i in range(4)])",
-			"write('out.txt', ','.join(str(value) for value in results) + '\\n')",
+			"open('out.txt', 'w').write(','.join(str(value) for value in results) + '\\n')",
 			"print('orchestrated', sum(results))",
 			"EOF",
 		].join("\n");
@@ -240,7 +240,7 @@ test("fleet js scripts execute in the JS kernel", async () => {
 		const bash = new BashTool(stubSession(dir));
 		const writeScript = [
 			"cat > fleet://plan.mjs <<'EOF'",
-			"await write('js-out.txt', 'from-node-fleet\\n');",
+			"await Bun.write('js-out.txt', 'from-node-fleet\\n');",
 			"console.log('js-fleet-done');",
 			"EOF",
 		].join("\n");

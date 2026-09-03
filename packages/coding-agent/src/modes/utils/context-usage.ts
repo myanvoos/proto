@@ -46,6 +46,9 @@ export interface NonMessageTokenSource {
 		};
 	};
 	readonly skills?: readonly Skill[];
+
+	/** When present, read may be provided as a mounted xd:// device instead of a native tool. */
+	getMountedXdevToolNames?: () => readonly string[];
 }
 
 const EMPTY_STRING_PARTS: string[] = [];
@@ -55,8 +58,10 @@ const EMPTY_SKILLS: readonly Skill[] = [];
 function renderedSkills(
 	skills: readonly Skill[],
 	tools: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>,
+	mountedXdevToolNames?: readonly string[],
 ): readonly Skill[] {
-	if (!tools.some(tool => tool.name === "read")) return EMPTY_SKILLS;
+	const hasRead = tools.some(tool => tool.name === "read") || mountedXdevToolNames?.includes("read") === true;
+	if (!hasRead) return EMPTY_SKILLS;
 	return skills.filter(skill => skill.hide !== true);
 }
 
@@ -156,7 +161,10 @@ export function computeNonMessageBreakdown(
 	const entry = nonMessageTokenCacheEntry(session, tokenizer);
 	if (entry.breakdown) return entry.breakdown;
 	const tools = session.agent?.state?.tools ?? EMPTY_TOOLS;
-	const skillsTokens = estimateSkillsTokens(renderedSkills(session.skills ?? EMPTY_SKILLS, tools), tokenizer);
+	const skillsTokens = estimateSkillsTokens(
+		renderedSkills(session.skills ?? EMPTY_SKILLS, tools, session.getMountedXdevToolNames?.()),
+		tokenizer,
+	);
 	const toolsTokens = estimateToolSchemaTokens(tools, tokenizer);
 	const systemPromptParts = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const systemContextTokens = tokenizer.countTokens(Array.from(systemPromptParts.slice(1), part => part ?? ""));

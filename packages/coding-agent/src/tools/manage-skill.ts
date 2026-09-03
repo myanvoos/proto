@@ -33,7 +33,7 @@ export class ManageSkillTool implements AgentTool<typeof manageSkillSchema> {
 	readonly description = manageSkillDescription;
 	readonly parameters = manageSkillSchema;
 	readonly strict = true;
-	readonly loadMode = "essential" as const;
+	readonly loadMode = "discoverable" as const;
 	readonly summary = "Create, update, or delete an isolated managed skill";
 
 	constructor(private readonly refreshSkills?: () => Promise<void>) {}

@@ -63,7 +63,7 @@ function alreadyReported(
 	root: string,
 ): boolean {
 	if (!events) return false;
-	// Dedupes walker findings against events the cell already reported (write()
+	// Dedupes walker findings against events the cell already reported (writes
 	// helpers, and the prelude's audit-hook flush for non-helper mutations).
 	// Writes match on path + final sha; deletes have no sha to compare, so the
 	// resolved path is the identity.

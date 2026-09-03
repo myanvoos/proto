@@ -121,7 +121,7 @@ def _emit(frame: dict) -> None:
 
 
 class _StreamProxy(io.TextIOBase):
-    """Emit ``write()`` data as typed frames tied to the current request.
+    """Emit cell ``write`` data as typed frames tied to the current request.
 
     Writes are coalesced per request: a frame is emitted once the buffer holds
     a complete line (everything up to the last newline goes out together) or

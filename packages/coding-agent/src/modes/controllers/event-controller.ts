@@ -173,6 +173,7 @@ export class EventController {
 				this.ctx.ui.resetDisplay();
 			},
 			goal_updated: async () => {},
+			conductor_activity: e => this.#handleConductorActivity(e),
 		} satisfies AgentSessionEventHandlers;
 	}
 
@@ -714,6 +715,10 @@ export class EventController {
 
 	inheritDisplaceableTodo(component: ToolExecutionComponent | null | undefined): void {
 		this.#displaceableTodoComponent = component?.canBeDisplacedBy("todo") ? component : undefined;
+	}
+
+	async #handleConductorActivity(event: Extract<AgentSessionEvent, { type: "conductor_activity" }>): Promise<void> {
+		this.ctx.syncConductorDisplay(event.activity);
 	}
 
 	async #handleNotice(event: Extract<AgentSessionEvent, { type: "notice" }>): Promise<void> {

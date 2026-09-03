@@ -142,7 +142,11 @@ function unquoteToken(token: string): string {
 	return token;
 }
 
-function isInsideShellQuote(command: string, index: number): boolean {
+function isInsideShellQuote(
+	command: string,
+	index: number,
+	bodies?: ReadonlyArray<readonly [number, number]>,
+): boolean {
 	type ShellQuote = "'" | '"' | undefined;
 	interface CommandSubstitution {
 		kind: "dollar" | "backtick";
@@ -153,6 +157,13 @@ function isInsideShellQuote(command: string, index: number): boolean {
 	let quote: ShellQuote;
 	const substitutions: CommandSubstitution[] = [];
 	for (let i = 0; i < index; i++) {
+		if (bodies) {
+			const body = bodies.find(([start, end]) => i >= start && i < end);
+			if (body) {
+				i = body[1] - 1;
+				continue;
+			}
+		}
 		const char = command[i];
 
 		if (
@@ -211,9 +222,14 @@ function isInsideShellQuote(command: string, index: number): boolean {
 	return quote !== undefined;
 }
 
-function isEmbeddedInQuotedText(command: string, token: string, index: number): boolean {
+function isEmbeddedInQuotedText(
+	command: string,
+	token: string,
+	index: number,
+	bodies?: ReadonlyArray<readonly [number, number]>,
+): boolean {
 	if (token.startsWith("'") || token.startsWith('"')) return false;
-	return isInsideShellQuote(command, index);
+	return isInsideShellQuote(command, index, bodies);
 }
 
 function shellEscape(p: string): string {
@@ -283,12 +299,126 @@ async function resolveInternalUrlToPath(
 	return path.resolve(resource.sourcePath);
 }
 
+// Heredoc bodies are stdin data for the command that follows them — never
+// command position. A scheme URL there is content (a script body, a doc
+// example, a kernel cell referencing `proto_path("fleet://x.py")`) and must
+// survive URL expansion untouched, exactly like the rest of the data stream.
+const HEREDOC_OPERATOR_RE = /^<<(-?)(?:\\([A-Za-z_][A-Za-z0-9_]*)|(["']?)([A-Za-z_][A-Za-z0-9_]*)\3)/;
+
+export function heredocBodyRanges(command: string): Array<[number, number]> {
+	const ranges: Array<[number, number]> = [];
+	let quote: "'" | '"' | undefined;
+	let pendingBodyEnd: number | undefined;
+	let i = 0;
+	while (i < command.length) {
+		if (pendingBodyEnd !== undefined) {
+			// Inside a heredoc body: quotes are data; jump to the terminator.
+			if (command[i] === "\n") {
+				i = pendingBodyEnd;
+				pendingBodyEnd = undefined;
+				continue;
+			}
+			i++;
+			continue;
+		}
+		const char = command[i]!;
+		if (char === "\n") {
+			i++;
+			continue;
+		}
+		if (char === "\\" && quote !== "'") {
+			i += 2;
+			continue;
+		}
+		if (char === "'" && quote !== '"') {
+			quote = quote === "'" ? undefined : "'";
+			i++;
+			continue;
+		}
+		if (char === '"' && quote !== "'") {
+			quote = quote === '"' ? undefined : '"';
+			i++;
+			continue;
+		}
+		if (
+			quote === undefined &&
+			char === "<" &&
+			command[i - 1] !== "<" &&
+			command[i + 1] === "<" &&
+			command[i + 2] !== "<"
+		) {
+			const operator = HEREDOC_OPERATOR_RE.exec(command.slice(i));
+			if (operator) {
+				const delimiter = operator[2] ?? operator[4]!;
+				const dash = operator[1] === "-";
+				const newline = command.indexOf("\n", i);
+				if (newline === -1) {
+					i = command.length;
+					continue;
+				}
+				const bodyStart = newline + 1;
+				// Scan for the terminator line: the delimiter alone on a line,
+				// with leading tabs stripped only for `<<-` (bash is strict —
+				// trailing whitespace keeps a line in the body).
+				let bodyEnd = -1;
+				let afterTerminator = -1;
+				let pos = bodyStart;
+				while (pos <= command.length) {
+					const nl = command.indexOf("\n", pos);
+					const lineEnd = nl === -1 ? command.length : nl;
+					const line = command.slice(pos, lineEnd);
+					const stripped = dash ? line.replace(/^\t+/, "") : line;
+					if (stripped === delimiter) {
+						bodyEnd = pos;
+						afterTerminator = nl === -1 ? command.length : nl + 1;
+						break;
+					}
+					if (nl === -1) break;
+					pos = nl + 1;
+				}
+				if (bodyEnd >= 0) {
+					// The operator line after the delimiter still carries shell
+					// syntax (redirects, `&&`, …); track its quotes, then jump
+					// past the body once its newline arrives.
+					let j = i + operator[0].length;
+					while (j < newline) {
+						const c = command[j]!;
+						if (c === "\\" && quote !== "'") {
+							j += 2;
+							continue;
+						}
+						if (c === "'" && quote !== '"') quote = quote === "'" ? undefined : "'";
+						else if (c === '"' && quote !== "'") quote = quote === '"' ? undefined : '"';
+						j++;
+					}
+					ranges.push([bodyStart, bodyEnd]);
+					pendingBodyEnd = afterTerminator;
+					i = newline;
+					continue;
+				}
+				// Unterminated heredoc: the body runs to the end of the command.
+				ranges.push([bodyStart, command.length]);
+				i = command.length;
+				continue;
+			}
+		}
+		i++;
+	}
+	return ranges;
+}
+
+function isInHeredocBody(ranges: ReadonlyArray<readonly [number, number]>, index: number): boolean {
+	return ranges.some(([start, end]) => index >= start && index < end);
+}
+
 export function expandSkillUrls(command: string, skills: readonly Skill[]): string {
 	if (skills.length === 0 || !command.includes("skill://")) {
 		return command;
 	}
 
-	return command.replace(SKILL_URL_PATTERN, token => {
+	const bodies = heredocBodyRanges(command);
+	return command.replace(SKILL_URL_PATTERN, (token, offset: number) => {
+		if (isInHeredocBody(bodies, offset)) return token;
 		const url = unquoteToken(token);
 		const resolvedPath = resolveSkillUrlToPath(url, skills);
 		return shellEscape(resolvedPath);
@@ -301,6 +431,10 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 	const matches = Array.from(command.matchAll(INTERNAL_URL_PATTERN_INCLUDING_NORMALIZED_LOCAL));
 	if (matches.length === 0) return command;
 
+	// Heredoc bodies are data (see heredocBodyRanges): URLs there must not
+	// expand, even though they sit inside the raw command string.
+	const bodies = heredocBodyRanges(command);
+
 	let expanded = command;
 	for (let i = matches.length - 1; i >= 0; i--) {
 		const match = matches[i];
@@ -308,7 +442,8 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 		const index = match.index;
 		if (index === undefined) continue;
 
-		if (isEmbeddedInQuotedText(command, token, index)) continue;
+		if (isInHeredocBody(bodies, index)) continue;
+		if (isEmbeddedInQuotedText(command, token, index, bodies)) continue;
 
 		const rawUrl = unquoteToken(token);
 		const url = normalizeLocalScheme(rawUrl);

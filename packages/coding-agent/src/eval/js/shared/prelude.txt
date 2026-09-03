@@ -37,8 +37,8 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 		return positionalOptions(name, [value, ...rest], keys, example);
 	};
 	const callHelper = (name, ...args) => globalThis.__proto_helpers__[name](...args);
-	const write = async (path, data) => callHelper("writeFile", path, data);
 	const env = (key, value) => callHelper("env", key, value);
+	const protoPath = path => callHelper("protoPath", path);
 
 	const tool = new Proxy(
 		{},
@@ -263,6 +263,6 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 	globalThis.phase = phase;
 	globalThis.budget = budget;
 	globalThis.__pool = __pool;
-	globalThis.write = write;
+	globalThis.protoPath = protoPath;
 	globalThis.env = env;
 }

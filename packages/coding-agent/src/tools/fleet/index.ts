@@ -113,7 +113,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		if (params.op === "wait") return true;
 		return params.op === "logs" && params.follow === true;
 	};
-	readonly loadMode = "essential";
+	readonly loadMode = "discoverable";
 
 	readonly examples: readonly ToolExample<typeof fleetSchema.infer>[] = [
 		{

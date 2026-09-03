@@ -111,6 +111,7 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 	readonly summary = "Spawn a persistent worker and start its first turn";
 	readonly description: string;
 	readonly parameters = orchestrateSpawnSchema;
+	readonly loadMode = "discoverable";
 	readonly strict = true;
 	constructor(
 		private readonly session: ToolSession,
@@ -199,6 +200,7 @@ export class OrchestrateSendTool implements AgentTool<typeof orchestrateSendSche
 	readonly summary = "Message a worker (steer or next turn)";
 	readonly description: string;
 	readonly parameters = orchestrateSendSchema;
+	readonly loadMode = "discoverable";
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(orchestrateSendDescription);
@@ -230,6 +232,7 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 	readonly summary = "Block until a worker finishes its turn";
 	readonly description: string;
 	readonly parameters = orchestrateWaitSchema;
+	readonly loadMode = "discoverable";
 	readonly strict = true;
 	readonly interruptible = true;
 	constructor(private readonly session: ToolSession) {
@@ -300,6 +303,7 @@ export class OrchestrateKillTool implements AgentTool<typeof orchestrateKillSche
 	readonly summary = "Terminate a worker";
 	readonly description: string;
 	readonly parameters = orchestrateKillSchema;
+	readonly loadMode = "discoverable";
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(orchestrateKillDescription);
@@ -328,6 +332,7 @@ export class OrchestrateListTool implements AgentTool<typeof orchestrateListSche
 	readonly summary = "List workers and their states";
 	readonly description: string;
 	readonly parameters = orchestrateListSchema;
+	readonly loadMode = "discoverable";
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(orchestrateListDescription);

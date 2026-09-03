@@ -282,7 +282,7 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 	readonly description: string;
 	readonly parameters = webSearchSchema;
 	readonly strict = true;
-	readonly loadMode = "discoverable";
+	readonly loadMode = "essential";
 	readonly summary = "Search the web for up-to-date information";
 
 	#session: ToolSession;

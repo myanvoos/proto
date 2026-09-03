@@ -71,7 +71,7 @@ Most file tools auto-resolve these to FS paths.
 
 {{#if xdevTools.length}}
 # xd:// Tool Devices
-Write JSON args as `content` to `xd://<tool>` via `write()`. Invalid args return schema in error → fix/retry.
+Dispatch mounted devices from bash: `xd <tool> '<json>'` executes; `xd <tool> ?` prints docs + JSON schema. Invalid args return the schema in the error → fix/retry.
 {{xdevDocs}}
 {{/if}}
 

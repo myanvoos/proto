@@ -56,7 +56,8 @@ function skipShellWord(command: string, start: number): number | null {
 	return inSingle || inDouble ? null : command.length;
 }
 
-function withoutLeadingEnvironmentAssignments(command: string): string | null {
+/** Strips leading `VAR=value` assignments so the real program name can be checked. */
+export function withoutLeadingEnvironmentAssignments(command: string): string | null {
 	let index = 0;
 	let foundAssignment = false;
 	while (index < command.length) {

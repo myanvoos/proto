@@ -58,6 +58,7 @@ interface SessionToolsOptions {
 	builtInToolNames?: Iterable<string>;
 	presentationPinnedToolNames?: ReadonlySet<string>;
 	requiredToolNames?: ReadonlySet<string>;
+	restrictToolNames?: boolean;
 
 	mcpManagerToolNames?: Iterable<string>;
 	rebuildSystemPrompt?: (
@@ -157,6 +158,7 @@ export class SessionTools {
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
 	#createInspectMediaTool: SessionToolsOptions["createInspectMediaTool"];
 	#builtInToolNames: Set<string>;
+	#restrictToolNames: boolean;
 	#rpcHostToolNames = new Set<string>();
 	#mcpManagerToolNames = new Set<string>();
 	#extensionMcpTools = new Map<string, AgentTool>();
@@ -200,6 +202,7 @@ export class SessionTools {
 		this.#createThinkTool = options.createThinkTool;
 		this.#createInspectMediaTool = options.createInspectMediaTool;
 		this.#builtInToolNames = new Set(options.builtInToolNames ?? []);
+		this.#restrictToolNames = options.restrictToolNames === true;
 		this.#mcpManagerToolNames = new Set(options.mcpManagerToolNames ?? []);
 		if (options.mcpManagerToolNames === undefined) {
 			for (const name of this.#toolRegistry.keys()) {
@@ -502,6 +505,17 @@ export class SessionTools {
 	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
 		toolNames = normalizeToolNames([...toolNames, ...this.#requiredToolNames]);
+		// read is registry-bridged and absent from enabled lists; re-add it so the mount pass keeps it
+		// mounted under xd:// (or native when xdev is off) instead of dropping it on every re-apply.
+		// Restricted or explicitly enumerated tool sets that omit read keep it out entirely.
+		if (
+			!toolNames.includes("read") &&
+			this.#toolRegistry.has("read") &&
+			!this.#restrictToolNames &&
+			(!this.#presentationPinnedToolNames || this.#presentationPinnedToolNames.has("read"))
+		) {
+			toolNames.push("read");
+		}
 		const codeMode = resolveCodeMode({
 			provider: this.#host.model()?.provider ?? "",
 			toolMode: this.#host.model()?.toolMode,

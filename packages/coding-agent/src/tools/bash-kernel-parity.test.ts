@@ -103,25 +103,32 @@ test("running kernel cell streams status events live (hunks withheld until settl
 		const streamed = updates.filter(u => (u.statusEvents?.length ?? 0) > 0);
 		expect(streamed.length, "status events reach the live update stream").toBeGreaterThan(0);
 
-		// The partial render shows the Status head (⟦+N/-M⟧ stats) but withholds the
-		// hunk body — exactly the eval tool's partial behavior.
-		const partial = strip(
-			bashRenderer
-				.renderResult(
-					{
-						content: [{ type: "text", text: "done\n" }],
-						details: { statusEvents: streamed.at(-1)?.statusEvents },
-					},
-					{ isPartial: true },
-					theme,
-					{ command },
-				)
-				.render(90)
-				.join("\n"),
-		);
-		expect(partial).toContain("Status");
-		expect(/⟦[+-]/.test(partial), "partial shows +N/-M stats").toBe(true);
-		expect(/\+│/.test(partial), "partial withholds the hunk body").toBe(false);
+		// The partial render shows the Status head (⟦+N/-M⟧ stats) AND the hunk
+		// body as soon as the event is delivered — no waiting for the whole call
+		// to settle. Small hunks fit the live window whole; oversized ones are
+		// tail-truncated with a marker (covered in eval-render.test.ts).
+		process.stdout.rows = 60;
+		try {
+			const partial = strip(
+				bashRenderer
+					.renderResult(
+						{
+							content: [{ type: "text", text: "done\n" }],
+							details: { statusEvents: streamed.at(-1)?.statusEvents },
+						},
+						{ isPartial: true },
+						theme,
+						{ command },
+					)
+					.render(90)
+					.join("\n"),
+			);
+			expect(partial).toContain("Status");
+			expect(/⟦[+-]/.test(partial), "partial shows +N/-M stats").toBe(true);
+			expect(/\d+│/.test(partial), "partial reveals the hunk body").toBe(true);
+		} finally {
+			delete (process.stdout as { rows?: number }).rows;
+		}
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -130,6 +137,9 @@ test("running kernel cell streams status events live (hunks withheld until settl
 test("python-in-bash renderResult is identical to the eval/kernel tool", async () => {
 	await assertParity("code+print", "def greet(n):\n    return n\n\nprint('hi', greet('x'))");
 	await assertParity("json-display", "display({'k': [1, 2, 3], 'nested': {'x': 1}})");
-	await assertParity("edit-hunks", "write('f.txt', 'a\\nb\\n')\nedit('f.txt', 'b', 'B')");
+	await assertParity(
+		"edit-hunks",
+		"open('f.txt', 'w').write('a\\nb\\n')\ntext = open('f.txt').read()\nopen('f.txt', 'w').write(text.replace('b', 'B'))",
+	);
 	await assertParity("traceback", "x = 1 / 0");
 }, 120000);

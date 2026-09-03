@@ -1052,6 +1052,7 @@ export class AgentSession {
 			createThinkTool: config.createThinkTool,
 			createInspectMediaTool: config.createInspectMediaTool,
 			builtInToolNames: config.builtInToolNames,
+			restrictToolNames: config.restrictToolNames,
 			mcpManagerToolNames: config.mcpManagerToolNames,
 			presentationPinnedToolNames: config.presentationPinnedToolNames,
 			requiredToolNames: config.requiredToolNames,
@@ -1246,11 +1247,17 @@ export class AgentSession {
 				...advisorsHost,
 				goalRuntime: () => this.#goalRuntime,
 				currentGoal: () => this.#goalModeState?.goal,
+				emitConductorActivity: activity => {
+					void this.#emitSessionEvent({ type: "conductor_activity", activity }).catch(error => {
+						logger.debug("conductor activity emit failed", { err: String(error) });
+					});
+				},
 			},
 			{
 				enabled: this.settings.get("conductor.enabled"),
 				initialCost: config.initialConductorCost,
 				toolsFactory: config.conductorToolsFactory,
+				setBashCommandAllowlist: config.conductorSetBashAllowlist,
 				getToolContext: config.advisorGetToolContext,
 				mcpResources: config.advisorMcpResources,
 				contextPrompt: config.advisorContextPrompt,

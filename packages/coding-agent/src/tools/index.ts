@@ -175,6 +175,12 @@ export interface ToolSession {
 
 	getCodeModeDirectToolNames?: () => readonly string[] | undefined;
 
+	/**
+	 * When set, every bash command must be a plain read-only exploration command from this list — enforced by
+	 * {@link checkBashCommandAllowlist} before execution. Used by the conductor's commissioning turns.
+	 */
+	bashCommandAllowlist?: readonly string[];
+
 	isToolActive?: (name: string) => boolean;
 
 	setActiveToolNames?: (names: Iterable<string>) => void;
@@ -450,6 +456,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		const wrappedRead = wrapToolWithMetaNotice(readTool);
 		toolRegistry.set(wrappedRead.name, wrappedRead);
 		builtInNames.add(wrappedRead.name);
+		// read declares itself discoverable, so it joins the mount pass below and leaves the native
+		// tool list when xdev mounting is active; it stays top-level otherwise.
+		tools.push(wrappedRead);
 	}
 
 	const xdevEnabled =
@@ -459,7 +468,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		const mountedNames = new Set<string>();
 		const kept: Tool[] = [];
 		for (const tool of tools) {
-			const mountable = mountBuiltinTools && isMountableUnderXdev(tool) && tool.name in BUILTIN_TOOLS;
+			const mountable = mountBuiltinTools && isMountableUnderXdev(tool) && !(tool.name in HIDDEN_TOOLS);
 			if (mountable) mountedNames.add(tool.name);
 			else kept.push(tool);
 		}

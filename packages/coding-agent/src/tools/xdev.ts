@@ -14,13 +14,18 @@ import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-to
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
 import { renderError, ToolAbortError, ToolError } from "./tool-errors";
 
+/**
+ * Tool names that always stay top-level native tools, even if something declares them
+ * discoverable — mirrors ESSENTIAL_BUILTIN_TOOL_NAMES minus the bash transport.
+ */
 export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
-	todo: true,
 	ask: true,
+	todo: true,
 	web_search: true,
+	inspect_media: true,
 };
 
-const XDEV_TRANSPORT_TOOLS: Record<string, true> = { read: true, bash: true };
+const XDEV_TRANSPORT_TOOLS: Record<string, true> = { bash: true };
 
 type XdevDocsMode = "inline" | "builtins" | "catalog";
 
@@ -54,7 +59,7 @@ function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string 
 	const schema = jsonSchemaToTypeScript(toolWireSchema(inst as AiTool));
 	let description = inst.description ?? "";
 	if (descriptionCap !== undefined && description.length > descriptionCap) {
-		description = `${description.slice(0, descriptionCap).trimEnd()}… (full docs: read ${XD_URL_PREFIX}${inst.name})`;
+		description = `${description.slice(0, descriptionCap).trimEnd()}… (full docs: \`xd ${inst.name} ?\`)`;
 	}
 	return [
 		`${heading} ${inst.name}${inst.label ? ` — ${inst.label}` : ""}`,
@@ -206,7 +211,7 @@ export function xdevListing(state: XdevState): string {
 		`${XD_URL_PREFIX} ${state.mountedNames.size} mounted tool devices.`,
 		...rows,
 		"",
-		`Read ${XD_URL_PREFIX}<tool> for docs + JSON schema; run \`xd <tool> '<json>'\` in bash to execute. Active top-level tools accept the same dispatch.`,
+		`Docs + JSON schema: run \`xd <tool> ?\` in bash; execute with \`xd <tool> '<json>'\`. Active top-level tools accept the same dispatch.`,
 	].join("\n");
 }
 
@@ -246,7 +251,7 @@ export function xdevDocsAll(
 					return `- ${XD_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxBytes)}`;
 				}),
 				"",
-				`Read ${XD_URL_PREFIX}<tool> for full docs + JSON schema before first use.`,
+				`Docs + JSON schema on demand: run \`xd <tool> ?\` in bash before first use.`,
 			].join("\n"),
 		);
 	}

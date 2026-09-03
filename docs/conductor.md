@@ -242,8 +242,11 @@ wakes:
    `escalate`. A soloist/conductor disagreement loop cannot burn the budget.
 
 The verification gate is the only place the primary waits on the conductor:
-generous timeout (`conductor.gateTimeoutSeconds`, default 300), timeout →
-`escalate`, never silent acceptance. The manual escape hatch for a pended goal
+an idle watchdog (`conductor.gateTimeoutSeconds`, default 3600) that escalates
+only when the claim sits unresolved with **no verification activity** — an
+in-flight audit, a still-streaming primary turn, or an in-flight commissioning
+run suspends it, and returning to idle re-arms a fresh period. Never silent
+acceptance. The manual escape hatch for a pended goal
 whose verdict source has died is `/goal resume` — `resumeGoal` forces the goal
 back to `active`, doubling as a user-driven reject.
 
@@ -306,6 +309,15 @@ Append-only, independent of in-memory context, follows session
 switch/branch/drop with the same detach-and-drain rules. Agent Fleet shows the
 conductor as a read-only `conductor`-kind transcript under its owning session.
 
+## Streaming display
+
+While a verification or commissioning run is in flight, the session emits
+`conductor_activity` events (subagent-progress-shaped) that drive a live HUD
+line under the editor — what the run is doing, its current tool, tokens, and
+cost — and a live Agent Fleet row; open it to tail the transcript as it is
+written. The run ends with a terminal status (`completed`, `failed`, or
+`aborted`) that drops the HUD line and parks the row.
+
 ## Command surface
 
 | Command                    | Effect                                                                          |
@@ -329,7 +341,7 @@ verification honored within the existing drain budget, abandoned work logged.
 | `conductor.enabled`            | `false` | Master switch.                                               |
 | `modelRoles.conductor`         | —       | **No fallback to `modelRoles.advisor`** — deliberately frontier; unresolvable → `no_model`, degradation ladder step 2. |
 | `conductor.minEpochTurns`      | `4`     | Minimum primary turns between ordinary wakes.                |
-| `conductor.gateTimeoutSeconds` | `300`   | Verification gate wait before forced escalate.               |
+| `conductor.gateTimeoutSeconds` | `3600`  | Idle wait before a pended claim escalates; active work suspends it. |
 | `conductor.maxRejections`      | `3`     | Consecutive verification rejections before forced escalate.  |
 | `conductor.maxHires`           | `3`     | Concurrent dynamic advisors.                                 |
 | `conductor.hireableModels`     | `[]`    | Model allowlist for hires; empty → `modelRoles.advisor` only. |

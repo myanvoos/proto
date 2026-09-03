@@ -514,7 +514,7 @@ function appendRepeatReadHint(session: ToolSession, path: string, result: AgentT
 export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	readonly name = "read";
 	readonly label = "Read";
-	readonly loadMode = "essential";
+	readonly loadMode = "discoverable";
 	description: string;
 	get parameters(): typeof readSchema {
 		return readSchema;

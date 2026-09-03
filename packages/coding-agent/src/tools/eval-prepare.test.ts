@@ -56,7 +56,7 @@ test("#@embed with until= terminator round-trips content containing #@end throug
 			"#@embed TXT until=EOF_EMBED",
 			content,
 			"EOF_EMBED",
-			'write("embed-roundtrip.txt", TXT)',
+			'open("embed-roundtrip.txt", "w").write(TXT)',
 			"print(len(TXT))",
 		].join("\n"),
 	);

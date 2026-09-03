@@ -1,10 +1,11 @@
 {{#ifAll py js}}Python: sync, kwargs. JS: async, ONE trailing object literal, never positional.{{else}}{{#if py}}Sync; kwargs.{{/if}}{{#if js}}Async; ONE trailing object literal, never positional.{{/if}}{{/ifAll}}
 ```
 display(value) → None        print(value, ...) → None
-{{#if py}}symbols(path?, code?=None, lang?=None) → str    tree-sitter outline, bodies elided; code= outlines an in-memory string (validate structure BEFORE write; lang= required without a path)
+{{#ifAll py js}}File edits are plain file APIs (`open`/`Path`/`Bun.write`) — no write/edit helpers. Every mutation is tracked and surfaced as a Status hunk diff; a stale-write guard raises StaleWriteError on any write to a file that changed on disk since your last read (re-read the file to re-arm and redo the change).{{/ifAll}}
+{{#if py}}symbols(path?, code?=None, lang?=None) → str    tree-sitter outline, bodies elided; code= outlines an in-memory string (validate structure BEFORE writing; lang= required without a path)
 defs() → dict    kernel-defined names → cell number
-{{/if}}{{#if py}}write(path, content, guard?=True) → Path    the written file's path, not content; wholly replaces an existing file; StaleWriteError if the file changed on disk since you last read it through any tool (guard=False overrides)
-edit(path, old, new, count?=1, guard?=True) → dict    anchored in-place edit: old is an EXACT literal substring, count = required occurrence count (None = replace all); mismatch → AnchorNotFoundError/AmbiguousAnchorError with line numbers, nothing written. edit(path, [(old, new), …]) = multi-hunk, atomic (all anchors resolve on the original text or nothing is written){{/if}}{{#if js}}write(path, content) → str{{/if}}
+{{/if}}{{#if py}}proto_path(path) → {...}    resolve a plain, `~/…`, or scheme URL (fleet//local//skill) path to a real filesystem path for the raw file APIs{{/if}}
+{{#if js}}protoPath(path) → string    JS twin of proto_path{{/if}}
 {{#if py}}block_range(path, line) → (start, end) | None
 {{/if}}env(key?=None, value?=None) → str | None | dict
 output(*ids, format?="raw", query?=None, offset?=None, limit?=None) → str | dict | list[dict]

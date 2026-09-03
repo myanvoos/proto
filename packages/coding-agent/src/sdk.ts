@@ -2312,6 +2312,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				initialToolNames.push(name);
 			}
 		}
+		// read is registry-bridged (DISABLED_TOOL_NAMES keeps it out of requested tool lists) but must
+		// stay reachable: mounted under xd:// when xdev is active, native otherwise. Restricted or
+		// explicitly enumerated tool sets that omit read keep it out entirely.
+		if (
+			!restrictToolNames &&
+			toolRegistry.has("read") &&
+			!initialToolNames.includes("read") &&
+			(explicitlyRequestedToolNameSet === undefined || explicitlyRequestedToolNameSet.has("read"))
+		) {
+			initialToolNames.push("read");
+		}
 
 		const registrationInput = {
 			id: resolvedAgentId,
@@ -2590,6 +2601,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Deferred on purpose: the conductor's isolated ToolSession and tool pool are built the first time a
 		// completion claim actually needs verifying, so a session with `conductor.enabled` off pays nothing.
 		let conductorToolsPromise: Promise<Tool[]> | undefined;
+		let conductorToolSessionRef: ToolSession | undefined;
 		const buildConductorTools = (): Promise<Tool[]> => {
 			conductorToolsPromise ??= (async () => {
 				const conductorToolSession: ToolSession = {
@@ -2610,6 +2622,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					xdev: undefined,
 					isToolActive: name => name !== "inspect_media" && toolSession.isToolActive?.(name) === true,
 				};
+				conductorToolSessionRef = conductorToolSession;
 				const conductorToolBuilds: Array<Tool | null | Promise<Tool | null>> = [];
 				for (const name in BUILTIN_TOOLS) {
 					conductorToolBuilds.push(BUILTIN_TOOLS[name as keyof typeof BUILTIN_TOOLS](conductorToolSession));
@@ -2642,6 +2655,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
 			advisorConfigs: discoveredAdvisors.advisors,
 			conductorToolsFactory: buildConductorTools,
+			conductorSetBashAllowlist: allowlist => {
+				if (conductorToolSessionRef) conductorToolSessionRef.bashCommandAllowlist = allowlist;
+			},
 			agent,
 			thinkingLevel: effectiveThinkingLevel,
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
@@ -2676,6 +2692,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				? undefined
 				: async () => (await BUILTIN_TOOLS.inspect_media(toolSession)) ?? null,
 			builtInToolNames: builtInRegistryToolNames,
+			restrictToolNames,
 			mcpManagerToolNames: initialMcpManagerToolNames,
 			transformContext,
 			transformProviderContext,

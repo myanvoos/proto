@@ -128,7 +128,7 @@ interface InspectMediaToolDetails {
 export class InspectMediaTool implements AgentTool<typeof inspectMediaSchema, InspectMediaToolDetails> {
 	readonly name = "inspect_media";
 	readonly label = "InspectMedia";
-	readonly loadMode = "discoverable";
+	readonly loadMode = "essential";
 	readonly summary = "Describe or analyze an image, audio, or video file";
 	readonly description: string;
 	readonly parameters = inspectMediaSchema;

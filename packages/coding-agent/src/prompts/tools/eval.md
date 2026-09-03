@@ -5,7 +5,7 @@ Work incrementally: imports → define → test → use, each its own cell; re-r
 
 {{#if py}}Top-level `await` works; `asyncio.run(…)` errors.
 
-File edits MUST use the kernel helpers: `edit()` for targeted changes (exact-literal anchors, asserted counts, atomic multi-hunk — NEVER hand-roll `open()` + `assert old in src` + `str.replace` + write surgery; `edit()` does that assertion with line-numbered diagnostics and writes atomically or not at all), `write()` for new or wholly-replaced files. Every read — in-kernel, the `read` tool, or shell builtins (`cat`, `rg`, `sed`, …) — arms the stale-write guard protecting both; only reads by external programs run from the shell don't.{{/if}}
+File edits use plain file APIs — `open`, `Path`, `os.*`; there are no write/edit helpers. The environment tracks and diffs every mutation, and a stale-write guard aborts any write (before truncation) to a file that changed on disk since your last read — that is `StaleWriteError`; re-read the file and redo the change. Every read — in-kernel, the `read` tool, or shell builtins (`cat`, `rg`, `sed`, …) — arms the guard; only reads by external programs run from the shell don't.{{/if}}
 {{#if js}}JS runs under **Bun**: globals (`Bun.file`, `Bun.write`, `Bun.$`, `fetch`, `Buffer`) available; top-level `await`/`return` work.{{/if}}
 
 <prelude>
@@ -18,7 +18,7 @@ Acyclic waves via `agent(…, handle=true)` + `pipeline`/`parallel`: name nodes 
 {{/if}}
 
 <critical>
-Prior top-level names survive into the next cell — reuse; NEVER re-import/re-declare. Re-read only if file changed since last read{{#if py}} — `StaleWriteError` from write()/edit() is the signal that it did. Targeted file edits go through `edit(path, old, new)`, never manual `str.replace` surgery{{/if}}.
+Prior top-level names survive into the next cell — reuse; NEVER re-import/re-declare. Re-read only if file changed since last read{{#if py}} — `StaleWriteError` is the signal that it did{{/if}}.
 </critical>
 
 {{#if autoBackgroundEnabled}}Long cells may auto-background and deliver later; kernel stays busy until the cell finishes. `timeout: 0` disables the cell deadline.{{/if}}

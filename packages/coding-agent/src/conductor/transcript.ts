@@ -14,6 +14,15 @@ export function isConductorTranscriptName(name: string): boolean {
 	return name === CONDUCTOR_TRANSCRIPT_FILENAME;
 }
 
+/**
+ * Absolute path of the conductor's transcript for a session file. `undefined` when the session is not persisted —
+ * an unpersisted session has no transcript directory, so there is nothing to display or tail.
+ */
+export function conductorTranscriptPath(sessionFile: string | undefined): string | undefined {
+	if (!sessionFile?.endsWith(JSONL_SUFFIX)) return undefined;
+	return path.join(sessionFile.slice(0, -JSONL_SUFFIX.length), CONDUCTOR_TRANSCRIPT_FILENAME);
+}
+
 const JSONL_SUFFIX = ".jsonl";
 
 /**
@@ -21,7 +30,7 @@ const JSONL_SUFFIX = ".jsonl";
  * `loadAdvisorTranscriptCosts` for the single conductor transcript. No transcript → 0.
  */
 export async function loadConductorTranscriptCost(sessionFile: string | undefined): Promise<number> {
-	if (!sessionFile?.endsWith(JSONL_SUFFIX)) return 0;
-	const transcriptFile = path.join(sessionFile.slice(0, -JSONL_SUFFIX.length), CONDUCTOR_TRANSCRIPT_FILENAME);
+	const transcriptFile = conductorTranscriptPath(sessionFile);
+	if (!transcriptFile) return 0;
 	return await loadReviewerTranscriptCost(transcriptFile);
 }

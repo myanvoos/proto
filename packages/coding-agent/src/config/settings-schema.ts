@@ -3168,7 +3168,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Discovery & MCP",
 			label: "xd:// Tools",
 			description:
-				"Mount rarely-used (discoverable) tools under xd:// device URLs driven via read/write instead of shipping their schemas on every request. Sessions without a granted write tool skip mounting and expose every tool top-level. Disable to expose every enabled tool top-level.",
+				"Mount rarely-used (discoverable) tools as xd:// devices instead of shipping their schemas on every request; dispatch them from bash with `xd <tool> '<json>'`. Sessions without bash skip mounting and expose every tool top-level. Disable to expose every enabled tool top-level.",
 		},
 	},
 
@@ -3298,13 +3298,13 @@ export const SETTINGS_SCHEMA = {
 
 	"conductor.gateTimeoutSeconds": {
 		type: "number",
-		default: 300,
+		default: 3600,
 		ui: {
 			tab: "tasks",
 			group: "Modes",
 			label: "Conductor Gate Timeout",
 			description:
-				"Seconds to wait for a verification verdict before escalating to the user. Never resolves to silent acceptance.",
+				"Seconds a pended completion claim may sit with no verification activity — no audit in flight and the primary idle — before escalating to the user. Active audits are never cut off; the gate never resolves to silent acceptance.",
 			condition: "conductorEnabled",
 		},
 	},

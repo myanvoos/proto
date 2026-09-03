@@ -6,7 +6,8 @@ import { createMockModel, type MockModel, type MockResponse, registerMockApi } f
 import { loadAdvisorTranscriptCosts } from "../advisor/transcript-recorder";
 import { GoalRuntime, type GoalRuntimeHost } from "../goals/runtime";
 import type { Goal } from "../goals/state";
-import { type ConductorHost, SessionConductor } from "./runtime";
+import { READ_ONLY_EXPLORATORY_COMMANDS } from "../tools/bash-allowlist";
+import { type ConductorActivity, type ConductorHost, SessionConductor } from "./runtime";
 import { loadConductorTranscriptCost } from "./transcript";
 
 registerMockApi("coding-agent/conductor-test");
@@ -44,20 +45,25 @@ interface Harness {
 	script: { current: () => MockResponse | Promise<MockResponse> };
 	goalState: { goal: Goal | undefined };
 	notices: Array<{ level: string; message: string }>;
+	activities: ConductorActivity[];
 	sentMessages: unknown[];
 	goalEvents: Array<Goal | null>;
 	goalRuntime: GoalRuntime;
 	sessionFile: string;
+	allowlistHistory: Array<readonly string[] | undefined>;
+	agentState: { isStreaming: boolean; promptCacheKey: undefined; telemetry: undefined };
 	cleanup(): Promise<void>;
 }
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(settingOverrides: Record<string, unknown> = {}): Promise<Harness> {
 	const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "conductor-test-"));
 	const sessionFile = path.join(tmp, "session.jsonl");
 	const goalState: { goal: Goal | undefined } = { goal: undefined };
 	const notices: Array<{ level: string; message: string }> = [];
+	const activities: ConductorActivity[] = [];
 	const sentMessages: unknown[] = [];
 	const goalEvents: Array<Goal | null> = [];
+	const allowlistHistory: Array<readonly string[] | undefined> = [];
 
 	// MockModel reads `options.handler` once (into `fallback`), so route every call through a mutable script
 	// the tests can re-point between phases.
@@ -94,6 +100,7 @@ async function createHarness(): Promise<Harness> {
 	const settings = {
 		getModelRole: (role: string) => (role === "conductor" ? "mock/conductor-test" : undefined),
 		get: (key: string) => {
+			if (key in settingOverrides) return settingOverrides[key];
 			if (key === "conductor.gateTimeoutSeconds") return 300;
 			if (key === "conductor.maxRejections") return 3;
 			return undefined;
@@ -107,8 +114,9 @@ async function createHarness(): Promise<Harness> {
 		getStorage: () => undefined,
 	};
 
+	const agentState = { isStreaming: false, promptCacheKey: undefined, telemetry: undefined };
 	const host = {
-		agent: { state: { isStreaming: false, promptCacheKey: undefined, telemetry: undefined } },
+		agent: { state: agentState },
 		sessionManager: { getCwd: () => tmp, getSessionFile: () => sessionFile },
 		settings,
 		modelRegistry: {
@@ -145,9 +153,15 @@ async function createHarness(): Promise<Harness> {
 		goalRuntime: () => goalRuntime,
 		currentGoal: () => goalState.goal,
 		obfuscator: undefined,
+		emitConductorActivity: (activity: ConductorActivity) => {
+			activities.push(activity);
+		},
 	} as unknown as ConductorHost;
 
-	conductor = new SessionConductor(host, { enabled: true });
+	conductor = new SessionConductor(host, {
+		enabled: true,
+		setBashCommandAllowlist: allowlist => allowlistHistory.push(allowlist),
+	});
 
 	return {
 		conductor,
@@ -155,10 +169,13 @@ async function createHarness(): Promise<Harness> {
 		script,
 		goalState,
 		notices,
+		activities,
 		sentMessages,
 		goalEvents,
 		goalRuntime,
 		sessionFile,
+		allowlistHistory,
+		agentState,
 		cleanup: async () => {
 			conductor?.stopRuntime();
 			await fs.rm(tmp, { recursive: true, force: true });
@@ -378,6 +395,226 @@ describe("SessionConductor gate", () => {
 			const advisorCosts = await loadAdvisorTranscriptCosts(h.sessionFile);
 			expect(advisorCosts.size).toBe(0);
 			expect(await loadConductorTranscriptCost(h.sessionFile)).toBeCloseTo(0.02, 5);
+		} finally {
+			await h.cleanup();
+		}
+	});
+});
+
+describe("SessionConductor gate timeouts", () => {
+	test("the idle gate never fires while the primary streams or the audit runs", async () => {
+		const h = await createHarness({ "conductor.gateTimeoutSeconds": 1 });
+		try {
+			const goal = makeGoal("g1", 1000);
+			h.goalState.goal = goal;
+
+			let calls = 0;
+			let releaseAudit: (() => void) | undefined;
+			const auditGate = new Promise<void>(resolve => {
+				releaseAudit = resolve;
+			});
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return auditGate.then(() => cueAccept());
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			// The claim pends mid-turn: the primary is still streaming its wrap-up. Before the idle-watchdog
+			// change the gate armed here and fired at 1s, escalating a claim whose audit had not even started.
+			h.agentState.isStreaming = true;
+			h.conductor.onGoalUpdated(goal);
+			await Bun.sleep(1300);
+			expect(h.notices.filter(n => n.message.includes("Conductor escalation"))).toHaveLength(0);
+
+			// The turn settles and the audit takes over: it runs past the gate period unpunished.
+			h.agentState.isStreaming = false;
+			h.conductor.onPrimaryTurnEnd(undefined);
+			await Bun.sleep(400);
+			expect(h.notices.filter(n => n.message.includes("Conductor escalation"))).toHaveLength(0);
+
+			releaseAudit?.();
+			await waitFor(() => h.goalState.goal?.status === "complete", "pended claim accepted after long audit");
+			expect(h.notices.filter(n => n.message.includes("Conductor verified the completion claim"))).toHaveLength(1);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("a pended claim nothing will verify escalates when the idle gate expires", async () => {
+		const h = await createHarness({ "conductor.gateTimeoutSeconds": 1 });
+		try {
+			const goal = makeGoal("g1", 1000);
+			h.goalState.goal = goal;
+			h.script.current = () => ({ content: ["unused"], usage: { input: 10, output: 5, cost: { total: 0.01 } } });
+
+			h.agentState.isStreaming = true;
+			h.conductor.onGoalUpdated(goal);
+			// Turn end claims a continuation hand-off while the goal is verifying: no continuation can fire and no
+			// audit starts, so the claim would strand silently — the idle gate is what surfaces it.
+			h.agentState.isStreaming = false;
+			h.conductor.onPrimaryTurnEnd(true);
+
+			await waitFor(() => h.notices.some(n => n.message.includes("Conductor escalation")), "idle gate escalation");
+			expect(h.goalState.goal?.status).toBe("verifying");
+			expect(h.conductor.getStats().escalated).toBe(true);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("commissioning is not bounded by the gate timeout", async () => {
+		const h = await createHarness({ "conductor.gateTimeoutSeconds": 1 });
+		try {
+			let calls = 0;
+			h.script.current = async () => {
+				calls++;
+				if (calls === 1) {
+					// A healthy but slow investigation: under the old wall clock this aborted as a timeout.
+					await Bun.sleep(1500);
+					return programPropose();
+				}
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			const outcome = await h.conductor.commission("add a greeting endpoint");
+
+			expect(outcome.status).toBe("proposed");
+			if (outcome.status !== "proposed") throw new Error("expected a proposed contract");
+			expect(outcome.objective).toContain("## Verification");
+		} finally {
+			await h.cleanup();
+		}
+	});
+});
+
+describe("SessionConductor streaming display", () => {
+	test("a verification run streams activity from running to completed with live progress", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return cueAccept();
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => h.goalState.goal?.status === "complete", "goal accepted");
+
+			expect(h.activities.length).toBeGreaterThanOrEqual(2);
+			const first = h.activities[0]!;
+			expect(first.status).toBe("running");
+			expect(first.mode).toBe("verify");
+			// The label is the contract's objective, collapsed to one line — what the HUD shows while it streams.
+			expect(first.label.startsWith("## Objective")).toBe(true);
+			expect(first.label.length).toBeLessThanOrEqual(80);
+			expect(first.sessionFile?.endsWith("__conductor.jsonl")).toBe(true);
+			expect(first.progress.modelRole).toBe("conductor");
+			expect(first.progress.status).toBe("running");
+
+			const last = h.activities[h.activities.length - 1]!;
+			expect(last.status).toBe("completed");
+			// Live accounting from the streamed turns: one assistant request, its usage, and the `cue` tool call.
+			expect(last.progress.requests).toBeGreaterThanOrEqual(1);
+			expect(last.progress.tokens).toBeGreaterThan(0);
+			expect(last.progress.cost).toBeGreaterThan(0);
+			expect(last.progress.toolCount).toBe(1);
+			expect(last.progress.recentTools).toHaveLength(1);
+			expect(last.progress.recentTools[0]?.tool).toBe("cue");
+			// Terminal snapshots carry no in-flight tool.
+			expect(last.progress.currentTool).toBeUndefined();
+			expect(last.progress.durationMs).toBeGreaterThanOrEqual(0);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("an escalated verification reports a failed terminal status", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			h.script.current = () => ({
+				// Three attempts, none calling `cue` → escalation.
+				content: ["still investigating"],
+				usage: { input: 10, output: 5, cost: { total: 0.01 } },
+			});
+
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => h.notices.some(n => n.message.includes("Conductor escalation")), "escalation notice");
+
+			const last = h.activities[h.activities.length - 1]!;
+			expect(last.status).toBe("failed");
+			expect(last.mode).toBe("verify");
+			expect(h.activities[0]!.status).toBe("running");
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("commissioning streams activity from running to completed", async () => {
+		const h = await createHarness();
+		try {
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return programPropose();
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			const outcome = await h.conductor.commission("add a greeting endpoint");
+			expect(outcome.status).toBe("proposed");
+
+			expect(h.activities.length).toBeGreaterThanOrEqual(2);
+			expect(h.activities[0]!.status).toBe("running");
+			expect(h.activities[0]!.mode).toBe("commission");
+			// The label previews the rough ask, not a contract heading.
+			expect(h.activities[0]!.label).toBe("add a greeting endpoint");
+			const last = h.activities[h.activities.length - 1]!;
+			expect(last.status).toBe("completed");
+			expect(last.progress.toolCount).toBe(1);
+			expect(last.progress.recentTools[0]?.tool).toBe("program");
+		} finally {
+			await h.cleanup();
+		}
+	});
+});
+
+describe("SessionConductor bash allowlist", () => {
+	test("commissioning arms the exploratory allowlist and teardown disarms it", async () => {
+		const h = await createHarness();
+		try {
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return programPropose();
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			const outcome = await h.conductor.commission("add a greeting endpoint");
+
+			expect(outcome.status).toBe("proposed");
+			expect(h.allowlistHistory[0]).toEqual(READ_ONLY_EXPLORATORY_COMMANDS);
+			expect(h.allowlistHistory.at(-1)).toBeUndefined();
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("verification turns never hold the commissioning allowlist", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return cueAccept();
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => h.goalState.goal?.status === "complete", "goal accepted");
+			expect(h.allowlistHistory.every(entry => entry === undefined)).toBe(true);
 		} finally {
 			await h.cleanup();
 		}

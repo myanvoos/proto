@@ -346,7 +346,7 @@ export function snapshotBeforeText(absPath: string): string | null {
 		if (!s.isFile() || s.size > DIFF_MAX_BYTES) return null;
 		return readContent(resolved).text;
 	} catch (err) {
-		// missing file: helper writes diff against empty content, like write()
+		// missing file: writes diff against empty content
 		// in the Python prelude; unreadable files get no diff
 		return (err as { code?: string }).code === "ENOENT" ? "" : null;
 	}

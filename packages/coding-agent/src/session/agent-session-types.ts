@@ -124,6 +124,8 @@ export interface AgentSessionConfig {
 
 	builtInToolNames?: Iterable<string>;
 
+	restrictToolNames?: boolean;
+
 	mcpManagerToolNames?: Iterable<string>;
 
 	setActiveToolNames?: (names: Iterable<string>) => void;
@@ -206,6 +208,9 @@ export interface AgentSessionConfig {
 
 	/** Deferred conductor tool-pool build; never invoked unless a verification turn needs it. */
 	conductorToolsFactory?: () => Promise<AgentTool[]>;
+
+	/** Arms/disarms the conductor's commissioning bash allowlist; see {@link SessionConductorOptions}. */
+	conductorSetBashAllowlist?: (allowlist: readonly string[] | undefined) => void;
 
 	disconnectOwnedMcpManager?: () => Promise<void>;
 

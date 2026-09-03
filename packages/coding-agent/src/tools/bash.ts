@@ -35,6 +35,7 @@ import { webpExclusionForModel } from "../utils/image-loading";
 import { resizeImage } from "../utils/image-resize";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
+import { checkBashCommandAllowlist } from "./bash-allowlist";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
 import { type BashKernelCell, detectBashKernelCell } from "./bash-kernel-cell";
@@ -82,6 +83,32 @@ export function wrapShellLineForClientTerminal(
 export function shellBuiltinsDisabled(settings: Settings): boolean {
 	const raw = settings.getShellConfig().env?.PI_DISABLE_UUTILS_BUILTINS ?? Bun.env.PI_DISABLE_UUTILS_BUILTINS;
 	return !!raw && raw !== "0" && raw.toLowerCase() !== "false";
+}
+
+const RG_PROGRAM = /^(?:rg|rgrep)$/;
+
+/**
+ * Advisory for grep habits that silently change meaning under rg: its -r is
+ * --replace and consumes the next token as the replacement, so a grep-style
+ * `-rn`/`-rl` cluster replaces matches with "n"/"l" instead of recursing with
+ * line numbers / files-with-matches output. Returns a notice text or
+ * undefined; advisory only — a genuine `--replace` use just sees the note.
+ */
+export function rgReplaceFlagNotice(command: string): string | undefined {
+	for (const segment of command.split(/\n|[|;&]|\|\||&&/)) {
+		const tokens = segment.trim().split(/\s+/).filter(Boolean);
+		let index = 0;
+		while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]!)) index++;
+		if (index >= tokens.length || !RG_PROGRAM.test(tokens[index]!)) continue;
+		for (const token of tokens.slice(index + 1)) {
+			if (token === "--") break;
+			if (!token.startsWith("-") || token.startsWith("--") || token === "-") continue;
+			if (token.includes("r")) {
+				return "note: rg's -r is --replace (grep's -rn/-rl habits don't transfer) — line numbers: -n, files-with-matches: -l, recursion is rg's default";
+			}
+		}
+	}
+	return undefined;
 }
 
 export function kernelBridgeAvailable(session: ToolSession): boolean {
@@ -710,6 +737,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			throw new ToolError("Async bash execution is disabled. Enable async.enabled to use async mode.");
 		}
 
+		const bashAllowlist = this.session.bashCommandAllowlist;
+		if (bashAllowlist) {
+			const verdict = checkBashCommandAllowlist(command, bashAllowlist);
+			if (!verdict.allowed) throw new ToolError(verdict.reason ?? "Command blocked by the bash allowlist.");
+		}
+
 		if (this.session.settings.get("bashInterceptor.enabled")) {
 			const rules = this.session.settings.getBashInterceptorRules();
 			const commandsToCheck = rawCommand === command ? [command] : [rawCommand, command];
@@ -776,6 +809,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const timeoutSec = timeoutDisabled ? undefined : clampTimeout("bash", requestedTimeoutSec, maxTimeout);
 		const timeoutMs = timeoutSec === undefined ? undefined : timeoutSec * 1000;
 		const pendingNotices: string[] = [];
+		const rgNotice = rgReplaceFlagNotice(command);
+		if (rgNotice) pendingNotices.push(rgNotice);
 		if (timeoutSec !== undefined) {
 			const timeoutClampNotice = formatTimeoutClampNotice(requestedTimeoutSec, timeoutSec, maxTimeout);
 			if (timeoutClampNotice) pendingNotices.push(timeoutClampNotice);
@@ -1117,7 +1152,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const wallTimeStart = performance.now();
 		// Stream kernel-cell status events (write/edit hunks) into the live view
 		// so a running `python`/`node` cell shows its Status section like an eval
-		// cell — hunks are withheld while partial, revealed on settle.
+		// cell — hunks render as soon as their event is delivered, tail-truncated
+		// to the live window (see eval-render's EVAL_STREAMING_SECTION_LINES).
 		const liveStatusEvents: EvalStatusEvent[] = [];
 		const pushLiveUpdate = (): void => {
 			onUpdate?.({

@@ -217,7 +217,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	supportsCodeModeTransport(): boolean {
 		return this.#enabledLanguages().includes("js");
 	}
-	readonly loadMode = "essential";
+	readonly loadMode = "discoverable";
 	readonly label = "Eval";
 	get description(): string {
 		let base: string;

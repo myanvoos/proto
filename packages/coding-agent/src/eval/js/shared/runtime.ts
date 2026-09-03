@@ -82,7 +82,7 @@ const PRELUDE_GLOBAL_KEYS = [
 	"phase",
 	"budget",
 	"__pool",
-	"write",
+	"protoPath",
 	"env",
 ];
 

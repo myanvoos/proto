@@ -64,7 +64,7 @@ type ComputerControllerFactory = (session: ToolSession) => ComputerController;
 export class ComputerTool implements AgentTool<ComputerSchema, ComputerToolDetails> {
 	readonly name = "computer";
 	readonly label = "Computer";
-	readonly loadMode = "essential" as const;
+	readonly loadMode = "discoverable" as const;
 	readonly concurrency = "exclusive" as const;
 	readonly summary = "Control the host desktop with persistent JavaScript and OS accessibility APIs";
 	readonly strict = false;

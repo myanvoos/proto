@@ -150,7 +150,7 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 		streamingArgs: { tool: "bash" },
 		args: {
 			tool: "bash",
-			report: "Kernel edit() dropped the multi-hunk anchor when the cell was re-run",
+			report: "Kernel cell dropped the multi-hunk anchor when the cell was re-run",
 		},
 		result: { content: [{ type: "text", text: "Noted, thanks!" }] },
 		errorResult: {

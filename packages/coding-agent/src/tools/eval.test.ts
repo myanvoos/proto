@@ -52,7 +52,7 @@ test("kernel audit hook reports plain open() writes outside the walker root", as
 	}
 });
 
-test("kernel audit hook dedupes against walker and write() helper", async () => {
+test("kernel audit hook reports each written file exactly once per cell", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-hook-dedupe-"));
 	try {
 		const tool = new EvalTool(stubSession(dir));
@@ -62,10 +62,8 @@ test("kernel audit hook dedupes against walker and write() helper", async () => 
 			'    f.write("original line\\n")',
 			'with open("plain.txt", "a") as f:',
 			'    f.write("appended by plain open\\n")',
-			"# helper write()",
-			'write("helper.txt", "helper content\\n")',
 			"# read-mode open must not be recorded",
-			'open("helper.txt").close()',
+			'open("plain.txt").close()',
 			'print("done")',
 		].join("\n");
 		const result = await tool.execute("eval-hook-dedupe-test", {
@@ -82,25 +80,21 @@ test("kernel audit hook dedupes against walker and write() helper", async () => 
 		expect(plain.length, "plain open() write is reported exactly once (hook + walker dedupe)").toBe(1);
 		expect(String(plain[0]?.diff)).toContain("appended by plain open");
 		expect(String(plain[0]?.diff)).toContain("original line");
-
-		const helper = cellEvents.filter(event => event.path === path.join(dir, "helper.txt"));
-		expect(helper.length, "write() helper emits exactly one event (no hook duplicate)").toBe(1);
-		expect(String(helper[0]?.diff)).toContain("helper content");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test("kernel flush diffs from last reported content after helper writes", async () => {
+test("a file written twice in one cell reports one event with the cumulative diff", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-flush-base-"));
 	try {
 		await Bun.write(path.join(dir, "b.txt"), "orig\n");
 		const tool = new EvalTool(stubSession(dir));
 		const code = [
-			'write("a.txt", "alpha\\nbeta\\n")',
+			'open("a.txt", "w").write("alpha\\nbeta\\n")',
 			'with open("a.txt", "a") as f:',
 			'    f.write("gamma\\n")',
-			'write("b.txt", "orig\\none\\n")',
+			'open("b.txt", "w").write("orig\\none\\n")',
 			'with open("b.txt", "a") as f:',
 			'    f.write("two\\n")',
 			'print("done")',
@@ -119,20 +113,14 @@ test("kernel flush diffs from last reported content after helper writes", async 
 			);
 
 		const a = eventsFor("a.txt");
-		expect(a.length, "created-then-appended file reports two events").toBe(2);
+		expect(a.length, "created-then-appended file reports one cumulative event").toBe(1);
 		expect(String(a[0]?.diff)).toContain("+1|alpha");
-		expect(String(a[1]?.diff), "flush shows only the appended line, not the helper's hunks again").toContain(
-			"+3|gamma",
-		);
-		expect(String(a[1]?.diff), "flush must not re-print hunks the write() event already showed").not.toContain(
-			"+1|alpha",
-		);
+		expect(String(a[0]?.diff)).toContain("+3|gamma");
 
 		const b = eventsFor("b.txt");
-		expect(b.length, "preexisting written-then-appended file reports two events").toBe(2);
+		expect(b.length, "preexisting written-then-appended file reports one cumulative event").toBe(1);
 		expect(String(b[0]?.diff)).toContain("+2|one");
-		expect(String(b[1]?.diff), "flush shows only the appended line").toContain("+3|two");
-		expect(String(b[1]?.diff), "flush must not re-print the helper's hunk").not.toContain("+2|one");
+		expect(String(b[0]?.diff)).toContain("+3|two");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -235,12 +223,12 @@ test("js kernel fs tracker reports raw fs writes outside the walker root", async
 	}
 });
 
-test("js kernel write() helper emits one deduped event with diff", async () => {
+test("a js kernel Bun.write emits one deduped event with diff", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-helper-"));
 	const outside = path.join(os.tmpdir(), `eval-js-helper-${process.pid}-${Date.now()}.txt`);
 	try {
 		const tool = new EvalTool(stubSession(dir));
-		const code = [`await write(${JSON.stringify(outside)}, "helper wrote this\\n");`, 'print("done")'].join("\n");
+		const code = [`await Bun.write(${JSON.stringify(outside)}, "Bun wrote this\\n");`, 'print("done")'].join("\n");
 		const result = await tool.execute("eval-js-helper-test", {
 			language: "js",
 			code,
@@ -251,8 +239,8 @@ test("js kernel write() helper emits one deduped event with diff", async () => {
 		expect(result.details?.cells?.[0]?.status).toBe("complete");
 		const cellEvents = (result.details?.cells?.[0]?.statusEvents ?? []).filter(event => event.op === "write");
 		const events = cellEvents.filter(e => e.path === outside);
-		expect(events.length, "helper write is reported exactly once (helper + flush dedupe)").toBe(1);
-		expect(String(events[0]?.diff)).toContain("+1|helper wrote this");
+		expect(events.length, "the tracked write is reported exactly once").toBe(1);
+		expect(String(events[0]?.diff)).toContain("+1|Bun wrote this");
 		expect(typeof events[0]?.sha).toBe("string");
 	} finally {
 		await fs.rm(outside, { force: true });
@@ -260,7 +248,7 @@ test("js kernel write() helper emits one deduped event with diff", async () => {
 	}
 });
 
-test("js kernel flush diffs from last reported content after helper writes", async () => {
+test("a js kernel file written twice reports one event with the cumulative diff", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-flush-base-"));
 	const outside = path.join(os.tmpdir(), `eval-js-flush-base-${process.pid}-${Date.now()}.txt`);
 	try {
@@ -268,9 +256,9 @@ test("js kernel flush diffs from last reported content after helper writes", asy
 		const tool = new EvalTool(stubSession(dir));
 		const code = [
 			'import * as fs from "node:fs";',
-			`await write(${JSON.stringify(outside)}, "alpha\\nbeta\\n");`,
+			`await Bun.write(${JSON.stringify(outside)}, "alpha\\nbeta\\n");`,
 			`fs.appendFileSync(${JSON.stringify(outside)}, "gamma\\n");`,
-			`await write(${JSON.stringify(path.join(dir, "b.txt"))}, "orig\\none\\n");`,
+			`await Bun.write(${JSON.stringify(path.join(dir, "b.txt"))}, "orig\\none\\n");`,
 			`fs.appendFileSync(${JSON.stringify(path.join(dir, "b.txt"))}, "two\\n");`,
 			'print("done")',
 		].join("\n");
@@ -286,27 +274,21 @@ test("js kernel flush diffs from last reported content after helper writes", asy
 			(result.details?.cells?.[0]?.statusEvents ?? []).filter(event => event.op === "write" && event.path === name);
 
 		const a = eventsFor(outside);
-		expect(a.length, "created-then-appended file reports two events").toBe(2);
+		expect(a.length, "created-then-appended file reports one cumulative event").toBe(1);
 		expect(String(a[0]?.diff)).toContain("+1|alpha");
-		expect(String(a[1]?.diff), "flush shows only the appended line, not the helper's hunks again").toContain(
-			"+3|gamma",
-		);
-		expect(String(a[1]?.diff), "flush must not re-print hunks the write() event already showed").not.toContain(
-			"+1|alpha",
-		);
+		expect(String(a[0]?.diff)).toContain("+3|gamma");
 
 		const b = eventsFor(path.join(dir, "b.txt"));
-		expect(b.length, "preexisting written-then-appended file reports two events").toBe(2);
+		expect(b.length, "preexisting written-then-appended file reports one cumulative event").toBe(1);
 		expect(String(b[0]?.diff)).toContain("+2|one");
-		expect(String(b[1]?.diff), "flush shows only the appended line").toContain("+3|two");
-		expect(String(b[1]?.diff), "flush must not re-print the helper's hunk").not.toContain("+2|one");
+		expect(String(b[0]?.diff)).toContain("+3|two");
 	} finally {
 		await fs.rm(outside, { force: true });
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test("js kernel write() expands a leading ~ like the Python helpers do", async () => {
+test("js protoPath resolves a leading ~ for the raw file APIs", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-tilde-"));
 	try {
 		const home = path.join(dir, "home");
@@ -316,7 +298,7 @@ test("js kernel write() expands a leading ~ like the Python helpers do", async (
 			'const prevHome = await env("HOME");',
 			`await env("HOME", ${JSON.stringify(home)});`,
 			"try {",
-			'  print(await write("~/tilde.txt", "from js\\n"));',
+			'  print(await Bun.write(protoPath("~/tilde.txt"), "from js\\n"));',
 			"} finally {",
 			'  if (prevHome !== undefined) await env("HOME", prevHome);',
 			"}",
@@ -409,13 +391,13 @@ test("js kernel fs tracker covers Bun.write and prunes cache dirs", async () => 
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
-test("kernel write wholly replaces an existing file without an overwrite flag", async () => {
+test("a second raw write wholly replaces the file the kernel itself wrote", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-write-guard-"));
 	try {
 		const tool = new EvalTool(stubSession(dir));
 		const code = [
-			'write("guard.txt", "v1")',
-			'write("guard.txt", "v2")',
+			'open("guard.txt", "w").write("v1")',
+			'open("guard.txt", "w").write("v2")',
 			'print("CONTENT", Path("guard.txt").read_text())',
 		].join("\n");
 		const result = await tool.execute("eval-fs-diff-test", {
@@ -460,13 +442,13 @@ test("stale-write guard stays armed past the read-seen cap via FIFO eviction", a
 		await Bun.write(path.join(dir, "guarded.txt"), "externally changed\n");
 
 		const writeCell = [
-			"def check(fn, *args, **kwargs):",
+			"def check(fn):",
 			"    try:",
-			"        fn(*args, **kwargs)",
+			'        open(fn, "w").write("v2")',
 			'        return "ok"',
 			"    except Exception as err:",
 			'        return type(err).__name__ + ": " + str(err)[:200]',
-			'print("RESULT", check(write, "guarded.txt", "v2"))',
+			'print("RESULT", check("guarded.txt"))',
 		].join("\n");
 		const writeResult = await tool.execute("eval-guard-evict-write", {
 			language: "py",

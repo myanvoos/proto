@@ -34,7 +34,7 @@ type KernelToolParams = typeof kernelSchema.infer;
 export class KernelTool implements AgentTool<typeof kernelSchema> {
 	readonly name = "kernel";
 	readonly label = "Kernel";
-	readonly loadMode = "essential";
+	readonly loadMode = "discoverable";
 	readonly concurrency = "exclusive";
 	readonly strict = true;
 
