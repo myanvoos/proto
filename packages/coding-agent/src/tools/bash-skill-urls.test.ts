@@ -28,13 +28,9 @@ const skill: Skill = {
 test("scheme URLs inside quoted heredoc bodies are preserved; command-position URLs expand", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "skill-urls-"));
 	try {
-		const command = [
-			"cat > " + PLAN_URL + " <<'EOF'",
-			`u = "${PLAN_URL}"`,
-			"print(u)",
-			"EOF",
-			"python " + PLAN_URL,
-		].join("\n");
+		const command = [`cat > ${PLAN_URL} <<'EOF'`, `u = "${PLAN_URL}"`, "print(u)", "EOF", `python ${PLAN_URL}`].join(
+			"\n",
+		);
 		const expanded = await expandInternalUrls(command, optionsWith(path.join(dir, "artifacts")));
 		const lines = expanded.split("\n");
 		// Redirect target (command position) expands; body content does not.
@@ -85,7 +81,7 @@ test("unquoted delimiters and <<- tab terminators are scoped as heredoc bodies",
 test("here-strings keep expanding: the word after <<< is command syntax, not body", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "skill-urls-"));
 	try {
-		const command = "grep pattern <<< " + INPUT_URL;
+		const command = `grep pattern <<< ${INPUT_URL}`;
 		const expanded = await expandInternalUrls(command, optionsWith(path.join(dir, "artifacts")));
 		expect(expanded).toContain(path.join(dir, "artifacts", "fleet", "input.txt"));
 	} finally {
@@ -100,7 +96,7 @@ test("multiple heredocs each keep their bodies while surrounding commands expand
 			"python <<'A'",
 			"x = '" + "fleet" + "://first'",
 			"A",
-			"cat " + MID_URL,
+			`cat ${MID_URL}`,
 			"node <<'B'",
 			"const y = '" + "fleet" + "://second'",
 			"B",
@@ -143,7 +139,7 @@ describe("expansion stays scoped", () => {
 				"cat <<'EOF'",
 				"body with 'unbalanced quote and " + "fleet" + "://data-url",
 				"EOF",
-				'echo "tail" ' + TAIL_URL,
+				`echo "tail" ${TAIL_URL}`,
 			].join("\n");
 			const expanded = await expandInternalUrls(command, optionsWith(path.join(dir, "artifacts")));
 			const lines = expanded.split("\n");

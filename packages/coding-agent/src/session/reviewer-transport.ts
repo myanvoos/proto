@@ -326,6 +326,11 @@ export class ReviewerTransport implements ReviewerInstance {
 
 		const advisorAgentFacade: AdvisorAgent = {
 			prompt: async input => {
+				// A session transition owns this transport while paused; an explicit prompt here would start a fresh
+				// turn (and an unbounded tool loop) inside the rewrite window instead of waiting for the resume.
+				if (this.runtime.sessionTransitionPaused) {
+					throw new Error("Session transition in progress; the reviewer turn cannot start.");
+				}
 				let quarantined: string | undefined;
 				try {
 					this.#quarantinedAdvisorOutput = undefined;

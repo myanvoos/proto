@@ -305,6 +305,10 @@ export class ReviewerRuntime {
 		return promise;
 	}
 
+	get sessionTransitionPaused(): boolean {
+		return this.#sessionTransitionPaused;
+	}
+
 	dispose(): void {
 		this.#iterationAbort?.abort("advisor disposed");
 		this.disposed = true;

@@ -1,0 +1,13 @@
+{
+  "head": "967f15b96d419febab21ad0f006b34027b152857",
+  "dirty": [
+    "packages/coding-agent/CHANGELOG.md",
+    "packages/coding-agent/src/advisor/runtime.ts",
+    "packages/coding-agent/src/conductor/runtime.test.ts",
+    "packages/coding-agent/src/conductor/runtime.ts",
+    "packages/coding-agent/src/session/agent-session.ts",
+    "packages/coding-agent/src/session/reviewer-transport.ts",
+    "packages/coding-agent/src/session/session-maintenance.ts"
+  ],
+  "recorded_at": "2026-09-04T06:52:44+12:00"
+}

@@ -202,6 +202,10 @@ export interface SessionMaintenanceHost {
 	findLastAssistantMessage(): AssistantMessage | undefined;
 	disconnectFromAgent(): void;
 	reconnectToAgent(): void;
+	/** Suspends the conductor for a persistence transition: aborts its turn, blocks verdicts/turn starts until resume. */
+	suspendConductorForTransition(): Promise<void>;
+	/** Releases one conductor suspension; the last one reattaches its recorder and re-arms a pended claim. */
+	resumeConductorAfterTransition(): void;
 	drainStrandedQueuedMessages(): void;
 	buildDisplaySessionContext(): SessionContext;
 	convertToLlmForSideRequest(messages: AgentMessage[]): Message[];
@@ -497,6 +501,9 @@ export class SessionMaintenance {
 			if (ownsCompactionController) {
 				this.#host.disconnectFromAgent();
 				await this.#host.abort({ goalReason: "internal", preserveCompaction: true });
+				// The compaction rewrite owns the transcript; an in-flight conductor audit would deliver its verdict
+				// (and possibly trigger a primary turn) into the window where persistence is disconnected.
+				await this.#host.suspendConductorForTransition();
 			}
 			const activeModel = this.#model;
 			if (!activeModel) {
@@ -692,6 +699,7 @@ export class SessionMaintenance {
 					this.#compactionAbortController = undefined;
 				}
 				this.#host.reconnectToAgent();
+				this.#host.resumeConductorAfterTransition();
 
 				this.#host.drainStrandedQueuedMessages();
 				if (this.#manualCompactionCleanup === manualCompactionCleanup?.promise) {
@@ -1664,6 +1672,10 @@ export class SessionMaintenance {
 		this.#autoCompactionAbortController = autoCompactionAbortController;
 		const autoCompactionSignal = autoCompactionAbortController.signal;
 
+		// Same bracket as manual compaction: the commit rewrites the transcript while message persistence may be
+		// mid-flight, so the conductor must not deliver a verdict or start a turn inside it.
+		await this.#host.suspendConductorForTransition();
+
 		let compactionCommitted = false;
 		try {
 			const startEvent = { type: "auto_compaction_start" as const, reason, action };
@@ -2092,6 +2104,7 @@ export class SessionMaintenance {
 			if (this.#autoCompactionAbortController === autoCompactionAbortController) {
 				this.#autoCompactionAbortController = undefined;
 			}
+			this.#host.resumeConductorAfterTransition();
 		}
 		return COMPACTION_CHECK_NONE;
 	}

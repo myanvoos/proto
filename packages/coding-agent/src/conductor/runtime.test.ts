@@ -51,7 +51,7 @@ interface Harness {
 	goalRuntime: GoalRuntime;
 	sessionFile: string;
 	allowlistHistory: Array<readonly string[] | undefined>;
-	agentState: { isStreaming: boolean; promptCacheKey: undefined; telemetry: undefined };
+	agentState: { isStreaming: boolean; promptCacheKey: undefined; telemetry: undefined; messages: unknown[] };
 	cleanup(): Promise<void>;
 }
 
@@ -114,7 +114,12 @@ async function createHarness(settingOverrides: Record<string, unknown> = {}): Pr
 		getStorage: () => undefined,
 	};
 
-	const agentState = { isStreaming: false, promptCacheKey: undefined, telemetry: undefined };
+	const agentState = {
+		isStreaming: false,
+		promptCacheKey: undefined,
+		telemetry: undefined,
+		messages: [] as unknown[],
+	};
 	const host = {
 		agent: { state: agentState },
 		sessionManager: { getCwd: () => tmp, getSessionFile: () => sessionFile },
@@ -688,6 +693,377 @@ describe("SessionConductor no-call retries", () => {
 			await waitFor(() => h.goalState.goal?.status === "complete", "goal accepted after clean-context retry");
 			expect(h.model.calls[1]?.context.messages.map(message => message.role)).toEqual(["user"]);
 			expect(h.notices.filter(n => n.message.includes("Conductor verified the completion claim"))).toHaveLength(1);
+		} finally {
+			await h.cleanup();
+		}
+	});
+});
+
+describe("SessionConductor transition suspension", () => {
+	test("suspendForTransition aborts an in-flight audit, blocks restarts, and re-arms on release", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return { ...cueAccept(), delayMs: 30_000 };
+				if (calls === 2) return cueAccept();
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => calls === 1, "in-flight verification request");
+
+			await h.conductor.suspendForTransition();
+
+			// The aborted audit must not retry or restart while the transition holds the conductor: a restarted turn
+			// would stream into the conversation being rewritten and its recorder would target the old session file.
+			await Bun.sleep(50);
+			expect(calls).toBe(1);
+			expect(h.goalState.goal?.status).toBe("verifying");
+
+			h.conductor.resumeFromTransition();
+			await waitFor(() => h.goalState.goal?.status === "complete", "re-armed audit completes");
+			// Request 2 rules accept; request 3 is the plain post-tool continuation that settles the turn.
+			expect(calls).toBe(3);
+			expect(h.notices.some(n => n.message.includes("Conductor verified the completion claim"))).toBe(true);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("commissioning is refused while a transition suspension is active", async () => {
+		const h = await createHarness();
+		try {
+			await h.conductor.suspendForTransition();
+			const outcome = await h.conductor.commission("add a greeting endpoint");
+			expect(outcome.status).toBe("busy");
+			expect(outcome).toMatchObject({ reason: "A session transition is in progress." });
+			expect(h.model.calls).toHaveLength(0);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("suspensions nest: a pended claim is audited only after the last release", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return cueAccept();
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			await h.conductor.suspendForTransition();
+			await h.conductor.suspendForTransition();
+
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await Bun.sleep(50);
+			expect(calls).toBe(0);
+
+			h.conductor.resumeFromTransition();
+			await Bun.sleep(50);
+			expect(calls).toBe(0);
+
+			h.conductor.resumeFromTransition();
+			await waitFor(() => h.goalState.goal?.status === "complete", "claim audited after last release");
+			expect(calls).toBe(2);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("the idle watchdog does not fire while a suspension holds the conductor", async () => {
+		const h = await createHarness({ "conductor.gateTimeoutSeconds": 0.05 });
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				return { content: ["no verdict"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			await h.conductor.suspendForTransition();
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await Bun.sleep(150);
+			// An armed watchdog would have escalated by now (timeout truncates to 0ms); a suspended one must not.
+			expect(calls).toBe(0);
+			expect(h.conductor.getStats().escalated).toBe(false);
+
+			h.conductor.resumeFromTransition();
+			await waitFor(() => calls >= 1, "audit starts after release");
+			expect(h.conductor.getStats().pendingGoalId).toBe("g1");
+		} finally {
+			await h.cleanup();
+		}
+	});
+});
+
+function cueNext(prompt?: string, extra: Record<string, unknown> = {}) {
+	return {
+		content: [
+			{
+				type: "toolCall" as const,
+				name: "cue",
+				arguments: { op: "next", ...(prompt === undefined ? {} : { prompt }), ...extra },
+			},
+		],
+		usage: { input: 10, output: 5, cost: { total: 0.01 } },
+	};
+}
+
+function activeGoal(id: string, updatedAt: number, overrides: Partial<Goal> = {}): Goal {
+	return { ...makeGoal(id, updatedAt, "active"), ...overrides };
+}
+
+function assistantTurn(text: string): unknown {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		usage: { input: 1, output: 1, cost: { total: 0 } },
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
+describe("SessionConductor epochs", () => {
+	test("wakes after minEpochTurns settled turns and delivers the authored iteration prompt", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 2 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			(h.agentState.messages as unknown[]).push(
+				assistantTurn("Implementing milestone 1"),
+				assistantTurn("Tests green"),
+			);
+
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				return calls === 1
+					? cueNext("Focus on milestone 2; milestone 1 is verified.")
+					: { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+
+			h.conductor.onPrimaryTurnEnd(false);
+			expect(h.sentMessages).toHaveLength(0);
+
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.sentMessages.length > 0, "epoch prompt delivered");
+
+			const epochMessage = h.sentMessages[0] as { customType: string; content: string; display: boolean };
+			expect(epochMessage.customType).toBe("conductor-epoch");
+			expect(epochMessage.content).toContain("Focus on milestone 2");
+			expect(epochMessage.display).toBe(false);
+			expect(h.conductor.getStats().epochCount).toBe(1);
+			// The decision journal reaches /conduct status.
+			expect(h.conductor.formatStatus()).toContain("Epochs: 1 ruled");
+			expect(h.conductor.formatStatus()).toContain("prompt: Focus on milestone 2");
+			// The cadence restarts: the delivered prompt resets the turn counter.
+			h.conductor.onPrimaryTurnEnd(false);
+			expect(h.sentMessages).toHaveLength(1);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("does not wake before the cadence spacing or without an active goal", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 3 });
+		try {
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				return cueNext();
+			};
+
+			h.goalState.goal = activeGoal("g1", 1000);
+			h.conductor.onPrimaryTurnEnd(false);
+			h.conductor.onPrimaryTurnEnd(true); // continuation hand-off: counted, never wakes
+			expect(calls).toBe(0);
+			expect(h.conductor.getStats().epochCount).toBe(0);
+
+			// No active goal: no counting, no wake.
+			h.goalState.goal = undefined;
+			h.conductor.onPrimaryTurnEnd(false);
+			h.goalState.goal = activeGoal("g1", 1000);
+			h.conductor.onPrimaryTurnEnd(false);
+			expect(calls).toBe(0);
+
+			// Third settled turn of the stretch satisfies the spacing.
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => calls >= 1, "epoch wakes at the spacing boundary");
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("a budget threshold crossing queues a wake reason that reaches the journal", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000, { tokenBudget: 100 });
+			// At creation the tracker adopts the goal's current fraction without queuing anything.
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			const spent = { ...h.goalState.goal, tokensUsed: 60, updatedAt: 1500 };
+			h.goalState.goal = spent;
+			h.conductor.onGoalUpdated(spent);
+
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return cueNext(undefined, { note: "watch the flaky test" });
+				if (calls === 3) return cueNext();
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.conductor.getJournal().length >= 1, "threshold wake journaled");
+
+			const entry = h.conductor.getJournal()[0];
+			expect(entry?.wakeReasons.some(reason => reason.includes("budget 50% used"))).toBe(true);
+			expect(entry?.note).toBe("watch the flaky test");
+			expect(entry?.action).toBe("template");
+			// Crossing the same threshold again never re-queues; the next one (80%) does.
+			const more = { ...spent, tokensUsed: 70, updatedAt: 1600 };
+			h.goalState.goal = more;
+			h.conductor.onGoalUpdated(more);
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.conductor.getJournal().length >= 2, "next epoch after continued spend");
+			expect(h.conductor.getJournal()[1]?.wakeReasons ?? []).toHaveLength(0);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("never wakes while a completion claim is pending", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = makeGoal("g1", 1000, "verifying");
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				return cueAccept();
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await Bun.sleep(50);
+			expect(calls).toBe(0);
+			expect(h.sentMessages).toHaveLength(0);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("an authored prompt identical to the previous epoch is deduped, not re-delivered", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1 || calls === 3) return cueNext("Stay on milestone 2.");
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.sentMessages.length >= 1, "first epoch prompt delivered");
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.conductor.getJournal().length >= 2, "second epoch ruled");
+			await Bun.sleep(50);
+			expect(h.sentMessages).toHaveLength(1);
+			expect(h.conductor.getJournal()[1]?.action).toBe("deduped");
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("repeated dropped epochs halt epoch steering with a warning (loop fallback)", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				// Every attempt ends without a cue call: the turn carries nothing worth keeping.
+				return { content: ["pondering"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+			for (let i = 0; i < 3; i++) {
+				h.conductor.onPrimaryTurnEnd(false);
+				await waitFor(() => h.conductor.getStats().droppedEpochs >= i + 1, `epoch ${i + 1} dropped`);
+			}
+			await waitFor(() => h.notices.some(n => n.message.includes("epoch steering is paused")), "halt notice");
+			expect(h.conductor.getStats().epochsHalted).toBe(true);
+
+			// Halted steering does not start further epoch turns.
+			const callsAtHalt = calls;
+			h.conductor.onPrimaryTurnEnd(false);
+			await Bun.sleep(50);
+			expect(calls).toBe(callsAtHalt);
+			// The verification gate is unaffected by the epoch halt.
+			expect(h.conductor.isHealthy()).toBe(true);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("fallback=pause pauses the stretch when an epoch is dropped", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1, "conductor.fallback": "pause" });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			h.script.current = () => ({
+				content: ["pondering"],
+				usage: { input: 10, output: 5, cost: { total: 0.01 } },
+			});
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.goalState.goal?.status === "paused", "stretch paused by fallback");
+			expect(h.notices.some(n => n.message.includes("conductor.fallback = pause"))).toBe(true);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("epoch turns run on the exploratory bash allowlist, not the unrestricted verification grant", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			h.script.current = () => cueNext();
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				return calls === 1
+					? cueNext()
+					: { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.conductor.getStats().epochCount >= 1, "epoch ruled");
+			expect(h.allowlistHistory).toContainEqual(READ_ONLY_EXPLORATORY_COMMANDS);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("an epoch escalate ruling halts the conductor", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) {
+					return {
+						content: [
+							{
+								type: "toolCall" as const,
+								name: "cue",
+								arguments: { op: "escalate", question: "The contract is unachievable; pick a smaller scope." },
+							},
+						],
+						usage: { input: 10, output: 5, cost: { total: 0.01 } },
+					};
+				}
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.notices.some(n => n.message.includes("Conductor escalation")), "escalation");
+			expect(h.conductor.getStats().escalated).toBe(true);
 		} finally {
 			await h.cleanup();
 		}

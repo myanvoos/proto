@@ -277,7 +277,7 @@ export function parseHostInfo(value: unknown): SSHHostInfo | null {
 	};
 }
 
-function shouldRefreshHostInfo(host: SSHConnectionTarget, info: SSHHostInfo): boolean {
+function shouldRefreshHostInfo(_host: SSHConnectionTarget, info: SSHHostInfo): boolean {
 	if (info.version !== HOST_INFO_VERSION) return true;
 	if (info.os === "unknown") return true;
 	if (!info.transferShell) return true;

@@ -3335,6 +3335,33 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"conductor.minEpochTurns": {
+		type: "number",
+		default: 4,
+		ui: {
+			tab: "tasks",
+			group: "Modes",
+			label: "Conductor Epoch Cadence",
+			description:
+				"Minimum primary turns between conductor epoch wakes while a goal is active. At each wake the conductor reviews a mechanical digest of the stretch (activity headlines, working-tree diff, budget state) and may author the next iteration prompt.",
+			condition: "conductorEnabled",
+		},
+	},
+
+	"conductor.fallback": {
+		type: "enum",
+		values: ["loop", "pause"] as const,
+		default: "loop",
+		ui: {
+			tab: "tasks",
+			group: "Modes",
+			label: "Conductor Fallback",
+			description:
+				"What happens when the conductor fails to produce an epoch ruling: loop keeps the contract template driving the stretch (today's /goal behavior), pause halts the stretch until you resume it.",
+			condition: "conductorEnabled",
+		},
+	},
+
 	"title.refreshOnReplan": {
 		type: "boolean",
 		default: true,

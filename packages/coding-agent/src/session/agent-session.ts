@@ -82,6 +82,7 @@ import { reset as resetCapabilities } from "../capability";
 import {
 	type ConductorCommissionOutcome,
 	type ConductorStats,
+	loadConductorJournal,
 	loadConductorTranscriptCost,
 	SessionConductor,
 } from "../conductor";
@@ -1247,6 +1248,7 @@ export class AgentSession {
 				...advisorsHost,
 				goalRuntime: () => this.#goalRuntime,
 				currentGoal: () => this.#goalModeState?.goal,
+				requestCompaction: () => this.compact(),
 				emitConductorActivity: activity => {
 					void this.#emitSessionEvent({ type: "conductor_activity", activity }).catch(error => {
 						logger.debug("conductor activity emit failed", { err: String(error) });
@@ -1306,6 +1308,8 @@ export class AgentSession {
 				this.#advisors.resetAllRuntimes(reason);
 				this.#conductor.resetAllRuntimes(reason);
 			},
+			suspendConductorForTransition: () => this.#conductor.suspendForTransition(),
+			resumeConductorAfterTransition: () => this.#conductor.resumeFromTransition(),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
 			getContextBreakdown: options => this.getContextBreakdown(options),
@@ -5179,7 +5183,7 @@ export class AgentSession {
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
-			await this.#conductor.drainAndDetachRecorders();
+			await this.#conductor.suspendForTransition();
 			try {
 				this.agent.reset();
 				await this.sessionManager.flush();
@@ -5211,6 +5215,7 @@ export class AgentSession {
 			this.#todo.resetCycle();
 			this.#advisors.resetSessionState();
 			this.#conductor.resetSessionState();
+			this.#conductor.resumeFromTransition();
 			advisorRecordersDetached = false;
 			this.#reconnectToAgent();
 			sessionReconciled = true;
@@ -5234,9 +5239,10 @@ export class AgentSession {
 				if (sessionTransitioned) {
 					this.#advisors.resetSessionState();
 					this.#conductor.resetSessionState();
+					this.#conductor.resumeFromTransition();
 				} else {
 					this.#advisors.reattachRecorderFeeds();
-					this.#conductor.reattachRecorderFeeds();
+					this.#conductor.resumeFromTransition();
 				}
 			}
 		}
@@ -5272,7 +5278,7 @@ export class AgentSession {
 			advisorRecordersDetached = true;
 
 			await this.#advisors.drainAndDetachRecorders();
-			await this.#conductor.drainAndDetachRecorders();
+			await this.#conductor.suspendForTransition();
 			const bashTransition = this.#bash.beginSessionTransition();
 
 			let forkResult: { oldSessionFile: string; newSessionFile: string } | undefined;
@@ -5299,7 +5305,7 @@ export class AgentSession {
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
 			this.#advisors.reattachRecorderFeeds();
-			this.#conductor.reattachRecorderFeeds();
+			this.#conductor.resumeFromTransition();
 			advisorRecordersDetached = false;
 			await this.#afterSessionSwitch();
 			sessionReconciled = true;
@@ -5317,7 +5323,7 @@ export class AgentSession {
 			if (!sessionReconciled) await this.#afterSessionSwitch();
 			if (advisorRecordersDetached) {
 				this.#advisors.reattachRecorderFeeds();
-				this.#conductor.reattachRecorderFeeds();
+				this.#conductor.resumeFromTransition();
 			}
 		}
 	}
@@ -5963,6 +5969,7 @@ export class AgentSession {
 		await this.sessionManager.flush();
 		const previousSessionState = this.sessionManager.captureState();
 		const bashTransition = this.#bash.beginSessionTransition();
+		let conductorSuspended = false;
 
 		const previousSessionContext = switchingToDifferentSession ? undefined : this.buildDisplaySessionContext();
 
@@ -5998,7 +6005,8 @@ export class AgentSession {
 		try {
 			if (switchingToDifferentSession) {
 				await this.#advisors.drainAndDetachRecorders();
-				await this.#conductor.drainAndDetachRecorders();
+				await this.#conductor.suspendForTransition();
+				conductorSuspended = true;
 			}
 			await this.sessionManager.setSessionFile(sessionPath);
 			this.#bash.markSessionTransition(bashTransition);
@@ -6124,7 +6132,9 @@ export class AgentSession {
 			if (switchingToDifferentSession) {
 				this.#advisors.restoreCost(await loadAdvisorTranscriptCosts(this.sessionFile));
 				this.#conductor.restoreCost(await loadConductorTranscriptCost(this.sessionFile));
+				this.#conductor.restoreJournal(await loadConductorJournal(this.sessionFile));
 			}
+			if (conductorSuspended) this.#conductor.resumeFromTransition();
 			this.#bash.finishSessionTransition(bashTransition, true);
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
 				this.#notifySessionChangeCallbacks();
@@ -6167,6 +6177,7 @@ export class AgentSession {
 			this.#conductor.resetAllRuntimes();
 			this.#advisors.reattachRecorderFeeds();
 			this.#conductor.reattachRecorderFeeds();
+			if (conductorSuspended) this.#conductor.resumeFromTransition();
 			this.#reconnectToAgent();
 			try {
 				await this.#afterSessionSwitch();
@@ -6228,7 +6239,7 @@ export class AgentSession {
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
-			await this.#conductor.drainAndDetachRecorders();
+			await this.#conductor.suspendForTransition();
 			try {
 				if (!selectedEntry.parentId) {
 					const title = this.sessionManager.getSessionName();
@@ -6271,7 +6282,7 @@ export class AgentSession {
 			}
 
 			this.#advisors.reattachRecorderFeeds();
-			this.#conductor.reattachRecorderFeeds();
+			this.#conductor.resumeFromTransition();
 			advisorRecordersDetached = false;
 			return { selectedText, selectedImages, cancelled: false };
 		} finally {
@@ -6279,9 +6290,10 @@ export class AgentSession {
 				if (sessionTransitioned) {
 					this.#advisors.resetSessionState();
 					this.#conductor.resetSessionState();
+					this.#conductor.resumeFromTransition();
 				} else {
 					this.#advisors.reattachRecorderFeeds();
-					this.#conductor.reattachRecorderFeeds();
+					this.#conductor.resumeFromTransition();
 				}
 			}
 		}
@@ -6347,7 +6359,7 @@ export class AgentSession {
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
-			await this.#conductor.drainAndDetachRecorders();
+			await this.#conductor.suspendForTransition();
 			try {
 				if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
 					throw new Error("Cannot branch /side: session changed since /side started");
@@ -6386,6 +6398,7 @@ export class AgentSession {
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#advisors.resetSessionState();
 			this.#conductor.resetSessionState();
+			this.#conductor.resumeFromTransition();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 			advisorRecordersDetached = false;
 
@@ -6395,9 +6408,10 @@ export class AgentSession {
 				if (sessionTransitioned) {
 					this.#advisors.resetSessionState();
 					this.#conductor.resetSessionState();
+					this.#conductor.resumeFromTransition();
 				} else {
 					this.#advisors.reattachRecorderFeeds();
-					this.#conductor.reattachRecorderFeeds();
+					this.#conductor.resumeFromTransition();
 				}
 			}
 		}
@@ -6587,37 +6601,45 @@ export class AgentSession {
 			newLeafId = targetId;
 		}
 
-		const bashTransition = this.#bash.beginSessionTransition();
+		// The branch rewrite rebinds leaf/parent wiring under the live conversation; an in-flight conductor audit
+		// must not deliver a verdict (or restart) into that window.
+		await this.#conductor.suspendForTransition();
 		let summaryEntry: BranchSummaryEntry | undefined;
-		let branchTransitioned = false;
+		let stateContext: SessionContext | undefined;
 		try {
-			if (summaryText) {
-				const summaryId = this.sessionManager.branchWithSummary(
-					newLeafId,
-					summaryText,
-					summaryDetails,
-					fromExtension,
-				);
-				summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
-			} else if (newLeafId === null) {
-				this.sessionManager.resetLeaf();
-			} else {
-				this.sessionManager.branch(newLeafId);
+			const bashTransition = this.#bash.beginSessionTransition();
+			let branchTransitioned = false;
+			try {
+				if (summaryText) {
+					const summaryId = this.sessionManager.branchWithSummary(
+						newLeafId,
+						summaryText,
+						summaryDetails,
+						fromExtension,
+					);
+					summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
+				} else if (newLeafId === null) {
+					this.sessionManager.resetLeaf();
+				} else {
+					this.sessionManager.branch(newLeafId);
+				}
+				this.#bash.markSessionTransition(bashTransition);
+				branchTransitioned = true;
+			} finally {
+				this.#bash.finishSessionTransition(bashTransition, branchTransitioned);
 			}
-			this.#bash.markSessionTransition(bashTransition);
-			branchTransitioned = true;
-		} finally {
-			this.#bash.finishSessionTransition(bashTransition, branchTransitioned);
-		}
 
-		const stateContext = this.sessionManager.buildSessionContext();
-		const displayContext = deobfuscateSessionContext(stateContext, this.#obfuscator);
-		this.agent.replaceMessages(displayContext.messages);
-		this.#rehydrateCheckpointRewindState();
-		this.#advisors.resetSessionState({ preserveCost: true });
-		this.#conductor.resetSessionState({ preserveCost: true });
-		this.#todo.syncFromBranch();
-		this.#closeCodexProviderSessionsForHistoryRewrite();
+			stateContext = this.sessionManager.buildSessionContext();
+			const displayContext = deobfuscateSessionContext(stateContext, this.#obfuscator);
+			this.agent.replaceMessages(displayContext.messages);
+			this.#rehydrateCheckpointRewindState();
+			this.#advisors.resetSessionState({ preserveCost: true });
+			this.#conductor.resetSessionState({ preserveCost: true });
+			this.#todo.syncFromBranch();
+			this.#closeCodexProviderSessionsForHistoryRewrite();
+		} finally {
+			this.#conductor.resumeFromTransition();
+		}
 
 		this.#branchSummaryAbortController = undefined;
 
@@ -6644,7 +6666,7 @@ export class AgentSession {
 			editorImages,
 			cancelled: false,
 			summaryEntry,
-			sessionContext: stateContext,
+			sessionContext: stateContext!,
 			askReanswerCommitted: isAskReanswerCompletion,
 		};
 	}
