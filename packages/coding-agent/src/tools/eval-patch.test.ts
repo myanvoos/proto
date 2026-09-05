@@ -109,7 +109,7 @@ test("apply_patch validates every hunk before writing", async () => {
 			},
 			{
 				name: "malformed",
-				patch: ["@@ -1 +1 @@", " first", "-first", "+FIRST"].join("\n"),
+				patch: ["@@ -1 +1", " first", "-first", "+FIRST"].join("\n"),
 				index: "hunk 1",
 			},
 		];
@@ -187,7 +187,7 @@ test("apply_patch preserves mixed endings and a missing final newline", async ()
 
 		const remove = await runCell(
 			dir,
-			`apply_patch(${JSON.stringify(target)}, ${JSON.stringify(["@@", " gamma", "-delta"].join("\n"))})`,
+			`apply_patch(${JSON.stringify(target)}, ${JSON.stringify(["@@", " gamma", "-delta", "\\ No newline at end of file"].join("\n"))})`,
 		);
 		expect(remove.status).toBe("complete");
 		expect(await Bun.file(target).text()).toBe("alpha\r\nbeta\r\ngamma");
@@ -201,6 +201,130 @@ test("apply_patch preserves mixed endings and a missing final newline", async ()
 		);
 		expect(mixed.status).toBe("complete");
 		expect(await Bun.file(mixedTarget).text()).toBe("one\r\nTWO\nthree");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("apply_patch accepts unified headers, wrappers, fences, and uniform indentation", async () => {
+	const dir = await makeDir();
+	try {
+		const target = path.join(dir, "wrapped.txt");
+		await Bun.write(target, "before\nold\nafter\n");
+		const patch = [
+			"```diff",
+			`  *** Begin Patch`,
+			`  *** Update File ${target}`,
+			"  @@ -2,1 +2,1 @@ section label",
+			"   before",
+			"  -old",
+			"  +new",
+			"  *** End Patch",
+			"```",
+		].join("\n");
+		const cell = await runCell(dir, `apply_patch(${JSON.stringify(target)}, ${JSON.stringify(patch)})`);
+		expect(cell.status).toBe("complete");
+		expect(await Bun.file(target).text()).toBe("before\nnew\nafter\n");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("apply_patch uses unique whitespace fallback and preserves matched context bytes", async () => {
+	const dir = await makeDir();
+	try {
+		const target = path.join(dir, "whitespace.txt");
+		await Bun.write(target, "alpha  \r\n\tbeta\r\nomega");
+		const patch = ["@@ function_name", " alpha", "-beta", "+BETA", " omega", "*** End of File"].join("\n");
+		const cell = await runCell(dir, `apply_patch(${JSON.stringify(target)}, ${JSON.stringify(patch)})`);
+		expect(cell.status).toBe("complete");
+		expect(await Bun.file(target).text()).toBe("alpha  \r\nBETA\r\nomega");
+
+		const direct = [
+			"*** Begin Patch",
+			`*** Update File: ${target}`,
+			"@@ -2 +2 @@ label",
+			"-BETA",
+			"+DONE",
+			"*** End Patch",
+		].join("\n");
+		const second = await runCell(dir, `apply_patch(${JSON.stringify(target)}, ${JSON.stringify(direct)})`);
+		expect(second.status).toBe("complete");
+		expect(await Bun.file(target).text()).toBe("alpha  \r\nDONE\r\nomega");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("apply_patch rejects ambiguous whitespace fallback without using line hints", async () => {
+	const dir = await makeDir();
+	try {
+		const target = path.join(dir, "ambiguous-whitespace.txt");
+		const source = "  repeat  \n\trepeat\n";
+		await Bun.write(target, source);
+		const patch = ["@@ -2 +2 @@ claimed line", "-repeat", "+changed"].join("\n");
+		const cell = await runCell(dir, `apply_patch(${JSON.stringify(target)}, ${JSON.stringify(patch)})`);
+		expect(cell.status).toBe("error");
+		expect(cell.output).toContain("ambiguous leading-indentation match");
+		expect(cell.output).toContain("hunk 1");
+		expect(cell.output).toContain("unique context");
+		expect(writeCalls(cell, target)).toHaveLength(0);
+		expect(await Bun.file(target).text()).toBe(source);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("apply_patch accepts one conventional unified file envelope", async () => {
+	const dir = await makeDir();
+	try {
+		const target = path.join(dir, "conventional.txt");
+		await Bun.write(target, "one\nold\nthree\n");
+		const patch = [
+			`diff --git a/conventional.txt b/conventional.txt`,
+			"index 1111111..2222222 100644",
+			"--- a/conventional.txt",
+			"+++ b/conventional.txt",
+			"@@ -2,1 +2,1 @@ section label",
+			" one",
+			"-old",
+			"+new",
+			" three",
+		].join("\n");
+		const cell = await runCell(dir, `apply_patch(${JSON.stringify(target)}, ${JSON.stringify(patch)})`);
+		expect(cell.status).toBe("complete");
+		expect(await Bun.file(target).text()).toBe("one\nnew\nthree\n");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("apply_patch enforces End of File and rejects target-changing envelopes atomically", async () => {
+	const dir = await makeDir();
+	try {
+		const target = path.join(dir, "safety.txt");
+		const source = "one\ntwo\nthree\n";
+		await Bun.write(target, source);
+		const eofMiss = ["@@", "-two", "+TWO", "*** End of File"].join("\n");
+		const eofCell = await runCell(dir, `apply_patch(${JSON.stringify(target)}, ${JSON.stringify(eofMiss)})`);
+		expect(eofCell.status).toBe("error");
+		expect(eofCell.output).toContain("requires this hunk to reach end of file");
+		expect(writeCalls(eofCell, target)).toHaveLength(0);
+		expect(await Bun.file(target).text()).toBe(source);
+
+		const mismatched = [
+			"*** Begin Patch",
+			"*** Update File: another.txt",
+			"@@",
+			"-two",
+			"+TWO",
+			"*** End Patch",
+		].join("\n");
+		const mismatchCell = await runCell(dir, `apply_patch(${JSON.stringify(target)}, ${JSON.stringify(mismatched)})`);
+		expect(mismatchCell.status).toBe("error");
+		expect(mismatchCell.output).toContain("mismatched update path");
+		expect(writeCalls(mismatchCell, target)).toHaveLength(0);
+		expect(await Bun.file(target).text()).toBe(source);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

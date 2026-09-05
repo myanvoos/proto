@@ -39,6 +39,7 @@ export class BashExecutionComponent extends Container {
 	#expanded = false;
 
 	#blockVersion = 0;
+	#onTranscriptBlockChange?: () => void;
 	#displayDirty = false;
 	#chunkGate = false;
 	#contentContainer: Container;
@@ -69,16 +70,28 @@ export class BashExecutionComponent extends Container {
 		return this.#blockVersion;
 	}
 
+	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
+		this.#onTranscriptBlockChange = listener;
+	}
+
 	setExpanded(expanded: boolean): void {
 		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	override invalidate(): void {
 		super.invalidate();
 		this.#displayDirty = false;
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
+	}
+
+	override dispose(): void {
+		this.#onTranscriptBlockChange?.();
+		this.#onTranscriptBlockChange = undefined;
+		super.dispose();
 	}
 
 	appendOutput(chunk: string): void {
@@ -104,6 +117,7 @@ export class BashExecutionComponent extends Container {
 		}
 
 		this.#displayDirty = true;
+		this.#onTranscriptBlockChange?.();
 	}
 
 	setComplete(
@@ -122,6 +136,7 @@ export class BashExecutionComponent extends Container {
 		this.#loader.stop();
 
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	override render(width: number): readonly string[] {

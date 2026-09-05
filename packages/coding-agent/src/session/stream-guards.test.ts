@@ -90,6 +90,7 @@ function waitForAbort(signal: AbortSignal | undefined): Promise<boolean> {
 
 interface StreamObserverTool extends AgentTool {
 	observeStreamedInput(toolCallId: string, rawPartialJson: string): Promise<StreamedKernelFailure | undefined>;
+	flushStreamedInput?(toolCallId: string, rawPartialJson?: string): Promise<void>;
 	cancelStreamedInput(toolCallId?: string): void;
 }
 
@@ -106,6 +107,7 @@ interface Harness {
 function makeBashTool(
 	execute: (toolCallId: string, args: Record<string, unknown>) => Promise<void> | void,
 	observe: (toolCallId: string, rawPartialJson: string) => Promise<StreamedKernelFailure | undefined>,
+	flush?: (toolCallId: string, rawPartialJson?: string) => Promise<void>,
 ): StreamObserverTool {
 	return {
 		name: "bash",
@@ -122,6 +124,7 @@ function makeBashTool(
 			return { content: [{ type: "text", text: "executed" }] };
 		},
 		observeStreamedInput: observe,
+		flushStreamedInput: flush,
 		cancelStreamedInput: () => {},
 	} as unknown as StreamObserverTool;
 }
@@ -385,6 +388,58 @@ describe("streamed kernel loop guard", () => {
 					message => message.role === "custom" && message.customType === "kernel-assert-preflight",
 				),
 			).toBe(false);
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	test("flushes the final streamed prefix at toolcall_end", async () => {
+		const toolCallId = "final-prefix-flush";
+		const raw = '{"command":"printf final"}';
+		const flushed: string[] = [];
+		const executed: string[] = [];
+		let streamCalls = 0;
+		const bash = makeBashTool(
+			(id, args) => {
+				executed.push(`${id}:${String(args.command)}`);
+			},
+			async () => undefined,
+			async (id, observedRaw) => {
+				flushed.push(`${id}:${observedRaw}`);
+			},
+		);
+		const streamFn: StreamFn = (model, _context, _options) => {
+			const stream = createAssistantMessageEventStream();
+			if (streamCalls++ > 0) {
+				textResponse(stream, model, "final prefix flushed");
+				return stream;
+			}
+			const timestamp = Date.now();
+			const complete = toolCall(toolCallId, raw, "printf final");
+			stream.push({ type: "start", partial: assistantMessage(model, timestamp, [], "toolUse") });
+			stream.push({
+				type: "toolcall_start",
+				contentIndex: 0,
+				partial: assistantMessage(model, timestamp, [toolCall(toolCallId, "")], "toolUse"),
+			});
+			stream.push({
+				type: "toolcall_end",
+				contentIndex: 0,
+				toolCall: complete,
+				partial: assistantMessage(model, timestamp, [complete], "toolUse"),
+			});
+			stream.push({
+				type: "done",
+				reason: "toolUse",
+				message: assistantMessage(model, timestamp, [complete], "toolUse"),
+			});
+			return stream;
+		};
+		const harness = makeHarness(streamFn, bash);
+		try {
+			await harness.agent.prompt("flush final prefix");
+			expect(flushed).toEqual([`${toolCallId}:${raw}`]);
+			expect(executed).toEqual([`${toolCallId}:printf final`]);
 		} finally {
 			await harness.dispose();
 		}

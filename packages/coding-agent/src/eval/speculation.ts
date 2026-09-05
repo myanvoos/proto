@@ -44,6 +44,110 @@ export interface StreamedHeredocCell {
 /** Shared bound for decoding one streamed tool-call JSON payload. */
 export const MAX_STREAMED_INPUT_JSON_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Maximum cadence for work derived from a streamed tool-call prefix. The
+ * observer keeps the latest value and runs it at most once per interval while
+ * a stream remains active; callers can force a trailing flush when the call
+ * ends or execution is about to claim speculative work.
+ */
+export const STREAMED_INPUT_OBSERVATION_INTERVAL_MS = 16;
+
+export interface LatestValueSchedulerOptions {
+	delayMs?: number;
+}
+
+/**
+ * Run only the newest value in a burst, with a bounded trailing cadence.
+ * `flush()` drains immediately and is deterministic for callers/tests; a
+ * queued timer is merely the normal streaming path. Work is never dropped by
+ * `flush()` and cancellation only drops values that have not started running.
+ */
+export class LatestValueScheduler<T> {
+	readonly #run: (value: T) => Promise<void> | void;
+	readonly #delayMs: number;
+	#pending: T | undefined;
+	#hasPending = false;
+	#timer: NodeJS.Timeout | undefined;
+	#running: Promise<void> | undefined;
+	#flushPromise: Promise<void> | undefined;
+
+	constructor(run: (value: T) => Promise<void> | void, options: LatestValueSchedulerOptions = {}) {
+		this.#run = run;
+		this.#delayMs = Math.max(0, Math.floor(options.delayMs ?? STREAMED_INPUT_OBSERVATION_INTERVAL_MS));
+	}
+
+	enqueue(value: T): void {
+		this.#pending = value;
+		this.#hasPending = true;
+		if (this.#running || this.#timer !== undefined) return;
+		this.#armTimer();
+	}
+
+	async flush(): Promise<void> {
+		if (this.#flushPromise) return await this.#flushPromise;
+		if (this.#timer !== undefined) {
+			clearTimeout(this.#timer);
+			this.#timer = undefined;
+		}
+		const flushPromise = this.#runPending(true);
+		this.#flushPromise = flushPromise;
+		try {
+			await flushPromise;
+		} finally {
+			if (this.#flushPromise === flushPromise) this.#flushPromise = undefined;
+		}
+	}
+
+	cancel(): void {
+		if (this.#timer !== undefined) {
+			clearTimeout(this.#timer);
+			this.#timer = undefined;
+		}
+		this.#pending = undefined;
+		this.#hasPending = false;
+	}
+
+	#armTimer(): void {
+		const timer = setTimeout(() => {
+			if (this.#timer !== timer) return;
+			this.#timer = undefined;
+			void this.#runPending(false).catch(() => undefined);
+		}, this.#delayMs);
+		timer.unref?.();
+		this.#timer = timer;
+	}
+
+	async #runPending(force: boolean): Promise<void> {
+		if (this.#running) {
+			await this.#running;
+			if (this.#hasPending) {
+				if (force) await this.#runPending(true);
+				else if (this.#timer === undefined) this.#armTimer();
+			}
+			return;
+		}
+		if (!this.#hasPending) return;
+		const value = this.#pending as T;
+		this.#pending = undefined;
+		this.#hasPending = false;
+		const running = Promise.resolve().then(() => this.#run(value));
+		this.#running = running;
+		let failure: unknown;
+		try {
+			await running;
+		} catch (error) {
+			failure = error;
+		} finally {
+			if (this.#running === running) this.#running = undefined;
+		}
+		if (this.#hasPending) {
+			if (force) await this.#runPending(true);
+			else if (this.#timer === undefined) this.#armTimer();
+		}
+		if (failure !== undefined) throw failure;
+	}
+}
+
 const PY_IDENT_START = /[A-Za-z_]/u;
 const PY_IDENT_CONT = /[A-Za-z0-9_]/u;
 const JS_IDENT_START = /[A-Za-z_$]/u;

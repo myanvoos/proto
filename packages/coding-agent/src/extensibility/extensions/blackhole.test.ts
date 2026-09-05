@@ -16,7 +16,7 @@ test("compact options preserve extension-provided instructions", async () => {
 	expect(receivedInstructions).toBe("__pi_vcc__");
 });
 
-test("built-in blackhole produces deterministic structural compaction", async () => {
+test("built-in memory extension produces deterministic structural compaction", async () => {
 	await using agentDir = await TempDir.create();
 	const packageDir = path.resolve(import.meta.dir, "../../..");
 	const source = `
@@ -42,10 +42,10 @@ const created = await createAgentSession({
     pi.on("session_compact_failed", event => { failureEvent = event; });
   }],
 });
-const extension = created.extensionsResult.extensions.find(item => item.path === "<builtin-pi-blackhole>");
-if (!extension) throw new Error("built-in blackhole extension was not loaded");
+const extension = created.extensionsResult.extensions.find(item => item.path === "<builtin-memory>");
+if (!extension) throw new Error("built-in memory extension was not loaded");
 const handler = extension.handlers.get("session_before_compact")?.[0];
-if (!handler) throw new Error("blackhole compaction hook was not registered");
+if (!handler) throw new Error("memory compaction hook was not registered");
 const message = (id, role, content) => ({ id, type: "message", message: { role, content } });
 const branchEntries = [
   message("m1", "user", "Fix the authentication bug"),
@@ -70,7 +70,7 @@ const result = await handler(
 await created.session.compact().catch(() => {});
 console.log(JSON.stringify({
   extensions: created.extensionsResult.extensions.map(item => item.path),
-  command: Boolean(created.session.extensionRunner?.getCommand("blackhole")),
+  command: Boolean(created.session.extensionRunner?.getCommand("memory")),
   tool: Boolean(created.session.extensionRunner?.getRegisteredTool("recall")),
   failureEvent,
   result,
@@ -99,7 +99,7 @@ authStorage.close();
 			compaction: { summary: string; firstKeptEntryId: string; details: { compactor: string } };
 		};
 	};
-	expect(output.extensions).toContain("<builtin-pi-blackhole>");
+	expect(output.extensions).toContain("<builtin-memory>");
 	expect(output.command).toBe(true);
 	expect(output.tool).toBe(true);
 	expect(output.failureEvent).toMatchObject({

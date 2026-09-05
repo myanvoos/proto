@@ -12,11 +12,14 @@ import { BashTool } from "./bash";
 interface CompletionServer {
 	server: Server<undefined>;
 	requests: Array<{ prompt: string; body: unknown }>;
+	waitForRequest: () => Promise<void>;
 	release: () => void;
 }
 
 function startCompletionServer(holdFirst = false): CompletionServer {
 	const requests: Array<{ prompt: string; body: unknown }> = [];
+	const requestWaiters: Array<() => void> = [];
+	let deliveredRequestCount = 0;
 	const first = Promise.withResolvers<void>();
 	const server = Bun.serve({
 		port: 0,
@@ -24,6 +27,7 @@ function startCompletionServer(holdFirst = false): CompletionServer {
 			const body = (await request.json()) as { messages?: Array<{ content?: Array<{ text?: string }> }> };
 			const prompt = body.messages?.at(-1)?.content?.[0]?.text ?? "";
 			requests.push({ prompt, body });
+			requestWaiters.shift()?.();
 			const requestNumber = requests.length;
 			if (holdFirst && requestNumber === 1) await first.promise;
 			const answer = `sample-${requestNumber}`;
@@ -38,6 +42,14 @@ function startCompletionServer(holdFirst = false): CompletionServer {
 	return {
 		server,
 		requests,
+		waitForRequest: async () => {
+			if (requests.length > deliveredRequestCount) {
+				deliveredRequestCount = requests.length;
+				return;
+			}
+			await new Promise<void>(resolve => requestWaiters.push(resolve));
+			deliveredRequestCount = requests.length;
+		},
 		release: () => first.resolve(),
 	};
 }
@@ -265,6 +277,30 @@ test("aborting final execution aborts its speculative request", async () => {
 		bash.cancelStreamedInput();
 	} finally {
 		completion.release();
+		await completion.server.stop(true);
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60_000);
+
+test("execution flushes a coalesced final prefix before claiming speculation", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-spec-coalesced-"));
+	const completion = startCompletionServer();
+	try {
+		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, settings());
+		const bash = new BashTool(session);
+		const command = `python <<'PY'\na = completion("coalesced")\nprint(a)\nPY`;
+		const earlyRaw = JSON.stringify({ command });
+		const finalRaw = JSON.stringify({ command, cwd: dir });
+		const earlyObservation = bash.observeStreamedInput("coalesced-outer", earlyRaw);
+		const finalObservation = bash.observeStreamedInput("coalesced-outer", finalRaw);
+		const result = await bash.execute("coalesced-outer", { command, cwd: dir });
+		await completion.waitForRequest();
+		expect(outputText(result)).toContain("sample-1");
+		expect(completion.requests).toHaveLength(1);
+		expect(await earlyObservation).toBeUndefined();
+		expect(await finalObservation).toBeUndefined();
+		bash.cancelStreamedInput("coalesced-outer");
+	} finally {
 		await completion.server.stop(true);
 		await fs.rm(dir, { recursive: true, force: true });
 	}

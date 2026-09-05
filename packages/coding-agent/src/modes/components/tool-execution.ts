@@ -254,6 +254,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#resultVersion = 0;
 
 	#blockVersion = 0;
+	#onTranscriptBlockChange?: () => void;
 	#lastDisplayKey: string | undefined;
 
 	#displayInputVersion = 0;
@@ -342,6 +343,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#displayInputVersion++;
 		this.#updateSpinnerAnimation();
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	setArgsComplete(_toolCallId?: string): void {
@@ -351,6 +353,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		if (alreadyComplete) return;
 		this.#displayInputVersion++;
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	setExecutionStarted(_toolCallId?: string): void {
@@ -360,6 +363,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#updateSpinnerAnimation();
 		this.#displayInputVersion++;
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	updateResult(
@@ -396,6 +400,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		);
 
 		this.#maybeConvertImagesForKitty();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	#getAllImageBlocks(): ToolImageBlock[] {
@@ -426,6 +431,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					this.#convertedImages.set(index, converted);
 					this.#displayInputVersion++;
 					this.#updateDisplay();
+					this.#onTranscriptBlockChange?.();
 					this.#ui.requestRender();
 				})
 				.catch(() => {});
@@ -479,6 +485,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	tickSpinner(frame: number): void {
 		this.#spinnerFrame = frame;
 		this.#renderState.spinnerFrame = frame;
+		this.#onTranscriptBlockChange?.();
 		this.#ui.requestComponentRender(this);
 	}
 
@@ -505,6 +512,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				this.#renderState.spinnerFrame = nextFrame;
 			}
 
+			this.#onTranscriptBlockChange?.();
 			this.#ui.requestComponentRender(this);
 		}, 65);
 	}
@@ -546,6 +554,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		return this.#blockVersion;
 	}
 
+	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
+		this.#onTranscriptBlockChange = listener;
+	}
+
 	seal(): void {
 		if (this.#sealed) return;
 		this.#sealed = true;
@@ -553,6 +565,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#displaceableByToolName = undefined;
 		this.stopAnimation();
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 		this.#ui.requestRender();
 	}
 
@@ -572,32 +585,43 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			unregisterSpinnerBlock(this);
 			this.#spinnerFrame = undefined;
 			this.#renderState.spinnerFrame = undefined;
+			this.#onTranscriptBlockChange?.();
 		}
 	}
 
 	override dispose(): void {
 		this.stopAnimation();
+		this.#stopTodoStrikeAnimation();
+		this.#onTranscriptBlockChange?.();
+		this.#onTranscriptBlockChange = undefined;
+		super.dispose();
 	}
 
 	setExpanded(expanded: boolean): void {
 		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	setToolActivityVisible(visible: boolean): void {
+		const changed = this.#toolActivityVisible !== visible;
 		this.#toolActivityVisible = visible;
 		super.invalidate();
+		if (changed) this.#onTranscriptBlockChange?.();
 	}
 
 	setShowImages(show: boolean): void {
+		const changed = this.#showImages !== show;
 		this.#showImages = show;
 		this.#updateDisplay();
+		if (changed) this.#onTranscriptBlockChange?.();
 	}
 
 	override invalidate(): void {
 		super.invalidate();
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	#updateDisplay(): void {

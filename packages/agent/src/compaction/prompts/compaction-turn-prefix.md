@@ -10,4 +10,4 @@ Summarize the supplied earlier part of this turn for the retained recent work. R
 ## Context for Suffix
 - [Information needed to understand the retained recent work]
 
-Keep the summary concise. Preserve exact file paths, function names, error messages, relevant tool outputs, and command results when present. Do not invent details omitted by preprocessing.
+Keep the summary concise. Preserve exact file paths, function names, error messages, relevant tool outputs, and command results when present. NEVER invent details omitted by preprocessing.

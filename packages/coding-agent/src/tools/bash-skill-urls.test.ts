@@ -78,6 +78,24 @@ test("unquoted delimiters and <<- tab terminators are scoped as heredoc bodies",
 	}
 });
 
+test("shell-quoted command URLs expand while embedded quoted text stays literal", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "skill-urls-"));
+	try {
+		const artifacts = path.join(dir, "artifacts");
+		const singleQuoted = await expandInternalUrls(`cat '${MID_URL}'`, optionsWith(artifacts));
+		const doubleQuoted = await expandInternalUrls(`cat "${TAIL_URL}"`, optionsWith(artifacts));
+		const standalone = await expandInternalUrls(`"${MID_URL}"`, optionsWith(artifacts));
+		const embedded = `printf "%s" "prefix ${INPUT_URL}"`;
+		const embeddedExpanded = await expandInternalUrls(embedded, optionsWith(artifacts));
+		expect(singleQuoted).toContain(path.join(artifacts, "fleet", "mid.txt"));
+		expect(doubleQuoted).toContain(path.join(artifacts, "fleet", "tail.txt"));
+		expect(standalone).toContain(path.join(artifacts, "fleet", "mid.txt"));
+		expect(embeddedExpanded).toBe(embedded);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("here-strings keep expanding: the word after <<< is command syntax, not body", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "skill-urls-"));
 	try {

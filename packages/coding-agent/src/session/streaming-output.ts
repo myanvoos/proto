@@ -17,6 +17,7 @@ const CR = "\r";
 const ELLIPSIS = "…";
 
 const MAX_ACTIONABLE_DIAGNOSTIC_BYTES = 16 * 1024;
+const MAX_ACTIONABLE_DIAGNOSTIC_LINE_BYTES = MAX_ACTIONABLE_DIAGNOSTIC_BYTES - 1;
 
 function isActionableDiagnostic(line: string): boolean {
 	if (!line.trim()) return false;
@@ -519,6 +520,8 @@ export class OutputSink {
 	#summarized = false;
 	#collectorError: string | undefined;
 	#diagnosticPending = "";
+	#diagnosticPendingBytes = 0;
+	#diagnosticSkippingOversized = false;
 	#actionableDiagnostics: string[] = [];
 	#actionableDiagnosticBytes = 0;
 	#lastChunkTime = 0;
@@ -591,10 +594,41 @@ export class OutputSink {
 
 	#collectActionableDiagnostics(chunk: string): void {
 		if (!chunk) return;
-		const combined = this.#diagnosticPending + chunk;
-		const lines = combined.split(NL);
-		this.#diagnosticPending = lines.pop() ?? "";
-		for (const line of lines) this.#rememberActionableDiagnostic(line);
+
+		let cursor = 0;
+		while (cursor < chunk.length) {
+			if (this.#diagnosticSkippingOversized) {
+				const newline = chunk.indexOf(NL, cursor);
+				if (newline === -1) return;
+				this.#diagnosticSkippingOversized = false;
+				cursor = newline + 1;
+				continue;
+			}
+
+			const newline = chunk.indexOf(NL, cursor);
+			const lineEnd = newline === -1 ? chunk.length : newline;
+			const segment = chunk.substring(cursor, lineEnd);
+			const segmentBytes = Buffer.byteLength(segment, "utf-8");
+			const lineBytes = this.#diagnosticPendingBytes + segmentBytes;
+			if (lineBytes > MAX_ACTIONABLE_DIAGNOSTIC_LINE_BYTES) {
+				this.#diagnosticPending = "";
+				this.#diagnosticPendingBytes = 0;
+				if (newline === -1) this.#diagnosticSkippingOversized = true;
+			} else {
+				if (segment.length > 0) {
+					this.#diagnosticPending += segment;
+					this.#diagnosticPendingBytes = lineBytes;
+				}
+				if (newline !== -1) {
+					this.#rememberActionableDiagnostic(this.#diagnosticPending);
+					this.#diagnosticPending = "";
+					this.#diagnosticPendingBytes = 0;
+				}
+			}
+
+			if (newline === -1) return;
+			cursor = newline + 1;
+		}
 	}
 
 	#rememberActionableDiagnostic(line: string): void {
@@ -617,6 +651,8 @@ export class OutputSink {
 			this.#rememberActionableDiagnostic(this.#diagnosticPending);
 			this.#diagnosticPending = "";
 		}
+		this.#diagnosticPendingBytes = 0;
+		this.#diagnosticSkippingOversized = false;
 	}
 
 	#collector(): ExecutionCollectorMetadata {
@@ -937,6 +973,8 @@ export class OutputSink {
 		this.#truncated = false;
 		this.#summarized = options?.summarized === true;
 		this.#diagnosticPending = "";
+		this.#diagnosticPendingBytes = 0;
+		this.#diagnosticSkippingOversized = false;
 		this.#actionableDiagnostics = [];
 		this.#actionableDiagnosticBytes = 0;
 		this.#currentLineBytes = 0;

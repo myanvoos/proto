@@ -46,12 +46,9 @@ export function planTurnPersistence(
 		const key = turnKeys[index];
 
 		if (key === undefined) continue;
-		if (persistedKeys.has(key)) continue;
-		for (let later = index + 1; later < turnKeys.length; later++) {
-			const laterKey = turnKeys[later];
-			if (laterKey !== undefined && persistedKeys.has(laterKey)) {
-				return { kind: "out-of-order", messageIndex: index };
-			}
+		if (persistedKeys.has(key)) {
+			if (toPersist.length > 0) return { kind: "out-of-order", messageIndex: toPersist[0] };
+			continue;
 		}
 		toPersist.push(index);
 	}

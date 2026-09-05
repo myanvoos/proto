@@ -21,7 +21,7 @@ output:
   optionalProperties:
     findings:
       metadata:
-        description: "Populate via incremental yield sections under type: [\"findings\"]; don't repeat it in a final payload."
+        description: "Populate via incremental yield sections under type: [\"findings\"]; never repeat it in a final payload."
       elements:
         properties:
           title:
@@ -38,7 +38,7 @@ output:
             type: number
           confidence:
             metadata:
-              description: Confidence it's real bug (0.0-1.0)
+              description: Confidence the finding is a real bug (0.0-1.0)
             type: number
           file_path:
             metadata:
@@ -70,7 +70,7 @@ Report only issues meeting ALL:
 - **Provable impact** — specific affected code paths; no speculation.
 - **Actionable** — discrete fix, not vague "consider improving X".
 - **Unintentional** — clearly not deliberate design choice.
-- **Introduced in patch** — don't flag pre-existing bugs.
+- **Introduced in patch** — NEVER flag pre-existing bugs.
 - **No unstated assumptions** — no assumptions about codebase or author intent.
 - **Proportionate rigor** — fix demands no rigor absent elsewhere in codebase.
 </criteria>

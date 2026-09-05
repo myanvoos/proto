@@ -42,7 +42,7 @@
 
 - Added default-on completion speculation for streamed Python/JavaScript kernel-in-bash calls, overlapping eligible completion requests with code generation.
 - Added default-on streamed assertion preflight that stops generation on supported failing file-anchor checks and resumes with a diagnostic, without executing the partial cell or writing files.
-- Added built-in pi-blackhole observational memory with `/blackhole`, `/blackhole-memory`, `/blackhole-recall`, `/blackhole-export`, and the agent-facing `recall` tool.
+- Added built-in pi-blackhole observational memory with plain `/memory`, `/observations`, and `/recall` commands (no vendor branding in the TUI) and the agent-facing `recall` tool.
 - Added the `session_compact_failed` extension event with failure reason, abort/retry state, and extension attribution.
 - Conductor epochs: with a goal active and `conductor.enabled`, the conductor now wakes between primary turns (every `conductor.minEpochTurns` settled turns, or early on 50/80/100% budget-threshold crossings), reviews a mechanical digest of the stretch (activity headlines, working-tree diff stat, goal/budget state), and rules via `cue({op:"next"})` — keeping the template continuation, authoring the next iteration prompt (delivered at the turn boundary, duplicates dropped), folding the session context (`context:"compact"`), or escalating. Epoch rulings land in a decision journal shown by `/conduct status`, survive session switches via the conductor transcript, and repeated dropped epochs halt epoch steering with a warning while `conductor.fallback: "pause"` pauses the stretch instead. The completion-claim verification gate is unchanged.- Conductor runs now stream their activity into the TUI: while a verification or commissioning run works, a live line under the editor shows what it is doing (current tool, tokens, cost), and the Agent Fleet lists it in real time — open it and press Enter to tail the conductor transcript as it is written. Previously the conductor ran silently.
 - Bash commands that run `rg` with a grep-style `-r` flag cluster (`-rn`, `-rl`, …) now surface an advisory notice: rg's `-r` is `--replace` and consumes the next token — line numbers are `-n`, files-with-matches `-l`, and recursion is rg's default.
@@ -79,6 +79,9 @@
 - Removed the `/agents` hub dashboard (`AgentsHubComponent`) and its per-agent model/prewalk/advisor surface; agent model roles remain available through `/model`. Removed the TUI info/delete/pin branches of `/session` (still available over ACP/text) and the now-unused `handleSessionCommand`/`showSessionPinSelector` context methods.
 
 ### Changed
+
+- Python patch helpers now accept unified diffs, single-file headers, code fences, quoted paths, and pasted indentation.
+- Python patches tolerate unique leading/trailing whitespace differences while retaining stale-file, ambiguity, and atomic-write protections.
 
 - Compaction now defaults to pi-blackhole's deterministic structural summaries, preserving Proto's existing scheduling, recovery, persistence, and optional pi-default fallback.
 - The conductor verification gate is now an idle watchdog: it escalates only when a pended completion claim sits unresolved with no verification activity (default raised 300s → 3600s) — an in-flight audit, a still-streaming primary turn, or an in-flight commissioning run suspends it instead of being cut off mid-work. Commissioning (`/conduct <ask>`) no longer aborts on a fixed wall clock; it ends through its bounded attempt loop, turn errors, or a user abort, so a slow-but-healthy frontier investigation finishes instead of timing out. Commissioning prompts now compose the autonomous loop — ordered milestones with per-stage checks and attempt caps — instead of a monolithic end-state spec: the contract states what must be true and how it is proved, never how to build it.
@@ -122,7 +125,23 @@
 
 ### Fixed
 
+- `xd` preserves internal URLs in quoted, escaped, and environment-supplied JSON arguments.
+- `xd read` fetches web URLs without treating them as local filesystem paths.
+- Plain-text read ranges stay exact across files, artifacts, and archive entries while code reads retain context.
+- Fleet sends complete lines to non-PTY processes while preserving terminal Enter behavior and raw input.
+- Browser startup works with Snap Chromium without manually choosing a compatible profile directory.
+
+- The status line no longer scans message history for throughput calculations when the tokens-per-second indicator is hidden.
+
+- Large streamed bash commands now coalesce speculative checks instead of repeatedly processing every intermediate argument update.
+- Long main-agent and subagent transcripts now reuse unchanged finalized blocks during live updates, reducing redraw work as history grows.
+
+- Large tool batches now avoid repeated scans when planning which messages to save before mid-run compaction.
+- Long sessions now avoid rescanning the transcript for each repeated message while still retaining distinct messages with matching metadata.
+
 - Verbatim Python payloads no longer trigger streamed assertion failures or speculative model calls.
+
+- Fixed excessive processing time and memory use when commands stream very long lines, while preserving later diagnostics and raw output artifacts.
 
 - Long-running sessions now release aborted-worker revival state and terminal execution payloads while preserving worker history.
 - Streamed assertion checks now use a byte-bounded cache so large commands cannot accumulate solely under an entry-count limit.

@@ -61,6 +61,7 @@ import {
 	type LineRange,
 	probeLiteralPathExists,
 	resolveReadPath,
+	shouldExpandRangeContext,
 	splitDelimitedPathEntry,
 	splitInternalUrlSel,
 	splitPathAndSel,
@@ -729,6 +730,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		bridgeResult?: AgentToolResult<ReadToolDetails>;
 	}> {
 		const rawSelector = isRawSelector(parsed);
+		const includeContext = shouldExpandRangeContext(absolutePath);
 
 		const bridgePromise = allowBridge ? routeReadThroughBridge(this.session, absolutePath) : undefined;
 		if (bridgePromise !== undefined) {
@@ -825,7 +827,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			const entries = buildLineEntriesWithBlockContext(
 				fullLines,
 				visibleSpans,
-				{ path: absolutePath, text: buffered?.normalizedText },
+				{ path: absolutePath, text: buffered?.normalizedText, includeContext },
 				{
 					lineText: (lineNumber, sourceText) => {
 						const visibleText = displayLineByNumber.get(lineNumber);
@@ -1275,8 +1277,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 					const rawSelector = isRawSelector(parsed);
 					const requestedStart = offset ? Math.max(0, offset - 1) : 0;
-					const expandStart = !rawSelector && offset !== undefined && offset > 1;
-					const expandEnd = !rawSelector && limit !== undefined;
+					const expandContext = shouldExpandRangeContext(absolutePath);
+					const expandStart = expandContext && !rawSelector && offset !== undefined && offset > 1;
+					const expandEnd = expandContext && !rawSelector && limit !== undefined;
 					const leadingContext = expandStart ? Math.min(requestedStart, RANGE_LEADING_CONTEXT_LINES) : 0;
 					const trailingContext = expandEnd ? RANGE_TRAILING_CONTEXT_LINES : 0;
 					const startLine = requestedStart - leadingContext;
@@ -1395,7 +1398,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						const entries = buildLineEntriesWithBlockContext(
 							bracketContextFullLines,
 							[{ startLine: startLineDisplay, endLine: displayedEndLine }],
-							{ path: absolutePath, text: buffered?.normalizedText },
+							{ path: absolutePath, text: buffered?.normalizedText, includeContext: expandContext },
 							{
 								lineText: (lineNumber, sourceText) => {
 									const visibleText = displayLineByNumber.get(lineNumber);
@@ -1657,8 +1660,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const { offset, limit } = selToOffsetLimit(parsedSel);
 		const requestedStart = offset ? Math.max(0, offset - 1) : 0;
 
-		const expandStart = !rawSelector && offset !== undefined && offset > 1;
-		const expandEnd = !rawSelector && limit !== undefined;
+		const expandContext = shouldExpandRangeContext(artifact.path);
+		const expandStart = expandContext && !rawSelector && offset !== undefined && offset > 1;
+		const expandEnd = expandContext && !rawSelector && limit !== undefined;
 		const leadingContext = expandStart ? Math.min(requestedStart, RANGE_LEADING_CONTEXT_LINES) : 0;
 		const trailingContext = expandEnd ? RANGE_TRAILING_CONTEXT_LINES : 0;
 		const startLine = requestedStart - leadingContext;

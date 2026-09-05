@@ -34,4 +34,4 @@ After all 5 settled: call `goal` with `op: "create"`, final objective, and `toke
 ## Boundaries
 ## Stop conditions
 
-Creation enables goal mode immediately: confirm in one short sentence, then work toward objective. If user declines or abandons interview, do not call `goal`.
+Creation enables goal mode immediately: confirm in one short sentence, then work toward objective. If user declines or abandons interview, NEVER call `goal`.

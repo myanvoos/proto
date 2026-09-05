@@ -1023,22 +1023,36 @@ class DaemonBroker {
 		return { op: "wait", daemon: record.snapshot, matched, timedOut };
 	}
 
+	async #writeInput(record: ManagedDaemon, data: string): Promise<void> {
+		if (record.spec.pty) {
+			if (!record.pty) throw new Error(`Daemon ${record.spec.name} PTY is unavailable`);
+			record.pty.write(data);
+			return;
+		}
+		if (record.input) {
+			record.input.write(data);
+			await record.input.flush();
+			return;
+		}
+		throw new Error(`Daemon ${record.spec.name} stdin is unavailable`);
+	}
+
 	async #send(operation: Extract<DaemonOperation, { op: "send" }>): Promise<DaemonRpcResult> {
 		const record = this.#record(operation.name);
 		await this.#refreshDetached(record);
 		if (terminalState(record.snapshot.state) || record.snapshot.state === "stopping") {
 			throw new Error(`Daemon ${operation.name} is ${record.snapshot.state}`);
 		}
-		if (operation.data === undefined && operation.signal === undefined) {
+		const keys = operation.keys ?? [];
+		if (operation.data === undefined && keys.length === 0 && operation.signal === undefined) {
 			throw new Error("send requires data or signal");
 		}
-		if (operation.data !== undefined) {
-			if (record.pty) record.pty.write(operation.data);
-			else if (record.input) {
-				record.input.write(operation.data);
-				await record.input.flush();
-			} else throw new Error(`Daemon ${operation.name} stdin is unavailable`);
+		let data = operation.data ?? "";
+		if (operation.enter === true) {
+			data += record.spec.pty ? "\r" : "\n";
 		}
+		data += keys.join("");
+		if (data) await this.#writeInput(record, data);
 		if (operation.signal) {
 			const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
 			if (!processRef) throw new Error(`Daemon ${operation.name} process is unavailable`);

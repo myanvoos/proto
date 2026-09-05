@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Shell } from "@oh-my-pi/pi-natives";
+import type { Skill } from "../extensibility/skills";
 import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
 import { ReadTool } from "./read";
@@ -15,7 +16,17 @@ interface ProbeState {
 	maxActive: number;
 }
 
-function sessionWithProbe(cwd: string, state: ProbeState): ToolSession {
+function systemPromptsSkill(dir: string): Skill {
+	return {
+		name: "system-prompts",
+		description: "test skill",
+		filePath: path.join(dir, "system-prompts", "SKILL.md"),
+		baseDir: path.join(dir, "system-prompts"),
+		source: "builtin",
+	};
+}
+
+function sessionWithProbe(cwd: string, state: ProbeState, skills: readonly Skill[] = []): ToolSession {
 	const probe = {
 		name: "probe",
 		label: "Probe",
@@ -35,6 +46,7 @@ function sessionWithProbe(cwd: string, state: ProbeState): ToolSession {
 	} as unknown as Tool;
 	return {
 		cwd,
+		skills,
 		settings: {
 			get: () => undefined,
 			getShellConfig: () => ({ env: {} }),
@@ -109,6 +121,78 @@ test("mixed native commands compose with xd through Brush", async () => {
 		expect(textOf(result)).toContain("probe:one\n");
 		expect(textOf(result)).toContain("done");
 	});
+});
+
+test("xd JSON string values keep internal URI literals opaque", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-opaque-uri-"));
+	const state: ProbeState = { calls: [], active: 0, maxActive: 0 };
+	const uri = "skill" + "://system-prompts";
+	const skills: Skill[] = [systemPromptsSkill(dir)];
+	try {
+		const bash = new BashTool(sessionWithProbe(dir, state, skills));
+		const result = await bash.execute("xd-opaque-uri", { command: `xd probe '{"value":"${uri}"}'` });
+		expect(result.isError).not.toBe(true);
+		expect(textOf(result)).toContain(`probe:${uri}\n`);
+		expect(state.calls).toEqual([uri]);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("xd JSON with shell-escaped quotes stays opaque", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-escaped-uri-"));
+	const state: ProbeState = { calls: [], active: 0, maxActive: 0 };
+	const uri = "skill" + "://system-prompts";
+	try {
+		const bash = new BashTool(sessionWithProbe(dir, state, [systemPromptsSkill(dir)]));
+		const json = `{\\"value\\":\\"${uri}\\"}`;
+		const result = await bash.execute("xd-escaped-uri", { command: `xd probe ${json}` });
+		expect(result.isError).not.toBe(true);
+		expect(textOf(result)).toContain(`probe:${uri}\n`);
+		expect(state.calls).toEqual([uri]);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("xd JSON supplied through an environment variable stays opaque", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-env-uri-"));
+	const state: ProbeState = { calls: [], active: 0, maxActive: 0 };
+	const uri = "skill" + "://system-prompts";
+	try {
+		const bash = new BashTool(sessionWithProbe(dir, state, [systemPromptsSkill(dir)]));
+		const result = await bash.execute("xd-env-uri", {
+			command: 'xd probe "$ARGS"',
+			env: { ARGS: `{"value":"${uri}"}` },
+		});
+		expect(result.isError).not.toBe(true);
+		expect(textOf(result)).toContain(`probe:${uri}\n`);
+		expect(state.calls).toEqual([uri]);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("standalone command and environment path URIs still resolve", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-path-uri-"));
+	const skillDir = path.join(dir, "system-prompts");
+	await fs.mkdir(skillDir);
+	await fs.writeFile(path.join(skillDir, "marker.txt"), "marker\n");
+	const uri = "skill" + "://system-prompts/marker.txt";
+	try {
+		const bash = new BashTool(
+			sessionWithProbe(dir, { calls: [], active: 0, maxActive: 0 }, [systemPromptsSkill(dir)]),
+		);
+		const direct = await bash.execute("standalone-uri", { command: `cat ${uri}` });
+		const viaEnv = await bash.execute("standalone-env-uri", {
+			command: 'cat "$TARGET"',
+			env: { TARGET: uri },
+		});
+		expect(textOf(direct)).toContain("marker\n");
+		expect(textOf(viaEnv)).toContain("marker\n");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
 });
 
 test("xd stdout participates in native pipelines and substitutions", async () => {

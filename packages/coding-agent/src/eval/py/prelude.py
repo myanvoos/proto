@@ -581,62 +581,319 @@ if "__proto_prelude_loaded__" not in globals():
     def _patch_error(path_label: str, index: int, cause: str) -> ValueError:
         return ValueError(f"{path_label}: hunk {index}: {cause}")
 
+    _PATCH_HUNK_HEADER_RE = re.compile(
+        r"^@@(?:[ \t]+-\d+(?:,\d+)?[ \t]+\+\d+(?:,\d+)?[ \t]+@@(?:[ \t].*)?)?$"
+    )
+    _PATCH_FENCE_OPEN_RE = re.compile(r"^```[A-Za-z0-9_+.#-]*[ \t]*$")
+
+    def _patch_hunk_header(line: str) -> bool:
+        value = line.strip()
+        if _PATCH_HUNK_HEADER_RE.fullmatch(value) is not None:
+            return True
+        # OpenAI/Codex-style labels (``@@ function_name``) carry no trusted
+        # line range; they still delimit a hunk whose old content is matched.
+        return (
+            value.startswith("@@")
+            and not value.startswith("@@@")
+            and len(value) > 3
+            and value[2].isspace()
+            and value[3] not in "-+@"
+            and bool(value[3:].strip())
+        )
+
+    def _patch_uniform_indent(lines: list[str], hunk_start: int) -> str:
+        """Return a shared pasted prefix before hunk syntax, or no prefix.
+
+        A context line can itself begin with whitespace followed by ``+`` or
+        ``-``.  The hunk header establishes the only safe candidate prefix;
+        explicit +/- rows must have that prefix immediately before their
+        marker, so context payload bytes cannot be mistaken for indentation.
+        """
+        first_header = next((line for line in lines[hunk_start:] if _patch_hunk_header(line)), None)
+        if first_header is None:
+            return ""
+        prefix = first_header[: len(first_header) - len(first_header.lstrip(" \t"))]
+        if not prefix:
+            return ""
+        saw_change_row = False
+        for line in lines[hunk_start:]:
+            if not line.strip():
+                continue
+            if _patch_hunk_header(line):
+                if not line.startswith(prefix):
+                    return ""
+                continue
+            if line.startswith(prefix) and len(line) > len(prefix) and line[len(prefix)] in "+-":
+                saw_change_row = True
+        return prefix if saw_change_row else ""
+
+    def _patch_header_path(value: str) -> str:
+        """Extract a unified header path, dropping its optional tab timestamp."""
+        value = value.strip()
+        if "\t" in value:
+            value = value.split("\t", 1)[0].rstrip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        return value
+
+    def _patch_path_matches(value: str, target: str) -> bool:
+        """Check a file-header path without letting it redirect the explicit target."""
+        value = _patch_header_path(value).replace("\\", "/")
+        if value == "/dev/null":
+            return False
+        target_abs = os.path.normpath(os.path.abspath(target)).replace("\\", "/")
+        target_rel = os.path.relpath(target_abs, os.getcwd()).replace("\\", "/")
+        value = os.path.normpath(value).replace("\\", "/")
+        if value.startswith("a/") or value.startswith("b/"):
+            value = value[2:]
+        if value.startswith("./"):
+            value = value[2:]
+        candidates = {target_abs, target_rel}
+        if target_rel.startswith("../"):
+            # Git headers for a temporary/out-of-tree target commonly retain
+            # only the basename.  This is safe because writes still use the
+            # caller's explicit target and a different basename is rejected.
+            candidates.add(os.path.basename(target_abs))
+        return value in candidates
+
+    def _patch_git_paths(value: str) -> tuple[str, str]:
+        """Parse the two paths in ``diff --git`` (including quoted paths)."""
+        import shlex
+
+        try:
+            paths = shlex.split(value, posix=True)
+        except ValueError:
+            paths = []
+        if len(paths) != 2:
+            raise ValueError("malformed diff --git header; expected exactly two file paths")
+        return paths[0], paths[1]
+
     def _parse_apply_patch(patch_text: str, path_label: str) -> list[list[tuple[str, str]]]:
-        """Parse the intentionally small, line-oriented apply_patch grammar."""
+        """Parse bare, unified, and single-file wrapped apply_patch hunks.
+
+        Metadata is validation-only: line numbers and section labels are
+        informational, and every file header must identify the explicit target.
+        The parser never creates, deletes, moves, or redirects a file.
+        """
         lines = patch_text.splitlines()
         if not lines:
-            raise _patch_error(path_label, 1, "empty patch; expected a bare '@@' hunk")
+            raise _patch_error(path_label, 1, "empty patch; expected an '@@' hunk")
+        for line_number, line in enumerate(lines, 1):
+            if "\\x00" in line:
+                raise _patch_error(
+                    path_label,
+                    1,
+                    f"malformed line {line_number}: NUL bytes are not allowed",
+                )
+
+        # Markdown fences and blank padding are accepted only as an outer
+        # wrapper.  An inner fence is content/malformed input, not a second
+        # parser mode.
+        first = next((index for index, line in enumerate(lines) if line.strip()), None)
+        last = next((index for index in range(len(lines) - 1, -1, -1) if lines[index].strip()), None)
+        if first is None or last is None:
+            raise _patch_error(path_label, 1, "empty patch; expected an '@@' hunk")
+        first_text = lines[first].strip()
+        if first_text.startswith("```"):
+            if _PATCH_FENCE_OPEN_RE.fullmatch(first_text) is None:
+                raise _patch_error(path_label, 1, "malformed code fence around patch")
+            opening_indent = lines[first][: len(lines[first]) - len(lines[first].lstrip(" \t"))]
+            closing_indent = (
+                lines[last][: len(lines[last]) - len(lines[last].lstrip(" \t"))]
+                if last is not None
+                else ""
+            )
+            if last <= first or lines[last].strip() != "```" or closing_indent != opening_indent:
+                raise _patch_error(path_label, 1, "code fence must surround one complete patch")
+            lines = lines[first + 1 : last]
+        elif any(line.strip().startswith("```") for line in lines if line.strip()):
+            raise _patch_error(path_label, 1, "code fence must surround one complete patch")
+
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if not lines:
+            raise _patch_error(path_label, 1, "empty patch; expected an '@@' hunk")
+
+        first_hunk = next((index for index, line in enumerate(lines) if _patch_hunk_header(line)), None)
+        if first_hunk is None:
+            raise _patch_error(path_label, 1, "missing '@@' hunk header")
+        uniform_indent = _patch_uniform_indent(lines, first_hunk)
+        if uniform_indent:
+            lines = [line[len(uniform_indent) :] if line.startswith(uniform_indent) else line for line in lines]
 
         hunks: list[list[tuple[str, str]]] = []
         current: list[tuple[str, str]] | None = None
-        for line_number, line in enumerate(lines, 1):
-            hunk_index = len(hunks) + 1
-            if "\x00" in line:
-                raise _patch_error(
-                    path_label,
-                    hunk_index,
-                    f"malformed line {line_number}: NUL bytes are not allowed",
-                )
-            if line == "@@":
-                if current is not None:
-                    hunks.append(current)
-                current = []
-                continue
+        saw_hunk = False
+        begin_seen = False
+        end_seen = False
+        update_seen = False
+        git_seen = False
+        unified_old: str | None = None
+        unified_pair_seen = False
+
+        def finish_hunk(hunk_index: int) -> None:
+            nonlocal current
             if current is None:
+                return
+            if not current:
+                raise _patch_error(path_label, hunk_index, "empty hunk")
+            old_lines = tuple(text for kind, text in current if kind in " -")
+            if not old_lines:
                 raise _patch_error(
                     path_label,
                     hunk_index,
-                    f"malformed line {line_number}: expected a bare '@@' hunk header",
+                    "anchorless hunk; include an old-side context or deletion line",
                 )
-            if line.startswith("@@"):
+            if not any(kind in "-+" for kind, _ in current):
+                raise _patch_error(path_label, hunk_index, "no-change hunk")
+            new_lines = tuple(text for kind, text in current if kind in " +")
+            if old_lines == new_lines:
+                raise _patch_error(path_label, hunk_index, "no-change hunk")
+            hunks.append(current)
+            current = None
+
+        def reject_file_header(hunk_index: int, cause: str) -> None:
+            raise _patch_error(
+                path_label,
+                hunk_index,
+                f"{cause}; headers must identify this target and one existing file only",
+            )
+
+        for line_number, original_line in enumerate(lines, 1):
+            line = original_line
+            stripped = line.strip()
+            hunk_index = len(hunks) + 1
+            if end_seen:
+                if stripped:
+                    raise _patch_error(path_label, hunk_index, f"malformed line {line_number}: content follows '*** End Patch'")
+                continue
+
+            if _patch_hunk_header(line):
+                if current is not None:
+                    finish_hunk(hunk_index)
+                current = []
+                saw_hunk = True
+                continue
+
+            if not saw_hunk:
+                if not stripped:
+                    continue
+                if stripped == "*** Begin Patch":
+                    if begin_seen:
+                        reject_file_header(hunk_index, "multiple '*** Begin Patch' wrappers")
+                    begin_seen = True
+                    continue
+                if stripped == "*** End Patch":
+                    if end_seen:
+                        reject_file_header(hunk_index, "multiple '*** End Patch' wrappers")
+                    end_seen = True
+                    continue
+                if stripped.startswith("*** Update File"):
+                    suffix = stripped[len("*** Update File") :]
+                    if suffix.startswith(":"):
+                        suffix = suffix[1:].strip()
+                    elif not suffix or not suffix[0].isspace():
+                        raise _patch_error(path_label, hunk_index, f"malformed line {line_number}: missing update path")
+                    else:
+                        suffix = suffix.strip()
+                        if suffix.startswith(":"):
+                            suffix = suffix[1:].strip()
+                    if update_seen:
+                        reject_file_header(hunk_index, "multiple target envelopes")
+                    update_seen = True
+                    update_path = suffix.strip()
+                    if not _patch_path_matches(update_path, path_label):
+                        reject_file_header(hunk_index, f"mismatched update path {update_path!r}")
+                    continue
+                if stripped.startswith("*** Add File") or stripped.startswith("*** Delete File"):
+                    reject_file_header(hunk_index, "add/delete file headers are not supported")
+                if stripped.startswith("*** Move") or stripped.startswith("*** Copy"):
+                    reject_file_header(hunk_index, "move/copy file headers are not supported")
+                if stripped == "*** Begin Patch" or stripped == "*** End Patch":
+                    continue
+                if stripped.startswith("diff --"):
+                    if not stripped.startswith("diff --git "):
+                        reject_file_header(hunk_index, "combined or multi-file diff headers are not supported")
+                    if git_seen:
+                        reject_file_header(hunk_index, "multiple target envelopes")
+                    try:
+                        old_path, new_path = _patch_git_paths(stripped[len("diff --git ") :])
+                    except ValueError as exc:
+                        raise _patch_error(path_label, hunk_index, str(exc)) from None
+                    if not _patch_path_matches(old_path, path_label) or not _patch_path_matches(new_path, path_label):
+                        reject_file_header(hunk_index, "mismatched diff --git path")
+                    git_seen = True
+                    continue
+                if stripped.startswith("---") and len(stripped) > 3 and stripped[3].isspace():
+                    if unified_old is not None or unified_pair_seen:
+                        reject_file_header(hunk_index, "multiple target envelopes")
+                    unified_old = _patch_header_path(stripped[3:])
+                    if not _patch_path_matches(unified_old, path_label):
+                        reject_file_header(hunk_index, f"mismatched old file path {unified_old!r}")
+                    continue
+                if stripped.startswith("+++") and len(stripped) > 3 and stripped[3].isspace():
+                    if unified_old is None or unified_pair_seen:
+                        reject_file_header(hunk_index, "unmatched or multiple unified file headers")
+                    unified_new = _patch_header_path(stripped[3:])
+                    if not _patch_path_matches(unified_new, path_label):
+                        reject_file_header(hunk_index, f"mismatched new file path {unified_new!r}")
+                    unified_pair_seen = True
+                    unified_old = None
+                    continue
+                if stripped.startswith("new file mode") or stripped.startswith("deleted file mode"):
+                    reject_file_header(hunk_index, "add/delete file headers are not supported")
+                if stripped.startswith("rename ") or stripped.startswith("copy "):
+                    reject_file_header(hunk_index, "move/copy file headers are not supported")
+                if stripped.startswith("similarity index"):
+                    reject_file_header(hunk_index, "rename/move file headers are not supported")
+                if stripped.startswith("old mode") or stripped.startswith("new mode") or stripped.startswith("index "):
+                    continue
+                if stripped.startswith("Binary files") or stripped.startswith("GIT binary patch"):
+                    reject_file_header(hunk_index, "binary file patches are not supported")
                 raise _patch_error(
                     path_label,
                     hunk_index,
-                    f"malformed line {line_number}: hunk headers must be exactly '@@'",
+                    f"malformed line {line_number}: expected an '@@' hunk or one file header",
                 )
-            if not line or line[0] not in " +-":
+
+            unprefixed_marker = bool(line) and line[0] not in " \t+-"
+            if unprefixed_marker and stripped == "*** Begin Patch":
+                reject_file_header(hunk_index, "nested '*** Begin Patch' wrapper")
+            if unprefixed_marker and stripped == "*** End Patch":
+                end_seen = True
+                continue
+            if unprefixed_marker and stripped == "\\ No newline at end of file":
+                continue
+            if unprefixed_marker and stripped == "*** End of File":
+                if current is None:
+                    raise _patch_error(path_label, hunk_index, "'*** End of File' must follow a hunk")
+                if any(kind == "EOF" for kind, _ in current):
+                    raise _patch_error(path_label, hunk_index, "duplicate '*** End of File' marker")
+                current.append(("EOF", ""))
+                continue
+            if not line or line.isspace():
+                current.append((" ", ""))
+                continue
+            if line[0] not in " +-":
+                if stripped.startswith("diff --") or stripped.startswith("*** Update File"):
+                    reject_file_header(hunk_index, "multiple target envelopes")
                 raise _patch_error(
                     path_label,
                     hunk_index,
                     f"malformed line {line_number}: expected a space, '-' or '+' prefix",
                 )
             current.append((line[0], line[1:]))
-        if current is not None:
-            hunks.append(current)
 
+        if current is not None:
+            finish_hunk(len(hunks) + 1)
+        if unified_old is not None:
+            raise _patch_error(path_label, len(hunks) + 1, "unmatched unified old-file header")
+        if begin_seen != end_seen:
+            raise _patch_error(path_label, len(hunks) + 1, "'*** Begin Patch' and '*** End Patch' must appear as a pair")
         if not hunks:
-            raise _patch_error(path_label, 1, "empty patch; expected a bare '@@' hunk")
-        for hunk_index, entries in enumerate(hunks, 1):
-            if not entries:
-                raise _patch_error(path_label, hunk_index, "empty hunk")
-            old_lines = tuple(text for kind, text in entries if kind in " -")
-            if not old_lines:
-                raise _patch_error(path_label, hunk_index, "anchorless hunk; include an old-side context or deletion line")
-            if not any(kind in "-+" for kind, _ in entries):
-                raise _patch_error(path_label, hunk_index, "no-change hunk")
-            new_lines = tuple(text for kind, text in entries if kind in " +")
-            if old_lines == new_lines:
-                raise _patch_error(path_label, hunk_index, "no-change hunk")
+            raise _patch_error(path_label, 1, "empty patch; expected an '@@' hunk")
         return hunks
 
     def _patch_source_lines(source: str) -> list[tuple[str, str]]:
@@ -711,35 +968,74 @@ if "__proto_prelude_loaded__" not in globals():
         source_bodies = [body for body, _ in source_lines]
         matches: list[tuple[int, int, list[tuple[str, str]]]] = []
         search_start = 0
+
+        def match_key(value: str, mode: int) -> str:
+            if mode >= 1:
+                value = value.rstrip(" \t")
+            if mode >= 2:
+                value = value.lstrip(" \t")
+            return value
+
         for hunk_index, entries in enumerate(hunks, 1):
             old_lines = [text for kind, text in entries if kind in " -"]
             width = len(old_lines)
-            positions = [
-                start
-                for start in range(search_start, len(source_bodies) - width + 1)
-                if source_bodies[start : start + width] == old_lines
-            ]
-            if len(positions) > 1:
+
+            def positions_for(mode: int, lower: int) -> list[int]:
+                expected = [match_key(value, mode) for value in old_lines]
+                return [
+                    start
+                    for start in range(lower, len(source_bodies) - width + 1)
+                    if [match_key(value, mode) for value in source_bodies[start : start + width]] == expected
+                ]
+
+            selected: int | None = None
+            selected_mode = "exact"
+            for mode, label in (
+                (0, "exact"),
+                (1, "trailing-whitespace"),
+                (2, "leading-indentation"),
+            ):
+                positions = positions_for(mode, search_start)
+                if len(positions) > 1:
+                    raise _patch_error(
+                        path_label,
+                        hunk_index,
+                        f"ambiguous {label} match ({len(positions)} matches in the remaining source); "
+                        "add more unique context or re-read the file",
+                    )
+                if positions:
+                    selected = positions[0]
+                    selected_mode = label
+                    break
+
+            if selected is None:
+                earlier = any(
+                    start < search_start
+                    for mode in (0, 1, 2)
+                    for start in positions_for(mode, 0)
+                )
+                cause = (
+                    "out-of-order or overlapping hunk; a whitespace-normalized match is before the remaining source"
+                    if earlier
+                    else "missing match after exact, trailing-whitespace, and leading-indentation checks"
+                )
                 raise _patch_error(
                     path_label,
                     hunk_index,
-                    f"ambiguous exact match ({len(positions)} matches in the remaining source)",
+                    f"{cause}; add more unique context or re-read the file",
                 )
-            if not positions:
-                earlier = any(
-                    source_bodies[start : start + width] == old_lines
-                    for start in range(0, min(search_start, len(source_bodies) - width + 1))
-                )
-                cause = (
-                    "out-of-order or overlapping hunk; exact match is before the remaining source"
-                    if earlier
-                    else "missing exact match in the remaining source"
-                )
-                raise _patch_error(path_label, hunk_index, cause)
-            start = positions[0]
+
+            start = selected
             end = start + width
             if start < search_start:
-                raise _patch_error(path_label, hunk_index, "overlapping or out-of-order hunk")
+                raise _patch_error(path_label, hunk_index, f"overlapping or out-of-order {selected_mode} hunk")
+            if any(kind == "EOF" for kind, _ in entries) and end != len(source_lines):
+                raise _patch_error(
+                    path_label,
+                    hunk_index,
+                    "'*** End of File' marker requires this hunk to reach end of file; "
+                    "add unique end context or re-read the file",
+                )
             matches.append((start, end, entries))
             search_start = end
 
@@ -768,6 +1064,8 @@ if "__proto_prelude_loaded__" not in globals():
                     source_index += 1
                 elif kind == "-":
                     source_index += 1
+                elif kind == "EOF":
+                    continue
                 else:
                     rendered.append((text, local_newline))
             rendered_source_end = source_index

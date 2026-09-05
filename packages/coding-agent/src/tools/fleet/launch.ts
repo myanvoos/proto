@@ -198,16 +198,23 @@ function commandSpec(params: LaunchParams, session: ToolSession): DaemonSpec {
 	};
 }
 
-function sendData(params: LaunchParams): string | undefined {
-	let data = params.text ?? "";
-	if (params.text && (params.enter ?? true)) data += KEY_INPUT.ENTER;
+interface SendData {
+	data?: string;
+	enter?: boolean;
+	keys?: string[];
+}
+
+function sendData(params: LaunchParams): SendData {
+	const data = params.text;
+	const enter = params.text ? (params.enter ?? true) : undefined;
+	const keys: string[] = [];
 	for (const rawKey of params.keys ?? []) {
 		const key = rawKey.trim().toUpperCase();
 		const input = KEY_INPUT[key];
 		if (input === undefined) throw new ToolError(`Unsupported launch key ${rawKey}`);
-		data += input;
+		keys.push(input);
 	}
-	return data || undefined;
+	return { data: data || undefined, enter, keys: keys.length > 0 ? keys : undefined };
 }
 
 function operationFor(params: LaunchParams, session: ToolSession): DaemonOperation {
@@ -240,7 +247,7 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 			return {
 				op: "send",
 				name: requiredName(params),
-				data: sendData(params),
+				...sendData(params),
 				signal: params.signal,
 			};
 		case "stop":

@@ -2,7 +2,7 @@ Agent coordination: peer messaging, background-job control, supervised long-runn
 
 Background jobs auto-deliver on finish — NEVER poll. `jobs`/`wait` observing a settled job first consumes the delivery and suppresses duplicate `async-result`. Job rows are process-local, expire ~5 min after settlement; afterward use the agent ID with `send`, `agent://<id>`, or `history://<id>`.
 
-- `send` (`to`): fire-and-forget; wakes `idle`/`parked` peers. Receipts immediate; `failed` → peer gone, don't retry. Answering: lead with the answer, NEVER quote, set `replyTo`. Format: plain prose ONLY — share content via `local://`/`artifact://` URLs, not pastes.
+- `send` (`to`): fire-and-forget; wakes `idle`/`parked` peers. Receipts immediate; `failed` → peer gone; NEVER retry. Answering: lead with the answer, NEVER quote, set `replyTo`. Format: plain prose ONLY — share content via `local://`/`artifact://` URLs, not pastes.
 - `wait`: ONLY when completely blocked with no other work. Returns on the first event (incoming message, watched job, window elapsing, steering interrupt) — NOT when all jobs finish; re-issue. Bare `wait` watches every running job AND incoming messages; NEVER pass an array of every running ID.
 - `inbox`: drain queued messages without blocking. `cancel`: kill hung/stalled/unneeded jobs by `ids`. `jobs`: snapshot without waiting; also names running subagents with no job entry — coordinate via `send`.
 

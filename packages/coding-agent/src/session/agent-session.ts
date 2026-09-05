@@ -498,7 +498,7 @@ export class AgentSession {
 	#turnIndex = 0;
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
-	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
+	#persistedMessageIndex: { anchor: string; messagesByKey: Map<string, AgentMessage[]> } | undefined;
 
 	#customCommands: LoadedCustomCommand[] = [];
 
@@ -1761,47 +1761,38 @@ export class AgentSession {
 		await this.#pendingMessageEndPersistence.get(key);
 	}
 
-	#indexPersistedMessageKeys(): Set<string> {
-		return this.#ensurePersistedMessageKeys();
-	}
-
-	#persistedMessageKeysAnchor(): string {
+	#persistedMessageIndexAnchor(): string {
 		return `${this.sessionManager.getSessionFile() ?? ""}\u0000${this.sessionManager.getLeafId() ?? ""}`;
 	}
 
-	#ensurePersistedMessageKeys(): Set<string> {
-		const anchor = this.#persistedMessageKeysAnchor();
-		let cache = this.#persistedMessageKeys;
+	#ensurePersistedMessageIndex(): Map<string, AgentMessage[]> {
+		const anchor = this.#persistedMessageIndexAnchor();
+		let cache = this.#persistedMessageIndex;
 		if (cache === undefined || cache.anchor !== anchor) {
-			cache = { anchor, keys: this.#buildPersistedMessageKeySet() };
-			this.#persistedMessageKeys = cache;
+			cache = { anchor, messagesByKey: this.#buildPersistedMessageIndex() };
+			this.#persistedMessageIndex = cache;
 		}
-		return cache.keys;
+		return cache.messagesByKey;
 	}
 
-	#buildPersistedMessageKeySet(): Set<string> {
-		const keys = new Set<string>();
+	#buildPersistedMessageIndex(): Map<string, AgentMessage[]> {
+		const messagesByKey = new Map<string, AgentMessage[]>();
 		for (const entry of this.sessionManager.getBranch()) {
 			if (entry.type !== "message") continue;
 			const key = sessionMessagePersistenceKey(entry.message);
-			if (key !== undefined) keys.add(key);
+			if (key === undefined) continue;
+			const candidates = messagesByKey.get(key);
+			if (candidates) candidates.push(entry.message);
+			else messagesByKey.set(key, [entry.message]);
 		}
-		return keys;
+		return messagesByKey;
 	}
 
 	#sessionMessageAlreadyPersisted(message: AgentMessage): boolean {
 		const key = sessionMessagePersistenceKey(message);
 		if (key === undefined) return false;
-		const keys = this.#ensurePersistedMessageKeys();
-		if (!keys.has(key)) return false;
-		const branch = this.sessionManager.getBranch();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
-			if (entry.type !== "message") continue;
-			if (sessionMessagePersistenceKey(entry.message) !== key) continue;
-			if (sameMessageContent(entry.message, message)) return true;
-		}
-		return false;
+		const candidates = this.#ensurePersistedMessageIndex().get(key);
+		return candidates?.some(candidate => sameMessageContent(candidate, message)) ?? false;
 	}
 
 	#appendSessionMessage(
@@ -1813,16 +1804,20 @@ export class AgentSession {
 			| PythonExecutionMessage
 			| FileMentionMessage,
 	): string {
-		const cache = this.#persistedMessageKeys;
-		const wasFresh = cache !== undefined && cache.anchor === this.#persistedMessageKeysAnchor();
+		const cache = this.#persistedMessageIndex;
+		const wasFresh = cache !== undefined && cache.anchor === this.#persistedMessageIndexAnchor();
 		const entryId = this.sessionManager.appendMessage(message);
 		if (message.role === "assistant") {
 			(message as PersistedAssistantMessage)[kPersistedSessionEntryId] = entryId;
 		}
 		const key = sessionMessagePersistenceKey(message);
-		if (wasFresh && cache && key) {
-			cache.keys.add(key);
-			cache.anchor = this.#persistedMessageKeysAnchor();
+		if (wasFresh && cache) {
+			if (key !== undefined) {
+				const candidates = cache.messagesByKey.get(key);
+				if (candidates) candidates.push(message);
+				else cache.messagesByKey.set(key, [message]);
+			}
+			cache.anchor = this.#persistedMessageIndexAnchor();
 		}
 		return entryId;
 	}
@@ -1930,14 +1925,14 @@ export class AgentSession {
 			await this.#waitForSessionMessagePersistence(message);
 		}
 
-		const branchKeys = this.#indexPersistedMessageKeys();
+		const branchIndex = this.#ensurePersistedMessageIndex();
 		const turnKeys = turnMessages.map(sessionMessagePersistenceKey);
 		const persistedKeys = new Set<string>();
 		for (let index = 0; index < turnMessages.length; index++) {
 			const key = turnKeys[index];
 			if (key === undefined) continue;
 
-			if (branchKeys.has(key)) {
+			if (branchIndex.has(key)) {
 				persistedKeys.add(key);
 			}
 		}

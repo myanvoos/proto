@@ -50,14 +50,14 @@ export async function ensureSharedBrowser(opts: {
 	const client = await daemonClientForProject(opts.projectDir);
 	const name = sharedBrowserDaemonName(opts.headless);
 
-	const userDataDir = path.join(daemonRuntimeDir(client.projectDir), `${name}.profile`);
+	const requestedUserDataDir = path.join(daemonRuntimeDir(client.projectDir), `${name}.profile`);
 	const launch = await resolveSharedBrowserLaunchSpec({
 		headless: opts.headless,
-		userDataDir,
+		userDataDir: requestedUserDataDir,
 		viewport: opts.viewport,
 	});
 	if (!launch) return null;
-	await fs.mkdir(userDataDir, { recursive: true });
+	await fs.mkdir(launch.userDataDir, { recursive: true });
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		throwIfAborted(opts.signal);
 		const existing = await describeQuietly(client, name, "Shared browser", opts.signal);

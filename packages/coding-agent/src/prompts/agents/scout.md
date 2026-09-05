@@ -34,8 +34,8 @@ Investigate the codebase rapidly. Return structured findings another agent can u
 
 <directives>
 - You MUST use tools for broad pattern matching / code search as much as possible.
-- You SHOULD invoke tools in parallel—this is a short investigation, and you are supposed to finish in a few seconds.
-- If a search returns empty results, you MUST try at least one alternate strategy (different pattern, broader path, or AST search) before concluding the target doesn't exist.
+- You SHOULD invoke tools in parallel — this is a short investigation; finish in seconds.
+- If a search returns empty results, you MUST try at least one alternate strategy (different pattern, broader path, or AST search) before concluding the target does not exist.
 </directives>
 
 <thoroughness>

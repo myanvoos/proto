@@ -95,6 +95,55 @@ async function loadBrowsers(): Promise<typeof BrowsersNs> {
 	return browsersModule;
 }
 
+const SNAP_CHROMIUM_BIN_DIR = "/snap/bin";
+const SNAP_CHROMIUM_MOUNT_DIR = "/snap/chromium";
+
+function snapChromiumCommonDir(): string {
+	return path.join(os.homedir(), "snap", "chromium", "common");
+}
+
+export function isSnapChromiumExecutable(executablePath: string | undefined): boolean {
+	if (process.platform !== "linux" || executablePath === undefined) return false;
+
+	const normalized = path.resolve(executablePath);
+	const executableName = path.basename(normalized).toLowerCase();
+	if (
+		normalized === path.join(SNAP_CHROMIUM_BIN_DIR, "chromium") ||
+		(normalized.startsWith(`${SNAP_CHROMIUM_BIN_DIR}${path.sep}`) &&
+			(executableName === "chromium" || executableName === "chromium-browser")) ||
+		(normalized.startsWith(`${SNAP_CHROMIUM_MOUNT_DIR}${path.sep}`) && executableName.startsWith("chromium"))
+	) {
+		return true;
+	}
+	if (!executableName.startsWith("chromium")) return false;
+
+	try {
+		const wrapper = fs.readFileSync(normalized, "utf8");
+		return wrapper.includes(`${SNAP_CHROMIUM_BIN_DIR}/chromium`) || wrapper.includes("snap run chromium");
+	} catch {
+		return false;
+	}
+}
+
+export function resolveChromiumUserDataDir(executablePath: string | undefined, requestedDir: string): string {
+	if (!isSnapChromiumExecutable(executablePath)) return requestedDir;
+
+	const resolvedRequestedDir = path.resolve(requestedDir);
+	const commonDir = snapChromiumCommonDir();
+	if (resolvedRequestedDir === commonDir || resolvedRequestedDir.startsWith(`${commonDir}${path.sep}`)) {
+		return resolvedRequestedDir;
+	}
+
+	const profileKey = Bun.hash(resolvedRequestedDir).toString(16).padStart(16, "0");
+	return path.join(commonDir, "proto-browser-profiles", profileKey, path.basename(resolvedRequestedDir));
+}
+
+async function createChromiumUserDataDir(executablePath: string | undefined): Promise<string> {
+	const parentDir = isSnapChromiumExecutable(executablePath) ? snapChromiumCommonDir() : os.tmpdir();
+	await fs.promises.mkdir(parentDir, { recursive: true });
+	return await fs.promises.mkdtemp(path.join(parentDir, "proto-chrome-profile-"));
+}
+
 let chromiumExecutablePromise: Promise<string | undefined> | undefined;
 export async function ensureChromiumExecutable(): Promise<string | undefined> {
 	const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -331,6 +380,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 		deviceScaleFactor: vp.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
 	};
 	const puppeteer = await loadPuppeteer();
+	const executablePath = await ensureChromiumExecutable();
 	const launchArgs = buildHeadlessLaunchArgs(initialViewport);
 	for (const arg of opts.args ?? []) {
 		if (!launchArgs.includes(arg)) launchArgs.push(arg);
@@ -338,11 +388,10 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 
 	let userDataDir: string | undefined;
 	if (!launchArgs.some(arg => arg.startsWith("--user-data-dir"))) {
-		userDataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "proto-chrome-profile-"));
+		userDataDir = await createChromiumUserDataDir(executablePath);
 		launchArgs.push(`--user-data-dir=${userDataDir}`);
 	}
 	try {
-		const executablePath = await ensureChromiumExecutable();
 		const browser = await puppeteer.launch({
 			headless: opts.headless,
 			defaultViewport: opts.headless ? initialViewport : null,
@@ -363,6 +412,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 interface SharedBrowserLaunchSpec {
 	executablePath: string;
 	args: string[];
+	userDataDir: string;
 }
 
 export async function resolveSharedBrowserLaunchSpec(opts: {
@@ -375,14 +425,16 @@ export async function resolveSharedBrowserLaunchSpec(opts: {
 	const puppeteer = await loadPuppeteer();
 	const vp = opts.viewport ?? DEFAULT_VIEWPORT;
 	const ignored = new Set(stealthIgnoreDefaultArgs(executablePath));
+	const userDataDir = resolveChromiumUserDataDir(executablePath, opts.userDataDir);
 	const defaults = await puppeteer.defaultArgs({
 		headless: opts.headless,
 		args: buildHeadlessLaunchArgs(vp),
-		userDataDir: opts.userDataDir,
+		userDataDir,
 	});
 	return {
 		executablePath,
 		args: [...defaults.filter(arg => !ignored.has(arg)), "--no-startup-window", "--remote-debugging-port=0"],
+		userDataDir,
 	};
 }
 

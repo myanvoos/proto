@@ -21,6 +21,56 @@ interface FinalizableBlock {
 	seal?(): void;
 }
 
+interface TranscriptBlockChangeSubscription {
+	setTranscriptBlockChangeListener?(listener: (() => void) | undefined): void;
+}
+
+interface ActiveTranscriptBlockListeners {
+	dispatcher: () => void;
+	listeners: Set<() => void>;
+}
+
+const activeTranscriptBlockListeners = new WeakMap<Component, ActiveTranscriptBlockListeners>();
+
+function addBlockChangeListener(child: Component, listener: () => void): boolean {
+	const setListener = (child as Component & TranscriptBlockChangeSubscription).setTranscriptBlockChangeListener;
+	if (typeof setListener !== "function") return false;
+	let active = activeTranscriptBlockListeners.get(child);
+	if (!active) {
+		const listeners = new Set<() => void>();
+		const dispatcher = (): void => {
+			for (const callback of listeners) callback();
+		};
+		active = { dispatcher, listeners };
+		activeTranscriptBlockListeners.set(child, active);
+		setListener.call(child, dispatcher);
+	}
+	active.listeners.add(listener);
+	return true;
+}
+
+function removeBlockChangeListener(child: Component, listener: () => void): void {
+	const active = activeTranscriptBlockListeners.get(child);
+	if (!active) return;
+	active.listeners.delete(listener);
+	if (active.listeners.size > 0) return;
+	const setListener = (child as Component & TranscriptBlockChangeSubscription).setTranscriptBlockChangeListener;
+	if (typeof setListener === "function") setListener.call(child, undefined);
+	activeTranscriptBlockListeners.delete(child);
+}
+
+function hasBlockChangeListener(child: Component, listener: (() => void) | undefined): boolean {
+	return listener !== undefined && activeTranscriptBlockListeners.get(child)?.listeners.has(listener) === true;
+}
+
+function hasCustomReplay(component: Component): boolean {
+	const replay = (component as Component & Partial<{ prepareNativeScrollbackReplay(): void }>)
+		.prepareNativeScrollbackReplay;
+	if (typeof replay === "function" && replay !== Container.prototype.prepareNativeScrollbackReplay) return true;
+	const children = (component as Component & Partial<{ children: Component[] }>).children;
+	return children?.some(child => hasCustomReplay(child)) === true;
+}
+
 function isBlockFinalized(child: Component): boolean {
 	const fn = (child as Component & FinalizableBlock).isTranscriptBlockFinalized;
 	return fn ? fn.call(child) : true;
@@ -79,6 +129,9 @@ interface BlockSegment {
 	finalized: boolean;
 
 	version: number | undefined;
+	changeTracked: boolean;
+
+	committedRows: number;
 }
 
 const EMPTY_SEGMENTS: BlockSegment[] = [];
@@ -109,23 +162,135 @@ export class TranscriptContainer
 	#renderRevision = 0;
 
 	#committedRows = 0;
+	#committedRowsDirty = false;
+	#committedDirtySegments = new Set<BlockSegment>();
+	#dirtyComponents = new Set<Component>();
+	#renderDirtyComponents = new Set<Component>();
+	#dirtyFromIndex = Number.POSITIVE_INFINITY;
+	#renderDirtyFromIndex = Number.POSITIVE_INFINITY;
+	#componentIndices = new WeakMap<Component, number>();
+	#trackedComponents = new WeakSet<Component>();
+	#trackedChildren = new Set<Component>();
+	#blockListeners = new WeakMap<Component, () => void>();
 	#widthEpochBoundaries = new WeakMap<
 		object,
 		{
-			segment: BlockSegment;
+			segment: {
+				component: Component;
+				finalized: boolean;
+				version: number | undefined;
+				rowCount: number;
+			};
+			segmentIndex: number;
 			childBoundary: unknown;
 			childHasBoundary: boolean;
-			precedingSegments: BlockSegment[];
-			trailingSegments: BlockSegment[];
+			precedingSegments: Array<{
+				component: Component;
+				finalized: boolean;
+				version: number | undefined;
+			}>;
+			trailingSegments: Array<{
+				component: Component;
+				finalized: boolean;
+				version: number | undefined;
+				rowCount: number;
+			}>;
 		}
 	>();
 
 	#stableRowsFloor = 0;
+	#childrenRevision = 0;
+	#childrenExternallyAssigned = false;
+	#settingChildrenInternally = false;
+	#renderedChildrenRevision = -1;
+	#renderedGeneration = -1;
+	#renderedCommittedRows = -1;
+	#stablePrefixLength = 0;
+
+	#noteBlockChange(component: Component): void {
+		this.#dirtyComponents.add(component);
+		const index = this.#componentIndices.get(component);
+		if (index !== undefined && index < this.#dirtyFromIndex) this.#dirtyFromIndex = index;
+	}
+
+	#attachBlockListener(component: Component): void {
+		if (this.#blockListeners.has(component)) return;
+		const listener = () => this.#noteBlockChange(component);
+		if (!addBlockChangeListener(component, listener)) return;
+		this.#blockListeners.set(component, listener);
+		this.#trackedComponents.add(component);
+		this.#trackedChildren.add(component);
+	}
+
+	#detachBlockListener(component: Component): void {
+		const listener = this.#blockListeners.get(component);
+		if (listener !== undefined) removeBlockChangeListener(component, listener);
+		this.#blockListeners.delete(component);
+		this.#trackedComponents.delete(component);
+		this.#trackedChildren.delete(component);
+	}
+
+	#reconcileBlockListeners(): void {
+		const currentChildren = new Set(this.children);
+		for (const child of this.#trackedChildren) {
+			if (currentChildren.has(child)) continue;
+			this.#detachBlockListener(child);
+		}
+		for (const child of currentChildren) {
+			if (!this.#trackedChildren.has(child)) this.#attachBlockListener(child);
+		}
+	}
+
+	constructor() {
+		super();
+		let children = this.children;
+		const markChildrenChanged = (): void => {
+			this.#childrenRevision++;
+			this.#committedRowsDirty = true;
+		};
+		const wrapChildren = (target: Component[]): Component[] =>
+			new Proxy(target, {
+				set: (array, property, value, receiver) => {
+					const previous = Reflect.get(array, property, receiver);
+					const changed = Reflect.set(array, property, value, receiver);
+					if (changed && previous !== value) markChildrenChanged();
+					return changed;
+				},
+				deleteProperty: (array, property) => {
+					const existed = Reflect.has(array, property);
+					const deleted = Reflect.deleteProperty(array, property);
+					if (deleted && existed) markChildrenChanged();
+					return deleted;
+				},
+			});
+		children = wrapChildren(children);
+		Object.defineProperty(this, "children", {
+			configurable: true,
+			enumerable: true,
+			get: () => children,
+			set: (next: Component[]) => {
+				if (next === children) return;
+				children = wrapChildren(next);
+				if (!this.#settingChildrenInternally) this.#childrenExternallyAssigned = true;
+				markChildrenChanged();
+			},
+		});
+	}
+
 	override addChild(component: Component): void {
 		const wasEmpty = this.children.length === 0;
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
 		super.addChild(component);
+		this.#attachBlockListener(component);
+		this.#committedRowsDirty = true;
 		if (wasEmpty && this.onFirstContent) this.onFirstContent();
+	}
+
+	override removeChild(component: Component): void {
+		const hadChild = this.children.includes(component);
+		super.removeChild(component);
+		if (hadChild) this.#committedRowsDirty = true;
+		if (hadChild && !this.children.includes(component)) this.#detachBlockListener(component);
 	}
 
 	onFirstContent?: () => void;
@@ -146,7 +311,22 @@ export class TranscriptContainer
 
 	override clear(): void {
 		this.#generation++;
-		super.clear();
+		for (const child of this.#trackedChildren) this.#detachBlockListener(child);
+		this.#trackedChildren.clear();
+		this.#trackedComponents = new WeakSet();
+		this.#blockListeners = new WeakMap();
+		this.#dirtyComponents.clear();
+		this.#renderDirtyComponents.clear();
+		this.#dirtyFromIndex = Number.POSITIVE_INFINITY;
+		this.#renderDirtyFromIndex = Number.POSITIVE_INFINITY;
+		this.#componentIndices = new WeakMap();
+		this.#settingChildrenInternally = true;
+		try {
+			super.clear();
+		} finally {
+			this.#settingChildrenInternally = false;
+		}
+		this.#childrenExternallyAssigned = false;
 		this.#lines = [];
 		this.#segments = EMPTY_SEGMENTS;
 		this.#renderWidth = -1;
@@ -156,29 +336,64 @@ export class TranscriptContainer
 		this.#nativeScrollbackLiveRegionPinned = false;
 		this.#nativeScrollbackLiveRegionPinnedStart = undefined;
 		this.#committedRows = 0;
+		this.#committedRowsDirty = false;
+		this.#committedDirtySegments.clear();
+		this.#renderedChildrenRevision = -1;
+		this.#renderedGeneration = -1;
+		this.#renderedCommittedRows = -1;
+		this.#stablePrefixLength = 0;
 	}
 
-	override setNativeScrollbackCommittedRows(rows: number): void {
-		this.#committedRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
-		for (let i = 0; i < this.children.length; i++) {
-			const child = this.children[i]!;
-			const segment = this.#segments[i];
-			if (segment === undefined || segment.component !== child) continue;
-			const committedContribution = Math.min(
-				segment.contribution.length,
-				Math.max(0, this.#committedRows - segment.startRow - segment.sep),
-			);
-			if (committedContribution === 0) {
-				setBlockCommittedRows(child, 0);
-				continue;
-			}
+	override dispose(): void {
+		for (const child of this.#trackedChildren) this.#detachBlockListener(child);
+		this.#trackedChildren.clear();
+		this.#trackedComponents = new WeakSet();
+		this.#blockListeners = new WeakMap();
+		this.#generation++;
+		this.#stablePrefixLength = 0;
+		super.dispose();
+	}
 
+	override prepareNativeScrollbackReplay(): void {
+		super.prepareNativeScrollbackReplay();
+		this.#committedRowsDirty = true;
+		for (const child of this.children) {
+			if (hasCustomReplay(child)) this.#noteBlockChange(child);
+		}
+	}
+
+	#publishCommittedRows(segment: BlockSegment): void {
+		const committedContribution = Math.min(
+			segment.contribution.length,
+			Math.max(0, this.#committedRows - segment.startRow - segment.sep),
+		);
+		let committedBlockRows = 0;
+		if (committedContribution > 0) {
 			let leadingTrimmedRows = 0;
 			while (leadingTrimmedRows < segment.rawRef.length && isPlainBlank(segment.rawRef[leadingTrimmedRows]!)) {
 				leadingTrimmedRows++;
 			}
-			setBlockCommittedRows(child, Math.min(segment.rawRef.length, leadingTrimmedRows + committedContribution));
+			committedBlockRows = Math.min(segment.rawRef.length, leadingTrimmedRows + committedContribution);
 		}
+		setBlockCommittedRows(segment.component, committedBlockRows);
+		segment.committedRows = committedBlockRows;
+	}
+
+	override setNativeScrollbackCommittedRows(rows: number): void {
+		const committed = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+		if (committed !== this.#committedRows) {
+			this.#committedRows = committed;
+			this.#committedRowsDirty = true;
+		}
+		if (!this.#committedRowsDirty && this.#committedDirtySegments.size === 0) return;
+
+		if (this.#committedRowsDirty) {
+			for (const segment of this.#segments) this.#publishCommittedRows(segment);
+		} else {
+			for (const segment of this.#committedDirtySegments) this.#publishCommittedRows(segment);
+		}
+		this.#committedRowsDirty = false;
+		this.#committedDirtySegments.clear();
 	}
 
 	override captureNativeScrollbackWidthEpoch(): unknown {
@@ -192,11 +407,26 @@ export class TranscriptContainer
 		const segmentIndex = this.#segments.indexOf(segment);
 		const marker = {};
 		this.#widthEpochBoundaries.set(marker, {
-			segment,
+			segment: {
+				component: segment.component,
+				finalized: segment.finalized,
+				version: segment.version,
+				rowCount: segment.rowCount,
+			},
+			segmentIndex,
 			childBoundary: childHasBoundary ? child.captureNativeScrollbackWidthEpoch?.() : undefined,
 			childHasBoundary,
-			precedingSegments: this.#segments.slice(0, segmentIndex),
-			trailingSegments: this.#segments.slice(segmentIndex + 1),
+			precedingSegments: this.#segments.slice(0, segmentIndex).map(candidate => ({
+				component: candidate.component,
+				finalized: candidate.finalized,
+				version: candidate.version,
+			})),
+			trailingSegments: this.#segments.slice(segmentIndex + 1).map(candidate => ({
+				component: candidate.component,
+				finalized: candidate.finalized,
+				version: candidate.version,
+				rowCount: candidate.rowCount,
+			})),
 		});
 		return marker;
 	}
@@ -205,9 +435,9 @@ export class TranscriptContainer
 		if (typeof boundary !== "object" || boundary === null) return undefined;
 		const marker = this.#widthEpochBoundaries.get(boundary);
 		if (!marker) return undefined;
-		const currentIndex = this.#segments.findIndex(segment => segment.component === marker.segment.component);
+		const currentIndex = marker.segmentIndex;
 		const current = this.#segments[currentIndex];
-		if (!current) return undefined;
+		if (!current || current.component !== marker.segment.component) return undefined;
 		if (currentIndex !== marker.precedingSegments.length) return undefined;
 		for (let i = 0; i < marker.precedingSegments.length; i++) {
 			const captured = marker.precedingSegments[i]!;
@@ -234,9 +464,17 @@ export class TranscriptContainer
 			else if (!marker.segment.finalized || marker.segment.version !== current.version) return undefined;
 			else rows = current.startRow + current.rowCount;
 		}
-		for (const captured of marker.trailingSegments) {
-			const trailing = this.#segments.find(segment => segment.component === captured.component);
-			if (!captured.finalized || !trailing?.finalized || trailing.version !== captured.version) return undefined;
+		for (let i = 0; i < marker.trailingSegments.length; i++) {
+			const captured = marker.trailingSegments[i]!;
+			const trailing = this.#segments[currentIndex + i + 1];
+			if (
+				!captured.finalized ||
+				!trailing ||
+				trailing.component !== captured.component ||
+				!trailing.finalized ||
+				trailing.version !== captured.version
+			)
+				return undefined;
 			rows += trailing.rowCount;
 		}
 		return rows;
@@ -352,53 +590,94 @@ export class TranscriptContainer
 		this.#nativeScrollbackLiveRegionPinned = false;
 		this.#nativeScrollbackLiveRegionPinnedStart = undefined;
 
+		const dirtyComponents = this.#dirtyComponents;
+		this.#dirtyComponents = this.#renderDirtyComponents;
+		this.#dirtyComponents.clear();
+		this.#renderDirtyComponents = dirtyComponents;
+		const dirtyFromIndex = this.#dirtyFromIndex;
+		this.#dirtyFromIndex = this.#renderDirtyFromIndex;
+		this.#renderDirtyFromIndex = dirtyFromIndex;
+		this.#dirtyFromIndex = Number.POSITIVE_INFINITY;
+
 		const count = this.children.length;
-
-		for (let i = 0; i < count && i < this.#segments.length; i++) {
-			const previous = this.#segments[i];
-			if (previous === undefined) continue;
-
-			const bodyStart = previous.startRow + previous.sep;
-			if (bodyStart >= this.#committedRows) break;
-			if (previous.rowCount === 0 || previous.component !== this.children[i]) continue;
-			sealCommittedSnapshot(previous.component);
-		}
-
-		let liveStartIndex = -1;
-		let hasLiveBlock = false;
-		for (let i = 0; i < count; i++) {
-			if (!isBlockFinalized(this.children[i]!)) {
-				liveStartIndex = i;
-				hasLiveBlock = true;
-				break;
-			}
-		}
-
-		const lines = this.#lines;
-		const previousLineCount = lines.length;
 		const previousSegments = this.#segments;
+		const previousLineCount = this.#lines.length;
 		const widthChanged = this.#renderWidth !== width;
-		const segments: BlockSegment[] = new Array(count);
-
+		const structureChanged =
+			this.#childrenExternallyAssigned ||
+			this.#renderedChildrenRevision !== this.#childrenRevision ||
+			previousSegments.length !== count;
+		if (structureChanged) this.#reconcileBlockListeners();
+		const canReusePrefix =
+			!widthChanged &&
+			!this.#childrenExternallyAssigned &&
+			!structureChanged &&
+			this.#renderedGeneration === this.#generation &&
+			this.#renderedCommittedRows === this.#committedRows;
+		const prefixLength = canReusePrefix ? Math.min(this.#stablePrefixLength, count) : 0;
+		const startIndex = canReusePrefix ? Math.min(prefixLength, dirtyFromIndex) : 0;
+		const segments =
+			previousSegments.length === count ? previousSegments : new Array<BlockSegment | undefined>(count);
+		if (structureChanged) this.#committedRowsDirty = true;
 		this.#segments = EMPTY_SEGMENTS;
 		const stableFloorBefore = this.#stableRowsFloor;
 		this.#stableRowsFloor = 0;
 
 		let chainStable = !widthChanged;
 		this.#renderWidth = width;
-
+		const lines = this.#lines;
 		if (!chainStable) lines.length = 0;
 
 		let row = 0;
 		let stableRows = 0;
-
+		let liveStartIndex = -1;
+		let canSealCommitted = startIndex === 0;
+		let stablePrefixLength = startIndex > 0 ? startIndex : 0;
 		let pinCandidates: { index: number; pinAt: number }[] | undefined;
-		for (let i = 0; i < count; i++) {
+		if (startIndex > 0) {
+			const prefix = previousSegments[startIndex - 1]!;
+			row = prefix.startRow + prefix.rowCount;
+			stableRows = row;
+		}
+		for (let i = startIndex; i < count; i++) {
 			const child = this.children[i]!;
-
+			const priorIndex = this.#componentIndices.get(child);
+			if (priorIndex === undefined || i < priorIndex) this.#componentIndices.set(child, i);
 			const previous = previousSegments[i];
-			const finalized = isBlockFinalized(child);
-			const version = getBlockVersion(child);
+			const previousComponent = previous?.component;
+			const previousRaw = previous?.rawRef;
+			const previousContribution = previous?.contribution;
+			const previousWidth = previous?.width;
+			const previousGeneration = previous?.generation;
+			const previousStartRow = previous?.startRow;
+			const previousRowCount = previous?.rowCount;
+			const previousSep = previous?.sep;
+			const previousFinalized = previous?.finalized;
+			const previousVersion = previous?.version;
+			const changeTracked =
+				previous?.component === child
+					? previous.changeTracked && hasBlockChangeListener(child, this.#blockListeners.get(child))
+					: this.#trackedComponents.has(child);
+			const blockChanged = dirtyComponents.has(child);
+			const reuseBlockMetadata =
+				previous !== undefined &&
+				previous.component === child &&
+				changeTracked &&
+				previous.finalized &&
+				previous.generation === this.#generation &&
+				!blockChanged;
+			const previousCommittedRows = previous?.component === child ? previous.committedRows : -1;
+
+			if (canSealCommitted && previous !== undefined) {
+				const bodyStart = previous.startRow + previous.sep;
+				if (bodyStart >= this.#committedRows) canSealCommitted = false;
+				else if (previous.rowCount > 0 && previous.component === child) sealCommittedSnapshot(child);
+			}
+
+			const finalized = reuseBlockMetadata ? previous.finalized : isBlockFinalized(child);
+			if (liveStartIndex < 0 && !finalized) liveStartIndex = i;
+			if (stablePrefixLength === i && finalized && changeTracked) stablePrefixLength = i + 1;
+			const version = reuseBlockMetadata ? previous.version : getBlockVersion(child);
 			const committedReusable =
 				previous !== undefined &&
 				previous.component === child &&
@@ -418,21 +697,9 @@ export class TranscriptContainer
 					previous.width === width &&
 					previous.generation === this.#generation);
 			const contribution = reusable ? previous.contribution : stripPlainBlankEdges(raw);
-
-			if (contribution.length === 0) {
-				if (hasLiveBlock && i === liveStartIndex) {
-					this.#nativeScrollbackLiveRegionStart = row;
-				}
-				if (!finalized && isBlockPinned(child)) {
-					if (pinCandidates === undefined) pinCandidates = [];
-					pinCandidates.push({ index: i, pinAt: row });
-				}
-				if (chainStable && !(reusable && previous.rowCount === 0 && previous.startRow === row)) {
-					chainStable = false;
-					lines.length = row;
-				}
-				if (chainStable) stableRows = row;
-				segments[i] = {
+			const segment =
+				previous ??
+				({
 					component: child,
 					rawRef: raw,
 					contribution,
@@ -443,14 +710,56 @@ export class TranscriptContainer
 					sep: 0,
 					finalized,
 					version,
-				};
+					changeTracked,
+					committedRows: -1,
+				} satisfies BlockSegment);
+			if (
+				previous === undefined ||
+				previousComponent !== child ||
+				previousRaw !== raw ||
+				previousContribution !== contribution ||
+				previousWidth !== width ||
+				previousGeneration !== this.#generation ||
+				previousFinalized !== finalized ||
+				previousVersion !== version
+			) {
+				this.#committedDirtySegments.add(segment);
+			}
+
+			if (contribution.length === 0) {
+				if (liveStartIndex === i) this.#nativeScrollbackLiveRegionStart = row;
+				if (!finalized && isBlockPinned(child)) {
+					if (pinCandidates === undefined) pinCandidates = [];
+					pinCandidates.push({ index: i, pinAt: row });
+				}
+				if (chainStable && !(reusable && previous?.rowCount === 0 && previous.startRow === row)) {
+					chainStable = false;
+					lines.length = row;
+				}
+				if (chainStable) stableRows = row;
+				segment.component = child;
+				segment.rawRef = raw;
+				segment.contribution = contribution;
+				segment.width = width;
+				segment.generation = this.#generation;
+				segment.startRow = row;
+				segment.rowCount = 0;
+				segment.sep = 0;
+				segment.finalized = finalized;
+				segment.version = version;
+				segment.changeTracked = changeTracked;
+				segment.committedRows = previousCommittedRows;
+				if (previousStartRow !== row || previousRowCount !== 0 || previousSep !== 0) {
+					this.#committedDirtySegments.add(segment);
+				}
+				segments[i] = segment;
 				continue;
 			}
 
 			const sep = row > 0 && !isPlainBlank(lines[row - 1]!) ? 1 : 0;
 
 			let settled = 0;
-			if (!finalized || (hasLiveBlock && i === liveStartIndex)) {
+			if (!finalized || liveStartIndex === i) {
 				const settledRaw = getBlockSettledRows(child);
 				if (settledRaw > 0) {
 					let lead = 0;
@@ -458,16 +767,14 @@ export class TranscriptContainer
 					settled = Math.max(0, Math.min(contribution.length, settledRaw - lead));
 				}
 			}
-			if (hasLiveBlock && i === liveStartIndex) {
-				this.#nativeScrollbackLiveRegionStart = row + sep + settled;
-			}
+			if (liveStartIndex === i) this.#nativeScrollbackLiveRegionStart = row + sep + settled;
 			if (!finalized && isBlockPinned(child)) {
 				if (pinCandidates === undefined) pinCandidates = [];
 				pinCandidates.push({ index: i, pinAt: row + sep + settled });
 			}
 
 			const rowCount = sep + contribution.length;
-			const stable = chainStable && reusable && previous.startRow === row && previous.sep === sep;
+			const stable = chainStable && reusable && previous?.startRow === row && previous.sep === sep;
 			if (stable) {
 				stableRows = row + rowCount;
 			} else {
@@ -479,23 +786,31 @@ export class TranscriptContainer
 				for (let j = 0; j < contribution.length; j++) lines.push(contribution[j]!);
 			}
 
-			segments[i] = {
-				component: child,
-				rawRef: raw,
-				contribution,
-				width,
-				generation: this.#generation,
-				startRow: row,
-				rowCount,
-				sep,
-				finalized,
-				version,
-			};
+			segment.component = child;
+			segment.rawRef = raw;
+			segment.contribution = contribution;
+			segment.width = width;
+			segment.generation = this.#generation;
+			segment.startRow = row;
+			segment.rowCount = rowCount;
+			segment.sep = sep;
+			segment.finalized = finalized;
+			segment.version = version;
+			segment.changeTracked = changeTracked;
+			segment.committedRows = previousCommittedRows;
+			if (previousStartRow !== row || previousRowCount !== rowCount || previousSep !== sep) {
+				this.#committedDirtySegments.add(segment);
+			}
+			segments[i] = segment;
 			row += rowCount;
 		}
 
 		if (lines.length !== row) lines.length = row;
-		this.#segments = segments;
+		this.#segments = segments as BlockSegment[];
+		this.#stablePrefixLength = stablePrefixLength;
+		this.#renderedChildrenRevision = this.#childrenRevision;
+		this.#renderedGeneration = this.#generation;
+		this.#renderedCommittedRows = this.#committedRows;
 		if (widthChanged || previousSegments.length !== count || !chainStable || lines.length !== previousLineCount) {
 			this.#renderRevision++;
 		}

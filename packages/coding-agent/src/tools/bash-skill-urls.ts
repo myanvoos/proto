@@ -222,13 +222,37 @@ function isInsideShellQuote(
 	return quote !== undefined;
 }
 
+function isEscapedCharacter(command: string, index: number): boolean {
+	let backslashes = 0;
+	for (let i = index - 1; i >= 0 && command[i] === "\\"; i--) backslashes++;
+	return backslashes % 2 === 1;
+}
+
+function isJsonDocument(value: string): boolean {
+	try {
+		const parsed: unknown = JSON.parse(value);
+		return parsed !== null && typeof parsed === "object";
+	} catch {
+		return false;
+	}
+}
+
 function isEmbeddedInQuotedText(
 	command: string,
 	token: string,
 	index: number,
 	bodies?: ReadonlyArray<readonly [number, number]>,
 ): boolean {
-	if (token.startsWith("'") || token.startsWith('"')) return false;
+	const startsWithQuote = token.startsWith("'") || token.startsWith('"');
+	const precedingQuote = command[index - 1];
+	const escapedOpeningQuote = startsWithQuote
+		? isEscapedCharacter(command, index)
+		: (precedingQuote === "'" || precedingQuote === '"') && isEscapedCharacter(command, index - 1);
+	if (escapedOpeningQuote) {
+		return true;
+	}
+	// A match may begin with a JSON quote nested inside an outer shell quote;
+	// the quote-state scan distinguishes that from a shell quote opening here.
 	return isInsideShellQuote(command, index, bodies);
 }
 
@@ -427,6 +451,9 @@ export function expandSkillUrls(command: string, skills: readonly Skill[]): stri
 
 export async function expandInternalUrls(command: string, options: InternalUrlExpansionOptions): Promise<string> {
 	if (!command.includes("://") && !command.includes("local:/")) return command;
+	// A complete JSON document is data, not shell syntax. This also preserves
+	// JSON passed through environment values, which have no shell quote context.
+	if (isJsonDocument(command)) return command;
 
 	const matches = Array.from(command.matchAll(INTERNAL_URL_PATTERN_INCLUDING_NORMALIZED_LOCAL));
 	if (matches.length === 0) return command;

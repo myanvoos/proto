@@ -224,8 +224,8 @@ The stored entry keeps Proto's normal `CompactionEntry` boundary and token field
 
 pi-blackhole also adds:
 
-- `/blackhole` for explicit structural compaction and an optional post-compaction follow-up.
-- `/blackhole settings`, `/blackhole-memory`, `/blackhole-recall`, and `/blackhole-export`.
+- `/memory` for explicit structural compaction and an optional post-compaction follow-up.
+- `/memory settings`, `/observations`, and `/recall`.
 - the agent-facing `recall` tool for transcript search, entry expansion, file drill-down, and observation/reflection evidence lookup.
 
 Configuration lives at `~/.proto/agent/pi-blackhole/pi-blackhole-config.json`, with an optional project override at `.pi/pi-blackhole-config.json`. The default mode is deterministic compaction with observational memory enabled. Set `compactionEngine` to `"pi-default"` in that file to bypass Blackhole's result producer and use Proto's previous remote/soft summarizer path; the scheduler and recovery settings described below remain authoritative in either mode. See the [upstream configuration reference](https://github.com/k0valik/pi-blackhole/blob/270aa0912800b2b7ce64414ef4247be84106d8f8/docs/CONFIG.md) for Blackhole-specific options.

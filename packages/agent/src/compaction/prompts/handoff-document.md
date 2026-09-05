@@ -10,7 +10,7 @@ Capture concrete technical state available in the supplied context.
 - Test results, observed failures
 - Decisions made
 - Partial work affecting the next step
-Preserve exact paths, names, errors, and outputs when present; do not invent details omitted by preprocessing.
+Preserve exact paths, names, errors, and outputs when present; NEVER invent details omitted by preprocessing.
 Register: address the successor directly in the imperative ("Fix X", "Run Y") — never first person ("I need to…", "my attempt…").
 The handoff mechanism is invisible to the document: NEVER list writing, generating, or delivering a handoff/summary/context document as progress or a next step. Progress and Next Steps cover the user's task only.
 </instruction>

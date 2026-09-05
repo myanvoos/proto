@@ -28,6 +28,7 @@ export class EvalExecutionComponent extends Container {
 	#expanded = false;
 
 	#blockVersion = 0;
+	#onTranscriptBlockChange?: () => void;
 	#contentContainer: Container;
 
 	#highlightLang(): "python" | "javascript" {
@@ -69,15 +70,27 @@ export class EvalExecutionComponent extends Container {
 		return this.#blockVersion;
 	}
 
+	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
+		this.#onTranscriptBlockChange = listener;
+	}
+
 	setExpanded(expanded: boolean): void {
 		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	override invalidate(): void {
 		super.invalidate();
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
+	}
+
+	override dispose(): void {
+		this.#onTranscriptBlockChange?.();
+		this.#onTranscriptBlockChange = undefined;
+		super.dispose();
 	}
 
 	appendOutput(chunk: string): void {
@@ -92,6 +105,7 @@ export class EvalExecutionComponent extends Container {
 		}
 
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	setComplete(
@@ -109,6 +123,7 @@ export class EvalExecutionComponent extends Container {
 
 		this.#loader.stop();
 		this.#updateDisplay();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	#updateDisplay(): void {

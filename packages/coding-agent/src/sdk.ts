@@ -215,7 +215,7 @@ import { normalizeProviderContextImagesForModel } from "./utils/image-loading";
 import { formatLocalCalendarDate } from "./utils/local-date";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { buildNamedToolChoice } from "./utils/tool-choice";
-import piBlackhole from "./vendor/pi-blackhole/index.js";
+import builtinMemory from "./vendor/pi-blackhole/index.js";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 type McpNotificationEntry = {
@@ -1575,15 +1575,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		toolSession.extensionPaths = extensionPaths;
 
-		if (!restrictToolNames && !extensionsResult.extensions.some(extension => extension.commands.has("blackhole"))) {
-			const blackhole = await loadExtensionFromFactory(
-				piBlackhole,
+		if (!restrictToolNames && !extensionsResult.extensions.some(extension => extension.commands.has("memory"))) {
+			const memoryExtension = await loadExtensionFromFactory(
+				builtinMemory,
 				cwd,
 				eventBus,
 				extensionsResult.runtime,
-				"<builtin-pi-blackhole>",
+				"<builtin-memory>",
 			);
-			extensionsResult.extensions.unshift(blackhole);
+			extensionsResult.extensions.unshift(memoryExtension);
 		}
 
 		if (inlineExtensions.length > 0) {

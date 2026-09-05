@@ -368,14 +368,57 @@ def _patch_header_error(message: str, line: str, line_no: int) -> SyntaxError:
     return SyntaxError(message, ("<cell>", line_no, 1, line))
 
 
+def _split_patch_until(rest: str) -> tuple[str, str]:
+    """Split a final ``until=TOKEN`` clause from a patch header.
+
+    A quoted path is opaque text, not a Python expression: quote characters
+    only delimit the optional surrounding pair and backslashes are retained
+    byte-for-byte. Looking for the suffix after that pair prevents a path
+    such as ``"name until=marker"`` from accidentally selecting a marker.
+    """
+    marker_match = re.search(r"[ \t]+until[ \t]*=[ \t]*(\S+)[ \t]*$", rest)
+    if marker_match is None:
+        if re.search(r"[ \t]+until[ \t]*=[ \t]*$", rest) is not None:
+            raise ValueError("until= requires a non-empty token")
+        return rest, _DEFAULT_EMBED_END
+
+    candidate_path = rest[: marker_match.start()].rstrip(" \t")
+    if not candidate_path:
+        raise ValueError("missing patch path before until=")
+
+    # If the path starts with a quote, only recognize the suffix when the
+    # matching closing quote occurs immediately before it. This is deliberately
+    # a wrapper check, never string-literal decoding or interpolation.
+    if candidate_path[0] in "\"'":
+        quote = candidate_path[0]
+        if len(candidate_path) < 2 or candidate_path[-1] != quote:
+            return rest, _DEFAULT_EMBED_END
+    return candidate_path, marker_match.group(1)
+
+
+def _unwrap_patch_path(path: str, line: str, line_no: int) -> str:
+    """Remove one surrounding matching quote pair without decoding its body."""
+    path = path.strip(" \t")
+    if len(path) >= 2 and path[0] in "\"'" and path[-1] == path[0]:
+        path = path[1:-1]
+    if not path:
+        raise _patch_header_error(
+            "malformed #@patch directive: missing patch path",
+            line,
+            line_no,
+        )
+    return path
+
+
 def _parse_patch_header(line: str, line_no: int) -> tuple[str, str]:
     """Parse a patch header into a literal path and terminator.
 
     The path is deliberately *not* a Python expression: after the directive
     marker it is the literal remainder, including spaces. A final,
-    whitespace-delimited ``until=TOKEN`` is reserved for selecting a marker.
-    No quote/backslash decoding is performed, so those characters are valid
-    literal path characters too.
+    whitespace-delimited ``until=TOKEN`` (with optional spaces around ``=``)
+    is reserved for selecting a marker. Matching surrounding single/double
+    quotes are wrappers only; their contents, including backslashes, remain
+    literal path bytes.
     """
     stripped = line.strip()
     suffix = stripped[len(_PATCH_PREFIX) :]
@@ -393,24 +436,15 @@ def _parse_patch_header(line: str, line_no: int) -> tuple[str, str]:
             line_no,
         )
 
-    marker = _DEFAULT_EMBED_END
-    marker_match = re.search(r"[ \t]+until=(\S+)[ \t]*$", rest)
-    if marker_match is not None:
-        marker = marker_match.group(1)
-        rest = rest[: marker_match.start()].rstrip()
-    elif re.search(r"[ \t]+until=[ \t]*$", rest) is not None:
+    try:
+        path, marker = _split_patch_until(rest)
+    except ValueError as exc:
         raise _patch_header_error(
-            "malformed #@patch directive: until= requires a non-empty token",
+            f"malformed #@patch directive: {exc}",
             line,
             line_no,
-        )
-    if not rest:
-        raise _patch_header_error(
-            "malformed #@patch directive: missing patch path before until=",
-            line,
-            line_no,
-        )
-    return rest, marker
+        ) from None
+    return _unwrap_patch_path(path, line, line_no), marker
 
 
 def _raw_string_body_lines(source: str) -> set[int]:
@@ -548,6 +582,50 @@ def _collect_directive_blocks(source: str) -> tuple[list[_DirectiveBlock], set[i
     return blocks, protected
 
 
+def _leading_whitespace_len(line: str) -> int:
+    """Count presentation indentation without treating patch text as code."""
+    index = 0
+    while index < len(line) and line[index] in " \t":
+        index += 1
+    return index
+
+
+def _patch_body_lines(lines: list[str], block: _DirectiveBlock, path: str) -> list[str]:
+    """Normalize pasted patch indentation while retaining hunk prefixes.
+
+    The opening Python indentation is structural and is removed first. A
+    second, common presentation indent is removed from non-blank rows; this
+    handles a body pasted one level deeper than its directive without removing
+    the leading space that marks a context hunk row. Blank rows may omit the
+    opening indentation. A non-blank row that crosses out of the opening
+    indentation is rejected so unrelated Python code cannot be consumed.
+    """
+    rows: list[str] = []
+    for row_index in range(block.start + 1, block.end):
+        row = lines[row_index]
+        is_blank = not row.strip(" \t\r\n")
+        if not is_blank and block.indent and not row.startswith(block.indent):
+            raise SyntaxError(
+                f"#@patch {path!r} (line {block.start + 1}) body line "
+                f"{row_index + 1} must begin with the opening indentation prefix",
+                ("<cell>", row_index + 1, 1, row),
+            )
+        rows.append(row[len(block.indent) :] if row.startswith(block.indent) else row)
+
+    non_blank = [row for row in rows if row.strip(" \t\r\n")]
+    presentation_indent = min((_leading_whitespace_len(row) for row in non_blank), default=0)
+    body: list[str] = []
+    for row in rows:
+        leading = _leading_whitespace_len(row)
+        if not row.strip(" \t\r\n"):
+            # A single semantic context-space survives after presentation
+            # indentation; otherwise blank padding is normalized to empty.
+            body.append(row[presentation_indent:] if leading > presentation_indent else "")
+        else:
+            body.append(row[presentation_indent:])
+    return body
+
+
 def _extract_embeds(source: str) -> tuple[str, list[str]]:
     """Expand ``#@embed`` and runtime ``#@patch`` blocks.
 
@@ -603,16 +681,7 @@ def _extract_embeds(source: str) -> tuple[str, list[str]]:
             )
         else:
             path = block.path or ""
-            body: list[str] = []
-            for row_index in range(block.start + 1, block.end):
-                row = lines[row_index]
-                if not row.startswith(block.indent):
-                    raise SyntaxError(
-                        f"#@patch {path!r} (line {block.start + 1}) body line "
-                        f"{row_index + 1} must begin with the opening indentation prefix",
-                        ("<cell>", row_index + 1, 1, row),
-                    )
-                body.append(row[len(block.indent) :])
+            body = _patch_body_lines(lines, block, path)
             out.append(
                 f"{block.indent}apply_patch({_quote_arg(path)}, {_quote_arg(chr(10).join(body))})"
             )

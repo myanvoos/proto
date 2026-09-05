@@ -638,7 +638,7 @@ function readJson(path) {
   try {
     return { data: JSON.parse(readFileSync(path, "utf-8")), error: null };
   } catch (e) {
-    const msg = `blackhole: config file at ${path} has invalid JSON: ${e.message}. Using defaults.`;
+    const msg = `Config file at ${path} has invalid JSON: ${e.message}. Using defaults.`;
     console.warn(msg);
     return { data: null, error: msg };
   }
@@ -701,7 +701,7 @@ function loadUnifiedConfig(cwd, onWarn) {
     if (isCompaction(trimmed)) {
       merged.compaction = trimmed;
     } else {
-      console.warn(`blackhole: invalid PI_BLACKHOLE_COMPACTION value "${envCompaction}"; ignoring`);
+      console.warn(`Invalid PI_BLACKHOLE_COMPACTION value "${envCompaction}"; ignoring`);
     }
   }
   const envCompactionEngine = process.env.PI_BLACKHOLE_COMPACTION_ENGINE;
@@ -711,7 +711,7 @@ function loadUnifiedConfig(cwd, onWarn) {
       merged.compactionEngine = trimmed;
     } else {
       console.warn(
-        `blackhole: invalid PI_BLACKHOLE_COMPACTION_ENGINE value "${envCompactionEngine}"; ignoring`
+        `Invalid PI_BLACKHOLE_COMPACTION_ENGINE value "${envCompactionEngine}"; ignoring`
       );
     }
   }
@@ -722,7 +722,7 @@ function loadUnifiedConfig(cwd, onWarn) {
       merged.midRunCompaction = trimmed;
     } else {
       console.warn(
-        `blackhole: invalid PI_BLACKHOLE_MID_RUN_COMPACTION value "${envMidRunCompaction}"; ignoring`
+        `Invalid PI_BLACKHOLE_MID_RUN_COMPACTION value "${envMidRunCompaction}"; ignoring`
       );
     }
   }
@@ -743,7 +743,7 @@ function scaffoldConfig() {
 `);
     }
   } catch (e) {
-    console.error("blackhole: config scaffold failed", e);
+    console.error("memory: config scaffold failed", e);
   }
 }
 function configFileNeedsMigration() {
@@ -2082,7 +2082,7 @@ function renderSegmentCoverageMarker(sequence, coverage) {
   const firstKept = coverage.firstKeptEntryId || "<compact-all>";
   const legacy = coverage.includesLegacySummary ? `; legacySummary=true${coverage.rebasedFromCompactionId ? `; rebasedFrom=${coverage.rebasedFromCompactionId}` : ""}` : "";
   return [
-    `[Blackhole Append Segment ${sequence}]`,
+    `[Memory Append Segment ${sequence}]`,
     `Coverage: ${coverage.firstCoveredEntryId}..${coverage.lastCoveredEntryId}; firstKept=${firstKept}; sourceMessages=${coverage.sourceMessageCount}${legacy}`,
     "Read segments in sequence. Later segments override earlier conflicting state."
   ].join("\n");
@@ -2510,7 +2510,7 @@ async function flushBuffer() {
     rotateIfNeeded(path);
     await appendFile(path, batch.join(""), "utf-8");
   } catch (error) {
-    console.error("blackhole: debug log write failed", error);
+    console.error("memory: debug log write failed", error);
   } finally {
     flushing = false;
   }
@@ -2543,7 +2543,7 @@ function flushDebugLog() {
     rotateIfNeeded(path);
     appendFileSync(path, batch.join(""), "utf-8");
   } catch (error) {
-    console.error("blackhole: debug log flush failed", error);
+    console.error("memory: debug log flush failed", error);
   }
 }
 function rotateIfNeeded(path) {
@@ -3053,7 +3053,7 @@ function notifyMigrationReminder(sessionId, notify) {
   if (count >= 2) return;
   if (!configFileNeedsMigration()) return;
   migrationNotifyCount.set(sessionId, count + 1);
-  notify("blackhole: Use `/blackhole configure` to save your updated configuration.", "info");
+  notify("Use `/memory settings` to save your updated configuration.", "info");
 }
 var formatTokens = (n) => {
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
@@ -3068,7 +3068,7 @@ var formatCompactionStats = (stats) => {
   if (stats.keepFallbackToCompactAll) {
     parts.push(`compact-all`);
   }
-  return `blackhole: ${parts.join("; ")} (~${formatTokens(stats.keptTokensEst)} tok).`;
+  return `${parts.join("; ")} (~${formatTokens(stats.keptTokensEst)} tok).`;
 };
 var dbg = (debug, data) => {
   if (!debug) return;
@@ -3203,8 +3203,8 @@ function buildOwnCut(branchEntries, piFirstKeptEntryId, tailBehavior) {
   };
 }
 var REASON_MESSAGES = {
-  no_live_messages: "blackhole: Nothing to compact (no live messages)",
-  too_few_live_messages: `blackhole: Too few live messages \u2014 Pi's default logic preserves visible context. Set tailBehavior to "minimal" in config to force compaction with fewer messages.`
+  no_live_messages: "Nothing to compact (no live messages)",
+  too_few_live_messages: `Too few live messages \u2014 Pi's default logic preserves visible context. Set tailBehavior to "minimal" in config to force compaction with fewer messages.`
 };
 var registerBeforeCompactHook = (pi, omRuntime) => {
   pi.on("session_before_compact", (event, ctx) => {
@@ -3246,13 +3246,13 @@ var registerBeforeCompactHook = (pi, omRuntime) => {
     if (omRuntime.config.compaction === void 0 && omRuntime.config.compactionEngine === void 0) {
       if (!isPiVcc && !omRuntime.config.overrideDefaultCompaction) {
         trace("before_compact.return_early", {
-          reason: "overrideDefaultCompaction=false and not /blackhole"
+          reason: "overrideDefaultCompaction=false and not /memory"
         });
         return;
       }
       if ((omRuntime.config.compaction === "manual" || omRuntime.config.noAutoCompact) && !isPiVcc) {
         trace("before_compact.cancel", {
-          reason: "manual mode and not /blackhole"
+          reason: "manual mode and not /memory"
         });
         omRuntime.lastCompactCancelled = true;
         return { cancel: true };
@@ -3444,7 +3444,7 @@ var registerBeforeCompactHook = (pi, omRuntime) => {
       if (omRuntime.appendFallbackNotified) return;
       omRuntime.appendFallbackNotified = true;
       ctx?.ui?.notify?.(
-        `pi-blackhole: append summary mode fell back to a complete replacement summary (${reason}); run /blackhole to rebase back into append segments`,
+        `Append summary mode fell back to a complete replacement summary (${reason}); run /memory to rebase back into append segments`,
         "warning"
       );
     };
@@ -3587,14 +3587,14 @@ function handleCompactFailed(event, ctx, runtime) {
     });
   }
   if (reason === "overflow" && aborted && willRetry) {
-    notifySafely(hasUI, ui, "blackhole: overflow compaction aborted, retrying turn", "info");
+    notifySafely(hasUI, ui, "Overflow compaction aborted, retrying turn", "info");
   }
   if (runtime.config.compactionEngine === "pi-default" && !attributedFromExtension) {
     trace("compact_failed.skipped_pi_default", { reason });
     return;
   }
   if (!aborted && errorMessage && attributedFromExtension) {
-    notifySafely(hasUI, ui, `blackhole: compaction failed \u2014 ${errorMessage}`, "error");
+    notifySafely(hasUI, ui, `Compaction failed \u2014 ${errorMessage}`, "error");
   }
 }
 
@@ -4131,7 +4131,7 @@ function createCleanupPicker(orphaned, theme, done) {
 async function handleCleanup(ctx) {
   const { orphaned } = analyzeOrphaned();
   if (orphaned.length === 0) {
-    ctx.ui.notify("pi-blackhole: No orphaned pending files found.", "info");
+    ctx.ui.notify("No orphaned pending files found.", "info");
     return;
   }
   const isRpc = ctx.mode === "rpc" || ctx.mode === "json" || ctx.mode === "print";
@@ -4142,7 +4142,7 @@ async function handleCleanup(ctx) {
       "",
       ...orphaned.map((pf) => `  ${describeFile(pf)}`),
       "",
-      "Use /blackhole cleanup in TUI mode to delete these files."
+      "Use /memory cleanup in TUI mode to delete these files."
     ];
     ctx.ui.notify(lines.join("\n"), "warning");
     return;
@@ -4159,24 +4159,24 @@ async function handleCleanup(ctx) {
     const intended = items.length;
     if (deleted === intended) {
       ctx.ui.notify(
-        `pi-blackhole: Deleted ${intended} orphaned pending file${intended === 1 ? "" : "s"}.`,
+        `Deleted ${intended} orphaned pending file${intended === 1 ? "" : "s"}.`,
         "info"
       );
     } else {
       ctx.ui.notify(
-        `pi-blackhole: Deleted ${deleted}/${intended} orphaned pending file${intended === 1 ? "" : "s"} (${intended - deleted} failed).`,
+        `Deleted ${deleted}/${intended} orphaned pending file${intended === 1 ? "" : "s"} (${intended - deleted} failed).`,
         "warning"
       );
     }
   } else if (items.length > 0 && items.length < orphaned.length) {
     const remainingSize = items.reduce((s, pf) => s + pf.sizeBytes, 0);
     ctx.ui.notify(
-      `pi-blackhole: ${orphaned.length - items.length} deleted, ${items.length} remain (${(remainingSize / 1024).toFixed(1)} KB).`,
+      `${orphaned.length - items.length} deleted, ${items.length} remain (${(remainingSize / 1024).toFixed(1)} KB).`,
       "info"
     );
   } else if (items.length === 0 && orphaned.length > 0) {
     ctx.ui.notify(
-      `pi-blackhole: All ${orphaned.length} orphaned pending file${orphaned.length === 1 ? "" : "s"} removed.`,
+      `All ${orphaned.length} orphaned pending file${orphaned.length === 1 ? "" : "s"} removed.`,
       "info"
     );
   }
@@ -8487,7 +8487,7 @@ var PREFERRED_INNER_ROWS2 = 45;
 function createChangelogViewer(args) {
   const { tui, theme, done, packageRoot, maxEntries } = args;
   const version = getPackageVersion(packageRoot);
-  const title = version ? `pi-blackhole v${version} \u2014 Changelog` : "pi-blackhole \u2014 Changelog";
+  const title = version ? `Changelog \u2014 v${version}` : "Changelog";
   const raw = readChangelogText(packageRoot);
   let allLines;
   if (!raw) {
@@ -8636,7 +8636,7 @@ var CONFIG_FILENAME = "pi-blackhole-config.json";
 var GLOBAL_CONFIG_DIR = join(getPiAgentDir(), "pi-blackhole");
 var config = new ConfigManager({
   id: "pi-blackhole",
-  label: "pi-blackhole",
+  label: "Memory",
   filename: CONFIG_FILENAME,
   configDir: GLOBAL_CONFIG_DIR,
   defaults: DEFAULTS,
@@ -8648,24 +8648,24 @@ var config = new ConfigManager({
       key: "compaction",
       type: "enum",
       label: "Compaction mode",
-      description: "auto=trigger on threshold, manual=only /blackhole, off=auto:Pi handles, /blackhole:blackhole pipeline",
+      description: "auto=trigger on threshold, manual=only /memory, off=auto:Pi handles, /memory:structural pipeline",
       value: cfg.compaction,
       options: ["auto", "manual", "off"],
       optionLabels: {
         auto: "auto \u2014 trigger on threshold",
-        manual: "manual \u2014 only /blackhole",
-        off: "off \u2014 auto:Pi handles, /blackhole:blackhole pipeline"
+        manual: "manual \u2014 only /memory",
+        off: "off \u2014 auto:Pi handles, /memory:structural pipeline"
       }
     },
     {
       key: "compactionEngine",
       type: "enum",
       label: "Compaction engine",
-      description: "blackhole=structured summary+OM, pi-default=built-in Pi summarization",
+      description: "structural=structured summary+OM, pi-default=built-in Pi summarization",
       value: cfg.compactionEngine,
       options: ["blackhole", "pi-default"],
       optionLabels: {
-        blackhole: "blackhole \u2014 structured summary + OM",
+        blackhole: "structural \u2014 structured summary + OM",
         "pi-default": "pi-default \u2014 built-in Pi summarization"
       }
     },
@@ -8673,12 +8673,12 @@ var config = new ConfigManager({
       key: "compactionSummaryMode",
       type: "enum",
       label: "Summary history",
-      description: "default=replace one complete summary, append=freeze automatic segments and rebase on /blackhole",
+      description: "default=replace one complete summary, append=freeze automatic segments and rebase on /memory",
       value: cfg.compactionSummaryMode,
       options: ["default", "append"],
       optionLabels: {
         default: "default \u2014 one complete replacement summary",
-        append: "append \u2014 immutable auto segments; /blackhole rebases"
+        append: "append \u2014 immutable auto segments; /memory rebases"
       }
     },
     {
@@ -8931,7 +8931,7 @@ var config = new ConfigManager({
       const trimmed = envCompactionEngine.trim().toLowerCase();
       if (!["blackhole", "pi-default"].includes(trimmed)) {
         console.warn(
-          `blackhole: invalid PI_BLACKHOLE_COMPACTION_ENGINE value "${envCompactionEngine}"; ignoring`
+          `Invalid PI_BLACKHOLE_COMPACTION_ENGINE value "${envCompactionEngine}"; ignoring`
         );
       }
     }
@@ -8949,7 +8949,7 @@ var config = new ConfigManager({
       const trimmed = envMidRunCompaction.trim().toLowerCase();
       if (!["resume", "pause", "off"].includes(trimmed)) {
         console.warn(
-          `blackhole: invalid PI_BLACKHOLE_MID_RUN_COMPACTION value "${envMidRunCompaction}"; ignoring`
+          `Invalid PI_BLACKHOLE_MID_RUN_COMPACTION value "${envMidRunCompaction}"; ignoring`
         );
       }
     }
@@ -9014,7 +9014,7 @@ var registerPiVccCommand = (pi, runtime) => {
   const prefixMatch = (value, prefix) => {
     return value.toLowerCase().startsWith(prefix.toLowerCase());
   };
-  pi.registerCommand("blackhole", {
+  pi.registerCommand("memory", {
     description: "Manual compact with structural summary. Subcommands: [settings] config overlay, [changelog] display changelog, [cleanup] remove orphaned files, [om-off]/[om-on] disable/enable observational memory.",
     getArgumentCompletions: (prefix) => {
       const subcommands = [
@@ -9063,7 +9063,7 @@ var registerPiVccCommand = (pi, runtime) => {
           );
           runtime.config = config.loadWithWarnings(ctx.cwd, GLOBAL_CONFIG_DIR).config;
           ctx.ui.notify(
-            "Observational memory disabled. Use /blackhole om-on to re-enable.",
+            "Observational memory disabled. Use /memory om-on to re-enable.",
             "info"
           );
         } catch {
@@ -9098,7 +9098,7 @@ var registerPiVccCommand = (pi, runtime) => {
       );
       if (nearMiss) {
         ctx.ui.notify(
-          `/blackhole ${nearMiss} accepts no arguments. Did you mean "/blackhole ${nearMiss}"?`,
+          `/memory ${nearMiss} accepts no arguments. Did you mean "/memory ${nearMiss}"?`,
           "warning"
         );
         return;
@@ -9128,7 +9128,7 @@ var registerPiVccCommand = (pi, runtime) => {
           if (stats) {
             ctx.ui.notify(formatCompactionStats(stats), "info");
           } else {
-            ctx.ui.notify("Compacted with blackhole", "info");
+            ctx.ui.notify("Compacted", "info");
           }
           notifyMigrationReminder(sessionId, (msg, level) => ctx.ui.notify(msg, level));
           if (followUpPrompt) {
@@ -9234,8 +9234,8 @@ function renderContentOnlyProjection(projection, emptyScope) {
   ].join("\n");
 }
 function registerMemoryCommand(pi, runtime) {
-  pi.registerCommand("blackhole-memory", {
-    description: "Show memory pipeline status & token counters. /blackhole-memory [view] visible observations & reflections, [full] complete recorded memory (copies to clipboard).",
+  pi.registerCommand("observations", {
+    description: "Show memory pipeline status & token counters. /observations [view] visible observations & reflections, [full] complete recorded memory (copies to clipboard).",
     handler: async (args, ctx) => {
       runtime.ensureConfig(ctx.cwd, (msg) => ctx.ui?.notify?.(msg, "warning"));
       const entries = ctx.sessionManager.getBranch();
@@ -9270,7 +9270,7 @@ Failed to copy to clipboard.`,
         return;
       }
       if (mode && mode !== "status") {
-        ctx.ui.notify("Usage: /blackhole-memory [status|view|full]", "info");
+        ctx.ui.notify("Usage: /observations [status|view|full]", "info");
         return;
       }
       const folded = foldLedger(entries);
@@ -9340,7 +9340,7 @@ Failed to copy to clipboard.`,
           lines.push(
             `Preamble cap: ${preambleCap.toLocaleString()} tokens for observations${pctNote}`
           );
-          lines.push("Run /blackhole to flush and compact.");
+          lines.push("Run /memory to flush and compact.");
         }
       }
       if (runtime.consolidationInFlight || runtime.compactInFlight || runtime.compactHookInFlight) {
@@ -9472,7 +9472,7 @@ var loadAllMessages = (sessionFile, full, allowedEntryIds) => {
     }
   }
   if (parseErrors > 0) {
-    console.warn(`blackhole: ${parseErrors} malformed JSONL line(s) in ${sessionFile}`);
+    console.warn(`memory: ${parseErrors} malformed JSONL line(s) in ${sessionFile}`);
   }
   const rendered = [];
   const rawMessages = [];
@@ -10026,8 +10026,8 @@ async function augmentWithObservations(output, rendered, ctx) {
   return output;
 }
 var registerVccRecallCommand = (pi) => {
-  pi.registerCommand("blackhole-recall", {
-    description: "Search session history. Defaults to active lineage. Usage: /blackhole-recall <query> [page:N] [scope:all] [mode:file|touched]",
+  pi.registerCommand("recall", {
+    description: "Search session history. Defaults to active lineage. Usage: /recall <query> [page:N] [scope:all] [mode:file|touched]",
     handler: async (args, ctx) => {
       const sessionFile = ctx.sessionManager.getSessionFile();
       if (!sessionFile) {
@@ -10083,7 +10083,7 @@ var registerVccRecallCommand = (pi) => {
       const scopeSuffix = parsed.scope === "all" ? " (scope: all)" : "";
       const header = totalPages > 1 ? `Page ${page}/${totalPages} (${allResults.length} total matches${scopeSuffix})` : `${allResults.length} matches${scopeSuffix}`;
       const footer = page < totalPages ? `
---- /blackhole-recall ${query}${parsed.scope === "all" ? " scope:all" : ""} page:${page + 1} ---` : "";
+--- /recall ${query}${parsed.scope === "all" ? " scope:all" : ""} page:${page + 1} ---` : "";
       const base = formatRecallOutput(pageResults, query, header) + footer;
       const output = await augmentWithObservations(base, pageResults, ctx);
       pi.sendMessage(
@@ -10436,1389 +10436,6 @@ async function buildProjectMemoryCorpusAsync(options, onProgress) {
   return corpus;
 }
 
-// src/project-recall/dedup.ts
-var NORM_CAP = 600;
-var FUZZY_THRESHOLD = 0.88;
-var SORENSEN_FUZZY_THRESHOLD = 0.7;
-var SORENSEN_MIN_LEVENSHTEIN = 0.45;
-var STOP_WORDS2 = /* @__PURE__ */ new Set([
-  "user",
-  "agent",
-  "assistant",
-  // relevance labels are rank words, not topics
-  "critical",
-  "high",
-  "medium",
-  "low",
-  // generic path components (scope dirs, cwd paths)
-  "home",
-  "projects",
-  "github",
-  "git",
-  "the",
-  "a",
-  "an",
-  "to",
-  "of",
-  "in",
-  "for",
-  "on",
-  "is",
-  "are",
-  "was",
-  "were",
-  "be",
-  "been",
-  "being",
-  "it",
-  "its",
-  "this",
-  "that",
-  "these",
-  "those",
-  "and",
-  "but",
-  "or",
-  "with",
-  "at",
-  "from",
-  "as",
-  "into",
-  "through",
-  "during",
-  "before",
-  "after",
-  "above",
-  "below",
-  "between",
-  "out",
-  "off",
-  "over",
-  "under",
-  "again",
-  "further",
-  "then",
-  "once",
-  "here",
-  "there",
-  "when",
-  "where",
-  "why",
-  "how",
-  "all",
-  "any",
-  "each",
-  "every",
-  "both",
-  "few",
-  "more",
-  "most",
-  "other",
-  "some",
-  "such",
-  "no",
-  "nor",
-  "not",
-  "only",
-  "own",
-  "same",
-  "so",
-  "than",
-  "too",
-  "very",
-  "just",
-  "about",
-  "also",
-  "because",
-  "until",
-  "while",
-  "which",
-  "who",
-  "whom",
-  "i",
-  "me",
-  "my",
-  "we",
-  "our",
-  "you",
-  "your",
-  "he",
-  "she",
-  "they",
-  "them",
-  "their",
-  "have",
-  "has",
-  "had",
-  "do",
-  "does",
-  "did",
-  "will",
-  "would",
-  "could",
-  "should",
-  "may",
-  "might",
-  "can",
-  "shall",
-  "need",
-  "used",
-  "using",
-  "one",
-  "two",
-  "new",
-  "old",
-  "via",
-  "per",
-  "etc"
-]);
-var TECHNICAL_ROOTS = {
-  initialize: "init",
-  initialization: "init",
-  initialized: "init",
-  initializes: "init",
-  initializer: "init",
-  configure: "config",
-  configuration: "config",
-  configuring: "config",
-  configured: "config",
-  configures: "config",
-  authenticate: "auth",
-  authentication: "auth",
-  authenticated: "auth",
-  authenticates: "auth",
-  synchronous: "sync",
-  synchronized: "sync",
-  synchronization: "sync",
-  synchronize: "sync",
-  synchronizing: "sync",
-  deprecate: "deprec",
-  deprecation: "deprec",
-  deprecated: "deprec",
-  deprecates: "deprec",
-  allocate: "alloc",
-  allocation: "alloc",
-  allocated: "alloc",
-  allocator: "alloc",
-  destructure: "destruct",
-  destructured: "destruct",
-  destructuring: "destruct",
-  destructor: "destruct",
-  destruction: "destruct",
-  validate: "valid",
-  validation: "valid",
-  validator: "valid",
-  validated: "valid",
-  validates: "valid",
-  validating: "valid",
-  sanitize: "sanit",
-  sanitization: "sanit",
-  sanitized: "sanit",
-  sanitizer: "sanit",
-  normalize: "normal",
-  normalization: "normal",
-  normalized: "normal",
-  normalizer: "normal",
-  refactor: "refactor",
-  refactored: "refactor",
-  refactoring: "refactor",
-  refactors: "refactor",
-  rebase: "rebas",
-  rebasing: "rebas",
-  rebased: "rebas",
-  serialize: "serializ",
-  serialization: "serializ",
-  serialized: "serializ",
-  serializer: "serializ",
-  serializers: "serializ",
-  optimize: "optim",
-  optimization: "optim",
-  optimized: "optim",
-  optimizer: "optim",
-  compress: "compress",
-  compression: "compress",
-  compressed: "compress",
-  compressor: "compress",
-  transpile: "transpil",
-  transpilation: "transpil",
-  transpiled: "transpil",
-  transpiler: "transpil",
-  migrate: "migrat",
-  migration: "migrat",
-  migrated: "migrat",
-  migrates: "migrat",
-  migrating: "migrat",
-  subscribe: "subscrib",
-  subscription: "subscrib",
-  subscribed: "subscrib",
-  subscriber: "subscrib",
-  resolve: "resolv",
-  resolution: "resolv",
-  resolved: "resolv",
-  resolver: "resolv",
-  implement: "implement",
-  implementation: "implement",
-  implemented: "implement",
-  implementer: "implement",
-  execute: "execut",
-  execution: "execut",
-  executed: "execut",
-  executor: "execut",
-  executable: "execut",
-  register: "regist",
-  registration: "regist",
-  registered: "regist",
-  registry: "regist",
-  registrar: "regist",
-  compact: "compact",
-  compaction: "compact",
-  compacted: "compact",
-  compactor: "compact",
-  prune: "prun",
-  pruning: "prun",
-  pruned: "prun",
-  pruner: "prun",
-  reflect: "reflect",
-  reflection: "reflect",
-  reflector: "reflect",
-  reflected: "reflect",
-  observe: "observ",
-  observation: "observ",
-  observer: "observ",
-  observed: "observ"
-};
-function stemToken(token) {
-  if (token.length <= 3) return token;
-  const directRoot = Object.prototype.hasOwnProperty.call(TECHNICAL_ROOTS, token) ? TECHNICAL_ROOTS[token] : void 0;
-  if (directRoot) return directRoot;
-  let word = token;
-  if (word.endsWith("sses")) {
-    word = word.slice(0, -2);
-  } else if (word.endsWith("ies") && word.length > 4) {
-    word = word.slice(0, -3) + "y";
-  } else if (word.endsWith("ss")) ; else if (word.endsWith("s") && word.length > 3 && !word.endsWith("us") && !word.endsWith("is")) {
-    word = word.slice(0, -1);
-  }
-  if (word.endsWith("eed") && word.length > 4) {
-    word = word.slice(0, -1);
-  } else if (word.endsWith("ed") && word.length > 4) {
-    word = word.slice(0, -2);
-    if (word.endsWith("i")) word = word.slice(0, -1) + "y";
-  } else if (word.endsWith("ing") && word.length > 5) {
-    word = word.slice(0, -3);
-    if (word.endsWith("i")) word = word.slice(0, -1) + "y";
-  }
-  if (word.length > 5) {
-    if (word.endsWith("ers") || word.endsWith("ors")) {
-      word = word.slice(0, -3);
-    } else if (word.endsWith("er") || word.endsWith("or")) {
-      word = word.slice(0, -2);
-    }
-  }
-  if (word.length > 6) {
-    if (word.endsWith("ability") || word.endsWith("ibility")) {
-      word = word.slice(0, -7);
-    } else if (word.endsWith("ation") || word.endsWith("ition")) {
-      word = word.slice(0, -5);
-    } else if (word.endsWith("ction") || word.endsWith("stion")) {
-      word = word.slice(0, -3);
-    } else if (word.endsWith("tion") || word.endsWith("sion")) {
-      word = word.slice(0, -2);
-    } else if (word.endsWith("ment") || word.endsWith("ness")) {
-      word = word.slice(0, -4);
-    } else if (word.endsWith("able") || word.endsWith("ible")) {
-      word = word.slice(0, -4);
-    } else if (word.endsWith("ance") || word.endsWith("ence")) {
-      word = word.slice(0, -4);
-    } else if (word.endsWith("ity") || word.endsWith("ous")) {
-      word = word.slice(0, -3);
-    } else if (word.endsWith("ful") || word.endsWith("ive")) {
-      word = word.slice(0, -3);
-    } else if (word.endsWith("ize") || word.endsWith("ise")) {
-      word = word.slice(0, -3);
-    } else if (word.endsWith("ify") || word.endsWith("ied")) {
-      word = word.slice(0, -3);
-    } else if (word.endsWith("ly") && word.length > 5) {
-      word = word.slice(0, -2);
-    }
-  }
-  if (Object.prototype.hasOwnProperty.call(TECHNICAL_ROOTS, word)) return TECHNICAL_ROOTS[word];
-  return word.length >= 3 ? word : token;
-}
-function tokenizeSurfaceContent(content) {
-  const expanded = content.replace(/\bdon't\b/gi, "do not").replace(/\bcan't\b/gi, "cannot").replace(/\bwon't\b/gi, "will not").replace(/\bisn't\b/gi, "is not").replace(/\baren't\b/gi, "are not").replace(/\bwasn't\b/gi, "was not").replace(/\bweren't\b/gi, "were not").replace(/\bhasn't\b/gi, "has not").replace(/\bhaven't\b/gi, "have not").replace(/\bhadn't\b/gi, "had not").replace(/\bdoesn't\b/gi, "does not").replace(/\bdidn't\b/gi, "did not").replace(/\bcouldn't\b/gi, "could not").replace(/\bshouldn't\b/gi, "should not").replace(/\bwouldn't\b/gi, "would not").replace(/\bmustn't\b/gi, "must not").replace(/\bneedn't\b/gi, "need not").replace(/\bit's\b/gi, "it is").replace(/\bthat's\b/gi, "that is").replace(/\bwhat's\b/gi, "what is").replace(/\bthere's\b/gi, "there is").replace(/\bhere's\b/gi, "here is").replace(/\bhow's\b/gi, "how is").replace(/\bwho's\b/gi, "who is").replace(/\bi'm\b/gi, "i am").replace(/\byou're\b/gi, "you are").replace(/\bwe're\b/gi, "we are").replace(/\bthey're\b/gi, "they are");
-  const splitCamel = expanded.replace(/([a-z])([A-Z])/g, "$1 $2");
-  const rawTokens = splitCamel.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(
-    (t) => t.length >= 3 && !STOP_WORDS2.has(t) && !/^\d+$/.test(t) && // Filter commit-like hex sequences (a7a15b5a, 837530d7, etc.)
-    !/^[a-f0-9]{7,}$/i.test(t) && // Filter single letters attached to parens/hyphens
-    !/^[a-z]$/.test(t)
-  );
-  return rawTokens;
-}
-function tokenizeContent(content) {
-  return tokenizeSurfaceContent(content).map(stemToken);
-}
-function computeSimHash64(tokens) {
-  if (tokens.length === 0) return 0n;
-  const v = new Int32Array(64);
-  for (const token of tokens) {
-    if (typeof token !== "string") continue;
-    let h = 0xcbf29ce484222325n;
-    const prime = 0x100000001b3n;
-    for (let i = 0; i < token.length; i++) {
-      h ^= BigInt(token.charCodeAt(i));
-      h = h * prime & 0xffffffffffffffffn;
-    }
-    for (let i = 0; i < 64; i++) {
-      const bit = h >> BigInt(i) & 1n;
-      v[i] += bit === 1n ? 1 : -1;
-    }
-  }
-  let fingerprint = 0n;
-  for (let i = 0; i < 64; i++) {
-    if (v[i] > 0) {
-      fingerprint |= 1n << BigInt(i);
-    }
-  }
-  return fingerprint;
-}
-function simHashHammingDistance(a, b) {
-  let x = a ^ b;
-  let count = 0;
-  while (x > 0n) {
-    count += Number(x & 1n);
-    x >>= 1n;
-  }
-  return count;
-}
-function normalizeContent(content) {
-  const expanded = content.replace(/\bdon't\b/gi, "do not").replace(/\bcan't\b/gi, "cannot").replace(/\bwon't\b/gi, "will not").replace(/\bisn't\b/gi, "is not").replace(/\baren't\b/gi, "are not").replace(/\bwasn't\b/gi, "was not").replace(/\bweren't\b/gi, "were not").replace(/\bhasn't\b/gi, "has not").replace(/\bhaven't\b/gi, "have not").replace(/\bhadn't\b/gi, "had not").replace(/\bdoesn't\b/gi, "does not").replace(/\bdidn't\b/gi, "did not").replace(/\bcouldn't\b/gi, "could not").replace(/\bshouldn't\b/gi, "should not").replace(/\bwouldn't\b/gi, "would not").replace(/\bmustn't\b/gi, "must not").replace(/\bneedn't\b/gi, "need not").replace(/\bit's\b/gi, "it is").replace(/\bthat's\b/gi, "that is").replace(/\bwhat's\b/gi, "what is").replace(/\bthere's\b/gi, "there is").replace(/\bhere's\b/gi, "here is").replace(/\bhow's\b/gi, "how is").replace(/\bwho's\b/gi, "who is").replace(/\bi'm\b/gi, "i am").replace(/\byou're\b/gi, "you are").replace(/\bwe're\b/gi, "we are").replace(/\bthey're\b/gi, "they are");
-  return expanded.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim().slice(0, NORM_CAP);
-}
-function levenshteinSimilarity(a, b) {
-  if (a === b) return 1;
-  if (!a.length || !b.length) return 0;
-  let prev = new Array(b.length + 1);
-  let cur = new Array(b.length + 1);
-  for (let j = 0; j <= b.length; j++) prev[j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    cur[0] = i;
-    const ca = a.charCodeAt(i - 1);
-    for (let j = 1; j <= b.length; j++) {
-      cur[j] = Math.min(
-        prev[j] + 1,
-        cur[j - 1] + 1,
-        prev[j - 1] + (ca === b.charCodeAt(j - 1) ? 0 : 1)
-      );
-    }
-    [prev, cur] = [cur, prev];
-  }
-  return 1 - prev[b.length] / Math.max(a.length, b.length);
-}
-function bigramJaccard(a, b, cache2) {
-  const bigrams = (s) => {
-    let set = cache2.get(s);
-    if (!set) {
-      set = /* @__PURE__ */ new Set();
-      for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
-      cache2.set(s, set);
-    }
-    return set;
-  };
-  const A = bigrams(a);
-  const B = bigrams(b);
-  let inter = 0;
-  for (const g of A) if (B.has(g)) inter++;
-  return inter / (A.size + B.size - inter);
-}
-function sorensenDiceSets(A, B) {
-  if (A.size === 0 || B.size === 0) return 0;
-  let inter = 0;
-  for (const t of A) if (B.has(t)) inter++;
-  return 2 * inter / (A.size + B.size);
-}
-var TIER_RANK = {
-  critical: 4,
-  high: 3,
-  medium: 2,
-  low: 1
-};
-function tsValue(ts) {
-  if (!ts) return 0;
-  const t = Date.parse(ts);
-  return Number.isNaN(t) ? 0 : t;
-}
-function pickRep(members) {
-  return members.reduce((best, m) => tsValue(m.timestamp) > tsValue(best.timestamp) ? m : best);
-}
-var UnionFind = class {
-  parent;
-  constructor(n) {
-    this.parent = Array.from({ length: n }, (_, i) => i);
-  }
-  find(x) {
-    while (this.parent[x] !== x) {
-      this.parent[x] = this.parent[this.parent[x]];
-      x = this.parent[x];
-    }
-    return x;
-  }
-  union(a, b) {
-    this.parent[this.find(a)] = this.find(b);
-  }
-};
-function clusterObservations(items, opts) {
-  const maxVariants = opts?.maxVariants ?? 2;
-  const groups = /* @__PURE__ */ new Map();
-  for (const item of items) {
-    const key = normalizeContent(item.content);
-    const group = groups.get(key);
-    if (group) group.push(item);
-    else groups.set(key, [item]);
-  }
-  let allGroups = [...groups.entries()].map(([key, members]) => ({
-    key,
-    members
-  }));
-  if (opts?.fuzzy && allGroups.length > 1) {
-    const uf = new UnionFind(allGroups.length);
-    const cache2 = /* @__PURE__ */ new Map();
-    for (let i = 0; i < allGroups.length; i++) {
-      for (let j = i + 1; j < allGroups.length; j++) {
-        const rootI = uf.find(i);
-        const rootJ = uf.find(j);
-        if (rootI === rootJ) continue;
-        const a = allGroups[i].key;
-        const b = allGroups[j].key;
-        const la = a.length;
-        const lb = b.length;
-        if (Math.abs(la - lb) > (1 - FUZZY_THRESHOLD) * Math.max(la, lb, 1)) continue;
-        if (bigramJaccard(a, b, cache2) < FUZZY_THRESHOLD - 0.15) continue;
-        if (levenshteinSimilarity(a, b) >= FUZZY_THRESHOLD) {
-          const rootKey = allGroups[rootI].key;
-          if (levenshteinSimilarity(rootKey, b) >= FUZZY_THRESHOLD - 0.08) {
-            uf.union(i, j);
-          }
-        }
-      }
-    }
-    const merged = /* @__PURE__ */ new Map();
-    allGroups.forEach((g, i) => {
-      const root = uf.find(i);
-      const acc = merged.get(root);
-      if (acc) {
-        acc.members.push(...g.members);
-      } else {
-        merged.set(root, { key: g.key, members: [...g.members] });
-      }
-    });
-    allGroups = [...merged.values()];
-  }
-  if (opts?.sorensen && allGroups.length > 1) {
-    const uf = new UnionFind(allGroups.length);
-    const groupReps = allGroups.map((g) => normalizeContent(pickRep(g.members).content));
-    const tokenLists = groupReps.map((s) => tokenizeContent(s));
-    const repTokens = tokenLists.map((tokens) => new Set(tokens));
-    const repHashes = tokenLists.map((tokens) => computeSimHash64(tokens));
-    for (let i = 0; i < allGroups.length; i++) {
-      for (let j = i + 1; j < allGroups.length; j++) {
-        const rootI = uf.find(i);
-        const rootJ = uf.find(j);
-        if (rootI === rootJ) continue;
-        const a = groupReps[i];
-        const b = groupReps[j];
-        const la = a.length;
-        const lb = b.length;
-        if (Math.abs(la - lb) > (1 - SORENSEN_FUZZY_THRESHOLD) * Math.max(la, lb, 1)) continue;
-        if (repTokens[i].size >= 4 && repTokens[j].size >= 4 && simHashHammingDistance(repHashes[i], repHashes[j]) > 26) {
-          continue;
-        }
-        if (levenshteinSimilarity(a, b) < SORENSEN_MIN_LEVENSHTEIN) continue;
-        if (sorensenDiceSets(repTokens[i], repTokens[j]) >= SORENSEN_FUZZY_THRESHOLD) {
-          const rootTokenSet = repTokens[rootI];
-          if (sorensenDiceSets(rootTokenSet, repTokens[j]) >= SORENSEN_FUZZY_THRESHOLD - 0.1) {
-            uf.union(i, j);
-          }
-        }
-      }
-    }
-    const merged = /* @__PURE__ */ new Map();
-    allGroups.forEach((g, i) => {
-      const root = uf.find(i);
-      const acc = merged.get(root);
-      if (acc) {
-        acc.members.push(...g.members);
-      } else {
-        merged.set(root, { key: g.key, members: [...g.members] });
-      }
-    });
-    allGroups = [...merged.values()];
-  }
-  const clusters = [];
-  for (const group of allGroups) {
-    const { members } = group;
-    const bestRelevance = members.reduce(
-      (best, m) => TIER_RANK[m.relevance] > TIER_RANK[best] ? m.relevance : best,
-      "low"
-    );
-    const rep = members.filter((m) => m.relevance === bestRelevance).reduce((best, m) => tsValue(m.timestamp) > tsValue(best.timestamp) ? m : best) ?? pickRep(members);
-    const repKey = normalizeContent(rep.content);
-    const extras = members.filter((m) => m !== rep && normalizeContent(m.content) !== repKey);
-    clusters.push({
-      rep,
-      extras: extras.slice(0, maxVariants),
-      occurrences: members.length,
-      distinctSessions: new Set(members.map((m) => m.sessionId)).size,
-      bestRelevance,
-      maxRelatedSimilarity: 0
-    });
-  }
-  if (clusters.length > 1) {
-    const repTokenSets = clusters.map((c) => new Set(tokenizeContent(c.rep.content)));
-    for (let i = 0; i < clusters.length; i++) {
-      let maxSim = 0;
-      for (let j = 0; j < clusters.length; j++) {
-        if (i === j) continue;
-        const sim = sorensenDiceSets(repTokenSets[i], repTokenSets[j]);
-        if (sim > maxSim) maxSim = sim;
-      }
-      clusters[i].maxRelatedSimilarity = maxSim;
-    }
-  }
-  return clusters;
-}
-function clusterReflections(items) {
-  const groups = /* @__PURE__ */ new Map();
-  for (const item of items) {
-    const key = normalizeContent(item.content);
-    const group = groups.get(key);
-    if (group) group.push(item);
-    else groups.set(key, [item]);
-  }
-  const clusters = [];
-  for (const [, members] of groups) {
-    const rep = pickRep(members);
-    clusters.push({
-      rep,
-      extras: [],
-      occurrences: members.length,
-      distinctSessions: new Set(members.map((m) => m.sessionId)).size,
-      bestRelevance: "medium",
-      maxRelatedSimilarity: 0
-    });
-  }
-  return clusters;
-}
-
-// src/project-recall/format-export.ts
-var TIER_WEIGHT = {
-  critical: 4,
-  high: 3,
-  medium: 2,
-  low: 1
-};
-var TIER_ORDER = ["critical", "high", "medium", "low"];
-var TIER_RANK2 = TIER_WEIGHT;
-var RECENCY_DECAY_EXP = 0.3;
-var TIER_DECAY_EXP = {
-  critical: 0.25,
-  high: 0.28,
-  medium: 0.31,
-  low: 0.34
-};
-var COVERAGE_WEIGHT = 0.3;
-var CONSENSUS_WEIGHT = 0.2;
-var BURST_PENALTY_WEIGHT = 0.15;
-var LENGTH_WEIGHT = 0.08;
-var TOPIC_SIMILARITY_THRESHOLD = 0.25;
-var TOPIC_SPLIT_STEP = 0.1;
-var MAX_COMPONENT_SIZE = 30;
-var MAX_SPLIT_DEPTH = 6;
-var MIN_TOPIC_SIZE = 5;
-function relativeTime(timestamp, nowMs) {
-  if (!timestamp) return null;
-  const t = Date.parse(timestamp);
-  if (Number.isNaN(t)) return null;
-  const diffMs = Math.max(0, nowMs - t);
-  const minutes = Math.floor(diffMs / 6e4);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 14) return `${days}d ago`;
-  const weeks = Math.floor(days / 7);
-  if (days < 60) return `${weeks}w ago`;
-  const months = Math.floor(days / 30);
-  if (months < 24) return `${months}mo ago`;
-  return `${Math.floor(days / 365)}y ago`;
-}
-function recencyDecay(timestamp, nowMs, tier) {
-  if (!timestamp) return 0.5;
-  const t = Date.parse(timestamp);
-  if (Number.isNaN(t)) return 0.5;
-  const days = Math.max(0, (nowMs - t) / 864e5);
-  const exp = tier ? TIER_DECAY_EXP[tier] ?? RECENCY_DECAY_EXP : RECENCY_DECAY_EXP;
-  return 1 / Math.pow(1 + days, exp);
-}
-function burstPenalty(cluster) {
-  if (cluster.distinctSessions === 0) return 1;
-  const ratio = cluster.occurrences / cluster.distinctSessions;
-  if (ratio <= 1.5) return 1;
-  return 1 / (1 + BURST_PENALTY_WEIGHT * Math.log2(ratio));
-}
-function technicalDensityFactor(content) {
-  let entityCount = 0;
-  const fileExts = "ts|tsx|js|jsx|mjs|cjs|vue|svelte|astro|html|css|scss|sass|less|wasm|rs|go|c|cpp|cc|cxx|h|hpp|zig|nim|java|kt|kts|scala|cs|fs|swift|py|rb|php|lua|pl|sh|bash|zsh|fish|json|json5|jsonc|yaml|yml|toml|xml|ini|env|sql|prisma|graphql|gql|proto|tf|hcl";
-  const fileMatches = content.match(
-    new RegExp(
-      `\\b[\\w.-]+[\\\\/][\\w.-]+(?:\\.(?:${fileExts}))?\\b|\\b[\\w.-]+\\.(?:${fileExts})\\b|\\b(?:Dockerfile|Containerfile|Makefile|Vagrantfile|Procfile|package\\.json|Cargo\\.toml|go\\.mod|requirements\\.txt|pyproject\\.toml|pom\\.xml|build\\.gradle|\\.gitignore|\\.dockerignore|\\.env(?:\\.[\\w-]+)?)\\b`,
-      "gi"
-    )
-  );
-  if (fileMatches) entityCount += fileMatches.length * 1.5;
-  const symbolMatches = content.match(
-    /\b[a-zA-Z_]\w*\(\)|\b[a-zA-Z_]\w*(?:::|->|\.)[a-zA-Z_]\w*|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z]+[A-Z]\w*\b|\b(?:Array|Option|Result|Map|Set|Promise|Vec|List|HashMap)<[\w\s,<>]+>|@\w+(?:\([^)]*\))?|#\[\w+(?:\([^)]*\))?\]/g
-  );
-  if (symbolMatches) entityCount += symbolMatches.length;
-  const apiMatches = content.match(
-    /\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\/[/\w:.-]*|\b[1-5]\d{2}\s+(?:OK|Created|Accepted|No Content|Bad Request|Unauthorized|Forbidden|Not Found|Conflict|Too Many Requests|Internal Server Error|Bad Gateway|Service Unavailable)\b|\/(?:api|v[0-9]+|auth|users|healthz|metrics|ws|graphql)[/\w:.-]*/gi
-  );
-  if (apiMatches) entityCount += apiMatches.length * 1.5;
-  const configMatches = content.match(
-    /\b(?:REACT_APP_|NEXT_PUBLIC_|VITE_|DATABASE_|NODE_|AWS_|DOCKER_|KUBE_|PI_|PI_BLACKHOLE_)[A-Z0-9_]+\b|\b[A-Z][A-Z0-9_]{3,}\b|\b(?:--[a-z0-9_-]+(?:=[^\s]+)?|-[a-zA-Z]{1,3})\b|\b(?:npm|pnpm|yarn|bun|cargo|go|rustc|docker|kubectl|git|make|pytest|pip|uv)\s+[a-z0-9_-]+/g
-  );
-  if (configMatches) entityCount += configMatches.length * 1.5;
-  const systemMatches = content.match(
-    /\b[A-Z]\w*(?:Exception|Error|Fault|Failure|Panic|SIGSEGV|SIGTERM|ECONNREFUSED|ETIMEDOUT|ENOTFOUND)\b|\b[a-f0-9]{7,40}\b|\bv?\d+\.\d+\.\d+(?:-[a-zA-Z0-9_.-]+)?\b/gi
-  );
-  if (systemMatches) entityCount += systemMatches.length;
-  return 1 + 0.12 * Math.log2(1 + entityCount);
-}
-function lengthAndDensityFactor(content) {
-  const tokens = tokenizeContent(content).length;
-  const lenFactor = 1 + LENGTH_WEIGHT * Math.log2(1 + tokens / 8);
-  const techFactor = technicalDensityFactor(content);
-  return lenFactor * techFactor;
-}
-function clusterScore(cluster, tier, nowMs, coverage = 0) {
-  return TIER_WEIGHT[tier] * recencyDecay(cluster.rep.timestamp, nowMs, tier) * (1 + Math.log2(1 + cluster.distinctSessions)) * (1 + COVERAGE_WEIGHT * Math.log2(1 + coverage)) * (1 + CONSENSUS_WEIGHT * cluster.maxRelatedSimilarity) * burstPenalty(cluster) * lengthAndDensityFactor(cluster.rep.content);
-}
-function buildObsTierMap(observations) {
-  const map = /* @__PURE__ */ new Map();
-  for (const o of observations) {
-    if (o.id) map.set(o.id, o.relevance);
-  }
-  return map;
-}
-function inferReflectionTier(cluster, obsTier) {
-  if (cluster.rep.supportingObservationIds.length === 0) return "medium";
-  let best = "medium";
-  let bestRank = 0;
-  for (const id of cluster.rep.supportingObservationIds) {
-    const rel = obsTier.get(id);
-    if (!rel) continue;
-    const rank = TIER_RANK2[rel];
-    if (rank > bestRank) {
-      bestRank = rank;
-      best = rel;
-    }
-  }
-  return best;
-}
-function reflectionScore(cluster, nowMs, obsTier) {
-  const tier = inferReflectionTier(cluster, obsTier);
-  const weight = TIER_WEIGHT[tier];
-  return weight * recencyDecay(cluster.rep.timestamp, nowMs, tier) * (1 + Math.log2(1 + cluster.distinctSessions)) * (1 + Math.log2(1 + cluster.rep.supportingObservationIds.length)) * burstPenalty(cluster) * lengthAndDensityFactor(cluster.rep.content);
-}
-function flatten(content) {
-  return content.replace(/\s+/g, " ").trim();
-}
-function buildCoverageIndex(reflections) {
-  const index = /* @__PURE__ */ new Map();
-  for (const r of reflections) {
-    for (const id of r.supportingObservationIds) {
-      index.set(id, (index.get(id) ?? 0) + 1);
-    }
-  }
-  return index;
-}
-function clusterCoverage(cluster, coverageIndex2) {
-  let total = 0;
-  const seen = /* @__PURE__ */ new Set();
-  const absorb = (id) => {
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    const n = coverageIndex2.get(id);
-    if (n) total += n;
-  };
-  absorb(cluster.rep.id);
-  for (const extra of cluster.extras) absorb(extra.id);
-  return total;
-}
-function passesViability(cluster, coverage) {
-  if (cluster.distinctSessions >= 2) return true;
-  if (coverage > 0) return true;
-  if (cluster.bestRelevance === "low") return false;
-  if (cluster.bestRelevance === "medium") {
-    return flatten(cluster.rep.content).length >= 50;
-  }
-  return true;
-}
-var UnionFindTopic = class {
-  parent;
-  constructor(n) {
-    this.parent = Array.from({ length: n }, (_, i) => i);
-  }
-  find(x) {
-    while (this.parent[x] !== x) {
-      this.parent[x] = this.parent[this.parent[x]];
-      x = this.parent[x];
-    }
-    return x;
-  }
-  union(a, b) {
-    this.parent[this.find(a)] = this.find(b);
-  }
-};
-function topicTokenData(content) {
-  const surface = tokenizeSurfaceContent(content);
-  return {
-    surface,
-    stemmed: surface.map(stemToken)
-  };
-}
-var TOPIC_STOP_WORDS = /* @__PURE__ */ new Set([
-  // compaction section headers
-  "changes",
-  "compaction",
-  "files",
-  "goal",
-  "original",
-  "session",
-  "summary",
-  // agent meta-utterances / filler speech
-  "let",
-  "reading",
-  "examining",
-  "looking",
-  "need",
-  "going",
-  "want",
-  "instructs",
-  "instructed",
-  "stated",
-  "decided",
-  "completed",
-  "implemented",
-  "updated",
-  "created",
-  "rewrote",
-  "fixed",
-  "added",
-  "removed",
-  "identified",
-  "confirmed",
-  "verified",
-  "proposed",
-  "diagnosed",
-  "began",
-  "begun",
-  // generic git/project scaffolding that produces opaque labels
-  "branch",
-  "branches",
-  "main",
-  "feat",
-  "fix",
-  "chore",
-  "commit",
-  "commits",
-  "insertion",
-  "insertions",
-  "deletion",
-  "deletions",
-  "diff",
-  "pr",
-  "file",
-  "code",
-  "docs",
-  "document"
-]);
-function connectedComponents(subset, tokenSets, threshold) {
-  const n = subset.length;
-  if (n === 0) return [];
-  const uf = new UnionFindTopic(n);
-  const maxSizeRatio = 2 / threshold - 1;
-  const sizes = tokenSets.map((s) => s.size);
-  for (let i = 0; i < n; i++) {
-    const ai = subset[i];
-    const sa = sizes[ai];
-    if (sa === 0) continue;
-    for (let j = i + 1; j < n; j++) {
-      const bj = subset[j];
-      const sb = sizes[bj];
-      if (sb === 0) continue;
-      const ratio = sa > sb ? sa / sb : sb / sa;
-      if (ratio > maxSizeRatio) continue;
-      if (sorensenDiceSets(tokenSets[ai], tokenSets[bj]) >= threshold) {
-        uf.union(i, j);
-      }
-    }
-  }
-  const comps = /* @__PURE__ */ new Map();
-  for (let i = 0; i < n; i++) {
-    const root = uf.find(i);
-    const arr = comps.get(root);
-    if (arr) arr.push(subset[i]);
-    else comps.set(root, [subset[i]]);
-  }
-  return [...comps.values()];
-}
-function assignTopics(clusters) {
-  if (clusters.length < MIN_TOPIC_SIZE) return /* @__PURE__ */ new Map();
-  const tokenData = clusters.map((c) => topicTokenData(flatten(c.rep.content)));
-  const orderedTokens = tokenData.map(
-    ({ stemmed }) => stemmed.filter((t) => !TOPIC_STOP_WORDS.has(t))
-  );
-  const surfaceTokens = tokenData.map(
-    ({ stemmed, surface }) => surface.filter((_, i) => !TOPIC_STOP_WORDS.has(stemmed[i]))
-  );
-  const tokenSets = orderedTokens.map((arr) => new Set(arr));
-  const df = /* @__PURE__ */ new Map();
-  for (const set of tokenSets) {
-    const deduped = new Set(set);
-    for (const t of deduped) df.set(t, (df.get(t) ?? 0) + 1);
-  }
-  const totalClusters = clusters.length;
-  const level1 = connectedComponents(
-    Array.from({ length: clusters.length }, (_, i) => i),
-    tokenSets,
-    TOPIC_SIMILARITY_THRESHOLD
-  );
-  const topics = splitComponents(
-    level1,
-    tokenSets,
-    orderedTokens,
-    surfaceTokens,
-    df,
-    totalClusters,
-    TOPIC_SIMILARITY_THRESHOLD,
-    0
-  );
-  if (topics.length === 0) return /* @__PURE__ */ new Map();
-  topics.sort((a, b) => b.indices.length - a.indices.length);
-  const assignment = /* @__PURE__ */ new Map();
-  for (const topic of topics)
-    for (const idx of topic.indices) assignment.set(clusters[idx], topic.label);
-  return assignment;
-}
-function splitComponents(components, tokenSets, orderedTokens, surfaceTokens, df, totalClusters, threshold, depth) {
-  const topics = [];
-  for (const comp of components) {
-    if (comp.length <= MAX_COMPONENT_SIZE) {
-      if (comp.length >= MIN_TOPIC_SIZE) {
-        topics.push({
-          label: computeTopicLabel(
-            comp,
-            tokenSets,
-            orderedTokens,
-            surfaceTokens,
-            df,
-            totalClusters
-          ),
-          indices: comp
-        });
-      }
-      continue;
-    }
-    const nextThreshold = threshold + TOPIC_SPLIT_STEP;
-    if (nextThreshold >= 0.9 || depth >= MAX_SPLIT_DEPTH) {
-      topics.push({
-        label: computeTopicLabel(comp, tokenSets, orderedTokens, surfaceTokens, df, totalClusters),
-        indices: comp
-      });
-      continue;
-    }
-    const sub = connectedComponents(comp, tokenSets, nextThreshold);
-    if (sub.length <= 1) {
-      topics.push({
-        label: computeTopicLabel(comp, tokenSets, orderedTokens, surfaceTokens, df, totalClusters),
-        indices: comp
-      });
-      continue;
-    }
-    topics.push(
-      ...splitComponents(
-        sub,
-        tokenSets,
-        orderedTokens,
-        surfaceTokens,
-        df,
-        totalClusters,
-        nextThreshold,
-        depth + 1
-      )
-    );
-  }
-  return topics;
-}
-function computeTopicLabel(indices, tokenSets, orderedTokens, surfaceTokens, df, totalClusters) {
-  const bigramCounts = /* @__PURE__ */ new Map();
-  for (const idx of indices) {
-    const arr = orderedTokens[idx];
-    const surface = surfaceTokens[idx];
-    for (let i = 0; i < arr.length - 1; i++) {
-      const bg = `${arr[i]} ${arr[i + 1]}`;
-      const entry = bigramCounts.get(bg) ?? { count: 0, surface: /* @__PURE__ */ new Map() };
-      entry.count++;
-      const surfaceBg = `${surface[i]} ${surface[i + 1]}`;
-      entry.surface.set(surfaceBg, (entry.surface.get(surfaceBg) ?? 0) + 1);
-      bigramCounts.set(bg, entry);
-    }
-  }
-  if (bigramCounts.size > 0) {
-    const sortedBigrams = [...bigramCounts.entries()].sort((a, b) => b[1].count - a[1].count);
-    const [topBigram, topStats] = sortedBigrams[0];
-    const threshold = Math.max(3, Math.ceil(indices.length * 0.3));
-    if (topStats.count >= threshold) {
-      const displayBigram = [...topStats.surface.entries()].sort(
-        (a, b) => b[1] - a[1] || a[0].length - b[0].length || a[0].localeCompare(b[0])
-      )[0]?.[0] ?? topBigram;
-      const label2 = displayBigram.split(" ").map((s) => s.charAt(0).toUpperCase() + s.slice(1)).join(" ");
-      if (label2.length > 40) return label2.slice(0, 40);
-      return label2;
-    }
-  }
-  const tf = /* @__PURE__ */ new Map();
-  for (const idx of indices) {
-    for (const t of tokenSets[idx]) tf.set(t, (tf.get(t) ?? 0) + 1);
-  }
-  const scored = [...tf.entries()].map(([token, count]) => {
-    const tfSat = Math.log2(1 + count);
-    const idf = Math.log(1 + totalClusters / (df.get(token) ?? 1));
-    const lenWeight = token.length <= 3 ? 0.6 : 1;
-    return {
-      token,
-      score: tfSat * idf * lenWeight
-    };
-  }).sort((a, b) => b.score - a.score);
-  if (scored.length === 0) return "Observations";
-  const picked = [];
-  for (const cand of scored) {
-    if (picked.length >= 2) break;
-    const dup = picked.some(
-      (p) => p.token.startsWith(cand.token) || cand.token.startsWith(p.token) || p.token.length >= 4 && cand.token.length >= 4 && p.token.slice(0, 4) === cand.token.slice(0, 4)
-    );
-    if (dup) continue;
-    picked.push(cand);
-  }
-  const final = picked.length > 0 ? picked : scored.slice(0, 2);
-  const displayByStem = /* @__PURE__ */ new Map();
-  for (const idx of indices) {
-    const stems = orderedTokens[idx];
-    const surface = surfaceTokens[idx];
-    for (let i = 0; i < stems.length; i++) {
-      const forms = displayByStem.get(stems[i]) ?? /* @__PURE__ */ new Map();
-      forms.set(surface[i], (forms.get(surface[i]) ?? 0) + 1);
-      displayByStem.set(stems[i], forms);
-    }
-  }
-  const displayToken = (stem) => {
-    const forms = displayByStem.get(stem);
-    if (!forms) return stem;
-    return [...forms.entries()].sort(
-      (a, b) => b[1] - a[1] || a[0].length - b[0].length || a[0].localeCompare(b[0])
-    )[0][0];
-  };
-  const label = final.map((s) => displayToken(s.token)).map((s) => s.charAt(0).toUpperCase() + s.slice(1)).join(" ");
-  return label.length > 40 ? label.slice(0, 40) : label;
-}
-function assignReflectionTopics(reflClusters) {
-  if (reflClusters.length < MIN_TOPIC_SIZE) return /* @__PURE__ */ new Map();
-  const tokenData = reflClusters.map((c) => topicTokenData(flatten(c.rep.content)));
-  const orderedTokens = tokenData.map(
-    ({ stemmed }) => stemmed.filter((t) => !TOPIC_STOP_WORDS.has(t))
-  );
-  const surfaceTokens = tokenData.map(
-    ({ stemmed, surface }) => surface.filter((_, i) => !TOPIC_STOP_WORDS.has(stemmed[i]))
-  );
-  const tokenSets = orderedTokens.map((arr) => new Set(arr));
-  const df = /* @__PURE__ */ new Map();
-  for (const set of tokenSets) {
-    const deduped = new Set(set);
-    for (const t of deduped) df.set(t, (df.get(t) ?? 0) + 1);
-  }
-  const total = reflClusters.length;
-  const level1 = connectedComponents(
-    Array.from({ length: reflClusters.length }, (_, i) => i),
-    tokenSets,
-    TOPIC_SIMILARITY_THRESHOLD
-  );
-  const topics = splitComponents(
-    level1,
-    tokenSets,
-    orderedTokens,
-    surfaceTokens,
-    df,
-    total,
-    TOPIC_SIMILARITY_THRESHOLD,
-    0
-  );
-  if (topics.length === 0) return /* @__PURE__ */ new Map();
-  topics.sort((a, b) => b.indices.length - a.indices.length);
-  const assignment = /* @__PURE__ */ new Map();
-  for (const topic of topics)
-    for (const idx of topic.indices) assignment.set(reflClusters[idx], topic.label);
-  return assignment;
-}
-function buildObservationTopicMap(reflTopicAssignments, obsClusters, observations) {
-  const obsIdToCluster = /* @__PURE__ */ new Map();
-  for (const cluster of obsClusters) {
-    if (cluster.rep.id) obsIdToCluster.set(cluster.rep.id, cluster);
-    for (const extra of cluster.extras) {
-      if (extra.id) obsIdToCluster.set(extra.id, cluster);
-    }
-  }
-  const obsTier = buildObsTierMap(observations);
-  const best = /* @__PURE__ */ new Map();
-  for (const [reflCluster, topic] of reflTopicAssignments) {
-    const reflTier = inferReflectionTier(reflCluster, obsTier);
-    const tierRank = TIER_RANK2[reflTier];
-    for (const obsId of reflCluster.rep.supportingObservationIds) {
-      const obsCluster = obsIdToCluster.get(obsId);
-      if (!obsCluster) continue;
-      const existing = best.get(obsCluster);
-      if (!existing || tierRank > existing.tierRank) {
-        best.set(obsCluster, { label: topic, tierRank });
-      }
-    }
-  }
-  const result = /* @__PURE__ */ new Map();
-  for (const [cluster, { label }] of best) result.set(cluster, label);
-  return result;
-}
-function emitBullets(scored, nowMs, topicAssignments) {
-  const lines = [];
-  for (const { cluster } of scored) {
-    const parts = [];
-    const age = relativeTime(cluster.rep.timestamp, nowMs);
-    if (age) parts.push(age);
-    if (cluster.distinctSessions > 1) parts.push(`across ${cluster.distinctSessions} sessions`);
-    if (cluster.occurrences > 1 && cluster.occurrences > cluster.distinctSessions)
-      parts.push(`recorded ${cluster.occurrences}\xD7`);
-    const meta = parts.length > 0 ? ` *(${parts.join(" \xB7 ")})*` : "";
-    const topic = topicAssignments.get(cluster);
-    const badge = topic ? ` **[${topic}]**` : "";
-    lines.push(`-${badge} ${flatten(cluster.rep.content)}${meta}`);
-    for (const extra of cluster.extras) {
-      lines.push(`  - ${flatten(extra.content)}`);
-    }
-  }
-  return lines;
-}
-function renderScoredBullets(clusters, coverageIndex2, nowMs, topicAssignments) {
-  const scored = clusters.map((cluster) => ({
-    cluster,
-    score: clusterScore(
-      cluster,
-      cluster.bestRelevance,
-      nowMs,
-      clusterCoverage(cluster, coverageIndex2)
-    )
-  }));
-  scored.sort(
-    (a, b) => b.score - a.score || flatten(b.cluster.rep.content).localeCompare(flatten(a.cluster.rep.content))
-  );
-  return emitBullets(scored, nowMs, topicAssignments);
-}
-function yieldToEventLoop2() {
-  return new Promise((resolve3) => setImmediate(resolve3));
-}
-function buildExportMarkdown(corpus, opts) {
-  const now = opts?.now ?? Date.now();
-  const title = opts?.title ?? corpus.projectRoot.split("/").filter(Boolean).pop() ?? corpus.projectRoot;
-  const notDropped = (o) => !o.id || !corpus.droppedIds.has(o.id);
-  const branchAndPendingObs = corpus.observations.filter(
-    (o) => o.source !== "orphan" && notDropped(o)
-  );
-  const orphanObs = corpus.observations.filter((o) => o.source === "orphan" && notDropped(o));
-  const branchAndPendingRefl = corpus.reflections.filter((r) => r.source !== "orphan");
-  const orphanRefl = corpus.reflections.filter((r) => r.source === "orphan");
-  const obsClusters = clusterObservations(branchAndPendingObs, {
-    fuzzy: true,
-    sorensen: true
-  });
-  const reflClusters = clusterReflections(branchAndPendingRefl);
-  const orphanObsClusters = clusterObservations(orphanObs);
-  const coverageIndex2 = buildCoverageIndex(branchAndPendingRefl);
-  const viable = obsClusters.filter((c) => passesViability(c, clusterCoverage(c, coverageIndex2)));
-  const observationsFiltered = obsClusters.length - viable.length;
-  const viableOrphans = orphanObsClusters.filter((c) => c.distinctSessions >= 2);
-  const reflTopicAssignments = assignReflectionTopics(reflClusters);
-  const reflectionDerivedTopics = buildObservationTopicMap(
-    reflTopicAssignments,
-    viable,
-    branchAndPendingObs
-  );
-  const unassignedObs = viable.filter((c) => !reflectionDerivedTopics.has(c));
-  const fallbackTopicAssignments = assignTopics(unassignedObs);
-  const topicAssignments = new Map(reflectionDerivedTopics);
-  for (const [cluster, label] of fallbackTopicAssignments) {
-    if (!topicAssignments.has(cluster)) {
-      topicAssignments.set(cluster, label);
-    }
-  }
-  const uniqueTopicLabels = new Set(topicAssignments.values());
-  const topicGroups = uniqueTopicLabels.size;
-  const sections = [];
-  const pctFiltered = observationsFiltered > 0 && obsClusters.length > 0 ? `~${Math.round(observationsFiltered / obsClusters.length * 100)}% of unique clusters removed` : "";
-  const topicNote = topicGroups > 0 ? ` **Topic badges** like **[${[...uniqueTopicLabels][0]}]** group related items.` : "";
-  const introParagraphs = [
-    `> **\u26A0\uFE0F Best-effort heuristic export \u2014 semantic review required.** Ranking, relevance tiers, and topic grouping are heuristic (tier-weighted recency decay, coverage/consensus signals, and c-TF-IDF / S\xF8rensen-Dice similarity) and not ground truth. This artifact is distilled automatically from observational memory and may contain noise, duplicates, or stale observations. The export pushes the most relevant reflections and observations to the top, but agents and humans should verify, distill, and de-duplicate before ingesting into any long-term memory system.`,
-    ``,
-    `_This file is a distilled artifact of pi-blackhole's observational memory for this project._`,
-    ``,
-    `_Observations carry an LLM-assigned **relevance tier** ([critical] > [high] > [medium] > [low]) and are organized by tier into sections below. The **Reflections** section at the top contains curator-verified insights from a second LLM pass \u2014 these are the most authoritative entries._${topicNote} _The **viability gate** filters single-session unsupported low/medium observations as likely transient noise (${pctFiltered})._`,
-    ""
-  ];
-  sections.push(introParagraphs.join("\n"));
-  if (reflClusters.length > 0 || orphanRefl.length > 0) {
-    sections.push(["## Reflections", ""].join("\n"));
-    const renderReflectionTier = (tier, clusters, obsPool) => {
-      const obsTier = buildObsTierMap(obsPool);
-      const tierClusters = clusters.filter((c) => inferReflectionTier(c, obsTier) === tier);
-      if (tierClusters.length === 0) return;
-      const label = tier.charAt(0).toUpperCase() + tier.slice(1) + " reflections";
-      const scored = tierClusters.map((cluster) => ({
-        cluster,
-        score: reflectionScore(cluster, now, obsTier)
-      })).sort((a, b) => b.score - a.score);
-      const lines = scored.map(({ cluster }) => {
-        const age = relativeTime(cluster.rep.timestamp, now);
-        return `- ${flatten(cluster.rep.content)}${age ? ` *(${age})*` : ""}`;
-      });
-      sections.push([`### ${label}`, "", ...lines, ""].join("\n"));
-    };
-    for (const tier of TIER_ORDER) renderReflectionTier(tier, reflClusters, branchAndPendingObs);
-    if (orphanRefl.length > 0) {
-      const lines = orphanRefl.map((r) => `- ${flatten(r.content)}`);
-      sections.push(["### Unattributed reflections", "", ...lines, ""].join("\n"));
-    }
-  }
-  for (const tier of TIER_ORDER) {
-    const tierClusters = viable.filter((c) => c.bestRelevance === tier);
-    if (tierClusters.length === 0) continue;
-    const label = tier.charAt(0).toUpperCase() + tier.slice(1);
-    sections.push(
-      [
-        `## ${label}`,
-        "",
-        ...renderScoredBullets(tierClusters, coverageIndex2, now, topicAssignments),
-        ""
-      ].join("\n")
-    );
-  }
-  const notes = [];
-  if (corpus.droppedIds.size > 0) {
-    notes.push(
-      `- ${corpus.droppedIds.size} observation ids were pruned by the dropper pipeline; entries carrying those ids are excluded from this export.`
-    );
-  }
-  if (observationsFiltered > 0) {
-    notes.push(
-      `- ${observationsFiltered} clusters failed the viability gate (single-session, unsupported, low/medium relevance) and are excluded from the body.`
-    );
-  }
-  if (notes.length > 0) {
-    sections.push(["## Notes", "", ...notes, ""].join("\n"));
-  }
-  if (viableOrphans.length > 0 || orphanRefl.length > 0) {
-    const body = [
-      "_These entries come from pending buffers whose sessions no longer exist on disk; project attribution was impossible._",
-      ""
-    ];
-    if (viableOrphans.length > 0) {
-      const orphanTopicAssignments = assignTopics(viableOrphans);
-      body.push(
-        `**${viableOrphans.length} observations** (${orphanObs.length} raw, only cross-session survivors shown):`,
-        ""
-      );
-      body.push(...renderScoredBullets(viableOrphans, coverageIndex2, now, orphanTopicAssignments));
-      body.push("");
-    }
-    if (orphanRefl.length > 0) {
-      body.push(`**${orphanRefl.length} reflections:**`, "");
-      for (const r of orphanRefl) body.push(`- ${flatten(r.content)}`);
-      body.push("");
-    }
-    sections.push(["## Unattributed pending memory", "", ...body].join("\n"));
-  }
-  const stats = {
-    sessionsConsidered: corpus.sessionsConsidered,
-    filesWithMarkers: corpus.filesWithMarkers,
-    observationsTotal: branchAndPendingObs.length + orphanObs.length,
-    observationsClustered: obsClusters.length,
-    observationsRendered: viable.length,
-    observationsFiltered,
-    duplicatesCollapsed: branchAndPendingObs.length - obsClusters.length,
-    reflectionsTotal: corpus.reflections.length,
-    droppedExcluded: corpus.droppedIds.size,
-    orphanedObservations: orphanObs.length,
-    orphanedReflections: orphanRefl.length,
-    orphanedSessions: corpus.orphanedSessions,
-    topicGroups
-  };
-  const header = [
-    `# Project memory export \u2014 ${title}`,
-    "",
-    `_Generated ${new Date(now).toISOString().slice(0, 16).replace("T", " ")} UTC \xB7 ${corpus.sessionsConsidered} sessions scanned \xB7 ${branchAndPendingObs.length + orphanObs.length} observations (${obsClusters.length} unique after dedup, ${viable.length} rendered${observationsFiltered > 0 ? `, ${observationsFiltered} filtered by viability gate` : ""}) \xB7 ${corpus.reflections.length} reflections_`,
-    ""
-  ].join("\n");
-  return { markdown: header + sections.join("\n"), stats };
-}
-async function buildExportMarkdownAsync(corpus, opts) {
-  await yieldToEventLoop2();
-  const result = buildExportMarkdown(corpus, opts);
-  await yieldToEventLoop2();
-  return result;
-}
-var execFileAsync = promisify(execFile);
-async function findGitRoot(cwd) {
-  try {
-    const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
-      cwd,
-      timeout: 5e3
-    });
-    const root = stdout.trim();
-    return { root: root || null };
-  } catch (error) {
-    const errnoError = error;
-    if (errnoError.code === "ENOENT" || errnoError.code === "EAGAIN") {
-      const message = errnoError.message ?? String(error);
-      return {
-        root: null,
-        warning: `[pi-blackhole] git lookup failed for ${cwd}: ${message}; falling back to cwd-only scoping`
-      };
-    }
-    return { root: null };
-  }
-}
-
-// src/commands/blackhole-export.ts
-function defaultOutPath(cwd, now) {
-  const iso = now.toISOString();
-  const stamp = iso.slice(0, 13).replace(/[-T]/g, "") + iso.slice(14, 16);
-  return join(cwd, `memory-export-${stamp}.md`);
-}
-var registerBlackholeExportCommand = (pi) => {
-  pi.registerCommand("blackhole-export", {
-    description: "Export distilled project memory (observations/reflections from past sessions) to markdown. Usage: /blackhole-export [out:<path>]. If no out: is provided, writes to the project local cwd.",
-    handler: async (args, ctx) => {
-      ctx.ui.notify(
-        "Exporting project memory\u2026 this may take a few minutes depending on the number of session files for the project.",
-        "info"
-      );
-      await new Promise((resolve3) => setImmediate(resolve3));
-      const outMatch = args.match(/\bout:(\S+)/);
-      const now = /* @__PURE__ */ new Date();
-      const outPath = outMatch ? isAbsolute(outMatch[1]) ? outMatch[1] : join(ctx.cwd, outMatch[1]) : defaultOutPath(ctx.cwd, now);
-      if (outMatch && !outPath.toLowerCase().endsWith(".md")) {
-        ctx.ui.notify(
-          `Export path must be a markdown file: ${outPath}. Use out:<path-to-file>.md`,
-          "error"
-        );
-        return;
-      }
-      const resolvedOut = resolve(outPath);
-      const userOut = outMatch?.[1];
-      if (userOut && !isAbsolute(userOut)) {
-        const rel = relative(resolve(ctx.cwd), resolvedOut);
-        if (rel.startsWith("..") || isAbsolute(rel)) {
-          ctx.ui.notify(`Export path escapes current directory: ${outPath}`, "error");
-          return;
-        }
-      }
-      const { root: gitRoot, warning: gitWarning } = await findGitRoot(ctx.cwd);
-      if (gitWarning) {
-        ctx.ui.notify(gitWarning, "warning");
-      }
-      const activeSessionFile = ctx.sessionManager.getSessionFile() ?? void 0;
-      let lastProgressAt = 0;
-      const onProgress = ({
-        scanned,
-        total
-      }) => {
-        const t = Date.now();
-        if (t - lastProgressAt < 800 && scanned !== 0 && scanned !== total) return;
-        lastProgressAt = t;
-        if (scanned === 0 && total > 0) {
-          ctx.ui.notify(
-            `Scanning ${total} session files for observational memory markers\u2026`,
-            "info"
-          );
-        } else if (total > 0) {
-          ctx.ui.notify(`Scanning ${scanned}/${total} session files\u2026`, "info");
-        }
-      };
-      const corpus = await buildProjectMemoryCorpusAsync(
-        {
-          cwd: ctx.cwd,
-          gitRoot,
-          activeSessionFile,
-          agentDir: getAgentDir()
-        },
-        onProgress
-      );
-      if (corpus.observations.length === 0 && corpus.reflections.length === 0 && corpus.droppedIds.size === 0) {
-        ctx.ui.notify(
-          `No observational memory found for ${basename(corpus.projectRoot)} (${corpus.sessionsConsidered} sessions scanned).`,
-          "warning"
-        );
-        return;
-      }
-      if (corpus.observations.length > 0 || corpus.reflections.length > 0) {
-        ctx.ui.notify(
-          `Ranking ${corpus.observations.length} observations and ${corpus.reflections.length} reflections\u2026`,
-          "info"
-        );
-        await new Promise((resolve3) => setImmediate(resolve3));
-      }
-      const { markdown, stats } = await buildExportMarkdownAsync(corpus, {
-        now: now.getTime(),
-        title: basename(corpus.projectRoot)
-      });
-      try {
-        writeFileSync(outPath, markdown, "utf-8");
-      } catch (error) {
-        ctx.ui.notify(`Export failed to write ${outPath}: ${String(error)}`, "error");
-        return;
-      }
-      const lines = [
-        `Project memory exported to ${outPath}`,
-        "",
-        `- sessions scanned: ${stats.sessionsConsidered} (${stats.filesWithMarkers} with memory entries)`,
-        `- observations: ${stats.observationsTotal} \u2192 ${stats.observationsRendered} rendered (${stats.duplicatesCollapsed} duplicates collapsed, ${stats.observationsFiltered} below viability gate)`,
-        stats.topicGroups > 0 ? `- ${stats.topicGroups} topic groups identified; each observation shows its **topic badge**` : null,
-        `- reflections: ${stats.reflectionsTotal}`
-      ];
-      if (stats.orphanedObservations > 0 || stats.orphanedReflections > 0) {
-        lines.push(
-          `- unattributed pending memory: ${stats.orphanedObservations} obs / ${stats.orphanedReflections} reflections from ${stats.orphanedSessions} lost session(s)`
-        );
-      }
-      if (stats.droppedExcluded > 0) {
-        lines.push(`- dropper-pruned ids excluded: ${stats.droppedExcluded}`);
-      }
-      lines.push("", "The file is plain markdown \u2014 curate it, then import into any memory system.");
-      pi.sendMessage({
-        customType: "blackhole-export",
-        content: lines.join("\n"),
-        display: true
-      });
-    }
-  });
-};
-
 // src/om/provider-stream.ts
 function captureRegisteredProviderStreams(registry, providerStreams) {
   if (registry.getRegisteredProviderIds && registry.getRegisteredProviderConfig) {
@@ -11847,7 +10464,7 @@ function getGlobalDispatcher() {
       return dispatcher;
     }
   }
-  throw new Error("Blackhole provider idle timeout requires Pi's Undici dispatcher");
+  throw new Error("Memory provider idle timeout requires Pi's Undici dispatcher");
 }
 function createProviderFetch(timeoutMs) {
   if (timeoutMs === void 0 || timeoutMs === 0) return void 0;
@@ -14331,7 +12948,7 @@ async function installHostInlineCompactionAdapter(options = {}) {
   const details = failureReasons.length > 0 ? ` (${failureReasons.join("; ")})` : "";
   return {
     supported: false,
-    reason: "Blackhole inline compaction is unavailable: host AgentSession module could not be resolved" + details
+    reason: "Inline compaction is unavailable: host AgentSession module could not be resolved" + details
   };
 }
 function installInlineCompactionAdapter(options = {}) {
@@ -14397,7 +13014,7 @@ async function compactInlineAtTurnBoundary(sessionManager, customInstructions) {
   const record = registry.sessions.get(sessionManager);
   if (!record) {
     throw new InlineCompactionUnavailableError(
-      `Blackhole inline compaction is unavailable: owning AgentSession was not captured or Pi internals are unsupported (host candidates: ${registry.hostCandidateCount ?? 0}; captured sessions: ${registry.capturedSessionCount ?? 0})`
+      `Inline compaction is unavailable: owning AgentSession was not captured or Pi internals are unsupported (host candidates: ${registry.hostCandidateCount ?? 0}; captured sessions: ${registry.capturedSessionCount ?? 0})`
     );
   }
   const { session, originalCompact, shape } = record;
@@ -14424,7 +13041,7 @@ async function compactInlineAtTurnBoundary(sessionManager, customInstructions) {
         const realDisconnect = session._disconnectFromAgent;
         if (!realDisconnect) {
           throw new InlineCompactionUnavailableError(
-            "Blackhole inline compaction is unavailable: disconnect hook disappeared"
+            "Inline compaction is unavailable: disconnect hook disappeared"
           );
         }
         restores.push(
@@ -14459,7 +13076,7 @@ async function compactInlineAtTurnBoundary(sessionManager, customInstructions) {
       registry.refreshPending.add(session);
       if (!abortSuppressed || shape.disconnectsAgent && !disconnectSuppressed) {
         throw new InlineCompactionUnavailableError(
-          "Blackhole inline compaction invariant failed: Pi quiesce hooks were not invoked as expected"
+          "Inline compaction invariant failed: Pi quiesce hooks were not invoked as expected"
         );
       }
     } catch (error) {
@@ -14483,7 +13100,7 @@ async function compactInlineAtTurnBoundary(sessionManager, customInstructions) {
     if (cleanupErrors.length > 0) {
       throw new AggregateError(
         [operationError, ...cleanupErrors],
-        "Blackhole inline compaction failed and could not restore all session properties"
+        "Inline compaction failed and could not restore all session properties"
       );
     }
     throw operationError;
@@ -14491,7 +13108,7 @@ async function compactInlineAtTurnBoundary(sessionManager, customInstructions) {
   if (cleanupErrors.length > 0) {
     throw new AggregateError(
       cleanupErrors,
-      "Blackhole inline compaction could not restore all session properties"
+      "Inline compaction could not restore all session properties"
     );
   }
   return result;
@@ -15496,7 +14113,7 @@ var Runtime = class {
   lastConsolidationErrorAt;
   /** Stats from the most recent compaction run (session-scoped via handler closure). */
   compactionStats = null;
-  /** Whether the current compaction attempt was triggered by /blackhole.
+  /** Whether the current compaction attempt was triggered by /memory.
    *  Overwritten at every session_before_compact and consumed by either the
    *  session_compact or session_compact_failed handler, preventing stale
    *  attribution from leaking into a later pi-default attempt. */
@@ -15829,7 +14446,6 @@ var index_default = async (pi) => {
   registerPiVccCommand(pi, omRuntime);
   registerMemoryCommand(pi, omRuntime);
   registerVccRecallCommand(pi);
-  registerBlackholeExportCommand(pi);
   registerRecallTool(pi);
 };
 

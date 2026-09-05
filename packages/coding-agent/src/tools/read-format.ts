@@ -5,7 +5,7 @@ import type { ToolSession } from "../sdk";
 import { DEFAULT_MAX_BYTES, noTruncResult, type TruncationResult, truncateHead } from "../session/streaming-output";
 import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainText } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
-import type { LineRange } from "./path-utils";
+import { type LineRange, shouldExpandRangeContext } from "./path-utils";
 import type { ReadToolDetails } from "./read";
 import { formatBytes } from "./render-utils";
 import { toolResult } from "./tool-result";
@@ -127,6 +127,7 @@ export function buildInMemoryTextResult(
 	options: {
 		details?: ReadToolDetails;
 		sourcePath?: string;
+		rangeContextPath?: string;
 		sourceUrl?: string;
 		sourceInternal?: string;
 		entityLabel: string;
@@ -145,12 +146,14 @@ export function buildInMemoryTextResult(
 	const requestedEnd = limit !== undefined ? Math.min(requestedStart + limit, allLines.length) : allLines.length;
 
 	const rawDisplay = options.raw === true;
+	const contextPath = options.rangeContextPath ?? options.sourcePath;
+	const expandContext = shouldExpandRangeContext(contextPath);
 	const expanded = expandRangeWithContext(
 		requestedStart,
 		requestedEnd,
 		allLines.length,
-		!rawDisplay && offset !== undefined && offset > 1,
-		!rawDisplay && limit !== undefined,
+		expandContext && !rawDisplay && offset !== undefined && offset > 1,
+		expandContext && !rawDisplay && limit !== undefined,
 	);
 	const startLine = expanded.startLine;
 	const endLineExpanded = expanded.endLine;
@@ -205,8 +208,9 @@ export function buildInMemoryTextResult(
 	};
 	const buildLineEntries = (endLineDisplay: number): LineEntry[] =>
 		buildLineEntriesWithBlockContext(allLines, [{ startLine: startLineDisplay, endLine: endLineDisplay }], {
-			path: options.sourcePath,
+			path: contextPath,
 			text,
+			includeContext: expandContext,
 		});
 
 	let outputText: string;
@@ -245,7 +249,11 @@ export function buildInMemoryTextResult(
 			result: truncation,
 			options: { direction: "head", startLine: startLineDisplay, totalFileLines: totalLines },
 		};
-	} else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
+	} else if (
+		userLimitedLines !== undefined &&
+		startLine + userLimitedLines < allLines.length &&
+		(expandContext || rawDisplay)
+	) {
 		const remaining = allLines.length - (startLine + userLimitedLines);
 		const nextOffset = startLine + userLimitedLines + 1;
 
@@ -277,6 +285,7 @@ export function buildInMemoryMultiRangeResult(
 	options: {
 		details?: ReadToolDetails;
 		sourcePath?: string;
+		rangeContextPath?: string;
 		sourceUrl?: string;
 		sourceInternal?: string;
 		entityLabel: string;
@@ -314,7 +323,12 @@ export function buildInMemoryMultiRangeResult(
 	if (options.raw === true) {
 		outputText = rawParts.length > 0 ? rawParts.join("\n\n…\n\n") : "";
 	} else if (visibleSpans.length > 0) {
-		const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, { path: options.sourcePath, text });
+		const contextPath = options.rangeContextPath ?? options.sourcePath;
+		const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, {
+			path: contextPath,
+			text,
+			includeContext: shouldExpandRangeContext(contextPath),
+		});
 		const firstLine = entries.find(entry => entry.kind === "line");
 		if (firstLine?.kind === "line") {
 			details.displayContent = {

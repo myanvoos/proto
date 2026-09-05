@@ -23,6 +23,7 @@ export interface BlockContextSource {
 	path?: string;
 	lang?: string;
 	text?: string;
+	includeContext?: boolean;
 }
 
 export type LineEntry = { kind: "line"; lineNumber: number; text: string; context: boolean } | { kind: "ellipsis" };
@@ -262,6 +263,7 @@ export function findBlockContextLines(
 	visibleInput: ReadonlySet<number> | readonly number[],
 	source: BlockContextSource = {},
 ): Map<number, string> {
+	if (source.includeContext === false) return new Map();
 	const visible = visibleInput instanceof Set ? visibleInput : new Set(visibleInput);
 	if (visible.size === 0 || hasEveryLineVisible(visible, fullLines.length)) return new Map();
 	if (exceedsScanCeiling(fullLines, source)) return new Map();

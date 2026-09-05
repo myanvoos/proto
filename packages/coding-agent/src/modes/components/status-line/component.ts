@@ -230,6 +230,10 @@ function hasPathSegment(segments: readonly StatusLineSegmentId[]): boolean {
 	return segments.includes("path");
 }
 
+function hasTokenRateSegment(segments: readonly StatusLineSegmentId[]): boolean {
+	return segments.includes("token_rate");
+}
+
 function hasGitBackedSegment(segments: readonly StatusLineSegmentId[]): boolean {
 	return hasGitSegment(segments) || hasPrSegment(segments);
 }
@@ -951,6 +955,7 @@ export class StatusLineComponent implements Component {
 		includeContext: boolean,
 		includeGit: boolean,
 		includePr: boolean,
+		includeTokenRate: boolean,
 	): SegmentContext {
 		const state = this.session.state;
 
@@ -970,7 +975,7 @@ export class StatusLineComponent implements Component {
 		};
 		const usageStats = {
 			...aggregateUsageStats,
-			tokensPerSecond: this.#getTokensPerSecond(),
+			tokensPerSecond: includeTokenRate ? this.#getTokensPerSecond() : null,
 		};
 
 		let contextWindow = state.model?.contextWindow ?? this.session.model?.contextWindow ?? 0;
@@ -1079,6 +1084,7 @@ export class StatusLineComponent implements Component {
 		const includeContext = hasContextSegment(leftCfg) || hasContextSegment(rightCfg);
 		const includeGit = gitEnabled && (hasGitSegment(leftCfg) || hasGitSegment(rightCfg));
 		const includePr = gitEnabled && (hasPrSegment(leftCfg) || hasPrSegment(rightCfg));
+		const includeTokenRate = hasTokenRateSegment(leftCfg) || hasTokenRateSegment(rightCfg);
 		const quietOptions = {
 			...effectiveSettings.segmentOptions,
 			path: {
@@ -1086,7 +1092,15 @@ export class StatusLineComponent implements Component {
 				maxLength: effectiveSettings.segmentOptions?.path?.maxLength ?? 30,
 			},
 		};
-		const ctx = this.#buildSegmentContext(width, quietOptions, includePath, includeContext, includeGit, includePr);
+		const ctx = this.#buildSegmentContext(
+			width,
+			quietOptions,
+			includePath,
+			includeContext,
+			includeGit,
+			includePr,
+			includeTokenRate,
+		);
 		const LOCATION_IDS: Record<string, true> = { path: true, git: true, pr: true };
 		const CONTEXT_IDS: Record<string, true> = { context_pct: true, context_total: true };
 		const subagentBadge = this.#subagentBadgeText();

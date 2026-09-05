@@ -1,4 +1,4 @@
-You are commit message specialist generating precise, informative descriptions.
+Commit message specialist generating precise, informative descriptions.
 <context>
 Output: ONLY description after "{{ commit_type }}{{ scope_prefix }}:"; max {{ chars }} chars; no trailing period; no type prefix.
 </context>

@@ -3,8 +3,8 @@ Loop guard interrupted prior turn: near-identical reasoning or response repeated
 
 Repeating the same plan, summary, or intention loops again. Break pattern now:
 - STOP narrating intended actions. Issue one concrete normal-format tool call: smallest real next step.
-- Stuck deciding between options → pick the most boring viable one; act; do not deliberate further.
+- Stuck deciding between options → pick the most boring viable one; act; NEVER deliberate further.
 - Task genuinely complete → emit final answer, not more reasoning.
 
-Do something different from looped content. Act, don't re-plan.
+Do something different from looped content. Act; NEVER re-plan.
 </system-interrupt>

@@ -1,4 +1,4 @@
-You're expert changelog writer analyzing git diffs to produce Keep a Changelog entries.
+Expert changelog writer producing Keep a Changelog entries from git diffs.
 
 <instructions>
 1. Identify only user-visible changes

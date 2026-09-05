@@ -1,9 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect, test, vi } from "bun:test";
 import {
 	findHeredocCompletionCalls,
 	findLiteralCompletionCalls,
+	LatestValueScheduler,
 	parseStandaloneQuotedHeredoc,
 	parseStreamedInputForCompletion,
+	STREAMED_INPUT_OBSERVATION_INTERVAL_MS,
 } from "./speculation";
 
 test("finds literal Python completion calls in a quoted heredoc", () => {
@@ -122,4 +124,79 @@ test("incomplete JSON unicode escapes cannot invent completion arguments", () =>
 	const suffix = JSON.stringify('13")\n').slice(1);
 	const complete = parseStreamedInputForCompletion(`${raw}${suffix}}`);
 	expect(complete.calls.map(call => call.args.prompt)).toEqual(["unfinished ✓"]);
+});
+
+test("coalesces streamed prefixes and drains the final value deterministically", async () => {
+	const seen: string[] = [];
+	const scheduler = new LatestValueScheduler<string>(
+		value => {
+			seen.push(value);
+		},
+		{ delayMs: 60_000 },
+	);
+	try {
+		scheduler.enqueue("prefix-1");
+		scheduler.enqueue("prefix-2");
+		scheduler.enqueue("final-prefix");
+		expect(seen).toEqual([]);
+		await scheduler.flush();
+		expect(seen).toEqual(["final-prefix"]);
+
+		scheduler.enqueue("next-prefix");
+		await scheduler.flush();
+		expect(seen).toEqual(["final-prefix", "next-prefix"]);
+
+		scheduler.enqueue("cancelled-prefix");
+		scheduler.cancel();
+		await scheduler.flush();
+		expect(seen).toEqual(["final-prefix", "next-prefix"]);
+	} finally {
+		scheduler.cancel();
+	}
+});
+
+test("runs the latest streamed value at a bounded cadence", async () => {
+	vi.useFakeTimers();
+	const seen: string[] = [];
+	const scheduler = new LatestValueScheduler<string>(value => {
+		seen.push(value);
+	});
+	try {
+		scheduler.enqueue("first");
+		scheduler.enqueue("latest");
+		vi.advanceTimersByTime(STREAMED_INPUT_OBSERVATION_INTERVAL_MS - 1);
+		expect(seen).toEqual([]);
+		vi.advanceTimersByTime(1);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(seen).toEqual(["latest"]);
+	} finally {
+		scheduler.cancel();
+		vi.useRealTimers();
+	}
+});
+
+test("retains a newer value when an in-flight streamed observation rejects", async () => {
+	const started = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const seen: string[] = [];
+	const scheduler = new LatestValueScheduler<string>(async value => {
+		seen.push(value);
+		if (value === "first") {
+			started.resolve();
+			await release.promise;
+			throw new Error("first observation failed");
+		}
+	});
+	try {
+		scheduler.enqueue("first");
+		const flushing = scheduler.flush();
+		await started.promise;
+		scheduler.enqueue("latest");
+		release.resolve();
+		await expect(flushing).rejects.toThrow("first observation failed");
+		expect(seen).toEqual(["first", "latest"]);
+	} finally {
+		scheduler.cancel();
+	}
 });

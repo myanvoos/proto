@@ -161,8 +161,16 @@ export class AssistantMessageComponent extends Container {
 
 	#textColorTransform?: (text: string) => string;
 
+	#onTranscriptBlockChange?: () => void;
+
+	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
+		this.#onTranscriptBlockChange = listener;
+	}
+
 	setTextColorTransform(transform?: (text: string) => string): void {
+		if (this.#textColorTransform === transform) return;
 		this.#textColorTransform = transform;
+		this.#onTranscriptBlockChange?.();
 	}
 	constructor(
 		message?: AssistantMessage,
@@ -192,6 +200,7 @@ export class AssistantMessageComponent extends Container {
 			this.#markerSlot.addChild(new CacheInvalidationMarkerComponent(info));
 		}
 		this.#blockVersion++;
+		this.#onTranscriptBlockChange?.();
 	}
 
 	override invalidate(): void {
@@ -202,6 +211,7 @@ export class AssistantMessageComponent extends Container {
 		if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
+		this.#onTranscriptBlockChange?.();
 	}
 
 	override render(width: number): readonly string[] {
@@ -210,15 +220,21 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	setHideThinkingBlock(hide: boolean): void {
+		if (this.hideThinkingBlock === hide) return;
 		this.hideThinkingBlock = hide;
+		this.#onTranscriptBlockChange?.();
 	}
 
 	setProseOnlyThinking(proseOnly: boolean): void {
+		if (this.proseOnlyThinking === proseOnly) return;
 		this.proseOnlyThinking = proseOnly;
+		this.#onTranscriptBlockChange?.();
 	}
 
 	override dispose(): void {
 		this.#stopThinkingAnimation();
+		this.#onTranscriptBlockChange?.();
+		this.#onTranscriptBlockChange = undefined;
 		super.dispose();
 	}
 
@@ -347,6 +363,7 @@ export class AssistantMessageComponent extends Container {
 			this.#fastPathItems = undefined;
 			if (this.#lastMessage) this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
+		this.#onTranscriptBlockChange?.();
 	}
 
 	applyRetryRecovery(retryRecovery: AssistantMessage["retryRecovery"]): void {
@@ -606,6 +623,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	updateContent(message: AssistantMessage, opts?: { transient?: boolean }): void {
+		this.#onTranscriptBlockChange?.();
 		this.#blockVersion++;
 		this.#lastMessage = message;
 		this.#lastUpdateTransient = opts?.transient === true;

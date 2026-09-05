@@ -108,7 +108,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
   - When an elided block sits between matching brace lines, `#renderSummary()` may merge them into one anchored line rather than emitting separate opener/closer lines.
 - Explicit selector or summarization miss: streamed text read.
   - Default open-ended limit is `read.defaultLimit = 300`, clamped to `[1, DEFAULT_MAX_LINES]`.
-  - Single bounded non-raw text ranges add `RANGE_LEADING_CONTEXT_LINES = 1` / `RANGE_TRAILING_CONTEXT_LINES = 3` on constrained sides. Raw and multi-range reads are exact; directory listing selectors slice rendered entries without context.
+  - Single bounded non-raw ranges on paths detected as code add `RANGE_LEADING_CONTEXT_LINES = 1` / `RANGE_TRAILING_CONTEXT_LINES = 3` on constrained sides. Paths detected as plaintext stay exact; raw and multi-range reads are exact. Directory listing selectors slice rendered entries without context.
   - Non-raw output uses `resolveFileDisplayMode()`: line numbers are prepended only when the `readLineNumbers` setting is `true`; `:raw` reads never get them.
 - With `readLineNumbers` enabled, output is plain text where each line is prefixed with its 1-indexed line number and a `|` separator, e.g. `41|def alpha():` (`prependLineNumbers()` in `packages/coding-agent/src/tools/read-format.ts`).
 

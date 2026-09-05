@@ -2,7 +2,7 @@ From provided diff, generate concise git commit message.
 
 Format: `type(scope): description`
 Type: feat|fix|refactor|chore|test|docs. Scope optional.
-Description MUST lowercase, imperative mood, no trailing period. Message <72 characters.
+Description MUST be lowercase, imperative mood, no trailing period. Message <72 characters.
 
 MUST output ONLY commit message.
 

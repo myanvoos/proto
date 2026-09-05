@@ -188,12 +188,14 @@ export async function readArchive(
 			? buildInMemoryMultiRangeResult(session, text, sel.ranges, {
 					details,
 					sourcePath: resolvedArchivePath.absolutePath,
+					rangeContextPath: archiveSubPath,
 					entityLabel: "archive entry",
 					raw,
 				})
 			: buildInMemoryTextResult(session, text, selToOffsetLimit(sel).offset, selToOffsetLimit(sel).limit, {
 					details,
 					sourcePath: resolvedArchivePath.absolutePath,
+					rangeContextPath: archiveSubPath,
 					entityLabel: "archive entry",
 					raw,
 				});

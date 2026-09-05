@@ -33,6 +33,7 @@ export interface StreamGuardsHost {
 
 interface StreamedKernelTool {
 	observeStreamedInput(toolCallId: string, rawPartialJson: string): Promise<StreamedKernelFailure | undefined>;
+	flushStreamedInput?(toolCallId: string, rawPartialJson?: string): Promise<void>;
 	cancelStreamedInput(toolCallId?: string): void;
 }
 
@@ -109,6 +110,22 @@ export class LoopGuards {
 		const call = message.content[event.contentIndex];
 		if (call?.type !== "toolCall" || call.name !== "bash") return;
 		if (event.type === "toolcall_end") {
+			const host = this.#host;
+			if (
+				!host.isDisposed() &&
+				!host.agent.isAborting &&
+				host.canObserveStreamedKernelInput() &&
+				(host.settings.get("kernel.speculation.enabled") || host.settings.get("kernel.assertPreflight.enabled"))
+			) {
+				const tool = streamedKernelTool(host.getToolByName("bash"));
+				const rawPartialJson = getStreamingPartialJson(call) ?? JSON.stringify(call.arguments);
+				if (tool?.flushStreamedInput && rawPartialJson !== undefined) {
+					this.#streamedTools.add(tool);
+					void tool.flushStreamedInput(call.id, rawPartialJson).catch(error => {
+						logger.debug("final streamed kernel observation failed", { error: String(error) });
+					});
+				}
+			}
 			this.#streamedCalls.delete(call.id);
 			return;
 		}

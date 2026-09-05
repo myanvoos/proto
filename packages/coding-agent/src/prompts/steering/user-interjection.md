@@ -1,4 +1,4 @@
 <system-notice>
-User interjection during work: priority; supersedes conflicting prior instructions. Re-read; ensure current work reflects user intent.
+User interjection during work: priority; supersedes conflicting prior instructions. Re-read; current work MUST reflect user intent.
 </system-notice>
 {{message}}

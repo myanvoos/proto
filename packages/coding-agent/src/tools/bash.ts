@@ -18,7 +18,7 @@ import {
 	startEvalCompletionSpeculation,
 } from "../eval/completion-bridge";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
-import { parseStreamedInputForCompletion, type StreamedKernelFailure } from "../eval/speculation";
+import { LatestValueScheduler, parseStreamedInputForCompletion, type StreamedKernelFailure } from "../eval/speculation";
 import {
 	type ExecutionMetadata,
 	type ExecutionTimeoutMetadata,
@@ -213,6 +213,7 @@ interface ManagedBashJobHandle {
 }
 
 interface StreamedBashState {
+	toolCallId: string;
 	generation: number;
 	latestRaw: string;
 	version: number;
@@ -222,6 +223,17 @@ interface StreamedBashState {
 	speculationStarted: Set<string>;
 	assertionController?: AbortController;
 	assertionPromise?: Promise<StreamedKernelFailure | undefined>;
+	observationScheduler: LatestValueScheduler<PendingStreamedObservation>;
+	pendingObservation?: PendingStreamedObservation;
+	activeObservation?: PendingStreamedObservation;
+	observationPromise?: Promise<void>;
+}
+
+interface PendingStreamedObservation {
+	raw: string;
+	version: number;
+	promise: Promise<StreamedKernelFailure | undefined>;
+	resolve: (failure: StreamedKernelFailure | undefined) => void;
 }
 
 interface XdDispatchRecord {
@@ -459,7 +471,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	readonly #streamedInputs = new Map<string, StreamedBashState>();
 	#nextStreamGeneration = 0;
 	#disposed = false;
-
 	constructor(private readonly session: ToolSession) {
 		this.#asyncEnabled = this.session.settings.get("async.enabled");
 		this.#autoBackgroundEnabled = this.session.settings.get("bash.autoBackground.enabled");
@@ -486,22 +497,147 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (this.#disposed || !toolCallId || typeof rawPartialJson !== "string") return undefined;
 		let state = this.#streamedInputs.get(toolCallId);
 		if (!state) {
-			state = {
-				generation: ++this.#nextStreamGeneration,
-				latestRaw: "",
-				version: 0,
-				speculationLaunches: 0,
-				speculationStarted: new Set(),
-			};
+			state = this.#newStreamedState(toolCallId);
 			this.#streamedInputs.set(toolCallId, state);
 		}
-		if (state.latestRaw === rawPartialJson) return state.assertionPromise ? await state.assertionPromise : undefined;
+		if (state.latestRaw === rawPartialJson) {
+			if (state.pendingObservation) return state.pendingObservation.promise;
+			if (state.assertionPromise) return state.assertionPromise;
+			if (state.observationPromise) {
+				await state.observationPromise;
+				return state.assertionPromise ? await state.assertionPromise : undefined;
+			}
+			return undefined;
+		}
+
 		state.latestRaw = rawPartialJson;
 		state.version++;
 		state.assertionController?.abort();
 		state.assertionController = undefined;
 		state.assertionPromise = undefined;
+		state.pendingObservation?.resolve(undefined);
+		state.pendingObservation = undefined;
+		state.activeObservation?.resolve(undefined);
 
+		let observationEnabled = false;
+		try {
+			observationEnabled =
+				this.session.settings.get("kernel.speculation.enabled") === true ||
+				this.session.settings.get("kernel.assertPreflight.enabled") === true;
+		} catch {
+			state.observationScheduler.cancel();
+			cancelEvalCompletionSpeculation(toolCallId, state.generation, this.session);
+			return Promise.resolve(undefined);
+		}
+		if (!observationEnabled) {
+			state.observationScheduler.cancel();
+			cancelEvalCompletionSpeculation(toolCallId, state.generation, this.session);
+			return Promise.resolve(undefined);
+		}
+
+		const deferred = Promise.withResolvers<StreamedKernelFailure | undefined>();
+		const pending: PendingStreamedObservation = {
+			raw: rawPartialJson,
+			version: state.version,
+			promise: deferred.promise,
+			resolve: deferred.resolve,
+		};
+		state.pendingObservation = pending;
+		state.observationScheduler.enqueue(pending);
+		return pending.promise;
+	}
+
+	/**
+	 * Drain the newest prefix before a call is executed. A completed call may
+	 * have no more deltas after its final JSON arrives, so this trailing flush is
+	 * what makes the last candidate observable without waiting for a timer.
+	 */
+	async flushStreamedInput(toolCallId: string, rawPartialJson?: string): Promise<void> {
+		if (this.#disposed || !toolCallId) return;
+		let state = this.#streamedInputs.get(toolCallId);
+		if (rawPartialJson !== undefined) {
+			if (typeof rawPartialJson !== "string") return;
+			if (!state) {
+				state = this.#newStreamedState(toolCallId);
+				this.#streamedInputs.set(toolCallId, state);
+			}
+			if (state.latestRaw !== rawPartialJson) this.observeStreamedInput(toolCallId, rawPartialJson);
+		}
+		if (!state) return;
+		await state.observationScheduler.flush();
+	}
+
+	#newStreamedState(toolCallId: string): StreamedBashState {
+		let state: StreamedBashState;
+		const observationScheduler = new LatestValueScheduler<PendingStreamedObservation>(pending =>
+			this.#runStreamedObservation(state, pending),
+		);
+		state = {
+			toolCallId,
+			generation: ++this.#nextStreamGeneration,
+			latestRaw: "",
+			version: 0,
+			speculationLaunches: 0,
+			speculationStarted: new Set(),
+			observationScheduler,
+		};
+		return state;
+	}
+
+	#runStreamedObservation(state: StreamedBashState, pending: PendingStreamedObservation): void {
+		if (state.pendingObservation !== pending) return;
+		state.pendingObservation = undefined;
+		state.activeObservation = pending;
+
+		let assertion: Promise<StreamedKernelFailure | undefined> | undefined;
+		try {
+			assertion = this.#processStreamedInput(state, pending.raw, pending.version);
+		} catch {
+			// Stream observation is advisory; parser failures must not block the
+			// real tool execution or leave an observer promise unresolved.
+			assertion = undefined;
+		}
+		if (!assertion) {
+			pending.resolve(undefined);
+			if (state.activeObservation === pending) state.activeObservation = undefined;
+			return;
+		}
+
+		state.assertionPromise = assertion;
+		const delivery = assertion
+			.then(failure => {
+				const current = this.#streamedInputs.get(state.toolCallId);
+				pending.resolve(
+					current === state &&
+						state.version === pending.version &&
+						state.latestRaw === pending.raw &&
+						!state.assertionController?.signal.aborted
+						? failure
+						: undefined,
+				);
+			})
+			.catch(() => {
+				pending.resolve(undefined);
+			});
+		state.observationPromise = delivery;
+		void delivery.then(
+			() => {
+				if (state.activeObservation === pending) state.activeObservation = undefined;
+				if (state.observationPromise === delivery) state.observationPromise = undefined;
+			},
+			() => {
+				if (state.activeObservation === pending) state.activeObservation = undefined;
+				if (state.observationPromise === delivery) state.observationPromise = undefined;
+			},
+		);
+	}
+
+	#processStreamedInput(
+		state: StreamedBashState,
+		rawPartialJson: string,
+		version: number,
+	): Promise<StreamedKernelFailure | undefined> | undefined {
+		const { toolCallId } = state;
 		const speculationEnabled = this.session.settings.get("kernel.speculation.enabled") === true;
 		if (!speculationEnabled) {
 			cancelEvalCompletionSpeculation(toolCallId, state.generation, this.session);
@@ -551,11 +687,15 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			}
 		}
 
-		if (this.session.settings.get("kernel.assertPreflight.enabled") !== true) return undefined;
+		if (
+			this.session.settings.get("kernel.assertPreflight.enabled") !== true ||
+			state.version !== version ||
+			state.latestRaw !== rawPartialJson
+		)
+			return undefined;
 		const controller = new AbortController();
 		state.assertionController = controller;
-		const version = state.version;
-		const assertion = preflightStreamedInput(toolCallId, rawPartialJson, {
+		return preflightStreamedInput(toolCallId, rawPartialJson, {
 			session: this.session,
 			signal: controller.signal,
 		})
@@ -571,8 +711,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				return failure;
 			})
 			.catch(() => undefined);
-		state.assertionPromise = assertion;
-		return await assertion;
 	}
 
 	cancelStreamedInput(toolCallId?: string): void {
@@ -580,6 +718,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		for (const id of ids) {
 			const state = this.#streamedInputs.get(id);
 			if (!state) continue;
+			state.observationScheduler.cancel();
+			state.pendingObservation?.resolve(undefined);
+			state.pendingObservation = undefined;
+			state.activeObservation?.resolve(undefined);
 			state.assertionController?.abort();
 			cancelEvalCompletionSpeculation(id, state.generation, this.session);
 			this.#streamedInputs.delete(id);
@@ -1129,11 +1271,16 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 		ctx?: AgentToolContext,
 	): Promise<AgentToolResult<BashToolDetails>> {
-		if (this.session.settings.get("kernel.speculation.enabled") !== true) {
-			this.cancelStreamedInput(_toolCallId);
-		}
 		if (signal) {
 			signal.addEventListener("abort", () => this.cancelStreamedInput(_toolCallId), { once: true });
+		}
+		if (this.session.settings.get("kernel.speculation.enabled") !== true) {
+			this.cancelStreamedInput(_toolCallId);
+		} else if (!signal?.aborted) {
+			// A delta may still be queued when the tool execution starts. Drain it
+			// before #kernelShellBridge validates the final context, otherwise an old
+			// speculative result could survive a revised env/cwd/pty/async prefix.
+			await this.flushStreamedInput(_toolCallId);
 		}
 		let command = rawCommand;
 		const env = normalizeBashEnv(rawEnv);

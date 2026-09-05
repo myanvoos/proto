@@ -341,6 +341,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#sealed = false;
 
 	#blockVersion = 0;
+	#onTranscriptBlockChange?: () => void;
+
+	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
+		this.#onTranscriptBlockChange = listener;
+	}
 
 	constructor(options: ReadToolGroupOptions = {}) {
 		super();
@@ -369,12 +374,16 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	finalize(): void {
+		if (this.#finalized) return;
 		this.#finalized = true;
+		this.#onTranscriptBlockChange?.();
 	}
 
 	seal(): void {
-		if (!this.#sealed) this.#blockVersion++;
+		if (this.#sealed) return;
+		this.#blockVersion++;
 		this.#sealed = true;
+		this.#onTranscriptBlockChange?.();
 	}
 
 	getTranscriptBlockVersion(): number {
@@ -483,14 +492,29 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	setExpanded(expanded: boolean): void {
-		if (this.#expanded !== expanded) this.#blockVersion++;
+		const changed = this.#expanded !== expanded;
+		if (changed) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
+		if (changed) this.#onTranscriptBlockChange?.();
 	}
 
 	setToolActivityVisible(visible: boolean): void {
+		const changed = this.#toolActivityVisible !== visible;
 		this.#toolActivityVisible = visible;
 		super.invalidate();
+		if (changed) this.#onTranscriptBlockChange?.();
+	}
+
+	override invalidate(): void {
+		super.invalidate();
+		this.#onTranscriptBlockChange?.();
+	}
+
+	override dispose(): void {
+		this.#onTranscriptBlockChange?.();
+		this.#onTranscriptBlockChange = undefined;
+		super.dispose();
 	}
 
 	getComponent(): Component {
@@ -498,6 +522,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	#updateDisplay(): void {
+		this.#onTranscriptBlockChange?.();
 		const entries = [...this.#entries.values()];
 		const displayTargets = this.#displayTargetsForEntries(entries);
 		const displayRows = this.#buildSummaryRows(displayTargets);

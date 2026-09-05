@@ -73,7 +73,14 @@ export type DaemonOperation =
 			timeoutMs: number;
 	  }
 	| { op: "wait"; name: string; for: "ready" | "exit"; pattern?: string; timeoutMs: number }
-	| { op: "send"; name: string; data?: string; signal?: DaemonSignal }
+	| {
+			op: "send";
+			name: string;
+			data?: string;
+			enter?: boolean;
+			keys?: string[];
+			signal?: DaemonSignal;
+	  }
 	| { op: "stop"; name: string; timeoutMs: number }
 	| { op: "restart"; name: string }
 	| { op: "describe"; name: string }
@@ -359,6 +366,8 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				op,
 				name: stringValue(source.name, "operation.name"),
 				data: optionalString(source.data, "operation.data"),
+				enter: source.enter === undefined ? undefined : booleanValue(source.enter, "operation.enter"),
+				keys: source.keys === undefined ? undefined : stringArray(source.keys, "operation.keys"),
 				signal: source.signal === undefined ? undefined : daemonSignal(source.signal),
 			};
 		case "stop":

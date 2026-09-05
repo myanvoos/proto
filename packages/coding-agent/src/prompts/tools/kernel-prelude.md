@@ -1,7 +1,7 @@
 {{#ifAll py js}}Python: sync, kwargs. JS: async, ONE trailing object literal, never positional.{{else}}{{#if py}}Sync; kwargs.{{/if}}{{#if js}}Async; ONE trailing object literal, never positional.{{/if}}{{/ifAll}}
 ```
 display(value) → None        print(value, ...) → None
-{{#if py}}apply_patch(path, patch_text) → None    Python only; exact context hunks against an existing UTF-8 file; all hunks validate before writing
+{{#if py}}apply_patch(path, patch_text) → None    Python only; context/unified hunks against one existing UTF-8 file; all hunks validate before writing
 symbols(path?, code?=None, lang?=None) → str    tree-sitter outline, bodies elided; code= outlines an in-memory string (validate structure BEFORE writing; lang= required without a path)
 defs() → dict    kernel-defined names → cell number
 {{/if}}{{#if py}}proto_path(path) → Path    resolve a plain, `~/…`, or scheme URL (fleet//local//skill) path to a real filesystem path for the raw file APIs{{/if}}
@@ -22,10 +22,12 @@ budget → {{#if py}}`budget.total` (ceiling or None), `budget.spent()`, `budget
 {{#if py}}
 Python verbatim blocks: quotes, backslashes, `%`/`!` stay literal; no interpolation. Both execute at their position in the cell.
 - `#@embed NAME` … `#@end`: bind text to NAME; no file write. Body lines joined with `\n`; delimiter-boundary newline excluded. Add a blank body line for a trailing newline.
-- `#@patch PATH` … `#@end`: apply context hunks to one existing file. PATH is literal, not a Python expression; spaces allowed. Computed path/body? Use `apply_patch(path, patch_text)`.
-- Either header accepts `until=TOKEN`; close with TOKEN instead of `#@end` when the body contains the default terminator.
-- Patch body: bare `@@` starts each hunk; ` ` context, `-` delete, `+` add. MUST supply exact, unique old context; hunks ordered and nonoverlapping. Missing/ambiguous context or malformed hunk → error, file unchanged. NEVER add file envelopes, line counts, or fuzzy anchors.
-- Indented patch: indent every body row and terminator by the header's indentation; only that prefix is removed. Embed body remains verbatim.
+- `#@patch PATH` … `#@end`: patch one existing file. PATH is literal, optionally wrapped in matching quotes; spaces allowed, no escape decoding/interpolation. Computed path/body? Use `apply_patch(path, patch_text)`.
+- Either header accepts `until=TOKEN`; close with TOKEN when the body contains `#@end`. Patch headers also accept whitespace around `=`.
+- Hunks: `@@`, `@@ label`, or unified `@@ -N,M +N,M @@`; ` ` context, `-` delete, `+` add. Single-file diff headers, `*** Begin Patch` / `*** Update File: PATH` / `*** End Patch`, and an outer code fence are accepted; headers MUST name the explicit target, never additional files.
+- Supply unique old context/deletions; hunks ordered, nonoverlapping. Exact matches win; otherwise unique trailing-whitespace, then indentation-only differences are tolerated. Added text stays literal. Line numbers/labels never select a match. Missing/ambiguous context or malformed patch → error, file unchanged.
+- Common pasted patch indentation and blank-row prefixes are tolerated. In Python blocks, nonblank body rows MUST retain the header's indentation; closing marker MUST use that same indentation (trailing whitespace allowed). Embed body remains verbatim.
+- `*** End of File` requires the hunk to reach EOF; `\ No newline at end of file` is accepted without changing the terminal-newline policy.
 - Patch preserves untouched line endings and terminal-newline presence; added lines inherit local newline style. New files/full replacement? Use `#@embed` + plain file APIs.
 
 ```python

@@ -4,7 +4,7 @@ Every file mutation a cell makes — plain `open()`, `Path`, `os.*`, `shutil` �
 
 Work incrementally: imports → define → test → use, each its own call; re-run setup ONLY after `reset`/kernel crash. Top-level `await` works; `asyncio.run(…)` errors; parallelize within a call via `parallel(thunks)`.
 
-File edits execute inside the cell: `#@patch`/`apply_patch` for exact context hunks; plain `open`/`Path`/`os.*` for creation, full replacement, and other mutations. Every mutation is tracked and diffed. `StaleWriteError` aborts stale writes before truncation; re-read and redo the change. In-kernel reads, the `read` tool, and shell-builtin reads arm the guard; external-program reads do not. Your own writes re-arm it. `proto_path()` resolves scheme URLs for plain file APIs. `Path`, `os`, `json`, `re`, `math` are pre-imported.
+File edits execute inside the cell: `#@patch`/`apply_patch` for context or unified hunks; plain `open`/`Path`/`os.*` for creation, full replacement, and other mutations. Every mutation is tracked and diffed. `StaleWriteError` aborts stale writes before truncation; re-read and redo the change. In-kernel reads, the `read` tool, and shell-builtin reads arm the guard; external-program reads do not. Your own writes re-arm it. `proto_path()` resolves scheme URLs for plain file APIs. `Path`, `os`, `json`, `re`, `math` are pre-imported.
 
 `#@` / `#@?` comments annotate the transcript; `#@embed` / `#@patch` are executable verbatim directives, documented below.
 

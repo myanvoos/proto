@@ -548,7 +548,7 @@ edit:
 
 ### Context and compaction
 
-Proto loads pi-blackhole as its built-in compaction engine. The settings below remain the scheduler, recovery, and pi-default fallback controls. Blackhole-specific memory, worker-model, tail, and engine settings live in `~/.proto/agent/pi-blackhole/pi-blackhole-config.json` (project override: `.pi/pi-blackhole-config.json`) and are also available through `/blackhole settings`.
+Proto loads pi-blackhole as its built-in compaction engine. The settings below remain the scheduler, recovery, and pi-default fallback controls. Blackhole-specific memory, worker-model, tail, and engine settings live in `~/.proto/agent/pi-blackhole/pi-blackhole-config.json` (project override: `.pi/pi-blackhole-config.json`) and are also available through `/memory settings`.
 
 ```yaml
 contextPromotion:

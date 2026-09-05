@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { type Component, Container } from "@oh-my-pi/pi-tui";
+import { type Component, Container, type NativeScrollbackWidthEpoch } from "@oh-my-pi/pi-tui";
 import { Settings } from "../config/settings";
 import { evalToolRenderer } from "../tools/eval-render";
 import type { ToolExecutionHandle } from "./components/tool-execution";
@@ -127,6 +127,89 @@ class MutableBlock implements Component {
 	}
 }
 
+class TrackedBlock implements Component {
+	#listener?: () => void;
+	#version = 0;
+	readonly #finalized: boolean;
+	notifications = 0;
+	lines: readonly string[];
+
+	constructor(lines: readonly string[], finalized = true) {
+		this.lines = lines;
+		this.#finalized = finalized;
+	}
+
+	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
+		this.#listener = listener;
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.#finalized;
+	}
+
+	getTranscriptBlockVersion(): number {
+		return this.#version;
+	}
+
+	setLines(lines: readonly string[]): void {
+		this.lines = lines;
+		this.#version++;
+		if (this.#listener) {
+			this.notifications++;
+			this.#listener();
+		}
+	}
+
+	render(_width: number): readonly string[] {
+		return this.lines;
+	}
+}
+
+class ReplayTrackedBlock extends TrackedBlock {
+	#replayedLines: readonly string[];
+
+	constructor(lines: readonly string[], replayedLines: readonly string[]) {
+		super(lines);
+		this.#replayedLines = replayedLines;
+	}
+
+	prepareNativeScrollbackReplay(): void {
+		this.setLines(this.#replayedLines);
+	}
+}
+
+class WidthAwareTrackedBlock extends TrackedBlock implements NativeScrollbackWidthEpoch {
+	#rows: number;
+
+	constructor(lines: readonly string[]) {
+		super(lines);
+		this.#rows = lines.length;
+	}
+
+	override setLines(lines: readonly string[]): void {
+		super.setLines(lines);
+		this.#rows = lines.length;
+	}
+
+	captureNativeScrollbackWidthEpoch(): unknown {
+		return { rows: this.#rows };
+	}
+
+	resolveNativeScrollbackWidthEpoch(boundary: unknown): number | undefined {
+		if (typeof boundary !== "object" || boundary === null || !("rows" in boundary)) return undefined;
+		const rows = (boundary as { rows?: unknown }).rows;
+		return typeof rows === "number" ? rows : undefined;
+	}
+
+	getNativeScrollbackWidthEpochRows(): number | undefined {
+		return this.#rows;
+	}
+
+	isNativeScrollbackWidthEpochAppendOnly(_boundary: unknown): boolean {
+		return true;
+	}
+}
+
 test("TranscriptContainer revision tracks rendered content and clear drops old rows", () => {
 	const container = new TranscriptContainer();
 	const block = new MutableBlock(["before"]);
@@ -146,6 +229,152 @@ test("TranscriptContainer revision tracks rendered content and clear drops old r
 
 	container.clear();
 	expect(container.render(40), "clearing a transcript must not replay rows from the previous session").toEqual([]);
+});
+
+test("tracked finalized edits and public child mutations rebuild transcript output", () => {
+	const first = new TrackedBlock(["first"]);
+	const second = new TrackedBlock(["second"]);
+	const live = new TrackedBlock(["live"], false);
+	const replacement = new TrackedBlock(["replacement"]);
+	const container = new TranscriptContainer();
+	container.addChild(first);
+	container.addChild(second);
+	container.addChild(live);
+
+	expect(container.render(40)).toEqual(["first", "", "second", "", "live"]);
+
+	first.setLines(["edited"]);
+	expect(container.render(40), "a subscribed finalized block must invalidate without parent invalidation").toEqual([
+		"edited",
+		"",
+		"second",
+		"",
+		"live",
+	]);
+
+	container.children.reverse();
+	expect(container.render(40), "reordering the public children array must invalidate cached prefix rows").toEqual([
+		"live",
+		"",
+		"second",
+		"",
+		"edited",
+	]);
+
+	container.children[0] = replacement;
+	expect(container.render(40), "replacing a public child must not reuse the old segment").toEqual([
+		"replacement",
+		"",
+		"second",
+		"",
+		"edited",
+	]);
+
+	container.children.length = 1;
+	expect(container.render(40), "removing public children must drop their rows").toEqual(["replacement"]);
+
+	container.removeChild(replacement);
+	container.children.push(replacement);
+	replacement.setLines(["reinserted"]);
+	expect(
+		container.render(40),
+		"a child reinserted through the public array remains conservatively polled after listener removal",
+	).toEqual(["reinserted"]);
+});
+
+test("externally aliased child arrays conservatively detect out-of-band reorder", () => {
+	const first = new MutableBlock(["first"]);
+	const second = new MutableBlock(["second"]);
+	const aliasedChildren = [first, second];
+	const container = new TranscriptContainer();
+	container.children = aliasedChildren;
+
+	expect(container.render(40)).toEqual(["first", "", "second"]);
+	aliasedChildren.reverse();
+	expect(
+		container.render(40),
+		"an external array alias can mutate without Proxy traps and must disable stable-prefix reuse",
+	).toEqual(["second", "", "first"]);
+});
+
+test("shared blocks keep each container subscribed independently", () => {
+	const shared = new TrackedBlock(["shared"]);
+	const left = new TranscriptContainer();
+	const right = new TranscriptContainer();
+	left.addChild(shared);
+	right.addChild(shared);
+
+	expect(left.render(40)).toEqual(["shared"]);
+	expect(right.render(40)).toEqual(["shared"]);
+
+	shared.setLines(["updated"]);
+	expect(shared.notifications).toBe(1);
+	expect(left.render(40)).toEqual(["updated"]);
+	expect(right.render(40)).toEqual(["updated"]);
+
+	right.removeChild(shared);
+	shared.setLines(["left only"]);
+	expect(shared.notifications, "removing a shared child from one container must not detach the other listener").toBe(
+		2,
+	);
+	expect(left.render(40)).toEqual(["left only"]);
+	expect(right.render(40)).toEqual([]);
+
+	left.children.splice(0, 1);
+	left.render(40);
+	shared.setLines(["detached"]);
+	expect(shared.notifications, "raw-array removal must detach the old parent listener").toBe(2);
+
+	left.children.push(shared);
+	left.render(40);
+	shared.setLines(["reinserted"]);
+	expect(shared.notifications, "reinserted public children must be re-subscribed or conservatively polled").toBe(3);
+	expect(left.render(40)).toEqual(["reinserted"]);
+});
+
+test("replay invalidates a custom block without forcing unrelated history renders", () => {
+	const replay = new ReplayTrackedBlock(["before"], ["after"]);
+	const stable = new TrackedBlock(["stable"]);
+	const container = new TranscriptContainer();
+	container.addChild(replay);
+	container.addChild(stable);
+
+	const initial = container.render(40);
+	container.setNativeScrollbackCommittedRows(initial.length);
+	expect(container.render(40)).toEqual(initial);
+
+	container.prepareNativeScrollbackReplay();
+	expect(container.render(40), "custom replay output must invalidate the cached finalized prefix").toEqual([
+		"after",
+		"",
+		"stable",
+	]);
+});
+
+test("width epoch boundaries survive segment reuse and reject edited preceding history", () => {
+	const first = new TrackedBlock(["first"]);
+	const last = new WidthAwareTrackedBlock(["last"]);
+	const container = new TranscriptContainer();
+	container.addChild(first);
+	container.addChild(last);
+
+	const initial = container.render(40);
+	const boundary = container.captureNativeScrollbackWidthEpoch();
+	expect(boundary).toBeDefined();
+	expect(container.resolveNativeScrollbackWidthEpoch(boundary)).toBe(initial.length);
+
+	container.render(40);
+	expect(
+		container.resolveNativeScrollbackWidthEpoch(boundary),
+		"an unchanged boundary remains valid after reusing segment records",
+	).toBe(initial.length);
+
+	first.setLines(["edited", "history"]);
+	container.render(40);
+	expect(
+		container.resolveNativeScrollbackWidthEpoch(boundary),
+		"editing finalized history invalidates a captured width boundary",
+	).toBeUndefined();
 });
 
 test("resolvePreservedLiveToolCallIds preserves in-flight calls without a persisted result", () => {

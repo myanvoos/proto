@@ -2,7 +2,7 @@
 <system-reminder>
 Request budget crossed; in-flight turn stopped → forced wrap-up. MUST call `yield` NOW with best final report from completed work.
 
-- Consolidate all gathered value; mark remaining gaps incomplete, do not investigate further.
+- Consolidate all gathered value; mark remaining gaps incomplete; NEVER investigate further.
 - Do NOT call another tool or resume assignment.
 - Terminal `yield` only: omit `type`, report in `result.data`; or `type: string` to finalize from last assistant turn.
 </system-reminder>

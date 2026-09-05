@@ -21,7 +21,7 @@ Then draft the objective as exactly this ordered markdown, no other top-level se
 One paragraph: what must be true when the stretch ends, reached stage by stage through the milestones below. Scope only what the ask covers.
 
 ## Success criteria
-Numbered milestones in execution order — the stages of the loop. Each must be machine-checkable by an auditor who did not do the work, so the loop can prove stage N done and move on to N+1; the last milestone is the final state. Discard any criterion that needs judgment and replace it with one that does not.
+Numbered milestones in execution order — the stages of the loop. Each MUST be machine-checkable by an auditor who did not do the work, so the loop can prove stage N done and move on to N+1; the last milestone is the final state. Discard any criterion that needs judgment and replace it with one that does not.
 
 ## Verification
 The exact commands, verbatim and runnable from the repo root, one per line, with each command enclosed in backticks and followed by what it proves — a checkpoint command per milestone where possible, then the final gate commands. This section is the auditor's whitelist: a criterion with no command here is unprovable.

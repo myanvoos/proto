@@ -8,7 +8,7 @@ import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
 import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool, ToolSession } from "./index";
-import { resolveToCwd, splitPathAndSel } from "./path-utils";
+import { isReadableUrlPath, resolveToCwd, splitPathAndSel } from "./path-utils";
 import { replaceTabs } from "./render-utils";
 import type { ToolRenderer } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
@@ -309,7 +309,7 @@ function scopeReadArgsToCwd(content: string, cwd: string): string {
 		const args = { ...(parsed as Record<string, unknown>) };
 		if (typeof args.path !== "string") return content;
 		const split = splitPathAndSel(args.path);
-		const resolved = resolveToCwd(split.path, cwd);
+		const resolved = isReadableUrlPath(split.path) ? split.path : resolveToCwd(split.path, cwd);
 		args.path = split.sel ? `${resolved}:${split.sel}` : resolved;
 		return JSON.stringify(args);
 	} catch {

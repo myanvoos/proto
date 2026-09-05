@@ -1,1 +1,1 @@
-Continue task now; do not end turn here.
+Continue task now; NEVER end turn here.

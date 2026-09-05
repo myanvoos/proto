@@ -130,19 +130,24 @@ PATTERN = r"/v1/\d+"
 #@end
 Path("route.py").write_text(SOURCE)
 
-#@patch route.py
-@@
+#@patch "route.py"
+--- a/route.py
++++ b/route.py
+@@ -1 +1 @@
 -PATTERN = r"/v1/\d+"
 +PATTERN = r"/v2/\d+"
 #@end
 ```
 
 - Embed body lines join with `\n`; the delimiter-boundary newline is excluded. The blank body line in the example supplies the file's final newline. Embed body indentation is literal.
-- Patch headers take a literal path, including spaces, not a Python expression. Paths resolve relative to the kernel cwd; scheme URLs resolve through `proto_path`.
-- Append `until=TOKEN` to either header to use a custom closing line instead of `#@end`. This allows literal content containing the default delimiter.
-- In indented Python blocks, indent every patch body row and its terminator by the header's indentation. Only that prefix is removed; spaces after a hunk prefix remain meaningful file content.
-- Each hunk starts with bare `@@`. Subsequent rows use one leading space for context, `-` for deletion, or `+` for addition. Supply at least one old/context line and a change. File envelopes, numbered hunk headers, and fuzzy matching are unsupported.
-- Hunks match exact lines, uniquely within the remaining forward search region, without overlap. A missing, ambiguous, or malformed hunk fails before any write to that file. Earlier completed operations in the cell are not rolled back.
+- Patch headers take a literal path, including spaces, optionally wrapped in matching single or double quotes. The quotes are removed without interpreting escapes or Python expressions. Paths resolve relative to the kernel cwd; scheme URLs resolve through `proto_path`.
+- Append `until=TOKEN` to either header to use a custom closing line instead of `#@end`. Patch headers also accept `until = TOKEN`. This allows literal content containing the default delimiter.
+- In indented Python blocks, nonblank patch body rows must retain the header's indentation. Blank rows may omit it, and a common extra pasted indentation level is removed without stripping the hunk's context prefix or added text. The closing marker must have the same indentation as the opening header; trailing spaces/tabs are allowed. Embed bodies remain verbatim.
+- Hunk headers may be bare `@@`, labeled `@@ function_name`, or standard unified `@@ -N,M +N,M @@` with an optional label. Rows use one leading space for context, `-` for deletion, or `+` for addition; whitespace-only blank rows are also accepted as blank context. Supply at least one old/context line and a change. Line numbers and labels are informational, not location selectors.
+- Pasted single-file diffs may include conventional `diff --git`, `index`, `---`/`+++` headers, or `*** Begin Patch` / `*** Update File: PATH` / `*** End Patch` wrappers, plus an outer Markdown code fence and blank padding. Header paths must identify the explicit target; `a/` and `b/` prefixes are accepted. Multi-file, mismatched-target, create/delete/rename/move patches are rejected rather than redirected.
+- Each hunk must match uniquely within the remaining forward search region, without overlap. Matching tries exact text first, then trailing-space/tab differences, then leading-space/tab differences as well. It never ignores non-whitespace text or uses line-number hints to resolve ambiguity. Unchanged context retains the source's bytes; added lines retain the patch's literal text.
+- A missing, ambiguous, malformed, or out-of-order hunk fails before any write to that file. Earlier completed operations in the cell are not rolled back. Errors identify the failed hunk and suggest re-reading or supplying more unique context.
+- `*** End of File` requires the matched old-side hunk to reach EOF. The standard `\ No newline at end of file` annotation is accepted; it does not override the terminal-newline preservation policy below.
 - Untouched line endings are preserved. Added lines inherit local newline style, falling back to the file's first newline style or LF. Terminal-newline presence is preserved unless the result is empty.
 - Patches update existing files only. Create or fully replace files with `#@embed` and ordinary filesystem APIs; delete and rename with ordinary APIs.
 

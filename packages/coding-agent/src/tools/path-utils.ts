@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as url from "node:url";
 import { glob } from "@oh-my-pi/pi-natives";
 import { hasFsCode, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils";
+import { detectLanguageId } from "../utils/lang-from-path";
 import { ToolAbortError, ToolError } from "./tool-errors";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
@@ -304,6 +305,10 @@ export function isInternalUrlPath(filePath: string): boolean {
 
 export function isReadableUrlPath(value: string): boolean {
 	return /^https?:\/\/?/i.test(value) || /^www\./i.test(value);
+}
+
+export function shouldExpandRangeContext(sourcePath?: string): boolean {
+	return sourcePath === undefined || detectLanguageId(sourcePath) !== "plaintext";
 }
 
 export function resolveToCwd(filePath: string, cwd: string): string {

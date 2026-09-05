@@ -15,7 +15,7 @@ Use null for: cross-cutting changes, project-wide refactoring.
 Forbidden scopes (use null): src, lib, include, tests, benches, examples, docs, project name, app, main, entire, all, misc.
 
 Prefer scopes from <common-scopes> over inventing new.
-## 2. Generate Details (0–6 items; never more than 6)
+## 2. Generate Details (0–6 items)
 
 Each detail:
 1. Past-tense verb, ends with period

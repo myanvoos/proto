@@ -27,4 +27,4 @@ Use this structure for the summary body; the caller MAY prepend a branch-return 
 ## Next Steps
 1. [What should happen next to continue]
 
-Keep sections concise. Preserve exact file paths, function names, error messages, and command outputs when present in the supplied context. Do not invent details omitted by preprocessing.
+Keep sections concise. Preserve exact file paths, function names, error messages, and command outputs when present in the supplied context. NEVER invent details omitted by preprocessing.

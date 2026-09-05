@@ -33,4 +33,4 @@ Use this structure for the summary body; the caller MAY augment it with split-tu
 ## Additional Notes
 [Anything else important not covered above]
 
-Keep sections concise. Preserve exact file paths, function names, error messages, relevant tool outputs, command results, and repository state when present in the supplied context. Excerpts MAY be filtered or truncated; do not invent omitted details. Return only the summary body; the caller MAY add context around it.
+Keep sections concise. Preserve exact file paths, function names, error messages, relevant tool outputs, command results, and repository state when present in the supplied context. Excerpts MAY be filtered or truncated; NEVER invent omitted details. Return only the summary body; the caller MAY add context around it.
