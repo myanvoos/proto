@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { Container } from "@oh-my-pi/pi-tui";
+import { type Component, Container } from "@oh-my-pi/pi-tui";
 import { Settings } from "../config/settings";
 import { evalToolRenderer } from "../tools/eval-render";
 import type { ToolExecutionHandle } from "./components/tool-execution";
@@ -114,6 +114,39 @@ function makeCtx(chatContainer: TranscriptContainer, pendingTools: Map<string, T
 function toolComponentsIn(container: TranscriptContainer): ToolExecutionComponent[] {
 	return container.children.filter(c => c instanceof ToolExecutionComponent) as ToolExecutionComponent[];
 }
+
+class MutableBlock implements Component {
+	lines: readonly string[];
+
+	constructor(lines: readonly string[]) {
+		this.lines = lines;
+	}
+
+	render(_width: number): readonly string[] {
+		return this.lines;
+	}
+}
+
+test("TranscriptContainer revision tracks rendered content and clear drops old rows", () => {
+	const container = new TranscriptContainer();
+	const block = new MutableBlock(["before"]);
+	container.addChild(block);
+
+	expect(container.render(40)).toEqual(["before"]);
+	const initialRevision = container.getRenderRevision();
+	expect(container.render(40)).toEqual(["before"]);
+	expect(container.getRenderRevision(), "unchanged transcript rows keep a stable revision").toBe(initialRevision);
+
+	block.lines = ["after"];
+	container.invalidate();
+	expect(container.render(40)).toEqual(["after"]);
+	expect(container.getRenderRevision(), "changed transcript rows invalidate the viewer source").toBeGreaterThan(
+		initialRevision,
+	);
+
+	container.clear();
+	expect(container.render(40), "clearing a transcript must not replay rows from the previous session").toEqual([]);
+});
 
 test("resolvePreservedLiveToolCallIds preserves in-flight calls without a persisted result", () => {
 	const live = makeLiveComponent();

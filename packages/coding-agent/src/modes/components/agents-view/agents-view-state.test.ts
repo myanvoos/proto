@@ -56,6 +56,18 @@ describe("agents view live-session classification", () => {
 		);
 		expect(rows[0].subtitle).toBe("running");
 	});
+
+	test("live markers override a stale parked registry ref", () => {
+		const sessionPath = "/tmp/proto-view/parallel.jsonl";
+		const records = reconcileAgentsViewRecords(
+			[fakeRef({ id: "parallel", sessionFile: sessionPath, status: "parked" })],
+			[fakeSession({ path: sessionPath, id: "parallel", liveOpen: true, liveStreaming: true })],
+		);
+		const rows = buildAgentsViewRows(records, new Set(), new Set(), new Map(), undefined);
+
+		expect(records[0]?.section).toBe("running");
+		expect(rows[0]?.subtitle).toBe("running");
+	});
 });
 
 describe("agents view section counts", () => {

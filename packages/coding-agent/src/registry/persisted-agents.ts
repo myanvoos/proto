@@ -4,7 +4,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor/transcript-recorder";
 import { isConductorTranscriptName } from "../conductor/transcript";
 import { resolveExplicitModelRole } from "../config/model-resolver";
-import { persistedOrchestratorWorkerIds } from "../orchestrator/runtime";
+import { persistedOrchestratorWorkerLabels } from "../orchestrator/runtime";
 import { assistantTurnProducedOutput } from "../session/messages";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "../session/session-entries";
 import { readSessionLiveState } from "../session/session-liveness";
@@ -308,25 +308,24 @@ export async function readAgentSpawnTask(sessionFile: string): Promise<string | 
 	return task;
 }
 
-async function readPersistedOrchestratorWorkerIds(
+async function readPersistedOrchestratorWorkerLabels(
 	sessionFile: string,
 	shouldContinue: () => boolean,
-): Promise<Set<string>> {
-	const ids = new Set<string>();
+): Promise<Map<string, string>> {
+	const labels = new Map<string, string>();
 	try {
 		await visitEntriesFromFileStream(
 			sessionFile,
 			entry => {
-				for (const id of persistedOrchestratorWorkerIds([entry])) ids.add(id);
+				for (const [id, label] of persistedOrchestratorWorkerLabels([entry])) labels.set(id, label);
 			},
 			{ shouldContinue },
 		);
-		return ids;
+		return labels;
 	} catch {
-		return new Set();
+		return new Map();
 	}
 }
-
 export async function registerPersistedSubagents(
 	registry: AgentRegistry,
 	sessionFile: string | null | undefined,
@@ -344,14 +343,14 @@ export async function registerPersistedSubagents(
 	}
 	if (rootEntries.length === 0) return;
 	if (!shouldContinue()) return;
-	const orchestratorOwnedIds = await readPersistedOrchestratorWorkerIds(sessionFile, shouldContinue);
+	const orchestratorWorkerLabels = await readPersistedOrchestratorWorkerLabels(sessionFile, shouldContinue);
 	if (!shouldContinue()) return;
 	const transcripts: PersistedTranscript[] = [];
 	await registerPersistedSubagentsFromDir(
 		registry,
 		root,
 		undefined,
-		orchestratorOwnedIds,
+		orchestratorWorkerLabels,
 		transcripts,
 		shouldContinue,
 	);
@@ -375,7 +374,7 @@ async function registerPersistedSubagentsFromDir(
 	registry: AgentRegistry,
 	dir: string,
 	parentId: string | undefined,
-	orchestratorOwnedIds: ReadonlySet<string>,
+	orchestratorWorkerLabels: ReadonlyMap<string, string>,
 	transcripts: PersistedTranscript[],
 	shouldContinue: () => boolean,
 ): Promise<void> {
@@ -442,7 +441,23 @@ async function registerPersistedSubagentsFromDir(
 			continue;
 		}
 		const id = entry.name.slice(0, -6);
-		if (orchestratorOwnedIds.has(id) && registry.get(id)?.sessionFile !== sessionFile) continue;
+		const orchestratorLabel = orchestratorWorkerLabels.get(id);
+		const orchestratorOwned = orchestratorLabel !== undefined;
+		const existing = registry.get(id);
+		if (orchestratorLabel && existing?.displayName === id) {
+			registry.setDisplayName(id, orchestratorLabel, sessionFile);
+		}
+		if (orchestratorOwned && parentId === undefined && existing?.sessionFile !== sessionFile) {
+			await registerPersistedSubagentsFromDir(
+				registry,
+				path.join(dir, id),
+				id,
+				await readPersistedOrchestratorWorkerLabels(sessionFile, shouldContinue),
+				transcripts,
+				shouldContinue,
+			);
+			continue;
+		}
 		let tombstoned = false;
 		try {
 			await fs.promises.access(getAgentTombstonePath(sessionFile));
@@ -462,7 +477,7 @@ async function registerPersistedSubagentsFromDir(
 				if (unclaimed) {
 					registry.register({
 						id,
-						displayName: id,
+						displayName: orchestratorLabel ?? id,
 						kind: "sub",
 						parentId: parentId ?? MAIN_AGENT_ID,
 						session: null,
@@ -487,7 +502,7 @@ async function registerPersistedSubagentsFromDir(
 			registry,
 			path.join(dir, id),
 			id,
-			orchestratorOwnedIds,
+			await readPersistedOrchestratorWorkerLabels(sessionFile, shouldContinue),
 			transcripts,
 			shouldContinue,
 		);

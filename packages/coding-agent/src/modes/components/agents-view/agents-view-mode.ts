@@ -52,6 +52,7 @@ import {
 	formatRowDetails,
 	getRecordModelLabel,
 	getRecordSessionFile,
+	getRecordStableId,
 	getRecordTitle,
 	hasExplicitTitle,
 	reconcileAgentsViewRecords,
@@ -163,6 +164,7 @@ export interface AgentsViewDeps extends AgentsViewActions {
 	keybindings: Pick<InteractiveModeContext["keybindings"], "getKeys">;
 
 	currentSessionFile: string | null;
+	initialSessions?: readonly SessionInfo[];
 	cwd: string;
 	version: string;
 	modelName: string | undefined;
@@ -240,10 +242,12 @@ export class AgentsViewComponent implements Component {
 	#transcriptViewer: AgentTranscriptViewer | undefined;
 
 	#persistentState: AgentsViewPersistentState | undefined;
+	#initialSessions: readonly SessionInfo[] | undefined;
 
 	constructor(deps: AgentsViewDeps) {
 		this.#deps = deps;
 		this.#registry = deps.registry ?? AgentRegistry.global();
+		this.#initialSessions = deps.initialSessions;
 
 		const editorTheme = { ...getEditorTheme(), symbols: { ...getSymbolTheme(), inputCursor: "" } };
 		editorTheme.hintStyle = text => text;
@@ -366,7 +370,8 @@ export class AgentsViewComponent implements Component {
 		if (this.#refreshInFlight || this.#disposed) return;
 		this.#refreshInFlight = true;
 		try {
-			const listed = await SessionManager.listAll();
+			const listed = this.#initialSessions ?? (await SessionManager.listAll());
+			this.#initialSessions = undefined;
 			if (this.#disposed) return;
 
 			const sessions = [...listed, ...this.#persistedChildSessions];
@@ -377,7 +382,7 @@ export class AgentsViewComponent implements Component {
 				sessions
 					.map(
 						session =>
-							`${session.path}:${session.modified.getTime()}:${session.messageCount}:${session.title ?? ""}`,
+							`${session.path}:${session.modified.getTime()}:${session.messageCount}:${session.liveStreaming === true}:${session.liveOpen === true}:${session.title ?? ""}`,
 					)
 					.join("|");
 			if (signature === this.#lastSignature && this.#records.length > 0) {
@@ -1266,6 +1271,12 @@ export class AgentsViewComponent implements Component {
 		const detailsWidth = row.detailsWidth > 0 ? row.detailsWidth : 10;
 		const title = pendingDelete ? `${formatViewKey("ctrl+x")} again to remove` : this.#styleRowTitle(row);
 		const suffixes: string[] = [];
+		const identityVisible =
+			!pendingDelete &&
+			record !== undefined &&
+			(row.kind === "subagent" || record.ref?.kind === "sub" || record.session?.parentSessionPath !== undefined);
+		const stableId = identityVisible && record ? getRecordStableId(record) : undefined;
+		if (stableId && stableId !== title) suffixes.push(stableId);
 		if (row.kind === "subagent" && !settledChild) {
 			const modelLabel = getRecordModelLabel(record) ?? record?.ref?.history?.resolvedModel;
 			if (modelLabel) suffixes.push(modelLabel);

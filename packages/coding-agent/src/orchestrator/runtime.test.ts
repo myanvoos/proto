@@ -112,4 +112,57 @@ describe("orchestrator lifecycle identity", () => {
 			runtime.send(scopedSession("parent-race"), { session: "worker-race", message: "follow up" }),
 		).rejects.toThrow(/history:\/\/worker-race/);
 	});
+
+	test("terminal records retain recovery identity after releasing live payloads", async () => {
+		AgentRegistry.resetGlobalForTests();
+		OrchestratorRuntime.resetGlobalForTests();
+		const runtime = OrchestratorRuntime.global();
+		const manager = new AsyncJobManager({ retentionMs: 0 });
+		const session = { ...scopedSession("terminal-payload"), asyncJobManager: manager };
+		const agent = {
+			name: "worker",
+			description: "terminal payload test",
+			systemPrompt: "terminal worker instructions ".repeat(10_000),
+			source: "bundled" as const,
+			tools: [],
+		};
+		const outputSchema = {
+			type: "object",
+			properties: { result: { type: "string" } },
+		};
+		runtime.registerRecordForTests({
+			id: "worker-terminal-payload",
+			label: "terminal payload",
+			ownerId: "Main",
+			parentSessionId: "terminal-payload",
+			state: "idle",
+			agent,
+			outputSchema,
+		});
+		AgentRegistry.global().register({
+			id: "worker-terminal-payload",
+			displayName: "terminal payload",
+			kind: "sub",
+			parentId: "Main",
+			session: null,
+			status: "idle",
+		});
+
+		try {
+			const killed = await runtime.kill(session, "worker-terminal-payload");
+			expect(killed.receipt.status).toBe("terminal");
+			expect(runtime.listIds(session)).toEqual(["worker-terminal-payload"]);
+			expect(runtime.screens(session)).toMatchObject([
+				{
+					id: "worker-terminal-payload",
+					label: "terminal payload",
+					state: "dead",
+					addressable: false,
+					terminal: { reason: "explicit-kill", history: "history://worker-terminal-payload" },
+				},
+			]);
+		} finally {
+			await manager.dispose({ timeoutMs: 1_000 });
+		}
+	});
 });

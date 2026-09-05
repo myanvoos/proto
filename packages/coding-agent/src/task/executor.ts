@@ -69,6 +69,7 @@ import {
 	type AgentProgress,
 	MAX_OUTPUT_BYTES,
 	MAX_OUTPUT_LINES,
+	projectAgentProgress,
 	type SingleResult,
 	type StructuredSubagentOutput,
 	type StructuredSubagentSchemaMode,
@@ -1060,7 +1061,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				parentToolCallId: args.parentToolCallId,
 				detached: args.detached,
 				assignment,
-				progress: { ...progress },
+				progress: projectAgentProgress(progress),
 				sessionFile: args.sessionFile,
 			});
 		}

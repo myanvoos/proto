@@ -13,12 +13,14 @@ export * from "./read-only-policy";
 export type {
 	AgentDefinition,
 	AgentProgress,
+	ObservableAgentProgress,
 	SingleResult,
 	SubagentEventPayload,
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
 } from "./types";
 export {
+	projectAgentProgress,
 	WORKER_SUBAGENT_EVENT_CHANNEL,
 	WORKER_SUBAGENT_LIFECYCLE_CHANNEL,
 	WORKER_SUBAGENT_PROGRESS_CHANNEL,

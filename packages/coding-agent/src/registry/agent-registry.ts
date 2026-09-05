@@ -151,6 +151,21 @@ export class AgentRegistry {
 		return true;
 	}
 
+	setDisplayName(id: string, displayName: string, expectedSessionFile?: string): boolean {
+		const ref = this.#refs.get(id);
+		const normalized = displayName.trim();
+		if (
+			!ref ||
+			!normalized ||
+			(expectedSessionFile !== undefined && ref.sessionFile !== expectedSessionFile) ||
+			ref.displayName === normalized
+		)
+			return false;
+		ref.displayName = normalized;
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
+	}
+
 	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean {
 		const ref = this.#refs.get(id);
 		if (!ref) return this.#rejectStatusUpdate(id, status, "missing-ref");

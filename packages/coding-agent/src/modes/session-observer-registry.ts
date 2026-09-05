@@ -1,5 +1,5 @@
-import type { AgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
-import { WORKER_SUBAGENT_LIFECYCLE_CHANNEL, WORKER_SUBAGENT_PROGRESS_CHANNEL } from "../task";
+import type { ObservableAgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
+import { projectAgentProgress, WORKER_SUBAGENT_LIFECYCLE_CHANNEL, WORKER_SUBAGENT_PROGRESS_CHANNEL } from "../task";
 import type { EventBus } from "../utils/event-bus";
 
 export interface ObservableSession {
@@ -16,7 +16,7 @@ export interface ObservableSession {
 	index?: number;
 	lastUpdate: number;
 
-	progress?: AgentProgress;
+	progress?: ObservableAgentProgress;
 }
 
 export type SessionObserverChangeKind = "main" | "reset" | "lifecycle" | "progress";
@@ -197,7 +197,7 @@ export class SessionObserverRegistry {
 		this.#eventBusUnsubscribers.push(
 			eventBus.on(WORKER_SUBAGENT_PROGRESS_CHANNEL, data => {
 				const payload = data as SubagentProgressPayload;
-				const progress = payload.progress;
+				const progress = projectAgentProgress(payload.progress);
 				const id = progress.id;
 				const existing = this.#sessions.get(id);
 

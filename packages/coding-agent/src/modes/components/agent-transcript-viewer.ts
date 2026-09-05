@@ -115,6 +115,10 @@ function statusBadge(status: AgentStatus): string {
 export class AgentTranscriptViewer implements Component {
 	#builder: ChatTranscriptBuilder;
 	#scrollView: ScrollView;
+	#scrollContentLines: readonly string[] | undefined;
+	#scrollContentRevision = -1;
+	#emptyContentText: string | undefined;
+	#emptyContentLines: readonly string[] = [];
 	#followBottom = true;
 	#editor: Editor | undefined;
 	#notice: string | undefined;
@@ -161,6 +165,15 @@ export class AgentTranscriptViewer implements Component {
 	dispose(): void {
 		this.#disposed = true;
 		this.#stopPolling();
+		this.#scrollView.setLines([]);
+		this.#scrollContentLines = undefined;
+		this.#scrollContentRevision = -1;
+		this.#emptyContentText = undefined;
+		this.#emptyContentLines = [];
+		this.#localState = undefined;
+		this.#localUnavailable = "";
+		this.#model = undefined;
+		this.#notice = undefined;
 		this.#builder.dispose();
 	}
 
@@ -426,10 +439,25 @@ export class AgentTranscriptViewer implements Component {
 		const chrome = headerLines.length + 2 + editorLines.length + footerLines.length + (noticeLine ? 1 : 0) + 1;
 		const viewportHeight = Math.max(3, termHeight - chrome);
 
-		const contentLines = this.#builder.isEmpty
-			? [` ${theme.fg("dim", this.#placeholder())}`]
-			: this.#builder.container.render(contentWidth);
-		this.#scrollView.setLines(contentLines);
+		let contentLines: readonly string[];
+		let contentRevision: number;
+		if (this.#builder.isEmpty) {
+			const placeholder = this.#placeholder();
+			if (this.#emptyContentText !== placeholder) {
+				this.#emptyContentText = placeholder;
+				this.#emptyContentLines = [` ${theme.fg("dim", placeholder)}`];
+			}
+			contentLines = this.#emptyContentLines;
+			contentRevision = -1;
+		} else {
+			contentLines = this.#builder.container.render(contentWidth);
+			contentRevision = this.#builder.container.getRenderRevision();
+		}
+		if (contentLines !== this.#scrollContentLines || contentRevision !== this.#scrollContentRevision) {
+			this.#scrollView.setLines(contentLines);
+			this.#scrollContentLines = contentLines;
+			this.#scrollContentRevision = contentRevision;
+		}
 		this.#scrollView.setHeight(viewportHeight);
 		if (this.#followBottom) this.#scrollView.scrollToBottom();
 

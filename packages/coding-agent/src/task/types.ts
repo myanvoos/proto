@@ -50,7 +50,7 @@ export interface SubagentProgressPayload {
 	task: string;
 	parentToolCallId?: string;
 	assignment?: string;
-	progress: AgentProgress;
+	progress: ObservableAgentProgress;
 	sessionFile?: string;
 
 	detached?: boolean;
@@ -169,6 +169,13 @@ export interface AgentProgress {
 		attempt: number;
 		errorMessage: string;
 	};
+}
+
+export type ObservableAgentProgress = Omit<AgentProgress, "extractedToolData">;
+
+export function projectAgentProgress(progress: AgentProgress): ObservableAgentProgress {
+	const { extractedToolData: _extractedToolData, ...observable } = progress;
+	return observable;
 }
 
 export interface SingleResult {

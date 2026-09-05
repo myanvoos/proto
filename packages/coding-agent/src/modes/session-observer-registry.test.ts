@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { type AgentProgress, projectAgentProgress, WORKER_SUBAGENT_PROGRESS_CHANNEL } from "../task";
+import { EventBus } from "../utils/event-bus";
 import {
 	CONDUCTOR_SESSION_ID,
 	type ObservableSession,
@@ -6,6 +8,24 @@ import {
 	SessionObserverRegistry,
 } from "./session-observer-registry";
 
+function subagentProgress(): AgentProgress {
+	return {
+		index: 0,
+		id: "worker",
+		agent: "lightbot",
+		agentSource: "bundled",
+		status: "running",
+		task: "task",
+		recentTools: [],
+		recentOutput: [],
+		toolCount: 1,
+		requests: 1,
+		tokens: 1,
+		cost: 0,
+		durationMs: 1,
+		extractedToolData: { yield: [{ data: "large result" }] },
+	};
+}
 function conductorSession(status: ObservableSession["status"] = "active"): ObservableSession {
 	return {
 		id: CONDUCTOR_SESSION_ID,
@@ -19,6 +39,28 @@ function conductorSession(status: ObservableSession["status"] = "active"): Obser
 }
 
 describe("SessionObserverRegistry conductor slot", () => {
+	test("retains display progress without retaining extracted yield data", () => {
+		const registry = new SessionObserverRegistry();
+		const eventBus = new EventBus();
+		registry.subscribeToEventBus(eventBus);
+		const progress = subagentProgress();
+		const projected = projectAgentProgress(progress);
+
+		eventBus.emit(WORKER_SUBAGENT_PROGRESS_CHANNEL, {
+			id: progress.id,
+			index: progress.index,
+			agent: progress.agent,
+			agentSource: progress.agentSource,
+			task: progress.task,
+			progress: projected,
+		});
+
+		const observed = registry.getSession(progress.id);
+		expect(observed?.progress?.requests).toBe(1);
+		expect("extractedToolData" in (observed?.progress ?? {})).toBe(false);
+		expect(progress.extractedToolData?.yield).toHaveLength(1);
+	});
+
 	test("upserts the conductor observable and reports it through change listeners", () => {
 		const registry = new SessionObserverRegistry();
 		const kinds: SessionObserverChangeKind[] = [];

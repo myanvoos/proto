@@ -8,6 +8,7 @@ import type { FileEntry } from "../../session/session-entries";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
 import type {
 	AgentProgress,
+	ObservableAgentProgress,
 	SubagentEventPayload,
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
@@ -118,7 +119,7 @@ export interface RpcSubagentSnapshot {
 	assignment?: string;
 	sessionFile?: string;
 	lastUpdate: number;
-	progress?: AgentProgress;
+	progress?: ObservableAgentProgress;
 	parentToolCallId?: string;
 }
 

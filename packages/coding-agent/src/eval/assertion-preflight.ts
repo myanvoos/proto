@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { parse as parseJavaScript } from "@babel/parser";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { ToolSession } from "../tools";
 import { type BashKernelCell, detectBashKernelCell } from "../tools/bash-kernel-cell";
 import type { StreamedKernelFailure as StreamedKernelFailureContract } from "./speculation";
@@ -63,6 +64,8 @@ const DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_LITERAL_CHARS = 64 * 1024;
 const MAX_STATEMENTS = 4096;
 const MAX_STREAMED_FAILURES = 256;
+const MAX_STREAMED_FAILURE_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_STREAMED_FAILURE_ENTRY_BYTES = 4 * 1024 * 1024;
 const MAX_PARTIAL_JSON_BYTES = 4 * 1024 * 1024;
 const MAX_COUNT_WORK = 16 * 1024 * 1024;
 
@@ -119,7 +122,37 @@ interface CachedFailure {
 	cwd: string | undefined;
 }
 
-const streamedFailures = new Map<string, CachedFailure>();
+function stringStorageBytes(value: string | undefined): number {
+	if (value === undefined) return 0;
+	// V8/Bun may store ASCII strings compactly, but UTF-16 is the conservative
+	// upper bound for the JS source and metadata retained by this cache.
+	return Math.max(Buffer.byteLength(value, "utf8"), value.length * 2);
+}
+
+function cachedFailureSize(value: CachedFailure, key: string): number {
+	const failure = value.failure;
+	let size = 256 + stringStorageBytes(key) + stringStorageBytes(value.toolCallId);
+	size += stringStorageBytes(value.sourcePrefix) + stringStorageBytes(value.cwd);
+	size +=
+		stringStorageBytes(failure.message) + stringStorageBytes(failure.path) + stringStorageBytes(failure.provenance);
+	for (const observation of value.provenance) {
+		size +=
+			128 +
+			stringStorageBytes(observation.path) +
+			stringStorageBytes(observation.device) +
+			stringStorageBytes(observation.inode) +
+			stringStorageBytes(observation.mtimeNs) +
+			stringStorageBytes(observation.ctimeNs);
+	}
+	return Math.max(1, size);
+}
+
+const streamedFailures = new LRUCache<string, CachedFailure>({
+	max: MAX_STREAMED_FAILURES,
+	maxSize: MAX_STREAMED_FAILURE_CACHE_BYTES,
+	maxEntrySize: MAX_STREAMED_FAILURE_ENTRY_BYTES,
+	sizeCalculation: cachedFailureSize,
+});
 const sessionCacheTokens = new WeakMap<object, string>();
 let nextSessionCacheToken = 0;
 
@@ -146,8 +179,24 @@ function streamedCacheKey(toolCallId: string, identity: string | undefined): str
  */
 export function resetStreamedAssertionPreflight(toolCallId?: string): void {
 	if (toolCallId === undefined) streamedFailures.clear();
-	else
-		for (const [key, cached] of streamedFailures) if (cached.toolCallId === toolCallId) streamedFailures.delete(key);
+	else {
+		for (const key of streamedFailures.keys()) {
+			if (streamedFailures.peek(key)?.toolCallId === toolCallId) streamedFailures.delete(key);
+		}
+	}
+}
+
+/** Internal cache telemetry used by focused regression tests and diagnostics. */
+export function streamedAssertionPreflightCacheStats(): {
+	entries: number;
+	bytes: number;
+	maxBytes: number;
+} {
+	return {
+		entries: streamedFailures.size,
+		bytes: streamedFailures.calculatedSize,
+		maxBytes: MAX_STREAMED_FAILURE_CACHE_BYTES,
+	};
 }
 
 /**
@@ -206,11 +255,6 @@ export async function preflightStreamedInput(
 				sourcePrefix: cell.code.slice(0, Math.min(cell.code.length, DEFAULT_MAX_SOURCE_BYTES)),
 				cwd,
 			});
-		while (streamedFailures.size > MAX_STREAMED_FAILURES) {
-			const oldest = streamedFailures.keys().next().value;
-			if (oldest === undefined) break;
-			streamedFailures.delete(oldest);
-		}
 		return withId;
 	} catch {
 		return undefined;

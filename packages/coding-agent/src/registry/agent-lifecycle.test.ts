@@ -77,4 +77,30 @@ describe("reclaimDeadCorpse", () => {
 		expect(registry.get("worker")).toBe(ref);
 		await lifecycle.dispose();
 	});
+
+	test("releases adopted revive handles when a ref becomes aborted", async () => {
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const ref = registry.register({
+			id: "worker",
+			displayName: "worker",
+			kind: "sub",
+			session: null,
+			status: "parked",
+		});
+		lifecycle.adopt("worker", {
+			idleTtlMs: 0,
+			revive: async () => {
+				throw new Error("unused");
+			},
+		});
+		expect(lifecycle.has("worker", ref)).toBe(true);
+		expect(registry.setStatus("worker", "idle", ref)).toBe(true);
+		expect(lifecycle.has("worker", ref)).toBe(true);
+
+		expect(registry.setStatus("worker", "aborted", ref)).toBe(true);
+		expect(lifecycle.has("worker", ref)).toBe(false);
+		expect(registry.get("worker")).toBe(ref);
+		await lifecycle.dispose();
+	});
 });

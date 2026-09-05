@@ -2,7 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { preflightKernelSource, preflightStreamedInput, resetStreamedAssertionPreflight } from "./assertion-preflight";
+import {
+	preflightKernelSource,
+	preflightStreamedInput,
+	resetStreamedAssertionPreflight,
+	streamedAssertionPreflightCacheStats,
+} from "./assertion-preflight";
 
 const temporaryDirectories: string[] = [];
 
@@ -218,4 +223,29 @@ test("rejects non-regular files and bounded/binary reads", async () => {
 	const source = pythonCell(binary);
 	expect(await preflightKernelSource(source, { cwd: directory })).toBeUndefined();
 	expect(await preflightKernelSource(source, { cwd: directory, maxFileBytes: 1 })).toBeUndefined();
+});
+
+test("bounds the streamed failure cache by bytes (1 MiB source stress)", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	const base = pythonCell(file);
+	const command = heredoc(`${base}\n# ${"é".repeat(1024 * 1024 - base.length - 10)}`);
+	const raw = JSON.stringify({ command });
+	const options = { session: { cwd: directory }, sessionKey: "cache-stress" };
+
+	for (let index = 0; index < 40; index++) {
+		const failure = await preflightStreamedInput(`cache-${index}`, raw, options);
+		expect(failure?.count).toBe(0);
+	}
+
+	const stats = streamedAssertionPreflightCacheStats();
+	expect(stats.bytes).toBeLessThanOrEqual(stats.maxBytes);
+	expect(stats.entries).toBeLessThan(40);
+
+	// The oldest entry was evicted, so a miss recomputes with the caller's
+	// smaller file-read limit instead of returning stale cached output.
+	const recomputed = await preflightStreamedInput("cache-0", raw, {
+		...options,
+		maxFileBytes: 1,
+	});
+	expect(recomputed).toBeUndefined();
 });

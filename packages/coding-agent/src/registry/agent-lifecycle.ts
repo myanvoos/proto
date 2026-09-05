@@ -400,6 +400,9 @@ export class AgentLifecycleManager {
 		} else if (event.ref.status === "idle") {
 			if (this.#parks.has(event.ref.id)) return;
 			this.#armTimer(event.ref.id, adopted);
+		} else if (event.ref.status === "aborted") {
+			clearTimeout(adopted.timer);
+			this.#adopted.delete(event.ref.id);
 		}
 	}
 }

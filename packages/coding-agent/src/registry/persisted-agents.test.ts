@@ -71,4 +71,90 @@ describe("registerPersistedSubagents", () => {
 		await registerPersistedSubagents(registry, parentFile);
 		expect(registry.list()).toHaveLength(0);
 	});
+	test("preserves orchestration labels for nested cold transcripts", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-persisted-labels-"));
+		const parentFile = path.join(dir, "sess.jsonl");
+		const root = parentFile.slice(0, -".jsonl".length);
+		const parentWorkerFile = path.join(root, "worker-parent.jsonl");
+		const nestedRoot = parentWorkerFile.slice(0, -".jsonl".length);
+		const nestedWorkerFile = path.join(nestedRoot, "worker-child.jsonl");
+		const now = new Date().toISOString();
+		const parentSpawn = {
+			type: "custom",
+			customType: "orchestrator-worker-lifecycle",
+			data: {
+				version: 1,
+				id: "worker-parent",
+				ownerId: "Main",
+				parentSessionId: "parent",
+				action: "spawn",
+				agent: "worker",
+				label: "Parent Label",
+				childSessionFile: "worker-parent.jsonl",
+				createdAt: Date.now(),
+			},
+		};
+		const nestedSpawn = {
+			type: "custom",
+			customType: "orchestrator-worker-lifecycle",
+			data: {
+				version: 1,
+				id: "worker-child",
+				ownerId: "Main",
+				parentSessionId: "worker-parent-session",
+				action: "spawn",
+				agent: "worker",
+				label: "Nested Label",
+				childSessionFile: "worker-child.jsonl",
+				createdAt: Date.now(),
+			},
+		};
+		const writeTranscript = (file: string, id: string, entries: unknown[]): void => {
+			fs.mkdirSync(path.dirname(file), { recursive: true });
+			fs.writeFileSync(
+				file,
+				[
+					JSON.stringify({ type: "session", id, cwd: dir, timestamp: now }),
+					JSON.stringify({
+						type: "session_init",
+						timestamp: now,
+						task: `${id} task`,
+						systemPrompt: "You are a worker.",
+					}),
+					...entries.map(entry => JSON.stringify(entry)),
+					JSON.stringify({ type: "message", message: { role: "user", content: `${id} prompt` } }),
+					"",
+				].join("\n"),
+				{ encoding: "utf8" },
+			);
+		};
+		fs.writeFileSync(
+			parentFile,
+			[
+				JSON.stringify({ type: "session", id: "parent", cwd: dir, timestamp: now }),
+				JSON.stringify(parentSpawn),
+				"",
+			].join("\n"),
+			{ encoding: "utf8" },
+		);
+		writeTranscript(parentWorkerFile, "worker-parent-session", [nestedSpawn]);
+		writeTranscript(nestedWorkerFile, "worker-child-session", []);
+
+		const registry = new AgentRegistry();
+		registry.register({
+			id: "worker-parent",
+			displayName: "worker-parent",
+			kind: "sub",
+			parentId: "Main",
+			session: null,
+			sessionFile: parentWorkerFile,
+			status: "parked",
+		});
+
+		await registerPersistedSubagents(registry, parentFile);
+
+		expect(registry.get("worker-parent")?.displayName).toBe("Parent Label");
+		expect(registry.get("worker-child")?.displayName).toBe("Nested Label");
+		expect(registry.get("worker-child")?.parentId).toBe("worker-parent");
+	});
 });

@@ -135,11 +135,11 @@ function createSearchableText(ref: AgentRef | undefined, session: SessionInfo | 
 		.join(" ");
 }
 
-function classifyAgentsViewRecord(record: Pick<AgentsViewRecord, "ref" | "session">): AgentsViewSection {
-	if (!record.ref) {
-		if (record.session?.liveStreaming) return "running";
-		return "inactive";
-	}
+export function classifyAgentsViewRecord(record: Pick<AgentsViewRecord, "ref" | "session">): AgentsViewSection {
+	// The live marker is cross-process truth; a registry ref can be a stale parked
+	// snapshot from before another daemon opened and started this transcript.
+	if (record.session?.liveStreaming) return "running";
+	if (!record.ref) return "inactive";
 	switch (record.ref.status) {
 		case "running":
 			return "running";
@@ -197,6 +197,7 @@ export function reconcileAgentsViewRecords(
 		const existing = aliases.map(alias => byAlias.get(alias)).find(Boolean);
 		if (existing) {
 			existing.session = session;
+			existing.section = classifyAgentsViewRecord(existing);
 			existing.identityAliases = [...new Set([...existing.identityAliases, ...aliases])];
 			existing.searchableText = createSearchableText(existing.ref, session);
 			for (const alias of aliases) byAlias.set(alias, existing);
@@ -394,30 +395,64 @@ export function formatRelativeAge(valueMs: number, now = Date.now()): string {
 	return `${Math.floor(hours / 24)}d`;
 }
 
+const GENERIC_AGENT_LABELS: Record<string, true> = {
+	agent: true,
+	eval: true,
+	lightbot: true,
+	scout: true,
+	sonic: true,
+	sub: true,
+	task: true,
+	worker: true,
+};
+
+function normalizeRecordText(value: string | undefined): string | undefined {
+	const normalized = value?.replace(/\s+/g, " ").trim();
+	return normalized && normalized !== "(no messages)" ? normalized : undefined;
+}
+
+function isGenericAgentLabel(value: string | undefined, record: AgentsViewRecord): boolean {
+	const normalized = normalizeRecordText(value)?.toLowerCase();
+	if (!normalized) return false;
+	return (
+		normalized === normalizeRecordText(record.ref?.history?.agent)?.toLowerCase() ||
+		GENERIC_AGENT_LABELS[normalized] === true
+	);
+}
+
 export function hasExplicitTitle(record: AgentsViewRecord): boolean {
 	return Boolean(record.session?.title);
 }
 
 export function getRecordTitle(record: AgentsViewRecord): string {
+	const refLabel = normalizeRecordText(record.ref?.displayName);
+	const agentName = normalizeRecordText(record.ref?.history?.agent);
 	const candidates = [
-		record.session?.title,
-		record.ref?.displayName,
-		record.session?.firstMessage,
-		record.session ? path.basename(record.session.cwd ?? "") : undefined,
-		record.ref?.history?.agent,
-		record.session?.id,
-		record.ref?.id,
+		normalizeRecordText(record.session?.title),
+		!isGenericAgentLabel(refLabel, record) ? refLabel : undefined,
+		normalizeRecordText(record.session?.firstMessage),
+		normalizeRecordText(record.session ? path.basename(record.session.cwd ?? "") : undefined),
+		!isGenericAgentLabel(agentName, record) ? agentName : undefined,
+		normalizeRecordText(record.session?.id),
+		normalizeRecordText(record.ref?.id),
 	];
-	for (const candidate of candidates) {
-		const normalized = candidate?.replace(/\s+/g, " ").trim();
-		if (normalized) return normalized;
-	}
-	return "(no messages)";
+	return candidates.find(Boolean) ?? "(no messages)";
+}
+
+export function getRecordStableId(record: AgentsViewRecord): string | undefined {
+	const refId = normalizeRecordText(record.ref?.id);
+	const sessionId = normalizeRecordText(record.session?.id);
+	if (refId && !(GENERIC_AGENT_LABELS[refId.toLowerCase()] === true && sessionId)) return refId;
+	return sessionId ?? refId;
 }
 
 function getStatusLabel(record: AgentsViewRecord): string {
+	// Registry state can lag a cross-process live marker (for example a parked
+	// ref retained after a prior scan). Streaming must win over lifecycle status,
+	// while a live registry activity label remains the most useful row text.
 	const ref = record.ref;
 	if (ref?.activity) return ref.activity;
+	if (record.session?.liveStreaming) return "running";
 	if (ref) {
 		switch (ref.status) {
 			case "running":
@@ -430,7 +465,6 @@ function getStatusLabel(record: AgentsViewRecord): string {
 				return "aborted";
 		}
 	}
-	if (record.session?.liveStreaming) return "running";
 	if (record.session?.liveOpen) return "in use";
 	switch (record.session?.status) {
 		case "complete":

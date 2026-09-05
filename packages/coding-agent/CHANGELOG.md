@@ -118,6 +118,12 @@
 
 ### Fixed
 
+- Long-running sessions now release aborted-worker revival state and terminal execution payloads while preserving worker history.
+- Streamed assertion checks now use a byte-bounded cache so large commands cannot accumulate solely under an entry-count limit.
+- Transcript views release cleared content immediately and avoid repeatedly copying unchanged transcript rows.
+- Session views now track concurrently running sessions and live activity changes without stale parked statuses.
+- Subagent views preserve persisted worker names and show stable IDs instead of ambiguous role-only labels.
+- Subagent progress no longer retains extracted tool payloads in UI observers, and opening the current-session view avoids a duplicate session scan.
 - Fixed cross-session worker completion routing and misleading idle/terminal status.
 - Fixed output summaries treating timeout-looking source text as timeouts and losing actionable diagnostic locations.
 - Bash `bun` cells now use the persistent JavaScript kernel and the same pi-ast TUI outline as `python`/`node` cells; real Bun script and package invocations still fall through to Bun.

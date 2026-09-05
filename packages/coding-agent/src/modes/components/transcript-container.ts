@@ -106,6 +106,7 @@ export class TranscriptContainer
 	#lines: string[] = [];
 	#segments: BlockSegment[] = EMPTY_SEGMENTS;
 	#renderWidth = -1;
+	#renderRevision = 0;
 
 	#committedRows = 0;
 	#widthEpochBoundaries = new WeakMap<
@@ -146,6 +147,14 @@ export class TranscriptContainer
 	override clear(): void {
 		this.#generation++;
 		super.clear();
+		this.#lines = [];
+		this.#segments = EMPTY_SEGMENTS;
+		this.#renderWidth = -1;
+		this.#stableRowsFloor = 0;
+		this.#widthEpochBoundaries = new WeakMap();
+		this.#nativeScrollbackLiveRegionStart = undefined;
+		this.#nativeScrollbackLiveRegionPinned = false;
+		this.#nativeScrollbackLiveRegionPinnedStart = undefined;
 		this.#committedRows = 0;
 	}
 
@@ -270,6 +279,10 @@ export class TranscriptContainer
 		return value;
 	}
 
+	getRenderRevision(): number {
+		return this.#renderRevision;
+	}
+
 	getNativeScrollbackLiveRegionStart(): number | undefined {
 		return this.#nativeScrollbackLiveRegionStart;
 	}
@@ -362,14 +375,16 @@ export class TranscriptContainer
 		}
 
 		const lines = this.#lines;
+		const previousLineCount = lines.length;
 		const previousSegments = this.#segments;
+		const widthChanged = this.#renderWidth !== width;
 		const segments: BlockSegment[] = new Array(count);
 
 		this.#segments = EMPTY_SEGMENTS;
 		const stableFloorBefore = this.#stableRowsFloor;
 		this.#stableRowsFloor = 0;
 
-		let chainStable = this.#renderWidth === width;
+		let chainStable = !widthChanged;
 		this.#renderWidth = width;
 
 		if (!chainStable) lines.length = 0;
@@ -481,6 +496,9 @@ export class TranscriptContainer
 
 		if (lines.length !== row) lines.length = row;
 		this.#segments = segments;
+		if (widthChanged || previousSegments.length !== count || !chainStable || lines.length !== previousLineCount) {
+			this.#renderRevision++;
+		}
 
 		if (pinCandidates) {
 			let lastVisible = -1;

@@ -155,7 +155,7 @@ interface WorkerRecord {
 	parentSessionFile: string | null;
 	jobOwnerId: string;
 	childSessionFile?: string;
-	agent: AgentDefinition;
+	agent?: AgentDefinition;
 	modelOverride?: string | string[];
 
 	modelRole?: string;
@@ -383,8 +383,8 @@ function parseLifecycleEvent(value: unknown): WorkerLifecycleEvent | undefined {
 	return undefined;
 }
 
-export function persistedOrchestratorWorkerIds(entries: Iterable<unknown>): Set<string> {
-	const ids = new Set<string>();
+export function persistedOrchestratorWorkerLabels(entries: Iterable<unknown>): Map<string, string> {
+	const labels = new Map<string, string>();
 	for (const value of entries) {
 		const entry = objectRecord(value);
 		if (entry?.type !== "custom" || entry.customType !== ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) continue;
@@ -394,12 +394,15 @@ export function persistedOrchestratorWorkerIds(entries: Iterable<unknown>): Set<
 			/^[A-Za-z0-9_-]+$/.test(event.id) &&
 			event.childSessionFile === `${event.id}.jsonl`
 		) {
-			ids.add(event.id);
+			labels.set(event.id, event.label);
 		}
 	}
-	return ids;
+	return labels;
 }
 
+export function persistedOrchestratorWorkerIds(entries: Iterable<unknown>): Set<string> {
+	return new Set(persistedOrchestratorWorkerLabels(entries).keys());
+}
 function mergeTrace(turn: WorkerTurn, progress: AgentProgress): void {
 	turn.toolCount = progress.toolCount;
 	for (let i = progress.recentTools.length - 1; i >= 0; i--) {
@@ -436,6 +439,8 @@ export class OrchestratorRuntime {
 		parentSessionId?: string;
 		state?: WorkerState;
 		jobId?: string;
+		agent?: AgentDefinition;
+		outputSchema?: unknown;
 	}): void {
 		const now = Date.now();
 		const scope: OwnerScope = {
@@ -452,7 +457,8 @@ export class OrchestratorRuntime {
 			parentSessionId: record.parentSessionId ?? "test-parent-session",
 			parentSessionFile: null,
 			jobOwnerId: record.parentSessionId ?? "test-parent-session",
-			agent: getBundledAgent("lightbot")!,
+			agent: record.agent ?? getBundledAgent("lightbot")!,
+			...(record.outputSchema !== undefined ? { outputSchema: record.outputSchema } : {}),
 			outputSchemaMode: "permissive",
 			outputSchemaSource: "none",
 			state: record.state ?? "running",
@@ -671,12 +677,37 @@ export class OrchestratorRuntime {
 		};
 	}
 
+	#compactTerminalRecord(record: WorkerRecord, clearTurn = false): void {
+		record.agent = undefined;
+		record.model = undefined;
+		record.modelOverride = undefined;
+		record.modelRole = undefined;
+		record.outputSchema = undefined;
+		record.live = undefined;
+		record.queue.length = 0;
+		if (record.turn) {
+			const jobId = record.turn.jobId;
+			if (clearTurn) {
+				record.lastJobId = record.lastJobId ?? jobId;
+				record.turn = undefined;
+			} else {
+				record.turn = {
+					jobId,
+					message: "",
+					startedAt: record.turn.startedAt,
+					trace: [],
+					toolCount: 0,
+				};
+			}
+		}
+	}
+
 	#markRecordTerminal(record: WorkerRecord, reason: WorkerTombstoneReason, activity?: string): void {
 		record.state = "dead";
 		record.terminal = this.#terminalInfo(record, reason);
 		record.lastActivityAt = record.terminal.at;
 		record.lastActivity = activity ?? `terminal: ${reason}`;
-		record.queue.length = 0;
+		this.#compactTerminalRecord(record);
 	}
 
 	#receipt(
@@ -711,6 +742,11 @@ export class OrchestratorRuntime {
 		const turn = terminal?.lastTurn ?? record.turnCount;
 		return `Worker "${record.id}" (label "${record.label}") is terminal (${reason}) after turn ${turn}. History: ${terminal?.history ?? `history://${record.id}`}; output: ${terminal?.output ?? `agent://${record.id}`}; context: ${terminal?.context ?? `history://${record.id}`}. Spawn a new worker.`;
 	}
+	#workerAgent(record: WorkerRecord): AgentDefinition {
+		if (!record.agent) throw new ToolError(`Worker "${record.id}" has no live agent definition.`);
+		return record.agent;
+	}
+
 	#registeredAgent(record: WorkerRecord): AgentRef | undefined {
 		const ref = AgentRegistry.global().get(record.id);
 		if (ref?.kind !== "sub" || ref.parentId !== record.ownerId) return undefined;
@@ -1376,6 +1412,7 @@ export class OrchestratorRuntime {
 			if (job) settlingJobs.add(job);
 			cancelledTurn = manager.cancel(record.turn.jobId, { ownerId: record.jobOwnerId });
 		}
+		this.#compactTerminalRecord(record, true);
 		record.state = "dead";
 		record.lastActivityAt = Date.now();
 		record.lastActivity = "killed";
@@ -1483,6 +1520,7 @@ export class OrchestratorRuntime {
 		signal: AbortSignal,
 		onProgress: (progress: AgentProgress) => void,
 	): Promise<ExecutorOptions> {
+		const agent = this.#workerAgent(record);
 		const sessionFile = session.getSessionFile();
 		const sessionArtifactsDir = sessionFile ? sessionFile.slice(0, -6) : null;
 		const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `proto-worker-${Snowflake.next()}`);
@@ -1494,7 +1532,7 @@ export class OrchestratorRuntime {
 		};
 		return {
 			cwd: session.cwd,
-			agent: record.agent,
+			agent,
 			task: message,
 			assignment: message,
 			description: `worker ${record.label}`,
@@ -1506,7 +1544,7 @@ export class OrchestratorRuntime {
 			modelOverride: record.modelOverride,
 			modelRole: record.modelRole,
 			parentActiveModelPattern: session.getActiveModelString?.(),
-			thinkingLevel: record.agent.thinkingLevel,
+			thinkingLevel: agent.thinkingLevel,
 			effort: record.effort,
 			outputSchema: record.outputSchema,
 			outputSchemaMode: record.outputSchemaMode,
@@ -1558,6 +1596,7 @@ export class OrchestratorRuntime {
 			toolCount: 0,
 		};
 		const onProgress = (progress: AgentProgress): void => {
+			if (record.state === "dead" || record.terminal) return;
 			mergeTrace(turn, progress);
 			record.resolvedModel = progress.resolvedModel ?? record.resolvedModel;
 
@@ -1609,7 +1648,7 @@ export class OrchestratorRuntime {
 							? await runSubprocess(await this.#buildSpawnOptions(session, record, message, signal, onProgress))
 							: await runSubagentFollowUpTurn({
 									id: record.id,
-									agent: record.agent,
+									agent: this.#workerAgent(record),
 									message,
 									description: `worker ${record.agentName}`,
 									modelRole: record.modelRole,

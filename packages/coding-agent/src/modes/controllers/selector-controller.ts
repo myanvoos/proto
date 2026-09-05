@@ -363,12 +363,14 @@ export class SelectorController {
 		const currentSessionFile = this.ctx.sessionManager.getSessionFile() ?? null;
 		let initialScopeIdentity: string | undefined;
 		let initialScopeTitle: string | undefined;
+		let initialSessions: SessionInfo[] | undefined;
 		if (scope === "current") {
 			if (!currentSessionFile) {
 				this.ctx.showError("No session file to inspect (in-memory session)");
 				return;
 			}
 			const sessions = await SessionManager.listAll();
+			initialSessions = sessions;
 			const registry = AgentRegistry.global();
 
 			if (currentSessionFile) await registerPersistedSubagents(registry, currentSessionFile);
@@ -400,6 +402,7 @@ export class SelectorController {
 			keybindings: this.ctx.keybindings,
 			persistentState: this.#agentsViewState,
 			currentSessionFile,
+			initialSessions,
 			cwd: this.ctx.sessionManager.getCwd(),
 			version: VERSION,
 			modelName: activeModel?.name,
