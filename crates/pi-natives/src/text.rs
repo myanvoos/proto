@@ -11,7 +11,6 @@ use crate::js;
 
 const MIN_TAB_WIDTH: u32 = 1;
 const MAX_TAB_WIDTH: u32 = 16;
-pub const DEFAULT_TAB_WIDTH: usize = 3;
 const ESC: u16 = 0x1b;
 const OSC8_CLOSE: [u16; 6] = [ESC, b']' as u16, b'8' as u16, b';' as u16, b';' as u16, 0x07];
 

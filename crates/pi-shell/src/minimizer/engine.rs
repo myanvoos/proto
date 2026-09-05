@@ -1,9 +1,6 @@
 use std::{
 	panic::{AssertUnwindSafe, catch_unwind},
-	sync::{
-		LazyLock,
-		atomic::{AtomicU64, Ordering},
-	},
+	sync::LazyLock,
 };
 
 use crate::minimizer::{
@@ -57,16 +54,22 @@ pub fn mode_for(command: &str, config: &MinimizerConfig) -> MinimizerMode {
 }
 
 #[must_use]
-pub fn should_minimize(command: &str, config: &MinimizerConfig) -> bool {
-	!matches!(mode_for(command, config), MinimizerMode::None)
-}
-
-#[must_use]
 pub fn apply(
 	command: &str,
 	captured: &str,
 	exit_code: i32,
 	config: &MinimizerConfig,
+) -> MinimizerOutput {
+	apply_with_runtime_status(command, captured, exit_code, config, false)
+}
+
+#[must_use]
+pub fn apply_with_runtime_status(
+	command: &str,
+	captured: &str,
+	exit_code: i32,
+	config: &MinimizerConfig,
+	runtime_timed_out: bool,
 ) -> MinimizerOutput {
 	let input_bytes = captured.len();
 
@@ -91,10 +94,9 @@ pub fn apply(
 	}
 
 	let Some(identity) = detect::detect(command) else {
-		record_unknown_command(command);
 		return MinimizerOutput::passthrough(captured).labeled("unknown");
 	};
-	apply_identity(&identity, command, captured, exit_code, config)
+	apply_identity(&identity, command, captured, exit_code, config, runtime_timed_out)
 }
 
 fn apply_chain(
@@ -227,6 +229,7 @@ fn apply_identity(
 	captured: &str,
 	exit_code: i32,
 	config: &MinimizerConfig,
+	runtime_timed_out: bool,
 ) -> MinimizerOutput {
 	if !config.is_program_enabled(&identity.program) {
 		return MinimizerOutput::passthrough(captured).labeled("disabled");
@@ -238,7 +241,13 @@ fn apply_identity(
 		if is_below_minimize_threshold(captured) {
 			return MinimizerOutput::passthrough(captured).labeled("too-short");
 		}
-		let ctx = MinimizerCtx { program: &identity.program, subcommand, command, config };
+		let ctx = MinimizerCtx {
+			program: &identity.program,
+			subcommand,
+			command,
+			config,
+			runtime_timed_out,
+		};
 		let Ok(rust_output) =
 			catch_unwind(AssertUnwindSafe(|| filters::filter(&ctx, captured, exit_code)))
 		else {
@@ -277,7 +286,6 @@ fn apply_identity(
 		.with_original(captured);
 	}
 
-	record_unknown_command(command);
 	MinimizerOutput::passthrough(captured).labeled("unsupported")
 }
 
@@ -404,16 +412,6 @@ fn resolve_pipeline<'a>(
 	builtin_pipelines().find(program, subcommand)
 }
 
-static UNKNOWN_COMMAND_COUNT: AtomicU64 = AtomicU64::new(0);
-
-fn record_unknown_command(_command: &str) {
-	UNKNOWN_COMMAND_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn unknown_command_count() -> u64 {
-	UNKNOWN_COMMAND_COUNT.load(Ordering::Relaxed)
-}
-
 const BUILTIN_FILTERS_TOML: &str = include_str!(concat!(env!("OUT_DIR"), "/builtin_filters.toml"));
 
 static BUILTIN_PIPELINES: LazyLock<PipelineRegistry> =
@@ -427,9 +425,4 @@ static BUILTIN_PIPELINES: LazyLock<PipelineRegistry> =
 
 fn builtin_pipelines() -> &'static PipelineRegistry {
 	&BUILTIN_PIPELINES
-}
-
-#[must_use]
-pub fn verify_builtin_filters() -> Vec<pipeline::TestOutcome> {
-	pipeline::run_tests(builtin_pipelines())
 }

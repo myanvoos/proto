@@ -18,6 +18,80 @@ Both eventually use `executeBash()` in `src/exec/bash-executor.ts` for non-PTY e
 
 Set `bash.enabled: false` in settings to remove the model-facing `bash` tool from the active tool registry. This does not disable user-initiated bang commands or RPC `bash` requests.
 
+## `xd` as a Brush builtin
+
+When xdev is enabled, model-facing Bash runs use the Brush shell parser and register `xd` as a builtin. `xd <tool> '<json>'` therefore composes with the same shell language as native commands: pipelines, `|&`, redirects, command substitutions, subshells/groups, loops, conditionals, `&&`/`||`, background jobs, and `pipefail` are parsed and executed by one runtime. The builtin receives the invocation-local working directory from each shell branch, so `(cd sub; xd read '{"path":"file"}')` does not mutate the shared tool session; concurrent branches remain isolated.
+
+The bridge maps successful text content to stdout and tool-error text to stderr; tool-error status is `1`, while bridge/serialization failure is `125`. Non-text content and `xdev` details travel in `xdDispatches`, a structured side channel consumed by Bash rendering, never through stdout/stderr pipes. Native shell cancellation and deadlines cancel the bridge await; downstream pipe closure returns the shell's broken-pipe status. Bridge input is bounded to 1 MiB of UTF-8 stdin.
+
+`xd` exists only inside the agent's Brush shell. `fleet` processes, client terminal/PTY execution, user bang commands without the agent Bash dispatcher, and standalone external `bash` do not inherit it; they must not assume an `xd` binary exists on `PATH`.
+
+## Streamed kernel preflight and speculation
+
+Two independent, default-on settings can overlap work with model generation:
+
+```yaml
+kernel:
+  speculation:
+    enabled: true
+  assertPreflight:
+    enabled: true
+```
+
+These settings apply to model-generated `bash` calls containing a standalone, quoted Python/JavaScript heredoc. They do not execute partial shell commands or partial cells in the live kernel, and do not apply to user bang commands. Normal finalized calls still pass through validation, extension approval, bash interception, and the normal execution path. Streaming observation is disabled while secret obfuscation has active secrets.
+
+**Both options permit preflight effects before final tool approval by default; set either to `false` to opt out.** Completion requests may already have been sent and billed when a call is blocked, changed, or cancelled. Assertion preflight may already have read local files. Cancellation cannot undo those effects.
+
+### Completion speculation
+
+`kernel.speculation.enabled` prelaunches eligible top-level `completion()` calls with literal arguments as their source becomes complete. Python keyword options and JavaScript literal options objects are supported. For example:
+
+```bash
+python <<'PY'
+summary = completion("Summarize the purpose of speculative execution.", model="smol")
+title = completion("Give a short title for a document about speculative execution.")
+print(summary, title)
+PY
+```
+
+The completed cell runs normally. A matching real completion invocation can claim its already-running result rather than make another request. Identical calls remain separate stochastic samples, not one memoized answer. Claiming is scoped to the originating call and runtime invocation, with model/options and finalized input matching; it is not a session-wide arguments-only cache.
+
+At most two speculative requests launch per outer bash call, including invalidated attempts; normal execution can make additional requests for calls without a reusable result. Changes to relevant input fields or candidates invalidate pending work; changing `cwd`, `env`, `pty`, or `async` does not silently reuse an incompatible result. Unclaimed work is cancelled when the call/turn is retired or the session is aborted/disposed; work already claimed by normal execution follows its runtime lifetime.
+
+This is deliberately not general shell speculation or a shadow REPL. Dynamic completion arguments, control-flow calls, and arbitrary `agent()`/tool calls are excluded. Unquoted heredocs, shell chains, and ambiguous invocations are not speculative execution surfaces. Unsupported code follows normal finalized execution.
+
+### Assertion preflight
+
+`kernel.assertPreflight.enabled` checks a restricted source-local subset against bounded, read-only file snapshots. It can detect the first failing anchor assertion while a later replacement literal is still being generated:
+
+```bash
+python <<'PY'
+from pathlib import Path
+p = Path("/absolute/path/to/source.py")
+text = p.read_text()
+old = "expected original text"
+assert text.count(old) == 1
+new = "replacement text"
+text = text.replace(old, new)
+p.write_text(text)
+PY
+```
+
+If the count assertion fails, generation is interrupted before the rest of the cell is needed. The partial assistant turn is discarded from active context, a diagnostic identifies the failing line and observed/expected count, and the agent continues to correct the assumption. Neither `str.replace()` nor `write_text()` is executed by preflight. A successful check does not commit anything or bypass the assertion during normal execution.
+
+Supported Python inputs include source-local `from pathlib import Path` / `import pathlib`, literal path construction, `read_text()` with UTF-8, explicit `builtins.open` imports for read-only `.read()`, string/integer assignments, and `assert text.count(old) == expected`. JavaScript supports explicit `node:fs` reads with UTF-8 and the corresponding `text.split(old).length - 1` check through `console.assert` or an explicitly imported `node:assert` function. These are source-local checks, not inspection of arbitrary retained kernel objects.
+
+Safety boundaries:
+
+- Prior-cell variables, inherited bare `Path`/`open` bindings, dynamic paths, unknown calls/imports, control flow, and mutations are not evaluated. Unsupported dependencies stop downstream checking rather than guess their values.
+- Relative literal paths require an explicit absolute tool/session working directory; preflight never guesses from the host process working directory. Cached observations are isolated by session, call, source, and working directory.
+- Only regular, bounded UTF-8 files are read. Symlink file targets, devices/FIFOs, binary content, and changed snapshots are skipped; failed observations are revalidated before being reported.
+- Limits: 1 MiB source, 8 MiB file, 64 KiB literal, 4,096 statements, and 16 MiB cumulative count work. Partial JSON scanning is capped at 4 MiB.
+- An incomplete string/assertion cannot itself be evaluated. An unfinished later literal does not hide an earlier complete failing assertion.
+- Late results cannot interrupt a completed call, a new prompt generation, or a disposed session. A preceding sibling tool call prevents assertion interruption because it could change the file before the checked cell would run.
+
+Preflight reports a check against the current file snapshot and supported language subset; it is not a proof of the eventual cell's behavior under arbitrary imports, monkeypatches, or concurrent filesystem changes. Keep normal assertions and stale-write protection in place.
+
 ## End-to-end tool-call pipeline
 
 ## 1) Input handling and parameter merge
@@ -229,6 +303,18 @@ Result details can also include resolved/requested timeout, `timeoutDisabled`, c
 
 Built-in tool wrapping appends the model-facing recovery notice automatically, for example `Read artifact://<id> for full output`.
 
+
+### Structured execution metadata
+
+`details.execution` is authoritative and is rendered before command output. It is independent of output wording:
+
+- `state` is `running`, `exited`, or `unknown`.
+- `exitCode`, `signal`, and `elapsedMs` are included only when observed; timeout/cancellation never fabricates an exit code or signal.
+- `timeout` records `cause`, `scope`, and requested/effective milliseconds when known. Bash deadlines use `cause: "deadline"`, `scope: "command"`.
+- `collector` records output collection separately (`running`, `complete`, `failed`, or `unavailable`), including a collector error without changing process state.
+- `output` distinguishes `complete`, `truncated`, `summarized`, and `unavailable`; truncation carries counts and an artifact id when persistence succeeded.
+
+A line such as `timeout: 60` or `all checks passed` is data, not lifecycle evidence. Consumers MUST use structured execution metadata and MUST NOT infer success, failure, or timeout from stdout/stderr text. Raw captured output remains in the artifact when spill succeeds; replayed bash/python execution messages retain the execution metadata alongside the output.
 ## Rendering paths
 
 ## Tool-call renderer (`bashToolRenderer`)

@@ -1,11 +1,14 @@
-import type { Agent, AgentMessage, AgentTurnEndContext } from "@oh-my-pi/pi-agent-core";
+import type { Agent, AgentMessage, AgentTool, AgentTurnEndContext } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, AssistantMessageEvent, Model } from "@oh-my-pi/pi-ai";
+import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { GeminiHeaderRunDetector } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import { modelFamilyToken } from "@oh-my-pi/pi-catalog/identity";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import type { StreamedKernelFailure } from "../eval/speculation";
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
+import kernelAssertPreflightTemplate from "../prompts/system/kernel-assert-preflight.md" with { type: "text" };
 import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redirect.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
@@ -19,6 +22,8 @@ export interface StreamGuardsHost {
 	settings: Settings;
 	sessionManager: SessionManager;
 	model(): Model | undefined;
+	getToolByName(name: string): AgentTool | undefined;
+	canObserveStreamedKernelInput(): boolean;
 	isDisposed(): boolean;
 	promptGeneration(): number;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
@@ -26,11 +31,33 @@ export interface StreamGuardsHost {
 	discardAssistantTurn(message: AssistantMessage): void;
 }
 
+interface StreamedKernelTool {
+	observeStreamedInput(toolCallId: string, rawPartialJson: string): Promise<StreamedKernelFailure | undefined>;
+	cancelStreamedInput(toolCallId?: string): void;
+}
+
+function streamedKernelTool(tool: AgentTool | undefined): (AgentTool & StreamedKernelTool) | undefined {
+	if (
+		tool &&
+		"observeStreamedInput" in tool &&
+		typeof tool.observeStreamedInput === "function" &&
+		"cancelStreamedInput" in tool &&
+		typeof tool.cancelStreamedInput === "function"
+	) {
+		return tool as AgentTool & StreamedKernelTool;
+	}
+	return undefined;
+}
+
 export class LoopGuards {
 	readonly #host: StreamGuardsHost;
 	#geminiHeaderDetector: GeminiHeaderRunDetector | undefined;
 	#toolCallLoopGuard: ToolCallLoopGuard | undefined;
 	#toolCallLoopGuardSettingsKey: string | undefined;
+	#streamedTimestamp: number | undefined;
+	#streamedEpoch = 0;
+	#streamedCalls = new Set<string>();
+	#streamedTools = new Set<StreamedKernelTool>();
 
 	constructor(host: StreamGuardsHost) {
 		this.#host = host;
@@ -46,6 +73,7 @@ export class LoopGuards {
 	}
 
 	onAssistantEvent(message: AssistantMessage, event: AssistantMessageEvent): void {
+		this.#observeStreamedKernel(message, event);
 		if (event.type === "thinking_start") {
 			this.#geminiHeaderDetector = this.#geminiHeaderGuardActive() ? new GeminiHeaderRunDetector() : undefined;
 			return;
@@ -57,6 +85,86 @@ export class LoopGuards {
 			return;
 		}
 		if (event.type === "text_start" || event.type === "toolcall_start") detector.reset();
+	}
+
+	/** Stop accepting late preflight results; claimed runtime work owns its own lifetime. */
+	cancelStreamedInput(): void {
+		this.#streamedEpoch++;
+		this.#streamedCalls.clear();
+		this.#streamedTimestamp = undefined;
+		for (const tool of this.#streamedTools) tool.cancelStreamedInput();
+		this.#streamedTools.clear();
+	}
+
+	onAssistantMessageEnd(message: AssistantMessage): void {
+		if (message.timestamp === this.#streamedTimestamp) this.#streamedCalls.clear();
+	}
+
+	#observeStreamedKernel(message: AssistantMessage, event: AssistantMessageEvent): void {
+		if (event.type !== "toolcall_start" && event.type !== "toolcall_delta" && event.type !== "toolcall_end") return;
+		if (this.#streamedTimestamp !== message.timestamp) {
+			this.cancelStreamedInput();
+			this.#streamedTimestamp = message.timestamp;
+		}
+		const call = message.content[event.contentIndex];
+		if (call?.type !== "toolCall" || call.name !== "bash") return;
+		if (event.type === "toolcall_end") {
+			this.#streamedCalls.delete(call.id);
+			return;
+		}
+		const host = this.#host;
+		if (
+			host.isDisposed() ||
+			host.agent.isAborting ||
+			!host.canObserveStreamedKernelInput() ||
+			(!host.settings.get("kernel.speculation.enabled") && !host.settings.get("kernel.assertPreflight.enabled"))
+		)
+			return;
+		const tool = streamedKernelTool(host.getToolByName("bash"));
+		const rawPartialJson = getStreamingPartialJson(call);
+		if (!tool || rawPartialJson === undefined) return;
+		this.#streamedTools.add(tool);
+		this.#streamedCalls.add(call.id);
+		const epoch = this.#streamedEpoch;
+		const generation = host.promptGeneration();
+		const hasPrecedingToolCall = message.content
+			.slice(0, event.contentIndex)
+			.some(block => block.type === "toolCall");
+		void tool
+			.observeStreamedInput(call.id, rawPartialJson)
+			.then(failure => {
+				if (
+					!failure ||
+					hasPrecedingToolCall ||
+					failure.toolCallId !== call.id ||
+					epoch !== this.#streamedEpoch ||
+					!this.#streamedCalls.has(call.id) ||
+					host.promptGeneration() !== generation ||
+					host.isDisposed() ||
+					host.agent.isAborting ||
+					!host.agent.state.isStreaming ||
+					!host.canObserveStreamedKernelInput() ||
+					!host.settings.get("kernel.assertPreflight.enabled")
+				)
+					return;
+				this.cancelStreamedInput();
+				host.emitNotice(
+					"warning",
+					"Stopped generation early: a streamed kernel assertion failed.",
+					"kernel-preflight",
+				);
+				this.#interruptWithReminder({
+					targetTimestamp: message.timestamp,
+					reason: "Interrupted: streamed kernel assertion failed",
+					customType: "kernel-assert-preflight",
+					content: prompt.render(kernelAssertPreflightTemplate, { diagnostic: failure.message }),
+					details: { toolCallId: call.id, diagnostic: failure.message },
+				});
+			})
+			.catch(error => {
+				// Preflight is optional; unsupported input or an observer failure never executes a partial cell.
+				logger.debug("streamed kernel observation failed", { error: String(error) });
+			});
 	}
 
 	#activeToolCallLoopGuard(): ToolCallLoopGuard | undefined {
@@ -134,7 +242,24 @@ export class LoopGuards {
 			`Interrupted ${headerCount} planning headers with no tool call; reminded the model to issue one.`,
 			"loop-guard",
 		);
-		this.#host.agent.abort(GEMINI_HEADER_INTERRUPT_REASON);
+		this.#interruptWithReminder({
+			targetTimestamp,
+			reason: GEMINI_HEADER_INTERRUPT_REASON,
+			customType: GEMINI_TOOL_REMINDER_TYPE,
+			content: prompt.render(geminiToolReminderTemplate, { count: headerCount }),
+			details: { headers: headerCount },
+		});
+	}
+
+	#interruptWithReminder(options: {
+		targetTimestamp: number;
+		reason: string;
+		customType: string;
+		content: string;
+		details: Record<string, unknown>;
+	}): void {
+		const { targetTimestamp, reason, customType, content, details } = options;
+		this.#host.agent.abort(reason);
 		const generation = this.#host.promptGeneration();
 		this.#host.schedulePostPromptTask(async signal => {
 			if (signal.aborted || this.#host.isDisposed() || this.#host.promptGeneration() !== generation) return;
@@ -145,28 +270,20 @@ export class LoopGuards {
 					message.role === "assistant" && message.timestamp === targetTimestamp,
 			);
 			if (aborted) this.#host.discardAssistantTurn(aborted);
-			const content = prompt.render(geminiToolReminderTemplate, { count: headerCount });
-			const details = { headers: headerCount };
 			this.#host.agent.appendMessage({
 				role: "custom",
-				customType: GEMINI_TOOL_REMINDER_TYPE,
+				customType,
 				content,
 				display: false,
 				details,
 				attribution: "agent",
 				timestamp: Date.now(),
 			});
-			this.#host.sessionManager.appendCustomMessageEntry(
-				GEMINI_TOOL_REMINDER_TYPE,
-				content,
-				false,
-				details,
-				"agent",
-			);
+			this.#host.sessionManager.appendCustomMessageEntry(customType, content, false, details, "agent");
 			try {
 				await this.#host.agent.continue();
 			} catch (error) {
-				logger.warn("gemini tool-call reminder continue failed", { error: String(error) });
+				logger.warn("stream guard reminder continue failed", { customType, error: String(error) });
 			}
 		});
 	}

@@ -1,5 +1,7 @@
 import { buildEvalUrlRoots, type LocalProtocolOptions } from "../internal-urls";
+import type { ExecutionMetadata } from "../session/execution-metadata";
 import type { ToolSession } from "../tools";
+import type { EvalCompletionInvocationContext } from "./completion-bridge";
 import type { EvalDisplayOutput, EvalLanguage, EvalStatusEvent } from "./types";
 
 export interface ExecutorBackendExecOptions {
@@ -16,18 +18,26 @@ export interface ExecutorBackendExecOptions {
 	onChunk: (chunk: string) => void;
 
 	onStatus?: (event: EvalStatusEvent) => void;
+	completionContext?: EvalCompletionInvocationContext;
 }
 
 export interface ExecutorBackendResult {
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;
+	timedOut?: boolean;
+	signal?: string | number;
+	execution?: ExecutionMetadata;
 	truncated: boolean;
 	artifactId: string | undefined;
 	totalLines: number;
 	totalBytes: number;
 	outputLines: number;
 	outputBytes: number;
+	collector?: { state: "running" | "complete" | "failed" | "unavailable"; error?: string };
+	outputDisposition?: "complete" | "truncated" | "summarized" | "unavailable";
+	summarized?: boolean;
+	actionableDiagnostics?: string[];
 	displayOutputs: EvalDisplayOutput[];
 }
 
@@ -47,5 +57,7 @@ export function resolveEvalUrlRoots(session: ToolSession): Record<string, string
 		getArtifactsDir: () => session.getArtifactsDir?.() ?? null,
 		getSessionId: () => session.getSessionId?.() ?? null,
 	};
-	return buildEvalUrlRoots(options);
+	const roots = buildEvalUrlRoots(options);
+	for (const skill of session.skills ?? []) roots[`skill:${skill.name}`] = skill.baseDir;
+	return roots;
 }

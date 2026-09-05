@@ -103,7 +103,7 @@ function parseObservations(message: AssistantMessage): string[] {
 		.map(line => line.replace(/^[-*]\s+/, ""))
 		.filter(Boolean);
 
-	return lines.slice(0, 5);
+	return lines.slice(0, 5).map(line => (line.length > 100 ? line.slice(0, 100) : line));
 }
 
 function generateContextHeader(files: FileDiff[], currentFile: string): string {

@@ -8,11 +8,12 @@ import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
 import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool, ToolSession } from "./index";
+import { resolveToCwd, splitPathAndSel } from "./path-utils";
 import { replaceTabs } from "./render-utils";
 import type { ToolRenderer } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
-import { renderError, ToolAbortError, ToolError } from "./tool-errors";
+import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 
 /**
  * Tool names that always stay top-level native tools, even if something declares them
@@ -301,6 +302,21 @@ function resolveRequiredXdevTool(state: XdevState, name: string): Tool {
 	return inst;
 }
 
+function scopeReadArgsToCwd(content: string, cwd: string): string {
+	try {
+		const parsed: unknown = JSON.parse(content);
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return content;
+		const args = { ...(parsed as Record<string, unknown>) };
+		if (typeof args.path !== "string") return content;
+		const split = splitPathAndSel(args.path);
+		const resolved = resolveToCwd(split.path, cwd);
+		args.path = split.sel ? `${resolved}:${split.sel}` : resolved;
+		return JSON.stringify(args);
+	} catch {
+		return content;
+	}
+}
+
 export async function dispatchXdevTool(
 	state: XdevState,
 	name: string,
@@ -312,6 +328,7 @@ export async function dispatchXdevTool(
 ): Promise<{ result: AgentToolResult<unknown>; xdev: XdevDispatch }> {
 	let xdev: XdevDispatch = { tool: name, mode: "execute" };
 	try {
+		throwIfAborted(signal);
 		const canonical = resolveRequiredXdevTool(state, name);
 
 		if (HELP_CONTENT_RE.test(content)) {
@@ -322,6 +339,7 @@ export async function dispatchXdevTool(
 		}
 
 		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId, () => renderDocs(canonical));
+		throwIfAborted(signal);
 		xdev = { ...xdev, args: validated };
 		const innerOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
 			? partial =>
@@ -376,6 +394,7 @@ export async function dispatchXdTarget(
 		signal?: AbortSignal;
 		onUpdate?: AgentToolUpdateCallback;
 		context?: AgentToolContext;
+		cwd?: string;
 	},
 ): Promise<AgentToolResult<unknown>> {
 	if (name === REPORT_ISSUE_DEVICE_NAME) {
@@ -393,10 +412,11 @@ export async function dispatchXdTarget(
 	if (!name) {
 		throw new ToolError(`Cannot dispatch to ${XD_URL_PREFIX} itself — pick a device:\n${xdevListing(xdev)}`);
 	}
+	const scopedContent = name === "read" && options.cwd ? scopeReadArgsToCwd(content, options.cwd) : content;
 	const { result, xdev: dispatch } = await dispatchXdevTool(
 		xdev,
 		name,
-		content,
+		scopedContent,
 		options.toolCallId,
 		options.signal,
 		options.onUpdate,

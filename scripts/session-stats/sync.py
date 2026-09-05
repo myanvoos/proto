@@ -198,11 +198,6 @@ def get_encoder() -> "tiktoken.Encoding":
     return enc
 
 
-def count_tokens(s: str) -> int:
-    if not s:
-        return 0
-    return len(get_encoder().encode_ordinary(s))
-
 
 def batch_count_tokens(strings: list[str]) -> list[int]:
     """Tokenize many strings in one FFI call. Empty strings short-circuit."""

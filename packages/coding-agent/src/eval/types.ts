@@ -1,6 +1,7 @@
 export type EvalLanguage = "python" | "js";
 
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { ExecutionMetadata } from "../session/execution-metadata";
 import type { OutputMeta } from "../tools/output-meta";
 
 export interface EvalStatusEvent {
@@ -23,6 +24,7 @@ export interface EvalCellResult {
 	status: "pending" | "running" | "complete" | "error";
 	durationMs?: number;
 	exitCode?: number;
+	execution?: ExecutionMetadata;
 	statusEvents?: EvalStatusEvent[];
 	hasMarkdown?: boolean;
 }
@@ -33,6 +35,7 @@ export interface EvalToolDetails {
 	images?: ImageContent[];
 	statusEvents?: EvalStatusEvent[];
 	isError?: boolean;
+	execution?: ExecutionMetadata;
 	meta?: OutputMeta;
 
 	language?: EvalLanguage;

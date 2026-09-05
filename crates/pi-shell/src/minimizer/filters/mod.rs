@@ -186,18 +186,20 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 fn filter_js_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
 	if let Some(tool) = wrapper_invoked_tool(ctx, &["tsc", "eslint", "biome"]) {
 		let routed = MinimizerCtx {
-			program:    tool,
-			subcommand: Some(tool),
-			command:    ctx.command,
-			config:     ctx.config,
+			program:           tool,
+			subcommand:        Some(tool),
+			command:           ctx.command,
+			config:            ctx.config,
+			runtime_timed_out: ctx.runtime_timed_out,
 		};
 		lint::filter(&routed, input, exit_code)
 	} else if let Some(tool) = wrapper_invoked_tool(ctx, &["jest", "vitest", "playwright"]) {
 		let routed = MinimizerCtx {
-			program:    tool,
-			subcommand: Some(tool),
-			command:    ctx.command,
-			config:     ctx.config,
+			program:           tool,
+			subcommand:        Some(tool),
+			command:           ctx.command,
+			config:            ctx.config,
+			runtime_timed_out: ctx.runtime_timed_out,
 		};
 		node_tests::filter(&routed, input, exit_code)
 	} else if js_tools::supports(ctx.program, ctx.subcommand) {
@@ -210,10 +212,11 @@ fn filter_js_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 fn filter_uv_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
 	if let Some(tool) = normalize_uv_form(ctx.subcommand, ctx.command) {
 		let routed = MinimizerCtx {
-			program:    tool,
-			subcommand: Some(tool),
-			command:    ctx.command,
-			config:     ctx.config,
+			program:           tool,
+			subcommand:        Some(tool),
+			command:           ctx.command,
+			config:            ctx.config,
+			runtime_timed_out: ctx.runtime_timed_out,
 		};
 		return match tool {
 			"pytest" | "ruff" | "mypy" => python::filter(&routed, input, exit_code),
@@ -223,10 +226,11 @@ fn filter_uv_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 	match uv_wrapper_tool(ctx) {
 		Some("pytest") => {
 			let routed = MinimizerCtx {
-				program:    "pytest",
-				subcommand: Some("pytest"),
-				command:    ctx.command,
-				config:     ctx.config,
+				program:           "pytest",
+				subcommand:        Some("pytest"),
+				command:           ctx.command,
+				config:            ctx.config,
+				runtime_timed_out: ctx.runtime_timed_out,
 			};
 			python::filter(&routed, input, exit_code)
 		},
@@ -236,25 +240,32 @@ fn filter_uv_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 			} else {
 				Some("ruff")
 			};
-			let routed =
-				MinimizerCtx { program: "ruff", subcommand, command: ctx.command, config: ctx.config };
+			let routed = MinimizerCtx {
+				program: "ruff",
+				subcommand,
+				command: ctx.command,
+				config: ctx.config,
+				runtime_timed_out: ctx.runtime_timed_out,
+			};
 			python::filter(&routed, input, exit_code)
 		},
 		Some("mypy") => {
 			let routed = MinimizerCtx {
-				program:    "mypy",
-				subcommand: Some("mypy"),
-				command:    ctx.command,
-				config:     ctx.config,
+				program:           "mypy",
+				subcommand:        Some("mypy"),
+				command:           ctx.command,
+				config:            ctx.config,
+				runtime_timed_out: ctx.runtime_timed_out,
 			};
 			python::filter(&routed, input, exit_code)
 		},
 		Some(tool @ ("tsc" | "eslint" | "biome" | "pyright" | "basedpyright" | "oxlint")) => {
 			let routed = MinimizerCtx {
-				program:    tool,
-				subcommand: Some(tool),
-				command:    ctx.command,
-				config:     ctx.config,
+				program:           tool,
+				subcommand:        Some(tool),
+				command:           ctx.command,
+				config:            ctx.config,
+				runtime_timed_out: ctx.runtime_timed_out,
 			};
 			lint::filter(&routed, input, exit_code)
 		},

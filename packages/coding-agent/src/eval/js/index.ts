@@ -33,6 +33,7 @@ export default {
 			reset: opts.reset,
 			onChunk: opts.onChunk,
 			onStatus: opts.onStatus,
+			completionContext: opts.completionContext,
 			session: opts.session,
 			localRoots: resolveEvalUrlRoots(opts.session),
 		});

@@ -11,10 +11,13 @@ interface InspectMediaModeContext {
 	getInspectMediaModeOverride?: () => InspectMediaMode | undefined;
 }
 
+export function modelSupportsImageInput(model: Model | undefined): boolean {
+	return model?.input?.includes("image") ?? false;
+}
+
 export function isInspectMediaToolActive(session: InspectMediaModeContext): boolean {
 	const mode = session.getInspectMediaModeOverride?.() ?? session.settings.get("inspect_media.mode");
 	if (mode === "on") return true;
 	if (mode === "off") return false;
-	const model = session.getActiveModel?.();
-	return !(model?.input?.includes("image") ?? false);
+	return !modelSupportsImageInput(session.getActiveModel?.());
 }

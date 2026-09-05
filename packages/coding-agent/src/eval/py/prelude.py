@@ -546,10 +546,20 @@ if "__proto_prelude_loaded__" not in globals():
             roots = json.loads(os.environ.get("PI_EVAL_LOCAL_ROOTS") or "{}")
         except (ValueError, TypeError):
             roots = {}
-        root = roots.get(scheme) if isinstance(roots, dict) else None
+        raw_relative = match.group(2).replace("\\", "/")
+        root_key = scheme
+        if scheme == "skill":
+            raw_skill_name, separator, raw_relative = raw_relative.partition("/")
+            skill_name = unquote(raw_skill_name)
+            if not skill_name:
+                raise ValueError("skill:// URL requires a skill name")
+            root_key = f"skill:{skill_name}"
+            if not separator:
+                raw_relative = ""
+        root = roots.get(root_key) if isinstance(roots, dict) else None
         if not root:
             raise ValueError(f"Protocol paths are not supported by this scheme: {path}")
-        relative = unquote(match.group(2).replace("\\", "/"))
+        relative = unquote(raw_relative)
         root_path = os.path.abspath(root)
         if relative == "":
             return Path(root_path)
@@ -844,7 +854,7 @@ if "__proto_prelude_loaded__" not in globals():
 
     _BRIDGE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def _bridge_call(name: str, args: dict):
+    def _bridge_call(name: str, args: dict, completion_invocation_id=None):
         """POST one request to the host tool bridge and return its `value`."""
         base, token, session = _tool_proxy_from_env()
         _run_id_getter = globals().get("__proto_current_run_id__")
@@ -853,9 +863,10 @@ if "__proto_prelude_loaded__" not in globals():
             if callable(_run_id_getter)
             else globals().get("__proto_run_id__")
         )
-        payload = json.dumps(
-            {"session": session, "run": _run_id, "name": name, "args": args}
-        ).encode("utf-8")
+        request_payload = {"session": session, "run": _run_id, "name": name, "args": args}
+        if completion_invocation_id is not None:
+            request_payload["completionInvocationId"] = str(completion_invocation_id)
+        payload = json.dumps(request_payload).encode("utf-8")
         req = urllib.request.Request(
             f"{base}/v1/tool",
             data=payload,
@@ -929,6 +940,16 @@ if "__proto_prelude_loaded__" not in globals():
 
     tool = _ToolProxy()
 
+    _completion_invocation_counts = {}
+
+    def _next_completion_invocation_id():
+        getter = globals().get("__proto_current_run_id__")
+        run_id = getter() if callable(getter) else globals().get("__proto_run_id__")
+        key = run_id or "__default__"
+        value = _completion_invocation_counts.get(key, 0)
+        _completion_invocation_counts[key] = value + 1
+        return str(value)
+
     def completion(prompt, *, model="default", system=None, schema=None):
         """Oneshot, stateless completion against a model tier.
 
@@ -942,7 +963,7 @@ if "__proto_prelude_loaded__" not in globals():
             args["system"] = system
         if schema is not None:
             args["schema"] = schema
-        res = _bridge_call("__completion__", args)
+        res = _bridge_call("__completion__", args, _next_completion_invocation_id())
         text = res.get("text") if isinstance(res, dict) else res
         return json.loads(text) if schema is not None else text
 

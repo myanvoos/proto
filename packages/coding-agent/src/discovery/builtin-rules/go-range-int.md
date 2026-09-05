@@ -1,7 +1,7 @@
 ---
 description: "Use for i := range n instead of the C-style for i := 0; i < n; i++ loop (Go 1.22)"
 interruptMode: never
-scope: "tool:edit(*.go), tool:write(*.go)"
+scope: "tool:eval, tool:kernel"
 astCondition:
   - "for $I := 0; $I < $N; $I++ { $$$BODY }"
 ---

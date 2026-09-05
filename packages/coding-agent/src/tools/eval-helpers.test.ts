@@ -8,10 +8,11 @@ import { EvalTool } from "./eval";
 
 const KERNEL_OWNER = `eval-helpers-test:${process.pid}`;
 
-function stubSession(cwd: string): ToolSession {
+function stubSession(cwd: string, skills?: ToolSession["skills"]): ToolSession {
 	const settings = new Map<string, unknown>();
 	return {
 		cwd,
+		skills,
 		settings: {
 			get: (key: string) => settings.get(key),
 		},
@@ -20,8 +21,8 @@ function stubSession(cwd: string): ToolSession {
 	} as unknown as ToolSession;
 }
 
-async function runCell(dir: string, code: string) {
-	const tool = new EvalTool(stubSession(dir));
+async function runCell(dir: string, code: string, session = stubSession(dir)) {
+	const tool = new EvalTool(session);
 	const result = await tool.execute("eval-helpers-test", {
 		language: "py",
 		code,
@@ -167,6 +168,37 @@ test("proto_path resolves ~ and scheme URLs for the raw file APIs", async () => 
 			() => false,
 		);
 		expect(literalTilde, "no literal ~/ directory under the kernel cwd").toBe(false);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("proto_path resolves active skill directories and their files", async () => {
+	const dir = await makeDir();
+	try {
+		const skillDir = path.join(dir, "example-skill");
+		await Bun.write(path.join(skillDir, "SKILL.md"), "# Example skill\n");
+		await Bun.write(path.join(skillDir, "notes.txt"), "skill notes\n");
+		const session = stubSession(dir, [
+			{
+				name: "example",
+				description: "test skill",
+				filePath: path.join(skillDir, "SKILL.md"),
+				baseDir: skillDir,
+				source: "test",
+			},
+		]);
+		const cell = await runCell(
+			dir,
+			[
+				'print(proto_path("skill://example"))',
+				'print(Path(proto_path("skill://example/notes.txt")).read_text())',
+			].join("\n"),
+			session,
+		);
+		expect(cell.status).toBe("complete");
+		expect(cell.output).toContain(skillDir);
+		expect(cell.output).toContain("skill notes");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

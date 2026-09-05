@@ -513,6 +513,7 @@ export class CommandController {
 				this.ctx.bashComponent.setComplete(result.exitCode, result.cancelled, {
 					output: result.output,
 					truncation: meta?.truncation,
+					execution: result.execution,
 				});
 			}
 			try {
@@ -588,6 +589,7 @@ export class CommandController {
 				this.ctx.pythonComponent.setComplete(result.exitCode, result.cancelled, {
 					output: result.output,
 					truncation: meta?.truncation,
+					execution: result.execution,
 				});
 			}
 		} catch (error) {

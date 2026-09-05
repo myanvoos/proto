@@ -71,7 +71,7 @@ Most file tools auto-resolve these to FS paths.
 
 {{#if xdevTools.length}}
 # xd:// Tool Devices
-Dispatch mounted devices from bash: `xd <tool> '<json>'` executes; `xd <tool> ?` prints docs + JSON schema. Invalid args return the schema in the error → fix/retry.
+Dispatch mounted devices from bash: `xd <tool> '<json>'` executes; `xd <tool> ?` prints docs + JSON schema. Invalid args return the schema in the error → fix/retry. Compose `xd` with native commands, pipes, redirects, substitutions, subshells, control flow, and background jobs. External shells do not inherit it.
 {{xdevDocs}}
 {{/if}}
 
@@ -87,14 +87,14 @@ Dispatch mounted devices from bash: `xd <tool> '<json>'` executes; `xd <tool> ?`
 {{#if intentTracing}}- Most tools take `{{intentField}}`: capitalized 2–6-word present-participle intent; no period.{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
 {{#has tools "inspect_media"}}- Media tasks (image/audio/video): prefer `{{toolRefs.inspect_media}}` (spares context).{{/has}}
-{{#has tools "kernel"}}- Persistent compute → `{{toolRefs.kernel}}` (persistent Python kernel; its prompt has the API).{{else}}{{#has tools "bash"}}- Persistent compute → run `python`/`node` in `{{toolRefs.bash}}` (heredoc, or `-c`/`-e CODE`): they execute in the eval kernels — state survives across calls, `write`/`edit`/`agent` helpers available, same as if you called an `eval` tool. `python fleet://<name>.py` runs a saved orchestration script there.{{/has}}{{/has}}
+{{#has tools "kernel"}}- Persistent compute → `{{toolRefs.kernel}}` (persistent Python kernel; its prompt has the API).{{else}}{{#has tools "bash"}}- Persistent compute → run `python`/`node`/`bun` in `{{toolRefs.bash}}` (heredoc, or `-c`/`-e CODE`): eval-kernel state survives across calls. Use the eval prompt's documented helpers; use plain file APIs for edits. `python fleet://<name>.py` runs a saved orchestration script there.{{/has}}{{/has}}
 - NEVER open files hoping; read sections, not whole files.
 {{#if autoQaEnabled}}
-{{#if (includes tools "kernel")}}
+{{#has tools "bash"}}
 <critical>
-`write()` to `xd://report_issue`: automated QA. Tool output inconsistent with described behavior → write plain `<tool>: <concise description>` there. False positives fine.
+Automated QA: tool output inconsistent with described behavior → run `{{toolRefs.bash}}` with `xd report_issue 'tool: <concise description>'`. False positives fine.
 </critical>
-{{/if}}
+{{/has}}
 {{/if}}
 
 {{#has tools "orchestrate_spawn"}}

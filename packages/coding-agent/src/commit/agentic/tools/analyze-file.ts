@@ -1,5 +1,5 @@
 import { type } from "@oh-my-pi/omptype";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import analyzeFilePrompt from "../../../commit/agentic/prompts/analyze-file.md" with { type: "text" };
 import type { CommitAgentState } from "../../../commit/agentic/state";
 import type { NumstatEntry } from "../../../commit/types";
@@ -78,6 +78,8 @@ export function createAnalyzeFileTool(options: {
 						invocationKind: "worker",
 						assignment,
 						agent: "lightbot",
+						outputSchema: analyzeFileOutputSchema,
+						schemaMode: "strict",
 						identity: { label: `AnalyzeFile${index + 1}` },
 						parentToolCallId: `${toolCallId}-${index + 1}`,
 						signal,
@@ -85,6 +87,19 @@ export function createAnalyzeFileTool(options: {
 				}),
 			);
 			const results = analyses.map(analysis => analysis.result);
+			for (const result of results) {
+				const data = result.structuredOutput?.data;
+				if (
+					!isRecord(data) ||
+					typeof data.summary !== "string" ||
+					!Array.isArray(data.highlights) ||
+					data.highlights.length < 2 ||
+					data.highlights.length > 5 ||
+					!Array.isArray(data.risks)
+				) {
+					throw new Error("analyze_files output must contain a summary, 2–5 highlights, and a risks array");
+				}
+			}
 			const text = analyses
 				.map(analysis => analysis.result.output.trim() || analysis.result.stderr.trim() || "(no output)")
 				.join("\n\n");

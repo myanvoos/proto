@@ -1,5 +1,6 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../../tools";
+import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { callSessionTool, type JsStatusEvent } from "../js/tool-bridge";
 
 interface PyToolBridgeEntry {
@@ -10,6 +11,7 @@ interface PyToolBridgeEntry {
 	shieldedSignal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;
 	abortRequested?: () => boolean;
+	completionContext?: EvalCompletionInvocationContext;
 }
 
 export interface PyToolBridgeInfo {
@@ -25,7 +27,12 @@ interface BridgeServer {
 const registrations = new Map<string, PyToolBridgeEntry>();
 let serverPromise: Promise<BridgeServer> | null = null;
 
-async function callSessionToolPromptOnAbort(name: string, args: unknown, entry: PyToolBridgeEntry): Promise<unknown> {
+async function callSessionToolPromptOnAbort(
+	name: string,
+	args: unknown,
+	entry: PyToolBridgeEntry,
+	completionInvocationId?: string,
+): Promise<unknown> {
 	if (entry.abortRequested?.()) {
 		throw new Error(`bridge call ${JSON.stringify(name)} aborted: eval cell was interrupted`);
 	}
@@ -33,6 +40,8 @@ async function callSessionToolPromptOnAbort(name: string, args: unknown, entry: 
 		session: entry.toolSession,
 		signal: entry.signal,
 		emitStatus: entry.emitStatus,
+		completionContext: entry.completionContext,
+		completionInvocationId,
 	});
 	const signal = entry.shieldedSignal ?? entry.signal;
 	if (!signal) return await call;
@@ -66,7 +75,13 @@ async function startServer(): Promise<BridgeServer> {
 				return new Response("Forbidden", { status: 403 });
 			}
 
-			let body: { session?: unknown; run?: unknown; name?: unknown; args?: unknown };
+			let body: {
+				session?: unknown;
+				run?: unknown;
+				name?: unknown;
+				args?: unknown;
+				completionInvocationId?: unknown;
+			};
 			try {
 				body = (await req.json()) as { session?: unknown; run?: unknown; name?: unknown; args?: unknown };
 			} catch {
@@ -88,7 +103,12 @@ async function startServer(): Promise<BridgeServer> {
 			}
 
 			try {
-				const value = await callSessionToolPromptOnAbort(name, body.args, entry);
+				const value = await callSessionToolPromptOnAbort(
+					name,
+					body.args,
+					entry,
+					typeof body.completionInvocationId === "string" ? body.completionInvocationId : undefined,
+				);
 				return Response.json({ ok: true, value });
 			} catch (err) {
 				return Response.json({

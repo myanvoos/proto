@@ -1,7 +1,7 @@
 ---
 description: "Use io and os instead of the deprecated io/ioutil package"
 condition: '"io/ioutil"'
-scope: "tool:edit(*.go), tool:write(*.go)"
+scope: "tool:eval, tool:kernel"
 interruptMode: never
 ---
 

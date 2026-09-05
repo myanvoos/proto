@@ -27,16 +27,21 @@ import type { CustomMessagePayload } from "../session/messages";
 import { type ReviewerIdentity, ReviewerTransport, type ReviewerTransportHost } from "../session/reviewer-transport";
 import { type AgentProgress, oneLineLabel } from "../task/types";
 import { resolveThinkingLevelForModel } from "../thinking";
-import { READ_ONLY_EXPLORATORY_COMMANDS } from "../tools/bash-allowlist";
+import {
+	type BashCommandPolicy,
+	checkBashCommandAllowlist,
+	checkBashVerificationCommand,
+	READ_ONLY_EXPLORATORY_COMMANDS,
+} from "../tools/bash-allowlist";
 import * as git from "../utils/git";
 import { type ConductorGateRuling, type ConductorRuling, type ConductorTempoRuling, CueTool } from "./cue-tool";
 import { assembleEpochDigest } from "./digest";
-import { type ConductorProposal, ProgramTool } from "./program-tool";
+import { type ConductorProposal, ProgramTool, parseConductorObjective } from "./program-tool";
 import { CONDUCTOR_TRANSCRIPT_FILENAME, type ConductorJournalEntry, conductorTranscriptPath } from "./transcript";
 
 /**
  * Investigative grant for a verification turn. `bash` is included because the objective's "## Verification"
- * commands are the whitelist there (prompt-enforced in v0). No mutating grants, ever.
+ * commands are the whitelist there. The bash policy enforces exact entries at execution time. No mutating grants, ever.
  */
 export const CONDUCTOR_TOOL_NAMES: readonly string[] = ["read", "bash"];
 
@@ -143,7 +148,7 @@ export interface ConductorHost extends ReviewerTransportHost {
 	currentGoal(): Goal | undefined;
 	/**
 	 * Folds the primary session's context down on the conductor's request (an epoch `context:"compact"` ruling).
-	 * Optional: hosts without a compaction entry point silently skip the ruling's compact half.
+	 * Optional: hosts without a compaction entry point downgrade the ruling to `continue` with a warning.
 	 */
 	requestCompaction?(): Promise<unknown>;
 	/**
@@ -169,11 +174,8 @@ export interface SessionConductorOptions {
 	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 	initialCost?: number;
 
-	/**
-	 * Arms the commissioning turn's exploratory bash allowlist on the conductor's ToolSession, or disarms it
-	 * (`undefined`) for verification and teardown. The slot is single-tenant, so this flips with turn kind.
-	 */
-	setBashCommandAllowlist?: (allowlist: readonly string[] | undefined) => void;
+	/** Arms or disarms the single-tenant bash policy for the conductor's ToolSession. */
+	setBashCommandPolicy?: (policy: BashCommandPolicy | undefined) => void;
 }
 
 export interface ConductorStats {
@@ -992,6 +994,10 @@ export class SessionConductor {
 		this.#epochCount++;
 		this.#droppedEpochs = 0;
 		const prompt = ruling.prompt?.trim() || undefined;
+		const context =
+			ruling.context === "compact" && !(await this.#requestConductorCompaction(epochNumber))
+				? "continue"
+				: ruling.context;
 		const action: ConductorJournalEntry["action"] = !prompt
 			? "template"
 			: prompt === this.#lastEpochPrompt
@@ -1002,14 +1008,13 @@ export class SessionConductor {
 			at: Date.now(),
 			wakeReasons: [...reasons],
 			action,
-			context: ruling.context,
+			context,
 			promptHeadline: prompt ? journalHeadline(prompt) : undefined,
 			note: ruling.note,
 		});
 		if (this.#journal.length > JOURNAL_LIMIT) this.#journal.splice(0, this.#journal.length - JOURNAL_LIMIT);
 
-		// Compaction runs first so an authored prompt lands in the folded context, not the bloated one.
-		if (ruling.context === "compact") await this.#requestConductorCompaction(epochNumber);
+		// Compaction runs before an authored prompt; failed compaction already downgraded context to continue.
 		if (prompt && action === "prompt") {
 			this.#lastEpochPrompt = prompt;
 			await this.#deliverEpochPrompt(epochNumber, prompt);
@@ -1034,16 +1039,28 @@ export class SessionConductor {
 			.catch(error => logger.debug("conductor epoch prompt delivery failed", { err: String(error) }));
 	}
 
-	async #requestConductorCompaction(epochNumber: number): Promise<void> {
+	async #requestConductorCompaction(epochNumber: number): Promise<boolean> {
 		if (!this.#host.requestCompaction) {
-			logger.debug("conductor compact ruling skipped: the host exposes no compaction entry point");
-			return;
+			this.#host.emitNotice(
+				"warning",
+				`Conductor epoch ${epochNumber}: compact ruling unsupported by this host; continuing without compaction.`,
+				"conductor",
+			);
+			logger.warn("conductor compact ruling skipped: the host exposes no compaction entry point");
+			return false;
 		}
 		try {
 			await this.#host.requestCompaction();
 			this.#host.emitNotice("info", `Conductor epoch ${epochNumber}: session context compacted.`, "conductor");
+			return true;
 		} catch (error) {
-			logger.debug("conductor-requested compaction failed", { err: String(error) });
+			this.#host.emitNotice(
+				"warning",
+				`Conductor epoch ${epochNumber}: compaction failed; continuing without compaction.`,
+				"conductor",
+			);
+			logger.warn("conductor-requested compaction failed", { err: String(error) });
+			return false;
 		}
 	}
 
@@ -1280,9 +1297,24 @@ export class SessionConductor {
 		// Each turn kind gets its own single-shot channel; the other tool is never even constructed, so a
 		// commissioning turn cannot rule on a verdict and a verification/epoch turn cannot rewrite the contract.
 		const commissioning = mode === "commission";
-		// Verification keeps unrestricted bash (prompt-enforced verification whitelist); commissioning and epoch
-		// turns get the exploratory read-only allowlist the bash tool itself enforces.
-		this.#options.setBashCommandAllowlist?.(mode === "verify" ? undefined : READ_ONLY_EXPLORATORY_COMMANDS);
+		// Every conductor mode gets a fail-closed policy. Verification permits exact commissioned commands plus
+		// read-only exploration; commissioning and epoch turns receive exploration only.
+		let verificationCommands: readonly string[] = [];
+		if (mode === "verify") {
+			const objective = this.#host.currentGoal()?.objective;
+			if (objective) {
+				try {
+					verificationCommands = parseConductorObjective(objective).verificationCommands;
+				} catch (error) {
+					logger.warn("conductor goal has no valid verification contract", { err: String(error) });
+				}
+			}
+		}
+		const bashPolicy: BashCommandPolicy =
+			mode === "verify"
+				? command => checkBashVerificationCommand(command, verificationCommands)
+				: command => checkBashCommandAllowlist(command, READ_ONLY_EXPLORATORY_COMMANDS);
+		this.#options.setBashCommandPolicy?.(bashPolicy);
 		let cueTool: CueTool | undefined;
 		let programTool: ProgramTool | undefined;
 		let adviseTool: AgentTool<any>;
@@ -1527,7 +1559,7 @@ export class SessionConductor {
 	 * verdict that is already pending — only {@link stopRuntime} owns the gate.
 	 */
 	#disposeInstance(): void {
-		this.#options.setBashCommandAllowlist?.(undefined);
+		this.#options.setBashCommandPolicy?.(undefined);
 		const instance = this.#instance;
 		this.#instance = undefined;
 		this.#instanceMode = undefined;

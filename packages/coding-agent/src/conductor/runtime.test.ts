@@ -6,7 +6,7 @@ import { createMockModel, type MockModel, type MockResponse, registerMockApi } f
 import { loadAdvisorTranscriptCosts } from "../advisor/transcript-recorder";
 import { GoalRuntime, type GoalRuntimeHost } from "../goals/runtime";
 import type { Goal } from "../goals/state";
-import { READ_ONLY_EXPLORATORY_COMMANDS } from "../tools/bash-allowlist";
+import type { BashCommandPolicy } from "../tools/bash-allowlist";
 import { type ConductorActivity, type ConductorHost, SessionConductor } from "./runtime";
 import { loadConductorTranscriptCost } from "./transcript";
 
@@ -50,7 +50,7 @@ interface Harness {
 	goalEvents: Array<Goal | null>;
 	goalRuntime: GoalRuntime;
 	sessionFile: string;
-	allowlistHistory: Array<readonly string[] | undefined>;
+	allowlistHistory: Array<BashCommandPolicy | undefined>;
 	agentState: { isStreaming: boolean; promptCacheKey: undefined; telemetry: undefined; messages: unknown[] };
 	cleanup(): Promise<void>;
 }
@@ -63,7 +63,7 @@ async function createHarness(settingOverrides: Record<string, unknown> = {}): Pr
 	const activities: ConductorActivity[] = [];
 	const sentMessages: unknown[] = [];
 	const goalEvents: Array<Goal | null> = [];
-	const allowlistHistory: Array<readonly string[] | undefined> = [];
+	const allowlistHistory: Array<BashCommandPolicy | undefined> = [];
 
 	// MockModel reads `options.handler` once (into `fallback`), so route every call through a mutable script
 	// the tests can re-point between phases.
@@ -165,7 +165,7 @@ async function createHarness(settingOverrides: Record<string, unknown> = {}): Pr
 
 	conductor = new SessionConductor(host, {
 		enabled: true,
-		setBashCommandAllowlist: allowlist => allowlistHistory.push(allowlist),
+		setBashCommandPolicy: policy => allowlistHistory.push(policy),
 	});
 
 	return {
@@ -599,7 +599,9 @@ describe("SessionConductor bash allowlist", () => {
 			const outcome = await h.conductor.commission("add a greeting endpoint");
 
 			expect(outcome.status).toBe("proposed");
-			expect(h.allowlistHistory[0]).toEqual(READ_ONLY_EXPLORATORY_COMMANDS);
+			const policy = h.allowlistHistory[0];
+			expect(policy?.("rg --files").allowed).toBe(true);
+			expect(policy?.("rm -rf .").allowed).toBe(false);
 			expect(h.allowlistHistory.at(-1)).toBeUndefined();
 		} finally {
 			await h.cleanup();
@@ -619,7 +621,10 @@ describe("SessionConductor bash allowlist", () => {
 
 			h.conductor.onGoalUpdated(h.goalState.goal);
 			await waitFor(() => h.goalState.goal?.status === "complete", "goal accepted");
-			expect(h.allowlistHistory.every(entry => entry === undefined)).toBe(true);
+			const policy = h.allowlistHistory.find(entry => entry !== undefined);
+			expect(policy).toBeDefined();
+			expect(policy?.("bun test").allowed).toBe(true);
+			expect(policy?.("bun test && rm -rf .").allowed).toBe(false);
 		} finally {
 			await h.cleanup();
 		}
@@ -1034,7 +1039,7 @@ describe("SessionConductor epochs", () => {
 			};
 			h.conductor.onPrimaryTurnEnd(false);
 			await waitFor(() => h.conductor.getStats().epochCount >= 1, "epoch ruled");
-			expect(h.allowlistHistory).toContainEqual(READ_ONLY_EXPLORATORY_COMMANDS);
+			expect(h.allowlistHistory.some(policy => policy?.("rg --files").allowed === true)).toBe(true);
 		} finally {
 			await h.cleanup();
 		}

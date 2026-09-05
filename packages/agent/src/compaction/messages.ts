@@ -16,6 +16,13 @@ const COMPACTION_SUMMARY_TEMPLATE = compactionSummaryContextPrompt;
 const HANDOFF_SUMMARY_TEMPLATE = handoffSummaryContextPrompt;
 const BRANCH_SUMMARY_TEMPLATE = branchSummaryContextPrompt;
 
+function escapeSummaryBoundaryTags(summary: string): string {
+	return summary.replace(/<\/?(summary|handoff)>/gi, tag => {
+		const name = tag.slice(tag.startsWith("</") ? 2 : 1, -1).toLowerCase();
+		return tag.startsWith("</") ? `&lt;/${name}>` : `&lt;${name}>`;
+	});
+}
+
 export interface CustomMessage<T = unknown> {
 	role: "custom";
 	customType: string;
@@ -82,15 +89,15 @@ function getPrunedToolResultContent(message: ToolResultMessage): (TextContent | 
 }
 
 export function renderBranchSummaryContext(summary: string): string {
-	return prompt.render(BRANCH_SUMMARY_TEMPLATE, { summary });
+	return prompt.render(BRANCH_SUMMARY_TEMPLATE, { summary: escapeSummaryBoundaryTags(summary) });
 }
 
 export function renderCompactionSummaryContext(summary: string): string {
-	return prompt.render(COMPACTION_SUMMARY_TEMPLATE, { summary });
+	return prompt.render(COMPACTION_SUMMARY_TEMPLATE, { summary: escapeSummaryBoundaryTags(summary) });
 }
 
 export function renderHandoffSummaryContext(summary: string): string {
-	return prompt.render(HANDOFF_SUMMARY_TEMPLATE, { summary });
+	return prompt.render(HANDOFF_SUMMARY_TEMPLATE, { summary: escapeSummaryBoundaryTags(summary) });
 }
 
 export function createBranchSummaryMessage(summary: string, fromId: string, timestamp: string): BranchSummaryMessage {

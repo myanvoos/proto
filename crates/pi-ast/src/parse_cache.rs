@@ -118,15 +118,6 @@ impl Cache {
 		}
 		true
 	}
-
-	fn clear(&mut self) {
-		self.entries.clear();
-		self.source_bytes = 0;
-		self.clock = 0;
-		self.hits = 0;
-		self.misses = 0;
-		self.evictions = 0;
-	}
 }
 
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| {
@@ -153,8 +144,4 @@ pub fn parse_cached(code: &str, lang: SupportLang) -> Result<Option<Tree>> {
 	};
 	lock().insert(key, code, &tree);
 	Ok(Some(tree))
-}
-
-pub fn clear_parse_cache() {
-	lock().clear();
 }

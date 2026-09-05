@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import { executeBash } from "../exec/bash-executor";
+import { convertToLlm } from "../session/messages";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
 import { EvalTool } from "./eval";
@@ -178,6 +179,18 @@ test("heredoc node routes to the JS kernel and state persists across bash calls"
 	}
 }, 60000);
 
+test("bun heredoc routes to the JS kernel and state persists across calls", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bunsh-state-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		await bash.execute("set", { command: "bun <<'EOF'\nglobalThis.bunProbe = 41;\nconsole.log('set-ok');\nEOF" });
+		const second = await bash.execute("use", { command: "bun -e 'console.log(\"value\", bunProbe + 1)'" });
+		expect(textOf(second)).toContain("value 42");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
 test("bash node shares the eval tool's JS kernel session", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-shared-"));
 	try {
@@ -252,3 +265,127 @@ test("fleet js scripts execute in the JS kernel", async () => {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 }, 60000);
+
+test("execution metadata ignores timeout-looking successful output", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-success-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		const result = await bash.execute("success", { command: "printf 'timeout: 60\\n'" });
+		expect(result.isError ?? false).toBe(false);
+		expect(result.details?.execution?.state).toBe("exited");
+		expect(result.details?.execution?.exitCode).toBe(0);
+		expect(result.details?.execution?.timeout).toBeUndefined();
+		expect(result.details?.execution?.elapsedMs).toBeGreaterThanOrEqual(0);
+		expect(textOf(result)).toContain("timeout: 60");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
+test("failed command status outranks checks-passed output", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-failure-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		const result = await bash.execute("failure", { command: "printf 'all checks passed\\n'; exit 7" });
+		expect(result.isError).toBe(true);
+		expect(result.details?.execution?.state).toBe("exited");
+		expect(result.details?.execution?.exitCode).toBe(7);
+		expect(result.details?.execution?.timeout).toBeUndefined();
+		expect(textOf(result)).toContain("all checks passed");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
+test("actual child timeout reports unknown process state and deadline scope", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-timeout-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		const result = await bash.execute("timeout", { command: "sleep 120", timeout: 1 });
+		expect(result.isError).toBe(true);
+		expect(result.details?.execution?.state).toBe("unknown");
+		expect(result.details?.execution?.exitCode).toBeUndefined();
+		expect(result.details?.execution?.timeout).toMatchObject({ cause: "deadline", scope: "command" });
+		expect(result.details?.timedOut).toBe(true);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
+test("artifact collector failure is distinct from successful process status", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-collector-"));
+	try {
+		const session = {
+			...stubSession(dir),
+			allocateOutputArtifact: async () => ({ id: "collector-failure", path: "/dev/null/proto-output.log" }),
+		} as ToolSession;
+		const bash = new BashTool(session);
+		const result = await bash.execute("collector", { command: `python3 -c 'print("x" * 60000)'` });
+		expect(result.isError ?? false).toBe(false);
+		expect(result.details?.execution?.state).toBe("exited");
+		expect(result.details?.execution?.exitCode).toBe(0);
+		expect(result.details?.execution?.collector.state).toBe("failed");
+		expect(result.details?.execution?.output?.disposition).toBe("truncated");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
+test("raw output artifact and execution metadata survive replay", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-replay-"));
+	const artifactPath = path.join(dir, "raw-output.log");
+	try {
+		const session = {
+			...stubSession(dir),
+			allocateOutputArtifact: async () => ({ id: "raw-output", path: artifactPath }),
+		} as ToolSession;
+		const result = await new BashTool(session).execute("replay", {
+			command: `python3 -c 'print("diagnostic.py:17: error: retained raw output " + "x" * 60000)'`,
+		});
+		const execution = result.details?.execution;
+		expect(execution?.state).toBe("exited");
+		expect(execution?.exitCode).toBe(0);
+		expect(execution?.output?.rawArtifactId).toBe("raw-output");
+		expect(execution?.output?.disposition).toBe("truncated");
+		expect(await Bun.file(artifactPath).exists()).toBe(true);
+		expect(await Bun.file(artifactPath).text()).toContain("diagnostic.py:17: error");
+		const replay = convertToLlm([
+			{
+				role: "bashExecution",
+				command: "replay",
+				output: textOf(result),
+				exitCode: 0,
+				cancelled: false,
+				truncated: true,
+				execution,
+				timestamp: Date.now(),
+			},
+		] as never);
+		const replayTextParts: string[] = [];
+		for (const message of replay) {
+			if (!Array.isArray(message.content)) continue;
+			for (const block of message.content) {
+				if (block.type === "text") replayTextParts.push(block.text);
+			}
+		}
+		const replayText = replayTextParts.join("\n");
+		expect(replayText).toContain("Execution metadata: state=exited; exit=0");
+		expect(replayText).toContain("diagnostic.py:17: error");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
+test("running Bash updates carry execution state separately from output", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-running-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		const updates: Array<{ state?: string }> = [];
+		await bash.execute("running", { command: "printf 'all checks passed\\n'; sleep 0.1" }, undefined, update => {
+			updates.push({ state: update.details?.execution?.state });
+		});
+		expect(updates.some(update => update.state === "running")).toBe(true);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);

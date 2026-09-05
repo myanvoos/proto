@@ -23,8 +23,7 @@ use std::{
 pub use cache::{
 	cache_ttl_ms, classify_file_type, contains_component, empty_recheck_ms, invalidate_all,
 	invalidate_path, invalidate_path_string, max_cache_entries, normalize_relative_path,
-	parallel_for_each, parallel_for_each_init, resolve_search_path, should_parallelize,
-	should_skip_path, walk_workers,
+	parallel_for_each_init, resolve_search_path, should_parallelize, should_skip_path, walk_workers,
 };
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
@@ -683,28 +682,6 @@ impl WalkRequest {
 			.collect())
 	}
 
-	pub fn collect_dirs_with_heartbeat<E, H>(
-		&self,
-		heartbeat: H,
-	) -> std::result::Result<Vec<CollectedEntry>, WalkError<String>>
-	where
-		H: Fn() -> std::result::Result<(), E> + Sync,
-		E: fmt::Display,
-	{
-		let outcome = self.collect_with_heartbeat(heartbeat)?;
-		Ok(outcome
-			.entries
-			.into_iter()
-			.filter(CollectedEntry::is_dir)
-			.collect())
-	}
-
-	pub fn collect_file_candidates(
-		&self,
-	) -> std::result::Result<Vec<FileCandidate>, WalkError<String>> {
-		self.collect_file_candidates_with_heartbeat(|| Ok::<(), Infallible>(()))
-	}
-
 	pub fn collect_file_candidates_with_heartbeat<E, H>(
 		&self,
 		heartbeat: H,
@@ -716,13 +693,6 @@ impl WalkRequest {
 		Ok(self
 			.collect_file_candidates_with_stats_with_heartbeat(heartbeat)?
 			.0)
-	}
-
-	pub fn stream<V>(&self, visitor: &mut V) -> std::result::Result<WalkStatus, WalkError<V::Error>>
-	where
-		V: EntryVisitor,
-	{
-		self.stream_with_heartbeat(visitor, || Ok::<(), V::Error>(()))
 	}
 
 	pub fn stream_with_heartbeat<V, H>(
@@ -752,18 +722,6 @@ impl WalkRequest {
 		self.stream_with_heartbeat(&mut visitor, heartbeat)
 	}
 
-	pub fn stream_with_predicate<V, P>(
-		&self,
-		visitor: &mut V,
-		predicate: P,
-	) -> std::result::Result<WalkStatus, WalkError<V::Error>>
-	where
-		V: EntryVisitor,
-		P: WalkPredicate,
-	{
-		self.stream_with_predicate_and_heartbeat(visitor, predicate, || Ok::<(), V::Error>(()))
-	}
-
 	pub fn stream_with_predicate_and_heartbeat<V, P, H>(
 		&self,
 		visitor: &mut V,
@@ -785,36 +743,6 @@ impl WalkRequest {
 			predicate,
 		};
 		walk_entries(&self.root, options, &mut adapter, &mut heartbeat)
-	}
-
-	pub fn for_each_file_with_heartbeat<E, HE, H>(
-		&self,
-		operation: impl Fn(&Path) -> std::result::Result<(), E> + Send + Sync,
-		heartbeat: H,
-	) -> std::result::Result<WalkStats, WalkError<String>>
-	where
-		E: fmt::Display + Send,
-		H: Fn() -> std::result::Result<(), HE> + Sync,
-		HE: fmt::Display,
-	{
-		self.for_each_file_candidate_with_heartbeat(|candidate| operation(&candidate.path), heartbeat)
-	}
-
-	pub fn for_each_file_candidate_with_heartbeat<E, HE, H>(
-		&self,
-		operation: impl Fn(&FileCandidate) -> std::result::Result<(), E> + Send + Sync,
-		heartbeat: H,
-	) -> std::result::Result<WalkStats, WalkError<String>>
-	where
-		E: fmt::Display + Send,
-		H: Fn() -> std::result::Result<(), HE> + Sync,
-		HE: fmt::Display,
-	{
-		let (candidates, stats) =
-			self.collect_file_candidates_with_stats_with_heartbeat(heartbeat)?;
-		execute_candidates(&candidates, operation)
-			.map_err(|err| WalkError::Interrupted(err.to_string()))?;
-		Ok(stats)
 	}
 
 	pub fn for_each_file_candidate_parallel<E>(
@@ -961,16 +889,6 @@ impl WalkRequest {
 			.collect();
 		Ok((candidates, outcome.stats))
 	}
-}
-
-pub fn execute_candidates<E>(
-	candidates: &[FileCandidate],
-	operation: impl Fn(&FileCandidate) -> std::result::Result<(), E> + Send + Sync,
-) -> std::result::Result<(), E>
-where
-	E: Send,
-{
-	parallel_for_each(candidates, operation)
 }
 
 pub fn execute_candidates_init<S, E>(
@@ -1487,10 +1405,6 @@ impl CollectedEntry {
 
 	pub const fn is_file(&self) -> bool {
 		matches!(self.file_type, FileType::File)
-	}
-
-	pub const fn is_dir(&self) -> bool {
-		matches!(self.file_type, FileType::Dir)
 	}
 }
 

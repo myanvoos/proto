@@ -2,14 +2,16 @@
 
 Compaction and branch summaries are the two mechanisms that keep long sessions usable without losing prior work context.
 
-- **Compaction** rewrites old history into a summary on the current branch.
+- **Compaction** uses the built-in [pi-blackhole](https://pi.dev/packages/pi-blackhole) extension to replace old history with a deterministic structural summary plus durable observations and reflections.
 - **Branch summary** captures abandoned branch context during `/tree` navigation.
 
-Both are persisted as session entries and converted back into user-context messages when rebuilding LLM input.
+Both are persisted as session entries and converted back into user-context messages when rebuilding LLM input. Proto retains its existing scheduler, cut-point selection, persistence, overflow recovery, and provider reset machinery; pi-blackhole owns the default summary and observational-memory behavior through `session_before_compact`.
 
 ## Key implementation files
 
-- `packages/agent/src/compaction/compaction.ts` (context-full summarization)
+- `packages/coding-agent/src/vendor/pi-blackhole/index.js` (pi-blackhole 0.4.10 runtime)
+- `packages/coding-agent/src/sdk.ts` (built-in extension registration)
+- `packages/agent/src/compaction/compaction.ts` (preparation and optional pi-default summarization)
 - `packages/agent/src/compaction/branch-summarization.ts`
 - `packages/agent/src/compaction/pruning.ts`
 - `packages/agent/src/compaction/compaction-v2-streaming.ts` (provider-native streaming compaction)
@@ -210,29 +212,27 @@ Final stored summary is merged as:
 
 ### Summary generation
 
-`compact(...)` builds summaries from serialized conversation text:
+By default, the built-in pi-blackhole `session_before_compact` hook returns the complete `CompactionResult`; no compaction-model call is made. Its deterministic compiler:
 
-1. Convert messages via `convertToLlm()`.
-2. Serialize with `serializeConversation()`.
-3. Wrap in `<conversation>...</conversation>`.
-4. Optionally include `<previous-summary>...</previous-summary>`.
-5. Optionally inject extension hook context and active memory-backend compaction context as `<additional-context>` entries.
-6. Execute summarization prompt with `SUMMARIZATION_SYSTEM_PROMPT`.
+1. Normalizes messages and removes configured noise and thinking blocks.
+2. Extracts goals, file changes, commits, outstanding context, and user preferences.
+3. Builds a bounded recent transcript with stable entry references.
+4. Folds observations and reflections from the session ledger.
+5. Adds `recall` instructions so compacted source evidence remains recoverable.
 
-Prompt selection:
+The stored entry keeps Proto's normal `CompactionEntry` boundary and token fields. Blackhole-specific metadata is stored in `details`, including `compactor: "blackhole"` and the folded observational-memory snapshot. Existing session replay, TUI dividers, conductor transitions, SDK events, and RPC results therefore keep the same outer contract.
 
-- first compaction: `compaction-summary.md`
-- iterative compaction with prior summary: `compaction-update-summary.md`
-- split-turn second pass: `compaction-turn-prefix.md`
-- short UI summary: `compaction-short-summary.md`
+pi-blackhole also adds:
 
-Remote summarization modes:
+- `/blackhole` for explicit structural compaction and an optional post-compaction follow-up.
+- `/blackhole settings`, `/blackhole-memory`, `/blackhole-recall`, and `/blackhole-export`.
+- the agent-facing `recall` tool for transcript search, entry expansion, file drill-down, and observation/reflection evidence lookup.
 
-- If `compaction.remoteEndpoint` is set and remote compaction is enabled, local summary generation POSTs one of two wire formats:
-  - custom proto summarizer endpoints receive `{ systemPrompt, prompt }` and must return JSON containing at least `{ summary }`.
-  - OpenAI-compatible endpoints whose path ends in `/chat/completions` receive `{ model, messages, stream: false }`, where `messages` contains one system prompt and one user prompt. The summary is read from `choices[0].message.content`, which lets self-hosted servers such as llama.cpp and vLLM act as remote compactors without a separate summarizer shim.
-- Compatible OpenAI Responses, Azure OpenAI Responses, and Codex models whose catalog metadata enables V2 streaming compaction first append a `compaction_trigger` to a normal Responses stream. The returned compaction item plus retained real user messages become replacement history, bounded by `compaction.v2RetainedMessageBudget`; the replacement is persisted under `preserveData.openaiRemoteCompaction`.
-- If V2 is unavailable or fails, eligible OpenAI/OpenAI Codex models try the provider-native `/responses/compact` path. Native failure then falls back to local summarization.
+Configuration lives at `~/.proto/agent/pi-blackhole/pi-blackhole-config.json`, with an optional project override at `.pi/pi-blackhole-config.json`. The default mode is deterministic compaction with observational memory enabled. Set `compactionEngine` to `"pi-default"` in that file to bypass Blackhole's result producer and use Proto's previous remote/soft summarizer path; the scheduler and recovery settings described below remain authoritative in either mode. See the [upstream configuration reference](https://github.com/k0valik/pi-blackhole/blob/270aa0912800b2b7ce64414ef4247be84106d8f8/docs/CONFIG.md) for Blackhole-specific options.
+
+Observational memory runs background Observer, Reflector, and Dropper model calls. Structural compaction itself is deterministic and model-free; memory is not. Configure explicit inexpensive worker models and set `sessionFallback: false` to prevent workers from falling back to the active session model.
+
+When `compactionEngine: "pi-default"`, the previous generator remains available as a compatibility fallback: it serializes the prepared conversation, treats it as untrusted data, and uses either provider-native compaction, a configured remote endpoint, or the structured LLM summary prompts in `packages/agent/src/compaction/prompts/`.
 
 ### File-operation context in summaries
 
@@ -357,6 +357,10 @@ Can return:
 ### `session_compact`
 
 Post-compaction notification with saved `compactionEntry` and `fromExtension` flag.
+
+### `session_compact_failed`
+
+Terminal compaction-failure notification with `reason`, optional `errorMessage`, `aborted`, `willRetry`, and `fromExtension`. Blackhole uses it to clear in-flight state and surface attributed failures. Method fallbacks do not emit this event until every configured method has failed.
 
 ### `session_before_tree`
 

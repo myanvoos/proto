@@ -153,10 +153,6 @@ notify = { version = "=8.2.0", features = ["macos_kqueue"] }
 rlimit = "0.11.0"
 rustix = { version = "1.1.4", features = ["fs", "process", "time"] }
 uucore = { version = "0.8.0", features = ["fsxattr", "safe-traversal"] }
-
-[dev-dependencies]
-anyhow = "1.0.102"
-pretty_assertions = { version = "1.4.1", features = ["unstable"] }
 tempfile = "3"
 
 [features]

@@ -252,7 +252,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 	}
 
 	#ownerId(): string | undefined {
-		return this.session.getAgentId?.() ?? undefined;
+		return this.session.getAsyncJobOwnerId?.() ?? this.session.getAgentId?.() ?? undefined;
 	}
 
 	#asyncDisabled(op: "cancel" | "jobs"): AgentToolResult<FleetDetails> {

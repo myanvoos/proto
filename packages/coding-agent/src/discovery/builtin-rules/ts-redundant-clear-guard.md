@@ -1,6 +1,6 @@
 ---
 description: Do not guard clearTimeout/clearInterval/clearImmediate with a truthiness or null/undefined check — they accept null and undefined
-scope: "tool:edit(*.{ts,tsx,js,jsx,mts,cts,mjs,cjs}), tool:write(*.{ts,tsx,js,jsx,mts,cts,mjs,cjs})"
+scope: "tool:eval, tool:kernel"
 interruptMode: never
 astCondition:
   - "if ($X) clearTimeout($X)"

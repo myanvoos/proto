@@ -25,7 +25,7 @@ Before changes in these directories, MUST read:
 {{/if}}
 
 {{#ifAny contextFiles.length agentsMdSearch.files.length}}
-Context files above auto-loaded. NEVER hunt for `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, or similar agent/context files: relevant files already in context; others noise.
+Context files above are auto-loaded. Entries under <dir-context> are path pointers, not loaded contents: before changing files in a listed directory, MUST read the applicable pointer. NEVER hunt for `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, or similar agent/context files beyond the paths listed above; others noise.
 {{/ifAny}}
 
 {{#if includeWorkspaceTree}}
@@ -41,7 +41,7 @@ Working-directory layout: newest mtime first; depth ≤ 3.
 {{/if}}
 {{#if additionalWorkspaceRoots.length}}
 <workspace-roots>
-Additional workspace directories. This CURRENT workspace state supersedes workspace changes mentioned earlier in the conversation. {{#ifAny (includes tools "read") (includes tools "edit")}}Use absolute paths under these roots to {{#has tools "read"}}`{{toolRefs.read}}`{{/has}}{{#has tools "edit"}}{{#ifAny (includes tools "read")}}/{{/ifAny}}`{{toolRefs.edit}}`{{/has}}.{{/ifAny}} Manage with `/add-dir` and `/remove-dir`; `/dirs` lists them.
+Additional workspace directories. This CURRENT workspace state supersedes workspace changes mentioned earlier in the conversation. {{#ifAny (includes tools "read") (includes tools "bash")}}Use absolute paths under these roots{{#has tools "read"}} with `{{toolRefs.read}}` for reads{{/has}}{{#has tools "bash"}}; use the available guarded kernel file APIs through `{{toolRefs.bash}}` for writes{{/has}}.{{/ifAny}} Manage with `/add-dir` and `/remove-dir`; `/dirs` lists them.
 {{#each additionalWorkspaceRoots}}
 - {{this}}
 {{/each}}

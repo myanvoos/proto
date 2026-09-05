@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import { initTheme, theme } from "../modes/theme/theme";
 import type { ToolSession } from ".";
@@ -29,6 +30,7 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const norm = (s: string) =>
 	strip(s)
 		.replace(/\(\d+ms\)/g, "(Nms)")
+		.replace(/elapsed=\d+ms/g, "elapsed=Nms")
 		.replace(/\/tmp\/[a-zA-Z]+-[\w]+/g, "/tmp/DIR")
 		.replace(/… \d+ more lines/g, "… N more lines");
 
@@ -48,6 +50,7 @@ const renderBashResult = (res: unknown, command: string) =>
 
 afterAll(async () => {
 	await disposeKernelSessionsByOwner(OWNER);
+	await disposeVmContextsByOwner(OWNER);
 });
 
 // The live/pending phase (renderCall) has no eval result to compare against, so
@@ -59,6 +62,9 @@ test("kernel-cell bash renderCall shows the eval-style running cell with AST out
 	expect(py).toContain("greet(name)");
 	expect(py).toContain("Widget");
 	expect(renderBashCall("node <<'JS'\nfunction f(){ return 1 }\nJS")).toContain("f");
+	const bun = renderBashCall("bun <<'JS'\nfunction greet(name) { return name; }\nJS");
+	expect(bun).toContain("· ast");
+	expect(bun).toContain("greet(name)");
 	expect(renderBashCall('python -c \'edit("a","b","c")\'')).toContain("edit");
 });
 
@@ -72,6 +78,19 @@ test("plain shell commands keep the normal $ command rendering (no AST)", () => 
 
 // The settled phase (renderResult) is compared byte-for-byte against the eval
 // tool rendering the same code, so the two can never drift.
+async function assertJavaScriptParity(label: string, code: string): Promise<void> {
+	const dirE = await fs.mkdtemp(path.join(os.tmpdir(), "jsE-"));
+	const dirB = await fs.mkdtemp(path.join(os.tmpdir(), "jsB-"));
+	const command = `bun <<'JSEOF'\n${code}\nJSEOF`;
+	try {
+		const er = await new EvalTool(stub(dirE)).execute(`e-js-${label}`, { language: "js", code, timeout: 60 });
+		const br = await new BashTool(stub(dirB)).execute(`b-js-${label}`, { command });
+		expect(renderBashResult(br, command), label).toBe(renderKernelResult(er, code));
+	} finally {
+		await fs.rm(dirE, { recursive: true, force: true });
+		await fs.rm(dirB, { recursive: true, force: true });
+	}
+}
 async function assertParity(label: string, code: string): Promise<void> {
 	const dirE = await fs.mkdtemp(path.join(os.tmpdir(), "pE-"));
 	const dirB = await fs.mkdtemp(path.join(os.tmpdir(), "pB-"));
@@ -134,6 +153,9 @@ test("running kernel cell streams status events live (hunks withheld until settl
 	}
 }, 60000);
 
+test("bun-in-bash renderResult uses the shared JavaScript AST renderer", async () => {
+	await assertJavaScriptParity("code+console", 'function greet(name) { return name; }\nconsole.log(greet("x"))');
+}, 120000);
 test("python-in-bash renderResult is identical to the eval/kernel tool", async () => {
 	await assertParity("code+print", "def greet(n):\n    return n\n\nprint('hi', greet('x'))");
 	await assertParity("json-display", "display({'k': [1, 2, 3], 'nested': {'x': 1}})");

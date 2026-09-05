@@ -1,7 +1,7 @@
 ---
-description: Use bare `catch {` when the error binding is unused
-condition: "catch \\(_"
-scope: "tool:edit(*.ts), tool:edit(*.tsx), tool:write(*.ts), tool:write(*.tsx)"
+description: Use bare `catch {` when an underscore-prefixed error binding is present; this textual trigger cannot determine semantic usage
+condition: 'catch\s*\(\s*_[A-Za-z_$][\w$]*\s*\)'
+scope: "tool:eval, tool:kernel"
 interruptMode: never
 ---
 

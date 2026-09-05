@@ -86,33 +86,6 @@ def percentile(values: list[int], p: float) -> float:
 
 
 
-TOOLS_AGGREGATE_SQL = """
-WITH per_tool AS (
-    SELECT
-        c.tool_name,
-        COUNT(*)                       AS calls,
-        IFNULL(SUM(c.arg_tokens), 0)   AS arg_tok
-    FROM ss_tool_calls c
-    GROUP BY c.tool_name
-),
-per_tool_res AS (
-    SELECT
-        r.tool_name,
-        COUNT(*)                       AS results,
-        IFNULL(SUM(r.result_tokens),0) AS res_tok
-    FROM ss_tool_results r
-    GROUP BY r.tool_name
-)
-SELECT
-    COALESCE(p.tool_name, q.tool_name) AS tool_name,
-    IFNULL(p.calls, 0)                 AS calls,
-    IFNULL(q.results, 0)               AS results,
-    IFNULL(p.arg_tok, 0)               AS arg_tok,
-    IFNULL(q.res_tok, 0)               AS res_tok
-FROM per_tool p FULL OUTER JOIN per_tool_res q USING (tool_name)
-ORDER BY (IFNULL(p.arg_tok, 0) + IFNULL(q.res_tok, 0)) DESC
-"""
-
 _SEPARATORS_RE = re.compile(r"(\|\||&&|\||;|`|\$\()")
 _EXCLUDE_SET = {
     "do",

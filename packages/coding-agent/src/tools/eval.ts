@@ -18,6 +18,12 @@ import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
+import {
+	type ExecutionMetadata,
+	type ExecutionStageMetadata,
+	type ExecutionTimeoutMetadata,
+	executionMetadataForResult,
+} from "../session/execution-metadata";
 import { capEventDiff } from "../utils/diff";
 import "./kernel-prelude";
 import * as path from "node:path";
@@ -204,6 +210,60 @@ function formatEvalInputLanguage(value: string): string {
 	return value;
 }
 
+function stageMetadataForCell(cell: EvalCellResult): ExecutionStageMetadata {
+	const execution = cell.execution;
+	if (execution) {
+		return {
+			index: cell.index,
+			state: execution.state,
+			exitCode: execution.exitCode,
+			signal: execution.signal,
+			elapsedMs: execution.elapsedMs,
+			timeout: execution.timeout,
+		};
+	}
+	return {
+		index: cell.index,
+		state: cell.status === "running" ? "running" : "unknown",
+		exitCode: cell.exitCode,
+	};
+}
+
+function buildEvalExecutionMetadata(options: {
+	cells: readonly EvalCellResult[];
+	exitCode?: number;
+	cancelled?: boolean;
+	timedOut?: boolean;
+	elapsedMs?: number;
+	summary?: OutputSummary;
+	running?: boolean;
+}): ExecutionMetadata {
+	const stages = options.cells.map(stageMetadataForCell);
+	const timedOutStage = stages.find(stage => stage.timeout !== undefined);
+	const timeout: ExecutionTimeoutMetadata | undefined = timedOutStage?.timeout
+		? { ...timedOutStage.timeout, scope: "pipeline" }
+		: options.timedOut
+			? { cause: "unknown", scope: "pipeline" }
+			: undefined;
+	const metadata = executionMetadataForResult(
+		{
+			exitCode: options.exitCode,
+			cancelled: options.cancelled === true,
+			timedOut: options.timedOut,
+		},
+		{
+			state: options.running === true ? "running" : undefined,
+			elapsedMs: options.elapsedMs,
+			timeout,
+			summary: options.summary,
+			stages,
+		},
+	);
+	if (options.running === true) {
+		return { ...metadata, collector: { state: "running" } };
+	}
+	return metadata;
+}
 function looksBinary(text: string): boolean {
 	return text.slice(0, 8192).includes("\u0000");
 }
@@ -424,7 +484,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					throw error;
 				}
 			},
-			{ ownerId: session.getAgentId?.() ?? undefined },
+			{ ownerId: session.getAsyncJobOwnerId?.() ?? session.getAgentId?.() ?? undefined },
 		);
 
 		if (startBackgrounded) {
@@ -538,13 +598,37 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		emitUpdate?: (text: string, details: EvalToolDetails) => void;
 	}): Promise<AgentToolResult<EvalToolDetails | undefined>> {
 		const { session, cells, languages, notice, excludeWebP, signal, sessionAbortController, emitUpdate } = options;
+		const executionStartedAt = performance.now();
+		const tailBuffer_v21 = new TailBuffer(DEFAULT_MAX_BYTES * 2);
 		let outputSink: OutputSink | undefined;
 		let outputSummary: OutputSummary | undefined;
 		let outputDumped = false;
 		const finalizeOutput = async (): Promise<OutputSummary | undefined> => {
 			if (outputDumped || !outputSink) return outputSummary;
-			outputSummary = await outputSink.dump();
-			outputDumped = true;
+			try {
+				outputSummary = await outputSink.dump();
+			} catch (error) {
+				const fallbackText = tailBuffer_v21.text();
+				const fallbackBytes = Buffer.byteLength(fallbackText, "utf-8");
+				outputSummary = {
+					output: fallbackText,
+					truncated: true,
+					totalLines: fallbackText.length > 0 ? fallbackText.split("\n").length : 0,
+					totalBytes: fallbackBytes,
+					outputLines: fallbackText.length > 0 ? fallbackText.split("\n").length : 0,
+					outputBytes: fallbackBytes,
+					collector: {
+						state: "failed",
+						error: error instanceof Error ? error.message : String(error),
+					},
+					outputDisposition: fallbackText.length > 0 ? "truncated" : "unavailable",
+				};
+				logger.warn("Eval output collection failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			} finally {
+				outputDumped = true;
+			}
 			return outputSummary;
 		};
 		try {
@@ -553,7 +637,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			}
 			session.assertEvalExecutionAllowed?.();
 
-			const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES * 2);
 			const jsonOutputs: unknown[] = [];
 			const images: ImageContent[] = [];
 			const statusEvents: EvalStatusEvent[] = [];
@@ -571,13 +654,19 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			let activeLiveCell: { result: EvalCellResult; buf: TailBuffer } | undefined;
 
 			const appendTail = (text: string) => {
-				tailBuffer.append(text);
+				tailBuffer_v21.append(text);
 			};
 
 			const buildUpdateDetails = (): EvalToolDetails => {
 				const details: EvalToolDetails = {
 					language: languages[0],
 					languages,
+					execution: buildEvalExecutionMetadata({
+						cells: cellResults,
+						running: true,
+						elapsedMs: performance.now() - executionStartedAt,
+						summary: outputSummary,
+					}),
 					cells: cellResults.map(cell => ({
 						...cell,
 						statusEvents: cell.statusEvents ? [...cell.statusEvents] : undefined,
@@ -599,7 +688,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			};
 
 			const pushUpdate = () => {
-				emitUpdate?.(tailBuffer.text(), buildUpdateDetails());
+				emitUpdate?.(tailBuffer_v21.text(), buildUpdateDetails());
 			};
 
 			const sessionFile = session.getSessionFile?.() ?? undefined;
@@ -766,6 +855,20 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				cellResult.output = cellOutput;
 				cellResult.exitCode = result.exitCode;
 				cellResult.durationMs = durationMs;
+				cellResult.execution =
+					result.execution ??
+					executionMetadataForResult(result, {
+						elapsedMs: durationMs,
+						timeout: result.timedOut
+							? {
+									cause: "idle",
+									scope: "cell",
+									requestedMs: cell.timeoutMs,
+									effectiveMs: idleTimeoutMs,
+								}
+							: undefined,
+						summary: result,
+					});
 				for (const event of cellFsEvents) {
 					upsertStatusEvent(statusEvents, event);
 				}
@@ -789,6 +892,13 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					const details: EvalToolDetails = {
 						language: languages[0],
 						languages,
+						execution: buildEvalExecutionMetadata({
+							cells: cellResults,
+							cancelled: true,
+							timedOut: result.timedOut,
+							elapsedMs: performance.now() - executionStartedAt,
+							summary: summaryForMeta,
+						}),
 						cells: cellResults,
 						jsonOutputs: jsonOutputs.length > 0 ? jsonOutputs : undefined,
 						statusEvents: statusEvents.length > 0 ? statusEvents : undefined,
@@ -799,6 +909,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					return toolResult(details)
 						.content([{ type: "text", text: outputText }, ...images])
 						.truncationFromSummary(summaryForMeta, { direction: "tail" })
+						.error()
 						.done();
 				}
 
@@ -814,6 +925,12 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					const details: EvalToolDetails = {
 						language: languages[0],
 						languages,
+						execution: buildEvalExecutionMetadata({
+							cells: cellResults,
+							exitCode: result.exitCode,
+							elapsedMs: performance.now() - executionStartedAt,
+							summary: summaryForMeta,
+						}),
 						cells: cellResults,
 						jsonOutputs: jsonOutputs.length > 0 ? jsonOutputs : undefined,
 						statusEvents: statusEvents.length > 0 ? statusEvents : undefined,
@@ -824,6 +941,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					return toolResult(details)
 						.content([{ type: "text", text: outputText }, ...images])
 						.truncationFromSummary(summaryForMeta, { direction: "tail" })
+						.error()
 						.done();
 				}
 
@@ -843,6 +961,12 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			const details: EvalToolDetails = {
 				language: languages[0],
 				languages,
+				execution: buildEvalExecutionMetadata({
+					cells: cellResults,
+					exitCode: 0,
+					elapsedMs: performance.now() - executionStartedAt,
+					summary: summaryForMeta,
+				}),
 				cells: cellResults,
 				jsonOutputs: jsonOutputs.length > 0 ? jsonOutputs : undefined,
 				statusEvents: statusEvents.length > 0 ? statusEvents : undefined,
@@ -869,11 +993,13 @@ async function summarizeFinal(
 ): Promise<OutputSummary> {
 	const rawSummary = (await finalizeOutput()) ?? {
 		output: "",
-		truncated: false,
+		truncated: true,
 		totalLines: 0,
 		totalBytes: 0,
 		outputLines: 0,
 		outputBytes: 0,
+		collector: { state: "unavailable" as const, error: "Output summary unavailable" },
+		outputDisposition: "unavailable" as const,
 	};
 	const outputLines = combinedOutput.length > 0 ? combinedOutput.split("\n").length : 0;
 	const outputBytes = Buffer.byteLength(combinedOutput, "utf-8");
@@ -890,5 +1016,9 @@ async function summarizeFinal(
 		columnDroppedBytes: rawSummary.columnDroppedBytes,
 		columnTruncatedLines: rawSummary.columnTruncatedLines,
 		columnMax: rawSummary.columnMax,
+		collector: rawSummary.collector,
+		outputDisposition: rawSummary.outputDisposition,
+		summarized: rawSummary.summarized,
+		actionableDiagnostics: rawSummary.actionableDiagnostics,
 	};
 }

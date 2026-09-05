@@ -2,7 +2,7 @@
 
 > Execute one Python or JavaScript cell in a persistent language runtime. One tool call is one cell; state survives later calls.
 
-> **Notice:** Do not shell out to `python -c`, `bun -e`, or `node -e` through `bash` for ad-hoc code. `eval` provides retained state, structured `display()` capture, tool/subagent bridges, streaming, cancellation, and artifact-backed truncation.
+> **Notice:** Do not use one-off `python -c`, `bun -e`, or `node -e` subprocesses through `bash` when a retained eval cell is appropriate. `eval` provides retained state, structured `display()` capture, tool/subagent bridges, streaming, cancellation, and artifact-backed truncation.
 
 ## Source
 - Entry and dynamic schema: `packages/coding-agent/src/tools/eval.ts`
@@ -12,7 +12,7 @@
 - Host bridges: `packages/coding-agent/src/eval/agent-bridge.ts`, `completion-bridge.ts`, `concurrency-bridge.ts`, `budget-bridge.ts`
 - JavaScript: `packages/coding-agent/src/eval/js/`
 - Python: `packages/coding-agent/src/eval/py/`
-- Output/truncation: `packages/coding-agent/src/session/streaming-output.ts`
+- Output/truncation and execution metadata: `packages/coding-agent/src/session/streaming-output.ts`, `execution-metadata.ts`
 - Python internals: `docs/python-repl.md`
 
 ## Inputs
@@ -72,8 +72,9 @@ When at least one runtime is enabled, disabled runtimes are removed from the ses
 - `meta`: output truncation/artifact metadata supplied by `toolResult(...)`.
 - `isError`: set for backend failure or cancellation.
 
-The renderer merges call and result inline, syntax-highlights from the declared language, renders markdown and JSON trees specially, and shows timeout/truncation metadata. `session.allocateOutputArtifact?.("eval")` backs spilled output; `artifact://...` in `meta` reaches the full capture.
+The renderer merges call and result inline, syntax-highlights from the declared language, renders markdown and JSON trees specially, and shows timeout/truncation metadata. Bash `python`/`node`/`bun` kernel cells use the same renderer and native AST outline. `session.allocateOutputArtifact?.("eval")` backs spilled output; `artifact://...` in `meta` reaches the full capture.
 
+Each result also carries `details.execution` before generated output: `state` (`running`, `exited`, `unknown`), observed `exitCode`/`signal`, elapsed time, explicit timeout `cause`/`scope`, independent collector status, and output disposition (`complete`, `truncated`, `summarized`, `unavailable`). A timeout-looking string printed by code is never status evidence. Cell metadata describes each stage; pipeline metadata remains separate, so a completed earlier cell cannot imply later-stage completion. Raw output and this metadata remain attached to artifact-backed results and replayed execution messages.
 ## Execution flow
 
 1. `EvalTool` builds a session-specific schema from enabled languages. It is essential and `concurrency="exclusive"` within one agent session.
@@ -81,7 +82,7 @@ The renderer merges call and result inline, syntax-highlights from the declared 
 3. It obtains the retained executor id from `session.getEvalSessionId?.()` or `defaultEvalSessionId(session)`, allocates the output sink/artifact, and registers the run through `trackEvalExecution?.(...)`.
 4. The timeout defaults to 30 seconds. `0` creates no watchdog. Otherwise `IdleTimeout` is combined with tool and session abort signals.
 5. `agent()`, `parallel()`, and `completion()` emit pause/resume status operations: time spent in those host bridges does not consume the cell's runtime-work budget. Compute, output, status helpers, and ordinary `tool.*` calls do consume it.
-6. The selected backend receives cwd, retained session id, session file, kernel owner, reset flag, callbacks, and cancellation signal.
+6. The selected backend receives cwd, retained session id, session file, kernel owner, reset flag, callbacks, and cancellation signal. Persistent orchestrator workers receive independent eval session ids; a worker reuses only its own namespace across follow-up turns.
 7. Output chunks stream into an artifact-aware `OutputSink` and live tail. Rich displays are separated into JSON, image, markdown, and status channels.
 8. Success, nonzero exit, and cancellation are assembled into the result shapes above. The output sink is finalized even when execution fails.
 
@@ -166,4 +167,5 @@ Runs one subagent through `runStructuredSubagent(...)`:
 - State is isolated by language; resetting Python does not reset JS.
 - Current schema tokens are only `py` and `js`; long language names are renderer formatting aliases, not wire values.
 - The former multi-cell `cells` payload, `*** Cell` parser, sniffing fallback, and constrained `eval.lark` grammar are removed.
-- Parent and ordinary workers may share an inherited eval executor id; children created by eval's own `agent()` explicitly do not.
+- Parent and persistent orchestrator workers use independent retained eval sessions; each worker reuses only its own namespace across follow-up turns.
+- Eval `agent()` children explicitly set `shareEvalSession=false`; explicit shared-session delegation remains supported when requested by the caller.

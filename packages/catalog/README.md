@@ -21,7 +21,7 @@ Import from subpaths (`@oh-my-pi/pi-catalog/<module>`) or the root barrel.
 
 ## models.json is generated
 
-Never edit `src/models.json` by hand — it is produced from upstream sources (stencil.so, provider catalog discovery, OpenCode docs) by `scripts/generate-models.ts` and the resolvers in `src/provider-models/`. Regenerate with:
+Never edit `src/models.json` by hand — it is produced from upstream sources (stencil.so, the Pi Codex catalog, provider catalog discovery, OpenCode docs) by `scripts/generate-models.ts` and the resolvers in `src/provider-models/`. Regenerate with:
 
 ```sh
 bun run gen:models

@@ -7,7 +7,13 @@
 - Removed `renderSnapcompactPng` and `snapcompactSupportedChars` native exports along with the bundled snapcompact fonts.
 - Native addons now build with plain cargo on matching-host runners via `scripts/build-natives.sh`; the Bazel pipeline and its hermetic cross toolchains are removed. Local iteration (`bun --cwd=packages/natives run build`) still uses the cargo/napi-rs host backend.
 
+### Added
+
+- Added native `xd` builtin dispatch with normal shell composition and structured results kept separate from pipe output.
+
 ### Fixed
+
+- Fixed Bun check summaries misclassifying timeout-looking output as command timeouts.
 
 - Native macOS spellchecker now honors all active system dictionaries: misspelling detection uses automatic language identification and completions/guesses/corrections select the per-word language, so non-English text (e.g. Russian) is checked instead of only the shared checker's current language (#9334).
 - Fixed PTY command cancellation leaking zombie child processes: a race where cancellation after spawn only attempted a single non-blocking reap could miss processes still being reaped by the kernel, and an early heartbeat check that bailed out without killing or reaping the child. On Unix, cancellation now polls for the child briefly and hands any straggler to a detached reaper, so the process is always waited on without an unbounded wait.

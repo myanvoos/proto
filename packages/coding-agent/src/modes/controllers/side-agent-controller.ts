@@ -75,6 +75,7 @@ export class SideAgentController {
 		const toolNames = session.getEnabledToolNames();
 		const modelRegistry = session.modelRegistry;
 		const ownerId = session.getAgentId() ?? MAIN_AGENT_ID;
+		const asyncJobOwnerId = session.sessionId;
 		const mcpManager = this.ctx.mcpManager;
 		const cwd = this.ctx.sessionManager.getCwd();
 		const parentArtifactsDir = this.ctx.sessionManager.getArtifactsDir();
@@ -189,7 +190,7 @@ export class SideAgentController {
 						}
 					}
 				},
-				{ ownerId, agentId: cloneId },
+				{ ownerId: asyncJobOwnerId, agentId: cloneId },
 			);
 		} catch (error) {
 			if (cloneFile) await removeCloneSession(cloneFile);

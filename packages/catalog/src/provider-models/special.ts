@@ -3,7 +3,7 @@ import { type CodexModelDiscoveryResult, fetchCodexModels } from "../discovery/c
 import type { DevinModelDiscoveryOptions } from "../discovery/devin";
 import { buildGitLabDuoWorkflowFallbackModel, fetchGitLabDuoWorkflowModels } from "../discovery/gitlab-duo-workflow";
 import type { ModelManagerOptions } from "../model-manager";
-import type { FetchImpl, ModelSpec } from "../types";
+import type { FetchImpl } from "../types";
 import { resolveModelCacheProviderId } from "./cache-provider-id";
 
 export interface OpenAICodexAccount {
@@ -14,14 +14,14 @@ export interface OpenAICodexAccount {
 
 export interface OpenAICodexModelManagerConfig {
 	resolveAccounts?: () => Promise<readonly OpenAICodexAccount[] | null>;
-	clientVersion?: string;
+	catalogUrl?: string;
 	fetch?: FetchImpl;
 }
 
 export function openaiCodexModelManagerOptions(
 	config: OpenAICodexModelManagerConfig = {},
 ): ModelManagerOptions<"openai-codex-responses"> {
-	const { resolveAccounts, clientVersion, fetch } = config;
+	const { resolveAccounts, catalogUrl, fetch } = config;
 	return {
 		providerId: "openai-codex",
 		dynamicModelsAuthoritative: true,
@@ -30,34 +30,15 @@ export function openaiCodexModelManagerOptions(
 					fetchDynamicModels: async () => {
 						const accounts = await resolveAccounts();
 						if (!accounts || accounts.length === 0) return null;
-						const results = await Promise.all(
-							accounts.map(account =>
-								fetchCodexModels({
-									accessToken: account.accessToken,
-									accountId: account.accountId,
-									clientVersion,
-									fetchFn: fetch,
-								}),
-							),
-						);
-						return unionCodexModels(results);
+						const result: CodexModelDiscoveryResult | null = await fetchCodexModels({
+							catalogUrl,
+							fetchFn: fetch,
+						});
+						return result?.models ?? null;
 					},
 				}
 			: undefined),
 	};
-}
-
-function unionCodexModels(
-	results: readonly (CodexModelDiscoveryResult | null)[],
-): ModelSpec<"openai-codex-responses">[] | null {
-	const byId = new Map<string, ModelSpec<"openai-codex-responses">>();
-	for (const result of results) {
-		if (!result) return null;
-		for (const model of result.models) {
-			if (!byId.has(model.id)) byId.set(model.id, model);
-		}
-	}
-	return [...byId.values()];
 }
 
 export interface CursorModelManagerConfig {

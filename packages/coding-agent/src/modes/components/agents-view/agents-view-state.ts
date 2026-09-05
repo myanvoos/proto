@@ -553,8 +553,6 @@ export function buildAgentsViewRows(
 		if (!row.record) continue;
 		// Children of the scope root render as roots — the scoped view flattens one level.
 		if (childOfScopeRoot(row.record)) continue;
-		const ref = row.record.ref;
-		const refNested = Boolean(ref && (ref.kind === "sub" || ref.parentId));
 		const parent = parentKeys(row.record)
 			.map(key => rowsByKey.get(key))
 			.find(Boolean);

@@ -107,20 +107,6 @@ pub fn should_parallelize(item_count: usize) -> bool {
 	walk_workers() > 1 && item_count >= PARALLEL_MIN_FILES
 }
 
-pub fn parallel_for_each<T, E>(
-	items: &[T],
-	operation: impl Fn(&T) -> std::result::Result<(), E> + Send + Sync,
-) -> std::result::Result<(), E>
-where
-	T: Sync,
-	E: Send,
-{
-	if !should_parallelize(items.len()) {
-		return items.iter().try_for_each(operation);
-	}
-	with_walk_pool(|| items.par_iter().try_for_each(operation))
-}
-
 pub fn parallel_for_each_init<T, S, E>(
 	items: &[T],
 	init: impl Fn() -> S + Send + Sync,

@@ -2,6 +2,7 @@ import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { sanitizeText, truncateHeadBytes, truncateTailBytes } from "@oh-my-pi/pi-utils";
 import { formatBytes } from "../tools/render-utils";
 import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
+import type { ExecutionCollectorMetadata, ExecutionOutputDisposition } from "./execution-metadata";
 
 export const DEFAULT_MAX_LINES = 3000;
 export const DEFAULT_MAX_BYTES = 50 * 1024;
@@ -15,6 +16,16 @@ const NL = "\n";
 const CR = "\r";
 const ELLIPSIS = "…";
 
+const MAX_ACTIONABLE_DIAGNOSTIC_BYTES = 16 * 1024;
+
+function isActionableDiagnostic(line: string): boolean {
+	if (!line.trim()) return false;
+	return (
+		/(?:^|[\s[(<{])(?:error|warning|fatal|panic|exception|assert(?:ion)?|failed|failure|traceback)(?:\b|:)/iu.test(
+			line,
+		) || /(?:^|[\s[(<{])[^\s:]+:\d+(?::\d+)?(?:[:\s]|$)/u.test(line)
+	);
+}
 export interface OutputSummary {
 	output: string;
 	truncated: boolean;
@@ -34,6 +45,12 @@ export interface OutputSummary {
 	columnMax?: number;
 
 	artifactId?: string;
+
+	/** Collector status is independent from the child process status. */
+	collector?: ExecutionCollectorMetadata;
+	outputDisposition?: ExecutionOutputDisposition;
+	summarized?: boolean;
+	actionableDiagnostics?: string[];
 }
 
 export interface OutputSinkOptions {
@@ -499,6 +516,11 @@ export class OutputSink {
 	#totalBytes = 0;
 	#sawData = false;
 	#truncated = false;
+	#summarized = false;
+	#collectorError: string | undefined;
+	#diagnosticPending = "";
+	#actionableDiagnostics: string[] = [];
+	#actionableDiagnosticBytes = 0;
 	#lastChunkTime = 0;
 	#pendingChunk = "";
 	#pendingCarriageReturn = false;
@@ -562,6 +584,56 @@ export class OutputSink {
 		this.#artifactTailBudget = Math.max(0, this.#artifactMaxBytes - this.#artifactHeadBudget);
 	}
 
+	#markCollectorFailure(error: unknown): void {
+		if (this.#collectorError !== undefined) return;
+		this.#collectorError = error instanceof Error ? error.message : String(error);
+	}
+
+	#collectActionableDiagnostics(chunk: string): void {
+		if (!chunk) return;
+		const combined = this.#diagnosticPending + chunk;
+		const lines = combined.split(NL);
+		this.#diagnosticPending = lines.pop() ?? "";
+		for (const line of lines) this.#rememberActionableDiagnostic(line);
+	}
+
+	#rememberActionableDiagnostic(line: string): void {
+		if (!isActionableDiagnostic(line) || this.#actionableDiagnostics.includes(line)) return;
+		const bytes = Buffer.byteLength(line, "utf-8") + 1;
+		if (bytes > MAX_ACTIONABLE_DIAGNOSTIC_BYTES) return;
+		while (
+			this.#actionableDiagnosticBytes + bytes > MAX_ACTIONABLE_DIAGNOSTIC_BYTES &&
+			this.#actionableDiagnostics.length > 0
+		) {
+			const removed = this.#actionableDiagnostics.shift()!;
+			this.#actionableDiagnosticBytes -= Buffer.byteLength(removed, "utf-8") + 1;
+		}
+		this.#actionableDiagnostics.push(line);
+		this.#actionableDiagnosticBytes += bytes;
+	}
+
+	#finishActionableDiagnostics(): void {
+		if (this.#diagnosticPending) {
+			this.#rememberActionableDiagnostic(this.#diagnosticPending);
+			this.#diagnosticPending = "";
+		}
+	}
+
+	#collector(): ExecutionCollectorMetadata {
+		if (this.#collectorError !== undefined) return { state: "failed", error: this.#collectorError };
+		return { state: this.#finalized ? "complete" : "running" };
+	}
+
+	collectorStatus(): ExecutionCollectorMetadata {
+		return this.#collector();
+	}
+
+	#summaryDisposition(outputBytes: number): ExecutionOutputDisposition {
+		if (this.#totalBytes > 0 && outputBytes === 0 && this.#collectorError !== undefined) return "unavailable";
+		if (this.#truncated) return "truncated";
+		if (this.#summarized) return "summarized";
+		return "complete";
+	}
 	#normalizeCarriageReturns(text: string): string {
 		if (text.length === 0 || (!this.#pendingCarriageReturn && !text.includes(CR))) return text;
 
@@ -593,6 +665,7 @@ export class OutputSink {
 	push(chunk: string): void {
 		if (this.#finalized) return;
 		chunk = sanitizeWithOptionalSixelPassthrough(chunk, text => sanitizeText(this.#normalizeCarriageReturns(text)));
+		this.#collectActionableDiagnostics(chunk);
 
 		if (this.#onChunk) {
 			const now = Date.now();
@@ -615,6 +688,7 @@ export class OutputSink {
 		const capped = this.#maxColumns > 0 ? this.#applyColumnCap(chunk) : chunk;
 		const cappedBytes = capped === chunk ? rawBytes : Buffer.byteLength(capped, "utf-8");
 		const cappedThisChunk = cappedBytes < rawBytes;
+		if (cappedThisChunk) this.#truncated = true;
 
 		if (this.#artifactPath && (this.#file != null || cappedThisChunk || this.#willOverflow(cappedBytes))) {
 			this.#writeToFile(chunk);
@@ -738,16 +812,27 @@ export class OutputSink {
 		}
 	}
 
+	#writeArtifactChunk(chunk: string): boolean {
+		if (!this.#file || chunk.length === 0) return true;
+		try {
+			this.#file.sink.write(chunk);
+			return true;
+		} catch (error) {
+			this.#markCollectorFailure(error);
+			return false;
+		}
+	}
+
 	#emitToSink(chunk: string): void {
 		if (!this.#file || chunk.length === 0) return;
 		if (this.#artifactMaxBytes === 0) {
-			this.#file.sink.write(chunk);
+			this.#writeArtifactChunk(chunk);
 			return;
 		}
 		const chunkBytes = Buffer.byteLength(chunk, "utf-8");
 		const room = this.#artifactHeadClosed ? 0 : this.#artifactHeadBudget - this.#artifactHeadBytesWritten;
 		if (room >= chunkBytes) {
-			this.#file.sink.write(chunk);
+			this.#writeArtifactChunk(chunk);
 			this.#artifactHeadBytesWritten += chunkBytes;
 			return;
 		}
@@ -755,7 +840,7 @@ export class OutputSink {
 		if (room > 0) {
 			const headSlice = truncateHeadBytes(chunk, room);
 			if (headSlice.bytes > 0) {
-				this.#file.sink.write(headSlice.text);
+				this.#writeArtifactChunk(headSlice.text);
 				this.#artifactHeadBytesWritten += headSlice.bytes;
 			}
 
@@ -811,10 +896,13 @@ export class OutputSink {
 				}
 				this.#pendingFileWrites = undefined;
 			}
-		} catch {
+		} catch (error) {
+			this.#markCollectorFailure(error);
 			try {
 				await this.#file?.sink?.end();
-			} catch {}
+			} catch (endError) {
+				this.#markCollectorFailure(endError);
+			}
 			this.#file = undefined;
 			this.#pendingFileWrites = undefined;
 			this.#fileReady = false;
@@ -835,7 +923,7 @@ export class OutputSink {
 		});
 	}
 
-	replace(text: string): void {
+	replace(text: string, options?: { summarized?: boolean }): void {
 		this.#clearPendingChunkTimer();
 		this.#buffer = text;
 		this.#bufferBytes = Buffer.byteLength(text, "utf-8");
@@ -847,6 +935,10 @@ export class OutputSink {
 		this.#totalLines = countNewlines(text);
 		this.#sawData = text.length > 0;
 		this.#truncated = false;
+		this.#summarized = options?.summarized === true;
+		this.#diagnosticPending = "";
+		this.#actionableDiagnostics = [];
+		this.#actionableDiagnosticBytes = 0;
 		this.#currentLineBytes = 0;
 		this.#columnEllipsisAdded = false;
 		this.#columnDroppedBytes = 0;
@@ -866,7 +958,12 @@ export class OutputSink {
 		this.#lastChunkTime = now;
 		const merged = this.#pendingChunk + chunk;
 		this.#pendingChunk = "";
-		this.#onChunk?.(merged);
+		try {
+			this.#onChunk?.(merged);
+		} catch (error) {
+			// Rendering/progress observers must never change the child process result.
+			this.#markCollectorFailure(error);
+		}
 	}
 
 	#flushPendingChunk(): void {
@@ -902,10 +999,10 @@ export class OutputSink {
 			const notice =
 				`${headSep}[ARTIFACT TRUNCATED: kept first ${formatBytes(headWritten)} + last ${formatBytes(tailBytes)} ` +
 				`of ${formatBytes(totalCapped)}; ${formatBytes(droppedBytes)} elided from the middle]${tailSep}`;
-			this.#file.sink.write(notice);
+			this.#writeArtifactChunk(notice);
 		}
 		if (tailBytes > 0) {
-			this.#file.sink.write(this.#artifactTailRing);
+			this.#writeArtifactChunk(this.#artifactTailRing);
 		}
 	}
 
@@ -927,6 +1024,7 @@ export class OutputSink {
 		const headLines = this.#headLines + (headBytes > 0 && !this.#head.endsWith("\n") ? 1 : 0);
 		const tailLines = tailBuf.length > 0 ? countNewlines(tailBuf) + 1 : 0;
 
+		this.#finishActionableDiagnostics();
 		const effectiveTotalBytes = Math.max(0, this.#totalBytes - this.#columnDroppedBytes);
 
 		let body: string;
@@ -961,6 +1059,14 @@ export class OutputSink {
 			outputLines = tailLines;
 		}
 
+		const actionable = this.#actionableDiagnostics.filter(line => !body.includes(line));
+		if (this.#truncated && actionable.length > 0) {
+			const diagnosticSection = `[ACTIONABLE DIAGNOSTICS]\n${actionable.join("\n")}`;
+			body = body.length > 0 ? `${body}\n${diagnosticSection}` : diagnosticSection;
+			outputBytes = Buffer.byteLength(body, "utf-8");
+			outputLines = countNewlines(body) + 1;
+		}
+
 		return {
 			output: `${noticeLine}${body}`,
 			truncated: this.#truncated,
@@ -973,7 +1079,11 @@ export class OutputSink {
 			columnDroppedBytes: this.#columnDroppedBytes > 0 ? this.#columnDroppedBytes : undefined,
 			columnTruncatedLines: this.#columnTruncatedLines > 0 ? this.#columnTruncatedLines : undefined,
 			columnMax: this.#columnTruncatedLines > 0 ? this.#maxColumns : undefined,
-			artifactId: this.#file?.artifactId,
+			artifactId: this.#collectorError === undefined ? this.#file?.artifactId : undefined,
+			collector: this.#collector(),
+			outputDisposition: this.#summaryDisposition(outputBytes),
+			summarized: this.#summarized || undefined,
+			actionableDiagnostics: actionable.length > 0 ? actionable : undefined,
 		};
 	}
 
@@ -988,11 +1098,14 @@ export class OutputSink {
 
 		try {
 			this.#flushArtifactTailIfCapped();
-		} catch {
+		} catch (error) {
+			this.#markCollectorFailure(error);
 		} finally {
 			try {
 				await file.sink.end();
-			} catch {}
+			} catch (error) {
+				this.#markCollectorFailure(error);
+			}
 		}
 	}
 

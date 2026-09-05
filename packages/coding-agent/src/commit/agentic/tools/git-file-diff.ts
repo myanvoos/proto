@@ -143,6 +143,11 @@ export function createGitFileDiffTool(cwd: string, state: CommitAgentState): Cus
 		description: "Return the diff for specific files.",
 		parameters: gitFileDiffSchema,
 		async execute(_toolCallId, params) {
+			const calls = state.gitFileDiffCalls ?? 0;
+			if (calls >= 2) {
+				throw new Error("git_file_diff hard limit reached: use git_hunk for additional detail");
+			}
+			state.gitFileDiffCalls = calls + 1;
 			const staged = params.staged ?? true;
 			const cacheKey = (file: string) => `${file}:${staged}`;
 

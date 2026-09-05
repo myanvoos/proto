@@ -13,7 +13,7 @@ Say "hi" — \backslash, """ and %d stay literal.
 print(PROMPT)
 ```
 
-File write with string escapes/nested brackets — hand-escaping (WRONG) vs `#@embed` + `write()` (RIGHT):
+File write with string escapes/nested brackets — hand-escaping (WRONG) vs `#@embed` + `open()` (RIGHT):
 
 ```
 # WRONG: write("src/routes.py", 'ROUTES = {"api": r"/v1/\\d+"}')  # doubled backslashes, quote collision

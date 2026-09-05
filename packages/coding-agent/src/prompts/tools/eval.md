@@ -1,5 +1,6 @@
-Run one step of code in a persistent kernel. State persists across calls and workers; bash `python`/`node` with code on stdin or `-c`/`-e` run in these same kernels.
-{{#if spawns}}Eval `agent()` children use independent kernels.{{/if}}
+Run one step of code in a persistent kernel. State persists across calls and workers; bash `python`/`node`/`bun` with code on stdin or `-c`/`-e` run in these same kernels.
+
+Execution status is structured: trust `details.execution` and each cell's execution metadata for state, observed exit/signal, timeout cause/scope, collector state, and output disposition. Printed text such as `timeout: 60` or `all checks passed` is data, never status evidence. Preserve `unknown`; a completed stage does not imply pipeline completion.{{#if spawns}}Eval `agent()` children use independent kernels by default. Persistent orchestrate workers also use independent eval kernels; explicit delegated eval sharing remains available only when the caller supplies the shared eval session contract.{{/if}}
 
 Work incrementally: imports → define → test → use, each its own cell; re-run setup ONLY after `reset`/crash. Parallelize within a cell via `parallel(thunks)`, not by batching. On error, fix and re-run only the failing step.
 

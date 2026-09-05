@@ -12,6 +12,10 @@
 
 - Fixed `google-gemini-cli` model refresh returning only bundled models for Gemini Code Assist Standard accounts, whose credential is not authorized for the Antigravity `fetchAvailableModels` endpoint (HTTP 403). Discovery now falls back to the account's own `retrieveUserQuota` list on Cloud Code Assist, surfacing models such as `gemini-3.5-flash` (#9315).
 
+### Changed
+
+- Switched OpenAI Codex model discovery to the Pi remote catalog, including newly published models such as GPT-6 Astra.
+
 ### Fixed
 
 - Fixed GLM-5.3 flash SKUs (e.g. a vLLM-served `LibertAIDAI/GLM-5.3-Flash-NVFP4`) classifying as non-reasoning. The `-flash` line now joins the GLM-5.3 reasoning family with the wire-exact `low`/`high`/`max` ladder, mandatory thinking, and default level `max`.

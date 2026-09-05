@@ -57,7 +57,8 @@
     "@opentelemetry/sdk-trace-base": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
     "diff": "catalog:",
-    "puppeteer-core": "catalog:"
+    "puppeteer-core": "catalog:",
+    "typebox": "catalog:"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "catalog:"

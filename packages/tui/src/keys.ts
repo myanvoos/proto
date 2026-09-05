@@ -289,7 +289,7 @@ function hasControlChars(data: string): boolean {
 	});
 }
 
-function decodeKittyPrintable(data: string): string | undefined {
+export function decodeKittyPrintable(data: string): string | undefined {
 	const match = data.match(KITTY_CSI_U_PATTERN);
 	if (!match) return undefined;
 

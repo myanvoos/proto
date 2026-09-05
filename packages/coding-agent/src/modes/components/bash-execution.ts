@@ -11,6 +11,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
+import type { ExecutionMetadata } from "../../session/execution-metadata";
 import type { TruncationMeta } from "../../tools/output-meta";
 import { getSixelLineMask, isSixelPassthroughEnabled, sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 import {
@@ -18,6 +19,7 @@ import {
 	buildStatusFooter,
 	createCollapsedPreview,
 	type ExecutionStatus,
+	formatExecutionMetadata,
 	resolveExecutionStatus,
 } from "./execution-shared";
 
@@ -31,6 +33,7 @@ export class BashExecutionComponent extends Container {
 	#outputLines: string[] = [];
 	#status: ExecutionStatus = "running";
 	#exitCode: number | undefined = undefined;
+	#execution?: ExecutionMetadata;
 	#loader: Loader;
 	#truncation?: TruncationMeta;
 	#expanded = false;
@@ -106,10 +109,11 @@ export class BashExecutionComponent extends Container {
 	setComplete(
 		exitCode: number | undefined,
 		cancelled: boolean,
-		options?: { output?: string; truncation?: TruncationMeta },
+		options?: { output?: string; truncation?: TruncationMeta; execution?: ExecutionMetadata },
 	): void {
 		this.#exitCode = exitCode;
-		this.#status = resolveExecutionStatus(exitCode, cancelled);
+		this.#execution = options?.execution ? { ...options.execution, renderer: { state: "complete" } } : undefined;
+		this.#status = resolveExecutionStatus(exitCode, cancelled, this.#execution);
 		this.#truncation = options?.truncation;
 		if (options?.output !== undefined) {
 			this.#setOutput(options.output);
@@ -144,6 +148,8 @@ export class BashExecutionComponent extends Container {
 		this.#contentContainer.clear();
 
 		this.#contentContainer.addChild(this.#headerText);
+		const executionLine = formatExecutionMetadata(this.#execution);
+		if (executionLine) this.#contentContainer.addChild(new Text(executionLine, 1, 0));
 
 		if (availableLines.length > 0) {
 			if (showingAllLines) {

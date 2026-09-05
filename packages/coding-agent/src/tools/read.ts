@@ -36,7 +36,7 @@ import {
 	MAX_IMAGE_INPUT_BYTES,
 	webpExclusionForModel,
 } from "../utils/image-loading";
-import { isInspectMediaToolActive } from "../utils/inspect-media-mode";
+import { isInspectMediaToolActive, modelSupportsImageInput } from "../utils/inspect-media-mode";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 import { isSampleProfilePath, renderSampleProfile } from "../utils/sample-profile";
 import { normalizeToLF, stripBom } from "../utils/text";
@@ -540,6 +540,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			DEFAULT_LIMIT: String(this.#defaultLimit),
 			DEFAULT_MAX_LINES: String(DEFAULT_MAX_LINES),
 			INSPECT_MEDIA_ENABLED: this.#inspectMediaActive,
+			IMAGES_INLINE: modelSupportsImageInput(this.session.getActiveModel?.()),
 		});
 	}
 
@@ -650,7 +651,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		fileSize: number;
 	}): Promise<{ content: Array<TextContent | ImageContent>; details: ReadToolDetails; sourcePath: string }> {
 		const { readPath, absolutePath, mimeType, imageMetadata, fileSize } = options;
-		if (this.syncInspectMediaState()) {
+		const modelSeesImages = modelSupportsImageInput(this.session.getActiveModel?.());
+		if (this.syncInspectMediaState() && !modelSeesImages) {
 			const outputMime = imageMetadata?.mimeType ?? mimeType;
 			const metadataLines = [
 				"Image metadata:",
@@ -666,10 +668,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						? "- Alpha: no"
 						: "- Alpha: unknown",
 				"",
-				`If you want to analyze the image, call inspect_media with path="${formatPathRelativeToCwd(
-					absolutePath,
-					this.session.cwd,
-				)}" and a question describing what to inspect and the desired output format.`,
+				this.#inspectMediaActive
+					? `If you want to analyze the image, call inspect_media with path="${formatPathRelativeToCwd(
+							absolutePath,
+							this.session.cwd,
+						)}" and a question describing what to inspect and the desired output format.`
+					: "The active model does not support image input, so the image contents cannot be analyzed in this session.",
 			];
 			return { content: [{ type: "text", text: metadataLines.join("\n") }], details: {}, sourcePath: absolutePath };
 		}

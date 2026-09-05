@@ -22,6 +22,7 @@ default = []
 wayland-pipewire = ["dep:pipewire"]
 
 [dependencies]
+anyhow.workspace = true
 arboard.workspace = true
 ast-grep-core.workspace = true
 globset.workspace = true
@@ -35,11 +36,12 @@ html-to-markdown-rs.workspace = true
 icy_sixel.workspace = true
 image = { workspace = true, features = ["bmp"] }
 
-zune-jpeg.workspace = true
 inferno.workspace = true
 napi.workspace = true
 napi-derive.workspace = true
 parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 pdf-inspector.workspace = true
 phf.workspace = true
 flume.workspace = true
@@ -50,8 +52,6 @@ pi-walker.workspace = true
 portable-pty.workspace = true
 rayon.workspace = true
 regex.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 smallvec.workspace = true
 syntect.workspace = true
 tokio.workspace = true
@@ -74,7 +74,6 @@ core-graphics = "0.25"
 foreign-types = "=0.5.0"
 objc2-app-kit = "=0.3.2"
 objc2 = "=0.6.4"
-objc2-core-graphics = "=0.3.2"
 objc2-foundation = "=0.3.2"
 objc2-application-services = { version = "=0.3.2", default-features = true }
 objc2-core-foundation = "=0.3.2"
@@ -83,11 +82,7 @@ objc2-core-foundation = "=0.3.2"
 libc.workspace = true
 
 [dev-dependencies]
-fancy-regex.workspace = true 
-tiktoken-rs.workspace = true 
 xkeysym = "=0.2.1"
 
 [build-dependencies]
 napi-build.workspace = true
-serde.workspace = true
-serde_json.workspace = true

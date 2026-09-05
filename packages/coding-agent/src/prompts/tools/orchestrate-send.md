@@ -1,3 +1,5 @@
-Message a worker by id (from `orchestrate_spawn`/`orchestrate_list`). It retains full history — refer naturally ("now do the same for the other module"); NEVER re-explain prior context.
+Message a worker by immutable id from `orchestrate_spawn` or `orchestrate_list`.
 
-Ack: `turn` (idle → new turn, result self-delivers), `steered` (injected into running turn), `queued` (runs as next turn).
+Receipt semantics: `accepted` = steer/new turn accepted; `queued` = next turn recorded; `delivered` = completion result delivered by wait/completion; `rejected` = message could not start; `terminal` = worker is no longer addressable. Labels are display-only and may repeat; NEVER route by label.
+
+Normal completion preserves the worker handle, including idle and parked/cold workers. Terminal errors include the reason, last turn, and `history://` / `agent://` recovery paths.

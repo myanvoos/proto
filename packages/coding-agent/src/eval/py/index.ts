@@ -51,6 +51,7 @@ export default {
 			reset: opts.reset,
 			onChunk: opts.onChunk,
 			onStatus: opts.onStatus,
+			completionContext: opts.completionContext,
 			toolSession: opts.session,
 			fsObservations: fsObservationLedgerFor(opts.session).drain(),
 		};

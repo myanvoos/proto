@@ -1,3 +1,3 @@
-Summarize conversation changes as a pull request description.
-MUST 2–3 sentences; first person (`I added…`, `I fixed…`); describe changes, not process.
-NEVER mention tests, builds, or other validation steps; explain user request; ask questions.
+Write a concise status preview for the compaction entry and history/UI display.
+Keep to 1–2 sentences; describe resulting progress/current state, not the summarization process.
+NEVER ask questions or invent changes.

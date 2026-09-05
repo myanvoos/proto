@@ -62,6 +62,15 @@ export interface SessionCompactEvent {
 	fromExtension: boolean;
 }
 
+export interface SessionCompactFailedEvent {
+	type: "session_compact_failed";
+	reason: "manual" | "threshold" | "overflow" | "idle" | "incomplete";
+	errorMessage?: string;
+	aborted: boolean;
+	willRetry: boolean;
+	fromExtension: boolean;
+}
+
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
 }
@@ -125,6 +134,7 @@ export type SessionEvent =
 	| SessionBeforeCompactEvent
 	| SessionCompactingEvent
 	| SessionCompactEvent
+	| SessionCompactFailedEvent
 	| SessionStopEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent

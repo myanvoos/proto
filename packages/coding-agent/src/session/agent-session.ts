@@ -1097,6 +1097,8 @@ export class AgentSession {
 		this.#providerBoundary = new SessionProviderBoundary(providerBoundaryHost);
 		const streamGuardsHost: StreamGuardsHost = {
 			agent: this.agent,
+			getToolByName: name => this.getToolByName(name),
+			canObserveStreamedKernelInput: () => !this.#obfuscator?.hasSecrets(),
 			settings: this.settings,
 			sessionManager: this.sessionManager,
 			model: () => this.model,
@@ -1114,9 +1116,10 @@ export class AgentSession {
 		this.#inheritedProviderPromptCacheKey =
 			config.providerPromptCacheKeySource === "fork" ? this.agent.promptCacheKey : undefined;
 
-		if (this.#asyncJobManager && this.#agentId) {
+		const asyncJobOwnerId = this.getAsyncJobOwnerId();
+		if (this.#asyncJobManager && asyncJobOwnerId) {
 			const manager = this.#asyncJobManager;
-			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(this.#agentId, (jobId, text, job) =>
+			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(asyncJobOwnerId, (jobId, text, job) =>
 				this.#deliverAsyncJobResult(manager, jobId, text, job),
 			);
 			this.yieldQueue.register<AsyncResultEntry>("async-result", {
@@ -1259,7 +1262,7 @@ export class AgentSession {
 				enabled: this.settings.get("conductor.enabled"),
 				initialCost: config.initialConductorCost,
 				toolsFactory: config.conductorToolsFactory,
-				setBashCommandAllowlist: config.conductorSetBashAllowlist,
+				setBashCommandPolicy: config.conductorSetBashCommandPolicy,
 				getToolContext: config.advisorGetToolContext,
 				mcpResources: config.advisorMcpResources,
 				contextPrompt: config.advisorContextPrompt,
@@ -1358,6 +1361,10 @@ export class AgentSession {
 		return this.#agentId;
 	}
 
+	getAsyncJobOwnerId(): string | undefined {
+		return this.sessionManager.getSessionId() ?? this.#agentId;
+	}
+
 	#nextHardToolChoice(): ToolChoice | undefined {
 		const choice = this.#toolChoiceQueue.nextToolChoice();
 		if (isToolChoiceActive(choice, this.agent.state.tools)) {
@@ -1445,7 +1452,8 @@ export class AgentSession {
 	getAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null {
 		const manager = this.#asyncJobManager;
 		if (!manager) return null;
-		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
+		const asyncJobOwnerId = this.getAsyncJobOwnerId();
+		const ownerFilter = asyncJobOwnerId ? { ownerId: asyncJobOwnerId } : undefined;
 		const running = manager.getRunningJobs(ownerFilter).map(job => ({
 			id: job.id,
 			type: job.type,
@@ -1467,8 +1475,8 @@ export class AgentSession {
 	#cancelOwnAsyncJobs(reason?: unknown): void {
 		if (!this.#agentId) return;
 		const manager = this.#asyncJobManager;
-		manager?.cancelAll({ ownerId: this.#agentId }, reason);
-		manager?.evictCompletedJobs({ ownerId: this.#agentId });
+		manager?.cancelAll({ ownerId: this.getAsyncJobOwnerId() ?? undefined }, reason);
+		manager?.evictCompletedJobs({ ownerId: this.getAsyncJobOwnerId() ?? undefined });
 
 		this.#asyncDeliveryEpoch += 1;
 		this.yieldQueue.clear("async-result");
@@ -1477,7 +1485,8 @@ export class AgentSession {
 	#hasPendingAsyncWake(): boolean {
 		const manager = this.#asyncJobManager;
 		if (!manager) return false;
-		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
+		const asyncJobOwnerId = this.getAsyncJobOwnerId();
+		const ownerFilter = asyncJobOwnerId ? { ownerId: asyncJobOwnerId } : undefined;
 		return (
 			manager.getRunningJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
 			manager.hasPendingDeliveries(ownerFilter) ||
@@ -1492,8 +1501,8 @@ export class AgentSession {
 	async settleAsyncWork(): Promise<void> {
 		const manager = this.#asyncJobManager;
 		if (!manager || !this.#agentId) return;
-		await manager.waitForOwnerJobs(this.#agentId, { excludeSuppressed: true });
-		await manager.drainDeliveries({ filter: { ownerId: this.#agentId } });
+		await manager.waitForOwnerJobs(this.getAsyncJobOwnerId() ?? this.#agentId, { excludeSuppressed: true });
+		await manager.drainDeliveries({ filter: { ownerId: this.getAsyncJobOwnerId() ?? this.#agentId } });
 		await this.waitForIdle();
 	}
 
@@ -2047,6 +2056,11 @@ export class AgentSession {
 		if (event.type === "turn_start") {
 			this.#ttsr.onTurnStart();
 		}
+
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			this.#loopGuards.onAssistantMessageEnd(event.message);
+		}
+		if (event.type === "turn_end" || event.type === "agent_end") this.#loopGuards.cancelStreamedInput();
 
 		if (event.type === "turn_end") this.#ttsr.onTurnEnd();
 
@@ -3074,6 +3088,7 @@ export class AgentSession {
 
 	beginDispose(): void {
 		this.#isDisposed = true;
+		this.#loopGuards.cancelStreamedInput();
 		this.#liveHeartbeat?.dispose();
 		this.#liveHeartbeat = undefined;
 		this.#queuedMessageDrainBlocked = false;
@@ -3453,7 +3468,8 @@ export class AgentSession {
 	async drainAsyncJobDeliveriesForAcp(options?: { timeoutMs?: number }): Promise<boolean> {
 		const manager = this.#asyncJobManager;
 		if (!manager) return false;
-		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
+		const asyncJobOwnerId = this.getAsyncJobOwnerId();
+		const ownerFilter = asyncJobOwnerId ? { ownerId: asyncJobOwnerId } : undefined;
 		const before = manager.getDeliveryState(ownerFilter);
 		if (before.queued === 0 && !before.delivering) return false;
 		const previousAllowAcpAgentInitiatedTurns = this.#allowAcpAgentInitiatedTurns;
@@ -5111,6 +5127,7 @@ export class AgentSession {
 
 		this.#abortInProgress = true;
 		try {
+			this.#loopGuards.cancelStreamedInput();
 			this.#abortAutolearnCapture();
 			for (const controller of this.#usagePreflightAbortControllers) controller.abort();
 			this.abortRetry();

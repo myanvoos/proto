@@ -28,6 +28,7 @@ import type {
 	SessionBeforeTreeResult,
 	SessionBranchEvent,
 	SessionCompactEvent,
+	SessionCompactFailedEvent,
 	SessionCompactingEvent,
 	SessionCompactingResult,
 	SessionEvent,
@@ -119,6 +120,7 @@ export type {
 	SessionBeforeTreeEvent,
 	SessionBranchEvent,
 	SessionCompactEvent,
+	SessionCompactFailedEvent,
 	SessionCompactingEvent,
 	SessionEvent,
 	SessionShutdownEvent,
@@ -254,6 +256,7 @@ export interface HookAPI {
 	): void;
 	on(event: "session.compacting", handler: HookHandler<SessionCompactingEvent, SessionCompactingResult>): void;
 	on(event: "session_compact", handler: HookHandler<SessionCompactEvent>): void;
+	on(event: "session_compact_failed", handler: HookHandler<SessionCompactFailedEvent>): void;
 	on(event: "session_shutdown", handler: HookHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: HookHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: HookHandler<SessionTreeEvent>): void;

@@ -1,4 +1,10 @@
-import type { AgentOptions, AgentTelemetryConfig, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import type {
+	AgentOptions,
+	AgentTelemetryConfig,
+	AgentTool,
+	AgentToolContext,
+	StreamFn,
+} from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
@@ -7,6 +13,7 @@ import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
+import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
@@ -30,6 +37,7 @@ import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
 import { BashTool, kernelBridgeAvailable } from "./bash";
+import type { BashCommandPolicy } from "./bash-allowlist";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
@@ -111,6 +119,10 @@ export interface ToolSession {
 
 	fetch?: FetchImpl;
 
+	streamFn?: StreamFn;
+
+	customTools?: CustomTool[];
+
 	getApiKey?: AgentOptions["getApiKey"];
 
 	skipPythonPreflight?: boolean;
@@ -165,6 +177,8 @@ export interface ToolSession {
 
 	getAgentId?: () => string | null;
 
+	/** Stable session-scoped owner key for async jobs and completion delivery. */
+	getAsyncJobOwnerId?: () => string | null;
 	getToolByName?: (name: string) => AgentTool | undefined;
 
 	getToolForEvalBridge?: (name: string) => AgentTool | undefined;
@@ -180,6 +194,8 @@ export interface ToolSession {
 	 * {@link checkBashCommandAllowlist} before execution. Used by the conductor's commissioning turns.
 	 */
 	bashCommandAllowlist?: readonly string[];
+
+	bashCommandPolicy?: BashCommandPolicy;
 
 	isToolActive?: (name: string) => boolean;
 

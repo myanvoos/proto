@@ -21,6 +21,9 @@ pub struct MinimizerCtx<'a> {
 	pub command: &'a str,
 
 	pub config: &'a MinimizerConfig,
+
+	/// True only when the runtime transport observed a deadline timeout.
+	pub runtime_timed_out: bool,
 }
 
 #[derive(Debug, Clone)]

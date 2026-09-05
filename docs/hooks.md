@@ -89,6 +89,7 @@ Hook events are strongly typed in `types.ts`.
 - `session_before_compact` → can return `{ cancel?: boolean; compaction?: CompactionResult }`
 - `session.compacting` → can return `{ context?: string[]; prompt?: string; preserveData?: Record<string, unknown> }`
 - `session_compact`
+- `session_compact_failed` → terminal failure metadata (`reason`, `errorMessage`, `aborted`, `willRetry`, `fromExtension`)
 - `session_before_tree` → can return `{ cancel?: boolean; summary?: { summary: string; details?: unknown } }`
 - `session_tree`
 - `session_shutdown`

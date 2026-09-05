@@ -5,12 +5,19 @@ import { resolveFleetRoot } from "../internal-urls";
 import type { ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isEvalTimeoutControlEvent } from "./bridge-timeout";
+import type { EvalCompletionInvocationContext } from "./completion-bridge";
 import { formatDisplayOutputsForText } from "./display-text";
 import { fsObservationLedgerFor, recordMutationEvents } from "./fs-observations";
 import jsBackend from "./js";
 import pythonBackend from "./py";
 import { defaultEvalSessionId } from "./session-id";
+import { findLiteralCompletionCalls } from "./speculation";
 import type { EvalStatusEvent } from "./types";
+
+export interface KernelShellBridgeOptions {
+	toolCallId?: string;
+	generation?: number;
+}
 
 export interface KernelShellBridgeHandle {
 	env: Record<string, string>;
@@ -27,6 +34,7 @@ interface RunContext {
 	jsonOutputs: unknown[];
 	active: Set<AbortController>;
 	onStatusEvent?: (event: EvalStatusEvent) => void;
+	completionContext?: KernelShellBridgeOptions;
 }
 
 interface SocketState {
@@ -48,6 +56,7 @@ let listener: TCPSocketListener<SocketState> | undefined;
 export function registerKernelShellRun(
 	session: ToolSession,
 	onStatusEvent?: (event: EvalStatusEvent) => void,
+	completionContext?: KernelShellBridgeOptions,
 ): KernelShellBridgeHandle {
 	const server = ensureListener();
 	const token = crypto.randomUUID();
@@ -58,8 +67,10 @@ export function registerKernelShellRun(
 		jsonOutputs: [],
 		active: new Set(),
 		onStatusEvent,
+		completionContext,
 	};
 	runs.set(token, context);
+	let disposed = false;
 	return {
 		env: {
 			PI_KERNEL_BRIDGE_ADDR: `127.0.0.1:${server.port}`,
@@ -75,8 +86,15 @@ export function registerKernelShellRun(
 		drainStatusEvents: () => context.statusEvents.splice(0),
 		drainJsonOutputs: () => context.jsonOutputs.splice(0),
 		dispose: () => {
+			if (disposed) return;
+			disposed = true;
 			runs.delete(token);
 			for (const abort of context.active) abort.abort();
+			if (runs.size === 0) {
+				const current = listener;
+				listener = undefined;
+				current?.stop(true);
+			}
 		},
 	};
 }
@@ -171,6 +189,21 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 
 	const session = context.session;
 	const abort = new AbortController();
+	const candidateFingerprints =
+		context.completionContext?.toolCallId && context.completionContext.generation !== undefined
+			? findLiteralCompletionCalls(request.lang === "js" ? "js" : "python", request.code).map(
+					call => call.fingerprint,
+				)
+			: [];
+	const completionContext: EvalCompletionInvocationContext | undefined =
+		context.completionContext?.toolCallId && context.completionContext.generation !== undefined
+			? {
+					toolCallId: context.completionContext.toolCallId,
+					generation: context.completionContext.generation,
+					language: request.lang === "js" ? "js" : "python",
+					candidateFingerprints,
+				}
+			: undefined;
 	socket.data.abort = abort;
 	context.active.add(abort);
 	// Status events (write/delete hunks, env, agent, …) are surfaced structurally
@@ -185,6 +218,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 			sessionId: session.getEvalSessionId?.() ?? defaultEvalSessionId(session),
 			sessionFile: session.getSessionFile?.() ?? undefined,
 			kernelOwnerId: session.getEvalKernelOwnerId?.() ?? undefined,
+			completionContext,
 			signal: abort.signal,
 			session,
 			reset: false,

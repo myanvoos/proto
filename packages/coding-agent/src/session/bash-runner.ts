@@ -254,6 +254,7 @@ export class BashRunner {
 			cancelled: result.cancelled,
 			truncated: result.truncated,
 			meta,
+			execution: result.execution,
 			timestamp: Date.now(),
 			excludeFromContext: options?.excludeFromContext,
 		};

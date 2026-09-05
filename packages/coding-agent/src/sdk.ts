@@ -8,6 +8,7 @@ import {
 	type AgentTool,
 	AppendOnlyContextManager,
 	filterProviderReplayMessages,
+	type StreamFn,
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import type {
@@ -214,6 +215,7 @@ import { normalizeProviderContextImagesForModel } from "./utils/image-loading";
 import { formatLocalCalendarDate } from "./utils/local-date";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { buildNamedToolChoice } from "./utils/tool-choice";
+import piBlackhole from "./vendor/pi-blackhole/index.js";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 type McpNotificationEntry = {
@@ -346,6 +348,9 @@ export interface CreateAgentSessionOptions {
 	providerPromptCacheKeySource?: "explicit" | "fork";
 
 	deadline?: number;
+
+	/** Deterministic provider seam for controlled orchestration tests and embeddings. */
+	streamFn?: StreamFn;
 
 	customTools?: (CustomTool | ToolDefinition)[];
 
@@ -1285,6 +1290,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			hasUI: options.hasUI ?? false,
 			canPromptUser: options.interactivePrompts ?? options.hasUI ?? false,
 			getApiKey: options.getApiKey,
+			streamFn: options.streamFn,
 			get additionalDirectories() {
 				return sessionManager.getAdditionalDirectories();
 			},
@@ -1315,6 +1321,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
 			isDisposed: () => session?.isDisposed ?? false,
 			getAgentId: () => resolvedAgentId,
+			getAsyncJobOwnerId: () => sessionManager.getSessionId?.() ?? resolvedAgentId,
 			getToolByName: name => session?.getToolByName(name),
 			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
 			getEvalBridgeToolNames: () => session?.getEvalBridgeToolNames() ?? [],
@@ -1567,6 +1574,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 
 		toolSession.extensionPaths = extensionPaths;
+
+		if (!restrictToolNames && !extensionsResult.extensions.some(extension => extension.commands.has("blackhole"))) {
+			const blackhole = await loadExtensionFromFactory(
+				piBlackhole,
+				cwd,
+				eventBus,
+				extensionsResult.runtime,
+				"<builtin-pi-blackhole>",
+			);
+			extensionsResult.extensions.unshift(blackhole);
+		}
 
 		if (inlineExtensions.length > 0) {
 			for (let i = 0; i < inlineExtensions.length; i++) {
@@ -2523,7 +2541,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					settings.get("externalThinking") &&
 					agent.state.tools.some(tool => tool.name === "think") &&
 					supportsExternalThinking(streamModel);
-				return settingsAwareStreamFn(streamModel, context, {
+				return (options.streamFn ?? settingsAwareStreamFn)(streamModel, context, {
 					...streamOptions,
 					anthropicCacheRefresh: true,
 					forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
@@ -2655,8 +2673,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
 			advisorConfigs: discoveredAdvisors.advisors,
 			conductorToolsFactory: buildConductorTools,
-			conductorSetBashAllowlist: allowlist => {
-				if (conductorToolSessionRef) conductorToolSessionRef.bashCommandAllowlist = allowlist;
+			conductorSetBashCommandPolicy: policy => {
+				if (conductorToolSessionRef) conductorToolSessionRef.bashCommandPolicy = policy;
 			},
 			agent,
 			thinkingLevel: effectiveThinkingLevel,

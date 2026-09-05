@@ -8,10 +8,11 @@ import { EvalTool } from "./eval";
 
 const KERNEL_OWNER = `eval-fs-diff-test:${process.pid}`;
 
-function stubSession(cwd: string): ToolSession {
+function stubSession(cwd: string, skills?: ToolSession["skills"]): ToolSession {
 	const settings = new Map<string, unknown>();
 	return {
 		cwd,
+		skills,
 		settings: {
 			get: (key: string) => settings.get(key),
 		},
@@ -321,6 +322,48 @@ test("js protoPath resolves a leading ~ for the raw file APIs", async () => {
 	}
 });
 
+test("js protoPath resolves skills activated after the kernel starts", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-skill-"));
+	try {
+		const skillDir = path.join(dir, "example-skill");
+		await Bun.write(path.join(skillDir, "SKILL.md"), "# Example skill\n");
+		await Bun.write(path.join(skillDir, "notes.txt"), "skill notes\n");
+		const session = stubSession(dir);
+		const tool = new EvalTool(session);
+		const started = await tool.execute("eval-js-skill-start-test", {
+			language: "js",
+			code: 'print("started");',
+			title: "start js kernel",
+			timeout: 60,
+		});
+		expect(started.details?.cells?.[0]?.status).toBe("complete");
+		session.skills = [
+			{
+				name: "example",
+				description: "test skill",
+				filePath: path.join(skillDir, "SKILL.md"),
+				baseDir: skillDir,
+				source: "test",
+			},
+		];
+		const result = await tool.execute("eval-js-skill-test", {
+			language: "js",
+			code: [
+				'print(protoPath("skill://example"));',
+				'print(await Bun.file(protoPath("skill://example/notes.txt")).text());',
+			].join("\n"),
+			title: "js skill path",
+			timeout: 60,
+		});
+		const cell = result.details?.cells?.[0];
+		expect(cell?.status).toBe("complete");
+		expect(cell?.output).toContain(skillDir);
+		expect(cell?.output).toContain("skill notes");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("js kernel fs tracker reports deletes once with diff", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-delete-"));
 	const outside = path.join(os.tmpdir(), `eval-js-delete-${process.pid}-${Date.now()}.txt`);
@@ -562,3 +605,95 @@ test("js capture budget stops retaining text past the aggregate budget but keeps
 		await fs.rm(outside, { recursive: true, force: true });
 	}
 }, 60000);
+
+test("Eval execution metadata ignores timeout-looking output", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-meta-success-"));
+	try {
+		const result = await new EvalTool(stubSession(dir)).execute("eval-meta-success", {
+			language: "py",
+			code: 'print("timeout: 60")',
+			timeout: 30,
+		});
+		expect(result.isError ?? false).toBe(false);
+		expect(result.details?.execution?.state).toBe("exited");
+		expect(result.details?.execution?.exitCode).toBe(0);
+		expect(result.details?.execution?.timeout).toBeUndefined();
+		expect(result.details?.execution?.elapsedMs).toBeGreaterThanOrEqual(0);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
+test("Eval failed status outranks checks-passed output", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-meta-failure-"));
+	try {
+		const result = await new EvalTool(stubSession(dir)).execute("eval-meta-failure", {
+			language: "py",
+			code: 'raise RuntimeError("all checks passed")',
+			timeout: 30,
+		});
+		expect(result.isError).toBe(true);
+		expect(result.details?.execution?.state).toBe("exited");
+		expect(result.details?.execution?.exitCode).toBe(1);
+		expect(result.details?.execution?.timeout).toBeUndefined();
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
+test("Eval child timeout reports unknown process state and cell scope", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-meta-timeout-"));
+	try {
+		const result = await new EvalTool(stubSession(dir)).execute("eval-meta-timeout", {
+			language: "py",
+			code: "import time\ntime.sleep(120)",
+			timeout: 1,
+		});
+		expect(result.isError).toBe(true);
+		expect(result.details?.execution?.state).toBe("unknown");
+		expect(result.details?.execution?.exitCode).toBeUndefined();
+		expect(result.details?.execution?.timeout).toMatchObject({ cause: "idle", scope: "pipeline" });
+		expect(result.details?.cells?.[0]?.execution?.timeout).toMatchObject({ cause: "idle", scope: "cell" });
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
+test("Eval collector failure does not change successful process status", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-meta-collector-"));
+	try {
+		const session = {
+			...stubSession(dir),
+			allocateOutputArtifact: async () => ({ id: "collector-failure", path: "/dev/null/proto-eval-output.log" }),
+		} as ToolSession;
+		const result = await new EvalTool(session).execute("eval-meta-collector", {
+			language: "py",
+			code: 'print("x" * 60000)',
+			timeout: 30,
+		});
+		expect(result.isError ?? false).toBe(false);
+		expect(result.details?.execution?.state).toBe("exited");
+		expect(result.details?.execution?.exitCode).toBe(0);
+		expect(result.details?.execution?.collector.state).toBe("failed");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
+test("running Eval updates carry pipeline metadata separately from output", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-meta-running-"));
+	try {
+		const updates: Array<{ state?: string }> = [];
+		await new EvalTool(stubSession(dir)).execute(
+			"eval-meta-running",
+			{ language: "py", code: 'import time\ntime.sleep(0.1)\nprint("all checks passed")', timeout: 30 },
+			undefined,
+			update => {
+				updates.push({ state: update.details?.execution?.state });
+			},
+		);
+		expect(updates.some(update => update.state === "running")).toBe(true);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);

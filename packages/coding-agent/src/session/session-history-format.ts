@@ -178,14 +178,32 @@ function executionLine(
 	source: string,
 	msg: BashExecutionMessage | PythonExecutionMessage,
 ): string {
-	const status = msg.cancelled
-		? "cancelled"
-		: msg.exitCode !== undefined && msg.exitCode !== 0
-			? `error · exit ${msg.exitCode}`
-			: "ok";
+	const execution = msg.execution;
+	const status = execution
+		? execution.state === "running"
+			? "running"
+			: execution.state === "unknown"
+				? "unknown"
+				: execution.exitCode === 0
+					? "ok"
+					: execution.exitCode !== undefined
+						? `error · exit ${execution.exitCode}`
+						: "exited"
+		: msg.cancelled
+			? "cancelled"
+			: msg.exitCode !== undefined && msg.exitCode !== 0
+				? `error · exit ${msg.exitCode}`
+				: "ok";
+	const details: string[] = [];
+	if (execution?.signal !== undefined) details.push(`signal ${execution.signal}`);
+	if (execution?.elapsedMs !== undefined) details.push(`${Math.round(execution.elapsedMs)}ms`);
+	if (execution?.timeout) details.push(`timeout ${execution.timeout.cause}/${execution.timeout.scope}`);
+	if (execution?.collector.state === "failed") details.push("collector failed");
+	if (execution?.renderer?.state === "failed") details.push("renderer failed");
 	const lines = lineCount(msg.output);
 	const sourcePreview = formatExecutionSourcePreview(source);
-	return `→ user-${kind}! ${sourcePreview} ⇒ ${status} · ${lines} ${lines === 1 ? "line" : "lines"}`;
+	const suffix = details.length > 0 ? ` · ${details.join(", ")}` : "";
+	return `→ user-${kind}! ${sourcePreview} ⇒ ${status}${suffix} · ${lines} ${lines === 1 ? "line" : "lines"}`;
 }
 
 const CONTEXTUAL_NON_PRIMARY_HIDDEN_CUSTOM_TYPES: Record<string, true> = {

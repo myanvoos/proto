@@ -1,7 +1,9 @@
 use std::{
 	collections::HashMap,
 	fs,
-	io::{self},
+	future::Future,
+	io::{self, Read, Write},
+	pin::Pin,
 	str,
 	sync::Arc,
 	time::Duration,
@@ -12,7 +14,10 @@ use brush_core::{
 	ExecutionControlFlow, ExecutionExitCode, ExecutionParameters, ExecutionResult,
 	ProcessGroupPolicy, ProfileLoadBehavior, RcLoadBehavior, Shell as BrushShell, ShellValue,
 	ShellVariable, SourceInfo, SpawnObserver,
+	builtins::{self, ContentType, Registration},
+	commands::{CommandArg, ExecutionContext},
 	env::EnvironmentScope,
+	extensions::{ErrorFormatter, ShellExtensions},
 	fsobserve,
 	openfiles::{self, OpenFile, OpenFiles},
 };
@@ -29,8 +34,196 @@ use crate::{
 	minimizer, process,
 };
 
+/// Request delivered to the TypeScript xdev bridge by the Brush `xd` builtin.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XdDispatchRequest {
+	pub name:            Option<String>,
+	pub args:            Vec<String>,
+	pub stdin:           String,
+	pub stdin_truncated: bool,
+	pub cwd:             String,
+	pub call_id:         Option<String>,
+}
+
+/// Text streams and metadata returned by the TypeScript xdev bridge.
+#[derive(Debug, Clone, Default)]
+pub struct XdDispatchResponse {
+	pub stdout:    String,
+	pub stderr:    String,
+	pub exit_code: i32,
+	/// Opaque JSON record retained outside shell stdout/stderr pipes.
+	pub record:    Option<String>,
+}
+
+pub type XdDispatchFuture = Pin<Box<dyn Future<Output = Result<XdDispatchResponse>> + Send>>;
+
+pub trait XdDispatcher: Send + Sync {
+	fn dispatch(&self, request: XdDispatchRequest) -> XdDispatchFuture;
+}
+
+type XdRuntime = Arc<parking_lot::Mutex<XdRuntimeState>>;
+
+#[derive(Default)]
+struct XdRuntimeState {
+	dispatcher: Option<Arc<dyn XdDispatcher>>,
+	call_id:    Option<String>,
+	records:    Vec<String>,
+}
+
+#[derive(Clone)]
+struct XdErrorFormatter {
+	runtime: XdRuntime,
+}
+
+impl XdErrorFormatter {
+	fn take_records(&self) -> Vec<String> {
+		std::mem::take(&mut self.runtime.lock().records)
+	}
+}
+
+impl Default for XdErrorFormatter {
+	fn default() -> Self {
+		Self { runtime: Arc::new(parking_lot::Mutex::new(XdRuntimeState::default())) }
+	}
+}
+
+impl ErrorFormatter for XdErrorFormatter {}
+
+#[derive(Clone, Default)]
+struct XdShellExtensions;
+
+impl ShellExtensions for XdShellExtensions {
+	type ErrorFormatter = XdErrorFormatter;
+}
+
+const XD_STDIN_LIMIT: usize = 1024 * 1024;
+const XD_BRIDGE_FAILURE_EXIT: i32 = 125;
+
+fn xd_content(name: &str, content_type: ContentType) -> String {
+	let content = match content_type {
+		ContentType::ShortDescription => "dispatch a mounted xdev tool through the agent session",
+		ContentType::ShortUsage => "xd [tool [JSON-ARGS...]]",
+		ContentType::DetailedHelp | ContentType::ManPage => {
+			return format!(
+				"{name}: dispatch a mounted agent tool.\nUsage: xd [tool [JSON-ARGS...]]\n\nThe Brush \
+				 builtin is available only in the agent shell; external bash does not inherit it."
+			);
+		},
+	};
+	content.to_string()
+}
+
+fn xd_exit_code(code: i32) -> ExecutionExitCode {
+	if !(0..=255).contains(&code) {
+		return ExecutionExitCode::Custom(XD_BRIDGE_FAILURE_EXIT as u8);
+	}
+	ExecutionExitCode::from(code as u8)
+}
+
+fn xd_execute(
+	context: ExecutionContext<'_, XdShellExtensions>,
+	args: Vec<CommandArg>,
+) -> builtins::BoxFuture<'_, Result<ExecutionResult, brush_core::error::Error>> {
+	Box::pin(async move {
+		let mut plain_args: Vec<String> = args.into_iter().map(|arg| arg.to_string()).collect();
+		if plain_args.first().is_some_and(|arg| arg == "xd") {
+			plain_args.remove(0);
+		}
+		let (name, args) = match plain_args.as_slice() {
+			[] => (None, Vec::new()),
+			[arg] if arg == "?" || arg.eq_ignore_ascii_case("help") => (None, Vec::new()),
+			[name, rest @ ..] => (Some(name.clone()), rest.to_vec()),
+		};
+		let (dispatcher, call_id) = {
+			let runtime = context.shell.error_formatter().runtime.lock();
+			(runtime.dispatcher.clone(), runtime.call_id.clone())
+		};
+		let Some(dispatcher) = dispatcher else {
+			let _ = writeln!(context.stderr(), "xd: no agent dispatcher is attached");
+			return Ok(ExecutionResult::from(ExecutionExitCode::NotFound));
+		};
+
+		let mut input = Vec::with_capacity(XD_STDIN_LIMIT + 1);
+		let read_result = context
+			.stdin()
+			.take((XD_STDIN_LIMIT + 1) as u64)
+			.read_to_end(&mut input);
+		if let Err(error) = read_result {
+			let _ = writeln!(context.stderr(), "xd: failed to read stdin: {error}");
+			return Ok(ExecutionResult::from(ExecutionExitCode::Custom(XD_BRIDGE_FAILURE_EXIT as u8)));
+		}
+		let stdin_truncated = input.len() > XD_STDIN_LIMIT;
+		if stdin_truncated {
+			input.truncate(XD_STDIN_LIMIT);
+		}
+		let request = XdDispatchRequest {
+			name,
+			args,
+			stdin: String::from_utf8_lossy(&input).into_owned(),
+			stdin_truncated,
+			cwd: context.shell.working_dir().to_string_lossy().into_owned(),
+			call_id,
+		};
+		let result = if let Some(cancel_token) = context.cancel_token() {
+			tokio::select! {
+				() = cancel_token.cancelled() => return Ok(ExecutionResult::from(ExecutionExitCode::Interrupted)),
+				result = dispatcher.dispatch(request) => result,
+			}
+		} else {
+			dispatcher.dispatch(request).await
+		};
+		let response = match result {
+			Ok(response) => response,
+			Err(error) => {
+				let _ = writeln!(context.stderr(), "xd: dispatcher failed: {error}");
+				return Ok(ExecutionResult::from(ExecutionExitCode::Custom(
+					XD_BRIDGE_FAILURE_EXIT as u8,
+				)));
+			},
+		};
+		if let Some(record) = response.record.clone() {
+			context
+				.shell
+				.error_formatter()
+				.runtime
+				.lock()
+				.records
+				.push(record);
+		}
+		if !response.stdout.is_empty()
+			&& context
+				.stdout()
+				.write_all(response.stdout.as_bytes())
+				.is_err()
+		{
+			return Ok(ExecutionResult::from(ExecutionExitCode::BrokenPipe));
+		}
+		if !response.stderr.is_empty()
+			&& context
+				.stderr()
+				.write_all(response.stderr.as_bytes())
+				.is_err()
+		{
+			return Ok(ExecutionResult::from(ExecutionExitCode::BrokenPipe));
+		}
+		Ok(ExecutionResult::from(xd_exit_code(response.exit_code)))
+	})
+}
+
+fn xd_registration() -> Registration<XdShellExtensions> {
+	Registration {
+		execute_func: xd_execute,
+		content_func: |name, content_type, _options| Ok(xd_content(name, content_type)),
+		disabled: false,
+		special_builtin: false,
+		declaration_builtin: false,
+		transparent_background_wrapper: false,
+	}
+}
+
 struct ShellSessionCore {
-	shell: BrushShell,
+	shell: BrushShell<XdShellExtensions>,
 }
 
 impl Drop for ShellSessionCore {
@@ -59,7 +252,7 @@ impl ShellAbortState {
 	}
 }
 
-fn shell_working_dir_matches(shell: &BrushShell, cwd: &str) -> bool {
+fn shell_working_dir_matches(shell: &BrushShell<XdShellExtensions>, cwd: &str) -> bool {
 	let requested = std::path::Path::new(cwd);
 	if !requested.is_absolute() {
 		return false;
@@ -68,7 +261,10 @@ fn shell_working_dir_matches(shell: &BrushShell, cwd: &str) -> bool {
 	current == requested
 }
 
-fn set_shell_working_dir_if_changed(shell: &mut BrushShell, cwd: &str) -> Result<()> {
+fn set_shell_working_dir_if_changed(
+	shell: &mut BrushShell<XdShellExtensions>,
+	cwd: &str,
+) -> Result<()> {
 	if shell_working_dir_matches(shell, cwd) {
 		return Ok(());
 	}
@@ -152,6 +348,7 @@ pub struct ShellRunResult {
 	pub minimized:       Option<MinimizerResult>,
 	pub working_dir:     Option<String>,
 	pub fs_observations: Vec<FsObservation>,
+	pub xd_dispatches:   Vec<String>,
 }
 
 struct CommandOutcome {
@@ -159,6 +356,7 @@ struct CommandOutcome {
 	minimized:       Option<MinimizerResult>,
 	working_dir:     Option<String>,
 	fs_observations: Vec<FsObservation>,
+	xd_dispatches:   Vec<String>,
 }
 
 impl CommandOutcome {
@@ -178,6 +376,7 @@ impl CommandOutcome {
 				.into_iter()
 				.map(Into::into)
 				.collect(),
+			xd_dispatches: session.shell.error_formatter().take_records(),
 		}
 	}
 
@@ -189,12 +388,13 @@ impl CommandOutcome {
 			minimized:       self.minimized,
 			working_dir:     self.working_dir,
 			fs_observations: self.fs_observations,
+			xd_dispatches:   self.xd_dispatches,
 		}
 	}
 }
 
 impl ShellRunResult {
-	fn aborted(reason: AbortReason) -> Self {
+	const fn aborted(reason: AbortReason) -> Self {
 		Self {
 			exit_code:       None,
 			cancelled:       matches!(reason, AbortReason::Signal),
@@ -202,6 +402,7 @@ impl ShellRunResult {
 			minimized:       None,
 			working_dir:     None,
 			fs_observations: Vec::new(),
+			xd_dispatches:   Vec::new(),
 		}
 	}
 }
@@ -220,6 +421,7 @@ pub struct ShellExecuteOptions {
 pub type ShellExecuteResult = ShellRunResult;
 
 pub struct Shell {
+	xd_runtime:  XdRuntime,
 	session:     Arc<TokioMutex<Option<ShellSessionCore>>>,
 	abort_state: ShellAbortState,
 	config:      ShellConfig,
@@ -243,10 +445,22 @@ impl Shell {
 			},
 		};
 		Self {
+			xd_runtime: Arc::new(parking_lot::Mutex::new(XdRuntimeState::default())),
 			session: Arc::new(TokioMutex::new(None)),
 			abort_state: ShellAbortState::default(),
 			config,
 		}
+	}
+
+	pub fn set_xd_dispatcher(
+		&self,
+		dispatcher: Option<Arc<dyn XdDispatcher>>,
+		call_id: Option<String>,
+	) {
+		let mut runtime = self.xd_runtime.lock();
+		runtime.dispatcher = dispatcher;
+		runtime.call_id = call_id;
+		runtime.records.clear();
 	}
 
 	pub async fn run(
@@ -263,6 +477,7 @@ impl Shell {
 		};
 		run_shell_session(
 			self.session.clone(),
+			self.xd_runtime.clone(),
 			self.abort_state.clone(),
 			self.config.clone(),
 			run_config,
@@ -343,6 +558,7 @@ pub async fn execute_shell_streams(
 
 async fn run_shell_session(
 	session: Arc<TokioMutex<Option<ShellSessionCore>>>,
+	xd_runtime: XdRuntime,
 	abort_state: ShellAbortState,
 	config: ShellConfig,
 	run_config: ShellRunConfig,
@@ -362,6 +578,7 @@ async fn run_shell_session(
 
 	let mut run_task = tokio::spawn({
 		let session = session.clone();
+		let xd_runtime = xd_runtime.clone();
 		let abort_state = abort_state.clone();
 		let tokio_cancel = tokio_cancel.clone();
 		let at = ct.emplace_abort_token();
@@ -374,6 +591,7 @@ async fn run_shell_session(
 				None => session_guard.insert(
 					create_session_for_run(
 						&config,
+						xd_runtime.clone(),
 						Some(spawn_registry.clone()),
 						Some(tokio_cancel.clone()),
 					)
@@ -426,6 +644,7 @@ async fn run_shell_oneshot(
 	on_chunk: Option<Sender<String>>,
 	ct: CancelToken,
 ) -> Result<ShellExecuteResult> {
+	let xd_runtime = Arc::new(parking_lot::Mutex::new(XdRuntimeState::default()));
 	let tokio_cancel = CancellationToken::new();
 	let spawn_registry = Arc::new(process::SpawnRegistry::new());
 	let process_cancel_bridge = tokio::spawn({
@@ -439,10 +658,12 @@ async fn run_shell_oneshot(
 
 	let mut task = tokio::spawn({
 		let tokio_cancel = tokio_cancel.clone();
+		let xd_runtime = xd_runtime.clone();
 		let spawn_registry = spawn_registry.clone();
 		async move {
 			let mut session = create_session_for_run(
 				&config,
+				xd_runtime.clone(),
 				Some(spawn_registry.clone()),
 				Some(tokio_cancel.clone()),
 			)
@@ -478,6 +699,7 @@ async fn run_shell_oneshot_streams(
 	streams: StreamSinks,
 	ct: CancelToken,
 ) -> Result<ShellExecuteResult> {
+	let xd_runtime = Arc::new(parking_lot::Mutex::new(XdRuntimeState::default()));
 	let tokio_cancel = CancellationToken::new();
 	let spawn_registry = Arc::new(process::SpawnRegistry::new());
 	let process_cancel_bridge = tokio::spawn({
@@ -491,10 +713,12 @@ async fn run_shell_oneshot_streams(
 
 	let mut task = tokio::spawn({
 		let tokio_cancel = tokio_cancel.clone();
+		let xd_runtime = xd_runtime.clone();
 		let spawn_registry = spawn_registry.clone();
 		async move {
 			let mut session = create_session_for_run(
 				&config,
+				xd_runtime.clone(),
 				Some(spawn_registry.clone()),
 				Some(tokio_cancel.clone()),
 			)
@@ -548,7 +772,7 @@ const fn normalize_env_key(key: &str) -> &str {
 }
 
 fn copy_env_into_shell(
-	shell: &mut BrushShell,
+	shell: &mut BrushShell<XdShellExtensions>,
 	env: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> Result<()> {
 	let mut merged_path: Option<String> = None;
@@ -586,17 +810,22 @@ fn copy_env_into_shell(
 
 async fn create_session_for_run(
 	config: &ShellConfig,
+	xd_runtime: XdRuntime,
 	spawn_registry: Option<Arc<process::SpawnRegistry>>,
 	cancel_token: Option<CancellationToken>,
 ) -> Result<ShellSessionCore> {
-	let mut shell = BrushShell::builder()
-		.do_not_inherit_env(true)
-		.profile(ProfileLoadBehavior::Skip)
-		.rc(RcLoadBehavior::Skip)
-		.builtins(default_builtins(BuiltinSet::BashMode))
-		.build()
-		.await
-		.map_err(|err| Error::msg(format!("Failed to initialize shell: {err}")))?;
+	let mut shell: BrushShell<XdShellExtensions> =
+		BrushShell::builder_with_extensions::<XdShellExtensions>()
+			.error_formatter(XdErrorFormatter { runtime: xd_runtime })
+			.do_not_inherit_env(true)
+			.profile(ProfileLoadBehavior::Skip)
+			.rc(RcLoadBehavior::Skip)
+			.builtins(default_builtins(BuiltinSet::BashMode))
+			.build()
+			.await
+			.map_err(|err| Error::msg(format!("Failed to initialize shell: {err}")))?;
+
+	shell.register_builtin("xd", xd_registration());
 
 	if let Some(exec_builtin) = shell.builtin_mut("exec") {
 		exec_builtin.disabled = true;
@@ -658,7 +887,7 @@ async fn create_session_for_run(
 }
 
 async fn source_snapshot(
-	shell: &mut BrushShell,
+	shell: &mut BrushShell<XdShellExtensions>,
 	snapshot_path: &str,
 	spawn_registry: Option<Arc<process::SpawnRegistry>>,
 	cancel_token: Option<CancellationToken>,
@@ -807,12 +1036,15 @@ async fn run_shell_command_single(
 		&& !buffered.exceeded
 	{
 		let minimized = match minimizer_mode {
-			minimizer::engine::MinimizerMode::WholeCommand => minimizer::apply(
-				&options.command,
-				&buffered.text,
-				exit_code(&command_run.result),
-				config,
-			),
+			minimizer::engine::MinimizerMode::WholeCommand => {
+				minimizer::engine::apply_with_runtime_status(
+					&options.command,
+					&buffered.text,
+					exit_code(&command_run.result),
+					config,
+					false,
+				)
+			},
 			minimizer::engine::MinimizerMode::None => {
 				minimizer::MinimizerOutput::passthrough(&buffered.text)
 			},
@@ -923,7 +1155,13 @@ async fn run_shell_command_segmented_chain(
 				if next_input_bytes > max_capture_bytes {
 					aggregate = None;
 				} else {
-					let minimized = minimizer::apply(&segment.command, &buffered.text, exit, config);
+					let minimized = minimizer::engine::apply_with_runtime_status(
+						&segment.command,
+						&buffered.text,
+						exit,
+						config,
+						false,
+					);
 					capture.push(
 						&buffered.text,
 						buffered.input_bytes,
@@ -1315,13 +1553,13 @@ async fn terminate_run(registry: &process::SpawnRegistry) {
 		}
 	}
 }
-fn terminate_internal_background_jobs(shell: &mut BrushShell) {
+fn terminate_internal_background_jobs(shell: &mut BrushShell<XdShellExtensions>) {
 	for job in &mut shell.jobs_mut().jobs {
 		job.abort_internal_tasks();
 	}
 }
 
-fn terminate_background_jobs(shell: &mut BrushShell) {
+fn terminate_background_jobs(shell: &mut BrushShell<XdShellExtensions>) {
 	let mut targets = process::TerminationTargets::new();
 	terminate_internal_background_jobs(shell);
 	for job in &shell.jobs().jobs {
@@ -1344,7 +1582,7 @@ fn terminate_background_jobs(shell: &mut BrushShell) {
 }
 
 fn apply_command_env(
-	shell: &mut BrushShell,
+	shell: &mut BrushShell<XdShellExtensions>,
 	env: Option<&HashMap<String, String>>,
 ) -> Result<bool> {
 	let Some(env) = env else {
@@ -1369,7 +1607,7 @@ fn apply_command_env(
 	Ok(true)
 }
 
-fn apply_env_fallback(shell: &mut BrushShell) -> Result<()> {
+fn apply_env_fallback(shell: &mut BrushShell<XdShellExtensions>) -> Result<()> {
 	if shell.env().get("env").is_some() {
 		return Ok(());
 	}

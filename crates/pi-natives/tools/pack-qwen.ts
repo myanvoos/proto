@@ -17,8 +17,7 @@
 const SRC = new URL("cache/qwen3.8.tokenizer.json", import.meta.url).pathname;
 const OUT = new URL("../data/qwen3.bin.zst", import.meta.url).pathname;
 
-const VOCAB_SIZE = 248_044; 
-const ALPHABET_SIZE = 256;
+const VOCAB_SIZE = 248_044;
 
 const tj = await Bun.file(SRC).json();
 const model = tj.model;

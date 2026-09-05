@@ -897,6 +897,7 @@ function validateSessionVerdict(v: SessionVerdict): string | undefined {
 function validateAggregate(a: AggregateFindings): string | undefined {
 	if (typeof a.summary !== "string" || !a.summary.trim()) return "summary missing or empty";
 	if (!Array.isArray(a.systemicIssues)) return "systemicIssues is not an array";
+	if (!Array.isArray(a.quickWins)) return "quickWins is not an array";
 	return undefined;
 }
 

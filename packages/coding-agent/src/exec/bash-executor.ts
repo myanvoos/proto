@@ -2,6 +2,8 @@ import { ExponentialYield } from "@oh-my-pi/pi-agent-core/utils/yield";
 import { type FsObservation, type MinimizerOptions, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
 import { isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings, type ShellMinimizerSettings } from "../config/settings";
+import type { ExecutionMetadata } from "../session/execution-metadata";
+import { type ExecutionTimeoutMetadata, executionMetadataForResult } from "../session/execution-metadata";
 import { OutputSink } from "../session/streaming-output";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";
 import { getOrCreateSnapshot } from "../utils/shell-snapshot";
@@ -22,6 +24,11 @@ interface BashExecutorOptions {
 
 	useUserShell?: boolean;
 
+	xd?: {
+		callId?: string;
+		createDispatcher: (signal?: AbortSignal) => (request: string) => Promise<string>;
+	};
+
 	artifactPath?: string;
 	artifactId?: string;
 
@@ -37,6 +44,8 @@ export interface BashResult {
 	cancelled: boolean;
 
 	timedOut?: boolean;
+	signal?: string | number;
+	execution?: ExecutionMetadata;
 	truncated: boolean;
 	totalLines: number;
 	totalBytes: number;
@@ -45,6 +54,11 @@ export interface BashResult {
 	artifactId?: string;
 	workingDir?: string;
 	fsObservations?: FsObservation[];
+	xdDispatches?: string[];
+	collector?: { state: "running" | "complete" | "failed" | "unavailable"; error?: string };
+	outputDisposition?: "complete" | "truncated" | "summarized" | "unavailable";
+	summarized?: boolean;
+	actionableDiagnostics?: string[];
 }
 
 const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -98,6 +112,14 @@ const retainedShells = new Set<Shell>();
 const RETAIN_REAP_INTERVAL_MS = 5_000;
 
 const NATIVE_TIMEOUT_FALLBACK_GRACE_MS = 5_000;
+
+function makeCommandTimeoutMetadata(timeoutMs: number | undefined): ExecutionTimeoutMetadata {
+	return {
+		cause: "deadline",
+		scope: "command",
+		effectiveMs: timeoutMs,
+	};
+}
 
 async function retainShellWithLiveBackgroundJobs(shell: Shell): Promise<void> {
 	let live: number;
@@ -282,6 +304,16 @@ function resolveUserShellConfig(settings: Settings, baseConfig: ShellConfig): Sh
 }
 
 export async function executeBash(command: string, options?: BashExecutorOptions): Promise<BashResult> {
+	const executionStartedAt = performance.now();
+	const withExecutionMetadata = (result: BashResult): BashResult => ({
+		...result,
+		execution: executionMetadataForResult(result, {
+			elapsedMs: performance.now() - executionStartedAt,
+			timeout: result.timedOut ? makeCommandTimeoutMetadata(options?.timeout) : undefined,
+			summary: result,
+		}),
+	});
+
 	const settings = await Settings.init();
 	const baseShellConfig = settings.getShellConfig();
 	const shellConfig =
@@ -325,11 +357,11 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	};
 
 	if (options?.signal?.aborted) {
-		return {
+		return withExecutionMetadata({
 			exitCode: undefined,
 			cancelled: true,
 			...(await sink.dump("Command cancelled")),
-		};
+		});
 	}
 
 	const shellOptions = {
@@ -395,6 +427,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	}
 
 	let resetSession = false;
+	const xdDispatcher = options?.xd?.createDispatcher(runAbortController.signal);
 
 	try {
 		const runPromise = executionShell.run(
@@ -403,6 +436,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				cwd: commandCwd,
 				env: commandEnv,
 				timeoutMs: nativeTimeoutMs,
+				xdCallId: options?.xd?.callId,
 				signal: runAbortController.signal,
 			},
 			(err, chunk) => {
@@ -410,6 +444,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 					enqueueChunk(chunk);
 				}
 			},
+			xdDispatcher,
 		);
 
 		const ey = new ExponentialYield();
@@ -430,7 +465,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			} else {
 				void Promise.allSettled([runPromise, cleanupPromise]);
 			}
-			return {
+			return withExecutionMetadata({
 				exitCode: undefined,
 				cancelled: true,
 				...(winner.kind === "timeout" ? { timedOut: true } : {}),
@@ -439,7 +474,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 						? `Command timed out after ${Math.round(deadlineTimeoutMs / 1000)} seconds`
 						: "Command cancelled",
 				)),
-			};
+			});
 		}
 		if (timeoutTimer) {
 			clearTimeout(timeoutTimer);
@@ -454,12 +489,12 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			if (shellSession) {
 				quarantineShellSession(sessionKey, runPromise, abortCleanupPromise);
 			}
-			return {
+			return withExecutionMetadata({
 				exitCode: undefined,
 				cancelled: true,
 				timedOut: true,
 				...(await sink.dump(annotation)),
-			};
+			});
 		}
 
 		if (winner.result.cancelled) {
@@ -467,16 +502,16 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			if (shellSession) {
 				quarantineShellSession(sessionKey, runPromise, abortCleanupPromise);
 			}
-			return {
+			return withExecutionMetadata({
 				exitCode: undefined,
 				cancelled: true,
 				...(await sink.dump("Command cancelled")),
-			};
+			});
 		}
 
 		const minimized = winner.result.minimized;
 		if (minimized && minimized.text !== minimized.originalText) {
-			sink.replace(minimized.text);
+			sink.replace(minimized.text, { summarized: true });
 			if (options?.onMinimizedSave) {
 				const artifactId = await options.onMinimizedSave(minimized.originalText, {
 					filter: minimized.filter,
@@ -490,13 +525,14 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			}
 		}
 
-		return {
+		return withExecutionMetadata({
 			exitCode: winner.result.exitCode,
 			cancelled: false,
 			workingDir: winner.result.workingDir,
 			fsObservations: winner.result.fsObservations,
+			xdDispatches: winner.result.xdDispatches,
 			...(await sink.dump()),
-		};
+		});
 	} catch (err) {
 		resetSession = true;
 		throw err;

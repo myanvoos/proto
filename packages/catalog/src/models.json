@@ -201240,7 +201240,14 @@
 				"input": 2.5,
 				"output": 15,
 				"cacheRead": 0.25,
-				"cacheWrite": 0
+				"cacheWrite": 0,
+				"longContext": {
+					"inputThreshold": 272000,
+					"input": 5,
+					"output": 22.5,
+					"cacheRead": 0.5,
+					"cacheWrite": 0
+				}
 			},
 			"remoteCompaction": {
 				"enabled": true,
@@ -201410,7 +201417,14 @@
 				"input": 5,
 				"output": 30,
 				"cacheRead": 0.5,
-				"cacheWrite": 0
+				"cacheWrite": 0,
+				"longContext": {
+					"inputThreshold": 272000,
+					"input": 10,
+					"output": 45,
+					"cacheRead": 1,
+					"cacheWrite": 0
+				}
 			},
 			"remoteCompaction": {
 				"enabled": true,
@@ -201766,9 +201780,9 @@
 				"usesOpenAIToolCallIdLimit": false
 			}
 		},
-		"gpt-daybreak-blue-latest": {
-			"id": "gpt-daybreak-blue-latest",
-			"name": "Daybreak Blue",
+		"gpt-6-astra": {
+			"id": "gpt-6-astra",
+			"name": "GPT-6 Astra",
 			"api": "openai-codex-responses",
 			"provider": "openai-codex",
 			"baseUrl": "https://chatgpt.com/backend-api",
@@ -201778,10 +201792,17 @@
 				"image"
 			],
 			"cost": {
-				"input": 5,
-				"output": 30,
-				"cacheRead": 0.5,
-				"cacheWrite": 6.25
+				"input": 10,
+				"output": 50,
+				"cacheRead": 1,
+				"cacheWrite": 12.5,
+				"longContext": {
+					"inputThreshold": 272000,
+					"input": 20,
+					"output": 75,
+					"cacheRead": 2,
+					"cacheWrite": 25
+				}
 			},
 			"remoteCompaction": {
 				"enabled": true,
@@ -201791,10 +201812,6 @@
 			"contextWindow": 272000,
 			"maxTokens": 128000,
 			"preferWebsockets": true,
-			"useResponsesLite": true,
-			"toolMode": "code_mode_only",
-			"priority": 3,
-			"applyPatchToolType": "freeform",
 			"thinking": {
 				"mode": "effort",
 				"efforts": [

@@ -1,7 +1,7 @@
 ---
 description: "Use for b.Loop() in benchmarks instead of the for i := 0; i < b.N; i++ loop (Go 1.24)"
 interruptMode: never
-scope: "tool:edit(*_test.go), tool:write(*_test.go)"
+scope: "tool:eval, tool:kernel"
 astCondition:
   - "func $F($B *testing.B) { $$$PRE for $I := 0; $I < $B.N; $I++ { $$$BODY } $$$POST }"
 ---

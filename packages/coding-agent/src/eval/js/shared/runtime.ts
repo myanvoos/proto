@@ -25,7 +25,7 @@ import type { JsDisplayOutput, JsStatusEvent } from "./types";
 export interface RuntimeHooks {
 	onText(chunk: string): void;
 	onDisplay(output: JsDisplayOutput): void;
-	callTool(name: string, args: unknown): Promise<unknown>;
+	callTool(name: string, args: unknown, completionInvocationId?: string): Promise<unknown>;
 }
 
 function surfaceBridgedToolImages(value: unknown, hooks: RuntimeHooks): unknown {
@@ -50,6 +50,7 @@ export interface RunContext {
 	cwd: string;
 	finalExpressionSet: boolean;
 	finalExpressionValue: unknown;
+	completionInvocationCount: number;
 }
 
 export interface RuntimeOptions {
@@ -194,6 +195,11 @@ export class JsRuntime {
 		}
 	}
 
+	setLocalRoots(localRoots: Record<string, string>): void {
+		if (this.#disposed) throw new Error("Cannot set local roots on a disposed JS runtime");
+		this.#localRoots = localRoots;
+	}
+
 	setRunScope(scope: Record<string, unknown>): void {
 		this.#activateGlobals("set run scope");
 		Object.assign(globalThis, scope);
@@ -213,6 +219,7 @@ export class JsRuntime {
 			cwd: options.cwd ?? this.#cwd,
 			finalExpressionSet: false,
 			finalExpressionValue: undefined,
+			completionInvocationCount: 0,
 		};
 		resetFileTracking();
 		try {
@@ -325,10 +332,15 @@ export class JsRuntime {
 		const injected: Record<string, unknown> = {
 			__proto_session__: this.#session,
 			__proto_helpers__: this.helpers,
-			__proto_call_tool__: async (name: string, args: unknown) => {
+			__proto_call_tool__: async (name: string, args: unknown, completionInvocationId?: string) => {
 				const hooks = this.#activeHooks("tool");
 				if (!hooks) return undefined;
-				return surfaceBridgedToolImages(await hooks.callTool(name, args), hooks);
+				return surfaceBridgedToolImages(await hooks.callTool(name, args, completionInvocationId), hooks);
+			},
+			__proto_next_completion_invocation__: () => {
+				const context = this.#als.getStore();
+				if (!context) return undefined;
+				return String(context.completionInvocationCount++);
 			},
 			__proto_import__: async (source: string, options?: ImportCallOptions) => {
 				const resolved = await this.#moduleLoader.resolveForRun(this.#activeCwd(), source);

@@ -1,7 +1,7 @@
 <stakes>
 You compress one text and nothing else. The output replaces the source in a system prompt, tool description, or spec — read cold by a model that must execute it, with no author present to disambiguate. Compression that forces a guess is a bug, not a saving.
 
-This is the runtime contract for the `semantic-compression` skill. When the two disagree, the skill is the source of truth.
+This is the runtime contract for the `semantic-compression` skill. Compression sessions load this prompt; keep it aligned with the skill's verification and loss rules.
 </stakes>
 
 # Compression

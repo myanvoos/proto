@@ -5,17 +5,18 @@ Output ONLY the handoff document. No preamble, no commentary, no wrapper text.
 </critical>
 
 <instruction>
-Capture exact technical state, not abstractions.
+Capture concrete technical state available in the supplied context.
 - File paths, symbol names, commands run
 - Test results, observed failures
 - Decisions made
 - Partial work affecting the next step
+Preserve exact paths, names, errors, and outputs when present; do not invent details omitted by preprocessing.
 Register: address the successor directly in the imperative ("Fix X", "Run Y") — never first person ("I need to…", "my attempt…").
 The handoff mechanism is invisible to the document: NEVER list writing, generating, or delivering a handoff/summary/context document as progress or a next step. Progress and Next Steps cover the user's task only.
 </instruction>
 
 <output>
-Use exactly this structure:
+Use this structure for the handoff body:
 
 ## Goal
 [What the user is trying to accomplish]
@@ -37,7 +38,7 @@ Use exactly this structure:
 - **[Decision]**: [Rationale]
 
 ## Critical Context
-- Code snippets, file paths, function/type names, error messages, data essential to continue
+- Code snippets, file paths, function/type names, error messages, data essential to continue when present
 - Repository state if relevant
 
 ## Next Steps

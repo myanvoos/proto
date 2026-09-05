@@ -15,7 +15,7 @@ Use null for: cross-cutting changes, project-wide refactoring.
 Forbidden scopes (use null): src, lib, include, tests, benches, examples, docs, project name, app, main, entire, all, misc.
 
 Prefer scopes from <common-scopes> over inventing new.
-## 2. Generate Details (0-6 items)
+## 2. Generate Details (0–6 items; never more than 6)
 
 Each detail:
 1. Past-tense verb, ends with period
@@ -46,6 +46,7 @@ State only visible rationale. If unclear, use neutral: "Updated logic for correc
 |Bug fix, correction|"Fixed"|
 |Feature marked for removal|"Deprecated"|
 |Feature/API removed|"Removed"|
+|Breaking behavior/API incompatible with prior releases|"Breaking Changes"|
 |Security fix or improvement|"Security"|
 
 user_visible: true for: new features, APIs, breaking changes, user-affecting bug fixes, user-facing docs, security fixes.
@@ -64,7 +65,7 @@ Call create_conventional_analysis with:
 "details": [
 {
 "text": "Past-tense description ending with period.",
-"changelog_category": "Added|Changed|Fixed|Deprecated|Removed|Security",
+"changelog_category": "Breaking Changes|Added|Changed|Fixed|Deprecated|Removed|Security",
 "user_visible": true
 },
 {

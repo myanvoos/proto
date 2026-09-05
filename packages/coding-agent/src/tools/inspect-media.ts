@@ -31,6 +31,7 @@ import {
 	MAX_IMAGE_INPUT_BYTES,
 	webpExclusionForModel,
 } from "../utils/image-loading";
+import { modelSupportsImageInput } from "../utils/inspect-media-mode";
 import {
 	type LoadedMediaFileInput,
 	loadMediaFileInput,
@@ -226,6 +227,61 @@ export class InspectMediaTool implements AgentTool<typeof inspectMediaSchema, In
 			throw new ToolError(
 				"Image submission is disabled by settings (images.blockImages=true). Disable it to inspect images with inspect_media.",
 			);
+		}
+
+		// The active model reads images natively -> hand the image itself to the
+		// conversation instead of round-tripping a lossy description through a
+		// side completion. Audio/video and text-only actives keep the side model.
+		const activeModel = this.session.getActiveModel?.();
+		if (kind === "image" && modelSupportsImageInput(activeModel)) {
+			const inlineModel = activeModel!;
+			let inlineInput: LoadedMedia | null;
+			try {
+				if (attachmentReference) {
+					inlineInput = await loadAttachmentReferenceInput({
+						path: params.path,
+						reference: attachmentReference,
+						attachments: this.session.getImageAttachments?.() ?? [],
+						autoResize: this.session.settings.get("images.autoResize"),
+						excludeWebP: webpExclusionForModel(inlineModel),
+					});
+				} else {
+					const loaded: LoadedImageInput | null = await loadImageInput({
+						path: params.path,
+						cwd: this.session.cwd,
+						autoResize: this.session.settings.get("images.autoResize"),
+						maxBytes: MAX_IMAGE_INPUT_BYTES,
+						excludeWebP: webpExclusionForModel(inlineModel),
+					});
+					inlineInput = loaded
+						? { kind: "image", resolvedPath: loaded.resolvedPath, mimeType: loaded.mimeType, data: loaded.data }
+						: null;
+				}
+			} catch (error) {
+				if (error instanceof ImageInputTooLargeError) {
+					throw new ToolError(error.message);
+				}
+				throw error;
+			}
+			if (!inlineInput) {
+				throw new ToolError(
+					"inspect_media could not decode the file as a supported image (PNG, JPEG, GIF, or WEBP detected by file content).",
+				);
+			}
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Image attached below (${inlineInput.mimeType}); analyze it directly to answer the question.`,
+					},
+					{ type: "image", data: inlineInput.data, mimeType: inlineInput.mimeType },
+				],
+				details: {
+					model: `${inlineModel.provider}/${inlineModel.id}`,
+					mediaPath: inlineInput.resolvedPath,
+					mimeType: inlineInput.mimeType,
+				},
+			};
 		}
 
 		const supporting = candidates.find(candidate => candidate.model.input.includes(kind));

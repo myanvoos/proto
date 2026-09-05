@@ -4,7 +4,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
-import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
+import { getProjectDir, isEnoent, isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import {
 	DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
 	formatBackgroundNotice,
@@ -12,12 +12,28 @@ import {
 	resolveAutoBackgroundWaitMs,
 } from "../async";
 import type { Settings } from "../config/settings";
+import {
+	cancelAllEvalCompletionSpeculation,
+	cancelEvalCompletionSpeculation,
+	startEvalCompletionSpeculation,
+} from "../eval/completion-bridge";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
+import { parseStreamedInputForCompletion, type StreamedKernelFailure } from "../eval/speculation";
+import {
+	type ExecutionMetadata,
+	type ExecutionTimeoutMetadata,
+	executionMetadataForResult,
+} from "../session/execution-metadata";
+
+export type { StreamedKernelFailure } from "../eval/speculation";
+
+import { preflightStreamedInput } from "../eval/assertion-preflight";
 import { type KernelShellBridgeHandle, registerKernelShellRun } from "../eval/shell-bridge";
 import type { EvalCellResult, EvalStatusEvent } from "../eval/types";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
+import { formatExecutionMetadata } from "../modes/components/execution-shared";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
@@ -60,13 +76,11 @@ import {
 	previewWindowRows,
 	replaceTabs,
 } from "./render-utils";
-import { REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
-import { isResolutionDeviceName } from "./resolve";
-import { extractLeadingCdTarget, tokenizeShellSegments } from "./shell-tokenize";
-import { ToolAbortError, ToolError } from "./tool-errors";
+import { extractLeadingCdTarget } from "./shell-tokenize";
+import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
-import { dispatchXdTarget, parseXdBashCommand, xdevListing } from "./xdev";
+import { dispatchXdTarget, type XdBashDispatch, xdevListing } from "./xdev";
 
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
 
@@ -162,6 +176,7 @@ export interface BashToolInput {
 export interface BashToolDetails {
 	xdev?: unknown;
 	meta?: OutputMeta;
+	execution?: ExecutionMetadata;
 	statusEvents?: EvalStatusEvent[];
 	jsonOutputs?: unknown[];
 	timeoutSeconds?: number;
@@ -197,6 +212,61 @@ interface ManagedBashJobHandle {
 	stopUpdates: () => void;
 }
 
+interface StreamedBashState {
+	generation: number;
+	latestRaw: string;
+	version: number;
+	specContextKey?: string;
+	specCandidateKey?: string;
+	speculationLaunches: number;
+	speculationStarted: Set<string>;
+	assertionController?: AbortController;
+	assertionPromise?: Promise<StreamedKernelFailure | undefined>;
+}
+
+interface XdDispatchRecord {
+	xdev?: unknown;
+	details?: { jsonOutputs?: unknown[] };
+	content?: unknown[];
+	isError?: boolean;
+}
+
+function parseXdDispatches(dispatches: readonly string[] | undefined): {
+	records: XdDispatchRecord[];
+	error?: string;
+} {
+	if (!dispatches) return { records: [] };
+	const records: XdDispatchRecord[] = [];
+	for (let index = 0; index < dispatches.length; index++) {
+		const raw = dispatches[index];
+		if (typeof raw !== "string") {
+			return { records, error: `xd dispatch record ${index + 1} is not text` };
+		}
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			if (!isRecord(parsed)) return { records, error: `xd dispatch record ${index + 1} is not an object` };
+			records.push({
+				xdev: parsed.xdev,
+				details: isRecord(parsed.details)
+					? { jsonOutputs: Array.isArray(parsed.details.jsonOutputs) ? parsed.details.jsonOutputs : undefined }
+					: undefined,
+				content: Array.isArray(parsed.content) ? parsed.content : undefined,
+				isError: parsed.isError === true,
+			});
+		} catch (error) {
+			return {
+				records,
+				error: `xd dispatch record ${index + 1} is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+	}
+	return { records };
+}
+
+function readXdDispatches(result: BashResult | BashInteractiveResult): readonly string[] | undefined {
+	if (!("xdDispatches" in result) || !Array.isArray(result.xdDispatches)) return undefined;
+	return result.xdDispatches;
+}
 function normalizeResultOutput(result: BashResult | BashInteractiveResult): string {
 	return result.output || "";
 }
@@ -386,6 +456,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	readonly #asyncEnabled: boolean;
 	readonly #autoBackgroundEnabled: boolean;
 	readonly #autoBackgroundThresholdMs: number;
+	readonly #streamedInputs = new Map<string, StreamedBashState>();
+	#nextStreamGeneration = 0;
+	#disposed = false;
 
 	constructor(private readonly session: ToolSession) {
 		this.#asyncEnabled = this.session.settings.get("async.enabled");
@@ -397,19 +470,131 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			),
 		);
 		this.parameters = this.#asyncEnabled ? bashSchemaWithAsync : bashSchemaBase;
+		this.session.registerDisposeCallback?.(() => {
+			this.#disposed = true;
+			this.cancelStreamedInput();
+		});
 	}
 
-	async #dispatchXdBash(
-		command: string,
+	/**
+	 * Observe an incremental tool-call argument JSON prefix. Only the explicit
+	 * speculation/assertion settings enable work; malformed or unsupported
+	 * prefixes are inert. A failure is returned only if it still belongs to the
+	 * newest prefix for this outer call and generation.
+	 */
+	async observeStreamedInput(toolCallId: string, rawPartialJson: string): Promise<StreamedKernelFailure | undefined> {
+		if (this.#disposed || !toolCallId || typeof rawPartialJson !== "string") return undefined;
+		let state = this.#streamedInputs.get(toolCallId);
+		if (!state) {
+			state = {
+				generation: ++this.#nextStreamGeneration,
+				latestRaw: "",
+				version: 0,
+				speculationLaunches: 0,
+				speculationStarted: new Set(),
+			};
+			this.#streamedInputs.set(toolCallId, state);
+		}
+		if (state.latestRaw === rawPartialJson) return state.assertionPromise ? await state.assertionPromise : undefined;
+		state.latestRaw = rawPartialJson;
+		state.version++;
+		state.assertionController?.abort();
+		state.assertionController = undefined;
+		state.assertionPromise = undefined;
+
+		const speculationEnabled = this.session.settings.get("kernel.speculation.enabled") === true;
+		if (!speculationEnabled) {
+			cancelEvalCompletionSpeculation(toolCallId, state.generation, this.session);
+		} else {
+			const parsed = parseStreamedInputForCompletion(rawPartialJson);
+			const envKey = Object.entries(parsed.input.env ?? {}).sort(([a], [b]) => a.localeCompare(b));
+			const contextKey = JSON.stringify({
+				cwd: parsed.input.cwd,
+				env: envKey,
+				pty: parsed.input.pty ?? false,
+				async: parsed.input.async ?? false,
+			});
+			const candidateKey = parsed.calls.map(call => call.fingerprint).join("\0");
+			if (state.specContextKey !== undefined && state.specContextKey !== contextKey) {
+				cancelEvalCompletionSpeculation(toolCallId, state.generation, this.session);
+			}
+			if (state.specCandidateKey !== undefined) {
+				const previousCandidates = state.specCandidateKey.length > 0 ? state.specCandidateKey.split("\0") : [];
+				const removedOrRevised =
+					parsed.calls.length < previousCandidates.length ||
+					previousCandidates.some((fingerprint, index) => parsed.calls[index]?.fingerprint !== fingerprint);
+				if (removedOrRevised) cancelEvalCompletionSpeculation(toolCallId, state.generation, this.session);
+			}
+			state.specContextKey = contextKey;
+			state.specCandidateKey = candidateKey;
+			if (parsed.input.pty === true || parsed.input.async === true || parsed.calls.length === 0) {
+				cancelEvalCompletionSpeculation(toolCallId, state.generation, this.session);
+			} else {
+				const candidateFingerprints = parsed.calls.map(call => call.fingerprint);
+				for (const call of parsed.calls) {
+					if (state.speculationLaunches >= 2) break;
+					const launchKey = `${call.index}\0${call.fingerprint}\0${contextKey}`;
+					if (state.speculationStarted.has(launchKey)) continue;
+					state.speculationStarted.add(launchKey);
+					state.speculationLaunches++;
+					void startEvalCompletionSpeculation({
+						session: this.session,
+						toolCallId,
+						generation: state.generation,
+						invocationId: String(call.index),
+						fingerprint: call.fingerprint,
+						args: call.args,
+						language: call.language,
+						candidateFingerprints,
+					}).catch(() => undefined);
+				}
+			}
+		}
+
+		if (this.session.settings.get("kernel.assertPreflight.enabled") !== true) return undefined;
+		const controller = new AbortController();
+		state.assertionController = controller;
+		const version = state.version;
+		const assertion = preflightStreamedInput(toolCallId, rawPartialJson, {
+			session: this.session,
+			signal: controller.signal,
+		})
+			.then(failure => {
+				const current = this.#streamedInputs.get(toolCallId);
+				if (
+					controller.signal.aborted ||
+					current !== state ||
+					current.version !== version ||
+					current.latestRaw !== rawPartialJson
+				)
+					return undefined;
+				return failure;
+			})
+			.catch(() => undefined);
+		state.assertionPromise = assertion;
+		return await assertion;
+	}
+
+	cancelStreamedInput(toolCallId?: string): void {
+		const ids = toolCallId === undefined ? [...this.#streamedInputs.keys()] : [toolCallId];
+		for (const id of ids) {
+			const state = this.#streamedInputs.get(id);
+			if (!state) continue;
+			state.assertionController?.abort();
+			cancelEvalCompletionSpeculation(id, state.generation, this.session);
+			this.#streamedInputs.delete(id);
+		}
+		if (toolCallId === undefined) cancelAllEvalCompletionSpeculation(this.session);
+	}
+
+	async #dispatchParsedXd(
+		parsed: XdBashDispatch,
 		toolCallId: string,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<BashToolDetails> | undefined,
 		ctx: AgentToolContext | undefined,
+		cwd?: string,
 	): Promise<AgentToolResult<BashToolDetails> | undefined> {
-		const segments = tokenizeShellSegments(command);
-		if (segments.length !== 1) return undefined;
-		const parsed = parseXdBashCommand(segments[0]);
-		if (!parsed) return undefined;
 		if (parsed.kind === "listing") {
 			const xdev = this.session.xdev;
 			const text = xdev
@@ -417,14 +602,104 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				: "xd:// is not mounted in this session. Enable tools.xdev to mount discoverable tools as xd:// devices.";
 			return { content: [{ type: "text", text }], details: {} };
 		}
-		const special = parsed.name === REPORT_ISSUE_DEVICE_NAME || isResolutionDeviceName(parsed.name);
-		if (!special && this.session.xdev === undefined) return undefined;
 		return (await dispatchXdTarget(this.session, parsed.name, parsed.content, {
 			toolCallId,
 			signal,
 			onUpdate: onUpdate as AgentToolUpdateCallback | undefined,
 			context: ctx,
+			cwd,
 		})) as AgentToolResult<BashToolDetails>;
+	}
+
+	#createXdDispatcher(
+		toolCallId: string,
+		signal: AbortSignal | undefined,
+		onUpdate: AgentToolUpdateCallback<BashToolDetails> | undefined,
+		ctx: AgentToolContext | undefined,
+	): (request: string) => Promise<string> {
+		let invocation = 0;
+		return async requestText => {
+			throwIfAborted(signal);
+			let request: {
+				name?: string | null;
+				args?: string[];
+				cwd?: string;
+			};
+			try {
+				const parsed: unknown = JSON.parse(requestText);
+				if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+					throw new Error("request must be an object");
+				request = parsed as typeof request;
+				if (request.name !== undefined && request.name !== null && typeof request.name !== "string") {
+					throw new Error("name must be a string or null");
+				}
+				if (
+					request.args !== undefined &&
+					(!Array.isArray(request.args) || request.args.some(arg => typeof arg !== "string"))
+				) {
+					throw new Error("args must be an array of strings");
+				}
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return JSON.stringify({
+					stdout: "",
+					stderr: `xd: invalid dispatcher request: ${message}\n`,
+					exitCode: 125,
+				});
+			}
+			throwIfAborted(signal);
+			const args = request.args ?? [];
+			const parsed: XdBashDispatch = request.name
+				? { kind: "device", name: request.name, content: args.join(" ") }
+				: { kind: "listing" };
+			let result: AgentToolResult<BashToolDetails> | undefined;
+			try {
+				result = await this.#dispatchParsedXd(
+					parsed,
+					`${toolCallId}:xd:${invocation++}`,
+					signal,
+					onUpdate,
+					ctx,
+					request.cwd,
+				);
+				throwIfAborted(signal);
+			} catch (error) {
+				if (
+					error instanceof ToolAbortError ||
+					signal?.aborted ||
+					(error instanceof Error && error.name === "AbortError")
+				)
+					throw error;
+				const message = error instanceof Error ? error.message : String(error);
+				return JSON.stringify({ stdout: "", stderr: `xd: dispatcher failed: ${message}\n`, exitCode: 125 });
+			}
+			if (!result) {
+				return JSON.stringify({ stdout: "", stderr: "xd: dispatcher returned no result\n", exitCode: 125 });
+			}
+			const text = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text ?? "")
+				.join("");
+			const nonText = result.content.filter(block => block.type !== "text");
+			const isError = result.isError === true;
+			let record: string | undefined;
+			try {
+				record = JSON.stringify({ xdev: result.details?.xdev, details: result.details, content: nonText, isError });
+			} catch {
+				record = JSON.stringify({
+					xdev: result.details?.xdev,
+					content: [],
+					isError,
+					recordError: "non-text result was not serializable",
+				});
+			}
+			return JSON.stringify({
+				stdout: isError ? "" : text,
+				stderr: isError ? text : "",
+				exitCode: isError ? 1 : 0,
+				record,
+			});
+		};
 	}
 
 	#formatResultOutput(result: BashResult | BashInteractiveResult): string {
@@ -453,9 +728,35 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 	}
 
-	#kernelShellBridge(onStatusEvent?: (event: EvalStatusEvent) => void): KernelShellBridgeHandle | undefined {
+	#kernelShellBridge(
+		toolCallId: string,
+		finalInput: { command: string; cwd?: string; env?: Record<string, string>; pty: boolean; async: boolean },
+		onStatusEvent?: (event: EvalStatusEvent) => void,
+	): KernelShellBridgeHandle | undefined {
 		if (!kernelBridgeAvailable(this.session)) return undefined;
-		return registerKernelShellRun(this.session, onStatusEvent);
+		const state =
+			this.session.settings.get("kernel.speculation.enabled") === true
+				? this.#streamedInputs.get(toolCallId)
+				: undefined;
+		let claimable = false;
+		if (state) {
+			const streamed = parseStreamedInputForCompletion(state.latestRaw);
+			const streamedEnv = streamed.input.env ?? {};
+			const finalEnv = finalInput.env ?? {};
+			const sameEnv =
+				Object.keys(streamedEnv).length === Object.keys(finalEnv).length &&
+				Object.entries(finalEnv).every(([key, value]) => streamedEnv[key] === value);
+			claimable =
+				streamed.input.command === finalInput.command &&
+				streamed.input.cwd === finalInput.cwd &&
+				(streamed.input.pty ?? false) === finalInput.pty &&
+				(streamed.input.async ?? false) === finalInput.async &&
+				sameEnv;
+		}
+		return registerKernelShellRun(this.session, onStatusEvent, {
+			toolCallId: claimable ? toolCallId : undefined,
+			generation: claimable ? state?.generation : undefined,
+		});
 	}
 
 	async #drainBridgeImages(bridge: KernelShellBridgeHandle | undefined): Promise<ImageContent[]> {
@@ -493,10 +794,59 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			images?: readonly ImageContent[];
 			statusEvents?: readonly EvalStatusEvent[];
 			jsonOutputs?: readonly unknown[];
+			xdDispatches?: readonly string[];
 		} = {},
 	): Promise<AgentToolResult<BashToolDetails>> {
 		const exitCode = result.exitCode;
 		const failedExit = exitCode !== undefined && exitCode !== 0;
+		const isTimeout = result.timedOut === true;
+		const observedSignal = "signal" in result ? result.signal : undefined;
+		const observedExecution = "execution" in result ? result.execution : undefined;
+		const executionTimeout: ExecutionTimeoutMetadata | undefined = isTimeout
+			? {
+					cause: "deadline",
+					scope: "command",
+					requestedMs: options.requestedTimeoutSec !== undefined ? options.requestedTimeoutSec * 1000 : undefined,
+					effectiveMs: timeoutSec !== undefined ? timeoutSec * 1000 : undefined,
+				}
+			: undefined;
+		const execution =
+			observedExecution ??
+			executionMetadataForResult(
+				{ exitCode, cancelled: result.cancelled, timedOut: isTimeout, signal: observedSignal },
+				{
+					elapsedMs: options.wallTimeMs,
+					timeout: executionTimeout,
+					summary: { ...result, collector: result.collector ?? { state: "complete" } },
+				},
+			);
+
+		const xdResult = parseXdDispatches(options.xdDispatches ?? readXdDispatches(result));
+		const xdImages: ImageContent[] = [];
+		const xdJsonOutputs: unknown[] = [];
+		const xdValues: unknown[] = [];
+		let xdTransportFailure = false;
+		for (const record of xdResult.records) {
+			if (record.xdev !== undefined) xdValues.push(record.xdev);
+			// A failed intermediate xd tool is data; final shell status remains authoritative.
+			for (const value of record.details?.jsonOutputs ?? []) xdJsonOutputs.push(value);
+			for (const block of record.content ?? []) {
+				if (
+					isRecord(block) &&
+					block.type === "image" &&
+					typeof block.data === "string" &&
+					typeof block.mimeType === "string"
+				) {
+					xdImages.push({ type: "image", data: block.data, mimeType: block.mimeType });
+				}
+			}
+		}
+		if (xdResult.error) {
+			xdTransportFailure = true;
+			if (execution.collector.state !== "failed") {
+				execution.collector = { state: "failed", error: xdResult.error };
+			}
+		}
 
 		const outputLines = [this.#formatResultOutput(result)];
 		const notices: string[] = [];
@@ -512,9 +862,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (failedExit) outputLines.push("", formatExitCodeNotice(exitCode));
 		const outputText = outputLines.join("\n");
 
-		const isTimeout = result.timedOut === true;
-
-		const details: BashToolDetails = {};
+		const details: BashToolDetails = { execution };
 		if (timeoutSec === undefined) {
 			details.timeoutDisabled = true;
 		} else {
@@ -532,16 +880,51 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (options.statusEvents?.length) {
 			details.statusEvents = [...options.statusEvents];
 		}
-		if (options.jsonOutputs?.length) {
-			details.jsonOutputs = [...options.jsonOutputs];
+		if (options.jsonOutputs?.length || xdJsonOutputs.length > 0) {
+			details.jsonOutputs = [...(options.jsonOutputs ?? []), ...xdJsonOutputs];
+		}
+		if (xdValues.length > 0) {
+			details.xdev = xdValues.length === 1 ? xdValues[0] : xdValues;
+		}
+		if (xdTransportFailure) {
+			details.execution = {
+				...execution,
+				collector: { state: "failed", error: xdResult.error ?? "xd dispatch failed" },
+			};
 		}
 		if (failedExit) {
 			details.exitCode = exitCode;
 		}
 
+		let inlineArtifactId = result.artifactId;
+		let inlineCapApplied = false;
 		const inlineCap = {
 			maxBytes: resolveInlineByteCapBudget(this.session.settings),
-			saveArtifact: (full: string) => result.artifactId ?? saveBashOriginalArtifact(this.session, full),
+			saveArtifact: async (full: string): Promise<string | undefined> => {
+				inlineCapApplied = true;
+				if (result.artifactId) return result.artifactId;
+				inlineArtifactId = await saveBashOriginalArtifact(this.session, full);
+				return inlineArtifactId;
+			},
+		};
+		const updateExecutionOutput = (): void => {
+			if (!details.execution) return;
+			const output = details.execution.output ?? { disposition: "unavailable" as const };
+			details.execution = {
+				...details.execution,
+				output: {
+					...output,
+					...(inlineCapApplied
+						? {
+								disposition: "truncated" as const,
+								truncated: true,
+								rawArtifactId: inlineArtifactId ?? output.rawArtifactId,
+							}
+						: inlineArtifactId !== undefined
+							? { rawArtifactId: inlineArtifactId }
+							: {}),
+				},
+			};
 		};
 
 		if (isTimeout) {
@@ -553,8 +936,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				outputLines.push("", `[${message}]`);
 			}
 			const timeoutOutputText = await enforceInlineByteCap(outputLines.join("\n"), inlineCap);
+			updateExecutionOutput();
 			return toolResult(details)
-				.text(timeoutOutputText)
+				.content([{ type: "text", text: timeoutOutputText }, ...(options.images ?? []), ...xdImages])
 				.truncationFromSummary(result, { direction: "tail" })
 				.error()
 				.done();
@@ -563,14 +947,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		this.#throwIfUnfinished(result, timeoutSec, outputText);
 
 		const cappedOutputText = await enforceInlineByteCap(outputText, inlineCap);
+		updateExecutionOutput();
 
 		const resultBuilder = toolResult(details).truncationFromSummary(result, { direction: "tail" });
-		if (options.images?.length) {
-			resultBuilder.content([{ type: "text", text: cappedOutputText }, ...options.images]);
-		} else {
-			resultBuilder.text(cappedOutputText);
-		}
-		if (failedExit) resultBuilder.error();
+		const contentImages = [...(options.images ?? []), ...xdImages];
+		resultBuilder.content([{ type: "text", text: cappedOutputText }, ...contentImages]);
+		if (failedExit || xdTransportFailure) resultBuilder.error();
 		return resultBuilder.done();
 	}
 
@@ -581,6 +963,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		options: { requestedTimeoutSec?: number; notices?: readonly string[] } = {},
 	): AgentToolResult<BashToolDetails> {
 		const details: BashToolDetails = {
+			execution: {
+				state: "running",
+				collector: { state: "complete" },
+				output: { disposition: previewText.length > 0 ? "complete" : "unavailable" },
+			},
 			async: { state: "running", jobId, type: "bash" },
 		};
 		if (timeoutSec === undefined) {
@@ -619,6 +1006,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		notices?: readonly string[];
 
 		resolvedEnv?: Record<string, string>;
+		xd?: {
+			callId?: string;
+			createDispatcher: (signal?: AbortSignal) => (request: string) => Promise<string>;
+		};
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>;
 		forwardUpdates: boolean;
 	}): ManagedBashJobHandle {
@@ -639,7 +1030,13 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 				const wallTimeStart = performance.now();
-				const pyBridge = this.#kernelShellBridge();
+				const pyBridge = this.#kernelShellBridge(jobId, {
+					command: options.command,
+					cwd: options.commandCwd,
+					env: options.resolvedEnv,
+					pty: false,
+					async: true,
+				});
 				try {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
@@ -647,6 +1044,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						timeout: options.timeoutMs ?? 0,
 						signal: runSignal,
 						env: pyBridge ? { ...options.resolvedEnv, ...pyBridge.env } : options.resolvedEnv,
+						xd: options.xd,
 						artifactPath,
 						artifactId,
 						onChunk: chunk => {
@@ -686,13 +1084,21 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				}
 			},
 			{
-				ownerId: this.session.getAgentId?.() ?? undefined,
+				ownerId: this.session.getAsyncJobOwnerId?.() ?? this.session.getAgentId?.() ?? undefined,
 				onProgress: async text => {
 					latestText = text;
 					if (!forwardUpdates) return;
 					await options.onUpdate?.({
 						content: [{ type: "text", text }],
-						details: {},
+						details: {
+							execution: {
+								state: "running",
+								collector: { state: "running" },
+								renderer: { state: "not-run" },
+								output: { disposition: "complete" },
+							},
+							async: { state: "running", jobId, type: "bash" },
+						},
 					});
 				},
 			},
@@ -723,8 +1129,21 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
 		ctx?: AgentToolContext,
 	): Promise<AgentToolResult<BashToolDetails>> {
+		if (this.session.settings.get("kernel.speculation.enabled") !== true) {
+			this.cancelStreamedInput(_toolCallId);
+		}
+		if (signal) {
+			signal.addEventListener("abort", () => this.cancelStreamedInput(_toolCallId), { once: true });
+		}
 		let command = rawCommand;
 		const env = normalizeBashEnv(rawEnv);
+		const xdBridge = this.session.xdev
+			? {
+					callId: _toolCallId,
+					createDispatcher: (dispatchSignal?: AbortSignal) =>
+						this.#createXdDispatcher(_toolCallId, dispatchSignal, onUpdate, ctx),
+				}
+			: undefined;
 
 		if (!cwd) {
 			const cd = extractLeadingCdTarget(command);
@@ -737,8 +1156,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			throw new ToolError("Async bash execution is disabled. Enable async.enabled to use async mode.");
 		}
 
+		const bashPolicy = this.session.bashCommandPolicy;
 		const bashAllowlist = this.session.bashCommandAllowlist;
-		if (bashAllowlist) {
+		if (bashPolicy) {
+			const verdict = bashPolicy(command);
+			if (!verdict.allowed) throw new ToolError(verdict.reason ?? "Command blocked by the bash policy.");
+		} else if (bashAllowlist) {
 			const verdict = checkBashCommandAllowlist(command, bashAllowlist);
 			if (!verdict.allowed) throw new ToolError(verdict.reason ?? "Command blocked by the bash allowlist.");
 		}
@@ -753,9 +1176,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				}
 			}
 		}
-
-		const xdResult = await this.#dispatchXdBash(command, _toolCallId, signal, onUpdate, ctx);
-		if (xdResult) return xdResult;
 
 		const internalUrlOptions: InternalUrlExpansionOptions = {
 			skills: this.session.skills ?? [],
@@ -828,6 +1248,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				requestedTimeoutSec,
 				notices: pendingNotices,
 
+				xd: xdBridge,
 				resolvedEnv,
 				onUpdate,
 				forwardUpdates: false,
@@ -862,6 +1283,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				requestedTimeoutSec,
 				notices: pendingNotices,
 
+				xd: xdBridge,
 				resolvedEnv,
 				onUpdate,
 				forwardUpdates: !startBackgrounded,
@@ -915,7 +1337,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					})
 				: undefined;
 
-		if (clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) {
+		if (clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty && !xdBridge) {
 			if (signal?.aborted) {
 				throw new ToolAbortError("Command aborted");
 			}
@@ -1079,7 +1501,15 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					lastPolledOutput = pollOutput;
 					onUpdate?.({
 						content: [{ type: "text", text: pollOutput.output }],
-						details: { terminalId: handle.terminalId },
+						details: {
+							terminalId: handle.terminalId,
+							execution: {
+								state: "running",
+								collector: { state: "running" },
+								renderer: { state: "not-run" },
+								output: { disposition: "complete" },
+							},
+						},
 					});
 				}
 
@@ -1151,22 +1581,34 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 		const wallTimeStart = performance.now();
 		// Stream kernel-cell status events (write/edit hunks) into the live view
-		// so a running `python`/`node` cell shows its Status section like an eval
+		// so a running `python`/`node`/`bun` cell shows its Status section like an eval
 		// cell — hunks render as soon as their event is delivered, tail-truncated
 		// to the live window (see eval-render's EVAL_STREAMING_SECTION_LINES).
 		const liveStatusEvents: EvalStatusEvent[] = [];
 		const pushLiveUpdate = (): void => {
 			onUpdate?.({
 				content: [{ type: "text", text: tailBuffer.text() }],
-				details: liveStatusEvents.length > 0 ? { statusEvents: [...liveStatusEvents] } : {},
+				details: {
+					execution: {
+						state: "running",
+						collector: { state: "running" },
+						renderer: { state: "not-run" },
+						output: { disposition: "complete" },
+					},
+					...(liveStatusEvents.length > 0 ? { statusEvents: [...liveStatusEvents] } : {}),
+				},
 			});
 		};
 		const pyBridge = interactiveUi
 			? undefined
-			: this.#kernelShellBridge(event => {
-					liveStatusEvents.push(event);
-					pushLiveUpdate();
-				});
+			: this.#kernelShellBridge(
+					_toolCallId,
+					{ command: rawCommand, cwd, env: rawEnv, pty, async: asyncRequested },
+					event => {
+						liveStatusEvents.push(event);
+						pushLiveUpdate();
+					},
+				);
 		let result: BashResult | BashInteractiveResult;
 		try {
 			result = interactiveUi
@@ -1185,6 +1627,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						timeout: timeoutMs ?? 0,
 						signal,
 						env: pyBridge ? { ...resolvedEnv, ...pyBridge.env } : resolvedEnv,
+						xd: xdBridge,
 						artifactPath,
 						artifactId,
 						onChunk: chunk => {
@@ -1285,7 +1728,7 @@ function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] 
 	return highlightedLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
 }
 
-// A kernel-routed `python`/`node` bash cell renders identically to an `eval`
+// A kernel-routed `python`/`node`/`bun` bash cell renders identically to an `eval`
 // cell (header, AST preview, output, Status hunks, JSON display trees) by
 // building an EvalCellResult and handing it to the shared renderKernelCellLines.
 function kernelCellLines(
@@ -1310,6 +1753,7 @@ function kernelCellLines(
 		status: opts.status,
 		statusEvents: opts.details?.statusEvents,
 		durationMs: opts.details?.wallTimeMs !== undefined ? Math.round(opts.details.wallTimeMs) : undefined,
+		execution: opts.details?.execution ? { ...opts.details.execution, renderer: { state: "complete" } } : undefined,
 	};
 	return renderKernelCellLines(cell, opts.details?.jsonOutputs ?? [], uiTheme, {
 		expanded: opts.expanded,
@@ -1330,7 +1774,7 @@ function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererC
 }
 
 export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
-	// Kernel-routed `python`/`node` cells animate their preview while running,
+	// Kernel-routed `python`/`node`/`bun` cells animate their preview while running,
 	// matching the eval tool (plain shell commands keep the default behavior).
 	const isKernelCellArgs = (args: unknown): boolean => {
 		const command = config.resolveCommand?.(args as TArgs);
@@ -1397,20 +1841,28 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		): Component {
 			const renderArgs = toBashRenderArgs(args, config);
 			const kernelCell = renderArgs.command ? detectBashKernelCell(renderArgs.command) : undefined;
-			const isError = result.isError === true;
-			const isPartial = options.isPartial === true;
-			const success = !isPartial && !isError;
 			const details = result.details;
-			const isTimeout = details?.timedOut === true;
+			const execution = details?.execution;
+			const isPartial = options.isPartial === true;
+			const isError = execution
+				? execution.state === "exited" && execution.exitCode !== undefined && execution.exitCode !== 0
+				: result.isError === true;
+			const isUnknown = execution
+				? execution.state === "unknown" || (execution.state === "exited" && execution.exitCode === undefined)
+				: false;
+			const success =
+				!isPartial && (execution ? execution.state === "exited" && execution.exitCode === 0 : !isError);
+			const isTimeout = details?.timedOut === true || execution?.timeout !== undefined;
+			const warningStatus = isTimeout || isUnknown;
 			const header =
 				config.showHeader === false
 					? success || isPartial
 						? undefined
 						: renderStatusLine(
 								{
-									icon: isTimeout ? "warning" : "error",
-									title: "failed",
-									titleColor: isTimeout ? "warning" : "error",
+									icon: warningStatus ? "warning" : "error",
+									title: warningStatus ? "status unknown" : "failed",
+									titleColor: warningStatus ? "warning" : "error",
 								},
 								uiTheme,
 							)
@@ -1421,7 +1873,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 										title: config.resolveTitle(args, options),
 									}
 								: {
-										icon: isPartial ? "pending" : isTimeout ? "warning" : "error",
+										icon: isPartial ? "pending" : warningStatus ? "warning" : "error",
 										title: config.resolveTitle(args, options),
 									},
 							uiTheme,
@@ -1529,6 +1981,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					}
 
 					const outputLines: string[] = [];
+					const executionLine = formatExecutionMetadata(
+						execution ? { ...execution, renderer: { state: "complete" } } : undefined,
+					);
+					if (executionLine) outputLines.push(uiTheme.fg("dim", executionLine));
 					const hasOutput = displayOutput.trim().length > 0;
 					const rawOutputLines = displayOutput.split("\n");
 					const sixelLineMask =

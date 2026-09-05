@@ -1,9 +1,15 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
-import { OutputSink } from "../session/streaming-output";
+import {
+	type ExecutionMetadata,
+	type ExecutionTimeoutMetadata,
+	executionMetadataForResult,
+} from "../session/execution-metadata";
+import { OutputSink, type OutputSummary } from "../session/streaming-output";
 import type { ToolSession } from "../tools";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP, isEvalTimeoutControlEvent } from "./bridge-timeout";
+import type { EvalCompletionInvocationContext } from "./completion-bridge";
 import type { FsObservation } from "./fs-observations";
 import type { JsStatusEvent } from "./js/shared/types";
 import type { KernelDisplayOutput } from "./py/display";
@@ -28,18 +34,25 @@ interface KernelExecutorBaseOptions {
 	artifactId?: string;
 	artifactPath?: string;
 	fsObservations?: FsObservation[];
+	completionContext?: EvalCompletionInvocationContext;
 }
 
 interface KernelExecutionResult {
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;
+	timedOut?: boolean;
+	execution?: ExecutionMetadata;
 	truncated: boolean;
 	artifactId: string | undefined;
 	totalLines: number;
 	totalBytes: number;
 	outputLines: number;
 	outputBytes: number;
+	collector?: { state: "running" | "complete" | "failed" | "unavailable"; error?: string };
+	outputDisposition?: "complete" | "truncated" | "summarized" | "unavailable";
+	summarized?: boolean;
+	actionableDiagnostics?: string[];
 	displayOutputs: KernelDisplayOutput[];
 	stdinRequested: boolean;
 }
@@ -392,6 +405,37 @@ export async function executeWithKernelBase<
 		resolveDeadlineMs,
 	} = params;
 
+	const executionStartedAt = performance.now();
+	const withExecutionMetadata = (result: KernelExecutionResult): KernelExecutionResult => {
+		const timeout: ExecutionTimeoutMetadata | undefined = result.timedOut
+			? {
+					cause: options?.idleTimeoutMs !== undefined ? "idle" : "deadline",
+					scope: "cell",
+					requestedMs: options?.idleTimeoutMs ?? options?.timeoutMs,
+					effectiveMs: executionTimeoutMs ?? options?.idleTimeoutMs,
+				}
+			: undefined;
+		return {
+			...result,
+			execution: executionMetadataForResult(result, {
+				elapsedMs: performance.now() - executionStartedAt,
+				timeout,
+				summary: result,
+			}),
+		};
+	};
+	const resultWithDumpedOutput = (
+		base: Pick<KernelExecutionResult, "exitCode" | "cancelled" | "stdinRequested"> & { timedOut?: boolean },
+		dumped: OutputSummary,
+	): KernelExecutionResult =>
+		withExecutionMetadata({
+			...dumped,
+			...base,
+			artifactId: dumped.artifactId,
+			displayOutputs,
+			stdinRequested: base.stdinRequested,
+		});
+
 	const settings = await Settings.init();
 	const sink = new OutputSink({
 		onChunk: options?.onChunk,
@@ -426,6 +470,7 @@ export async function executeWithKernelBase<
 					signal: options.signal,
 					shieldedSignal: abortShield.signal,
 					emitStatus,
+					completionContext: options?.completionContext,
 					abortRequested: () => {
 						return abortShield.abortRequested;
 					},
@@ -458,72 +503,35 @@ export async function executeWithKernelBase<
 				? formatKernelTimeoutAnnotation(executionTimeoutMs ?? options?.idleTimeoutMs, result.kernelKilled ?? false)
 				: undefined;
 			const dumped = await sink.dump(annotation);
-			return {
-				exitCode: undefined,
-				cancelled: true,
-				truncated: dumped.truncated,
-				output: dumped.output,
-				artifactId: dumped.artifactId ?? undefined,
-				totalLines: dumped.totalLines,
-				totalBytes: dumped.totalBytes,
-				outputLines: dumped.outputLines,
-				outputBytes: dumped.outputBytes,
-				displayOutputs,
-				stdinRequested: !!result.stdinRequested,
-			};
+			return resultWithDumpedOutput(
+				{
+					exitCode: undefined,
+					cancelled: true,
+					timedOut,
+					stdinRequested: !!result.stdinRequested,
+				},
+				dumped,
+			);
 		}
 
 		if (result.stdinRequested) {
 			const dumped = await sink.dump("Kernel requested stdin; interactive input is not supported.");
-			return {
-				exitCode: 1,
-				cancelled: false,
-				truncated: dumped.truncated,
-				output: dumped.output,
-				artifactId: dumped.artifactId ?? undefined,
-				totalLines: dumped.totalLines,
-				totalBytes: dumped.totalBytes,
-				outputLines: dumped.outputLines,
-				outputBytes: dumped.outputBytes,
-				displayOutputs,
-				stdinRequested: true,
-			};
+			return resultWithDumpedOutput({ exitCode: 1, cancelled: false, stdinRequested: true }, dumped);
 		}
 
 		const exitCode = result.status === "ok" ? 0 : 1;
 		const dumped = await sink.dump();
-		return {
-			exitCode,
-			cancelled: false,
-			truncated: dumped.truncated,
-			output: dumped.output,
-			artifactId: dumped.artifactId ?? undefined,
-			totalLines: dumped.totalLines,
-			totalBytes: dumped.totalBytes,
-			outputLines: dumped.outputLines,
-			outputBytes: dumped.outputBytes,
-			displayOutputs,
-			stdinRequested: false,
-		};
+		return resultWithDumpedOutput({ exitCode, cancelled: false, stdinRequested: false }, dumped);
 	} catch (err) {
 		if (isCancellationError(err, cancelledErrorClass) || abortShield.abortRequested || abortShield.signal?.aborted) {
 			const timedOut = abortShield.timedOut || isTimedOutCancellation(err, cancelledErrorClass, abortShield.signal);
 			const dumped = await sink.dump(
 				timedOut ? formatTimeoutAnnotation(executionTimeoutMs ?? options?.idleTimeoutMs) : undefined,
 			);
-			return {
-				exitCode: undefined,
-				cancelled: true,
-				truncated: dumped.truncated,
-				output: dumped.output,
-				artifactId: dumped.artifactId ?? undefined,
-				totalLines: dumped.totalLines,
-				totalBytes: dumped.totalBytes,
-				outputLines: dumped.outputLines,
-				outputBytes: dumped.outputBytes,
-				displayOutputs,
-				stdinRequested: false,
-			};
+			return resultWithDumpedOutput(
+				{ exitCode: undefined, cancelled: true, timedOut, stdinRequested: false },
+				dumped,
+			);
 		}
 		const error = err instanceof Error ? err : new Error(String(err));
 		logger.error(`${errorLogLabel} execution failed`, { error: error.message });

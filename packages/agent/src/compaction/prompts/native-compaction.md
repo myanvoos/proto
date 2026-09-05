@@ -1,0 +1,1 @@
+Provider-native compaction request. Replace the supplied provider history with compact native compaction items that preserve the information needed to continue the session. Do not produce a Markdown handoff or answer the conversation; return only the provider-native compaction result required by this API.

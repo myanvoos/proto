@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- Fixed Gemma and Antigravity provider prompt documentation to match native result rendering and enforced tool-choice behavior.
+- Fixed GPT-6 Astra and other newly published Codex models being rejected because requests advertised an outdated Codex client version.
 - Captured bounded Devin Connect trailer details and request-shape evidence for diagnosing intermittent `invalid_argument` stream rejections (#4218).
 - Fixed abandoned `auth-broker-snapshot.enc.*.tmp` files accumulating in the cache directory when a process exited mid-write; stale temp files are now swept on each cache write.
 - Fixed Cursor GPT effort models failing with `not_found` on accounts that require the discovered effort-specific model id (#9287).

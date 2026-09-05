@@ -30,10 +30,11 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 		Some("submit" | "create") => compact_noisy_command(&cleaned, exit_code),
 		Some("diff" | "show" | "add" | "push" | "pull" | "fetch" | "stash" | "worktree") => {
 			let git_ctx = MinimizerCtx {
-				program:    "git",
-				subcommand: ctx.subcommand,
-				command:    ctx.command,
-				config:     ctx.config,
+				program:           "git",
+				subcommand:        ctx.subcommand,
+				command:           ctx.command,
+				config:            ctx.config,
+				runtime_timed_out: ctx.runtime_timed_out,
 			};
 			return git::filter(&git_ctx, input, exit_code);
 		},

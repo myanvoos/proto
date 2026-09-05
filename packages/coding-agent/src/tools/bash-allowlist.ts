@@ -137,3 +137,41 @@ export function checkBashCommandAllowlist(command: string, allowlist: readonly s
 	}
 	return { allowed: true };
 }
+
+/** A command guard installed by a host for a bounded bash turn. */
+export type BashCommandPolicy = (command: string) => BashAllowlistVerdict;
+
+/**
+ * Allows exact single-command entries from a commissioned Verification section, plus the normal read-only grant.
+ * Exact matching prevents a model from appending a second command to an approved test command.
+ */
+export function checkBashVerificationCommand(
+	command: string,
+	verificationCommands: readonly string[],
+): BashAllowlistVerdict {
+	const exploratory = checkBashCommandAllowlist(command, READ_ONLY_EXPLORATORY_COMMANDS);
+	if (exploratory.allowed) return exploratory;
+	const normalized = command.trim();
+	if (!verificationCommands.some(expected => expected.trim() === normalized)) {
+		return {
+			allowed: false,
+			reason: "Blocked by verification policy: command is not an exact commissioned verification command.",
+		};
+	}
+	if (forbiddenOutputRedirect(command)) {
+		return { allowed: false, reason: "Blocked by verification policy: output redirection is not allowed." };
+	}
+	const segments = extractFlatShellCommandSegments(command);
+	if (segments.length !== 1) {
+		return {
+			allowed: false,
+			reason: "Blocked by verification policy: shell chaining, pipes, substitutions, and grouping are not allowed.",
+		};
+	}
+	const text = withoutLeadingEnvironmentAssignments(segments[0]!.text) ?? segments[0]!.text;
+	const program = stripQuotes(text.split(/[ \t\n]+/).filter(Boolean)[0] ?? "");
+	if (!program || program.includes("/")) {
+		return { allowed: false, reason: "Blocked by verification policy: path-qualified commands are not allowed." };
+	}
+	return { allowed: true };
+}

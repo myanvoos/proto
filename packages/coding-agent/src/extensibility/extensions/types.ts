@@ -74,6 +74,7 @@ import type {
 	SessionBeforeTreeResult,
 	SessionBranchEvent,
 	SessionCompactEvent,
+	SessionCompactFailedEvent,
 	SessionCompactingEvent,
 	SessionCompactingResult,
 	SessionEvent,
@@ -282,6 +283,7 @@ export interface ContextUsage {
 }
 
 export interface CompactOptions {
+	customInstructions?: string;
 	onComplete?: (result: CompactionResult) => void;
 	onError?: (error: Error) => void;
 
@@ -468,6 +470,7 @@ export type {
 	SessionBeforeTreeEvent,
 	SessionBranchEvent,
 	SessionCompactEvent,
+	SessionCompactFailedEvent,
 	SessionCompactingEvent,
 	SessionEvent,
 	SessionShutdownEvent,
@@ -794,6 +797,7 @@ export interface ExtensionAPI {
 	): void;
 	on(event: "session.compacting", handler: ExtensionHandler<SessionCompactingEvent, SessionCompactingResult>): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;

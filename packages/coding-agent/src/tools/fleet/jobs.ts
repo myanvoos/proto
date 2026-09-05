@@ -66,11 +66,12 @@ function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[]
 	const registry = session.agentRegistry;
 	if (!registry) return [];
 	const selfId = session.getAgentId?.() ?? undefined;
+	const asyncJobOwnerId = session.getAsyncJobOwnerId?.() ?? selfId;
 
 	const covered = new Set<string>();
 	const manager = session.asyncJobManager;
 	if (manager) {
-		for (const job of manager.getRunningJobs(selfId ? { ownerId: selfId } : undefined)) {
+		for (const job of manager.getRunningJobs(asyncJobOwnerId ? { ownerId: asyncJobOwnerId } : undefined)) {
 			covered.add(job.id);
 			if (job.agentId) covered.add(job.agentId);
 		}
@@ -277,15 +278,16 @@ export async function executeCancel(
 	ids: string[],
 ): Promise<AgentToolResult<CoordinationDetails>> {
 	const ownerFilter = ownerId ? { ownerId } : undefined;
+	const registryOwnerId = session.getAgentId?.() ?? undefined;
 	const cancelOutcomes: CancelOutcome[] = [];
 	for (const id of ids) {
 		const existing = manager.getJob(id);
 		if (!existing || (ownerId && existing.ownerId !== ownerId)) {
-			cancelOutcomes.push(await cancelAgentRegistration(session, ownerId, id));
+			cancelOutcomes.push(await cancelAgentRegistration(session, registryOwnerId, id));
 			continue;
 		}
 		if (existing.status !== "running") {
-			const regOutcome = await cancelAgentRegistration(session, ownerId, id);
+			const regOutcome = await cancelAgentRegistration(session, registryOwnerId, id);
 			cancelOutcomes.push(
 				regOutcome.status === "cancelled"
 					? regOutcome

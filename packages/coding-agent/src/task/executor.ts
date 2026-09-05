@@ -302,13 +302,17 @@ export interface ExecutorOptions {
 	additionalDirectories?: string[];
 
 	getApiKey?: CreateAgentSessionOptions["getApiKey"];
+	streamFn?: CreateAgentSessionOptions["streamFn"];
+	customTools?: CreateAgentSessionOptions["customTools"];
 	worktree?: string;
 	agent: AgentDefinition;
+	model?: Model;
 	task: string;
 	assignment?: string;
 
 	context?: string;
 	description?: string;
+	agentDisplayName?: string;
 	index: number;
 	id: string;
 	parentToolCallId?: string;
@@ -2473,21 +2477,31 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 							modelRole ?? resolveExplicitModelRole(modelPatterns, subagentSettings),
 						)
 					: undefined;
+			const resolvedSelection = options.model
+				? {
+						model: options.model,
+						thinkingLevel: undefined,
+						explicitThinkingLevel: false,
+						authFallbackUsed: false,
+						warning: undefined,
+					}
+				: await awaitAbortable(
+						resolveModelOverrideWithAuthFallback(
+							modelPatterns,
+							options.parentActiveModelPattern,
+							modelRegistry,
+							settings,
+							id,
+						),
+					);
 			const {
 				model,
 				thinkingLevel: resolvedThinkingLevel,
 				explicitThinkingLevel,
 				authFallbackUsed,
 				warning: modelResolutionWarning,
-			} = await awaitAbortable(
-				resolveModelOverrideWithAuthFallback(
-					modelPatterns,
-					options.parentActiveModelPattern,
-					modelRegistry,
-					settings,
-					id,
-				),
-			);
+			} = resolvedSelection;
+
 			if (modelResolutionWarning) {
 				logger.warn("Subagent model resolution warning", {
 					warning: modelResolutionWarning,
@@ -2615,6 +2629,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				authStorage,
 				modelRegistry,
 				getApiKey: options.getApiKey,
+				streamFn: options.streamFn,
 				settings: subagentSettings,
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
@@ -2660,13 +2675,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				parentTaskPrefix: id,
 				parentAgentId: options.parentAgentId,
 				agentId: id,
-				agentDisplayName: agent.name,
+				agentDisplayName: options.agentDisplayName ?? agent.name,
 				expectedAgentRef,
 				enableIrc: options.enableIrc,
 				skipPythonPreflight,
 				enableMCP,
 				mcpManager,
-				customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
+				customTools:
+					options.customTools || mcpProxyTools.length > 0
+						? [...(options.customTools ?? []), ...mcpProxyTools]
+						: undefined,
 				localProtocolOptions: options.localProtocolOptions,
 				telemetry: subagentTelemetry,
 				parentEvalSessionId: options.parentEvalSessionId,
@@ -2904,9 +2922,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				} catch {}
 				unsubscribe = null;
 			}
+			const session = monitor.takeActiveSession();
+			const asyncJobOwnerId = session?.getAsyncJobOwnerId() ?? id;
 			const jobManager = AsyncJobManager.instance();
 			if (jobManager) {
-				const reap = await jobManager.cancelAndReapOwnerJobs(id, cleanupDeadlineAt);
+				const reap = await jobManager.cancelAndReapOwnerJobs(asyncJobOwnerId, cleanupDeadlineAt);
 				if (!reap.settled) {
 					deferCleanup(reap.completion);
 					logger.warn("Subagent async job cleanup exceeded its deadline", {
@@ -2915,7 +2935,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					});
 				}
 			}
-			const session = monitor.takeActiveSession();
 			if (session) {
 				monitor.captureSalvage(session);
 				if (options.keepAlive !== false && worktree === undefined) {
@@ -2940,12 +2959,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (jobManager) {
 				if (deferredSessionShutdown) {
 					const finalReap = Promise.allSettled([deferredSessionShutdown]).then(async () => {
-						const reap = await jobManager.cancelAndReapOwnerJobs(id, Date.now());
+						const reap = await jobManager.cancelAndReapOwnerJobs(asyncJobOwnerId, Date.now());
 						await reap.completion;
 					});
 					lateCleanups.push(finalReap);
 				} else {
-					const reap = await jobManager.cancelAndReapOwnerJobs(id, cleanupDeadlineAt);
+					const reap = await jobManager.cancelAndReapOwnerJobs(asyncJobOwnerId, cleanupDeadlineAt);
 					if (!reap.settled) {
 						deferCleanup(reap.completion);
 						logger.warn("Subagent async job cleanup exceeded its deadline after session shutdown", {

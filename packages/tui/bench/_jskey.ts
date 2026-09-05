@@ -4,10 +4,6 @@ export function setKittyProtocolActive(active: boolean): void {
 	kittyProtocolActive = active;
 }
 
-export function isKittyProtocolActive(): boolean {
-	return kittyProtocolActive;
-}
-
 type Letter =
 	| "a"
 	| "b"
@@ -120,84 +116,6 @@ export type KeyId =
 	| `shift+alt+ctrl+${BaseKey}`
 	| `alt+ctrl+shift+${BaseKey}`
 	| `alt+shift+ctrl+${BaseKey}`;
-
-export const Key = {
-	escape: "escape" as const,
-	esc: "esc" as const,
-	enter: "enter" as const,
-	return: "return" as const,
-	tab: "tab" as const,
-	space: "space" as const,
-	backspace: "backspace" as const,
-	delete: "delete" as const,
-	insert: "insert" as const,
-	clear: "clear" as const,
-	home: "home" as const,
-	end: "end" as const,
-	pageUp: "pageUp" as const,
-	pageDown: "pageDown" as const,
-	up: "up" as const,
-	down: "down" as const,
-	left: "left" as const,
-	right: "right" as const,
-	f1: "f1" as const,
-	f2: "f2" as const,
-	f3: "f3" as const,
-	f4: "f4" as const,
-	f5: "f5" as const,
-	f6: "f6" as const,
-	f7: "f7" as const,
-	f8: "f8" as const,
-	f9: "f9" as const,
-	f10: "f10" as const,
-	f11: "f11" as const,
-	f12: "f12" as const,
-
-	backtick: "`" as const,
-	hyphen: "-" as const,
-	equals: "=" as const,
-	leftbracket: "[" as const,
-	rightbracket: "]" as const,
-	backslash: "\\" as const,
-	semicolon: ";" as const,
-	quote: "'" as const,
-	comma: "," as const,
-	period: "." as const,
-	slash: "/" as const,
-	exclamation: "!" as const,
-	at: "@" as const,
-	hash: "#" as const,
-	dollar: "$" as const,
-	percent: "%" as const,
-	caret: "^" as const,
-	ampersand: "&" as const,
-	asterisk: "*" as const,
-	leftparen: "(" as const,
-	rightparen: ")" as const,
-	underscore: "_" as const,
-	plus: "+" as const,
-	pipe: "|" as const,
-	tilde: "~" as const,
-	leftbrace: "{" as const,
-	rightbrace: "}" as const,
-	colon: ":" as const,
-	lessthan: "<" as const,
-	greaterthan: ">" as const,
-	question: "?" as const,
-
-	ctrl: <K extends BaseKey>(key: K): `ctrl+${K}` => `ctrl+${key}`,
-	shift: <K extends BaseKey>(key: K): `shift+${K}` => `shift+${key}`,
-	alt: <K extends BaseKey>(key: K): `alt+${K}` => `alt+${key}`,
-
-	ctrlShift: <K extends BaseKey>(key: K): `ctrl+shift+${K}` => `ctrl+shift+${key}`,
-	shiftCtrl: <K extends BaseKey>(key: K): `shift+ctrl+${K}` => `shift+ctrl+${key}`,
-	ctrlAlt: <K extends BaseKey>(key: K): `ctrl+alt+${K}` => `ctrl+alt+${key}`,
-	altCtrl: <K extends BaseKey>(key: K): `alt+ctrl+${K}` => `alt+ctrl+${key}`,
-	shiftAlt: <K extends BaseKey>(key: K): `shift+alt+${K}` => `shift+alt+${key}`,
-	altShift: <K extends BaseKey>(key: K): `alt+shift+${K}` => `alt+shift+${key}`,
-
-	ctrlShiftAlt: <K extends BaseKey>(key: K): `ctrl+shift+alt+${K}` => `ctrl+shift+alt+${key}`,
-} as const;
 
 const SYMBOL_KEYS = new Set([
 	"`",
@@ -420,46 +338,6 @@ interface ParsedKittySequence {
 	baseLayoutKey?: number;
 	modifier: number;
 	eventType: KeyEventType;
-}
-
-export function isKeyRelease(data: string): boolean {
-	if (data.includes("\x1b[200~")) {
-		return false;
-	}
-
-	if (
-		data.includes(":3u") ||
-		data.includes(":3~") ||
-		data.includes(":3A") ||
-		data.includes(":3B") ||
-		data.includes(":3C") ||
-		data.includes(":3D") ||
-		data.includes(":3H") ||
-		data.includes(":3F")
-	) {
-		return true;
-	}
-	return false;
-}
-
-export function isKeyRepeat(data: string): boolean {
-	if (data.includes("\x1b[200~")) {
-		return false;
-	}
-
-	if (
-		data.includes(":2u") ||
-		data.includes(":2~") ||
-		data.includes(":2A") ||
-		data.includes(":2B") ||
-		data.includes(":2C") ||
-		data.includes(":2D") ||
-		data.includes(":2H") ||
-		data.includes(":2F")
-	) {
-		return true;
-	}
-	return false;
 }
 
 function parseEventType(eventTypeStr: string | undefined): KeyEventType {

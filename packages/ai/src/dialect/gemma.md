@@ -8,10 +8,10 @@ Emit each tool call as one `<|tool_call>` block. The body is `call:NAME{key:valu
 
 Non-string values are bare: numbers (`2`), `true`/`false`, `null`, lists `[<|"|>a<|"|>,<|"|>b<|"|>]`, and nested objects `{k:<|"|>v<|"|>}`.
 
-Tool results arrive later in matching `<|tool_response>` blocks:
+Tool results arrive later in matching `<|tool_response>` blocks. JSON object and array text is parsed and emitted as native Gemma values; non-JSON text remains a quoted string:
 
 ```text
-<|tool_response>response:function_name{output:<|"|>verbatim result<|"|>}<tool_response|>
+<|tool_response>response:function_name{output:<|"|>plain text result<|"|>}<tool_response|>
 ```
 
 Optionally precede tool calls with private reasoning in a `<|channel>thought` block, closed by `<channel|>`:
@@ -25,7 +25,7 @@ brief reasoning
 ## Rules
 
 - `NAME` MUST match a listed function; arguments are `key:value` pairs separated by commas.
-- String values between `<|"|>` tokens are raw literal text (no escaping); never HTML-escape them — write `a & b`, not `a &amp; b`.
+- String values between `<|"|>` tokens are raw literal text (no escaping); never HTML-escape them — write `a & b`, not `a &amp; b`. Parsed JSON tool results use native objects/lists rather than a quoted JSON string.
 - Multiple calls = consecutive `<|tool_call>...<tool_call|>` blocks; keep prose outside them.
 - The closer is `<tool_call|>` (pipe on the right), not `</tool_call>` or `<|tool_call>`.
 - Private reasoning goes in a `<|channel>thought…<channel|>` block before any call; NEVER put tool calls inside it.

@@ -177,7 +177,7 @@ fn compact_bun_check_output(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32)
 	let mut packages: Vec<&str> = Vec::new();
 	let mut diagnostics: Vec<&str> = Vec::new();
 	let mut nonzero_exits: Vec<&str> = Vec::new();
-	let mut timeout: Option<&str> = None;
+	let mut timeout: Option<&str> = ctx.runtime_timed_out.then_some("runtime timeout");
 
 	for line in input.lines() {
 		let trimmed = line.trim();
@@ -185,7 +185,7 @@ fn compact_bun_check_output(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32)
 			continue;
 		}
 		let lower = trimmed.to_ascii_lowercase();
-		if lower.contains("timeout") || lower.contains("timed out") {
+		if ctx.runtime_timed_out && is_timeout_notice(trimmed, &lower) {
 			timeout = Some(trimmed);
 			continue;
 		}
@@ -256,6 +256,18 @@ fn compact_bun_check_output(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32)
 		out.push_str(" diagnostic lines elided…]\n");
 	}
 	Some(out)
+}
+
+fn is_timeout_notice(trimmed: &str, lower: &str) -> bool {
+	let notice = trimmed.trim_matches(|ch| matches!(ch, '[' | ']' | '⟦' | '⟧'));
+	let notice_lower = notice.to_ascii_lowercase();
+	matches!(
+		notice_lower.as_str(),
+		value if value.starts_with("command timed out")
+			|| value.starts_with("wrapper timed out")
+			|| value.starts_with("timed out after")
+			|| value.starts_with("timed out waiting")
+	) || (lower.starts_with('[') && lower.contains(" timed out"))
 }
 
 fn command_summary(command: &str) -> &str {
@@ -335,4 +347,63 @@ fn is_important(line: &str) -> bool {
 		|| lower.contains("failed")
 		|| lower.contains("warning")
 		|| lower.contains("panic")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{compact_bun_check_output, filter_bun_check};
+	use crate::minimizer::{MinimizerConfig, MinimizerCtx};
+
+	#[test]
+	fn source_timeout_text_does_not_become_wrapper_timeout() {
+		let config = MinimizerConfig::default();
+		let ctx = MinimizerCtx {
+			program:           "bun",
+			subcommand:        Some("check"),
+			command:           "bun check",
+			config:            &config,
+			runtime_timed_out: false,
+		};
+		let input = "Checked 1130 files. No fixes applied.\nsrc/check.ts:60: timeout: 60\n";
+		let output = compact_bun_check_output(&ctx, input, 0).expect("check output recognized");
+		assert!(output.contains("bun check: passed"));
+		assert!(!output.contains("wrapper timed out"));
+		assert!(!output.contains("visible checks passed"));
+	}
+
+	#[test]
+	fn timeout_looking_output_does_not_override_success_status() {
+		let config = MinimizerConfig::default();
+		let ctx = MinimizerCtx {
+			program:           "bun",
+			subcommand:        Some("check"),
+			command:           "bun check",
+			config:            &config,
+			runtime_timed_out: false,
+		};
+		let input = "Checked 1130 files. No fixes applied.\n[Command timed out after 60 seconds]\n";
+		let output = compact_bun_check_output(&ctx, input, 0).expect("check output recognized");
+		assert!(output.contains("bun check: passed"));
+		assert!(!output.contains("wrapper timed out"));
+	}
+
+	#[test]
+	fn explicit_command_timeout_stays_timeout() {
+		let config = MinimizerConfig::default();
+		let ctx = MinimizerCtx {
+			program:           "bun",
+			subcommand:        Some("check"),
+			command:           "bun check",
+			config:            &config,
+			runtime_timed_out: true,
+		};
+		let input = "Checked 1130 files. No fixes applied.\n[Command timed out after 60 seconds]\n";
+		let output = filter_bun_check(&ctx, input, 0);
+		assert!(output.changed);
+		assert!(
+			output
+				.text
+				.contains("visible checks passed; wrapper timed out")
+		);
+	}
 }

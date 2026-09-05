@@ -337,8 +337,6 @@ use super::{
 };
 
 const ALLOC_CHUNK_SIZE: usize = 64 * 1024;
-const MAX_TOKEN_BUFFER_BYTES: usize = 4 * 1024 * 1024;
-const MAX_TOKEN_BUFFER_ELEMS: usize = MAX_TOKEN_BUFFER_BYTES / size_of::<Range<usize>>();
 
 self_cell!(
 

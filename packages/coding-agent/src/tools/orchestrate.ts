@@ -11,6 +11,7 @@ import {
 	OrchestratorRuntime,
 	type SendOutcome,
 	type WaitOutcome,
+	type WorkerReceipt,
 	type WorkerScreen,
 	type WorkerState,
 } from "../orchestrator/runtime";
@@ -85,10 +86,16 @@ export interface OrchestrateToolDetails {
 	op: OrchestrateOp;
 
 	screens: WorkerScreen[];
-	spawned?: { id: string; agent: string; jobId: string };
+	spawned?: { id: string; label?: string; agent: string; jobId: string };
 	send?: SendOutcome;
 	wait?: {
-		settled: Array<{ id: string; jobId: string; status: "completed" | "failed" | "cancelled" }>;
+		settled: Array<{
+			id: string;
+			label: string;
+			jobId: string;
+			status: "completed" | "failed" | "cancelled";
+			receipt: WorkerReceipt;
+		}>;
 		stillRunning: string[];
 		timedOut: boolean;
 
@@ -151,6 +158,7 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 					...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
 					...(params.schemaMode !== undefined ? { schemaMode: params.schemaMode } : {}),
 					isolation: { requested: true },
+					shareEvalSession: false,
 					identity: { label: params.name },
 					detached: false,
 					signal,
@@ -178,7 +186,7 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 				};
 			}
 		}
-		const { id, jobId } = await registry.spawn(this.session, {
+		const { id, label, jobId } = await registry.spawn(this.session, {
 			agent: params.agent,
 			name: params.name,
 			prompt: params.prompt,
@@ -188,8 +196,8 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 		});
 		const agentName = params.agent?.trim() || "worker";
 		return textResult(
-			`Spawned \`${agentName}\` worker \`${id}\` (turn job \`${jobId}\`). The turn result will be delivered when it finishes — keep directing other workers meanwhile. Continue this one with orchestrate_send \`${id}\`.`,
-			{ op: "spawn", screens: screensOf(this.session), spawned: { id, agent: agentName, jobId } },
+			`Spawned \`${agentName}\` worker \`${id}\` (label \`${label}\`, turn job \`${jobId}\`). The immutable worker id is the only routing address; its result will be delivered when the turn finishes. Continue this worker with orchestrate_send \`${id}\`.`,
+			{ op: "spawn", screens: screensOf(this.session), spawned: { id, label, agent: agentName, jobId } },
 		);
 	}
 }
@@ -216,10 +224,10 @@ export class OrchestrateSendTool implements AgentTool<typeof orchestrateSendSche
 		});
 		const ack =
 			outcome.mode === "turn"
-				? `Started a new turn on \`${outcome.id}\` (job \`${outcome.jobId}\`). Its result will be delivered when the turn finishes.`
+				? `Accepted turn ${outcome.receipt.turn} for worker \`${outcome.id}\` (label \`${outcome.label}\`, job \`${outcome.jobId}\`). Receipt: accepted; completion will report delivered.`
 				: outcome.mode === "steered"
-					? `Steered \`${outcome.id}\` mid-turn — the running turn sees your message at its next step.`
-					: `\`${outcome.id}\` is mid-turn; your message is queued and runs automatically as the next turn.`;
+					? `Accepted steer for worker \`${outcome.id}\` (label \`${outcome.label}\`, turn ${outcome.receipt.turn}, job \`${outcome.jobId}\`). Receipt: accepted.`
+					: `Accepted message for worker \`${outcome.id}\` (label \`${outcome.label}\`) as queued turn ${outcome.receipt.turn}; receipt: queued.`;
 		return textResult(ack, { op: "send", screens: screensOf(this.session), send: outcome });
 	}
 }
@@ -273,7 +281,13 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 			op: "wait",
 			screens: screensOf(this.session, params.workers),
 			wait: {
-				settled: outcome.settled.map(({ id, jobId, status }) => ({ id, jobId, status })),
+				settled: outcome.settled.map(({ id, label, jobId, status, receipt }) => ({
+					id,
+					label,
+					jobId,
+					status,
+					receipt,
+				})),
 				stillRunning: outcome.stillRunning,
 				timedOut: outcome.timedOut,
 			},
@@ -283,7 +297,11 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 		}
 		const lines: string[] = [];
 		for (const entry of outcome.settled) {
-			lines.push(`## \`${entry.id}\` — ${entry.status}`, entry.resultText, "");
+			lines.push(
+				`## \`${entry.id}\` (label \`${entry.label}\`) — ${entry.status} / receipt=${entry.receipt.status} turn=${entry.receipt.turn}`,
+				entry.resultText,
+				"",
+			);
 		}
 		if (outcome.stillRunning.length > 0) {
 			lines.push(`Still running: ${outcome.stillRunning.map(id => `\`${id}\``).join(", ")}.`);
@@ -316,7 +334,7 @@ export class OrchestrateKillTool implements AgentTool<typeof orchestrateKillSche
 		const outcome = await OrchestratorRuntime.global().kill(this.session, params.worker);
 		const cancelNote = outcome.cancelledTurn ? " Its in-flight turn was cancelled." : "";
 		return textResult(
-			`Killed session \`${outcome.id}\`.${cancelNote} Transcript remains at history://${outcome.id}.`,
+			`Worker \`${outcome.id}\` (label \`${outcome.label}\`) is terminal; receipt=${outcome.receipt.status}, reason=${outcome.receipt.reason ?? "explicit-kill"}.${cancelNote} Recover at history://${outcome.id} or agent://${outcome.id}.`,
 			{
 				op: "kill",
 				screens: screensOf(this.session),
@@ -346,12 +364,16 @@ export class OrchestrateListTool implements AgentTool<typeof orchestrateListSche
 		}
 		const lines = screens.map(screen => {
 			const parts = [
-				`- \`${screen.id}\` [${screen.agent}] ${screen.state}`,
+				`- \`${screen.id}\` (label \`${screen.label ?? screen.id}\`) [${screen.agent}] ${screen.state}`,
 				`${screen.turns} turn${screen.turns === 1 ? "" : "s"}`,
+				`addressable=${screen.addressable ?? false}`,
+				`owner=${screen.ownerId ?? "?"}`,
+				`parent=${screen.parentSessionId ?? "?"}`,
 			];
 			if (screen.queued > 0) parts.push(`${screen.queued} queued`);
 			if (screen.model) parts.push(screen.model);
 			if (screen.lastActivity) parts.push(`last: ${screen.lastActivity}`);
+			if (screen.terminal) parts.push(`reason: ${screen.terminal.reason}`, `history: ${screen.terminal.history}`);
 			return parts.join(" · ");
 		});
 		return textResult(lines.join("\n"), details);
@@ -452,7 +474,8 @@ function tvScreen(
 		live && options.spinnerFrame !== undefined && shimmerEnabled()
 			? shimmerText(screen.id, uiTheme)
 			: uiTheme.fg(live ? "accent" : "toolOutput", screen.id);
-	const headParts = [icon, badge, idText, uiTheme.fg("dim", settledStatus ?? screen.state)];
+	const labelText = uiTheme.fg("muted", screen.label ?? screen.id);
+	const headParts = [icon, badge, idText, labelText, uiTheme.fg("dim", settledStatus ?? screen.state)];
 	const turnsLabel = `${screen.turns}t${screen.queued > 0 ? `+${screen.queued}q` : ""}`;
 	headParts.push(uiTheme.fg("muted", turnsLabel));
 	if (screen.turnStartedAt !== undefined) {
@@ -492,7 +515,9 @@ function tvScreen(
 	const footer = settledStatus
 		? uiTheme.fg(
 				settledStatus === "completed" ? "success" : settledStatus === "failed" ? "error" : "warning",
-				`turn ${settledStatus} — result delivered`,
+				settledStatus === "cancelled"
+					? "turn cancelled — receipt terminal/rejected"
+					: `turn ${settledStatus} — result delivered`,
 			)
 		: undefined;
 	return miniFrame(uiTheme, headParts.join(" "), body, footer);

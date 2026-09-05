@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, ApiKey, Model } from "@oh-my-pi/pi-ai";
-import { getProjectDir, logger, prompt } from "@oh-my-pi/pi-utils";
+import { getProjectDir, prompt } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
@@ -114,7 +114,7 @@ async function runLegacyCommitCommand(args: CommitCommandArgs): Promise<void> {
 
 	const analysisValidation = validateAnalysis(analysis);
 	if (!analysisValidation.valid) {
-		logger.warn("commit analysis validation failed", { errors: analysisValidation.errors });
+		throw new Error(`Commit analysis validation failed: ${analysisValidation.errors.join("; ")}`);
 	}
 
 	const summary = await generateSummaryWithRetry({
@@ -218,6 +218,7 @@ async function generateSummaryWithRetry(input: {
 	userContext?: string;
 }): Promise<{ summary: string }> {
 	let context = input.userContext;
+	let lastErrors: string[] = [];
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		const result = await generateSummary({
 			model: input.model,
@@ -234,8 +235,9 @@ async function generateSummaryWithRetry(input: {
 		if (validation.valid) {
 			return result;
 		}
+		lastErrors = validation.errors;
 		if (attempt === 2) {
-			return result;
+			throw new Error(`Commit summary validation failed after 3 attempts: ${lastErrors.join("; ")}`);
 		}
 		context = buildRetryContext(input.userContext, validation.errors);
 	}

@@ -5,6 +5,10 @@
 
 - Removed the `snapcompact` compaction strategy and `CompactionSummaryMessage` image-frame support (`blocks`/`images`); use context-full/handoff/shake/soft or remote compaction.
 
+### Fixed
+
+- Fixed compaction reinsertion boundaries and clarified local, native, and short-summary contracts.
+
 ## [18.0.0] - 2026-08-22
 
 ### Fixed

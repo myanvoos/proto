@@ -22,6 +22,11 @@ pub struct OutlineEntry {
 	pub line:     u32,
 	// Spelled out rather than `Vec<Self>`: napi-rs copies the field type name
 	// into index.d.ts verbatim, and `Array<Self>` is not a TypeScript type.
+	#[allow(
+		clippy::use_self,
+		reason = "napi-rs copies the field type name into index.d.ts verbatim and Array<Self> is \
+		          not a TypeScript type; see comment above"
+	)]
 	pub children: Vec<OutlineEntry>,
 }
 

@@ -5,7 +5,11 @@ import { ToolError } from "../../tools/tool-errors";
 import { EVAL_AGENT_BRIDGE_NAME, runEvalAgent } from "../agent-bridge";
 import { EVAL_AST_BRIDGE_NAME, type EvalAstBlockRange, type EvalAstSymbols, runEvalAst } from "../ast-bridge";
 import { EVAL_BUDGET_BRIDGE_NAME, type EvalBudgetResult, runEvalBudget } from "../budget-bridge";
-import { EVAL_COMPLETION_BRIDGE_NAME, runEvalCompletion } from "../completion-bridge";
+import {
+	EVAL_COMPLETION_BRIDGE_NAME,
+	type EvalCompletionInvocationContext,
+	runEvalCompletion,
+} from "../completion-bridge";
 import { EVAL_CONCURRENCY_BRIDGE_NAME, type EvalConcurrencyResult, runEvalConcurrency } from "../concurrency-bridge";
 import type { JsStatusEvent } from "./shared/types";
 
@@ -15,6 +19,8 @@ interface ToolBridgeOptions {
 	session: ToolSession;
 	signal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;
+	completionContext?: EvalCompletionInvocationContext;
+	completionInvocationId?: string;
 }
 
 type ToolValue =

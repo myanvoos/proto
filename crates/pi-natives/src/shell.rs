@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use napi::{
-	Env, Result,
+	Env, Result, Status,
 	bindgen_prelude::*,
 	threadsafe_function::{ThreadsafeFunction, UnknownReturnValue},
 };
@@ -10,11 +10,50 @@ use pi_shell::{
 	FsObservation as CoreFsObservation, FsObservationKind as CoreFsObservationKind,
 	MinimizerResult as CoreMinimizerResult, Shell as CoreShell,
 	ShellExecuteOptions as CoreShellExecuteOptions, ShellOptions as CoreShellOptions,
-	ShellRunOptions as CoreShellRunOptions, ShellRunResult as CoreShellRunResult,
-	execute_shell as core_execute_shell, minimizer,
+	ShellRunOptions as CoreShellRunOptions, ShellRunResult as CoreShellRunResult, XdDispatchFuture,
+	XdDispatchRequest, XdDispatchResponse, XdDispatcher, execute_shell as core_execute_shell,
+	minimizer,
 };
 
 use crate::task;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireXdDispatchResponse {
+	stdout:    String,
+	stderr:    String,
+	exit_code: i32,
+	record:    Option<String>,
+}
+
+struct NapiXdDispatcher {
+	callback: Arc<ThreadsafeFunction<String, Promise<String>, String, Status, false, true>>,
+}
+
+impl XdDispatcher for NapiXdDispatcher {
+	fn dispatch(&self, request: XdDispatchRequest) -> XdDispatchFuture {
+		let callback = Arc::clone(&self.callback);
+		Box::pin(async move {
+			let payload = serde_json::to_string(&request)
+				.map_err(|error| anyhow::anyhow!("failed to encode xd request: {error}"))?;
+			let promise = callback
+				.call_async(payload)
+				.await
+				.map_err(|error| anyhow::anyhow!("xd dispatcher callback failed: {error}"))?;
+			let response_json = promise
+				.await
+				.map_err(|error| anyhow::anyhow!("xd dispatcher promise rejected: {error}"))?;
+			let response: WireXdDispatchResponse = serde_json::from_str(&response_json)
+				.map_err(|error| anyhow::anyhow!("invalid xd dispatcher response: {error}"))?;
+			Ok(XdDispatchResponse {
+				stdout:    response.stdout,
+				stderr:    response.stderr,
+				exit_code: response.exit_code,
+				record:    response.record,
+			})
+		})
+	}
+}
 
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
@@ -79,6 +118,8 @@ pub struct ShellRunOptions<'env> {
 	pub env: Option<HashMap<String, String>>,
 
 	pub timeout_ms: Option<u32>,
+
+	pub xd_call_id: Option<String>,
 
 	pub signal: Option<Unknown<'env>>,
 }
@@ -181,6 +222,8 @@ pub struct ShellRunResult {
 	pub working_dir: Option<String>,
 
 	pub fs_observations: Vec<FsObservation>,
+
+	pub xd_dispatches: Vec<String>,
 }
 
 impl From<CoreShellRunResult> for ShellRunResult {
@@ -192,6 +235,7 @@ impl From<CoreShellRunResult> for ShellRunResult {
 			minimized:       value.minimized.map(Into::into),
 			working_dir:     value.working_dir,
 			fs_observations: value.fs_observations.into_iter().map(Into::into).collect(),
+			xd_dispatches:   value.xd_dispatches,
 		}
 	}
 }
@@ -215,9 +259,17 @@ impl Shell {
 		options: ShellRunOptions<'env>,
 		#[napi(ts_arg_type = "((error: Error | null, chunk: string) => void) | undefined | null")]
 		on_chunk: Option<ThreadsafeFunction<String, UnknownReturnValue>>,
+		#[napi(ts_arg_type = "((request: string) => Promise<string>) | undefined | null")]
+		xd_dispatcher: Option<
+			ThreadsafeFunction<String, Promise<String>, String, Status, false, true>,
+		>,
 	) -> Result<PromiseRaw<'env, ShellRunResult>> {
 		let cancel_token = task::CancelToken::new(options.timeout_ms, options.signal);
 		let inner = Arc::clone(&self.inner);
+		let dispatcher = xd_dispatcher.map(|callback| {
+			Arc::new(NapiXdDispatcher { callback: Arc::new(callback) }) as Arc<dyn XdDispatcher>
+		});
+		inner.set_xd_dispatcher(dispatcher, options.xd_call_id.clone());
 		let run_options = CoreShellRunOptions {
 			command:    options.command,
 			cwd:        options.cwd,

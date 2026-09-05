@@ -1,7 +1,7 @@
 ---
-description: "Never use `any` in TypeScript annotations or assertions — use `unknown`, generics, a schema parse at trust boundaries, or the actual type"
-condition: ": any|as any"
-scope: "tool:edit(*.ts), tool:edit(*.tsx), tool:write(*.ts), tool:write(*.tsx)"
+description: "Detect explicit `any` in common TypeScript type positions and assertions — use `unknown`, generics, a schema parse at trust boundaries, or the actual type"
+condition: '(?m)(?:(?::|\bas\b|=|<|,|\||&|\?|\bextends)\s*)any\b'
+scope: "tool:eval, tool:kernel"
 interruptMode: never
 ---
 

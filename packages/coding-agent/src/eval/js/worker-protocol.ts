@@ -1,3 +1,4 @@
+import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import type { JsDisplayOutput } from "./shared/types";
 
 export type { JsDisplayOutput } from "./shared/types";
@@ -21,7 +22,14 @@ export type ToolReply = { ok: true; value: unknown } | { ok: false; error: RunEr
 
 export type WorkerInbound =
 	| { type: "init"; snapshot: SessionSnapshot }
-	| { type: "run"; runId: string; code: string; filename: string; snapshot: SessionSnapshot }
+	| {
+			type: "run";
+			runId: string;
+			code: string;
+			filename: string;
+			snapshot: SessionSnapshot;
+			completionContext?: EvalCompletionInvocationContext;
+	  }
 	| { type: "tool-reply"; id: string; reply: ToolReply }
 	| { type: "close" };
 
@@ -30,7 +38,7 @@ export type WorkerOutbound =
 	| { type: "init-failed"; error: RunErrorPayload }
 	| { type: "text"; runId: string; chunk: string }
 	| { type: "display"; runId: string; output: JsDisplayOutput }
-	| { type: "tool-call"; id: string; runId: string; name: string; args: unknown }
+	| { type: "tool-call"; id: string; runId: string; name: string; args: unknown; completionInvocationId?: string }
 	| { type: "result"; runId: string; ok: true }
 	| { type: "result"; runId: string; ok: false; error: RunErrorPayload }
 	| { type: "log"; level: "debug" | "warn" | "error"; msg: string; meta?: Record<string, unknown> }

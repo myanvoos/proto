@@ -1,6 +1,6 @@
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 
-export const CODEX_CLIENT_VERSION = "0.144.1";
+export const CODEX_CLIENT_VERSION = "0.153.3";
 
 export const OPENAI_HEADERS = {
 	BETA: "OpenAI-Beta",

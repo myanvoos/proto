@@ -3,13 +3,13 @@ Tasks: verbatim content strings, NEVER auto-generated IDs. After each state-chan
 |`op`|Effect|
 |---|---|
 |`init`|Full list `list: [{phase, items: string[]}]`, or single-phase `items: string[]`; replaces existing|
-|`start` / `done` / `drop`|`task` or `phase`: in progress / completed / abandoned|
+|`start` / `done` / `drop`|`task` or `phase` required: start selects a phase's current/first pending task; done/drop affect that target|
 |`block` / `unblock`|`task` or `phase` (+ optional `reason`): blocked — awaiting external input, excluded from stop reminder / back to pending|
 |`rm`|Remove task/phase; omit both → clear all|
 |`append`|`phase` + `items: string[]`; lazily creates phase|
 |`view`|Echo list (also: lost exact task text → `view`, NEVER guess)|
 
-Task content: 5–10 words, what not how, unique. Phase: short noun phrase; NEVER prefix `1.`/`A)`. Keep strings stable.
+Starting a completed, abandoned, or blocked task is rejected; completed tasks NEVER revert. Task content: 5–10 words, what not how, unique. Phase: short noun phrase; NEVER prefix `1.`/`A)`. Keep strings stable.
 
 Blocked on user decision/external service → `block`; the active task blocked hands `in_progress` to the next `pending` task; blocker agent-actionable → `append` an unblocking task instead.
 

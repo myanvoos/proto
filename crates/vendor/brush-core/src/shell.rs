@@ -364,6 +364,10 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 	pub fn fs_observations(&self) -> &crate::fsobserve::FsObservationLog {
 		&self.fs_observations
 	}
+
+	pub fn error_formatter(&self) -> &SE::ErrorFormatter {
+		&self.error_formatter
+	}
 }
 
 #[inherent::inherent]

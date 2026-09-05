@@ -322,3 +322,29 @@ test("status events render under their own label even when the cell has no outpu
 	expect(lines.some(line => /(^|\s)Output$/.test(line))).toBe(false);
 	expect(lines.some(line => line.includes("hello"))).toBe(true);
 });
+
+test("renderer places authoritative execution metadata before output prose", () => {
+	const component = evalToolRenderer.renderResult(
+		{
+			content: [{ type: "text", text: "all checks passed" }],
+			details: {
+				execution: {
+					state: "unknown",
+					collector: { state: "failed", error: "summary unavailable" },
+					output: { disposition: "unavailable" },
+					timeout: { cause: "unknown", scope: "pipeline" },
+				},
+			},
+		},
+		{ expanded: true, isPartial: false },
+		theme,
+	);
+	const lines = component.render(WIDTH).map(strip);
+	const metadataLine = lines.findIndex(line => line.includes("Execution: state=unknown"));
+	const outputLine = lines.findIndex(line => line.includes("all checks passed"));
+	expect(metadataLine).toBeGreaterThanOrEqual(0);
+	expect(metadataLine).toBeLessThan(outputLine);
+	expect(lines[metadataLine]).toContain("collector=failed");
+	expect(lines[metadataLine]).toContain("renderer=complete");
+	expect(lines[metadataLine]).toContain("timeout=unknown/pipeline");
+});

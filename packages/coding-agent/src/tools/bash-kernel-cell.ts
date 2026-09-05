@@ -7,12 +7,13 @@ const LANG_BY_CMD: Record<string, "python" | "js"> = {
 	python: "python",
 	python3: "python",
 	node: "js",
+	bun: "js",
 };
 
 const PASSTHROUGH_BEFORE_STDIN = /^(?:\s|-u|-)*$/;
 
 /**
- * Best-effort detection of a kernel-routed `python`/`node` invocation in a bash
+ * Best-effort detection of a kernel-routed `python`/`node`/`bun` invocation in a bash
  * command, mirroring the routing in crates/pi-builtins kernel_cell.rs: code on
  * stdin (heredoc) or a bare `-c`/`-e CODE` runs in the persistent kernel, while
  * `python file.py`, `-m`, or extra argv run a real interpreter. Display-only —
@@ -27,7 +28,7 @@ export function detectBashKernelCell(command: string): BashKernelCell | undefine
 function detectHeredocCell(command: string): BashKernelCell | undefined {
 	// `<lang> [flags] <<[-]['"]?DELIM['"]? \n <body> \n DELIM`
 	const open = command.match(
-		/(?:^|[\n;&|]|&&|\|\|)\s*(python3?|node)\b([^\n]*?)<<(-?)\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\4[^\n]*\n/,
+		/(?:^|[\n;&|]|&&|\|\|)\s*(python3?|node|bun)\b([^\n]*?)<<(-?)\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\4[^\n]*\n/,
 	);
 	if (!open) return undefined;
 	const language = LANG_BY_CMD[open[1]];
@@ -47,7 +48,7 @@ function detectHeredocCell(command: string): BashKernelCell | undefined {
 
 function detectFlagCell(command: string): BashKernelCell | undefined {
 	// `<lang> [flags] (-c|-e) CODE` with nothing meaningful after the code.
-	const m = command.match(/(?:^|[\n;&|]|&&|\|\|)\s*(python3?|node)\b((?:\s+-[A-Za-z]+)*)\s+(-c|-e)\s+(.*)$/s);
+	const m = command.match(/(?:^|[\n;&|]|&&|\|\|)\s*(python3?|node|bun)\b((?:\s+-[A-Za-z]+)*)\s+(-c|-e)\s+(.*)$/s);
 	if (!m) return undefined;
 	const language = LANG_BY_CMD[m[1]];
 	if (!language) return undefined;

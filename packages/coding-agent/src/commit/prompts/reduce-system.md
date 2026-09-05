@@ -21,7 +21,7 @@ Each detail point:
 - Under 120 chars, ends with period
 - Group related cross-file changes
 Priority: user-visible behavior > performance/security > architecture > internal implementation
-changelog_category: Added|Changed|Fixed|Deprecated|Removed|Security
+changelog_category: Breaking Changes|Added|Changed|Fixed|Deprecated|Removed|Security
 user_visible: true for features, user-facing bugs, breaking changes, security
 </output-format>
 <example>

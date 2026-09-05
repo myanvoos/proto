@@ -8,6 +8,7 @@ pub use pi_builtins::{
 };
 pub use shell::{
 	FsObservation, FsObservationKind, MinimizerResult, Shell, ShellExecuteOptions,
-	ShellExecuteResult, ShellOptions, ShellRunOptions, ShellRunResult, StreamSinks, execute_shell,
+	ShellExecuteResult, ShellOptions, ShellRunOptions, ShellRunResult, StreamSinks,
+	XdDispatchFuture, XdDispatchRequest, XdDispatchResponse, XdDispatcher, execute_shell,
 	execute_shell_streams,
 };

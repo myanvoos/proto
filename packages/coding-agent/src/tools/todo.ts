@@ -303,7 +303,34 @@ function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: st
 		const phase = resolvePhaseOrError(phases, entry.phase, errors);
 		return phase ? [...phase.tasks] : [];
 	}
-	return phases.flatMap(phase => phase.tasks);
+	errors.push(`${entry.op} requires a task or phase target`);
+	return [];
+}
+
+function resolveStartTask(
+	phases: TodoPhase[],
+	entry: TodoOpEntryValue,
+	errors: string[],
+): { task: TodoItem; phase: TodoPhase } | undefined {
+	if (entry.task && entry.phase) {
+		errors.push("start accepts either task or phase, not both");
+		return undefined;
+	}
+	if (entry.task) return resolveTaskOrError(phases, entry.task, errors);
+	if (!entry.phase) {
+		errors.push("start requires a task or phase target");
+		return undefined;
+	}
+	const phase = resolvePhaseOrError(phases, entry.phase, errors);
+	if (!phase) return undefined;
+	const task =
+		phase.tasks.find(candidate => candidate.status === "in_progress") ??
+		phase.tasks.find(candidate => candidate.status === "pending");
+	if (!task) {
+		errors.push(`Phase "${entry.phase}" has no pending task to start`);
+		return undefined;
+	}
+	return { task, phase };
 }
 
 const DEFAULT_INIT_PHASE = "Tasks";
@@ -396,8 +423,16 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 		case "init":
 			return initPhases(entry, errors);
 		case "start": {
-			const hit = resolveTaskOrError(phases, entry.task, errors);
+			const hit = resolveStartTask(phases, entry, errors);
 			if (!hit) return phases;
+			if (hit.task.status === "completed" || hit.task.status === "abandoned") {
+				errors.push(`Task "${hit.task.content}" is already closed`);
+				return phases;
+			}
+			if (hit.task.status === "blocked") {
+				errors.push(`Task "${hit.task.content}" is blocked; unblock it before starting`);
+				return phases;
+			}
 			for (const phase of phases) {
 				for (const candidate of phase.tasks) {
 					if (candidate.status === "in_progress" && candidate !== hit.task) {
@@ -416,7 +451,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 		}
 		case "drop": {
 			for (const task of getTaskTargets(phases, entry, errors)) {
-				task.status = "abandoned";
+				if (task.status !== "completed") task.status = "abandoned";
 			}
 			return phases;
 		}

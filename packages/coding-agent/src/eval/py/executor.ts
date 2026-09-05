@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
 
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import type { ExecutionMetadata } from "../../session/execution-metadata";
 import type { ToolSession } from "../../tools";
+import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import {
 	buildManagedKernelEnv,
 	buildManagedKernelEnvPatch,
@@ -82,6 +84,7 @@ export interface PythonExecutorOptions {
 	bridge?: { url: string; token: string };
 
 	fsObservations?: FsObservation[];
+	completionContext?: EvalCompletionInvocationContext;
 }
 
 export interface PythonKernelExecutor {
@@ -95,6 +98,12 @@ export interface PythonResult {
 
 	cancelled: boolean;
 
+	timedOut?: boolean;
+
+	signal?: string | number;
+
+	execution?: ExecutionMetadata;
+
 	truncated: boolean;
 
 	artifactId?: string;
@@ -106,6 +115,14 @@ export interface PythonResult {
 	outputLines: number;
 
 	outputBytes: number;
+
+	collector?: { state: "running" | "complete" | "failed" | "unavailable"; error?: string };
+
+	outputDisposition?: "complete" | "truncated" | "summarized" | "unavailable";
+
+	summarized?: boolean;
+
+	actionableDiagnostics?: string[];
 
 	displayOutputs: KernelDisplayOutput[];
 

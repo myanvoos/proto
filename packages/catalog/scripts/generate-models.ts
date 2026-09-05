@@ -17,6 +17,7 @@ import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry";
 import { $env } from "@oh-my-pi/pi-utils";
 import { buildModel } from "../src/build";
 import { ANTIGRAVITY_PRIMARY_ENDPOINT, fetchAntigravityDiscoveryModels } from "../src/discovery/antigravity";
+import { fetchCodexModels } from "../src/discovery/codex";
 import { buildGitLabDuoWorkflowFallbackModel } from "../src/discovery/gitlab-duo-workflow";
 import { createModelManager } from "../src/model-manager";
 import prevModelsJson from "../src/models.json" with { type: "json" };
@@ -51,7 +52,6 @@ import {
 	SAKANA_FUGU_STATIC_MODELS,
 	stripFireworksDeepSeekThinkingToggle,
 } from "../src/provider-models/openai-compat";
-import { type OpenAICodexAccount, openaiCodexModelManagerOptions } from "../src/provider-models/special";
 import type { Api, Model, ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
 import { collapseEffortVariantsAcrossProviders } from "../src/variant-collapse";
@@ -387,42 +387,14 @@ async function fetchAntigravityModels(): Promise<ModelSpec<"google-gemini-cli">[
 }
 
 async function fetchCodexDiscoveryModels(): Promise<ModelSpec<"openai-codex-responses">[]> {
-	const accounts: OpenAICodexAccount[] = [];
-	try {
-		const authStorage = await discoverAuthStorage();
-		try {
-			const accesses = await authStorage.getOAuthAccesses("openai-codex");
-			for (const access of accesses) {
-				if (!access.ok) {
-					console.warn(`Codex account failed to resolve (${access.error}), keeping previous models.`);
-					return [];
-				}
-				accounts.push({ accessToken: access.accessToken, accountId: access.accountId });
-			}
-		} finally {
-			authStorage.close();
-		}
-	} catch (error) {
-		console.warn(
-			"Warning: Failed to retrieve Codex credentials:",
-			error instanceof Error ? error.message : String(error),
-		);
+	console.log("Fetching models from the Pi remote catalog...");
+	const result = await fetchCodexModels();
+	if (!result) {
+		console.warn("Pi remote catalog fetch failed, keeping previous models.");
 		return [];
 	}
-	if (accounts.length === 0) {
-		console.log("No Codex credentials found, will use previous models.");
-		console.log("Tip: If you are logged in under a specific profile, run with PROTO_PROFILE=<name>.");
-		return [];
-	}
-	console.log(`Fetching models from Codex API for ${accounts.length} account(s)...`);
-	const options = openaiCodexModelManagerOptions({ resolveAccounts: async () => accounts });
-	const models = await options.fetchDynamicModels?.();
-	if (!models) {
-		console.warn("Codex API fetch failed, keeping previous models.");
-		return [];
-	}
-	console.log(`Fetched ${models.length} models from Codex API`);
-	return [...models];
+	console.log(`Fetched ${result.models.length} models from the Pi remote catalog`);
+	return result.models;
 }
 
 async function generateModels() {

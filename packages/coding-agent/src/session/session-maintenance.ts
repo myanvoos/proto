@@ -43,7 +43,11 @@ import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { CompactionSettings as ConfiguredCompactionSettings, Settings } from "../config/settings";
-import type { ExtensionRunner, SessionBeforeCompactResult } from "../extensibility/extensions";
+import type {
+	ExtensionRunner,
+	SessionBeforeCompactResult,
+	SessionCompactFailedEvent,
+} from "../extensibility/extensions";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import type { GoalModeState } from "../goals/state";
 import type { NonMessageTokenSource } from "../modes/utils/context-usage";
@@ -298,6 +302,15 @@ export class SessionMaintenance {
 		return this.#host.emitSessionEvent(event, detach ? { detachExtensions: true } : undefined);
 	}
 
+	async #emitCompactionFailed(event: SessionCompactFailedEvent): Promise<void> {
+		if (!this.#host.extensionRunner?.hasHandlers(event.type)) return;
+		try {
+			await this.#host.extensionRunner.emit(event);
+		} catch (error) {
+			logger.warn("Compaction failure hook failed", { error: String(error) });
+		}
+	}
+
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
@@ -487,6 +500,7 @@ export class SessionMaintenance {
 		let methods: CompactionMethod[] = [];
 		let selectedMethodIndex = -1;
 		let compactionCommitted = false;
+		let fromExtension = false;
 		let methodAttempted = false;
 		const compactionAbortController = retryController ?? new AbortController();
 		const manualCompactionCleanup = ownsCompactionController ? Promise.withResolvers<void>() : undefined;
@@ -563,7 +577,6 @@ export class SessionMaintenance {
 			}
 
 			let hookCompaction: CompactionResult | undefined;
-			let fromExtension = false;
 			let preserveData: Record<string, unknown> | undefined;
 
 			if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) {
@@ -691,6 +704,14 @@ export class SessionMaintenance {
 				);
 				return await this.compact(customInstructions, options, selectedMethodIndex + 1, compactionAbortController);
 			}
+			await this.#emitCompactionFailed({
+				type: "session_compact_failed",
+				reason: "manual",
+				errorMessage: err.message,
+				aborted: compactionAbortController.signal.aborted || error instanceof CompactionCancelledError,
+				willRetry: false,
+				fromExtension,
+			});
 			options?.onError?.(err);
 			throw error;
 		} finally {
@@ -1677,6 +1698,7 @@ export class SessionMaintenance {
 		await this.#host.suspendConductorForTransition();
 
 		let compactionCommitted = false;
+		let fromExtension = false;
 		try {
 			const startEvent = { type: "auto_compaction_start" as const, reason, action };
 			await this.#emitLifecycleEvent(startEvent, false);
@@ -1803,7 +1825,6 @@ export class SessionMaintenance {
 			}
 
 			let hookCompaction: CompactionResult | undefined;
-			let fromExtension = false;
 			let preserveData: Record<string, unknown> | undefined;
 			let codexCompaction: CodexCompactionContext | undefined;
 
@@ -1817,6 +1838,14 @@ export class SessionMaintenance {
 				})) as SessionBeforeCompactResult | undefined;
 
 				if (hookResult?.cancel) {
+					await this.#emitCompactionFailed({
+						type: "session_compact_failed",
+						reason,
+						errorMessage: "Compaction cancelled",
+						aborted: true,
+						willRetry: false,
+						fromExtension: false,
+					});
 					await this.#emitLifecycleEvent(
 						{
 							type: "auto_compaction_end",
@@ -2049,6 +2078,14 @@ export class SessionMaintenance {
 			});
 		} catch (error) {
 			if (autoCompactionSignal.aborted) {
+				await this.#emitCompactionFailed({
+					type: "session_compact_failed",
+					reason,
+					errorMessage: error instanceof Error ? error.message : "Compaction aborted",
+					aborted: true,
+					willRetry: false,
+					fromExtension,
+				});
 				await this.#emitLifecycleEvent(
 					{
 						type: "auto_compaction_end",
@@ -2089,6 +2126,14 @@ export class SessionMaintenance {
 					methodIndex: methodIndex + 1,
 				});
 			}
+			await this.#emitCompactionFailed({
+				type: "session_compact_failed",
+				reason,
+				errorMessage,
+				aborted: false,
+				willRetry: false,
+				fromExtension,
+			});
 			await this.#emitLifecycleEvent(
 				{
 					type: "auto_compaction_end",

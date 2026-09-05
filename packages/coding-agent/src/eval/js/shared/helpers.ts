@@ -65,11 +65,26 @@ function resolveHelperPath(ctx: HelperContext, rawPath: string): string {
 	const match = INTERNAL_URL_RE.exec(rawPath);
 	if (!match) return resolvePath(ctx, rawPath);
 	const scheme = match[1].toLowerCase();
-	const root = ctx.localRoots()[scheme];
+	let rootKey = scheme;
+	let rawRelative = match[2];
+	if (scheme === "skill") {
+		const slash = rawRelative.indexOf("/");
+		const rawSkillName = slash === -1 ? rawRelative : rawRelative.slice(0, slash);
+		rawRelative = slash === -1 ? "" : rawRelative.slice(slash + 1);
+		let skillName: string;
+		try {
+			skillName = decodeURIComponent(rawSkillName);
+		} catch {
+			throw new ToolError(`Invalid URL encoding in skill:// path: ${rawPath}`);
+		}
+		if (!skillName) throw new ToolError("skill:// URL requires a skill name");
+		rootKey = `skill:${skillName}`;
+	}
+	const root = ctx.localRoots()[rootKey];
 	if (!root) {
 		throw new ToolError(`Protocol paths are not supported by this scheme: ${rawPath}`);
 	}
-	return resolveUnderRoot(scheme, root, match[2], rawPath);
+	return resolveUnderRoot(scheme, root, rawRelative, rawPath);
 }
 
 function resolveUnderRoot(scheme: string, root: string, rawRelative: string, rawPath: string): string {

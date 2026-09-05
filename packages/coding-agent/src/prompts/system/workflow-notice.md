@@ -20,7 +20,7 @@ State persists across `eval` calls;{{#if scoutAvailable}} scout one call, fan ou
 - `log(message)`: progress line above status tree. `phase(title)`: phase; following status lines group under it.
 - `budget`: `budget.total` output-token ceiling/`None` if unset; `budget.spent()` tokens spent this turn (main loop + eval subagents); `budget.remaining()`/`math.inf` if total `None`; `budget.hard` enforcement. User `+Nk`: advisory, self-limit via `budget.remaining()`; `+Nk!`/Goal Mode: hard, `agent()` refuses spawn at spent ceiling. Gate loops on `budget.total` first: no user budget → `None`.
 
-All execution INLINE, synchronous within `eval`: no background mode, resume, separate progress app. One call: one well-scoped fan-out. Chain calls/turns for phases; read each result before next-phase decision.
+Orchestration calls are synchronous within an eval cell; eval cells MAY auto-background when `eval.autoBackground.enabled` is true and its configured threshold is reached. Follow the eval tool's async job notice and result. One call: one well-scoped fan-out. Chain calls/turns for phases; read each result before next-phase decision.
 </helpers>
 
 <structure>

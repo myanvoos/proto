@@ -1,7 +1,13 @@
-import { DEFAULT_MAX_BYTES, OutputSink } from "../../session/streaming-output";
+import {
+	type ExecutionMetadata,
+	type ExecutionTimeoutMetadata,
+	executionMetadataForResult,
+} from "../../session/execution-metadata";
+import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary } from "../../session/streaming-output";
 import type { ToolSession } from "../../tools";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../../tools/output-meta";
 import { isEvalTimeoutControlEvent } from "../bridge-timeout";
+import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { executeInVmContext, type JsDisplayOutput } from "./context-manager";
 import type { JsStatusEvent } from "./shared/types";
 
@@ -24,18 +30,26 @@ interface JsExecutorOptions {
 	session: ToolSession;
 
 	localRoots?: Record<string, string>;
+	completionContext?: EvalCompletionInvocationContext;
 }
 
 export interface JsResult {
 	output: string;
 	exitCode: number | undefined;
 	cancelled: boolean;
+	timedOut?: boolean;
+	signal?: string | number;
+	execution?: ExecutionMetadata;
 	truncated: boolean;
 	artifactId?: string;
 	totalLines: number;
 	totalBytes: number;
 	outputLines: number;
 	outputBytes: number;
+	collector?: { state: "running" | "complete" | "failed" | "unavailable"; error?: string };
+	outputDisposition?: "complete" | "truncated" | "summarized" | "unavailable";
+	summarized?: boolean;
+	actionableDiagnostics?: string[];
 	displayOutputs: JsDisplayOutput[];
 }
 
@@ -88,6 +102,29 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			: (options.signal ?? timeoutSignal);
 
 	const acquireBudgetMs = legacyTimeoutMs ?? options.idleTimeoutMs;
+	const executionStartedAt = performance.now();
+	const resultWithSummary = (
+		summary: OutputSummary,
+		base: Pick<JsResult, "exitCode" | "cancelled"> & { timedOut?: boolean },
+	): JsResult => {
+		const result: JsResult = { ...summary, ...base, displayOutputs };
+		const timeout: ExecutionTimeoutMetadata | undefined = result.timedOut
+			? {
+					cause: options.idleTimeoutMs !== undefined ? "idle" : "deadline",
+					scope: "cell",
+					requestedMs: legacyTimeoutMs ?? options.idleTimeoutMs,
+					effectiveMs: legacyTimeoutMs ?? options.idleTimeoutMs,
+				}
+			: undefined;
+		return {
+			...result,
+			execution: executionMetadataForResult(result, {
+				elapsedMs: performance.now() - executionStartedAt,
+				timeout,
+				summary: result,
+			}),
+		};
+	};
 
 	try {
 		await executeInVmContext({
@@ -97,6 +134,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			cwd: options.cwd ?? options.session.cwd,
 			session: options.session,
 			localRoots: options.localRoots,
+			completionContext: options.completionContext,
 			reset: options.reset,
 			code,
 			filename: `js-cell-${crypto.randomUUID()}.js`,
@@ -114,18 +152,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			},
 		});
 		const summary = await outputSink.dump();
-		return {
-			output: summary.output,
-			exitCode: 0,
-			cancelled: false,
-			truncated: summary.truncated,
-			artifactId: summary.artifactId,
-			totalLines: summary.totalLines,
-			totalBytes: summary.totalBytes,
-			outputLines: summary.outputLines,
-			outputBytes: summary.outputBytes,
-			displayOutputs,
-		};
+		return resultWithSummary(summary, { exitCode: 0, cancelled: false });
 	} catch (error) {
 		if (signal?.aborted || isAbortError(error)) {
 			const timedOut = Boolean(timeoutSignal?.aborted) || isTimeoutReason(options.signal?.reason);
@@ -133,34 +160,12 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 				outputSink.push(formatJsTimeoutAnnotation(legacyTimeoutMs ?? options.idleTimeoutMs));
 			}
 			const summary = await outputSink.dump();
-			return {
-				output: summary.output,
-				exitCode: undefined,
-				cancelled: true,
-				truncated: summary.truncated,
-				artifactId: summary.artifactId,
-				totalLines: summary.totalLines,
-				totalBytes: summary.totalBytes,
-				outputLines: summary.outputLines,
-				outputBytes: summary.outputBytes,
-				displayOutputs,
-			};
+			return resultWithSummary(summary, { exitCode: undefined, cancelled: true, timedOut });
 		}
 		const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
 		outputSink.push(message);
 		const summary = await outputSink.dump();
-		return {
-			output: summary.output,
-			exitCode: 1,
-			cancelled: false,
-			truncated: summary.truncated,
-			artifactId: summary.artifactId,
-			totalLines: summary.totalLines,
-			totalBytes: summary.totalBytes,
-			outputLines: summary.outputLines,
-			outputBytes: summary.outputBytes,
-			displayOutputs,
-		};
+		return resultWithSummary(summary, { exitCode: 1, cancelled: false });
 	} finally {
 		await outputSink.dispose();
 	}

@@ -9,9 +9,9 @@ export async function runExtensionCompact(
 	session: CompactableSession,
 	instructionsOrOptions: string | CompactOptions | undefined,
 ): Promise<void> {
-	const instructions = typeof instructionsOrOptions === "string" ? instructionsOrOptions : undefined;
 	const options =
 		instructionsOrOptions && typeof instructionsOrOptions === "object" ? instructionsOrOptions : undefined;
+	const instructions = typeof instructionsOrOptions === "string" ? instructionsOrOptions : options?.customInstructions;
 	await session.compact(instructions, options);
 }
 

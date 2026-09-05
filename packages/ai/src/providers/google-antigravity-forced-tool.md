@@ -1,1 +1,1 @@
-TOOL-ONLY TURN. This turn accepts a tool call and nothing else; a text reply here is discarded unread and you will be re-prompted. Emit the tool call now.
+TOOL-ONLY REQUEST. Emit one allowed tool call now; do not add explanatory prose or a text-only reply.

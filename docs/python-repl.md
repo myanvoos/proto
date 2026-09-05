@@ -107,7 +107,8 @@ Unknown magic names raise `NameError: UsageError: ...` inside the cell.
 
 - `session` (default)
   - Reuses kernel sessions keyed by namespaced eval session id plus normalized cwd and interpreter.
-  - Multiple owners can share the same retained kernel for that key.
+  - Multiple calls in one canonical eval session share that retained kernel; independent orchestrator workers receive distinct session ids and do not share the parent or sibling kernel.
+  - Explicit callers may intentionally pass the same eval session id to preserve shared-state delegation.
   - Calls through the tool are exclusive, so tool invocations do not overlap.
   - A dead retained subprocess is replaced before execution.
   - If the subprocess dies during execution, it is replaced and the call is retried once.

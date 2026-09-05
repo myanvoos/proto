@@ -69,7 +69,8 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 
 	const completion = async (prompt, opts, ...rest) => {
 		const o = optionsArg("completion", opts, rest, ["model", "system", "schema"], "{ model, system, schema }");
-		const res = await globalThis.__proto_call_tool__("__completion__", { prompt, ...o });
+		const invocationId = globalThis.__proto_next_completion_invocation__?.();
+		const res = await globalThis.__proto_call_tool__("__completion__", { prompt, ...o }, invocationId);
 		const text = res && typeof res === "object" ? res.text : res;
 		return hasOwn(o, "schema") ? JSON.parse(text) : text;
 	};

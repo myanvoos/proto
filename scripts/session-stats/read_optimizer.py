@@ -46,7 +46,6 @@ CURRENT_MAX_LINES = 3000
 CURRENT_LEADING = 3
 CURRENT_TRAILING = 3
 CURRENT_MAX_BYTES = 50 * 1024
-READ_MAX_COLUMN = 768
 
 _RANGE_RE = re.compile(r"^(\d+)(?:([-+])(\d+))?$")
 TEXT_EXTS = {
@@ -320,23 +319,6 @@ def add_interval(
     if not placed:
         out.append((s, e))
     return out
-
-
-def estimate_cost(
-    call: ReadCall, delivered: tuple[int, int]
-) -> tuple[float, bool, bool]:
-    lines = max(0, delivered[1] - delivered[0] + 1)
-    line_tokens = call.token_per_line * lines
-    byte_budget = max(CURRENT_MAX_BYTES, lines * 512)
-    approx_bytes = line_tokens * 4
-    bytes_limited = approx_bytes > byte_budget
-    if bytes_limited:
-        line_tokens = byte_budget / 4
-    return (
-        call.arg_tokens + line_tokens,
-        call.kind == "explicit" and lines >= call.config_max_lines if False else False,
-        bytes_limited,
-    )
 
 
 def load_reads(

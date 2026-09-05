@@ -34,6 +34,7 @@ export {
 
 import type { OutputMeta } from "../tools/output-meta";
 import { formatOutputNotice } from "../tools/output-meta";
+import type { ExecutionMetadata } from "./execution-metadata";
 import { titleTextFromSkillPrompt } from "./skill-title-input";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
@@ -231,6 +232,7 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 							limits: normalizeProviderReplayValue(message.meta.limits),
 						}
 					: undefined,
+				execution: normalizeProviderReplayValue(message.execution),
 				excludeFromContext: message.excludeFromContext,
 			};
 		case "pythonExecution":
@@ -246,6 +248,7 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 							limits: normalizeProviderReplayValue(message.meta.limits),
 						}
 					: undefined,
+				execution: normalizeProviderReplayValue(message.execution),
 				excludeFromContext: message.excludeFromContext,
 			};
 		case "custom":
@@ -735,6 +738,7 @@ export interface BashExecutionMessage {
 	cancelled: boolean;
 	truncated: boolean;
 	meta?: OutputMeta;
+	execution?: ExecutionMetadata;
 	timestamp: number;
 
 	excludeFromContext?: boolean;
@@ -748,6 +752,7 @@ export interface PythonExecutionMessage {
 	cancelled: boolean;
 	truncated: boolean;
 	meta?: OutputMeta;
+	execution?: ExecutionMetadata;
 	timestamp: number;
 
 	excludeFromContext?: boolean;
@@ -802,8 +807,21 @@ declare module "@oh-my-pi/pi-agent-core" {
 	}
 }
 
+function formatExecutionMetadataHeader(execution: ExecutionMetadata | undefined): string {
+	if (!execution) return "Execution metadata: unavailable\n";
+	const parts = [`state=${execution.state}`];
+	if (execution.exitCode !== undefined) parts.push(`exit=${execution.exitCode}`);
+	if (execution.signal !== undefined) parts.push(`signal=${execution.signal}`);
+	if (execution.elapsedMs !== undefined) parts.push(`elapsed=${Math.round(execution.elapsedMs)}ms`);
+	if (execution.timeout) parts.push(`timeout=${execution.timeout.cause}/${execution.timeout.scope}`);
+	parts.push(`collector=${execution.collector.state}`);
+	if (execution.collector.error) parts.push(`collectorError=${execution.collector.error}`);
+	if (execution.renderer) parts.push(`renderer=${execution.renderer.state}`);
+	if (execution.output) parts.push(`output=${execution.output.disposition}`);
+	return `Execution metadata: ${parts.join("; ")}\n`;
+}
 function bashExecutionToText(msg: BashExecutionMessage): string {
-	let text = `Ran \`${msg.command}\`\n`;
+	let text = `${formatExecutionMetadataHeader(msg.execution)}Ran \`${msg.command}\`\n`;
 	if (msg.output) {
 		text += `\`\`\`\n${msg.output}\n\`\`\``;
 	} else {
@@ -819,7 +837,7 @@ function bashExecutionToText(msg: BashExecutionMessage): string {
 }
 
 function pythonExecutionToText(msg: PythonExecutionMessage): string {
-	let text = `Ran Python:\n\`\`\`python\n${msg.code}\n\`\`\`\n`;
+	let text = `${formatExecutionMetadataHeader(msg.execution)}Ran Python:\n\`\`\`python\n${msg.code}\n\`\`\`\n`;
 	if (msg.output) {
 		text += `Output:\n\`\`\`\n${msg.output}\n\`\`\``;
 	} else {

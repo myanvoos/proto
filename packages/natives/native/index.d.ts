@@ -75,7 +75,7 @@ export declare class PtySession {
 
 export declare class Shell {
   constructor(options?: ShellOptions | undefined | null)
-  run(options: ShellRunOptions, onChunk?: ((error: Error | null, chunk: string) => void) | undefined | null): Promise<ShellRunResult>
+  run(options: ShellRunOptions, onChunk?: ((error: Error | null, chunk: string) => void) | undefined | null, xdDispatcher?: ((request: string) => Promise<string>) | undefined | null): Promise<ShellRunResult>
   abort(): Promise<void>
   liveBackgroundJobCount(): Promise<number>
 }
@@ -865,6 +865,7 @@ export interface ShellRunOptions {
   cwd?: string
   env?: Record<string, string>
   timeoutMs?: number
+  xdCallId?: string
   signal?: unknown
 }
 
@@ -875,6 +876,7 @@ export interface ShellRunResult {
   minimized?: MinimizerResult
   workingDir?: string
   fsObservations: Array<FsObservation>
+  xdDispatches: Array<string>
 }
 
 export interface SliceResult {

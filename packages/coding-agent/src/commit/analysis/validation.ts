@@ -5,10 +5,49 @@ export interface ValidationResult {
 	errors: string[];
 }
 
+const PAST_TENSE_SUMMARY_VERBS = new Set([
+	"added",
+	"addressed",
+	"accelerated",
+	"cleaned",
+	"configured",
+	"corrected",
+	"documented",
+	"eliminated",
+	"enabled",
+	"expanded",
+	"extracted",
+	"implemented",
+	"introduced",
+	"migrated",
+	"moved",
+	"optimized",
+	"organized",
+	"patched",
+	"pinned",
+	"reduced",
+	"removed",
+	"renamed",
+	"reorganized",
+	"restructured",
+	"resolved",
+	"simplified",
+	"updated",
+	"upgraded",
+]);
+
 export function validateSummary(summary: string, maxChars: number): ValidationResult {
 	const errors: string[] = [];
-	if (!summary.trim()) {
+	const trimmed = summary.trim();
+	if (!trimmed) {
 		errors.push("Summary is empty");
+	} else {
+		const firstWord = trimmed.split(/\s+/, 1)[0];
+		if (!/^[a-z][a-z-]*$/.test(firstWord)) {
+			errors.push("Summary must start with a lowercase past-tense verb");
+		} else if (!PAST_TENSE_SUMMARY_VERBS.has(firstWord)) {
+			errors.push(`Summary must start with a recognized past-tense verb, got "${firstWord}"`);
+		}
 	}
 	if (summary.length > maxChars) {
 		errors.push(`Summary exceeds ${maxChars} characters`);
@@ -21,6 +60,22 @@ export function validateSummary(summary: string, maxChars: number): ValidationRe
 	}
 	return { valid: errors.length === 0, errors };
 }
+
+const FORBIDDEN_SCOPES = new Set([
+	"src",
+	"lib",
+	"include",
+	"tests",
+	"benches",
+	"examples",
+	"docs",
+	"project",
+	"app",
+	"main",
+	"entire",
+	"all",
+	"misc",
+]);
 
 export function validateScope(scope: string | null): ValidationResult {
 	if (!scope) return { valid: true, errors: [] };
@@ -37,6 +92,9 @@ export function validateScope(scope: string | null): ValidationResult {
 		if (segment !== segment.toLowerCase()) {
 			errors.push("Scope must be lowercase");
 		}
+		if (FORBIDDEN_SCOPES.has(segment)) {
+			errors.push(`Scope is too broad or generic: ${segment}`);
+		}
 		if (!/^[a-z0-9][a-z0-9-_]*$/.test(segment)) {
 			errors.push(`Scope segment has invalid characters: ${segment}`);
 		}
@@ -49,6 +107,9 @@ export function validateAnalysis(analysis: ConventionalAnalysis): ValidationResu
 	const scopeResult = validateScope(analysis.scope);
 	if (!scopeResult.valid) {
 		errors.push(...scopeResult.errors);
+	}
+	if (analysis.details.length > 6) {
+		errors.push("Analysis may contain at most 6 detail items");
 	}
 	for (const detail of analysis.details) {
 		if (!detail.text.trim()) {

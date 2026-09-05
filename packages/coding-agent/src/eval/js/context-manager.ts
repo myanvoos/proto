@@ -9,6 +9,7 @@ import type { ToolSession } from "../../tools";
 import { ToolAbortError, ToolError } from "../../tools/tool-errors";
 import { safeSend as safeSendIpc } from "../../utils/ipc";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../bridge-timeout";
+import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { attachSessionOwner, resolveOwnerScopedSessionKey, type SessionOwners } from "../executor-base";
 import { callSessionTool, type JsStatusEvent } from "./tool-bridge";
 import { WorkerCore } from "./worker-core";
@@ -47,6 +48,7 @@ interface PendingRun {
 	resolve(value: { value: unknown }): void;
 	reject(error: Error): void;
 	toolCalls: Map<string, AbortController>;
+	completionContext?: EvalCompletionInvocationContext;
 
 	deferDepth: number;
 
@@ -93,6 +95,7 @@ export async function executeInVmContext(options: {
 	session: ToolSession;
 	localRoots?: Record<string, string>;
 	reset?: boolean;
+	completionContext?: EvalCompletionInvocationContext;
 	code: string;
 	filename: string;
 	timeoutMs?: number;
@@ -195,6 +198,7 @@ async function runOnce(
 		cwd: string;
 		session: ToolSession;
 		localRoots?: Record<string, string>;
+		completionContext?: EvalCompletionInvocationContext;
 		code: string;
 		filename: string;
 		runState: VmRunState;
@@ -209,6 +213,7 @@ async function runOnce(
 		resolve,
 		reject,
 		toolCalls: new Map(),
+		completionContext: options.completionContext,
 		deferDepth: 0,
 		aborted: false,
 		settled: false,
@@ -243,6 +248,7 @@ async function runOnce(
 			code: options.code,
 			filename: options.filename,
 			snapshot: { cwd: options.cwd, sessionId: options.sessionId, localRoots: options.localRoots },
+			completionContext: options.completionContext,
 		});
 		return await promise;
 	} finally {
@@ -431,6 +437,8 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 		const value = await callSessionTool(msg.name, msg.args, {
 			session: pending.toolSession,
 			signal: ctrl.signal,
+			completionContext: pending.completionContext,
+			completionInvocationId: msg.completionInvocationId,
 			emitStatus: (event: JsStatusEvent) => {
 				trackDeferPhase(pending, event);
 				pending.runState.onDisplay?.({ type: "status", event });

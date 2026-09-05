@@ -55,6 +55,7 @@ import compactionSummaryPrompt from "./prompts/compaction-summary.md" with { typ
 import compactionTurnPrefixPrompt from "./prompts/compaction-turn-prefix.md" with { type: "text" };
 import compactionUpdateSummaryPrompt from "./prompts/compaction-update-summary.md" with { type: "text" };
 import handoffDocumentPrompt from "./prompts/handoff-document.md" with { type: "text" };
+import nativeCompactionPrompt from "./prompts/native-compaction.md" with { type: "text" };
 
 import {
 	computeFileLists,
@@ -1154,7 +1155,7 @@ export async function compact(
 		);
 		if (remoteHistory.length > 0) {
 			try {
-				const instructions = summaryOptions.remoteInstructions ?? SUMMARIZATION_SYSTEM_PROMPT;
+				const instructions = summaryOptions.remoteInstructions ?? nativeCompactionPrompt;
 				const tools = summaryOptions.tools
 					? convertTools(summaryOptions.tools, model.compat.supportsStrictMode, model)
 					: undefined;
@@ -1230,7 +1231,7 @@ export async function compact(
 							model,
 							key,
 							remoteHistory,
-							summaryOptions.remoteInstructions ?? SUMMARIZATION_SYSTEM_PROMPT,
+							summaryOptions.remoteInstructions ?? nativeCompactionPrompt,
 							signal,
 							{
 								fetch: summaryOptions.fetch,

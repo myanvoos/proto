@@ -204,7 +204,7 @@ Handlers and tool `execute` receive `ctx` with:
 - `localProtocolOptions` (optional calling-session `local://` root mapping for external tool bridges)
 - `getContextUsage()`
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
-- `compact(...)`
+- `compact(instructionsOrOptions?)` — accepts a string or `{ customInstructions, mode, onComplete, onError }`
 - `isIdle()`, `hasPendingMessages()`, `abort()`
 - `shutdown()`
 - `getSystemPrompt()`
@@ -273,7 +273,7 @@ Canonical event unions and payload types are in `types.ts`.
 - `session_start`
 - `session_before_switch` / `session_switch`
 - `session_before_branch` / `session_branch`
-- `session_before_compact` / `session.compacting` / `session_compact`
+- `session_before_compact` / `session.compacting` / `session_compact` / `session_compact_failed`
 - `session_before_tree` / `session_tree`
 - `session_shutdown`
 

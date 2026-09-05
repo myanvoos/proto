@@ -1,4 +1,5 @@
 import { ToolError } from "../../tools/tool-errors";
+import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { JsRuntime, type RuntimeHooks } from "./shared/runtime";
 import type {
 	RunErrorPayload,
@@ -18,6 +19,7 @@ interface PendingTool {
 interface ActiveRun {
 	runId: string;
 	filename: string;
+	completionContext?: EvalCompletionInvocationContext;
 	pendingTools: Map<string, PendingTool>;
 
 	floatingRejections: unknown[];
@@ -177,7 +179,7 @@ export class WorkerCore {
 				}
 				return;
 			case "run":
-				void this.#runOne(msg.runId, msg.code, msg.filename, msg.snapshot);
+				void this.#runOne(msg.runId, msg.code, msg.filename, msg.snapshot, msg.completionContext);
 				return;
 			case "tool-reply":
 				this.#deliverToolReply(msg.id, msg.reply);
@@ -192,6 +194,7 @@ export class WorkerCore {
 		this.#syncProcessCwd(snapshot.cwd, currentRunId);
 		if (this.#runtime) {
 			this.#runtime.setCwd(snapshot.cwd);
+			this.#runtime.setLocalRoots(snapshot.localRoots ?? {});
 			return this.#runtime;
 		}
 		this.#runtime = new JsRuntime({
@@ -231,13 +234,19 @@ export class WorkerCore {
 		}
 	}
 
-	async #runOne(runId: string, code: string, filename: string, snapshot: SessionSnapshot): Promise<void> {
-		const active: ActiveRun = { runId, filename, pendingTools: new Map(), floatingRejections: [] };
+	async #runOne(
+		runId: string,
+		code: string,
+		filename: string,
+		snapshot: SessionSnapshot,
+		completionContext?: EvalCompletionInvocationContext,
+	): Promise<void> {
+		const active: ActiveRun = { runId, filename, completionContext, pendingTools: new Map(), floatingRejections: [] };
 		this.#runs.set(runId, active);
 		const hooks: RuntimeHooks = {
 			onText: chunk => this.#transport.send({ type: "text", runId, chunk }),
 			onDisplay: output => this.#transport.send({ type: "display", runId, output }),
-			callTool: (name, args) => this.#callTool(active, name, args),
+			callTool: (name, args, completionInvocationId) => this.#callTool(active, name, args, completionInvocationId),
 		};
 		let result: RunResult;
 		try {
@@ -268,12 +277,19 @@ export class WorkerCore {
 		}
 	}
 
-	async #callTool(active: ActiveRun, name: string, args: unknown): Promise<unknown> {
+	async #callTool(active: ActiveRun, name: string, args: unknown, completionInvocationId?: string): Promise<unknown> {
 		const id = `tc-${active.runId}-${crypto.randomUUID()}`;
 		const { promise, resolve, reject } = Promise.withResolvers<unknown>();
 		active.pendingTools.set(id, { runId: active.runId, resolve, reject });
 		try {
-			this.#transport.send({ type: "tool-call", id, runId: active.runId, name, args });
+			this.#transport.send({
+				type: "tool-call",
+				id,
+				runId: active.runId,
+				name,
+				args,
+				...(completionInvocationId !== undefined ? { completionInvocationId } : {}),
+			});
 		} catch (error) {
 			active.pendingTools.delete(id);
 			reject(error);

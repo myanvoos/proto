@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { checkBashCommandAllowlist, READ_ONLY_EXPLORATORY_COMMANDS } from "./bash-allowlist";
+import {
+	checkBashCommandAllowlist,
+	checkBashVerificationCommand,
+	READ_ONLY_EXPLORATORY_COMMANDS,
+} from "./bash-allowlist";
 
 function allow(command: string): void {
 	const verdict = checkBashCommandAllowlist(command, READ_ONLY_EXPLORATORY_COMMANDS);
@@ -88,5 +92,18 @@ describe("checkBashCommandAllowlist", () => {
 		const verdict = checkBashCommandAllowlist("rg a", ["ls"]);
 		expect(verdict.allowed).toBe(false);
 		expect(checkBashCommandAllowlist("ls -la", ["ls"]).allowed).toBe(true);
+	});
+});
+
+describe("checkBashVerificationCommand", () => {
+	test("allows exact commissioned commands and read-only exploration", () => {
+		expect(checkBashVerificationCommand("bun test", ["bun test"]).allowed).toBe(true);
+		expect(checkBashVerificationCommand("rg --files", ["bun test"]).allowed).toBe(true);
+	});
+
+	test("rejects appended commands, redirects, and path-qualified commands", () => {
+		expect(checkBashVerificationCommand("bun test && rm -rf .", ["bun test"]).allowed).toBe(false);
+		expect(checkBashVerificationCommand("bun test > result.txt", ["bun test > result.txt"]).allowed).toBe(false);
+		expect(checkBashVerificationCommand("./bun test", ["./bun test"]).allowed).toBe(false);
 	});
 });

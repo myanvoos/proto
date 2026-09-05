@@ -1,7 +1,7 @@
 ---
-description: "Use `import type`, not `import('pkg').Type` in type positions"
-condition: "import\\("
-scope: "tool:edit(*.ts), tool:edit(*.tsx), tool:write(*.ts), tool:write(*.tsx)"
+description: "Use `import type`, not inline `import('pkg').Type` or indexed type references"
+condition: "(?m)(?:^|[,:=<(\\[|&])\\s*import\\s*\\(\\s*[\"'][^\"'\\n]+[\"']\\s*\\)\\s*(?:\\.|\\[)"
+scope: "tool:eval, tool:kernel"
 interruptMode: never
 ---
 

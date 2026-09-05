@@ -2668,6 +2668,30 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"kernel.speculation.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "shell",
+			group: "Eval & Runtimes",
+			label: "Streamed Completion Speculation",
+			description:
+				"Allow early completion requests while kernel code streams; requests may be sent and billed even if the final call is blocked or cancelled",
+		},
+	},
+
+	"kernel.assertPreflight.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "shell",
+			group: "Eval & Runtimes",
+			label: "Streamed Assertion Preflight",
+			description:
+				"Allow safe local file reads before final tool approval to detect failed kernel assertions and interrupt generation early",
+		},
+	},
+
 	"eval.autoBackground.enabled": {
 		type: "boolean",
 		default: false,
@@ -2802,7 +2826,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Available Tools",
 			label: "Inspect Media",
 			description:
-				"Controls the inspect_media tool, which delegates image/audio/video understanding to a capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
+				"Controls the inspect_media tool. Images the active model reads natively are attached directly; other media is analyzed by a capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
 			options: [
 				{ value: "auto", label: "Auto (only for models without native image input)" },
 				{ value: "on", label: "On" },

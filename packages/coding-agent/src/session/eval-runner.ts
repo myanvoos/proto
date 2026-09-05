@@ -113,6 +113,7 @@ export class EvalRunner {
 			cancelled: result.cancelled,
 			truncated: result.truncated,
 			meta,
+			execution: result.execution,
 			timestamp: Date.now(),
 			excludeFromContext: options?.excludeFromContext,
 		};

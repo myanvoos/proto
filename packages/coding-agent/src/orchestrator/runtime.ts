@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { Model } from "@oh-my-pi/pi-ai";
 import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
 import { resolveAgentModelSelection } from "../config/model-resolver";
@@ -15,7 +16,6 @@ import { getBundledAgent } from "../task/agents";
 import { discoverAgents, getAgent } from "../task/discovery";
 import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
 import { generateWorkerName } from "../task/name-generator";
-import { AgentOutputManager } from "../task/output-manager";
 import { Semaphore } from "../task/parallel";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
 import type { StructuredSubagentSchemaMode, StructuredSubagentSchemaSource } from "../task/structured-subagent";
@@ -51,8 +51,8 @@ interface OwnerScope {
 	ownerId: string;
 	parentSessionId: string;
 	parentSessionFile: string | null;
+	jobOwnerId: string;
 }
-
 export interface OrchestratorParent {
 	cwd?: string;
 	getAgentId?: () => string | null;
@@ -65,10 +65,24 @@ export interface OrchestratorParent {
 	getModelString?: () => string | undefined;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
+	getAsyncJobOwnerId?: () => string | null;
 }
+type WorkerTombstoneReason =
+	| "explicit-kill"
+	| "spawn-failed"
+	| "unrecoverable"
+	| "ownership-lost"
+	| "parent-session-changed";
 
-type WorkerTombstoneReason = "explicit-kill" | "spawn-failed" | "unrecoverable";
-
+interface WorkerTerminalInfo {
+	reason: WorkerTombstoneReason;
+	at: number;
+	lastTurn: number;
+	lastJobId?: string;
+	history: string;
+	output: string;
+	context: string;
+}
 interface WorkerLifecycleBase {
 	version: typeof WORKER_LIFECYCLE_VERSION;
 	id: string;
@@ -79,13 +93,13 @@ interface WorkerLifecycleBase {
 interface WorkerSpawnEvent extends WorkerLifecycleBase {
 	action: "spawn";
 	agent: string;
+	label: string;
 	childSessionFile: string;
 	createdAt: number;
 	effort?: WorkerEffort;
 	outputSchema?: unknown;
 	schemaMode?: StructuredSubagentSchemaMode;
 }
-
 interface WorkerTurnLifecycleEvent extends WorkerLifecycleBase {
 	action: "turn-started" | "turn-settled";
 	turn: number;
@@ -108,6 +122,7 @@ interface RestoreCandidate {
 
 interface ResolvedWorker {
 	agent: AgentDefinition;
+	model?: Model;
 	modelOverride?: string | string[];
 
 	modelRole?: string;
@@ -133,9 +148,12 @@ interface WorkerRecord {
 	id: string;
 
 	agentName: string;
+	model?: Model;
+	label: string;
 	ownerId: string;
 	parentSessionId: string;
 	parentSessionFile: string | null;
+	jobOwnerId: string;
 	childSessionFile?: string;
 	agent: AgentDefinition;
 	modelOverride?: string | string[];
@@ -172,10 +190,17 @@ interface WorkerRecord {
 	suspended: boolean;
 
 	terminalPersisted: boolean;
+	terminal?: WorkerTerminalInfo;
 }
-
 export interface WorkerScreen {
+	/** Immutable authoritative worker id; use this for routing. */
 	id: string;
+	/** User-facing label; labels are not addresses. */
+	label?: string;
+	ownerId?: string;
+	parentSessionId?: string;
+	addressable?: boolean;
+	terminal?: WorkerTerminalInfo;
 
 	agent: string;
 	state: WorkerState;
@@ -196,32 +221,54 @@ export interface WorkerScreen {
 	lastActivity?: string;
 	lastActivityAt: number;
 }
+export type WorkerReceiptStatus = "accepted" | "queued" | "delivered" | "rejected" | "terminal";
+
+export interface WorkerReceipt {
+	status: WorkerReceiptStatus;
+	workerId: string;
+	label: string;
+	ownerId: string;
+	parentSessionId: string;
+	turn: number;
+	jobId?: string;
+	reason?: string;
+	terminal?: WorkerTerminalInfo;
+}
 
 interface SpawnOutcome {
 	id: string;
+	label: string;
 	jobId: string;
 }
 
 export interface SendOutcome {
 	id: string;
-
+	label: string;
 	mode: "turn" | "steered" | "queued";
 	jobId?: string;
+	receipt: WorkerReceipt;
 }
 
 export interface KillOutcome {
 	id: string;
-
+	label: string;
 	cancelledTurn: boolean;
+	receipt: WorkerReceipt;
 }
 
 export interface WaitOutcome {
-	settled: Array<{ id: string; jobId: string; status: "completed" | "failed" | "cancelled"; resultText: string }>;
+	settled: Array<{
+		id: string;
+		label: string;
+		jobId: string;
+		status: "completed" | "failed" | "cancelled";
+		resultText: string;
+		receipt: WorkerReceipt;
+	}>;
 
 	stillRunning: string[];
 	timedOut: boolean;
 }
-
 type TeardownStatus = "pending" | "settled" | "failed";
 
 interface TrackedTeardown {
@@ -297,6 +344,7 @@ function parseLifecycleEvent(value: unknown): WorkerLifecycleEvent | undefined {
 	};
 	if (data.action === "spawn") {
 		if (typeof data.agent !== "string" || !/^[A-Za-z0-9_-]+$/.test(data.agent)) return undefined;
+		const label = typeof data.label === "string" && data.label.trim() ? data.label.trim() : data.id;
 		if (typeof data.childSessionFile !== "string") return undefined;
 		if (typeof data.createdAt !== "number" || !Number.isFinite(data.createdAt)) return undefined;
 		const effort = data.effort;
@@ -307,6 +355,7 @@ function parseLifecycleEvent(value: unknown): WorkerLifecycleEvent | undefined {
 			...base,
 			action: "spawn",
 			agent: data.agent,
+			label,
 			childSessionFile: data.childSessionFile,
 			createdAt: data.createdAt,
 			...(effort !== undefined ? { effort } : {}),
@@ -320,7 +369,13 @@ function parseLifecycleEvent(value: unknown): WorkerLifecycleEvent | undefined {
 	}
 	if (data.action === "tombstone") {
 		const reason = data.reason;
-		if (reason !== "explicit-kill" && reason !== "spawn-failed" && reason !== "unrecoverable") {
+		if (
+			reason !== "explicit-kill" &&
+			reason !== "spawn-failed" &&
+			reason !== "unrecoverable" &&
+			reason !== "ownership-lost" &&
+			reason !== "parent-session-changed"
+		) {
 			return undefined;
 		}
 		return { ...base, action: "tombstone", reason };
@@ -376,22 +431,27 @@ export class OrchestratorRuntime {
 	registerRecordForTests(record: {
 		id: string;
 		agentName?: string;
+		label?: string;
 		ownerId: string;
+		parentSessionId?: string;
 		state?: WorkerState;
 		jobId?: string;
 	}): void {
 		const now = Date.now();
 		const scope: OwnerScope = {
 			ownerId: record.ownerId,
-			parentSessionId: "test-parent-session",
+			parentSessionId: record.parentSessionId ?? "test-parent-session",
 			parentSessionFile: null,
+			jobOwnerId: record.parentSessionId ?? "test-parent-session",
 		};
 		this.#records.set(scopeKey(scope, record.id), {
 			id: record.id,
 			agentName: record.agentName ?? "lightbot",
+			label: record.label ?? record.agentName ?? "lightbot",
 			ownerId: record.ownerId,
-			parentSessionId: "test-parent-session",
+			parentSessionId: record.parentSessionId ?? "test-parent-session",
 			parentSessionFile: null,
+			jobOwnerId: record.parentSessionId ?? "test-parent-session",
 			agent: getBundledAgent("lightbot")!,
 			outputSchemaMode: "permissive",
 			outputSchemaSource: "none",
@@ -413,7 +473,12 @@ export class OrchestratorRuntime {
 	readonly #terminationTails = new Map<string, Promise<void>>();
 	readonly #turnSemaphores = new Map<string, { limit: number; semaphore: Semaphore }>();
 	readonly #waitedJobIds = new Set<string>();
+	#testResolvedWorker: ResolvedWorker | undefined;
 	#teardownGraceMs = TEARDOWN_GRACE_MS;
+
+	setWorkerResolutionForTesting(agent: AgentDefinition, model: Model): void {
+		this.#testResolvedWorker = { agent, model };
+	}
 
 	setTeardownGraceForTesting(timeoutMs: number): void {
 		this.#teardownGraceMs = Math.max(1, timeoutMs);
@@ -429,6 +494,7 @@ export class OrchestratorRuntime {
 			ownerId: session.getAgentId?.() ?? MAIN_AGENT_ID,
 			parentSessionId,
 			parentSessionFile: parentSessionFile ? path.resolve(parentSessionFile) : null,
+			jobOwnerId: session.getAsyncJobOwnerId?.() ?? parentSessionId,
 		};
 	}
 
@@ -468,6 +534,7 @@ export class OrchestratorRuntime {
 		cwd: string,
 		agentName: string | undefined,
 	): Promise<ResolvedWorker> {
+		if (this.#testResolvedWorker) return this.#testResolvedWorker;
 		const requested = agentName?.trim() || "worker";
 		const { agents } = await discoverAgents(cwd);
 		const agent = getAgent(agents, requested);
@@ -592,17 +659,70 @@ export class OrchestratorRuntime {
 		return record;
 	}
 
+	#terminalInfo(record: WorkerRecord, reason: WorkerTombstoneReason): WorkerTerminalInfo {
+		return {
+			reason,
+			at: Date.now(),
+			lastTurn: record.turnCount,
+			...(record.lastJobId || record.turn?.jobId ? { lastJobId: record.lastJobId ?? record.turn?.jobId } : {}),
+			history: `history://${record.id}`,
+			output: `agent://${record.id}`,
+			context: `history://${record.id}`,
+		};
+	}
+
+	#markRecordTerminal(record: WorkerRecord, reason: WorkerTombstoneReason, activity?: string): void {
+		record.state = "dead";
+		record.terminal = this.#terminalInfo(record, reason);
+		record.lastActivityAt = record.terminal.at;
+		record.lastActivity = activity ?? `terminal: ${reason}`;
+		record.queue.length = 0;
+	}
+
+	#receipt(
+		record: WorkerRecord,
+		status: WorkerReceiptStatus,
+		turn: number,
+		jobId?: string,
+		reason?: string,
+	): WorkerReceipt {
+		return {
+			status,
+			workerId: record.id,
+			label: record.label,
+			ownerId: record.ownerId,
+			parentSessionId: record.parentSessionId,
+			turn,
+			...(jobId ? { jobId } : {}),
+			...(reason ? { reason } : {}),
+			...(record.terminal ? { terminal: record.terminal } : {}),
+		};
+	}
+
+	#terminalError(record: WorkerRecord): ToolError {
+		return new ToolError(this.#terminalMessage(record), {
+			receipt: this.#receipt(record, "terminal", record.terminal?.lastTurn ?? record.turnCount, record.lastJobId),
+		});
+	}
+
+	#terminalMessage(record: WorkerRecord): string {
+		const terminal = record.terminal;
+		const reason = terminal?.reason ?? "unrecoverable";
+		const turn = terminal?.lastTurn ?? record.turnCount;
+		return `Worker "${record.id}" (label "${record.label}") is terminal (${reason}) after turn ${turn}. History: ${terminal?.history ?? `history://${record.id}`}; output: ${terminal?.output ?? `agent://${record.id}`}; context: ${terminal?.context ?? `history://${record.id}`}. Spawn a new worker.`;
+	}
 	#registeredAgent(record: WorkerRecord): AgentRef | undefined {
 		const ref = AgentRegistry.global().get(record.id);
 		if (ref?.kind !== "sub" || ref.parentId !== record.ownerId) return undefined;
 		if (record.childSessionFile && ref.sessionFile !== record.childSessionFile) return undefined;
+		if (ref.status === "aborted") return undefined;
 		return ref;
 	}
 
 	#listIds(scope: OwnerScope): string[] {
 		const ids: string[] = [];
 		for (const record of this.#records.values()) {
-			if (matchesScope(record, scope) && record.state !== "dead") ids.push(record.id);
+			if (matchesScope(record, scope)) ids.push(record.id);
 		}
 		return ids;
 	}
@@ -622,8 +742,18 @@ export class OrchestratorRuntime {
 		}
 
 		records.sort((a, b) => a.createdAt - b.createdAt);
+		for (const record of records) {
+			if (record.state === "idle" && this.#registeredAgent(record) === undefined) {
+				this.#markRecordTerminal(record, "ownership-lost", "terminal: worker ownership is no longer addressable");
+			}
+		}
 		return records.map(record => ({
 			id: record.id,
+			label: record.label,
+			ownerId: record.ownerId,
+			parentSessionId: record.parentSessionId,
+			addressable: record.state !== "dead" && this.#registeredAgent(record) !== undefined,
+			...(record.terminal ? { terminal: record.terminal } : {}),
 			agent: record.agentName,
 			state: record.state,
 			model: record.resolvedModel,
@@ -718,6 +848,7 @@ export class OrchestratorRuntime {
 		childSessionFile: string,
 		expected?: AgentRef | null,
 		teardownDeadline?: number,
+		displayName = id,
 	): Promise<void> {
 		const registry = AgentRegistry.global();
 		const existing = registry.get(id);
@@ -742,7 +873,7 @@ export class OrchestratorRuntime {
 		if (current) registry.unregister(id, current);
 		registry.register({
 			id,
-			displayName: id,
+			displayName,
 			kind: "sub",
 			parentId: ownerId,
 			session: null,
@@ -800,7 +931,7 @@ export class OrchestratorRuntime {
 			if (!spawn) continue;
 			const childSessionFile = await this.#resolvePersistedChild(sessionFile, spawn);
 			if (!childSessionFile) continue;
-			await this.#markTerminalRef(id, scope.ownerId, childSessionFile);
+			await this.#markTerminalRef(id, scope.ownerId, childSessionFile, undefined, undefined, spawn.label);
 			this.#records.delete(scopeKey(scope, id));
 		}
 
@@ -839,7 +970,7 @@ export class OrchestratorRuntime {
 			if (!existing) {
 				AgentRegistry.global().register({
 					id: spawn.id,
-					displayName: spawn.id,
+					displayName: spawn.label,
 					kind: "sub",
 					parentId: scope.ownerId,
 					session: null,
@@ -850,9 +981,11 @@ export class OrchestratorRuntime {
 			this.#records.set(key, {
 				id: spawn.id,
 				agentName: spawn.agent,
+				label: spawn.label,
 				ownerId: scope.ownerId,
 				parentSessionId: scope.parentSessionId,
 				parentSessionFile: scope.parentSessionFile,
+				jobOwnerId: scope.jobOwnerId,
 				childSessionFile,
 				agent,
 				modelOverride,
@@ -916,16 +1049,18 @@ export class OrchestratorRuntime {
 		if (disabledAgents.includes(requestedAgent)) {
 			throw new ToolError(`Worker agent "${requestedAgent}" is disabled in settings.`);
 		}
-		const { agent, modelOverride, modelRole } = await this.#resolveWorker(session, session.cwd, requestedAgent);
+		const { agent, model, modelOverride, modelRole } = await this.#resolveWorker(
+			session,
+			session.cwd,
+			requestedAgent,
+		);
 		const schema = this.#resolveOutputSchema(session, agent, args);
-		if (!session.agentOutputManager) {
-			session.agentOutputManager = new AgentOutputManager(session.getArtifactsDir ?? (() => null));
-		}
 		const reservedIds = this.#persistedIds(session, scope);
 		for (const ref of AgentRegistry.global().list()) reservedIds.add(ref.id);
-		await session.agentOutputManager.reserve(reservedIds);
-		const requestedName = args.name?.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48);
-		const id = await session.agentOutputManager.allocate(requestedName || generateWorkerName());
+		const requestedLabel = args.name?.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48);
+		const label = requestedLabel || generateWorkerName();
+		let id = `worker-${Snowflake.next()}`;
+		while (reservedIds.has(id) || AgentRegistry.global().get(id)) id = `worker-${Snowflake.next()}`;
 		const parentSessionFile = scope.parentSessionFile;
 		const childSessionName = `${id}.jsonl`;
 		const childSessionFile = parentSessionFile
@@ -935,9 +1070,12 @@ export class OrchestratorRuntime {
 		const record: WorkerRecord = {
 			id,
 			agentName: agent.name,
+			label,
+			model,
 			ownerId: scope.ownerId,
 			parentSessionId: scope.parentSessionId,
 			parentSessionFile,
+			jobOwnerId: scope.jobOwnerId,
 			childSessionFile,
 			agent,
 			modelOverride,
@@ -963,6 +1101,7 @@ export class OrchestratorRuntime {
 						...this.#eventBase(record),
 						action: "spawn",
 						agent: agent.name,
+						label,
 						childSessionFile: childSessionName,
 						createdAt,
 						...(record.effort !== undefined ? { effort: record.effort } : {}),
@@ -974,7 +1113,7 @@ export class OrchestratorRuntime {
 				if (!persisted) throw new ToolError("Orchestrator parent session changed before the worker could start.");
 			}
 			const jobId = this.#registerTurnJob(session, manager, record, args.prompt, { first: true });
-			return { id, jobId };
+			return { id, label, jobId };
 		} catch (error) {
 			record.killed = true;
 			record.state = "dead";
@@ -994,14 +1133,15 @@ export class OrchestratorRuntime {
 	async send(session: ToolSession, args: { session: string; message: string }): Promise<SendOutcome> {
 		const scope = this.ownerScope(session);
 		const record = this.#record(scope, args.session);
-		if (record.state === "dead") {
-			throw new ToolError(`Worker "${record.id}" is dead. Spawn a new one with orchestrate_spawn.`);
+		if (record.state === "dead" || record.terminal) {
+			throw this.#terminalError(record);
 		}
 		const message = args.message.trim();
 		if (!message) throw new ToolError("Message must not be empty.");
 		const registered = this.#registeredAgent(record);
-		if (AgentRegistry.global().get(record.id) && !registered) {
-			throw new ToolError(`Worker "${record.id}" no longer resolves to this parent session.`);
+		if (!registered && record.state !== "starting") {
+			this.#markRecordTerminal(record, "ownership-lost", "terminal: worker ownership is no longer addressable");
+			throw this.#terminalError(record);
 		}
 
 		if (record.turn) {
@@ -1009,22 +1149,39 @@ export class OrchestratorRuntime {
 			if (live?.isStreaming) {
 				await live.steer(message);
 				record.lastActivityAt = Date.now();
-				return { id: record.id, mode: "steered" };
+				return {
+					id: record.id,
+					label: record.label,
+					mode: "steered",
+					jobId: record.turn.jobId,
+					receipt: this.#receipt(record, "accepted", record.turnCount, record.turn.jobId),
+				};
 			}
 			record.queue.push(message);
 			record.lastActivityAt = Date.now();
-			return { id: record.id, mode: "queued" };
+			return {
+				id: record.id,
+				label: record.label,
+				mode: "queued",
+				receipt: this.#receipt(record, "queued", record.turnCount + 1),
+			};
 		}
 
 		if (!registered || (registered.status !== "idle" && registered.status !== "parked")) {
-			throw new ToolError(`Worker "${record.id}" no longer resolves to this parent session.`);
+			this.#markRecordTerminal(record, registered?.status === "aborted" ? "unrecoverable" : "ownership-lost");
+			throw this.#terminalError(record);
 		}
 
 		const manager = this.#manager(session);
 		const jobId = this.#registerTurnJob(session, manager, record, message, { first: false });
-		return { id: record.id, mode: "turn", jobId };
+		return {
+			id: record.id,
+			label: record.label,
+			mode: "turn",
+			jobId,
+			receipt: this.#receipt(record, "accepted", record.turnCount, jobId),
+		};
 	}
-
 	async wait(
 		session: ToolSession,
 		args: { sessions?: string[]; timeoutMs?: number; signal?: AbortSignal },
@@ -1048,11 +1205,15 @@ export class OrchestratorRuntime {
 				if (this.#waitedJobIds.has(jobId)) continue;
 				const job = manager.getJob(jobId);
 				if (!job || job.status === "running") continue;
+				const receiptStatus: WorkerReceiptStatus =
+					job.status === "cancelled" ? (record.state === "dead" ? "terminal" : "rejected") : "delivered";
 				settled.push({
 					id: record.id,
+					label: record.label,
 					jobId,
 					status: job.status,
 					resultText: job.resultText ?? job.errorText ?? "(no output)",
+					receipt: this.#receipt(record, receiptStatus, record.turnCount, jobId, job.errorText),
 				});
 			}
 			return settled;
@@ -1118,7 +1279,7 @@ export class OrchestratorRuntime {
 			record.lastActivityAt = Date.now();
 			record.lastActivity = "suspended for parent-session switch";
 			this.#records.delete(scopeKey(scope, record.id));
-			if (record.turn && manager) manager.cancel(record.turn.jobId, { ownerId: record.ownerId });
+			if (record.turn && manager) manager.cancel(record.turn.jobId, { ownerId: record.jobOwnerId });
 		}
 		const deadline = Date.now() + this.#teardownGraceMs;
 		const cleanup = teardown.map(entry => ({
@@ -1208,12 +1369,12 @@ export class OrchestratorRuntime {
 			}
 		}
 		record.killed = true;
-		record.queue.length = 0;
 		let cancelledTurn = false;
+		this.#markRecordTerminal(record, reason, reason === "explicit-kill" ? "killed" : `terminal: ${reason}`);
 		if (record.turn && manager) {
 			const job = manager.getJob(record.turn.jobId);
 			if (job) settlingJobs.add(job);
-			cancelledTurn = manager.cancel(record.turn.jobId, { ownerId: record.ownerId });
+			cancelledTurn = manager.cancel(record.turn.jobId, { ownerId: record.jobOwnerId });
 		}
 		record.state = "dead";
 		record.lastActivityAt = Date.now();
@@ -1266,7 +1427,12 @@ export class OrchestratorRuntime {
 			}
 			throw finalPersistenceError;
 		}
-		return { id: record.id, cancelledTurn };
+		return {
+			id: record.id,
+			label: record.label,
+			cancelledTurn,
+			receipt: this.#receipt(record, "terminal", record.turnCount, record.turn?.jobId ?? record.lastJobId, reason),
+		};
 	}
 
 	async #markTerminalRecord(
@@ -1278,7 +1444,14 @@ export class OrchestratorRuntime {
 		try {
 			const persisted = await SessionManager.peekSessionInit(record.childSessionFile);
 			if (persisted?.init) {
-				await this.#markTerminalRef(record.id, record.ownerId, record.childSessionFile, expected, teardownDeadline);
+				await this.#markTerminalRef(
+					record.id,
+					record.ownerId,
+					record.childSessionFile,
+					expected,
+					teardownDeadline,
+					record.label,
+				);
 			}
 		} catch (error) {
 			logger.warn("orchestrator: failed to retain terminal worker transcript", {
@@ -1324,7 +1497,8 @@ export class OrchestratorRuntime {
 			agent: record.agent,
 			task: message,
 			assignment: message,
-			description: `worker ${record.agentName}`,
+			description: `worker ${record.label}`,
+			agentDisplayName: record.label,
 			index: 0,
 			id: record.id,
 			taskDepth: session.taskDepth ?? 0,
@@ -1345,7 +1519,10 @@ export class OrchestratorRuntime {
 			eventBus: session.eventBus,
 			onProgress,
 			authStorage: session.authStorage,
+			streamFn: session.streamFn,
+			customTools: session.customTools,
 			modelRegistry: session.modelRegistry,
+			model: record.model,
 			settings: session.settings,
 			mcpManager: session.mcpManager ?? MCPManager.instance(),
 			contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
@@ -1358,7 +1535,6 @@ export class OrchestratorRuntime {
 			localProtocolOptions,
 			parentArtifactManager: session.getArtifactManager?.() ?? undefined,
 			parentTelemetry: session.getTelemetry?.(),
-			parentEvalSessionId: session.getEvalSessionId?.() ?? undefined,
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
 			parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
 			keepAlive: true,
@@ -1402,6 +1578,7 @@ export class OrchestratorRuntime {
 			ownerId: record.ownerId,
 			parentSessionId: record.parentSessionId,
 			parentSessionFile: record.parentSessionFile,
+			jobOwnerId: record.jobOwnerId,
 		});
 		const jobId = manager.register(
 			"worker",
@@ -1465,7 +1642,7 @@ export class OrchestratorRuntime {
 					if (acquired) semaphore.release();
 				}
 			},
-			{ id: `${record.id}-t${turnIndex}`, agentId: record.id, ownerId: record.ownerId, queued: true },
+			{ id: `${record.id}-t${turnIndex}`, agentId: record.id, ownerId: record.jobOwnerId, queued: true },
 		);
 		turn.jobId = jobId;
 		record.turn = turn;
@@ -1478,21 +1655,30 @@ export class OrchestratorRuntime {
 		record: WorkerRecord,
 		settledJobId: string,
 	): Promise<void> {
+		if (record.lastJobId === settledJobId && record.turn?.jobId !== settledJobId) return;
 		record.lastJobId = settledJobId;
-		record.turn = undefined;
 		record.live = undefined;
 		record.lastActivityAt = Date.now();
 		if (record.killed || record.suspended) {
-			record.state = "dead";
+			record.turn = undefined;
+			if (!record.terminal)
+				this.#markRecordTerminal(record, record.killed ? "explicit-kill" : "parent-session-changed");
 			return;
 		}
 
-		const registered = this.#registeredAgent(record);
-		record.state = registered && (registered.status === "idle" || registered.status === "parked") ? "idle" : "dead";
-		if (record.state === "dead") {
-			record.terminalPersisted = await this.#appendTombstone(session, record, "unrecoverable");
+		let registered = this.#registeredAgent(record);
+		if (registered?.status === "running" && registered.session) {
+			AgentRegistry.global().setStatus(record.id, "idle", registered);
+			registered = this.#registeredAgent(record);
+		}
+		if (!registered || (registered.status !== "idle" && registered.status !== "parked")) {
+			record.turn = undefined;
+			const reason: WorkerTombstoneReason = registered?.status === "aborted" ? "unrecoverable" : "ownership-lost";
+			this.#markRecordTerminal(record, reason, `terminal: ${reason}`);
+			record.terminalPersisted = await this.#appendTombstone(session, record, reason);
 			return;
 		}
+		record.state = "idle";
 		const settledPersisted = await this.#appendLifecycleEvent(
 			session,
 			{
@@ -1503,9 +1689,15 @@ export class OrchestratorRuntime {
 			record.parentSessionFile,
 		);
 		if (record.childSessionFile && !settledPersisted) {
-			record.state = "dead";
+			record.turn = undefined;
+			this.#markRecordTerminal(
+				record,
+				"parent-session-changed",
+				"terminal: parent session changed before settlement",
+			);
 			return;
 		}
+		record.turn = undefined;
 		if (record.queue.length === 0) return;
 		const nextMessage = record.queue.splice(0, record.queue.length).join("\n\n");
 		try {
@@ -1528,7 +1720,6 @@ export class OrchestratorRuntime {
 		turnIndex: number,
 		result: SingleResult,
 	): Promise<string> {
-		await this.#finishTurn(session, manager, record, settledJobId);
 		const failed = result.exitCode !== 0 || result.aborted === true;
 		const status = result.aborted ? "aborted" : failed ? "failed" : "completed";
 		record.lastActivity = firstLine(
@@ -1549,12 +1740,18 @@ export class OrchestratorRuntime {
 			response = lastNewline > 0 ? slice.slice(0, lastNewline) : slice;
 			responseTruncated = true;
 		}
+
+		// Hold record.turn until persistence and rendering are ready; concurrent sends queue safely.
+		await this.#finishTurn(session, manager, record, settledJobId);
 		let text: string;
 		try {
 			text = prompt
 				.render(workerTurnResultTemplate, {
 					id: record.id,
+					label: record.label,
 					agent: record.agentName,
+					owner: record.ownerId,
+					parent: record.parentSessionId,
 					turn: turnIndex,
 					status,
 					duration: formatDuration(result.durationMs),
@@ -1575,7 +1772,7 @@ export class OrchestratorRuntime {
 				error: error instanceof Error ? error.message : String(error),
 			});
 			text = [
-				`[worker:${record.id} agent=${record.agentName} turn=${turnIndex} status=${status}]`,
+				`[worker:${record.id} label=${record.label} owner=${record.ownerId} parent=${record.parentSessionId} turn=${turnIndex} status=${status}]`,
 				`Activity (${turn.toolCount} tool calls, ${result.requests} requests):`,
 				...traceLines.map(line => `- ${line}`),
 				"",

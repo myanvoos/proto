@@ -8,6 +8,7 @@ import { renderDiff as renderDiffColored } from "../modes/components/diff";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
+import type { ExecutionMetadata } from "../session/execution-metadata";
 import { markFramedBlockComponent, outputBlockContentWidth, renderCodeCell } from "../tui";
 import { formatEvalCodeForDisplay } from "./eval-format";
 import { renderJavaScriptAstLines } from "./eval-format/javascript-ast";
@@ -136,6 +137,25 @@ export function upsertStatusEvent(events: EvalStatusEvent[], event: EvalStatusEv
 	events.push(event);
 }
 
+function formatExecutionMetadataLine(execution: ExecutionMetadata | undefined, theme: Theme): string | undefined {
+	if (!execution) return undefined;
+	const parts = [`state=${execution.state}`];
+	if (execution.exitCode !== undefined) parts.push(`exit=${execution.exitCode}`);
+	if (execution.signal !== undefined) parts.push(`signal=${execution.signal}`);
+	if (execution.elapsedMs !== undefined) parts.push(`elapsed=${formatDuration(Math.round(execution.elapsedMs))}`);
+	if (execution.timeout) parts.push(`timeout=${execution.timeout.cause}/${execution.timeout.scope}`);
+	parts.push(`collector=${execution.collector.state}`);
+	if (execution.renderer) parts.push(`renderer=${execution.renderer.state}`);
+	if (execution.collector.error) parts.push(`collector error: ${execution.collector.error}`);
+	if (execution.output) parts.push(`output=${execution.output.disposition}`);
+	const color =
+		execution.state === "running"
+			? "accent"
+			: execution.state === "exited" && execution.exitCode === 0
+				? "success"
+				: "warning";
+	return theme.fg(color, wrapBrackets(`Execution: ${parts.join(" | ")}`, theme));
+}
 function eventString(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -683,7 +703,7 @@ function astPreviewLines(code: string, language: string, theme: Theme, width: nu
 /**
  * Render one kernel cell (header + AST preview + output + Status hunks + JSON
  * display trees) exactly as the eval tool's per-cell path does. Shared so the
- * bash `python`/`node` bridge renders a routed cell identically to the `eval`
+ * bash `python`/`node`/`bun` bridge renders a routed cell identically to the `eval`
  * tool — same primitives, so the two can never drift.
  */
 export function renderKernelCellLines(
@@ -786,7 +806,11 @@ export function renderKernelCellLines(
 		theme,
 	);
 
-	const lines = [...cellLines, ...agentLines];
+	const executionLine = formatExecutionMetadataLine(
+		cell.execution ? { ...cell.execution, renderer: { state: "complete" } } : undefined,
+		theme,
+	);
+	const lines = executionLine ? [executionLine, ...cellLines, ...agentLines] : [...cellLines, ...agentLines];
 	// Ctrl+O expansion is deferred for live cells — an expanded block could
 	// outgrow the viewport again. The toggle sticks and applies on settle.
 	if (expanded && cellLive) {
@@ -871,6 +895,10 @@ export const evalToolRenderer = {
 		_args?: EvalRenderArgs,
 	): Component {
 		const details = result.details;
+		const executionLine = formatExecutionMetadataLine(
+			details?.execution ? { ...details.execution, renderer: { state: "complete" } } : undefined,
+			uiTheme,
+		);
 		// Captured at build time; every isPartial flip rebuilds this component
 		// (tool-execution keys its display on isPartial), so this stays accurate.
 		const isPartialResult = options.isPartial === true;
@@ -991,13 +1019,14 @@ export const evalToolRenderer = {
 		};
 
 		if (!combinedOutput && !hasStatusEvents) {
-			const lines = [timeoutLine, noticeLine, asyncLine, warningLine].filter(Boolean) as string[];
+			const lines = [executionLine, timeoutLine, noticeLine, asyncLine, warningLine].filter(Boolean) as string[];
 			return new Text(lines.join("\n"), 0, 0);
 		}
 
 		if (!combinedOutput && hasStatusEvents) {
 			return widthAwareText(width => {
 				const lines = [
+					executionLine,
 					uiTheme.fg("dim", "Status"),
 					...renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, statusSectionOptions()),
 					timeoutLine,
@@ -1022,6 +1051,7 @@ export const evalToolRenderer = {
 						: undefined,
 				});
 				const lines = [
+					executionLine,
 					styledOutput,
 					...(statusLines.length > 0 ? [uiTheme.fg("dim", "Status"), ...statusLines] : []),
 					timeoutLine,
@@ -1057,7 +1087,7 @@ export const evalToolRenderer = {
 					cachedWidth = width;
 					cachedPreviewLines = previewLines;
 				}
-				const outputLines: string[] = [];
+				const outputLines: string[] = executionLine ? [executionLine] : [];
 				if (cachedSkipped && cachedSkipped > 0) {
 					outputLines.push("");
 					const skippedLine = uiTheme.fg(

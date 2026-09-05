@@ -57,4 +57,5 @@ export interface CommitAgentState {
 	changelogProposal?: ChangelogProposal;
 	diffCache?: Map<string, string>;
 	diffText?: string;
+	gitFileDiffCalls?: number;
 }

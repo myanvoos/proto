@@ -13,6 +13,17 @@ test("python3 - heredoc with cd prefix", () => {
 test("node heredoc", () => {
 	expect(detectBashKernelCell("node <<'JS'\nconsole.log(1)\nJS")?.code).toBe("console.log(1)");
 });
+
+test("bun heredoc and -e use the JavaScript kernel cell shape", () => {
+	expect(detectBashKernelCell("bun <<'JS'\nfunction f() {}\nJS")).toEqual({
+		language: "js",
+		code: "function f() {}",
+	});
+	expect(detectBashKernelCell("bun -e 'console.log(1)'")).toEqual({
+		language: "js",
+		code: "console.log(1)",
+	});
+});
 test("python -c single quoted, node -e double quoted", () => {
 	expect(detectBashKernelCell('python -c \'edit("a","b","c")\'')?.code).toBe('edit("a","b","c")');
 	expect(detectBashKernelCell('node -e "console.log(1)"')?.code).toBe("console.log(1)");

@@ -1,4 +1,4 @@
-<worker-turn id="{{id}}" agent="{{agent}}" turn="{{turn}}" status="{{status}}" duration="{{duration}}"{{#if model}} model="{{model}}"{{/if}}>
+<worker-turn id="{{id}}" label="{{label}}" agent="{{agent}}" owner="{{owner}}" parent="{{parent}}" turn="{{turn}}" status="{{status}}" duration="{{duration}}"{{#if model}} model="{{model}}"{{/if}}>
 <activity tool-calls="{{toolCount}}" requests="{{requests}}">
 {{#each trace}}
 - {{this}}
@@ -14,6 +14,10 @@
 <error>{{error}}</error>
 {{/if}}
 {{#if alive}}
-Worker `{{id}}` is idle and retains this conversation — continue it with orchestrate_send. Transcript: history://{{id}}
+<receipt status="delivered" worker="{{id}}" turn="{{turn}}" />
+Worker `{{id}}` (label `{{label}}`) is idle and retains this conversation — continue it with orchestrate_send using the immutable worker id. Transcript: history://{{id}}
+{{else}}
+<receipt status="terminal" worker="{{id}}" turn="{{turn}}" />
+Worker `{{id}}` is terminal; recover context from history://{{id}} or output agent://{{id}} before spawning a replacement.
 {{/if}}
 </worker-turn>

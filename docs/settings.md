@@ -496,6 +496,12 @@ eval:
   py: true
   js: true
 
+kernel:
+  speculation:
+    enabled: true
+  assertPreflight:
+    enabled: true
+
 python:
   kernelMode: session # session, per-call
   interpreter: ""
@@ -509,9 +515,13 @@ python:
 | `bash.autoBackground.thresholdMs` | number  | `60000`   | Threshold before auto-backgrounding.                                                                                                                        |
 | `eval.py`                         | boolean | `true`    | Python eval backend. `PI_PY=0` disables for the process.                                                                                                    |
 | `eval.js`                         | boolean | `true`    | JavaScript eval backend. `PI_JS=0` disables for the process.                                                                                                |
+| `kernel.speculation.enabled`      | boolean | `true`   | Permit early completion requests from streamed kernel-in-bash code. Requests can be sent and billed before final approval, even if the call is later blocked or cancelled. |
+| `kernel.assertPreflight.enabled`  | boolean | `true`   | Permit bounded local file reads before final tool approval to check supported assertions and interrupt generation early on failure. |
 | `python.kernelMode`               | enum    | `session` | `session` (persistent kernel) or `per-call`.                                                                                                                |
 | `python.interpreter`              | string  | `""`      | Path to a Python interpreter; empty = auto-detect.                                                                                                          |
 | `shellPath`                       | string  | _(unset)_ | Override the shell binary used by bash.                                                                                                                     |
+
+The kernel streaming options are independent and enabled by default; set either to `false` to disable it. They apply to model-generated bash tool calls, not user bang commands. See [streamed kernel preflight and speculation](bash-tool-runtime.md#streamed-kernel-preflight-and-speculation) for the supported syntax, cancellation behavior, and safety boundaries.
 
 ### Files: editing and reading
 
@@ -538,6 +548,8 @@ edit:
 
 ### Context and compaction
 
+Proto loads pi-blackhole as its built-in compaction engine. The settings below remain the scheduler, recovery, and pi-default fallback controls. Blackhole-specific memory, worker-model, tail, and engine settings live in `~/.proto/agent/pi-blackhole/pi-blackhole-config.json` (project override: `.pi/pi-blackhole-config.json`) and are also available through `/blackhole settings`.
+
 ```yaml
 contextPromotion:
   enabled: false
@@ -555,11 +567,11 @@ compaction:
 | `contextPromotion.enabled`    | boolean | `false`                                  | Promote to the active model's explicit `contextPromotionTarget` on context overflow.                                                                                                                                                      |
 | `compaction.enabled`          | boolean | `true`                                   | Automatic conversation compaction.                                                                                                                                                                                                        |
 | `compaction.midTurnEnabled`   | boolean | `true`                                   | Check thresholds at safe mid-turn tool-loop boundaries before the next provider request.                                                                                                                                                  |
-| `compaction.methodOrder`      | array   | `remote, soft`                           | Ordered fallbacks. `remote` uses provider-native OpenAI-compatible server compaction; unavailable or failed methods advance. Legacy `handoff`/`shake` entries in configured orders are dropped. |
+| `compaction.methodOrder`      | array   | `remote, soft`                           | Ordered pi-default fallbacks used when Blackhole delegates to the host. `remote` uses provider-native OpenAI-compatible server compaction; unavailable or failed methods advance. |
 | `compaction.thresholdPercent` | number  | `-1`                                     | Percent-of-context trigger; `-1` = reserve-based default.                                                                                                                                                                                 |
 | `compaction.thresholdTokens`  | number  | `-1`                                     | Fixed token trigger when `> 0`.                                                                                                                                                                                                           |
 | `compaction.reserveTokens`    | number  | _(unset)_                                | Absolute reserve floor. When unset, the effective reserve is the larger of `16384` and 15% of the context window; if that default would leave no practical small-window budget, it falls back to the 15% reserve.                         |
-| `compaction.keepRecentTokens` | number  | `20000`                                  | Recent tokens always preserved.                                                                                                                                                                                                           |
+| `compaction.keepRecentTokens` | number  | `20000`                                  | Recent-token tail for pi-default compaction and Blackhole's `tailBehavior: "pi-default"`; Blackhole's default minimal tail chooses its own boundary. |
 | `compaction.autoContinue`     | boolean | `true`                                   | Continue automatically after compaction.                                                                                                                                                                                                  |
 | `autolearn.enabled`           | boolean | `false`       | Experimental: after the agent stops, nudge it to create/enhance isolated managed skills under `~/.proto/agent/managed-skills`. Enables the `manage_skill` tool.                                                                           |
 | `autolearn.autoContinue`      | boolean | `false`       | When `autolearn.enabled`, auto-run one capture turn at stop (uses extra tokens). Off = a passive reminder rides your next turn.                                                                                                           |
