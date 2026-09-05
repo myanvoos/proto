@@ -389,3 +389,39 @@ test("running Bash updates carry execution state separately from output", async 
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 }, 30000);
+
+test("verbatim patches compose through bash and expose one structured file mutation", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-patch-"));
+	try {
+		await fs.mkdir(path.join(dir, "sub"));
+		await Bun.write(path.join(dir, "sub", "target.txt"), "before\n");
+		const bash = new BashTool(stubSession(dir));
+		const result = await bash.execute("patch", {
+			command: [
+				"cd sub && python <<'PYEOF' && cat target.txt",
+				"#@embed CHANGE",
+				"@@",
+				"-before",
+				"+intermediate",
+				"#@end",
+				'apply_patch("target.txt", CHANGE)',
+				"#@patch target.txt",
+				"@@",
+				"-intermediate",
+				"+after",
+				"#@end",
+				"PYEOF",
+			].join("\n"),
+		});
+		expect(result.details?.execution?.state).toBe("exited");
+		expect(result.details?.execution?.exitCode, textOf(result)).toBe(0);
+		expect(await Bun.file(path.join(dir, "sub", "target.txt")).text()).toBe("after\n");
+		expect(textOf(result)).toContain("after");
+		const writes = (result.details?.statusEvents ?? []).filter(event => event.op === "write");
+		expect(writes).toHaveLength(1);
+		expect(writes[0]?.diff).toMatch(/^-\d+\|before$/m);
+		expect(writes[0]?.diff).toMatch(/^\+\d+\|after$/m);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);

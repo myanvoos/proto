@@ -5,8 +5,24 @@ import * as path from "node:path";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import type { ToolSession } from ".";
 import { EvalTool } from "./eval";
+import { KernelTool } from "./kernel";
 
 const KERNEL_OWNER = `eval-fs-diff-test:${process.pid}`;
+
+test("eval and kernel schemas reject pre-execution file writes", async () => {
+	const evalTool = new EvalTool(null);
+	const kernelTool = new KernelTool(null);
+	const evalSchema = evalTool.parameters.toJsonSchema() as { properties?: Record<string, unknown> };
+	const kernelSchema = kernelTool.parameters.toJsonSchema() as { properties?: Record<string, unknown> };
+
+	expect(evalSchema.properties ?? {}).not.toHaveProperty("files");
+	expect(kernelSchema.properties ?? {}).not.toHaveProperty("files");
+
+	const evalValidation = await evalTool.parameters["~standard"].validate({ language: "py", code: "", files: [] });
+	const kernelValidation = await kernelTool.parameters["~standard"].validate({ code: "", files: [] });
+	expect(evalValidation).toHaveProperty("issues");
+	expect(kernelValidation).toHaveProperty("issues");
+});
 
 function stubSession(cwd: string, skills?: ToolSession["skills"]): ToolSession {
 	const settings = new Map<string, unknown>();

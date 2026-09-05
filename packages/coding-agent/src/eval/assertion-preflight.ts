@@ -371,6 +371,11 @@ function parsePartialShellWord(input: string): PartialShellWord | undefined {
 	return { word: input.slice(0, end), rest: input.slice(end), complete: true };
 }
 
+function isPythonDirectiveStart(source: string, index: number, lineStart: number): boolean {
+	if (index < lineStart || !/^\s*$/u.test(source.slice(lineStart, index))) return false;
+	return /^#@(embed|patch)(?:\s|$)/u.test(source.slice(index));
+}
+
 function scanPythonStatements(source: string, maxSourceBytes: number): Statement[] {
 	const limit = Math.min(source.length, maxSourceBytes);
 	const truncated = limit < source.length;
@@ -378,6 +383,7 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 	let start = 0;
 	let startLine = 1;
 	let line = 1;
+	let lineStart = 0;
 	let quote: "'" | '"' | undefined;
 	let triple = false;
 	let comment = false;
@@ -393,19 +399,30 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 					startLine = line + 1;
 				}
 				line += 1;
+				lineStart = index + 1;
 			}
 			continue;
 		}
 		if (quote !== undefined) {
 			if (triple) {
+				if (char === "\\") {
+					if (source[index + 1] === "\n") {
+						line += 1;
+						lineStart = index + 2;
+					}
+					index += 1;
+					continue;
+				}
 				if (source.startsWith(quote.repeat(3), index)) {
 					quote = undefined;
 					triple = false;
 					index += 2;
 					continue;
 				}
-				if (char === "\n") line += 1;
-				if (char === "\\") index += 1;
+				if (char === "\n") {
+					line += 1;
+					lineStart = index + 1;
+				}
 				continue;
 			}
 			if (char === "\\") {
@@ -421,6 +438,10 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 			continue;
 		}
 		if (char === "#") {
+			// The Python runner replaces these blocks before execution.  Treat a
+			// header outside a string as a hard scanner boundary so literal body
+			// lines cannot become assertions while a streamed cell is incomplete.
+			if (isPythonDirectiveStart(source, index, lineStart)) return statements;
 			comment = true;
 			continue;
 		}
@@ -440,6 +461,7 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 			brackets.pop();
 			continue;
 		}
+		if (char === "\n") lineStart = index + 1;
 		if (brackets.length === 0 && (char === "\n" || char === ";")) {
 			pushStatement(statements, source.slice(start, index), startLine);
 			start = index + 1;

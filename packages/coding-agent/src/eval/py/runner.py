@@ -287,7 +287,34 @@ def _start_capture_drain() -> None:
 _EMBED_OPEN_RE = re.compile(
     r"#@embed\s+(?P<name>[A-Za-z_][A-Za-z_0-9]*)(?:\s+until=(?P<until>\S+))?\s*$"
 )
+_PATCH_PREFIX = "#@patch"
 _DEFAULT_EMBED_END = "#@end"
+
+
+class _DirectiveBlock:
+    """A source-range directive found by the shared literal-aware scanner."""
+
+    __slots__ = ("kind", "start", "end", "indent", "name", "path", "marker")
+
+    def __init__(
+        self,
+        kind: str,
+        start: int,
+        end: int,
+        indent: str,
+        *,
+        name: str | None = None,
+        path: str | None = None,
+        marker: str = _DEFAULT_EMBED_END,
+    ) -> None:
+        self.kind = kind
+        self.start = start
+        self.end = end
+        self.indent = indent
+        self.name = name
+        self.path = path
+        self.marker = marker
+
 
 _CURLY_DOUBLE_RE = re.compile("[\u201c\u201d]")
 _CURLY_SINGLE_RE = re.compile("[\u2018\u2019]")
@@ -332,57 +359,266 @@ def _compiles(source: str) -> bool:
     return True
 
 
-def _extract_embeds(source: str) -> tuple[str, list[str]]:
-    """Inline ``#@embed NAME ... #@end`` blocks as string-literal assignments.
+def _directive_indent(line: str) -> str:
+    """Return the exact Python indentation prefix (spaces/tabs only)."""
+    return line[: len(line) - len(line.lstrip(" \t"))]
 
-    Block content is taken verbatim: no quote, backslash, or ``%``/``!``
-    interpretation applies inside the block, so large text payloads (config
-    files, prompts, markup, code in other languages) ride in a cell without
-    nested-quote gymnastics. ``until=<token>`` on the opening line overrides
-    the ``#@end`` terminator for content that contains one.
 
-    A ``#@embed`` line that begins inside a multi-line string literal is
-    content, not a directive (best-effort via :func:`_string_body_lines`).
-    An unterminated directive is a SyntaxError naming the opening line.
+def _patch_header_error(message: str, line: str, line_no: int) -> SyntaxError:
+    return SyntaxError(message, ("<cell>", line_no, 1, line))
+
+
+def _parse_patch_header(line: str, line_no: int) -> tuple[str, str]:
+    """Parse a patch header into a literal path and terminator.
+
+    The path is deliberately *not* a Python expression: after the directive
+    marker it is the literal remainder, including spaces. A final,
+    whitespace-delimited ``until=TOKEN`` is reserved for selecting a marker.
+    No quote/backslash decoding is performed, so those characters are valid
+    literal path characters too.
+    """
+    stripped = line.strip()
+    suffix = stripped[len(_PATCH_PREFIX) :]
+    if not stripped.startswith(_PATCH_PREFIX) or (suffix and not suffix[0].isspace()):
+        raise _patch_header_error(
+            "malformed #@patch directive: expected '#@patch PATH [until=TOKEN]'",
+            line,
+            line_no,
+        )
+    rest = suffix.strip()
+    if not rest:
+        raise _patch_header_error(
+            "malformed #@patch directive: missing patch path",
+            line,
+            line_no,
+        )
+
+    marker = _DEFAULT_EMBED_END
+    marker_match = re.search(r"[ \t]+until=(\S+)[ \t]*$", rest)
+    if marker_match is not None:
+        marker = marker_match.group(1)
+        rest = rest[: marker_match.start()].rstrip()
+    elif re.search(r"[ \t]+until=[ \t]*$", rest) is not None:
+        raise _patch_header_error(
+            "malformed #@patch directive: until= requires a non-empty token",
+            line,
+            line_no,
+        )
+    if not rest:
+        raise _patch_header_error(
+            "malformed #@patch directive: missing patch path before until=",
+            line,
+            line_no,
+        )
+    return rest, marker
+
+
+def _raw_string_body_lines(source: str) -> set[int]:
+    """1-based physical lines that begin inside Python multiline strings."""
+    protected: set[int] = set()
+    fstring_start = getattr(tokenize, "FSTRING_START", None)
+    fstring_end = getattr(tokenize, "FSTRING_END", None)
+    depth = 0
+    outer_start = 0
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.STRING:
+                if tok.end[0] > tok.start[0]:
+                    protected.update(range(tok.start[0] + 1, tok.end[0] + 1))
+            elif fstring_start is not None and tok.type == fstring_start:
+                if depth == 0:
+                    outer_start = tok.start[0]
+                depth += 1
+            elif fstring_end is not None and tok.type == fstring_end:
+                depth = max(0, depth - 1)
+                if depth == 0 and tok.end[0] > outer_start:
+                    protected.update(range(outer_start + 1, tok.end[0] + 1))
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        pass
+    return protected
+
+
+def _masked_verbatim_source(source: str, ranges: list[tuple[int, int]]) -> str:
+    """Blank payload characters while preserving every physical newline."""
+    if not ranges:
+        return source
+    lines = source.split("\n")
+    for start, end in ranges:
+        for index in range(start, min(end, len(lines))):
+            # Keep a possible CR so CRLF remains a line ending for tokenize.
+            lines[index] = "".join("\r" if char == "\r" else " " for char in lines[index])
+    return "\n".join(lines)
+
+
+def _inside_verbatim(index: int, ranges: list[tuple[int, int]]) -> bool:
+    return any(start <= index < end for start, end in ranges)
+
+
+def _patch_terminator(line: str, indent: str, marker: str) -> bool:
+    """Patch terminators must have exactly the opening indentation prefix."""
+    leading = _directive_indent(line)
+    return leading == indent and line[len(indent) :].strip() == marker
+
+
+def _find_directive_end(
+    lines: list[str], start: int, kind: str, indent: str, marker: str
+) -> int | None:
+    for index in range(start + 1, len(lines)):
+        if kind == "embed":
+            # Preserve embed's historical marker semantics: indentation and
+            # trailing whitespace around the marker are ignored.
+            if lines[index].strip() == marker:
+                return index
+        elif _patch_terminator(lines[index], indent, marker):
+            return index
+    return None
+
+
+def _collect_directive_blocks(source: str) -> tuple[list[_DirectiveBlock], set[int]]:
+    """Find embed/patch ranges while masking verbatim payloads between passes.
+
+    Tokenizing the raw cell alone is insufficient: a quote in an embed or
+    patch payload can make tokenize believe later directives are part of a
+    Python string. Each discovered payload is therefore blanked and tokenized
+    again until the literal protection map stabilizes. This keeps actual
+    multiline strings protected while making verbatim payloads opaque.
     """
     lines = source.split("\n")
-    protected = _string_body_lines(source)
+    protected = _raw_string_body_lines(source)
+    ranges: list[tuple[int, int]] = []
+    blocks: list[_DirectiveBlock] = []
+    starts: set[int] = set()
+
+    for _ in range(max(1, len(lines) + 1)):
+        discovered = False
+        for index, line in enumerate(lines):
+            if index in starts or index + 1 in protected or _inside_verbatim(index, ranges):
+                continue
+            stripped = line.strip()
+            indent = _directive_indent(line)
+
+            if stripped.startswith("#@embed"):
+                match = _EMBED_OPEN_RE.fullmatch(stripped)
+                if match is None:
+                    continue
+                marker = match.group("until") or _DEFAULT_EMBED_END
+                end = _find_directive_end(lines, index, "embed", indent, marker)
+                if end is None:
+                    continue
+                block = _DirectiveBlock(
+                    "embed",
+                    index,
+                    end,
+                    indent,
+                    name=match.group("name"),
+                    marker=marker,
+                )
+            elif stripped.startswith(_PATCH_PREFIX):
+                try:
+                    path, marker = _parse_patch_header(line, index + 1)
+                except SyntaxError:
+                    # Defer malformed-header diagnostics to extraction. A
+                    # malformed line cannot safely identify a payload range.
+                    continue
+                end = _find_directive_end(lines, index, "patch", indent, marker)
+                if end is None:
+                    continue
+                block = _DirectiveBlock(
+                    "patch",
+                    index,
+                    end,
+                    indent,
+                    path=path,
+                    marker=marker,
+                )
+            else:
+                continue
+
+            starts.add(index)
+            blocks.append(block)
+            ranges.append((index + 1, end))
+            discovered = True
+
+        new_protected = _raw_string_body_lines(_masked_verbatim_source(source, ranges))
+        if not discovered and new_protected == protected:
+            break
+        protected = new_protected
+
+    blocks.sort(key=lambda block: block.start)
+    return blocks, protected
+
+
+def _extract_embeds(source: str) -> tuple[str, list[str]]:
+    """Expand ``#@embed`` and runtime ``#@patch`` blocks.
+
+    Embed payloads remain verbatim string assignments. Patch payloads become
+    ``apply_patch(<literal path>, <literal hunk text>)`` at the opening line,
+    so Python's ordinary control flow determines whether/when the filesystem
+    mutation happens. Consumed rows are replaced with blank lines to keep
+    subsequent source line numbers aligned.
+    """
+    lines = source.split("\n")
+    blocks, protected = _collect_directive_blocks(source)
+    by_start = {block.start: block for block in blocks}
     notes: list[str] = []
     out: list[str] = []
     i = 0
     while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-        directive = None
-        if stripped.startswith("#@embed") and (i + 1) not in protected:
-            directive = _EMBED_OPEN_RE.match(stripped)
-        if directive is None:
+        block = by_start.get(i)
+        if block is None:
+            line = lines[i]
+            stripped = line.strip()
+            if i + 1 not in protected and stripped.startswith("#@embed"):
+                match = _EMBED_OPEN_RE.fullmatch(stripped)
+                if match is not None:
+                    marker = match.group("until") or _DEFAULT_EMBED_END
+                    if _find_directive_end(lines, i, "embed", _directive_indent(line), marker) is None:
+                        name = match.group("name")
+                        raise SyntaxError(
+                            f"#@embed {name!r} (line {i + 1}) is never closed: "
+                            f"expected a line reading {marker!r}",
+                            ("<cell>", i + 1, 1, line),
+                        )
+            elif i + 1 not in protected and stripped.startswith(_PATCH_PREFIX):
+                # Valid headers with a missing marker and malformed headers
+                # both fail loudly instead of silently remaining comments.
+                path, marker = _parse_patch_header(line, i + 1)
+                if _find_directive_end(lines, i, "patch", _directive_indent(line), marker) is None:
+                    raise SyntaxError(
+                        f"#@patch (line {i + 1}) is never closed: expected a line reading {marker!r}",
+                        ("<cell>", i + 1, 1, line),
+                    )
             out.append(line)
             i += 1
             continue
-        name = directive.group("name")
-        end_marker = directive.group("until") or _DEFAULT_EMBED_END
-        end_idx: int | None = None
-        for j in range(i + 1, len(lines)):
-            if lines[j].strip() == end_marker:
-                end_idx = j
-                break
-        if end_idx is None:
-            raise SyntaxError(
-                f"#@embed {name!r} (line {i + 1}) is never closed: "
-                f"expected a line reading {end_marker!r}",
-                ("<cell>", i + 1, 1, line),
-            )
-        content = "\n".join(lines[i + 1 : end_idx])
-        indent = line[: len(line) - len(line.lstrip())]
-        out.append(f"{indent}{name} = {json.dumps(content, ensure_ascii=True)}")
-        notes.append(
-            f"#@embed {name}: bound {len(content)} chars "
-            f"({end_idx - i - 1} lines) verbatim"
-        )
-        i = end_idx + 1
-    return "\n".join(out), notes
 
+        if block.kind == "embed":
+            content = "\n".join(lines[block.start + 1 : block.end])
+            name = block.name or ""
+            out.append(f"{block.indent}{name} = {json.dumps(content, ensure_ascii=True)}")
+            out.extend("" for _ in range(block.end - block.start))
+            notes.append(
+                f"#@embed {name}: bound {len(content)} chars "
+                f"({block.end - block.start - 1} lines) verbatim"
+            )
+        else:
+            path = block.path or ""
+            body: list[str] = []
+            for row_index in range(block.start + 1, block.end):
+                row = lines[row_index]
+                if not row.startswith(block.indent):
+                    raise SyntaxError(
+                        f"#@patch {path!r} (line {block.start + 1}) body line "
+                        f"{row_index + 1} must begin with the opening indentation prefix",
+                        ("<cell>", row_index + 1, 1, row),
+                    )
+                body.append(row[len(block.indent) :])
+            out.append(
+                f"{block.indent}apply_patch({_quote_arg(path)}, {_quote_arg(chr(10).join(body))})"
+            )
+            out.extend("" for _ in range(block.end - block.start))
+        i = block.end + 1
+    return "\n".join(out), notes
 
 def _unicode_repairs(source: str) -> tuple[str, list[str]]:
     """Replace typography homoglyphs that are never valid code.
@@ -677,32 +913,8 @@ def transform_cell(source: str) -> str:
 
 
 def _string_body_lines(source: str) -> set[int]:
-    """1-based physical lines that *begin* inside a multi-line string literal.
-
-    Best effort: tokenizing stops at the first hard error (e.g. an
-    unterminated quote in a ``%%bash`` body); lines seen before that are
-    still protected.
-    """
-    protected: set[int] = set()
-    fstring_start = getattr(tokenize, "FSTRING_START", None)
-    fstring_end = getattr(tokenize, "FSTRING_END", None)
-    depth = 0
-    outer_start = 0
-    try:
-        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
-            if tok.type == tokenize.STRING:
-                if tok.end[0] > tok.start[0]:
-                    protected.update(range(tok.start[0] + 1, tok.end[0] + 1))
-            elif fstring_start is not None and tok.type == fstring_start:
-                if depth == 0:
-                    outer_start = tok.start[0]
-                depth += 1
-            elif fstring_end is not None and tok.type == fstring_end:
-                depth = max(0, depth - 1)
-                if depth == 0 and tok.end[0] > outer_start:
-                    protected.update(range(outer_start + 1, tok.end[0] + 1))
-    except (tokenize.TokenError, SyntaxError, ValueError):
-        pass
+    """Return literal-protected lines using the shared directive scanner."""
+    _, protected = _collect_directive_blocks(source)
     return protected
 
 

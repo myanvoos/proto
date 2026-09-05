@@ -12,22 +12,14 @@ import type { ToolSession } from ".";
 
 const kernelSchema = type({
 	code: type("string").describe(
-		"Python code to run in the persistent kernel, verbatim. Top-level `await` is available. Verbatim `#@embed NAME … #@end` blocks bind NAME without any escaping.",
+		"Python code to run in the persistent kernel, verbatim. Top-level `await` is available. Verbatim `#@embed NAME … #@end` and `#@patch PATH … #@end` blocks carry literal text without escaping.",
 	),
 	"title?": type("string").describe('short label shown in transcript (e.g. "imports", "load config")'),
 	"timeout?": type("number").describe(
 		"timeout for this call in seconds (default 30; time spent inside agent()/completion() does not count); 0 disables the cell timeout",
 	),
 	"reset?": type("boolean").describe("wipe the kernel before running"),
-	"files?": type({
-		path: type("string").describe("file path, absolute or relative to cwd"),
-		content: type("string").describe("full file contents, written verbatim as UTF-8 text"),
-	})
-		.array()
-		.describe(
-			"files written to disk before the code runs. The quoting-safe channel for file creation: content is a raw JSON string — no string-literal nesting, heredocs, or escaping gymnastics. Each write emits a write event with diff.",
-		),
-});
+}).onUndeclaredKey("reject");
 
 type KernelToolParams = typeof kernelSchema.infer;
 
@@ -125,7 +117,6 @@ export class KernelTool implements AgentTool<typeof kernelSchema> {
 				title: params.title,
 				timeout: params.timeout,
 				reset: params.reset,
-				files: params.files,
 			},
 			signal,
 			onUpdate,

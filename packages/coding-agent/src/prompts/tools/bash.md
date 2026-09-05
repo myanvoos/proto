@@ -16,7 +16,7 @@ When `xd://` devices are mounted, `xd` is an agent-shell Brush builtin, not a PA
 <kernel>
 `python`{{#if js}}/`node`/`bun`{{/if}} with code on **stdin** (heredoc — prefer quoted `<<'EOF'` so `$`, backticks, quotes stay literal) or bare {{#if js}}`-c`/`-e` {{else}}`-c` {{/if}}CODE run in the **persistent eval kernel**, NOT a fresh interpreter: top-level state (vars, imports, defs, running tasks) survives across bash calls, and cells expose the helpers below. `python file.py`, `-m`, or any extra argv runs a real fresh interpreter instead.
 
-File edits MUST use plain APIs inside kernel cells (`open`/`Path`/`Bun.write`), NEVER `sed -i`/`awk -i`/shell redirection. Read first; assert anchors and occurrence counts before replacing text. Every mutation is tracked and diffed; stale writes raise `StaleWriteError` before truncation, so re-read and redo the edit. Use a quoted heredoc for quoting-safe content.
+File edits MUST run inside kernel cells: {{#if py}}Python `#@patch`/`apply_patch` for context hunks; {{/if}}plain APIs (`open`/`Path`/`Bun.write`) for other mutations. NEVER `sed -i`/`awk -i`/shell redirection. Read first; manual replacements MUST assert anchors and occurrence counts. Every mutation is tracked and diffed; stale writes raise `StaleWriteError` before truncation, so re-read and redo the edit. A quoted heredoc protects shell quoting.{{#if py}} Python `#@embed`/`#@patch` protects literal payloads inside the cell.{{/if}}
 
 Orchestration default: write the script (`agent()`, `parallel()`, `pipeline()`) to `fleet://<name>.py`, then run `python fleet://<name>.py` — scripts under `fleet://` execute in the kernel; other script paths run real interpreters.
 

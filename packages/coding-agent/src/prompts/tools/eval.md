@@ -6,7 +6,7 @@ Work incrementally: imports → define → test → use, each its own cell; re-r
 
 {{#if py}}Top-level `await` works; `asyncio.run(…)` errors.
 
-File edits use plain file APIs — `open`, `Path`, `os.*`; there are no write/edit helpers. The environment tracks and diffs every mutation, and a stale-write guard aborts any write (before truncation) to a file that changed on disk since your last read — that is `StaleWriteError`; re-read the file and redo the change. Every read — in-kernel, the `read` tool, or shell builtins (`cat`, `rg`, `sed`, …) — arms the guard; only reads by external programs run from the shell don't.{{/if}}
+File edits execute inside the cell: `#@patch`/`apply_patch` for context hunks; plain `open`/`Path`/`os.*` for other mutations. Quote-hostile payloads SHOULD use `#@embed`/`#@patch`; manual replacements MUST assert anchors and occurrence counts. The environment tracks and diffs every mutation, and a stale-write guard aborts any write (before truncation) to a file that changed on disk since your last read — that is `StaleWriteError`; re-read the file and redo the change. Every read — in-kernel, the `read` tool, or shell builtins (`cat`, `rg`, `sed`, …) — arms the guard; only reads by external programs run from the shell don't.{{/if}}
 {{#if js}}JS runs under **Bun**: globals (`Bun.file`, `Bun.write`, `Bun.$`, `fetch`, `Buffer`) available; top-level `await`/`return` work.{{/if}}
 
 <prelude>
@@ -14,7 +14,7 @@ File edits use plain file APIs — `open`, `Path`, `os.*`; there are no write/ed
 </prelude>
 {{#if spawns}}
 <dag>
-Acyclic waves via `agent(…, handle=true)` + `pipeline`/`parallel`: name nodes (capture `handle` + `output`), wire edges (upstream handles in downstream prompts; bulk via `write("local://<name>.md", …)`). `pipeline` = staged waves with barriers; `parallel` = one wave. Wrap risky nodes in try/except. Acyclic only. Default flow: author the orchestration as a script at `fleet://<name>.py`, then run `python fleet://<name>.py` in bash — fleet scripts execute in this same kernel.
+Acyclic waves via `agent(…, handle=true)` + `pipeline`/`parallel`: name nodes (capture `handle` + `output`), wire edges (upstream handles in downstream prompts; bulk via plain file APIs with `proto_path`/`protoPath`). `pipeline` = staged waves with barriers; `parallel` = one wave. Wrap risky nodes in try/except. Acyclic only. Default flow: author the orchestration as a script at `fleet://<name>.py`, then run `python fleet://<name>.py` in bash — fleet scripts execute in this same kernel.
 </dag>
 {{/if}}
 

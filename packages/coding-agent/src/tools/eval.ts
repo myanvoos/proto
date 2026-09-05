@@ -1,7 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, ToolExample } from "@oh-my-pi/pi-ai";
-import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
+import { logger, prompt } from "@oh-my-pi/pi-utils";
 import {
 	DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
 	formatBackgroundNotice,
@@ -11,7 +11,7 @@ import {
 import { jsBackend, pythonBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
-import { CellFsTracker, sha256Prefix } from "../eval/cell-file-diff";
+import { CellFsTracker } from "../eval/cell-file-diff";
 import { formatDisplayOutputsForText } from "../eval/display-text";
 import { fsObservationLedgerFor, recordMutationEvents } from "../eval/fs-observations";
 import { IdleTimeout } from "../eval/idle-timeout";
@@ -24,9 +24,7 @@ import {
 	type ExecutionTimeoutMetadata,
 	executionMetadataForResult,
 } from "../session/execution-metadata";
-import { capEventDiff } from "../utils/diff";
 import "./kernel-prelude";
-import * as path from "node:path";
 import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
@@ -81,29 +79,19 @@ function enabledEvalLanguages(backends: EvalBackendsAllowance): EvalLanguageToke
 	return EVAL_LANGUAGE_ORDER.filter(lang => allowed[lang]);
 }
 
-const evalFileSchema = type({
-	path: type("string").describe("file path, absolute or relative to cwd"),
-	content: type("string").describe("full file contents, written verbatim as UTF-8 text"),
-});
-
 const evalCellCommonFields = {
 	"title?": type("string").describe('short label shown in transcript (e.g. "imports", "load config")'),
 	"timeout?": type("number").describe(
 		"timeout for this eval call in seconds (default 30; time spent inside agent()/completion() does not count); 0 disables the cell timeout",
 	),
 	"reset?": type("boolean").describe("wipe this language's kernel before running. Other languages are untouched."),
-	"files?": evalFileSchema
-		.array()
-		.describe(
-			"files written to disk before the code runs. The quoting-safe channel for file creation: content is a raw JSON string — no string-literal nesting, heredocs, or escaping gymnastics. Each write emits a write event with diff.",
-		),
 };
 
 const evalSchema = type({
 	language: type("'py' | 'js'").describe(describeLanguageField(EVAL_LANGUAGE_ORDER)),
 	...evalCellCommonFields,
 	code: type("string").describe(EVAL_CODE_FIELD_DESCRIPTION),
-});
+}).onUndeclaredKey("reject");
 type EvalToolParams = typeof evalSchema.infer;
 
 function buildEvalSchema(langs: readonly EvalLanguageToken[]): typeof evalSchema {
@@ -111,7 +99,7 @@ function buildEvalSchema(langs: readonly EvalLanguageToken[]): typeof evalSchema
 		language: type.enumerated(...langs).describe(describeLanguageField(langs)),
 		code: type("string").describe(EVAL_CODE_FIELD_DESCRIPTION),
 		...evalCellCommonFields,
-	});
+	}).onUndeclaredKey("reject");
 	return schema as unknown as typeof evalSchema;
 }
 
@@ -154,18 +142,12 @@ interface ResolvedBackend {
 	notice?: string;
 }
 
-interface EvalFileSpec {
-	path: string;
-	content: string;
-}
-
 interface ResolvedEvalCell {
 	index: number;
 	title?: string;
 	code: string;
 	timeoutMs: number;
 	reset: boolean;
-	files?: EvalFileSpec[];
 	resolved: ResolvedBackend;
 }
 
@@ -263,9 +245,6 @@ function buildEvalExecutionMetadata(options: {
 		return { ...metadata, collector: { state: "running" } };
 	}
 	return metadata;
-}
-function looksBinary(text: string): boolean {
-	return text.slice(0, 8192).includes("\u0000");
 }
 
 export class EvalTool implements AgentTool<typeof evalSchema> {
@@ -401,7 +380,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				code: params.code,
 				timeoutMs: (params.timeout ?? 30) * 1000,
 				reset: params.reset ?? false,
-				files: params.files,
 				resolved,
 			},
 		];
@@ -519,38 +497,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	}
 
 	readonly #fsTracker = new CellFsTracker();
-
-	async #materializeFiles(
-		files: EvalFileSpec[] | undefined,
-		cwd: string,
-		onStatus: (event: EvalStatusEvent) => void,
-	): Promise<void> {
-		if (!files || files.length === 0) return;
-		for (const file of files) {
-			const abs = path.isAbsolute(file.path) ? file.path : path.join(cwd, file.path);
-			let before: string | undefined = "";
-			try {
-				const existing = await Bun.file(abs).text();
-				before = looksBinary(existing) ? undefined : existing;
-			} catch (err) {
-				if (!isEnoent(err)) before = undefined;
-			}
-			await Bun.write(abs, file.content);
-			this.#fsTracker.noteWrite(abs, file.content);
-			const event: EvalStatusEvent = {
-				op: "write",
-				path: abs,
-				chars: file.content.length,
-				sha: sha256Prefix(new TextEncoder().encode(file.content)),
-			};
-			const capped = before === undefined ? undefined : capEventDiff(before, file.content);
-			if (capped) {
-				event.diff = capped.diff;
-				if (capped.diffTruncated) event.diffTruncated = true;
-			}
-			onStatus(event);
-		}
-	}
 
 	#buildBackgroundStartResult(
 		jobId: string,
@@ -735,14 +681,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				cellResult.statusEvents = undefined;
 				cellResult.exitCode = undefined;
 				cellResult.durationMs = undefined;
-				const materializedEvents: EvalStatusEvent[] = [];
-				await this.#materializeFiles(cell.files, session.cwd, event => {
-					materializedEvents.push(event);
-					upsertStatusEvent(statusEvents, event);
-					cellResult.statusEvents ??= [];
-					upsertStatusEvent(cellResult.statusEvents, event);
-					pushUpdate();
-				});
+
 				const fsBefore = await this.#fsTracker.capture(session.cwd, combinedSignal);
 				activeLiveCell = { result: cellResult, buf: new TailBuffer(DEFAULT_MAX_BYTES * 2) };
 				pushUpdate();
@@ -872,7 +811,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				for (const event of cellFsEvents) {
 					upsertStatusEvent(statusEvents, event);
 				}
-				const mergedCellEvents = [...materializedEvents, ...cellStatusEvents, ...cellFsEvents];
+				const mergedCellEvents = [...cellStatusEvents, ...cellFsEvents];
 				cellResult.statusEvents = mergedCellEvents.length > 0 ? mergedCellEvents : undefined;
 				cellResult.hasMarkdown = cellHasMarkdown || undefined;
 

@@ -13,6 +13,37 @@ test("finds literal Python completion calls in a quoted heredoc", () => {
 	expect(calls[0]?.args).toEqual({ prompt: "summarize", model: "smol", system: "brief" });
 });
 
+test("stops speculative Python calls at embed and patch literal bodies", () => {
+	const directives = [
+		["#@embed PAYLOAD", "#@end"],
+		["#@embed PAYLOAD until=STOP", "STOP"],
+		["#@patch /tmp/target", "#@end"],
+		["#@patch /tmp/target until=STOP", "STOP"],
+	] as const;
+	for (const [opening, closing] of directives) {
+		const code = [
+			'answer = completion("before")',
+			opening,
+			'completion("hidden")',
+			'payload = """quotes and #@end and completion("also hidden")"""',
+			closing,
+			'answer = completion("after")',
+		].join("\n");
+		const calls = findHeredocCompletionCalls(`python <<'PY'\n${code}\nPY`);
+		expect(calls.map(call => call.args.prompt)).toEqual(["before"]);
+
+		const partial = parseStreamedInputForCompletion(
+			JSON.stringify({ command: `python <<'PY'\n${code.slice(0, code.indexOf(closing))}` }),
+		);
+		expect(partial.calls.map(call => call.args.prompt)).toEqual(["before"]);
+	}
+});
+
+test("keeps directive-looking lines inside Python string literals literal", () => {
+	const command = `python <<'PY'\nanswer = completion("before")\npayload = """\n#@embed PAYLOAD\ncompletion("hidden")\n#@end\n"""\nanswer = completion("after")\nPY`;
+	expect(findHeredocCompletionCalls(command).map(call => call.args.prompt)).toEqual(["before", "after"]);
+});
+
 test("finds literal JavaScript options and preserves duplicate ordinals", () => {
 	const command = `node <<'JS'\nconst a = await completion("same", { model: "default" });\nconst b = await completion("same", { model: "default" });\nJS`;
 	const calls = findHeredocCompletionCalls(command);

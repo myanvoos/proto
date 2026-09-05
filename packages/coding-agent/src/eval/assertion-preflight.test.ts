@@ -197,6 +197,57 @@ test("keeps an earlier proven failure visible past trailing incomplete literals"
 	expect(streamedJs?.line).toBe(4);
 });
 
+test("stops preflight at literal Python directive bodies, including streamed partial blocks", async () => {
+	const { directory, file } = await makeFixture("needle\n");
+	const prefix = [
+		"from pathlib import Path",
+		`text = Path(${JSON.stringify(file)}).read_text()`,
+		'old = "needle"',
+		"assert text.count(old) == 1",
+	].join("\n");
+	const directives = [
+		["#@embed PAYLOAD", "#@end"],
+		["#@embed PAYLOAD until=STOP", "STOP"],
+		["#@patch /tmp/target", "#@end"],
+		["#@patch /tmp/target until=STOP", "STOP"],
+	] as const;
+
+	for (const [opening, closing] of directives) {
+		const body = [
+			opening,
+			'assert text.count("missing") == 1',
+			'payload = """body with "quotes" and #@end"""',
+			closing,
+		].join("\n");
+		const source = `${prefix}\n${body}`;
+		expect(await preflightKernelSource(source, { cwd: directory })).toBeUndefined();
+
+		const command = heredoc(source);
+		expect(
+			await preflightStreamedInput(
+				`directive-${opening.startsWith("#@patch") ? "patch" : "embed"}`,
+				JSON.stringify({ command: command.slice(0, command.indexOf(closing)) }),
+				{ session: { cwd: directory } },
+			),
+		).toBeUndefined();
+	}
+});
+
+test("keeps an earlier proven Python failure before a directive boundary", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	const source = `${pythonCell(file)}\n#@embed PAYLOAD\nassert text.count("ignored") == 1\n#@end`;
+	const direct = await preflightKernelSource(source, { cwd: directory });
+	expect(direct?.line).toBe(6);
+	expect(direct?.count).toBe(0);
+	const streamed = await preflightStreamedInput(
+		"directive-prior-failure",
+		JSON.stringify({ command: heredoc(source) }),
+		{ session: { cwd: directory } },
+	);
+	expect(streamed?.line).toBe(6);
+	expect(streamed?.count).toBe(0);
+});
+
 test("supports the explicit node:fs/readFileSync JavaScript count shape", async () => {
 	const { directory, file } = await makeFixture("haystack\n");
 	const source = [

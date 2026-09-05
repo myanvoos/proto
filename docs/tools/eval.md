@@ -2,7 +2,7 @@
 
 > Execute one Python or JavaScript cell in a persistent language runtime. One tool call is one cell; state survives later calls.
 
-> **Notice:** Do not use one-off `python -c`, `bun -e`, or `node -e` subprocesses through `bash` when a retained eval cell is appropriate. `eval` provides retained state, structured `display()` capture, tool/subagent bridges, streaming, cancellation, and artifact-backed truncation.
+> Bash `python`/`node`/`bun` with code on stdin or bare `-c`/`-e` uses these same persistent kernels when the kernel bridge is available. Script paths and extra interpreter arguments run external processes, except `fleet://` scripts, which execute in the kernel.
 
 ## Source
 - Entry and dynamic schema: `packages/coding-agent/src/tools/eval.ts`
@@ -21,7 +21,7 @@ The params object is one cell. There is no `cells` array, header parser, languag
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `language` | `"py" \| "js" \| "rb" \| "jl"` | Yes | Explicit backend token. Normally the live schema includes only enabled runtimes; see the all-disabled edge case below. |
+| `language` | `"py" \| "js"` | Yes | Explicit backend token. Normally the live schema includes only enabled runtimes; see the all-disabled edge case below. |
 | `code` | `string` | Yes | Cell body, verbatim. |
 | `title` | `string` | No | Short transcript label. |
 | `timeout` | `number` | No | Runtime-work timeout in seconds. Default 30; `0` disables the cell timeout. Nonzero values are clamped by the tool timeout policy and `tools.maxTimeout`. |
@@ -109,14 +109,56 @@ Each result also carries `details.execution` before generated output: `state` (`
 All enabled runtimes expose equivalent helpers where the language permits:
 
 - `display(value)`, `print(...)`
-- `write(path, content)`, `env(...)`, `output(...)`
+- `env(...)`, `output(...)`
+- Python `apply_patch(path, patch_text)` and `proto_path(path)`; JS `protoPath(path)`
 - `tool.<name>(args)` for a normal session tool call
 - `completion(...)`, `agent(...)`, `parallel(...)`, `pipeline(...)`
 - `log(message)`, `phase(title)`, `budget`
 
-JS filesystem/bridge helpers are asynchronous; Python helpers are synchronous. `write()` accepts regular and `local://` paths but rejects other protocol URLs.
+JS filesystem/bridge calls are asynchronous; Python helpers are synchronous. File mutations execute inside the cell through plain APIs (`open`, `Path`, `Bun.write`) or Python `apply_patch`. There is no `files` input or preexecution file materialization. Use `proto_path`/`protoPath` to resolve scheme URLs for plain file APIs.
 
 `display()` captures JSON-compatible structures, images, markdown, or text according to the backend.
+
+### Python verbatim strings and patches
+
+`#@embed NAME` binds a literal string; `#@patch PATH` applies a literal patch to one existing UTF-8 file. Both execute at their source position: preceding exceptions prevent them, false branches skip them, and function bodies defer them until called. Payloads do not interpolate or interpret Python quotes, backslashes, or shell escapes.
+
+```python
+#@embed SOURCE
+PATTERN = r"/v1/\d+"
+
+#@end
+Path("route.py").write_text(SOURCE)
+
+#@patch route.py
+@@
+-PATTERN = r"/v1/\d+"
++PATTERN = r"/v2/\d+"
+#@end
+```
+
+- Embed body lines join with `\n`; the delimiter-boundary newline is excluded. The blank body line in the example supplies the file's final newline. Embed body indentation is literal.
+- Patch headers take a literal path, including spaces, not a Python expression. Paths resolve relative to the kernel cwd; scheme URLs resolve through `proto_path`.
+- Append `until=TOKEN` to either header to use a custom closing line instead of `#@end`. This allows literal content containing the default delimiter.
+- In indented Python blocks, indent every patch body row and its terminator by the header's indentation. Only that prefix is removed; spaces after a hunk prefix remain meaningful file content.
+- Each hunk starts with bare `@@`. Subsequent rows use one leading space for context, `-` for deletion, or `+` for addition. Supply at least one old/context line and a change. File envelopes, numbered hunk headers, and fuzzy matching are unsupported.
+- Hunks match exact lines, uniquely within the remaining forward search region, without overlap. A missing, ambiguous, or malformed hunk fails before any write to that file. Earlier completed operations in the cell are not rolled back.
+- Untouched line endings are preserved. Added lines inherit local newline style, falling back to the file's first newline style or LF. Terminal-newline presence is preserved unless the result is empty.
+- Patches update existing files only. Create or fully replace files with `#@embed` and ordinary filesystem APIs; delete and rename with ordinary APIs.
+
+For computed paths or patch text, call the same operation directly:
+
+```python
+#@embed CHANGE
+@@
+-enabled: false
++enabled: true
+#@end
+for target in targets:
+    apply_patch(target, CHANGE)
+```
+
+`apply_patch(path, patch_text)` returns `None`. It uses the existing stale-write guard and structured mutation diffs; internal reads do not silently refresh the agent's prior observation. On `StaleWriteError`, explicitly re-read the file and reconstruct the change. Manual string replacements should assert anchor occurrence counts before writing.
 
 ### `completion()`
 

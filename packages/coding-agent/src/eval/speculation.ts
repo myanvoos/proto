@@ -161,21 +161,35 @@ function decodeString(raw: string): string | undefined {
 	return out;
 }
 
+function isPythonDirectiveStart(source: string, index: number, lineStart: number): boolean {
+	if (index < lineStart || !/^\s*$/u.test(source.slice(lineStart, index))) return false;
+	return /^#@(embed|patch)(?:\s|$)/u.test(source.slice(index));
+}
+
 function lexSource(source: string, language: StreamedCompletionLanguage): LexResult {
 	const tokens: Token[] = [];
 	let i = 0;
+	let lineStart = 0;
 	let incomplete = false;
 	const isStart = language === "python" ? PY_IDENT_START : JS_IDENT_START;
 	const isCont = language === "python" ? PY_IDENT_CONT : JS_IDENT_CONT;
 	while (i < source.length) {
 		const ch = source[i]!;
 		if (/\s/u.test(ch)) {
+			if (ch === "\n") lineStart = i + 1;
 			i++;
 			continue;
 		}
 		if (language === "python" && ch === "#") {
+			// The Python runner consumes directive blocks before execution. Stop
+			// lexing at a real header so body text cannot authorize completion calls.
+			if (isPythonDirectiveStart(source, i, lineStart)) {
+				incomplete = true;
+				break;
+			}
 			const end = source.indexOf("\n", i);
 			i = end < 0 ? source.length : end + 1;
+			if (end >= 0) lineStart = i;
 			continue;
 		}
 		if (language === "js" && ch === "/" && source[i + 1] === "/") {
@@ -192,11 +206,30 @@ function lexSource(source: string, language: StreamedCompletionLanguage): LexRes
 			i = end + 2;
 			continue;
 		}
-		if (
-			ch === "`" ||
-			(language === "python" && ch === "'" && source[i + 1] === "'") ||
-			(language === "python" && ch === '"' && source[i + 1] === '"')
-		) {
+		if (language === "python" && (ch === "'" || ch === '"') && source.startsWith(ch.repeat(3), i)) {
+			const delimiter = ch.repeat(3);
+			i += delimiter.length;
+			let closed = false;
+			while (i < source.length) {
+				const c = source[i]!;
+				if (c === "\\") {
+					if (source[i + 1] === "\n") lineStart = i + 2;
+					i += 2;
+					continue;
+				}
+				if (source.startsWith(delimiter, i)) {
+					i += delimiter.length;
+					closed = true;
+					break;
+				}
+				if (c === "\n") lineStart = i + 1;
+				i++;
+			}
+			if (!closed) incomplete = true;
+			if (!closed) break;
+			continue;
+		}
+		if (ch === "`") {
 			return { tokens, incomplete: false, valid: false };
 		}
 		if (ch === "'" || ch === '"') {
@@ -208,6 +241,7 @@ function lexSource(source: string, language: StreamedCompletionLanguage): LexRes
 				const c = source[i]!;
 				if (c === "\n" || c === "\r") return { tokens, incomplete: false, valid: false };
 				if (c === "\\") {
+					if (source[i + 1] === "\n") lineStart = i + 2;
 					i += 2;
 					continue;
 				}

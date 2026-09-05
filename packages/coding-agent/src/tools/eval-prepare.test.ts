@@ -110,3 +110,119 @@ test("invalid escape in string literal suggests a raw string", async () => {
 	const output = result.details?.cells?.[0]?.output ?? "";
 	expect(output).toContain("raw string");
 });
+
+test("#@patch applies at runtime with a literal path containing spaces", async () => {
+	const file = "patch file with spaces.txt";
+	await fs.writeFile(path.join(dir, file), "before\n", "utf8");
+	const result = await runCell([`#@patch ${file}`, "@@", "-before", "+after", "#@end"].join("\n"));
+	expect(result.details?.cells?.[0]?.status).toBe("complete");
+	expect(await fs.readFile(path.join(dir, file), "utf8")).toBe("after\n");
+});
+
+test("#@patch respects false branches and defers function bodies", async () => {
+	const file = "patch-control-flow.txt";
+	await fs.writeFile(path.join(dir, file), "old\n", "utf8");
+	const result = await runCell(
+		[
+			"if False:",
+			`    #@patch ${file}`,
+			"    @@",
+			"    -old",
+			"    +false-branch",
+			"    #@end",
+			"def apply_deferred_patch():",
+			`    #@patch ${file}`,
+			"    @@",
+			"    -old",
+			"    +deferred",
+			"    #@end",
+		].join("\n"),
+	);
+	expect(result.details?.cells?.[0]?.status).toBe("complete");
+	expect(await fs.readFile(path.join(dir, file), "utf8")).toBe("old\n");
+
+	const invoked = await runCell("apply_deferred_patch()");
+	expect(invoked.details?.cells?.[0]?.status).toBe("complete");
+	expect(await fs.readFile(path.join(dir, file), "utf8")).toBe("deferred\n");
+});
+
+test("#@patch keeps hostile hunk text literal and supports a custom delimiter", async () => {
+	const file = "patch hostile payload.txt";
+	await fs.writeFile(path.join(dir, file), "before\n", "utf8");
+	const replacement = String.raw`after """ quote \\\\ backslash`;
+	const embedded = String.raw`literal """ and \\backslash`;
+	const result = await runCell(
+		[
+			`#@patch ${file} until=PATCH_DONE`,
+			"@@",
+			"-before",
+			`+${replacement}`,
+			"PATCH_DONE",
+			"#@embed AFTER_HOSTILE",
+			embedded,
+			"#@end",
+			"print(AFTER_HOSTILE)",
+		].join("\n"),
+	);
+	expect(result.details?.cells?.[0]?.status).toBe("complete");
+	expect(await fs.readFile(path.join(dir, file), "utf8")).toBe(`${replacement}\n`);
+	expect(result.details?.cells?.[0]?.output ?? "").toContain(embedded);
+});
+
+test("#@patch does not consume a top-level context row resembling #@end", async () => {
+	const file = "patch context marker.txt";
+	await fs.writeFile(path.join(dir, file), "#@end\nold\n", "utf8");
+	const result = await runCell([`#@patch ${file}`, "@@", " #@end", "-old", "+new", "#@end"].join("\n"));
+	expect(result.details?.cells?.[0]?.status).toBe("complete");
+	expect(await fs.readFile(path.join(dir, file), "utf8")).toBe("#@end\nnew\n");
+});
+
+test("directives inside multiline strings stay literal while later embeds run", async () => {
+	const result = await runCell(
+		[
+			'text = """',
+			"#@patch should-not-run.txt",
+			"@@",
+			"-before",
+			"+changed",
+			"#@end",
+			'"""',
+			"#@embed AFTER_STRING",
+			"literal #@patch text",
+			"#@end",
+			"print(text)",
+			"print(AFTER_STRING)",
+		].join("\n"),
+	);
+	expect(result.details?.cells?.[0]?.status).toBe("complete");
+	const output = result.details?.cells?.[0]?.output ?? "";
+	expect(output).toContain("#@patch should-not-run.txt");
+	expect(output).toContain("literal #@patch text");
+});
+
+test("a hostile embed quote does not hide a subsequent embed", async () => {
+	const result = await runCell(
+		[
+			"#@embed HOSTILE",
+			String.raw`""" hostile \\backslash`,
+			"#@end",
+			"#@embed AFTER_HOSTILE_EMBED",
+			"after",
+			"#@end",
+			"print(AFTER_HOSTILE_EMBED)",
+		].join("\n"),
+	);
+	expect(result.details?.cells?.[0]?.status).toBe("complete");
+	expect(result.details?.cells?.[0]?.output ?? "").toContain("after");
+});
+
+test("malformed #@patch headers and missing terminators fail clearly", async () => {
+	const malformed = await runCell("#@patch\n@@\n-old\n+new\n#@end");
+	expect(malformed.details?.cells?.[0]?.status).toBe("error");
+	expect(malformed.details?.cells?.[0]?.output ?? "").toContain("missing patch path");
+
+	const unclosed = await runCell("#@patch path with spaces.txt\n@@\n-old\n+new");
+	expect(unclosed.details?.cells?.[0]?.status).toBe("error");
+	expect(unclosed.details?.cells?.[0]?.output ?? "").toContain("#@patch (line 1) is never closed");
+	expect(unclosed.details?.cells?.[0]?.output ?? "").toContain("#@end");
+});

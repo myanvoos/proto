@@ -8,6 +8,7 @@ __all__ = [
     "display",
     "env",
     "proto_path",
+    "apply_patch",
     "StaleWriteError",
     "block_range",
     "symbols",
@@ -576,6 +577,230 @@ if "__proto_prelude_loaded__" not in globals():
 
         Raised before any raw write-mode open truncates a guarded path; any
         re-read of the file re-arms the guard."""
+
+    def _patch_error(path_label: str, index: int, cause: str) -> ValueError:
+        return ValueError(f"{path_label}: hunk {index}: {cause}")
+
+    def _parse_apply_patch(patch_text: str, path_label: str) -> list[list[tuple[str, str]]]:
+        """Parse the intentionally small, line-oriented apply_patch grammar."""
+        lines = patch_text.splitlines()
+        if not lines:
+            raise _patch_error(path_label, 1, "empty patch; expected a bare '@@' hunk")
+
+        hunks: list[list[tuple[str, str]]] = []
+        current: list[tuple[str, str]] | None = None
+        for line_number, line in enumerate(lines, 1):
+            hunk_index = len(hunks) + 1
+            if "\x00" in line:
+                raise _patch_error(
+                    path_label,
+                    hunk_index,
+                    f"malformed line {line_number}: NUL bytes are not allowed",
+                )
+            if line == "@@":
+                if current is not None:
+                    hunks.append(current)
+                current = []
+                continue
+            if current is None:
+                raise _patch_error(
+                    path_label,
+                    hunk_index,
+                    f"malformed line {line_number}: expected a bare '@@' hunk header",
+                )
+            if line.startswith("@@"):
+                raise _patch_error(
+                    path_label,
+                    hunk_index,
+                    f"malformed line {line_number}: hunk headers must be exactly '@@'",
+                )
+            if not line or line[0] not in " +-":
+                raise _patch_error(
+                    path_label,
+                    hunk_index,
+                    f"malformed line {line_number}: expected a space, '-' or '+' prefix",
+                )
+            current.append((line[0], line[1:]))
+        if current is not None:
+            hunks.append(current)
+
+        if not hunks:
+            raise _patch_error(path_label, 1, "empty patch; expected a bare '@@' hunk")
+        for hunk_index, entries in enumerate(hunks, 1):
+            if not entries:
+                raise _patch_error(path_label, hunk_index, "empty hunk")
+            old_lines = tuple(text for kind, text in entries if kind in " -")
+            if not old_lines:
+                raise _patch_error(path_label, hunk_index, "anchorless hunk; include an old-side context or deletion line")
+            if not any(kind in "-+" for kind, _ in entries):
+                raise _patch_error(path_label, hunk_index, "no-change hunk")
+            new_lines = tuple(text for kind, text in entries if kind in " +")
+            if old_lines == new_lines:
+                raise _patch_error(path_label, hunk_index, "no-change hunk")
+        return hunks
+
+    def _patch_source_lines(source: str) -> list[tuple[str, str]]:
+        """Split source while retaining each line's original terminator bytes."""
+        lines: list[tuple[str, str]] = []
+        start = 0
+        for match in re.finditer(r"\r\n|\r|\n", source):
+            lines.append((source[start : match.start()], match.group(0)))
+            start = match.end()
+        if start < len(source):
+            lines.append((source[start:], ""))
+        return lines
+
+    def _patch_snapshot(path) -> tuple[int, int, int | None] | None:
+        try:
+            info = os.stat(path)
+        except OSError:
+            return None
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        return (info.st_mtime_ns, info.st_size, getattr(info, "st_ino", None))
+
+    def _raise_patch_stale(path_label: str) -> None:
+        raise StaleWriteError(
+            f"write to {path_label}: file changed on disk while applying patch; "
+            "re-read the file and redo the change."
+        )
+
+    def _patch_read_bytes(path) -> bytes:
+        """Read patch input without arming the agent-visible stale-read record."""
+        tls = _FS_STATE["tls"]
+        was_recording = getattr(tls, "recording", False)
+        tls.recording = True
+        try:
+            return path.read_bytes()
+        finally:
+            tls.recording = was_recording
+
+    def apply_patch(path: str | Path, patch_text: str) -> None:
+        """Apply exact, composable ``@@`` hunks to an existing UTF-8 text file.
+
+        A hunk header is exactly ``@@``. The following lines use one leading
+        character: space for context, ``-`` for deletion, and ``+`` for
+        insertion. Old-side lines are matched exactly in the original file
+        from the end of the previous match onward; every match must be unique.
+        """
+        target = proto_path(path)
+        path_label = str(target)
+        if not isinstance(patch_text, str):
+            raise TypeError(f"{path_label}: patch_text must be a str")
+        hunks = _parse_apply_patch(patch_text, path_label)
+
+        # Check the host/agent stale stamp before the private read. The second
+        # check closes the small gap between the first stat and our baseline
+        # snapshot without exposing the private read to the stale-read ledger.
+        _fs_check_stale_raw(target)
+        baseline = _patch_snapshot(target)
+        if baseline is None:
+            raise ValueError(f"{path_label}: existing regular text file required")
+        _fs_check_stale_raw(target)
+        raw = _patch_read_bytes(target)
+        if _patch_snapshot(target) != baseline:
+            _raise_patch_stale(path_label)
+        if b"\x00" in raw:
+            raise ValueError(f"{path_label}: binary files are not supported")
+        try:
+            source = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"{path_label}: file is not valid UTF-8 ({exc})") from None
+
+        source_lines = _patch_source_lines(source)
+        source_bodies = [body for body, _ in source_lines]
+        matches: list[tuple[int, int, list[tuple[str, str]]]] = []
+        search_start = 0
+        for hunk_index, entries in enumerate(hunks, 1):
+            old_lines = [text for kind, text in entries if kind in " -"]
+            width = len(old_lines)
+            positions = [
+                start
+                for start in range(search_start, len(source_bodies) - width + 1)
+                if source_bodies[start : start + width] == old_lines
+            ]
+            if len(positions) > 1:
+                raise _patch_error(
+                    path_label,
+                    hunk_index,
+                    f"ambiguous exact match ({len(positions)} matches in the remaining source)",
+                )
+            if not positions:
+                earlier = any(
+                    source_bodies[start : start + width] == old_lines
+                    for start in range(0, min(search_start, len(source_bodies) - width + 1))
+                )
+                cause = (
+                    "out-of-order or overlapping hunk; exact match is before the remaining source"
+                    if earlier
+                    else "missing exact match in the remaining source"
+                )
+                raise _patch_error(path_label, hunk_index, cause)
+            start = positions[0]
+            end = start + width
+            if start < search_start:
+                raise _patch_error(path_label, hunk_index, "overlapping or out-of-order hunk")
+            matches.append((start, end, entries))
+            search_start = end
+
+        first_newline = next((terminator for _, terminator in source_lines if terminator), "\n")
+        rendered: list[tuple[str, str]] = []
+        source_cursor = 0
+        for start, end, entries in matches:
+            rendered.extend(source_lines[source_cursor:start])
+            source_index = start
+            changed_newline = ""
+            context_newline = ""
+            for kind, _ in entries:
+                if kind == " ":
+                    if not context_newline and source_lines[source_index][1]:
+                        context_newline = source_lines[source_index][1]
+                    source_index += 1
+                elif kind == "-":
+                    if not changed_newline and source_lines[source_index][1]:
+                        changed_newline = source_lines[source_index][1]
+                    source_index += 1
+            local_newline = changed_newline or context_newline or first_newline
+            source_index = start
+            for kind, text in entries:
+                if kind == " ":
+                    rendered.append(source_lines[source_index])
+                    source_index += 1
+                elif kind == "-":
+                    source_index += 1
+                else:
+                    rendered.append((text, local_newline))
+            rendered_source_end = source_index
+            if rendered_source_end != end:
+                raise _patch_error(path_label, len(matches), "malformed hunk line count")
+            source_cursor = end
+        rendered.extend(source_lines[source_cursor:])
+
+        if rendered:
+            # A source line without a terminator cannot remain before another
+            # line. Only that structural separator, and the final newline
+            # policy below, may alter an untouched terminator.
+            for index in range(len(rendered) - 1):
+                if not rendered[index][1]:
+                    rendered[index] = (rendered[index][0], first_newline)
+            had_terminal_newline = bool(source_lines and source_lines[-1][1])
+            if had_terminal_newline and not rendered[-1][1]:
+                rendered[-1] = (rendered[-1][0], first_newline)
+            elif not had_terminal_newline:
+                rendered[-1] = (rendered[-1][0], "")
+        new_source = "".join(body + terminator for body, terminator in rendered)
+        new_raw = new_source.encode("utf-8")
+
+        # All hunk parsing/matching is complete. Re-check both stale guards
+        # immediately before the guarded write so a never-read caller still
+        # detects an intervening replacement or deletion.
+        _fs_check_stale_raw(target)
+        if _patch_snapshot(target) != baseline:
+            _raise_patch_stale(path_label)
+        if new_raw == raw:
+            raise _patch_error(path_label, 1, "no-change patch")
+        target.write_bytes(new_raw)
+        return None
 
     def _format_mtime(mtime_ns: int) -> str:
         import datetime
