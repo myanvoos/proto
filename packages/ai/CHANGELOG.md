@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Fixed Claude OAuth requests being rejected because the embedded Claude Code fingerprint was older than the minimum supported version.
 - Fixed Gemma and Antigravity provider prompt documentation to match native result rendering and enforced tool-choice behavior.
 - Fixed GPT-6 Astra and other newly published Codex models being rejected because requests advertised an outdated Codex client version.
 - Captured bounded Devin Connect trailer details and request-shape evidence for diagnosing intermittent `invalid_argument` stream rejections (#4218).

@@ -1164,7 +1164,8 @@ export class Markdown
 	#transientRenderCache = false;
 
 	#streamPrefixText?: string;
-	#streamPrefixTokens?: Token[];
+	#streamTokens?: Token[];
+	#streamPrefixTokenCount = 0;
 	#streamPrefixLineCache?: StreamPrefixLineCache;
 
 	#lastRenderSettledRows = 0;
@@ -1226,7 +1227,8 @@ export class Markdown
 		this.#text = text;
 		if (!text.trim()) {
 			this.#streamPrefixText = undefined;
-			this.#streamPrefixTokens = undefined;
+			this.#streamTokens = undefined;
+			this.#streamPrefixTokenCount = 0;
 			this.#streamPrefixLineCache = undefined;
 			this.#settledExposedText = undefined;
 		}
@@ -1340,41 +1342,36 @@ export class Markdown
 
 	#lexTokens(text: string): Token[] {
 		const prefix = this.#streamPrefixText;
-		const prefixTokens = this.#streamPrefixTokens;
+		const streamTokens = this.#streamTokens;
 		const hasPrefix =
-			prefix !== undefined && prefixTokens !== undefined && text.length > prefix.length && text.startsWith(prefix);
+			prefix !== undefined && streamTokens !== undefined && text.length > prefix.length && text.startsWith(prefix);
 		const refDefText = hasPrefix ? text.slice(prefix.length) : text;
 		const canStream = !HAS_REF_DEF.test(refDefText) && !refDefText.includes("\r");
 		if (canStream && hasPrefix) {
 			const tailTokens = lexDocument(refDefText);
-			const tokens = [...prefixTokens, ...tailTokens];
-			this.#freezeStablePrefix(text, tokens, { preserveExisting: true });
-			return tokens;
+			const frozen = stableBlockBoundary(text, prefix.length, tailTokens);
+			// Keep frozen token indexes stable; only the mutable tail needs replacing or scanning.
+			streamTokens.length = this.#streamPrefixTokenCount;
+			for (const token of tailTokens) streamTokens.push(token);
+			if (frozen.count > 0) {
+				this.#streamPrefixText = text.slice(0, frozen.end);
+				this.#streamPrefixTokenCount += frozen.count;
+			}
+			return streamTokens;
 		}
 		const tokens = lexDocument(text);
-		if (canStream) {
-			this.#freezeStablePrefix(text, tokens, { preserveExisting: false });
+		const frozen = canStream ? stableBlockBoundary(text, 0, tokens) : NO_BLOCK_BOUNDARY;
+		if (frozen.count > 0) {
+			this.#streamPrefixText = text.slice(0, frozen.end);
+			this.#streamTokens = tokens;
+			this.#streamPrefixTokenCount = frozen.count;
 		} else {
 			this.#streamPrefixText = undefined;
-			this.#streamPrefixTokens = undefined;
+			this.#streamTokens = undefined;
+			this.#streamPrefixTokenCount = 0;
 			this.#streamPrefixLineCache = undefined;
 		}
 		return tokens;
-	}
-
-	#freezeStablePrefix(text: string, tokens: Token[], opts: { preserveExisting: boolean }): void {
-		const frozen = stableBlockBoundary(text, 0, tokens);
-		if (frozen.count > 0) {
-			this.#streamPrefixText = text.slice(0, frozen.end);
-			this.#streamPrefixTokens = tokens.slice(0, frozen.count);
-			return;
-		}
-
-		if (!opts.preserveExisting) {
-			this.#streamPrefixText = undefined;
-			this.#streamPrefixTokens = undefined;
-			this.#streamPrefixLineCache = undefined;
-		}
 	}
 
 	render(width: number): readonly string[] {
@@ -1491,7 +1488,7 @@ export class Markdown
 		contentWidth: number,
 	): string[] {
 		const frozenText = this.#streamPrefixText;
-		const frozenTokenCount = this.#streamPrefixTokens?.length ?? 0;
+		const frozenTokenCount = this.#streamPrefixTokenCount;
 		if (frozenText === undefined || frozenTokenCount === 0 || !normalizedText.startsWith(frozenText)) {
 			return this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature, 0, 0);
 		}

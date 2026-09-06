@@ -236,3 +236,9 @@ Run `proto <command> --help` for each command's own flags and examples.
 > reachable through related mechanisms (the `plugin` command and so on).
 > The table lists each as it is registered in
 > `packages/coding-agent/src/cli-commands.ts`.
+
+### Supervised process logs and shutdown
+
+`fleet` log requests with a returned `cursor` read only newer output; omitting the cursor reads retained history. A follow timeout does not replay previous output. The broker retains bounded log windows across rotation and uses the current process generation for historical pattern waits.
+
+During broker shutdown, new launches are rejected with a retryable shutdown error instead of being reported as running immediately before termination. Retry after the departing broker exits; concurrent clients continue to use the shared project broker.

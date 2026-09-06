@@ -18,6 +18,8 @@ Both eventually use `executeBash()` in `src/exec/bash-executor.ts` for non-PTY e
 
 Set `bash.enabled: false` in settings to remove the model-facing `bash` tool from the active tool registry. This does not disable user-initiated bang commands or RPC `bash` requests.
 
+An explicit `cwd: "/"`, or a normalized leading `cd /`, selects the filesystem root. Relative directories resolve against the session directory; `~` selects the home directory.
+
 ## `xd` as a Brush builtin
 
 When xdev is enabled, model-facing Bash runs use the Brush shell parser and register `xd` as a builtin. `xd <tool> '<json>'` therefore composes with the same shell language as native commands: pipelines, `|&`, redirects, command substitutions, subshells/groups, loops, conditionals, `&&`/`||`, background jobs, and `pipefail` are parsed and executed by one runtime. The builtin receives the invocation-local working directory from each shell branch, so `(cd sub; xd read '{"path":"file"}')` does not mutate the shared tool session; concurrent branches remain isolated.
@@ -25,6 +27,16 @@ When xdev is enabled, model-facing Bash runs use the Brush shell parser and regi
 The bridge maps successful text content to stdout and tool-error text to stderr; tool-error status is `1`, while bridge/serialization failure is `125`. Non-text content and `xdev` details travel in `xdDispatches`, a structured side channel consumed by Bash rendering, never through stdout/stderr pipes. Native shell cancellation and deadlines cancel the bridge await; downstream pipe closure returns the shell's broken-pipe status. Bridge input is bounded to 1 MiB of UTF-8 stdin.
 
 `xd` exists only inside the agent's Brush shell. `fleet` processes, client terminal/PTY execution, user bang commands without the agent Bash dispatcher, and standalone external `bash` do not inherit it; they must not assume an `xd` binary exists on `PATH`.
+
+Without positional JSON, `xd` parses its stdin as the argument object: `printf '%s' '{"path":"src"}' | xd read`. Positional JSON wins when both are supplied. Non-empty text output ends with a newline so a following shell command starts on its own line. Shell settlement aborts outstanding tool dispatches, including deadline cancellation, rather than leaving detached tool work running.
+
+## Persistent interpreter cells
+
+Supported `python`/`python3`, `node`, and `bun` stdin and inline-code invocations use the same persistent kernels as the eval tool. Ordinary script paths, interpreter options, and inline code with extra argv fall through to an external interpreter; supported `fleet://` scripts remain kernel cells. External fallback preserves stdin bytes even when the source is not UTF-8, leaving decoding and syntax errors to the interpreter. Empty `PATH` components search the shell's working directory, just as they do for other shell commands.
+
+A bridge request belongs to its shell run from the start of backend availability checks. Cancellation or run disposal during those checks returns exit status `130` rather than launching a late cell or falling through to an external interpreter. Disposing one run does not stop the bridge for other live runs; disconnected clients cancel their own pending cell.
+
+Kernel stdout, display text, and the final exit frame share one ordered response stream. The bridge retains unwritten UTF-8 bytes across socket backpressure and closes only after the final frame is written, so slow readers do not receive truncated JSON or lose the command's exit status. The native reader scans incoming bytes incrementally rather than rescanning a growing frame, keeping large kernel output practical in shell pipelines.
 
 ## Streamed kernel preflight and speculation
 

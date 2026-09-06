@@ -150,11 +150,12 @@ function wordWrapLine(line: string, maxWidth: number, knownLineWidth?: number): 
 	let chunkEnd = 0;
 	let currentWidth = 0;
 	let atLineStart = true;
+	const indentationEnd = tokens[0]?.isWhitespace ? tokens[0].endIndex : 0;
 
 	for (const token of tokens) {
 		const tokenWidth = visibleWidth(line.slice(token.startIndex, token.endIndex));
 
-		if (atLineStart && token.isWhitespace) {
+		if (atLineStart && token.isWhitespace && chunks.length > 0) {
 			const prev = chunks[chunks.length - 1];
 			if (prev) prev.endIndex = token.endIndex;
 			chunkStart = token.endIndex;
@@ -232,7 +233,8 @@ function wordWrapLine(line: string, maxWidth: number, knownLineWidth?: number): 
 				}
 			}
 
-			const trimmedChunk = line.slice(chunkStart, chunkEnd).trimEnd();
+			const chunkText = line.slice(chunkStart, chunkEnd);
+			const trimmedChunk = chunkEnd <= indentationEnd ? chunkText : chunkText.trimEnd();
 			if (trimmedChunk || chunks.length === 0) {
 				pushChunk(trimmedChunk, chunkStart, chunkEnd);
 			} else {

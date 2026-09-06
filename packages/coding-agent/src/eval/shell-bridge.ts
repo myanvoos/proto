@@ -1,5 +1,5 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Socket, TCPSocketListener } from "bun";
 import { resolveFleetRoot } from "../internal-urls";
 import type { ToolSession } from "../tools";
@@ -12,6 +12,7 @@ import jsBackend from "./js";
 import pythonBackend from "./py";
 import { defaultEvalSessionId } from "./session-id";
 import { findLiteralCompletionCalls } from "./speculation";
+import { upsertStatusEvent } from "./status-events";
 import type { EvalStatusEvent } from "./types";
 
 export interface KernelShellBridgeOptions {
@@ -41,6 +42,10 @@ interface SocketState {
 	buffer: Buffer;
 	started: boolean;
 	abort?: AbortController;
+	output: Buffer[];
+	outputOffset: number;
+	ending: boolean;
+	closed: boolean;
 }
 
 interface CellRequest {
@@ -106,18 +111,22 @@ function ensureListener(): TCPSocketListener<SocketState> {
 		port: 0,
 		socket: {
 			open(socket) {
-				socket.data = { buffer: Buffer.alloc(0), started: false };
+				socket.data = {
+					buffer: Buffer.alloc(0),
+					started: false,
+					output: [],
+					outputOffset: 0,
+					ending: false,
+					closed: false,
+				};
 			},
 			data(socket, data) {
 				socket.data.buffer = Buffer.concat([socket.data.buffer, data]);
 				pump(socket);
 			},
-			close(socket) {
-				socket.data.abort?.abort();
-			},
-			error(socket) {
-				socket.data.abort?.abort();
-			},
+			drain: flushOutput,
+			close: closeConnection,
+			error: closeConnection,
 		},
 	});
 	return listener;
@@ -148,16 +157,46 @@ function parseLine(line: string): Record<string, unknown> | undefined {
 }
 
 function send(socket: Socket<SocketState>, frame: Record<string, unknown>): void {
-	try {
-		socket.write(`${JSON.stringify(frame)}\n`);
-	} catch {}
+	if (socket.data.closed || socket.data.ending) return;
+	socket.data.output.push(Buffer.from(`${JSON.stringify(frame)}\n`));
+	flushOutput(socket);
 }
 
 function finish(socket: Socket<SocketState>, frame: Record<string, unknown>): void {
 	send(socket, frame);
+	socket.data.ending = true;
+	flushOutput(socket);
+}
+
+function closeConnection(socket: Socket<SocketState>): void {
+	if (socket.data.closed) return;
+	socket.data.closed = true;
+	socket.data.output.length = 0;
+	socket.data.buffer = Buffer.alloc(0);
+	socket.data.abort?.abort();
+	socket.terminate();
+}
+
+function flushOutput(socket: Socket<SocketState>): void {
+	const state = socket.data;
+	if (state.closed) return;
 	try {
-		socket.end();
-	} catch {}
+		while (state.output.length > 0) {
+			const chunk = state.output[0]!;
+			const written = socket.write(chunk, state.outputOffset, chunk.length - state.outputOffset);
+			if (written < 0) {
+				closeConnection(socket);
+				return;
+			}
+			state.outputOffset += written;
+			if (state.outputOffset < chunk.length) return;
+			state.output.shift();
+			state.outputOffset = 0;
+		}
+		if (state.ending) socket.end();
+	} catch {
+		closeConnection(socket);
+	}
 }
 
 function parseRequest(line: string): CellRequest | undefined {
@@ -179,31 +218,8 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 		finish(socket, { t: "f" });
 		return;
 	}
-	const backend = request.lang === "js" ? jsBackend : pythonBackend;
-	const backends = resolveEvalBackends(context.session);
-	const enabled = request.lang === "js" ? backends.js : backends.python;
-	if (!enabled || !(await backend.isAvailable(context.session).catch(() => false))) {
-		finish(socket, { t: "f" });
-		return;
-	}
-
 	const session = context.session;
 	const abort = new AbortController();
-	const candidateFingerprints =
-		context.completionContext?.toolCallId && context.completionContext.generation !== undefined
-			? findLiteralCompletionCalls(request.lang === "js" ? "js" : "python", request.code).map(
-					call => call.fingerprint,
-				)
-			: [];
-	const completionContext: EvalCompletionInvocationContext | undefined =
-		context.completionContext?.toolCallId && context.completionContext.generation !== undefined
-			? {
-					toolCallId: context.completionContext.toolCallId,
-					generation: context.completionContext.generation,
-					language: request.lang === "js" ? "js" : "python",
-					candidateFingerprints,
-				}
-			: undefined;
 	socket.data.abort = abort;
 	context.active.add(abort);
 	// Status events (write/delete hunks, env, agent, …) are surfaced structurally
@@ -212,6 +228,31 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 	// model-facing text is stdout only and whose hunks are a TUI affordance.
 	const cellStatusEvents: EvalStatusEvent[] = [];
 	try {
+		const backend = request.lang === "js" ? jsBackend : pythonBackend;
+		const backends = resolveEvalBackends(session);
+		const enabled = request.lang === "js" ? backends.js : backends.python;
+		const available =
+			enabled && (await untilAborted(abort.signal, () => backend.isAvailable(session).catch(() => false)));
+		abort.signal.throwIfAborted();
+		if (!available) {
+			finish(socket, { t: "f" });
+			return;
+		}
+		const candidateFingerprints =
+			context.completionContext?.toolCallId && context.completionContext.generation !== undefined
+				? findLiteralCompletionCalls(request.lang === "js" ? "js" : "python", request.code).map(
+						call => call.fingerprint,
+					)
+				: [];
+		const completionContext: EvalCompletionInvocationContext | undefined =
+			context.completionContext?.toolCallId && context.completionContext.generation !== undefined
+				? {
+						toolCallId: context.completionContext.toolCallId,
+						generation: context.completionContext.generation,
+						language: request.lang === "js" ? "js" : "python",
+						candidateFingerprints,
+					}
+				: undefined;
 		const result = await backend.execute(request.code, {
 			cwd: session.cwd,
 			runCwd: request.cwd,
@@ -225,8 +266,8 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 			onChunk: chunk => send(socket, { t: "o", d: chunk }),
 			onStatus: event => {
 				if (isEvalTimeoutControlEvent(event)) return;
-				cellStatusEvents.push(event);
-				context.statusEvents.push(event);
+				upsertStatusEvent(cellStatusEvents, event);
+				upsertStatusEvent(context.statusEvents, event);
 				context.onStatusEvent?.(event);
 			},
 		});
@@ -242,6 +283,10 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, cellStatusEvents);
 		finish(socket, { t: "x", c: result.cancelled ? 130 : (result.exitCode ?? 0) });
 	} catch (err) {
+		if (abort.signal.aborted) {
+			finish(socket, { t: "x", c: 130 });
+			return;
+		}
 		logger.warn("kernel shell bridge cell failed", { error: err instanceof Error ? err.message : String(err) });
 		send(socket, { t: "e", d: `${err instanceof Error ? err.message : String(err)}\n` });
 		finish(socket, { t: "x", c: 1 });

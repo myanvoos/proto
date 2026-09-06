@@ -6,7 +6,7 @@ Work incrementally: imports → define → test → use, each its own cell; re-r
 
 {{#if py}}Top-level `await` works; `asyncio.run(…)` errors.
 
-File edits execute inside the cell: `#@patch`/`apply_patch` for context hunks; plain `open`/`Path`/`os.*` for other mutations. Quote-hostile payloads SHOULD use `#@embed`/`#@patch`; manual replacements MUST assert anchors and occurrence counts. The environment tracks and diffs every mutation, and a stale-write guard aborts any write (before truncation) to a file that changed on disk since your last read — that is `StaleWriteError`; re-read the file and redo the change. Every read — in-kernel, the `read` tool, or shell builtins (`cat`, `rg`, `sed`, …) — arms the guard; only reads by external programs run from the shell don't.{{/if}}
+File edits execute inside the cell through plain `open`/`Path`/`os.*`. Native Python strings are the default; quote-hostile payloads SHOULD use `NAME = <<DELIMITER` heredoc assignments. Localized replacements MUST read first and assert anchor occurrence counts before writing. The environment tracks and diffs every mutation, and a stale-write guard aborts any write (before truncation) to a file that changed on disk since your last read — that is `StaleWriteError`; re-read the file and redo the change. Every read — in-kernel, the `read` tool, or shell builtins (`cat`, `rg`, `sed`, …) — arms the guard; only reads by external programs run from the shell don't.{{/if}}
 {{#if js}}JS runs under **Bun**: globals (`Bun.file`, `Bun.write`, `Bun.$`, `fetch`, `Buffer`) available; top-level `await`/`return` work.{{/if}}
 
 <prelude>

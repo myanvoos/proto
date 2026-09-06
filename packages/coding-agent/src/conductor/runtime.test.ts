@@ -7,7 +7,7 @@ import { loadAdvisorTranscriptCosts } from "../advisor/transcript-recorder";
 import { GoalRuntime, type GoalRuntimeHost } from "../goals/runtime";
 import type { Goal } from "../goals/state";
 import type { BashCommandPolicy } from "../tools/bash-allowlist";
-import { type ConductorActivity, type ConductorHost, SessionConductor } from "./runtime";
+import { type ConductorActivity, type ConductorHost, SessionConductor, type SessionConductorOptions } from "./runtime";
 import { loadConductorTranscriptCost } from "./transcript";
 
 registerMockApi("coding-agent/conductor-test");
@@ -41,12 +41,14 @@ function makeGoal(id: string, updatedAt: number, status: Goal["status"] = "verif
 
 interface Harness {
 	conductor: SessionConductor;
+	host: ConductorHost;
 	model: MockModel;
 	script: { current: () => MockResponse | Promise<MockResponse> };
 	goalState: { goal: Goal | undefined };
 	notices: Array<{ level: string; message: string }>;
 	activities: ConductorActivity[];
 	sentMessages: unknown[];
+	deliveries: Array<{ deliverAs?: string; triggerTurn?: boolean } | undefined>;
 	goalEvents: Array<Goal | null>;
 	goalRuntime: GoalRuntime;
 	sessionFile: string;
@@ -55,13 +57,17 @@ interface Harness {
 	cleanup(): Promise<void>;
 }
 
-async function createHarness(settingOverrides: Record<string, unknown> = {}): Promise<Harness> {
+async function createHarness(
+	settingOverrides: Record<string, unknown> = {},
+	options: Partial<SessionConductorOptions> = {},
+): Promise<Harness> {
 	const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "conductor-test-"));
 	const sessionFile = path.join(tmp, "session.jsonl");
 	const goalState: { goal: Goal | undefined } = { goal: undefined };
 	const notices: Array<{ level: string; message: string }> = [];
 	const activities: ConductorActivity[] = [];
 	const sentMessages: unknown[] = [];
+	const deliveries: Array<{ deliverAs?: string; triggerTurn?: boolean } | undefined> = [];
 	const goalEvents: Array<Goal | null> = [];
 	const allowlistHistory: Array<BashCommandPolicy | undefined> = [];
 
@@ -74,6 +80,7 @@ async function createHarness(settingOverrides: Record<string, unknown> = {}): Pr
 
 	let conductor: SessionConductor | undefined;
 	const goalHost: GoalRuntimeHost = {
+		completionAuthority: goal => conductor?.completionAuthority(goal) ?? "commit",
 		getState: () =>
 			goalState.goal
 				? {
@@ -150,8 +157,9 @@ async function createHarness(settingOverrides: Record<string, unknown> = {}): Pr
 		emitNotice: (level: string, message: string) => {
 			notices.push({ level, message });
 		},
-		sendCustomMessage: async (message: unknown) => {
+		sendCustomMessage: async (message: unknown, options?: { deliverAs?: string; triggerTurn?: boolean }) => {
 			sentMessages.push(message);
+			deliveries.push(options);
 			return true;
 		},
 		effectiveServiceTier: () => undefined,
@@ -166,23 +174,28 @@ async function createHarness(settingOverrides: Record<string, unknown> = {}): Pr
 	conductor = new SessionConductor(host, {
 		enabled: true,
 		setBashCommandPolicy: policy => allowlistHistory.push(policy),
+		...options,
 	});
 
 	return {
 		conductor,
+		host,
 		model,
 		script,
 		goalState,
 		notices,
 		activities,
 		sentMessages,
+		deliveries,
 		goalEvents,
 		goalRuntime,
 		sessionFile,
 		allowlistHistory,
 		agentState,
 		cleanup: async () => {
-			conductor?.stopRuntime();
+			conductor?.setEnabled(false);
+			await conductor?.drainAndDetachRecorders();
+			await conductor?.recorderClosed();
 			await fs.rm(tmp, { recursive: true, force: true });
 		},
 	};
@@ -228,6 +241,13 @@ function cueAccept() {
 				arguments: { op: "verify", verdict: "accept", evidence: "tests pass; artifacts present" },
 			},
 		],
+		usage: { input: 10, output: 5, cost: { total: 0.01 } },
+	};
+}
+
+function cueReject(evidence: string) {
+	return {
+		content: [{ type: "toolCall" as const, name: "cue", arguments: { op: "verify", verdict: "reject", evidence } }],
 		usage: { input: 10, output: 5, cost: { total: 0.01 } },
 	};
 }
@@ -303,6 +323,96 @@ describe("SessionConductor gate", () => {
 			expect(calls).toBe(4);
 			expect(h.goalState.goal?.id).toBe("g1");
 			expect(h.goalState.goal?.status).toBe("complete");
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("a reject verdict reactivates the goal and delivers the discrepancies as a turn-boundary follow-up", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return cueReject("- src/greet.ts is missing\n- `bun test` fails: 1 test failed");
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => h.sentMessages.length === 1, "rejection delivered");
+
+			expect(h.goalState.goal?.status).toBe("active");
+			const rejection = h.sentMessages[0] as { customType: string; content: string; display: boolean };
+			expect(rejection.customType).toBe("conductor-verification");
+			expect(rejection.content).toContain('verdict="reject"');
+			expect(rejection.content).toContain("src/greet.ts is missing");
+			expect(rejection.display).toBe(false);
+			expect(h.deliveries[0]).toEqual({ deliverAs: "followUp", triggerTurn: true });
+			expect(h.conductor.getStats().rejections).toBe(1);
+			expect(h.conductor.getStats().pendingGoalId).toBeUndefined();
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("the rejection that would reach conductor.maxRejections escalates instead of re-pending", async () => {
+		const h = await createHarness({ "conductor.maxRejections": 2 });
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let rulings = 0;
+			h.script.current = () => {
+				const call = h.model.calls.length;
+				if (call % 2 === 0) {
+					rulings++;
+					return cueReject(`discrepancy ${rulings}`);
+				}
+				return { content: ["done"], usage: { input: 10, output: 5, cost: { total: 0.01 } } };
+			};
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => h.sentMessages.length === 1, "first rejection delivered");
+			expect(h.goalState.goal?.status).toBe("active");
+
+			const repended = { ...makeGoal("g1", 2000), tokensUsed: 5 };
+			h.goalState.goal = repended;
+			h.conductor.onGoalUpdated(repended);
+			await waitFor(() => h.notices.some(n => n.message.includes("Conductor escalation")), "forced escalation");
+
+			expect(h.sentMessages).toHaveLength(1);
+			expect(h.goalState.goal?.status).toBe("verifying");
+			expect(h.notices.at(-1)?.message).toContain("2 consecutive verification rejections");
+			expect(h.notices.at(-1)?.message).toContain("discrepancy 2");
+			expect(h.conductor.getStats().escalated).toBe(true);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("pausing the pended goal cancels the in-flight audit instead of letting it run to a stale ruling", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return { ...cueAccept(), delayMs: 30_000 };
+				return calls === 2 ? cueAccept() : { content: ["done"] };
+			};
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => calls === 1, "audit streaming");
+
+			await h.goalRuntime.pauseGoal();
+			await waitFor(() => h.activities.at(-1)?.status !== "running", "audit settled");
+			expect(h.activities.at(-1)?.status).toBe("aborted");
+			expect(h.goalState.goal?.status).toBe("paused");
+			expect(h.conductor.getStats().pendingGoalId).toBeUndefined();
+			expect(h.notices).toHaveLength(0);
+			expect(calls).toBe(1);
+
+			await h.goalRuntime.resumeGoal();
+			const pendingClaim = await h.goalRuntime.completeGoalFromTool();
+			expect(pendingClaim.status).toBe("verifying");
+			await waitFor(() => h.goalState.goal?.status === "complete", "fresh claim audited after resume");
+			expect(h.goalEvents.slice(-2).map(goal => goal?.status)).toEqual(["verifying", "complete"]);
 		} finally {
 			await h.cleanup();
 		}
@@ -586,6 +696,32 @@ describe("SessionConductor streaming display", () => {
 });
 
 describe("SessionConductor bash allowlist", () => {
+	test("a later verification authorizes only its current contract commands", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				return calls % 2 === 1 ? cueAccept() : { content: ["done"] };
+			};
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => h.goalState.goal?.status === "complete", "first contract verified");
+
+			const next = makeGoal("g2", 2000);
+			next.objective = next.objective.replaceAll("bun test", "bun test tests/new.test.ts");
+			h.goalState.goal = next;
+			h.conductor.onGoalUpdated(next);
+			await waitFor(() => h.goalState.goal?.status === "complete", "second contract verified");
+
+			const policy = h.allowlistHistory.at(-1);
+			expect(policy?.("bun test tests/new.test.ts").allowed).toBe(true);
+			expect(policy?.("bun test").allowed).toBe(false);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
 	test("commissioning arms the exploratory allowlist and teardown disarms it", async () => {
 		const h = await createHarness();
 		try {
@@ -705,6 +841,92 @@ describe("SessionConductor no-call retries", () => {
 });
 
 describe("SessionConductor transition suspension", () => {
+	test("an immediate off/on waits for the old audit before starting the replacement", async () => {
+		const h = await createHarness();
+		try {
+			h.goalState.goal = makeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return { ...cueAccept(), delayMs: 30_000 };
+				return calls === 2 ? cueAccept() : { content: ["done"] };
+			};
+			h.conductor.onGoalUpdated(h.goalState.goal);
+			await waitFor(() => calls === 1, "first audit streaming");
+			h.conductor.setEnabled(false);
+			h.conductor.setEnabled(true);
+
+			await waitFor(() => h.goalState.goal?.status === "complete", "replacement audit accepted");
+			expect(calls).toBe(3);
+			expect(
+				h.activities.filter(activity => activity.status !== "running").map(activity => activity.status),
+			).toEqual(["aborted", "completed"]);
+			expect(h.notices.filter(notice => notice.message.includes("Conductor verified"))).toHaveLength(1);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("disabling during deferred tool construction cannot resurrect a commissioning turn", async () => {
+		const toolsRequested = Promise.withResolvers<void>();
+		const toolsReady = Promise.withResolvers<[]>();
+		const h = await createHarness(
+			{},
+			{
+				toolsFactory: () => {
+					toolsRequested.resolve();
+					return toolsReady.promise;
+				},
+			},
+		);
+		try {
+			let calls = 0;
+			h.script.current = () => (++calls === 1 ? programPropose() : { content: ["done"] });
+			const commissioning = h.conductor.commission("add a greeting endpoint");
+			await toolsRequested.promise;
+			h.conductor.setEnabled(false);
+			toolsReady.resolve([]);
+
+			expect((await commissioning).status).toBe("unavailable");
+			expect(h.model.calls).toHaveLength(0);
+			expect(h.conductor.isActive()).toBe(false);
+			expect(h.conductor.getStats().status).toBe("off");
+		} finally {
+			toolsReady.resolve([]);
+			await h.cleanup();
+		}
+	});
+
+	test("a suspended deferred build cannot start inside the session rewrite", async () => {
+		const toolsRequested = Promise.withResolvers<void>();
+		const toolsReady = Promise.withResolvers<[]>();
+		const h = await createHarness(
+			{},
+			{
+				toolsFactory: () => {
+					toolsRequested.resolve();
+					return toolsReady.promise;
+				},
+			},
+		);
+		try {
+			let calls = 0;
+			h.script.current = () => (++calls === 1 ? programPropose() : { content: ["done"] });
+			const commissioning = h.conductor.commission("add a greeting endpoint");
+			await toolsRequested.promise;
+			await h.conductor.suspendForTransition();
+			toolsReady.resolve([]);
+
+			expect((await commissioning).status).toBe("unavailable");
+			expect(h.model.calls).toHaveLength(0);
+			h.conductor.resumeFromTransition();
+			expect((await h.conductor.commission("add a greeting endpoint")).status).toBe("proposed");
+		} finally {
+			toolsReady.resolve([]);
+			await h.cleanup();
+		}
+	});
+
 	test("suspendForTransition aborts an in-flight audit, blocks restarts, and re-arms on release", async () => {
 		const h = await createHarness();
 		try {
@@ -835,6 +1057,171 @@ function assistantTurn(text: string): unknown {
 }
 
 describe("SessionConductor epochs", () => {
+	test("a transition abort does not invoke the pause fallback or consume a dropped epoch", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1, "conductor.fallback": "pause" });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return { ...cueNext(), delayMs: 30_000 };
+				return calls === 2 ? cueNext("Resume after the transition.") : { content: ["done"] };
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => calls === 1, "epoch request streaming");
+			await h.conductor.suspendForTransition();
+			await waitFor(() => h.activities.at(-1)?.status === "aborted", "epoch abort drained");
+
+			expect(h.goalState.goal?.status).toBe("active");
+			expect(h.conductor.getStats().droppedEpochs).toBe(0);
+			expect(h.notices.some(notice => notice.message.includes("stretch was paused"))).toBe(false);
+			h.conductor.resumeFromTransition();
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.sentMessages.length === 1, "fresh epoch after transition");
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("a transcript prune during an epoch review does not cancel the review", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return { ...cueNext("Finish milestone 2."), delayMs: 40 };
+				return { content: ["done"] };
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => calls === 1, "epoch request streaming");
+			h.conductor.resetAllRuntimes("prune-tool-outputs");
+			await waitFor(() => h.activities.at(-1)?.status !== "running", "epoch settled");
+
+			expect(h.activities.at(-1)?.status).toBe("completed");
+			expect(h.sentMessages).toHaveLength(1);
+			expect(h.conductor.getStats().epochCount).toBe(1);
+			expect(h.conductor.getStats().droppedEpochs).toBe(0);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("an epoch compact ruling survives its own transport suspension and resets the digest cursor", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			h.agentState.messages.push(assistantTurn("Old milestone"), assistantTurn("Old verification"));
+			let compactions = 0;
+			h.host.requestCompaction = async () => {
+				compactions++;
+				await h.conductor.suspendForTransition();
+				h.agentState.messages.splice(
+					0,
+					h.agentState.messages.length,
+					assistantTurn("Compacted summary: preserve the database migration requirement."),
+					assistantTurn("Retained migration details"),
+					assistantTurn("New activity after compaction"),
+				);
+				h.conductor.resetAllRuntimes("manual-compaction");
+				h.conductor.resumeFromTransition();
+			};
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return cueNext("Finish the migration.", { context: "compact" });
+				return calls === 3 ? cueNext() : { content: ["done"] };
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.sentMessages.length === 1, "authored prompt after compaction");
+			expect(compactions).toBe(1);
+			expect(h.conductor.getJournal()[0]?.context).toBe("compact");
+
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.conductor.getStats().epochCount === 2, "post-compaction epoch");
+			const request = h.model.calls[2]?.context.messages.findLast(message => message.role === "user");
+			expect(JSON.stringify(request?.content)).toContain("preserve the database migration requirement");
+			expect(JSON.stringify(request?.content)).not.toContain("Old milestone");
+			expect(h.model.calls[2]?.context.messages.filter(message => message.role === "user")).toHaveLength(2);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("a goal paused during conductor compaction does not receive the completed ruling", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			h.host.requestCompaction = async () => {
+				await h.conductor.suspendForTransition();
+				await h.goalRuntime.pauseGoal();
+				h.conductor.resetAllRuntimes("manual-compaction");
+				h.conductor.resumeFromTransition();
+			};
+			let calls = 0;
+			h.script.current = () =>
+				++calls === 1 ? cueNext("Do not resume the paused goal.", { context: "compact" }) : { content: ["done"] };
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.activities.at(-1)?.status === "aborted", "invalidated compact ruling settled");
+			expect(h.goalState.goal?.status).toBe("paused");
+			expect(h.sentMessages).toHaveLength(0);
+			expect(h.conductor.getJournal()).toHaveLength(0);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("ordinary budget accounting does not invalidate an in-flight epoch", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			const goal = activeGoal("g1", 1000, { tokenBudget: 100 });
+			h.goalState.goal = goal;
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return cueNext("Continue the same objective.");
+				h.goalState.goal = { ...goal, tokensUsed: 60, updatedAt: 2000 };
+				h.conductor.onGoalUpdated(h.goalState.goal);
+				return { content: ["done"] };
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.sentMessages.length === 1, "epoch survives accounting update");
+			expect(h.goalState.goal?.tokensUsed).toBe(60);
+			expect(h.conductor.getStats().epochCount).toBe(1);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	test("a replaced stretch never receives the old epoch's prompt or compaction", async () => {
+		const h = await createHarness({ "conductor.minEpochTurns": 1 });
+		try {
+			h.goalState.goal = activeGoal("g1", 1000);
+			let compactions = 0;
+			h.host.requestCompaction = async () => {
+				compactions++;
+			};
+			let calls = 0;
+			h.script.current = () => {
+				calls++;
+				if (calls === 1) return cueNext("Continue the old objective.", { context: "compact" });
+				h.goalState.goal = activeGoal("g2", 2000);
+				h.conductor.onGoalUpdated(h.goalState.goal);
+				return { content: ["done"] };
+			};
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.activities.at(-1)?.status !== "running" && calls >= 2, "stale epoch settled");
+
+			expect(h.sentMessages).toHaveLength(0);
+			expect(compactions).toBe(0);
+			expect(h.conductor.getJournal()).toHaveLength(0);
+			expect(h.conductor.getStats().epochCount).toBe(0);
+			expect(h.conductor.getStats().droppedEpochs).toBe(0);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
 	test("wakes after minEpochTurns settled turns and delivers the authored iteration prompt", async () => {
 		const h = await createHarness({ "conductor.minEpochTurns": 2 });
 		try {
@@ -862,6 +1249,7 @@ describe("SessionConductor epochs", () => {
 			expect(epochMessage.customType).toBe("conductor-epoch");
 			expect(epochMessage.content).toContain("Focus on milestone 2");
 			expect(epochMessage.display).toBe(false);
+			expect(h.deliveries[0]).toEqual({ deliverAs: "followUp", triggerTurn: true });
 			expect(h.conductor.getStats().epochCount).toBe(1);
 			// The decision journal reaches /conduct status.
 			expect(h.conductor.formatStatus()).toContain("Epochs: 1 ruled");
@@ -1004,6 +1392,15 @@ describe("SessionConductor epochs", () => {
 			expect(calls).toBe(callsAtHalt);
 			// The verification gate is unaffected by the epoch halt.
 			expect(h.conductor.isHealthy()).toBe(true);
+
+			// The advertised retry hatch must restart epoch steering, not only the verification gate.
+			h.conductor.setEnabled(true);
+			h.script.current = () =>
+				++calls === callsAtHalt + 1 ? cueNext("Resume the stretch.") : { content: ["done"] };
+			h.conductor.onPrimaryTurnEnd(false);
+			await waitFor(() => h.sentMessages.length === 1, "epoch steering resumed by /conduct on");
+			expect(h.conductor.getStats().epochsHalted).toBe(false);
+			expect(h.conductor.getStats().droppedEpochs).toBe(0);
 		} finally {
 			await h.cleanup();
 		}

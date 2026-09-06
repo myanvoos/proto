@@ -50,7 +50,7 @@ pub(crate) fn run_kernel_lang(spec: &KernelLang, argv: &[OsString], host: &mut H
 			CellOutcome::Exit(code) => code,
 			CellOutcome::FallThrough => spawn_external(spec, host, argv, stdin_body),
 		},
-		Plan::External => spawn_external(spec, host, argv, None),
+		Plan::External { stdin_body } => spawn_external(spec, host, argv, stdin_body),
 	}
 }
 
@@ -59,14 +59,16 @@ enum Plan {
 		code:       String,
 		stdin_body: Option<Vec<u8>>,
 	},
-	External,
+	External {
+		stdin_body: Option<Vec<u8>>,
+	},
 }
 
 fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
 	let mut index = 0;
 	while index < argv.len() {
 		let Some(arg) = argv[index].to_str() else {
-			return Plan::External;
+			return Plan::External { stdin_body: None };
 		};
 		if spec.passthrough.contains(&arg) {
 			index += 1;
@@ -75,51 +77,51 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
 		if arg == spec.code_flag {
 			let code = argv.get(index + 1).and_then(|value| value.to_str());
 			let Some(code) = code else {
-				return Plan::External;
+				return Plan::External { stdin_body: None };
 			};
 			if index + 2 < argv.len() {
-				return Plan::External;
+				return Plan::External { stdin_body: None };
 			}
 			return Plan::Cell { code: code.to_string(), stdin_body: None };
 		}
 		if arg == "-" {
 			if index + 1 < argv.len() {
-				return Plan::External;
+				return Plan::External { stdin_body: None };
 			}
 		} else if arg.starts_with('-') {
-			return Plan::External;
+			return Plan::External { stdin_body: None };
 		} else {
 			return plan_positional(spec, argv, index, host);
 		}
 		index += 1;
 	}
 	if host.stdin.file().is_terminal() {
-		return Plan::External;
+		return Plan::External { stdin_body: None };
 	}
 	let mut body = Vec::new();
 	if host.stdin.read_to_end(&mut body).is_err() {
-		return Plan::External;
+		return Plan::External { stdin_body: Some(body) };
 	}
 	match str::from_utf8(&body) {
 		Ok(code) => Plan::Cell { code: code.to_string(), stdin_body: Some(body) },
-		Err(_) => Plan::External,
+		Err(_) => Plan::External { stdin_body: Some(body) },
 	}
 }
 
 fn plan_positional(spec: &KernelLang, argv: &[OsString], index: usize, host: &mut Host) -> Plan {
 	let Some(script) = argv[index].to_str() else {
-		return Plan::External;
+		return Plan::External { stdin_body: None };
 	};
 	let candidate = host.resolve(script);
 	if !is_fleet_script(spec, host, &candidate) {
-		return Plan::External;
+		return Plan::External { stdin_body: None };
 	}
 	let mut code = String::new();
 	let read = host
 		.open_read(&candidate)
 		.and_then(|mut file| file.read_to_string(&mut code));
 	if read.is_err() {
-		return Plan::External;
+		return Plan::External { stdin_body: None };
 	}
 	if index + 1 < argv.len() {
 		host.error("extra argv after a fleet script is ignored (kernel cells have no argv)", 0);
@@ -205,10 +207,13 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str) -> CellOutcom
 				};
 			},
 			Ok(read) => {
+				let mut scan_start = buffer.len();
 				buffer.extend_from_slice(&chunk[..read]);
-				while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
-					let line: Vec<u8> = buffer.drain(..=newline).collect();
-					match handle_frame(host, &line, &mut streamed) {
+				// Previously buffered bytes contain no delimiter. Scan only new bytes,
+				// rather than rescanning a large output frame after every socket read.
+				while let Some(offset) = memchr::memchr(b'\n', &buffer[scan_start..]) {
+					let newline = scan_start + offset;
+					match handle_frame(host, &buffer[..=newline], &mut streamed) {
 						FrameOutcome::Continue => {},
 						FrameOutcome::Exit(code) => return CellOutcome::Exit(code),
 						FrameOutcome::FallThrough => {
@@ -219,6 +224,8 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str) -> CellOutcom
 							};
 						},
 					}
+					drop(buffer.drain(..=newline));
+					scan_start = 0;
 				}
 			},
 			Err(err)
@@ -351,9 +358,6 @@ fn interpreter_candidates<'a>(spec: &'a KernelLang, program: &'a str) -> impl It
 
 fn resolve_on_path(host: &Host, program: &str) -> Option<PathBuf> {
 	for dir in std::env::split_paths(host.var("PATH").unwrap_or_default()) {
-		if dir.as_os_str().is_empty() {
-			continue;
-		}
 		let base = if dir.is_absolute() { dir } else { host.cwd().join(dir) };
 		let candidate = base.join(program);
 		if is_executable_file(&candidate) {

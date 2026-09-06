@@ -2,11 +2,13 @@ import { afterAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import type { EvalStatusEvent } from "../eval/types";
 import { initTheme, theme } from "../modes/theme/theme";
 import type { ToolSession } from ".";
-import { BashTool } from "./bash";
+import { BashTool, type BashToolDetails } from "./bash";
 import { EvalTool } from "./eval";
 import { toolRenderers } from "./renderers";
 
@@ -54,17 +56,17 @@ afterAll(async () => {
 });
 
 // The live/pending phase (renderCall) has no eval result to compare against, so
-// assert the eval-style running cell directly (header meta + AST outline).
-test("kernel-cell bash renderCall shows the eval-style running cell with AST outline", () => {
+// assert the eval-style running cell directly (header meta + source preview).
+test("kernel-cell bash renderCall shows the eval-style running cell with source preview", () => {
 	const py = renderBashCall("python <<'EOF'\ndef greet(name):\n    return name\n\nclass Widget:\n    pass\nEOF");
-	expect(py).toContain("· ast");
-	expect(py).toContain("Module");
-	expect(py).toContain("greet(name)");
+	expect(py).not.toContain("· ast");
+	expect(py).not.toContain("Module");
+	expect(py).toContain("def greet(name):");
 	expect(py).toContain("Widget");
 	expect(renderBashCall("node <<'JS'\nfunction f(){ return 1 }\nJS")).toContain("f");
 	const bun = renderBashCall("bun <<'JS'\nfunction greet(name) { return name; }\nJS");
-	expect(bun).toContain("· ast");
-	expect(bun).toContain("greet(name)");
+	expect(bun).not.toContain("· ast");
+	expect(bun).toContain("function greet(name) { return name; }");
 	expect(renderBashCall('python -c \'edit("a","b","c")\'')).toContain("edit");
 });
 
@@ -153,6 +155,80 @@ test("running kernel cell streams status events live (hunks withheld until settl
 	}
 }, 60000);
 
+test("bash kernel coalesces repeated agent progress in live and completed rendering", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-progress-"));
+	const code = `
+const emit = globalThis["__proto_" + "emit_status__"];
+const alpha = ["stable", "alpha"].join("-");
+const beta = ["stable", "beta"].join("-");
+const mutationPath = ["shared", "mutation.txt"].join("-");
+emit("agent", { id: alpha, status: "pending", taskPreview: ["stale", "preview"].join(" ") });
+emit("write", { path: mutationPath, bytes: 1 });
+emit("agent", { id: beta, status: "running", lastIntent: ["beta", "activity"].join(" ") });
+emit("agent", { id: alpha, status: "running", currentTool: "read", lastIntent: ["latest", "activity"].join(" ") });
+emit("write", { path: mutationPath, bytes: 2 });
+emit("agent", { id: beta, status: "completed", durationMs: 25 });
+`;
+	const command = `bun <<'JSEOF'\n${code}\nJSEOF`;
+	const updates: AgentToolResult<BashToolDetails>[] = [];
+	try {
+		const result = await new BashTool(stub(dir)).execute("agent-progress", { command }, undefined, update =>
+			updates.push(update),
+		);
+		const live = updates.filter(update => (update.details?.statusEvents?.length ?? 0) > 0).at(-1);
+		expect(live, "agent events reach the live bash update").toBeDefined();
+
+		const completedEvents: EvalStatusEvent[] = result.details?.statusEvents ?? [];
+		for (const events of [live?.details?.statusEvents ?? [], completedEvents]) {
+			expect(events.filter(event => event.op === "agent" && event.id === "stable-alpha")).toEqual([
+				expect.objectContaining({ status: "running", currentTool: "read", lastIntent: "latest activity" }),
+			]);
+			expect(events.filter(event => event.op === "agent" && event.id === "stable-beta")).toEqual([
+				expect.objectContaining({ status: "completed" }),
+			]);
+			expect(events.filter(event => event.op === "write").map(event => event.path)).toEqual([
+				"shared-mutation.txt",
+				"shared-mutation.txt",
+			]);
+		}
+
+		let liveRender: string;
+		const originalRows = process.stdout.rows;
+		process.stdout.rows = 60;
+		try {
+			liveRender = strip(
+				bashRenderer
+					.renderResult(live, { expanded: false, isPartial: true }, theme, { command })
+					.render(100)
+					.join("\n"),
+			);
+		} finally {
+			if (originalRows === undefined) delete (process.stdout as { rows?: number }).rows;
+			else process.stdout.rows = originalRows;
+		}
+		const completedRender = renderBashResult(result, command);
+		for (const rendered of [liveRender, completedRender]) {
+			const rows = rendered.split("\n");
+			expect(
+				rows.filter(row => row.includes("stable-alpha")),
+				rendered,
+			).toHaveLength(1);
+			expect(
+				rows.filter(row => row.includes("stable-beta")),
+				rendered,
+			).toHaveLength(1);
+			expect(rendered).toContain("latest activity");
+			expect(rendered).not.toContain("stale preview");
+			expect(
+				rows.filter(row => row.includes("shared-mutation.txt")),
+				rendered,
+			).toHaveLength(2);
+		}
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
 test("bun-in-bash renderResult uses the shared JavaScript AST renderer", async () => {
 	await assertJavaScriptParity("code+console", 'function greet(name) { return name; }\nconsole.log(greet("x"))');
 }, 120000);
@@ -165,3 +241,22 @@ test("python-in-bash renderResult is identical to the eval/kernel tool", async (
 	);
 	await assertParity("traceback", "x = 1 / 0");
 }, 120000);
+
+test("bash kernel live and rebuilt partial results preserve heredoc payload source", () => {
+	const code =
+		'CONTENT = <<END_CONTENT\nnew prose: keep(x,y)\n  indented **payload**\nEND_CONTENT\nPath("notes.md").write_text(CONTENT)';
+	const command = `python <<'EOF'\n${code}\nEOF`;
+	const call = renderBashCall(command);
+	const partial = strip(
+		bashRenderer
+			.renderResult({ content: [{ type: "text", text: "" }] }, { expanded: true, isPartial: true }, theme, {
+				command,
+			})
+			.render(100)
+			.join("\n"),
+	);
+	for (const text of [call, partial]) {
+		expect(text).not.toContain("· ast");
+		for (const line of code.split("\n")) expect(text).toContain(line);
+	}
+});

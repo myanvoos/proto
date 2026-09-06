@@ -16,6 +16,7 @@ import { formatDisplayOutputsForText } from "../eval/display-text";
 import { fsObservationLedgerFor, recordMutationEvents } from "../eval/fs-observations";
 import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
+import { upsertStatusEvent } from "../eval/status-events";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
 import {
@@ -33,7 +34,6 @@ import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import type { ToolSession } from ".";
 import { type EvalBackendsAllowance, resolveEvalBackends } from "./eval-backends";
 import { generateCodeModeDeclarations } from "./eval-format/code-mode-declarations";
-import { upsertStatusEvent } from "./eval-render";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";

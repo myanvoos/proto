@@ -538,6 +538,9 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		throw err;
 	} finally {
 		await sink.dispose();
+		if (!runAbortController.signal.aborted) {
+			runAbortController.abort();
+		}
 		if (timeoutTimer) {
 			clearTimeout(timeoutTimer);
 		}

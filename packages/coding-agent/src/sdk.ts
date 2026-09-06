@@ -41,6 +41,7 @@ import {
 	postmortem,
 	prompt,
 	Snowflake,
+	untilAborted,
 } from "@oh-my-pi/pi-utils";
 import {
 	discoverAdvisorConfigs,
@@ -1205,22 +1206,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	);
 
 	const raceWithDeadline = async <T>(name: string, work: Promise<T>): Promise<T | undefined> => {
-		let timedOut = false;
-		const result = await Promise.race([
-			work,
-			Bun.sleep(STARTUP_SCAN_DEADLINE_MS).then(() => {
-				timedOut = true;
-				return undefined;
-			}),
-		]);
-		if (timedOut) {
+		const deadline = AbortSignal.timeout(STARTUP_SCAN_DEADLINE_MS);
+		try {
+			return await untilAborted(deadline, work);
+		} catch (error) {
+			if (!deadline.aborted) throw error;
 			logger.warn("Startup scan exceeded deadline; deferring to system prompt fallback", {
 				name,
 				timeoutMs: STARTUP_SCAN_DEADLINE_MS,
 				cwd,
 			});
+			return undefined;
 		}
-		return result;
 	};
 	const [initialContextFiles, resolvedWorkspaceTree, watchdogFiles, initialActiveRepoContext, discoveredAdvisors] =
 		await Promise.all([
@@ -2904,6 +2901,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 
 		let unsubscribeMcpNotifications: (() => void) | undefined;
+		let unregisterMcpDebouncePostmortem: (() => void) | undefined;
 		let unregisterMcpPostmortem: (() => void) | undefined;
 
 		{
@@ -2930,11 +2928,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					unregisterUnlessParked();
 					unsubscribeCredentialDisabled?.();
 					unsubscribeMcpNotifications?.();
+					unregisterMcpDebouncePostmortem?.();
 					unregisterMcpPostmortem?.();
 					for (const callback of disposeCallbacks) callback();
 					disposeCallbacks.clear();
 
 					unsubscribeMcpNotifications = undefined;
+					unregisterMcpDebouncePostmortem = undefined;
 					unregisterMcpPostmortem = undefined;
 				}
 			};
@@ -3057,7 +3057,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				for (const timer of notificationDebounceTimers.values()) clearTimeout(timer);
 				notificationDebounceTimers.clear();
 			};
-			postmortem.register("mcp-notification-cleanup", clearDebounceTimers);
+			unregisterMcpDebouncePostmortem = postmortem.register("mcp-notification-cleanup", clearDebounceTimers);
 			mcpManager.setOnResourcesChanged((serverName, uri) => {
 				logger.debug("MCP resources changed", { path: `mcp:${serverName}`, uri });
 				if (!settings.get("mcp.notifications")) return;

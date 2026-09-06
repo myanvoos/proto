@@ -4,6 +4,7 @@ import { extractPrintableText } from "../keys";
 import { KillRing } from "../kill-ring";
 import { type Component, CURSOR_MARKER, type Focusable } from "../tui";
 import {
+	Ellipsis,
 	getSegmenter,
 	getWordNavKind,
 	moveWordLeft,
@@ -11,6 +12,7 @@ import {
 	padding,
 	replaceTabs,
 	sliceWithWidth,
+	truncateToWidth,
 	visibleWidth,
 } from "../utils";
 
@@ -46,6 +48,8 @@ export class Input implements Component, Focusable {
 	}
 
 	setValue(value: string): void {
+		this.#undoStack.length = 0;
+		this.#lastAction = null;
 		this.#value = value;
 
 		this.#cursor = value.length;
@@ -375,7 +379,7 @@ export class Input implements Component, Focusable {
 		const availableWidth = width - visibleWidth(prompt);
 
 		if (availableWidth <= 0) {
-			return [prompt];
+			return [truncateToWidth(prompt, width, Ellipsis.Omit)];
 		}
 
 		let cursorIndex = this.#cursor;

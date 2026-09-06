@@ -70,15 +70,31 @@ async function observe(absPath: string, kind: FsObservationKind): Promise<FsObse
 
 export type FsObservationSession = Pick<ToolSession, "cwd" | "getSessionFile" | "getEvalSessionId">;
 
-const ledgers = new Map<string, FsObservationLedger>();
+interface OwnedFsObservationLedger {
+	ledger: FsObservationLedger;
+	owners: Set<string>;
+}
+
+const ledgers = new Map<string, OwnedFsObservationLedger>();
 
 export function fsObservationLedger(sessionId: string): FsObservationLedger {
-	let ledger = ledgers.get(sessionId);
-	if (!ledger) {
-		ledger = new FsObservationLedger();
-		ledgers.set(sessionId, ledger);
+	let entry = ledgers.get(sessionId);
+	if (!entry) {
+		entry = { ledger: new FsObservationLedger(), owners: new Set() };
+		ledgers.set(sessionId, entry);
 	}
-	return ledger;
+	return entry.ledger;
+}
+
+export function retainFsObservationLedger(sessionId: string, ownerId: string): void {
+	fsObservationLedger(sessionId);
+	ledgers.get(sessionId)?.owners.add(ownerId);
+}
+
+export function releaseFsObservationLedger(sessionId: string, ownerId: string): void {
+	const entry = ledgers.get(sessionId);
+	if (!entry?.owners.delete(ownerId) || entry.owners.size > 0) return;
+	ledgers.delete(sessionId);
 }
 
 export function fsObservationLedgerFor(session: FsObservationSession): FsObservationLedger {

@@ -295,6 +295,7 @@ export class SessionConductor {
 
 	/** Nesting count of active session-persistence suspensions; > 0 blocks new turns and gate arming. */
 	#transitionDepth = 0;
+	#turnLifetime = new AbortController();
 
 	#pendingGoalId: string | undefined;
 	#pendingGoalUpdatedAt: number | undefined;
@@ -303,6 +304,7 @@ export class SessionConductor {
 	#gateTimer: NodeJS.Timeout | undefined;
 	#startWhenIdle = false;
 	#verificationInFlight = false;
+	#auditedClaim: { id: string; updatedAt: number } | undefined;
 	#commissioningInFlight = false;
 	#escalated = false;
 	#ruling: ConductorRuling | undefined;
@@ -318,7 +320,8 @@ export class SessionConductor {
 	// Epoch cadence: the conductor wakes between primary turns to review a mechanical digest of the stretch and
 	// rule on the next stretch's tempo. All counters are event-driven; nothing here ticks on a timer.
 	#epochCount = 0;
-	#epochInFlight = false;
+	#epochGoal: Goal | undefined;
+	#epochApplyingCompaction = false;
 	#epochRuling: ConductorRuling | undefined;
 
 	/** Reads and clears the tempo-ruling slot; the method read defeats tsgo's property-assignment narrowing. */
@@ -391,6 +394,15 @@ export class SessionConductor {
 	 */
 	onGoalUpdated(goal: Goal | null): void {
 		if (!this.#enabled) return;
+		if (this.#epochGoal && !this.#matchesEpochGoal(this.#epochGoal, goal)) {
+			this.#invalidateTurn("conductor stretch changed");
+			this.#instance?.agent.abort("conductor stretch changed");
+		}
+		if (this.#auditedClaim && !this.#matchesPendedClaim(this.#auditedClaim, goal)) {
+			this.#auditedClaim = undefined;
+			this.#invalidateTurn("conductor audited claim changed");
+			this.#instance?.agent.abort("conductor audited claim changed");
+		}
 		this.#trackEpochCadence(goal);
 		// Rejection accounting is keyed on the goal, not on the pend: a rejected goal re-pends under the same id,
 		// and only a genuinely different goal clears the consecutive-rejection streak.
@@ -490,7 +502,7 @@ export class SessionConductor {
 			this.#escalated ||
 			this.#verificationInFlight ||
 			this.#commissioningInFlight ||
-			this.#epochInFlight ||
+			this.#epochGoal ||
 			!this.#startWhenIdle ||
 			this.#host.agent.state.isStreaming
 		) {
@@ -510,7 +522,7 @@ export class SessionConductor {
 	 */
 	#rearmPendedVerification(): void {
 		if (!this.#enabled || this.#host.isDisposed()) return;
-		if (this.#verificationInFlight || this.#commissioningInFlight || this.#epochInFlight || this.#escalated) {
+		if (this.#verificationInFlight || this.#commissioningInFlight || this.#epochGoal || this.#escalated) {
 			return;
 		}
 		if (this.#status !== "running") return;
@@ -544,7 +556,7 @@ export class SessionConductor {
 		if (!this.#enabled || !this.#startWhenIdle || this.#verificationInFlight || this.#escalated) return;
 		// The single transport slot is built for one turn kind at a time; a commissioning or epoch turn in
 		// flight owns it. The claim is re-armed when that turn settles.
-		if (this.#commissioningInFlight || this.#epochInFlight) return;
+		if (this.#commissioningInFlight || this.#epochGoal) return;
 		// A session transition owns the slot and the recorder; the claim is re-armed when the transition releases.
 		if (this.#transitionDepth > 0) return;
 		if (this.#host.isDisposed()) return;
@@ -558,20 +570,23 @@ export class SessionConductor {
 		}
 		this.#startWhenIdle = false;
 		this.#verificationInFlight = true;
+		this.#auditedClaim = { id: goal.id, updatedAt: goal.updatedAt };
 		// The audit is now the active work on the claim: the idle watchdog stands down for its whole duration.
 		this.#clearGateTimer();
-		void this.#runVerification(goal)
+		void this.#runVerification(goal, this.#turnLifetime.signal)
 			.catch(error => logger.warn("conductor verification failed", { err: String(error) }))
 			.finally(() => {
 				this.#verificationInFlight = false;
+				this.#auditedClaim = undefined;
 				// A claim pended (or re-pended) while this turn ran was parked behind it; re-arm the gate for it and
 				// start now that the slot is free — still never mid-primary-turn. Deliberate parks stay parked.
 				this.#rearmPendedVerification();
 			});
 	}
 
-	async #runVerification(goal: Goal): Promise<void> {
-		const instance = await this.#ensureInstance("verify");
+	async #runVerification(goal: Goal, signal: AbortSignal): Promise<void> {
+		const instance = await this.#ensureInstance("verify", signal);
+		if (!this.#isCurrentTurn(signal)) return;
 		const facade = this.#facade;
 		const cueTool = this.#cueTool;
 		if (!instance || !facade || !cueTool) {
@@ -579,10 +594,11 @@ export class SessionConductor {
 			return;
 		}
 
+		this.#armBashPolicy("verify", goal);
 		this.#beginActivity("verify", oneLineLabel(goal.objective));
 		let terminal: ConductorActivity["status"] = "failed";
 		try {
-			terminal = await this.#verificationTurns(goal, facade, cueTool);
+			terminal = await this.#verificationTurns(goal, facade, cueTool, signal);
 		} finally {
 			this.#endActivity(terminal);
 		}
@@ -593,6 +609,7 @@ export class SessionConductor {
 		goal: Goal,
 		facade: ConductorFacade,
 		cueTool: CueTool,
+		signal: AbortSignal,
 	): Promise<ConductorActivity["status"]> {
 		const instance = this.#instance;
 		if (!instance) return "aborted";
@@ -600,20 +617,22 @@ export class SessionConductor {
 		let ruling: ConductorGateRuling | undefined;
 		let lastTurn = "no assistant turn";
 		for (let attempt = 0; attempt < MAX_VERIFICATION_ATTEMPTS; attempt++) {
-			if (this.#host.isDisposed()) return "aborted";
+			if (!this.#isCurrentTurn(signal)) return "aborted";
 			this.#ruling = undefined;
 			cueTool.beginTurn();
 			try {
 				await facade.prompt(promptText);
 			} catch (error) {
+				if (!this.#isCurrentTurn(signal)) return "aborted";
 				if (error instanceof AdvisorOutputQuarantinedError) {
 					logger.warn("conductor turn quarantined; discarding ruling", { err: String(error) });
 					facade.reset();
 					continue;
 				}
-				if (await this.#handleTurnError(error, instance)) continue;
-				return "failed";
+				if (await this.#handleTurnError(error, instance, signal)) continue;
+				return this.#isCurrentTurn(signal) ? "failed" : "aborted";
 			}
+			if (!this.#isCurrentTurn(signal)) return "aborted";
 			const candidate = this.#takeRuling();
 			switch (candidate?.op) {
 				case "verify":
@@ -662,7 +681,7 @@ export class SessionConductor {
 		if (this.#transitionDepth > 0) {
 			return { status: "busy", reason: "A session transition is in progress." };
 		}
-		if (this.#epochInFlight) {
+		if (this.#epochGoal) {
 			return { status: "busy", reason: "An epoch ruling is in progress." };
 		}
 		if (this.#pendingGoalId !== undefined || this.#verificationInFlight) {
@@ -684,12 +703,12 @@ export class SessionConductor {
 
 		this.#commissioningInFlight = true;
 		try {
-			return await this.#runCommissioning(trimmed);
+			return await this.#runCommissioning(trimmed, this.#turnLifetime.signal);
 		} finally {
 			this.#commissioningInFlight = false;
 			this.#proposal = undefined;
 			// The slot is released for the next turn kind: verification needs the auditor persona, the `cue` tool, and
-			// its unrestricted-bash verification whitelist instead of the commissioning exploration allowlist. Gate
+			// the claim's exact verification commands in addition to read-only exploration. Gate
 			// state is untouched.
 			this.#disposeInstance();
 			// A verdict that pended while this turn ran (the user can still `/goal set` by hand mid-commission) was
@@ -698,19 +717,23 @@ export class SessionConductor {
 		}
 	}
 
-	async #runCommissioning(ask: string): Promise<ConductorCommissionOutcome> {
-		const instance = await this.#ensureInstance("commission");
+	async #runCommissioning(ask: string, signal: AbortSignal): Promise<ConductorCommissionOutcome> {
+		const instance = await this.#ensureInstance("commission", signal);
+		if (!this.#isCurrentTurn(signal)) {
+			return { status: "unavailable", reason: "The commissioning turn was cancelled." };
+		}
 		const facade = this.#facade;
 		const programTool = this.#programTool;
 		if (!instance || !facade || !programTool) {
 			return { status: "unavailable", reason: "The conductor could not be started." };
 		}
 
+		this.#armBashPolicy("commission");
 		this.#beginActivity("commission", oneLineLabel(ask));
 		let terminal: ConductorActivity["status"] = "failed";
 		try {
-			const outcome = await this.#commissioningTurns(ask, facade, programTool);
-			terminal = outcome.status === "proposed" ? "completed" : "failed";
+			const outcome = await this.#commissioningTurns(ask, facade, programTool, signal);
+			terminal = !this.#isCurrentTurn(signal) ? "aborted" : outcome.status === "proposed" ? "completed" : "failed";
 			return outcome;
 		} finally {
 			this.#endActivity(terminal);
@@ -722,6 +745,7 @@ export class SessionConductor {
 		ask: string,
 		facade: ConductorFacade,
 		programTool: ProgramTool,
+		signal: AbortSignal,
 	): Promise<ConductorCommissionOutcome> {
 		const instance = this.#instance;
 		if (!instance) return { status: "unavailable", reason: "The conductor could not be started." };
@@ -730,12 +754,17 @@ export class SessionConductor {
 		let proposal: ConductorProposal | undefined;
 		let lastTurn = "no assistant turn";
 		for (let attempt = 0; attempt < MAX_COMMISSIONING_ATTEMPTS; attempt++) {
-			if (this.#host.isDisposed()) return { status: "unavailable", reason: "The session is shutting down." };
+			if (!this.#isCurrentTurn(signal)) {
+				return { status: "unavailable", reason: "The commissioning turn was cancelled." };
+			}
 			this.#proposal = undefined;
 			programTool.beginTurn();
 			try {
 				await facade.prompt(promptText);
 			} catch (error) {
+				if (!this.#isCurrentTurn(signal)) {
+					return { status: "unavailable", reason: "The commissioning turn was cancelled." };
+				}
 				if (error instanceof AdvisorOutputQuarantinedError) {
 					logger.warn("conductor commissioning turn quarantined; discarding contract", {
 						err: String(error),
@@ -743,8 +772,14 @@ export class SessionConductor {
 					facade.reset();
 					continue;
 				}
-				if (await this.#handleTurnError(error, instance, "commissioning")) continue;
+				if (await this.#handleTurnError(error, instance, signal, "commissioning")) continue;
+				if (!this.#isCurrentTurn(signal)) {
+					return { status: "unavailable", reason: "The commissioning turn was cancelled." };
+				}
 				return { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+			}
+			if (!this.#isCurrentTurn(signal)) {
+				return { status: "unavailable", reason: "The commissioning turn was cancelled." };
 			}
 			proposal = this.#proposal;
 			this.#proposal = undefined;
@@ -833,30 +868,32 @@ export class SessionConductor {
 	#maybeStartEpoch(): void {
 		if (!this.isHealthy()) return;
 		if (this.#transitionDepth > 0) return;
-		if (this.#epochInFlight || this.#verificationInFlight || this.#commissioningInFlight) return;
+		if (this.#epochGoal || this.#verificationInFlight || this.#commissioningInFlight) return;
 		// The verification gate owns the slot once a claim is pending.
 		if (this.#pendingGoalId !== undefined) return;
 		if (this.#epochsHalted) return;
 		const goal = this.#host.currentGoal();
 		if (!goal || (goal.status !== "active" && goal.status !== "budget-limited")) return;
 		if (this.#turnsSinceWake < this.#minEpochTurns()) return;
-		this.#startEpochTurn();
+		this.#startEpochTurn(goal);
 	}
 
-	#startEpochTurn(): void {
+	#startEpochTurn(goal: Goal): void {
 		const reasons = this.#pendingWakeReasons;
 		this.#pendingWakeReasons = [];
 		this.#turnsSinceWake = 0;
-		this.#epochInFlight = true;
-		void this.#runEpochTurn(reasons)
-			.catch(error => {
+		this.#epochGoal = goal;
+		const signal = this.#turnLifetime.signal;
+		void this.#runEpochTurn(goal, reasons, signal)
+			.catch(async error => {
+				if (!this.#isCurrentEpoch(goal, signal)) return;
 				logger.warn("conductor epoch turn failed", { err: String(error) });
 				// An escaped crash (digest assembly, unexpected transport state) counts as a dropped epoch too —
 				// the degradation ladder must see it even though the attempt loop never completed.
-				this.#dropEpoch(`epoch turn crashed: ${error instanceof Error ? error.message : String(error)}`);
+				await this.#dropEpoch(`epoch turn crashed: ${error instanceof Error ? error.message : String(error)}`);
 			})
 			.finally(() => {
-				this.#epochInFlight = false;
+				this.#epochGoal = undefined;
 				// A claim pended while this epoch ran was parked behind it; re-arm the gate for it now that the
 				// slot is free — still never mid-primary-turn.
 				this.#rearmPendedVerification();
@@ -864,26 +901,26 @@ export class SessionConductor {
 	}
 
 	/** Runs one epoch: digest, tempo review, exactly one `cue` ruling. */
-	async #runEpochTurn(reasons: string[]): Promise<void> {
-		const goal = this.#host.currentGoal();
-		if (!goal || (goal.status !== "active" && goal.status !== "budget-limited")) return;
+	async #runEpochTurn(goal: Goal, reasons: string[], signal: AbortSignal): Promise<void> {
 		const epochNumber = this.#epochCount + 1;
-		const instance = await this.#ensureInstance("epoch");
+		const instance = await this.#ensureInstance("epoch", signal);
+		if (!this.#isCurrentEpoch(goal, signal)) return;
 		const facade = this.#facade;
 		const cueTool = this.#cueTool;
 		if (!instance || !facade || !cueTool) {
-			this.#dropEpoch("the conductor could not be started");
+			await this.#dropEpoch("the conductor could not be started");
 			return;
 		}
 
+		this.#armBashPolicy("epoch");
 		this.#beginActivity("epoch", `epoch ${epochNumber}: ${oneLineLabel(goal.objective)}`);
 		let terminal: ConductorActivity["status"] = "failed";
 		try {
-			const promptText = await this.#buildEpochPrompt(goal, epochNumber, reasons);
+			const promptText = await this.#buildEpochPrompt(goal, epochNumber, reasons, signal);
 			let ruling: ConductorTempoRuling | undefined;
 			let lastTurn = "no assistant turn";
 			for (let attempt = 0; attempt < MAX_EPOCH_ATTEMPTS; attempt++) {
-				if (this.#host.isDisposed()) {
+				if (!this.#isCurrentEpoch(goal, signal)) {
 					terminal = "aborted";
 					return;
 				}
@@ -892,13 +929,25 @@ export class SessionConductor {
 				try {
 					await facade.prompt(promptText);
 				} catch (error) {
+					if (!this.#isCurrentEpoch(goal, signal)) {
+						terminal = "aborted";
+						return;
+					}
 					if (error instanceof AdvisorOutputQuarantinedError) {
 						logger.warn("conductor epoch turn quarantined; discarding ruling", { err: String(error) });
 						facade.reset();
 						continue;
 					}
-					if (await this.#handleTurnError(error, instance, "epoch")) continue;
-					this.#dropEpoch(`epoch turn failed: ${error instanceof Error ? error.message : String(error)}`);
+					if (await this.#handleTurnError(error, instance, signal, "epoch")) continue;
+					if (!this.#isCurrentEpoch(goal, signal)) {
+						terminal = "aborted";
+						return;
+					}
+					await this.#dropEpoch(`epoch turn failed: ${error instanceof Error ? error.message : String(error)}`);
+					return;
+				}
+				if (!this.#isCurrentEpoch(goal, signal)) {
+					terminal = "aborted";
 					return;
 				}
 				const candidate = this.#takeEpochRuling();
@@ -920,18 +969,18 @@ export class SessionConductor {
 				if (attempt + 1 < MAX_EPOCH_ATTEMPTS) facade.reset();
 			}
 			if (!ruling) {
-				this.#dropEpoch(`no tempo ruling after ${MAX_EPOCH_ATTEMPTS} attempts (last: ${lastTurn})`);
+				await this.#dropEpoch(`no tempo ruling after ${MAX_EPOCH_ATTEMPTS} attempts (last: ${lastTurn})`);
 				return;
 			}
-			terminal = "completed";
-			await this.#applyEpochRuling(ruling, epochNumber, reasons);
+			await this.#applyEpochRuling(goal, ruling, epochNumber, reasons, signal);
+			terminal = this.#isCurrentEpoch(goal, signal) ? "completed" : "aborted";
 		} finally {
 			this.#endActivity(terminal);
 		}
 	}
 
 	/** Assembles the mechanical epoch digest and renders the epoch turn's prompt. */
-	async #buildEpochPrompt(goal: Goal, epochNumber: number, reasons: string[]): Promise<string> {
+	async #buildEpochPrompt(goal: Goal, epochNumber: number, reasons: string[], signal: AbortSignal): Promise<string> {
 		const digest = assembleEpochDigest({
 			messages: this.#host.agent.state.messages,
 			cursor: this.#digestCursor,
@@ -940,7 +989,7 @@ export class SessionConductor {
 			goalSummary: this.#epochGoalSummary(goal),
 			diffStat: await this.#workingTreeSummary(),
 		});
-		this.#digestCursor = digest.cursor;
+		if (this.#isCurrentEpoch(goal, signal)) this.#digestCursor = digest.cursor;
 		const text = this.#host.obfuscator ? this.#host.obfuscator.obfuscate(digest.text) : digest.text;
 		const wakeLines = reasons.length > 0 ? reasons.map(reason => `- ${reason}`).join("\n") : "- routine cadence wake";
 		return renderEpochPrompt(goal, epochNumber, wakeLines, text);
@@ -986,18 +1035,27 @@ export class SessionConductor {
 	}
 
 	/** Applies one tempo ruling: journal it, fold context if ruled, deliver the authored prompt, or escalate. */
-	async #applyEpochRuling(ruling: ConductorTempoRuling, epochNumber: number, reasons: string[]): Promise<void> {
+	async #applyEpochRuling(
+		goal: Goal,
+		ruling: ConductorTempoRuling,
+		epochNumber: number,
+		reasons: string[],
+		signal: AbortSignal,
+	): Promise<void> {
+		if (!this.#isCurrentEpoch(goal, signal)) return;
 		if (ruling.op === "escalate") {
 			this.#escalate(ruling.question);
 			return;
 		}
-		this.#epochCount++;
-		this.#droppedEpochs = 0;
 		const prompt = ruling.prompt?.trim() || undefined;
 		const context =
 			ruling.context === "compact" && !(await this.#requestConductorCompaction(epochNumber))
 				? "continue"
 				: ruling.context;
+		// The compaction request may have yielded to a goal/session change or an explicit /conduct off.
+		if (!this.#isCurrentEpoch(goal, signal)) return;
+		this.#epochCount++;
+		this.#droppedEpochs = 0;
 		const action: ConductorJournalEntry["action"] = !prompt
 			? "template"
 			: prompt === this.#lastEpochPrompt
@@ -1021,10 +1079,6 @@ export class SessionConductor {
 		}
 	}
 
-	/**
-	 * The epoch prompt reaches the primary through the same channel as a verification rejection: a synthetic
-	 * agent-attributed message at a turn boundary (steer when the continuation machinery already re-fired).
-	 */
 	async #deliverEpochPrompt(epochNumber: number, prompt: string): Promise<void> {
 		const content = [
 			`<conductor-epoch epoch="${epochNumber}" guidance="the conductor authored this iteration prompt after reviewing the stretch">`,
@@ -1034,7 +1088,7 @@ export class SessionConductor {
 		await this.#host
 			.sendCustomMessage(
 				{ customType: CONDUCTOR_EPOCH_MESSAGE_TYPE, content, display: false, attribution: "agent" },
-				{ deliverAs: "steer", triggerTurn: true },
+				{ deliverAs: "followUp", triggerTurn: true },
 			)
 			.catch(error => logger.debug("conductor epoch prompt delivery failed", { err: String(error) }));
 	}
@@ -1050,6 +1104,9 @@ export class SessionConductor {
 			return false;
 		}
 		try {
+			// This ruling has already settled. Its own compaction suspends the transport, but must not cancel the
+			// authored prompt that follows it. Goal changes, session resets, and /conduct off still invalidate it.
+			this.#epochApplyingCompaction = true;
 			await this.#host.requestCompaction();
 			this.#host.emitNotice("info", `Conductor epoch ${epochNumber}: session context compacted.`, "conductor");
 			return true;
@@ -1061,6 +1118,8 @@ export class SessionConductor {
 			);
 			logger.warn("conductor-requested compaction failed", { err: String(error) });
 			return false;
+		} finally {
+			this.#epochApplyingCompaction = false;
 		}
 	}
 
@@ -1070,12 +1129,12 @@ export class SessionConductor {
 	 * the stretch instead. Repeated drops halt epoch steering with a host warning; the verification gate is
 	 * unaffected either way.
 	 */
-	#dropEpoch(reason: string): void {
+	async #dropEpoch(reason: string): Promise<void> {
 		this.#droppedEpochs++;
 		logger.warn("conductor epoch dropped", { reason, droppedEpochs: this.#droppedEpochs });
 		if (this.#fallbackPolicy() === "pause") {
 			this.#droppedEpochs = 0;
-			void this.#host
+			await this.#host
 				.goalRuntime()
 				?.pauseGoal()
 				.then(() => {
@@ -1111,11 +1170,12 @@ export class SessionConductor {
 	async #handleTurnError(
 		error: unknown,
 		instance: ReviewerTransport,
+		signal: AbortSignal,
 		context: "verification" | "commissioning" | "epoch" = "verification",
 	): Promise<boolean> {
 		// A session transition aborted this turn on purpose: never retry into the rewrite window, never surface a
 		// conductor error for it — the claim is re-armed when the transition releases.
-		if (this.#transitionDepth > 0) return false;
+		if (!this.#isCurrentTurn(signal)) return false;
 		const quotaNotice =
 			context === "commissioning"
 				? "Conductor quota exhausted — no contract was drafted. Run /goal to set an objective manually."
@@ -1128,13 +1188,13 @@ export class SessionConductor {
 				: context === "epoch"
 					? "Epoch steering is paused; the contract template keeps driving the stretch."
 					: "The goal stays pending verification — run /goal resume to continue manually.";
-		const controller = new AbortController();
 		let recovered = false;
 		try {
-			recovered = await instance.recoverTurn(error, instance.agent.state.messages, controller.signal);
+			recovered = await instance.recoverTurn(error, instance.agent.state.messages, signal);
 		} catch (recoveryError) {
 			logger.debug("conductor turn recovery threw", { err: String(recoveryError) });
 		}
+		if (!this.#isCurrentTurn(signal)) return false;
 		if (recovered) return true;
 
 		const errorId = AIError.classify(error, instance.agent.state.model.api);
@@ -1182,6 +1242,7 @@ export class SessionConductor {
 			});
 			return;
 		}
+		this.#auditedClaim = undefined;
 		this.#clearGateTimer();
 		const runtime = this.#host.goalRuntime();
 		if (!runtime) return;
@@ -1225,10 +1286,6 @@ export class SessionConductor {
 		this.#pendingGoalId = undefined;
 		this.#pendingGoalUpdatedAt = undefined;
 
-		// `deliverAs` only matters while the primary is streaming; verification always runs at a settled turn
-		// boundary, so this lands on the idle branch and drives one fresh turn. That turn's `agent_end` is what
-		// re-arms the goal's own continuation — seeding context without a turn would strand the goal, because
-		// `goal_updated` deliberately never arms the continuation timer.
 		await this.#host
 			.sendCustomMessage(
 				{
@@ -1237,7 +1294,7 @@ export class SessionConductor {
 					display: false,
 					attribution: "agent",
 				},
-				{ deliverAs: "steer", triggerTurn: true },
+				{ deliverAs: "followUp", triggerTurn: true },
 			)
 			.catch(error => logger.debug("conductor rejection delivery failed", { err: String(error) }));
 	}
@@ -1250,19 +1307,20 @@ export class SessionConductor {
 
 	// ---------------------------------------------------------------- construction
 
-	async #ensureInstance(mode: ConductorTurnMode): Promise<ReviewerTransport | undefined> {
+	async #ensureInstance(mode: ConductorTurnMode, signal: AbortSignal): Promise<ReviewerTransport | undefined> {
+		if (!this.#isCurrentTurn(signal)) return undefined;
 		// Commissioning and verification need different personas, different tools, and different single-shot tools,
 		// and they are mutually exclusive in time, so one slot is rebuilt rather than two kept alive.
 		if (this.#instance && this.#instanceMode !== mode) this.#disposeInstance();
 		if (this.#instance) return this.#instance;
-		this.#buildPromise ??= this.#buildInstance(mode).finally(() => {
+		this.#buildPromise ??= this.#buildInstance(mode, signal).finally(() => {
 			this.#buildPromise = undefined;
 		});
 		return await this.#buildPromise;
 	}
 
-	async #buildInstance(mode: ConductorTurnMode): Promise<ReviewerTransport | undefined> {
-		if (!this.#enabled || this.#host.isDisposed()) return undefined;
+	async #buildInstance(mode: ConductorTurnMode, signal: AbortSignal): Promise<ReviewerTransport | undefined> {
+		if (!this.#isCurrentTurn(signal)) return undefined;
 		const selection = this.#resolveModelSelection();
 		if (!selection) {
 			this.#status = "no_model";
@@ -1277,7 +1335,7 @@ export class SessionConductor {
 		} catch (error) {
 			logger.warn("conductor tool pool build failed", { err: String(error) });
 		}
-		if (this.#host.isDisposed()) return undefined;
+		if (!this.#isCurrentTurn(signal)) return undefined;
 
 		const model = selection.model;
 		const requestedLevel = selection.thinkingLevel ?? ThinkingLevel.High;
@@ -1297,24 +1355,6 @@ export class SessionConductor {
 		// Each turn kind gets its own single-shot channel; the other tool is never even constructed, so a
 		// commissioning turn cannot rule on a verdict and a verification/epoch turn cannot rewrite the contract.
 		const commissioning = mode === "commission";
-		// Every conductor mode gets a fail-closed policy. Verification permits exact commissioned commands plus
-		// read-only exploration; commissioning and epoch turns receive exploration only.
-		let verificationCommands: readonly string[] = [];
-		if (mode === "verify") {
-			const objective = this.#host.currentGoal()?.objective;
-			if (objective) {
-				try {
-					verificationCommands = parseConductorObjective(objective).verificationCommands;
-				} catch (error) {
-					logger.warn("conductor goal has no valid verification contract", { err: String(error) });
-				}
-			}
-		}
-		const bashPolicy: BashCommandPolicy =
-			mode === "verify"
-				? command => checkBashVerificationCommand(command, verificationCommands)
-				: command => checkBashCommandAllowlist(command, READ_ONLY_EXPLORATORY_COMMANDS);
-		this.#options.setBashCommandPolicy?.(bashPolicy);
 		let cueTool: CueTool | undefined;
 		let programTool: ProgramTool | undefined;
 		let adviseTool: AgentTool<any>;
@@ -1387,6 +1427,23 @@ export class SessionConductor {
 		this.#status = "running";
 		this.#attachRecorderFeed();
 		return transport;
+	}
+
+	/** Grants belong to the audited claim, not the reusable transport. Refresh before every turn. */
+	#armBashPolicy(mode: ConductorTurnMode, goal?: Goal): void {
+		let verificationCommands: readonly string[] = [];
+		if (mode === "verify" && goal) {
+			try {
+				verificationCommands = parseConductorObjective(goal.objective).verificationCommands;
+			} catch (error) {
+				logger.warn("conductor goal has no valid verification contract", { err: String(error) });
+			}
+		}
+		const policy: BashCommandPolicy =
+			mode === "verify"
+				? command => checkBashVerificationCommand(command, verificationCommands)
+				: command => checkBashCommandAllowlist(command, READ_ONLY_EXPLORATORY_COMMANDS);
+		this.#options.setBashCommandPolicy?.(policy);
 	}
 
 	#attachRecorderFeed(): void {
@@ -1545,9 +1602,36 @@ export class SessionConductor {
 
 	// ---------------------------------------------------------------- lifecycle
 
+	#isCurrentTurn(signal: AbortSignal): boolean {
+		return !signal.aborted && this.#enabled && !this.#host.isDisposed() && this.#transitionDepth === 0;
+	}
+
+	#matchesEpochGoal(goal: Goal, current: Goal | null | undefined): boolean {
+		return (
+			current?.id === goal.id &&
+			current.objective === goal.objective &&
+			(current.status === "active" || current.status === "budget-limited")
+		);
+	}
+
+	#isCurrentEpoch(goal: Goal, signal: AbortSignal): boolean {
+		return this.#isCurrentTurn(signal) && this.#matchesEpochGoal(goal, this.#host.currentGoal());
+	}
+
+	#matchesPendedClaim(claim: { id: string; updatedAt: number }, current: Goal | null | undefined): boolean {
+		return current?.id === claim.id && current.updatedAt === claim.updatedAt && current.status === "verifying";
+	}
+
+	#invalidateTurn(reason: string): void {
+		this.#turnLifetime.abort(reason);
+		this.#turnLifetime = new AbortController();
+	}
+
 	stopRuntime(): void {
+		this.#invalidateTurn("conductor stopped");
 		this.#clearGate();
-		this.#verificationInFlight = false;
+		// The current run owns the slot until its finally settles. Re-enabling must not race its recorder,
+		// ruling slots, or activity finalizer with a new run.
 		this.#ruling = undefined;
 		this.#proposal = undefined;
 		this.#epochRuling = undefined;
@@ -1579,7 +1663,10 @@ export class SessionConductor {
 	}
 
 	async drainAndDetachRecorders(): Promise<void> {
-		await this.#instance?.runtime.pauseForSessionTransition();
+		const instance = this.#instance;
+		await instance?.runtime.pauseForSessionTransition();
+		// Conductor prompts bypass ReviewerRuntime's backlog loop, so its pause alone does not drain them.
+		await instance?.agent.waitForIdle();
 		await this.detachAndCloseRecorders();
 	}
 
@@ -1609,6 +1696,7 @@ export class SessionConductor {
 	 */
 	async suspendForTransition(): Promise<void> {
 		this.#transitionDepth++;
+		if (!this.#epochApplyingCompaction) this.#invalidateTurn("conductor session transition");
 		this.#clearGateTimer();
 		await this.drainAndDetachRecorders();
 	}
@@ -1627,6 +1715,7 @@ export class SessionConductor {
 
 	/** A transcript rewrite invalidates any pending verdict: the claim it was grading no longer exists. */
 	resetSessionState(options: { preserveCost?: boolean } = {}): void {
+		this.#invalidateTurn("conductor session reset");
 		if (options.preserveCost !== true) this.#cost = 0;
 		this.#clearGate();
 		this.#rejectionCount = 0;
@@ -1648,7 +1737,8 @@ export class SessionConductor {
 	}
 
 	resetAllRuntimes(reason?: string): void {
-		this.#instance?.runtime.reset(reason);
+		this.#digestCursor = 0;
+		logger.debug("conductor digest cursor rewound", { reason });
 	}
 
 	/** Drop a built conductor whose model no longer matches the `conductor` role; the next gate rebuilds it. */
@@ -1726,6 +1816,8 @@ export class SessionConductor {
 		this.#escalated = false;
 		this.#rejectionCount = 0;
 		this.#rejectionGoalId = undefined;
+		this.#droppedEpochs = 0;
+		this.#epochsHalted = false;
 		this.#status = this.#resolveModelSelection() ? "running" : "no_model";
 		// A claim pended before the conductor was halted or disabled is still waiting; re-arm it so the promise in
 		// the escalation notice holds. Parks rooted in quota/error clear here too — re-enabling is the retry.

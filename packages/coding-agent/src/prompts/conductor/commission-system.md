@@ -29,6 +29,6 @@ Success criteria MUST be machine-checkable by someone who did not do the work: t
 Verification MUST be exact commands that exist in this repo — they double as the auditor's whitelist. An invented or unrunnable command makes the criterion it covers unprovable. Give each milestone its own checkpoint command where possible, plus the final gate commands.
 Iteration MUST be capped — per milestone and overall. "Until CI is green" and "keep going until it works" are stop conditions waiting to be written; write them.
 Self-graded success is not success. Every criterion maps to a command the auditor can rerun.
-Boundaries MUST name what may be touched and, explicitly, what MUST NOT.
+Boundaries MUST name what may be touched and, explicitly, what is NEVER touched.
 You cannot interview the user. Resolve a vague ask by narrowing it to what this repo makes checkable, NEVER by widening scope and NEVER by writing an unverifiable criterion.
 </critical>

@@ -281,39 +281,33 @@ def _start_capture_drain() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cell pre-processing: verbatim embed blocks + tolerant repair ladder
+# Cell pre-processing: assignment heredocs + tolerant repair ladder
 # ---------------------------------------------------------------------------
 
-_EMBED_OPEN_RE = re.compile(
-    r"#@embed\s+(?P<name>[A-Za-z_][A-Za-z_0-9]*)(?:\s+until=(?P<until>\S+))?\s*$"
+_HEREDOC_OPEN_RE = re.compile(
+    r"(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z_0-9]*)[ \t]*"
+    r"=[ \t]*<<[ \t]*(?P<delimiter>[A-Za-z_][A-Za-z_0-9]*)[ \t]*\r?$"
 )
-_PATCH_PREFIX = "#@patch"
-_DEFAULT_EMBED_END = "#@end"
 
 
-class _DirectiveBlock:
-    """A source-range directive found by the shared literal-aware scanner."""
+class _HeredocBlock:
+    """A source-range heredoc assignment found by the literal-aware scanner."""
 
-    __slots__ = ("kind", "start", "end", "indent", "name", "path", "marker")
+    __slots__ = ("start", "end", "indent", "name", "delimiter")
 
     def __init__(
         self,
-        kind: str,
         start: int,
         end: int,
         indent: str,
-        *,
-        name: str | None = None,
-        path: str | None = None,
-        marker: str = _DEFAULT_EMBED_END,
+        name: str,
+        delimiter: str,
     ) -> None:
-        self.kind = kind
         self.start = start
         self.end = end
         self.indent = indent
         self.name = name
-        self.path = path
-        self.marker = marker
+        self.delimiter = delimiter
 
 
 _CURLY_DOUBLE_RE = re.compile("[\u201c\u201d]")
@@ -339,7 +333,7 @@ class PreparedCell:
     """Pre-processed cell ready for compilation.
 
     ``source`` is what will execute. ``notes`` disclose behavior the model
-    did not explicitly request (embed bindings, accepted repairs); ``hints``
+    did not explicitly request (heredoc bindings, accepted repairs); ``hints``
     carry diagnostics for a cell that will fail to compile regardless.
     """
 
@@ -359,92 +353,9 @@ def _compiles(source: str) -> bool:
     return True
 
 
-def _directive_indent(line: str) -> str:
-    """Return the exact Python indentation prefix (spaces/tabs only)."""
+def _heredoc_indent(line: str) -> str:
+    """Return the exact heredoc indentation prefix (spaces/tabs only)."""
     return line[: len(line) - len(line.lstrip(" \t"))]
-
-
-def _patch_header_error(message: str, line: str, line_no: int) -> SyntaxError:
-    return SyntaxError(message, ("<cell>", line_no, 1, line))
-
-
-def _split_patch_until(rest: str) -> tuple[str, str]:
-    """Split a final ``until=TOKEN`` clause from a patch header.
-
-    A quoted path is opaque text, not a Python expression: quote characters
-    only delimit the optional surrounding pair and backslashes are retained
-    byte-for-byte. Looking for the suffix after that pair prevents a path
-    such as ``"name until=marker"`` from accidentally selecting a marker.
-    """
-    marker_match = re.search(r"[ \t]+until[ \t]*=[ \t]*(\S+)[ \t]*$", rest)
-    if marker_match is None:
-        if re.search(r"[ \t]+until[ \t]*=[ \t]*$", rest) is not None:
-            raise ValueError("until= requires a non-empty token")
-        return rest, _DEFAULT_EMBED_END
-
-    candidate_path = rest[: marker_match.start()].rstrip(" \t")
-    if not candidate_path:
-        raise ValueError("missing patch path before until=")
-
-    # If the path starts with a quote, only recognize the suffix when the
-    # matching closing quote occurs immediately before it. This is deliberately
-    # a wrapper check, never string-literal decoding or interpolation.
-    if candidate_path[0] in "\"'":
-        quote = candidate_path[0]
-        if len(candidate_path) < 2 or candidate_path[-1] != quote:
-            return rest, _DEFAULT_EMBED_END
-    return candidate_path, marker_match.group(1)
-
-
-def _unwrap_patch_path(path: str, line: str, line_no: int) -> str:
-    """Remove one surrounding matching quote pair without decoding its body."""
-    path = path.strip(" \t")
-    if len(path) >= 2 and path[0] in "\"'" and path[-1] == path[0]:
-        path = path[1:-1]
-    if not path:
-        raise _patch_header_error(
-            "malformed #@patch directive: missing patch path",
-            line,
-            line_no,
-        )
-    return path
-
-
-def _parse_patch_header(line: str, line_no: int) -> tuple[str, str]:
-    """Parse a patch header into a literal path and terminator.
-
-    The path is deliberately *not* a Python expression: after the directive
-    marker it is the literal remainder, including spaces. A final,
-    whitespace-delimited ``until=TOKEN`` (with optional spaces around ``=``)
-    is reserved for selecting a marker. Matching surrounding single/double
-    quotes are wrappers only; their contents, including backslashes, remain
-    literal path bytes.
-    """
-    stripped = line.strip()
-    suffix = stripped[len(_PATCH_PREFIX) :]
-    if not stripped.startswith(_PATCH_PREFIX) or (suffix and not suffix[0].isspace()):
-        raise _patch_header_error(
-            "malformed #@patch directive: expected '#@patch PATH [until=TOKEN]'",
-            line,
-            line_no,
-        )
-    rest = suffix.strip()
-    if not rest:
-        raise _patch_header_error(
-            "malformed #@patch directive: missing patch path",
-            line,
-            line_no,
-        )
-
-    try:
-        path, marker = _split_patch_until(rest)
-    except ValueError as exc:
-        raise _patch_header_error(
-            f"malformed #@patch directive: {exc}",
-            line,
-            line_no,
-        ) from None
-    return _unwrap_patch_path(path, line, line_no), marker
 
 
 def _raw_string_body_lines(source: str) -> set[int]:
@@ -472,6 +383,32 @@ def _raw_string_body_lines(source: str) -> set[int]:
     return protected
 
 
+def _nested_python_lines(source: str) -> set[int]:
+    """Physical lines whose first tokens are inside (), [], or {}."""
+    nested: set[int] = set()
+    depth = 0
+    ignored = {
+        tokenize.ENCODING,
+        tokenize.INDENT,
+        tokenize.DEDENT,
+        tokenize.NEWLINE,
+        tokenize.NL,
+    }
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if depth > 0 and tok.type not in ignored:
+                nested.add(tok.start[0])
+            if tok.type != tokenize.OP:
+                continue
+            if tok.string in "([{":
+                depth += 1
+            elif tok.string in ")]}":
+                depth = max(0, depth - 1)
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        pass
+    return nested
+
+
 def _masked_verbatim_source(source: str, ranges: list[tuple[int, int]]) -> str:
     """Blank payload characters while preserving every physical newline."""
     if not ranges:
@@ -488,155 +425,87 @@ def _inside_verbatim(index: int, ranges: list[tuple[int, int]]) -> bool:
     return any(start <= index < end for start, end in ranges)
 
 
-def _patch_terminator(line: str, indent: str, marker: str) -> bool:
-    """Patch terminators must have exactly the opening indentation prefix."""
-    leading = _directive_indent(line)
-    return leading == indent and line[len(indent) :].strip() == marker
+def _heredoc_line_text(line: str) -> str:
+    """Drop the CR belonging to a CRLF physical line."""
+    return line[:-1] if line.endswith("\r") else line
 
 
-def _find_directive_end(
-    lines: list[str], start: int, kind: str, indent: str, marker: str
+def _find_heredoc_end(
+    lines: list[str], start: int, indent: str, delimiter: str
 ) -> int | None:
+    terminator = re.compile(re.escape(delimiter) + r"[ \t]*\r?$")
     for index in range(start + 1, len(lines)):
-        if kind == "embed":
-            # Preserve embed's historical marker semantics: indentation and
-            # trailing whitespace around the marker are ignored.
-            if lines[index].strip() == marker:
-                return index
-        elif _patch_terminator(lines[index], indent, marker):
+        line = lines[index]
+        if _heredoc_indent(line) != indent:
+            continue
+        if terminator.fullmatch(line[len(indent) :]) is not None:
             return index
     return None
 
 
-def _collect_directive_blocks(source: str) -> tuple[list[_DirectiveBlock], set[int]]:
-    """Find embed/patch ranges while masking verbatim payloads between passes.
+def _collect_heredoc_blocks(source: str) -> tuple[list[_HeredocBlock], set[int]]:
+    """Find heredocs incrementally, re-tokenizing after every masked payload.
 
-    Tokenizing the raw cell alone is insufficient: a quote in an embed or
-    patch payload can make tokenize believe later directives are part of a
-    Python string. Each discovered payload is therefore blanked and tokenized
-    again until the literal protection map stabilizes. This keeps actual
-    multiline strings protected while making verbatim payloads opaque.
+    A hostile unmatched quote in one payload can stop Python tokenization before
+    a later real string. Discovering only the first eligible heredoc per pass
+    ensures its body is masked before any later header-looking line is judged.
     """
     lines = source.split("\n")
-    protected = _raw_string_body_lines(source)
     ranges: list[tuple[int, int]] = []
-    blocks: list[_DirectiveBlock] = []
+    blocks: list[_HeredocBlock] = []
     starts: set[int] = set()
+    protected: set[int] = set()
 
     for _ in range(max(1, len(lines) + 1)):
+        masked = _masked_verbatim_source(source, ranges)
+        protected = _raw_string_body_lines(masked)
+        nested = _nested_python_lines(masked)
         discovered = False
         for index, line in enumerate(lines):
-            if index in starts or index + 1 in protected or _inside_verbatim(index, ranges):
+            if (
+                index in starts
+                or index + 1 in protected
+                or index + 1 in nested
+                or _inside_verbatim(index, ranges)
+            ):
                 continue
-            stripped = line.strip()
-            indent = _directive_indent(line)
-
-            if stripped.startswith("#@embed"):
-                match = _EMBED_OPEN_RE.fullmatch(stripped)
-                if match is None:
-                    continue
-                marker = match.group("until") or _DEFAULT_EMBED_END
-                end = _find_directive_end(lines, index, "embed", indent, marker)
-                if end is None:
-                    continue
-                block = _DirectiveBlock(
-                    "embed",
-                    index,
-                    end,
-                    indent,
-                    name=match.group("name"),
-                    marker=marker,
-                )
-            elif stripped.startswith(_PATCH_PREFIX):
-                try:
-                    path, marker = _parse_patch_header(line, index + 1)
-                except SyntaxError:
-                    # Defer malformed-header diagnostics to extraction. A
-                    # malformed line cannot safely identify a payload range.
-                    continue
-                end = _find_directive_end(lines, index, "patch", indent, marker)
-                if end is None:
-                    continue
-                block = _DirectiveBlock(
-                    "patch",
-                    index,
-                    end,
-                    indent,
-                    path=path,
-                    marker=marker,
-                )
-            else:
+            match = _HEREDOC_OPEN_RE.fullmatch(line)
+            if match is None:
                 continue
-
+            indent = match.group("indent")
+            delimiter = match.group("delimiter")
+            end = _find_heredoc_end(lines, index, indent, delimiter)
+            if end is None:
+                # An open heredoc owns the remainder of the cell. Extraction
+                # emits its targeted diagnostic; later text is not source yet.
+                return blocks, protected
+            block = _HeredocBlock(
+                index,
+                end,
+                indent,
+                match.group("name"),
+                delimiter,
+            )
             starts.add(index)
             blocks.append(block)
             ranges.append((index + 1, end))
             discovered = True
-
-        new_protected = _raw_string_body_lines(_masked_verbatim_source(source, ranges))
-        if not discovered and new_protected == protected:
             break
-        protected = new_protected
+        if not discovered:
+            break
 
     blocks.sort(key=lambda block: block.start)
     return blocks, protected
 
 
-def _leading_whitespace_len(line: str) -> int:
-    """Count presentation indentation without treating patch text as code."""
-    index = 0
-    while index < len(line) and line[index] in " \t":
-        index += 1
-    return index
+def _extract_heredocs(source: str) -> tuple[str, list[str]]:
+    """Expand assignment heredocs into verbatim string assignments.
 
-
-def _patch_body_lines(lines: list[str], block: _DirectiveBlock, path: str) -> list[str]:
-    """Normalize pasted patch indentation while retaining hunk prefixes.
-
-    The opening Python indentation is structural and is removed first. A
-    second, common presentation indent is removed from non-blank rows; this
-    handles a body pasted one level deeper than its directive without removing
-    the leading space that marks a context hunk row. Blank rows may omit the
-    opening indentation. A non-blank row that crosses out of the opening
-    indentation is rejected so unrelated Python code cannot be consumed.
-    """
-    rows: list[str] = []
-    for row_index in range(block.start + 1, block.end):
-        row = lines[row_index]
-        is_blank = not row.strip(" \t\r\n")
-        if not is_blank and block.indent and not row.startswith(block.indent):
-            raise SyntaxError(
-                f"#@patch {path!r} (line {block.start + 1}) body line "
-                f"{row_index + 1} must begin with the opening indentation prefix",
-                ("<cell>", row_index + 1, 1, row),
-            )
-        rows.append(row[len(block.indent) :] if row.startswith(block.indent) else row)
-
-    non_blank = [row for row in rows if row.strip(" \t\r\n")]
-    presentation_indent = min((_leading_whitespace_len(row) for row in non_blank), default=0)
-    body: list[str] = []
-    for row in rows:
-        leading = _leading_whitespace_len(row)
-        if not row.strip(" \t\r\n"):
-            # A single semantic context-space survives after presentation
-            # indentation; otherwise blank padding is normalized to empty.
-            body.append(row[presentation_indent:] if leading > presentation_indent else "")
-        else:
-            body.append(row[presentation_indent:])
-    return body
-
-
-def _extract_embeds(source: str) -> tuple[str, list[str]]:
-    """Expand ``#@embed`` and runtime ``#@patch`` blocks.
-
-    Embed payloads remain verbatim string assignments. Patch payloads become
-    ``apply_patch(<literal path>, <literal hunk text>)`` at the opening line,
-    so Python's ordinary control flow determines whether/when the filesystem
-    mutation happens. Consumed rows are replaced with blank lines to keep
-    subsequent source line numbers aligned.
+    Consumed rows are replaced with blank lines to keep subsequent source line
+    numbers aligned.
     """
     lines = source.split("\n")
-    blocks, protected = _collect_directive_blocks(source)
+    blocks, protected = _collect_heredoc_blocks(source)
     by_start = {block.start: block for block in blocks}
     notes: list[str] = []
     out: list[str] = []
@@ -645,49 +514,34 @@ def _extract_embeds(source: str) -> tuple[str, list[str]]:
         block = by_start.get(i)
         if block is None:
             line = lines[i]
-            stripped = line.strip()
-            if i + 1 not in protected and stripped.startswith("#@embed"):
-                match = _EMBED_OPEN_RE.fullmatch(stripped)
+            if i + 1 not in protected:
+                match = _HEREDOC_OPEN_RE.fullmatch(line)
                 if match is not None:
-                    marker = match.group("until") or _DEFAULT_EMBED_END
-                    if _find_directive_end(lines, i, "embed", _directive_indent(line), marker) is None:
+                    indent = match.group("indent")
+                    delimiter = match.group("delimiter")
+                    if _find_heredoc_end(lines, i, indent, delimiter) is None:
                         name = match.group("name")
                         raise SyntaxError(
-                            f"#@embed {name!r} (line {i + 1}) is never closed: "
-                            f"expected a line reading {marker!r}",
+                            f"heredoc {name!r} (line {i + 1}) is never closed: "
+                            f"expected {delimiter!r} alone at the opening indentation",
                             ("<cell>", i + 1, 1, line),
                         )
-            elif i + 1 not in protected and stripped.startswith(_PATCH_PREFIX):
-                # Valid headers with a missing marker and malformed headers
-                # both fail loudly instead of silently remaining comments.
-                path, marker = _parse_patch_header(line, i + 1)
-                if _find_directive_end(lines, i, "patch", _directive_indent(line), marker) is None:
-                    raise SyntaxError(
-                        f"#@patch (line {i + 1}) is never closed: expected a line reading {marker!r}",
-                        ("<cell>", i + 1, 1, line),
-                    )
             out.append(line)
             i += 1
             continue
 
-        if block.kind == "embed":
-            content = "\n".join(lines[block.start + 1 : block.end])
-            name = block.name or ""
-            out.append(f"{block.indent}{name} = {json.dumps(content, ensure_ascii=True)}")
-            out.extend("" for _ in range(block.end - block.start))
-            notes.append(
-                f"#@embed {name}: bound {len(content)} chars "
-                f"({block.end - block.start - 1} lines) verbatim"
-            )
-        else:
-            path = block.path or ""
-            body = _patch_body_lines(lines, block, path)
-            out.append(
-                f"{block.indent}apply_patch({_quote_arg(path)}, {_quote_arg(chr(10).join(body))})"
-            )
-            out.extend("" for _ in range(block.end - block.start))
+        content = "\n".join(
+            _heredoc_line_text(line) for line in lines[block.start + 1 : block.end]
+        )
+        out.append(f"{block.indent}{block.name} = {json.dumps(content, ensure_ascii=True)}")
+        out.extend("" for _ in range(block.end - block.start))
+        notes.append(
+            f"heredoc {block.name}: bound {len(content)} chars "
+            f"({block.end - block.start - 1} lines) verbatim"
+        )
         i = block.end + 1
     return "\n".join(out), notes
+
 
 def _unicode_repairs(source: str) -> tuple[str, list[str]]:
     """Replace typography homoglyphs that are never valid code.
@@ -763,7 +617,7 @@ def _syntax_hints(source: str) -> list[str]:
             hints.append(
                 f"{_quote_style_at(source, pos)} opened at line {pos[0]} is never closed — "
                 "count the quote runs; text containing triple quotes is the usual cause "
-                "(a #@embed block avoids quoting entirely)"
+                "(an assignment heredoc avoids quoting entirely)"
             )
         elif pos:
             hints.append(
@@ -807,16 +661,16 @@ def _syntax_hints(source: str) -> list[str]:
 def prepare_cell(code: str) -> PreparedCell:
     """Full pre-processing pipeline for a user cell.
 
-    Order matters: embed blocks are extracted first (their content is data,
-    immune to magic rewriting and repairs), then magics are translated, then
+    Order matters: heredocs are extracted first (their content is data, immune
+    to magic rewriting and repairs), then magics are translated, then
     a repair ladder runs only if the result still fails to compile. Every
     accepted repair is disclosed in ``notes``; ``hints`` are populated only
     when no repair compiles.
     """
-    source, embed_notes = _extract_embeds(code)
+    source, heredoc_notes = _extract_heredocs(code)
     transformed = transform_cell(source)
     if _compiles(transformed):
-        return PreparedCell(transformed, embed_notes, [])
+        return PreparedCell(transformed, heredoc_notes, [])
     fenced = _strip_markdown_fences(transformed)
     cleaned, repair_notes = _unicode_repairs(transformed)
     candidates: list[tuple[str, list[str]]] = []
@@ -834,10 +688,10 @@ def prepare_cell(code: str) -> PreparedCell:
         if _compiles(candidate):
             return PreparedCell(
                 candidate,
-                embed_notes + [f"executed repaired cell: {'; '.join(applied)}"],
+                heredoc_notes + [f"executed repaired cell: {'; '.join(applied)}"],
                 [],
             )
-    return PreparedCell(transformed, embed_notes, _syntax_hints(transformed))
+    return PreparedCell(transformed, heredoc_notes, _syntax_hints(transformed))
 
 
 def _emit_cell_prep(rid: str, prepared: PreparedCell) -> None:
@@ -982,8 +836,8 @@ def transform_cell(source: str) -> str:
 
 
 def _string_body_lines(source: str) -> set[int]:
-    """Return literal-protected lines using the shared directive scanner."""
-    _, protected = _collect_directive_blocks(source)
+    """Return literal-protected lines using the shared heredoc scanner."""
+    _, protected = _collect_heredoc_blocks(source)
     return protected
 
 

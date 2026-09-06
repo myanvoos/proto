@@ -1,16 +1,19 @@
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { pipeline } from "node:stream/promises";
+import { createGunzip, gunzipSync, gzipSync } from "node:zlib";
 import { getAgentDir, getBlobsDir, getHistoryDbPath, getModelDbPath, getSessionsDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
-import { BLOB_HASH_RE } from "../session/blob-store";
 import { listSessionsReadOnly, type SessionInfo, type SessionStatus } from "../session/session-listing";
+import { readSessionLiveState } from "../session/session-liveness";
 import { FileSessionStorage } from "../session/session-storage";
 
 const BLOB_FILE_RE = /^([a-f0-9]{64})(?:\.[A-Za-z0-9][A-Za-z0-9._-]{0,31})?$/;
 const BLOB_REF_RE = /\bblob:sha256:([a-f0-9]{64})\b/gi;
+const BLOB_SCAN_CHUNK_BYTES = 64 * 1024;
+const BLOB_REF_OVERLAP = "blob:sha256:".length + 64 + 1;
 const JSONL_GLOB = new Bun.Glob("**/*.jsonl");
 const JSONL_GZ_GLOB = new Bun.Glob("**/*.jsonl.gz");
 const JSONL_BACKUP_GLOB = new Bun.Glob("**/*.jsonl.*.bak");
@@ -275,10 +278,41 @@ async function collectReferencedBlobHashes(sessionRoots: string[]): Promise<Set<
 			...(await collectBackupJsonlFiles(root)),
 		];
 		for (const file of files) {
-			const text = await readTextIfPresent(file);
-			for (const match of text.matchAll(BLOB_REF_RE)) {
-				const hash = match[1]?.toLowerCase();
-				if (hash && BLOB_HASH_RE.test(hash)) hashes.add(hash);
+			const scan = async (source: AsyncIterable<Uint8Array>): Promise<void> => {
+				const decoder = new TextDecoder();
+				let tail = "";
+				let atFileStart = true;
+				const scanChunk = (chunk: string, atEof: boolean): void => {
+					const text = tail + chunk;
+					for (const match of text.matchAll(BLOB_REF_RE)) {
+						// A cropped tail has no trustworthy boundary before its first character.
+						if (!atFileStart && match.index === 0) continue;
+						// A token ending at a chunk edge still needs its following word boundary.
+						if (!atEof && match.index + match[0].length === text.length) continue;
+						hashes.add(match[1]!.toLowerCase());
+					}
+					if (text.length > BLOB_REF_OVERLAP) atFileStart = false;
+					// Keep a full token and its leading boundary, independent of JSONL line size.
+					tail = text.slice(-BLOB_REF_OVERLAP);
+				};
+				for await (const chunk of source) scanChunk(decoder.decode(chunk, { stream: true }), false);
+				scanChunk(decoder.decode(), true);
+			};
+			try {
+				const handle = await fs.open(file, "r");
+				try {
+					const source = handle.createReadStream({ highWaterMark: BLOB_SCAN_CHUNK_BYTES, autoClose: false });
+					if (file.endsWith(COMPRESSED_SESSION_SUFFIX)) {
+						// pipeline propagates read/decompression failures before any blob can be deleted.
+						await pipeline(source, createGunzip(), scan);
+					} else {
+						await scan(source);
+					}
+				} finally {
+					await handle.close();
+				}
+			} catch (error) {
+				if (codeOf(error) !== "ENOENT") throw error;
 			}
 		}
 	}
@@ -377,6 +411,7 @@ async function listNestedSessionsReadOnly(artifactsRoot: string): Promise<Sessio
 
 async function hasLiveNestedSessions(session: SessionInfo, archiveBeforeMs: number): Promise<boolean> {
 	for (const nested of await listNestedSessionsReadOnly(sessionArtifactsPath(session.path))) {
+		if (nested.liveOpen || nested.liveStreaming || readSessionLiveState(nested.path).fresh) return true;
 		if (nested.status && ACTIVE_STATUSES.has(nested.status)) return true;
 		if (nested.modified.getTime() > archiveBeforeMs) return true;
 	}
@@ -470,16 +505,47 @@ function sessionLineageHeaderFromText(text: string): SessionLineageHeader | unde
 	return undefined;
 }
 
-async function gzipSessionFile(source: string, destination: string): Promise<void> {
+async function gzipSessionFile(candidate: ArchiveCandidate, archiveBeforeMs: number): Promise<boolean> {
+	const source = candidate.session.path;
+	const destination = candidate.destinationPath;
+	if (await hasLiveNestedSessions(candidate.session, archiveBeforeMs)) return false;
+	const sourceStat = await statIfPresent(source);
+	if (
+		!sourceStat?.isFile() ||
+		sourceStat.size !== candidate.session.size ||
+		sourceStat.mtime.getTime() !== candidate.session.modified.getTime() ||
+		sourceStat.mtimeMs > archiveBeforeMs ||
+		readSessionLiveState(source).fresh
+	) {
+		return false;
+	}
+
 	await fs.mkdir(path.dirname(destination), { recursive: true });
 	const tempPath = `${destination}.${process.pid}.${Date.now()}.tmp`;
 	let renamed = false;
 	try {
 		const compressed = gzipSync(await Bun.file(source).bytes(), { level: 9 });
 		await Bun.write(tempPath, compressed);
+		// Staging can outlast enumeration: leave writers and replaced transcripts untouched.
+		const nestedLive = await hasLiveNestedSessions(candidate.session, archiveBeforeMs);
+		const currentStat = await statIfPresent(source);
+		if (
+			nestedLive ||
+			!currentStat ||
+			currentStat.dev !== sourceStat.dev ||
+			currentStat.ino !== sourceStat.ino ||
+			currentStat.size !== sourceStat.size ||
+			currentStat.mtimeMs !== sourceStat.mtimeMs ||
+			currentStat.ctimeMs !== sourceStat.ctimeMs ||
+			readSessionLiveState(source).fresh
+		) {
+			await fs.rm(tempPath, { force: true });
+			return false;
+		}
 		await fs.rename(tempPath, destination);
 		renamed = true;
 		await fs.unlink(source);
+		return true;
 	} catch (error) {
 		await fs.rm(tempPath, { force: true });
 		if (renamed) await fs.rm(destination, { force: true });
@@ -494,7 +560,7 @@ async function restoreGzipSessionFile(source: string, destination: string): Prom
 	await fs.unlink(source);
 }
 
-async function moveSessionWithArtifacts(candidate: ArchiveCandidate): Promise<void> {
+async function moveSessionWithArtifacts(candidate: ArchiveCandidate, archiveBeforeMs: number): Promise<boolean> {
 	const sourceSession = candidate.session.path;
 	const destSession = candidate.destinationPath;
 	const legacyDestSession = destSession.endsWith(".gz") ? destSession.slice(0, -".gz".length) : `${destSession}.gz`;
@@ -508,12 +574,13 @@ async function moveSessionWithArtifacts(candidate: ArchiveCandidate): Promise<vo
 
 	const moved: Array<{ source: string; destination: string; compressed?: boolean }> = [];
 	try {
-		await gzipSessionFile(sourceSession, destSession);
+		if (!(await gzipSessionFile(candidate, archiveBeforeMs))) return false;
 		moved.push({ source: sourceSession, destination: destSession, compressed: true });
 		if (await pathExists(sourceArtifacts)) {
 			await movePath(sourceArtifacts, destArtifacts);
 			moved.push({ source: sourceArtifacts, destination: destArtifacts });
 		}
+		return true;
 	} catch (error) {
 		for (const move of moved.reverse()) {
 			try {
@@ -625,7 +692,7 @@ async function runArchiveGc(options: ResolvedGcOptions, archiveRoot: string): Pr
 	const archiveBeforeMs = Date.now() - GC_WRITE_GRACE_MS;
 
 	for (const session of sessions) {
-		if (session.status && ACTIVE_STATUSES.has(session.status)) {
+		if (session.liveOpen || session.liveStreaming || (session.status && ACTIVE_STATUSES.has(session.status))) {
 			result.skippedActive += 1;
 			continue;
 		}
@@ -663,7 +730,11 @@ async function runArchiveGc(options: ResolvedGcOptions, archiveRoot: string): Pr
 	const archivedSessionIds: string[] = [];
 	for (const candidate of candidates) {
 		try {
-			await moveSessionWithArtifacts(candidate);
+			if (!(await moveSessionWithArtifacts(candidate, archiveBeforeMs))) {
+				result.skippedActive += 1;
+				result.wouldArchive -= 1;
+				continue;
+			}
 			result.archived += 1;
 			archivedSessionIds.push(candidate.session.id);
 		} catch (error) {

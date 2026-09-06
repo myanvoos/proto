@@ -80,6 +80,7 @@ test("non-PTY launch send appends a line feed for line-oriented stdin and preser
 		});
 		expect(textOf(rawLogs)).toContain("follow timed out");
 		expect(textOf(rawLogs)).not.toContain("echo:raw");
+		expect(textOf(rawLogs)).not.toContain("echo:marker");
 
 		const completedCursor = rawLogs.details?.cursor ?? rawCursor;
 		await executeLaunch(session, { op: "send", name, text: "\n", enter: false });
@@ -91,6 +92,7 @@ test("non-PTY launch send appends a line feed for line-oriented stdin and preser
 			timeout: 2,
 		});
 		expect(textOf(completed)).toContain("echo:raw");
+		expect(textOf(completed)).not.toContain("echo:marker");
 	} finally {
 		await cleanupDaemon(cwd, runtimeDir, session, name, started);
 	}
@@ -125,3 +127,88 @@ test("PTY launch send keeps terminal Enter as carriage return", async () => {
 		await cleanupDaemon(cwd, runtimeDir, session, name, started);
 	}
 }, 30000);
+
+test("a shutting-down broker rejects new launches before reporting a doomed process as running", async () => {
+	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-launch-shutdown-"));
+	const runtimeDir = daemonRuntimeDir(cwd);
+	const session = testSession(cwd);
+	const name = "shutdown-gate";
+	const stopping = path.join(cwd, "stopping");
+	const release = path.join(cwd, "release");
+	let started = false;
+	try {
+		await executeLaunch(session, {
+			op: "start",
+			name,
+			application: process.execPath,
+			args: [
+				"-e",
+				'process.on("SIGTERM", async () => { await Bun.write(process.argv[1], "stopping"); while (!(await Bun.file(process.argv[2]).exists())) await Bun.sleep(10); process.exit(0); }); console.log("ready"); setInterval(() => {}, 1000);',
+				stopping,
+				release,
+			],
+			pty: false,
+			ready: { log: "ready", timeout: 5 },
+		});
+		started = true;
+		const client = await daemonClientForProject(cwd);
+		await client.request({ op: "shutdown" });
+		const deadline = Date.now() + 5_000;
+		while (!(await Bun.file(stopping).exists())) {
+			if (Date.now() >= deadline) throw new Error("daemon did not begin shutdown");
+			await Bun.sleep(10);
+		}
+		await expect(
+			client.request({
+				op: "start",
+				spec: {
+					name: "late-launch",
+					application: process.execPath,
+					args: ["-e", "setInterval(() => {}, 1000)"],
+					cwd,
+					env: {},
+					pty: false,
+					persist: false,
+					detached: false,
+					restart: "no",
+				},
+			}),
+		).rejects.toMatchObject({ retryable: true, message: expect.stringContaining("shutting down") });
+		expect(await Bun.file(path.join(runtimeDir, "daemons", "late-launch", "meta.json")).exists()).toBe(false);
+	} finally {
+		await Bun.write(release, "release");
+		await cleanupDaemon(cwd, runtimeDir, session, name, started);
+	}
+}, 30_000);
+
+test("invalid readiness ports return a validation error without launching a process", async () => {
+	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-launch-port-"));
+	const runtimeDir = daemonRuntimeDir(cwd);
+	const session = testSession(cwd);
+	const name = "invalid-readiness";
+	try {
+		const client = await daemonClientForProject(cwd);
+		for (const port of [0, 65_536, 1.5]) {
+			await expect(
+				client.request({
+					op: "start",
+					spec: {
+						name,
+						application: process.execPath,
+						args: ["-e", "setInterval(() => {}, 1000)"],
+						cwd,
+						env: {},
+						pty: false,
+						persist: false,
+						detached: false,
+						restart: "no",
+						ready: { port, timeoutMs: 10 },
+					},
+				}),
+			).rejects.toThrow("ready.port must be an integer from 1 to 65535");
+		}
+		expect(await client.request({ op: "list" })).toMatchObject({ daemons: [] });
+	} finally {
+		await cleanupDaemon(cwd, runtimeDir, session, name, true);
+	}
+}, 30_000);

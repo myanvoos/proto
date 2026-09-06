@@ -1542,7 +1542,7 @@ export async function runRootCommand(
 					settings: settingsInstance,
 					eventBus,
 				}),
-				Math.trunc(Number(settingsInstance.get("orchestrator.agentIdleTtlMs") ?? 420_000) || 0),
+				Math.trunc(Number(settingsInstance.get("orchestrator.agentIdleTtlMs") ?? 60_000) || 0),
 			);
 			if (parsedArgs.apiKey && !sessionOptions.model && session.model) {
 				authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);

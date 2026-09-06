@@ -436,11 +436,10 @@ test("js kernel fs tracker covers Bun.write and prunes cache dirs", async () => 
 		const reported = cellEvents
 			.filter(event => event.op === "write" || event.op === "delete")
 			.map(event => String(event.path));
-		expect(reported, "only real changes, Bun.write, and the walker's baseline-less mtime event appear").toEqual([
-			outside,
-			path.join(dir, "changed.txt"),
-			path.join(dir, "touched.txt"),
-		]);
+		expect(
+			reported.toSorted(),
+			"only real changes, Bun.write, and the walker's baseline-less mtime event appear",
+		).toEqual([outside, path.join(dir, "changed.txt"), path.join(dir, "touched.txt")].toSorted());
 		const bunEvent = cellEvents.find(event => event.op === "write" && event.path === outside);
 		expect(String(bunEvent?.diff)).toContain("+1|bun wrote this");
 		const touched = cellEvents.find(event => event.op === "write" && event.path === path.join(dir, "touched.txt"));

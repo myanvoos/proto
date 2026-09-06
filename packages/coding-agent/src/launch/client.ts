@@ -9,6 +9,7 @@ import {
 	DAEMON_IDLE_GRACE_ENV,
 	DAEMON_PROJECT_DIR_ENV,
 	DAEMON_RUNTIME_DIR_ENV,
+	DaemonBrokerRejectedError,
 	type DaemonCompletionNotification,
 	type DaemonOperation,
 	type DaemonRpcResult,
@@ -50,8 +51,6 @@ export interface DaemonBrokerClient {
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
 	close(): void;
 }
-
-export class DaemonBrokerRejectedError extends Error {}
 
 async function readOrCreateToken(runtimeDir: string): Promise<string> {
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
@@ -153,6 +152,8 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		if (this.#closed) throw new Error("Daemon broker client is closed");
 		if (signal?.aborted) throw new Error("Daemon broker request aborted");
 		await this.#connect();
+		if (this.#closed) throw new Error("Daemon broker client is closed");
+		if (signal?.aborted) throw new Error("Daemon broker request aborted");
 		const socket = this.#socket;
 		if (!socket || socket.destroyed) throw new Error("Daemon broker socket is unavailable");
 
@@ -276,6 +277,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			this.#bindSocket(await openSocket(this.#endpoint, 250));
 			return;
 		} catch {}
+		if (this.#closed) throw new Error("Daemon broker client is closed");
 		this.#spawnBroker();
 		const deadline = Date.now() + CONNECT_TIMEOUT_MS;
 		let lastError: Error | undefined;
@@ -284,6 +286,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 				this.#bindSocket(await openSocket(this.#endpoint, 250));
 				return;
 			} catch (error) {
+				if (this.#closed) throw new Error("Daemon broker client is closed");
 				lastError = error instanceof Error ? error : new Error(String(error));
 				await Bun.sleep(CONNECT_RETRY_MS);
 			}
@@ -310,6 +313,10 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	}
 
 	#bindSocket(socket: net.Socket): void {
+		if (this.#closed) {
+			socket.destroy();
+			throw new Error("Daemon broker client is closed");
+		}
 		this.#socket = socket;
 		this.#buffer = "";
 		socket.setEncoding("utf8");
@@ -365,7 +372,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			clearTimeout(pending.timer);
 			pending.removeAbort?.();
 			if (!response.ok) {
-				pending.reject(new DaemonBrokerRejectedError(response.error));
+				pending.reject(new DaemonBrokerRejectedError(response.error, response.retryable === true));
 				continue;
 			}
 			try {

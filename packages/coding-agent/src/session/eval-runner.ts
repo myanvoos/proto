@@ -1,6 +1,7 @@
 import type { Agent } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { releaseFsObservationLedger, retainFsObservationLedger } from "../eval/fs-observations";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { namespaceSessionId as namespacePythonSessionId } from "../eval/py";
 import {
@@ -30,6 +31,7 @@ export class EvalRunner {
 	#abortControllers = new Set<AbortController>();
 	#pendingMessages: PythonExecutionMessage[] = [];
 	#activeExecutions = new Set<Promise<unknown>>();
+	#observationSessionId: string | undefined;
 	#disposing = false;
 
 	constructor(host: EvalRunnerHost, options: { kernelOwnerId: string; parentSessionId: string | undefined }) {
@@ -141,11 +143,30 @@ export class EvalRunner {
 	}
 
 	getSessionId(): string | null {
-		if (this.#parentSessionId !== undefined) return this.#parentSessionId;
-		return defaultEvalSessionId({
-			cwd: this.#host.sessionManager.getCwd(),
-			getSessionFile: () => this.#host.sessionManager.getSessionFile() ?? null,
-		});
+		const sessionId =
+			this.#parentSessionId ??
+			defaultEvalSessionId({
+				cwd: this.#host.sessionManager.getCwd(),
+				getSessionFile: () => this.#host.sessionManager.getSessionFile() ?? null,
+			});
+		if (!this.#disposing && sessionId !== this.#observationSessionId) {
+			if (this.#observationSessionId !== undefined) {
+				releaseFsObservationLedger(this.#observationSessionId, this.#kernelOwnerId);
+			}
+			retainFsObservationLedger(sessionId, this.#kernelOwnerId);
+			this.#observationSessionId = sessionId;
+		}
+		return sessionId;
+	}
+
+	syncObservationSession(): void {
+		this.getSessionId();
+	}
+
+	disposeObservations(): void {
+		if (this.#observationSessionId === undefined) return;
+		releaseFsObservationLedger(this.#observationSessionId, this.#kernelOwnerId);
+		this.#observationSessionId = undefined;
 	}
 
 	flushPending(): void {

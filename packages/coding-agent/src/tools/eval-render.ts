@@ -116,7 +116,7 @@ function getRenderCells(args: EvalRenderArgs | undefined): EvalRenderCell[] {
 		const code = typeof cell.code === "string" ? cell.code : "";
 		out.push({
 			language,
-			code: formatEvalCodeForDisplay(code, language),
+			code,
 			title: typeof cell.title === "string" ? cell.title : undefined,
 		});
 	}
@@ -124,18 +124,6 @@ function getRenderCells(args: EvalRenderArgs | undefined): EvalRenderCell[] {
 }
 
 type AgentEventStatus = "pending" | "running" | "completed" | "failed" | "aborted";
-
-export function upsertStatusEvent(events: EvalStatusEvent[], event: EvalStatusEvent): void {
-	if (event.op === "agent" && typeof event.id === "string") {
-		const id = event.id;
-		const idx = events.findIndex(e => e.op === "agent" && e.id === id);
-		if (idx >= 0) {
-			events[idx] = event;
-			return;
-		}
-	}
-	events.push(event);
-}
 
 function formatExecutionMetadataLine(execution: ExecutionMetadata | undefined, theme: Theme): string | undefined {
 	if (!execution) return undefined;
@@ -701,7 +689,7 @@ function astPreviewLines(code: string, language: string, theme: Theme, width: nu
 }
 
 /**
- * Render one kernel cell (header + AST preview + output + Status hunks + JSON
+ * Render one kernel cell (header + code preview + output + Status hunks + JSON
  * display trees) exactly as the eval tool's per-cell path does. Shared so the
  * bash `python`/`node`/`bun` bridge renders a routed cell identically to the `eval`
  * tool — same primitives, so the two can never drift.
@@ -722,11 +710,11 @@ export function renderKernelCellLines(
 ): string[] {
 	const { expanded, isPartial, spinnerFrame, previewLines, width } = opts;
 	const language = cell.language ?? "python";
-	const code = formatEvalCodeForDisplay(cell.code, language);
+	const cellLive = isPartial || cell.status === "running" || cell.status === "pending";
+	const code = cellLive ? cell.code : formatEvalCodeForDisplay(cell.code, language);
 	const allEvents = cell.statusEvents ?? [];
 	const agentEvents = allEvents.filter(e => e.op === "agent");
 	const otherEvents = agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents;
-	const cellLive = isPartial && (cell.status === "running" || cell.status === "pending");
 	const cellExpanded = expanded && !cellLive;
 	const liveWindow = previewWindowRows();
 	const liveSectionCap = Math.min(EVAL_STREAMING_SECTION_LINES, Math.max(3, Math.floor(liveWindow / 2)));
@@ -779,7 +767,7 @@ export function renderKernelCellLines(
 	const codeMaxLines = isPartial
 		? Math.max(3, liveWindow - statusLines.length - outputLines.length - agentLines.length)
 		: liveWindow;
-	const astLines = cellExpanded ? undefined : astPreviewLines(code, language, theme, width);
+	const astLines = cellLive || cellExpanded ? undefined : astPreviewLines(code, language, theme, width);
 
 	const cellLines = renderCodeCell(
 		{
@@ -850,7 +838,6 @@ export const evalToolRenderer = {
 				const lines: string[] = [];
 				for (let i = 0; i < cells.length; i++) {
 					const cell = cells[i];
-					const astLines = astPreviewLines(cell.code, cell.language, uiTheme, width);
 					const cellLines = renderCodeCell(
 						{
 							code: cell.code,
@@ -866,8 +853,6 @@ export const evalToolRenderer = {
 							codeTail: true,
 							codeMaxLines: previewWindowRows(),
 							expanded: false,
-							preRenderedCodeLines: astLines,
-							codeVariant: astLines ? "ast" : undefined,
 						},
 						uiTheme,
 					);

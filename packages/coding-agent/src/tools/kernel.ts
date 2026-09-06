@@ -12,7 +12,7 @@ import type { ToolSession } from ".";
 
 const kernelSchema = type({
 	code: type("string").describe(
-		"Python code to run in the persistent kernel, verbatim. Top-level `await` is available. Verbatim `#@embed NAME … #@end` and `#@patch PATH … #@end` blocks carry literal text without escaping.",
+		"Python code to run in the persistent kernel, verbatim. Top-level `await` is available. Custom `NAME = <<DELIMITER` heredoc assignments carry literal text without escaping.",
 	),
 	"title?": type("string").describe('short label shown in transcript (e.g. "imports", "load config")'),
 	"timeout?": type("number").describe(

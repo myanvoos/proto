@@ -19,11 +19,14 @@ import { workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBrokerEndpoint, writeDaemonScopeMeta } from "./paths";
 import { hasLiveDaemonProjectPresence, pruneDeadDaemonRuntimeDirs } from "./presence";
 import {
+	DAEMON_BROKER_WORKER_ARG,
 	DAEMON_IDLE_GRACE_ENV,
+	DAEMON_MAX_REQUEST_BYTES,
 	DAEMON_PROJECT_DIR_ENV,
 	DAEMON_PTY_COLUMNS,
 	DAEMON_PTY_ROWS,
 	DAEMON_RUNTIME_DIR_ENV,
+	DaemonBrokerRejectedError,
 	type DaemonCompletionNotification,
 	type DaemonOperation,
 	type DaemonReadySpec,
@@ -40,12 +43,13 @@ import {
 import { renderTerminalOutput } from "./terminal-output";
 
 const DEFAULT_IDLE_GRACE_MS = 3_000;
-const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LOG_BYTES = 25 * 1024 * 1024;
 const LOG_READ_BYTES = 2 * 1024 * 1024;
 const READINESS_BUFFER_CHARS = 64 * 1024;
 const RESTART_MAX_DELAY_MS = 30_000;
 const RESTART_BACKOFF_BASE_MS = 1_000;
+const LEASE_WAIT_TIMEOUT_MS = 15_000;
+const LEASE_WAIT_POLL_MS = 100;
 
 const MAX_TERMINAL_DAEMONS_LISTED = 10;
 const TOKEN_FILE = "broker.token";
@@ -103,6 +107,15 @@ interface DaemonLogRead {
 	cursor: number;
 }
 
+interface DaemonLogReadOptions {
+	head: boolean;
+	lines: number;
+	cursor: number;
+	grep?: string;
+	sinceBytes?: number;
+	currentEnd: number;
+}
+
 function quoteShellArg(value: string): string {
 	return `'${value.replaceAll("'", `'\\''`)}'`;
 }
@@ -150,20 +163,58 @@ function syncReadyPending(record: ManagedDaemon): void {
 	record.snapshot.readyPending = pending.length > 0 ? pending : undefined;
 }
 
-async function fileTextSlice(filePath: string, head: boolean): Promise<string> {
+interface DaemonLogWindow {
+	currentEnd: number;
+	sinceBytes?: number;
+	head: boolean;
+}
+
+async function fileSize(filePath: string): Promise<number> {
 	try {
-		const stat = await fs.stat(filePath);
-		const file = Bun.file(filePath);
-		if (stat.size <= LOG_READ_BYTES) return await file.text();
-		return head
-			? await file.slice(0, LOG_READ_BYTES).text()
-			: await file.slice(Math.max(0, stat.size - LOG_READ_BYTES)).text();
+		return (await fs.stat(filePath)).size;
+	} catch (error) {
+		if (isEnoent(error)) return 0;
+		throw error;
+	}
+}
+
+async function fileRangeText(filePath: string, start: number, end: number): Promise<string> {
+	if (end <= start) return "";
+	try {
+		const text = await Bun.file(filePath).slice(start, end).text();
+		return start > 0 ? text.replace(/^\uFFFD+/u, "") : text;
 	} catch (error) {
 		if (isEnoent(error)) return "";
 		throw error;
 	}
 }
 
+async function readLogWindow(logPath: string, previousPath: string, window: DaemonLogWindow): Promise<string> {
+	let currentEnd = Math.min(window.currentEnd, await fileSize(logPath));
+	let previousStart = 0;
+	let previousEnd = 0;
+	let currentStart = currentEnd - (window.sinceBytes ?? Number.POSITIVE_INFINITY);
+	if (currentStart < 0) {
+		previousEnd = await fileSize(previousPath);
+		previousStart = Math.max(0, previousEnd + currentStart);
+		currentStart = 0;
+	}
+	const excess = previousEnd - previousStart + (currentEnd - currentStart) - LOG_READ_BYTES;
+	if (excess > 0 && window.head) {
+		const fromCurrent = Math.min(excess, currentEnd - currentStart);
+		currentEnd -= fromCurrent;
+		previousEnd -= excess - fromCurrent;
+	} else if (excess > 0) {
+		const fromPrevious = Math.min(excess, previousEnd - previousStart);
+		previousStart += fromPrevious;
+		currentStart += excess - fromPrevious;
+	}
+	const [previous, current] = await Promise.all([
+		fileRangeText(previousPath, previousStart, previousEnd),
+		fileRangeText(logPath, currentStart, currentEnd),
+	]);
+	return `${previous}${current}`;
+}
 class DaemonLog {
 	readonly #path: string;
 	readonly #previousPath: string;
@@ -206,10 +257,10 @@ class DaemonLog {
 		return text;
 	}
 
-	read(head: boolean, lines: number, cursor: number, grep?: string): Promise<DaemonLogRead> {
+	read(options: DaemonLogReadOptions): Promise<DaemonLogRead> {
 		const snapshot = this.#queue.then(async () => {
 			await this.#writer.flush();
-			return DaemonLog.readFiles(this.#path, this.#previousPath, head, lines, cursor, grep);
+			return DaemonLog.readFiles(this.#path, this.#previousPath, options);
 		});
 
 		this.#queue = snapshot.then(
@@ -226,19 +277,28 @@ class DaemonLog {
 		await this.#writer.end();
 	}
 
+	async readTail(currentEnd: number): Promise<string> {
+		await this.#queue;
+		return DaemonLog.readTail(this.#path, this.#previousPath, currentEnd);
+	}
+
+	static async readTail(logPath: string, previousPath: string, currentEnd: number): Promise<string> {
+		if (currentEnd <= 0) return "";
+		const window = await readLogWindow(logPath, previousPath, { currentEnd, sinceBytes: currentEnd, head: false });
+		return sanitizeText(window).slice(-READINESS_BUFFER_CHARS);
+	}
+
 	static async readFiles(
 		logPath: string,
 		previousPath: string,
-		head: boolean,
-		lines: number,
-		cursor: number,
-		grep?: string,
+		options: DaemonLogReadOptions,
 	): Promise<DaemonLogRead> {
-		const [previous, current] = await Promise.all([fileTextSlice(previousPath, head), fileTextSlice(logPath, head)]);
-		const combined = `${previous}${previous && current && !previous.endsWith("\n") ? "\n" : ""}${current}`;
+		const { head, lines, cursor, grep, sinceBytes, currentEnd } = options;
+		if (sinceBytes !== undefined && sinceBytes <= 0) return { text: "", terminalOutput: "", cursor };
+		const window = await readLogWindow(logPath, previousPath, { currentEnd, sinceBytes, head });
 		const terminalOutput = head
-			? truncateHeadBytes(combined, LOG_READ_BYTES).text
-			: truncateTailBytes(combined, LOG_READ_BYTES).text;
+			? truncateHeadBytes(window, LOG_READ_BYTES).text
+			: truncateTailBytes(window, LOG_READ_BYTES).text;
 		let text = sanitizeText(terminalOutput);
 		if (grep) {
 			let pattern: RegExp;
@@ -252,9 +312,9 @@ class DaemonLog {
 				.filter(line => pattern.test(line))
 				.join("\n");
 		}
-		const options = { maxLines: lines, maxBytes: 256 * 1024 };
+		const limits = { maxLines: lines, maxBytes: 256 * 1024 };
 		return {
-			text: head ? truncateHead(text, options).content : truncateTail(text, options).content,
+			text: head ? truncateHead(text, limits).content : truncateTail(text, limits).content,
 			terminalOutput,
 			cursor,
 		};
@@ -269,9 +329,38 @@ class DaemonLog {
 	}
 }
 
-async function acquireBrokerLease(runtimeDir: string): Promise<BrokerLease | null> {
+function brokerLeaseHolder(pidPath: string): Promise<number | undefined> {
+	return Bun.file(pidPath)
+		.json()
+		.then((raw: unknown) => {
+			if (typeof raw !== "object" || raw === null || !("pid" in raw) || typeof raw.pid !== "number")
+				return undefined;
+			const holder = Process.fromPid(raw.pid);
+			if (holder?.status() !== "running") return undefined;
+			return holder.args().includes(DAEMON_BROKER_WORKER_ARG) ? raw.pid : undefined;
+		})
+		.catch(() => undefined);
+}
+
+function endpointAccepts(endpoint: string): Promise<boolean> {
+	const { promise, resolve } = Promise.withResolvers<boolean>();
+	const socket = net.createConnection({ path: endpoint });
+	socket.setTimeout(250, () => {
+		socket.destroy();
+		resolve(false);
+	});
+	socket.once("connect", () => {
+		socket.destroy();
+		resolve(true);
+	});
+	socket.once("error", () => resolve(false));
+	return promise;
+}
+
+async function acquireBrokerLease(runtimeDir: string, endpoint: string): Promise<BrokerLease | null> {
 	const pidPath = path.join(runtimeDir, PID_FILE);
-	for (let attempt = 0; attempt < 2; attempt++) {
+	const deadline = Date.now() + LEASE_WAIT_TIMEOUT_MS;
+	for (;;) {
 		try {
 			const handle = await fs.open(pidPath, "wx", 0o600);
 			const instanceId = crypto.randomUUID();
@@ -283,21 +372,20 @@ async function acquireBrokerLease(runtimeDir: string): Promise<BrokerLease | nul
 			return { path: pidPath, instanceId };
 		} catch (error) {
 			if (!isEexist(error)) throw error;
-			try {
-				const raw: unknown = await Bun.file(pidPath).json();
-				if (typeof raw === "object" && raw !== null && "pid" in raw && typeof raw.pid === "number") {
-					try {
-						process.kill(raw.pid, 0);
-						return null;
-					} catch {}
-				}
-			} catch {}
-			await fs.rm(pidPath, { force: true });
 		}
+		const holder = await brokerLeaseHolder(pidPath);
+		if (holder === undefined) {
+			await fs.rm(pidPath, { force: true });
+			continue;
+		}
+		if (await endpointAccepts(endpoint)) return null;
+		if (Date.now() >= deadline) {
+			logger.warn("Daemon broker lease held by an unresponsive broker", { pid: holder, runtimeDir });
+			return null;
+		}
+		await Bun.sleep(LEASE_WAIT_POLL_MS);
 	}
-	return null;
 }
-
 async function releaseBrokerLease(lease: BrokerLease): Promise<void> {
 	try {
 		const raw: unknown = await Bun.file(lease.path).json();
@@ -407,7 +495,7 @@ class DaemonBroker {
 		socket.setEncoding("utf8");
 		socket.on("data", chunk => {
 			buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-			if (Buffer.byteLength(buffer, "utf8") > MAX_REQUEST_BYTES) {
+			if (Buffer.byteLength(buffer, "utf8") > DAEMON_MAX_REQUEST_BYTES) {
 				socket.destroy(new Error("Daemon broker request exceeds size limit"));
 				return;
 			}
@@ -442,8 +530,16 @@ class DaemonBroker {
 		let id = "unknown";
 		try {
 			const decoded: unknown = JSON.parse(line);
+			if (
+				typeof decoded === "object" &&
+				decoded !== null &&
+				"id" in decoded &&
+				typeof decoded.id === "string" &&
+				decoded.id.length > 0
+			) {
+				id = decoded.id;
+			}
 			const request = parseDaemonWireRequest(decoded);
-			id = request.id;
 			if (request.token !== this.#token) throw new Error("Daemon broker authentication failed");
 			onAuthenticated();
 			for (const owner of request.completionUnsubscribes ?? []) {
@@ -523,11 +619,25 @@ class DaemonBroker {
 			if (request.operation.op === "shutdown") setTimeout(() => void this.shutdown(), 10);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			socket.write(`${JSON.stringify({ id, ok: false, error: message })}\n`);
+			socket.write(
+				`${JSON.stringify({
+					id,
+					ok: false,
+					error: message,
+					...(error instanceof DaemonBrokerRejectedError && error.retryable ? { retryable: true } : {}),
+				})}\n`,
+			);
+		}
+	}
+
+	#assertAcceptingRequests(): void {
+		if (this.#shuttingDown) {
+			throw new DaemonBrokerRejectedError("Daemon broker is shutting down; retry the request after it exits.", true);
 		}
 	}
 
 	async #dispatch(operation: DaemonOperation): Promise<DaemonRpcResult> {
+		this.#assertAcceptingRequests();
 		switch (operation.op) {
 			case "ping":
 				return { op: "ping", projectDir: this.#projectDir };
@@ -624,6 +734,10 @@ class DaemonBroker {
 				completionSubscriptionId: owner === undefined ? undefined : this.#completionSubscriptions.get(owner),
 				pendingCompletions: [],
 			};
+			if (this.#shuttingDown) {
+				await record.log?.close();
+				this.#assertAcceptingRequests();
+			}
 			syncReadyPending(record);
 			this.#records.set(spec.name, record);
 		} finally {
@@ -786,7 +900,9 @@ class DaemonBroker {
 		if (generation !== record.generation) return;
 		const output = raw.toWellFormed();
 		const text = record.log?.append(output) ?? output;
-		record.snapshot.outputBytes += Buffer.byteLength(text, "utf8");
+		const bytes = Buffer.byteLength(text, "utf8");
+		record.snapshot.outputBytes += bytes;
+		record.outputOffset += bytes;
 		this.#trackOutput(record, generation, sanitizeText(text));
 	}
 
@@ -933,6 +1049,7 @@ class DaemonBroker {
 		this.#persist(record);
 		await record.log?.close();
 		record.log = undefined;
+		record.readinessBuffer = "";
 		await record.persistQueue;
 		if (
 			completion &&
@@ -959,15 +1076,23 @@ class DaemonBroker {
 			timedOut = !changed;
 		}
 		const lines = Math.max(1, Math.min(1_000, Math.floor(operation.lines)));
+		const options: DaemonLogReadOptions = {
+			head: operation.head,
+			lines,
+			cursor: record.snapshot.outputBytes,
+			grep: operation.grep,
+			sinceBytes:
+				operation.cursor !== undefined || operation.follow
+					? Math.max(0, record.snapshot.outputBytes - cursor)
+					: undefined,
+			currentEnd: record.outputOffset,
+		};
 		const output = record.log
-			? await record.log.read(operation.head, lines, record.snapshot.outputBytes, operation.grep)
+			? await record.log.read(options)
 			: await DaemonLog.readFiles(
 					path.join(record.dir, LOG_FILE),
 					path.join(record.dir, PREVIOUS_LOG_FILE),
-					operation.head,
-					lines,
-					record.snapshot.outputBytes,
-					operation.grep,
+					options,
 				);
 		const terminalOutput = record.spec.pty && operation.grep === undefined ? output.terminalOutput : undefined;
 		const terminalRows =
@@ -1006,9 +1131,26 @@ class DaemonBroker {
 			record.snapshot.readyAt !== undefined ||
 			record.snapshot.state === "ready" ||
 			(record.snapshot.state === "running" && !record.spec.ready);
-		const condition = (): boolean => {
+		let terminalOutput: { generation: number; text: string } | undefined;
+		const condition = async (): Promise<boolean> => {
 			if (pattern) {
-				const match = pattern.exec(record.readinessBuffer);
+				let text = record.readinessBuffer;
+				if (terminalState(record.snapshot.state)) {
+					if (terminalOutput?.generation !== record.generation) {
+						const generation = record.generation;
+						text = record.log
+							? await record.log.readTail(record.outputOffset)
+							: await DaemonLog.readTail(
+									path.join(record.dir, LOG_FILE),
+									path.join(record.dir, PREVIOUS_LOG_FILE),
+									record.outputOffset,
+								);
+						if (generation !== record.generation) return false;
+						terminalOutput = { generation, text };
+					}
+					text = terminalOutput.text;
+				}
+				const match = pattern.exec(text);
 				if (!match) return false;
 				matched = match[0].slice(0, 500);
 				return true;
@@ -1017,7 +1159,7 @@ class DaemonBroker {
 
 			return readyObserved() || terminalState(record.snapshot.state);
 		};
-		const woke = condition() || (await this.#waitUntil(record, condition, operation.timeoutMs));
+		const woke = (await condition()) || (await this.#waitUntil(record, condition, operation.timeoutMs));
 
 		const timedOut = operation.for === "ready" && !pattern ? !readyObserved() : !woke;
 		return { op: "wait", daemon: record.snapshot, matched, timedOut };
@@ -1073,6 +1215,7 @@ class DaemonBroker {
 			this.#persist(record);
 			await record.log?.close();
 			record.log = undefined;
+			record.readinessBuffer = "";
 			return;
 		}
 		record.snapshot.state = "stopping";
@@ -1087,19 +1230,29 @@ class DaemonBroker {
 	async #restart(name: string): Promise<DaemonRpcResult> {
 		const record = this.#record(name);
 		await this.#stopRecord(record, 2_000);
+		this.#assertAcceptingRequests();
 		await record.log?.close();
 		record.log = await DaemonLog.open(record.dir);
+		if (this.#shuttingDown) {
+			await record.log.close();
+			record.log = undefined;
+			this.#assertAcceptingRequests();
+		}
 		record.stopRequested = false;
 		await this.#launch(record);
 		await record.persistQueue;
 		return { op: "restart", daemon: record.snapshot };
 	}
 
-	async #waitUntil(record: ManagedDaemon, condition: () => boolean, timeoutMs: number): Promise<boolean> {
+	async #waitUntil(
+		record: ManagedDaemon,
+		condition: () => boolean | Promise<boolean>,
+		timeoutMs: number,
+	): Promise<boolean> {
 		const deadline = Date.now() + Math.max(0, timeoutMs);
 		while (Date.now() < deadline) {
 			await this.#refreshDetached(record);
-			if (condition()) return true;
+			if (await condition()) return true;
 			if (this.#shuttingDown && terminalState(record.snapshot.state)) return condition();
 			await Bun.sleep(50);
 		}
@@ -1120,6 +1273,7 @@ class DaemonBroker {
 		const metadata = {
 			daemon: { ...record.snapshot },
 			spec: record.spec,
+			outputOffset: record.outputOffset,
 			completionEvents: record.completionCapable,
 			completionSubscriptionId: record.completionSubscriptionId,
 			completionPending: record.pendingCompletions.length > 0,
@@ -1203,7 +1357,13 @@ class DaemonBroker {
 					logReady: detached && (!spec.ready?.log || snapshot.state === "ready"),
 					portReady: detached && (spec.ready?.port === undefined || snapshot.state === "ready"),
 					readinessBuffer: "",
-					outputOffset: detached ? snapshot.outputBytes : 0,
+					outputOffset:
+						"outputOffset" in decoded &&
+						typeof decoded.outputOffset === "number" &&
+						Number.isSafeInteger(decoded.outputOffset) &&
+						decoded.outputOffset >= 0
+							? decoded.outputOffset
+							: snapshot.outputBytes,
 					readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
 					consecutiveFailures: 0,
 					persistQueue: Promise.resolve(),
@@ -1315,7 +1475,7 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 			? requestedRestartBackoffBaseMs
 			: RESTART_BACKOFF_BASE_MS;
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
-	const lease = await acquireBrokerLease(runtimeDir);
+	const lease = await acquireBrokerLease(runtimeDir, daemonBrokerEndpoint(projectDir, runtimeDir));
 	if (!lease) return;
 	setProcessName("proto daemon broker");
 

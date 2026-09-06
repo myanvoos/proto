@@ -27,7 +27,7 @@ Numbered milestones in execution order — the stages of the loop. Each MUST be 
 The exact commands, verbatim and runnable from the repo root, one per line, with each command enclosed in backticks and followed by what it proves — a checkpoint command per milestone where possible, then the final gate commands. This section is the auditor's whitelist: a criterion with no command here is unprovable.
 
 ## Boundaries
-Files, directories, and operations in scope, then an explicit denylist of what MUST NOT be touched.
+Files, directories, and operations in scope, then an explicit denylist of what is NEVER touched.
 
 ## Stop conditions
 A hard attempt cap per milestone and an overall cap, plus every condition that halts the loop and surfaces to the user: ambiguity, risky operation, cap reached, verification impossible.

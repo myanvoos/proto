@@ -13,12 +13,15 @@
 
 ### Changed
 
+- Long Markdown responses update faster while streaming.
 - Improved slash command autocompletion to chain suggestions after selecting a namespace
 - Removed all composer shapes except the default borderless layout; `Editor` now renders a single chrome and `setBorderStyle`/`getComposerStyle`/`registerComposerStyle` are gone
 - Desktop and terminal (OSC 7/9/99, Kitty, tmux) notifications now identify the app as `proto` instead of "Oh My Pi".
 
 ### Fixed
 
+- Reused single-line inputs no longer undo into a previous prompt or overflow narrow panes.
+- Wrapped editor lines retain leading indentation and cursor placement.
 - Fixed consecutive prompt submissions being skipped by persistent history, allowing the latest project metadata to replace the previous entry without duplicating editor navigation history.
 - Fixed fuzzy matching so a qualifying whole-word hit is not hidden by an earlier mid-word occurrence (#8465 by [@Mustaqeem66](https://github.com/Mustaqeem66)).
 - Fixed stray characters appearing in the terminal viewport during title updates

@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Made large kernel-output shell pipelines complete promptly instead of stalling while reading response frames.
+- Preserved non-UTF-8 interpreter stdin and honored current-directory entries in PATH.
 - Fixed Bun check summaries misclassifying timeout-looking output as command timeouts.
 
 - Native macOS spellchecker now honors all active system dictionaries: misspelling detection uses automatic language identification and completions/guesses/corrections select the per-word language, so non-English text (e.g. Russian) is checked instead of only the shared checker's current language (#9334).

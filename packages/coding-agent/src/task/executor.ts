@@ -372,6 +372,7 @@ export interface ExecutorOptions {
 	parentServiceTier?: ServiceTierByFamily | null;
 
 	localProtocolOptions?: LocalProtocolOptions;
+	preferPersistedRevive?: boolean;
 
 	parentArtifactManager?: ArtifactManager;
 
@@ -2052,6 +2053,7 @@ export async function finalizeSubagentLifecycle(args: {
 	isolated: boolean;
 	agentIdleTtlMs: number;
 	reviveSession: AgentReviver | null;
+	preferPersistedRevive: boolean;
 	cleanupDeadlineAt?: number;
 	onCleanupDeferred?: (completion: Promise<void>) => void;
 }): Promise<void> {
@@ -2129,6 +2131,7 @@ export async function finalizeSubagentLifecycle(args: {
 		{
 			idleTtlMs: args.agentIdleTtlMs,
 			revive: args.reviveSession ?? undefined,
+			preferPersistedRevive: args.preferPersistedRevive,
 		},
 		ref,
 	);
@@ -2163,6 +2166,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	const index = options.index ?? 0;
 	const startTime = Date.now();
 	const session = await AgentLifecycleManager.global().ensureLive(id);
+	if (session.isStreaming) await untilAborted(signal, () => session.waitForStreamingIdle());
 	const ref = AgentRegistry.global().get(id);
 	const sessionFile = ref?.sessionFile ?? undefined;
 
@@ -2309,7 +2313,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		Math.trunc(Number(options.maxRuntimeMs ?? settings.get("orchestrator.maxRuntimeMs") ?? 0) || 0),
 	);
 
-	const agentIdleTtlMs = Math.trunc(Number(settings.get("orchestrator.agentIdleTtlMs") ?? 420_000) || 0);
+	const agentIdleTtlMs = Math.trunc(Number(settings.get("orchestrator.agentIdleTtlMs") ?? 60_000) || 0);
 	const configuredDefaultBudget = Math.max(
 		0,
 		Math.trunc(Number(settings.get("orchestrator.softRequestBudget") ?? SOFT_REQUEST_BUDGET.default) || 0),
@@ -2950,6 +2954,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					isolated: worktree !== undefined,
 					agentIdleTtlMs,
 					reviveSession,
+					preferPersistedRevive: options.preferPersistedRevive === true,
 					cleanupDeadlineAt,
 					onCleanupDeferred: completion => {
 						deferredSessionShutdown = completion;

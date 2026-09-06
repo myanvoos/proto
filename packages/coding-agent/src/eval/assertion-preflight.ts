@@ -6,7 +6,7 @@ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { ToolSession } from "../tools";
 import { type BashKernelCell, detectBashKernelCell } from "../tools/bash-kernel-cell";
 import type { StreamedKernelFailure as StreamedKernelFailureContract } from "./speculation";
-import { parseStandaloneQuotedHeredoc, parseStreamedBashInput } from "./speculation";
+import { isPythonRawHeredocHeader, parseStandaloneQuotedHeredoc, parseStreamedBashInput } from "./speculation";
 
 /** Languages understood by the assertion preflight. */
 export type PreflightKernelLanguage = "python" | "js";
@@ -371,11 +371,6 @@ function parsePartialShellWord(input: string): PartialShellWord | undefined {
 	return { word: input.slice(0, end), rest: input.slice(end), complete: true };
 }
 
-function isPythonDirectiveStart(source: string, index: number, lineStart: number): boolean {
-	if (index < lineStart || !/^\s*$/u.test(source.slice(lineStart, index))) return false;
-	return /^#@(embed|patch)(?:\s|$)/u.test(source.slice(index));
-}
-
 function scanPythonStatements(source: string, maxSourceBytes: number): Statement[] {
 	const limit = Math.min(source.length, maxSourceBytes);
 	const truncated = limit < source.length;
@@ -437,11 +432,12 @@ function scanPythonStatements(source: string, maxSourceBytes: number): Statement
 			if (char === "\n") return statements;
 			continue;
 		}
+		if (isPythonRawHeredocHeader(source, index, lineStart, limit)) {
+			// Raw heredoc bodies are not Python until the runner replaces them.
+			// A close may not have streamed yet, so conservatively stop at the header.
+			return statements;
+		}
 		if (char === "#") {
-			// The Python runner replaces these blocks before execution.  Treat a
-			// header outside a string as a hard scanner boundary so literal body
-			// lines cannot become assertions while a streamed cell is incomplete.
-			if (isPythonDirectiveStart(source, index, lineStart)) return statements;
 			comment = true;
 			continue;
 		}

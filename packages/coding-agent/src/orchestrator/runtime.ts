@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { $env, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
 import { resolveAgentModelSelection } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
@@ -10,14 +10,14 @@ import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
 import workerTurnResultTemplate from "../prompts/tools/worker-turn-result.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
-import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { type AgentRef, AgentRegistry, hasAgentTombstone, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { SessionManager, SessionPersistenceIndeterminateError } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
 import { discoverAgents, getAgent } from "../task/discovery";
 import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
 import { generateWorkerName } from "../task/name-generator";
 import { Semaphore } from "../task/parallel";
-import { resolveSpawnPolicy } from "../task/spawn-policy";
+import { describeUnknownAgent, resolveSpawnPreflight } from "../task/spawn-policy";
 import type { StructuredSubagentSchemaMode, StructuredSubagentSchemaSource } from "../task/structured-subagent";
 import { type AgentDefinition, type AgentProgress, oneLineLabel, type SingleResult } from "../task/types";
 import type { WorkerEffort } from "../thinking";
@@ -417,6 +417,10 @@ function mergeTrace(turn: WorkerTurn, progress: AgentProgress): void {
 
 class WorkerTurnError extends Error {}
 
+export function prefersPersistedWorkerRevival(session: ToolSession): boolean {
+	return !session.streamFn && !session.localProtocolOptions && (session.customTools?.length ?? 0) === 0;
+}
+
 export class OrchestratorRuntime {
 	static #global: OrchestratorRuntime | undefined;
 
@@ -545,7 +549,7 @@ export class OrchestratorRuntime {
 		const { agents } = await discoverAgents(cwd);
 		const agent = getAgent(agents, requested);
 		if (!agent) {
-			throw new ToolError(`Unknown agent "${requested}". Check the available agent types and retry.`);
+			throw new ToolError(describeUnknownAgent(requested, agents));
 		}
 		const agentModelOverrides = session.settings.get("orchestrator.agentModelOverrides");
 		const { patterns, role } = resolveAgentModelSelection({
@@ -670,7 +674,7 @@ export class OrchestratorRuntime {
 			reason,
 			at: Date.now(),
 			lastTurn: record.turnCount,
-			...(record.lastJobId || record.turn?.jobId ? { lastJobId: record.lastJobId ?? record.turn?.jobId } : {}),
+			...(record.turn?.jobId || record.lastJobId ? { lastJobId: record.turn?.jobId ?? record.lastJobId } : {}),
 			history: `history://${record.id}`,
 			output: `agent://${record.id}`,
 			context: `history://${record.id}`,
@@ -688,7 +692,7 @@ export class OrchestratorRuntime {
 		if (record.turn) {
 			const jobId = record.turn.jobId;
 			if (clearTurn) {
-				record.lastJobId = record.lastJobId ?? jobId;
+				record.lastJobId = jobId;
 				record.turn = undefined;
 			} else {
 				record.turn = {
@@ -980,6 +984,27 @@ export class OrchestratorRuntime {
 			const key = scopeKey(scope, spawn.id);
 			if (this.#records.has(key)) continue;
 			const existing = AgentRegistry.global().get(spawn.id);
+			let tombstoned: boolean;
+			try {
+				tombstoned = await hasAgentTombstone(childSessionFile);
+			} catch (error) {
+				logger.warn("orchestrator: could not determine persisted worker termination state", {
+					id: spawn.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				continue;
+			}
+			if (tombstoned) {
+				await this.#markTerminalRef(
+					spawn.id,
+					scope.ownerId,
+					childSessionFile,
+					existing ?? null,
+					Date.now() + this.#teardownGraceMs,
+					spawn.label,
+				);
+				continue;
+			}
 			const existingIsResumable =
 				existing?.kind === "sub" &&
 				existing.parentId === scope.ownerId &&
@@ -1072,15 +1097,15 @@ export class OrchestratorRuntime {
 	): Promise<SpawnOutcome> {
 		const manager = this.#manager(session);
 		await session.settings.reloadFromDisk();
-		const requestedAgent = args.agent?.trim() || "worker";
-		const spawnPolicy = resolveSpawnPolicy(session.getSessionSpawns());
-		if (
-			(session.taskDepth ?? 0) > 0 &&
-			(!spawnPolicy.enabled ||
-				(spawnPolicy.allowedAgents !== null && !spawnPolicy.allowedAgents.includes(requestedAgent)))
-		) {
-			throw new ToolError(`Cannot spawn '${requestedAgent}'. Allowed: ${spawnPolicy.allowedErrorText}`);
-		}
+		const preflight = resolveSpawnPreflight({
+			requestedAgent: args.agent,
+			parentSpawns: session.getSessionSpawns(),
+			taskDepth: session.taskDepth ?? 0,
+			maxRecursionDepth: session.settings.get("orchestrator.maxRecursionDepth") ?? 2,
+			blockedAgent: $env.PI_BLOCKED_AGENT,
+		});
+		if (preflight.error) throw new ToolError(preflight.error);
+		const requestedAgent = preflight.agentName;
 		const disabledAgents = session.settings.get("orchestrator.disabledAgents");
 		if (disabledAgents.includes(requestedAgent)) {
 			throw new ToolError(`Worker agent "${requestedAgent}" is disabled in settings.`);
@@ -1203,7 +1228,12 @@ export class OrchestratorRuntime {
 			};
 		}
 
-		if (!registered || (registered.status !== "idle" && registered.status !== "parked")) {
+		if (
+			!registered ||
+			(registered.status !== "idle" &&
+				registered.status !== "parked" &&
+				!(registered.status === "running" && registered.session))
+		) {
 			this.#markRecordTerminal(record, registered?.status === "aborted" ? "unrecoverable" : "ownership-lost");
 			throw this.#terminalError(record);
 		}
@@ -1229,15 +1259,15 @@ export class OrchestratorRuntime {
 			? args.sessions.map(id => this.#record(scope, id))
 			: [...this.#records.values()].filter(record => matchesScope(record, scope) && record.turn !== undefined);
 
-		const snapshots: Array<{ record: WorkerRecord; jobId: string }> = [];
+		const snapshots: Array<{ record: WorkerRecord; jobId: string; turn: number }> = [];
 		for (const record of watched) {
 			const jobId = record.turn?.jobId ?? record.lastJobId;
-			if (jobId) snapshots.push({ record, jobId });
+			if (jobId) snapshots.push({ record, jobId, turn: record.turnCount });
 		}
 
 		const collectSettled = (): WaitOutcome["settled"] => {
 			const settled: WaitOutcome["settled"] = [];
-			for (const { record, jobId } of snapshots) {
+			for (const { record, jobId, turn } of snapshots) {
 				if (this.#waitedJobIds.has(jobId)) continue;
 				const job = manager.getJob(jobId);
 				if (!job || job.status === "running") continue;
@@ -1249,7 +1279,7 @@ export class OrchestratorRuntime {
 					jobId,
 					status: job.status,
 					resultText: job.resultText ?? job.errorText ?? "(no output)",
-					receipt: this.#receipt(record, receiptStatus, record.turnCount, jobId, job.errorText),
+					receipt: this.#receipt(record, receiptStatus, turn, jobId, job.errorText),
 				});
 			}
 			return settled;
@@ -1530,6 +1560,7 @@ export class OrchestratorRuntime {
 			getArtifactsDir: session.getArtifactsDir ?? (() => null),
 			getSessionId: session.getSessionId ?? (() => null),
 		};
+		const preferPersistedRevive = prefersPersistedWorkerRevival(session);
 		return {
 			cwd: session.cwd,
 			agent,
@@ -1571,6 +1602,7 @@ export class OrchestratorRuntime {
 			preloadedExtensionPaths: session.extensionPaths,
 			preloadedCustomToolPaths: session.customToolPaths,
 			localProtocolOptions,
+			preferPersistedRevive,
 			parentArtifactManager: session.getArtifactManager?.() ?? undefined,
 			parentTelemetry: session.getTelemetry?.(),
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
@@ -1629,7 +1661,6 @@ export class OrchestratorRuntime {
 					acquired = true;
 					markRunning();
 					record.state = "running";
-					record.turnCount = turnIndex;
 					record.lastActivityAt = Date.now();
 					try {
 						const turnStartedPersisted = await this.#appendLifecycleEvent(
@@ -1684,6 +1715,8 @@ export class OrchestratorRuntime {
 			{ id: `${record.id}-t${turnIndex}`, agentId: record.id, ownerId: record.jobOwnerId, queued: true },
 		);
 		turn.jobId = jobId;
+		// Reservation precedes semaphore acquisition so cancellation cannot reuse a turn identity.
+		record.turnCount = turnIndex;
 		record.turn = turn;
 		return jobId;
 	}
@@ -1718,15 +1751,35 @@ export class OrchestratorRuntime {
 			return;
 		}
 		record.state = "idle";
-		const settledPersisted = await this.#appendLifecycleEvent(
-			session,
-			{
-				...this.#eventBase(record),
-				action: "turn-settled",
-				turn: record.turnCount,
-			},
-			record.parentSessionFile,
-		);
+		let settledPersisted: boolean;
+		try {
+			settledPersisted = await this.#appendLifecycleEvent(
+				session,
+				{
+					...this.#eventBase(record),
+					action: "turn-settled",
+					turn: record.turnCount,
+				},
+				record.parentSessionFile,
+			);
+		} catch (error) {
+			// A failed job must not retain an active turn or accept messages no job can consume.
+			record.turn = undefined;
+			this.#markRecordTerminal(record, "unrecoverable", "terminal: turn settlement persistence failed");
+			AgentRegistry.global().setStatus(record.id, "aborted", registered);
+			try {
+				record.terminalPersisted = await this.#appendTombstone(session, record, "unrecoverable");
+			} catch (persistenceError) {
+				logger.warn("orchestrator: failed to persist terminal turn settlement", {
+					id: record.id,
+					error: persistenceError instanceof Error ? persistenceError.message : String(persistenceError),
+				});
+			}
+			const deadline = Date.now() + this.#teardownGraceMs;
+			await this.#releaseRefWithinDeadline(record.id, registered, deadline, "release");
+			await this.#markTerminalRecord(record, registered, deadline);
+			throw error;
+		}
 		if (record.childSessionFile && !settledPersisted) {
 			record.turn = undefined;
 			this.#markRecordTerminal(

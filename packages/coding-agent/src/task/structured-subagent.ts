@@ -25,14 +25,8 @@ import {
 } from "./isolation-runner";
 import { generateWorkerName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
-import { resolveSpawnPolicy } from "./spawn-policy";
-import {
-	type AgentDefinition,
-	type AgentProgress,
-	canSpawnAtDepth,
-	type SingleResult,
-	type StructuredSubagentOutput,
-} from "./types";
+import { describeDisabledAgent, describeUnknownAgent, resolveSpawnPreflight } from "./spawn-policy";
+import type { AgentDefinition, AgentProgress, SingleResult, StructuredSubagentOutput } from "./types";
 import { type NestedRepoPatch, parseIsolationMode } from "./worktree";
 
 export type StructuredSubagentSchemaMode = "permissive" | "strict";
@@ -157,53 +151,30 @@ function resolveSchema(request: StructuredSubagentRequest, agent: AgentDefinitio
 	return { schema: undefined, source: "none", mode, outputSchemaOverridesAgent: false };
 }
 
-function assertDepthAndSpawnAllowed(request: StructuredSubagentRequest, agentName: string): void {
-	const taskDepth = request.session.taskDepth ?? 0;
-	const maxDepth = request.session.settings.get("orchestrator.maxRecursionDepth") ?? 2;
-	if (!canSpawnAtDepth(maxDepth, taskDepth)) {
-		throw new StructuredSubagentError(
-			"preflight",
-			`Cannot spawn another agent at task depth ${taskDepth}; maximum depth is ${maxDepth}.`,
-		);
-	}
-	const blockedAgent = request.blockedAgent ?? $env.PI_BLOCKED_AGENT;
-	if (blockedAgent && blockedAgent === agentName) {
-		throw new StructuredSubagentError(
-			"preflight",
-			`Cannot spawn ${blockedAgent} agent from within itself (recursion prevention). Use a different agent type.`,
-		);
-	}
-	const spawnPolicy = resolveSpawnPolicy(request.session.getSessionSpawns());
-	if (!spawnPolicy.enabled || (spawnPolicy.allowedAgents !== null && !spawnPolicy.allowedAgents.includes(agentName))) {
-		throw new StructuredSubagentError(
-			"preflight",
-			`Cannot spawn '${agentName}'. Allowed: ${spawnPolicy.allowedErrorText}`,
-		);
-	}
-}
-
 export async function resolveEffectiveSubagentPolicy(
 	request: StructuredSubagentRequest,
 ): Promise<EffectiveSubagentPolicy> {
 	await request.session.settings.reloadFromDisk();
-	const spawnPolicy = resolveSpawnPolicy(request.session.getSessionSpawns());
-	const agentName = request.agent?.trim() || spawnPolicy.defaultAgent;
-	assertDepthAndSpawnAllowed(request, agentName);
+	const preflight = resolveSpawnPreflight({
+		requestedAgent: request.agent,
+		parentSpawns: request.session.getSessionSpawns(),
+		taskDepth: request.session.taskDepth ?? 0,
+		maxRecursionDepth: request.session.settings.get("orchestrator.maxRecursionDepth") ?? 2,
+		blockedAgent: request.blockedAgent ?? $env.PI_BLOCKED_AGENT,
+	});
+	const agentName = preflight.agentName;
+	if (preflight.error) throw new StructuredSubagentError("preflight", preflight.error);
 
 	const discovery = await discoverAgents(request.session.cwd);
 	const agent = getAgent(discovery.agents, agentName);
 	if (!agent) {
-		const available = discovery.agents.map(candidate => candidate.name).join(", ") || "none";
-		throw new StructuredSubagentError("preflight", `Unknown agent "${agentName}". Available: ${available}`);
+		throw new StructuredSubagentError("preflight", describeUnknownAgent(agentName, discovery.agents));
 	}
 	const disabledAgents = request.session.settings.get("orchestrator.disabledAgents") as string[];
 	if (disabledAgents.includes(agentName)) {
-		const enabled = discovery.agents
-			.filter(candidate => !disabledAgents.includes(candidate.name))
-			.map(candidate => candidate.name);
 		throw new StructuredSubagentError(
 			"preflight",
-			`Agent "${agentName}" is disabled in settings. Enable it via /agents, or use a different agent type.${enabled.length > 0 ? ` Available: ${enabled.join(", ")}` : ""}`,
+			describeDisabledAgent(agentName, discovery.agents, disabledAgents),
 		);
 	}
 

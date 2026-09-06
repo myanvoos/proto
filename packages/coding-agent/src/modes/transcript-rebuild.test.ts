@@ -439,3 +439,16 @@ test("replay skips preserved ids and creates components for unpreserved calls", 
 	).toHaveLength(0);
 	expect(ctx2.pendingTools.get(CALL_ID), "preserved call must stay pending on the live component").toBeUndefined();
 });
+
+test("a tracked block reusing mutable rows updates the transcript instead of claiming a stale stable prefix", () => {
+	const rows = ["before"];
+	const block = new TrackedBlock(rows);
+	const container = new TranscriptContainer();
+	container.addChild(block);
+	expect([...container.render(40)]).toEqual(["before"]);
+	container.getRenderStablePrefixRows();
+	rows[0] = "after";
+	block.setLines(rows);
+	expect([...container.render(40)]).toEqual(["after"]);
+	expect(container.getRenderStablePrefixRows()).toBe(0);
+});

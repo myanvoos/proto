@@ -36,6 +36,8 @@ export interface Component {
 
 Render results are component-owned and immutable to callers. An unchanged component may (and should) return the **same array reference** it returned last time; it must return a new array whenever content changes. Reference equality enables container memoization and stable-prefix work avoidance. A component that mutates a previously returned array in place must also implement `RenderStablePrefix` and report how many leading rows survived unchanged.
 
+Tool-block headers and section labels obey the same width and tab-sanitization rules as body rows. Transcript change notifications invalidate cached row contributions even when a tracked component reuses a mutable array, so changed rows are not reported as an unchanged render prefix.
+
 `Focusable` is separate:
 
 ```ts

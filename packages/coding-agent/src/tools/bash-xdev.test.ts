@@ -223,6 +223,36 @@ test("xd redirects and pipeline status use the native shell", async () => {
 	});
 });
 
+test("piped stdin supplies the xd JSON args when no positional args are given", async () => {
+	await withBash(async (bash, state) => {
+		const piped = await bash.execute("xd-stdin", { command: `printf '{"value":"from-stdin"}' | xd probe` });
+		expect(piped.isError).not.toBe(true);
+		expect(textOf(piped)).toContain("probe:from-stdin\n");
+		const chained = await bash.execute("xd-stdin-chain", {
+			command: `xd probe '{"value":"first"}' | sed 's/^probe:\\(.*\\)$/{"value":"\\1-again"}/' | xd probe`,
+		});
+		expect(textOf(chained)).toContain("probe:first-again\n");
+		const explicit = await bash.execute("xd-stdin-ignored", {
+			command: `printf '{"value":"stdin"}' | xd probe '{"value":"arg"}'`,
+		});
+		expect(textOf(explicit)).toContain("probe:arg\n");
+		const invalid = await bash.execute("xd-stdin-invalid", { command: `printf 'nope' | xd probe; echo rc=$?` });
+		expect(textOf(invalid)).toContain("expects a JSON args object");
+		expect(textOf(invalid)).toContain("rc=1");
+		expect(state.calls).toEqual(["from-stdin", "first", "first-again", "arg"]);
+	});
+});
+
+test("xd text output is newline-terminated so following commands start on their own line", async () => {
+	await withBash(async bash => {
+		const docs = await bash.execute("xd-docs-newline", { command: `xd probe ?; printf next` });
+		expect(textOf(docs)).toContain("for these docs).\nnext");
+		const failure = await bash.execute("xd-error-newline", { command: `xd missing '{}'; printf next` });
+		expect(textOf(failure)).toContain("No such tool: xd://missing.");
+		expect(textOf(failure)).toMatch(/xd:\/\/<tool>\.\nnext/);
+	});
+});
+
 test("mounted read uses pipelines and branch-local cwd", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-read-"));
 	await fs.mkdir(path.join(dir, "one"));
@@ -285,6 +315,7 @@ interface CancellationProbeState {
 	started: PromiseWithResolvers<void>;
 	release: PromiseWithResolvers<void>;
 	ignoreSignal: boolean;
+	aborted: PromiseWithResolvers<void>;
 }
 
 function sessionWithCancellationProbe(cwd: string, state: CancellationProbeState): ToolSession {
@@ -303,10 +334,18 @@ function sessionWithCancellationProbe(cwd: string, state: CancellationProbeState
 					state.release.promise,
 					new Promise<never>((_resolve, reject) => {
 						if (signal?.aborted) {
+							state.aborted.resolve();
 							reject(new ToolAbortError("probe aborted"));
 							return;
 						}
-						signal?.addEventListener("abort", () => reject(new ToolAbortError("probe aborted")), { once: true });
+						signal?.addEventListener(
+							"abort",
+							() => {
+								state.aborted.resolve();
+								reject(new ToolAbortError("probe aborted"));
+							},
+							{ once: true },
+						);
 					}),
 				]);
 			}
@@ -332,6 +371,7 @@ test("pre-aborted xd calls never invoke the mounted tool", async () => {
 		started: Promise.withResolvers<void>(),
 		release: Promise.withResolvers<void>(),
 		ignoreSignal: false,
+		aborted: Promise.withResolvers<void>(),
 	};
 	try {
 		const bash = new BashTool(sessionWithCancellationProbe(dir, state));
@@ -353,6 +393,7 @@ test("xd cooperative cancellation propagates the signal and discards output", as
 		started: Promise.withResolvers<void>(),
 		release: Promise.withResolvers<void>(),
 		ignoreSignal: false,
+		aborted: Promise.withResolvers<void>(),
 	};
 	try {
 		const bash = new BashTool(sessionWithCancellationProbe(dir, state));
@@ -379,6 +420,7 @@ test("xd late results are discarded after cancellation", async () => {
 		started: Promise.withResolvers<void>(),
 		release: Promise.withResolvers<void>(),
 		ignoreSignal: true,
+		aborted: Promise.withResolvers<void>(),
 	};
 	try {
 		const bash = new BashTool(sessionWithCancellationProbe(dir, state));
@@ -393,6 +435,29 @@ test("xd late results are discarded after cancellation", async () => {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
+
+test("the shell deadline aborts an in-flight xd dispatch instead of orphaning it", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-deadline-"));
+	const state: CancellationProbeState = {
+		calls: 0,
+		started: Promise.withResolvers<void>(),
+		release: Promise.withResolvers<void>(),
+		ignoreSignal: false,
+		aborted: Promise.withResolvers<void>(),
+	};
+	try {
+		const bash = new BashTool(sessionWithCancellationProbe(dir, state));
+		const result = await bash.execute("xd-deadline", { command: `xd probe '{"value":"deadline"}'`, timeout: 1 });
+		expect(result.isError).toBe(true);
+		expect(result.details?.timedOut).toBe(true);
+		expect(result.details?.execution?.timeout).toMatchObject({ cause: "deadline", scope: "command" });
+		await state.aborted.promise;
+		expect(state.calls).toBe(1);
+	} finally {
+		state.release.resolve();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 15000);
 
 test("native xd bridge keeps stdin and pipe purity separate from status records", async () => {
 	const shell = new Shell();

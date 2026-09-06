@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentSession } from "../session/agent-session";
 import { getSessionLivePath } from "../session/session-liveness";
 import { AgentLifecycleManager } from "./agent-lifecycle";
 import { type AgentRef, AgentRegistry } from "./agent-registry";
@@ -101,6 +102,101 @@ describe("reclaimDeadCorpse", () => {
 		expect(registry.setStatus("worker", "aborted", ref)).toBe(true);
 		expect(lifecycle.has("worker", ref)).toBe(false);
 		expect(registry.get("worker")).toBe(ref);
+		await lifecycle.dispose();
+	});
+});
+
+describe("parking", () => {
+	test("drops the run-local reviver and resumes through disk-backed revival", async () => {
+		const dir = makeTempDir();
+		const sessionFile = path.join(dir, "worker.jsonl");
+		fs.writeFileSync(sessionFile, "", { encoding: "utf8" });
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		let disposed = false;
+		const originalSession = {
+			dispose: async () => {
+				disposed = true;
+			},
+		} as unknown as AgentSession;
+		const revivedSession = { dispose: async () => {} } as unknown as AgentSession;
+		const ref = registry.register({
+			id: "worker",
+			displayName: "worker",
+			kind: "sub",
+			session: originalSession,
+			sessionFile,
+			status: "idle",
+		});
+		let runLocalRevives = 0;
+		let persistedRevives = 0;
+		lifecycle.setPersistedSubagentReviverFactory(async expected => {
+			expect(expected).toBe(ref);
+			persistedRevives++;
+			return async () => revivedSession;
+		}, 0);
+		lifecycle.adopt(
+			"worker",
+			{
+				idleTtlMs: 0,
+				preferPersistedRevive: true,
+				revive: async () => {
+					runLocalRevives++;
+					return revivedSession;
+				},
+			},
+			ref,
+		);
+
+		await lifecycle.park("worker");
+		expect(disposed).toBe(true);
+		expect(ref.session).toBeNull();
+		expect(ref.status).toBe("parked");
+		expect(persistedRevives).toBe(0);
+
+		expect(await lifecycle.ensureLive("worker")).toBe(revivedSession);
+		expect(runLocalRevives).toBe(0);
+		expect(persistedRevives).toBe(1);
+		expect(ref.session).toBe(revivedSession);
+		expect(ref.status).toBe("idle");
+		await lifecycle.dispose();
+	});
+
+	test("retains the run-local reviver when persisted revival is not equivalent", async () => {
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const live = { dispose: async () => {} } as unknown as AgentSession;
+		const revived = { dispose: async () => {} } as unknown as AgentSession;
+		const ref = registry.register({
+			id: "worker",
+			displayName: "worker",
+			kind: "sub",
+			session: live,
+			sessionFile: "/missing-or-custom-init.jsonl",
+			status: "idle",
+		});
+		let localRevives = 0;
+		let persistedFactories = 0;
+		lifecycle.setPersistedSubagentReviverFactory(async () => {
+			persistedFactories++;
+			return undefined;
+		}, 0);
+		lifecycle.adopt(
+			"worker",
+			{
+				idleTtlMs: 0,
+				revive: async () => {
+					localRevives++;
+					return revived;
+				},
+			},
+			ref,
+		);
+
+		await lifecycle.park("worker");
+		expect(await lifecycle.ensureLive("worker")).toBe(revived);
+		expect(localRevives).toBe(1);
+		expect(persistedFactories).toBe(0);
 		await lifecycle.dispose();
 	});
 });

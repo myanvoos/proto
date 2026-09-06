@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { logger } from "@oh-my-pi/pi-utils";
 import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor/transcript-recorder";
 import { isConductorTranscriptName } from "../conductor/transcript";
 import { resolveExplicitModelRole } from "../config/model-resolver";
@@ -15,7 +16,7 @@ import {
 	type AgentHistorySummary,
 	type AgentMetricsSummary,
 	type AgentRegistry,
-	getAgentTombstonePath,
+	hasAgentTombstone,
 	MAIN_AGENT_ID,
 } from "./agent-registry";
 
@@ -441,6 +442,8 @@ async function registerPersistedSubagentsFromDir(
 			continue;
 		}
 		const id = entry.name.slice(0, -6);
+		// The stem also names the child artifact directory; it must descend rather than alias this directory or its parent.
+		if (!id || id === "." || id === "..") continue;
 		const orchestratorLabel = orchestratorWorkerLabels.get(id);
 		const orchestratorOwned = orchestratorLabel !== undefined;
 		const existing = registry.get(id);
@@ -458,12 +461,15 @@ async function registerPersistedSubagentsFromDir(
 			);
 			continue;
 		}
-		let tombstoned = false;
+		let tombstoned: boolean;
 		try {
-			await fs.promises.access(getAgentTombstonePath(sessionFile));
-			tombstoned = true;
+			tombstoned = await hasAgentTombstone(sessionFile);
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") continue;
+			logger.warn("registry: could not determine persisted subagent termination state", {
+				id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			continue;
 		}
 		if (!shouldContinue()) return;
 		if (!registry.get(id)) {

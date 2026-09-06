@@ -41,6 +41,8 @@ On a wide terminal, the selected agent's inspector appears beside the roster. On
 
 Metrics depend on the progress or persisted usage data available for that agent. Missing data appears as `usage —` rather than an estimate.
 
+The transcript viewer bounds its headers, footer hints, notices, and reply editor to the available terminal width. Long agent identities and embedded tabs do not overflow adjacent terminal rows.
+
 ### Roster controls
 
 | Key or input                | Action                                                                       |

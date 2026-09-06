@@ -1,5 +1,13 @@
 import type { Component } from "@oh-my-pi/pi-tui";
-import { ImageProtocol, padding, TERMINAL, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import {
+	ImageProtocol,
+	padding,
+	replaceTabs,
+	TERMINAL,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@oh-my-pi/pi-tui";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { getSixelLineMask } from "../utils/sixel";
 import type { State } from "./types";
@@ -99,14 +107,14 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const contentLeftPadding = contentPaddingLeft > 0 ? padding(contentPaddingLeft) : "";
 
 	const rows: BlockRow[] = [];
-	const headerText = [header, headerMeta].filter(Boolean).join(theme.sep.dot);
+	const headerText = replaceTabs([header, headerMeta].filter(Boolean).join(theme.sep.dot)).replace(/[\r\n]+/g, " ");
 	if (headerText) rows.push({ kind: "header", text: headerText });
 
 	const normalizedSections = sections.length > 0 ? sections : [{ lines: [] as string[] }];
 	for (let sectionIndex = 0; sectionIndex < normalizedSections.length; sectionIndex++) {
 		const section = normalizedSections[sectionIndex]!;
 		if (section.label) {
-			rows.push({ kind: "label", text: section.label });
+			rows.push({ kind: "label", text: replaceTabs(section.label).replace(/[\r\n]+/g, " ") });
 		} else if (section.separator && sectionIndex > 0) {
 			rows.push({ kind: "rule" });
 		}
@@ -118,7 +126,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 				rows.push({ kind: "sixel", raw: line });
 				continue;
 			}
-			const wrappedLines = wrapTextWithAnsi(line.trimEnd(), contentWidth);
+			const wrappedLines = wrapTextWithAnsi(replaceTabs(line).trimEnd(), contentWidth);
 			for (const wrappedLine of wrappedLines) {
 				rows.push({ kind: "content", inner: wrappedLine });
 			}
@@ -157,7 +165,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 					: row.kind === "label"
 						? onRail(`${contentLeftPadding}${row.text}`)
 						: onRail(border(h.repeat(Math.min(Math.max(innerWidth, 0), SEPARATOR_CELLS))));
-		lines.push(line);
+		lines.push(truncateToWidth(line, lineWidth));
 	}
 
 	return lines;

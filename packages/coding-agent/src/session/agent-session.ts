@@ -784,6 +784,7 @@ export class AgentSession {
 			kernelOwnerId: config.evalKernelOwnerId ?? `agent-session:${Snowflake.next()}`,
 			parentSessionId: config.parentEvalSessionId,
 		});
+		this.registerSessionChangeCallback(() => this.#eval.syncObservationSession());
 		const ircHost: IrcBridgeHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -3084,8 +3085,6 @@ export class AgentSession {
 	beginDispose(): void {
 		this.#isDisposed = true;
 		this.#loopGuards.cancelStreamedInput();
-		this.#liveHeartbeat?.dispose();
-		this.#liveHeartbeat = undefined;
 		this.#queuedMessageDrainBlocked = false;
 		this.#usagePreflightReadyForNextModelCall = false;
 		this.#detachUsageBeforeQueueDequeue?.();
@@ -3265,11 +3264,16 @@ export class AgentSession {
 
 		this.sessionManager.seal();
 		await this.sessionManager.close();
+		this.#liveHeartbeat?.dispose();
+		this.#liveHeartbeat = undefined;
 
-		if (!drained) {
+		if (drained) {
+			this.#eval.disposeObservations();
+		} else {
 			void (async () => {
 				await this.agent.waitForIdle();
 				await this.#drainInFlightEventHandlers();
+				this.#eval.disposeObservations();
 			})().catch(error => logger.warn("Deferred dispose finalization failed", { error: String(error) }));
 		}
 	}
@@ -3450,6 +3454,16 @@ export class AgentSession {
 		await this.agent.waitForIdle();
 		await this.#advisors.waitForPendingCardEvents();
 		await this.#waitForPostPromptRecovery();
+	}
+
+	async waitForStreamingIdle(): Promise<void> {
+		while (this.isStreaming) {
+			await this.waitForIdle();
+			if (this.#promptInFlightCount === 0) continue;
+			const settled = Promise.withResolvers<void>();
+			this.#inFlightSettledCallbacks.push(() => settled.resolve());
+			await settled.promise;
+		}
 	}
 
 	prepareForHeadlessAdvisorDrain(): void {
@@ -5209,6 +5223,7 @@ export class AgentSession {
 				this.#conductor.clearCost();
 				sessionTransitioned = true;
 			} finally {
+				this.#syncLiveHeartbeat();
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
 			}
 
@@ -5299,6 +5314,8 @@ export class AgentSession {
 			} catch (error) {
 				this.#bash.finishSessionTransition(bashTransition, false);
 				throw error;
+			} finally {
+				this.#syncLiveHeartbeat();
 			}
 			if (!forkResult) {
 				this.#bash.finishSessionTransition(bashTransition, false);
@@ -5345,6 +5362,7 @@ export class AgentSession {
 		try {
 			await this.sessionManager.moveTo(newCwd, targetSessionDir);
 		} finally {
+			this.#syncLiveHeartbeat();
 			await this.#afterSessionSwitch();
 		}
 	}
@@ -5942,16 +5960,16 @@ export class AgentSession {
 
 	#syncLiveHeartbeat(): void {
 		const sessionFile = this.sessionManager.getSessionFile();
+		const streaming = this.isStreaming;
 		if (!this.#liveHeartbeat) {
 			this.#liveHeartbeat = createSessionLiveHeartbeat(sessionFile);
-			return;
-		}
-		if (sessionFile) {
+		} else if (sessionFile) {
 			this.#liveHeartbeat.retarget(sessionFile);
 		} else {
 			this.#liveHeartbeat.dispose();
 			this.#liveHeartbeat = undefined;
 		}
+		this.#liveHeartbeat?.setStreaming(streaming);
 	}
 
 	async switchSession(sessionPath: string): Promise<boolean> {
@@ -6021,6 +6039,7 @@ export class AgentSession {
 				conductorSuspended = true;
 			}
 			await this.sessionManager.setSessionFile(sessionPath);
+			this.#syncLiveHeartbeat();
 			this.#bash.markSessionTransition(bashTransition);
 			if (switchingToDifferentSession) {
 				this.#freshProviderSessionId = undefined;
@@ -6151,10 +6170,10 @@ export class AgentSession {
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
 				this.#notifySessionChangeCallbacks();
 			}
-			this.#syncLiveHeartbeat();
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
+			this.#syncLiveHeartbeat();
 			this.#freshProviderSessionId = previousFreshProviderSessionId;
 			this.#syncAgentSessionId(previousSessionState.sessionId, false);
 			this.agent.setTools(previousTools);
@@ -6266,6 +6285,7 @@ export class AgentSession {
 				this.#conductor.clearCost();
 				sessionTransitioned = true;
 			} finally {
+				this.#syncLiveHeartbeat();
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
 			}
 
@@ -6382,6 +6402,7 @@ export class AgentSession {
 				this.#conductor.clearCost();
 				sessionTransitioned = true;
 			} finally {
+				this.#syncLiveHeartbeat();
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
 			}
 

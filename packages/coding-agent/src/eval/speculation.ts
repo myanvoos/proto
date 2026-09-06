@@ -265,9 +265,23 @@ function decodeString(raw: string): string | undefined {
 	return out;
 }
 
-function isPythonDirectiveStart(source: string, index: number, lineStart: number): boolean {
-	if (index < lineStart || !/^\s*$/u.test(source.slice(lineStart, index))) return false;
-	return /^#@(embed|patch)(?:\s|$)/u.test(source.slice(index));
+/**
+ * Recognize the runner's raw-heredoc header at the first non-indentation character
+ * of a physical line. Callers remain responsible for invoking this only while
+ * outside strings and comments.
+ */
+export function isPythonRawHeredocHeader(
+	source: string,
+	index: number,
+	lineStart: number,
+	limit = source.length,
+): boolean {
+	if (index < lineStart || limit < index || !/^[ \t]*$/u.test(source.slice(lineStart, index))) return false;
+	const newline = source.indexOf("\n", index);
+	const lineEnd = newline < 0 ? Math.min(source.length, limit) : Math.min(newline, limit);
+	let line = source.slice(lineStart, lineEnd);
+	if (line.endsWith("\r")) line = line.slice(0, -1);
+	return /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*<<[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*$/u.test(line);
 }
 
 function lexSource(source: string, language: StreamedCompletionLanguage): LexResult {
@@ -284,13 +298,13 @@ function lexSource(source: string, language: StreamedCompletionLanguage): LexRes
 			i++;
 			continue;
 		}
+		if (language === "python" && isPythonRawHeredocHeader(source, i, lineStart)) {
+			// The Python runner replaces the whole block before execution. Stop at
+			// its header: the body is raw text, even when its close has not streamed.
+			incomplete = true;
+			break;
+		}
 		if (language === "python" && ch === "#") {
-			// The Python runner consumes directive blocks before execution. Stop
-			// lexing at a real header so body text cannot authorize completion calls.
-			if (isPythonDirectiveStart(source, i, lineStart)) {
-				incomplete = true;
-				break;
-			}
 			const end = source.indexOf("\n", i);
 			i = end < 0 ? source.length : end + 1;
 			if (end >= 0) lineStart = i;

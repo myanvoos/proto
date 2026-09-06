@@ -126,7 +126,7 @@ const truncated = new TruncatedText(
 
 ### Input
 
-Single-line text input with horizontal scrolling.
+Single-line text input with horizontal scrolling. `setValue()` replaces the editable value and starts a fresh undo/typing sequence, so reusing an input for a new prompt cannot undo into the previous response.
 
 ```typescript
 const input = new Input();
@@ -148,7 +148,7 @@ input.getValue();
 
 ### Editor
 
-Multi-line text editor with autocomplete, file completion, and paste handling.
+Multi-line text editor with autocomplete, file completion, and paste handling. Soft-wrapped lines preserve their source indentation, including cursor navigation through leading spaces.
 
 ```typescript
 interface SymbolTheme {
@@ -230,6 +230,8 @@ editor.borderColor = (s) => chalk.blue(s); // Change border dynamically
 ### Markdown
 
 Renders markdown with syntax highlighting and theming support.
+
+For live output, set `md.transientRenderCache = true` and call `setText()` with the growing document. Completed block tokens and rendered rows are reused while the mutable tail is reparsed. Set it back to `false` when streaming finishes. Replacements, reference definitions, and terminal-width changes invalidate the relevant caches automatically.
 
 ```typescript
 interface MarkdownTheme {

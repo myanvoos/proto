@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import { executeBash } from "../exec/bash-executor";
 import { convertToLlm } from "../session/messages";
@@ -30,7 +31,7 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
 }
 
 afterAll(async () => {
-	await disposeKernelSessionsByOwner(KERNEL_OWNER);
+	await Promise.all([disposeKernelSessionsByOwner(KERNEL_OWNER), disposeVmContextsByOwner(KERNEL_OWNER)]);
 });
 
 test("heredoc python routes to the kernel and state persists across bash calls", async () => {
@@ -121,6 +122,20 @@ test("routed python composes in pipelines and reports errors with real exit code
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 }, 60000);
+
+test("large kernel output reaches shell pipeline consumers without quadratic frame parsing", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-large-pipe-"));
+	try {
+		const result = await new BashTool(stubSession(dir)).execute("large-pipe", {
+			command: "node -e 'console.log(\"ü\".repeat(8 * 1024 * 1024))' | wc -c",
+			timeout: 10,
+		});
+		expect(result.isError).not.toBe(true);
+		expect(textOf(result).split("\n", 1)[0]?.trim()).toBe("16777217");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
 
 test("executeBash without a registered bridge falls through to real python", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-plain-"));
@@ -390,26 +405,25 @@ test("running Bash updates carry execution state separately from output", async 
 	}
 }, 30000);
 
-test("verbatim patches compose through bash and expose one structured file mutation", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-patch-"));
+test("heredoc file edits compose through bash and expose one structured file mutation", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-file-edit-"));
 	try {
 		await fs.mkdir(path.join(dir, "sub"));
 		await Bun.write(path.join(dir, "sub", "target.txt"), "before\n");
 		const bash = new BashTool(stubSession(dir));
-		const result = await bash.execute("patch", {
+		const result = await bash.execute("file-edit", {
 			command: [
 				"cd sub && python <<'PYEOF' && cat target.txt",
-				"#@embed CHANGE",
-				"@@",
-				"-before",
-				"+intermediate",
-				"#@end",
-				'apply_patch("target.txt", CHANGE)',
-				"#@patch target.txt",
-				"@@",
-				"-intermediate",
-				"+after",
-				"#@end",
+				"from pathlib import Path",
+				'target = Path("target.txt")',
+				"source = target.read_text()",
+				'assert source.count("before") == 1',
+				'target.write_text(source.replace("before", "intermediate"))',
+				"CONTENT = <<END_CONTENT",
+				"after",
+				"",
+				"END_CONTENT",
+				"target.write_text(CONTENT)",
 				"PYEOF",
 			].join("\n"),
 		});

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getSessionLivePath } from "../session/session-liveness";
-import { AgentRegistry } from "./agent-registry";
+import { AgentRegistry, getAgentTombstonePath } from "./agent-registry";
 import { registerPersistedSubagents } from "./persisted-agents";
 
 function makeSessionTree(): { dir: string; parentFile: string; childFile: string } {
@@ -42,6 +42,27 @@ function writeLiveMarker(sessionFile: string, streaming: boolean, pid: number): 
 }
 
 describe("registerPersistedSubagents", () => {
+	test.each([".jsonl", "..jsonl", "...jsonl"])(
+		"ignores the non-descendant transcript stem in %s without looping or leaving the artifact tree",
+		async filename => {
+			const { dir, parentFile, childFile } = makeSessionTree();
+			try {
+				const transcript = await Bun.file(childFile).text();
+				await Bun.write(path.join(path.dirname(childFile), filename), transcript);
+				await Bun.write(path.join(dir, "outside.jsonl"), transcript);
+				const registry = new AgentRegistry();
+				// Interrupt the old recursive path deterministically without touching any directory outside this fixture.
+				let remainingChecks = 256;
+				await registerPersistedSubagents(registry, parentFile, {
+					shouldContinue: () => --remainingChecks > 0,
+				});
+				expect(remainingChecks).toBeGreaterThan(0);
+				expect(registry.list().map(ref => ref.id)).toEqual(["worker"]);
+			} finally {
+				await fs.promises.rm(dir, { recursive: true, force: true });
+			}
+		},
+	);
 	test("registers a finished persisted subagent as parked", async () => {
 		const { parentFile } = makeSessionTree();
 		const registry = new AgentRegistry();
@@ -57,6 +78,22 @@ describe("registerPersistedSubagents", () => {
 		const registry = new AgentRegistry();
 		await registerPersistedSubagents(registry, parentFile);
 		expect(registry.get("worker")).toBeUndefined();
+	});
+
+	test("retains a tombstoned child as aborted rather than a revivable parked worker", async () => {
+		const { dir, parentFile, childFile } = makeSessionTree();
+		try {
+			await Bun.write(getAgentTombstonePath(childFile), "");
+			const registry = new AgentRegistry();
+			await registerPersistedSubagents(registry, parentFile);
+			expect(registry.get("worker")).toMatchObject({
+				status: "aborted",
+				session: null,
+				sessionFile: childFile,
+			});
+		} finally {
+			await fs.promises.rm(dir, { recursive: true, force: true });
+		}
 	});
 
 	test("returns without touching the registry when no artifacts directory exists", async () => {

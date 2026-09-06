@@ -1,6 +1,6 @@
 Spawns one persistent coding-agent worker; returns an immutable worker id and a display label.
 
-Agent type — omit for generic `worker`: `worker` (strong; design, debugging, multi-file, judgment), `lightbot` (fast; mechanical well-specified work), specialists (scout, reviewer, …) when matching.
+Omitted `agent`: first parent-permitted type; unrestricted → `worker`. Choose `worker` for design/debugging/multi-file judgment, `lightbot` for mechanical well-specified work, specialists (scout, reviewer, …) when matching. Parent spawn restrictions and recursion limits apply.
 {{#if agents.length}}
 Available agent types:
 {{#each agents}}

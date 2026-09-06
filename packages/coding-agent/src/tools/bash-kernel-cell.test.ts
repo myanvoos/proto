@@ -35,6 +35,14 @@ test("real-interpreter invocations are not cells", () => {
 	expect(detectBashKernelCell("python -m http.server")).toBeUndefined();
 	expect(detectBashKernelCell("python -e 'x'")).toBeUndefined();
 	expect(detectBashKernelCell("node -c 'x'")).toBeUndefined();
+	expect(detectBashKernelCell("python -i -c 'x'")).toBeUndefined();
+	expect(detectBashKernelCell("node --input-type=module <<'JS'\nconsole.log(1)\nJS")).toBeUndefined();
+	expect(detectBashKernelCell("node -u <<'JS'\nconsole.log(1)\nJS")).toBeUndefined();
+});
+test("interpreter options the bridge passes through still route to a cell", () => {
+	expect(detectBashKernelCell("python -u -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
+	expect(detectBashKernelCell("python3 -u - <<'PY'\nprint(2)\nPY")).toEqual({ language: "python", code: "print(2)" });
+	expect(detectBashKernelCell("bun - <<'JS'\nconsole.log(3)\nJS")).toEqual({ language: "js", code: "console.log(3)" });
 });
 test("plain shell is not a cell", () => {
 	expect(detectBashKernelCell("rg -n foo src")).toBeUndefined();

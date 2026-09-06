@@ -679,6 +679,7 @@ export class TranscriptContainer
 			if (stablePrefixLength === i && finalized && changeTracked) stablePrefixLength = i + 1;
 			const version = reuseBlockMetadata ? previous.version : getBlockVersion(child);
 			const committedReusable =
+				!blockChanged &&
 				previous !== undefined &&
 				previous.component === child &&
 				previous.width === width &&
@@ -691,7 +692,8 @@ export class TranscriptContainer
 			const raw = committedReusable ? previous.rawRef : child.render(width);
 			const reusable =
 				committedReusable ||
-				(previous !== undefined &&
+				(!blockChanged &&
+					previous !== undefined &&
 					previous.component === child &&
 					previous.rawRef === raw &&
 					previous.width === width &&

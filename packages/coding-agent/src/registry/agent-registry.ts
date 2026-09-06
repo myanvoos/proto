@@ -1,4 +1,5 @@
-import { logger } from "@oh-my-pi/pi-utils";
+import * as fs from "node:fs/promises";
+import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import { oneLineLabel } from "../task/types";
 
@@ -8,6 +9,16 @@ const AGENT_TOMBSTONE_SUFFIX = ".tombstone";
 
 export function getAgentTombstonePath(sessionFile: string): string {
 	return `${sessionFile}${AGENT_TOMBSTONE_SUFFIX}`;
+}
+
+export async function hasAgentTombstone(sessionFile: string): Promise<boolean> {
+	try {
+		await fs.access(getAgentTombstonePath(sessionFile));
+		return true;
+	} catch (error) {
+		if (isEnoent(error)) return false;
+		throw error;
+	}
 }
 
 export type AgentStatus = "running" | "idle" | "parked" | "aborted";

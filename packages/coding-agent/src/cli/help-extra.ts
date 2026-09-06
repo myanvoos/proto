@@ -1,6 +1,7 @@
 import "@oh-my-pi/pi-utils/env";
 import chalk from "@oh-my-pi/pi-utils/chalk";
-import { BINARY_NAME, CONFIG_DIR_NAME } from "@oh-my-pi/pi-utils/dirs";
+import { CONFIG_DIR_NAME } from "@oh-my-pi/pi-utils/dirs";
+import { BUILTIN_TOOL_NAMES } from "../tools/builtin-names";
 
 export function getExtraHelpText(): string {
 	return `${chalk.bold("Environment Variables:")}
@@ -61,22 +62,14 @@ export function getExtraHelpText(): string {
   PI_NO_PTY                  - Disable PTY-based interactive bash execution
   For complete environment variable reference, see:
   ${chalk.dim("docs/environment-variables.md")}
-${chalk.bold("Available Tools (default-enabled unless noted):")}
-  read          - Read file contents
-  bash          - Execute bash commands
-  edit          - Edit files with find/replace
-  write         - Write files (creates/overwrites)
-  grep          - Search file contents
-  glob          - Find files by glob pattern
-  python        - Execute Python code (requires: ${BINARY_NAME} setup python)
-  notebook      - Edit Jupyter notebooks
-  inspect_media - Analyze images, audio, or video with a capable model
-  browser       - Browser automation (Puppeteer)
-  computer      - Native host desktop capture and input (disabled by default)
-  task          - Launch sub-agents for parallel tasks
-  todo          - Manage todo/task lists
-  web_search    - Search the web
-  ask           - Ask user questions (interactive mode only)
+${chalk.bold("Built-in Tools (availability depends on settings and model):")}
+${BUILTIN_TOOL_NAMES.map(name => `  ${name}`).join("\n")}
+
+  bash runs shell commands and supported Python/JavaScript kernel cells.
+  Mounted tools are available through \`xd <tool> '<json>'\` inside bash.
+  Use \`xd <tool> ?\` for a mounted tool's documentation and schema.
+  orchestrate_spawn/send/wait/kill/list manage persistent worker conversations.
+  fleet handles peer messaging, background jobs, and supervised processes.
 
 ${chalk.bold("Plugin Options:")}
   --plugin-dir <path>        Load plugin from directory (repeatable)

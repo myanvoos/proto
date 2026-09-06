@@ -44,11 +44,11 @@ const POLL_MS = 250;
 
 const SENTINEL_BYTES = 4096;
 
-function sanitizeErrorLine(text: string, maxWidth: number): string {
+function sanitizeViewerLine(text: string, maxWidth: number): string {
 	const singleLine = replaceTabs(text)
 		.replace(/[\r\n]+/g, " ")
 		.replace(/\/[^\s'")\]]+/g, p => shortenPath(p));
-	return truncateToWidth(singleLine, Math.max(10, maxWidth));
+	return truncateToWidth(singleLine, Math.max(0, maxWidth));
 }
 
 interface LocalTranscriptSentinel {
@@ -425,14 +425,14 @@ export class AgentTranscriptViewer implements Component {
 	render(width: number): readonly string[] {
 		const termHeight = process.stdout.rows || 40;
 
-		const innerWidth = Math.max(20, width - 2);
+		const innerWidth = Math.max(1, width - 2);
 		const contentWidth = Math.max(1, width - 1);
 		const ref = this.deps.registry.get(this.deps.agentId);
 
 		const headerLines = this.#headerLines(ref?.status, ref?.kind, ref?.parentId);
 		const footerLines = this.#footerLines();
 		const noticeLine = this.#notice
-			? ` ${theme.fg("error", sanitizeErrorLine(this.#notice, innerWidth))}`
+			? ` ${theme.fg("error", sanitizeViewerLine(this.#notice, innerWidth))}`
 			: undefined;
 		const editorLines = this.#editor ? this.#editor.render(innerWidth) : [];
 
@@ -463,12 +463,12 @@ export class AgentTranscriptViewer implements Component {
 
 		const lines: string[] = [];
 		lines.push(...new DynamicBorder().render(width));
-		for (const headerLine of headerLines) lines.push(` ${headerLine}`);
+		for (const headerLine of headerLines) lines.push(sanitizeViewerLine(` ${headerLine}`, width));
 		lines.push(...new DynamicBorder().render(width));
 		for (const row of this.#scrollView.render(width)) lines.push(row);
-		if (noticeLine) lines.push(noticeLine);
-		for (const editorLine of editorLines) lines.push(` ${editorLine}`);
-		lines.push(...footerLines);
+		if (noticeLine) lines.push(sanitizeViewerLine(noticeLine, width));
+		for (const editorLine of editorLines) lines.push(sanitizeViewerLine(` ${editorLine}`, width));
+		for (const footerLine of footerLines) lines.push(sanitizeViewerLine(footerLine, width));
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
 	}

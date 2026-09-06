@@ -4,7 +4,9 @@
 
 ### Breaking Changes
 
-- Removed the eval/kernel `files` parameter; create or replace files inside the cell with `#@embed` and ordinary file APIs instead of pre-execution writes.
+- Replaced Python kernel `#@embed` blocks with assignment-shaped heredocs: `NAME = <<DELIMITER`, literal payload, then `DELIMITER` on its own line.
+- Removed Python kernel `#@patch` blocks and `apply_patch()`; use guarded ordinary file APIs (`Path`, `open`, `Bun.write`) for edits and heredoc assignments for literal payloads.
+- Removed the eval/kernel `files` parameter; create or replace files inside the cell with ordinary file APIs instead of pre-execution writes.
 
 - Orchestration worker names are now display labels; use the returned immutable worker IDs for messaging, waiting, and cancellation.
 - Orchestration workers now use independent Python/JavaScript kernels instead of sharing parent variables; explicitly requested eval-session sharing remains available outside orchestration.
@@ -35,8 +37,7 @@
 
 ### Added
 
-- Edit existing files with Python `#@patch PATH` verbatim blocks or composable `apply_patch(path, text)` calls, with exact context matching, stale-write protection, and mutation diffs.
-
+- `xd` can now read JSON arguments from piped stdin when no positional JSON is supplied.
 - Added shell composition for `xd`: pipelines, redirects, substitutions, conditionals, background jobs, and mixed native commands.
 - Added authoritative execution and output-collection metadata to Bash/Eval results and saved output artifacts.
 
@@ -65,7 +66,7 @@
 - `/trajectory export` now preserves agent reasoning blocks: OTLP chat spans expose the reasoning under `pi.gen_ai.response.reasoning`, and `pi.gen_ai.response.text` now contains only the assistant's text (reasoning and tool-call markers are no longer spliced into it).
 - Renamed the `inspect_image` tool to `inspect_media`: it now accepts audio and video files in addition to images, detected by file content (MP3/WAV/OGG/FLAC/M4A/AAC/AIFF audio, MP4/WEBM/MOV/MPEG video), and sends them to models that advertise the matching input modality; `inspect_image.*` settings migrate to `inspect_media.*` (`inspect_media.mode`, `inspect_media.timeoutMs`).
 - Kernel/eval tool calls accept `files: [{path, content}]`, written to disk before execution with write-event diffs — a quoting-safe channel for creating files whose content contains code.
-- Kernel cells tolerate common quoting failures: `#@embed NAME … #@end` blocks bind NAME to the intervening lines verbatim with zero escaping (""", backslashes, `%`/`!` all literal; `until=TOKEN` overrides the terminator); cells wrapped in markdown fences or containing smart-quote/non-breaking-space homoglyphs are repaired with a `<kernel> note:` disclosure; unrepairable syntax errors gain `<kernel> hint:` diagnostics naming the opening line of unterminated string literals, the offending homoglyph, or Windows-path escape mistakes.
+- Kernel cells tolerate common quoting failures: cells wrapped in markdown fences or containing smart-quote/non-breaking-space homoglyphs are repaired with a `<kernel> note:` disclosure; unrepairable syntax errors gain `<kernel> hint:` diagnostics naming the opening line of unterminated string literals, the offending homoglyph, or Windows-path escape mistakes.
 - Kernel cells snapshot working-directory file state (mtime/size walk; gitignored paths and heavy dirs pruned) before and after execution and emit `write`/`delete` status events with numbered diffs for every file the cell changed — regardless of mechanism (raw `open`, `shutil`, subprocess, helpers) and independent of git. Git index blobs serve only as an optional diff baseline for previously-untouched tracked files; helper-emitted events dedupe by content hash.
 - Kernel code cells render a Python AST preview in the TUI (collapsed view; raw code on expand), with `#@`/`#@?` session annotations surfaced as margin callouts.
 - Removed the `composer.shape` setting and every composer layout option; the editor always renders the default borderless prompt, and extensions can no longer register composer shapes.
@@ -79,6 +80,8 @@
 - Removed the `/agents` hub dashboard (`AgentsHubComponent`) and its per-agent model/prewalk/advisor surface; agent model roles remain available through `/model`. Removed the TUI info/delete/pin branches of `/session` (still available over ACP/text) and the now-unused `handleSessionCommand`/`showSessionPinSelector` context methods.
 
 ### Changed
+
+- Idle workers now park after one minute by default instead of seven; configured idle timeouts and worker concurrency remain unchanged.
 
 - Python patch helpers now accept unified diffs, single-file headers, code fences, quoted paths, and pasted indentation.
 - Python patches tolerate unique leading/trailing whitespace differences while retaining stale-file, ambiguity, and atomic-write protections.
@@ -124,6 +127,35 @@
 - Removed the setup wizard's post-setup "Setup saved" outro screen; the wizard closes as soon as the last scene finishes (Ctrl+C also exits immediately).
 
 ### Fixed
+
+- Bash now honors the filesystem root as its working directory, cancels outstanding tool dispatches at shell deadlines, and keeps kernel previews aligned with interpreter routing.
+- Tool-block headers and agent transcript chrome stay within narrow terminals; changed transcript rows no longer remain stale when a component reuses its render array.
+- Daemon log cursors no longer replay old output, and new launches during broker shutdown return a retryable error instead of a doomed running process.
+- Invalid daemon requests now return validation errors instead of hanging until the broker connection closes.
+- Parent orchestration can queue follow-ups behind peer-driven worker turns without losing ownership; all spawn paths now honor parent restrictions and permitted defaults.
+- Conductor pruning no longer interrupts active reviews; paused claims cancel their audits, and review follow-ups preserve primary turn boundaries.
+- CLI help now lists canonical built-in tool names instead of advertising removed tools.
+- Parked and terminated disk-resumable workers no longer retain disposed sessions; custom runtime callbacks and idle-timeout overrides remain intact.
+
+- Released eval sessions no longer retain pending filesystem observations; shared sessions keep their observations until the last owner releases them.
+
+- Fixed duplicate worker rows in live and completed kernel orchestration previews.
+- Live kernel previews now show readable, bounded source instead of syntax trees, preserving incomplete code and multiline patch payloads while streaming.
+- Fixed garbage collection archiving open sessions or sessions with active nested work, including sessions still finishing shutdown.
+- Fixed live-session tracking after starting, branching, forking, moving, or resuming sessions.
+- Prevented closed or connection-aborted daemon clients from issuing pending operations and retaining broker connections.
+- Released completed daemon output buffers while preserving log access and pattern waits after broker restart.
+- Reduced memory use during blob garbage collection of large transcripts and compressed archives.
+- Preserved complete Python/JavaScript kernel output and exit status for slow shell readers.
+- Prevented cancelled Python/JavaScript shell cells from starting later or unexpectedly running in an external interpreter.
+- Persistent workers no longer remain falsely active or accept undeliverable follow-ups after lifecycle persistence fails.
+- Worker receipts retain the correct turn and job identities through queued cancellation, follow-up delivery, and later-turn termination.
+- Killed workers remain terminal after restoration even when only their child transcript contains a tombstone.
+- Malformed transcript names no longer hang worker restoration or traverse into the parent artifact directory.
+- Fixed conductor turns restarting after disabling or during session transitions, and stale epoch rulings steering replaced or paused goals.
+- Fixed conductor verification retaining command permissions from previous objectives.
+- Fixed `/conduct on` failing to restart epoch steering after repeated failures.
+- Fixed conductor reviews skipping retained activity after context compaction.
 
 - `xd` preserves internal URLs in quoted, escaped, and environment-supplied JSON arguments.
 - `xd read` fetches web URLs without treating them as local filesystem paths.

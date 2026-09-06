@@ -1,4 +1,4 @@
-export const claudeCodeVersion = "2.1.220";
+export const claudeCodeVersion = "2.1.251";
 
 export const coworkUserAgent = `claude-cli/${claudeCodeVersion} (external, claude-desktop)`;
 

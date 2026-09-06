@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
@@ -19,6 +20,7 @@ import {
 } from "../eval/completion-bridge";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
 import { LatestValueScheduler, parseStreamedInputForCompletion, type StreamedKernelFailure } from "../eval/speculation";
+import { upsertStatusEvent } from "../eval/status-events";
 import {
 	type ExecutionMetadata,
 	type ExecutionTimeoutMetadata,
@@ -67,7 +69,7 @@ import {
 	stripOutputNotice,
 	stripRawOutputArtifactNotice,
 } from "./output-meta";
-import { resolveToCwd } from "./path-utils";
+import { expandPath } from "./path-utils";
 import {
 	capPreviewLines,
 	DEFAULT_TERMINAL_PREVIEW_LINES,
@@ -144,20 +146,18 @@ async function saveBashOriginalArtifact(session: ToolSession, originalText: stri
 
 const BASH_TIMEOUT_DESCRIPTION = `timeout in seconds; 0 disables the command deadline; nonzero values are clamped to ${TOOL_TIMEOUTS.bash.min}-${TOOL_TIMEOUTS.bash.max}`;
 
-const bashSchemaBase = type({
+const bashSchemaFields = {
 	command: type("string").describe("command to execute"),
 	"env?": type({ "[string]": "string" }).describe("extra env vars"),
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": type("string").describe("working directory"),
 	"pty?": type("boolean").describe("run in pty mode"),
-});
+};
+
+const bashSchemaBase = type(bashSchemaFields);
 
 const bashSchemaWithAsync = type({
-	command: "string",
-	"env?": { "[string]": "string" },
-	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
-	"cwd?": "string",
-	"pty?": "boolean",
+	...bashSchemaFields,
 	"async?": type("boolean").describe("run in background"),
 });
 
@@ -766,6 +766,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				name?: string | null;
 				args?: string[];
 				cwd?: string;
+				stdin?: string;
+				stdinTruncated?: boolean;
 			};
 			try {
 				const parsed: unknown = JSON.parse(requestText);
@@ -781,6 +783,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				) {
 					throw new Error("args must be an array of strings");
 				}
+				if (request.stdin !== undefined && typeof request.stdin !== "string") {
+					throw new Error("stdin must be a string");
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return JSON.stringify({
@@ -791,8 +796,16 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			}
 			throwIfAborted(signal);
 			const args = request.args ?? [];
+			const stdinArgs = args.length === 0 && (request.stdin ?? "").trim().length > 0 ? request.stdin : undefined;
+			if (request.name && stdinArgs !== undefined && request.stdinTruncated === true) {
+				return JSON.stringify({
+					stdout: "",
+					stderr: "xd: stdin exceeds the 1 MiB bridge limit; pass smaller JSON args\n",
+					exitCode: 125,
+				});
+			}
 			const parsed: XdBashDispatch = request.name
-				? { kind: "device", name: request.name, content: args.join(" ") }
+				? { kind: "device", name: request.name, content: stdinArgs ?? args.join(" ") }
 				: { kind: "listing" };
 			let result: AgentToolResult<BashToolDetails> | undefined;
 			try {
@@ -818,10 +831,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			if (!result) {
 				return JSON.stringify({ stdout: "", stderr: "xd: dispatcher returned no result\n", exitCode: 125 });
 			}
-			const text = result.content
+			const joinedText = result.content
 				.filter(block => block.type === "text")
 				.map(block => block.text ?? "")
 				.join("");
+			const text = joinedText.length > 0 && !joinedText.endsWith("\n") ? `${joinedText}\n` : joinedText;
 			const nonText = result.content.filter(block => block.type !== "text");
 			const isError = result.isError === true;
 			let record: string | undefined;
@@ -1356,7 +1370,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		invalidateGithubCacheForBashCommand(command);
 
-		const commandCwd = cwd ? resolveToCwd(cwd, this.session.cwd) : this.session.cwd;
+		const commandCwd = cwd ? path.resolve(this.session.cwd, expandPath(cwd)) : this.session.cwd;
 		let cwdStat: fs.Stats;
 		try {
 			cwdStat = await fs.promises.stat(commandCwd);
@@ -1752,7 +1766,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					_toolCallId,
 					{ command: rawCommand, cwd, env: rawEnv, pty, async: asyncRequested },
 					event => {
-						liveStatusEvents.push(event);
+						upsertStatusEvent(liveStatusEvents, event);
 						pushLiveUpdate();
 					},
 				);

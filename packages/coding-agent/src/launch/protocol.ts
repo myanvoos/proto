@@ -9,6 +9,17 @@ export const DAEMON_RUNTIME_DIR_ENV = "PROTO_DAEMON_RUNTIME_DIR";
 
 export const DAEMON_IDLE_GRACE_ENV = "PROTO_DAEMON_IDLE_GRACE_MS";
 
+export const DAEMON_MAX_REQUEST_BYTES = 1024 * 1024;
+
+export class DaemonBrokerRejectedError extends Error {
+	constructor(
+		message: string,
+		readonly retryable = false,
+	) {
+		super(message);
+	}
+}
+
 export type DaemonState = "starting" | "running" | "ready" | "restarting" | "stopping" | "exited" | "failed";
 
 type DaemonRestartPolicy = "no" | "on-failure" | "always";
@@ -122,7 +133,9 @@ export interface DaemonWireRequest {
 	operation: DaemonOperation;
 }
 
-type DaemonWireResponse = { id: string; ok: true; result: unknown } | { id: string; ok: false; error: string };
+type DaemonWireResponse =
+	| { id: string; ok: true; result: unknown }
+	| { id: string; ok: false; error: string; retryable?: boolean };
 
 export interface DaemonCompletionNotification {
 	event: "daemon-completed";
@@ -176,6 +189,20 @@ function optionalNumber(value: unknown, label: string): number | undefined {
 	return numberValue(value, label);
 }
 
+function optionalBoolean(value: unknown, label: string): boolean | undefined {
+	if (value === undefined) return undefined;
+	return booleanValue(value, label);
+}
+
+function portNumber(value: unknown, label: string): number | undefined {
+	if (value === undefined) return undefined;
+	const port = numberValue(value, label);
+	if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+		throw new Error(`${label} must be an integer from 1 to 65535`);
+	}
+	return port;
+}
+
 function stringArray(value: unknown, label: string): string[] {
 	if (!Array.isArray(value)) throw new Error(`${label} must be an array of strings`);
 	const result: string[] = [];
@@ -223,7 +250,7 @@ function readyPendingList(value: unknown): ("log" | "port")[] {
 function readySpec(value: unknown): DaemonReadySpec {
 	const source = record(value, "ready");
 	const log = optionalString(source.log, "ready.log");
-	const port = optionalNumber(source.port, "ready.port");
+	const port = portNumber(source.port, "ready.port");
 	const host = optionalString(source.host, "ready.host");
 	const timeoutMs = numberValue(source.timeoutMs, "ready.timeoutMs");
 	if (!log && port === undefined) throw new Error("ready requires log or port");
@@ -278,10 +305,7 @@ export function parseDaemonWireRequest(value: unknown): DaemonWireRequest {
 		owners: source.owners === undefined ? undefined : stringArray(source.owners, "request.owners"),
 		detachedOwners:
 			source.detachedOwners === undefined ? undefined : stringArray(source.detachedOwners, "request.detachedOwners"),
-		completionEvents:
-			source.completionEvents === undefined
-				? undefined
-				: booleanValue(source.completionEvents, "request.completionEvents"),
+		completionEvents: optionalBoolean(source.completionEvents, "request.completionEvents"),
 		completionAcks:
 			source.completionAcks === undefined ? undefined : stringArray(source.completionAcks, "request.completionAcks"),
 		completionUnsubscribes:
@@ -304,7 +328,14 @@ function parseDaemonWireResponse(value: unknown): DaemonWireResponse {
 	const source = record(value, "daemon response");
 	const id = stringValue(source.id, "response.id");
 	if (source.ok === true) return { id, ok: true, result: source.result };
-	if (source.ok === false) return { id, ok: false, error: stringValue(source.error, "response.error") };
+	if (source.ok === false) {
+		return {
+			id,
+			ok: false,
+			error: stringValue(source.error, "response.error"),
+			retryable: optionalBoolean(source.retryable, "response.retryable"),
+		};
+	}
 	throw new Error("response.ok must be a boolean");
 }
 
@@ -344,10 +375,7 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				grep: optionalString(source.grep, "operation.grep"),
 				follow: booleanValue(source.follow, "operation.follow"),
 				cursor: optionalNumber(source.cursor, "operation.cursor"),
-				renderTerminalRows:
-					source.renderTerminalRows === undefined
-						? undefined
-						: booleanValue(source.renderTerminalRows, "operation.renderTerminalRows"),
+				renderTerminalRows: optionalBoolean(source.renderTerminalRows, "operation.renderTerminalRows"),
 				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
 			};
 		case "wait": {
@@ -366,7 +394,7 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				op,
 				name: stringValue(source.name, "operation.name"),
 				data: optionalString(source.data, "operation.data"),
-				enter: source.enter === undefined ? undefined : booleanValue(source.enter, "operation.enter"),
+				enter: optionalBoolean(source.enter, "operation.enter"),
 				keys: source.keys === undefined ? undefined : stringArray(source.keys, "operation.keys"),
 				signal: source.signal === undefined ? undefined : daemonSignal(source.signal),
 			};

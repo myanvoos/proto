@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import { AgentRegistry } from "../../registry/agent-registry";
 import { initThemeSync } from "../theme/theme";
@@ -25,11 +25,11 @@ function messageLine(text: string): string {
 	});
 }
 
-function viewerFor(sessionFile: string): AgentTranscriptViewer {
+function viewerFor(sessionFile: string, agentId = "probe-agent"): AgentTranscriptViewer {
 	const registry = new AgentRegistry();
 	registry.register({
-		id: "probe-agent",
-		displayName: "probe-agent",
+		id: agentId,
+		displayName: agentId,
 		kind: "sub",
 		parentId: "Main",
 		status: "parked",
@@ -43,7 +43,7 @@ function viewerFor(sessionFile: string): AgentTranscriptViewer {
 		resetDisplay: () => {},
 	} as unknown as TUI;
 	return new AgentTranscriptViewer({
-		agentId: "probe-agent",
+		agentId,
 		registry,
 		ui,
 		expandKeys: [],
@@ -75,5 +75,25 @@ test("transcript viewer appends a newly persisted message without rebuilding or 
 	} finally {
 		viewer.dispose();
 		vi.useRealTimers();
+	}
+});
+
+test("transcript viewer chrome stays within the terminal width for long external agent identities", async () => {
+	const directory = await fs.mkdtemp("/tmp/proto-transcript-viewer-width-");
+	temporaryDirectories.push(directory);
+	const sessionFile = `${directory}/session.jsonl`;
+	await Bun.write(sessionFile, `${messageLine("visible message")}\n`);
+	const viewer = viewerFor(sessionFile, "worker\twith-a-very-long-identity-\u{1f600}");
+	try {
+		for (const width of [2, 20, 40]) {
+			const lines = viewer.render(width);
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+				expect(line).not.toContain("\t");
+			}
+			if (width === 40) expect(lines.join("\n")).toContain("visible message");
+		}
+	} finally {
+		viewer.dispose();
 	}
 });

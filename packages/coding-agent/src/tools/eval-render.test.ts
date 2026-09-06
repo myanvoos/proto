@@ -269,6 +269,9 @@ test("call-phase expansion is deferred while args stream", () => {
 	);
 	const lines = component.render(WIDTH).map(strip);
 	expect(lines.length, "streaming call block stays windowed").toBeLessThan(30);
+	expect(lines.some(line => line.includes("x79 = 79"))).toBe(true);
+	expect(lines.some(line => line.includes("x0 = 0"))).toBe(false);
+	expect(lines.some(line => line.includes("earlier lines"))).toBe(true);
 	expect(lines.some(line => line.includes("expanded view once the cell settles"))).toBe(true);
 });
 
@@ -347,4 +350,46 @@ test("renderer places authoritative execution metadata before output prose", () 
 	expect(lines[metadataLine]).toContain("collector=failed");
 	expect(lines[metadataLine]).toContain("renderer=complete");
 	expect(lines[metadataLine]).toContain("timeout=unknown/pipeline");
+});
+
+for (const [language, code] of [
+	["python", 'PAYLOAD = <<END_PAYLOAD\n  first: keep(x,y)\n\n    second line\nEND_PAYLOAD\nprint("unfinished'],
+	["js", "const payload = `\n  first: keep(x,y)\n\n    second line\n${unfinished("],
+] as const) {
+	test(`live ${language} previews preserve incomplete payload source lines`, () => {
+		withTerminalRows(80, () => {
+			for (const expanded of [false, true]) {
+				const call = evalToolRenderer.renderCall({ language, code }, { expanded, isPartial: true }, theme);
+				const lines = call.render(100).map(strip);
+				expect(lines.join("\n")).not.toContain("· ast");
+				const start = lines.findIndex(line => line.includes(code.split("\n")[0]!));
+				expect(start).toBeGreaterThanOrEqual(0);
+				for (const [index, sourceLine] of code.split("\n").entries()) {
+					expect(lines[start + index]).toContain(sourceLine);
+				}
+				for (const [isPartial, status] of [
+					[true, "complete"],
+					[true, "running"],
+					[false, "running"],
+					[false, "pending"],
+				] as const) {
+					const result = renderCells([{ index: 0, code, language, output: "", status }], { expanded, isPartial });
+					expect(result.join("\n")).not.toContain("· ast");
+					for (const sourceLine of code.split("\n").filter(Boolean)) {
+						expect(result.some(line => line.includes(sourceLine))).toBe(true);
+					}
+				}
+			}
+		});
+	});
+}
+
+test("settled collapsed cells retain outlines while expanded cells show source", () => {
+	const cells: EvalToolDetails["cells"] = [
+		{ index: 0, code: "def greet(name):\n    return name", language: "python", output: "", status: "complete" },
+	];
+	expect(renderCells(cells, { expanded: false, isPartial: false }).join("\n")).toContain("· ast");
+	const expanded = renderCells(cells, { expanded: true, isPartial: false }).join("\n");
+	expect(expanded).not.toContain("· ast");
+	expect(expanded).toContain("def greet(name):");
 });

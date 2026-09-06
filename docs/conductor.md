@@ -1,12 +1,53 @@
 # Conductor (`/conduct`)
 
-> **Status: v0 design. Not implemented.** This document is the agreed spec for the
-> conductor subsystem. It composes three shipped subsystems —
+> **Status: commissioning, epoch steering, and completion verification are implemented.**
+> The runtime contract below describes the shipped subset; the remaining sections
+> preserve the broader target design, including unimplemented personnel management,
+> contract amendment, and loop/goal scheduler unification. The conductor composes
+> three shipped subsystems —
 > [goal mode](../packages/coding-agent/src/goals/runtime.ts), loop mode
 > ([`src/modes/loop-limit.ts`](../packages/coding-agent/src/modes/loop-limit.ts)),
 > and the [advisor](./advisor-watchdog.md) — and reuses the advisor transport
 > rather than inventing a parallel one. Read `advisor-watchdog.md` first; the
 > conductor is defined largely by contrast with it.
+
+## Implemented runtime contract
+
+- `/conduct <rough ask>` drafts a five-section objective through `program({op:"create"})`;
+  `conductor.approveContract` controls whether the user approves it before goal creation.
+  `/conduct on`, `/conduct off`, and `/conduct status` control the same session-scoped runtime.
+- Commissioning, verification, and epoch review share one reviewer transport slot.
+  A stopped turn must settle before a replacement starts, including an immediate
+  off/on. Deferred tool construction cannot restart a disabled conductor or launch
+  a turn during a session rewrite.
+- Every mode receives `read` and restricted `bash`. Commissioning and epochs permit
+  read-only exploration; verification additionally permits the exact commands from
+  the **claim currently being audited**, refreshed even when its transport is reused.
+  Changing objectives never retains the previous contract's command grant.
+- Active goals wake epoch review after `conductor.minEpochTurns` primary turns at a
+  settled boundary. `cue({op:"next", prompt?, context?})` supports `continue` or
+  `compact`; an omitted prompt keeps the goal template driving. An epoch is valid
+  only for the same active objective. Replacement, pause, completion claims, session
+  resets, and disabling cancel stale rulings without prompting or pausing another
+  stretch. Ordinary usage-accounting updates do not invalidate the review.
+- Session transitions abort and drain review activity before detaching its recorder.
+  Intentional cancellation does not count as a dropped epoch or invoke
+  `conductor.fallback: pause`. A conductor-requested compaction preserves its already
+  completed ruling only while the same goal remains active; the next digest starts
+  from the rewritten transcript rather than a stale pre-compaction cursor.
+- Three consecutive dropped epochs halt epoch steering without disabling the
+  completion gate. `/conduct on` clears the drop streak and re-arms epoch steering
+  as well as pending verification.
+- Routine transcript pruning rewinds the next digest without aborting an active
+  review. Epoch prompts and verification rejections are delivered as follow-ups
+  at turn boundaries, rather than interrupting primary tool execution.
+- Pausing or replacing the completion claim cancels its in-flight audit. Resuming
+  and submitting a new claim starts a fresh verification; stale audits cannot
+  complete or reject the new claim.
+
+The target design below is not an additional command/tool surface. In particular,
+`roster`, `program` amendment/show, `cue` stop/reset, dynamic advisor hires, and
+hard wall-clock/iteration contract budgets are not currently implemented.
 
 The conductor is a session-scoped strategic agent on a frontier model. It designs
 an autonomous stretch of work (the **program**), sets the primary agent's tempo

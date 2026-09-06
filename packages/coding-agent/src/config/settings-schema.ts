@@ -3539,7 +3539,7 @@ export const SETTINGS_SCHEMA = {
 
 	"orchestrator.agentIdleTtlMs": {
 		type: "number",
-		default: 420_000,
+		default: 60_000,
 		ui: {
 			tab: "tasks",
 			group: "Workers",
