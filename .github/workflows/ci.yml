@@ -89,7 +89,7 @@ jobs:
 
    check:
       name: Lint, type check
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
+      runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
@@ -97,11 +97,10 @@ jobs:
            run: |
               cargo install --locked --version 0.20.2 cargo-deny
               # `--offline` needs every workspace crate already in the registry
-              # cache. PR runs use a fresh GitHub-hosted runner (see runs-on
-              # above), where the only prior cargo work is the cargo-deny
-              # install, so nothing populates the index for our own graph and
-              # resolution fails. Non-PR events land on proto-kata, whose Cargo
-              # cache is warm, which is why main stayed green. Fetch first.
+              # cache. Every run lands on a fresh GitHub-hosted runner, where the
+              # only prior cargo work is the cargo-deny install, so nothing
+              # populates the index for our own graph and resolution fails.
+              # Fetch first.
               cargo fetch --locked
               cargo deny --locked --offline check licenses sources
          - name: Type check workspace
@@ -110,7 +109,7 @@ jobs:
    rust_validate:
       name: Validate Rust workspace
       if: github.event_name != 'pull_request'
-      runs-on: proto-kata
+      runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
@@ -129,13 +128,61 @@ jobs:
            run: cargo fmt --all --check
 
    native_addons:
-      name: Build native addons
-      runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'proto-kata' }}
+      name: "Build native addons: ${{ matrix.arch }}"
+      if: github.event_name != 'pull_request'
+      strategy:
+         fail-fast: false
+         matrix:
+            include:
+               - {
+                    arch: x64,
+                    os: ubuntu-22.04,
+                    targets: linux-musl-x64-baseline linux-x64-baseline linux-x64-modern,
+                 }
+               - { arch: arm64, os: ubuntu-24.04-arm, targets: linux-arm64 linux-musl-arm64 }
+      runs-on: ${{ matrix.os }}
       steps:
          - uses: actions/checkout@v4
+         - name: Install musl toolchain
+           shell: bash
+           run: |
+              set -euo pipefail
+              # build-natives.sh wires musl-gcc in as CARGO_TARGET_<triple>_CC
+              # for ring/cc-rs; stock runner images do not ship it.
+              sudo apt-get update
+              sudo apt-get install -y musl-tools
+         - name: Build native addons
+           shell: bash
+           run: |
+              set -eo pipefail
+              # Split by host architecture: build-natives.sh compiles for the
+              # matching host only (no cross toolchains), so each arch builds on
+              # its own runner and release_binary merges both artifacts.
+              #
+              # Sequential by design: each addon link peaks at several GiB of
+              # rustc RSS, and concurrent links OOM'd the build host back when
+              # all targets built at once (runs 30556752623 / 30557524371).
+              # The script builds strictly one target at a time; the flat
+              # artifact dir stores musl addons under their musl-explicit
+              # names so gnu and musl outputs cannot clobber each other
+              # (native-artifacts renames at install time).
+              sh scripts/build-natives.sh ${{ matrix.targets }} \
+                 --dest "$RUNNER_TEMP/native-addons"
+         - name: Upload native addon artifacts
+           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+           with:
+              name: native-addons-${{ matrix.arch }}
+              path: ${{ runner.temp }}/native-addons/*.node
+              if-no-files-found: error
+              retention-days: 1
 
+   native_addons_pr:
+      name: Smoke release native addons
+      if: github.event_name == 'pull_request'
+      runs-on: ubuntu-22.04
+      steps:
+         - uses: actions/checkout@v4
          - name: Fetch release native addons (npm)
-           if: github.event_name == 'pull_request'
            shell: bash
            run: |
               set -euo pipefail
@@ -147,7 +194,6 @@ jobs:
                  "$RUNNER_TEMP/package/pi_natives.linux-x64-modern.node" \
                  "$RUNNER_TEMP/native-addons/"
          - name: Smoke release addons
-           if: github.event_name == 'pull_request'
            shell: bash
            run: |
               set -euo pipefail
@@ -169,7 +215,6 @@ jobs:
                 "$RUNNER_TEMP/native-addons/pi_natives.linux-x64-baseline.node" \
                 "$RUNNER_TEMP/native-addons/pi_natives.linux-x64-modern.node"
          - name: Note native changes tested against release addons
-           if: github.event_name == 'pull_request'
            shell: bash
            env:
               GH_TOKEN: ${{ github.token }}
@@ -178,29 +223,6 @@ jobs:
                  | grep -qE '^(crates/|Cargo\.(toml|lock)|rust-toolchain\.toml|rustfmt\.toml|scripts/build-natives\.sh)'; then
                 echo "::notice title=Native sources changed::PR CI tests against the latest release addons by design; native changes are validated post-merge on main and at release."
               fi
-
-         - name: Build native addons
-           if: github.event_name != 'pull_request'
-           shell: bash
-           run: |
-              set -eo pipefail
-              # Sequential by design: each addon link peaks at several GiB of
-              # rustc RSS, and concurrent links OOM'd the kata pod back when
-              # all targets built at once (runs 30556752623 / 30557524371).
-              # The script builds strictly one target at a time; the flat
-              # artifact dir stores musl addons under their musl-explicit
-              # names so gnu and musl outputs cannot clobber each other
-              # (native-artifacts renames at install time).
-              sh scripts/build-natives.sh linux-arm64 linux-musl-arm64 \
-                 linux-musl-x64-baseline linux-x64-baseline linux-x64-modern \
-                 --dest "$RUNNER_TEMP/native-addons"
-         - name: Upload native addon artifacts
-           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-           with:
-              name: native-addons
-              path: ${{ runner.temp }}/native-addons/*.node
-              if-no-files-found: error
-              retention-days: 1
 
    release_gate:
       name: Release validation gate

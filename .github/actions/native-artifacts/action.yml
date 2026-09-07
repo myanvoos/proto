@@ -18,7 +18,8 @@ runs:
       - name: Download native addon artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-           name: native-addons
+           pattern: native-addons-*
+           merge-multiple: true
            path: ${{ runner.temp }}/proto-native-artifacts
 
       - name: Install native addon targets
