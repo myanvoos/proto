@@ -290,15 +290,14 @@ export function buildSessionContext(
 		const compactionIdx = path.findIndex(e => e.type === "compaction" && e.id === compaction.id);
 
 		if (!remoteReplacementHistory || options?.transcript) {
-			let foundFirstKept = false;
-			for (let i = 0; i < compactionIdx; i++) {
-				const entry = path[i];
-				if (entry.id === compaction.firstKeptEntryId) {
-					foundFirstKept = true;
-				}
-				if (foundFirstKept) {
-					appendMessage(entry);
-				}
+			const firstKeptIdx = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
+
+			// An extension compactor may fold the whole window by reporting an empty boundary, and a
+			// rewritten history can leave the id stale. Dropping everything is correct for the model
+			// context (the summary replaces it) but would erase display-only scrollback.
+			const keptStartIdx = firstKeptIdx >= 0 ? firstKeptIdx : options?.transcript ? 0 : compactionIdx;
+			for (let i = keptStartIdx; i < compactionIdx; i++) {
+				appendMessage(path[i]);
 			}
 		} else if (compaction.providerReplayThroughEntryId) {
 			const replayThroughIdx = path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId);

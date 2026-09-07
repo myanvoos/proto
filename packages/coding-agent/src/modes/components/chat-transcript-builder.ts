@@ -11,6 +11,7 @@ import {
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
 } from "../../session/messages";
+import { MONITOR_EVENT_MESSAGE_TYPE } from "../../session/monitor-event";
 import type { SessionMessageEntry } from "../../session/session-entries";
 import { theme } from "../theme/theme";
 import {
@@ -20,6 +21,7 @@ import {
 	buildFileMentionBlock,
 	buildIrcMessageCard,
 	buildLaunchCompletionBlock,
+	buildMonitorEventBlock,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
@@ -444,6 +446,10 @@ export class ChatTranscriptBuilder {
 		}
 		if (message.customType === LAUNCH_COMPLETION_MESSAGE_TYPE) {
 			this.container.addChild(buildLaunchCompletionBlock(message));
+			return;
+		}
+		if (message.customType === MONITOR_EVENT_MESSAGE_TYPE) {
+			this.container.addChild(buildMonitorEventBlock(message));
 			return;
 		}
 		if (message.customType === BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE) {

@@ -1335,6 +1335,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			getGoalModeState: () => session?.getGoalModeState(),
 			getGoalRuntime: () => session?.goalRuntime,
+			getMonitorManager: () => session?.monitorManager,
 			getUsageStatistics: () => sessionManager.getUsageStatistics(),
 			getTurnBudget: () => sessionManager.getTurnBudget(),
 			recordEvalSubagentUsage: output => sessionManager.recordEvalSubagentOutput(output),

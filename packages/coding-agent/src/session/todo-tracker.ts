@@ -43,6 +43,7 @@ export interface TodoTrackerHost {
 	scheduleAgentContinue(options: { generation?: number }): void;
 	promptGeneration(): number;
 	hasPendingAsyncWake(): boolean;
+	hasActiveMonitors(): boolean;
 	getActiveToolNames(): string[];
 	getEnabledToolNames(): string[];
 	toolRegistry(): Map<string, AgentTool>;
@@ -199,6 +200,12 @@ export class TodoTracker {
 		}
 		if (this.#host.hasPendingAsyncWake()) {
 			logger.debug("Todo completion: async jobs in flight will re-wake the loop; skipping reminder", {
+				incomplete: incomplete.length,
+			});
+			return false;
+		}
+		if (this.#host.hasActiveMonitors()) {
+			logger.debug("Todo completion: an active monitor will re-wake the loop; skipping reminder", {
 				incomplete: incomplete.length,
 			});
 			return false;

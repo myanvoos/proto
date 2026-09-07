@@ -3161,6 +3161,38 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"monitor.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Monitor",
+			description: "Enable the monitor tool for watching background output and waiting on events",
+		},
+	},
+
+	"monitor.maxConcurrent": {
+		type: "number",
+		default: 4,
+		ui: {
+			tab: "tools",
+			group: "Execution",
+			label: "Max Monitors",
+			description: "How many monitors may run at once in one session",
+		},
+	},
+
+	"monitor.maxEvents": {
+		type: "number",
+		default: 50,
+		ui: {
+			tab: "tools",
+			group: "Execution",
+			label: "Monitor Event Limit",
+			description: "Default number of events a single monitor delivers before it stops itself",
+		},
+	},
 	"irc.timeoutMs": {
 		type: "number",
 		default: 120_000,

@@ -40,6 +40,7 @@ import {
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
 } from "../../session/messages";
+import { MONITOR_EVENT_MESSAGE_TYPE } from "../../session/monitor-event";
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
 import { replaceTabs } from "../../tools/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
@@ -51,6 +52,7 @@ import {
 	buildFileMentionBlock,
 	buildIrcMessageCard,
 	buildLaunchCompletionBlock,
+	buildMonitorEventBlock,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
@@ -209,6 +211,10 @@ export class UiHelpers {
 					}
 					if (message.customType === LAUNCH_COMPLETION_MESSAGE_TYPE) {
 						this.ctx.chatContainer.addChild(buildLaunchCompletionBlock(message));
+						break;
+					}
+					if (message.customType === MONITOR_EVENT_MESSAGE_TYPE) {
+						this.ctx.chatContainer.addChild(buildMonitorEventBlock(message));
 						break;
 					}
 					if (message.customType === SKILL_PROMPT_MESSAGE_TYPE) {

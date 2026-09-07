@@ -140,6 +140,8 @@ import { parseTurnBudget } from "../modes/turn-budget";
 import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
 import { computeNonMessageTokens } from "../modes/utils/context-usage";
 import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
+import { MonitorManager } from "../monitor";
+import type { MonitorEvent } from "../monitor/types";
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
@@ -265,6 +267,7 @@ import {
 	USER_INTERRUPT_LABEL,
 } from "./messages";
 import { ModelControls, type ModelControlsHost } from "./model-controls";
+import { buildMonitorEventBatchMessage, MONITOR_EVENT_MESSAGE_TYPE } from "./monitor-event";
 import { isPrewalkPlanNudge, PrewalkCoordinator, type PrewalkCoordinatorHost } from "./prewalk";
 import {
 	isAdvisorCard,
@@ -473,6 +476,8 @@ export class AgentSession {
 	#unregisterAsyncDeliverySink: (() => void) | undefined;
 
 	#asyncDeliveryEpoch = 0;
+
+	readonly #monitors: MonitorManager;
 
 	readonly #irc: IrcBridge;
 	#ircWakeTurnObserver:
@@ -822,6 +827,7 @@ export class AgentSession {
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
 			promptGeneration: () => this.#promptGeneration,
 			hasPendingAsyncWake: () => this.#hasPendingAsyncWake(),
+			hasActiveMonitors: () => this.hasActiveMonitors(),
 			getActiveToolNames: () => this.getActiveToolNames(),
 			getEnabledToolNames: () => this.getEnabledToolNames(),
 			toolRegistry: () => this.#tools.registry,
@@ -1013,6 +1019,15 @@ export class AgentSession {
 			isStale: entry =>
 				this.#isDisposed || !isLaunchCompletionOwner(entry.owner, this.sessionManager.getSessionId()),
 			build: buildLaunchCompletionBatchMessage,
+		});
+		this.#monitors = new MonitorManager({
+			deliver: event => this.#deliverMonitorEvent(event),
+			settings: this.settings,
+			cwd: () => this.sessionManager.getCwd(),
+		});
+		this.yieldQueue.register<MonitorEvent>(MONITOR_EVENT_MESSAGE_TYPE, {
+			isStale: () => this.#isDisposed,
+			build: buildMonitorEventBatchMessage,
 		});
 
 		this.agent.hasIrcInterrupts = () => this.#irc.hasInterrupts();
@@ -1483,6 +1498,23 @@ export class AgentSession {
 		this.yieldQueue.clear("async-result");
 	}
 
+	get monitorManager(): MonitorManager {
+		return this.#monitors;
+	}
+
+	hasActiveMonitors(): boolean {
+		return this.#monitors.hasActive() || this.yieldQueue.has(MONITOR_EVENT_MESSAGE_TYPE);
+	}
+
+	#deliverMonitorEvent(event: MonitorEvent): void {
+		if (this.#isDisposed) return;
+		this.yieldQueue.enqueue<MonitorEvent>(MONITOR_EVENT_MESSAGE_TYPE, event);
+		this.yieldQueue.requestIdleFlush();
+	}
+
+	// Monitors are deliberately absent from #hasPendingAsyncWake(): that predicate backs
+	// settleAsyncWork() and the willContinue agent-end signal, and a monitor is an open-ended
+	// wait that may never settle, so folding it in would hang shutdown.
 	#hasPendingAsyncWake(): boolean {
 		const manager = this.#asyncJobManager;
 		if (!manager) return false;
@@ -3099,6 +3131,7 @@ export class AgentSession {
 		this.agent.hasIrcInterrupts = undefined;
 		this.#advisors.stopRuntime();
 		this.#conductor.stopRuntime();
+		this.#monitors.dispose();
 		this.#eval.beginDispose();
 	}
 

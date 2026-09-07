@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `monitor` tool: watch a background command and get woken by each matching output line (`stream`) or each changed output of a repeated command (`every: N` seconds), instead of polling or sleeping in `bash`.
+- While a monitor is running, incomplete-todo reminders and goal-mode auto-continuation no longer nudge the agent to keep going — waiting for a monitored event is a legitimate stopping point.
+
+### Fixed
+
+- Fixed the transcript going blank after compaction: when a compactor folds the entire window (or a compaction's kept-entry id no longer resolves), the collapsed transcript now keeps the scrollback above the summary divider instead of hiding every earlier message.
+
 ## [18.0.1] - 2026-09-07
 
 ### Breaking Changes

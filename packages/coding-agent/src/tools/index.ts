@@ -20,6 +20,7 @@ import { GoalTool } from "../goals/tools/goal-tool";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import type { MCPManager } from "../mcp";
+import type { MonitorManager } from "../monitor";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
@@ -48,6 +49,7 @@ import { GithubTool } from "./gh";
 import { InspectMediaTool } from "./inspect-media";
 import { KernelTool } from "./kernel";
 import { ManageSkillTool } from "./manage-skill";
+import { MonitorTool } from "./monitor";
 import {
 	OrchestrateKillTool,
 	OrchestrateListTool,
@@ -81,6 +83,7 @@ export * from "./image-gen";
 export * from "./inspect-media";
 export * from "./kernel";
 export * from "./manage-skill";
+export * from "./monitor";
 export * from "./orchestrate";
 export * from "./read";
 export * from "./report-tool-issue";
@@ -235,6 +238,9 @@ export interface ToolSession {
 
 	asyncJobManager?: AsyncJobManager;
 
+	/** Session-scoped monitors; absent until the owning session finishes construction. */
+	getMonitorManager?: () => MonitorManager | undefined;
+
 	mcpManager?: MCPManager;
 
 	localProtocolOptions?: LocalProtocolOptions;
@@ -317,6 +323,7 @@ export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read" | "eval">, To
 	orchestrate_kill: s => new OrchestrateKillTool(s),
 	orchestrate_list: s => new OrchestrateListTool(s),
 	fleet: s => new FleetTool(s),
+	monitor: s => new MonitorTool(s),
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
 	manage_skill: ManageSkillTool.createIf,
@@ -412,6 +419,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				session.settings.get("checkpoint.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
+		if (name === "monitor") return (session.taskDepth ?? 0) === 0 && session.settings.get("monitor.enabled");
 		if (name === "fleet") {
 			return (
 				!restrictToolNames && session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)

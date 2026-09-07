@@ -1197,6 +1197,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.session.settings.get("goal.continuationModes").includes("interactive")) return;
 		if (!this.goalModeEnabled || this.goalModePaused) return;
 		if (this.#goalSuppressNextContinuation) return;
+		if (this.session.hasActiveMonitors()) return;
 		if (this.#pendingSubmittedInput) return;
 		if (this.editor.getText().trim().length > 0) return;
 		if ((this.editor.pendingImages?.length ?? 0) > 0) return;
@@ -1210,6 +1211,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (!this.goalModeEnabled || this.goalModePaused) return;
 
 			if (this.#isAutoSubmitBlocked()) return;
+			if (this.session.hasActiveMonitors()) return;
 			if (this.#pendingSubmittedInput) return;
 			if (this.editor.getText().trim().length > 0) return;
 			if ((this.editor.pendingImages?.length ?? 0) > 0) return;

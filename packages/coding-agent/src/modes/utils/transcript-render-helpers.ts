@@ -3,14 +3,22 @@ import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
 import type { AsyncJobType } from "../../async";
 import type { DaemonSnapshot } from "../../launch/protocol";
+import type { MonitorEvent, MonitorEventKind } from "../../monitor/types";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
 	resolveAbortLabel,
 	shouldRenderAbortReason,
 } from "../../session/messages";
+import type { MonitorEventDetails } from "../../session/monitor-event";
 import { createIrcMessageCard } from "../../tools/fleet";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import {
+	formatMoreItems,
+	PREVIEW_LIMITS,
+	replaceTabs,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
+} from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { ToolActivityContainer } from "../components/tool-activity";
 import { TranscriptBlock } from "../components/transcript-container";
@@ -86,6 +94,57 @@ export function buildLaunchCompletionBlock(message: CustomOrHookMessage): ToolAc
 	return new ToolActivityContainer(block);
 }
 
+function monitorEventHeading(kind: MonitorEventKind): {
+	glyph: string;
+	color: "success" | "warning" | "error";
+	text: string;
+} {
+	switch (kind) {
+		case "error":
+			return { glyph: theme.status.error, color: "error", text: "Monitor error" };
+		case "exit":
+			return { glyph: theme.status.warning, color: "warning", text: "Monitor exited" };
+		case "limit":
+			return { glyph: theme.status.warning, color: "warning", text: "Monitor event limit" };
+		case "timeout":
+			return { glyph: theme.status.warning, color: "warning", text: "Monitor timeout" };
+		default:
+			return { glyph: theme.status.done, color: "success", text: "Monitor" };
+	}
+}
+
+function monitorEventBodyLines(text: string): string[] {
+	const rawLines = text.split("\n");
+	const shown = rawLines.slice(0, PREVIEW_LIMITS.OUTPUT_COLLAPSED);
+	const lines = shown.map(line => truncateToWidth(replaceTabs(line), TRUNCATE_LENGTHS.LINE));
+	const remaining = rawLines.length - shown.length;
+	if (remaining > 0) lines.push(formatMoreItems(remaining, "line"));
+	return lines;
+}
+
+export function buildMonitorEventBlock(message: CustomOrHookMessage): ToolActivityContainer {
+	const details = (message as CustomMessage<MonitorEventDetails>).details;
+	const block = new TranscriptBlock();
+	const events: MonitorEvent[] = details?.events ?? [];
+	if (events.length === 0 && typeof message.content === "string") {
+		block.addChild(new Text(theme.fg("dim", `${theme.status.done} ${message.content}`), 1, 0));
+	}
+	for (const event of events) {
+		const heading = monitorEventHeading(event.kind);
+		const line = [
+			theme.fg(heading.color, `${heading.glyph} ${heading.text}`),
+			theme.fg("accent", event.monitorId),
+			event.label ? theme.fg("dim", event.label) : undefined,
+		]
+			.filter(Boolean)
+			.join(" ");
+		block.addChild(new Text(line, 1, 0));
+		for (const bodyLine of monitorEventBodyLines(event.text)) {
+			block.addChild(new Text(theme.fg("muted", bodyLine), 3, 0));
+		}
+	}
+	return new ToolActivityContainer(block);
+}
 export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: () => boolean): Component {
 	const details = (
 		message as CustomMessage<{ from?: string; to?: string; message?: string; body?: string; replyTo?: string }>

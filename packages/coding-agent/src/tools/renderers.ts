@@ -11,6 +11,7 @@ import { evalToolRenderer } from "./eval-render";
 import { fleetToolRenderer } from "./fleet";
 import { githubToolRenderer } from "./gh-renderer";
 import { inspectMediaToolRenderer } from "./inspect-media-renderer";
+import { monitorToolRenderer } from "./monitor";
 import { createOrchestrateToolRenderer, type OrchestrateOp } from "./orchestrate";
 import { readToolRenderer } from "./read";
 import { REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
@@ -121,6 +122,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	get fleet(): ToolRenderer {
 		return fleetToolRenderer as ToolRenderer;
 	},
+	monitor: monitorToolRenderer as ToolRenderer,
 	read: readToolRenderer as ToolRenderer,
 
 	resolve: resolveRenderer as ToolRenderer,

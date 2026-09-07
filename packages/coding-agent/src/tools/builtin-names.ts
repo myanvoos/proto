@@ -16,6 +16,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"orchestrate_kill",
 	"orchestrate_list",
 	"fleet",
+	"monitor",
 	"todo",
 	"web_search",
 	"manage_skill",
