@@ -202,7 +202,7 @@ describe("GC archive active-session safety", () => {
 		vi.spyOn(Bun, "write").mockImplementation(async (destination, input, options?) => {
 			const written = await originalWrite(
 				destination,
-				input instanceof Response ? await input.blob() : input,
+				input instanceof Response || input instanceof Request ? await input.blob() : input,
 				options,
 			);
 			if (typeof destination === "string" && destination.startsWith(`${root.archive}.`) && !heartbeat) {
@@ -233,7 +233,7 @@ describe("GC archive active-session safety", () => {
 		vi.spyOn(Bun, "write").mockImplementation(async (destination, input, options?) => {
 			const written = await originalWrite(
 				destination,
-				input instanceof Response ? await input.blob() : input,
+				input instanceof Response || input instanceof Request ? await input.blob() : input,
 				options,
 			);
 			if (typeof destination === "string" && destination.startsWith(`${root.archive}.`) && !replaced) {
