@@ -258,6 +258,7 @@ jobs:
                     binary_path: packages/coding-agent/binaries/proto-linux-musl-arm64,
                     native_targets: linux-musl-arm64,
                  }
+      runs-on: ${{ matrix.os }}
       permissions:
          contents: read
       steps:
