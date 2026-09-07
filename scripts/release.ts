@@ -308,9 +308,18 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 
 	console.log("Tagging and pushing to remote...");
 	const tagRef = `v${version}`;
-	const sha = (await git(["rev-parse", "HEAD"]).text()).trim();
-	await git(["tag", "-f", tagRef]);
-	await git(["push", "--atomic", "origin", "refs/heads/main:refs/heads/main", `${sha}:refs/tags/${tagRef}`]);
+	// `-m` is required, not cosmetic: with `tag.gpgsign = true` a bare `git tag -f <name>`
+	// creates a signed annotated tag and dies with "no tag message?" when none is supplied.
+	await git(["tag", "-f", "-m", `proto ${tagRef}`, tagRef]);
+	// Push the tag ref itself, never `<sha>:refs/tags/<tag>`: the sha form publishes a
+	// lightweight tag, dropping the annotation and signature the line above just created.
+	await git([
+		"push",
+		"--atomic",
+		"origin",
+		"refs/heads/main:refs/heads/main",
+		`refs/tags/${tagRef}:refs/tags/${tagRef}`,
+	]);
 	console.log();
 
 	console.log("Watching CI...");
@@ -321,9 +330,9 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	} else {
 		console.log("\nTo retry after fixing (repeat until CI passes):");
 		console.log(`  git commit -m "chore: bump version to ${version}" -m "<what was fixed>"`);
-		console.log(`  git tag -f v${version}`);
+		console.log(`  git tag -f -m "proto v${version}" v${version}`);
 		console.log(
-			`  git push --atomic origin refs/heads/main:refs/heads/main "+$(git rev-parse HEAD):refs/tags/v${version}"`,
+			`  git push --atomic origin refs/heads/main:refs/heads/main "+refs/tags/v${version}:refs/tags/v${version}"`,
 		);
 		console.log("  bun scripts/release.ts watch");
 		process.exit(1);

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.2] - 2026-09-07
+
 ### Added
 
 - Added the `monitor` tool: watch a background command and get woken by each matching output line (`stream`) or each changed output of a repeated command (`every: N` seconds), instead of polling or sleeping in `bash`.
