@@ -147,7 +147,7 @@ jobs:
            shell: bash
            run: |
               set -euo pipefail
-              # build-natives.sh wires musl-gcc in as CARGO_TARGET_<triple>_CC
+              # build-natives.sh wires musl-gcc in as CC_<triple> and the musl target's linker
               # for ring/cc-rs; stock runner images do not ship it.
               sudo apt-get update
               sudo apt-get install -y musl-tools

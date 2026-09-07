@@ -41,7 +41,12 @@
 #     rust targets are installed on demand via `rustup target add`.
 #   - musl targets on a glibc host need musl-gcc (debian/ubuntu:
 #     `apt-get install musl-tools`, alpine: `apk add gcc musl-dev`); it is
-#     wired in as CARGO_TARGET_<triple>_CC for ring/cc-rs.
+#     wired in as CC_<triple_with_underscores> (what cc-rs actually
+#     reads, for ring/pcre2/opus) and CARGO_TARGET_<TRIPLE>_LINKER (rustc's
+#     link driver). Both are required: without the linker override cargo
+#     links through the host's glibc `cc`, and because musl builds here run
+#     with -crt-static disabled that silently yields a glibc-linked addon
+#     from a musl target -- it loads nowhere and only fails on Alpine.
 #
 # Usage: scripts/build-natives.sh [--dest DIR] <target>...
 # Targets:
@@ -149,6 +154,27 @@ export PCRE2_SYS_STATIC
 # appended on top (recomputed from the pristine value each iteration).
 base_rustflags=${RUSTFLAGS:-}
 
+# rustc links the unwinder dynamically (-lgcc_s) whenever crt-static is off,
+# but musl-gcc's specs replace gcc's default library search path, so ld can no
+# longer resolve what the libgcc_s.so linker script points at. Expose exactly
+# that one file through a private directory: putting the host's whole lib dir
+# on the search path instead lets -lc resolve to glibc's libc.so linker script
+# and silently produces a glibc-linked addon from a musl target.
+musl_libgcc_dir=""
+prepare_musl_libgcc() {
+	_libgcc=$(${REALGCC:-gcc} -print-file-name=libgcc_s.so.1)
+	case $_libgcc in
+	/*) ;;
+	*)
+		die "building $1 requires libgcc_s.so.1 (the musl addon links the unwinder dynamically; Alpine users get it from 'apk add libgcc')
+  debian/ubuntu: apt-get install libgcc-s1"
+		;;
+	esac
+	musl_libgcc_dir="$ROOT/target/musl-libgcc"
+	mkdir -p "$musl_libgcc_dir"
+	ln -sf "$_libgcc" "$musl_libgcc_dir/libgcc_s.so.1"
+}
+
 require_musl_gcc() {
 	command -v musl-gcc >/dev/null 2>&1 && return 0
 	die "building $1 on this host requires 'musl-gcc' (the C dependencies -- ring, pcre2, opus -- must compile against musl, not glibc)
@@ -176,16 +202,20 @@ build_target() {
 	linux-musl-x64-baseline)
 		triple=x86_64-unknown-linux-musl
 		require_musl_gcc "$_target"
-		CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_CC=musl-gcc
-		export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_CC
-		variant_flags="-Ctarget-cpu=x86-64-v2 -Ctarget-feature=-crt-static"
+		CC_x86_64_unknown_linux_musl=musl-gcc
+		CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+		export CC_x86_64_unknown_linux_musl CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER
+		prepare_musl_libgcc "$_target"
+		variant_flags="-Ctarget-cpu=x86-64-v2 -Ctarget-feature=-crt-static -Clink-arg=-L$musl_libgcc_dir"
 		;;
 	linux-musl-arm64)
 		triple=aarch64-unknown-linux-musl
 		require_musl_gcc "$_target"
-		CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_CC=musl-gcc
-		export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_CC
-		variant_flags="-Ctarget-feature=-crt-static"
+		CC_aarch64_unknown_linux_musl=musl-gcc
+		CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+		export CC_aarch64_unknown_linux_musl CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER
+		prepare_musl_libgcc "$_target"
+		variant_flags="-Ctarget-feature=-crt-static -Clink-arg=-L$musl_libgcc_dir"
 		;;
 	darwin-x64-baseline)
 		triple=x86_64-apple-darwin
