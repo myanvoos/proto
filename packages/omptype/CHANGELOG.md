@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.1] - 2026-09-07
+
 ### Breaking Changes
 
 - Removed the ArkType compatibility facade subpath `@oh-my-pi/omptype/ark`; import `type`/`scope` from the package root instead.

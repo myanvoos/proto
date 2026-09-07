@@ -2,7 +2,10 @@
 
 ## [Unreleased]
 
+## [18.0.1] - 2026-09-07
+
 ### Breaking Changes
+
 - Dropped Windows support: no `win32-x64` native addon or npm leaf package is built or published anymore, and the loader no longer ships Windows node_modules staging, the `%LOCALAPPDATA%` cache fallback, or PowerShell AVX2 detection.
 - Removed `renderSnapcompactPng` and `snapcompactSupportedChars` native exports along with the bundled snapcompact fonts.
 - Native addons now build with plain cargo on matching-host runners via `scripts/build-natives.sh`; the Bazel pipeline and its hermetic cross toolchains are removed. Local iteration (`bun --cwd=packages/natives run build`) still uses the cargo/napi-rs host backend.
@@ -16,7 +19,6 @@
 - Made large kernel-output shell pipelines complete promptly instead of stalling while reading response frames.
 - Preserved non-UTF-8 interpreter stdin and honored current-directory entries in PATH.
 - Fixed Bun check summaries misclassifying timeout-looking output as command timeouts.
-
 - Native macOS spellchecker now honors all active system dictionaries: misspelling detection uses automatic language identification and completions/guesses/corrections select the per-word language, so non-English text (e.g. Russian) is checked instead of only the shared checker's current language (#9334).
 - Fixed PTY command cancellation leaking zombie child processes: a race where cancellation after spawn only attempted a single non-blocking reap could miss processes still being reaped by the kernel, and an early heartbeat check that bailed out without killing or reaping the child. On Unix, cancellation now polls for the child briefly and hands any straggler to a detached reaper, so the process is always waited on without an unbounded wait.
 - Fixed installed CLIs losing desktop capture when the resolved prebuilt addon still exposes the pre-parity `DesktopSession` ABI. That ABI is now adapted behind the current session contract, legacy error codes are translated, and the adapter ships in the published native core package.

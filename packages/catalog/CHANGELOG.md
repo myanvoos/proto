@@ -2,14 +2,15 @@
 
 ## [Unreleased]
 
+## [18.0.1] - 2026-09-07
+
 ### Breaking Changes
+
 - Removed `supportsHashlineEdits` and `isStep37FlashModelId` from `@oh-my-pi/pi-catalog/identity`: the hashline edit mode they gated no longer exists. Kimi/MiMo/DeepSeek-V4-Flash classifiers are unchanged.
 
 ### Added
+
 - `Model.input` modality list now admits `audio` and `video` alongside `text` and `image`, so discovered models can advertise media input.
-
-### Added
-
 - Fixed `google-gemini-cli` model refresh returning only bundled models for Gemini Code Assist Standard accounts, whose credential is not authorized for the Antigravity `fetchAvailableModels` endpoint (HTTP 403). Discovery now falls back to the account's own `retrieveUserQuota` list on Cloud Code Assist, surfacing models such as `gemini-3.5-flash` (#9315).
 
 ### Changed
@@ -23,8 +24,6 @@
 - Fixed Venice-hosted Qwen models (e.g. `venice/qwen3-6-35b-a3b`) failing with `400 Invalid request parameters`. Reasoning levels now use the accepted OpenAI-style `reasoning_effort` field, while Thinking Off sends Venice's explicit `venice_parameters.disable_thinking` flag (#9345).
 - Fixed gateway-first OpenCode Zen and Go models missing context, output, image, and reasoning metadata by enriching live discovery from the current stencil catalog (#9272).
 - Fixed `opencode-go/deepseek-v4-flash` exposing the generic `minimal`/`low`/`medium`/`high`/`xhigh` thinking ladder instead of DeepSeek V4's real `low`/`high`/`max` tiers. The model is pinned to the Responses transport (the Go gateway serves it only at `/responses`), which the DeepSeek effort branch did not admit, so it fell through to the default ladder; the branch now covers the `openai-responses` transport like every other host (#9134).
-### Fixed
-
 - Fixed protobuf map decoding corrupting entries when a key is `__proto__`, which dropped that argument and replayed spurious numeric arguments (#9394).
 
 ## [18.0.0] - 2026-08-22

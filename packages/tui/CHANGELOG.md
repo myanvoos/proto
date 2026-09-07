@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.1] - 2026-09-07
+
 ### Breaking Changes
 
 - Dropped Windows support: removed native Windows Terminal OSC-11 polling and sixel detection, ConPTY input handling, WSL-hosted TUI accommodations (kitty downgrade, write chunking, transcript trimming, title-spinner suppression), and the kernel32 console codepage guard.

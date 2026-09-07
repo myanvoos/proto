@@ -2,15 +2,15 @@
 
 ## [Unreleased]
 
+## [18.0.1] - 2026-09-07
+
 ### Breaking Changes
 
 - Replaced Python kernel `#@embed` blocks with assignment-shaped heredocs: `NAME = <<DELIMITER`, literal payload, then `DELIMITER` on its own line.
 - Removed Python kernel `#@patch` blocks and `apply_patch()`; use guarded ordinary file APIs (`Path`, `open`, `Bun.write`) for edits and heredoc assignments for literal payloads.
 - Removed the eval/kernel `files` parameter; create or replace files inside the cell with ordinary file APIs instead of pre-execution writes.
-
 - Orchestration worker names are now display labels; use the returned immutable worker IDs for messaging, waiting, and cancellation.
 - Orchestration workers now use independent Python/JavaScript kernels instead of sharing parent variables; explicitly requested eval-session sharing remains available outside orchestration.
-
 - Removed the kernel `edit()`/`write()` helpers entirely — plain file APIs (`open`, `Path`, `os.*`, `Bun.write`) are guarded and diffed at the environment level: any write-mode open of a file that changed on disk since your last read raises `StaleWriteError` before truncating (re-read the file to re-arm), every mutation surfaces as a Status hunk diff exactly as helper writes did, and `proto_path()`/`protoPath()` resolve scheme URLs (`fleet://`, `local://`, `skill://`) for the raw APIs.
 - Removed the standalone `edit` tool entirely — all modes (hashline, replace, patch, apply_patch) — moving file edits into guarded and diffed persistent kernel cells; existing configs referencing edit modes/settings are ignored.
 - Removed the `@oh-my-pi/hashline` package dependency and all hashline machinery (file snapshot store, seen-line tracking, `[path#tag]` read headers).
@@ -42,7 +42,6 @@
 - `xd` can now read JSON arguments from piped stdin when no positional JSON is supplied.
 - Added shell composition for `xd`: pipelines, redirects, substitutions, conditionals, background jobs, and mixed native commands.
 - Added authoritative execution and output-collection metadata to Bash/Eval results and saved output artifacts.
-
 - Added default-on completion speculation for streamed Python/JavaScript kernel-in-bash calls, overlapping eligible completion requests with code generation.
 - Added default-on streamed assertion preflight that stops generation on supported failing file-anchor checks and resumes with a diagnostic, without executing the partial cell or writing files.
 - Added built-in pi-blackhole observational memory with plain `/memory`, `/observations`, and `/recall` commands (no vendor branding in the TUI) and the agent-facing `recall` tool.
@@ -64,7 +63,6 @@
 - The stale-write guard now spans every tool the agent reads and writes through, not just the kernel: the embedded shell records each file its in-process builtins read (`cat`, `rg`/`grep` matches, `sed`, `head`, `tail`, `diff`, `jq`, `sort`, …) or wrote (`tee`, `sponge`, `sed -i`, `mv`, `rm`, `touch`, redirects) with the exact mtime/size at that moment, the `read` tool records reads, and `write`/`edit` record writes; the host forwards them to the Python kernel before each cell. A file viewed with `cat` and then changed externally trips `StaleWriteError` on the kernel's next `write()`/`edit()`, while the agent's own `sed -i` re-arms the guard instead of tripping it. Reads made by external programs run from the shell (`python x.py`, `git show`) are not observed.
 - Kernel `symbols()` outlines in-memory code: `symbols(code=src, lang="python")` renders the same tree-sitter outline as `symbols(path)` without touching disk — validate the structure of generated source before `write()`, or outline scratch snippets in any language the grammar set supports.
 - Environment context lists installed search tools (`rg`, `fd`) with versions so agents reach for them instead of `grep`/`find`.
-
 - `/trajectory export` now preserves agent reasoning blocks: OTLP chat spans expose the reasoning under `pi.gen_ai.response.reasoning`, and `pi.gen_ai.response.text` now contains only the assistant's text (reasoning and tool-call markers are no longer spliced into it).
 - Renamed the `inspect_image` tool to `inspect_media`: it now accepts audio and video files in addition to images, detected by file content (MP3/WAV/OGG/FLAC/M4A/AAC/AIFF audio, MP4/WEBM/MOV/MPEG video), and sends them to models that advertise the matching input modality; `inspect_image.*` settings migrate to `inspect_media.*` (`inspect_media.mode`, `inspect_media.timeoutMs`).
 - Kernel/eval tool calls accept `files: [{path, content}]`, written to disk before execution with write-event diffs — a quoting-safe channel for creating files whose content contains code.
@@ -85,10 +83,8 @@
 
 - New built-in `proto` theme is now the default dark theme (was `dark`); pick another with `theme.dark` or `/theme`.
 - Idle workers now park after one minute by default instead of seven; configured idle timeouts and worker concurrency remain unchanged.
-
 - Python patch helpers now accept unified diffs, single-file headers, code fences, quoted paths, and pasted indentation.
 - Python patches tolerate unique leading/trailing whitespace differences while retaining stale-file, ambiguity, and atomic-write protections.
-
 - Compaction now defaults to pi-blackhole's deterministic structural summaries, preserving Proto's existing scheduling, recovery, persistence, and optional pi-default fallback.
 - The conductor verification gate is now an idle watchdog: it escalates only when a pended completion claim sits unresolved with no verification activity (default raised 300s → 3600s) — an in-flight audit, a still-streaming primary turn, or an in-flight commissioning run suspends it instead of being cut off mid-work. Commissioning (`/conduct <ask>`) no longer aborts on a fixed wall clock; it ends through its bounded attempt loop, turn errors, or a user abort, so a slow-but-healthy frontier investigation finishes instead of timing out. Commissioning prompts now compose the autonomous loop — ordered milestones with per-stage checks and attempt caps — instead of a monolithic end-state spec: the contract states what must be true and how it is proved, never how to build it.
 - Only `bash`, `ask`, `todo`, `web_search`, and `inspect_media` load as native tools on every request; every other built-in (`read`, `eval`, `kernel`, `computer`, `orchestrate_*`, `fleet`, `manage_skill`, `github`, `browser`, `checkpoint`/`rewind`) is now a discoverable `xd://` device dispatched from bash (`xd <tool> '<json>'`, docs via `xd <tool> ?`). Explicit tool lists and `tools.xdev: false` keep the previous top-level presentation, and the `read` device keeps `skill://` reads and the skills prompt section working.
@@ -97,7 +93,6 @@
 - Kernel per-cell filesystem tracking is memory-bounded: pre-mutation snapshots stop retaining text past a 16 MB aggregate budget (32 MB for cached helper-write diff bases) while keeping content hashes, so bulk-write cells no longer retain hundreds of MB and content-identical rewrites past the budget no longer produce phantom write events.
 - Kernel Python cells now render their AST outline preview with the shared tree-sitter outline engine (`codeOutline`) instead of a hand-rolled tokenizer/parser: decorators, docstrings, `match`/`case`, `elif`/`except`/`finally` clauses, async clauses, annotated assignments and `#@` margin notes all come from the same structural parse as JS cells (raw code on expand is unchanged).
 - Kernel/eval cell transcripts now render file-edit diffs in full — every hunk of every write/edit/delete event stays visible in both collapsed and expanded views, with no "… N more hunks" truncation (the only remaining trim is the producer-side large-diff guard, disclosed as "… diff truncated"); only non-file status noise stays collapsed behind "… N earlier".
-
 - The bash tool is model-facing again for the main agent (`bash.enabled` still gates it); the kernel remains the default work surface and subagents stay kernel-first.
 - Trimmed ~75 tokens of duplication from the system prompt: the clean-cutover and yield-before-delivery rules are each stated once, with terser `history://` discovery and Orchestration wording.
 - Completed the proto rebrand across user-facing surfaces: desktop/terminal notification titles, OAuth dynamic-registration client name, OTLP service name, Exa source tag, ACP agent name, and cloud-upload mail bodies now identify as proto; PR-checkout now stores branch metadata under `branch.<name>.protoPr*` git-config keys instead of `ompPr*`; binary updates and mise/homebrew installs target the renamed repository.
@@ -139,9 +134,7 @@
 - Conductor pruning no longer interrupts active reviews; paused claims cancel their audits, and review follow-ups preserve primary turn boundaries.
 - CLI help now lists canonical built-in tool names instead of advertising removed tools.
 - Parked and terminated disk-resumable workers no longer retain disposed sessions; custom runtime callbacks and idle-timeout overrides remain intact.
-
 - Released eval sessions no longer retain pending filesystem observations; shared sessions keep their observations until the last owner releases them.
-
 - Fixed duplicate worker rows in live and completed kernel orchestration previews.
 - Live kernel previews now show readable, bounded source instead of syntax trees, preserving incomplete code and multiline patch payloads while streaming.
 - Fixed garbage collection archiving open sessions or sessions with active nested work, including sessions still finishing shutdown.
@@ -159,25 +152,18 @@
 - Fixed conductor verification retaining command permissions from previous objectives.
 - Fixed `/conduct on` failing to restart epoch steering after repeated failures.
 - Fixed conductor reviews skipping retained activity after context compaction.
-
 - `xd` preserves internal URLs in quoted, escaped, and environment-supplied JSON arguments.
 - `xd read` fetches web URLs without treating them as local filesystem paths.
 - Plain-text read ranges stay exact across files, artifacts, and archive entries while code reads retain context.
 - Fleet sends complete lines to non-PTY processes while preserving terminal Enter behavior and raw input.
 - Browser startup works with Snap Chromium without manually choosing a compatible profile directory.
-
 - The status line no longer scans message history for throughput calculations when the tokens-per-second indicator is hidden.
-
 - Large streamed bash commands now coalesce speculative checks instead of repeatedly processing every intermediate argument update.
 - Long main-agent and subagent transcripts now reuse unchanged finalized blocks during live updates, reducing redraw work as history grows.
-
 - Large tool batches now avoid repeated scans when planning which messages to save before mid-run compaction.
 - Long sessions now avoid rescanning the transcript for each repeated message while still retaining distinct messages with matching metadata.
-
 - Verbatim Python payloads no longer trigger streamed assertion failures or speculative model calls.
-
 - Fixed excessive processing time and memory use when commands stream very long lines, while preserving later diagnostics and raw output artifacts.
-
 - Long-running sessions now release aborted-worker revival state and terminal execution payloads while preserving worker history.
 - Streamed assertion checks now use a byte-bounded cache so large commands cannot accumulate solely under an entry-count limit.
 - Transcript views release cleared content immediately and avoid repeatedly copying unchanged transcript rows.
@@ -217,7 +203,6 @@
 - Python `agent()` without an explicit `agent=` argument now follows the session's spawn-policy default instead of always spawning a `worker`.
 - Python kernel startup applies the remaining deadline separately to the init and prelude phases instead of reusing one budget for both.
 - Timed-out Python cells include the timeout duration in the surfaced annotation again.
-
 - Sessions streaming in another process now show as running in the global agents view (spinner, `running` label) instead of `interrupted`/`pending` with a dim checkmark; sessions merely open elsewhere show as `in use`.
 - Resuming, renaming, or deleting a session that is currently open in another proto process is blocked with the owning pid instead of double-opening the transcript.
 - Persisted subagents that are actively streaming in another process are no longer registered as revivable parked agents; reviving or re-spawning over such a transcript no longer corrupts it or fails with "already owned by another session generation".

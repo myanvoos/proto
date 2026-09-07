@@ -2,7 +2,10 @@
 
 ## [Unreleased]
 
+## [18.0.1] - 2026-09-07
+
 ### Added
+
 - Added `AudioContent` and `VideoContent` user-message types, and `Model.input` now advertises `audio`/`video`: Google providers send them as inline data parts, OpenAI chat completions sends audio as `input_audio` (wav/mp3), and providers without support demote them to text omission notes instead of failing.
 
 ### Changed

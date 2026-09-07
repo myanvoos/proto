@@ -2,13 +2,15 @@
 
 ## [Unreleased]
 
+## [18.0.1] - 2026-09-07
+
 ### Breaking Changes
 
 - Dropped Windows support: removed `stripWindowsExtendedLengthPathPrefix`, the cmd.exe shell-resolution arms, the Windows browser platform entries, the win32 arms in atomic writes, PowerShell shell-arg selection in `getShellArgs`, and Windows reserved-device-name rejection for profile names from the public API.
 
 ### Added
-- Added `readMediaMetadata` with magic-byte detection for audio (MP3/WAV/OGG/FLAC/M4A/AAC/AIFF) and video (MP4/WEBM/MOV/MPEG), plus `SUPPORTED_AUDIO_MIME_TYPES`/`SUPPORTED_VIDEO_MIME_TYPES`.
 
+- Added `readMediaMetadata` with magic-byte detection for audio (MP3/WAV/OGG/FLAC/M4A/AAC/AIFF) and video (MP4/WEBM/MOV/MPEG), plus `SUPPORTED_AUDIO_MIME_TYPES`/`SUPPORTED_VIDEO_MIME_TYPES`.
 - Added `readBytesWithLimit` for capped stream reads with a truncation flag, and a `malformed: "skip" | "throw"` option on `readSseJson`.
 
 ### Changed
