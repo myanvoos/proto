@@ -70,7 +70,7 @@ xkeysym = "=0.2.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 xcap = { version = "=0.9.6", default-features = false }
 tempfile = "=3.27.0"
-core-graphics = "0.25"
+core-graphics = { version = "0.25", features = ["highsierra"] }
 foreign-types = "=0.5.0"
 objc2-app-kit = "=0.3.2"
 objc2 = "=0.6.4"
