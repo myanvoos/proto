@@ -517,16 +517,10 @@ function installNativeTokioRuntime(bindings) {
 function buildHelpMessage(ctx) {
 	if (ctx.isCompiledBinary) {
 		const expectedPaths = ctx.addonFilenames.map(filename => `  ${path.join(ctx.versionedDir, filename)}`).join("\n");
-		const downloadHints = ctx.addonFilenames
-			.map(filename => {
-				const downloadUrl = `https://proto.sh${filename}`;
-				const targetPath = path.join(ctx.versionedDir, filename);
-				return `  curl -fsSL "${downloadUrl}" -o "${targetPath}"`;
-			})
-			.join("\n");
 		return (
 			`The compiled binary should extract one of:\n${expectedPaths}\n\n` +
-			`If missing, delete ${ctx.versionedDir} and re-run, or download manually:\n${downloadHints}`
+			`If missing, delete ${ctx.versionedDir} and re-run. If it still fails, the binary is ` +
+			"incomplete — reinstall proto."
 		);
 	}
 	return (

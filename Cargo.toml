@@ -19,8 +19,8 @@ version = "18.0.0"
 edition = "2024"
 license = "MIT"
 authors = ["Stencil Labs, Inc."]
-homepage = "https://proto.sh/"
-repository = "https://proto.sh"
+homepage = "https://github.com/myanvoos/proto"
+repository = "https://github.com/myanvoos/proto"
 
 [patch.crates-io]
 brush-core = { path = "crates/vendor/brush-core" }

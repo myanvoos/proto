@@ -1504,7 +1504,7 @@ export function maybeAddReplayUnsignedThinkingHint(model: Model<"anthropic-messa
 	if (!isInvalidThinkingSignatureError(message)) return message;
 	if (model.compat.officialEndpoint) return message;
 	if (model.compatConfig?.replayUnsignedThinking !== undefined) return message;
-	const hint = `Provider "${model.provider}" looks like an Anthropic-compatible signing proxy: it rejected a replayed unsigned thinking block. Set \`compat.replayUnsignedThinking: false\` under \`providers.${model.provider}\` in your models.yml and retry. See https://proto.sh`;
+	const hint = `Provider "${model.provider}" looks like an Anthropic-compatible signing proxy: it rejected a replayed unsigned thinking block. Set \`compat.replayUnsignedThinking: false\` under \`providers.${model.provider}\` in your models.yml and retry. See https://github.com/myanvoos/proto`;
 	return `${hint}\n\n${message}`;
 }
 

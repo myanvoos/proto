@@ -8,6 +8,8 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import {
+	DEFAULT_DARK_THEME,
+	DEFAULT_LIGHT_THEME,
 	enableAutoTheme,
 	getAvailableThemes,
 	getCurrentThemeName,
@@ -22,9 +24,9 @@ import type { SetupScene, SetupSceneController, SetupSceneHost } from "./types";
 type ThemeMode = "curated" | "all";
 
 const CURATED_ITEMS: readonly SelectItem[] = [
-	{ value: "auto", label: "Match terminal", description: "Titanium in dark terminals, Light in light terminals" },
-	{ value: "theme:titanium", label: "Titanium", description: "Default dark theme" },
-	{ value: "theme:light", label: "Light", description: "Default light theme" },
+	{ value: "auto", label: "Match terminal", description: "Proto in dark terminals, Light in light terminals" },
+	{ value: `theme:${DEFAULT_DARK_THEME}`, label: "Proto", description: "Default dark theme" },
+	{ value: `theme:${DEFAULT_LIGHT_THEME}`, label: "Light", description: "Default light theme" },
 	{ value: "colorblind", label: "Colorblind colors", description: "Adjust red/green contrast" },
 	{ value: "ansi", label: "ANSI-safe", description: "ASCII glyphs with the dark terminal theme" },
 	{ value: "browse", label: "Browse all…", description: "Show every built-in and custom theme" },
@@ -182,8 +184,8 @@ class ThemeSceneController implements SetupSceneController {
 
 	#currentCuratedIndex(): number {
 		const current = getCurrentThemeName();
-		if (current === "titanium") return 1;
-		if (current === "light") return 2;
+		if (current === DEFAULT_DARK_THEME) return 1;
+		if (current === DEFAULT_LIGHT_THEME) return 2;
 		return 0;
 	}
 
@@ -229,8 +231,8 @@ class ThemeSceneController implements SetupSceneController {
 
 	async #commit(value: string): Promise<void> {
 		if (value === "auto") {
-			this.host.ctx.settings.set("theme.dark", "titanium");
-			this.host.ctx.settings.set("theme.light", "light");
+			this.host.ctx.settings.set("theme.dark", DEFAULT_DARK_THEME);
+			this.host.ctx.settings.set("theme.light", DEFAULT_LIGHT_THEME);
 			await this.#applyPreviewPresentation(this.#originalColorBlindMode);
 			enableAutoTheme();
 			return;

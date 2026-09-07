@@ -93,7 +93,7 @@ export interface MCPSseServerConfig extends MCPServerConfigBase {
 export type MCPServerConfig = MCPStdioServerConfig | MCPHttpServerConfig | MCPSseServerConfig;
 
 export const MCP_CONFIG_SCHEMA_URL =
-	"https://raw.githubusercontent.com/can1357/proto/main/packages/coding-agent/src/config/mcp-schema.json";
+	"https://raw.githubusercontent.com/myanvoos/proto/main/packages/coding-agent/src/config/mcp-schema.json";
 
 export interface MCPConfigFile {
 	$schema?: string;

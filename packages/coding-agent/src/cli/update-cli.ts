@@ -16,46 +16,18 @@ import {
 	withTimeoutSignal,
 } from "../utils/fetch-timeout";
 
-const REPO = "can1357/proto";
-const PACKAGE = "@oh-my-pi/pi-coding-agent";
-const HOMEBREW_FORMULA = "can1357/tap/proto";
-const MISE_TOOL = "github:can1357/proto";
+const REPO = "myanvoos/proto";
+const HOMEBREW_FORMULA = "myanvoos/tap/proto";
+const MISE_TOOL = "github:myanvoos/proto";
 const NIX_STORE_DIR = "/nix/store";
 
-const NPM_REGISTRY = "https://registry.npmjs.org/";
 const GITHUB_API = "https://api.github.com";
 const RELEASE_METADATA_TIMEOUT_MS = 30_000;
 const BINARY_DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
 
-const NATIVES_PACKAGE = "@oh-my-pi/pi-natives";
-
-const SUPPORTED_NATIVE_TAGS: ReadonlySet<string> = new Set(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]);
-
-function currentNativeTag(): string {
-	return `${process.platform}-${process.arch}`;
-}
-
-type ReleaseDist = "npm" | "binary";
-
-interface ReleasePackages {
-	pkg: string;
-	natives: string;
-}
-
-interface ReleaseRename {
-	pkg: string;
-	natives?: string;
-}
-
-const CURRENT_PACKAGES: ReleasePackages = { pkg: PACKAGE, natives: NATIVES_PACKAGE };
-
 export interface ReleaseInfo {
 	tag: string;
 	version: string;
-
-	dist?: ReleaseDist;
-
-	packages: ReleasePackages;
 }
 
 interface ReleaseBinaryAsset {
@@ -68,37 +40,6 @@ type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Resp
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
-}
-
-export function resolveReleaseDist(manifest: unknown): ReleaseDist | undefined {
-	if (!isRecord(manifest) || !isRecord(manifest.proto)) return undefined;
-	const dist = manifest.proto.dist;
-	if (dist === undefined) return undefined;
-	return dist === "npm" ? "npm" : "binary";
-}
-
-export function resolveReleaseRename(manifest: unknown): ReleaseRename | undefined {
-	if (!isRecord(manifest) || !isRecord(manifest.proto)) return undefined;
-	const rename = manifest.proto.rename;
-	if (!isRecord(rename) || typeof rename.package !== "string" || rename.package.length === 0) return undefined;
-	const natives = rename.natives;
-	return {
-		pkg: rename.package,
-		natives: typeof natives === "string" && natives.length > 0 ? natives : undefined,
-	};
-}
-
-function majorVersion(version: string): number {
-	const major = Number.parseInt(version, 10);
-	return Number.isNaN(major) ? 0 : major;
-}
-
-export function shouldForceBinaryUpdate(
-	release: { version: string; dist?: ReleaseDist },
-	currentVersion: string = VERSION,
-): boolean {
-	if (release.dist !== undefined) return release.dist === "binary";
-	return majorVersion(release.version) > majorVersion(currentVersion);
 }
 
 export function resolveReleaseBinaryAsset(
@@ -151,13 +92,16 @@ export function resolveReleaseBinaryAsset(
 	};
 }
 
-async function getReleaseBinaryAsset(
-	expectedVersion: string,
-	binaryName: string,
+function githubApiToken(): string | undefined {
+	return $env.GITHUB_TOKEN || $env.GH_TOKEN;
+}
+
+async function fetchReleaseJson(
+	apiPath: string,
+	timeoutMs: number,
 	fetchImpl: Fetch = fetch,
-	githubToken: string | undefined = $env.GITHUB_TOKEN || $env.GH_TOKEN,
-): Promise<ReleaseBinaryAsset> {
-	const tag = `v${expectedVersion}`;
+	githubToken: string | undefined = githubApiToken(),
+): Promise<unknown> {
 	const headers: Record<string, string> = {
 		Accept: "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28",
@@ -166,13 +110,15 @@ async function getReleaseBinaryAsset(
 
 	let response: Response;
 	try {
-		response = await fetchImpl(`${GITHUB_API}/repos/${REPO}/releases/tags/${encodeURIComponent(tag)}`, {
+		response = await fetchImpl(`${GITHUB_API}${apiPath}`, {
 			headers,
-			signal: withTimeoutSignal(RELEASE_METADATA_TIMEOUT_MS),
+			signal: withTimeoutSignal(timeoutMs),
 		});
 	} catch (err) {
 		if (isTimeoutError(err)) {
-			throw new Error("Timed out fetching GitHub release metadata after 30s", { cause: err });
+			throw new Error(`Timed out fetching GitHub release metadata after ${Math.round(timeoutMs / 1000)}s`, {
+				cause: err,
+			});
 		}
 		if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
 		throw err;
@@ -186,7 +132,23 @@ async function getReleaseBinaryAsset(
 		throw new Error(`Failed to fetch GitHub release metadata: ${response.statusText}`);
 	}
 
-	return resolveReleaseBinaryAsset(await response.json(), tag, binaryName);
+	return await response.json();
+}
+
+async function getReleaseBinaryAsset(
+	expectedVersion: string,
+	binaryName: string,
+	fetchImpl: Fetch = fetch,
+	githubToken: string | undefined = githubApiToken(),
+): Promise<ReleaseBinaryAsset> {
+	const tag = `v${expectedVersion}`;
+	const release = await fetchReleaseJson(
+		`/repos/${REPO}/releases/tags/${encodeURIComponent(tag)}`,
+		RELEASE_METADATA_TIMEOUT_MS,
+		fetchImpl,
+		githubToken,
+	);
+	return resolveReleaseBinaryAsset(release, tag, binaryName);
 }
 
 interface VerifiedBinaryDownloadOptions {
@@ -420,8 +382,6 @@ type UpdateTarget =
 	| { method: "brew" }
 	| { method: "mise" }
 	| { method: "nix" }
-	| { method: "bun"; path?: string }
-	| { method: "npm"; path?: string }
 	| { method: "binary"; path: string; replacesSymlink: boolean };
 
 function resolveUpdateMethod(
@@ -481,7 +441,7 @@ export function resolveUpdateMethodForTest(
 export function resolveUpdateTargetFromPath(
 	ompPath: string,
 	bunBinDir: string | undefined,
-	options: UpdateMethodResolutionOptions & { allowPackageManagers: boolean },
+	options: UpdateMethodResolutionOptions = {},
 ): UpdateTarget {
 	let ompIsRegularFile = false;
 	let ompIsSymlink = false;
@@ -501,320 +461,73 @@ export function resolveUpdateTargetFromPath(
 
 	const method = resolveUpdateMethod(ompPath, bunBinDir, {
 		...options,
+		allowPackageManagers: false,
 		ompIsRegularFile,
 		ompLinkTarget,
 	});
-	if (method === "binary") {
-		const managerLauncher =
-			ompIsSymlink &&
-			!options.allowPackageManagers &&
-			resolveUpdateMethod(ompPath, bunBinDir, {
-				...options,
-				allowPackageManagers: true,
-				ompIsRegularFile,
-				ompLinkTarget,
-			}) !== "binary";
-		const binaryPath = ompIsSymlink && !managerLauncher ? (ompRealpath ?? ompPath) : ompPath;
-		return { method, path: binaryPath, replacesSymlink: ompIsSymlink && binaryPath === ompPath };
-	}
-	if (method === "bun" || method === "npm") return { method, path: ompPath };
-	return { method };
+	if (method === "brew" || method === "mise" || method === "nix") return { method };
+
+	// A bun/npm-owned symlink is overwritten in place by the standalone binary
+	// rather than followed to the package payload it points at.
+	const managerLauncher =
+		ompIsSymlink &&
+		resolveUpdateMethod(ompPath, bunBinDir, {
+			...options,
+			allowPackageManagers: true,
+			ompIsRegularFile,
+			ompLinkTarget,
+		}) !== "binary";
+	const binaryPath = ompIsSymlink && !managerLauncher ? (ompRealpath ?? ompPath) : ompPath;
+	return { method: "binary", path: binaryPath, replacesSymlink: ompIsSymlink && binaryPath === ompPath };
 }
 
-async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): Promise<UpdateTarget> {
+async function resolveUpdateTarget(): Promise<UpdateTarget> {
 	const homebrewPrefix = await getHomebrewFormulaPrefix();
 	const miseAvailable = $which("mise") !== undefined;
 	const miseBinDirs = miseAvailable ? await getMiseBinDirs() : [];
 	const miseDataDir = miseAvailable ? getMiseDataDir() : undefined;
 	const ompPath = resolveOmpPath();
+	if (!ompPath) throw new Error(`Could not resolve ${BINARY_NAME} binary path in PATH`);
 
-	const probeManagers = options.allowPackageManagers || (ompPath !== undefined && isSymlinkPath(ompPath));
+	// Package-manager locations are probed only to recognize a bun/npm-owned
+	// launcher symlink; they are never used to run an install.
+	const probeManagers = isSymlinkPath(ompPath);
 	const bunBinDir = probeManagers ? await getBunGlobalBinDir() : undefined;
 	const npmBinDir = probeManagers ? await getNpmGlobalBinDir() : undefined;
 
-	if (ompPath) {
-		return resolveUpdateTargetFromPath(ompPath, bunBinDir, {
-			allowPackageManagers: options.allowPackageManagers,
-			bunGlobalDir: probeManagers ? process.env.BUN_INSTALL_GLOBAL_DIR : undefined,
-			homebrewPrefix,
-			miseBinDirs,
-			miseDataDir,
-			npmBinDir,
-		});
-	}
-
-	if (bunBinDir) return { method: "bun" };
-
-	throw new Error(`Could not resolve ${BINARY_NAME} binary path in PATH`);
-}
-
-const MAX_RENAME_HOPS = 3;
-
-async function fetchLatestManifest(
-	pkg: string,
-	timeoutMs: number,
-): Promise<{ version: string; manifest: Record<string, unknown> }> {
-	let response: Response;
-	try {
-		response = await fetch(`${NPM_REGISTRY}${pkg}/latest`, {
-			signal: withTimeoutSignal(timeoutMs),
-		});
-	} catch (err) {
-		if (isTimeoutError(err)) {
-			throw new Error(`Timed out fetching release info for ${pkg} after ${Math.round(timeoutMs / 1000)}s`, {
-				cause: err,
-			});
-		}
-		if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
-		throw err;
-	}
-	if (!response.ok) {
-		throw new Error(`Failed to fetch release info for ${pkg}: ${response.statusText}`);
-	}
-
-	const data: unknown = await response.json();
-	if (!isRecord(data) || typeof data.version !== "string") {
-		throw new Error(`Malformed npm registry response for ${pkg}: missing version`);
-	}
-	return { version: data.version, manifest: data };
+	return resolveUpdateTargetFromPath(ompPath, bunBinDir, {
+		bunGlobalDir: probeManagers ? process.env.BUN_INSTALL_GLOBAL_DIR : undefined,
+		homebrewPrefix,
+		miseBinDirs,
+		miseDataDir,
+		npmBinDir,
+	});
 }
 
 export async function getLatestRelease(options: { timeoutMs?: number } = {}): Promise<ReleaseInfo> {
 	const timeoutMs = options.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
-	const packages: ReleasePackages = { ...CURRENT_PACKAGES };
-	const visited = new Set([packages.pkg]);
-	let latest = await fetchLatestManifest(packages.pkg, timeoutMs);
-	for (let hop = 0; hop < MAX_RENAME_HOPS; hop++) {
-		const rename = resolveReleaseRename(latest.manifest);
-		if (!rename || visited.has(rename.pkg)) break;
-		visited.add(rename.pkg);
-		packages.pkg = rename.pkg;
-		if (rename.natives) packages.natives = rename.natives;
-		latest = await fetchLatestManifest(packages.pkg, timeoutMs);
+	const release = await fetchReleaseJson(`/repos/${REPO}/releases/latest`, timeoutMs);
+	if (!isRecord(release) || typeof release.tag_name !== "string" || release.tag_name.length === 0) {
+		throw new Error(`Malformed GitHub release metadata for ${REPO}: missing tag_name`);
 	}
-
-	return {
-		tag: `v${latest.version}`,
-		version: latest.version,
-		dist: resolveReleaseDist(latest.manifest),
-		packages,
-	};
-}
-
-interface BunInstallCachePruneResult {
-	scannedPackages: number;
-	removedEntries: number;
-}
-
-interface BunCachePackageGroup {
-	actualDirs: Map<string, string[]>;
-	markerDir?: string;
-	markerEntries: Map<string, string[]>;
-}
-
-function stripBunCacheVersionSuffix(name: string): string {
-	const metadataIndex = name.indexOf("@@");
-	return metadataIndex === -1 ? name : name.slice(0, metadataIndex);
-}
-
-async function readdirIfExists(dir: string): Promise<fs.Dirent[]> {
-	try {
-		return await fs.promises.readdir(dir, { withFileTypes: true });
-	} catch (err) {
-		if (isEnoent(err)) return [];
-		throw err;
-	}
-}
-
-function getBunCacheGroup(groups: Map<string, BunCachePackageGroup>, packageName: string): BunCachePackageGroup {
-	let group = groups.get(packageName);
-	if (!group) {
-		group = { actualDirs: new Map(), markerEntries: new Map() };
-		groups.set(packageName, group);
-	}
-	return group;
-}
-
-function addVersionPath(entries: Map<string, string[]>, version: string, entryPath: string): void {
-	const paths = entries.get(version);
-	if (paths) {
-		paths.push(entryPath);
-		return;
-	}
-	entries.set(version, [entryPath]);
-}
-
-async function addBunCacheActualDir(
-	groups: Map<string, BunCachePackageGroup>,
-	dirPath: string,
-	packageNames: Set<string> | undefined,
-): Promise<void> {
-	try {
-		const manifest = (await Bun.file(path.join(dirPath, "package.json")).json()) as Partial<
-			Record<"name" | "version", unknown>
-		>;
-		if (typeof manifest.name !== "string" || typeof manifest.version !== "string") return;
-		if (packageNames && !packageNames.has(manifest.name)) return;
-		const group = getBunCacheGroup(groups, manifest.name);
-		addVersionPath(group.actualDirs, manifest.version, dirPath);
-	} catch (err) {
-		if (isEnoent(err)) return;
-		throw err;
-	}
-}
-
-async function addBunCacheMarkerDir(
-	groups: Map<string, BunCachePackageGroup>,
-	packageName: string,
-	markerDir: string,
-	packageNames: Set<string> | undefined,
-): Promise<void> {
-	if (packageNames && !packageNames.has(packageName)) return;
-	const markerEntries = await readdirIfExists(markerDir);
-	const group = getBunCacheGroup(groups, packageName);
-	group.markerDir = markerDir;
-	for (const entry of markerEntries) {
-		const cacheVersion = stripBunCacheVersionSuffix(entry.name);
-		addVersionPath(group.markerEntries, cacheVersion, path.join(markerDir, entry.name));
-	}
-}
-
-async function collectBunCacheGroups(
-	cacheDir: string,
-	packageNames: Set<string> | undefined,
-): Promise<Map<string, BunCachePackageGroup>> {
-	const groups = new Map<string, BunCachePackageGroup>();
-	for (const entry of await readdirIfExists(cacheDir)) {
-		if (!entry.isDirectory()) continue;
-		const entryPath = path.join(cacheDir, entry.name);
-		if (entry.name.startsWith("@")) {
-			for (const scopedEntry of await readdirIfExists(entryPath)) {
-				if (!scopedEntry.isDirectory()) continue;
-				const scopedEntryPath = path.join(entryPath, scopedEntry.name);
-				const versionSeparator = scopedEntry.name.lastIndexOf("@");
-				if (versionSeparator === -1) {
-					await addBunCacheMarkerDir(groups, `${entry.name}/${scopedEntry.name}`, scopedEntryPath, packageNames);
-				} else {
-					await addBunCacheActualDir(groups, scopedEntryPath, packageNames);
-				}
-			}
-			continue;
-		}
-		const versionSeparator = entry.name.lastIndexOf("@");
-		if (versionSeparator === -1) {
-			await addBunCacheMarkerDir(groups, entry.name, entryPath, packageNames);
-		} else {
-			await addBunCacheActualDir(groups, entryPath, packageNames);
-		}
-	}
-	return groups;
-}
-
-async function removeCacheEntries(paths: string[]): Promise<number> {
-	for (const entryPath of paths) {
-		await fs.promises.rm(entryPath, { recursive: true, force: true });
-	}
-	return paths.length;
-}
-
-export async function pruneBunInstallCache(
-	cacheDir: string,
-	packageNames?: Set<string>,
-): Promise<BunInstallCachePruneResult> {
-	const groups = await collectBunCacheGroups(cacheDir, packageNames);
-	let scannedPackages = 0;
-	let removedEntries = 0;
-	for (const group of groups.values()) {
-		if (group.actualDirs.size === 0) continue;
-		scannedPackages++;
-		let latestVersion: string | undefined;
-		for (const version of group.actualDirs.keys()) {
-			if (!latestVersion || compareVersions(version, latestVersion) > 0) latestVersion = version;
-		}
-		if (!latestVersion) continue;
-		for (const [version, paths] of group.actualDirs) {
-			if (version !== latestVersion) removedEntries += await removeCacheEntries(paths);
-		}
-		for (const [version, paths] of group.markerEntries) {
-			if (version !== latestVersion) removedEntries += await removeCacheEntries(paths);
-		}
-	}
-	return { scannedPackages, removedEntries };
-}
-
-async function resolveBunInstallCacheDir(): Promise<string | undefined> {
-	try {
-		const result = await $`bun pm cache`.quiet().nothrow();
-		if (result.exitCode !== 0) return undefined;
-		const output = result.text().trim();
-		return output.length > 0 ? output : undefined;
-	} catch {
-		return undefined;
-	}
+	const tag = release.tag_name;
+	return { tag, version: tag.startsWith("v") ? tag.slice(1) : tag };
 }
 
 interface BunGlobalInstallLocations {
 	globalDir?: string;
 	globalBinDir?: string;
-	cacheDir?: string;
 }
 
 export function resolveBunGlobalNodeModulesDirFromLocations({
 	globalDir,
 	globalBinDir,
-	cacheDir,
 }: BunGlobalInstallLocations): string | undefined {
 	if (globalDir && globalDir.length > 0) return path.join(globalDir, "node_modules");
 	if (globalBinDir && globalBinDir.length > 0) {
 		return path.join(path.dirname(globalBinDir), "install", "global", "node_modules");
 	}
-	if (cacheDir && cacheDir.length > 0) {
-		return path.join(path.dirname(cacheDir), "global", "node_modules");
-	}
 	return undefined;
-}
-
-async function resolveBunGlobalNodeModulesDir(cacheDir: string): Promise<string | undefined> {
-	try {
-		const result = await $`bun pm bin -g`.quiet().nothrow();
-		const globalBinDir = result.exitCode === 0 ? result.text().trim() : undefined;
-		return resolveBunGlobalNodeModulesDirFromLocations({
-			globalDir: process.env.BUN_INSTALL_GLOBAL_DIR,
-			globalBinDir,
-			cacheDir,
-		});
-	} catch {
-		return resolveBunGlobalNodeModulesDirFromLocations({
-			globalDir: process.env.BUN_INSTALL_GLOBAL_DIR,
-			cacheDir,
-		});
-	}
-}
-
-async function collectInstalledPackageNames(nodeModulesDir: string): Promise<Set<string>> {
-	const packageNames = new Set<string>();
-	for (const entry of await readdirIfExists(nodeModulesDir)) {
-		if (!entry.isDirectory() || entry.name === ".bin") continue;
-		if (entry.name.startsWith("@")) {
-			for (const scopedEntry of await readdirIfExists(path.join(nodeModulesDir, entry.name))) {
-				if (scopedEntry.isDirectory()) packageNames.add(`${entry.name}/${scopedEntry.name}`);
-			}
-			continue;
-		}
-		packageNames.add(entry.name);
-	}
-	return packageNames;
-}
-
-async function pruneBunCacheAfterGlobalInstall(): Promise<BunInstallCachePruneResult | undefined> {
-	const cacheDir = await resolveBunInstallCacheDir();
-	if (!cacheDir) return undefined;
-	const globalNodeModulesDir = await resolveBunGlobalNodeModulesDir(cacheDir);
-	const packageNames = globalNodeModulesDir
-		? await collectInstalledPackageNames(globalNodeModulesDir)
-		: new Set<string>();
-	if (packageNames.size === 0 && !path.basename(cacheDir).toLowerCase().includes("proto")) return undefined;
-	return await pruneBunInstallCache(cacheDir, packageNames.size === 0 ? undefined : packageNames);
 }
 
 interface MuslDetectionOptions {
@@ -915,7 +628,7 @@ async function printVerification(expectedVersion: string): Promise<void> {
 		return;
 	}
 	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion)}`));
-	console.log(chalk.yellow(`You may need to reinstall: curl -fsSL https://proto.sh/install | sh`));
+	console.log(chalk.yellow(`You may need to reinstall: ${installerHint()}`));
 }
 
 async function unlinkIfExists(filePath: string): Promise<void> {
@@ -994,47 +707,6 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 	}
 }
 
-function buildVersionedPackageInstallArgs(
-	expectedVersion: string,
-	nativeTag: string,
-	packages: ReleasePackages,
-): string[] {
-	const args = [`${packages.pkg}@${expectedVersion}`, `${packages.natives}@${expectedVersion}`];
-	if (SUPPORTED_NATIVE_TAGS.has(nativeTag)) {
-		args.push(`${packages.natives}-${nativeTag}@${expectedVersion}`);
-	}
-	return args;
-}
-
-export function buildBunInstallArgs(
-	expectedVersion: string,
-	nativeTag: string = currentNativeTag(),
-	packages: ReleasePackages = CURRENT_PACKAGES,
-): string[] {
-	return [
-		"install",
-		"-g",
-		"--no-cache",
-		`--registry=${NPM_REGISTRY}`,
-		...buildVersionedPackageInstallArgs(expectedVersion, nativeTag, packages),
-	];
-}
-
-export function buildNpmInstallArgs(
-	expectedVersion: string,
-	nativeTag: string = currentNativeTag(),
-	packages: ReleasePackages = CURRENT_PACKAGES,
-	flags: { force?: boolean } = {},
-): string[] {
-	return [
-		"install",
-		"-g",
-		...(flags.force ? ["--force"] : []),
-		`--registry=${NPM_REGISTRY}`,
-		...buildVersionedPackageInstallArgs(expectedVersion, nativeTag, packages),
-	];
-}
-
 export function buildHomebrewUpdateArgs(force: boolean): string[] {
 	return [force ? "reinstall" : "upgrade", HOMEBREW_FORMULA];
 }
@@ -1045,117 +717,6 @@ export function buildMiseUpgradeArgs(): string[] {
 
 export function buildMiseForceInstallArgs(expectedVersion: string): string[] {
 	return ["install", "--force", `${MISE_TOOL}@${expectedVersion}`];
-}
-
-export function buildRenameCleanupPackages(
-	packages: ReleasePackages,
-	nativeTag: string = currentNativeTag(),
-): string[] {
-	const old = [PACKAGE, NATIVES_PACKAGE];
-	if (SUPPORTED_NATIVE_TAGS.has(nativeTag)) {
-		old.push(`${NATIVES_PACKAGE}-${nativeTag}`);
-	}
-	const newLeaf = `${packages.natives}-${nativeTag}`;
-	return old.filter(name => name !== packages.pkg && name !== packages.natives && name !== newLeaf);
-}
-
-export interface RenameMigrationSteps {
-	install(): Promise<number>;
-
-	removeOld(): Promise<number>;
-
-	verify(): Promise<InstalledVersionVerification>;
-}
-
-function packageManagerMigrationSteps(manager: "bun" | "npm", release: ReleaseInfo): RenameMigrationSteps {
-	const nativeTag = currentNativeTag();
-	return {
-		async install() {
-			if (manager === "bun") {
-				const args = buildBunInstallArgs(release.version, nativeTag, release.packages);
-				return (await $`bun ${args}`.nothrow()).exitCode;
-			}
-			const args = buildNpmInstallArgs(release.version, nativeTag, release.packages, { force: true });
-			return (await $`npm ${args}`.nothrow()).exitCode;
-		},
-		async removeOld() {
-			let agentExit = 0;
-			for (const pkg of buildRenameCleanupPackages(release.packages, nativeTag)) {
-				const result =
-					manager === "bun"
-						? await $`bun remove -g ${pkg}`.quiet().nothrow()
-						: await $`npm uninstall -g ${pkg}`.quiet().nothrow();
-				if (pkg === PACKAGE) agentExit = result.exitCode;
-			}
-			return agentExit;
-		},
-		verify: () => verifyInstalledVersion(release.version),
-	};
-}
-
-export async function migrateRenamedInstall(release: ReleaseInfo, steps: RenameMigrationSteps): Promise<void> {
-	console.log(chalk.dim(`npm package renamed to ${release.packages.pkg}; migrating this install.`));
-	const installExit = await steps.install();
-	if (installExit !== 0) {
-		throw new Error(
-			`install of ${release.packages.pkg} failed with exit code ${installExit}; the existing install was left untouched`,
-		);
-	}
-
-	const removeExit = await steps.removeOld();
-	if (removeExit !== 0) {
-		console.log(chalk.yellow(`Warning: could not remove the old ${PACKAGE} package; remove it manually later.`));
-	}
-
-	let verification = await steps.verify();
-	if (!verification.ok) {
-		if ((await steps.install()) === 0) {
-			verification = await steps.verify();
-		}
-	}
-	if (!verification.ok) {
-		throw new Error(
-			`${formatVerificationFailure(verification, release.version)}; reinstall with: curl -fsSL https://proto.sh/install | sh`,
-		);
-	}
-	printVerifiedVersion(release.version);
-}
-
-async function updateViaBun(release: ReleaseInfo): Promise<void> {
-	console.log(chalk.dim("Updating via bun..."));
-	if (release.packages.pkg !== PACKAGE) {
-		await migrateRenamedInstall(release, packageManagerMigrationSteps("bun", release));
-	} else {
-		const args = buildBunInstallArgs(release.version, currentNativeTag(), release.packages);
-		const result = await $`bun ${args}`.nothrow();
-		if (result.exitCode !== 0) {
-			throw new Error(`bun install failed with exit code ${result.exitCode}`);
-		}
-		await printVerification(release.version);
-	}
-	try {
-		const pruneResult = await pruneBunCacheAfterGlobalInstall();
-		if (pruneResult && pruneResult.removedEntries > 0) {
-			console.log(chalk.dim(`Pruned ${pruneResult.removedEntries} stale Bun cache entries`));
-		}
-	} catch (err) {
-		console.log(chalk.yellow(`Warning: could not prune stale Bun cache entries: ${err}`));
-	}
-}
-
-async function updateViaNpm(release: ReleaseInfo): Promise<void> {
-	console.log(chalk.dim("Updating via npm..."));
-	if (release.packages.pkg !== PACKAGE) {
-		await migrateRenamedInstall(release, packageManagerMigrationSteps("npm", release));
-		return;
-	}
-	const args = buildNpmInstallArgs(release.version, currentNativeTag(), release.packages);
-	const result = await $`npm ${args}`.nothrow();
-	if (result.exitCode !== 0) {
-		throw new Error(`npm install failed with exit code ${result.exitCode}`);
-	}
-
-	await printVerification(release.version);
 }
 
 async function updateViaHomebrew(expectedVersion: string, force: boolean): Promise<void> {
@@ -1239,7 +800,7 @@ export async function updateViaBinaryAt(
 }
 
 function installerHint(): string {
-	return "curl -fsSL https://proto.sh/install | sh -s -- --binary";
+	return `curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | sh`;
 }
 
 export async function runUpdateCommand(opts: { force: boolean; check: boolean }): Promise<void> {
@@ -1265,17 +826,13 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 	} else {
 		console.log(chalk.yellow(`Forcing reinstall of ${release.version}`));
 	}
-	if (release.packages.pkg !== PACKAGE) {
-		console.log(chalk.cyan(`The npm package moved to ${release.packages.pkg}; updating migrates this install.`));
-	}
 
 	if (opts.check) {
 		return;
 	}
 
 	try {
-		const forceBinary = shouldForceBinaryUpdate(release);
-		const target = await resolveUpdateTarget({ allowPackageManagers: !forceBinary });
+		const target = await resolveUpdateTarget();
 		if (target.method === "nix") {
 			console.log(chalk.yellow("This installation is managed by Nix and cannot update itself."));
 			console.log(chalk.dim("Update the flake input or profile that provides proto, then rebuild."));
@@ -1283,16 +840,12 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 			await updateViaHomebrew(release.version, opts.force);
 		} else if (target.method === "mise") {
 			await updateViaMise(release.version, opts.force);
-		} else if (target.method === "bun") {
-			await updateViaBun(release);
-		} else if (target.method === "npm") {
-			await updateViaNpm(release);
 		} else {
-			if (forceBinary && target.replacesSymlink) {
+			if (target.replacesSymlink) {
 				console.log(chalk.dim("Replacing the package-manager launcher with the standalone binary."));
 			}
 			await updateViaBinaryAt(target.path, release.version);
-			if (forceBinary && target.replacesSymlink) {
+			if (target.replacesSymlink) {
 				console.log(
 					chalk.yellow(
 						`This install is no longer managed by bun/npm. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,

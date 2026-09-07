@@ -4,7 +4,7 @@
 	"version": "0.1.0",
 	"private": true,
 	"description": "Chrome extension that lets the proto browser tool drive your existing tabs (relay server lives in the proto CLI: `proto browser-relay`)",
-	"homepage": "https://proto.sh",
+	"homepage": "https://github.com/myanvoos/proto",
 	"author": "Stencil Labs, Inc.",
 	"license": "MIT",
 	"scripts": {

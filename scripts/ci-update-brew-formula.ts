@@ -2,8 +2,8 @@
 
 import { $ } from "bun";
 
-const REPO = process.env.PROTO_REPO ?? "can1357/proto";
-const HOMEPAGE = "https://proto.sh";
+const REPO = process.env.PROTO_REPO ?? "myanvoos/proto";
+const HOMEPAGE = "https://github.com/myanvoos/proto";
 const DESC = "Coding agent with the IDE wired in";
 
 interface ReleaseAsset {

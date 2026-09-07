@@ -4,12 +4,26 @@ import { detectMacOSAppearance, MacAppearanceObserver } from "@oh-my-pi/pi-nativ
 import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui";
 import { colorLuma, getCustomThemesDir, logger } from "@oh-my-pi/pi-utils";
 import { resolveVarRefs } from "./color";
-import { type CreateThemeOptions, getBuiltinThemes, loadTheme, loadThemeSync } from "./loader";
+import {
+	type CreateThemeOptions,
+	DEFAULT_DARK_THEME,
+	DEFAULT_LIGHT_THEME,
+	getBuiltinThemes,
+	loadTheme,
+	loadThemeSync,
+} from "./loader";
 import type { ThemeColor, ThemeJson } from "./schema";
 import type { Theme } from "./theme-class";
 
 export { getLanguageFromPath, isMarkdownPath } from "../../utils/lang-from-path";
-export { getAvailableThemes, getAvailableThemesWithPaths, getThemeByName, type ThemeInfo } from "./loader";
+export {
+	DEFAULT_DARK_THEME,
+	DEFAULT_LIGHT_THEME,
+	getAvailableThemes,
+	getAvailableThemesWithPaths,
+	getThemeByName,
+	type ThemeInfo,
+} from "./loader";
 export { isValidThemeColor, type ThemeBg, type ThemeColor } from "./schema";
 export type { SpinnerType, SymbolKey, SymbolPreset } from "./symbols";
 export { Theme } from "./theme-class";
@@ -77,8 +91,8 @@ var themeWatcher: fs.FSWatcher | undefined;
 var themeReloadTimer: NodeJS.Timeout | undefined;
 var sigwinchHandler: (() => void) | undefined;
 var autoDetectedTheme: boolean = false;
-var autoDarkTheme: string = "dark";
-var autoLightTheme: string = "light";
+var autoDarkTheme: string = DEFAULT_DARK_THEME;
+var autoLightTheme: string = DEFAULT_LIGHT_THEME;
 var onThemeChangeCallback: ((event: ThemeChangeEvent) => void) | undefined;
 var themeLoadRequestId: number = 0;
 let themeEpoch = 0;
@@ -90,8 +104,8 @@ function getCurrentThemeOptions(): CreateThemeOptions {
 }
 function configureTheme(colorBlindMode?: boolean, darkTheme?: string, lightTheme?: string): string {
 	autoDetectedTheme = true;
-	autoDarkTheme = darkTheme ?? "dark";
-	autoLightTheme = lightTheme ?? "light";
+	autoDarkTheme = darkTheme ?? DEFAULT_DARK_THEME;
+	autoLightTheme = lightTheme ?? DEFAULT_LIGHT_THEME;
 	currentColorBlindMode = colorBlindMode ?? false;
 	const name = getDefaultTheme();
 	currentThemeName = name;
@@ -106,9 +120,9 @@ export function initThemeSync(colorBlindMode?: boolean, darkTheme?: string, ligh
 	try {
 		theme = loadThemeSync(name, options);
 	} catch (error) {
-		logger.debug("Theme loading failed, falling back to dark theme", { error: String(error) });
-		currentThemeName = "dark";
-		theme = loadThemeSync("dark", options);
+		logger.debug("Theme loading failed, falling back to the default dark theme", { error: String(error) });
+		currentThemeName = DEFAULT_DARK_THEME;
+		theme = loadThemeSync(DEFAULT_DARK_THEME, options);
 	}
 }
 
@@ -131,9 +145,9 @@ export async function initTheme(
 			startSigwinchListener();
 		}
 	} catch (err) {
-		logger.debug("Theme loading failed, falling back to dark theme", { error: String(err) });
-		currentThemeName = "dark";
-		theme = await loadTheme("dark", getCurrentThemeOptions());
+		logger.debug("Theme loading failed, falling back to the default dark theme", { error: String(err) });
+		currentThemeName = DEFAULT_DARK_THEME;
+		theme = await loadTheme(DEFAULT_DARK_THEME, getCurrentThemeOptions());
 	}
 }
 
@@ -160,8 +174,8 @@ export async function setTheme(
 			return { success: false, error: "Theme change superseded by a newer request" };
 		}
 
-		currentThemeName = "dark";
-		theme = await loadTheme("dark", getCurrentThemeOptions());
+		currentThemeName = DEFAULT_DARK_THEME;
+		theme = await loadTheme(DEFAULT_DARK_THEME, getCurrentThemeOptions());
 
 		notifyThemeChange();
 
@@ -236,7 +250,7 @@ export async function setColorBlindMode(enabled: boolean): Promise<void> {
 	} catch {
 		if (requestId !== themeLoadRequestId) return;
 
-		theme = await loadTheme("dark", getCurrentThemeOptions());
+		theme = await loadTheme(DEFAULT_DARK_THEME, getCurrentThemeOptions());
 		if (requestId !== themeLoadRequestId) return;
 	}
 	notifyThemeChange({ ephemeral: true });
@@ -529,7 +543,7 @@ function isLightThemeJson(themeJson: ThemeJson): boolean {
 }
 
 export function isLightTheme(themeName?: string): boolean {
-	const name = themeName ?? "dark";
+	const name = themeName ?? DEFAULT_DARK_THEME;
 	const builtinThemes = getBuiltinThemes();
 	let themeJson: ThemeJson | undefined;
 	if (name in builtinThemes) {

@@ -4,6 +4,7 @@ import {
 	type BlobDestinationMetadata,
 	BUILTIN_BLOB_DESTINATIONS,
 } from "../blob-broker/destinations";
+import { DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME } from "../modes/theme/loader";
 import {
 	COMPACTION_METHOD_CHOICES,
 	type CompactionMethod,
@@ -502,7 +503,7 @@ export const SETTINGS_SCHEMA = {
 
 	"theme.dark": {
 		type: "string",
-		default: "dark",
+		default: DEFAULT_DARK_THEME,
 		ui: {
 			tab: "appearance",
 			group: "Theme",
@@ -514,7 +515,7 @@ export const SETTINGS_SCHEMA = {
 
 	"theme.light": {
 		type: "string",
-		default: "light",
+		default: DEFAULT_LIGHT_THEME,
 		ui: {
 			tab: "appearance",
 			group: "Theme",

@@ -129,7 +129,7 @@ Use nested YAML mappings for dotted setting paths:
 
 ```yaml
 theme:
-  dark: titanium
+  dark: proto
   light: light
 
 read:
@@ -205,7 +205,7 @@ compaction:
   thresholdPercent: 80
 
 theme:
-  dark: titanium
+  dark: proto
 ```
 
 Keep secrets out of committed project config unless your repository policy allows it. Prefer environment variables, stored auth, an auth broker, or an untracked `--config` overlay for credentials.
@@ -583,7 +583,7 @@ compaction:
 
 ```yaml
 theme:
-  dark: titanium
+  dark: proto
   light: light
 colorBlindMode: false
 
@@ -603,7 +603,7 @@ tui:
 
 | Key                         | Type    | Default          | Values                                                                    |
 | --------------------------- | ------- | ---------------- | ------------------------------------------------------------------------- |
-| `theme.dark`                | string  | `titanium`       | Theme used on a dark terminal background.                                 |
+| `theme.dark`                | string  | `proto`          | Theme used on a dark terminal background.                                 |
 | `theme.light`               | string  | `light`          | Theme used on a light terminal background.                                |
 | `colorBlindMode`            | boolean | `false`          | Use blue instead of green for diff additions.                             |
 | `showHardwareCursor`        | boolean | `true`           | Show the terminal hardware cursor.                                        |

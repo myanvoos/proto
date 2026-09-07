@@ -1070,7 +1070,7 @@ Official docs: [Application Default Credentials](https://cloud.google.com/docs/a
 
 ### CLI Login
 
-Authenticate via the [`proto`](https://proto.sh) coding-agent CLI, which drives this library's OAuth/API-key flows in-process and persists into `agent.db`:
+Authenticate via the [`proto`](https://github.com/myanvoos/proto) coding-agent CLI, which drives this library's OAuth/API-key flows in-process and persists into `agent.db`:
 
 ```bash
 proto auth-broker login              # interactive provider selection

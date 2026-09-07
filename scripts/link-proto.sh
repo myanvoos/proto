@@ -10,7 +10,7 @@
 # (`No package.json was found for directory "$HOME/.bun/install/global"`) on
 # fresh hosts where the global install has not been initialized. Falling
 # through that error would expand `$(bun pm -g bin)/proto` to `/proto` and try to
-# write under `/` — see https://proto.sh
+# write under `/` — see https://github.com/myanvoos/proto
 set -e
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)

@@ -2,7 +2,7 @@
   "name": "hello-extension",
   "version": "1.0.0",
   "description": "Minimal oh-my-pi extension example",
-  "homepage": "https://proto.sh",
+  "homepage": "https://github.com/myanvoos/proto",
   "proto": {
     "extensions": ["./index.ts"]
   }

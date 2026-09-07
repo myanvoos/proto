@@ -3,7 +3,7 @@ import { USER_AGENT } from "@oh-my-pi/pi-utils";
 export function getOpenRouterHeaders(): Record<string, string> {
 	return {
 		"User-Agent": USER_AGENT,
-		"HTTP-Referer": "https://proto.sh/",
+		"HTTP-Referer": "https://github.com/myanvoos/proto",
 		"X-OpenRouter-Title": "proto",
 		"X-OpenRouter-Categories": "cli-agent",
 		"X-OpenRouter-Cache": "true",

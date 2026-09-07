@@ -23,6 +23,11 @@ const BUILTIN_THEMES: Record<string, ThemeJson> = {
 	...(defaultThemes as Record<string, ThemeJson>),
 };
 
+/** Theme used when the terminal background is dark and no explicit theme is configured. */
+export const DEFAULT_DARK_THEME = "proto";
+/** Theme used when the terminal background is light and no explicit theme is configured. */
+export const DEFAULT_LIGHT_THEME = "light";
+
 export function getBuiltinThemes(): Record<string, ThemeJson> {
 	return BUILTIN_THEMES;
 }

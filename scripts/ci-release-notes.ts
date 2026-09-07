@@ -4,7 +4,7 @@ import { $, Glob } from "bun";
 import { compareVersions } from "../packages/utils/src/version";
 
 const changelogGlob = new Glob("packages/*/CHANGELOG.md");
-const REPO = process.env.PROTO_REPO ?? process.env.GITHUB_REPOSITORY ?? "can1357/proto";
+const REPO = process.env.PROTO_REPO ?? process.env.GITHUB_REPOSITORY ?? "myanvoos/proto";
 
 const CATEGORY_ORDER = ["Breaking Changes", "Added", "Changed", "Fixed", "Removed"] as const;
 

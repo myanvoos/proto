@@ -9,7 +9,7 @@ import { initTheme } from "./theme/theme";
 import { resolvePreservedLiveToolCallIds, UiHelpers } from "./utils/ui-helpers";
 
 await Settings.init();
-await initTheme(false, false, "dark-hybrid-slate-cool");
+await initTheme(false, false, "proto");
 
 afterEach(disposeSpinnerComponents);
 

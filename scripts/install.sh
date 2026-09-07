@@ -2,16 +2,15 @@
 set -e
 
 # PROTO Coding Agent Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/can1357/proto/main/scripts/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/myanvoos/proto/main/scripts/install.sh | sh
 #
 # Options:
-#   --source       Install via bun (installs bun if needed)
-#   --binary       Always install prebuilt binary
-#   --ref <ref>    Install specific tag/commit/branch
+#   --binary       Install the prebuilt release binary (default)
+#   --source       Build from a clone of the repo (installs bun if needed)
+#   --ref <ref>    Release tag for --binary, or branch/tag/commit for --source (default: main)
 #   -r <ref>       Shorthand for --ref
 
-REPO="can1357/proto"
-PACKAGE="@oh-my-pi/pi-coding-agent"
+REPO="myanvoos/proto"
 INSTALL_DIR="${PI_INSTALL_DIR:-$HOME/.local/bin}"
 MIN_BUN_VERSION="1.3.14"
 
@@ -60,11 +59,6 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
-
-# If a ref is provided, default to source install
-if [ -n "$REF" ] && [ -z "$MODE" ]; then
-    MODE="source"
-fi
 
 # Check if bun is available
 has_bun() {
@@ -171,47 +165,41 @@ has_git_lfs() {
     command -v git-lfs >/dev/null 2>&1
 }
 
-# Install via bun
-install_via_bun() {
-    echo "Installing via bun..."
-    if [ -n "$REF" ]; then
-        if ! has_git; then
-            echo "git is required for --ref when installing from source"
-            exit 1
-        fi
-
-        TMP_DIR="$(mktemp -d)"
-        trap 'rm -rf "$TMP_DIR"' EXIT
-
-        if git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$TMP_DIR" >/dev/null 2>&1; then
-            :
-        else
-            git clone "https://github.com/${REPO}.git" "$TMP_DIR"
-            (cd "$TMP_DIR" && git checkout "$REF")
-        fi
-
-        # Pull LFS files
-        if has_git_lfs; then
-            (cd "$TMP_DIR" && git lfs pull)
-        fi
-
-        if [ ! -d "$TMP_DIR/packages/coding-agent" ]; then
-            echo "Expected package at ${TMP_DIR}/packages/coding-agent"
-            exit 1
-        fi
-
-        bun install -g "$TMP_DIR/packages/coding-agent" || {
-            echo "Failed to install from source"
-            exit 1
-        }
-    else
-        bun install -g "$PACKAGE" || {
-            echo "Failed to install $PACKAGE"
-            exit 1
-        }
+# Install from a clone of the repository
+install_from_source() {
+    SOURCE_REF="${REF:-main}"
+    echo "Installing from source (${REPO}@${SOURCE_REF})..."
+    if ! has_git; then
+        echo "git is required to install from source"
+        exit 1
     fi
+
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "$TMP_DIR"' EXIT
+
+    if git clone --depth 1 --branch "$SOURCE_REF" "https://github.com/${REPO}.git" "$TMP_DIR" >/dev/null 2>&1; then
+        :
+    else
+        git clone "https://github.com/${REPO}.git" "$TMP_DIR"
+        (cd "$TMP_DIR" && git checkout "$SOURCE_REF")
+    fi
+
+    # Pull LFS files
+    if has_git_lfs; then
+        (cd "$TMP_DIR" && git lfs pull)
+    fi
+
+    if [ ! -d "$TMP_DIR/packages/coding-agent" ]; then
+        echo "Expected package at ${TMP_DIR}/packages/coding-agent"
+        exit 1
+    fi
+
+    bun install -g "$TMP_DIR/packages/coding-agent" || {
+        echo "Failed to install from source"
+        exit 1
+    }
     echo ""
-    echo "✓ Installed proto via bun"
+    echo "✓ Installed proto from source"
     echo "Run 'proto' to get started!"
 }
 
@@ -242,7 +230,7 @@ install_binary() {
     # Get release tag
     if [ -n "$REF" ]; then
         echo "Fetching release $REF..."
-        if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases/tags/${REF}"); then
+        if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases/tags/${REF}" 2>/dev/null); then
             LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
         else
             echo "Release tag not found: $REF"
@@ -251,12 +239,16 @@ install_binary() {
         fi
     else
         echo "Fetching latest release..."
-        RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases/latest")
-        LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+        if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null); then
+            LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+        else
+            LATEST=""
+        fi
     fi
 
     if [ -z "$LATEST" ]; then
-        echo "Failed to fetch release tag"
+        echo "No published release found for ${REPO}."
+        echo "Install from source instead: --source"
         exit 1
     fi
     echo "Using version: $LATEST"
@@ -313,22 +305,10 @@ case "$MODE" in
             echo "Install a native bun for your architecture, or re-run without --source to fetch the prebuilt $(host_arch) binary."
             exit 1
         fi
-        install_via_bun
-        ;;
-    binary)
-        install_binary
+        install_from_source
         ;;
     *)
-        # Default: use bun only when it matches the host architecture, otherwise
-        # fall back to the prebuilt binary so Rosetta bun can't force an x86_64 build.
-        if has_bun && bun_arch_matches_host; then
-            require_bun_version
-            install_via_bun
-        else
-            if has_bun; then
-                echo "Detected bun with architecture '$(bun_arch)' on a '$(host_arch)' host; using the prebuilt binary instead."
-            fi
-            install_binary
-        fi
+        # Default: the prebuilt release binary.
+        install_binary
         ;;
 esac

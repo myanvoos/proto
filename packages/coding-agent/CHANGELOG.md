@@ -34,6 +34,8 @@
 - Removed the bundled `/init` workflow command; custom command files in project/user command directories still work.
 - Removed per-session accent colors: the `statusLine.sessionAccent` setting, the session-name-derived hue for the spinner, editor border, and status-line segments, and the theme `sessionAccent` color token. These now render in the theme's single consistent `accent`/`borderAccent` colors.
 - Removed the Ruby and Julia eval kernels: the `rb`/`jl` language tokens are gone from the `eval` tool (and the `kernel` tool was always Python-only), along with the `eval.rb`/`eval.jl` settings, the `PI_RB`/`PI_JL`/`PI_RUBY_SKIP_CHECK`/`PI_RUBY_IPC_TRACE`/`PI_JULIA_IPC_TRACE` environment overrides, and the Ruby/Julia runtime documentation. Stale `eval.rb`/`eval.jl` config keys are ignored; Python and JavaScript behavior is unchanged.
+- Distribution moved to GitHub Releases: `proto update` resolves versions from the repository's releases instead of the npm registry, and a bun/npm-managed install is replaced in place by the standalone binary on the next update.
+- `install.sh` installs the prebuilt release binary by default; `--source` now always clones the repository (`--ref` defaults to `main`) instead of installing a published npm package.
 
 ### Added
 
@@ -81,6 +83,7 @@
 
 ### Changed
 
+- New built-in `proto` theme is now the default dark theme (was `dark`); pick another with `theme.dark` or `/theme`.
 - Idle workers now park after one minute by default instead of seven; configured idle timeouts and worker concurrency remain unchanged.
 
 - Python patch helpers now accept unified diffs, single-file headers, code fences, quoted paths, and pasted indentation.
@@ -292,6 +295,8 @@
 - Fixed `formatContent` reporting no-formatter as unchanged: when no configured server supports formatting, the result is now correctly classified as `FileFormatResult.UNSUPPORTED` (#8388).
 - Fixed MCP request timeouts surfacing as `Unexpected end of JSON input` instead of `Request timeout after Nms` when the abort lands mid-JSON-body read.
 - Fixed CJS modules being misclassified as ESM when imported from an ESM parent module. The extension loader now identifies unshadowed CommonJS syntax from Babel's parsed AST before deferring to the importer's module kind. This resolves `SyntaxError: Missing 'default' export` for packages with conditional exports (e.g. playwright-core) where an ESM wrapper re-exports from a CJS entry, while ambiguous files continue to inherit their importer's classification.
+- The startup `Update Available` notification renders again in interactive mode.
+- Reinstall hints after a failed update or a missing native addon no longer point at an install URL that is not served.
 
 ### Removed
 

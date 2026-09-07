@@ -12,7 +12,7 @@ import { BashTool, type BashToolDetails } from "./bash";
 import { EvalTool } from "./eval";
 import { toolRenderers } from "./renderers";
 
-await initTheme(false, false, "dark-hybrid-slate-cool");
+await initTheme(false, false, "proto");
 const OWNER = `bash-kernel-parity:${process.pid}`;
 
 function stub(cwd: string): ToolSession {

@@ -52,7 +52,7 @@ signing or credential failure.
 
 What this means in practice:
 
-- `curl https://proto.sh/install | sh` — `curl` sets no quarantine bit, so
+- `curl -fsSL https://raw.githubusercontent.com/myanvoos/proto/main/scripts/install.sh | sh` — `curl` sets no quarantine bit, so
   Gatekeeper is not consulted.
 - Homebrew **formula** installs — Homebrew does not quarantine formula files, so
   Gatekeeper is not consulted.
@@ -101,7 +101,7 @@ over stdin — no secret is ever printed to the terminal, argv, or shell history
 ```sh
 scripts/ci-macos-upload-secrets.sh ~/proto-signing --dry-run   # validate first
 scripts/ci-macos-upload-secrets.sh ~/proto-signing             # upload all five
-gh secret list --repo can1357/proto                       # confirm
+gh secret list --repo myanvoos/proto                       # confirm
 ```
 
 Re-run it whenever the certificate is renewed.

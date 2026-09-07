@@ -5,7 +5,7 @@ An experimental agent harness with the IDE wired in — forked from [OMP](https:
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/can1357/proto/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/myanvoos/proto/main/scripts/install.sh | sh
 ```
 
 Downloads a prebuilt binary (macOS / Linux, glibc and musl) from GitHub Releases into `~/.local/bin`. Pass `--source` to build and install from source with Bun instead.

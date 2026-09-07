@@ -78,7 +78,7 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 		args: {
 			op: "search_prs",
 			query: "is:open review-requested:@me sort:updated",
-			repo: "can1357/proto",
+			repo: "myanvoos/proto",
 		},
 		result: {
 			content: [
@@ -99,7 +99,7 @@ export const miscFixtures: Record<string, GalleryFixture> = {
 			content: [
 				{
 					type: "text",
-					text: "gh: Could not resolve to a Repository with the name 'can1357/proto'. (HTTP 404)",
+					text: "gh: Could not resolve to a Repository with the name 'myanvoos/proto'. (HTTP 404)",
 				},
 			],
 			isError: true,
