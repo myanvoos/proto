@@ -79,6 +79,13 @@ export interface Frame {
 	status?: "ok" | "error";
 	executionCount?: number;
 	cancelled?: boolean;
+	busy?: number;
+}
+
+export interface KernelStatusReport {
+	/** Number of in-flight kernel request tasks (0 = quiescent). */
+	busy: number;
+	executionCount?: number;
 }
 
 interface PendingExecution {
@@ -129,6 +136,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	#shutdownConfirmed = false;
 	#exitedPromise: Promise<number> | null = null;
 	#pending = new Map<string, PendingExecution>();
+	#controlPending = new Map<string, (report: KernelStatusReport | undefined) => void>();
 	#readBuffer = "";
 	readonly #options: BaseKernelOptions<TExecuteOptions>;
 
@@ -268,6 +276,40 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		return promise;
 	}
 
+	/**
+	 * Probe the kernel for in-flight work without executing user code.
+	 * Returns undefined when the kernel is not running or did not answer in time;
+	 * callers must treat undefined as "possibly busy".
+	 */
+	async requestStatus(timeoutMs = 2_000): Promise<KernelStatusReport | undefined> {
+		if (!this.isAlive() || this.#disposed) return undefined;
+		const msgId = Snowflake.next();
+		const { promise, resolve } = Promise.withResolvers<KernelStatusReport | undefined>();
+		this.#controlPending.set(msgId, resolve);
+		const timer = setTimeout(() => {
+			if (this.#controlPending.delete(msgId)) resolve(undefined);
+		}, timeoutMs);
+		timer.unref?.();
+		try {
+			await this.#writeLine(JSON.stringify({ type: "status", id: msgId }));
+		} catch {
+			if (this.#controlPending.delete(msgId)) resolve(undefined);
+		}
+		try {
+			return await promise;
+		} finally {
+			clearTimeout(timer);
+			this.#controlPending.delete(msgId);
+		}
+	}
+
+	/** True when the kernel reports in-flight request tasks. Undefined = unknown (treat as busy). */
+	async isBusy(): Promise<boolean | undefined> {
+		const report = await this.requestStatus();
+		if (report === undefined) return undefined;
+		return report.busy > 0;
+	}
+
 	async interrupt(): Promise<void> {
 		if (!this.#proc || this.#disposed) return;
 		try {
@@ -301,22 +343,23 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			this.#stdin?.end();
 		} catch {}
 
-		const exited = this.#waitForExitWithTimeout(timeoutMs);
-		let result = await exited;
-		if (!result) {
+		let result = await this.#waitForExitWithTimeout(timeoutMs);
+		if (result === null) {
 			try {
 				proc.kill("SIGTERM");
 			} catch {}
 			result = await this.#waitForExitWithTimeout(timeoutMs);
 		}
-		if (!result) {
+		if (result === null) {
 			try {
 				proc.kill("SIGKILL");
 			} catch {}
 			result = await this.#waitForExitWithTimeout(timeoutMs);
 		}
 
-		const confirmed = !!result;
+		// null = the process did not exit within the deadline; any exit code
+		// (including 0) means the process is gone and shutdown is confirmed.
+		const confirmed = result !== null;
 		this.#shutdownConfirmed = confirmed;
 		this.#disposed = true;
 		return { confirmed };
@@ -424,6 +467,16 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	async #handleFrame(frame: Frame): Promise<void> {
 		const rid = frame.id;
 		if (!rid) return;
+		const control = this.#controlPending.get(rid);
+		if (control) {
+			this.#controlPending.delete(rid);
+			if (frame.type === "done") {
+				control({ busy: typeof frame.busy === "number" ? frame.busy : 0, executionCount: frame.executionCount });
+			} else if (frame.type === "error") {
+				control(undefined);
+			}
+			return;
+		}
 		const pending = this.#pending.get(rid);
 		if (!pending) return;
 

@@ -43,6 +43,8 @@ Settled RSS was about **41% lower** in this workload; sampled peak RSS was about
 
 Additional compiled-CLI PTY probes exercised a single user followed by 7,999 assistant messages, eight older/latest paging cycles, thinking/tool display toggles, slash-command paging, and a read-only advisor viewer's latest/oldest/latest/close navigation. Main-window paging is refused while model, bash, or Python output is active; continuation restores the latest page before streaming. The read-only viewer can remain on an older page while its file grows. A final compiled-CLI continuation probe resumed 800 uniquely marked messages, navigated via both `/history` and keyboard controls, and submitted from an older page to a local test Anthropic SSE endpoint. Exactly one provider request contained all 800 original markers, the response rendered, and all 800 markers remained in the persisted session. No external provider was used.
 
+Idle eval kernels (Python interpreter, JS VM worker) are released after 15 idle minutes and evicted detached subagent sessions are fully disposed; see "Idle reap" in `docs/python-repl.md`. Busy kernels — backgrounded cells, awaited subagents/tool bridges, monitors — are never reaped.
+
 ## Whole-process measurement
 
 Use an isolated profile with no credentials and disable onboarding, update checks, and extensions for the minimal baseline. Then measure the real CLI in a PTY through:

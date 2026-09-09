@@ -136,6 +136,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			localRoots: options.localRoots,
 			completionContext: options.completionContext,
 			reset: options.reset,
+			onStatus: options.onStatus,
 			code,
 			filename: `js-cell-${crypto.randomUUID()}.js`,
 			timeoutMs: acquireBudgetMs,

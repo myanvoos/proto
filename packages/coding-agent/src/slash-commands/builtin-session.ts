@@ -303,6 +303,30 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "history",
+		description: "Page through transcript history",
+		allowArgs: true,
+		subcommands: [
+			{ name: "older", description: "Show the previous transcript page" },
+			{ name: "newer", description: "Show the next transcript page" },
+			{ name: "latest", description: "Return to the latest transcript page" },
+		],
+		handle: async (_command, runtime) => {
+			await runtime.output("Transcript paging is available in the interactive TUI.");
+			return commandConsumed();
+		},
+		handleTui: async (command, runtime) => {
+			const direction = command.args.trim();
+			if (direction !== "older" && direction !== "newer" && direction !== "latest") {
+				runtime.ctx.showStatus("Usage: /history older|newer|latest");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			await runtime.ctx.navigateTranscriptHistory(direction);
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "hotkeys",
 		description: "Show all keyboard shortcuts",
 		handleTui: (_command, runtime) => {

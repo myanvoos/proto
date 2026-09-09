@@ -347,6 +347,13 @@ const sessionRegistry = createKernelSessionRegistry<PythonKernel, PythonExecutor
 	},
 	shutdownSession: session => shutdownInvalidatedSession(session),
 	validateKernel: (session, kernel) => session.kernel === kernel,
+	kernelBusy: kernel => kernel.isBusy(),
+	notifySessionReaped: (options, note) =>
+		options.onStatus?.({
+			op: "kernel-idle-reap",
+			idleMs: note.idleMs,
+			reapedAt: note.reapedAt,
+		}),
 });
 
 export async function disposeAllKernelSessions(): Promise<void> {

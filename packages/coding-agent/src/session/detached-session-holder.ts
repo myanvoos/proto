@@ -1,4 +1,7 @@
 import * as path from "node:path";
+
+import { postmortem } from "@oh-my-pi/pi-utils";
+
 import type { AgentSession } from "./agent-session";
 import type { SessionManager } from "./session-manager";
 
@@ -76,6 +79,11 @@ export class DetachedSessionHolder {
 			toEvict.map(async ([, entry]) => {
 				try {
 					await entry.session.abort({ goalReason: "internal" });
+				} catch {}
+				// Fully tear down the evicted session so its eval kernels,
+				// browser tabs, and MCP connections do not outlive the holder entry.
+				try {
+					await entry.session.dispose({ reason: postmortem.Reason.MANUAL });
 				} catch {}
 			}),
 		);

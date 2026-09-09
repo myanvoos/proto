@@ -50,6 +50,15 @@ Kernel shutdown:
 - Wait for process exit with `SHUTDOWN_GRACE_MS` budget.
 - Escalate to `SIGTERM` and finally `SIGKILL` if the process does not exit in time.
 
+### Idle reap (Python and JavaScript)
+
+Retained kernels are released after `DEFAULT_KERNEL_IDLE_REAP_MS` (15 minutes) without activity, in `session` mode. Reap candidates are skipped while a cell is executing, while a reset/replacement is in flight, and — decisive — while the kernel reports in-flight work:
+
+- Python: the host sends a `{"type": "status"}` control request over stdin; the runner answers with a `done` frame whose `busy` field counts in-flight request tasks. Backgrounded cells, awaited tool/subagent bridges, and monitors all hold a request task, so they block the reap. A missing or late answer counts as busy.
+- JavaScript: any pending run (including awaited tool/agent bridges) blocks the reap.
+
+Reaping shuts the subprocess/worker down; the next call for that session key starts a fresh kernel and the call's status events include a `kernel-idle-reap` event with the idle duration. Retained state from before the reap is gone, exactly as with `reset: true`. Known gap: fire-and-forget tasks a cell created without awaiting (for example a raw `asyncio.create_task`) are not request tasks and do not block the reap. Session disposal by owner (`disposeKernelSessionsByOwner` / `disposeVmContextsByOwner`) and explicit `reset` remain unchanged. A cleanly exited kernel is now always reported as `confirmed` by kernel shutdown; only a shutdown deadline miss escalates to `SIGTERM`/`SIGKILL` and reports `confirmed: false`.
+
 ## Wire protocol (NDJSON, host ↔ runner)
 
 One JSON object per line, UTF-8, `\n` terminated.
@@ -112,6 +121,7 @@ Unknown magic names raise `NameError: UsageError: ...` inside the cell.
   - Calls through the tool are exclusive, so tool invocations do not overlap.
   - A dead retained subprocess is replaced before execution.
   - If the subprocess dies during execution, it is replaced and the call is retried once.
+  - A quiescent kernel is released after 15 idle minutes (see "Idle reap" under Kernel lifecycle); the next call starts fresh and reports a `kernel-idle-reap` status event.
 - `per-call`
   - Spawns a fresh subprocess for each call.
   - Shuts the subprocess down after the call.

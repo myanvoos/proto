@@ -1,5 +1,4 @@
 import * as path from "node:path";
-
 import { logger } from "@oh-my-pi/pi-utils";
 import {
 	attachSessionOwner,
@@ -10,8 +9,9 @@ import {
 	resolveOwnerScopedSessionKey,
 	type SessionOwners,
 } from "./executor-base";
+import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "./idle-timeout";
 
-interface KernelSessionRegistryOptions {
+export interface KernelSessionRegistryOptions {
 	sessionId?: string;
 	kernelOwnerId?: string;
 	interpreter?: string;
@@ -29,6 +29,7 @@ interface RegistryKernelShutdownResult {
 interface RegistryKernel {
 	isAlive(): boolean;
 	shutdown(options?: { timeoutMs: number }): Promise<RegistryKernelShutdownResult>;
+	isBusy?(): Promise<boolean | undefined>;
 }
 
 export interface KernelSession<TKernel extends RegistryKernel> extends SessionOwners {
@@ -58,6 +59,12 @@ interface KernelSessionRegistryDescriptor<
 	TResult,
 	TSession extends KernelSession<TKernel>,
 > {
+	/** Release a quiescent kernel after this much inactivity; 0 disables. Defaults to DEFAULT_KERNEL_IDLE_REAP_MS. */
+	idleReapMs?: number;
+	/** Busy probe for the reap check. Undefined/true/unknown = not idle, keep the kernel. */
+	kernelBusy?: (kernel: TKernel) => Promise<boolean | undefined>;
+	/** Called on the next execute for a session key that was idle-reaped, so callers can surface the state wipe. */
+	notifySessionReaped?: (options: TOptions, note: KernelReapNote) => void;
 	languageLabel: string;
 	cancelledErrorClass: CancelledErrorClass;
 	buildSessionKey: (sessionId: string, cwd: string, interpreter: string | undefined) => string;
@@ -86,7 +93,7 @@ interface KernelSessionRegistryDescriptor<
 	validateKernel?: (session: TSession, kernel: TKernel) => boolean;
 }
 
-interface KernelSessionRegistry<TOptions extends KernelSessionRegistryOptions, TResult> {
+export interface KernelSessionRegistry<TOptions extends KernelSessionRegistryOptions, TResult> {
 	disposeAll(): Promise<void>;
 	disposeByOwner(ownerId: string): Promise<void>;
 	executeOnSession(code: string, cwd: string, options: TOptions): Promise<TResult>;
@@ -123,6 +130,8 @@ export function formatSessionKernelTimeoutAnnotation(timeoutMs: number | undefin
 	return `eval cell timed out after ${duration}; kernel interrupted but remains running. Reset the kernel via { reset: true } if state appears corrupted.`;
 }
 
+export { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "./idle-timeout";
+
 export function createKernelSessionRegistry<
 	TKernel extends RegistryKernel,
 	TOptions extends KernelSessionRegistryOptions,
@@ -134,6 +143,76 @@ export function createKernelSessionRegistry<
 	const sessions = new Map<string, TSession>();
 	const startingSessions = new Map<string, StartingKernelSession<TSession>>();
 	const resettingSessions = new Map<string, Promise<void>>();
+	const idleReapMs = descriptor.idleReapMs ?? DEFAULT_KERNEL_IDLE_REAP_MS;
+	const reapTimers = new Map<string, NodeJS.Timeout>();
+	const executingDepth = new Map<string, number>();
+	const reapedNotes = new Map<string, KernelReapNote>();
+
+	function armReap(sessionKey: string): void {
+		const existing = reapTimers.get(sessionKey);
+		if (existing) clearTimeout(existing);
+		if (idleReapMs <= 0) return;
+		if (!sessions.has(sessionKey)) return;
+		const timer = setTimeout(() => void reapFire(sessionKey), idleReapMs);
+		timer.unref?.();
+		reapTimers.set(sessionKey, timer);
+	}
+
+	function clearReapState(sessionKey: string): void {
+		const timer = reapTimers.get(sessionKey);
+		if (timer) clearTimeout(timer);
+		reapTimers.delete(sessionKey);
+		executingDepth.delete(sessionKey);
+	}
+
+	async function reapFire(sessionKey: string): Promise<void> {
+		reapTimers.delete(sessionKey);
+		const session = sessions.get(sessionKey);
+		if (!session) return;
+		// Never reap around lifecycle transitions or while a cell is executing.
+		if (startingSessions.has(sessionKey) || resettingSessions.has(sessionKey)) {
+			armReap(sessionKey);
+			return;
+		}
+		if ((executingDepth.get(sessionKey) ?? 0) > 0) {
+			armReap(sessionKey);
+			return;
+		}
+		// Busy covers anything the kernel is still waiting on: backgrounded cells,
+		// monitors, awaited subagents/tool bridges. Unknown counts as busy.
+		const busy = descriptor.kernelBusy ? await descriptor.kernelBusy(session.kernel) : true;
+		if (busy !== false) {
+			armReap(sessionKey);
+			return;
+		}
+		// The busy probe awaited: re-check the guards before tearing down.
+		if (
+			sessions.get(sessionKey) !== session ||
+			startingSessions.has(sessionKey) ||
+			resettingSessions.has(sessionKey) ||
+			(executingDepth.get(sessionKey) ?? 0) > 0
+		) {
+			armReap(sessionKey);
+			return;
+		}
+		descriptor.invalidateSession?.(session);
+		sessions.delete(sessionKey);
+		const result = await shutdownSession(session, false).catch(() => undefined);
+		if (result?.confirmed === false) {
+			logger.warn(`${descriptor.languageLabel} kernel idle-reap shutdown not confirmed`, {
+				sessionKey,
+				sessionId: session.sessionId,
+				cwd: session.cwd,
+			});
+		} else {
+			logger.info(`${descriptor.languageLabel} kernel released after idle timeout`, {
+				sessionKey,
+				sessionId: session.sessionId,
+				idleReapMs,
+			});
+		}
+		reapedNotes.set(sessionKey, { idleMs: idleReapMs, reapedAt: Date.now() });
+	}
 
 	const context: KernelSessionRegistryContext<TKernel, TOptions, TSession> = {
 		sessions,
@@ -245,6 +324,8 @@ export function createKernelSessionRegistry<
 		if (!existing) return;
 		descriptor.invalidateSession?.(existing);
 		sessions.delete(sessionKey);
+		clearReapState(sessionKey);
+		reapedNotes.delete(sessionKey);
 		await shutdownSession(existing, true).catch(() => undefined);
 	}
 
@@ -263,6 +344,8 @@ export function createKernelSessionRegistry<
 		for (const [id, session] of all) {
 			descriptor.invalidateSession?.(session);
 			if (sessions.get(id) === session) sessions.delete(id);
+			clearReapState(id);
+			reapedNotes.delete(id);
 		}
 		const results = await Promise.allSettled(all.map(([, session]) => shutdownSession(session, false)));
 		for (let i = 0; i < all.length; i += 1) {
@@ -303,6 +386,8 @@ export function createKernelSessionRegistry<
 		for (const session of toShutdown) {
 			descriptor.invalidateSession?.(session);
 			if (sessions.get(session.sessionKey) === session) sessions.delete(session.sessionKey);
+			clearReapState(session.sessionKey);
+			reapedNotes.delete(session.sessionKey);
 		}
 		const started = await Promise.allSettled(startingToShutdown.map(starting => starting.promise));
 		for (const result of started) {
@@ -362,7 +447,13 @@ export function createKernelSessionRegistry<
 			const inFlight = resettingSessions.get(sessionKey);
 			if (inFlight) await inFlight.catch(() => undefined);
 		}
+		const reapNote = reapedNotes.get(sessionKey);
+		if (reapNote) {
+			reapedNotes.delete(sessionKey);
+			descriptor.notifySessionReaped?.(options, reapNote);
+		}
 		const session = await acquireSession(sessionKey, sessionId, cwd, options);
+		armReap(sessionKey);
 		if (options.signal?.aborted) {
 			const timedOut =
 				descriptor.isTimedOutCancellation?.(options.signal.reason, options.signal) ??
@@ -372,6 +463,7 @@ export function createKernelSessionRegistry<
 		const kernel = await acquireLiveSessionKernel(session, cwd, options);
 		if (!isCurrent(session, kernel)) throw new descriptor.cancelledErrorClass(false);
 		const runOptions = { ...options, cwd };
+		executingDepth.set(sessionKey, (executingDepth.get(sessionKey) ?? 0) + 1);
 		try {
 			return await descriptor.executeWithKernel(kernel, code, runOptions);
 		} catch (err) {
@@ -391,6 +483,11 @@ export function createKernelSessionRegistry<
 			}
 			if (!isCurrent(session, retryKernel)) throw new descriptor.cancelledErrorClass(false);
 			return await descriptor.executeWithKernel(retryKernel, code, runOptions);
+		} finally {
+			const depth = (executingDepth.get(sessionKey) ?? 1) - 1;
+			if (depth <= 0) executingDepth.delete(sessionKey);
+			else executingDepth.set(sessionKey, depth);
+			armReap(sessionKey);
 		}
 	}
 

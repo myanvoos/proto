@@ -1,3 +1,11 @@
+/** Release quiescent eval kernels (Python interpreter, JS VM worker) after this much inactivity. */
+export const DEFAULT_KERNEL_IDLE_REAP_MS = 15 * 60_000;
+
+export interface KernelReapNote {
+	idleMs: number;
+	reapedAt: number;
+}
+
 export class IdleTimeout {
 	readonly #controller = new AbortController();
 	readonly #idleMs: number;

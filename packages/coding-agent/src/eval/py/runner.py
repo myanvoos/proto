@@ -2104,6 +2104,19 @@ async def _main_async() -> None:
             req = await queue.get()
             if req.get("type") == "exit":
                 break
+            if req.get("type") == "status":
+                # Control probe (kernel idle/busy check). Handled inline so it
+                # neither creates a request task nor counts toward busy itself.
+                _emit(
+                    {
+                        "type": "done",
+                        "id": str(req.get("id", "")),
+                        "status": "ok",
+                        "executionCount": _STATE.execution_count,
+                        "busy": len(tasks),
+                    }
+                )
+                continue
             task = asyncio.create_task(_handle_request_async(req))
             tasks.add(task)
             task.add_done_callback(_task_done)

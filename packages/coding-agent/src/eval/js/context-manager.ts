@@ -11,6 +11,7 @@ import { safeSend as safeSendIpc } from "../../utils/ipc";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../bridge-timeout";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { attachSessionOwner, resolveOwnerScopedSessionKey, type SessionOwners } from "../executor-base";
+import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "../idle-timeout";
 import { callSessionTool, type JsStatusEvent } from "./tool-bridge";
 import { WorkerCore } from "./worker-core";
 
@@ -69,6 +70,7 @@ interface JsSession {
 	pending: Map<string, PendingRun>;
 	ownerIds: Set<string>;
 	hasFallbackOwner: boolean;
+	reapTimer?: NodeJS.Timeout;
 }
 
 interface StartingJsSession extends SessionOwners {
@@ -84,6 +86,42 @@ const WORKER_CLOSE_TIMEOUT_MS = 1_000;
 const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
 
 const workerCloseTimeoutMs: number = WORKER_CLOSE_TIMEOUT_MS;
+const reapNotes = new Map<string, KernelReapNote>();
+
+function armSessionReap(session: JsSession): void {
+	if (session.reapTimer) clearTimeout(session.reapTimer);
+	const timer = setTimeout(() => void reapSessionFire(session), DEFAULT_KERNEL_IDLE_REAP_MS);
+	timer.unref?.();
+	session.reapTimer = timer;
+}
+
+function clearSessionReap(session: JsSession): void {
+	if (session.reapTimer) clearTimeout(session.reapTimer);
+	session.reapTimer = undefined;
+}
+
+async function reapSessionFire(session: JsSession): Promise<void> {
+	session.reapTimer = undefined;
+	if (sessions.get(session.sessionKey) !== session || session.state !== "alive") return;
+	// Busy covers anything the worker is still coordinating: backgrounded cells,
+	// awaited tool/agent bridges, completion calls. Reset cycles also block reaping.
+	if (
+		session.pending.size > 0 ||
+		startingSessions.has(session.sessionKey) ||
+		resettingSessions.has(session.sessionKey)
+	) {
+		armSessionReap(session);
+		return;
+	}
+	sessions.delete(session.sessionKey);
+	await killSession(session, new ToolError("JS eval context released after idle timeout"), { force: false });
+	logger.info("JS eval context released after idle timeout", {
+		sessionKey: session.sessionKey,
+		sessionId: session.sessionId,
+		idleMs: DEFAULT_KERNEL_IDLE_REAP_MS,
+	});
+	reapNotes.set(session.sessionKey, { idleMs: DEFAULT_KERNEL_IDLE_REAP_MS, reapedAt: Date.now() });
+}
 const useWorkerThreadForTests = false;
 
 export async function executeInVmContext(options: {
@@ -95,6 +133,7 @@ export async function executeInVmContext(options: {
 	session: ToolSession;
 	localRoots?: Record<string, string>;
 	reset?: boolean;
+	onStatus?: (event: JsStatusEvent) => void;
 	completionContext?: EvalCompletionInvocationContext;
 	code: string;
 	filename: string;
@@ -127,13 +166,23 @@ export async function executeInVmContext(options: {
 		const inFlight = resettingSessions.get(sessionKey);
 		if (inFlight) await inFlight.catch(() => undefined);
 	}
+	const reapNote = reapNotes.get(sessionKey);
+	if (reapNote) {
+		reapNotes.delete(sessionKey);
+		options.onStatus?.({ op: "kernel-idle-reap", idleMs: reapNote.idleMs, reapedAt: reapNote.reapedAt });
+	}
 	const session = await acquireSession(
 		sessionKey,
 		{ cwd: options.cwd, sessionId: options.sessionId, localRoots: options.localRoots },
 		options.timeoutMs,
 		options.ownerId,
 	);
-	return await runOnce(session, options);
+	armSessionReap(session);
+	try {
+		return await runOnce(session, options);
+	} finally {
+		if (sessions.get(sessionKey) === session && session.state === "alive") armSessionReap(session);
+	}
 }
 
 async function resetVmContext(sessionKey: string): Promise<void> {
@@ -490,6 +539,8 @@ async function killSessionFor(session: JsSession, error: Error, options: { force
 async function killSession(session: JsSession, error: Error, options: { force: boolean }): Promise<void> {
 	if (session.state === "dead") return;
 	session.state = "dead";
+	clearSessionReap(session);
+	reapNotes.delete(session.sessionKey);
 	for (const pending of session.pending.values()) {
 		if (pending.settled) continue;
 		pending.settled = true;
