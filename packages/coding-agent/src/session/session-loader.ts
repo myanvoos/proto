@@ -33,6 +33,8 @@ export interface SessionLoadResult {
 	entries: FileEntry[];
 	titleSlot: SessionTitleUpdate | undefined;
 	malformedRecords: number;
+	/** Whether non-empty session data was found without a valid leading session header. */
+	invalidHeader: boolean;
 }
 
 function splitTitleSlot(content: string): { body: string; slot: SessionTitleUpdate | undefined } {
@@ -69,7 +71,12 @@ export function parseSessionContent(content: string): SessionLoadResult {
 		},
 	}) as FileEntry[];
 	applyTitleSlot(entries[0], slot);
-	return { entries, titleSlot: slot, malformedRecords };
+	return {
+		entries,
+		titleSlot: slot,
+		malformedRecords,
+		invalidHeader: entries.length > 0 ? !isValidSessionHeader(entries[0]) : malformedRecords > 0,
+	};
 }
 
 export async function visitEntriesFromFileStream(
@@ -223,7 +230,12 @@ export async function loadEntriesFromFileStream(filePath: string): Promise<Sessi
 			},
 		},
 	);
-	return { entries, titleSlot, malformedRecords };
+	return {
+		entries,
+		titleSlot,
+		malformedRecords,
+		invalidHeader: entries.length > 0 ? !isValidSessionHeader(entries[0]) : malformedRecords > 0,
+	};
 }
 
 export function parseSessionEntries(content: string): FileEntry[] {
@@ -238,7 +250,7 @@ async function loadWithKnownSize(filePath: string, storage: SessionStorage, size
 	const loaded = shouldStreamEntries(storage, size)
 		? await loadEntriesFromFileStream(filePath)
 		: parseSessionContent(await storage.readText(filePath));
-	return isValidSessionHeader(loaded.entries[0]) ? loaded : { ...loaded, entries: [] };
+	return loaded.invalidHeader ? { ...loaded, entries: [] } : loaded;
 }
 
 export async function loadSessionFile(
@@ -248,7 +260,7 @@ export async function loadSessionFile(
 	try {
 		return await loadWithKnownSize(filePath, storage, storage.statSync(filePath).size);
 	} catch (err) {
-		if (isEnoent(err)) return { entries: [], titleSlot: undefined, malformedRecords: 0 };
+		if (isEnoent(err)) return { entries: [], titleSlot: undefined, malformedRecords: 0, invalidHeader: false };
 		throw err;
 	}
 }

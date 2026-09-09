@@ -1,4 +1,5 @@
 import type { Model, ProviderResponseMetadata, RawSseEvent } from "@oh-my-pi/pi-ai";
+import { materializeString } from "@oh-my-pi/pi-utils";
 
 const MAX_RAW_SSE_EVENTS = 1_000;
 const MAX_RAW_SSE_CHARS = 512_000;
@@ -170,6 +171,7 @@ function trimRawLines(raw: string[]): TrimResult {
 	} else if (lines === raw) {
 		lines = raw.slice();
 	}
+	lines = lines.map(materializeString);
 	lines.push(`: proto-debug-truncated originalChars=${originalChars}`);
 	return { raw: lines, truncated: true, originalChars, chars: countLines(lines) + 1 };
 }

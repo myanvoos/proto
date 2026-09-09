@@ -474,15 +474,10 @@ export function createKernelSessionRegistry<
 			)
 				throw err;
 			if (kernel.isAlive()) throw err;
-			let retryKernel: TKernel;
-			if (descriptor.acquireLiveSessionKernel) {
-				retryKernel = await acquireLiveSessionKernel(session, cwd, options);
-			} else {
-				if (!isCurrent(session, kernel)) throw new descriptor.cancelledErrorClass(false);
-				retryKernel = await replaceSessionKernel(session, cwd, options);
-			}
-			if (!isCurrent(session, retryKernel)) throw new descriptor.cancelledErrorClass(false);
-			return await descriptor.executeWithKernel(retryKernel, code, runOptions);
+			throw new Error(
+				`${descriptor.languageLabel} kernel died during execution; completion is uncertain and the cell was not replayed. The next call will start a fresh kernel.`,
+				{ cause: err },
+			);
 		} finally {
 			const depth = (executingDepth.get(sessionKey) ?? 1) - 1;
 			if (depth <= 0) executingDepth.delete(sessionKey);

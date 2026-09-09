@@ -1,5 +1,5 @@
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import { sanitizeText, truncateHeadBytes, truncateTailBytes } from "@oh-my-pi/pi-utils";
+import { materializeString, sanitizeText, truncateHeadBytes, truncateTailBytes } from "@oh-my-pi/pi-utils";
 import { formatBytes } from "../tools/render-utils";
 import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
 import type { ExecutionCollectorMetadata, ExecutionOutputDisposition } from "./execution-metadata";
@@ -124,7 +124,7 @@ export function truncateLine(
 	maxChars: number = DEFAULT_MAX_COLUMN,
 ): { text: string; wasTruncated: boolean } {
 	if (line.length <= maxChars) return { text: line, wasTruncated: false };
-	return { text: `${line.slice(0, maxChars)}…`, wasTruncated: true };
+	return { text: materializeString(`${line.slice(0, maxChars)}…`), wasTruncated: true };
 }
 
 export function noTruncResult(content: string, totalLines?: number, totalBytes?: number): TruncationResult {
@@ -214,7 +214,7 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
 	if (includedLines >= maxLines && bytesUsed <= maxBytes) truncatedBy = "lines";
 
 	return {
-		content: content.slice(0, cutIndex),
+		content: materializeString(content.slice(0, cutIndex)),
 		truncated: true,
 		truncatedBy,
 		totalLines,
@@ -312,7 +312,7 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
 	if (includedLines >= maxLines && bytesUsed <= maxBytes) truncatedBy = "lines";
 
 	return {
-		content: content.slice(startIndex),
+		content: materializeString(content.slice(startIndex)),
 		truncated: true,
 		truncatedBy,
 		totalLines,

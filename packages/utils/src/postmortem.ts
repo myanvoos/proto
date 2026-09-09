@@ -42,7 +42,7 @@ export interface FatalRecoveryHint {
 type FatalRecoveryHintProvider = () => FatalRecoveryHint | undefined;
 const fatalRecoveryHintProviders = new Set<FatalRecoveryHintProvider>();
 
-function runCleanup(reason: Reason): Promise<void> {
+function runCleanup(reason: Reason, keepAlive = false): Promise<void> {
 	switch (cleanupStage) {
 		case "idle":
 			cleanupStage = "running";
@@ -52,6 +52,10 @@ function runCleanup(reason: Reason): Promise<void> {
 		case "complete":
 			return Promise.resolve();
 	}
+
+	const settle = (): void => {
+		cleanupStage = keepAlive ? "idle" : "complete";
+	};
 
 	const promises = callbackList.toReversed().map(callback => {
 		return Promise.try(() => callback(reason));
@@ -64,16 +68,17 @@ function runCleanup(reason: Reason): Promise<void> {
 				logger.error("Cleanup callback failed", { err, stack: err.stack });
 			}
 		}
-		cleanupStage = "complete";
+		settle();
 	});
 	const deadline = Promise.withResolvers<void>();
 	const deadlineTimer = setTimeout(() => {
 		logger.error("Cleanup deadline exceeded; proceeding with exit", { reason });
-		cleanupStage = "complete";
+		settle();
 		deadline.resolve();
 	}, CLEANUP_DEADLINE_MS);
 	cleanupPromise = Promise.race([cleanupSettled, deadline.promise]).finally(() => {
 		clearTimeout(deadlineTimer);
+		if (keepAlive) cleanupPromise = undefined;
 	});
 	return cleanupPromise;
 }
@@ -314,7 +319,7 @@ export function register(id: string, callback: (reason: Reason) => void | Promis
 }
 
 export function cleanup(): Promise<void> {
-	return runCleanup(Reason.MANUAL);
+	return runCleanup(Reason.MANUAL, true);
 }
 
 export interface QuitOptions {

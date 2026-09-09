@@ -7,6 +7,13 @@
 - MCP server environment placeholders no longer expand to inherited JavaScript object members, and a literal `__proto__` key in MCP or plugin config stays an ordinary key instead of mutating object prototypes.
 - MCP error diagnostics now redact credential values (API keys, tokens, `Authorization` headers) before they reach the transcript or the TUI.
 - GitHub Copilot model-policy 403s (plan, model policy, org restriction) no longer delete stored credentials, so the provider stays listed in `/model` instead of disappearing until the next `/login`.
+- Session files are no longer truncated in place when a rename is denied (EPERM); the original file survives intact and open readers keep a consistent view.
+- A session whose header is corrupt is now rejected on resume instead of loading as empty and overwriting a recoverable transcript.
+- Prompt history is committed at submit and flushed on exit, so submitted prompts survive an abrupt exit or crash.
+- A prompt submitted while another prompt is still being prepared is now queued as steering instead of being dropped or failing with a busy error.
+- A failing bash command keeps its raw diagnostics when the minimized output cannot be persisted as an artifact.
+- Kernel cells are no longer replayed after a kernel crash: the result reports that completion is uncertain and the next call starts on a fresh kernel, so partially applied edits are not duplicated.
+- Truncated tool output and raw SSE windows no longer retain the entire original payload in memory for the life of the session.
 
 ## [18.0.4] - 2026-09-09
 

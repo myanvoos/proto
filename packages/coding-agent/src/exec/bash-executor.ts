@@ -511,17 +511,17 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 
 		const minimized = winner.result.minimized;
 		if (minimized && minimized.text !== minimized.originalText) {
-			sink.replace(minimized.text, { summarized: true });
-			if (options?.onMinimizedSave) {
-				const artifactId = await options.onMinimizedSave(minimized.originalText, {
-					filter: minimized.filter,
-					inputBytes: minimized.inputBytes,
-					outputBytes: minimized.outputBytes,
-				});
-				if (artifactId) {
-					const sep = minimized.text.endsWith("\n") ? "" : "\n";
-					sink.push(`${sep}[raw output: artifact://${artifactId}]\n`);
-				}
+			const artifactId = options?.onMinimizedSave
+				? await options.onMinimizedSave(minimized.originalText, {
+						filter: minimized.filter,
+						inputBytes: minimized.inputBytes,
+						outputBytes: minimized.outputBytes,
+					})
+				: undefined;
+			if (artifactId) {
+				sink.replace(minimized.text, { summarized: true });
+				const sep = minimized.text.endsWith("\n") ? "" : "\n";
+				sink.push(`${sep}[raw output: artifact://${artifactId}]\n`);
 			}
 		}
 

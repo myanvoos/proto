@@ -5,6 +5,7 @@
 ### Fixed
 
 - Launch-time dotenv values and `NODE_ENV` provenance no longer leak into explicitly built child-process environments; they now apply only to the live process environment.
+- Runtime installation now uses an OS-backed lock, so an installer killed mid-run no longer blocks the next run with a stale lock directory.
 
 ## [18.0.1] - 2026-09-07
 

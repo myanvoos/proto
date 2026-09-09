@@ -408,7 +408,14 @@ async function initWorker(session: JsSession, snapshot: SessionSnapshot, timeout
 			return;
 		}
 
-		void killSessionFor(session, error, { force: true });
+		const executionError =
+			session.pending.size > 0
+				? new Error(
+						"JS eval worker died during execution; completion is uncertain and the cell was not replayed. Check for partial side effects before retrying. The next call will start a fresh worker.",
+						{ cause: error },
+					)
+				: error;
+		void killSessionFor(session, executionError, { force: true });
 	});
 	try {
 		worker.send({ type: "init", snapshot });

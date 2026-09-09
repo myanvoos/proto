@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as Module from "node:module";
 import * as path from "node:path";
+import { withFileLock } from "./file-lock";
 
 const RUNTIME_CONDITIONS: Record<string, true> = { node: true, require: true, default: true };
 
@@ -223,25 +224,15 @@ export interface EnsureRuntimeInstalledOptions {
 	lockSleepMs?: number;
 }
 
-function isErrnoCode(error: unknown, code: string): boolean {
-	return typeof error === "object" && error !== null && "code" in error && error.code === code;
-}
-
-async function acquireInstallLock(runtimeDir: string, attempts: number, sleepMs: number): Promise<() => Promise<void>> {
-	const lockDir = `${runtimeDir}.lock`;
-	await fsp.mkdir(path.dirname(lockDir), { recursive: true });
-	for (let attempt = 0; attempt < attempts; attempt++) {
-		try {
-			await fsp.mkdir(lockDir);
-			return async () => {
-				await fsp.rm(lockDir, { recursive: true, force: true });
-			};
-		} catch (error) {
-			if (!isErrnoCode(error, "EEXIST")) throw error;
-			await Bun.sleep(sleepMs);
-		}
+/** Best-effort cleanup for lock directories orphaned by older installers. */
+async function removeLegacyInstallLock(runtimeDir: string): Promise<void> {
+	try {
+		const lockDir = `${runtimeDir}.lock`;
+		const stat = await fsp.stat(lockDir).catch(() => null);
+		if (stat?.isDirectory()) await fsp.rm(lockDir, { recursive: true, force: true });
+	} catch {
+		// The legacy directory is inert now that installs use a distinct lock path.
 	}
-	throw new Error(`Timed out waiting for runtime install lock: ${lockDir}`);
 }
 
 export async function writeRuntimeManifest(runtimeDir: string, install: RuntimeInstallSpec): Promise<void> {
@@ -293,15 +284,18 @@ export async function ensureRuntimeInstalled(options: EnsureRuntimeInstalledOpti
 	if (await probeManifest.exists()) return runtimeDir;
 
 	onPhase?.("initiate");
-	const releaseLock = await acquireInstallLock(runtimeDir, lockAttempts, lockSleepMs);
-	try {
-		if (await probeManifest.exists()) return runtimeDir;
-		await writeRuntimeManifest(runtimeDir, install);
-		onPhase?.("download");
-		await runRuntimeInstall(runtimeDir);
-		onPhase?.("done");
-		return runtimeDir;
-	} finally {
-		await releaseLock();
-	}
+	await fsp.mkdir(path.dirname(runtimeDir), { recursive: true });
+	await removeLegacyInstallLock(runtimeDir);
+	return withFileLock(
+		`${runtimeDir}.install`,
+		async () => {
+			if (await probeManifest.exists()) return runtimeDir;
+			await writeRuntimeManifest(runtimeDir, install);
+			onPhase?.("download");
+			await runRuntimeInstall(runtimeDir);
+			onPhase?.("done");
+			return runtimeDir;
+		},
+		{ retries: lockAttempts, retryDelayMs: lockSleepMs },
+	);
 }

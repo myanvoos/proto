@@ -8,7 +8,15 @@ import {
 	SqliteAuthCredentialStore,
 	type StoredAuthCredential,
 } from "@oh-my-pi/pi-ai";
-import { AsyncDrain, getAgentDbPath, getDbBusyTimeoutMs, isRecord, logger } from "@oh-my-pi/pi-utils";
+import {
+	AsyncDrain,
+	checkpointWal,
+	getAgentDbPath,
+	getDbBusyTimeoutMs,
+	isRecord,
+	logger,
+	postmortem,
+} from "@oh-my-pi/pi-utils";
 import type { RawSettings as Settings } from "../config/settings";
 
 type SettingsRow = {
@@ -73,6 +81,7 @@ export const SCHEMA_VERSION = 6;
 const SQLITE_NOW_EPOCH = "CAST(strftime('%s','now') AS INTEGER)";
 
 const instances = new Map<string, AgentStorage>();
+let cancelExitCleanup: (() => void) | undefined;
 
 export class AgentStorage {
 	#db: Database;
@@ -299,6 +308,7 @@ FROM model_usage_legacy
 		for (let attempt = 0; attempt < maxRetries; attempt++) {
 			try {
 				const storage = new AgentStorage(dbPath);
+				cancelExitCleanup ??= postmortem.register("agent-storage", () => AgentStorage.close());
 				instances.set(dbPath, storage);
 				return storage;
 			} catch (err) {
@@ -318,12 +328,17 @@ FROM model_usage_legacy
 		);
 	}
 
-	static resetInstance(): void {
+	/** Flushes deferred writes, closes every process-wide database, and permits reopening them. */
+	static close(): void {
 		for (const storage of instances.values()) storage.#close();
 		instances.clear();
+		cancelExitCleanup?.();
+		cancelExitCleanup = undefined;
 	}
 
 	#close(): void {
+		void this.#perfDrain.flush();
+		checkpointWal(this.#db);
 		this.#listSettingsStmt.finalize();
 		this.#upsertModelUsageStmt.finalize();
 		this.#listModelUsageStmt.finalize();

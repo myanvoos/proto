@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import * as path from "node:path";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { disposeKernelSessionsByOwner, executePython } from "./executor";
 import { checkPythonKernelAvailability, PythonKernel } from "./kernel";
 
@@ -30,6 +32,50 @@ describe("PythonKernel status probe", () => {
 			if (kernel.isAlive()) await kernel.shutdown().catch(() => {});
 		}
 	});
+
+	test("does not replay a crashed cell after the Python kernel reports uncertain completion", async () => {
+		const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+		if (!availability.ok) return;
+
+		using tempDir = TempDir.createSync("@python-kernel-crash-");
+		const ownerId = `test-owner:${crypto.randomUUID()}`;
+		const sessionId = `test-session:${crypto.randomUUID()}`;
+		const effectsPath = path.join(tempDir.path(), "effects.txt");
+		const options = {
+			cwd: tempDir.path(),
+			sessionId,
+			kernelOwnerId: ownerId,
+			kernelMode: "session" as const,
+			timeoutMs: 10_000,
+		};
+
+		try {
+			const crashed = await executePython(
+				[
+					"import os",
+					"with open('effects.txt', 'a') as effects:",
+					"    effects.write('once\\n')",
+					"    effects.flush()",
+					"print('before crash', flush=True)",
+					"os._exit(17)",
+				].join("\n"),
+				options,
+			);
+
+			expect(crashed.cancelled).toBe(true);
+			expect(crashed.output).toContain("before crash");
+			expect(crashed.output).toContain("completion is uncertain");
+			expect(crashed.output).toContain("not replayed");
+			expect(await Bun.file(effectsPath).text()).toBe("once\n");
+
+			const next = await executePython("print(21 * 2)", options);
+			expect(next.exitCode).toBe(0);
+			expect(next.output.trim()).toBe("42");
+			expect(await Bun.file(effectsPath).text()).toBe("once\n");
+		} finally {
+			await disposeKernelSessionsByOwner(ownerId);
+		}
+	}, 30_000);
 
 	test("owner-scoped disposal releases the retained kernel and its state", async () => {
 		const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });

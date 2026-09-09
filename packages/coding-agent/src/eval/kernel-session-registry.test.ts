@@ -177,3 +177,57 @@ describe("kernel session registry idle reap", () => {
 		expect(shutDown).toBe(false);
 	});
 });
+
+describe("kernel session failure recovery", () => {
+	test("does not replay a cell after its kernel dies with an exception", async () => {
+		let nextTag = 0;
+		const effects: string[] = [];
+		const kernels: StubKernel[] = [];
+		const failure = new Error("transport closed");
+		const registry = createKernelSessionRegistry<StubKernel, StubOptions, string, StubSession>({
+			languageLabel: "Stub",
+			cancelledErrorClass: class StubCancelled extends Error {} as unknown as never,
+			buildSessionKey: sessionId => sessionId,
+			createSession: session => session,
+			startKernel: () => {
+				const kernel: StubKernel = {
+					tag: nextTag++,
+					isAlive: () => !kernel.disposed,
+					disposed: false,
+					shutdown: () => {
+						kernel.disposed = true;
+						return Promise.resolve({ confirmed: true });
+					},
+					isBusy: () => Promise.resolve(false),
+				};
+				kernels.push(kernel);
+				return Promise.resolve(kernel);
+			},
+			executeWithKernel: (kernel, code) => {
+				effects.push(code);
+				if (kernel.tag === 0) {
+					kernel.disposed = true;
+					return Promise.reject(failure);
+				}
+				return Promise.resolve(`${kernel.tag}:${code}`);
+			},
+			idleReapMs: 0,
+		});
+
+		try {
+			await expect(registry.executeOnSession("first effect", "/tmp", {})).rejects.toMatchObject({
+				cause: failure,
+				message: expect.stringContaining("completion is uncertain"),
+			});
+			expect(effects).toEqual(["first effect"]);
+			expect(kernels).toHaveLength(1);
+
+			expect(await registry.executeOnSession("next effect", "/tmp", {})).toBe("1:next effect");
+			expect(effects).toEqual(["first effect", "next effect"]);
+			expect(kernels).toHaveLength(2);
+			expect(kernels[0]?.disposed).toBe(true);
+		} finally {
+			await registry.disposeAll();
+		}
+	});
+});
