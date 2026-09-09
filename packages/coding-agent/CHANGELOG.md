@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.3] - 2026-09-09
+
 ### Changed
 
 - `xd <tool> ?` no longer dumps full tool instructions into the TUI: help results render as a compact card (tool, arg count, required args, description preview) that expands to the full docs; the model still receives the complete instructions.
