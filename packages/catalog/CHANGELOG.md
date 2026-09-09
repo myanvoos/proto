@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Gemini 3.7 Flash no longer offers the `minimal` thinking effort on Google, Vertex, and OpenCode Zen, which reject it; budget-based resellers keep it.
+- Bedrock Converse OpenAI models (GPT-5.6 Luna, Sol, Terra) now use effort-based thinking control instead of token budgets.
+- Alibaba Token Plan `qwen3.8-flash` now reports its 1M context window, 131K max output, reasoning support, and image input.
+
 ## [18.0.1] - 2026-09-07
 
 ### Breaking Changes

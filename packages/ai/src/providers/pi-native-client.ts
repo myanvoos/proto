@@ -181,14 +181,19 @@ export function streamPiNative<TApi extends Api>(
 
 			if (!sawTerminal) {
 				const aborted = abortTracker.wasCallerAbort();
-				const partial = makeSyntheticAssistant(model as Model<Api>);
 				if (aborted) {
+					const partial = makeSyntheticAssistant(model as Model<Api>);
 					partial.stopReason = "aborted";
 					partial.errorMessage = "stream closed without terminal event";
 					stream.push({ type: "error", reason: "aborted", error: partial });
 				} else {
-					partial.stopReason = "stop";
-					stream.push({ type: "done", reason: "stop", message: partial });
+					stream.fail(
+						new AIError.ProviderResponseError(
+							"pi-native stream read error: stream closed before a terminal response event",
+							{ provider: model.provider, kind: "incomplete-stream" },
+						),
+					);
+					return;
 				}
 			}
 			stream.end();

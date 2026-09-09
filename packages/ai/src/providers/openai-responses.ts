@@ -422,6 +422,7 @@ const streamOpenAIResponsesOnce = (
 			const resolvedBaseUrl = (baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
 			const requestReasoningEffortFallbacks = new Map<string, OpenAIReasoningEffortFallback>();
 			const attemptedReasoningEffortFallbacks = new Set<string>();
+			const isExplicitDisable = options?.forceReasoningOff === true || options?.disableReasoning === true;
 			let pendingReasoningEffortFallback: { key: string; fallback: OpenAIReasoningEffortFallback } | undefined;
 			let activeReasoningEffortFallbackKey: string | undefined;
 			let activeRequestParams: OpenAIResponsesSamplingParams | undefined;
@@ -526,11 +527,15 @@ const streamOpenAIResponsesOnce = (
 					try {
 						openaiStream = await openResponsesStream(chained.params);
 						if (pendingReasoningEffortFallback) {
-							rememberOpenAIReasoningEffortFallback(
-								providerSessionState,
-								pendingReasoningEffortFallback.key,
-								pendingReasoningEffortFallback.fallback,
-							);
+							// Off-request fallbacks are local to this request. Remembering them
+							// would silently downgrade later enabled turns in the same session.
+							if (!isExplicitDisable) {
+								rememberOpenAIReasoningEffortFallback(
+									providerSessionState,
+									pendingReasoningEffortFallback.key,
+									pendingReasoningEffortFallback.fallback,
+								);
+							}
 							pendingReasoningEffortFallback = undefined;
 						}
 						break;
@@ -539,9 +544,7 @@ const streamOpenAIResponsesOnce = (
 						const reasoningEffortFallback =
 							activeReasoningEffortFallbackKey && activeRequestParams && !requestSignal.aborted
 								? resolveOpenAIReasoningEffortFallback(error, capturedErrorResponse, activeRequestParams, {
-										explicitDisable:
-											options?.forceReasoningOff === true ||
-											(options?.disableReasoning === true && options.reasoning === undefined),
+										explicitDisable: isExplicitDisable,
 									})
 								: undefined;
 						if (reasoningEffortFallback !== undefined && activeReasoningEffortFallbackKey) {

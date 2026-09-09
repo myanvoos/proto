@@ -542,26 +542,30 @@ const streamOpenAICompletionsOnce = (
 		);
 		const { requestAbortController, requestSignal } = abortTracker;
 		const onSseEvent = options?.onSseEvent;
-		const rawSseObserver = onSseEvent
-			? (event: RawSseEvent) => {
-					if (!event.event && event.data && event.data !== "[DONE]") {
-						try {
-							const parsed = JSON.parse(event.data);
-							const resolvedEvent =
-								typeof parsed.type === "string"
-									? parsed.type
-									: typeof parsed.object === "string"
-										? parsed.object
-										: null;
-							if (resolvedEvent) {
-								event.event = resolvedEvent;
-								event.raw = [`event: ${resolvedEvent}`, ...event.raw];
-							}
-						} catch {}
-					}
-					onSseEvent(event, model);
+		// Track the protocol terminator independently of the optional observer:
+		// some compatible hosts omit finish_reason and rely on [DONE] alone.
+		let sawDoneSentinel = false;
+		const rawSseObserver = (event: RawSseEvent) => {
+			if (event.data === "[DONE]") sawDoneSentinel = true;
+			if (onSseEvent) {
+				if (!event.event && event.data && event.data !== "[DONE]") {
+					try {
+						const parsed = JSON.parse(event.data);
+						const resolvedEvent =
+							typeof parsed.type === "string"
+								? parsed.type
+								: typeof parsed.object === "string"
+									? parsed.object
+									: null;
+						if (resolvedEvent) {
+							event.event = resolvedEvent;
+							event.raw = [`event: ${resolvedEvent}`, ...event.raw];
+						}
+					} catch {}
 				}
-			: undefined;
+				onSseEvent(event, model);
+			}
+		};
 
 		let finishOpenBlocksOnError: () => void = () => {};
 
@@ -662,10 +666,13 @@ const streamOpenAICompletionsOnce = (
 				});
 			} catch (error) {
 				const capturedErrorResponse = error instanceof OpenAIHttpError ? error.captured : undefined;
+				// A retained effort preference does not make a caller-requested disable
+				// implicit: the wire still contains an explicit off value.
+				const isExplicitDisable = options?.disableReasoning === true;
 				const reasoningEffortFallback =
 					activeReasoningEffortFallbackKey && activeRequestParams && !requestSignal.aborted
 						? resolveOpenAIReasoningEffortFallback(error, capturedErrorResponse, activeRequestParams, {
-								explicitDisable: options?.disableReasoning === true && options.reasoning === undefined,
+								explicitDisable: isExplicitDisable,
 							})
 						: undefined;
 				if (reasoningEffortFallback !== undefined && activeReasoningEffortFallbackKey) {
@@ -674,11 +681,15 @@ const streamOpenAICompletionsOnce = (
 					attemptedReasoningEffortFallbacks.add(retryMarker);
 					requestReasoningEffortFallbacks.set(activeReasoningEffortFallbackKey, reasoningEffortFallback);
 					openaiStream = await createCompletionsStream();
-					rememberOpenAIReasoningEffortFallback(
-						providerSessionState,
-						activeReasoningEffortFallbackKey,
-						reasoningEffortFallback,
-					);
+					// Off-request fallbacks are local to this request. Remembering them
+					// would silently downgrade later enabled turns in the same session.
+					if (!isExplicitDisable) {
+						rememberOpenAIReasoningEffortFallback(
+							providerSessionState,
+							activeReasoningEffortFallbackKey,
+							reasoningEffortFallback,
+						);
+					}
 				} else if (
 					isOpenRouterAnthropicModel(model) &&
 					!disableStrictTools &&
@@ -1154,7 +1165,9 @@ const streamOpenAICompletionsOnce = (
 				flushDeepseekStripBuffer(true);
 			}
 
-			if (streamFinishedAt === undefined && output.content.length > 0) {
+			// [DONE] is a clean protocol termination even when a compatible host
+			// omits finish_reason; only a bare transport EOF is incomplete.
+			if (streamFinishedAt === undefined && !sawDoneSentinel && output.content.length > 0) {
 				throw new AIError.ProviderResponseError(
 					"OpenAI completions stream closed before a finish_reason was received",
 					{ provider: model.provider, kind: "incomplete-stream" },

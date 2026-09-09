@@ -74,29 +74,33 @@ export class ToolCallLoopGuard {
 
 	recordTurn(turn: ToolCallLoopTurn): RepeatedToolCallDetection | null {
 		const toolCalls = turn.message.content.filter((part): part is ToolCall => part.type === "toolCall");
-		if (toolCalls.length !== 1 || this.#exemptTools.has(toolCalls[0]!.name)) {
+		if (toolCalls.length === 0 || toolCalls.every(toolCall => this.#exemptTools.has(toolCall.name))) {
 			this.#lastHash = undefined;
 			this.#count = 0;
 			return null;
 		}
 
-		const toolCall = toolCalls[0]!;
-		const canonicalArgs = JSON.stringify(canonicalizeToolCallValue(toolCall.arguments));
-		const hash = `${toolCall.name}:${canonicalArgs}`;
-		if (hash === this.#lastHash) {
+		const turnHash = toolCalls
+			.map(toolCall => `${toolCall.name}:${JSON.stringify(canonicalizeToolCallValue(toolCall.arguments))}`)
+			.join("|");
+		if (turnHash === this.#lastHash) {
 			this.#count++;
 		} else {
-			this.#lastHash = hash;
+			this.#lastHash = turnHash;
 			this.#count = 1;
 		}
 
 		if (this.#count !== this.#threshold) return null;
+		const reportCall = toolCalls.find(toolCall => !this.#exemptTools.has(toolCall.name)) ?? toolCalls[0]!;
 		return {
 			kind: "repeated_tool_call",
-			toolName: toolCall.name,
+			toolName: reportCall.name,
 			count: this.#count,
-			resultSummary: summarizeToolResult(turn.toolResults, toolCall.id),
-			argumentsSummary: summarizeText(canonicalArgs, ARGUMENT_SUMMARY_LIMIT),
+			resultSummary: summarizeToolResult(turn.toolResults, reportCall.id),
+			argumentsSummary: summarizeText(
+				JSON.stringify(canonicalizeToolCallValue(reportCall.arguments)),
+				ARGUMENT_SUMMARY_LIMIT,
+			),
 		};
 	}
 }

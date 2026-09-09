@@ -556,15 +556,19 @@ export function transformMessages<TApi extends Api>(
 					}
 
 					if (isAnthropicTarget) {
-						const normalizedId = normalizeAnthropicTargetToolCallId(
-							toolCall.id,
-							model,
-							assistantMsg,
-							normalizeToolCallId,
-						);
-						if (normalizedId !== toolCall.id) {
-							toolCallIdMap.set(toolCall.id, normalizedId);
-							normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
+						// Custom same-model endpoints own opaque correlation IDs; official
+						// endpoints and cross-model replays require Anthropic-valid IDs.
+						if (!isSameModel || model.compat.officialEndpoint) {
+							const normalizedId = normalizeAnthropicTargetToolCallId(
+								toolCall.id,
+								model,
+								assistantMsg,
+								normalizeToolCallId,
+							);
+							if (normalizedId !== toolCall.id) {
+								toolCallIdMap.set(toolCall.id, normalizedId);
+								normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
+							}
 						}
 					} else if (!isSameModel && normalizeToolCallId) {
 						const normalizedId = normalizeToolCallId(toolCall.id, model, assistantMsg);

@@ -3568,9 +3568,8 @@ export function processInteractionUpdate(
 					id,
 
 					name: args.toolName || args.name || "",
-					arguments: {},
+					arguments: decodeMcpArgsMap(args.args) ?? {},
 					[kStreamingBlockIndex]: output.content.length,
-					[kStreamingPartialJson]: "",
 					[kStreamingBlockKind]: "mcp",
 					[kStreamingEnvelopeId]: update.message.value.callId || undefined,
 				};
@@ -4353,14 +4352,23 @@ function resolveCursorWireModel(
 	const wireModelId = requestModelId ?? model.requestModelId ?? model.id;
 	if (wireMode === "discovered") return { modelId: wireModelId, parameters: [] };
 
-	const match = /^(.*)-(minimal|low|medium|high|xhigh|max)(-fast)?$/.exec(wireModelId);
+	// The base is non-greedy so the two-token `extra-high` tier is not
+	// misread as a `high` tier on a model whose base ends in `-extra`.
+	const match = /^(.+?)-(none|extra-high|minimal|low|medium|high|xhigh|max)(-fast)?$/.exec(wireModelId);
 	const base = match?.[1];
-	const effort = match?.[2];
-	if (base && effort && (THINKING_EFFORTS as readonly string[]).includes(effort) && parseOpenAIModel(base) !== null) {
-		return {
-			modelId: `${base}${match[3] ?? ""}`,
-			parameters: [create(RequestedModel_ModelParameterbytesSchema, { id: "reasoning", value: effort })],
-		};
+	const tier = match?.[2];
+	const lane = match?.[3] ?? "";
+	if (base && tier && parseOpenAIModel(base) !== null) {
+		if (tier === "none") {
+			return { modelId: `${base}${lane}`, parameters: [] };
+		}
+		const effort = tier === "extra-high" ? "xhigh" : tier;
+		if ((THINKING_EFFORTS as readonly string[]).includes(effort)) {
+			return {
+				modelId: `${base}${lane}`,
+				parameters: [create(RequestedModel_ModelParameterbytesSchema, { id: "reasoning", value: effort })],
+			};
+		}
 	}
 	return { modelId: wireModelId, parameters: [] };
 }

@@ -9,6 +9,12 @@ const RETRY_DELAY_FIELD_PATTERN = /"retryDelay":\s*"([0-9.]+)(ms|s)"/i;
 const TRY_AGAIN_PATTERN = /try again in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
 
 const WILL_RESET_IN_PATTERN = /(?:will\s+)?reset in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
+// "Your limit will reset at 2026-09-01 09:44:51" / "reset at 2026-09-01T09:44:51Z"
+const WILL_RESET_AT_PATTERN =
+	/(?:will\s+)?reset at\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)/i;
+const CN_RESET_AT_PATTERN = /将在\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*重置/;
+// "retry-after-ms=98497000"
+const RETRY_AFTER_MS_BODY_PATTERN = /\bretry-after-ms=([0-9]+)\b/i;
 
 export function extractRetryHint(source: Response | Headers | null | undefined, body?: string): number | undefined {
 	const headers = source instanceof Headers ? source : (source?.headers ?? undefined);
@@ -63,7 +69,35 @@ export function extractRetryHint(source: Response | Headers | null | undefined, 
 		}
 	}
 
-	for (const pattern of [WILL_RESET_IN_PATTERN, PLEASE_RETRY_PATTERN, RETRY_DELAY_FIELD_PATTERN, TRY_AGAIN_PATTERN]) {
+	for (const pattern of [WILL_RESET_AT_PATTERN, CN_RESET_AT_PATTERN]) {
+		const match = pattern.exec(body);
+		if (match?.[1]) {
+			// Provider timestamps without an explicit offset are interpreted as UTC.
+			const normalized = match[1].replace(" ", "T");
+			const hasOffset = /(?:Z|[+-][0-9]{2}:?[0-9]{2})$/i.test(normalized);
+			const parsed = Date.parse(hasOffset ? normalized : `${normalized}Z`);
+			if (!Number.isNaN(parsed) && parsed > Date.now()) {
+				return parsed - Date.now();
+			}
+		}
+	}
+	// Account-reset hints take precedence over shorter generic retry hints.
+	const accountResetMatch = WILL_RESET_IN_PATTERN.exec(body);
+	if (accountResetMatch?.[1]) {
+		const value = Number.parseFloat(accountResetMatch[1]);
+		if (Number.isFinite(value) && value > 0) {
+			const unitMs = unitToMs(accountResetMatch[2]!);
+			if (unitMs !== undefined) return value * unitMs;
+		}
+	}
+
+	const retryAfterMsMatch = RETRY_AFTER_MS_BODY_PATTERN.exec(body);
+	if (retryAfterMsMatch?.[1]) {
+		const ms = Number(retryAfterMsMatch[1]);
+		if (Number.isFinite(ms) && ms > 0) return ms;
+	}
+
+	for (const pattern of [PLEASE_RETRY_PATTERN, RETRY_DELAY_FIELD_PATTERN, TRY_AGAIN_PATTERN]) {
 		const match = pattern.exec(body);
 		if (match?.[1]) {
 			const value = Number.parseFloat(match[1]);
@@ -274,7 +308,10 @@ export function isRetryableStatus(status: number): boolean {
 }
 
 export function isUnexpectedSocketCloseMessage(message: string): boolean {
-	return /\b(?:the\s+)?socket connection (?:was )?closed unexpectedly\b/i.test(message);
+	return (
+		/\b(?:the\s+)?socket connection (?:was )?closed unexpectedly\b/i.test(message) ||
+		/^(?:error:\s*)?socket is closed\.?$/i.test(message.trim())
+	);
 }
 
 const TRANSIENT_MESSAGE_PATTERN =

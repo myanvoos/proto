@@ -477,7 +477,7 @@ function inferSupportedEfforts<TApi extends Api>(
 		case "openai":
 			return inferOpenAISupportedEfforts(parsedModel);
 		case "gemini":
-			return inferGeminiSupportedEfforts(parsedModel);
+			return inferGeminiSupportedEfforts(parsedModel, spec);
 		case "anthropic":
 			return inferAnthropicSupportedEfforts(parsedModel, spec, compat);
 		case "unknown":
@@ -499,11 +499,21 @@ function inferOpenAISupportedEfforts(model: OpenAIModel): readonly Effort[] {
 	return DEFAULT_REASONING_EFFORTS;
 }
 
-function inferGeminiSupportedEfforts(model: GeminiModel): readonly Effort[] {
+function inferGeminiSupportedEfforts<TApi extends Api>(model: GeminiModel, spec: ModelSpec<TApi>): readonly Effort[] {
 	if (!semverGte(model.version, "3.0")) {
 		return DEFAULT_REASONING_EFFORTS;
 	}
-	return model.kind === "pro" ? GEMINI_3_PRO_EFFORTS : GEMINI_3_FLASH_EFFORTS;
+	if (model.kind === "pro") {
+		return GEMINI_3_PRO_EFFORTS;
+	}
+	if (
+		semverGte(model.version, "3.7") &&
+		!semverGte(model.version, "3.8") &&
+		(spec.provider === "google" || spec.provider === "google-vertex" || spec.provider === "opencode-zen")
+	) {
+		return LOW_MEDIUM_HIGH_REASONING_EFFORTS;
+	}
+	return GEMINI_3_FLASH_EFFORTS;
 }
 
 const OPENAI_O_SERIES_RE = /^o[134](?:$|[-:.])/i;
@@ -617,6 +627,11 @@ function inferThinkingControlMode<TApi extends Api>(
 				if (parsedModel.kind === "opus" && semverGte(parsedModel.version, "4.5")) {
 					return "anthropic-budget-effort";
 				}
+			}
+			// Bedrock's GPT-5.x SKUs use OpenAI's reasoning.effort schema,
+			// not the Anthropic-style thinking budget block.
+			if (parsedModel.family === "openai") {
+				return "effort";
 			}
 			return "budget";
 

@@ -160,8 +160,13 @@ function collectMessageParts(error: unknown, captured: CapturedHttpErrorResponse
 }
 
 const REASONING_EFFORT_FIELD_PATTERN = /reasoning[_. ]effort|reasoning value|(?:valid|supported|allowed) levels?/i;
+const REASONING_EFFORT_SUPPORTED_VALUES_PATTERN = /(?:valid|supported|allowed) values?/i;
 
-function mentionsReasoningEffort(error: unknown, captured: CapturedHttpErrorResponse | undefined): boolean {
+function mentionsReasoningEffort(
+	error: unknown,
+	captured: CapturedHttpErrorResponse | undefined,
+	currentEffort: string,
+): boolean {
 	const param = capturedStringField(captured, "param");
 	const code = capturedStringField(captured, "code");
 	const type = capturedStringField(captured, "type");
@@ -170,7 +175,11 @@ function mentionsReasoningEffort(error: unknown, captured: CapturedHttpErrorResp
 		REASONING_EFFORT_FIELD_PATTERN.test(param ?? "") ||
 		REASONING_EFFORT_FIELD_PATTERN.test(code ?? "") ||
 		REASONING_EFFORT_FIELD_PATTERN.test(type ?? "") ||
-		REASONING_EFFORT_FIELD_PATTERN.test(message)
+		REASONING_EFFORT_FIELD_PATTERN.test(message) ||
+		// Bare "Supported values" lists are ambiguous for enabled tiers (for
+		// example, text verbosity uses the same words). Copilot's fieldless
+		// rejection is safe to attribute when it rejects the off value.
+		(currentEffort.toLowerCase() === "none" && REASONING_EFFORT_SUPPORTED_VALUES_PATTERN.test(message))
 	);
 }
 
@@ -181,7 +190,7 @@ function isInvalidReasoningEffortError(
 ): boolean {
 	const status = extractHttpStatusFromError(error) ?? captured?.status;
 	if (status !== 400 && status !== 422) return false;
-	if (!mentionsReasoningEffort(error, captured)) return false;
+	if (!mentionsReasoningEffort(error, captured, currentEffort)) return false;
 	const message = collectMessageParts(error, captured);
 	if (/reasoning[_ ]content/i.test(message) && !REASONING_EFFORT_FIELD_PATTERN.test(message)) return false;
 	if (/invalid[^\n]*(?:reasoning[_. ]effort|reasoning value)/i.test(message)) return true;

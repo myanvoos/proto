@@ -1,3 +1,4 @@
+import { getInstallId, USER_AGENT } from "@oh-my-pi/pi-utils";
 import { ProviderHttpError } from "../error";
 import type {
 	CredentialRankingStrategy,
@@ -95,6 +96,8 @@ async function fetchOpenCodeGoUsage(params: UsageFetchParams, ctx: UsageFetchCon
 			headers: {
 				accept: "application/json",
 				authorization: `Bearer ${credential.apiKey}`,
+				"User-Agent": USER_AGENT,
+				"x-opencode-session": getInstallId(),
 			},
 			signal: params.signal,
 		});

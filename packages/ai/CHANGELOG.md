@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex WebSocket shutdown no longer crashes a turn when the socket is already closed, and abort/timeout reasons are preserved instead of surfacing as a generic failure.
+- Throttled Codex continuations now retry with the correct response anchor instead of dropping it.
+- Anthropic streams that end empty at `message_stop` are retried as transient truncation instead of failing the turn.
+- Overlapping exhausted quota windows now wait for the latest reset instead of retrying at the earliest one and failing again immediately.
+- Fireworks decode-time NaN errors are retried, and provider message-count caps are reported as context overflow rather than transport failures.
+- An incomplete provider stream now fails transiently instead of being reported as a complete reply with silently truncated content.
+- Sessions no longer wedge on replay: malformed `function_call` arguments are dropped, compaction statuses are stripped, and opaque Responses/Anthropic tool-call ids keep their result pairing.
+- Bedrock thinking-signature rejections are recognized, so the existing signature-healing retry runs instead of failing the request.
+- Reasoning effort is no longer silently downgraded for the rest of a session after one reasoning-disabled request.
+- GitHub Copilot `Supported values` rejections now retry, and Cursor `-none` / `-extra-high` model ids resolve to the correct model and effort.
+- Cursor streamed tool-call arguments survive a truncated stream flush, and Completions streams terminated by `[DONE]` are no longer reported as incomplete.
+- A model repeating the same multi-call tool batch is now caught by the tool-call loop guard.
+- OpenCode Go usage polls send the headers the endpoint requires, so quota reporting works again.
+
 ## [18.0.1] - 2026-09-07
 
 ### Added

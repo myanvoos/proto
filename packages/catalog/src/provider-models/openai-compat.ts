@@ -2625,6 +2625,10 @@ export const ALIBABA_TOKEN_PLAN_DISCOVERED_MODEL_LIMITS: Readonly<Record<string,
 		contextWindow: 1_000_000,
 		maxTokens: 131_072,
 	},
+	"qwen3.8-flash": {
+		contextWindow: 1_000_000,
+		maxTokens: 131_072,
+	},
 	"deepseek-v4-flash": {
 		contextWindow: 1_000_000,
 		maxTokens: 384_000,
@@ -2728,6 +2732,16 @@ export function alibabaTokenPlanModelManagerOptions(
 									maxTokens: limits.maxTokens,
 								}
 							: defaults;
+
+						if (normalizedId === "qwen3.8-flash") {
+							return {
+								...enriched,
+								reasoning: true,
+								input: ["text", "image"],
+								thinking: ALIBABA_TOKEN_PLAN_REASONING,
+								compat: ALIBABA_TOKEN_PLAN_COMPAT,
+							};
+						}
 
 						if (normalizedId.startsWith("deepseek-v4")) {
 							return {
