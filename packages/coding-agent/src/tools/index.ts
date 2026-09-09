@@ -454,7 +454,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 						.map(([name, factory]) => [name, factory] as const),
 					...(externalThinkingActive ? ([["think", HIDDEN_TOOLS.think]] as const) : []),
 					...(includeYield ? ([["yield", HIDDEN_TOOLS.yield]] as const) : []),
-					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
+					...(isToolAllowed("goal") ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
 				];
 
 	const activeToolNames = new Set([...baseEntries.map(([name]) => name), "read"]);

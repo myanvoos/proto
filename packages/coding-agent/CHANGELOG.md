@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The goal tool ships in every unrestricted session's toolset (gated by `goal.enabled`), so the agent can create, check, resume, complete, or drop a goal itself instead of waiting for `/goal` to activate goal mode first.
+
 ### Fixed
 
 - MCP server environment placeholders no longer expand to inherited JavaScript object members, and a literal `__proto__` key in MCP or plugin config stays an ordinary key instead of mutating object prototypes.
