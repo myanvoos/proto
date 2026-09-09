@@ -74,3 +74,205 @@ describe("Markdown reference links", () => {
 		expect(output).not.toContain("\x1b]8;;");
 	});
 });
+
+function renderMarkdown(text: string, transientRenderCache = false): readonly string[] {
+	const markdown = new Markdown(text, 1, 0, theme);
+	markdown.transientRenderCache = transientRenderCache;
+	return markdown.render(80);
+}
+
+describe("Markdown streaming normalization and lexing", () => {
+	test("keeps long boundary-heavy documents identical in streamed and ordinary renders", () => {
+		const block =
+			"A paragraph with **bold**, _italic_, and `code` text keeps the lexer busy.\n\n" +
+			"- first list item\n- second list item\n\n";
+		let text = "";
+		while (text.length < 16 * 1024 - 900) text += block;
+		text += [
+			"## Boundary heading",
+			"",
+			"[reference]: https://example.com/reference",
+			"",
+			"<blockquote>html block near the lexing boundary</blockquote>",
+			"",
+			"```ts",
+			"const value = 42;",
+			"```",
+			"",
+			"| name | value |",
+			"| --- | --- |",
+			"| boundary | stable |",
+			"",
+			"tail text makes this document cross the window threshold.",
+		].join("\n");
+		if (text.length <= 16 * 1024) text += "\n".repeat(16 * 1024 - text.length + 1);
+
+		expect(renderMarkdown(text)).toEqual(renderMarkdown(text, true));
+	});
+
+	test("normalizes only appended text while preserving balanced fences and tabs", () => {
+		const initial = "Intro paragraph.\n\n```ts\nconst value = 1;\n```\n\n";
+		const appended = `${initial}next\tline after the balanced fence.`;
+		const markdown = new Markdown(initial, 1, 0, theme);
+		markdown.render(80);
+		markdown.setText(appended);
+
+		expect(markdown.render(80)).toEqual(renderMarkdown(appended));
+	});
+
+	test("rechecks fence repair when an append changes an orphan into a table or closes it", () => {
+		const initial = "Intro paragraph.\n\n```\n";
+		const markdown = new Markdown(initial, 1, 0, theme);
+		markdown.render(80);
+
+		const repaired = `${initial}# Heading\n\n| key | value |\n| --- | --- |\n| one | two |\n`;
+		markdown.setText(repaired);
+		expect(markdown.render(80)).toEqual(renderMarkdown(repaired));
+
+		const closed = `${repaired}\`\`\`\n`;
+		markdown.setText(closed);
+		expect(markdown.render(80)).toEqual(renderMarkdown(closed));
+
+		const splitFence = new Markdown("Intro paragraph.\n\n``", 1, 0, theme);
+		splitFence.render(80);
+		const completedSplit = "Intro paragraph.\n\n```\n# Heading\n\n| key | value |\n| --- | --- |\n| one | two |\n";
+		splitFence.setText(completedSplit);
+		expect(splitFence.render(80)).toEqual(renderMarkdown(completedSplit));
+
+		const splitReference = new Markdown("[reference", 1, 0, theme);
+		splitReference.render(80);
+		const completedReference = "[reference]: https://example.com\n\n[x][reference]";
+		splitReference.setText(completedReference);
+		expect(splitReference.render(80)).toEqual(renderMarkdown(completedReference));
+	});
+
+	test("fully resets append normalization on replacement", () => {
+		const markdown = new Markdown("first\tline", 1, 0, theme);
+		markdown.render(80);
+		markdown.setText("first\tline plus more");
+		markdown.render(80);
+
+		const replacement = "replacement\n\n- one\n- two\n";
+		markdown.setText(replacement);
+		expect(markdown.render(80)).toEqual(renderMarkdown(replacement));
+	});
+});
+
+describe("Markdown incremental wrapping", () => {
+	function freshRender(
+		text: string,
+		width: number,
+		transientRenderCache: boolean,
+		mdTheme = theme,
+	): readonly string[] {
+		const markdown = new Markdown(text, 1, 0, mdTheme);
+		markdown.transientRenderCache = transientRenderCache;
+		return markdown.render(width);
+	}
+
+	test("keeps appended paragraph and fenced-code output identical", () => {
+		const cases = [
+			{
+				initial: "A paragraph with enough words to wrap across terminal rows",
+				suffixes: [" and a changed tail", " plus another continuation", "\n\nA new paragraph"],
+			},
+			{
+				initial: "Intro\n\n```ts\nconst value = 1;",
+				suffixes: ["\nconst next = value + 1;", "\n```", "\n\nTail after the fence"],
+			},
+		] as const;
+
+		for (const { initial, suffixes } of cases) {
+			for (const transientRenderCache of [false, true]) {
+				const markdown = new Markdown(initial, 1, 0, theme);
+				markdown.transientRenderCache = transientRenderCache;
+				markdown.render(32);
+				let text = initial;
+				for (const suffix of suffixes) {
+					text += suffix;
+					markdown.setText(text);
+					expect(markdown.render(32)).toEqual(freshRender(text, 32, transientRenderCache));
+				}
+			}
+		}
+	});
+
+	test("keeps appended heading and list-item boundaries identical", () => {
+		const initial = "Existing paragraph.\n\n";
+		const suffixes = ["# New heading\n\n", "- first item", "\n- second item", "\n\nTail"];
+		const markdown = new Markdown(initial, 1, 0, theme);
+		markdown.render(48);
+		let text = initial;
+		for (const suffix of suffixes) {
+			text += suffix;
+			markdown.setText(text);
+			expect(markdown.render(48)).toEqual(freshRender(text, 48, false));
+		}
+	});
+
+	test("re-lexes a repaired fence before recognizing an appended table", () => {
+		const suffixes = [
+			"```ts\n",
+			"```\n",
+			"_it_ ",
+			"\n\n",
+			"```\n",
+			"\n\n",
+			"|a|b|\n|---|---|\n|1|2|\n",
+			"# head\n\n",
+		] as const;
+		const markdown = new Markdown("", 1, 0, theme);
+		markdown.transientRenderCache = false;
+		let text = "";
+		for (const suffix of suffixes) {
+			text += suffix;
+			markdown.setText(text);
+			expect(markdown.render(59)).toEqual(freshRender(text, 59, false));
+		}
+	});
+
+	test("keeps repeated plain paragraph appends identical at wrap boundaries", () => {
+		const suffix = " streaming token words follow ";
+		for (const transientRenderCache of [false, true]) {
+			for (const width of [12, 32, 64]) {
+				const markdown = new Markdown(suffix, 1, 0, theme);
+				markdown.transientRenderCache = transientRenderCache;
+				markdown.render(width);
+				let text = suffix;
+				for (let i = 0; i < 20; i++) {
+					text += suffix;
+					markdown.setText(text);
+					expect(markdown.render(width)).toEqual(freshRender(text, width, transientRenderCache));
+				}
+			}
+		}
+	});
+
+	test("invalidates incremental fragments for replacements, width changes, and theme changes", () => {
+		const initial = "Intro\n\n```ts\nconst value = 1;\n```\n\nA long paragraph that wraps at narrow widths.";
+		const markdown = new Markdown(initial, 1, 0, theme);
+		markdown.render(64);
+		let text = `${initial} first append`;
+		markdown.setText(text);
+		markdown.render(64);
+
+		text += " second append";
+		markdown.setText(text);
+		expect(markdown.render(28)).toEqual(freshRender(text, 28, false));
+
+		const replacement = "Replacement\n\n- one\n- two";
+		markdown.setText(replacement);
+		expect(markdown.render(28)).toEqual(freshRender(replacement, 28, false));
+
+		const changingTheme: MarkdownTheme = { ...theme };
+		const themed = new Markdown(initial, 1, 0, changingTheme);
+		themed.render(64);
+		let themedText = `${initial} first append`;
+		themed.setText(themedText);
+		themed.render(64);
+		changingTheme.codeBlock = text => `changed:${text}`;
+		themedText += " second append";
+		themed.setText(themedText);
+		expect(themed.render(64)).toEqual(freshRender(themedText, 64, false, changingTheme));
+	});
+});

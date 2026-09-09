@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
-import { $flag, getDebugLogPath } from "@oh-my-pi/pi-utils";
+import { getDebugLogPath } from "@oh-my-pi/pi-utils/dirs";
+import { $flag } from "@oh-my-pi/pi-utils/env";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
@@ -658,6 +659,8 @@ interface PreparedLine {
 	raw: string;
 	width: number;
 	line: string;
+	asciiWidth: number | undefined;
+	terminalLine: string | undefined;
 }
 
 const SGR_SEQUENCE = /\x1b\[[0-9;:]*m/g;
@@ -670,6 +673,66 @@ const CC_SEMI = 0x3b;
 const CC_COLON = 0x3a;
 
 const MERGE_TOKEN_CAP = 16;
+
+function frameOutputEscapeEnd(text: string, start: number): number {
+	if (text.charCodeAt(start) !== CC_ESC) return start + 1;
+	const next = text.charCodeAt(start + 1);
+	if (!Number.isFinite(next)) return start + 1;
+
+	// CSI sequences end at their final byte (0x40..0x7e).
+	if (next === CC_BRACKET) {
+		for (let i = start + 2; i < text.length; i++) {
+			const code = text.charCodeAt(i);
+			if (code >= 0x40 && code <= 0x7e) return i + 1;
+		}
+		return text.length;
+	}
+
+	// OSC, DCS, SOS, PM, and APC sequences terminate with BEL or ST.
+	if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
+		for (let i = start + 2; i < text.length; i++) {
+			const code = text.charCodeAt(i);
+			if (code === 0x07 || code === 0x9c) return i + 1;
+			if (code === CC_ESC && text.charCodeAt(i + 1) === 0x5c) return i + 2;
+		}
+		return text.length;
+	}
+
+	// Other 7-bit escape sequences have optional intermediates followed by one
+	// final byte. Treat an unknown/truncated sequence as ESC plus its next byte.
+	let i = start + 1;
+	while (i < text.length) {
+		const code = text.charCodeAt(i);
+		if (code >= 0x20 && code <= 0x2f) {
+			i++;
+			continue;
+		}
+		return code >= 0x30 && code <= 0x7e ? i + 1 : i;
+	}
+	return text.length;
+}
+
+function frameOutputBoundary(text: string, start: number, maxLength: number): number {
+	const limit = Math.min(text.length, start + maxLength);
+	let cursor = start;
+	let safe = start;
+	while (cursor < limit) {
+		const code = text.charCodeAt(cursor);
+		if (code === CC_ESC) {
+			const end = frameOutputEscapeEnd(text, cursor);
+			if (end > limit) break;
+			cursor = end;
+		} else if (code >= 0xd800 && code <= 0xdbff && cursor + 1 < limit) {
+			const low = text.charCodeAt(cursor + 1);
+			if (low >= 0xdc00 && low <= 0xdfff) cursor += 2;
+			else cursor++;
+		} else {
+			cursor++;
+		}
+		safe = cursor;
+	}
+	return safe;
+}
 
 function isSgrParamByte(c: number): boolean {
 	return (c >= 0x30 && c <= 0x39) || c === CC_SEMI || c === CC_COLON;
@@ -836,6 +899,7 @@ export class TUI extends Container {
 	static readonly #MAX_ADAPTIVE_RENDER_MS = 200;
 
 	static readonly #MAX_PENDING_OUTPUT_BYTES = 256 * 1024;
+	static readonly #MAX_FRAME_WRITE_CHUNK_CODE_UNITS = 1024;
 
 	static readonly #OUTPUT_BACKLOG_RETRY_MS = 10;
 	#inputRenderGraceUntilMs = 0;
@@ -949,8 +1013,11 @@ export class TUI extends Container {
 	#pendingAltExit = "";
 
 	#composedFrame: string[] = [];
+	#composedFrameChangedFrom = Number.POSITIVE_INFINITY;
+	#composedFrameChangedTo = 0;
 
 	#frameSegments: FrameSegment[] = [];
+	#frameSegmentsScratch: FrameSegment[] = [];
 	#composeWidth = -1;
 	#rootWidthEpochBoundaries = new WeakMap<
 		object,
@@ -980,6 +1047,17 @@ export class TUI extends Container {
 	#preparedFrame: string[] = [];
 	#preparedMeta: PreparedLine[] = [];
 	#preparedValidRows = 0;
+	#preparedRawFrame: string[] = [];
+	#preparedRowSafety: number[] = [];
+	#preparedCacheWidth = -1;
+	#preparedCacheHeight = -1;
+	#preparedCacheOverlay = false;
+	#preparedCacheAlt = false;
+	#preparedCacheImageProtocol: ImageProtocol | null | undefined;
+	#preparedCacheValid = false;
+	#windowScratchA: string[] = [];
+	#windowScratchB: string[] = [];
+	#frameOutput: string[] = [];
 
 	overlayStack: {
 		component: Component;
@@ -1136,12 +1214,16 @@ export class TUI extends Container {
 
 	override render(width: number): readonly string[] {
 		width = Math.max(1, width);
+		this.#composedFrameChangedFrom = Number.POSITIVE_INFINITY;
+		this.#composedFrameChangedTo = 0;
 		this.#nativeScrollbackLiveRegionStart = undefined;
 		this.#nativeScrollbackLiveRegionPinned = false;
 		this.#nativeScrollbackPinnedBoundary = undefined;
 		const children = this.children;
 		const previousSegments = this.#frameSegments;
-		const segments: FrameSegment[] = new Array(children.length);
+		const segments = this.#frameSegmentsScratch;
+		this.#frameSegmentsScratch = previousSegments;
+		segments.length = children.length;
 
 		const committedCoordinatesOpaque =
 			this.#composeWidth > 0 && this.#composeWidth !== width && this.#resizeRepaintsInPlace();
@@ -1234,16 +1316,24 @@ export class TUI extends Container {
 					chainStable = false;
 				}
 			}
-			segments[index] = {
-				component: child,
-				lines: childLines,
-				start: offset,
-				rowCount: childLines.length,
-				widthEpochRevision,
-				liveLocalStart,
-				liveRegionPinned,
-				liveRegionPinnedStart,
-			};
+			const segment =
+				segments[index] ??
+				({
+					component: child,
+					lines: childLines,
+					start: offset,
+					rowCount: childLines.length,
+					liveRegionPinned: false,
+				} satisfies FrameSegment);
+			segment.component = child;
+			segment.lines = childLines;
+			segment.start = offset;
+			segment.rowCount = childLines.length;
+			segment.widthEpochRevision = widthEpochRevision;
+			segment.liveLocalStart = liveLocalStart;
+			segment.liveRegionPinned = liveRegionPinned;
+			segment.liveRegionPinnedStart = liveRegionPinnedStart;
+			segments[index] = segment;
 			offset += childLines.length;
 		}
 		this.#frameSegments = segments;
@@ -1252,17 +1342,36 @@ export class TUI extends Container {
 
 		if (stableRows > frame.length) stableRows = frame.length;
 		if (stableRows !== offset || frame.length !== offset) {
-			frame.length = stableRows;
+			const retainedFrameLength = frame.length;
+			if (frame.length < offset) frame.length = offset;
 			this.#pruneFrameCursorMarkers(stableRows);
-			for (const segment of segments) {
-				const lines = segment.lines;
+			for (let index = 0; index < segments.length; index++) {
+				const segment = segments[index]!;
 				const from = segment.start >= stableRows ? 0 : stableRows - segment.start;
-				for (let i = from; i < lines.length; i++) this.#ingestFrameRow(lines[i]!);
+				if (from < segment.lines.length) {
+					const previous = previousSegments[index];
+					const previousLines =
+						previous?.component === segment.component && previous.start === segment.start
+							? previous.lines
+							: undefined;
+					this.#writeFrameRows(segment.start, segment.lines, from, previousLines, retainedFrameLength);
+				}
 			}
+			frame.length = offset;
 		}
 		this.#renderStablePrefixRows = stableRows;
-		this.#preparedValidRows = Math.min(this.#preparedValidRows, stableRows);
+		// Row writes now record the exact dirty range; unchanged suffix rows may keep
+		// their prepared entries even when a child returned a fresh array.
+		this.#preparedValidRows = Math.min(this.#preparedValidRows, frame.length);
 		return frame;
+	}
+
+	getComposedFrameChangedFrom(): number {
+		return this.#composedFrameChangedFrom;
+	}
+
+	getComposedFrameChangedTo(): number {
+		return this.#composedFrameChangedTo;
 	}
 
 	#pruneFrameCursorMarkers(fromRow: number): void {
@@ -1329,17 +1438,31 @@ export class TUI extends Container {
 		return stripped;
 	}
 
-	#ingestFrameRow(line: string): void {
-		const markerIndex = line.indexOf(CURSOR_MARKER);
-		if (markerIndex === -1) {
-			this.#composedFrame.push(line);
-			return;
+	#writeFrameRows(
+		startRow: number,
+		lines: readonly string[],
+		from: number,
+		previousLines?: readonly string[],
+		retainedFrameLength = 0,
+	): void {
+		const frame = this.#composedFrame;
+		const markers = this.#frameCursorMarkers;
+		for (let row = from; row < lines.length; row++) {
+			const line = lines[row]!;
+			const frameRow = startRow + row;
+			const previousLine = previousLines?.[row];
+			if (frameRow < retainedFrameLength && previousLine === line && frame[frameRow] === line) continue;
+			if (frameRow < this.#composedFrameChangedFrom) this.#composedFrameChangedFrom = frameRow;
+			if (frameRow + 1 > this.#composedFrameChangedTo) this.#composedFrameChangedTo = frameRow + 1;
+			const markerIndex = line.indexOf(CURSOR_MARKER);
+			if (markerIndex === -1) {
+				frame[frameRow] = line;
+				continue;
+			}
+			const absoluteRow = startRow + row;
+			markers.push({ row: absoluteRow, col: visibleWidth(line.slice(0, markerIndex)) });
+			frame[frameRow] = this.#stripCursorMarkers(line, markerIndex);
 		}
-		this.#frameCursorMarkers.push({
-			row: this.#composedFrame.length,
-			col: visibleWidth(line.slice(0, markerIndex)),
-		});
-		this.#composedFrame.push(this.#stripCursorMarkers(line, markerIndex));
 	}
 
 	#syncTerminalCursorMode(component: Component | null): void {
@@ -1454,6 +1577,7 @@ export class TUI extends Container {
 		if (this.#isOverlayVisible(entry)) {
 			this.setFocus(component);
 		}
+		this.#invalidatePreparedRowCache();
 		this.terminal.hideCursor();
 		this.#recordHardwareCursorHidden();
 		this.requestRender();
@@ -1472,6 +1596,7 @@ export class TUI extends Container {
 						this.terminal.hideCursor();
 						this.#recordHardwareCursorHidden();
 					}
+					this.#invalidatePreparedRowCache();
 					this.requestRender();
 				}
 			},
@@ -1489,6 +1614,7 @@ export class TUI extends Container {
 						this.setFocus(component);
 					}
 				}
+				this.#invalidatePreparedRowCache();
 				this.requestRender();
 			},
 			isHidden: () => entry.hidden,
@@ -1505,6 +1631,7 @@ export class TUI extends Container {
 			this.terminal.hideCursor();
 			this.#recordHardwareCursorHidden();
 		}
+		this.#invalidatePreparedRowCache();
 		this.requestRender();
 	}
 
@@ -1921,6 +2048,7 @@ export class TUI extends Container {
 			return;
 		}
 
+		this.#invalidatePreparedRowCache();
 		const nextLines = root.render(width);
 		if (nextLines.length !== segment.rowCount) {
 			this.requestComponentRender(component);
@@ -1967,13 +2095,14 @@ export class TUI extends Container {
 		const currentScreenRow = Math.max(0, Math.min(height - 1, this.#hardwareCursorRow - windowTop));
 		const targetScreenRow = screenStart + firstChanged;
 		const rowDelta = targetScreenRow - currentScreenRow;
-		let buffer = this.#paintBeginSequence;
-		if (rowDelta > 0) buffer += `\x1b[${rowDelta}B`;
-		else if (rowDelta < 0) buffer += `\x1b[${-rowDelta}A`;
-		buffer += "\r";
+		const output = this.#beginFrameOutput(this.#paintBeginSequence);
+		if (rowDelta > 0) output.push(`\x1b[${rowDelta}B`);
+		else if (rowDelta < 0) output.push(`\x1b[${-rowDelta}A`);
+		output.push("\r");
 		for (let i = firstChanged; i <= lastChanged; i++) {
-			if (i > firstChanged) buffer += "\r\n";
-			buffer += this.#lineRewriteSequence(
+			if (i > firstChanged) output.push("\r\n");
+			this.#appendLineRewrite(
+				output,
 				this.#preparedFrame[segment.start + i] ?? "",
 				width,
 				screenStart + i,
@@ -1987,9 +2116,8 @@ export class TUI extends Container {
 			this.#composedFrame.length,
 			segment.start + lastChanged,
 		);
-		buffer += cursorControl.seq;
-		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		output.push(cursorControl.seq, this.#paintEndSequence);
+		this.#writeFrameOutput();
 		this.#windowTopRow = windowTop;
 		this.#commit(this.#composedFrame, previousWindow, width, height, cursorControl);
 	}
@@ -2092,6 +2220,10 @@ export class TUI extends Container {
 		}, delayMs);
 		return true;
 	}
+	#invalidatePreparedRowCache(): void {
+		this.#preparedCacheValid = false;
+	}
+
 	#prepareForcedRender(clearScrollback: boolean): void {
 		this.#clearScrollbackOnNextRender ||= clearScrollback;
 		this.#forceViewportRepaintOnNextRender = true;
@@ -2334,8 +2466,14 @@ export class TUI extends Container {
 		}
 	}
 
+	#acquireWindow(height: number): string[] {
+		const window = this.#previousWindow === this.#windowScratchA ? this.#windowScratchB : this.#windowScratchA;
+		window.length = height;
+		return window;
+	}
+
 	#compositeOverlaysIntoWindow(window: string[], termWidth: number, termHeight: number): string[] {
-		const result = [...window];
+		const result = window;
 		for (const entry of this.overlayStack) {
 			if (!this.#isOverlayVisible(entry)) continue;
 			const { component, options } = entry;
@@ -2450,6 +2588,92 @@ export class TUI extends Container {
 		return coalesced + (line.includes("\x1b]8;") ? LINE_TERMINATOR : SEGMENT_RESET);
 	}
 
+	#terminalLineForFrame(
+		line: string,
+		width: number,
+		screenRow: number,
+		frameRow: number,
+		committedTo: number,
+	): string {
+		const prepared = frameRow >= 0 ? this.#preparedMeta[frameRow] : undefined;
+		if (prepared?.width === width && prepared.line === line) {
+			if (prepared.terminalLine !== undefined) return prepared.terminalLine;
+			const terminalLine = this.#terminalLine(line, screenRow, frameRow, committedTo);
+			if (prepared.asciiWidth !== undefined) prepared.terminalLine = terminalLine;
+			return terminalLine;
+		}
+		return this.#terminalLine(line, screenRow, frameRow, committedTo);
+	}
+
+	#beginFrameOutput(first: string, second?: string, third?: string, fourth?: string): string[] {
+		const output = this.#frameOutput;
+		output.length = 0;
+		output.push(first);
+		if (second !== undefined) output.push(second);
+		if (third !== undefined) output.push(third);
+		if (fourth !== undefined) output.push(fourth);
+		return output;
+	}
+
+	#writeFrameOutput(): void {
+		const output = this.#frameOutput;
+		const maxChunk = TUI.#MAX_FRAME_WRITE_CHUNK_CODE_UNITS;
+		try {
+			let chunk = "";
+			const flush = (): void => {
+				if (chunk.length === 0) return;
+				this.terminal.write(chunk);
+				chunk = "";
+			};
+
+			for (const fragment of output) {
+				if (fragment.length === 0) continue;
+				if (fragment.length <= maxChunk) {
+					if (chunk.length > 0 && chunk.length + fragment.length > maxChunk) flush();
+					chunk += fragment;
+					continue;
+				}
+
+				let offset = 0;
+				while (offset < fragment.length) {
+					if (chunk.length === maxChunk) flush();
+					const capacity = maxChunk - chunk.length;
+					const remaining = fragment.length - offset;
+					if (remaining <= capacity) {
+						chunk += fragment.slice(offset);
+						offset = fragment.length;
+						continue;
+					}
+
+					let boundary = frameOutputBoundary(fragment, offset, capacity);
+					if (boundary === offset) {
+						if (chunk.length > 0) {
+							flush();
+							continue;
+						}
+						const escapeEnd =
+							fragment.charCodeAt(offset) === CC_ESC ? frameOutputEscapeEnd(fragment, offset) : offset + 1;
+						if (escapeEnd > offset + capacity) {
+							// A control sequence longer than the chunk cap must stay intact;
+							// plain text and shorter escape sequences remain bounded below.
+							this.terminal.write(fragment.slice(offset, escapeEnd));
+							offset = escapeEnd;
+							continue;
+						}
+						boundary = Math.min(fragment.length, offset + capacity);
+						if (boundary === offset) boundary = offset + 1;
+					}
+					chunk += fragment.slice(offset, boundary);
+					offset = boundary;
+					if (chunk.length === maxChunk) flush();
+				}
+			}
+			flush();
+		} finally {
+			output.length = 0;
+		}
+	}
+
 	#doRender(): void {
 		if (this.#stopped) return;
 		const width = this.terminal.columns;
@@ -2463,6 +2687,7 @@ export class TUI extends Container {
 		const wantAlt = topOverlay?.options?.fullscreen === true;
 		const wantMouseTracking = wantAlt && topOverlay.options?.mouseTracking !== false;
 		if (wantAlt && !this.#altActive) {
+			this.#invalidatePreparedRowCache();
 			const mouseEnter = wantMouseTracking ? MOUSE_TRACKING_ON : "";
 			this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${mouseEnter}`);
 			setAltScreenActive(true);
@@ -2476,6 +2701,7 @@ export class TUI extends Container {
 			this.#altEnterHeight = height;
 			this.#altWidthEpochBoundary = this.captureNativeScrollbackWidthEpoch();
 		} else if (!wantAlt && this.#altActive) {
+			this.#invalidatePreparedRowCache();
 			const mouseExit = this.#altMouseTrackingActive ? MOUSE_TRACKING_OFF : "";
 			const enhancementExit = this.#keyboardEnhancementExit();
 			const exitSequence = `${mouseExit}${enhancementExit}\x1b[?1049l`;
@@ -2817,16 +3043,32 @@ export class TUI extends Container {
 				break;
 			}
 		}
-		const frame = this.#prepareFrame(rawFrame, width);
-		let window: string[] = new Array(height);
+		const preparedReuseBlocked =
+			resizeEventOccurred ||
+			geometryChanged ||
+			widthEpochOccurred ||
+			widthEpochReset ||
+			this.#clearScrollbackOnNextRender ||
+			this.#widthEpochBaselineRows !== undefined ||
+			this.#widthEpochCommittedPrefix !== undefined ||
+			this.#widthEpochOverlayReplayPending ||
+			this.#widthEpochOverlayBoundary !== undefined ||
+			this.#resizeScrollbackReplayPending ||
+			liveRegionStart !== undefined ||
+			liveRegionPinned ||
+			commitCeiling !== frameLength ||
+			hasVisibleOverlay;
+		const frame = this.#prepareFrame(rawFrame, width, height, preparedReuseBlocked, hasVisibleOverlay);
+		const window = this.#acquireWindow(height);
 		for (let r = 0; r < height; r++) window[r] = frame[windowTop + r] ?? "";
 		if (hasVisibleOverlay) {
-			window = this.#compositeOverlaysIntoWindow(window, width, height);
+			this.#compositeOverlaysIntoWindow(window, width, height);
 			const overlayMarkers = this.#extractCursorMarkers(window);
 			if (overlayMarkers.length > 0) {
 				cursorPos = { row: windowTop + overlayMarkers[0]!.row, col: overlayMarkers[0]!.col };
 			}
-			window = this.#prepareLinesArray(window, width);
+			const preparedWindow = this.#prepareLinesArray(window, width);
+			for (let i = 0; i < preparedWindow.length; i++) window[i] = preparedWindow[i]!;
 		}
 		const cursorTrackingLineCount = hasVisibleOverlay ? Math.max(frame.length, windowTop + height) : frame.length;
 
@@ -3048,26 +3290,71 @@ export class TUI extends Container {
 		}
 	}
 
-	#prepareFrame(frame: readonly string[], width: number): string[] {
+	#prepareFrame(
+		frame: readonly string[],
+		width: number,
+		height: number,
+		reuseBlocked: boolean,
+		overlayVisible: boolean,
+	): string[] {
 		const prepared = this.#preparedFrame;
 		const meta = this.#preparedMeta;
-		if (prepared.length > frame.length) {
-			prepared.length = frame.length;
-			meta.length = frame.length;
-		}
-		for (let i = Math.min(this.#preparedValidRows, prepared.length); i < frame.length; i++) {
-			const raw = frame[i]!;
-			const cached = meta[i];
-			if (cached !== undefined && cached.raw === raw && cached.width === width) {
-				prepared[i] = cached.line;
-				continue;
+		const previousRaw = this.#preparedRawFrame;
+		// This cache is indexed by logical frame rows, not screen rows. A viewport slide
+		// changes windowTop but never changes which logical row lives at frame[i].
+		// Keeping that distinction avoids reusing a prepared row for the wrong screen row.
+		const canReuse =
+			!reuseBlocked &&
+			this.#preparedCacheValid &&
+			this.#preparedCacheWidth === width &&
+			this.#preparedCacheHeight === height &&
+			this.#preparedCacheOverlay === overlayVisible &&
+			this.#preparedCacheAlt === this.#altActive &&
+			this.#preparedCacheImageProtocol === TERMINAL.imageProtocol;
+
+		if (prepared.length > frame.length) prepared.length = frame.length;
+		if (meta.length > frame.length) meta.length = frame.length;
+		if (previousRaw.length > frame.length) previousRaw.length = frame.length;
+		if (this.#preparedRowSafety.length > frame.length) this.#preparedRowSafety.length = frame.length;
+		const preparedRows = canReuse ? Math.min(this.#preparedValidRows, frame.length) : 0;
+		let firstRow = preparedRows;
+		let endRow = frame.length;
+		if (canReuse) {
+			const changedFrom = this.getComposedFrameChangedFrom();
+			const changedTo = Math.min(frame.length, this.getComposedFrameChangedTo());
+			if (changedFrom < changedTo) {
+				firstRow = Math.min(preparedRows, changedFrom);
+				endRow = Math.max(preparedRows, changedTo);
 			}
-			const entry = this.#prepareLine(raw, width);
+		}
+		for (let i = firstRow; i < endRow; i++) {
+			const raw = frame[i]!;
+			const sameRaw = canReuse && previousRaw[i] === raw;
+			const reusable =
+				sameRaw && raw.length > 0 && this.#preparedRowSafety[i] === 1
+					? true
+					: this.#isPreparedRowReusable(frame, i, raw);
+			const entry = sameRaw && reusable ? meta[i]! : this.#prepareLine(raw, width, meta[i]);
 			meta[i] = entry;
 			prepared[i] = entry.line;
+			previousRaw[i] = raw;
+			this.#preparedRowSafety[i] = reusable && raw.length > 0 ? 1 : 0;
 		}
 		this.#preparedValidRows = frame.length;
+		this.#preparedCacheWidth = width;
+		this.#preparedCacheHeight = height;
+		this.#preparedCacheOverlay = overlayVisible;
+		this.#preparedCacheAlt = this.#altActive;
+		this.#preparedCacheImageProtocol = TERMINAL.imageProtocol;
+		this.#preparedCacheValid = true;
 		return prepared;
+	}
+
+	#isPreparedRowReusable(frame: readonly string[], row: number, raw: string): boolean {
+		if (raw.length === 0) return this.#osc66SpacerGlyphWidth(frame, row) < 0;
+		if (raw.charCodeAt(0) !== CC_ESC) return true;
+		if (raw.includes("\x1b]66;")) return false;
+		return TERMINAL.imageProtocol === null || !TERMINAL.isImageLine(raw);
 	}
 
 	#prepareLinesArray(lines: readonly string[], width: number): string[] {
@@ -3078,18 +3365,30 @@ export class TUI extends Container {
 		return prepared;
 	}
 
-	#prepareLine(raw: string, width: number): PreparedLine {
+	#prepareLine(raw: string, width: number, reusable?: PreparedLine): PreparedLine {
+		const entry =
+			reusable ??
+			({ raw: "", width: 0, line: "", asciiWidth: undefined, terminalLine: undefined } satisfies PreparedLine);
+		entry.raw = raw;
+		entry.width = width;
+		entry.terminalLine = undefined;
 		if (TERMINAL.isImageLine(raw)) {
-			return { raw, width, line: raw };
+			entry.line = raw;
+			entry.asciiWidth = undefined;
+			return entry;
 		}
 		const source = this.#lineFitSource(raw, width);
 		const normalized = normalizeTerminalOutput(source);
-		const asciiWidth = this.#ansiAsciiLineWidth(normalized, width);
-		if ((asciiWidth ?? visibleWidth(normalized)) <= width) {
-			return { raw, width, line: normalized };
+		const normalizedWidth = this.#ansiAsciiLineWidth(normalized, width);
+		let line = normalized;
+		let asciiWidth = normalizedWidth;
+		if ((normalizedWidth ?? visibleWidth(normalized)) > width) {
+			line = truncateToWidth(normalized, width, Ellipsis.Omit);
+			asciiWidth = this.#ansiAsciiLineWidth(line, width);
 		}
-		const line = truncateToWidth(normalized, width, Ellipsis.Omit);
-		return { raw, width, line };
+		entry.line = line;
+		entry.asciiWidth = asciiWidth;
+		return entry;
 	}
 
 	#lineFitSource(raw: string, width: number): string {
@@ -3253,28 +3552,38 @@ export class TUI extends Container {
 		return visibleWidth(above);
 	}
 
-	#lineRewriteSequence(
+	#appendLineRewrite(
+		output: string[],
 		line: string,
 		width: number,
 		screenRow = -1,
 		frameRow = -1,
 		committedTo = -1,
 		spacerGlyphWidth = -1,
-	): string {
+	): void {
 		if (spacerGlyphWidth >= 0) {
-			if (spacerGlyphWidth >= width) return "";
-			return `${SEGMENT_RESET}\x1b[${spacerGlyphWidth}C${ERASE_TO_END_OF_LINE}`;
+			if (spacerGlyphWidth < width) output.push(`${SEGMENT_RESET}\x1b[${spacerGlyphWidth}C${ERASE_TO_END_OF_LINE}`);
+			return;
 		}
 		if (TERMINAL.isImageLine(line)) {
-			return ERASE_LINE + this.#imageLineSequence(line, screenRow, frameRow, committedTo);
+			output.push(ERASE_LINE, this.#imageLineSequence(line, screenRow, frameRow, committedTo));
+			return;
 		}
-		const terminalLine = this.#terminalLine(line);
-		const asciiWidth = this.#ansiAsciiLineWidth(line, width);
+		const prepared = frameRow >= 0 ? this.#preparedMeta[frameRow] : undefined;
+		const cached = prepared?.width === width && prepared.line === line ? prepared : undefined;
+		let terminalLine = cached?.terminalLine;
+		if (terminalLine === undefined) {
+			terminalLine = this.#terminalLine(line);
+			if (cached?.asciiWidth !== undefined) cached.terminalLine = terminalLine;
+		}
+		const asciiWidth = cached ? cached.asciiWidth : this.#ansiAsciiLineWidth(line, width);
 		if (asciiWidth !== undefined) {
-			return asciiWidth >= width ? terminalLine : terminalLine + ERASE_TO_END_OF_LINE;
+			output.push(terminalLine);
+			if (asciiWidth < width) output.push(ERASE_TO_END_OF_LINE);
+			return;
 		}
 
-		return SEGMENT_RESET + ERASE_TO_END_OF_LINE + terminalLine;
+		output.push(SEGMENT_RESET, ERASE_TO_END_OF_LINE, terminalLine);
 	}
 
 	#commit(
@@ -3367,27 +3676,27 @@ export class TUI extends Container {
 		},
 	): void {
 		this.#fullRedrawCount += 1;
-		let buffer = this.#paintBeginSequence + purgeSequence + options.leadingSequence + imageTransmitBuffer;
+		const output = this.#beginFrameOutput(
+			this.#paintBeginSequence,
+			purgeSequence,
+			options.leadingSequence,
+			imageTransmitBuffer,
+		);
 		if (options.commitTo > options.commitFrom) {
 			if (options.appendOnly) {
 				if (options.prepaintWindowTop !== undefined) {
 					for (let screenRow = 0; screenRow < height; screenRow++) {
 						const frameRow = options.prepaintWindowTop + screenRow;
-						buffer += `\x1b[${screenRow + 1};1H`;
-						buffer += this.#lineRewriteSequence(
-							frame[frameRow] ?? "",
-							width,
-							screenRow,
-							frameRow,
-							options.commitTo,
-						);
+						output.push(`\x1b[${screenRow + 1};1H`);
+						this.#appendLineRewrite(output, frame[frameRow] ?? "", width, screenRow, frameRow, options.commitTo);
 					}
 				}
-				buffer += `\x1b[${height};1H`;
+				output.push(`\x1b[${height};1H`);
 				for (let row = options.commitFrom; row < options.commitTo; row++) {
 					const enteringRow = options.prepaintWindowTop === undefined ? row : row + height;
-					buffer += "\r\n";
-					buffer += this.#lineRewriteSequence(
+					output.push("\r\n");
+					this.#appendLineRewrite(
+						output,
 						frame[enteringRow] ?? "",
 						width,
 						height - 1,
@@ -3396,8 +3705,9 @@ export class TUI extends Container {
 					);
 				}
 				for (let screenRow = 0; screenRow < height; screenRow++) {
-					buffer += `\x1b[${screenRow + 1};1H`;
-					buffer += this.#lineRewriteSequence(
+					output.push(`\x1b[${screenRow + 1};1H`);
+					this.#appendLineRewrite(
+						output,
 						window[screenRow] ?? "",
 						width,
 						screenRow,
@@ -3406,11 +3716,12 @@ export class TUI extends Container {
 					);
 				}
 			} else {
-				buffer += "\x1b[1;1H";
+				output.push("\x1b[1;1H");
 				let wroteLine = false;
 				for (let row = options.commitFrom; row < options.commitTo; row++) {
-					if (wroteLine) buffer += "\r\n";
-					buffer += this.#lineRewriteSequence(
+					if (wroteLine) output.push("\r\n");
+					this.#appendLineRewrite(
+						output,
 						frame[row] ?? "",
 						width,
 						Math.min(row - options.commitFrom, height - 1),
@@ -3420,8 +3731,9 @@ export class TUI extends Container {
 					wroteLine = true;
 				}
 				for (let screenRow = 0; screenRow < height; screenRow++) {
-					if (wroteLine) buffer += "\r\n";
-					buffer += this.#lineRewriteSequence(
+					if (wroteLine) output.push("\r\n");
+					this.#appendLineRewrite(
+						output,
 						window[screenRow] ?? "",
 						width,
 						Math.min(options.commitTo - options.commitFrom + screenRow, height - 1),
@@ -3433,8 +3745,9 @@ export class TUI extends Container {
 			}
 		} else {
 			for (let screenRow = options.repaintFromScreenRow; screenRow < height; screenRow++) {
-				buffer += `\x1b[${screenRow + 1};1H`;
-				buffer += this.#lineRewriteSequence(
+				output.push(`\x1b[${screenRow + 1};1H`);
+				this.#appendLineRewrite(
+					output,
 					window[screenRow] ?? "",
 					width,
 					screenRow,
@@ -3443,19 +3756,19 @@ export class TUI extends Container {
 				);
 			}
 		}
-		buffer += "\r";
+		output.push("\r");
 		const contentRows = Math.max(1, Math.min(height, frame.length - options.windowTop));
 		const contentBottomRow = options.windowTop + contentRows - 1;
 		const target = this.#targetHardwareCursorState(cursorPos, options.cursorTrackingLineCount);
 		if (target) {
 			const screenRow = Math.max(0, Math.min(height - 1, target.row - options.windowTop));
-			buffer += `\x1b[${screenRow + 1};${target.col + 1}H`;
-			buffer += target.visible ? "\x1b[?25h" : "\x1b[?25l";
+			output.push(`\x1b[${screenRow + 1};${target.col + 1}H`);
+			output.push(target.visible ? "\x1b[?25h" : "\x1b[?25l");
 		} else {
-			buffer += `\x1b[${contentRows};1H\x1b[?25l`;
+			output.push(`\x1b[${contentRows};1H\x1b[?25l`);
 		}
-		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		output.push(this.#paintEndSequence);
+		this.#writeFrameOutput();
 
 		this.#commit(frame, window, width, height, {
 			toRow: target?.row ?? contentBottomRow,
@@ -3495,19 +3808,24 @@ export class TUI extends Container {
 		}
 
 		const paintLineCount = chunkTo + height;
-		let buffer = this.#paintBeginSequence + this.#leaveResizeAltSequence() + options.leadingSequence + purgeSequence;
+		const output = this.#beginFrameOutput(
+			this.#paintBeginSequence,
+			this.#leaveResizeAltSequence(),
+			options.leadingSequence,
+			purgeSequence,
+		);
 		if (options.clearScrollback) {
-			buffer += "\x1b[H\x1b[3J";
+			output.push("\x1b[H\x1b[3J");
 			for (const { imageId, lastEpoch } of this.#imageBudget.resetPlacementEpochs()) {
 				for (let placementId = 1; placementId <= lastEpoch; placementId++) {
-					buffer += encodeKittyDeletePlacement(imageId, placementId);
+					output.push(encodeKittyDeletePlacement(imageId, placementId));
 				}
 			}
 		} else {
-			if (options.copyScreenToScrollback && TERMINAL.supportsScreenToScrollback) buffer += "\x1b[22J";
-			buffer += "\x1b[2J\x1b[H";
+			if (options.copyScreenToScrollback && TERMINAL.supportsScreenToScrollback) output.push("\x1b[22J");
+			output.push("\x1b[2J\x1b[H");
 		}
-		if (imageTransmitBuffer.length > 0) buffer += imageTransmitBuffer;
+		if (imageTransmitBuffer.length > 0) output.push(imageTransmitBuffer);
 
 		const visibleStart = Math.max(0, paintLineCount - height);
 		let fillSequence = "";
@@ -3518,46 +3836,46 @@ export class TUI extends Container {
 			fillSequence = plan.sequence;
 		}
 		for (let i = 0; i < chunkTo; i++) {
-			if (i > 0) buffer += "\r\n";
+			if (i > 0) output.push("\r\n");
 			const writeRow = Math.min(i, height - 1);
-			buffer += options.clearScrollback
-				? this.#lineRewriteSequence(
-						frame[i] ?? "",
-						width,
-						writeRow,
-						i,
-						chunkTo,
-						this.#osc66SpacerGlyphWidth(frame, i),
-					)
-				: this.#terminalLine(frame[i] ?? "", writeRow, i, chunkTo);
+			const line = frame[i] ?? "";
+			if (options.clearScrollback) {
+				this.#appendLineRewrite(output, line, width, writeRow, i, chunkTo, this.#osc66SpacerGlyphWidth(frame, i));
+			} else {
+				output.push(this.#terminalLineForFrame(line, width, writeRow, i, chunkTo));
+			}
 		}
 		for (let screenRow = 0; screenRow < height; screenRow++) {
-			if (chunkTo + screenRow > 0) buffer += "\r\n";
+			if (chunkTo + screenRow > 0) output.push("\r\n");
 			const line = visibleTexts ? (visibleTexts[screenRow] ?? "") : (window[screenRow] ?? "");
 			const writeRow = Math.min(chunkTo + screenRow, height - 1);
 			const frameRow = windowTop + screenRow;
-			buffer += options.clearScrollback
-				? this.#lineRewriteSequence(
-						line,
-						width,
-						writeRow,
-						frameRow,
-						chunkTo,
-						this.#osc66SpacerGlyphWidth(frame, frameRow),
-					)
-				: this.#terminalLine(line, writeRow, frameRow, chunkTo);
+			if (options.clearScrollback) {
+				this.#appendLineRewrite(
+					output,
+					line,
+					width,
+					writeRow,
+					frameRow,
+					chunkTo,
+					this.#osc66SpacerGlyphWidth(frame, frameRow),
+				);
+			} else if (visibleTexts) {
+				output.push(this.#terminalLine(line, writeRow, frameRow, chunkTo));
+			} else {
+				output.push(this.#terminalLineForFrame(line, width, writeRow, frameRow, chunkTo));
+			}
 		}
-		buffer += fillSequence;
+		output.push(fillSequence);
 
 		const contentRows = Math.max(1, Math.min(height, frame.length - windowTop));
 		const parkUp = height - contentRows;
-		if (parkUp > 0) buffer += `\x1b[${parkUp}A`;
+		if (parkUp > 0) output.push(`\x1b[${parkUp}A`);
 		const contentBottomRow = windowTop + contentRows - 1;
 		const paintContentBottomRow = Math.max(0, paintLineCount - 1 - parkUp);
 		const cursorControl = this.#cursorControlSequence(paintCursorPos, paintLineCount, paintContentBottomRow);
-		buffer += cursorControl.seq;
-		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		output.push(cursorControl.seq, this.#paintEndSequence);
+		this.#writeFrameOutput();
 
 		const committedCursorState = paintCursorPos
 			? this.#targetHardwareCursorState(cursorPos, cursorTrackingLineCount)
@@ -3601,6 +3919,7 @@ export class TUI extends Container {
 
 	#renderResizeViewport(width: number, height: number): void {
 		if (width <= 0 || height <= 0) return;
+		this.#invalidatePreparedRowCache();
 
 		this.#imageBudget.beginPass(true);
 		const { framed, viewportTop, contentRows } = this.#composeResizeViewport(width, height);
@@ -3680,12 +3999,13 @@ export class TUI extends Container {
 	): void {
 		const widthChanged = this.#previousWidth > 0 && this.#previousWidth !== width;
 		const altEnter = widthChanged ? this.#enterResizeAltSequence() : "";
-		let buffer = `${this.#paintBeginSequence + altEnter}\x1b[H`;
+		const output = this.#beginFrameOutput(`${this.#paintBeginSequence + altEnter}\x1b[H`);
 		for (let r = 0; r < height; r++) {
-			if (r > 0) buffer += "\r\n";
+			if (r > 0) output.push("\r\n");
 
 			const idx = viewportTop + r;
-			buffer += this.#lineRewriteSequence(
+			this.#appendLineRewrite(
+				output,
 				framed[idx] ?? "",
 				width,
 				r,
@@ -3696,12 +4016,13 @@ export class TUI extends Container {
 		}
 
 		const parkUp = height - Math.max(1, contentRows);
-		if (parkUp > 0) buffer += `\x1b[${parkUp}A`;
-		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		if (parkUp > 0) output.push(`\x1b[${parkUp}A`);
+		output.push(this.#paintEndSequence);
+		this.#writeFrameOutput();
 	}
 
 	#renderAltFrame(width: number, height: number): void {
+		this.#invalidatePreparedRowCache();
 		const base: string[] = new Array(Math.max(0, height)).fill("");
 		let lines = this.#compositeOverlaysIntoWindow(base, width, height);
 		this.#extractCursorMarkers(lines);
@@ -3732,13 +4053,13 @@ export class TUI extends Container {
 			}
 			if (same) return;
 		}
-		let buffer = `${this.#paintBeginSequence}\x1b[H`;
+		const output = this.#beginFrameOutput(`${this.#paintBeginSequence}\x1b[H`);
 		for (let r = 0; r < height; r++) {
-			if (r > 0) buffer += "\r\n";
-			buffer += this.#lineRewriteSequence(fitted[r], width, r, -1, -1, this.#osc66SpacerGlyphWidth(fitted, r));
+			if (r > 0) output.push("\r\n");
+			this.#appendLineRewrite(output, fitted[r], width, r, -1, -1, this.#osc66SpacerGlyphWidth(fitted, r));
 		}
-		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		output.push(this.#paintEndSequence);
+		this.#writeFrameOutput();
 		this.#altPreviousLines = fitted;
 		this.#fullRedrawCount += 1;
 	}
@@ -3791,11 +4112,20 @@ export class TUI extends Container {
 				if (previousWindow[i] !== frame[chunkFrom + i]) prefixIntact = false;
 			}
 			if (prefixIntact) {
-				let buffer = this.#paintBeginSequence + purgeSequence;
+				const output = this.#beginFrameOutput(this.#paintBeginSequence, purgeSequence);
 				const moveToBottom = height - 1 - currentScreenRow;
-				if (moveToBottom > 0) buffer += `\x1b[${moveToBottom}B`;
+				if (moveToBottom > 0) output.push(`\x1b[${moveToBottom}B`);
 				for (let r = height - scroll; r < height; r++) {
-					buffer += `\r\n${this.#lineRewriteSequence(window[r] ?? "", width, height - 1, windowTop + r, chunkTo, this.#osc66SpacerGlyphWidth(frame, windowTop + r))}`;
+					output.push("\r\n");
+					this.#appendLineRewrite(
+						output,
+						window[r] ?? "",
+						width,
+						height - 1,
+						windowTop + r,
+						chunkTo,
+						this.#osc66SpacerGlyphWidth(frame, windowTop + r),
+					);
 				}
 
 				let firstChanged = -1;
@@ -3808,11 +4138,12 @@ export class TUI extends Container {
 				let cursorFromRow = windowTop + height - 1;
 				if (firstChanged !== -1) {
 					const up = height - 1 - firstChanged;
-					if (up > 0) buffer += `\x1b[${up}A`;
-					buffer += "\r";
+					if (up > 0) output.push(`\x1b[${up}A`);
+					output.push("\r");
 					for (let r = firstChanged; r <= lastChanged; r++) {
-						if (r > firstChanged) buffer += "\r\n";
-						buffer += this.#lineRewriteSequence(
+						if (r > firstChanged) output.push("\r\n");
+						this.#appendLineRewrite(
+							output,
 							window[r] ?? "",
 							width,
 							r,
@@ -3824,9 +4155,8 @@ export class TUI extends Container {
 					cursorFromRow = windowTop + lastChanged;
 				}
 				const cursorControl = this.#cursorControlSequence(cursorPos, cursorTrackingLineCount, cursorFromRow);
-				buffer += cursorControl.seq;
-				buffer += this.#paintEndSequence;
-				this.terminal.write(buffer);
+				output.push(cursorControl.seq, this.#paintEndSequence);
+				this.#writeFrameOutput();
 				this.#committedRows = chunkTo;
 				this.#windowTopRow = windowTop;
 				this.#commit(frame, window, width, height, cursorControl);
@@ -3854,15 +4184,15 @@ export class TUI extends Container {
 				this.#previousHeight = height;
 				return;
 			}
-			let buffer = this.#paintBeginSequence + purgeSequence;
+			const output = this.#beginFrameOutput(this.#paintBeginSequence, purgeSequence);
 			if (inPlaceRewrite) {
-				if (height > 1) buffer += `\x1b[${height - 1}A`;
+				if (height > 1) output.push(`\x1b[${height - 1}A`);
 			} else {
 				const rowDelta = firstChanged - currentScreenRow;
-				if (rowDelta > 0) buffer += `\x1b[${rowDelta}B`;
-				else if (rowDelta < 0) buffer += `\x1b[${-rowDelta}A`;
+				if (rowDelta > 0) output.push(`\x1b[${rowDelta}B`);
+				else if (rowDelta < 0) output.push(`\x1b[${-rowDelta}A`);
 			}
-			buffer += "\r";
+			output.push("\r");
 
 			let fillTexts: string[] | null = null;
 			let fillSequence = "";
@@ -3874,8 +4204,9 @@ export class TUI extends Container {
 				fillSequence = plan.sequence;
 			}
 			for (let r = firstChanged; r <= lastChanged; r++) {
-				if (r > firstChanged) buffer += "\r\n";
-				buffer += this.#lineRewriteSequence(
+				if (r > firstChanged) output.push("\r\n");
+				this.#appendLineRewrite(
+					output,
 					fillTexts ? fillTexts[r - firstChanged] : (window[r] ?? ""),
 					width,
 					r,
@@ -3884,31 +4215,31 @@ export class TUI extends Container {
 					this.#osc66SpacerGlyphWidth(frame, windowTop + r),
 				);
 			}
-			buffer += fillSequence;
+			output.push(fillSequence);
 
 			let cursorFromRow = windowTop + lastChanged;
 			const contentBottomScreenRow = contentBottomRow - windowTop;
 			if (lastChanged > contentBottomScreenRow) {
-				buffer += `\x1b[${lastChanged - contentBottomScreenRow}A`;
+				output.push(`\x1b[${lastChanged - contentBottomScreenRow}A`);
 				cursorFromRow = contentBottomRow;
 			}
 			const cursorControl = this.#cursorControlSequence(cursorPos, cursorTrackingLineCount, cursorFromRow);
-			buffer += cursorControl.seq;
-			buffer += this.#paintEndSequence;
-			this.terminal.write(buffer);
+			output.push(cursorControl.seq, this.#paintEndSequence);
+			this.#writeFrameOutput();
 			this.#windowTopRow = windowTop;
 			this.#commit(frame, window, width, height, cursorControl);
 			return;
 		}
 
 		this.#fullRedrawCount += 1;
-		let buffer = this.#paintBeginSequence + purgeSequence;
-		if (currentScreenRow > 0) buffer += `\x1b[${currentScreenRow}A`;
-		buffer += "\r";
+		const output = this.#beginFrameOutput(this.#paintBeginSequence, purgeSequence);
+		if (currentScreenRow > 0) output.push(`\x1b[${currentScreenRow}A`);
+		output.push("\r");
 		let wroteLine = false;
 		for (let i = chunkFrom; i < chunkTo; i++) {
-			if (wroteLine) buffer += "\r\n";
-			buffer += this.#lineRewriteSequence(
+			if (wroteLine) output.push("\r\n");
+			this.#appendLineRewrite(
+				output,
 				frame[i] ?? "",
 				width,
 				Math.min(i - chunkFrom, height - 1),
@@ -3919,8 +4250,9 @@ export class TUI extends Container {
 			wroteLine = true;
 		}
 		for (let screenRow = 0; screenRow < height; screenRow++) {
-			if (wroteLine) buffer += "\r\n";
-			buffer += this.#lineRewriteSequence(
+			if (wroteLine) output.push("\r\n");
+			this.#appendLineRewrite(
+				output,
 				window[screenRow] ?? "",
 				width,
 				Math.min(chunkTo - chunkFrom + screenRow, height - 1),
@@ -3931,11 +4263,10 @@ export class TUI extends Container {
 			wroteLine = true;
 		}
 		const parkUp = height - 1 - (contentBottomRow - windowTop);
-		if (parkUp > 0) buffer += `\x1b[${parkUp}A`;
+		if (parkUp > 0) output.push(`\x1b[${parkUp}A`);
 		const cursorControl = this.#cursorControlSequence(cursorPos, cursorTrackingLineCount, contentBottomRow);
-		buffer += cursorControl.seq;
-		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		output.push(cursorControl.seq, this.#paintEndSequence);
+		this.#writeFrameOutput();
 		this.#committedRows = chunkTo;
 		this.#windowTopRow = windowTop;
 		this.#commit(frame, window, width, height, cursorControl);

@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
-import { logger, takeRecentLoopPhase } from "@oh-my-pi/pi-utils";
+import * as logger from "@oh-my-pi/pi-utils/logger";
+import { takeRecentLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 
 export interface LoopWatchdogOptions {
 	intervalMs?: number;

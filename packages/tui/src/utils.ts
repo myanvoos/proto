@@ -8,11 +8,11 @@ import {
 	wrapTextWithAnsi as nativeWrapTextWithAnsi,
 	type SliceResult,
 } from "@oh-my-pi/pi-natives";
-import { DEFAULT_TAB_WIDTH } from "@oh-my-pi/pi-utils";
+import { DEFAULT_TAB_WIDTH } from "@oh-my-pi/pi-utils/tab-spacing";
 
 export { Ellipsis } from "@oh-my-pi/pi-natives";
 
-export { DEFAULT_TAB_WIDTH } from "@oh-my-pi/pi-utils";
+export { DEFAULT_TAB_WIDTH };
 
 export type HangulCompatibilityJamoWidth = "platform" | "unicode" | 1 | 2;
 
@@ -241,6 +241,15 @@ const VISIBLE_WIDTH_CACHE_MAX_LEN = 512;
 const visibleWidthCache = new Map<string, number>();
 let visibleWidthCacheEpoch = widthConfigEpoch;
 
+function cacheVisibleWidth(str: string, width: number): void {
+	while (visibleWidthCache.size >= VISIBLE_WIDTH_CACHE_MAX) {
+		const oldest = visibleWidthCache.keys().next();
+		if (oldest.done) break;
+		visibleWidthCache.delete(oldest.value);
+	}
+	visibleWidthCache.set(str, width);
+}
+
 export function visibleWidth(str: string): number {
 	if (!str) return 0;
 	const cacheable = str.length <= VISIBLE_WIDTH_CACHE_MAX_LEN;
@@ -255,8 +264,7 @@ export function visibleWidth(str: string): number {
 
 	if (PRINTABLE_ASCII_REGEX.test(str)) {
 		if (cacheable) {
-			if (visibleWidthCache.size >= VISIBLE_WIDTH_CACHE_MAX) visibleWidthCache.clear();
-			visibleWidthCache.set(str, str.length);
+			cacheVisibleWidth(str, str.length);
 		}
 		return str.length;
 	}
@@ -302,8 +310,7 @@ export function visibleWidth(str: string): number {
 
 	width = correctHangulCompatibilityJamoWidth(width, compatibilityJamoCount, fillerCount);
 	if (cacheable) {
-		if (visibleWidthCache.size >= VISIBLE_WIDTH_CACHE_MAX) visibleWidthCache.clear();
-		visibleWidthCache.set(str, width);
+		cacheVisibleWidth(str, width);
 	}
 	return width;
 }

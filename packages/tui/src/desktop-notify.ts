@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { $which } from "@oh-my-pi/pi-utils";
+import { $which } from "@oh-my-pi/pi-utils/which";
 import type { TerminalId, TerminalNotification } from "./terminal-capabilities";
 
 const APP_NAME = "Proto";

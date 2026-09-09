@@ -23,6 +23,7 @@ import {
 	encodeTextSized,
 	getPaddingX,
 	getSegmenter,
+	getWidthConfigEpoch,
 	isOsc66Line,
 	padding,
 	replaceTabs,
@@ -42,6 +43,7 @@ function normalizeOsc8Terminators(text: string): string {
 const MARKDOWN_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
 const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6}[ \t]+\S/;
 const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s*:?\s*$/i;
+const PLAIN_STREAM_APPEND = /^[A-Za-z0-9 .,!?;:'"()-]+$/u;
 
 function isGfmTableDelimiter(line: string, headerLine: string | undefined): boolean {
 	if (!headerLine || !line.includes("|") || !headerLine.includes("|")) return false;
@@ -55,7 +57,12 @@ function isGfmTableDelimiter(line: string, headerLine: string | undefined): bool
 	);
 }
 
-function repairOrphanClosingFence(text: string): string {
+interface FenceRepairResult {
+	text: string;
+	hasPendingFenceRepair: boolean;
+}
+
+function repairOrphanClosingFence(text: string): FenceRepairResult {
 	const lines = text.split("\n");
 	let open: { index: number; marker: string; info: string } | undefined;
 	for (let index = 0; index < lines.length; index++) {
@@ -71,14 +78,17 @@ function repairOrphanClosingFence(text: string): string {
 			open = undefined;
 		}
 	}
-	if (open?.info !== "") return text;
+	if (open === undefined) return { text, hasPendingFenceRepair: false };
+	if (open.info !== "") return { text, hasPendingFenceRepair: false };
 
 	let previous = "";
 	for (let index = open.index - 1; index >= 0; index--) {
 		previous = lines[index]!.trim();
 		if (previous) break;
 	}
-	if (!previous || previous.endsWith(":") || FENCED_SOURCE_INTRO.test(previous)) return text;
+	if (!previous || previous.endsWith(":") || FENCED_SOURCE_INTRO.test(previous)) {
+		return { text, hasPendingFenceRepair: false };
+	}
 
 	let hasHeading = false;
 	let hasTableDelimiter = false;
@@ -88,13 +98,35 @@ function repairOrphanClosingFence(text: string): string {
 		hasTableDelimiter ||= isGfmTableDelimiter(line, lines[index - 1]);
 		if (hasHeading && hasTableDelimiter) {
 			lines.splice(open.index, 1);
-			return lines.join("\n");
+			return { text: lines.join("\n"), hasPendingFenceRepair: true };
 		}
 	}
-	return text;
+	return { text, hasPendingFenceRepair: true };
+}
+
+function hasFenceLine(text: string): boolean {
+	for (const line of text.split("\n")) {
+		if (MARKDOWN_FENCE_LINE.test(line)) return true;
+	}
+	return false;
+}
+
+function hasFenceLineAtAppendBoundary(source: string, suffix: string): boolean {
+	const linePrefix = source.slice(source.lastIndexOf("\n") + 1);
+	if (!/^ {0,3}[`~]{0,2}$/.test(linePrefix)) return false;
+	return hasFenceLine(linePrefix + suffix);
+}
+
+function hasReferenceDefinitionAtAppendBoundary(source: string, suffix: string): boolean {
+	const linePrefix = source.slice(source.lastIndexOf("\n") + 1);
+	if (!linePrefix || !suffix) return false;
+	const firstLineEnd = suffix.indexOf("\n");
+	const firstSuffixLine = firstLineEnd < 0 ? suffix : suffix.slice(0, firstLineEnd);
+	return HAS_REF_DEF.test(linePrefix + firstSuffixLine);
 }
 
 function normalizeHtmlEntitiesForTerminal(raw: string): string {
+	if (!raw.includes("&")) return raw;
 	const parseCodePoint = (value: number): string => {
 		if (Number.isFinite(value) && value >= 0 && value <= 0x10ffff) {
 			try {
@@ -528,6 +560,7 @@ const mathBlockExtension: TokenizerAndRendererExtension = {
 	name: "mathBlock",
 	level: "block",
 	start(src) {
+		if (!src.includes("$$") && !src.includes("\\[")) return undefined;
 		const m = MATH_BLOCK_START.exec(src);
 		return m ? m.index : undefined;
 	},
@@ -543,6 +576,7 @@ const mathBlockExtension: TokenizerAndRendererExtension = {
 
 const BARE_ENV_BEGIN = /(?:^|\n)[ \t]{0,3}\\begin\{([A-Za-z]+\*?)\}/;
 function bareMathEnvBlock(src: string): readonly [number, number] | null {
+	if (!src.includes("\\begin{")) return null;
 	const bm = BARE_ENV_BEGIN.exec(src);
 	if (!bm || !isBareMathEnvironment(bm[1])) return null;
 	const beginLineStart = bm.index === 0 ? 0 : bm.index + 1;
@@ -617,6 +651,7 @@ function isAutolinkSchemeAt(src: string, i: number): boolean {
 }
 
 export function autolinkSchemeScanIndex(src: string): number | undefined {
+	if (!src.includes("://") && !/[wW][wW][wW]\./.test(src)) return undefined;
 	for (let i = 0; i < src.length; i++) {
 		const c = src.charCodeAt(i) | 32;
 		if ((c === 119 || c === 104 || c === 102) && isAutolinkSchemeAt(src, i)) return i;
@@ -715,6 +750,7 @@ for (const table of [Lexer.rules.block.normal, Lexer.rules.block.gfm]) {
 const RENDER_CACHE_MAX = 256;
 const RENDER_CACHE_MAX_SIZE = 4 * 1024 * 1024;
 const RENDER_CACHE_MAX_ENTRY_SIZE = 256 * 1024;
+const INCREMENTAL_FRAGMENT_CACHE_MAX_SIZE = RENDER_CACHE_MAX_SIZE;
 const EMPTY_RENDER_LINES: readonly string[] = [];
 
 interface RenderedLine {
@@ -726,6 +762,13 @@ interface RenderedListItemLine extends RenderedLine {
 	nested: boolean;
 }
 
+interface MutableListParagraphCapture {
+	raw: string;
+	text: string;
+	lineStart: number;
+	lineCount: number;
+}
+
 function renderedLine(text: string, literalCode?: boolean): RenderedLine {
 	return literalCode ? { text, literalCode: true } : { text };
 }
@@ -734,6 +777,35 @@ interface RenderCacheEntry {
 	lines: readonly string[];
 	tables: readonly RenderedTableLayout[];
 }
+
+// Append renders keep the wrapped rows for each source-offset token. The raw/type checks
+// make a fragment reusable only while the lexer still describes the same leaf block.
+interface IncrementalTokenFragment {
+	kind: "token";
+	revision: number;
+	transient: boolean;
+	frozen: boolean;
+	type: string;
+	nextTokenType: string | undefined;
+	raw: string;
+	wrappedLines: readonly RenderedLine[];
+	tables: readonly TableRenderSpec[];
+	contentLines?: readonly string[];
+	hasSpecialLine: boolean;
+	startsWithEmptyLine: boolean;
+	// Plain paragraphs can be extended without rebuilding their settled wrapped rows.
+	plainText?: string;
+	plainContentLineCount?: number;
+	listItemCount?: number;
+	listLastItemRaw?: string;
+	listLastItemLineCount?: number;
+	listLastParagraphRaw?: string;
+	listLastParagraphText?: string;
+	listLastParagraphLineStart?: number;
+	listLastParagraphLineCount?: number;
+}
+
+type IncrementalRenderFragment = IncrementalTokenFragment;
 
 const renderCache = new LRUCache<string, RenderCacheEntry>({
 	max: RENDER_CACHE_MAX,
@@ -846,8 +918,8 @@ function lexWindowed(text: string): Token[] {
 	return lexer.tokens;
 }
 
-function lexDocument(text: string): Token[] {
-	if (text.length < WINDOWED_LEX_MIN_BYTES || text.includes("\r")) return markdownParser.lexer(text);
+function lexDocument(text: string, allowWindowed: boolean): Token[] {
+	if (!allowWindowed || text.length < WINDOWED_LEX_MIN_BYTES || text.includes("\r")) return markdownParser.lexer(text);
 	return lexWindowed(text);
 }
 
@@ -913,7 +985,12 @@ interface InlineStyleContext {
 	stylePrefix: string;
 }
 
-type ListToken = Token & { items: Array<{ tokens?: Token[] }>; ordered: boolean; start?: number };
+interface RenderableListItem {
+	raw?: string;
+	tokens?: Token[];
+}
+
+type ListToken = Token & { items: RenderableListItem[]; ordered: boolean; start?: number };
 type TableCellToken = { tokens?: Token[] };
 type TableToken = Token & { header: TableCellToken[]; rows: TableCellToken[][]; raw?: string };
 
@@ -1071,6 +1148,7 @@ function colorSwatch(hex: string, glyph: string): string {
 }
 
 function renderTextWithSwatches(text: string, applySegment: (t: string) => string, glyph: string): string {
+	if (!text.includes("#")) return applySegment(text);
 	HEX_COLOR_REGEX.lastIndex = 0;
 	let result = "";
 	let last = 0;
@@ -1107,12 +1185,13 @@ interface RenderSignature {
 	textSizing: boolean;
 	bgColorProbe: string;
 	headingProbe: string;
+	themeRevision: string;
 }
 
 interface StreamPrefixLineCache extends RenderSignature {
 	text: string;
 	tokenCount: number;
-	lines: readonly string[];
+	lines: string[];
 	tables: readonly TableRenderSpec[];
 }
 interface StreamingHighlightCache extends RenderSignature {
@@ -1120,6 +1199,14 @@ interface StreamingHighlightCache extends RenderSignature {
 	text: string;
 	lines: readonly string[];
 	stream: HighlightStreamSession;
+}
+
+interface NormalizedTextCache {
+	source: string;
+	text: string;
+	repairFences: boolean;
+	hasPendingFenceRepair: boolean;
+	hasReferenceDefinition: boolean;
 }
 
 function splitPushedHighlightLines(pushed: string): string[] {
@@ -1162,11 +1249,14 @@ export class Markdown
 	#cachedWidth?: number;
 	#cachedLines?: readonly string[];
 	#transientRenderCache = false;
+	#normalizedTextCache?: NormalizedTextCache;
+	#appendOnlySinceRender = false;
 
 	#streamPrefixText?: string;
 	#streamTokens?: Token[];
 	#streamPrefixTokenCount = 0;
 	#streamPrefixLineCache?: StreamPrefixLineCache;
+	#streamLexedText?: string;
 
 	#lastRenderSettledRows = 0;
 
@@ -1183,6 +1273,25 @@ export class Markdown
 	#renderingFrozenPrefix = false;
 	#streamingHighlightCache?: StreamingHighlightCache;
 	#activeRenderSignature?: RenderSignature;
+	#activeRenderFragmentRevision?: number;
+	#renderFragmentCacheSignature?: string;
+	#renderFragmentCacheRevision = 0;
+	// This is intentionally per Markdown instance: settled-prefix rows remain owned by
+	// #streamPrefixLineCache, while this cache covers the mutable suffix only.
+	#incrementalTokenFragments = new Map<number, IncrementalRenderFragment>();
+	#incrementalTokenFragmentsSize = 0;
+	#renderWrappedLinesScratch: RenderedLine[] = [];
+	#renderContentLinesScratch: string[] = [];
+	#renderTokenSegmentsScratch: Array<{
+		start: number;
+		end: number;
+		fragment?: IncrementalTokenFragment;
+		sourceOffset: number;
+		storeFragment: boolean;
+	}> = [];
+	#lastRenderedListLastItemLineCount = 0;
+	#lastRenderedListMutableParagraphLineStart = -1;
+	#lastRenderedListMutableParagraphLineCount = 0;
 
 	#tableLayoutWidth?: number;
 	#lockedTableLayouts = new Map<string, TableLayoutLock>();
@@ -1223,13 +1332,20 @@ export class Markdown
 		text = normalizeOsc8Terminators(text);
 
 		if (text === this.#text) return false;
-		if (!text.startsWith(this.#text)) this.#clearTableLayouts();
+		const appended = text.startsWith(this.#text);
+		if (!appended) {
+			this.#clearIncrementalTokenFragments();
+			this.#clearTableLayouts();
+			this.#normalizedTextCache = undefined;
+		}
+		this.#appendOnlySinceRender = appended;
 		this.#text = text;
 		if (!text.trim()) {
 			this.#streamPrefixText = undefined;
 			this.#streamTokens = undefined;
 			this.#streamPrefixTokenCount = 0;
 			this.#streamPrefixLineCache = undefined;
+			this.#streamLexedText = undefined;
 			this.#settledExposedText = undefined;
 		}
 		this.#widthEpochRevision++;
@@ -1323,7 +1439,10 @@ export class Markdown
 			});
 			changed = true;
 		}
-		if (changed) this.invalidate();
+		if (changed) {
+			this.#clearIncrementalTokenFragments();
+			this.invalidate();
+		}
 	}
 
 	prepareNativeScrollbackReplay(): void {
@@ -1336,19 +1455,150 @@ export class Markdown
 		this.#lockedTableLayouts.clear();
 		this.#lastRenderedTableLayouts = [];
 		this.#activeTableRenderSpecs = undefined;
+		this.#clearIncrementalTokenFragments();
 
 		this.#streamPrefixLineCache = undefined;
+	}
+
+	#invalidateStreamingState(): void {
+		this.#streamPrefixText = undefined;
+		this.#streamTokens = undefined;
+		this.#streamPrefixTokenCount = 0;
+		this.#streamPrefixLineCache = undefined;
+		this.#streamLexedText = undefined;
+		this.#clearIncrementalTokenFragments();
+	}
+
+	#normalizedTextForRender(): string {
+		const repairFences = !this.transientRenderCache;
+		const cache = this.#normalizedTextCache;
+		if (cache?.source === this.#text && cache.repairFences === repairFences) {
+			if (cache.hasPendingFenceRepair) this.#invalidateStreamingState();
+			return cache.text;
+		}
+
+		if (cache?.repairFences === repairFences && this.#text.startsWith(cache.source)) {
+			if (cache.hasPendingFenceRepair) this.#invalidateStreamingState();
+			// A balanced prefix cannot be changed by ordinary appended text. Re-run the
+			// repair only when the suffix can introduce or complete a fence line.
+			const suffix = this.#text.slice(cache.source.length);
+			const normalizedSuffix = replaceTabs(suffix);
+			if (
+				!repairFences ||
+				(!cache.hasPendingFenceRepair &&
+					!hasFenceLine(normalizedSuffix) &&
+					!hasFenceLineAtAppendBoundary(cache.source, normalizedSuffix))
+			) {
+				const normalizedText = cache.text + normalizedSuffix;
+				this.#normalizedTextCache = {
+					source: this.#text,
+					text: normalizedText,
+					repairFences,
+					hasPendingFenceRepair: false,
+					hasReferenceDefinition:
+						cache.hasReferenceDefinition ||
+						HAS_REF_DEF.test(normalizedSuffix) ||
+						hasReferenceDefinitionAtAppendBoundary(cache.source, normalizedSuffix),
+				};
+				return normalizedText;
+			}
+		}
+
+		const replaced = replaceTabs(this.#text);
+		if (!repairFences) {
+			this.#normalizedTextCache = {
+				source: this.#text,
+				text: replaced,
+				repairFences: false,
+				hasPendingFenceRepair: false,
+				hasReferenceDefinition: HAS_REF_DEF.test(replaced),
+			};
+			return replaced;
+		}
+
+		const repaired = repairOrphanClosingFence(replaced);
+		this.#normalizedTextCache = {
+			source: this.#text,
+			text: repaired.text,
+			repairFences: true,
+			hasPendingFenceRepair: repaired.hasPendingFenceRepair,
+			hasReferenceDefinition: HAS_REF_DEF.test(repaired.text),
+		};
+		return repaired.text;
+	}
+
+	#tryAppendPlainListToken(text: string, refDefText: string, streamTokens: Token[] | undefined): boolean {
+		const prefix = this.#streamPrefixText;
+		const previousText = this.#streamLexedText;
+		if (
+			prefix === undefined ||
+			previousText === undefined ||
+			streamTokens === undefined ||
+			!previousText.startsWith(prefix) ||
+			!text.startsWith(previousText)
+		) {
+			return false;
+		}
+		const previousMutableText = previousText.slice(prefix.length);
+		if (!refDefText.startsWith(previousMutableText)) return false;
+		const appendedText = text.slice(previousText.length);
+		if (!appendedText || !PLAIN_STREAM_APPEND.test(appendedText)) return false;
+
+		const list = streamTokens.at(-1);
+		if (list?.type !== "list" || !list.items || list.items.length === 0) return false;
+		const lastItem = list.items.at(-1);
+		const finalToken = lastItem?.tokens?.at(-1);
+		if (
+			lastItem?.raw === undefined ||
+			finalToken?.type !== "paragraph" ||
+			!("raw" in finalToken) ||
+			typeof finalToken.raw !== "string"
+		) {
+			return false;
+		}
+		const inlineTokens = finalToken.tokens;
+		const inlineToken = inlineTokens?.[0];
+		if (
+			inlineTokens === undefined ||
+			inlineTokens.length !== 1 ||
+			inlineToken?.type !== "text" ||
+			!("raw" in inlineToken) ||
+			typeof inlineToken.raw !== "string" ||
+			typeof inlineToken.text !== "string"
+		) {
+			return false;
+		}
+		if (this.#plainParagraphText(finalToken) !== finalToken.text) return false;
+		if (typeof list.raw !== "string") return false;
+
+		list.raw += appendedText;
+		lastItem.raw += appendedText;
+		finalToken.raw += appendedText;
+		finalToken.text += appendedText;
+		inlineToken.raw += appendedText;
+		inlineToken.text += appendedText;
+		this.#streamLexedText = text;
+		return true;
 	}
 
 	#lexTokens(text: string): Token[] {
 		const prefix = this.#streamPrefixText;
 		const streamTokens = this.#streamTokens;
 		const hasPrefix =
-			prefix !== undefined && streamTokens !== undefined && text.length > prefix.length && text.startsWith(prefix);
+			this.#appendOnlySinceRender &&
+			prefix !== undefined &&
+			streamTokens !== undefined &&
+			text.length > prefix.length &&
+			text.startsWith(prefix);
 		const refDefText = hasPrefix ? text.slice(prefix.length) : text;
-		const canStream = !HAS_REF_DEF.test(refDefText) && !refDefText.includes("\r");
+		const hasReferenceDefinition =
+			this.#normalizedTextCache?.source === text
+				? this.#normalizedTextCache.hasReferenceDefinition
+				: HAS_REF_DEF.test(refDefText);
+		const canStream = !hasReferenceDefinition && !refDefText.includes("\r");
 		if (canStream && hasPrefix) {
-			const tailTokens = lexDocument(refDefText);
+			if (this.#tryAppendPlainListToken(text, refDefText, streamTokens)) return streamTokens;
+			const tailTokens = lexDocument(refDefText, true);
 			const frozen = stableBlockBoundary(text, prefix.length, tailTokens);
 			// Keep frozen token indexes stable; only the mutable tail needs replacing or scanning.
 			streamTokens.length = this.#streamPrefixTokenCount;
@@ -1357,19 +1607,22 @@ export class Markdown
 				this.#streamPrefixText = text.slice(0, frozen.end);
 				this.#streamPrefixTokenCount += frozen.count;
 			}
+			this.#streamLexedText = text;
 			return streamTokens;
 		}
-		const tokens = lexDocument(text);
+		const tokens = lexDocument(text, this.transientRenderCache || hasPrefix);
 		const frozen = canStream ? stableBlockBoundary(text, 0, tokens) : NO_BLOCK_BOUNDARY;
 		if (frozen.count > 0) {
 			this.#streamPrefixText = text.slice(0, frozen.end);
 			this.#streamTokens = tokens;
 			this.#streamPrefixTokenCount = frozen.count;
+			this.#streamLexedText = text;
 		} else {
 			this.#streamPrefixText = undefined;
 			this.#streamTokens = undefined;
 			this.#streamPrefixTokenCount = 0;
 			this.#streamPrefixLineCache = undefined;
+			this.#streamLexedText = undefined;
 		}
 		return tokens;
 	}
@@ -1377,11 +1630,13 @@ export class Markdown
 	render(width: number): readonly string[] {
 		if (this.#tableLayoutWidth !== undefined && this.#tableLayoutWidth !== width) {
 			this.#clearTableLayouts();
+			this.#normalizedTextCache = undefined;
 			this.invalidate();
 		}
 		this.#tableLayoutWidth = width;
 
 		if (this.#cachedLines && this.#cachedText === this.#text && this.#cachedWidth === width) {
+			this.#appendOnlySinceRender = false;
 			this.#recordLastRenderedState(this.#cachedLines.length > 0);
 			return this.#cachedLines;
 		}
@@ -1395,17 +1650,16 @@ export class Markdown
 			this.#cachedText = this.#text;
 			this.#cachedWidth = width;
 			this.#cachedLines = EMPTY_RENDER_LINES;
+			this.#appendOnlySinceRender = false;
 			this.#recordLastRenderedState(false);
 			return EMPTY_RENDER_LINES;
 		}
 
-		const normalizedText = this.transientRenderCache
-			? replaceTabs(this.#text)
-			: repairOrphanClosingFence(replaceTabs(this.#text));
+		const normalizedText = this.#normalizedTextForRender();
 		const signature = this.#renderSignature(width, paddingX);
 
 		let cacheKey: string | undefined;
-		if (!this.transientRenderCache && this.#lockedTableLayouts.size === 0) {
+		if (!this.transientRenderCache && !this.#appendOnlySinceRender && this.#lockedTableLayouts.size === 0) {
 			cacheKey = this.#renderCacheKey(normalizedText, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
@@ -1417,6 +1671,7 @@ export class Markdown
 				this.#cachedText = this.#text;
 				this.#cachedWidth = width;
 				this.#cachedLines = cached.lines;
+				this.#appendOnlySinceRender = false;
 				this.#recordLastRenderedState(cached.lines.length > 0);
 				return cached.lines;
 			}
@@ -1427,12 +1682,23 @@ export class Markdown
 		const tableRenderSpecs: TableRenderSpec[] = [];
 		this.#activeTableRenderSpecs = tableRenderSpecs;
 		this.#activeRenderSignature = signature;
+		if (this.#appendOnlySinceRender) {
+			const fragmentSignature = this.#renderFragmentPrefix(signature);
+			if (this.#renderFragmentCacheSignature !== fragmentSignature) {
+				this.#clearIncrementalTokenFragments();
+				this.#renderFragmentCacheSignature = fragmentSignature;
+				this.#renderFragmentCacheRevision++;
+			}
+			this.#activeRenderFragmentRevision = this.#renderFragmentCacheRevision;
+		}
 		try {
-			contentLines = this.transientRenderCache
-				? this.#renderStreamingContentLines(tokens, normalizedText, signature, contentWidth)
-				: this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature, 0, 0);
+			contentLines =
+				this.transientRenderCache || this.#appendOnlySinceRender
+					? this.#renderStreamingContentLines(tokens, normalizedText, signature, contentWidth)
+					: this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature, 0, 0);
 		} finally {
 			this.#activeRenderSignature = undefined;
+			this.#activeRenderFragmentRevision = undefined;
 			this.#activeTableRenderSpecs = undefined;
 		}
 		this.#lastRenderedTableLayouts = this.#resolveRenderedTableLayouts(tableRenderSpecs, signature.paddingY);
@@ -1454,6 +1720,7 @@ export class Markdown
 				})),
 			});
 		}
+		this.#appendOnlySinceRender = false;
 		this.#recordLastRenderedState(contentLines.length > 0);
 
 		return result;
@@ -1462,6 +1729,7 @@ export class Markdown
 	#renderSignature(width: number, paddingX: number): RenderSignature {
 		const bgColorProbe = this.#defaultTextStyle?.bgColor ? this.#defaultTextStyle.bgColor("\x01") : "";
 		const headingProbe = this.#theme.heading("");
+		const themeRevision = this.#themeRevision();
 		return {
 			width,
 			paddingX,
@@ -1474,11 +1742,489 @@ export class Markdown
 			textSizing: TERMINAL.textSizing,
 			bgColorProbe,
 			headingProbe,
+			themeRevision,
 		};
 	}
 
+	#themeRevision(): string {
+		const themeCallbacks = [
+			this.#theme.heading,
+			this.#theme.link,
+			this.#theme.linkUrl,
+			this.#theme.code,
+			this.#theme.codeBlock,
+			this.#theme.codeBlockBorder,
+			this.#theme.codeBlockFence,
+			this.#theme.quote,
+			this.#theme.quoteBorder,
+			this.#theme.hr,
+			this.#theme.listBullet,
+			this.#theme.bold,
+			this.#theme.italic,
+			this.#theme.strikethrough,
+			this.#theme.underline,
+			this.#theme.highlightCode,
+			this.#theme.createHighlightStream,
+			this.#theme.resolveMermaidAscii,
+		];
+		const callbackIds = themeCallbacks
+			.map(callback => (typeof callback === "function" ? objectId(callback) : -1))
+			.join(",");
+		const defaultStyle = this.#defaultTextStyle;
+		const defaultCallbacks = [defaultStyle?.color, defaultStyle?.bgColor];
+		const defaultCallbackIds = defaultCallbacks
+			.map(callback => (typeof callback === "function" ? objectId(callback) : -1))
+			.join(",");
+		return [
+			callbackIds,
+			JSON.stringify(this.#theme.symbols),
+			defaultCallbackIds,
+			defaultStyle?.bold ? 1 : 0,
+			defaultStyle?.italic ? 1 : 0,
+			defaultStyle?.strikethrough ? 1 : 0,
+			defaultStyle?.underline ? 1 : 0,
+		].join("|");
+	}
+
 	#renderCacheKey(normalizedText: string, signature: RenderSignature): string {
-		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
+		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}\x00${signature.themeRevision}`;
+	}
+
+	#renderFragmentPrefix(signature: RenderSignature): string {
+		return [
+			signature.width,
+			signature.paddingX,
+			signature.paddingY,
+			signature.codeBlockIndent,
+			signature.themeId,
+			signature.defaultTextStyleId,
+			signature.imageProtocol,
+			signature.hyperlinks ? 1 : 0,
+			signature.textSizing ? 1 : 0,
+			signature.bgColorProbe,
+			signature.headingProbe,
+			signature.themeRevision,
+			getWidthConfigEpoch(),
+		]
+			.map(value => {
+				const text = String(value);
+				return `${text.length}:${text}`;
+			})
+			.join("|");
+	}
+
+	#plainParagraphText(token: Token): string | undefined {
+		if (token.type !== "paragraph" || this.#defaultTextStyle !== undefined) return undefined;
+		const inlineTokens = token.tokens;
+		if (inlineTokens === undefined || inlineTokens.length !== 1) return undefined;
+		const inlineToken = inlineTokens[0];
+		if (inlineToken?.type !== "text" || typeof inlineToken.text !== "string") return undefined;
+		const text = inlineToken.text;
+		// Entity and swatch parsing can change already-rendered text when an append
+		// completes a marker that crossed the previous render boundary.
+		if (text.includes("&") || text.includes("#") || text.includes("\x1b") || TREE_GUIDE_ANCHOR_RE.test(text)) {
+			return undefined;
+		}
+		return text;
+	}
+
+	#cachedTokenFragment(
+		token: Token,
+		nextTokenType: string | undefined,
+		sourceOffset: number,
+	): IncrementalTokenFragment | undefined {
+		const revision = this.#activeRenderFragmentRevision;
+		if (revision === undefined || this.#normalizedTextCache?.hasReferenceDefinition === true) return undefined;
+		if (!("raw" in token) || typeof token.raw !== "string") return undefined;
+		const cached = this.#incrementalTokenFragments.get(sourceOffset);
+		if (cached?.kind !== "token") return undefined;
+		if (cached.revision !== revision || cached.transient !== this.transientRenderCache) return undefined;
+		if (cached.frozen !== this.#renderingFrozenPrefix) return undefined;
+		if (cached.type !== token.type || cached.nextTokenType !== nextTokenType || cached.raw !== token.raw) {
+			return undefined;
+		}
+		// Refresh insertion order so the bounded map evicts the least recently used
+		// fragment rather than simply the oldest source offset.
+		this.#incrementalTokenFragments.delete(sourceOffset);
+		this.#incrementalTokenFragments.set(sourceOffset, cached);
+		return cached;
+	}
+
+	#formatPlainContentLine(
+		text: string,
+		signature: RenderSignature,
+		leftMargin: string,
+		rightMargin: string,
+		bgFn: ((text: string) => string) | undefined,
+	): string {
+		const lineWithMargins = leftMargin + text + rightMargin;
+		if (bgFn) return applyBackgroundToLine(lineWithMargins, signature.width, bgFn);
+		const visibleLen = visibleWidth(lineWithMargins);
+		const paddingNeeded = Math.max(0, signature.width - visibleLen);
+		return lineWithMargins + padding(paddingNeeded);
+	}
+
+	#appendListPlainParagraphTail(
+		listToken: ListToken,
+		sourceOffset: number,
+		contentWidth: number,
+		signature: RenderSignature,
+		cached: IncrementalTokenFragment,
+	): IncrementalTokenFragment | undefined {
+		if (
+			cached.listLastItemLineCount === undefined ||
+			cached.listLastParagraphRaw === undefined ||
+			cached.listLastParagraphText === undefined ||
+			cached.listLastParagraphLineStart === undefined ||
+			cached.listLastParagraphLineCount === undefined
+		) {
+			return undefined;
+		}
+		const lastItem = listToken.items.at(-1);
+		const finalToken = lastItem?.tokens?.at(-1);
+		if (
+			lastItem?.raw === undefined ||
+			finalToken === undefined ||
+			finalToken.type !== "paragraph" ||
+			!("raw" in finalToken) ||
+			typeof finalToken.raw !== "string"
+		) {
+			return undefined;
+		}
+		const plainText = this.#plainParagraphText(finalToken);
+		if (plainText === undefined || contentWidth < 8) return undefined;
+		if (listToken.items.length !== cached.listItemCount) return undefined;
+		if (!listToken.raw.startsWith(cached.raw) || !lastItem.raw.startsWith(cached.listLastItemRaw ?? "")) {
+			return undefined;
+		}
+		if (!finalToken.raw.startsWith(cached.listLastParagraphRaw)) return undefined;
+		if (plainText.length <= cached.listLastParagraphText.length) return undefined;
+		if (cached.listLastParagraphText.includes("\n") || plainText.includes("\n")) return undefined;
+
+		const wrappedLines = cached.wrappedLines as RenderedLine[];
+		const contentLines = cached.contentLines as string[] | undefined;
+		const oldLastItemLineCount = cached.listLastItemLineCount;
+		const oldParagraphLineCount = cached.listLastParagraphLineCount;
+		const itemStart = wrappedLines.length - oldLastItemLineCount;
+		const paragraphStart = itemStart + cached.listLastParagraphLineStart;
+		if (
+			itemStart < 0 ||
+			paragraphStart < itemStart ||
+			oldParagraphLineCount <= 0 ||
+			paragraphStart + oldParagraphLineCount !== wrappedLines.length ||
+			contentLines === undefined ||
+			contentLines.length !== wrappedLines.length
+		) {
+			return undefined;
+		}
+
+		const itemIndex = listToken.items.length - 1;
+		const bullet = listToken.ordered ? `${(listToken.start ?? 1) + itemIndex}. ` : "- ";
+		const firstPrefix = this.#theme.listBullet(bullet);
+		const continuationPrefix = padding(visibleWidth(bullet));
+		const firstPrefixWidth = visibleWidth(firstPrefix);
+		const continuationPrefixWidth = visibleWidth(continuationPrefix);
+		if (firstPrefixWidth >= contentWidth || continuationPrefixWidth >= contentWidth) return undefined;
+		const bodyWidth =
+			paragraphStart === itemStart ? contentWidth - firstPrefixWidth : contentWidth - continuationPrefixWidth;
+		const rowPrefix = (rowIndex: number): string =>
+			paragraphStart === itemStart && rowIndex === 0 ? firstPrefix : continuationPrefix;
+		const rowBodyWidth = Math.max(1, bodyWidth);
+
+		const rewrapStart = Math.max(0, oldParagraphLineCount - 2);
+		let searchFrom = 0;
+		let tailStart = -1;
+		for (let rowIndex = 0; rowIndex <= rewrapStart; rowIndex++) {
+			const renderedRow = wrappedLines[paragraphStart + rowIndex];
+			const prefix = rowPrefix(rowIndex);
+			if (
+				renderedRow === undefined ||
+				renderedRow.literalCode ||
+				TERMINAL.isImageLine(renderedRow.text) ||
+				isOsc66Line(renderedRow.text) ||
+				!renderedRow.text.startsWith(prefix)
+			) {
+				return undefined;
+			}
+			const body = renderedRow.text.slice(prefix.length);
+			if (body === "") return undefined;
+			const rowStart = cached.listLastParagraphText.indexOf(body, searchFrom);
+			if (rowStart < 0) return undefined;
+			if (rowIndex === rewrapStart) tailStart = rowStart;
+			searchFrom = rowStart + body.length;
+		}
+		if (tailStart < 0) return undefined;
+		const sourceTail = cached.listLastParagraphText.slice(tailStart);
+		if (sourceTail.length > Math.max(1024, rowBodyWidth * 8)) return undefined;
+		const appendedText = plainText.slice(cached.listLastParagraphText.length);
+		const tailRows = wrapTextWithAnsi(sourceTail + appendedText, rowBodyWidth);
+		if (tailRows.length === 0) return undefined;
+
+		const previousFragmentSize = this.#incrementalTokenFragmentSize(sourceOffset, cached);
+		const leftMargin = padding(signature.paddingX);
+		const rightMargin = padding(signature.paddingX);
+		const bgFn = this.#defaultTextStyle?.bgColor;
+		let rowIndex = paragraphStart + rewrapStart;
+		for (let tailIndex = 0; tailIndex < tailRows.length; tailIndex++) {
+			let renderedRow = wrappedLines[rowIndex];
+			if (renderedRow === undefined) {
+				renderedRow = renderedLine("");
+				wrappedLines[rowIndex] = renderedRow;
+			}
+			renderedRow.text = rowPrefix(rewrapStart + tailIndex) + tailRows[tailIndex]!;
+			delete renderedRow.literalCode;
+			contentLines[rowIndex] = this.#formatPlainContentLine(
+				renderedRow.text,
+				signature,
+				leftMargin,
+				rightMargin,
+				bgFn,
+			);
+			rowIndex++;
+		}
+
+		const newParagraphLineCount = rewrapStart + tailRows.length;
+		const targetLength = paragraphStart + newParagraphLineCount;
+		wrappedLines.length = targetLength;
+		contentLines.length = targetLength;
+		cached.raw = listToken.raw;
+		cached.listLastItemRaw = lastItem.raw;
+		cached.listLastItemLineCount = cached.listLastItemLineCount - oldParagraphLineCount + newParagraphLineCount;
+		cached.listLastParagraphRaw = finalToken.raw;
+		cached.listLastParagraphText = plainText;
+		cached.listLastParagraphLineCount = newParagraphLineCount;
+		this.#incrementalTokenFragmentsSize +=
+			this.#incrementalTokenFragmentSize(sourceOffset, cached) - previousFragmentSize;
+		return cached;
+	}
+
+	#appendListFragment(
+		token: Token,
+		nextTokenType: string | undefined,
+		sourceOffset: number,
+		contentWidth: number,
+		signature: RenderSignature,
+	): IncrementalTokenFragment | undefined {
+		if (token.type !== "list") return undefined;
+		const revision = this.#activeRenderFragmentRevision;
+		if (revision === undefined || this.#normalizedTextCache?.hasReferenceDefinition === true) return undefined;
+		const cached = this.#incrementalTokenFragments.get(sourceOffset);
+		if (cached?.kind !== "token") return undefined;
+		if (cached.revision !== revision || cached.transient !== this.transientRenderCache) return undefined;
+		if (cached.frozen !== this.#renderingFrozenPrefix) return undefined;
+		if (cached.type !== "list" || cached.nextTokenType !== nextTokenType) return undefined;
+		if (
+			cached.listItemCount === undefined ||
+			cached.listLastItemRaw === undefined ||
+			cached.listLastItemLineCount === undefined
+		) {
+			return undefined;
+		}
+
+		const listToken = token as ListToken;
+		const lastItem = listToken.items.at(-1);
+		if (lastItem?.raw === undefined || listToken.items.length !== cached.listItemCount) return undefined;
+		if (!token.raw.startsWith(cached.raw) || !lastItem.raw.startsWith(cached.listLastItemRaw)) return undefined;
+		if (lastItem.raw.length <= cached.listLastItemRaw.length) return undefined;
+		if (cached.hasSpecialLine) return undefined;
+		const appendedParagraph = this.#appendListPlainParagraphTail(
+			listToken,
+			sourceOffset,
+			contentWidth,
+			signature,
+			cached,
+		);
+		if (appendedParagraph !== undefined) return appendedParagraph;
+
+		const wrappedLines = cached.wrappedLines as RenderedLine[];
+		const contentLines = cached.contentLines as string[] | undefined;
+		const oldLastItemLineCount = cached.listLastItemLineCount;
+		const lastItemStart = wrappedLines.length - oldLastItemLineCount;
+		if (lastItemStart < 0 || contentLines === undefined || contentLines.length !== wrappedLines.length)
+			return undefined;
+
+		const renderedLastItem = this.#renderList(listToken, 0, contentWidth, undefined, listToken.items.length - 1);
+		if (
+			renderedLastItem.some(
+				line =>
+					line.literalCode ||
+					TERMINAL.isImageLine(line.text) ||
+					isOsc66Line(line.text) ||
+					("nested" in line && line.nested === true),
+			)
+		) {
+			return undefined;
+		}
+
+		const previousFragmentSize = this.#incrementalTokenFragmentSize(sourceOffset, cached);
+		const leftMargin = padding(signature.paddingX);
+		const rightMargin = padding(signature.paddingX);
+		const bgFn = this.#defaultTextStyle?.bgColor;
+		let rowIndex = lastItemStart;
+		for (const renderedLastItemLine of renderedLastItem) {
+			let renderedRow = wrappedLines[rowIndex];
+			if (renderedRow === undefined) {
+				renderedRow = renderedLine("");
+				wrappedLines[rowIndex] = renderedRow;
+			}
+			renderedRow.text = renderedLastItemLine.text;
+			if (renderedLastItemLine.literalCode) renderedRow.literalCode = true;
+			else delete renderedRow.literalCode;
+			contentLines[rowIndex] = this.#formatPlainContentLine(
+				renderedLastItemLine.text,
+				signature,
+				leftMargin,
+				rightMargin,
+				bgFn,
+			);
+			rowIndex++;
+		}
+		wrappedLines.length = rowIndex;
+		contentLines.length = rowIndex;
+		cached.raw = token.raw;
+		cached.listLastItemRaw = lastItem.raw;
+		cached.listLastItemLineCount = renderedLastItem.length;
+		this.#incrementalTokenFragmentsSize +=
+			this.#incrementalTokenFragmentSize(sourceOffset, cached) - previousFragmentSize;
+		return cached;
+	}
+
+	#appendPlainParagraphFragment(
+		token: Token,
+		nextTokenType: string | undefined,
+		sourceOffset: number,
+		contentWidth: number,
+		signature: RenderSignature,
+	): IncrementalTokenFragment | undefined {
+		const plainText = this.#plainParagraphText(token);
+		if (plainText === undefined) return undefined;
+
+		const revision = this.#activeRenderFragmentRevision;
+		if (revision === undefined || this.#normalizedTextCache?.hasReferenceDefinition === true) return undefined;
+		const cached = this.#incrementalTokenFragments.get(sourceOffset);
+		if (cached?.kind !== "token") return undefined;
+		if (cached.revision !== revision || cached.transient !== this.transientRenderCache) return undefined;
+		if (cached.frozen !== this.#renderingFrozenPrefix) return undefined;
+		if (cached.type !== "paragraph" || cached.nextTokenType !== nextTokenType) return undefined;
+		if (cached.plainText === undefined || cached.plainContentLineCount === undefined) return undefined;
+		if (!token.raw.startsWith(cached.raw) || !plainText.startsWith(cached.plainText)) return undefined;
+		if (plainText.length <= cached.plainText.length) return undefined;
+		if (cached.hasSpecialLine) return undefined;
+		// Newline handling has stateful whitespace behavior in the native wrapper;
+		// leave those appends on the fully-rendered path. Very narrow rows also
+		// have grapheme-boundary edge cases that are not worth a speculative fast path.
+		if (contentWidth < 8 || cached.plainText.includes("\n")) return undefined;
+
+		const wrappedLines = cached.wrappedLines as RenderedLine[];
+		const contentLines = cached.contentLines as string[] | undefined;
+		const oldContentCount = cached.plainContentLineCount;
+		const spacerCount = wrappedLines.length - oldContentCount;
+		if (oldContentCount <= 0 || spacerCount < 0 || spacerCount > 1 || contentLines === undefined) return undefined;
+		if (contentLines.length !== wrappedLines.length) return undefined;
+		const rewrapStart = Math.max(0, oldContentCount - 2);
+		let searchFrom = 0;
+		let tailStart = -1;
+		for (let rowIndex = 0; rowIndex <= rewrapStart; rowIndex++) {
+			const row = wrappedLines[rowIndex];
+			if (row === undefined || row.literalCode || row.text === "") return undefined;
+			const rowStart = cached.plainText.indexOf(row.text, searchFrom);
+			if (rowStart < 0) return undefined;
+			if (rowIndex === rewrapStart) tailStart = rowStart;
+			searchFrom = rowStart + row.text.length;
+		}
+		if (tailStart < 0) return undefined;
+		// The native wrapper may discard the separator at a line break. Start at
+		// the source position of the final two rows so separator whitespace is
+		// available when the append changes which row owns it.
+		const sourceTail = cached.plainText.slice(tailStart);
+		if (sourceTail.length > Math.max(1024, contentWidth * 8)) return undefined;
+		const appendedText = plainText.slice(cached.plainText.length);
+		const tailRows = wrapTextWithAnsi(sourceTail + appendedText, contentWidth);
+		if (tailRows.length === 0) return undefined;
+
+		const previousFragmentSize = this.#incrementalTokenFragmentSize(sourceOffset, cached);
+		const leftMargin = padding(signature.paddingX);
+		const rightMargin = padding(signature.paddingX);
+		const bgFn = this.#defaultTextStyle?.bgColor;
+		const blankLine = spacerCount > 0 ? contentLines[oldContentCount] : undefined;
+		let rowIndex = rewrapStart;
+		for (const tailRow of tailRows) {
+			let renderedRow = wrappedLines[rowIndex];
+			if (renderedRow === undefined) {
+				renderedRow = renderedLine("");
+				wrappedLines[rowIndex] = renderedRow;
+			}
+			renderedRow.text = tailRow;
+			delete renderedRow.literalCode;
+			contentLines[rowIndex] = this.#formatPlainContentLine(tailRow, signature, leftMargin, rightMargin, bgFn);
+			rowIndex++;
+		}
+
+		const newContentCount = rowIndex;
+		const targetLength = newContentCount + spacerCount;
+		for (let i = 0; i < spacerCount; i++) {
+			let renderedRow = wrappedLines[rowIndex];
+			if (renderedRow === undefined) {
+				renderedRow = renderedLine("");
+				wrappedLines[rowIndex] = renderedRow;
+			}
+			renderedRow.text = "";
+			delete renderedRow.literalCode;
+			contentLines[rowIndex] =
+				blankLine ?? this.#formatPlainContentLine("", signature, leftMargin, rightMargin, bgFn);
+			rowIndex++;
+		}
+		wrappedLines.length = targetLength;
+		contentLines.length = targetLength;
+		cached.raw = token.raw;
+		cached.plainText = plainText;
+		cached.plainContentLineCount = newContentCount;
+		cached.startsWithEmptyLine = wrappedLines[0]?.text === "";
+		this.#incrementalTokenFragmentsSize +=
+			this.#incrementalTokenFragmentSize(sourceOffset, cached) - previousFragmentSize;
+		return cached;
+	}
+
+	#incrementalTokenFragmentSize(sourceOffset: number, fragment: IncrementalRenderFragment): number {
+		let size = String(sourceOffset).length + fragment.type.length + (fragment.nextTokenType?.length ?? 0);
+		size += fragment.raw.length;
+		for (const line of fragment.wrappedLines) size += line.text.length + 1;
+		for (const table of fragment.tables) size += table.key.length + table.columnWidths.length + 4;
+		if (fragment.contentLines !== undefined) {
+			for (const line of fragment.contentLines) size += line.length + 1;
+		}
+		return Math.max(1, size);
+	}
+
+	#clearIncrementalTokenFragments(): void {
+		this.#incrementalTokenFragments.clear();
+		this.#incrementalTokenFragmentsSize = 0;
+	}
+
+	#deleteIncrementalTokenFragment(sourceOffset: number): void {
+		const fragment = this.#incrementalTokenFragments.get(sourceOffset);
+		if (fragment === undefined) return;
+		this.#incrementalTokenFragments.delete(sourceOffset);
+		this.#incrementalTokenFragmentsSize = Math.max(
+			0,
+			this.#incrementalTokenFragmentsSize - this.#incrementalTokenFragmentSize(sourceOffset, fragment),
+		);
+	}
+
+	#storeTokenFragment(sourceOffset: number, fragment: IncrementalRenderFragment): void {
+		const size = this.#incrementalTokenFragmentSize(sourceOffset, fragment);
+		this.#deleteIncrementalTokenFragment(sourceOffset);
+		if (size > RENDER_CACHE_MAX_ENTRY_SIZE) return;
+		while (
+			this.#incrementalTokenFragments.size >= RENDER_CACHE_MAX ||
+			this.#incrementalTokenFragmentsSize + size > INCREMENTAL_FRAGMENT_CACHE_MAX_SIZE
+		) {
+			const oldest = this.#incrementalTokenFragments.keys().next();
+			if (oldest.done) break;
+			this.#deleteIncrementalTokenFragment(oldest.value);
+		}
+		this.#incrementalTokenFragments.set(sourceOffset, fragment);
+		this.#incrementalTokenFragmentsSize += size;
 	}
 
 	#renderStreamingContentLines(
@@ -1493,12 +2239,12 @@ export class Markdown
 			return this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature, 0, 0);
 		}
 
-		const contentLines: string[] = [];
+		let contentLines: string[] | undefined;
 		const reusablePrefix = this.#matchingStreamPrefixLineCache(normalizedText, frozenText, signature);
 		let renderedUntil = 0;
 		let renderedSourceOffset = 0;
 		if (reusablePrefix && reusablePrefix.tokenCount <= frozenTokenCount) {
-			contentLines.push(...reusablePrefix.lines);
+			contentLines = reusablePrefix.lines;
 			this.#activeTableRenderSpecs?.push(...reusablePrefix.tables);
 			renderedUntil = reusablePrefix.tokenCount;
 			renderedSourceOffset = reusablePrefix.text.length;
@@ -1507,52 +2253,56 @@ export class Markdown
 		if (renderedUntil < frozenTokenCount) {
 			this.#renderingFrozenPrefix = true;
 			try {
-				contentLines.push(
-					...this.#renderContentLines(
-						tokens,
-						renderedUntil,
-						frozenTokenCount,
-						contentWidth,
-						signature,
-						contentLines.length,
-						renderedSourceOffset,
-					),
+				const renderedPrefix = this.#renderContentLines(
+					tokens,
+					renderedUntil,
+					frozenTokenCount,
+					contentWidth,
+					signature,
+					contentLines?.length ?? 0,
+					renderedSourceOffset,
 				);
+				contentLines = contentLines === undefined ? renderedPrefix : contentLines.concat(renderedPrefix);
 			} finally {
 				this.#renderingFrozenPrefix = false;
 			}
 			renderedUntil = frozenTokenCount;
 		}
 
+		// Keep the frozen prefix array itself. The mutable suffix is appended to a
+		// separate result below, so no copy of every settled row is needed per update.
+		const frozenLines = contentLines ?? [];
 		this.#streamPrefixLineCache = {
 			...signature,
 			text: frozenText,
 			tokenCount: frozenTokenCount,
-			lines: contentLines.slice(),
+			lines: frozenLines,
 			tables: this.#activeTableRenderSpecs?.slice() ?? [],
 		};
 
-		if (contentLines.length > 0) {
+		if (this.transientRenderCache && frozenLines.length > 0) {
 			if (this.#settledExposedText === undefined || frozenText.startsWith(this.#settledExposedText)) {
 				this.#settledExposedText = frozenText;
-				this.#lastRenderSettledRows = signature.paddingY + contentLines.length;
+				this.#lastRenderSettledRows = signature.paddingY + frozenLines.length;
 			} else {
 				this.#settledExposedText = undefined;
 			}
 		}
 
 		if (renderedUntil < tokens.length) {
-			contentLines.push(
-				...this.#renderContentLines(
+			contentLines = frozenLines.concat(
+				this.#renderContentLines(
 					tokens,
 					renderedUntil,
 					tokens.length,
 					contentWidth,
 					signature,
-					contentLines.length,
+					frozenLines.length,
 					frozenText.length,
 				),
 			);
+		} else {
+			contentLines = frozenLines;
 		}
 
 		return contentLines;
@@ -1577,6 +2327,7 @@ export class Markdown
 		if (cache.textSizing !== signature.textSizing) return undefined;
 		if (cache.bgColorProbe !== signature.bgColorProbe) return undefined;
 		if (cache.headingProbe !== signature.headingProbe) return undefined;
+		if (cache.themeRevision !== signature.themeRevision) return undefined;
 		return cache;
 	}
 
@@ -1589,7 +2340,14 @@ export class Markdown
 		rowOffset: number,
 		startingSourceOffset: number,
 	): string[] {
-		const wrappedLines: RenderedLine[] = [];
+		const wrappedLines = this.#renderWrappedLinesScratch;
+		wrappedLines.length = 0;
+		const tokenSegments = this.#renderTokenSegmentsScratch;
+		tokenSegments.length = 0;
+		const canReuseContentLines =
+			this.#streamPrefixLineCache !== undefined && startingSourceOffset >= this.#streamPrefixLineCache.text.length;
+		const contentLines = canReuseContentLines ? this.#renderContentLinesScratch : [];
+		contentLines.length = 0;
 		let sourceOffset = startingSourceOffset;
 		for (let i = start; i < end; i++) {
 			const token = tokens[i];
@@ -1597,87 +2355,218 @@ export class Markdown
 			const tableSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
 			const tokenWrappedRowStart = wrappedLines.length;
 			const tokenRowStart = rowOffset + tokenWrappedRowStart;
-			const renderedTokenLines = this.#renderToken(
-				token,
-				contentWidth,
-				nextToken?.type,
-				undefined,
-				`offset:${sourceOffset}`,
-			);
-			const tokenLineOffsets = [0];
-			for (const renderedRow of renderedTokenLines) {
-				if (token.type === "list" || TERMINAL.isImageLine(renderedRow.text) || isOsc66Line(renderedRow.text)) {
-					wrappedLines.push(renderedRow);
+			const cachedToken = this.#cachedTokenFragment(token, nextToken?.type, sourceOffset);
+
+			if (cachedToken !== undefined) {
+				wrappedLines.push(...cachedToken.wrappedLines);
+				for (const table of cachedToken.tables) {
+					this.#activeTableRenderSpecs?.push({
+						...table,
+						startRow: tokenRowStart + table.startRow,
+						endRow: tokenRowStart + table.endRow,
+						columnWidths: table.columnWidths.slice(),
+					});
+				}
+				tokenSegments.push({
+					start: tokenWrappedRowStart,
+					end: wrappedLines.length,
+					fragment: cachedToken,
+					sourceOffset,
+					storeFragment: false,
+				});
+			} else {
+				const appendedFragment =
+					this.#appendListFragment(token, nextToken?.type, sourceOffset, contentWidth, signature) ??
+					this.#appendPlainParagraphFragment(token, nextToken?.type, sourceOffset, contentWidth, signature);
+				if (appendedFragment !== undefined) {
+					wrappedLines.push(...appendedFragment.wrappedLines);
+					tokenSegments.push({
+						start: tokenWrappedRowStart,
+						end: wrappedLines.length,
+						fragment: appendedFragment,
+						sourceOffset,
+						storeFragment: true,
+					});
 				} else {
-					const wrappedRows = wrapTextWithAnsi(renderedRow.text, contentWidth);
-					if (wrappedRows.length === 1 && wrappedRows[0] === renderedRow.text) {
-						wrappedLines.push(renderedRow);
-					} else {
-						for (const wrappedLine of wrappedRows) {
-							wrappedLines.push(renderedLine(wrappedLine, renderedRow.literalCode));
+					const renderedTokenLines = this.#renderToken(
+						token,
+						contentWidth,
+						nextToken?.type,
+						undefined,
+						`offset:${sourceOffset}`,
+					);
+					const tokenLineOffsets = [0];
+					for (const renderedRow of renderedTokenLines) {
+						if (
+							token.type === "list" ||
+							TERMINAL.isImageLine(renderedRow.text) ||
+							isOsc66Line(renderedRow.text)
+						) {
+							wrappedLines.push(renderedRow);
+						} else {
+							const wrappedRows = wrapTextWithAnsi(renderedRow.text, contentWidth);
+							if (wrappedRows.length === 1 && wrappedRows[0] === renderedRow.text) {
+								wrappedLines.push(renderedRow);
+							} else {
+								for (const wrappedLine of wrappedRows) {
+									wrappedLines.push(renderedLine(wrappedLine, renderedRow.literalCode));
+								}
+							}
+						}
+						tokenLineOffsets.push(wrappedLines.length - tokenWrappedRowStart);
+					}
+					const tableSpecs = this.#activeTableRenderSpecs;
+					if (tableSpecs !== undefined) {
+						for (let specIndex = tableSpecStart; specIndex < tableSpecs.length; specIndex++) {
+							const spec = tableSpecs[specIndex]!;
+							let relativeStart: number;
+							let relativeEnd: number;
+							if (token.type === "table") {
+								relativeStart = 0;
+								relativeEnd = Math.min(renderedTokenLines.length, spec.lineCount);
+							} else {
+								if (spec.startRow < 0 || spec.endRow <= spec.startRow) continue;
+								relativeStart = Math.min(renderedTokenLines.length, spec.startRow);
+								relativeEnd = Math.min(renderedTokenLines.length, spec.endRow);
+							}
+							spec.startRow = tokenRowStart + tokenLineOffsets[relativeStart]!;
+							spec.endRow = tokenRowStart + tokenLineOffsets[relativeEnd]!;
 						}
 					}
-				}
-				tokenLineOffsets.push(wrappedLines.length - tokenWrappedRowStart);
-			}
-			const tableSpecs = this.#activeTableRenderSpecs;
-			if (tableSpecs !== undefined) {
-				for (let specIndex = tableSpecStart; specIndex < tableSpecs.length; specIndex++) {
-					const spec = tableSpecs[specIndex]!;
-					let relativeStart: number;
-					let relativeEnd: number;
-					if (token.type === "table") {
-						relativeStart = 0;
-						relativeEnd = Math.min(renderedTokenLines.length, spec.lineCount);
+
+					if (
+						this.#activeRenderFragmentRevision !== undefined &&
+						"raw" in token &&
+						typeof token.raw === "string"
+					) {
+						const tables = (this.#activeTableRenderSpecs?.slice(tableSpecStart) ?? []).map(table => ({
+							...table,
+							startRow: table.startRow - tokenRowStart,
+							endRow: table.endRow - tokenRowStart,
+							columnWidths: table.columnWidths.slice(),
+						}));
+						const fragment: IncrementalTokenFragment = {
+							kind: "token",
+							revision: this.#activeRenderFragmentRevision,
+							transient: this.transientRenderCache,
+							frozen: this.#renderingFrozenPrefix,
+							type: token.type,
+							nextTokenType: nextToken?.type,
+							raw: token.raw,
+							wrappedLines: wrappedLines.slice(tokenWrappedRowStart),
+							tables,
+							hasSpecialLine: wrappedLines
+								.slice(tokenWrappedRowStart)
+								.some(line => TERMINAL.isImageLine(line.text) || isOsc66Line(line.text)),
+							startsWithEmptyLine: wrappedLines[tokenWrappedRowStart]?.text === "",
+						};
+						const plainParagraphText = this.#plainParagraphText(token);
+						if (plainParagraphText !== undefined && !fragment.hasSpecialLine) {
+							const spacerRows =
+								nextToken?.type && nextToken.type !== "list" && nextToken.type !== "space" ? 1 : 0;
+							fragment.plainText = plainParagraphText;
+							fragment.plainContentLineCount = Math.max(0, fragment.wrappedLines.length - spacerRows);
+						}
+						if (token.type === "list" && !fragment.hasSpecialLine) {
+							const listToken = token as ListToken;
+							const lastItem = listToken.items.at(-1);
+							if (lastItem?.raw !== undefined && this.#lastRenderedListLastItemLineCount > 0) {
+								fragment.listItemCount = listToken.items.length;
+								fragment.listLastItemRaw = lastItem.raw;
+								fragment.listLastItemLineCount = this.#lastRenderedListLastItemLineCount;
+								if (
+									this.#lastRenderedListMutableParagraphLineStart >= 0 &&
+									this.#lastRenderedListMutableParagraphLineCount > 0
+								) {
+									const finalToken = lastItem.tokens?.at(-1);
+									if (finalToken !== undefined && "raw" in finalToken && typeof finalToken.raw === "string") {
+										fragment.listLastParagraphRaw = finalToken.raw;
+										fragment.listLastParagraphText = this.#plainParagraphText(finalToken);
+										if (fragment.listLastParagraphText !== undefined) {
+											fragment.listLastParagraphLineStart = this.#lastRenderedListMutableParagraphLineStart;
+											fragment.listLastParagraphLineCount = this.#lastRenderedListMutableParagraphLineCount;
+										}
+									}
+								}
+							}
+						}
+						tokenSegments.push({
+							start: tokenWrappedRowStart,
+							end: wrappedLines.length,
+							fragment,
+							sourceOffset,
+							storeFragment: true,
+						});
 					} else {
-						if (spec.startRow < 0 || spec.endRow <= spec.startRow) continue;
-						relativeStart = Math.min(renderedTokenLines.length, spec.startRow);
-						relativeEnd = Math.min(renderedTokenLines.length, spec.endRow);
+						tokenSegments.push({
+							start: tokenWrappedRowStart,
+							end: wrappedLines.length,
+							sourceOffset,
+							storeFragment: false,
+						});
 					}
-					spec.startRow = tokenRowStart + tokenLineOffsets[relativeStart]!;
-					spec.endRow = tokenRowStart + tokenLineOffsets[relativeEnd]!;
 				}
 			}
 			sourceOffset += token.raw.length;
 		}
-
 		const leftMargin = padding(signature.paddingX);
 		const rightMargin = padding(signature.paddingX);
 		const bgFn = this.#defaultTextStyle?.bgColor;
-		const contentLines: string[] = [];
 		let previousLineWasOsc66 = false;
-		for (const renderedLine of wrappedLines) {
-			const literalCodeRow = renderedLine.literalCode === true;
-			const line = renderedLine.text;
-
-			if (previousLineWasOsc66 && line === "") {
-				contentLines.push("");
+		for (const segment of tokenSegments) {
+			const fragment = segment.fragment;
+			if (
+				fragment?.contentLines !== undefined &&
+				!fragment.hasSpecialLine &&
+				(!previousLineWasOsc66 || !fragment.startsWithEmptyLine)
+			) {
+				contentLines.push(...fragment.contentLines);
 				previousLineWasOsc66 = false;
 				continue;
 			}
 
-			if (TERMINAL.isImageLine(line) || isOsc66Line(line)) {
-				contentLines.push(line);
-				previousLineWasOsc66 = isOsc66Line(line);
-				continue;
+			const contentStart = contentLines.length;
+			for (let rowIndex = segment.start; rowIndex < segment.end; rowIndex++) {
+				const renderedLine = wrappedLines[rowIndex]!;
+				const literalCodeRow = renderedLine.literalCode === true;
+				const line = renderedLine.text;
+
+				if (previousLineWasOsc66 && line === "") {
+					contentLines.push("");
+					previousLineWasOsc66 = false;
+					continue;
+				}
+
+				if (TERMINAL.isImageLine(line) || isOsc66Line(line)) {
+					contentLines.push(line);
+					previousLineWasOsc66 = isOsc66Line(line);
+					continue;
+				}
+
+				previousLineWasOsc66 = false;
+				if (literalCodeRow) {
+					contentLines.push(line);
+					continue;
+				}
+				const lineWithMargins = leftMargin + line + rightMargin;
+
+				if (bgFn) {
+					contentLines.push(applyBackgroundToLine(lineWithMargins, signature.width, bgFn));
+				} else {
+					const visibleLen = visibleWidth(lineWithMargins);
+					const paddingNeeded = Math.max(0, signature.width - visibleLen);
+					contentLines.push(lineWithMargins + padding(paddingNeeded));
+				}
 			}
 
-			previousLineWasOsc66 = false;
-			if (literalCodeRow) {
-				contentLines.push(line);
-				continue;
-			}
-			const lineWithMargins = leftMargin + line + rightMargin;
-
-			if (bgFn) {
-				contentLines.push(applyBackgroundToLine(lineWithMargins, signature.width, bgFn));
-			} else {
-				const visibleLen = visibleWidth(lineWithMargins);
-				const paddingNeeded = Math.max(0, signature.width - visibleLen);
-				contentLines.push(lineWithMargins + padding(paddingNeeded));
+			if (segment.storeFragment && fragment !== undefined) {
+				if (!fragment.hasSpecialLine) fragment.contentLines = contentLines.slice(contentStart);
+				this.#storeTokenFragment(segment.sourceOffset, fragment);
 			}
 		}
 
+		tokenSegments.length = 0;
+		wrappedLines.length = 0;
 		return contentLines;
 	}
 
@@ -1789,7 +2678,8 @@ export class Markdown
 			cache.hyperlinks === signature.hyperlinks &&
 			cache.textSizing === signature.textSizing &&
 			cache.bgColorProbe === signature.bgColorProbe &&
-			cache.headingProbe === signature.headingProbe
+			cache.headingProbe === signature.headingProbe &&
+			cache.themeRevision === signature.themeRevision
 		) {
 			if (completedText.length === cache.text.length) return cache.lines;
 
@@ -1968,7 +2858,8 @@ export class Markdown
 					if (nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") lines.push(renderedLine(""));
 					break;
 				}
-				const paragraphText = this.#renderInlineTokens(token.tokens || [], styleContext);
+				const paragraphText =
+					this.#plainParagraphText(token) ?? this.#renderInlineTokens(token.tokens || [], styleContext);
 				for (const paragraphLine of hangWrapTreeGuideLines(paragraphText, width) ?? [paragraphText]) {
 					lines.push(renderedLine(paragraphLine));
 				}
@@ -2309,7 +3200,13 @@ export class Markdown
 		return result;
 	}
 
-	#renderList(token: ListToken, depth: number, width: number, styleContext?: InlineStyleContext): RenderedLine[] {
+	#renderList(
+		token: ListToken,
+		depth: number,
+		width: number,
+		styleContext?: InlineStyleContext,
+		onlyItemIndex?: number,
+	): RenderedLine[] {
 		const lines: RenderedLine[] = [];
 		const indent = "  ".repeat(depth);
 
@@ -2347,17 +3244,36 @@ export class Markdown
 			}
 		};
 
-		for (let i = 0; i < token.items.length; i++) {
+		const firstItemIndex = onlyItemIndex ?? 0;
+		const lastItemIndex = onlyItemIndex ?? token.items.length - 1;
+		let mutableParagraphLineStart = -1;
+		let mutableParagraphLineCount = 0;
+		for (let i = firstItemIndex; i <= lastItemIndex; i++) {
 			const item = token.items[i];
+			const itemLineStart = lines.length;
 			const bullet = token.ordered ? `${startNumber + i}. ` : "- ";
 			const firstPrefix = indent + this.#theme.listBullet(bullet);
 
 			const continuationIndent = indent + padding(visibleWidth(bullet));
+			let mutableParagraphCapture: MutableListParagraphCapture | undefined;
+			if (i === lastItemIndex) {
+				const finalToken = item.tokens?.at(-1);
+				const finalText = finalToken === undefined ? undefined : this.#plainParagraphText(finalToken);
+				if (
+					finalToken !== undefined &&
+					finalText !== undefined &&
+					"raw" in finalToken &&
+					typeof finalToken.raw === "string"
+				) {
+					mutableParagraphCapture = { raw: finalToken.raw, text: finalText, lineStart: 0, lineCount: 0 };
+				}
+			}
 
-			const itemLines = this.#renderListItem(item.tokens || [], depth, width, styleContext);
+			const itemLines = this.#renderListItem(item.tokens || [], depth, width, styleContext, mutableParagraphCapture);
 
 			if (itemLines.length > 0) {
 				const firstLine = itemLines[0]!;
+				if (mutableParagraphCapture?.lineStart === 0) mutableParagraphLineStart = lines.length - itemLineStart;
 				if (firstLine.nested) {
 					lines.push(firstLine);
 				} else {
@@ -2366,6 +3282,7 @@ export class Markdown
 
 				for (let j = 1; j < itemLines.length; j++) {
 					const line = itemLines[j]!;
+					if (mutableParagraphCapture?.lineStart === j) mutableParagraphLineStart = lines.length - itemLineStart;
 					if (line.nested) {
 						lines.push(line);
 					} else {
@@ -2375,7 +3292,16 @@ export class Markdown
 			} else {
 				lines.push(renderedLine(firstPrefix));
 			}
+			if (i === lastItemIndex) {
+				this.#lastRenderedListLastItemLineCount = lines.length - itemLineStart;
+				if (mutableParagraphCapture !== undefined && mutableParagraphLineStart >= 0) {
+					mutableParagraphLineCount = lines.length - itemLineStart - mutableParagraphLineStart;
+				}
+			}
 		}
+		if (token.items.length === 0) this.#lastRenderedListLastItemLineCount = 0;
+		this.#lastRenderedListMutableParagraphLineStart = mutableParagraphLineStart;
+		this.#lastRenderedListMutableParagraphLineCount = mutableParagraphLineCount;
 
 		return lines;
 	}
@@ -2385,10 +3311,13 @@ export class Markdown
 		parentDepth: number,
 		width: number,
 		styleContext?: InlineStyleContext,
+		capture?: MutableListParagraphCapture,
 	): RenderedListItemLine[] {
 		const lines: RenderedListItemLine[] = [];
 
-		for (const token of tokens) {
+		for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
+			const token = tokens[tokenIndex]!;
+			const tokenLineStart = lines.length;
 			if (token.type === "list") {
 				const nestedLines = this.#renderList(token as ListToken, parentDepth + 1, width, styleContext);
 				for (const nestedLine of nestedLines) {
@@ -2414,7 +3343,20 @@ export class Markdown
 					for (const mathLine of latexToBlock(displayMath.text))
 						lines.push({ text: apply(mathLine), nested: false });
 				} else {
-					lines.push({ text: this.#renderInlineTokens(token.tokens || [], styleContext), nested: false });
+					const paragraphText =
+						this.#plainParagraphText(token) ?? this.#renderInlineTokens(token.tokens || [], styleContext);
+					lines.push({ text: paragraphText, nested: false });
+					if (
+						capture !== undefined &&
+						tokenIndex === tokens.length - 1 &&
+						"raw" in token &&
+						typeof token.raw === "string" &&
+						token.raw === capture.raw &&
+						paragraphText === capture.text
+					) {
+						capture.lineStart = tokenLineStart;
+						capture.lineCount = lines.length - tokenLineStart;
+					}
 				}
 			} else if (token.type === "code") {
 				const codeIndent = padding(this.#codeBlockIndent);
@@ -2456,7 +3398,7 @@ export class Markdown
 	#wrapCellText(text: string, maxWidth: number): string[] {
 		const cellWidth = Math.max(1, maxWidth);
 
-		const wrapped = wrapTextWithAnsi(text, cellWidth);
+		const wrapped = [...wrapTextWithAnsi(text, cellWidth)];
 		while (wrapped.length > 1 && wrapped[wrapped.length - 1] === "") {
 			wrapped.pop();
 		}
@@ -2481,7 +3423,7 @@ export class Markdown
 		const borderOverhead = 3 * numCols + 1;
 		const availableForCells = availableWidth - borderOverhead;
 		if (availableForCells < numCols) {
-			const fallbackLines = token.raw ? wrapTextWithAnsi(token.raw, availableWidth) : [];
+			const fallbackLines = token.raw ? [...wrapTextWithAnsi(token.raw, availableWidth)] : [];
 			if (nextTokenType && nextTokenType !== "space") {
 				fallbackLines.push("");
 			}

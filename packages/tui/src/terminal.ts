@@ -1,14 +1,9 @@
 import * as fs from "node:fs";
 import { TtyWriter } from "@oh-my-pi/pi-natives";
-import {
-	$env,
-	isBunTestRuntime,
-	isTerminalHeadless,
-	logger,
-	postmortem,
-	restoreTerminalStderr,
-	suppressTerminalStderr,
-} from "@oh-my-pi/pi-utils";
+import { $env, isBunTestRuntime, isTerminalHeadless } from "@oh-my-pi/pi-utils/env";
+import * as logger from "@oh-my-pi/pi-utils/logger";
+import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
+import { restoreTerminalStderr, suppressTerminalStderr } from "@oh-my-pi/pi-utils/stderr-guard";
 import { setKittyProtocolActive } from "./keys";
 import { StdinBuffer } from "./stdin-buffer";
 import {

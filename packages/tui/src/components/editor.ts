@@ -1,4 +1,5 @@
-import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import {
 	type AutocompleteItem,
 	type AutocompleteProvider,
@@ -28,6 +29,8 @@ import {
 import { type SelectItem, SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list";
 
 const DEFAULT_PROMPT_GUTTER = "❯ ";
+const DEFAULT_HINT_STYLE = (text: string): string => `\x1b[2m${text}\x1b[0m`;
+const EMPTY_DECORATION_CONTEXT: EditorTextDecorationContext = { line: 0, startCol: 0, endCol: 0 };
 
 const AUTOCOMPLETE_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 	overflowSearch: false,
@@ -46,6 +49,29 @@ function sanitizeLoadedText(text: string): string {
 }
 
 const segmenter = getSegmenter();
+const printableBindingCache = new WeakMap<KeybindingsManager, boolean>();
+
+function hasPrintableSingleCharBinding(keybindings: KeybindingsManager): boolean {
+	const cached = printableBindingCache.get(keybindings);
+	if (cached !== undefined) return cached;
+
+	const resolved = keybindings.getResolvedBindings();
+	for (const keys of Object.values(resolved)) {
+		if (typeof keys === "string") {
+			if (keys.length === 1) {
+				printableBindingCache.set(keybindings, true);
+				return true;
+			}
+			continue;
+		}
+		if (keys?.some(key => key.length === 1)) {
+			printableBindingCache.set(keybindings, true);
+			return true;
+		}
+	}
+	printableBindingCache.set(keybindings, false);
+	return false;
+}
 
 interface TextChunk {
 	text: string;
@@ -333,6 +359,33 @@ interface WrapEntry {
 	chunks: TextChunk[] | null;
 }
 
+interface LayoutCacheEntry {
+	line: string;
+	width: number;
+	epoch: number;
+	wrapped: boolean;
+	layouts: LayoutLine[];
+}
+
+interface PlainRenderCacheEntry {
+	width: number;
+	gutter: string;
+	output: string;
+}
+
+interface PromptGutter {
+	firstLine: string;
+	continuation: string;
+	width: number;
+}
+
+interface PromptGutterCacheEntry {
+	width: number;
+	gutter: string;
+	continuation: string | undefined;
+	value: PromptGutter | undefined;
+}
+
 export interface EditorTopBorder {
 	content: string;
 
@@ -422,6 +475,7 @@ export class Editor implements Component, Focusable {
 	decorateText: ((text: string, context: EditorTextDecorationContext) => string) | undefined;
 	#promptGutter: string | undefined;
 	#promptGutterContinuation: string | undefined;
+	#promptGutterCache: PromptGutterCacheEntry | undefined;
 	#placeholder: string | undefined;
 
 	#lastLayoutWidth: number = 80;
@@ -429,6 +483,9 @@ export class Editor implements Component, Focusable {
 	#wrapCache = new Map<string, WrapEntry>();
 	#wrapCacheWidth = -1;
 	#wrapCacheEpoch = -1;
+	#layoutCache: Array<LayoutCacheEntry | undefined> = [];
+	#layoutScratch: LayoutLine[] = [];
+	#plainRenderCache = new WeakMap<LayoutLine, PlainRenderCacheEntry>();
 	#maxHeight?: number;
 	#scrollOffset: number = 0;
 
@@ -645,16 +702,27 @@ export class Editor implements Component, Focusable {
 		return Math.min(visibleWidth(gutter), width);
 	}
 
-	#getPromptGutter(width: number): { firstLine: string; continuation: string; width: number } | undefined {
+	#getPromptGutter(width: number): PromptGutter | undefined {
 		const gutter = this.#promptGutter ?? DEFAULT_PROMPT_GUTTER;
-		if (!gutter) return undefined;
-		const gutterWidth = this.#getPromptGutterWidth(width);
-		if (gutterWidth === 0) return undefined;
-		return {
-			firstLine: sliceByColumn(gutter, 0, gutterWidth, true),
-			continuation: this.#getContinuationGutter(gutterWidth),
-			width: gutterWidth,
-		};
+		const continuation = this.#promptGutterContinuation;
+		const cached = this.#promptGutterCache;
+		if (cached && cached.width === width && cached.gutter === gutter && cached.continuation === continuation) {
+			return cached.value;
+		}
+
+		let value: PromptGutter | undefined;
+		if (gutter) {
+			const gutterWidth = this.#getPromptGutterWidth(width);
+			if (gutterWidth > 0) {
+				value = {
+					firstLine: sliceByColumn(gutter, 0, gutterWidth, true),
+					continuation: this.#getContinuationGutter(gutterWidth),
+					width: gutterWidth,
+				};
+			}
+		}
+		this.#promptGutterCache = { width, gutter, continuation, value };
+		return value;
 	}
 
 	#getContinuationGutter(gutterWidth: number): string {
@@ -773,14 +841,45 @@ export class Editor implements Component, Focusable {
 		return Math.max(1, visibleHeight - 1);
 	}
 
-	#updateScrollOffset(layoutWidth: number, layoutLines: LayoutLine[], visibleHeight: number): void {
+	#renderPlainLayoutLine(layoutLine: LayoutLine, lineContentWidth: number, gutterText: string): string {
+		if (lineContentWidth === 0) return gutterText;
+
+		let displayText = layoutLine.text;
+		let displayWidth = layoutLine.width;
+		if (displayWidth > lineContentWidth) {
+			displayText = sliceByColumn(displayText, 0, lineContentWidth, true);
+			displayWidth = visibleWidth(displayText);
+		}
+		return gutterText + displayText + padding(Math.max(0, lineContentWidth - displayWidth));
+	}
+
+	#findCurrentLayoutLine(layoutLines: LayoutLine[]): number {
+		for (let i = 0; i < layoutLines.length; i++) {
+			const layoutLine = layoutLines[i];
+			if (!layoutLine || layoutLine.sourceLine !== this.#state.cursorLine) continue;
+
+			const colInSegment = this.#state.cursorCol - layoutLine.sourceStartCol;
+			const isLastSegmentOfLine =
+				i === layoutLines.length - 1 || layoutLines[i + 1]?.sourceLine !== layoutLine.sourceLine;
+			const isFirstSegmentOfLine = i === 0 || layoutLines[i - 1]?.sourceLine !== layoutLine.sourceLine;
+			if (
+				(colInSegment >= 0 || isFirstSegmentOfLine) &&
+				(colInSegment < layoutLine.text.length || (isLastSegmentOfLine && colInSegment <= layoutLine.text.length))
+			) {
+				return i;
+			}
+		}
+
+		return layoutLines.length - 1;
+	}
+
+	#updateScrollOffset(layoutLines: LayoutLine[], visibleHeight: number): void {
 		if (layoutLines.length <= visibleHeight) {
 			this.#scrollOffset = 0;
 			return;
 		}
 
-		const visualLines = this.#buildVisualLineMap(layoutWidth);
-		const cursorLine = this.#findCurrentVisualLine(visualLines);
+		const cursorLine = this.#findCurrentLayoutLine(layoutLines);
 		if (cursorLine < this.#scrollOffset) {
 			this.#scrollOffset = cursorLine;
 		} else if (cursorLine >= this.#scrollOffset + visibleHeight) {
@@ -793,15 +892,16 @@ export class Editor implements Component, Focusable {
 
 	render(width: number): readonly string[] {
 		const promptGutter = this.#getPromptGutter(width);
-		const contentAreaWidth = Math.max(0, width - this.#getPromptGutterWidth(width));
+		const contentAreaWidth = Math.max(0, width - (promptGutter?.width ?? 0));
 
 		const layoutWidth = Math.max(1, contentAreaWidth);
 		this.#lastLayoutWidth = layoutWidth;
 
 		const layoutLines = this.#layoutText(layoutWidth);
 		const visibleContentHeight = this.#getVisibleContentHeight(layoutLines.length);
-		this.#updateScrollOffset(layoutWidth, layoutLines, visibleContentHeight);
-		const visibleLayoutLines = layoutLines.slice(this.#scrollOffset, this.#scrollOffset + visibleContentHeight);
+		this.#updateScrollOffset(layoutLines, visibleContentHeight);
+		const visibleStart = this.#scrollOffset;
+		const visibleEnd = Math.min(layoutLines.length, visibleStart + visibleContentHeight);
 
 		const result: string[] = [];
 
@@ -809,24 +909,25 @@ export class Editor implements Component, Focusable {
 		const lineContentWidth = contentAreaWidth;
 
 		const inlineHint = this.#getInlineHint();
-		const hintStyle = this.#theme.hintStyle ?? ((t: string) => `\x1b[2m${t}\x1b[0m`);
+		const hintStyle = this.#theme.hintStyle ?? DEFAULT_HINT_STYLE;
 		const placeholderActive =
 			inlineHint !== null &&
 			this.#placeholder !== undefined &&
 			inlineHint === this.#placeholder &&
 			this.#state.lines.length === 1 &&
 			this.#state.lines[0] === "";
-		const styleGhost = (text: string): string => (placeholderActive ? text : hintStyle(text));
-
-		for (let visibleIndex = 0; visibleIndex < visibleLayoutLines.length; visibleIndex++) {
-			const layoutLine = visibleLayoutLines[visibleIndex]!;
+		for (let visibleIndex = 0, layoutIndex = visibleStart; layoutIndex < visibleEnd; visibleIndex++, layoutIndex++) {
+			const layoutLine = layoutLines[layoutIndex]!;
 			let displayText = layoutLine.text;
 			let displayWidth = layoutLine.width;
-			const decorationContext: EditorTextDecorationContext = {
-				line: layoutLine.sourceLine,
-				startCol: layoutLine.sourceStartCol,
-				endCol: layoutLine.sourceStartCol + layoutLine.text.length,
-			};
+			const decorationContext =
+				this.decorateText === undefined
+					? EMPTY_DECORATION_CONTEXT
+					: {
+							line: layoutLine.sourceLine,
+							startCol: layoutLine.sourceStartCol,
+							endCol: layoutLine.sourceStartCol + layoutLine.text.length,
+						};
 			let decorated = false;
 			const showPromptGutter = promptGutter !== undefined && visibleIndex === 0;
 			const gutterText =
@@ -834,6 +935,18 @@ export class Editor implements Component, Focusable {
 
 			const hasCursor = layoutLine.hasCursor && layoutLine.cursorPos !== undefined;
 			const marker = emitCursorMarker ? CURSOR_MARKER : "";
+
+			if (!hasCursor && this.decorateText === undefined) {
+				const cached = this.#plainRenderCache.get(layoutLine);
+				if (cached?.width === lineContentWidth && cached.gutter === gutterText) {
+					result.push(cached.output);
+					continue;
+				}
+				const output = this.#renderPlainLayoutLine(layoutLine, lineContentWidth, gutterText);
+				this.#plainRenderCache.set(layoutLine, { width: lineContentWidth, gutter: gutterText, output });
+				result.push(output);
+				continue;
+			}
 
 			if (displayWidth > lineContentWidth) {
 				displayText = sliceByColumn(displayText, 0, lineContentWidth, true);
@@ -885,7 +998,8 @@ export class Editor implements Component, Focusable {
 					if (after.length === 0 && inlineHint) {
 						const availWidth = Math.max(0, lineContentWidth - displayWidth - 1);
 						const truncated = truncateToWidth(inlineHint, availWidth);
-						const hintText = truncated.length > 0 ? ` ${styleGhost(truncated)}` : "";
+						const hintText =
+							truncated.length > 0 ? ` ${placeholderActive ? truncated : hintStyle(truncated)}` : "";
 						displayText = before + marker + hintText;
 						displayWidth += truncated.length > 0 ? 1 + Math.min(visibleWidth(inlineHint), availWidth) : 0;
 					} else if (after.length === 0 && displayWidth >= lineContentWidth) {
@@ -925,7 +1039,8 @@ export class Editor implements Component, Focusable {
 					} else if (inlineHint) {
 						const availWidth = Math.max(0, lineContentWidth - displayWidth - overrideWidth - 1);
 						const truncated = truncateToWidth(inlineHint, availWidth);
-						const hintText = truncated.length > 0 ? ` ${styleGhost(truncated)}` : "";
+						const hintText =
+							truncated.length > 0 ? ` ${placeholderActive ? truncated : hintStyle(truncated)}` : "";
 						displayText = before + marker + this.cursorOverride + hintText;
 						displayWidth +=
 							overrideWidth + (truncated.length > 0 ? 1 + Math.min(visibleWidth(inlineHint), availWidth) : 0);
@@ -942,7 +1057,8 @@ export class Editor implements Component, Focusable {
 					} else if (inlineHint) {
 						const availWidth = Math.max(0, lineContentWidth - displayWidth - cursorWidth - 1);
 						const truncated = truncateToWidth(inlineHint, availWidth);
-						const hintText = truncated.length > 0 ? ` ${styleGhost(truncated)}` : "";
+						const hintText =
+							truncated.length > 0 ? ` ${placeholderActive ? truncated : hintStyle(truncated)}` : "";
 						displayText = before + marker + cursor + hintText;
 						displayWidth +=
 							cursorWidth + (truncated.length > 0 ? 1 + Math.min(visibleWidth(inlineHint), availWidth) : 0);
@@ -989,16 +1105,14 @@ export class Editor implements Component, Focusable {
 	}
 
 	#handleInputChunk(data: string): string | undefined {
-		const kb = getKeybindings();
-
-		const parsedKey = parseKey(data);
-		const canonical = parsedKey === undefined ? undefined : canonicalKeyId(parsedKey);
-
 		if (this.#autocompleteRequestRunning && this.#autocompleteState === null) {
 			this.#invalidateAutocompleteRequests();
 		}
 
 		if (this.#jumpMode !== null) {
+			const kb = getKeybindings();
+			const parsedKey = parseKey(data);
+			const canonical = parsedKey === undefined ? undefined : canonicalKeyId(parsedKey);
 			if (
 				kb.matchesCanonical(canonical, "tui.editor.jumpForward") ||
 				kb.matchesCanonical(canonical, "tui.editor.jumpBackward")
@@ -1028,6 +1142,20 @@ export class Editor implements Component, Focusable {
 			}
 			return;
 		}
+
+		if (
+			this.#autocompleteState === null &&
+			data.length === 1 &&
+			isPlainTextRun(data) &&
+			!hasPrintableSingleCharBinding(getKeybindings())
+		) {
+			this.#insertCharacter(data);
+			return;
+		}
+
+		const kb = getKeybindings();
+		const parsedKey = parseKey(data);
+		const canonical = parsedKey === undefined ? undefined : canonicalKeyId(parsedKey);
 
 		if (canonical === undefined && data.length > 1 && isPlainTextRun(data)) {
 			this.#insertCharacter(data);
@@ -1355,88 +1483,128 @@ export class Editor implements Component, Focusable {
 	}
 
 	#layoutText(contentWidth: number): LayoutLine[] {
-		const layoutLines: LayoutLine[] = [];
+		const layoutLines = this.#layoutScratch;
+		layoutLines.length = 0;
+		const lineCount = this.#state.lines.length;
+		this.#layoutCache.length = Math.max(1, lineCount);
+		const epoch = getWidthConfigEpoch();
 
-		if (this.#state.lines.length === 0 || (this.#state.lines.length === 1 && this.#state.lines[0] === "")) {
-			layoutLines.push({
-				text: "",
-				width: 0,
-				sourceLine: 0,
-				sourceStartCol: 0,
-				hasCursor: true,
-				cursorPos: 0,
-			});
+		if (lineCount === 0 || (lineCount === 1 && this.#state.lines[0] === "")) {
+			let entry = this.#layoutCache[0];
+			if (entry?.line !== "" || entry.width !== contentWidth || entry.epoch !== epoch) {
+				entry = {
+					line: "",
+					width: contentWidth,
+					epoch,
+					wrapped: false,
+					layouts: [
+						{
+							text: "",
+							width: 0,
+							sourceLine: 0,
+							sourceStartCol: 0,
+							hasCursor: false,
+						},
+					],
+				};
+				this.#layoutCache[0] = entry;
+			}
+			const layoutLine = entry.layouts[0]!;
+			layoutLine.sourceLine = 0;
+			layoutLine.hasCursor = true;
+			layoutLine.cursorPos = 0;
+			layoutLines.push(layoutLine);
 			return layoutLines;
 		}
 
-		for (let i = 0; i < this.#state.lines.length; i++) {
+		for (let i = 0; i < lineCount; i++) {
 			const line = this.#state.lines[i] || "";
-			const isCurrentLine = i === this.#state.cursorLine;
-			const lineVisibleWidth = this.#lineEntry(line, contentWidth).width;
-
-			if (lineVisibleWidth <= contentWidth) {
-				if (isCurrentLine) {
-					layoutLines.push({
-						text: line,
-						width: lineVisibleWidth,
-						sourceLine: i,
-						sourceStartCol: 0,
-						hasCursor: true,
-						cursorPos: this.#state.cursorCol,
-					});
+			let entry = this.#layoutCache[i];
+			if (!entry || entry.line !== line || entry.width !== contentWidth || entry.epoch !== epoch) {
+				const lineEntry = this.#lineEntry(line, contentWidth);
+				const wrapped = lineEntry.width > contentWidth;
+				if (!entry) {
+					entry = { line, width: contentWidth, epoch, wrapped, layouts: [] };
+					this.#layoutCache[i] = entry;
 				} else {
-					layoutLines.push({
-						text: line,
-						width: lineVisibleWidth,
-						sourceLine: i,
-						sourceStartCol: 0,
-						hasCursor: false,
-					});
+					entry.line = line;
+					entry.width = contentWidth;
+					entry.epoch = epoch;
+					entry.wrapped = wrapped;
 				}
-			} else {
-				const chunks = this.#wrapLine(line, contentWidth);
 
-				for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-					const chunk = chunks[chunkIndex];
-					if (!chunk) continue;
-
-					const cursorPos = this.#state.cursorCol;
-					const isLastChunk = chunkIndex === chunks.length - 1;
-
-					let hasCursorInChunk = false;
-					let adjustedCursorPos = 0;
-
-					if (isCurrentLine) {
-						const chunkStart = chunkIndex === 0 ? 0 : chunk.startIndex;
-						if (isLastChunk) {
-							hasCursorInChunk = cursorPos >= chunkStart;
-						} else {
-							hasCursorInChunk = cursorPos >= chunkStart && cursorPos < chunk.endIndex;
-						}
-						if (hasCursorInChunk) {
-							adjustedCursorPos = Math.max(0, Math.min(cursorPos - chunk.startIndex, chunk.text.length));
-						}
-					}
-
-					if (hasCursorInChunk) {
-						layoutLines.push({
-							text: chunk.text,
-							width: chunk.width,
+				const cachedLayouts = entry.layouts;
+				if (!wrapped) {
+					let layoutLine = cachedLayouts[0];
+					if (!layoutLine) {
+						layoutLine = {
+							text: line,
+							width: lineEntry.width,
 							sourceLine: i,
-							sourceStartCol: chunk.startIndex,
-							hasCursor: true,
-							cursorPos: adjustedCursorPos,
-						});
-					} else {
-						layoutLines.push({
-							text: chunk.text,
-							width: chunk.width,
-							sourceLine: i,
-							sourceStartCol: chunk.startIndex,
+							sourceStartCol: 0,
 							hasCursor: false,
-						});
+						};
+						cachedLayouts[0] = layoutLine;
+					} else {
+						this.#plainRenderCache.delete(layoutLine);
+						layoutLine.text = line;
+						layoutLine.width = lineEntry.width;
+						layoutLine.sourceStartCol = 0;
+					}
+					cachedLayouts.length = 1;
+				} else {
+					const chunks = this.#wrapLine(line, contentWidth);
+					for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+						const chunk = chunks[chunkIndex]!;
+						let layoutLine = cachedLayouts[chunkIndex];
+						if (!layoutLine) {
+							layoutLine = {
+								text: chunk.text,
+								width: chunk.width,
+								sourceLine: i,
+								sourceStartCol: chunk.startIndex,
+								hasCursor: false,
+							};
+							cachedLayouts[chunkIndex] = layoutLine;
+						} else {
+							this.#plainRenderCache.delete(layoutLine);
+							layoutLine.text = chunk.text;
+							layoutLine.width = chunk.width;
+							layoutLine.sourceStartCol = chunk.startIndex;
+						}
+					}
+					cachedLayouts.length = chunks.length;
+				}
+			}
+
+			const isCurrentLine = i === this.#state.cursorLine;
+			const cursorPos = this.#state.cursorCol;
+			const cachedLayouts = entry.layouts;
+			for (let layoutIndex = 0; layoutIndex < cachedLayouts.length; layoutIndex++) {
+				const layoutLine = cachedLayouts[layoutIndex]!;
+				layoutLine.sourceLine = i;
+				layoutLine.hasCursor = false;
+
+				if (!isCurrentLine) {
+					layoutLines.push(layoutLine);
+					continue;
+				}
+
+				if (!entry.wrapped) {
+					layoutLine.hasCursor = true;
+					layoutLine.cursorPos = cursorPos;
+				} else {
+					const chunkStart = layoutLine.sourceStartCol;
+					const isLastChunk = layoutIndex === cachedLayouts.length - 1;
+					const hasCursorInChunk = isLastChunk
+						? cursorPos >= chunkStart
+						: cursorPos >= chunkStart && cursorPos < chunkStart + layoutLine.text.length;
+					if (hasCursorInChunk) {
+						layoutLine.hasCursor = true;
+						layoutLine.cursorPos = Math.max(0, Math.min(cursorPos - chunkStart, layoutLine.text.length));
 					}
 				}
+				layoutLines.push(layoutLine);
 			}
 		}
 
@@ -1701,19 +1869,24 @@ export class Editor implements Component, Focusable {
 	#insertCharacter(char: string): void {
 		this.#exitHistoryForEditing();
 
-		const isWordChunk = [...segmenter.segment(char)].every(seg => getWordNavKind(seg.segment) !== "whitespace");
+		const isWordChunk =
+			char.length === 1
+				? getWordNavKind(char) !== "whitespace"
+				: [...segmenter.segment(char)].every(seg => getWordNavKind(seg.segment) !== "whitespace");
 		if (!isWordChunk || this.#lastAction !== "type-word") {
 			this.#recordUndoState();
 		}
 		this.#lastAction = isWordChunk ? "type-word" : null;
 
 		const line = this.#state.lines[this.#state.cursorLine] || "";
-
-		const before = line.slice(0, this.#state.cursorCol);
-		const after = line.slice(this.#state.cursorCol);
-
-		this.#state.lines[this.#state.cursorLine] = before + char + after;
-		this.#setCursorCol(this.#state.cursorCol + char.length);
+		const cursorCol = this.#state.cursorCol;
+		this.#state.lines[this.#state.cursorLine] =
+			cursorCol === line.length
+				? line + char
+				: cursorCol === 0
+					? char + line
+					: line.slice(0, cursorCol) + char + line.slice(cursorCol);
+		this.#setCursorCol(cursorCol + char.length);
 
 		if (this.onChange) {
 			this.onChange(this.getText());
@@ -1746,6 +1919,8 @@ export class Editor implements Component, Focusable {
 				return;
 			}
 		}
+
+		if (!this.#autocompleteProvider) return;
 
 		if (!this.#autocompleteState) {
 			if (char === "/" && (this.#isAtStartOfSubmittedMessage() || this.#isInMidPromptSkillSlashContext())) {
@@ -2137,7 +2312,11 @@ export class Editor implements Component, Focusable {
 
 	#recordUndoState(): void {
 		if (this.#suspendUndo) return;
-		this.#undoStack.push(structuredClone(this.#state));
+		this.#undoStack.push({
+			lines: this.#state.lines.slice(),
+			cursorLine: this.#state.cursorLine,
+			cursorCol: this.#state.cursorCol,
+		});
 		if (this.#undoStack.length > MAX_UNDO_STACK) {
 			this.#undoStack.shift();
 		}
