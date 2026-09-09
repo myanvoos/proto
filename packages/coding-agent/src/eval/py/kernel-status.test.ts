@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-
+import { disposeKernelSessionsByOwner, executePython } from "./executor";
 import { checkPythonKernelAvailability, PythonKernel } from "./kernel";
 
 describe("PythonKernel status probe", () => {
@@ -28,6 +28,38 @@ describe("PythonKernel status probe", () => {
 			expect((await kernel.shutdown()).confirmed).toBe(true);
 		} finally {
 			if (kernel.isAlive()) await kernel.shutdown().catch(() => {});
+		}
+	});
+
+	test("owner-scoped disposal releases the retained kernel and its state", async () => {
+		const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+		if (!availability.ok) {
+			console.warn("skipping kernel owner-disposal test: no local Python interpreter");
+			return;
+		}
+		const ownerId = `test-owner:${crypto.randomUUID()}`;
+		const sessionId = `test-session:${crypto.randomUUID()}`;
+		const run = (code: string) =>
+			executePython(code, {
+				cwd: process.cwd(),
+				sessionId,
+				kernelOwnerId: ownerId,
+				kernelMode: "session",
+			});
+		try {
+			expect((await run("owner_disposal_probe = 7")).exitCode).toBe(0);
+			// Same retained kernel: state visible.
+			expect((await run("owner_disposal_probe")).exitCode).toBe(0);
+
+			// This is the call AgentSession.dispose() makes when a subagent
+			// is parked, killed, or evicted.
+			await disposeKernelSessionsByOwner(ownerId);
+
+			// Fresh kernel on next call: prior state is gone.
+			const fresh = await run("owner_disposal_probe");
+			expect(fresh.output).toContain("NameError");
+		} finally {
+			await disposeKernelSessionsByOwner(ownerId);
 		}
 	});
 });
