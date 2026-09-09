@@ -39,6 +39,8 @@ interface TinyTitleDownloadOptions {
 	onProgress?: (event: TinyTitleProgressEvent) => void;
 }
 
+const DEFAULT_TINY_WORKER_IDLE_KILL_MS = 5 * 60_000;
+
 interface TinyTitleGenerateOptions {
 	signal?: AbortSignal;
 	systemPrompt?: string;
@@ -152,12 +154,16 @@ export class TinyTitleClient {
 	#progressListeners = new Set<(event: TinyTitleProgressEvent) => void>();
 	#nextRequestId = 0;
 	#refed = false;
+	#idleTimer: NodeJS.Timeout | null = null;
+	#idleKillMs: number;
 	#spawnWorker: () => RefCountedWorkerHandle<TinyTitleWorkerInbound, TinyTitleWorkerOutbound>;
 
 	constructor(
 		spawnWorker: () => RefCountedWorkerHandle<TinyTitleWorkerInbound, TinyTitleWorkerOutbound> = spawnTinyTitleWorker,
+		idleKillMs: number = DEFAULT_TINY_WORKER_IDLE_KILL_MS,
 	) {
 		this.#spawnWorker = spawnWorker;
+		this.#idleKillMs = idleKillMs;
 	}
 
 	onProgress(listener: (event: TinyTitleProgressEvent) => void): () => void {
@@ -296,6 +302,7 @@ export class TinyTitleClient {
 	}
 
 	async terminate(): Promise<void> {
+		this.#disarmIdleKill();
 		const worker = this.#worker;
 		this.#worker = null;
 		this.#unsubscribeMessage?.();
@@ -315,21 +322,48 @@ export class TinyTitleClient {
 	}
 
 	#ensureWorker(): RefCountedWorkerHandle<TinyTitleWorkerInbound, TinyTitleWorkerOutbound> {
-		if (this.#worker) return this.#worker;
+		if (this.#worker) {
+			this.#armIdleKill();
+			return this.#worker;
+		}
 		const worker = this.#spawnWorker();
 		this.#worker = worker;
 		this.#unsubscribeMessage = worker.onMessage(message => this.#handleMessage(message));
 		this.#unsubscribeError = worker.onError(error => this.#handleWorkerError(error));
+		this.#armIdleKill();
 		return worker;
+	}
+
+	#disarmIdleKill(): void {
+		if (this.#idleTimer !== null) {
+			clearTimeout(this.#idleTimer);
+			this.#idleTimer = null;
+		}
+	}
+
+	#armIdleKill(): void {
+		this.#disarmIdleKill();
+		if (this.#worker === null || this.#pending.size > 0 || this.#idleKillMs <= 0) return;
+		const timer = setTimeout(() => {
+			this.#idleTimer = null;
+			logger.debug("tiny-title: terminating idle worker", { idleMs: this.#idleKillMs });
+			void this.terminate();
+		}, this.#idleKillMs);
+		timer.unref();
+		this.#idleTimer = timer;
 	}
 
 	#addPending(id: string, request: PendingRequest): void {
 		this.#pending.set(id, request);
+		this.#disarmIdleKill();
 		this.#syncWorkerRef();
 	}
 
 	#deletePending(id: string): void {
-		if (this.#pending.delete(id)) this.#syncWorkerRef();
+		if (this.#pending.delete(id)) {
+			this.#syncWorkerRef();
+			if (this.#pending.size === 0) this.#armIdleKill();
+		}
 	}
 
 	#syncWorkerRef(): void {

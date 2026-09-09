@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Local tiny-model workers release their process and loaded models after five idle minutes, restarting on demand.
+
+### Fixed
+
+- Closing the session browser releases its retained records and child-session metadata, and persisted subagent rows whose parent artifacts no longer list them are pruned on each full refresh instead of accumulating.
+
 ## [18.0.3] - 2026-09-09
 
 ### Changed

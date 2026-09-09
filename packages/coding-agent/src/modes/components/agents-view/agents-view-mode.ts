@@ -322,6 +322,13 @@ export class AgentsViewComponent implements Component {
 			for (const infos of nested) {
 				for (const info of infos) merged.set(info.path, info);
 			}
+			if (refreshDue) {
+				// Full relist: drop child sessions whose parent artifacts no longer list them.
+				const current = new Set(nested.flatMap(infos => infos.map(info => info.path)));
+				for (const path of merged.keys()) {
+					if (!current.has(path)) merged.delete(path);
+				}
+			}
 			const fingerprint = [...merged.values()]
 				.map(
 					info =>
@@ -364,6 +371,13 @@ export class AgentsViewComponent implements Component {
 		}
 		const viewer = this.#transcriptViewer;
 		this.#closeTranscriptOverlay(viewer);
+		this.#records = [];
+		this.#index = { byKey: new Map(), childrenByParent: new Map() };
+		this.#rows = [];
+		this.#persistedChildSessions = [];
+		this.#persistSeededPaths.clear();
+		this.#spawnTasks.clear();
+		this.#childSessionsFingerprint = "";
 	}
 
 	async refresh(): Promise<void> {
@@ -476,12 +490,16 @@ export class AgentsViewComponent implements Component {
 				this.#spawnTasks.set(file, "");
 				void readAgentSpawnTask(file)
 					.then(task => {
+						if (this.#disposed) return;
 						if (task === undefined) this.#spawnTasks.delete(file);
 						else this.#spawnTasks.set(file, task);
 						this.#rebuildRows();
 						this.#deps.requestRender();
 					})
-					.catch(() => this.#spawnTasks.delete(file));
+					.catch(() => {
+						if (this.#disposed) return;
+						this.#spawnTasks.delete(file);
+					});
 			}
 		}
 	}

@@ -40,6 +40,24 @@ On Linux, collect `/proc/<pid>/smaps_rollup` for the CLI and its descendants. Su
 
 For retained-object diagnosis, use `bun:jsc` heap statistics after an explicit diagnostic collection. Record uncollected RSS separately. Heap snapshots and weak-reference probes can establish why a particular object remains reachable; do not treat every RSS increase as a leak.
 
+## Runtime virtual memory and multi-instance footprint
+
+A compiled proto process reserves most of its address space at JSC initialization, before any proto code runs. On linux-arm64 the idle breakdown (measured via `/proc/<pid>/smaps`, v18.0.2) is:
+
+| Mapping | Reservation |
+|---|---|
+| `[anon:JSGigacage]` | 64 GiB (61.5 GiB `rw-p`) |
+| `[anon:JSStructureHeap]` | 4 GiB |
+| `[anon:WKFastMalloc]` | ~1.6 GiB |
+| `[anon:JSJITCode]` | 512 MiB (`rwxp`) |
+| binary + natives mappings | ~290 MiB (file-backed, shared across instances) |
+
+VSZ is not resident RAM: these mappings are predominantly reservations, and the sampled process had about 2.4 MiB of page tables. Commit accounting also depends on mapping flags and the kernel overcommit policy; RSS/PSS and memory-pressure measurements are more useful than VSZ alone.
+
+In an isolated compiled-binary RPC experiment, setting `GIGACAGE_ENABLED=0` **before process start** reduced VSZ from about 74.5 GiB to 9 GiB without demonstrating an RSS saving. This disables a JavaScriptCore memory-isolation mechanism: it is a diagnostic experiment, not a recommended performance setting or a production default. Setting it from application JavaScript is too late.
+
+An isolated PTY test with a synthetic 90 MB JSONL transcript containing 40,000 assistant messages increased RSS from about 226 MiB to 1,790 MiB after resume. This measures aggregate loading/rendering cost, not a proven leak or a per-object allocation breakdown. `Agent.replaceMessages` shallow-copies the message array, not every message object. The subsequent process exit was not established as OOM. Local tiny-model workers cache pipelines until termination; their model-loaded RSS was not measured in this experiment. They now terminate after five idle minutes and restart on demand.
+
 ## Reference observations
 
 An isolated source CLI measurement on Linux arm64 with Bun 1.3.14 found approximately:
