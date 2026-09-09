@@ -3,7 +3,7 @@ use std::{
 	sync::atomic::{AtomicU8, Ordering},
 };
 
-use napi::{JsString, bindgen_prelude::*};
+use napi::{Env, JsString, bindgen_prelude::*};
 use napi_derive::napi;
 use smallvec::{SmallVec, smallvec};
 
@@ -28,27 +28,20 @@ pub enum Ellipsis {
 	Omit    = 2,
 }
 
-fn build_utf16_string(mut data: Vec<u16>) -> Utf16String {
-	while data.last() == Some(&0) {
-		data.pop();
-	}
-	Utf16String::from(data)
-}
-
 #[napi(object)]
-pub struct SliceResult {
-	pub text: Utf16String,
+pub struct SliceResult<'env> {
+	pub text: JsString<'env>,
 
 	pub width: u32,
 }
 
 #[napi(object)]
-pub struct ExtractSegmentsResult {
-	pub before: Utf16String,
+pub struct ExtractSegmentsResult<'env> {
+	pub before: JsString<'env>,
 
 	pub before_width: u32,
 
-	pub after: Utf16String,
+	pub after: JsString<'env>,
 
 	pub after_width: u32,
 }
@@ -912,9 +905,56 @@ fn trim_end_spaces_in_place(line: &mut Vec<u16>) {
 	}
 }
 
-fn split_into_tokens_with_ansi(line: &[u16]) -> SmallVec<[Vec<u16>; 4]> {
+#[inline]
+fn strip_trailing_nuls(data: &mut Vec<u16>) {
+	while data.last() == Some(&0) {
+		data.pop();
+	}
+}
+
+const UTF16_POOL_MAX_ENTRIES: usize = 32;
+const UTF16_POOL_MAX_CAPACITY: usize = 1 << 19;
+const UTF16_POOL_MAX_VEC_CAPACITY: usize = 64 << 10;
+
+struct Utf16VecPool {
+	free:              Vec<Vec<u16>>,
+	retained_capacity: usize,
+}
+
+impl Utf16VecPool {
+	#[inline]
+	fn take(&mut self) -> Vec<u16> {
+		let value = self.free.pop().unwrap_or_default();
+		self.retained_capacity = self.retained_capacity.saturating_sub(value.capacity());
+		value
+	}
+
+	#[inline]
+	fn recycle(&mut self, mut value: Vec<u16>) {
+		value.clear();
+		let capacity = value.capacity();
+		// The free-list is bounded by both entries and retained UTF-16 capacity;
+		// vectors above the per-buffer limit are dropped instead of retained.
+		if capacity > UTF16_POOL_MAX_VEC_CAPACITY
+			|| self.free.len() >= UTF16_POOL_MAX_ENTRIES
+			|| self.retained_capacity.saturating_add(capacity) > UTF16_POOL_MAX_CAPACITY
+		{
+			return;
+		}
+		self.retained_capacity += capacity;
+		self.free.push(value);
+	}
+}
+
+thread_local! {
+	static UTF16_VEC_POOL: RefCell<Utf16VecPool> = const {
+		RefCell::new(Utf16VecPool { free: Vec::new(), retained_capacity: 0 })
+	};
+}
+
+fn split_into_tokens_with_ansi(line: &[u16], pool: &mut Utf16VecPool) -> SmallVec<[Vec<u16>; 4]> {
 	let mut tokens = SmallVec::<[Vec<u16>; 4]>::new();
-	let mut current = Vec::<u16>::new();
+	let mut current = pool.take();
 	let mut pending_ansi = SmallVec::<[u16; 32]>::new();
 	let mut in_whitespace = false;
 	let mut i = 0usize;
@@ -938,7 +978,7 @@ fn split_into_tokens_with_ansi(line: &[u16]) -> SmallVec<[Vec<u16>; 4]> {
 		let char_is_space = ch == b' ' as u16;
 		if char_is_space != in_whitespace && !current.is_empty() {
 			tokens.push(current);
-			current = Vec::new();
+			current = pool.take();
 		}
 
 		if !pending_ansi.is_empty() {
@@ -967,9 +1007,10 @@ fn break_long_word(
 	width: usize,
 	tab_width: usize,
 	state: &mut WrapState,
+	pool: &mut Utf16VecPool,
 ) -> SmallVec<[Vec<u16>; 4]> {
 	let mut lines = SmallVec::<[Vec<u16>; 4]>::new();
-	let mut current_line = Vec::<u16>::new();
+	let mut current_line = pool.take();
 	write_active_codes(state, &mut current_line);
 	let mut current_width = 0usize;
 	let mut i = 0usize;
@@ -983,7 +1024,7 @@ fn break_long_word(
 				if current_width.saturating_add(seq_width) > width {
 					write_line_end_reset(state, &mut current_line);
 					lines.push(current_line);
-					current_line = Vec::new();
+					current_line = pool.take();
 					write_active_codes(state, &mut current_line);
 					current_width = 0;
 				}
@@ -1019,7 +1060,7 @@ fn break_long_word(
 				if current_width + gw > width {
 					write_line_end_reset(state, &mut current_line);
 					lines.push(current_line);
-					current_line = Vec::new();
+					current_line = pool.take();
 					write_active_codes(state, &mut current_line);
 					current_width = 0;
 				}
@@ -1048,22 +1089,28 @@ fn break_long_word(
 	lines
 }
 
-fn wrap_single_line(line: &[u16], width: usize, tab_width: usize) -> SmallVec<[Vec<u16>; 4]> {
+fn wrap_single_line(
+	line: &[u16],
+	width: usize,
+	tab_width: usize,
+	pool: &mut Utf16VecPool,
+) -> SmallVec<[Vec<u16>; 4]> {
 	if line.is_empty() {
-		return smallvec![Vec::new()];
+		return smallvec![pool.take()];
 	}
 
 	if visible_width_u16(line, tab_width) <= width {
-		let mut only = line.to_vec();
+		let mut only = pool.take();
+		only.extend_from_slice(line);
 		let mut state = WrapState::new();
 		update_state_from_text(line, &mut state);
 		write_hyperlink_close(&state, &mut only);
 		return smallvec![only];
 	}
 
-	let tokens = split_into_tokens_with_ansi(line);
+	let tokens = split_into_tokens_with_ansi(line, pool);
 	let mut wrapped = SmallVec::<[Vec<u16>; 4]>::new();
-	let mut current_line = Vec::<u16>::new();
+	let mut current_line = pool.take();
 	let mut current_width = 0usize;
 	let mut state = WrapState::new();
 
@@ -1075,16 +1122,17 @@ fn wrap_single_line(line: &[u16], width: usize, tab_width: usize) -> SmallVec<[V
 			if !current_line.is_empty() {
 				write_line_end_reset(&state, &mut current_line);
 				wrapped.push(current_line);
-				current_line = Vec::new();
+				current_line = pool.take();
 				current_width = 0;
 			}
 
-			let mut broken = break_long_word(&token, width, tab_width, &mut state);
+			let mut broken = break_long_word(&token, width, tab_width, &mut state, pool);
 			if let Some(last) = broken.pop() {
 				wrapped.extend(broken);
 				current_line = last;
 				current_width = visible_width_u16(&current_line, tab_width);
 			}
+			pool.recycle(token);
 			continue;
 		}
 
@@ -1095,7 +1143,7 @@ fn wrap_single_line(line: &[u16], width: usize, tab_width: usize) -> SmallVec<[V
 			write_line_end_reset(&state, &mut line_to_wrap);
 			wrapped.push(line_to_wrap);
 
-			current_line = Vec::new();
+			current_line = pool.take();
 			write_active_codes(&state, &mut current_line);
 			if is_whitespace {
 				current_width = 0;
@@ -1109,6 +1157,7 @@ fn wrap_single_line(line: &[u16], width: usize, tab_width: usize) -> SmallVec<[V
 		}
 
 		update_state_from_text(&token, &mut state);
+		pool.recycle(token);
 	}
 
 	if !current_line.is_empty() {
@@ -1121,7 +1170,7 @@ fn wrap_single_line(line: &[u16], width: usize, tab_width: usize) -> SmallVec<[V
 	}
 
 	if wrapped.is_empty() {
-		wrapped.push(Vec::new());
+		wrapped.push(pool.take());
 	}
 
 	wrapped
@@ -1131,9 +1180,10 @@ fn wrap_text_with_ansi_impl(
 	text: &[u16],
 	width: usize,
 	tab_width: usize,
+	pool: &mut Utf16VecPool,
 ) -> SmallVec<[Vec<u16>; 4]> {
 	if text.is_empty() {
-		return smallvec![Vec::new()];
+		return smallvec![pool.take()];
 	}
 
 	let mut result = SmallVec::<[Vec<u16>; 4]>::new();
@@ -1143,51 +1193,96 @@ fn wrap_text_with_ansi_impl(
 	for i in 0..=text.len() {
 		if i == text.len() || text[i] == b'\n' as u16 {
 			let line = &text[line_start..i];
-			let mut line_with_prefix: Vec<u16> = Vec::new();
+			let mut line_with_prefix: Vec<u16> = pool.take();
 			if !result.is_empty() {
 				write_active_codes(&state, &mut line_with_prefix);
 			}
 			line_with_prefix.extend_from_slice(line);
 
-			let wrapped = wrap_single_line(&line_with_prefix, width, tab_width);
+			let wrapped = wrap_single_line(&line_with_prefix, width, tab_width, pool);
 			result.extend(wrapped);
+			pool.recycle(line_with_prefix);
 			update_state_from_text(line, &mut state);
 			line_start = i + 1;
 		}
 	}
 
 	if result.is_empty() {
-		result.push(Vec::new());
+		result.push(pool.take());
 	}
 
 	result
 }
 
 #[napi]
-pub fn wrap_text_with_ansi(text: JsString, width: u32, tab_width: u32) -> Result<Vec<Utf16String>> {
+pub fn wrap_text_with_ansi<'env>(
+	env: &'env Env,
+	text: JsString<'env>,
+	width: u32,
+	tab_width: u32,
+) -> Result<Vec<JsString<'env>>> {
+	let original = text;
 	let text = js::utf16(text)?;
 	let tab_width = clamp_tab_width_for_ops(tab_width);
-	Ok(wrap_text_with_ansi_impl(&text, width as usize, tab_width)
-		.into_iter()
-		.map(build_utf16_string)
-		.collect())
+	if !text.contains(&(b'\n' as u16))
+		&& text.last() != Some(&0)
+		&& visible_width_u16(&text, tab_width) <= width as usize
+	{
+		let mut state = WrapState::new();
+		update_state_from_text(&text, &mut state);
+		if state.hyperlink.is_none() {
+			return Ok(vec![original]);
+		}
+	}
+	UTF16_VEC_POOL.with(|pool| {
+		let mut pool = pool.borrow_mut();
+		let lines = wrap_text_with_ansi_impl(&text, width as usize, tab_width, &mut pool);
+		let mut output = Vec::with_capacity(lines.len());
+		for mut line in lines {
+			strip_trailing_nuls(&mut line);
+			let value = env.create_string_utf16(&line);
+			pool.recycle(line);
+			output.push(value?);
+		}
+		Ok(output)
+	})
 }
 
 #[napi]
-pub fn truncate_to_width(
-	text: JsString<'_>,
+pub fn truncate_to_width<'env>(
+	env: &'env Env,
+	text: JsString<'env>,
 	max_width: u32,
 	ellipsis_kind: Option<Ellipsis>,
 	pad: Option<bool>,
 	tab_width: u32,
-) -> Result<Either<JsString<'_>, Utf16String>> {
+) -> Result<Either<JsString<'env>, JsString<'env>>> {
 	let max_width = max_width as usize;
 	let ellipsis_kind = ellipsis_kind.unwrap_or(Ellipsis::Unicode);
 	let pad = pad.unwrap_or(false);
 	let tab_width = clamp_tab_width_for_ops(tab_width);
 	let original = text;
 	let text = js::utf16(text)?;
-	Ok(truncate_to_width_impl(original, &text, max_width, ellipsis_kind, pad, tab_width))
+	UTF16_VEC_POOL.with(|pool| {
+		let mut pool = pool.borrow_mut();
+		match truncate_to_width_impl(
+			original,
+			&text,
+			max_width,
+			ellipsis_kind,
+			pad,
+			tab_width,
+			&mut pool,
+		) {
+			Either::A(value) => Ok(Either::A(value)),
+			Either::B(mut out) => {
+				strip_trailing_nuls(&mut out);
+				let value = env.create_string_utf16(&out);
+				pool.recycle(out);
+				Ok(Either::B(value?))
+			},
+		}
+	})
 }
 
 fn truncate_to_width_impl<'env>(
@@ -1197,7 +1292,8 @@ fn truncate_to_width_impl<'env>(
 	ellipsis_kind: Ellipsis,
 	pad: bool,
 	tab_width: usize,
-) -> Either<JsString<'env>, Utf16String> {
+	pool: &mut Utf16VecPool,
+) -> Either<JsString<'env>, Vec<u16>> {
 	let (text_w, exceeded) = visible_width_u16_up_to(text, max_width, tab_width);
 	if !exceeded {
 		if !pad {
@@ -1205,10 +1301,11 @@ fn truncate_to_width_impl<'env>(
 		}
 
 		if text_w < max_width {
-			let mut out = Vec::with_capacity(text.len() + (max_width - text_w));
+			let mut out = pool.take();
+			out.reserve(text.len() + (max_width - text_w));
 			out.extend_from_slice(text);
 			out.resize(out.len() + (max_width - text_w), b' ' as u16);
-			return Either::B(build_utf16_string(out));
+			return Either::B(out);
 		}
 
 		return Either::A(original);
@@ -1227,7 +1324,8 @@ fn truncate_to_width_impl<'env>(
 	let target_w = max_width.saturating_sub(ellipsis_w);
 
 	if target_w == 0 {
-		let mut out = Vec::with_capacity(ellipsis.len().min(max_width * 2));
+		let mut out = pool.take();
+		out.reserve(ellipsis.len().min(max_width * 2));
 		let mut w = 0usize;
 		let _ = for_each_grapheme_u16_slow(ellipsis, tab_width, |gu16, gw| {
 			if w + gw > max_width {
@@ -1241,10 +1339,11 @@ fn truncate_to_width_impl<'env>(
 		if pad && w < max_width {
 			out.resize(out.len() + (max_width - w), b' ' as u16);
 		}
-		return Either::B(build_utf16_string(out));
+		return Either::B(out);
 	}
 
-	let mut out = Vec::with_capacity(text.len().min(max_width * 2) + ellipsis.len() + 8);
+	let mut out = pool.take();
+	out.reserve(text.len().min(max_width * 2) + ellipsis.len() + 8);
 	let mut w = 0usize;
 	let mut i = 0usize;
 	let text_len = text.len();
@@ -1343,7 +1442,7 @@ fn truncate_to_width_impl<'env>(
 		}
 	}
 
-	Either::B(build_utf16_string(out))
+	Either::B(out)
 }
 
 fn slice_with_width_impl(
@@ -1352,10 +1451,12 @@ fn slice_with_width_impl(
 	length: usize,
 	strict: bool,
 	tab_width: usize,
+	pool: &mut Utf16VecPool,
 ) -> (Vec<u16>, usize) {
 	let end_col = start_col.saturating_add(length);
 
-	let mut out = Vec::with_capacity(length * 2);
+	let mut out = pool.take();
+	out.reserve(length * 2);
 	let mut out_w = 0usize;
 
 	let mut current_col = 0usize;
@@ -1477,23 +1578,38 @@ fn slice_with_width_impl(
 }
 
 #[napi]
-pub fn slice_with_width(
-	line: JsString,
+pub fn slice_with_width<'env>(
+	env: &'env Env,
+	line: JsString<'env>,
 	start_col: u32,
 	length: u32,
 	strict: Option<bool>,
 	tab_width: u32,
-) -> Result<SliceResult> {
-	if length == 0 {
-		return Ok(SliceResult { text: build_utf16_string(vec![]), width: 0 });
-	}
+) -> Result<SliceResult<'env>> {
+	UTF16_VEC_POOL.with(|pool| {
+		let mut pool = pool.borrow_mut();
+		if length == 0 {
+			let text = env.create_string_utf16([])?;
+			return Ok(SliceResult { text, width: 0 });
+		}
 
-	let line = js::utf16(line)?;
-	let strict = strict.unwrap_or(false);
-	let tab_width = clamp_tab_width_for_ops(tab_width);
-	let (out, width) =
-		slice_with_width_impl(&line, start_col as usize, length as usize, strict, tab_width);
-	Ok(SliceResult { text: build_utf16_string(out), width: crate::utils::clamp_u32(width as u64) })
+		let line = js::utf16(line)?;
+		let strict = strict.unwrap_or(false);
+		let tab_width = clamp_tab_width_for_ops(tab_width);
+		let (out, width) = slice_with_width_impl(
+			&line,
+			start_col as usize,
+			length as usize,
+			strict,
+			tab_width,
+			&mut pool,
+		);
+		let mut out = out;
+		strip_trailing_nuls(&mut out);
+		let text = env.create_string_utf16(&out)?;
+		pool.recycle(out);
+		Ok(SliceResult { text, width: crate::utils::clamp_u32(width as u64) })
+	})
 }
 
 fn extract_segments_impl(
@@ -1503,13 +1619,16 @@ fn extract_segments_impl(
 	after_len: usize,
 	strict_after: bool,
 	tab_width: usize,
+	pool: &mut Utf16VecPool,
 ) -> (Vec<u16>, usize, Vec<u16>, usize) {
 	let after_end = after_start.saturating_add(after_len);
 
-	let mut before = Vec::with_capacity(before_end * 2);
+	let mut before = pool.take();
+	before.reserve(before_end * 2);
 	let mut before_w = 0usize;
 
-	let mut after = Vec::with_capacity(after_len * 2);
+	let mut after = pool.take();
+	after.reserve(after_len * 2);
 	let mut after_w = 0usize;
 
 	let mut current_col = 0usize;
@@ -1686,30 +1805,43 @@ fn extract_segments_impl(
 }
 
 #[napi]
-pub fn extract_segments(
-	line: JsString,
+pub fn extract_segments<'env>(
+	env: &'env Env,
+	line: JsString<'env>,
 	before_end: u32,
 	after_start: u32,
 	after_len: u32,
 	strict_after: bool,
 	tab_width: u32,
-) -> Result<ExtractSegmentsResult> {
-	let line = js::utf16(line)?;
-	let tab_width = clamp_tab_width_for_ops(tab_width);
-	let (before, before_width, after, after_width) = extract_segments_impl(
-		&line,
-		before_end as usize,
-		after_start as usize,
-		after_len as usize,
-		strict_after,
-		tab_width,
-	);
+) -> Result<ExtractSegmentsResult<'env>> {
+	UTF16_VEC_POOL.with(|pool| {
+		let mut pool = pool.borrow_mut();
+		let line = js::utf16(line)?;
+		let tab_width = clamp_tab_width_for_ops(tab_width);
+		let (before, before_width, after, after_width) = extract_segments_impl(
+			&line,
+			before_end as usize,
+			after_start as usize,
+			after_len as usize,
+			strict_after,
+			tab_width,
+			&mut pool,
+		);
+		let mut before = before;
+		strip_trailing_nuls(&mut before);
+		let before_value = env.create_string_utf16(&before)?;
+		pool.recycle(before);
+		let mut after = after;
+		strip_trailing_nuls(&mut after);
+		let after_value = env.create_string_utf16(&after)?;
+		pool.recycle(after);
 
-	Ok(ExtractSegmentsResult {
-		before:       build_utf16_string(before),
-		before_width: crate::utils::clamp_u32(before_width as u64),
-		after:        build_utf16_string(after),
-		after_width:  crate::utils::clamp_u32(after_width as u64),
+		Ok(ExtractSegmentsResult {
+			before:       before_value,
+			before_width: crate::utils::clamp_u32(before_width as u64),
+			after:        after_value,
+			after_width:  crate::utils::clamp_u32(after_width as u64),
+		})
 	})
 }
 
