@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.4] - 2026-09-09
+
 ### Changed
 
 - Local tiny-model workers release their process and loaded models after five idle minutes, restarting on demand.
