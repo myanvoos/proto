@@ -21,6 +21,7 @@ import {
 import type { ToolRenderer } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
+import { tokenizeShellSegments } from "./shell-tokenize";
 import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 
 /**
@@ -50,6 +51,9 @@ export interface XdevDispatch {
 	args?: Record<string, unknown>;
 
 	inner?: unknown;
+
+	/** Set by the bash transport when this dispatch failed; drives the error icon in composite cards. */
+	isError?: boolean;
 }
 
 let rendererLookup: ((name: string) => ToolRenderer | undefined) | undefined;
@@ -538,6 +542,59 @@ function formatXdevHelpCard(
 	return lines.join("\n");
 }
 
+function widthAwareText(format: (contentWidth: number) => string): Component {
+	const component = new WidthAwareText(format, 1, 1);
+	component.setIgnoreTight(true);
+	return component;
+}
+
+function helpStatusMeta(dispatch: XdevDispatch, resolveMounted?: (name: string) => Tool | undefined): string[] {
+	if (dispatch.mode !== "help") return [];
+	return ["docs", ...helpArgsMeta(resolveMounted?.(dispatch.tool))];
+}
+
+function formatXdevCompositeCard(
+	dispatches: readonly XdevDispatch[],
+	text: string,
+	options: RenderResultOptions,
+	contentWidth: number,
+	theme: Theme,
+	resolveMounted?: (name: string) => Tool | undefined,
+): string {
+	const lines: string[] = [];
+	for (const dispatch of dispatches) {
+		const meta = helpStatusMeta(dispatch, resolveMounted);
+		lines.push(
+			renderStatusLine(
+				{
+					icon: dispatch.isError ? "error" : "done",
+					title: `${XD_URL_PREFIX}${dispatch.tool}`,
+					...(meta.length > 0 ? { meta } : {}),
+				},
+				theme,
+			),
+		);
+	}
+
+	const outputLines = text.trimEnd() ? text.trimEnd().split("\n") : [];
+	const bodyWidth = Math.max(20, contentWidth - 2);
+	const maxLines = options.expanded ? PREVIEW_LIMITS.OUTPUT_EXPANDED : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
+	const shown = outputLines.slice(0, maxLines);
+	for (const line of shown) {
+		lines.push(`  ${theme.fg("toolOutput", truncateToWidth(replaceTabs(line), bodyWidth))}`);
+	}
+	const remaining = outputLines.length - shown.length;
+	if (remaining > 0) {
+		const more = theme.fg("dim", `… ${remaining} more lines`);
+		const hint = formatExpandHint(theme, options.expanded, true);
+		lines.push(`  ${[more, hint].filter(Boolean).join(" ")}`);
+	} else if (!options.expanded) {
+		const hint = formatExpandHint(theme, options.expanded, true);
+		if (hint) lines.push(`  ${hint}`);
+	}
+	return lines.join("\n");
+}
+
 function renderXdevHelpCard(
 	dispatch: XdevDispatch,
 	text: string,
@@ -546,13 +603,20 @@ function renderXdevHelpCard(
 	theme: Theme,
 ): Component | undefined {
 	if (!text) return undefined;
-	const component = new WidthAwareText(
-		width => formatXdevHelpCard(dispatch, text, mounted, options, width, theme),
-		1,
-		1,
-	);
-	component.setIgnoreTight(true);
-	return component;
+	return widthAwareText(width => formatXdevHelpCard(dispatch, text, mounted, options, width, theme));
+}
+
+/**
+ * The xd device call when `args.command` is exactly one xd invocation (no chaining, no
+ * surrounding commands). Composite commands render through the composite card instead.
+ */
+export function xdDeviceCallFromBashArgs(args: unknown): { name: string; content: string } | undefined {
+	const command = (args as { command?: unknown } | undefined)?.command;
+	if (typeof command !== "string") return undefined;
+	const segments = tokenizeShellSegments(command);
+	if (segments.length !== 1) return undefined;
+	const parsed = parseXdBashCommand(segments[0]);
+	return parsed?.kind === "device" ? { name: parsed.name, content: parsed.content } : undefined;
 }
 
 function renderQueuedXdevCall(
@@ -594,19 +658,36 @@ export function renderXdevCall(
 }
 
 export function renderXdevResult(
+	dispatch: XdevDispatch | readonly XdevDispatch[],
+	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
+	options: RenderResultOptions,
+	theme: Theme,
+	resolveMounted?: (name: string) => Tool | undefined,
+	singleCall?: { name: string; content: string },
+): Component | undefined {
+	const dispatches = Array.isArray(dispatch) ? dispatch : [dispatch];
+	const text = result.content
+		.map(block => (block.type === "text" ? block.text : ""))
+		.filter(Boolean)
+		.join("\n");
+	if (dispatches.length === 1 && singleCall) {
+		const only = dispatches[0];
+		if (only.mode === "help") {
+			return renderXdevHelpCard(only, text, resolveMounted?.(only.tool), options, theme);
+		}
+		return renderSingleXdevExecute(only, text, result, options, theme, resolveMounted);
+	}
+	return widthAwareText(width => formatXdevCompositeCard(dispatches, text, options, width, theme, resolveMounted));
+}
+
+function renderSingleXdevExecute(
 	dispatch: XdevDispatch,
+	text: string,
 	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
 	options: RenderResultOptions,
 	theme: Theme,
 	resolveMounted?: (name: string) => Tool | undefined,
 ): Component | undefined {
-	const text = result.content
-		.map(block => (block.type === "text" ? block.text : ""))
-		.filter(Boolean)
-		.join("\n");
-	if (dispatch.mode === "help") {
-		return renderXdevHelpCard(dispatch, text, resolveMounted?.(dispatch.tool), options, theme);
-	}
 	const mounted = resolveMounted?.(dispatch.tool);
 	const renderer = resolveDeviceRenderer(dispatch.tool, mounted);
 	const innerResult = { content: result.content, details: dispatch.inner, isError: result.isError };

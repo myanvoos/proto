@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Chained or multiple `xd` calls in one bash command render one status line per dispatch (with per-call failure flags) above a capped output preview, instead of a blank-label default render.
+
 ## [18.0.5] - 2026-09-09
 
 ### Changed

@@ -16,10 +16,15 @@ import { createOrchestrateToolRenderer, type OrchestrateOp } from "./orchestrate
 import { readToolRenderer } from "./read";
 import { REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
 import { isResolutionDeviceName, renderResolutionDeviceCall, resolveRenderer } from "./resolve";
-import { tokenizeShellSegments } from "./shell-tokenize";
 import { thinkToolRenderer } from "./think";
 import { todoToolRenderer } from "./todo";
-import { parseXdBashCommand, renderXdevCall, renderXdevResult, setXdevRendererLookup, type XdevDispatch } from "./xdev";
+import {
+	renderXdevCall,
+	renderXdevResult,
+	setXdevRendererLookup,
+	type XdevDispatch,
+	xdDeviceCallFromBashArgs,
+} from "./xdev";
 
 export type FirstResultViewportRepaint = boolean | ((args: unknown, options: RenderResultOptions) => boolean);
 
@@ -44,22 +49,13 @@ export type ToolRenderer = {
 	forceResultViewportRepaintOnSettle?: boolean;
 };
 
-function bashXdCallFromArgs(args: unknown): { name: string; content: string } | undefined {
-	const command = (args as { command?: unknown } | undefined)?.command;
-	if (typeof command !== "string") return undefined;
-	const segments = tokenizeShellSegments(command);
-	if (segments.length !== 1) return undefined;
-	const parsed = parseXdBashCommand(segments[0]);
-	return parsed?.kind === "device" ? { name: parsed.name, content: parsed.content } : undefined;
-}
-
 let bashXdRendererInstance: ToolRenderer | undefined;
 
 function getBashXdRenderer(): ToolRenderer {
 	bashXdRendererInstance ??= {
 		...bashToolRenderer,
 		renderCall(args: unknown, options: RenderResultOptions, uiTheme: Theme): Component {
-			const xd = bashXdCallFromArgs(args);
+			const xd = xdDeviceCallFromBashArgs(args);
 			if (xd) {
 				if (isResolutionDeviceName(xd.name)) return renderResolutionDeviceCall(xd.name, xd.content, uiTheme);
 				if (xd.name === REPORT_ISSUE_DEVICE_NAME) return renderReportIssueDeviceCall(xd.content, uiTheme);
@@ -83,7 +79,7 @@ function getBashXdRenderer(): ToolRenderer {
 			uiTheme: Theme,
 			args?: unknown,
 		): Component {
-			const xdev = (result.details as { xdev?: XdevDispatch } | undefined)?.xdev;
+			const xdev = (result.details as { xdev?: XdevDispatch | readonly XdevDispatch[] } | undefined)?.xdev;
 			if (xdev) {
 				const context = (options as { renderContext?: { resolveXdevMounted?: (name: string) => unknown } })
 					.renderContext;
@@ -93,6 +89,7 @@ function getBashXdRenderer(): ToolRenderer {
 					options,
 					uiTheme,
 					context?.resolveXdevMounted as Parameters<typeof renderXdevResult>[4],
+					xdDeviceCallFromBashArgs(args),
 				);
 				if (delegated) return delegated;
 			}

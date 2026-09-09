@@ -983,7 +983,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const xdValues: unknown[] = [];
 		let xdTransportFailure = false;
 		for (const record of xdResult.records) {
-			if (record.xdev !== undefined) xdValues.push(record.xdev);
+			if (record.xdev !== undefined) {
+				xdValues.push(
+					record.isError === true ? { ...(record.xdev as Record<string, unknown>), isError: true } : record.xdev,
+				);
+			}
 			// A failed intermediate xd tool is data; final shell status remains authoritative.
 			for (const value of record.details?.jsonOutputs ?? []) xdJsonOutputs.push(value);
 			for (const block of record.content ?? []) {

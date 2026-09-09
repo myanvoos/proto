@@ -48,6 +48,16 @@ function sessionWithProbe(cwd: string, state: ProbeState, skills: readonly Skill
 			};
 		},
 	} as unknown as Tool;
+	const probe2 = {
+		name: "probe2",
+		label: "Probe Two",
+		description: "Second probe tool for composite dispatch rendering.",
+		parameters: type({ value: "string" }),
+		async execute(_toolCallId: string, args: { value: string }) {
+			state.calls.push(`probe2:${args.value}`);
+			return { content: [{ type: "text" as const, text: `probe2:${args.value}\n` }] };
+		},
+	} as unknown as Tool;
 	return {
 		cwd,
 		skills,
@@ -56,9 +66,12 @@ function sessionWithProbe(cwd: string, state: ProbeState, skills: readonly Skill
 			getShellConfig: () => ({ env: {} }),
 		},
 		xdev: {
-			tools: new Map([[probe.name, probe]]),
-			mountedNames: new Set([probe.name]),
-			builtInNames: new Set([probe.name]),
+			tools: new Map([
+				[probe.name, probe],
+				[probe2.name, probe2],
+			]),
+			mountedNames: new Set([probe.name, probe2.name]),
+			builtInNames: new Set([probe.name, probe2.name]),
 			isActive: () => false,
 		},
 	} as unknown as ToolSession;
@@ -548,5 +561,78 @@ test("xd help card expands to the full docs", async () => {
 		expect(rendered).toContain("xd://probe docs");
 		expect(rendered).toContain("type Args");
 		expect(rendered).toContain("Execute from bash:");
+	});
+});
+
+test("chained xd help calls render one status line per device, not a docs dump", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `xd probe ?; xd probe2 ?`;
+		const result = await bash.execute("xd-composite-help", { command });
+		expect(result.isError).not.toBe(true);
+
+		const modelText = textOf(result);
+		expect(modelText).toContain("Returns the supplied value.");
+		expect(modelText).toContain("Second probe tool for composite dispatch rendering.");
+		expect(modelText).toContain("type Args");
+
+		const resolveXdevMounted = (name: string) => {
+			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
+			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+		};
+		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
+		expect(rendered).toContain("xd://probe docs");
+		expect(rendered).toContain("xd://probe2 docs");
+		expect(rendered).not.toContain("type Args");
+		expect(rendered).toContain("expand");
+	});
+});
+
+test("composite output is not swallowed when xd help is chained with other commands", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `printf hi; xd probe ?`;
+		const result = await bash.execute("xd-composite-mixed", { command });
+		expect(result.isError).not.toBe(true);
+		const resolveXdevMounted = (name: string) => {
+			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
+			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+		};
+		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
+		expect(rendered).toContain("xd://probe docs");
+		expect(rendered).toContain("hi");
+	});
+});
+
+test("chained xd execute calls render one line per dispatch with their output", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `xd probe '{"value":"one"}'; xd probe '{"value":"two"}'`;
+		const result = await bash.execute("xd-composite-execute", { command });
+		expect(result.isError).not.toBe(true);
+		const resolveXdevMounted = (name: string) => {
+			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
+			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+		};
+		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
+		expect(rendered).toContain("probe:one");
+		expect(rendered).toContain("probe:two");
+		const statusLines = rendered.split("\n").filter(line => line.includes("xd://probe "));
+		expect(statusLines.length).toBe(2);
+	});
+});
+
+test("failed xd dispatches are flagged in composite cards", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `xd probe '{"value":"fail"}'; xd probe '{"value":"ok"}'`;
+		const result = await bash.execute("xd-composite-failure", { command });
+		const resolveXdevMounted = (name: string) => {
+			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
+			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+		};
+		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
+		const errorGlyph = stripAnsi(theme.styledSymbol("status.error", "error"));
+		const doneGlyph = stripAnsi(theme.styledSymbol("status.done", "success"));
+		expect(rendered).toContain(`${errorGlyph} xd://probe`);
+		expect(rendered).toContain(`${doneGlyph} xd://probe`);
+		expect(rendered).toContain("probe:fail");
+		expect(rendered).toContain("probe:ok");
 	});
 });
