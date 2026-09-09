@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.5] - 2026-09-09
+
 ### Fixed
 
 - Gemini 3.7 Flash no longer offers the `minimal` thinking effort on Google, Vertex, and OpenCode Zen, which reject it; budget-based resellers keep it.

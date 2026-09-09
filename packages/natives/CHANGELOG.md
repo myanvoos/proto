@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.5] - 2026-09-09
+
 ### Fixed
 
 - `grep -G` and `sed` BRE patterns now follow POSIX semantics: `\(` `\)` group, `\{m,n\}` is an interval, `\+` `\?` are operators, and the bare forms are literal.

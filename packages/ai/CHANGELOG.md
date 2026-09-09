@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.5] - 2026-09-09
+
 ### Fixed
 
 - Codex WebSocket shutdown no longer crashes a turn when the socket is already closed, and abort/timeout reasons are preserved instead of surfacing as a generic failure.

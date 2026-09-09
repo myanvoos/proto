@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.5] - 2026-09-09
+
 ### Fixed
 
 - Reference-style markdown links whose label collides with a JavaScript object member (`[x][constructor]`, `[x][__proto__]`) no longer crash the renderer; they render as plain text.

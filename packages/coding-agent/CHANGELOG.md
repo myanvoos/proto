@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.5] - 2026-09-09
+
 ### Changed
 
 - The goal tool ships in every unrestricted session's toolset (gated by `goal.enabled`), so the agent can create, check, resume, complete, or drop a goal itself instead of waiting for `/goal` to activate goal mode first.
