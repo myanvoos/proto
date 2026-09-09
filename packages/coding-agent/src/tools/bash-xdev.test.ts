@@ -5,9 +5,11 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Shell } from "@oh-my-pi/pi-natives";
 import type { Skill } from "../extensibility/skills";
+import { initTheme, theme } from "../modes/theme/theme";
 import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
 import { ReadTool } from "./read";
+import { toolRenderers } from "./renderers";
 import { ToolAbortError } from "./tool-errors";
 
 interface ProbeState {
@@ -15,6 +17,8 @@ interface ProbeState {
 	active: number;
 	maxActive: number;
 }
+
+await initTheme(false, false, "proto");
 
 function systemPromptsSkill(dir: string): Skill {
 	return {
@@ -67,14 +71,38 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
 		.join("");
 }
 
-async function withBash(run: (bash: BashTool, state: ProbeState) => Promise<void>): Promise<void> {
+async function withBash(
+	run: (bash: BashTool, state: ProbeState, session: ToolSession) => Promise<void>,
+): Promise<void> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-"));
 	const state: ProbeState = { calls: [], active: 0, maxActive: 0 };
 	try {
-		await run(new BashTool(sessionWithProbe(dir, state)), state);
+		const session = sessionWithProbe(dir, state);
+		await run(new BashTool(session), state, session);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
+}
+
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+/** Render a settled bash result through the production renderer, mirroring tool-execution's render context. */
+function renderBashResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
+	command: string,
+	expanded: boolean,
+	resolveXdevMounted?: (name: string) => unknown,
+): string {
+	const renderer = toolRenderers.bash as never as {
+		renderResult: (r: unknown, o: unknown, t: unknown, a: unknown) => { render: (w: number) => string[] };
+	};
+	const component = renderer.renderResult(
+		result,
+		{ expanded, isPartial: false, renderContext: { expanded, resolveXdevMounted } },
+		theme,
+		{ command },
+	);
+	return stripAnsi(component.render(90).join("\n"));
 }
 
 test("multiple semicolon-separated xd calls dispatch in order", async () => {
@@ -485,4 +513,40 @@ test("native xd bridge keeps stdin and pipe purity separate from status records"
 		async () => JSON.stringify({ stdout: "out\n", stderr: "not-piped\n", exitCode: 0, record: "{}" }),
 	);
 	expect(stderrOnly.exitCode).toBe(1);
+});
+
+test("xd help keeps full docs for the model but renders a compact card in TUI", async () => {
+	await withBash(async (bash, _state, session) => {
+		const result = await bash.execute("xd-help", { command: `xd probe ?` });
+		expect(result.isError).not.toBe(true);
+
+		// Model-facing content is untouched: full description + schema.
+		const modelText = textOf(result);
+		expect(modelText).toContain("Returns the supplied value.");
+		expect(modelText).toContain("type Args");
+
+		const resolveXdevMounted = (name: string) => {
+			const xdev = (session as { xdev?: { mountedNames: Set<string>; tools: Map<string, unknown> } }).xdev;
+			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+		};
+		const rendered = renderBashResult(result, `xd probe ?`, false, resolveXdevMounted);
+		expect(rendered).toContain("xd://probe docs");
+		expect(rendered).toContain("Returns the supplied value.");
+		expect(rendered).toContain("1 arg");
+		expect(rendered).toContain("required: value");
+		// Collapsed card must not dump the full instruction block into the TUI.
+		expect(rendered).not.toContain("type Args");
+		expect(rendered).not.toContain("## Schema");
+	});
+});
+
+test("xd help card expands to the full docs", async () => {
+	await withBash(async bash => {
+		const result = await bash.execute("xd-help-expanded", { command: `xd probe ?` });
+		expect(result.isError).not.toBe(true);
+		const rendered = renderBashResult(result, `xd probe ?`, true);
+		expect(rendered).toContain("xd://probe docs");
+		expect(rendered).toContain("type Args");
+		expect(rendered).toContain("Execute from bash:");
+	});
 });

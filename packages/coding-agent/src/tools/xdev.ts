@@ -1,15 +1,23 @@
 import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import { type Tool as AiTool, jsonSchemaToTypeScript, toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
-import { type Component, Container, Text } from "@oh-my-pi/pi-tui";
+import { type Component, Container } from "@oh-my-pi/pi-tui";
 import { parseStreamingJson, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
+import { renderStatusLine, WidthAwareText } from "../tui";
 import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool, ToolSession } from "./index";
 import { isReadableUrlPath, resolveToCwd, splitPathAndSel } from "./path-utils";
-import { replaceTabs } from "./render-utils";
+import {
+	formatExpandHint,
+	PREVIEW_LIMITS,
+	pluralize,
+	replaceTabs,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
+} from "./render-utils";
 import type { ToolRenderer } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
@@ -447,6 +455,106 @@ function displayDeviceArgs(args: Record<string, unknown>): Record<string, unknow
 	return rest;
 }
 
+const HELP_SUMMARY_MAX_CHARS = TRUNCATE_LENGTHS.RECAP;
+const HELP_META_MAX_REQUIRED = 4;
+
+/** Description body of rendered docs: everything between the heading and the next markdown heading. */
+function docsDescriptionBody(text: string): string {
+	const lines = text.split("\n");
+	const start = lines.findIndex(line => line.trim().length > 0);
+	if (start < 0) return "";
+	const body: string[] = [];
+	for (let i = start + 1; i < lines.length; i++) {
+		if (/^#{1,6} /.test(lines[i])) break;
+		body.push(lines[i]);
+	}
+	return body.join("\n");
+}
+
+/** First paragraph flattened to a single bounded line for collapsed previews. */
+function flatFirstParagraph(text: string): string {
+	const trimmed = text.trim();
+	if (!trimmed) return "";
+	const paragraph = trimmed.split(/\n[ \t]*\n/)[0] ?? "";
+	const flat = paragraph.replace(/\s+/g, " ").trim();
+	if (flat.length <= HELP_SUMMARY_MAX_CHARS) return flat;
+	return `${flat.slice(0, HELP_SUMMARY_MAX_CHARS).trimEnd()}…`;
+}
+
+function helpArgsMeta(mounted: Tool | undefined): string[] {
+	const schema = mounted
+		? (toolWireSchema(mounted as AiTool) as {
+				properties?: Record<string, unknown>;
+				required?: readonly string[];
+			})
+		: undefined;
+	const names = Object.keys(schema?.properties ?? {});
+	if (names.length === 0) return [];
+	const required = (schema?.required ?? []).filter(name => names.includes(name));
+	const meta = [`${names.length} ${pluralize("arg", names.length)}`];
+	if (required.length > 0) {
+		const overflow = required.length - HELP_META_MAX_REQUIRED;
+		const shown = required.slice(0, HELP_META_MAX_REQUIRED).join(", ");
+		meta.push(`required: ${shown}${overflow > 0 ? ` +${overflow}` : ""}`);
+	}
+	return meta;
+}
+
+function formatXdevHelpCard(
+	dispatch: XdevDispatch,
+	text: string,
+	mounted: Tool | undefined,
+	options: RenderResultOptions,
+	contentWidth: number,
+	theme: Theme,
+): string {
+	const lines = [
+		renderStatusLine(
+			{
+				icon: options.isPartial ? "running" : "done",
+				spinnerFrame: options.spinnerFrame,
+				title: `${XD_URL_PREFIX}${dispatch.tool}`,
+				meta: ["docs", ...helpArgsMeta(mounted)],
+			},
+			theme,
+		),
+	];
+	if (options.expanded) {
+		for (const line of text.split("\n")) {
+			lines.push(theme.fg("toolOutput", replaceTabs(line)));
+		}
+		return lines.join("\n");
+	}
+	const summary = flatFirstParagraph(docsDescriptionBody(text));
+	if (summary) {
+		const bodyWidth = Math.max(20, contentWidth - 2);
+		const wrapped = Bun.wrapAnsi(summary, bodyWidth, { hard: true }).split("\n");
+		for (const line of wrapped.slice(0, PREVIEW_LIMITS.COLLAPSED_LINES)) {
+			lines.push(`  ${theme.fg("toolOutput", truncateToWidth(line, bodyWidth))}`);
+		}
+	}
+	const hint = formatExpandHint(theme, options.expanded, true);
+	if (hint) lines.push(`  ${hint}`);
+	return lines.join("\n");
+}
+
+function renderXdevHelpCard(
+	dispatch: XdevDispatch,
+	text: string,
+	mounted: Tool | undefined,
+	options: RenderResultOptions,
+	theme: Theme,
+): Component | undefined {
+	if (!text) return undefined;
+	const component = new WidthAwareText(
+		width => formatXdevHelpCard(dispatch, text, mounted, options, width, theme),
+		1,
+		1,
+	);
+	component.setIgnoreTight(true);
+	return component;
+}
+
 function renderQueuedXdevCall(
 	label: string,
 	args: Record<string, unknown>,
@@ -471,6 +579,9 @@ export function renderXdevCall(
 	resolveMounted?: (name: string) => Tool | undefined,
 ): Component | undefined {
 	const mounted = resolveMounted?.(name);
+	if (typeof content === "string" && HELP_CONTENT_RE.test(content)) {
+		return renderDefaultToolExecution({ label: `xd ${displayDeviceLabel(name, mounted)}`, args: {}, options }, theme);
+	}
 	const args = decodeInnerArgs(content);
 	if (!options.executionStarted) {
 		return renderQueuedXdevCall(displayDeviceLabel(name, mounted), args, options, theme);
@@ -494,7 +605,7 @@ export function renderXdevResult(
 		.filter(Boolean)
 		.join("\n");
 	if (dispatch.mode === "help") {
-		return text ? new Text(theme.fg("toolOutput", replaceTabs(text)), 0, 0) : undefined;
+		return renderXdevHelpCard(dispatch, text, resolveMounted?.(dispatch.tool), options, theme);
 	}
 	const mounted = resolveMounted?.(dispatch.tool);
 	const renderer = resolveDeviceRenderer(dispatch.tool, mounted);
