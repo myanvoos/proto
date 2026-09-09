@@ -12,9 +12,17 @@ import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-ut
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { getEditorTheme, theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
+import { TRANSCRIPT_WINDOW_SOFT_BYTES, TRANSCRIPT_WINDOW_SOFT_MESSAGES } from "../utils/transcript-window";
 import { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { DynamicBorder } from "./dynamic-border";
 import { formatContextUsage } from "./status-line/context-thresholds";
+import {
+	readFileRangeSync,
+	readTranscriptAfter,
+	readTranscriptBefore,
+	readTranscriptTail,
+	type TranscriptFileWindow,
+} from "./transcript-file-window";
 
 interface AgentTranscriptViewerDeps {
 	agentId: string;
@@ -62,36 +70,17 @@ interface LocalTranscriptState {
 	ino: number;
 	size: number;
 	mtimeMs: number;
-	offset: number;
-	pending: string;
+	ctimeMs: number;
+	windowStart: number;
+	windowEnd: number;
+	atTail: boolean;
 	sentinels: LocalTranscriptSentinel[];
-}
-
-function readFileRangeSync(file: string, offset: number, length: number): Buffer {
-	if (length <= 0) return Buffer.alloc(0);
-	const fd = fs.openSync(file, "r");
-	try {
-		const buffer = Buffer.alloc(length);
-		const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
-		return bytesRead === length ? buffer : buffer.subarray(0, bytesRead);
-	} finally {
-		fs.closeSync(fd);
-	}
 }
 
 function sentinelOffsets(size: number): number[] {
 	if (size <= 0) return [];
 	const length = Math.min(SENTINEL_BYTES, size);
 	return [...new Set([0, Math.max(0, Math.floor((size - length) / 2)), Math.max(0, size - length)])];
-}
-
-function sentinelsFromBuffer(buffer: Buffer): LocalTranscriptSentinel[] {
-	const size = buffer.byteLength;
-	const length = Math.min(SENTINEL_BYTES, size);
-	return sentinelOffsets(size).map(offset => ({
-		offset,
-		bytes: Buffer.from(buffer.subarray(offset, offset + length)),
-	}));
 }
 
 function sentinelsFromFile(file: string, size: number): LocalTranscriptSentinel[] {
@@ -198,14 +187,23 @@ export class AgentTranscriptViewer implements Component {
 			return;
 		}
 		const state = this.#localState;
-		if (state && this.#canAppendLocal(sessionFile, stat, state)) {
-			if (stat.size === state.size && stat.mtimeMs === state.mtimeMs) return;
-			if (stat.size > state.size) {
-				this.#appendLocal(sessionFile, stat, state);
-				return;
-			}
+		if (!state || !this.#sameFileContents(sessionFile, stat, state)) {
+			this.#loadTail(sessionFile, stat);
+			return;
 		}
-		this.#loadLocalFull(sessionFile, stat);
+		if (stat.size === state.size && stat.mtimeMs === state.mtimeMs && stat.ctimeMs === state.ctimeMs) return;
+		if (stat.size > state.size && !state.atTail) {
+			this.#localState = {
+				...state,
+				size: stat.size,
+				mtimeMs: stat.mtimeMs,
+				ctimeMs: stat.ctimeMs,
+				sentinels: sentinelsFromFile(sessionFile, stat.size),
+			};
+			this.deps.requestRender();
+			return;
+		}
+		this.#loadTail(sessionFile, stat);
 	}
 
 	#clearLocal(reason: string): void {
@@ -216,7 +214,7 @@ export class AgentTranscriptViewer implements Component {
 		this.#rebuild([]);
 	}
 
-	#canAppendLocal(sessionFile: string, stat: fs.Stats, state: LocalTranscriptState): boolean {
+	#sameFileContents(sessionFile: string, stat: fs.Stats, state: LocalTranscriptState): boolean {
 		if (state.path !== sessionFile || state.dev !== stat.dev || state.ino !== stat.ino || stat.size < state.size)
 			return false;
 		for (const sentinel of state.sentinels) {
@@ -232,75 +230,108 @@ export class AgentTranscriptViewer implements Component {
 		return true;
 	}
 
-	#loadLocalFull(sessionFile: string, stat: fs.Stats): void {
-		let data: Buffer;
+	#loadTail(sessionFile: string, stat: fs.Stats): void {
 		try {
-			data = fs.readFileSync(sessionFile);
+			this.#loadWindow(
+				sessionFile,
+				stat,
+				readTranscriptTail(sessionFile, stat.size, TRANSCRIPT_WINDOW_SOFT_BYTES, TRANSCRIPT_WINDOW_SOFT_MESSAGES),
+				"bottom",
+				true,
+			);
 		} catch (err) {
-			logger.debug("transcript viewer: read failed", { err: String(err) });
-			return;
+			logger.debug("transcript viewer: tail window read failed", { err: String(err) });
 		}
+	}
 
-		let post: fs.Stats;
-		try {
-			post = fs.statSync(sessionFile);
-		} catch {
-			post = stat;
-		}
-
-		const text = data.toString("utf-8");
-		const lastNewline = text.lastIndexOf("\n");
-		const complete = lastNewline >= 0 ? text.slice(0, lastNewline + 1) : "";
-		const pending = lastNewline >= 0 ? text.slice(lastNewline + 1) : text;
+	#loadWindow(
+		sessionFile: string,
+		stat: fs.Stats,
+		window: TranscriptFileWindow,
+		position: "top" | "bottom",
+		atTail: boolean,
+	): void {
 		this.#localUnavailable = "";
 		this.#localState = {
 			path: sessionFile,
-			dev: post.dev,
-			ino: post.ino,
-			size: data.byteLength,
-			mtimeMs: post.mtimeMs,
-			offset: data.byteLength,
-			pending,
-			sentinels: sentinelsFromBuffer(data),
-		};
-		this.#model = undefined;
-		this.#rebuild(this.#extractMessages(parseSessionEntries(complete)));
-	}
-
-	#appendLocal(sessionFile: string, stat: fs.Stats, state: LocalTranscriptState): void {
-		let chunk: string;
-		try {
-			chunk = readFileRangeSync(sessionFile, state.offset, stat.size - state.offset).toString("utf-8");
-		} catch (err) {
-			logger.debug("transcript viewer: tail read failed", { err: String(err) });
-			this.#loadLocalFull(sessionFile, stat);
-			return;
-		}
-		const combined = state.pending + chunk;
-		const lastNewline = combined.lastIndexOf("\n");
-		const complete = lastNewline >= 0 ? combined.slice(0, lastNewline + 1) : "";
-		const previousModel = this.#model;
-		const parsed = complete ? this.#extractMessages(parseSessionEntries(complete)) : [];
-		let sentinels: LocalTranscriptSentinel[];
-		try {
-			sentinels = sentinelsFromFile(sessionFile, stat.size);
-		} catch (err) {
-			logger.debug("transcript viewer: sentinel recompute failed", { err: String(err) });
-			this.#loadLocalFull(sessionFile, stat);
-			return;
-		}
-		this.#localState = {
-			...state,
+			dev: stat.dev,
+			ino: stat.ino,
 			size: stat.size,
 			mtimeMs: stat.mtimeMs,
-			offset: stat.size,
-			pending: lastNewline >= 0 ? combined.slice(lastNewline + 1) : combined,
-			sentinels,
+			ctimeMs: stat.ctimeMs,
+			windowStart: window.start,
+			windowEnd: window.end,
+			atTail,
+			sentinels: sentinelsFromFile(sessionFile, stat.size),
 		};
-		if (parsed.length > 0) {
-			this.#append(parsed);
-		} else if (this.#model !== previousModel) {
-			this.deps.requestRender();
+		this.#model = undefined;
+		this.#rebuild(this.#extractMessages(parseSessionEntries(window.text)));
+		this.#followBottom = position === "bottom";
+		if (position === "top") this.#scrollView.scrollToTop();
+	}
+
+	#pageOlder(): boolean {
+		const state = this.#localState;
+		if (!state || state.windowStart === 0) return false;
+		try {
+			const window = readTranscriptBefore(
+				state.path,
+				state.windowStart,
+				TRANSCRIPT_WINDOW_SOFT_BYTES,
+				TRANSCRIPT_WINDOW_SOFT_MESSAGES,
+			);
+			this.#loadWindow(state.path, fs.statSync(state.path), window, "bottom", false);
+			return true;
+		} catch (err) {
+			logger.debug("transcript viewer: older window read failed", { err: String(err) });
+			return false;
+		}
+	}
+
+	#pageNewer(): boolean {
+		const state = this.#localState;
+		if (!state || state.atTail) return false;
+		try {
+			const window = readTranscriptAfter(
+				state.path,
+				state.windowEnd,
+				state.size,
+				TRANSCRIPT_WINDOW_SOFT_BYTES,
+				TRANSCRIPT_WINDOW_SOFT_MESSAGES,
+			);
+			if (window.end <= state.windowEnd) return false;
+			this.#loadWindow(state.path, fs.statSync(state.path), window, "top", window.end >= state.size);
+			return true;
+		} catch (err) {
+			logger.debug("transcript viewer: newer window read failed", { err: String(err) });
+			return false;
+		}
+	}
+
+	#jumpOldest(): void {
+		const state = this.#localState;
+		if (!state) return;
+		try {
+			const window = readTranscriptAfter(
+				state.path,
+				0,
+				state.size,
+				TRANSCRIPT_WINDOW_SOFT_BYTES,
+				TRANSCRIPT_WINDOW_SOFT_MESSAGES,
+			);
+			this.#loadWindow(state.path, fs.statSync(state.path), window, "top", false);
+		} catch (err) {
+			logger.debug("transcript viewer: oldest window read failed", { err: String(err) });
+		}
+	}
+
+	#jumpNewest(): void {
+		const state = this.#localState;
+		if (!state) return;
+		try {
+			this.#loadTail(state.path, fs.statSync(state.path));
+		} catch (err) {
+			logger.debug("transcript viewer: newest window read failed", { err: String(err) });
 		}
 	}
 
@@ -376,6 +407,18 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#handleScroll(data: string): boolean {
+		if (matchesKey(data, "pageUp") && this.#scrollView.getScrollOffset() === 0 && this.#pageOlder()) {
+			this.deps.requestRender();
+			return true;
+		}
+		if (
+			matchesKey(data, "pageDown") &&
+			this.#scrollView.getScrollOffset() >= this.#scrollView.getMaxScrollOffset() &&
+			this.#pageNewer()
+		) {
+			this.deps.requestRender();
+			return true;
+		}
 		if (this.#scrollView.handleScrollKey(data)) {
 			this.#syncFollow();
 			this.deps.requestRender();
@@ -386,9 +429,13 @@ export class AgentTranscriptViewer implements Component {
 		} else if (matchesKey(data, "k") || matchesSelectUp(data)) {
 			this.#scrollView.scroll(-1);
 		} else if (data === "g") {
-			this.#scrollView.scrollToTop();
+			this.#jumpOldest();
+			this.deps.requestRender();
+			return true;
 		} else if (data === "G") {
-			this.#scrollView.scrollToBottom();
+			this.#jumpNewest();
+			this.deps.requestRender();
+			return true;
 		} else {
 			return false;
 		}
@@ -487,11 +534,21 @@ export class AgentTranscriptViewer implements Component {
 		const lines: string[] = [];
 		const statsLine = this.#statsLine();
 		if (statsLine) lines.push(` ${statsLine}`);
+		const paging = this.#pagingStatus();
+		if (paging) lines.push(` ${theme.fg("dim", paging)}`);
 		const hint = this.#editor
-			? `Enter:send  Esc:close  ${this.deps.expandKeys[0] ?? "ctrl+o"}:expand  empty input → j/k:scroll  g/G:top/bottom`
-			: `Esc:close  ${this.deps.expandKeys[0] ?? "ctrl+o"}:expand  j/k:scroll  g/G:top/bottom`;
+			? `Enter:send  Esc:close  ${this.deps.expandKeys[0] ?? "ctrl+o"}:expand  empty input → PgUp/PgDn:page  g/G:first/latest`
+			: `Esc:close  ${this.deps.expandKeys[0] ?? "ctrl+o"}:expand  PgUp/PgDn:page  g/G:first/latest`;
 		lines.push(` ${theme.fg("dim", hint)}`);
 		return lines;
+	}
+
+	#pagingStatus(): string {
+		const state = this.#localState;
+		if (!state) return "";
+		const older = state.windowStart > 0 ? "← older" : "start";
+		const newer = state.atTail ? "latest" : "newer →";
+		return `${older}  ${newer}`;
 	}
 
 	#statsLine(): string {

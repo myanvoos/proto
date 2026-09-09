@@ -19,6 +19,8 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		"|-----|--------|",
 		"| `Arrow keys` | Move cursor / browse history (Up when empty) |",
 		`| \`${alt}+Left/Right\` | Move by word |`,
+		`| \`${appKey(bindings, "app.history.older")}\` / \`${appKey(bindings, "app.history.newer")}\` | Page older/newer transcript history |`,
+		`| \`${appKey(bindings, "app.history.latest")}\` | Return to latest transcript history |`,
 		isMac ? `| \`Ctrl+A\` / \`Home\` / \`${cmd}+Left\` | Start of line |` : "| `Ctrl+A` / `Home` | Start of line |",
 		isMac ? `| \`Ctrl+E\` / \`End\` / \`${cmd}+Right\` | End of line |` : "| `Ctrl+E` / `End` | End of line |",
 		"",

@@ -70,6 +70,19 @@ Steering uses the normal prompt path, so the message and response are written to
 
 Contexts without a local focusable session use the Fleet's full-screen transcript viewer instead. This includes advisor rows. The viewer incrementally tails the file-backed transcript and provides an input line only when the selected agent can be messaged. Sending there has the same semantics: revive if parked, steer if running, and prompt if idle.
 
+The read-only viewer starts at a bounded tail window instead of reading and rendering the entire file. Its soft limits are 256 message groups and 2 MiB of JSONL data. Each assistant record stays with its following tool results; a single oversized record/group is kept intact even when it exceeds a soft limit. Historical windows are read on demand and replaced, not accumulated.
+
+| Viewer input | Behavior |
+| --- | --- |
+| `PageUp` at the window's top | Load the preceding window and land at its bottom. |
+| `PageDown` at the window's bottom | Load the following window and land at its top. |
+| `g` | Read the first history window. |
+| `G` | Return to the latest window and follow new output. |
+| Arrows, `j`/`k`, wheel | Scroll within the loaded window. |
+
+While you read an older window, appended output does not replace that window. Returning to the latest tail picks up new records and evicts older rendered components. Incomplete final JSONL records wait for their terminating newline. The model label comes from metadata available in the loaded window; the viewer does not scan all old history just to find it.
+
+
 ## Persisted agents and advisors
 
 Opening the Fleet for a persisted session scans that session's artifact tree. Historical subagent JSONL files become parked rows; a killed agent's tombstone keeps it aborted. Nested subagents retain their parent/child lineage. Output and patch artifacts are attached to the corresponding inspector row.

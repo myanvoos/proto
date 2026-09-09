@@ -196,7 +196,9 @@ Any failure after the snapshot restores the previous manager and runtime state, 
 - reload todos from new session artifacts
 - show `Resumed session` (or `Resumed session in <dir>` for a cross-project resume)
 
-So visible conversation/todo state is rebuilt from the new session file.
+Visible conversation/todo state is rebuilt from the new session file. Transcript component hydration starts with the newest window (soft limits: 256 messages and 2 MiB of estimated message data). An assistant and its associated tool results stay together; one oversized message or tool group may exceed those limits. Long autonomous turns can span multiple windows without waiting for another user message.
+
+`Alt+PageUp` / `Alt+PageDown` / `Alt+End`, or `/history older|newer|latest`, navigate the display windows. Previous rendered components are disposed rather than retained as an ever-growing UI cache. The persisted entries and model context remain complete; this bounds eager UI hydration, not all session-storage memory.
 
 ## Startup resume vs in-session switch
 

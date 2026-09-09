@@ -11,6 +11,7 @@ bun packages/coding-agent/scripts/bench-orchestrator-memory.ts
 bun --expose-gc packages/coding-agent/scripts/bench-worker-lifecycle-memory.ts --workers 1,4,8 --payload-kib 256
 bun packages/coding-agent/bench/assertion-preflight-cache.bench.ts
 bun packages/coding-agent/bench/transcript-viewer-cache.bench.ts
+bun packages/coding-agent/scripts/bench-agent-transcript-viewer.ts --count 8000
 bun packages/coding-agent/scripts/bench-daemon-memory.ts --clients 200 --terminal 50
 bun packages/coding-agent/scripts/bench-gc-memory.ts --mib 128 --runs 3
 ```
@@ -23,6 +24,24 @@ bun packages/coding-agent/scripts/bench-gc-memory.ts --mib 128 --runs 3
 - **Blob GC:** creates plain, gzip-archived, and backup single-line transcripts outside the measured child, then runs real blob collection in an isolated agent directory. Each run verifies referenced blobs survive and an orphan is removed. `--mib` is the size of each of the three transcripts; use `--mib 512 --runs 3` to check scaling. This measures one-shot scanner peak RSS, not retained daemon memory.
 
 These are local, synthetic workloads; they do not require provider requests. Garbage collection in a benchmark is diagnostic instrumentation, not a production optimization. Keep input sizes, warmup, live fixture references, and collection boundaries identical. Use repeated samples; do not infer savings from a single RSS reading.
+
+## Windowed transcript hydration
+
+Main-session revival keeps complete persisted entries and the agent's context, but constructs UI components only for the selected history window. Older/newer/latest navigation replaces and disposes the previous window. This reduces display hydration; it does **not** make total session-storage memory constant. The read-only subagent viewer additionally seeks bounded JSONL windows from disk instead of loading all historical records. Both preserve complete tool-call/result groups and oversized individual records rather than truncating their contents.
+
+The viewer benchmark runs the production `AgentTranscriptViewer` and the eager `ChatTranscriptBuilder` reference in separate child processes. With 8,000 assistant/tool-result groups (16,001 records), one local run measured an RSS increase of **18.6 MiB windowed versus 172.8 MiB eager**. The eager reference produced 40,003 transcript lines; the viewer returned its 40-line viewport. These are component-workload measurements, not whole-CLI or machine-wide savings. Heap reporting is allocator/runtime-dependent; a zero reported heap delta is not evidence of zero allocations.
+
+A matched compiled-CLI PTY comparison used isolated homes, the same Bun runtime, 8,000 messages (user / assistant tool call / matching result / assistant conclusion), a 15.3 MB JSONL file, and a 140×40 terminal. No prompt was submitted and no diagnostic GC was requested. Each of three independent runs per build sampled memory through 14 seconds after startup/resume and a further 3-second settling interval:
+
+| Metric (median of three runs) | Eager resume | Windowed resume |
+| --- | ---: | ---: |
+| Settled RSS | 518.6 MiB | 305.8 MiB |
+| Settled PSS | 516.7 MiB | 303.9 MiB |
+| Sampled peak RSS | 662.8 MiB | 593.8 MiB |
+
+Settled RSS was about **41% lower** in this workload; sampled peak RSS was about **10% lower**. Peaks were sampled from procfs at approximately 50 ms intervals, not measured with a kernel peak counter. Allocator behavior, transcript contents, native services, and concurrent workloads can change these numbers. The JSONL/session context still loads for model continuation; windowing does not eliminate that baseline.
+
+Additional compiled-CLI PTY probes exercised a single user followed by 7,999 assistant messages, eight older/latest paging cycles, thinking/tool display toggles, slash-command paging, and a read-only advisor viewer's latest/oldest/latest/close navigation. Main-window paging is refused while model, bash, or Python output is active; continuation restores the latest page before streaming. The read-only viewer can remain on an older page while its file grows. A final compiled-CLI continuation probe resumed 800 uniquely marked messages, navigated via both `/history` and keyboard controls, and submitted from an older page to a local test Anthropic SSE endpoint. Exactly one provider request contained all 800 original markers, the response rendered, and all 800 markers remained in the persisted session. No external provider was used.
 
 ## Whole-process measurement
 
@@ -54,7 +73,7 @@ A compiled proto process reserves most of its address space at JSC initializatio
 
 VSZ is not resident RAM: these mappings are predominantly reservations, and the sampled process had about 2.4 MiB of page tables. Commit accounting also depends on mapping flags and the kernel overcommit policy; RSS/PSS and memory-pressure measurements are more useful than VSZ alone.
 
-In an isolated compiled-binary RPC experiment, setting `GIGACAGE_ENABLED=0` **before process start** reduced VSZ from about 74.5 GiB to 9 GiB without demonstrating an RSS saving. This disables a JavaScriptCore memory-isolation mechanism: it is a diagnostic experiment, not a recommended performance setting or a production default. Setting it from application JavaScript is too late.
+In an isolated compiled-binary RPC experiment, setting `GIGACAGE_ENABLED=0` **before process start** reduced VSZ from approximately 74,540 MiB to 8,972 MiB without demonstrating an RSS saving. This disables a JavaScriptCore memory-isolation mechanism: it is a diagnostic experiment, not a recommended performance setting or a production default. Setting it from application JavaScript is too late.
 
 An isolated PTY test with a synthetic 90 MB JSONL transcript containing 40,000 assistant messages increased RSS from about 226 MiB to 1,790 MiB after resume. This measures aggregate loading/rendering cost, not a proven leak or a per-object allocation breakdown. `Agent.replaceMessages` shallow-copies the message array, not every message object. The subsequent process exit was not established as OOM. Local tiny-model workers cache pipelines until termination; their model-loaded RSS was not measured in this experiment. They now terminate after five idle minutes and restart on demand.
 

@@ -57,11 +57,124 @@ import {
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
 } from "./transcript-render-helpers";
+import { TRANSCRIPT_WINDOW_SOFT_BYTES, TRANSCRIPT_WINDOW_SOFT_MESSAGES } from "./transcript-window";
 
 type TextBlock = { type: "text"; text: string };
 interface RenderInitialMessagesOptions {
 	preserveExistingChat?: boolean;
 	clearTerminalHistory?: boolean;
+}
+
+export type TranscriptHistoryDirection = "older" | "newer" | "latest";
+
+export interface TranscriptWindow {
+	start: number;
+	end: number;
+	pageFromLatest: number;
+	totalMessages: number;
+}
+
+function estimateValueBytes(value: unknown, limit: number): number {
+	const stack: unknown[] = [value];
+	const seen = new WeakSet<object>();
+	let bytes = 0;
+	while (stack.length > 0 && bytes <= limit) {
+		const item = stack.pop();
+		if (typeof item === "string") {
+			bytes += Buffer.byteLength(item);
+		} else if (typeof item === "number" || typeof item === "bigint") {
+			bytes += 16;
+		} else if (typeof item === "boolean") {
+			bytes += 5;
+		} else if (item && typeof item === "object") {
+			if (seen.has(item)) continue;
+			seen.add(item);
+			if (Array.isArray(item)) {
+				for (const child of item) stack.push(child);
+			} else {
+				for (const [key, child] of Object.entries(item)) {
+					bytes += Buffer.byteLength(key);
+					stack.push(child);
+				}
+			}
+		}
+	}
+	return bytes;
+}
+
+function assistantToolCallIds(message: AgentMessage): Set<string> | undefined {
+	if (message.role !== "assistant") return undefined;
+	let ids: Set<string> | undefined;
+	for (const content of message.content) {
+		if (content.type !== "toolCall") continue;
+		ids ??= new Set<string>();
+		ids.add(content.id);
+	}
+	return ids;
+}
+
+function transcriptGroupStart(messages: readonly AgentMessage[], end: number): number {
+	let start = end - 1;
+	if (start <= 0 || messages[start]?.role !== "toolResult") return Math.max(0, start);
+	while (start > 0 && messages[start - 1]?.role === "toolResult") start--;
+	const assistantIndex = start - 1;
+	const assistant = messages[assistantIndex];
+	if (!assistant) return start;
+	const callIds = assistantToolCallIds(assistant);
+	if (!callIds) return start;
+	for (let i = start; i < end; i++) {
+		const result = messages[i];
+		if (result?.role !== "toolResult" || !callIds.has(result.toolCallId)) return start;
+	}
+	return assistantIndex;
+}
+
+/**
+ * Select a newest-first transcript page without splitting an assistant and its
+ * immediately following matching tool results. Limits are soft: one atomic
+ * group or one oversized record remains intact and may exceed them.
+ */
+export function selectTranscriptWindow(
+	messages: readonly AgentMessage[],
+	pageFromLatest: number,
+	softMessages = TRANSCRIPT_WINDOW_SOFT_MESSAGES,
+	softBytes = TRANSCRIPT_WINDOW_SOFT_BYTES,
+): TranscriptWindow {
+	const requestedPage = Math.max(0, Math.floor(pageFromLatest));
+	let end = messages.length;
+	let actualPage = 0;
+	while (actualPage <= requestedPage) {
+		const pageEnd = end;
+		let start = end;
+		let count = 0;
+		let bytes = 0;
+		while (start > 0) {
+			const groupStart = transcriptGroupStart(messages, start);
+			const groupCount = start - groupStart;
+			let groupBytes = 0;
+			for (let i = groupStart; i < start; i++) {
+				groupBytes += estimateValueBytes(messages[i], Math.max(0, softBytes - groupBytes) + 1);
+			}
+			if (count > 0 && (count + groupCount > softMessages || bytes + groupBytes > softBytes)) break;
+			start = groupStart;
+			count += groupCount;
+			bytes += groupBytes;
+		}
+		if (actualPage === requestedPage || start === 0) {
+			return { start, end: pageEnd, pageFromLatest: actualPage, totalMessages: messages.length };
+		}
+		end = start;
+		actualPage++;
+	}
+	return { start: 0, end: 0, pageFromLatest: 0, totalMessages: messages.length };
+}
+
+export function transcriptWindowContext(context: SessionContext, window: TranscriptWindow): SessionContext {
+	return {
+		...context,
+		messages: context.messages.slice(window.start, window.end),
+		cacheMissExplainedAt: context.cacheMissExplainedAt?.slice(window.start, window.end),
+	};
 }
 
 const TRANSCRIPT_RENDER_CHUNK_MESSAGES = 32;
@@ -144,7 +257,29 @@ export function resolvePreservedLiveToolCallIds(params: {
 }
 
 export class UiHelpers {
+	#transcriptPageFromLatest = 0;
+	#transcriptRenderQueue: Promise<void> = Promise.resolve();
+
 	constructor(private ctx: InteractiveModeContext) {}
+
+	#queueTranscriptRender(task: () => Promise<void>): Promise<void> {
+		const queued = this.#transcriptRenderQueue.then(task, task);
+		this.#transcriptRenderQueue = queued.catch(() => {});
+		return queued;
+	}
+
+	selectVisibleTranscriptContext(fullContext: SessionContext): { context: SessionContext; window: TranscriptWindow } {
+		const window = selectTranscriptWindow(fullContext.messages, this.#transcriptPageFromLatest);
+		this.#transcriptPageFromLatest = window.pageFromLatest;
+		return { context: transcriptWindowContext(fullContext, window), window };
+	}
+
+	addTranscriptWindowNotice(container: TranscriptContainer, window: TranscriptWindow): void {
+		if (window.start === 0 && window.end === window.totalMessages) return;
+		const controls = "Alt+PgUp older · Alt+PgDn newer · Alt+End latest · /history";
+		const label = `Transcript messages ${(window.start + 1).toLocaleString()}–${window.end.toLocaleString()} of ${window.totalMessages.toLocaleString()} · ${controls}`;
+		container.addChild(new Text(label, 1, 0).setStyleFn(text => theme.fg("dim", text)));
+	}
 
 	getUserMessageText(message: Message): string {
 		if (message.role !== "user") return "";
@@ -727,6 +862,49 @@ export class UiHelpers {
 	}
 
 	async renderInitialMessages(options: RenderInitialMessagesOptions = {}): Promise<void> {
+		return this.#queueTranscriptRender(async () => {
+			this.#transcriptPageFromLatest = 0;
+			await this.#renderTranscriptWindow(options, true);
+		});
+	}
+
+	async navigateTranscriptHistory(direction: TranscriptHistoryDirection): Promise<void> {
+		return this.#queueTranscriptRender(async () => {
+			if (
+				this.ctx.viewSession.isStreaming ||
+				this.ctx.pendingBashComponents.length > 0 ||
+				this.ctx.pendingPythonComponents.length > 0
+			) {
+				this.ctx.showStatus("Transcript history paging is unavailable while output is running.");
+				return;
+			}
+			const previousPage = this.#transcriptPageFromLatest;
+			if (direction === "older") this.#transcriptPageFromLatest++;
+			else if (direction === "newer") this.#transcriptPageFromLatest = Math.max(0, previousPage - 1);
+			else this.#transcriptPageFromLatest = 0;
+			const window = await this.#renderTranscriptWindow({ clearTerminalHistory: true }, false);
+			if (window.pageFromLatest === previousPage && direction !== "latest") {
+				this.ctx.showStatus(
+					direction === "older"
+						? "Already at the oldest transcript page."
+						: "Already at the latest transcript page.",
+				);
+			}
+		});
+	}
+
+	async ensureLatestTranscriptWindow(): Promise<void> {
+		return this.#queueTranscriptRender(async () => {
+			if (this.#transcriptPageFromLatest === 0) return;
+			this.#transcriptPageFromLatest = 0;
+			await this.#renderTranscriptWindow({ clearTerminalHistory: true }, false);
+		});
+	}
+
+	async #renderTranscriptWindow(
+		options: RenderInitialMessagesOptions,
+		resetPendingMessages: boolean,
+	): Promise<TranscriptWindow> {
 		const visibleChatContainer = this.ctx.chatContainer;
 		const stagedChatContainer = new TranscriptContainer();
 		stagedChatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
@@ -741,31 +919,27 @@ export class UiHelpers {
 		this.ctx.chatContainer = stagedChatContainer;
 		this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 		this.ctx.pendingTools = new Map<string, ToolExecutionHandle>();
-		this.ctx.pendingMessagesContainer.disposeChildren();
+		if (resetPendingMessages) this.ctx.pendingMessagesContainer.disposeChildren();
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
 
-		let context = this.ctx.viewSession.buildTranscriptSessionContext({
+		let fullContext = this.ctx.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: settings.get("display.collapseCompacted"),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
+		let selection = this.selectVisibleTranscriptContext(fullContext);
+		let { context, window } = selection;
 		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
-		const renderOptions = {
-			updateFooter: true,
-		};
+		const renderOptions = { updateFooter: true };
 		let committed = false;
 		let replayAttempts = 0;
 		this.ctx.initialChatRendered = false;
 		try {
 			while (true) {
-				if (this.ctx.viewSession.isStreaming) {
-					this.ctx.renderSessionContext(context, renderOptions);
-				} else {
-					await this.ctx.renderSessionContextIncrementally(context, renderOptions);
-				}
-				if (this.ctx.viewSession.sessionManager.getEntries().length === replayEntryCount) {
-					break;
-				}
+				this.addTranscriptWindowNotice(stagedChatContainer, window);
+				if (this.ctx.viewSession.isStreaming) this.ctx.renderSessionContext(context, renderOptions);
+				else await this.ctx.renderSessionContextIncrementally(context, renderOptions);
+				if (this.ctx.viewSession.sessionManager.getEntries().length === replayEntryCount) break;
 				replayAttempts++;
 				if (replayAttempts >= TRANSCRIPT_REPLAY_MAX_ATTEMPTS) {
 					logger.warn("renderInitialMessages: transcript replay did not converge; accepting current replay", {
@@ -775,53 +949,50 @@ export class UiHelpers {
 					});
 					break;
 				}
-
 				stagedChatContainer.disposeChildren();
 				this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 				this.ctx.pendingTools.clear();
 				this.ctx.pendingBashComponents = [];
 				this.ctx.pendingPythonComponents = [];
-				context = this.ctx.viewSession.buildTranscriptSessionContext({
+				fullContext = this.ctx.viewSession.buildTranscriptSessionContext({
 					collapseCompactedHistory: settings.get("display.collapseCompacted"),
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 				});
+				selection = this.selectVisibleTranscriptContext(fullContext);
+				({ context, window } = selection);
 				replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
 			}
 
 			const replayedChatChildren = [...stagedChatContainer.children];
 			stagedChatContainer.clear();
 			this.ctx.chatContainer = visibleChatContainer;
-			if (preservedChatChildren) {
-				visibleChatContainer.clear();
-			} else {
-				visibleChatContainer.disposeChildren();
-			}
-			for (const child of replayedChatChildren) {
-				visibleChatContainer.addChild(child);
-			}
-			if (preservedChatChildren) {
-				for (const child of preservedChatChildren) {
-					visibleChatContainer.addChild(child);
+			if (preservedChatChildren) visibleChatContainer.clear();
+			else visibleChatContainer.disposeChildren();
+			for (const child of replayedChatChildren) visibleChatContainer.addChild(child);
+			if (preservedChatChildren) for (const child of preservedChatChildren) visibleChatContainer.addChild(child);
+			committed = true;
+
+			let latestUsage: Usage | undefined;
+			for (let i = fullContext.messages.length - 1; i >= 0; i--) {
+				const message = fullContext.messages[i];
+				if (message?.role !== "assistant") continue;
+				if (message.usage.cacheRead + message.usage.cacheWrite + message.usage.input > 0) {
+					latestUsage = message.usage;
+					break;
 				}
 			}
-			committed = true;
+			this.ctx.lastAssistantUsage = latestUsage;
 
 			const allEntries = this.ctx.viewSession.sessionManager.getEntries();
 			let compactionCount = 0;
-			for (const entry of allEntries) {
-				if (entry.type === "compaction") {
-					compactionCount++;
-				}
-			}
+			for (const entry of allEntries) if (entry.type === "compaction") compactionCount++;
 			if (compactionCount > 0) {
 				const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 				this.ctx.showStatus(`Session compacted ${times}`);
 			}
-			if (options.clearTerminalHistory) {
-				this.ctx.ui.requestRender(true, { clearScrollback: true });
-			} else {
-				this.ctx.ui.requestRender();
-			}
+			if (options.clearTerminalHistory) this.ctx.ui.requestRender(true, { clearScrollback: true });
+			else this.ctx.ui.requestRender();
+			return window;
 		} finally {
 			if (!committed) {
 				this.ctx.chatContainer = visibleChatContainer;
@@ -835,7 +1006,6 @@ export class UiHelpers {
 			this.ctx.initialChatRendered = committed ? true : chatWasAlreadyRendered;
 		}
 	}
-
 	clearEditor(): void {
 		this.ctx.editor.clearDraft();
 		this.ctx.ui.requestRender();

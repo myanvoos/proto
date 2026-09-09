@@ -45,6 +45,18 @@ app.history.search: []
 | `app.clipboard.pasteImage`   | Linux: `Ctrl+V`; macOS: `Ctrl+V`, `Cmd+V`; Windows: `Ctrl+V`, `Alt+V` | Paste from the clipboard (image preferred, text fallback)                                                                                                                            |
 | `app.agents.fleet`             | `Alt+A`                                                               | [Open the Agent Fleet](./agent-fleet.md)                                                                                                                                                 |
 
+## Transcript history windows
+
+Resumed conversations initially render their newest history window rather than eagerly constructing UI components for the entire transcript. Older history is still available:
+
+| Action ID | Default | Command | Behavior |
+| --- | --- | --- | --- |
+| `app.history.older` | `Alt+PageUp` | `/history older` | Show the preceding history window. |
+| `app.history.newer` | `Alt+PageDown` | `/history newer` | Show the following history window. |
+| `app.history.latest` | `Alt+End` | `/history latest` | Return to the newest messages. |
+
+Each page replaces the previous page's rendered components. Terminal scrollback contains the rendered window, not an eagerly rendered copy of all older history; use these controls to reach older pages. Submitting a normal prompt returns to the latest window. Paging changes the display only: it does not compact, truncate, or replace the model's conversation context or the persisted session. Main-window paging is temporarily unavailable while model, bash, or Python output is active; the UI reports this instead of changing the live transcript underneath a running operation.
+
 On Windows Terminal, `Ctrl+V` may be handled by the terminal paste command before `proto` sees it; use the `Alt+V` fallback when clipboard image paste appears to do nothing. When the clipboard holds no image, `app.clipboard.pasteImage` pastes the clipboard text instead, so hosts that deliver only this chord (VS Code's integrated terminal when configured to forward `Ctrl+V`, Windows clipboard history via `Win+V`) work for both payload kinds. Windows Terminal also swallows `Ctrl+Enter`, so the `app.message.followUp` chord also binds `Ctrl+Q` — the same chord GitHub Copilot CLI uses — and the same chord submits the agent dashboard's new-agent description and hook-editor prompts. If your existing `keybindings.yml` already assigns `Ctrl+Q` to another action, that user remap wins and follow-up keeps `Ctrl+Enter` unless you explicitly bind `app.message.followUp`.
 
 Terminals that implement OSC 5522 enhanced paste can send clipboard MIME data directly to `proto`; image pastes are attached as `[Image #N]`, while text/plain paste events keep normal paste behavior. When OSC 5522 is unavailable, bracketed paste still handles text, and a pasted single image-file path is loaded as an image when the file is readable from the `proto` host.

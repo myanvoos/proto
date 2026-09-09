@@ -442,6 +442,15 @@ export class InputController {
 		for (const key of this.ctx.keybindings.getKeys("app.session.resume")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showSessionSelector());
 		}
+		for (const key of this.ctx.keybindings.getKeys("app.history.older")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.navigateTranscriptHistory("older"));
+		}
+		for (const key of this.ctx.keybindings.getKeys("app.history.newer")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.navigateTranscriptHistory("newer"));
+		}
+		for (const key of this.ctx.keybindings.getKeys("app.history.latest")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.navigateTranscriptHistory("latest"));
+		}
 		for (const key of this.ctx.keybindings.getKeys("app.message.followUp")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.handleFollowUp());
 		}
@@ -577,6 +586,7 @@ export class InputController {
 			if (!text && !hasPendingImages) return;
 
 			if (text === "." || text === "c") {
+				await this.ctx.ensureLatestTranscriptWindow();
 				if (this.ctx.onInputCallback) {
 					this.ctx.editor.clearDraft();
 					this.ctx.onInputCallback({
@@ -642,6 +652,7 @@ export class InputController {
 
 			if (text) {
 				this.#recordSlashCommandUsage(text);
+				if (parseSlashCommand(text)?.name !== "history") await this.ctx.ensureLatestTranscriptWindow();
 				const input =
 					(inputImages?.length ?? 0) > 0 || (inputImageLinks?.length ?? 0) > 0
 						? { images: inputImages, imageLinks: inputImageLinks }
@@ -656,6 +667,8 @@ export class InputController {
 					text = slashResult;
 				}
 			}
+
+			if (!text) await this.ctx.ensureLatestTranscriptWindow();
 
 			if (text && isKnownSkillCommand(this.ctx, text)) {
 				if (this.ctx.session.isCompacting) {

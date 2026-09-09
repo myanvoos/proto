@@ -48,6 +48,9 @@ interface AppKeybindings {
 	"app.tree.foldOrUp": true;
 	"app.tree.unfoldOrDown": true;
 	"app.history.search": true;
+	"app.history.older": true;
+	"app.history.newer": true;
+	"app.history.latest": true;
 }
 
 export type AppKeybinding = keyof AppKeybindings;
@@ -201,7 +204,19 @@ const KEYBINDINGS = {
 	},
 	"app.history.search": {
 		defaultKeys: "ctrl+r",
-		description: "Search history",
+		description: "Search prompt history",
+	},
+	"app.history.older": {
+		defaultKeys: "alt+pageUp",
+		description: "Show older transcript history",
+	},
+	"app.history.newer": {
+		defaultKeys: "alt+pageDown",
+		description: "Show newer transcript history",
+	},
+	"app.history.latest": {
+		defaultKeys: "alt+end",
+		description: "Show latest transcript history",
 	},
 } as const satisfies KeybindingDefinitions;
 

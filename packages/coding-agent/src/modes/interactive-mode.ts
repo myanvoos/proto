@@ -1679,16 +1679,18 @@ export class InteractiveMode implements InteractiveModeContext {
 				}
 			}
 		}
+		const previousChildren = [...this.chatContainer.children];
 		this.chatContainer.clear();
 
-		const context = this.viewSession.buildTranscriptSessionContext({
+		const fullContext = this.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: settings.get("display.collapseCompacted"),
 		});
 		const preservedLiveToolCallIds = resolvePreservedLiveToolCallIds({
 			livePendingTools,
 			liveComponents,
-			messages: context.messages,
+			messages: fullContext.messages,
 		});
+		const { context, window } = this.#uiHelpers.selectVisibleTranscriptContext(fullContext);
 
 		const retained = new WeakMap<AgentMessage, Component>();
 		for (const message of context.messages) {
@@ -1696,19 +1698,20 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (component) retained.set(message, component);
 		}
 		this.transcriptMessageComponents = retained;
+		this.#uiHelpers.addTranscriptWindowNotice(this.chatContainer, window);
 		this.renderSessionContext(context, {
 			reuseSettledComponents: options.reuseSettledComponents,
 			preservedLiveToolCallIds,
 		});
-		for (const child of liveComponents) {
-			this.chatContainer.addChild(child);
-		}
+		for (const child of liveComponents) this.chatContainer.addChild(child);
 
-		for (const [id, component] of livePendingTools) {
-			this.pendingTools.set(id, component);
-		}
+		for (const [id, component] of livePendingTools) this.pendingTools.set(id, component);
 
 		this.#replayOptimisticUserMessage();
+		const retainedChildren = new Set(this.chatContainer.children);
+		for (const child of previousChildren) {
+			if (!retainedChildren.has(child)) child.dispose?.();
+		}
 	}
 
 	#replayOptimisticUserMessage(): void {
@@ -2992,6 +2995,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		clearTerminalHistory?: boolean;
 	}): Promise<void> {
 		await this.#uiHelpers.renderInitialMessages(options);
+	}
+
+	navigateTranscriptHistory(direction: "older" | "newer" | "latest"): Promise<void> {
+		return this.#uiHelpers.navigateTranscriptHistory(direction);
+	}
+
+	ensureLatestTranscriptWindow(): Promise<void> {
+		return this.#uiHelpers.ensureLatestTranscriptWindow();
 	}
 
 	truncateTranscriptFromMessage(message: AgentMessage): boolean {

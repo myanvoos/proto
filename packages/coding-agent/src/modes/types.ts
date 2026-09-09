@@ -281,6 +281,8 @@ export interface InteractiveModeContext {
 		renderChunk?: () => void,
 	): Promise<void>;
 	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): Promise<void>;
+	navigateTranscriptHistory(direction: "older" | "newer" | "latest"): Promise<void>;
+	ensureLatestTranscriptWindow(): Promise<void>;
 
 	truncateTranscriptFromMessage(message: AgentMessage): boolean;
 	getUserMessageText(message: Message): string;

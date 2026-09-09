@@ -5,6 +5,8 @@
 ### Changed
 
 - Local tiny-model workers release their process and loaded models after five idle minutes, restarting on demand.
+- Resumed conversations render a recent history window; use `/history older|newer|latest` or Alt+PageUp/Alt+PageDown/Alt+End to browse without eagerly rendering the entire transcript.
+- Subagent transcript viewers read history windows from disk on demand, keeping long histories and live tails from accumulating rendered components.
 
 ### Fixed
 
