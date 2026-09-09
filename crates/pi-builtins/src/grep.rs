@@ -20,7 +20,10 @@ use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{
 	BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch,
 };
-use crate::host::{Host, Utility, util};
+use crate::{
+	bre,
+	host::{Host, Utility, util},
+};
 
 
 
@@ -605,74 +608,30 @@ fn escape_literal(pat: &str) -> String {
 
 
 
-fn normalize_basic_alternation(pattern: &str) -> Cow<'_, str> {
-	let bytes = pattern.as_bytes();
-	let mut output = None;
-	let mut copied = 0;
-	let mut index = 0;
-	let mut in_class = false;
-
-	while index < bytes.len() {
-		if bytes[index] == b'\\' {
-			let run_start = index;
-			while index < bytes.len() && bytes[index] == b'\\' {
-				index += 1;
-			}
-			let slash_count = index - run_start;
-			if !in_class && slash_count % 2 == 1 && index < bytes.len() && bytes[index] == b'|' {
-				let normalized = output.get_or_insert_with(|| String::with_capacity(pattern.len()));
-				normalized.push_str(&pattern[copied..index - 1]);
-				normalized.push('|');
-				copied = index + 1;
-				index += 1;
-				continue;
-			}
-			if slash_count % 2 == 1 && index < bytes.len() {
-				index += 1;
-			}
-			continue;
-		}
-
-		match bytes[index] {
-			b'[' if !in_class => in_class = true,
-			b']' if in_class => in_class = false,
-			_ => {},
-		}
-		index += 1;
-	}
-
-	if let Some(mut normalized) = output {
-		normalized.push_str(&pattern[copied..]);
-		Cow::Owned(normalized)
-	} else {
-		Cow::Borrowed(pattern)
-	}
-}
-
-fn build_default_matcher<P: AsRef<str>>(
+fn build_default_matcher<P: AsRef<str>, F: AsRef<str>>(
 	builder: &RegexMatcherBuilder,
 	patterns: &[P],
+	fallbacks: &[F],
 ) -> Result<RegexMatcher, String> {
+	debug_assert_eq!(patterns.len(), fallbacks.len());
 	let error = match builder.build_many(patterns) {
 		Ok(matcher) => return Ok(matcher),
 		Err(error) => error,
 	};
 	let sanitized: Vec<String> = patterns
 		.iter()
-		.map(|pattern| {
+		.zip(fallbacks)
+		.map(|(pattern, fallback)| {
 			let pattern = pattern.as_ref();
 			if builder.build(pattern).is_ok() {
 				pattern.to_owned()
 			} else {
-				escape_literal(pattern)
+				escape_literal(fallback.as_ref())
 			}
 		})
 		.collect();
-	builder
-		.build_many(&sanitized)
-		.map_err(|_| error.to_string())
+	builder.build_many(&sanitized).map_err(|_| error.to_string())
 }
-
 
 fn build_matcher(
 	host: &Host,
@@ -716,15 +675,25 @@ fn build_matcher(
 	}
 
 	if mode == MatchMode::Default {
-		let normalized: Vec<_> = patterns
+		let translated: Vec<String> = patterns
 			.iter()
-			.map(|pattern| normalize_basic_alternation(pattern))
-			.collect();
-		return build_default_matcher(&builder, &normalized).map(CompiledMatcher::Rust);
+			.map(|pattern| bre::bre_to_ere(pattern, bre::Backrefs::Unsupported))
+			.collect::<Result<_, _>>()
+			.map_err(|error: bre::BreError| error.message().to_owned())?;
+		return build_default_matcher(&builder, &translated, patterns).map(CompiledMatcher::Rust);
+	}
+
+	let patterns: Vec<Cow<'_, str>> =
+		patterns.iter().map(|pattern| bre::ere_literalize_braces(pattern)).collect();
+	if let Some(pattern) = patterns
+		.iter()
+		.find(|pattern| bre::ere_repetition_operand_missing(pattern))
+	{
+		return Err(format!("repetition-operator operand invalid: {pattern}"));
 	}
 
 	builder
-		.build_many(patterns)
+		.build_many(&patterns)
 		.map(CompiledMatcher::Rust)
 		.map_err(|error| error.to_string())
 }
@@ -1557,3 +1526,47 @@ pub(crate) fn grep_builtin<SE: ShellExtensions>() -> Registration<SE> {
 
 
 
+
+
+#[cfg(test)]
+mod tests {
+	use grep_matcher::Matcher;
+
+	use super::*;
+
+	fn matches(pattern: &str, extended: bool, text: &str) -> bool {
+		let pattern = if extended {
+			Cow::Borrowed(pattern)
+		} else {
+			Cow::Owned(bre::bre_to_ere(pattern, bre::Backrefs::Unsupported).expect("valid BRE"))
+		};
+		let anchored = format!("^(?:{pattern})$");
+		RegexMatcherBuilder::new()
+			.build(&anchored)
+			.expect("valid test pattern")
+			.is_match(text.as_bytes())
+			.expect("match succeeds")
+	}
+
+	#[test]
+	fn basic_and_extended_metacharacters_have_inverse_grep_meanings() {
+		let cases = [
+			(r"\(ab\)", "ab", "(ab)", "(ab)", "ab"),
+			("(ab)", "(ab)", "ab", "ab", "(ab)"),
+			(r"a\{2\}", "aa", "a{2}", "a{2}", "aa"),
+			("a{2}", "a{2}", "aa", "aa", "a{2}"),
+			(r"a\|b", "b", "a|b", "a|b", "b"),
+			("a|b", "a|b", "b", "b", "a|b"),
+			(r"a\+", "aaa", "a+", "a+", "aaa"),
+			("a+", "a+", "aaa", "aaa", "a+"),
+			(r"a\?", "", "a?", "a?", ""),
+			("a?", "a?", "", "", "a?"),
+		];
+		for (pattern, bre_yes, bre_no, ere_yes, ere_no) in cases {
+			assert!(matches(pattern, false, bre_yes), "BRE {pattern:?} must match {bre_yes:?}");
+			assert!(!matches(pattern, false, bre_no), "BRE {pattern:?} must not match {bre_no:?}");
+			assert!(matches(pattern, true, ere_yes), "ERE {pattern:?} must match {ere_yes:?}");
+			assert!(!matches(pattern, true, ere_no), "ERE {pattern:?} must not match {ere_no:?}");
+		}
+	}
+}

@@ -333,7 +333,7 @@ const DEFAULTS: MarkedOptions = {
 };
 const PUNCTUATION = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
 
-function tokenList(links: Links = {}): TokensList {
+function tokenList(links: Links = Object.create(null) as Links): TokensList {
 	const list = [] as unknown as TokensList;
 	list.links = links;
 	return list;

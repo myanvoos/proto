@@ -24,20 +24,47 @@ struct Inner {
 }
 
 #[cfg(unix)]
-fn write_all(fd: i32, buf: &[u8]) -> std::io::Result<()> {
-	let mut off = 0usize;
-	while off < buf.len() {
-		let rc = unsafe { libc::write(fd, buf[off..].as_ptr().cast(), buf.len() - off) };
-		if rc < 0 {
-			let err = std::io::Error::last_os_error();
-			if err.kind() == std::io::ErrorKind::Interrupted {
-				continue;
-			}
-			return Err(err);
+const MAX_TTY_WRITE_CHUNK_BYTES: usize = 16 * 1024;
+
+#[cfg(unix)]
+fn write_all_with(
+	mut write: impl FnMut(&[u8]) -> std::io::Result<usize>,
+	buf: &[u8],
+	mut on_progress: impl FnMut(usize),
+) -> std::io::Result<()> {
+	let mut offset = 0usize;
+	while offset < buf.len() {
+		let end = (offset + MAX_TTY_WRITE_CHUNK_BYTES).min(buf.len());
+		match write(&buf[offset..end]) {
+			Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+			Ok(written) => {
+				offset += written;
+				on_progress(written);
+			},
+			Err(error)
+				if matches!(
+					error.kind(),
+					std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+				) => {},
+			Err(error) => return Err(error),
 		}
-		off += rc as usize;
 	}
 	Ok(())
+}
+
+#[cfg(unix)]
+fn write_all(fd: i32, buf: &[u8], on_progress: impl FnMut(usize)) -> std::io::Result<()> {
+	write_all_with(
+		|chunk| {
+			let rc = unsafe { libc::write(fd, chunk.as_ptr().cast(), chunk.len()) };
+			if rc < 0 {
+				return Err(std::io::Error::last_os_error());
+			}
+			Ok(rc as usize)
+		},
+		buf,
+		on_progress,
+	)
 }
 
 #[cfg(unix)]
@@ -54,22 +81,21 @@ fn pump_loop(fd: i32, inner: &Inner) {
 			}
 			std::mem::swap(&mut *back, &mut front);
 		}
-		let result = if inner.dead.load(Ordering::Acquire) {
-			Ok(())
-		} else {
-			write_all(fd, &front)
-		};
-		if result.is_err() {
-			inner.dead.store(true, Ordering::Release);
-
-			let mut back = inner.back.lock();
-			let dropped = back.len();
-			back.clear();
-			inner
-				.pending
-				.fetch_sub(dropped + front.len(), Ordering::AcqRel);
-		} else {
+		if inner.dead.load(Ordering::Acquire) {
 			inner.pending.fetch_sub(front.len(), Ordering::AcqRel);
+		} else {
+			let mut written = 0usize;
+			let result = write_all(fd, &front, |count| {
+				written += count;
+				inner.pending.fetch_sub(count, Ordering::AcqRel);
+			});
+			if result.is_err() {
+				inner.dead.store(true, Ordering::Release);
+				let mut back = inner.back.lock();
+				let dropped = back.len() + (front.len() - written);
+				back.clear();
+				inner.pending.fetch_sub(dropped, Ordering::AcqRel);
+			}
 		}
 		front.clear();
 
@@ -205,5 +231,43 @@ impl TtyWriter {
 impl Drop for TtyWriter {
 	fn drop(&mut self) {
 		self.stop(0);
+	}
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+	use std::io::{Error, ErrorKind};
+
+	use super::*;
+
+	#[test]
+	fn bounded_writer_retries_interrupts_and_partial_writes_without_losing_bytes() {
+		let payload = vec![b'x'; MAX_TTY_WRITE_CHUNK_BYTES * 2 + 37];
+		let mut output = Vec::new();
+		let mut transient_errors = 0usize;
+		let mut calls = 0usize;
+		write_all_with(
+			|chunk| {
+				calls += 1;
+				if transient_errors < 2 {
+					let kind = if transient_errors == 0 {
+						ErrorKind::Interrupted
+					} else {
+						ErrorKind::WouldBlock
+					};
+					transient_errors += 1;
+					return Err(Error::from(kind));
+				}
+				let accepted = chunk.len().min(997);
+				output.extend_from_slice(&chunk[..accepted]);
+				Ok(accepted)
+			},
+			&payload,
+			|_| {},
+		)
+		.expect("bounded writer should retry transient errors");
+
+		assert!(calls > payload.len() / 997, "fixture must force partial writes");
+		assert_eq!(output, payload, "partial writes must not duplicate or truncate the frame");
 	}
 }

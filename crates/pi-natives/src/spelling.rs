@@ -1,3 +1,4 @@
+use napi::{Error, Result, Status};
 use napi_derive::napi;
 
 #[napi(object)]
@@ -5,6 +6,29 @@ pub struct SpellingRange {
 	pub start: u32,
 
 	pub length: u32,
+}
+
+#[cfg_attr(
+	not(target_os = "macos"),
+	allow(dead_code, reason = "macOS result filter is unit-tested cross-platform")
+)]
+fn collect_spelling_ranges(
+	results: impl IntoIterator<Item = (bool, usize, usize)>,
+) -> Result<Vec<SpellingRange>> {
+	const NS_NOT_FOUND: usize = isize::MAX as usize;
+	let mut ranges = Vec::new();
+	for (is_spelling, start, length) in results {
+		if !is_spelling || length == 0 || start >= NS_NOT_FOUND {
+			continue;
+		}
+		ranges.push(SpellingRange {
+			start:  u32::try_from(start)
+				.map_err(|_| Error::new(Status::InvalidArg, "spelling range start is too large"))?,
+			length: u32::try_from(length)
+				.map_err(|_| Error::new(Status::InvalidArg, "spelling range length is too large"))?,
+		});
+	}
+	Ok(ranges)
 }
 
 #[cfg(target_os = "macos")]
@@ -16,7 +40,7 @@ mod platform {
 	use objc2_app_kit::NSSpellChecker;
 	use objc2_foundation::{NSArray, NSRange, NSString, NSTextCheckingType};
 
-	use super::SpellingRange;
+	use super::{SpellingRange, collect_spelling_ranges};
 
 	type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -33,7 +57,6 @@ mod platform {
 		sender
 	});
 	static APP_KIT_LOADED: LazyLock<bool> = LazyLock::new(|| unsafe { NSApplicationLoad() });
-	const NS_NOT_FOUND: usize = isize::MAX as usize;
 
 	#[link(name = "AppKit", kind = "framework")]
 	unsafe extern "C" {
@@ -90,20 +113,10 @@ mod platform {
 				std::ptr::null_mut(),
 			)
 		};
-		let mut ranges = Vec::new();
-		for result in results.iter() {
+		collect_spelling_ranges(results.iter().map(|result| {
 			let range = result.range();
-			if range.length == 0 || range.location >= NS_NOT_FOUND {
-				continue;
-			}
-			ranges.push(SpellingRange {
-				start:  u32::try_from(range.location)
-					.map_err(|_| Error::new(Status::InvalidArg, "spelling range start is too large"))?,
-				length: u32::try_from(range.length)
-					.map_err(|_| Error::new(Status::InvalidArg, "spelling range length is too large"))?,
-			});
-		}
-		Ok(ranges)
+			(result.resultType() == NSTextCheckingType::Spelling, range.location, range.length)
+		}))
 	}
 
 	fn strings(values: Option<Retained<NSArray<NSString>>>) -> Vec<String> {
@@ -245,5 +258,21 @@ pub async fn macos_spelling_guesses(
 	{
 		let _ = (text, start, length);
 		Ok(Vec::new())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn check_filters_non_spelling_full_range_that_duplicates_editor_text() {
+		let ranges =
+			collect_spelling_ranges([(false, 0, 12), (true, 4, 3), (true, isize::MAX as usize, 1)])
+				.expect("valid spelling ranges should convert");
+
+		assert_eq!(ranges.len(), 1, "orthography and sentinel ranges must not render as typos");
+		assert_eq!(ranges[0].start, 4);
+		assert_eq!(ranges[0].length, 3);
 	}
 }

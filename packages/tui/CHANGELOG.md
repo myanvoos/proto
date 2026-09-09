@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Reference-style markdown links whose label collides with a JavaScript object member (`[x][constructor]`, `[x][__proto__]`) no longer crash the renderer; they render as plain text.
+- LaTeX text styles (`\textbf`, `\textit`, `\textsl`, `\emph`) now render as real terminal bold/italic instead of mathematical alphanumeric glyphs, and survive stacked layouts such as `\frac`.
+- Horizontal wheel and trackpad scrolling is no longer decoded as vertical scrolling.
+- Images degrade to a text placeholder in Paseo and Herdr instead of emitting Kitty graphics those terminals cannot render.
+- Synchronized output is enabled inside Herdr, removing repaint tearing.
+
 ## [18.0.1] - 2026-09-07
 
 ### Breaking Changes

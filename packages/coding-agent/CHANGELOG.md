@@ -14,6 +14,8 @@
 - A failing bash command keeps its raw diagnostics when the minimized output cannot be persisted as an artifact.
 - Kernel cells are no longer replayed after a kernel crash: the result reports that completion is uncertain and the next call starts on a fresh kernel, so partially applied edits are not duplicated.
 - Truncated tool output and raw SSE windows no longer retain the entire original payload in memory for the life of the session.
+- Read errors and delimiter notices no longer leak raw tabs or carriage returns into the terminal.
+- The Jina fetch provider sends its API key when one is configured, avoiding anonymous rate limits.
 
 ## [18.0.4] - 2026-09-09
 

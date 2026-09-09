@@ -12,6 +12,7 @@ import {
 	encodeKittyPlacementLine,
 	ImageProtocol,
 	isImageProtocolForced,
+	isInsideHerdr,
 	isInsideTerminalMultiplexer,
 	parseKittyDirectPlacementLine,
 	setCellDimensions,
@@ -1543,6 +1544,7 @@ export class TUI extends Container {
 		this.terminal.onPrivateModeReport?.((mode, supported, confirmed = true) => {
 			if (mode !== 2026 || !confirmed) return;
 			if (synchronizedOutputUserOverride() !== null) return;
+			if (!supported && isInsideHerdr()) return;
 			this.#setSynchronizedOutput(supported);
 		});
 		this.terminal.start(

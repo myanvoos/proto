@@ -849,89 +849,7 @@ fn parse_command_ending(
 }
 
 
-fn bre_to_ere(pattern: &str) -> String {
-	let mut result = String::with_capacity(pattern.len());
-	let mut chars = pattern.chars().peekable();
-
-	let mut at_beginning = true;
-	let mut previous: Option<char> = None;
-	while let Some(c) = chars.next() {
-		if c == '\\' {
-			match chars.peek() {
-				Some('(') => {
-					chars.next();
-					result.push('(');
-				},
-				Some(')') => {
-					chars.next();
-					result.push(')');
-				},
-				Some('?') => {
-					chars.next();
-					result.push('?');
-				},
-				Some('+') => {
-					chars.next();
-					result.push('+');
-				},
-				Some('|') => {
-					chars.next();
-					result.push('|');
-				},
-				Some('{') => {
-					chars.next();
-					result.push('{');
-				},
-				Some('}') => {
-					chars.next();
-					result.push('}');
-				},
-				Some(v) if v.is_ascii_digit() => {
-
-
-					result.push_str(&format!(r"(?:\{v})"));
-					chars.next();
-				},
-				Some(&next) => {
-
-					chars.next();
-					result.push('\\');
-					result.push(next);
-				},
-				None => {
-
-					result.push('\\');
-				},
-			}
-		} else {
-			match c {
-				'+' | '?' | '{' | '}' | '|' | '(' | ')' => {
-
-					result.push('\\');
-					result.push(c);
-				},
-				'^' if !at_beginning && previous != Some('[') => {
-
-
-					result.push('\\');
-					result.push(c);
-				},
-				'$' if chars.peek().is_some() => {
-
-					result.push('\\');
-					result.push(c);
-				},
-				_ => result.push(c),
-			}
-		}
-		at_beginning = false;
-		previous = Some(c);
-	}
-
-	result
-}
-
-
+// BRE translation is shared with grep in `crate::bre`.
 fn compile_regex(
 	lines: &ScriptLineProvider,
 	line: &ScriptCharProvider,
@@ -945,11 +863,21 @@ fn compile_regex(
 	}
 
 
-	let pattern = if context.regex_extended {
-		pattern
+	let translated = if context.regex_extended {
+		None
 	} else {
-		&bre_to_ere(pattern)
+		Some(
+			crate::bre::bre_to_ere(pattern, crate::bre::Backrefs::Supported).map_err(|error| {
+				compilation_error::<Regex>(
+					lines,
+					line,
+					format!("invalid regex '{pattern}': {}", error.message()),
+				)
+				.unwrap_err()
+			})?,
+		)
 	};
+	let pattern = translated.as_deref().unwrap_or(pattern);
 
 	let mut modifiers = String::new();
 	if icase {
@@ -1669,7 +1597,47 @@ fn get_cmd_spec(
 }
 
 
+
+	#[cfg(test)]
+	mod tests {
+		use fancy_regex::Regex as FancyRegex;
+
+		fn matches(pattern: &str, extended: bool, text: &str) -> bool {
+			let translated = (!extended).then(|| {
+				crate::bre::bre_to_ere(pattern, crate::bre::Backrefs::Supported).expect("valid BRE")
+			});
+			let pattern = translated.as_deref().unwrap_or(pattern);
+			FancyRegex::new(&format!("^(?:{pattern})$"))
+				.expect("valid test pattern")
+				.is_match(text)
+				.expect("match succeeds")
+		}
+
+		#[test]
+		fn basic_and_extended_metacharacters_have_inverse_sed_meanings() {
+			let cases = [
+				(r"\(ab\)", "ab", "(ab)", "(ab)", "ab"),
+				("(ab)", "(ab)", "ab", "ab", "(ab)"),
+				(r"a\{2\}", "aa", "a{2}", "a{2}", "aa"),
+				("a{2}", "a{2}", "aa", "aa", "a{2}"),
+				(r"a\|b", "b", "a|b", "a|b", "b"),
+				("a|b", "a|b", "b", "b", "a|b"),
+				(r"a\+", "aaa", "a+", "a+", "aaa"),
+				("a+", "a+", "aaa", "aaa", "a+"),
+				(r"a\?", "", "a?", "a?", ""),
+				("a?", "a?", "", "", "a?"),
+			];
+			for (pattern, bre_yes, bre_no, ere_yes, ere_no) in cases {
+				assert!(matches(pattern, false, bre_yes), "BRE {pattern:?} must match {bre_yes:?}");
+				assert!(!matches(pattern, false, bre_no), "BRE {pattern:?} must not match {bre_no:?}");
+				assert!(matches(pattern, true, ere_yes), "ERE {pattern:?} must match {ere_yes:?}");
+				assert!(!matches(pattern, true, ere_no), "ERE {pattern:?} must not match {ere_no:?}");
+			}
+		}
+	}
 }
+
+
 pub mod delimited_parser {
 
 

@@ -2,6 +2,18 @@ import { CString, dlopen, FFIType } from "bun:ffi";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
+export function isInsideHerdr(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	if (env.HERDR_ENV === "1") return true;
+	return Boolean(env.HERDR_PANE_ID || env.HERDR_TAB_ID || env.HERDR_WORKSPACE_ID);
+}
+
+export function isInsideTerminalMultiplexer(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	if (env.TMUX || env.STY || env.ZELLIJ || isInsideHerdr(env)) return true;
+	if (env.CMUX_WORKSPACE_ID || env.CMUX_SURFACE_ID || env.CMUX_REMOTE_TRANSPORT) return true;
+	const term = env.TERM?.toLowerCase() ?? "";
+	return term.startsWith("tmux") || term.startsWith("screen");
+}
+
 export function getTtyPath(): string | null {
 	if (os.platform() === "linux") {
 		try {

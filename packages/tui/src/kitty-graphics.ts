@@ -1,4 +1,5 @@
 import { wrapTmuxPassthroughIfNeeded } from "./tmux";
+import { isInsideHerdr, isInsideTerminalMultiplexer } from "./ttyid";
 
 export const KITTY_PLACEHOLDER = "\u{10eeee}";
 
@@ -38,7 +39,9 @@ export function detectKittyUnicodePlaceholdersSupport(terminalId: string, env: N
 	const force = env.PI_KITTY_PLACEHOLDERS?.trim().toLowerCase();
 	if (force === "1" || force === "true" || force === "on" || force === "yes" || force === "y") return true;
 	if (force === "0" || force === "false" || force === "off" || force === "no" || force === "n") return false;
-	if (env.TMUX && env.PI_FORCE_IMAGE_PROTOCOL?.trim().toLowerCase() === "kitty") return true;
+	const insideMultiplexer = isInsideTerminalMultiplexer(env);
+	if (insideMultiplexer && env.PI_FORCE_IMAGE_PROTOCOL?.trim().toLowerCase() === "kitty") return true;
+	if (isInsideHerdr(env)) return false;
 	return terminalId === "kitty" || terminalId === "ghostty";
 }
 

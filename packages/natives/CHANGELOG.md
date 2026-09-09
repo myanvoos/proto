@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `grep -G` and `sed` BRE patterns now follow POSIX semantics: `\(` `\)` group, `\{m,n\}` is an interval, `\+` `\?` are operators, and the bare forms are literal.
+- Builtins whose output pipe closes early (`... | head`) now exit quietly with status 141 instead of reporting an error.
+- Large terminal writes are chunked and resume at the correct offset on partial writes and interrupts, so big frames no longer truncate or stall the UI.
+- The PTY output queue is bounded with backpressure, so a runaway process can no longer accumulate unbounded output in memory.
+- A shell whose output handle is inherited and never closed can no longer hang a timed-out run.
+- macOS spell checking no longer returns a duplicate full-range result alongside the real misspelling.
+
 ## [18.0.1] - 2026-09-07
 
 ### Breaking Changes

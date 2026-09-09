@@ -4,7 +4,7 @@ import type { Ellipsis } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { getKeybindings, replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { SGR_FG_RESET } from "@oh-my-pi/pi-tui/ansi";
-import { pluralize } from "@oh-my-pi/pi-utils";
+import { pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
@@ -172,8 +172,10 @@ export function formatMeta(meta: string[], theme: Theme): string {
 }
 
 function sanitizeErrorText(message: string | undefined): string {
-	const clean = (message ?? "").replace(/^Error:\s*/, "").trim();
-	return clean ? replaceTabs(truncateToWidth(clean, TRUNCATE_LENGTHS.LINE)) : "Unknown error";
+	const clean = sanitizeText(message ?? "")
+		.replace(/^Error:\s*/, "")
+		.trim();
+	return clean ? truncateToWidth(replaceTabs(clean), TRUNCATE_LENGTHS.LINE) : "Unknown error";
 }
 
 export function formatErrorMessage(message: string | undefined, theme: Theme): string {

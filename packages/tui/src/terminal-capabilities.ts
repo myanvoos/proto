@@ -10,9 +10,11 @@ import {
 	setKittyGraphics,
 } from "./kitty-graphics";
 import { isInsideTmux, wrapTmuxPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
+import { isInsideHerdr, isInsideTerminalMultiplexer } from "./ttyid";
 import type { HangulCompatibilityJamoWidth } from "./utils";
 
 export { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
+export { isInsideHerdr, isInsideTerminalMultiplexer } from "./ttyid";
 
 export enum ImageProtocol {
 	Kitty = "\x1b_G",
@@ -150,13 +152,6 @@ export class TerminalInfo {
 	}
 }
 
-export function isInsideTerminalMultiplexer(env: NodeJS.ProcessEnv = Bun.env): boolean {
-	if (env.TMUX || env.STY || env.ZELLIJ || env.HERDR_ENV === "1") return true;
-	if (env.CMUX_WORKSPACE_ID || env.CMUX_SURFACE_ID || env.CMUX_REMOTE_TRANSPORT) return true;
-	const term = env.TERM?.toLowerCase() ?? "";
-	return term.startsWith("tmux") || term.startsWith("screen");
-}
-
 export function isInsideZellij(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	return Boolean(env.ZELLIJ);
 }
@@ -209,6 +204,7 @@ export function shouldEnableSynchronizedOutputByDefault(
 	if (override !== null) return override;
 
 	if (advertisesSynchronizedOutput(env.TERM_FEATURES)) return true;
+	if (isInsideHerdr(env)) return true;
 
 	if (isInsideTerminalMultiplexer(env)) {
 		return false;
@@ -272,10 +268,14 @@ export function shouldEnableHyperlinksByDefault(
 	return true;
 }
 
-function getFallbackImageProtocol(terminalId: TerminalId): ImageProtocol | null {
-	if (!process.stdout.isTTY) return null;
+function getFallbackImageProtocol(
+	terminalId: TerminalId,
+	env: NodeJS.ProcessEnv,
+	isTTY: boolean,
+): ImageProtocol | null {
+	if (!isTTY) return null;
 	if (terminalId === "vscode" || terminalId === "alacritty") return null;
-	const term = Bun.env.TERM?.toLowerCase() ?? "";
+	const term = env.TERM?.toLowerCase() ?? "";
 	if (term.includes("screen") || term.includes("tmux") || term.includes("ghostty")) {
 		return ImageProtocol.Kitty;
 	}
@@ -357,6 +357,22 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 
 export const TERMINAL_ID: TerminalId = detectTerminalId(Bun.env);
 
+export function isPaseoEmbedder(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	return Boolean(env.PASEO_TERMINAL_ID);
+}
+
+export function resolveImageProtocol(
+	terminalId: TerminalId,
+	env: NodeJS.ProcessEnv = Bun.env,
+	isTTY = Boolean(process.stdout.isTTY),
+): ImageProtocol | null {
+	let imageProtocol = getTerminalInfo(terminalId).imageProtocol;
+	if (terminalId === "warp") imageProtocol = resolveWarpImageProtocol();
+	if (!imageProtocol) imageProtocol = getFallbackImageProtocol(terminalId, env, isTTY);
+	if (imageProtocol && (isPaseoEmbedder(env) || isInsideHerdr(env))) return null;
+	return imageProtocol;
+}
+
 export interface RuntimeTerminal extends TerminalInfo {
 	imageProtocol: ImageProtocol | null;
 	hyperlinks: boolean;
@@ -374,11 +390,8 @@ export const TERMINAL: RuntimeTerminal = (() => {
 	const forcedImageProtocol = getForcedImageProtocol();
 	if (forcedImageProtocol !== undefined) {
 		resolved.imageProtocol = forcedImageProtocol;
-	} else if (resolved.id === "warp") {
-		resolved.imageProtocol = resolveWarpImageProtocol();
-	} else if (!resolved.imageProtocol) {
-		const fallbackImageProtocol = getFallbackImageProtocol(resolved.id);
-		if (fallbackImageProtocol) resolved.imageProtocol = fallbackImageProtocol;
+	} else {
+		resolved.imageProtocol = resolveImageProtocol(resolved.id);
 	}
 
 	resolved.hyperlinks = shouldEnableHyperlinksByDefault(Bun.env, resolved.id);

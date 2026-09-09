@@ -203,3 +203,17 @@ test("mounted read preserves loopback HTTP URLs and scopes filesystem paths to b
 		}
 	});
 });
+
+test("delimited read errors remove terminal control characters", async () => {
+	await withReadSession(async (_session, read, root) => {
+		await Bun.write(path.join(root, "ok.txt"), "ok");
+
+		const result = await read.execute("sanitized-error", { path: "ok.txt;missing\t\rname" });
+		const output = textOf(result);
+
+		expect(output).toContain("Could not read missing");
+		expect(output).not.toContain("\t");
+		expect(output).not.toContain("\r");
+		expect(result.details?.displayReadTargets).toEqual(["ok.txt", "missing   name"]);
+	});
+});

@@ -111,6 +111,8 @@ mod unset;
 #[cfg(feature = "builtin.wait")]
 mod wait;
 
+#[cfg(any(feature = "util.grep", feature = "util.sed"))]
+mod bre;
 mod builder;
 mod factory;
 mod host;

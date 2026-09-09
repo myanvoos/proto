@@ -109,8 +109,87 @@ pub(crate) struct Host {
 	stdin_is_search_input: bool,
 	observations:          FsObservationLog,
 
+	merged_out: Option<Arc<Mutex<StreamWriter>>>,
+	sigpipe:    Arc<Sigpipe>,
+}
 
-	merged_out:            Option<Arc<Mutex<StreamWriter>>>,
+const SIGPIPE_EXIT_CODE: i32 = 141;
+
+#[derive(Default)]
+struct Sigpipe {
+	hit: AtomicBool,
+}
+
+impl Sigpipe {
+	fn record(&self, error: &io::Error) {
+		if error.kind() == io::ErrorKind::BrokenPipe {
+			self.hit.store(true, Ordering::Relaxed);
+		}
+	}
+
+	fn is_hit(&self) -> bool {
+		self.hit.load(Ordering::Relaxed)
+	}
+}
+
+#[derive(Clone, Copy)]
+enum GuardedStream {
+	Stdout,
+	Stderr,
+}
+
+struct SigpipeGuard {
+	inner:   OpenFile,
+	stream:  GuardedStream,
+	sigpipe: Arc<Sigpipe>,
+}
+
+impl SigpipeGuard {
+	fn wrap(inner: OpenFile, stream: GuardedStream, sigpipe: &Arc<Sigpipe>) -> OpenFile {
+		OpenFile::Stream(Box::new(Self { inner, stream, sigpipe: Arc::clone(sigpipe) }))
+	}
+}
+
+impl Read for SigpipeGuard {
+	fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+		self.inner.read(buf)
+	}
+}
+
+impl Write for SigpipeGuard {
+	fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+		if matches!(self.stream, GuardedStream::Stderr) && self.sigpipe.is_hit() {
+			return Ok(buf.len());
+		}
+		self.inner.write(buf).inspect_err(|error| self.sigpipe.record(error))
+	}
+
+	fn flush(&mut self) -> io::Result<()> {
+		if matches!(self.stream, GuardedStream::Stderr) && self.sigpipe.is_hit() {
+			return Ok(());
+		}
+		self.inner.flush().inspect_err(|error| self.sigpipe.record(error))
+	}
+}
+
+impl openfiles::Stream for SigpipeGuard {
+	fn clone_box(&self) -> Box<dyn openfiles::Stream> {
+		Box::new(Self {
+			inner:   self.inner.clone(),
+			stream:  self.stream,
+			sigpipe: Arc::clone(&self.sigpipe),
+		})
+	}
+
+	#[cfg(unix)]
+	fn try_clone_to_owned(&self) -> Result<std::os::fd::OwnedFd, Error> {
+		Ok(self.inner.try_borrow_as_fd()?.try_clone_to_owned()?)
+	}
+
+	#[cfg(unix)]
+	fn try_borrow_as_fd(&self) -> Result<std::os::fd::BorrowedFd<'_>, Error> {
+		self.inner.try_borrow_as_fd()
+	}
 }
 
 struct CancelOnDrop(Arc<AtomicBool>);
@@ -841,7 +920,11 @@ pub(crate) fn run_caught<U: Utility>(parsed: U, host: &mut Host) -> i32 {
 	PANIC_SCOPE_DEPTH.with(|depth| depth.set(depth.get() + 1));
 	let _guard = Guard;
 
-	match catch_unwind(AssertUnwindSafe(|| parsed.run(host))) {
+	let outcome = catch_unwind(AssertUnwindSafe(|| parsed.run(host)));
+	if host.sigpipe.is_hit() {
+		return SIGPIPE_EXIT_CODE;
+	}
+	match outcome {
 		Ok(code) => code,
 		Err(_) => {
 			let _ = writeln!(host.stderr, "{}: internal error", U::NAME);
@@ -892,14 +975,17 @@ fn build_host<SE: ShellExtensions>(
 
 	let stdout = or_null(context.try_fd(OpenFiles::STDOUT_FD))?;
 	let stderr_file = or_null(context.try_fd(OpenFiles::STDERR_FD))?;
-
+	let sigpipe = Arc::new(Sigpipe::default());
 
 	let (merged_out, stderr) = if same_destination(&stdout, &stderr_file) {
-		let shared = Arc::new(Mutex::new(StreamWriter::new(stderr_file)));
+		let guarded = SigpipeGuard::wrap(stderr_file, GuardedStream::Stdout, &sigpipe);
+		let shared = Arc::new(Mutex::new(StreamWriter::new(guarded)));
 		(Some(Arc::clone(&shared)), StreamWriter::Shared(shared))
 	} else {
-		(None, StreamWriter::new(stderr_file))
+		let guarded = SigpipeGuard::wrap(stderr_file, GuardedStream::Stderr, &sigpipe);
+		(None, StreamWriter::new(guarded))
 	};
+	let stdout = SigpipeGuard::wrap(stdout, GuardedStream::Stdout, &sigpipe);
 
 	Ok(Host {
 		stdin: Stdin {
@@ -917,6 +1003,7 @@ fn build_host<SE: ShellExtensions>(
 		stdin_is_search_input,
 		observations: context.shell.fs_observations().clone(),
 		merged_out,
+		sigpipe,
 	})
 }
 
@@ -1009,3 +1096,117 @@ pub(crate) use matches_parser;
 
 
 
+
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[derive(clap::Parser)]
+	struct LongWriter;
+
+	impl Utility for LongWriter {
+		const NAME: &'static str = "long-writer";
+
+		fn run(self, host: &mut Host) -> i32 {
+			for _ in 0..10_000 {
+				if let Err(error) = writeln!(host.stdout, "output") {
+					let _ = writeln!(host.stderr, "long-writer: {error}");
+					return 1;
+				}
+			}
+			0
+		}
+	}
+
+	#[cfg(unix)]
+	fn test_host(stdout: OpenFile) -> (Host, tempfile::NamedTempFile) {
+		let stderr = tempfile::NamedTempFile::new().expect("stderr file");
+		let sigpipe = Arc::new(Sigpipe::default());
+		let stderr_file = OpenFile::File(stderr.reopen().expect("reopen stderr"));
+		let cancel = Arc::new(AtomicBool::new(false));
+		let host = Host {
+			stdin: Stdin {
+				file: openfiles::null().expect("null stdin"),
+				fd: None,
+				cancel: Arc::clone(&cancel),
+			},
+			stdout: SigpipeGuard::wrap(stdout, GuardedStream::Stdout, &sigpipe),
+			stderr: StreamWriter::new(SigpipeGuard::wrap(
+				stderr_file,
+				GuardedStream::Stderr,
+				&sigpipe,
+			)),
+			name: "long-writer".to_string(),
+			cwd: PathBuf::from("/"),
+			env: HashMap::new(),
+			cancel,
+			exit_code: 0,
+			stdin_is_search_input: false,
+			observations: FsObservationLog::default(),
+			merged_out: None,
+			sigpipe,
+		};
+		(host, stderr)
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn closed_stdout_reader_terminates_builtin_silently() {
+		let (reader, writer) = std::io::pipe().expect("pipe");
+		drop(reader);
+		let (mut host, stderr) = test_host(OpenFile::from(writer));
+
+		let code = run_caught(LongWriter, &mut host);
+
+		assert_eq!(code, SIGPIPE_EXIT_CODE);
+		assert_eq!(std::fs::read(stderr.path()).expect("read stderr"), b"");
+	}
+
+	struct OtherIoError;
+
+	impl Read for OtherIoError {
+		fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+			Ok(0)
+		}
+	}
+
+	impl Write for OtherIoError {
+		fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+			Err(io::Error::other("device failed"))
+		}
+
+		fn flush(&mut self) -> io::Result<()> {
+			Err(io::Error::other("device failed"))
+		}
+	}
+
+	impl openfiles::Stream for OtherIoError {
+		fn clone_box(&self) -> Box<dyn openfiles::Stream> {
+			Box::new(Self)
+		}
+
+		#[cfg(unix)]
+		fn try_clone_to_owned(&self) -> Result<std::os::fd::OwnedFd, Error> {
+			Err(brush_core::error::ErrorKind::CannotConvertToNativeFd.into())
+		}
+
+		#[cfg(unix)]
+		fn try_borrow_as_fd(&self) -> Result<std::os::fd::BorrowedFd<'_>, Error> {
+			Err(brush_core::error::ErrorKind::CannotConvertToNativeFd.into())
+		}
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn non_broken_pipe_write_errors_remain_visible() {
+		let (mut host, stderr) = test_host(OpenFile::Stream(Box::new(OtherIoError)));
+
+		let code = run_caught(LongWriter, &mut host);
+		drop(host);
+		let diagnostic = std::fs::read_to_string(stderr.path()).expect("read stderr");
+
+		assert_eq!(code, 1);
+		assert!(diagnostic.contains("device failed"), "{diagnostic:?}");
+	}
+}

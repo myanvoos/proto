@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use napi::{
 	Env, Result, Status,
@@ -283,9 +283,7 @@ impl Shell {
 				.await
 				.map(Into::into)
 				.map_err(|err| Error::from_reason(err.to_string()));
-			if let Some(handle) = drain_handle {
-				let _ = handle.await;
-			}
+			await_drain(drain_handle, &result).await;
 			result
 		})
 	}
@@ -325,9 +323,7 @@ pub fn execute_shell<'env>(
 			.await
 			.map(Into::into)
 			.map_err(|err| Error::from_reason(err.to_string()));
-		if let Some(handle) = drain_handle {
-			let _ = handle.await;
-		}
+		await_drain(drain_handle, &result).await;
 		result
 	})
 }
@@ -365,5 +361,89 @@ async fn pump_chunks(rx: flume::Receiver<String>, mut forward: impl AsyncFnMut(S
 		if !forward(payload).await {
 			return;
 		}
+	}
+}
+const INTERRUPTED_DRAIN_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+async fn await_drain(
+	handle: Option<napi::tokio::task::JoinHandle<()>>,
+	result: &Result<ShellRunResult>,
+) {
+	let Some(mut handle) = handle else {
+		return;
+	};
+	if !matches!(result, Ok(result) if result.cancelled || result.timed_out) {
+		let _ = handle.await;
+		return;
+	}
+	if napi::tokio::time::timeout(INTERRUPTED_DRAIN_SHUTDOWN_TIMEOUT, &mut handle)
+		.await
+		.is_err()
+	{
+		handle.abort();
+		let _ = handle.await;
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		sync::{
+			Arc,
+			atomic::{AtomicBool, Ordering},
+		},
+		time::{Duration, Instant},
+	};
+
+	use tokio::time;
+
+	use super::*;
+
+	fn run_result(cancelled: bool, timed_out: bool) -> ShellRunResult {
+		ShellRunResult {
+			exit_code: Some(0),
+			cancelled,
+			timed_out,
+			minimized: None,
+			working_dir: None,
+			fs_observations: Vec::new(),
+			xd_dispatches: Vec::new(),
+		}
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn interrupted_drain_disconnects_an_orphaned_output_sender() {
+		let (tx, rx) = flume::bounded::<String>(BRIDGE_QUEUE_CHUNKS);
+		let orphan = tx.clone();
+		let handle = napi::tokio::spawn(pump_chunks(rx, async |_payload: String| true));
+		drop(tx);
+		let started = Instant::now();
+		let result = Ok(run_result(false, true));
+		time::timeout(
+			INTERRUPTED_DRAIN_SHUTDOWN_TIMEOUT + Duration::from_secs(1),
+			await_drain(Some(handle), &result),
+		)
+		.await
+		.expect("a timed-out run must not hang on inherited output handles");
+		assert!(started.elapsed() >= INTERRUPTED_DRAIN_SHUTDOWN_TIMEOUT);
+		assert!(orphan.send("late".to_string()).is_err(), "aborting drain must disconnect readers");
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn successful_drain_preserves_accepted_output() {
+		let (tx, rx) = flume::bounded::<String>(BRIDGE_QUEUE_CHUNKS);
+		let forwarded = Arc::new(AtomicBool::new(false));
+		let observed = Arc::clone(&forwarded);
+		let handle = napi::tokio::spawn(pump_chunks(rx, async move |_payload: String| {
+			time::sleep(Duration::from_millis(25)).await;
+			observed.store(true, Ordering::Release);
+			true
+		}));
+		tx.send("accepted".to_string())
+			.expect("pump should be connected");
+		drop(tx);
+		let result = Ok(run_result(false, false));
+		await_drain(Some(handle), &result).await;
+		assert!(forwarded.load(Ordering::Acquire), "success must not drop accepted output");
 	}
 }

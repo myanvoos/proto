@@ -11,6 +11,7 @@ import {
 	logger,
 	prompt,
 	readImageMetadata,
+	sanitizeText,
 	truncateHeadBytes,
 } from "@oh-my-pi/pi-utils";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
@@ -93,7 +94,7 @@ import { type PdfImageReadTarget, renderPdfPageScreenshot, splitPdfImageReadPath
 import { isMultiRange, isRawSelector, type ParsedSelector, parseSel, selToOffsetLimit } from "./read-selector";
 import { readSqlite, resolveSqliteReadPath } from "./read-sqlite";
 import { isProseSummaryPath, renderSummary, routeReadThroughBridge, trySummarize } from "./read-summary";
-import { formatBytes, shortenPath } from "./render-utils";
+import { formatBytes, replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "./render-utils";
 import { REPORT_ISSUE_DEVICE_NAME, reportIssueDeviceUsage } from "./report-tool-issue";
 import { isResolutionDeviceName, resolutionDeviceUsage } from "./resolve";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
@@ -570,7 +571,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const parts = await splitDelimitedPathEntry(readPath, this.session.cwd, { routedUrlPredicate });
 		if (!parts) return null;
 
-		const notice = `Note: interpreted as ${parts.length} paths: ${parts.join(", ")}`;
+		const renderedParts = parts.map(part => truncateToWidth(replaceTabs(sanitizeText(part)), TRUNCATE_LENGTHS.LINE));
+		const notice = truncateToWidth(
+			`Note: interpreted as ${parts.length} paths: ${renderedParts.join(", ")}`,
+			TRUNCATE_LENGTHS.LINE,
+		);
 		const notes = [notice];
 		const content: Array<TextContent | ImageContent> = [];
 		const displayReadTargets: string[] = [];
@@ -584,10 +589,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			pendingText = pendingText.length > 0 ? `${pendingText}\n\n${text}` : text;
 		};
 
-		for (const part of parts) {
+		for (const [index, part] of parts.entries()) {
 			try {
 				const result = await this.execute("read-delimited-part", { path: part }, signal);
-				displayReadTargets.push(result.details?.suffixResolution?.to ?? part);
+				const displayTarget = result.details?.suffixResolution?.to ?? renderedParts[index] ?? part;
+				displayReadTargets.push(truncateToWidth(replaceTabs(sanitizeText(displayTarget)), TRUNCATE_LENGTHS.LINE));
 				for (const block of result.content) {
 					if (block.type === "text") {
 						appendText(block.text);
@@ -599,9 +605,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			} catch (error) {
 				if (error instanceof ToolAbortError || signal?.aborted) throw error;
 				const message = error instanceof Error ? error.message : String(error);
-				const errorNote = `Could not read ${part}: ${message}`;
+				const errorNote = truncateToWidth(
+					replaceTabs(sanitizeText(`Could not read ${part}: ${message}`)),
+					TRUNCATE_LENGTHS.LINE,
+				);
 				notes.push(errorNote);
-				displayReadTargets.push(part);
+				displayReadTargets.push(renderedParts[index] ?? "");
 				appendText(`[${errorNote}]`);
 			}
 		}
