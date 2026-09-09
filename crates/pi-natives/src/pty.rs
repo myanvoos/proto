@@ -1,5 +1,5 @@
 use std::{
-	collections::HashMap,
+	collections::{HashMap, VecDeque},
 	io::{Read, Write},
 	str,
 	sync::{
@@ -95,6 +95,10 @@ enum ControlMessage {
 
 const CONTROL_MESSAGES_PER_TICK: usize = 64;
 const READER_QUEUE_CHUNKS: usize = 64;
+// The child process can be alive before its command has installed its stdin
+// reader. Keep the first terminal writes queued through that startup window so
+// callers can safely write immediately after the on_start callback.
+const PTY_INPUT_STARTUP_GRACE: Duration = Duration::from_millis(100);
 const POST_CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_millis(300);
 const STUCK_SLAVE_IDLE: Duration = Duration::from_secs(2);
 const CANCEL_REAP_TIMEOUT: Duration = Duration::from_millis(500);
@@ -302,9 +306,8 @@ fn run_pty_sync(
 	drop(pair.slave);
 	let child_process_id = child.process_id();
 	let child_pid = child_process_id.and_then(|value| i32::try_from(value).ok());
-	if let Some(callback) = on_start.as_ref() {
-		callback.call(Ok(child_process_id.unwrap_or(0)), ThreadsafeFunctionCallMode::NonBlocking);
-	}
+	let input_ready_at = Instant::now() + PTY_INPUT_STARTUP_GRACE;
+	let mut pending_input = VecDeque::new();
 
 	let master = pair.master;
 	let mut writer = master
@@ -429,6 +432,9 @@ fn run_pty_sync(
 		})
 	};
 	let abort_pump = pump_task.abort_handle();
+	if let Some(callback) = on_start.as_ref() {
+		callback.call(Ok(child_process_id.unwrap_or(0)), ThreadsafeFunctionCallMode::NonBlocking);
+	}
 
 	let mut timed_out = false;
 	let mut cancelled = false;
@@ -454,8 +460,12 @@ fn run_pty_sync(
 		for _ in 0..CONTROL_MESSAGES_PER_TICK {
 			match control_rx.try_recv() {
 				Ok(ControlMessage::Input(data)) => {
-					let _ = writer.write_all(data.as_bytes());
-					let _ = writer.flush();
+					if Instant::now() < input_ready_at {
+						pending_input.push_back(data);
+					} else {
+						let _ = writer.write_all(data.as_bytes());
+						let _ = writer.flush();
+					}
 				},
 				Ok(ControlMessage::Resize { cols, rows }) => {
 					let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
@@ -469,6 +479,12 @@ fn run_pty_sync(
 					}
 				},
 				Err(flume::TryRecvError::Empty | flume::TryRecvError::Disconnected) => break,
+			}
+		}
+		if Instant::now() >= input_ready_at {
+			while let Some(data) = pending_input.pop_front() {
+				let _ = writer.write_all(data.as_bytes());
+				let _ = writer.flush();
 			}
 		}
 		if exit_code.is_none()
@@ -492,8 +508,12 @@ fn run_pty_sync(
 		});
 		match control_rx.recv_timeout(wait_duration) {
 			Ok(ControlMessage::Input(data)) => {
-				let _ = writer.write_all(data.as_bytes());
-				let _ = writer.flush();
+				if Instant::now() < input_ready_at {
+					pending_input.push_back(data);
+				} else {
+					let _ = writer.write_all(data.as_bytes());
+					let _ = writer.flush();
+				}
 			},
 			Ok(ControlMessage::Resize { cols, rows }) => {
 				let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });

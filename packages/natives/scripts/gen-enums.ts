@@ -67,7 +67,9 @@ function buildGeneratedBlock(dts: string): string {
 		lines.push("// classes");
 		for (const name of classes) {
 			const binding =
-				name === "DesktopSession" ? `adaptDesktopSession(nativeBindings.${name})` : `nativeBindings.${name}`;
+				name === "DesktopSession"
+					? `lazyNativeExport("${name}", bindings => adaptDesktopSession(bindings.${name}), true)`
+					: `lazyNativeExport("${name}", undefined, true)`;
 			lines.push(`export const ${name} = ${binding};`);
 		}
 	}
@@ -75,7 +77,7 @@ function buildGeneratedBlock(dts: string): string {
 		if (lines.length > 0) lines.push("");
 		lines.push("// functions");
 		for (const name of functions) {
-			lines.push(`export const ${name} = nativeBindings.${name};`);
+			lines.push(`export const ${name} = lazyNativeExport("${name}");`);
 		}
 	}
 	if (enums.length > 0) {
