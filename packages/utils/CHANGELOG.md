@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Launch-time dotenv values and `NODE_ENV` provenance no longer leak into explicitly built child-process environments; they now apply only to the live process environment.
+
 ## [18.0.1] - 2026-09-07
 
 ### Breaking Changes

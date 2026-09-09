@@ -153,6 +153,7 @@ const COPILOT_TRANSIENT_MODEL_CODES: Record<string, true> = {
 	model_not_supported: true,
 };
 const COPILOT_TRANSIENT_MODEL_PATTERN = /model_not_supported/i;
+const GITHUB_COPILOT_POLICY_DENIAL_PATTERN = /GitHub Copilot access denied \(HTTP 403\)/;
 
 const GRAMMAR_TOO_LARGE_PATTERN = /compiled grammar/i;
 const GRAMMAR_TOO_LARGE_DETAIL_PATTERN = /too large/i;
@@ -556,6 +557,21 @@ export function isCopilotTransientModelError(error: unknown): boolean {
 	if (code !== undefined && Object.hasOwn(COPILOT_TRANSIENT_MODEL_CODES, code)) return true;
 	const message: unknown = "message" in error ? error.message : undefined;
 	return typeof message === "string" && COPILOT_TRANSIENT_MODEL_PATTERN.test(message);
+}
+
+/**
+ * GitHub Copilot 403s are plan/model-policy/org denials against a valid token,
+ * while revoked credentials arrive as 401. Preserve credentials when the HTTP
+ * status or the normalized user-facing error identifies that policy denial.
+ */
+export function isGitHubCopilotPolicyDenial(
+	provider: string | undefined,
+	status: number | undefined,
+	errorMessage: string | undefined,
+): boolean {
+	if (provider !== "github-copilot") return false;
+	if (status === 403) return true;
+	return errorMessage !== undefined && GITHUB_COPILOT_POLICY_DENIAL_PATTERN.test(errorMessage);
 }
 
 export function classifyMessage(message: {

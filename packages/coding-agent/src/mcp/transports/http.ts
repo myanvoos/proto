@@ -11,6 +11,7 @@ import type {
 	MCPTransport,
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
+import { sanitizeMCPDiagnostic } from "../errors";
 import { RequestIdAllocator } from "../request-id";
 import { createMCPTimeout, getNeverAbortSignal, isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
 import { type MCPFetchInit, mcpFetch, withoutHeader } from "./header-policy";
@@ -236,7 +237,7 @@ export class HttpTransport implements MCPTransport {
 		}
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");
-			throw new SSEResumeError(`HTTP ${response.status} resuming MCP SSE stream: ${text}`);
+			throw new SSEResumeError(sanitizeMCPDiagnostic(`HTTP ${response.status} resuming MCP SSE stream: ${text}`));
 		}
 		const contentType = response.headers.get("Content-Type") ?? "";
 		if (!contentType.includes("text/event-stream") || !response.body) {
@@ -333,7 +334,7 @@ export class HttpTransport implements MCPTransport {
 					.filter(Boolean)
 					.join("; ");
 				const suffix = authHints ? ` [${authHints}]` : "";
-				throw new Error(`HTTP ${response.status}: ${text}${suffix}`);
+				throw new Error(sanitizeMCPDiagnostic(`HTTP ${response.status}: ${text}${suffix}`));
 			}
 
 			const contentType = response.headers.get("Content-Type") ?? "";
@@ -345,7 +346,7 @@ export class HttpTransport implements MCPTransport {
 			const result = (await response.json()) as JsonRpcResponse;
 
 			if (result.error) {
-				throw new Error(`MCP error ${result.error.code}: ${result.error.message}`);
+				throw new Error(sanitizeMCPDiagnostic(`MCP error ${result.error.code}: ${result.error.message}`));
 			}
 
 			return result.result as T;
@@ -394,7 +395,11 @@ export class HttpTransport implements MCPTransport {
 									captured = true;
 									operation.clear();
 									if (message.error) {
-										reject(new Error(`MCP error ${message.error.code}: ${message.error.message}`));
+										reject(
+											new Error(
+												sanitizeMCPDiagnostic(`MCP error ${message.error.code}: ${message.error.message}`),
+											),
+										);
 									} else {
 										resolve(message.result as T);
 									}
@@ -523,7 +528,7 @@ export class HttpTransport implements MCPTransport {
 
 			if (!response.ok && response.status !== 202) {
 				const text = await response.text();
-				throw new Error(`HTTP ${response.status}: ${text}`);
+				throw new Error(sanitizeMCPDiagnostic(`HTTP ${response.status}: ${text}`));
 			}
 
 			const contentType = response.headers.get("Content-Type") ?? "";

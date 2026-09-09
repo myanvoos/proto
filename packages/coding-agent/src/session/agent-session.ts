@@ -2292,7 +2292,8 @@ export class AgentSession {
 				if (
 					AIError.is(errorId, AIError.Flag.AuthFailed) &&
 					!AIError.is(errorId, AIError.Flag.UsageLimit) &&
-					!isConcurrencyCap
+					!isConcurrencyCap &&
+					!AIError.isGitHubCopilotPolicyDenial(msg.provider, msg.errorStatus, msg.errorMessage)
 				) {
 					await this.#modelRegistry.authStorage.remove("github-copilot");
 				}

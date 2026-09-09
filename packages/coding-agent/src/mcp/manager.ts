@@ -1209,7 +1209,7 @@ export class MCPManager {
 
 		if (resolved.type !== "http" && resolved.type !== "sse") {
 			if (resolved.env && resolved.envPolicy !== "literal") {
-				const nextEnv: Record<string, string> = {};
+				const nextEnv: Record<string, string> = Object.create(null);
 				for (const [key, value] of Object.entries(resolved.env)) {
 					const resolvedValue = await resolveConfigValue(value);
 					if (resolvedValue) nextEnv[key] = resolvedValue;

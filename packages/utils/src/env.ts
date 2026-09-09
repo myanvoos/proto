@@ -83,9 +83,10 @@ export function filterChildShellEnv(
 	env: Record<string, string | undefined>,
 	cwd: string = process.cwd(),
 ): Record<string, string> {
+	const runtimeLaunchEnvValues = env === Bun.env || env === process.env ? launchEnvValues : undefined;
 	const result = filterProcessEnv(env);
 	const projectEnv = parseEnvFile(path.join(cwd, ".env"));
-	const launchNodeEnv = launchEnvValues ? launchEnvValues.get("NODE_ENV") : env.NODE_ENV;
+	const launchNodeEnv = runtimeLaunchEnvValues ? runtimeLaunchEnvValues.get("NODE_ENV") : env.NODE_ENV;
 	const nodeEnvName = `.env.${launchNodeEnv || "development"}`;
 	const modeEnv = parseEnvFile(path.join(cwd, nodeEnvName));
 	const localEnv = parseEnvFile(path.join(cwd, ".env.local"));
@@ -99,7 +100,7 @@ export function filterChildShellEnv(
 	};
 	let fallbackLaunchEnv: Record<string, string> | undefined;
 	let expandedFallbackLaunchEnv: Record<string, string> | undefined;
-	if (!launchEnvValues && nodeEnvName !== ".env.development") {
+	if (!runtimeLaunchEnvValues && nodeEnvName !== ".env.development") {
 		const fallbackModeEnv = parseEnvFile(path.join(cwd, ".env.development"));
 		const fallbackModeLocalEnv = parseEnvFile(path.join(cwd, ".env.development.local"));
 		const candidate = { ...projectEnv, ...fallbackModeEnv, ...localEnv, ...fallbackModeLocalEnv };
@@ -116,7 +117,7 @@ export function filterChildShellEnv(
 	}
 	const allLaunchEnv = fallbackLaunchEnv ? { ...launchEnv, ...fallbackLaunchEnv } : launchEnv;
 	for (const key in allLaunchEnv) {
-		const launchValue = launchEnvValues?.get(key);
+		const launchValue = runtimeLaunchEnvValues?.get(key);
 		if (launchValue !== undefined) {
 			if (
 				result[key] !== launchValue &&
@@ -129,7 +130,7 @@ export function filterChildShellEnv(
 			}
 			continue;
 		}
-		if (launchEnvValues || projectEnvNamesLoadedByOmp.has(key)) {
+		if (runtimeLaunchEnvValues || projectEnvNamesLoadedByOmp.has(key)) {
 			delete result[key];
 		} else if (
 			result[key] === launchEnv[key] ||

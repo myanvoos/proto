@@ -378,9 +378,19 @@ export async function scanSkillsFromDir(
 	return { items, warnings };
 }
 
+/**
+ * Resolve placeholders only from own overrides or actual ambient strings.
+ * Bun.env falls through to Object.prototype for inherited names.
+ */
+function lookupEnvValue(varName: string, extraEnv?: Record<string, string>): string | undefined {
+	if (extraEnv !== undefined && Object.hasOwn(extraEnv, varName)) return extraEnv[varName];
+	const ambient = Bun.env[varName];
+	return typeof ambient === "string" ? ambient : undefined;
+}
+
 function expandEnvVars(value: string, extraEnv?: Record<string, string>): string {
 	return value.replace(/\$\{([^}:]+)(?::-([^}]*))?\}/g, (_, varName: string, defaultValue?: string) => {
-		const envValue = extraEnv?.[varName] ?? Bun.env[varName];
+		const envValue = lookupEnvValue(varName, extraEnv);
 		if (envValue !== undefined) return envValue;
 		if (defaultValue !== undefined) return defaultValue;
 		return `\${${varName}}`;
@@ -395,7 +405,7 @@ export function expandEnvVarsDeep<T>(obj: T, extraEnv?: Record<string, string>):
 		return obj.map(item => expandEnvVarsDeep(item, extraEnv)) as T;
 	}
 	if (obj !== null && typeof obj === "object") {
-		const result: Record<string, unknown> = {};
+		const result: Record<string, unknown> = Object.create(null);
 		for (const [key, value] of Object.entries(obj)) {
 			result[key] = expandEnvVarsDeep(value, extraEnv);
 		}

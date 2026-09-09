@@ -480,13 +480,16 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 			const substitutedCwd = raw.cwd !== undefined ? substitutePluginRoot(raw.cwd, root.path) : undefined;
 
 			const rooted = resolvePluginStdioPaths({ command: substitutedCommand, cwd: substitutedCwd }, baseDir);
+			// Expand before inserting the plugin root so placeholders inside the
+			// install path are not scanned as untrusted environment references.
+			const expandedEnv = raw.env !== undefined ? expandEnvVarsDeep(raw.env) : undefined;
 			const server: MCPServer = {
 				name: namespacedName,
 				...(raw.enabled !== undefined && { enabled: raw.enabled }),
 				...(raw.timeout !== undefined && { timeout: raw.timeout }),
 				...(rooted.command !== undefined && { command: rooted.command }),
 				...(raw.args !== undefined && { args: substitutePluginRoot(raw.args, root.path) }),
-				...(raw.env !== undefined && { env: substitutePluginRoot(raw.env, root.path) }),
+				...(expandedEnv !== undefined && { env: substitutePluginRoot(expandedEnv, root.path) }),
 				...(rooted.cwd !== undefined && { cwd: rooted.cwd }),
 				...(raw.url !== undefined && { url: expandEnvVarsDeep(raw.url) }),
 				...(raw.headers !== undefined && { headers: expandEnvVarsDeep(raw.headers) }),

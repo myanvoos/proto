@@ -15,6 +15,7 @@ import type { OutputMeta } from "../tools/output-meta";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { callTool } from "./client";
+import { sanitizeMCPDiagnostic } from "./errors";
 import { renderMCPCall, renderMCPResult } from "./render";
 import type {
 	MCPAuthChallenge,
@@ -230,7 +231,7 @@ function buildErrorResult(
 	provider?: string,
 	providerName?: string,
 ): CustomToolResult<MCPToolDetails> {
-	const message = error instanceof Error ? error.message : String(error);
+	const message = sanitizeMCPDiagnostic(error instanceof Error ? error.message : String(error));
 	return {
 		content: [{ type: "text", text: `MCP error: ${message}` }],
 		details: { serverName, mcpToolName, isError: true, provider, providerName },
