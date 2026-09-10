@@ -107,6 +107,10 @@ ON CONFLICT(prompt) DO UPDATE SET
 	cwd = excluded.cwd,
 	session_id = excluded.session_id
 		`);
+
+		// Schema/FTS setup can leave a sizable initial WAL. Checkpoint it before
+		// the interactive session so shutdown only handles writes made in-session.
+		checkpointWal(this.#db);
 	}
 
 	static open(dbPath: string = getHistoryDbPath()): HistoryStorage {

@@ -478,6 +478,7 @@ export class AgentSession {
 	#asyncDeliveryEpoch = 0;
 
 	readonly #monitors: MonitorManager;
+	#monitorDisposeTask: Promise<void> | undefined;
 
 	readonly #irc: IrcBridge;
 	#ircWakeTurnObserver:
@@ -3125,6 +3126,7 @@ export class AgentSession {
 		this.#detachUsageBeforeModelCall?.();
 		this.#detachUsageBeforeModelCall = undefined;
 		this.#titleGenerationAbortController.abort();
+		this.#bash.abort();
 		this.#abortAutolearnCapture();
 		this.#irc.flushPending();
 		this.yieldQueue.clear();
@@ -3132,7 +3134,7 @@ export class AgentSession {
 		this.agent.hasIrcInterrupts = undefined;
 		this.#advisors.stopRuntime();
 		this.#conductor.stopRuntime();
-		this.#monitors.dispose();
+		this.#monitorDisposeTask ??= this.#monitors.dispose();
 		this.#eval.beginDispose();
 	}
 
@@ -3236,7 +3238,9 @@ export class AgentSession {
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		const conductorRecorderClosed = this.#conductor.recorderClosed();
 		const results = await Promise.allSettled([
+			this.#bash.dispose(),
 			this.#disposeOwnedAsyncJobs(),
+			this.#monitorDisposeTask,
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.sessionManager.getSessionId()),
 			this.#releaseOwnedComputerSessions(this.#eval.getKernelOwnerId()),

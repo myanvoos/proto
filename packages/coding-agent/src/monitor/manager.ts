@@ -1,13 +1,16 @@
 import { Process } from "@oh-my-pi/pi-natives";
-import { logger, readLines, sanitizeText } from "@oh-my-pi/pi-utils";
+import { logger, readBytesWithLimit, readLines, sanitizeText, withTimeout } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
 import type { MonitorEvent, MonitorEventKind, MonitorSnapshot, MonitorStartSpec, MonitorStopReason } from "./types";
 
 const MAX_EVENT_TEXT_CHARS = 1_200;
 const STOP_GRACE_MS = 2_000;
+const TERMINATION_TIMEOUT_MS = STOP_GRACE_MS + 1_000;
+const TASK_SETTLE_TIMEOUT_MS = TERMINATION_TIMEOUT_MS + 500;
 const MIN_POLL_SECONDS = 1;
 const DEFAULT_LABEL = "monitor";
+const EXIT_WAIT_ABORTED = Symbol("monitor exit wait aborted");
 
 export interface MonitorManagerOptions {
 	/** Pushes one event into the session so the agent wakes on it. */
@@ -22,8 +25,8 @@ interface MonitorRecord {
 	matcher: RegExp | undefined;
 	abort: AbortController;
 	process: Bun.Subprocess | undefined;
-	pollTimer: ReturnType<typeof setTimeout> | undefined;
-	timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+	pollTimer: Timer | undefined;
+	timeoutTimer: Timer | undefined;
 	lastPollOutput: string | undefined;
 
 	/** Only `output` events count against `maxEvents`; terminal events always get through. */
@@ -42,8 +45,10 @@ function errorText(error: unknown): string {
 export class MonitorManager {
 	readonly #options: MonitorManagerOptions;
 	readonly #records = new Map<string, MonitorRecord>();
+	readonly #tasks = new Set<Promise<unknown>>();
 	#counter = 0;
 	#disposed = false;
+	#disposeCall?: Promise<void>;
 
 	constructor(options: MonitorManagerOptions) {
 		this.#options = options;
@@ -148,7 +153,7 @@ export class MonitorManager {
 		}
 
 		if (record.snapshot.mode === "stream") this.#startStream(record);
-		else void this.#runPoll(record);
+		else this.#trackTask(record, this.#runPoll(record));
 
 		return { ...record.snapshot };
 	}
@@ -166,13 +171,29 @@ export class MonitorManager {
 		return stopped;
 	}
 
-	dispose(): void {
-		if (this.#disposed) return;
+	dispose(): Promise<void> {
+		if (this.#disposeCall) return this.#disposeCall;
+		if (this.#records.size === 0 && this.#tasks.size === 0) {
+			this.#disposed = true;
+			this.#disposeCall = Promise.resolve();
+			return this.#disposeCall;
+		}
 		this.#disposed = true;
 		for (const record of this.#records.values()) {
 			if (record.snapshot.status === "running") this.#finish(record, "session");
 		}
 		this.#records.clear();
+		const tasks = [...this.#tasks];
+		this.#disposeCall = withTimeout(
+			Promise.allSettled(tasks).then(() => undefined),
+			TASK_SETTLE_TIMEOUT_MS,
+			"Timed out waiting for monitor tasks during dispose",
+		)
+			.catch(error => {
+				logger.warn("Monitor tasks did not settle during dispose", { error: errorText(error) });
+			})
+			.finally(() => this.#tasks.clear());
+		return this.#disposeCall;
 	}
 
 	#spawn(record: MonitorRecord): Bun.Subprocess {
@@ -186,6 +207,66 @@ export class MonitorManager {
 			stderr: "pipe",
 			detached: true,
 		});
+	}
+
+	#trackTask(record: MonitorRecord, task: Promise<unknown>): void {
+		this.#tasks.add(task);
+		void task.then(
+			() => {
+				this.#tasks.delete(task);
+			},
+			error => {
+				this.#tasks.delete(task);
+				logger.debug("Monitor task ended with an error", {
+					monitorId: record.snapshot.id,
+					error: errorText(error),
+				});
+			},
+		);
+	}
+
+	async #readStreamText(stream: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<string> {
+		const { bytes } = await readBytesWithLimit(stream, Number.MAX_SAFE_INTEGER, signal);
+		return new TextDecoder().decode(bytes);
+	}
+
+	async #waitForExitBounded(child: Bun.Subprocess, monitorId: string): Promise<number | undefined> {
+		try {
+			return await withTimeout(
+				child.exited,
+				TERMINATION_TIMEOUT_MS,
+				`Timed out waiting for monitor process ${monitorId} to exit`,
+			);
+		} catch (error) {
+			logger.debug("Monitor process did not exit before the task deadline", {
+				monitorId,
+				error: errorText(error),
+			});
+			return undefined;
+		}
+	}
+
+	async #waitForExit(child: Bun.Subprocess, record: MonitorRecord): Promise<number | undefined> {
+		if (record.snapshot.status !== "running" || record.abort.signal.aborted) {
+			return this.#waitForExitBounded(child, record.snapshot.id);
+		}
+
+		const { promise: aborted, resolve } = Promise.withResolvers<typeof EXIT_WAIT_ABORTED>();
+		const onAbort = () => resolve(EXIT_WAIT_ABORTED);
+		record.abort.signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			const result = await Promise.race([child.exited, aborted]);
+			if (result === EXIT_WAIT_ABORTED) return this.#waitForExitBounded(child, record.snapshot.id);
+			return result;
+		} catch (error) {
+			logger.debug("Monitor process exit wait failed", {
+				monitorId: record.snapshot.id,
+				error: errorText(error),
+			});
+			return undefined;
+		} finally {
+			record.abort.signal.removeEventListener("abort", onAbort);
+		}
 	}
 
 	#startStream(record: MonitorRecord): void {
@@ -205,7 +286,7 @@ export class MonitorManager {
 			}
 		};
 
-		void (async () => {
+		const task = (async () => {
 			const pumps = await Promise.allSettled([
 				pump(child.stdout as ReadableStream<Uint8Array>),
 				pump(child.stderr as ReadableStream<Uint8Array>),
@@ -218,11 +299,16 @@ export class MonitorManager {
 					});
 				}
 			}
-			const exitCode = await child.exited;
+			const exitCode = await this.#waitForExit(child, record);
 			if (record.snapshot.status !== "running") return;
+			if (exitCode === undefined) {
+				this.#finish(record, "error", undefined, "monitored process did not exit before the deadline");
+				return;
+			}
 			record.process = undefined;
 			this.#finish(record, "exit", exitCode);
 		})();
+		this.#trackTask(record, task);
 	}
 
 	async #runPoll(record: MonitorRecord): Promise<void> {
@@ -237,11 +323,15 @@ export class MonitorManager {
 		record.process = child;
 		try {
 			const [stdout, stderr] = await Promise.all([
-				new Response(child.stdout as ReadableStream<Uint8Array>).text(),
-				new Response(child.stderr as ReadableStream<Uint8Array>).text(),
+				this.#readStreamText(child.stdout as ReadableStream<Uint8Array>, record.abort.signal),
+				this.#readStreamText(child.stderr as ReadableStream<Uint8Array>, record.abort.signal),
 			]);
-			await child.exited;
+			const exitCode = await this.#waitForExit(child, record);
 			if (record.snapshot.status !== "running") return;
+			if (exitCode === undefined) {
+				this.#finish(record, "error", undefined, "monitored process did not exit before the deadline");
+				return;
+			}
 			record.process = undefined;
 			const output = sanitizeText(`${stdout}${stderr}`).trim();
 			const changed = output !== record.lastPollOutput;
@@ -250,12 +340,18 @@ export class MonitorManager {
 				this.#emit(record, "output", output);
 			}
 		} catch (error) {
+			if (record.abort.signal.aborted || record.snapshot.status !== "running") return;
 			this.#fail(record, errorText(error));
 			return;
 		}
 		if (record.snapshot.status !== "running") return;
 		const everySeconds = record.snapshot.everySeconds ?? MIN_POLL_SECONDS;
-		record.pollTimer = setTimeout(() => void this.#runPoll(record), everySeconds * 1_000);
+		record.pollTimer = setTimeout(() => {
+			record.pollTimer = undefined;
+			if (record.snapshot.status === "running" && !this.#disposed) {
+				this.#trackTask(record, this.#runPoll(record));
+			}
+		}, everySeconds * 1_000);
 	}
 
 	#matches(record: MonitorRecord, text: string): boolean {
@@ -312,7 +408,7 @@ export class MonitorManager {
 		if (record.pollTimer) clearTimeout(record.pollTimer);
 		record.pollTimer = undefined;
 		record.abort.abort();
-		this.#kill(record);
+		this.#trackTask(record, this.#kill(record));
 
 		if (reason === "manual" || reason === "session") return;
 		const text =
@@ -328,15 +424,35 @@ export class MonitorManager {
 		this.#emit(record, kind, text);
 	}
 
-	#kill(record: MonitorRecord): void {
+	async #kill(record: MonitorRecord): Promise<void> {
 		const child = record.process;
 		record.process = undefined;
 		if (!child) return;
 		const ref = child.pid === undefined ? null : Process.fromPid(child.pid);
 		if (ref) {
-			void ref
-				.terminate({ group: true, gracefulMs: STOP_GRACE_MS, timeoutMs: STOP_GRACE_MS + 1_000 })
-				.catch(error => logger.debug("Monitor process termination failed", { error: errorText(error) }));
+			let terminated = false;
+			try {
+				terminated = await withTimeout(
+					ref.terminate({ group: true, gracefulMs: STOP_GRACE_MS, timeoutMs: TERMINATION_TIMEOUT_MS }),
+					TERMINATION_TIMEOUT_MS,
+					`Timed out terminating monitor process ${record.snapshot.id}`,
+				);
+			} catch (error) {
+				logger.debug("Monitor process termination failed", {
+					monitorId: record.snapshot.id,
+					error: errorText(error),
+				});
+			}
+			if (!terminated) {
+				try {
+					ref.killTree(9);
+				} catch (error) {
+					logger.debug("Monitor process force kill failed", {
+						monitorId: record.snapshot.id,
+						error: errorText(error),
+					});
+				}
+			}
 			return;
 		}
 		try {

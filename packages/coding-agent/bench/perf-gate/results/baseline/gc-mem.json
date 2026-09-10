@@ -1,0 +1,15 @@
+{
+  "ts": "2026-09-10T11:26:04.267Z",
+  "churn": 1500,
+  "retainedComponents": 375,
+  "serializedBytes": 426759,
+  "forcedFullGcMs": {
+    "p50": 12.469775,
+    "min": 11.186948,
+    "max": 18.294938
+  },
+  "heapUsedBeforeMb": 26.113280296325684,
+  "heapUsedAfterMb": 26.113280296325684,
+  "rssMb": 267.30859375,
+  "vmHwmMb": 275.27734375
+}

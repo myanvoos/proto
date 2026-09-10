@@ -1,0 +1,39 @@
+{
+  "ts": "2026-09-10T16:42:15.623Z",
+  "rounds": 120,
+  "toolCallsPerRound": 3,
+  "compactions": 14,
+  "compactionRounds": [
+    15,
+    19,
+    35,
+    39,
+    48,
+    56,
+    59,
+    76,
+    79,
+    95,
+    99,
+    108,
+    116,
+    119
+  ],
+  "gcPauseP50Ms": 12.2241205,
+  "gcPauseSamplesMs": [
+    11.940087,
+    12.508154,
+    11.890599,
+    13.174957,
+    13.756176,
+    11.407542
+  ],
+  "durationMs": 11896,
+  "rssMedianMb": 536.67578125,
+  "rssMaxMb": 741,
+  "rssFirst10AvgMb": 370.88046875,
+  "heapUsedMb": 87.87965297698975,
+  "rssFinalMb": 594.53515625,
+  "vmHwmMb": 761.78125,
+  "gate800Mb": true
+}

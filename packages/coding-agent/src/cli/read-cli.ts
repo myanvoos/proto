@@ -80,8 +80,7 @@ export async function runReadCommand(cmd: ReadCommandArgs): Promise<void> {
 		failed = true;
 	} finally {
 		if (mcpManager) {
-			await mcpManager.disconnectAll();
-			if (MCPManager.instance() === mcpManager) MCPManager.setInstance(undefined);
+			await mcpManager.dispose();
 		}
 		authStorage?.close();
 		await closeDaemonClients();

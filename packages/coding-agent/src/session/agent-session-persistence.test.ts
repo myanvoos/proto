@@ -10,6 +10,7 @@ import {
 	type UserMessage,
 } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Process } from "@oh-my-pi/pi-natives";
 import type { ExtensionFactory } from "../extensibility/extensions";
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "./agent-session";
@@ -76,6 +77,25 @@ async function closeHarness(harness: Harness): Promise<void> {
 	harness.authStorage.close();
 	await fs.rm(harness.agentDir, { recursive: true, force: true });
 }
+
+test("disposing an AgentSession terminates its persistent bash child", async () => {
+	const harness = await createHarness();
+	const pidFile = path.join(harness.agentDir, "bash-child.pid");
+	let child: Process | null = null;
+	try {
+		await harness.session.executeBash(`sh -c 'sleep 60 & echo $! > "${pidFile}"; wait' &`);
+		const pid = Number.parseInt(await Bun.file(pidFile).text(), 10);
+		child = Process.fromPid(pid);
+		expect(child).not.toBeNull();
+		const started = performance.now();
+		await harness.session.dispose();
+		expect(performance.now() - started).toBeLessThan(5_000);
+		expect(await child!.waitForExit({ timeoutMs: 2_000 })).toBe(true);
+	} finally {
+		child?.killTree(9);
+		await closeHarness(harness);
+	}
+}, 30_000);
 
 let persistenceBarrierIndex = 0;
 

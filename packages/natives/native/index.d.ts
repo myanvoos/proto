@@ -77,6 +77,8 @@ export declare class Shell {
   constructor(options?: ShellOptions | undefined | null)
   run(options: ShellRunOptions, onChunk?: ((error: Error | null, chunk: string) => void) | undefined | null, xdDispatcher?: ((request: string) => Promise<string>) | undefined | null): Promise<ShellRunResult>
   abort(): Promise<void>
+  close(): Promise<void>
+  forceClose(): void
   liveBackgroundJobCount(): Promise<number>
 }
 

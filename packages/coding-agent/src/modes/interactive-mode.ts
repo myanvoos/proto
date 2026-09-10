@@ -180,6 +180,9 @@ import type {
 import { resolvePreservedLiveToolCallIds, UiHelpers } from "./utils/ui-helpers";
 
 const STILL_CLOSING_DELAY_MS = 3_000;
+// Shutdown already owns the input handler; a short quiet window absorbs any
+// trailing key-release bytes without paying the normal 50ms SSH drain window.
+const SHUTDOWN_INPUT_DRAIN_IDLE_MS = 5;
 
 const EDITOR_MAX_HEIGHT_MIN = 6;
 const EDITOR_MAX_HEIGHT_MAX = 18;
@@ -2668,11 +2671,15 @@ export class InteractiveMode implements InteractiveModeContext {
 			clearTimeout(stillClosingTimer);
 		}
 
-		await this.ui.terminal.drainInput(1000);
+		await this.ui.terminal.drainInput(1000, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 
 		disposeTerminalTitleState();
 		popTerminalTitle();
 		this.stop();
+
+		// Cleanup callbacks no longer need the live UI/session. Start them before
+		// the synchronous resume hint so their independent I/O can overlap it.
+		const quitPromise = postmortem.quit(0);
 
 		const sessionId = this.sessionManager.getSessionId();
 		const sessionFile = this.sessionManager.getSessionFile();
@@ -2680,7 +2687,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			process.stderr.write(`\n${chalk.dim(`Resume this session with ${resumeCommand(sessionId)}`)}\n`);
 		}
 
-		await postmortem.quit(0);
+		await quitPromise;
 	}
 
 	async checkShutdownRequested(): Promise<void> {

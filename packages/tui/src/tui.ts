@@ -891,9 +891,13 @@ export class TUI extends Container {
 	#renderTimer: RenderTimer | undefined;
 	#renderScheduler: RenderScheduler;
 	#lastRenderAt = 0;
+	#inputRenderPending = false;
+	#renderTimerDelayMs = 0;
 
 	#lastFrameCostMs = 0;
 	static readonly #MIN_RENDER_INTERVAL_MS = 1000 / 30;
+	static readonly #MIN_ADAPTIVE_RENDER_MS = 1000 / 60;
+	static readonly #INPUT_RENDER_MIN_INTERVAL_MS = 8;
 	static readonly #INPUT_RENDER_GRACE_MS = TUI.#MIN_RENDER_INTERVAL_MS;
 
 	static readonly #MAX_ADAPTIVE_RENDER_MS = 200;
@@ -1952,6 +1956,7 @@ export class TUI extends Container {
 
 			this.#prepareForcedRender(options?.clearScrollback === true);
 			this.#renderRequested = true;
+			this.#inputRenderPending = false;
 			this.#renderScheduler.scheduleImmediate(() => {
 				if (this.#stopped || !this.#renderRequested) {
 					return;
@@ -2239,6 +2244,7 @@ export class TUI extends Container {
 			return;
 		}
 		this.#renderRequested = false;
+		this.#inputRenderPending = false;
 		this.#executeRender();
 		if (this.#renderRequested) {
 			this.#scheduleRender();
@@ -2255,17 +2261,46 @@ export class TUI extends Container {
 		}
 		const now = this.#renderScheduler.now();
 		const elapsed = now - this.#lastRenderAt;
-		const cadenceDelay = Math.max(0, TUI.#MIN_RENDER_INTERVAL_MS - elapsed);
-
-		const adaptiveFloor = Math.min(TUI.#MAX_ADAPTIVE_RENDER_MS, this.#lastFrameCostMs * 2);
-		const adaptiveDelay = Math.max(0, adaptiveFloor - elapsed);
+		const frameCost = Number.isFinite(this.#lastFrameCostMs) ? Math.max(0, this.#lastFrameCostMs) : 0;
+		// Budgeted duty-cycle backpressure: cheap frames may repaint at up to
+		// 60fps (input echo: faster), expensive frames are throttled to ~50%
+		// duty so a slow compose can never busy-loop the scheduler.
+		const floor = this.#inputRenderPending
+			? Math.max(TUI.#INPUT_RENDER_MIN_INTERVAL_MS, Math.min(TUI.#MAX_ADAPTIVE_RENDER_MS, frameCost * 2))
+			: Math.max(TUI.#MIN_ADAPTIVE_RENDER_MS, Math.min(TUI.#MAX_ADAPTIVE_RENDER_MS, frameCost * 2));
+		const cadenceDelay = Math.max(0, floor - elapsed);
 		const inputGraceDelay = Math.max(0, this.#inputRenderGraceUntilMs - now);
-		const delay = Math.max(cadenceDelay, adaptiveDelay, inputGraceDelay);
+		const delay = Math.max(cadenceDelay, inputGraceDelay);
+		this.#renderTimerDelayMs = delay;
 		this.#renderTimer = this.#renderScheduler.scheduleRender(this.#runScheduledRender, delay);
+	}
+
+	#expediteInputRender(): void {
+		this.#inputRenderPending = true;
+		if (this.#multiplexerResizeTimer) return;
+		if (this.#renderTimer) {
+			const now = this.#renderScheduler.now();
+			const frameCost = Number.isFinite(this.#lastFrameCostMs) ? Math.max(0, this.#lastFrameCostMs) : 0;
+			const inputFloor = Math.max(
+				TUI.#INPUT_RENDER_MIN_INTERVAL_MS,
+				Math.min(TUI.#MAX_ADAPTIVE_RENDER_MS, frameCost * 2),
+			);
+			const inputDelay = Math.max(0, inputFloor - (now - this.#lastRenderAt));
+			if (inputDelay + 0.01 < this.#renderTimerDelayMs) {
+				this.#renderTimer.cancel();
+				this.#renderTimer = undefined;
+				this.#scheduleRender();
+			}
+			return;
+		}
+		if (this.#renderRequested) {
+			this.#scheduleRender();
+		}
 	}
 
 	#executeRender(): void {
 		if (this.#deferRenderForOutputBacklog()) return;
+		this.#inputRenderPending = false;
 		const start = this.#renderScheduler.now();
 		this.#lastRenderAt = start;
 		this.#doRender();
@@ -2276,10 +2311,13 @@ export class TUI extends Container {
 		const pending = this.terminal.pendingOutputBytes;
 		if (pending === undefined || pending <= TUI.#MAX_PENDING_OUTPUT_BYTES) return false;
 		this.#renderRequested = true;
-		this.#renderTimer ??= this.#renderScheduler.scheduleRender(
-			this.#runScheduledRender,
-			TUI.#OUTPUT_BACKLOG_RETRY_MS,
-		);
+		if (!this.#renderTimer) {
+			this.#renderTimer = this.#renderScheduler.scheduleRender(
+				this.#runScheduledRender,
+				TUI.#OUTPUT_BACKLOG_RETRY_MS,
+			);
+			this.#renderTimerDelayMs = TUI.#OUTPUT_BACKLOG_RETRY_MS;
+		}
 		return true;
 	}
 
@@ -2320,6 +2358,7 @@ export class TUI extends Container {
 
 		const focused = this.#focusedComponent;
 		if (focused?.handleInput) {
+			this.#inputRenderPending = true;
 			if (isKeyRelease(data) && !focused.wantsKeyRelease) {
 				return;
 			}
@@ -2329,6 +2368,7 @@ export class TUI extends Container {
 			} else {
 				this.requestRender();
 			}
+			this.#expediteInputRender();
 		}
 	}
 

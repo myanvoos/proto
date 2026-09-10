@@ -1,5 +1,6 @@
 use std::{
 	collections::{HashMap, HashSet},
+	sync::Arc,
 	time::Duration,
 };
 
@@ -878,13 +879,15 @@ impl TerminationTargets {
 		self.pgids.is_empty() && self.processes.is_empty()
 	}
 
-	pub fn signal(&self, signal: i32) {
+	pub fn signal(&self, signal: i32) -> bool {
+		let mut signaled = false;
 		for &pgid in &self.pgids {
-			let _ = kill_process_group(pgid, signal);
+			signaled |= kill_process_group(pgid, signal);
 		}
 		for process in &self.processes {
-			let _ = process.signal_tree(signal);
+			signaled |= process.signal_tree(signal) > 0;
 		}
+		signaled
 	}
 }
 
@@ -903,7 +906,8 @@ struct RegistryState {
 
 #[derive(Default)]
 pub struct SpawnRegistry {
-	state: Mutex<RegistryState>,
+	state:  Mutex<RegistryState>,
+	parent: Option<Arc<SpawnRegistry>>,
 }
 
 impl SpawnRegistry {
@@ -914,7 +918,15 @@ impl SpawnRegistry {
 		Self::default()
 	}
 
+	#[must_use]
+	pub fn with_parent(parent: Arc<SpawnRegistry>) -> Self {
+		Self { state: Mutex::new(RegistryState::default()), parent: Some(parent) }
+	}
+
 	pub fn record(&self, pgid: Option<i32>, process: Option<Process>) {
+		if let Some(parent) = &self.parent {
+			parent.record(pgid, process.clone());
+		}
 		let mut state = self.state.lock();
 		state.spawned.push(SpawnedProcess { process, pgid });
 		if state.spawned.len() >= state.next_sweep_at.max(Self::PRUNE_THRESHOLD) {

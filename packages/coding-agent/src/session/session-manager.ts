@@ -1548,17 +1548,21 @@ export class SessionManager {
 	}
 
 	async close(): Promise<void> {
-		if (!this.#persist) return;
-		await this.#scheduleDiskWork(async () => {
-			const hadWriter = this.#writer !== undefined;
-			await this.#closeWriterHandle();
-			if (hadWriter || (this.#sessionFile && this.#storage.existsSync(this.#sessionFile)))
-				this.#fileIsCurrent = true;
-		});
-		await this.#dropIfEmptyAndNoDraft();
+		try {
+			if (!this.#persist) return;
+			await this.#scheduleDiskWork(async () => {
+				const hadWriter = this.#writer !== undefined;
+				await this.#closeWriterHandle();
+				if (hadWriter || (this.#sessionFile && this.#storage.existsSync(this.#sessionFile)))
+					this.#fileIsCurrent = true;
+			});
+			await this.#dropIfEmptyAndNoDraft();
 
-		await this.#storage.drain();
-		if (this.#diskFailure) throw this.#diskFailure;
+			await this.#storage.drain();
+			if (this.#diskFailure) throw this.#diskFailure;
+		} finally {
+			this.releaseRetainedEntries();
+		}
 	}
 
 	seal(): void {

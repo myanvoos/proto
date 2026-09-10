@@ -2,7 +2,27 @@
 
 ## [Unreleased]
 
-- Chained or multiple `xd` calls in one bash command render one status line per dispatch (with per-call failure flags) above a capped output preview, instead of a blank-label default render.
+### Added
+
+- perf-gate benchmark harnesses under `bench/perf-gate/` (startup, keystroke echo, render frames, shutdown, GC/heap, marathon RSS with `run-all.ts` acceptance runner) recording baseline gates for latency and memory work.
+
+### Changed
+
+- TUI render scheduling is budget-based: input echo paints within ~8ms instead of the next 30fps tick, and ordinary frames scale their cadence with real frame cost, cutting keystroke-to-paint latency by ~78% and incremental transcript paints by ~50%.
+- Session teardown runs shell/monitor disposal with bounded waits, force-close fallbacks, and idle fast paths; `/exit` is ~2x faster and SIGTERM cleanup no longer depends on fixed sleeps.
+- History and agent storage checkpoint their WAL at open, so shutdown checkpoints no longer stall the exit path (durability unchanged).
+- Extension, custom-tool, custom-command, and hook loaders no longer construct the full public namespace when nothing is loaded; the vendor host surface uses a narrow facade.
+- Advisor and watchdog scans share one config-candidate snapshot instead of walking the repo twice.
+- The JS-eval and computer worker entries load only inside their worker-dispatch branches instead of every foreground launch.
+
+### Fixed
+
+- MCP manager disposal now clears callback slots, notification listeners, and the static singleton on terminal teardown (reload/reconnect flows keep their callbacks), and an owned MCP manager is disposed when session creation fails after registration.
+- Monitor managers track async stream/poll/termination tasks, abort reads on dispose, and bound process-termination waits, so a stalled child can no longer retain the session after exit.
+- Exit diagnostics store a bounded tool-argument summary instead of retaining full raw tool-call arguments at exit.
+- Session manager close releases retained entries and index references so closed sessions are collectible.
+- Persistent bash shells are tracked per owning session with native `close`/`forceClose` (TERM grace, then KILL): resumed or revived sessions get fresh shells instead of inheriting disposed-session markers, retained background-job shells are reaped when their job ends (60s force bound after owner disposal), and exit force-close kills through a spawn registry independent of the session mutex.
+- Assistant transcript components retain ~30-45% less memory per finalized message (lazy image/maps, released raw envelope, compacted parser state) without re-parsing on every frame.
 
 ## [18.0.5] - 2026-09-09
 

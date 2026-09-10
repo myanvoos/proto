@@ -44,3 +44,12 @@ test("open rejects a corrupt session header without overwriting recoverable tran
 	expect(openError).toBeInstanceOf(Error);
 	expect((openError as Error).message).toContain("session header is missing or malformed");
 });
+test("close releases retained entries after sealing an in-memory session", async () => {
+	const manager = SessionManager.inMemory();
+	manager.appendCustomEntry("retained", { payload: "x".repeat(100_000) });
+
+	await manager.close();
+
+	expect(manager.getEntries()).toEqual([]);
+	expect(manager.getBranch()).toEqual([]);
+});

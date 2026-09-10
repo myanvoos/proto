@@ -176,6 +176,8 @@ export class MCPManager {
 	#reconnectHistory = new Map<string, number[]>();
 
 	#epoch = 0;
+	#disposed = false;
+	#disposeCall?: Promise<void>;
 
 	constructor(
 		private cwd: string,
@@ -550,6 +552,7 @@ export class MCPManager {
 		});
 	}
 	async #handleServerNotification(serverName: string, method: string, params: unknown): Promise<void> {
+		if (this.#disposed) return;
 		logger.debug("MCP notification received", { path: `mcp:${serverName}`, method });
 
 		const connectionKnown = this.#connections.has(serverName);
@@ -582,6 +585,7 @@ export class MCPManager {
 		if (refreshPromise) {
 			await refreshPromise;
 		}
+		if (this.#disposed) return;
 
 		if (this.#notificationListeners.size === 0) {
 			this.#pendingNotifications.push({ server: serverName, method, params });
@@ -735,6 +739,26 @@ export class MCPManager {
 		this.#tools = [];
 		this.#subscribedResources.clear();
 		this.#reconnectHistory.clear();
+	}
+
+	async dispose(): Promise<void> {
+		if (this.#disposeCall) return this.#disposeCall;
+
+		this.#disposed = true;
+		this.#onToolsChanged = undefined;
+		this.#onResourcesChanged = undefined;
+		this.#onPromptsChanged = undefined;
+		this.#notificationListeners.clear();
+		this.#pendingNotifications = [];
+		this.#authHandler = undefined;
+		this.#authStorage = null;
+		this.#notificationsEnabled = false;
+		if (MCPManager.instance() === this) MCPManager.setInstance(undefined);
+
+		this.#disposeCall = this.disconnectAll().finally(() => {
+			this.#pendingNotifications = [];
+		});
+		return this.#disposeCall;
 	}
 
 	async reconnectServer(

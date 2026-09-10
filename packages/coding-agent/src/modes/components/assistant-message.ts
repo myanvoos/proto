@@ -27,6 +27,8 @@ const CODE_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
 
+const EMPTY_THINKING_RENDERERS: readonly AssistantThinkingRenderer[] = [];
+
 function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean): { text: string; visible: boolean } {
 	const rawThinking = (block as DisplayThinkingContentBlock).rawThinking;
 
@@ -61,6 +63,10 @@ function containsMermaidFence(text: string): boolean {
 }
 
 const THINKING_DOTS_FRAMES = ["⠀⠶⠀", "⠰⣿⠆", "⢸⣿⡇", "⢸⣉⡇", "⢾⣉⡷", "⣿⣉⣿", "⣏⠀⣹", "⡇⠀⢸", "⡁⠀⢈"] as const;
+const THINKING_MARKDOWN_STYLE = {
+	color: (text: string) => theme.fg("thinkingText", text),
+	italic: true,
+} as const;
 
 const THINKING_DOTS_FRAME_MS_MIN = 70;
 const THINKING_DOTS_FRAME_MS_MAX = 230;
@@ -119,14 +125,16 @@ function lerpHex(from: string, to: string, t: number): string {
 }
 
 export class AssistantMessageComponent extends Container {
-	#contentContainer: Container;
-	#markerSlot: Container;
+	#cacheInvalidationMarker?: CacheInvalidationMarkerComponent;
+	#widthEpochBoundaries?: WeakMap<object, { childBoundary: unknown; markerRows: number }>;
 	#lastMessage?: AssistantMessage;
-	#toolImagesByCallId = new Map<string, ImageContent[]>();
-	#convertedKittyImages = new Map<string, ImageContent>();
+	#messagePersistenceKey?: string;
+	#staticTextBlocks?: readonly string[];
+	#toolImagesByCallId?: Map<string, ImageContent[]>;
+	#convertedKittyImages?: Map<string, ImageContent>;
 	#showImages = true;
 	#showToolResultImages = true;
-	#kittyConversionsInFlight = new Set<string>();
+	#kittyConversionsInFlight?: Set<string>;
 	#transcriptBlockFinalized: boolean;
 
 	#containsMermaidSource = false;
@@ -170,24 +178,19 @@ export class AssistantMessageComponent extends Container {
 	setTextColorTransform(transform?: (text: string) => string): void {
 		if (this.#textColorTransform === transform) return;
 		this.#textColorTransform = transform;
+		if (!this.#lastMessage && this.#staticTextBlocks !== undefined) this.#rebuildStaticTextContent();
 		this.#onTranscriptBlockChange?.();
 	}
 	constructor(
 		message?: AssistantMessage,
 		private hideThinkingBlock = false,
 		private readonly onImageUpdate?: () => void,
-		private readonly thinkingRenderers: readonly AssistantThinkingRenderer[] = [],
+		private readonly thinkingRenderers: readonly AssistantThinkingRenderer[] = EMPTY_THINKING_RENDERERS,
 		private readonly imageBudget?: ImageBudget,
 		private proseOnlyThinking = true,
 	) {
 		super();
 		this.#transcriptBlockFinalized = message !== undefined;
-
-		this.#markerSlot = new Container();
-		this.addChild(this.#markerSlot);
-
-		this.#contentContainer = new Container();
-		this.addChild(this.#contentContainer);
 
 		if (message) {
 			this.updateContent(message);
@@ -195,16 +198,14 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	setCacheInvalidation(info: CacheInvalidation | undefined): void {
-		this.#markerSlot.clear();
-		if (info) {
-			this.#markerSlot.addChild(new CacheInvalidationMarkerComponent(info));
-		}
+		this.#cacheInvalidationMarker = info ? new CacheInvalidationMarkerComponent(info) : undefined;
 		this.#blockVersion++;
 		this.#onTranscriptBlockChange?.();
 	}
 
 	override invalidate(): void {
 		super.invalidate();
+		this.#cacheInvalidationMarker?.invalidate();
 
 		this.#fastPathKey = undefined;
 		this.#fastPathItems = undefined;
@@ -216,7 +217,71 @@ export class AssistantMessageComponent extends Container {
 
 	override render(width: number): readonly string[] {
 		this.#lastRenderWidth = width;
-		return super.render(width);
+		// Finalized messages render through the memoized Container path: the
+		// differential renderer hits per-child render caches, so repeated frames
+		// are O(dirty) instead of re-parsing every block. Memory slimming happens
+		// once at finalize (#compactFinalMessage), never per render.
+		const contentLines = this.#renderStreamingChildren(width);
+		const marker = this.#cacheInvalidationMarker;
+		const lines = marker ? marker.render(width).concat(contentLines) : contentLines;
+		if (this.#transcriptBlockFinalized) {
+			this.#fastPathKey = undefined;
+			this.#fastPathItems = undefined;
+			this.#compactFinalMessage();
+		}
+		return lines;
+	}
+
+	override setNativeScrollbackCommittedRows(rows: number): void {
+		const markerRows = this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0;
+		super.setNativeScrollbackCommittedRows(Math.max(0, rows - markerRows));
+	}
+
+	override captureNativeScrollbackWidthEpoch(): unknown {
+		if (this.#transcriptBlockFinalized) {
+			super.render(this.#lastRenderWidth);
+		}
+		const childBoundary = super.captureNativeScrollbackWidthEpoch();
+		if (childBoundary === undefined) return undefined;
+		const marker = {};
+		const boundaries = this.#widthEpochBoundaries ?? new WeakMap();
+		this.#widthEpochBoundaries = boundaries;
+		boundaries.set(marker, {
+			childBoundary,
+			markerRows: this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0,
+		});
+		return marker;
+	}
+
+	override resolveNativeScrollbackWidthEpoch(boundary: unknown): number | undefined {
+		if (typeof boundary !== "object" || boundary === null) return undefined;
+		const captured = this.#widthEpochBoundaries?.get(boundary);
+		if (!captured) return undefined;
+		const markerRows = this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0;
+		if (markerRows !== captured.markerRows) return undefined;
+		const rows = super.resolveNativeScrollbackWidthEpoch(captured.childBoundary);
+		return rows === undefined ? undefined : rows + markerRows;
+	}
+
+	override getNativeScrollbackWidthEpochRows(): number | undefined {
+		if (this.#transcriptBlockFinalized) {
+			const markerRows = this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0;
+			const rows = this.#canRenderFinalWithoutCache()
+				? this.#renderChildren(this.#lastRenderWidth).length
+				: this.#renderStreamingChildren(this.#lastRenderWidth).length;
+			return rows + markerRows;
+		}
+		const rows = super.getNativeScrollbackWidthEpochRows();
+		if (rows === undefined) return undefined;
+		return rows + (this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0);
+	}
+
+	override isNativeScrollbackWidthEpochAppendOnly(boundary: unknown): boolean {
+		if (typeof boundary !== "object" || boundary === null) return true;
+		const captured = this.#widthEpochBoundaries?.get(boundary);
+		if (!captured) return super.isNativeScrollbackWidthEpochAppendOnly(boundary);
+		const markerRows = this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0;
+		return markerRows === captured.markerRows && super.isNativeScrollbackWidthEpochAppendOnly(captured.childBoundary);
 	}
 
 	setHideThinkingBlock(hide: boolean): void {
@@ -325,7 +390,7 @@ export class AssistantMessageComponent extends Container {
 	getTranscriptBlockSettledRows(): number {
 		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return 0;
 		if (this.#containsMermaidSource) return 0;
-		if (this.#markerSlot.children.length > 0) return 0;
+		if (this.#cacheInvalidationMarker) return 0;
 		const items = this.#fastPathItems;
 		const width = this.#lastRenderWidth;
 		if (!items || items.length === 0 || width <= 0) return 0;
@@ -333,7 +398,7 @@ export class AssistantMessageComponent extends Container {
 
 		let itemIndex = 0;
 		let settled = 0;
-		for (const child of this.#contentContainer.children) {
+		for (const child of this.children) {
 			if (child === streaming) return settled + streaming.getLastRenderSettledRows();
 			if (itemIndex < items.length - 1 && items[itemIndex]!.md === child) {
 				itemIndex++;
@@ -373,23 +438,68 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	messagePersistenceKey(): string | undefined {
+		if (this.#messagePersistenceKey !== undefined) return this.#messagePersistenceKey;
 		if (!this.#lastMessage) return undefined;
+		return this.#persistenceKeyFor(this.#lastMessage);
+	}
+
+	#persistenceKeyFor(message: AssistantMessage): string {
 		return [
 			"assistant",
-			this.#lastMessage.timestamp,
-			this.#lastMessage.provider,
-			this.#lastMessage.model,
-			this.#lastMessage.responseId ?? "",
-			this.#lastMessage.stopReason,
+			message.timestamp,
+			message.provider,
+			message.model,
+			message.responseId ?? "",
+			message.stopReason,
 		].join(":");
+	}
+
+	#compactFinalMessage(): void {
+		const message = this.#lastMessage;
+		if (!message || this.#lastUpdateTransient || message.content.some(content => content.type !== "text")) return;
+		if (resolveAssistantErrorPresentation(message).kind !== "none") return;
+		this.#messagePersistenceKey = this.#persistenceKeyFor(message);
+		this.#staticTextBlocks = this.children.flatMap(child => (child instanceof Markdown ? [child.getText()] : []));
+		this.#lastMessage = undefined;
+	}
+
+	#rebuildStaticTextContent(): void {
+		const blocks = this.#staticTextBlocks;
+		if (blocks === undefined) return;
+		this.#clearContent();
+		const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
+		for (const text of blocks) this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(), mdOptions, 2, false));
+		this.#renderToolImages();
+	}
+
+	#clearContent(): void {
+		while (this.children.length > 0) this.removeChild(this.children[this.children.length - 1]!);
+	}
+
+	#renderStreamingChildren(width: number): readonly string[] {
+		return super.render(width);
+	}
+
+	#canRenderFinalWithoutCache(): boolean {
+		return this.children.every(
+			child => child instanceof Markdown || child instanceof Text || child instanceof Spacer,
+		);
+	}
+
+	#renderChildren(width: number): readonly string[] {
+		const lines: string[] = [];
+		for (const child of this.children) {
+			lines.push(...child.render(width));
+		}
+		return lines;
 	}
 
 	#appendErrorBlock(message: string): void {
 		if (this.#errorExpanded) {
 			const [first = "Unknown error", ...rest] = replaceTabs(message.replace(/\s+$/, "")).split("\n");
-			this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${first}`), 1, 0));
+			this.addChild(new Text(theme.fg("error", `Error: ${first}`), 1, 0));
 			for (const line of rest) {
-				this.#contentContainer.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
+				this.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
 			}
 			return;
 		}
@@ -397,13 +507,13 @@ export class AssistantMessageComponent extends Container {
 		const lines = getPreviewLines(message, MAX_TRANSCRIPT_ERROR_LINES, TRUNCATE_LENGTHS.LINE);
 		if (lines.length === 0) lines.push("Unknown error");
 
-		this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${lines[0]}`), 1, 0));
+		this.addChild(new Text(theme.fg("error", `Error: ${lines[0]}`), 1, 0));
 		for (const line of lines.slice(1)) {
-			this.#contentContainer.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
+			this.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
 		}
 		if (total > lines.length) {
 			const hidden = total - lines.length;
-			this.#contentContainer.addChild(
+			this.addChild(
 				new Text(
 					theme.fg("dim", `  … +${hidden} more line${hidden === 1 ? "" : "s"} (${expandKeyHint()} to expand)`),
 					1,
@@ -418,6 +528,8 @@ export class AssistantMessageComponent extends Container {
 		this.#showImages = visible;
 		if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		} else if (this.#staticTextBlocks !== undefined) {
+			this.#rebuildStaticTextContent();
 		}
 	}
 
@@ -426,30 +538,39 @@ export class AssistantMessageComponent extends Container {
 		this.#showToolResultImages = visible;
 		if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		} else if (this.#staticTextBlocks !== undefined) {
+			this.#rebuildStaticTextContent();
 		}
 	}
 
 	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
 		if (!toolCallId) return;
 		const validImages = images.filter(img => img.type === "image" && img.data && img.mimeType);
-		for (const key of Array.from(this.#convertedKittyImages.keys())) {
+		for (const key of Array.from(this.#convertedKittyImages?.keys() ?? [])) {
 			if (key.startsWith(`${toolCallId}:`)) {
-				this.#convertedKittyImages.delete(key);
+				this.#convertedKittyImages?.delete(key);
 			}
 		}
-		for (const key of Array.from(this.#kittyConversionsInFlight)) {
+		for (const key of Array.from(this.#kittyConversionsInFlight ?? [])) {
 			if (key.startsWith(`${toolCallId}:`)) {
-				this.#kittyConversionsInFlight.delete(key);
+				this.#kittyConversionsInFlight?.delete(key);
 			}
 		}
+		if (this.#convertedKittyImages?.size === 0) this.#convertedKittyImages = undefined;
 		if (validImages.length === 0) {
-			this.#toolImagesByCallId.delete(toolCallId);
+			this.#toolImagesByCallId?.delete(toolCallId);
 		} else {
-			this.#toolImagesByCallId.set(toolCallId, validImages);
+			const toolImagesByCallId = this.#toolImagesByCallId ?? new Map<string, ImageContent[]>();
+			this.#toolImagesByCallId = toolImagesByCallId;
+			toolImagesByCallId.set(toolCallId, validImages);
 			this.#convertImagesForKitty(validImages.map((image, index) => ({ image, key: `${toolCallId}:${index}` })));
 		}
+		if (this.#toolImagesByCallId?.size === 0) this.#toolImagesByCallId = undefined;
+		if (this.#kittyConversionsInFlight?.size === 0) this.#kittyConversionsInFlight = undefined;
 		if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		} else if (this.#staticTextBlocks !== undefined) {
+			this.#rebuildStaticTextContent();
 		}
 	}
 
@@ -457,19 +578,25 @@ export class AssistantMessageComponent extends Container {
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
 		for (const { image, key } of entries) {
 			if (image.mimeType === "image/png") continue;
-			if (this.#convertedKittyImages.has(key) || this.#kittyConversionsInFlight.has(key)) continue;
-			this.#kittyConversionsInFlight.add(key);
+			if (this.#convertedKittyImages?.has(key) || this.#kittyConversionsInFlight?.has(key)) continue;
+			const kittyConversionsInFlight = this.#kittyConversionsInFlight ?? new Set<string>();
+			this.#kittyConversionsInFlight = kittyConversionsInFlight;
+			kittyConversionsInFlight.add(key);
 			convertImageToPng(image)
 				.then(converted => {
-					this.#kittyConversionsInFlight.delete(key);
-					this.#convertedKittyImages.set(key, converted);
+					this.#kittyConversionsInFlight?.delete(key);
+					if (this.#kittyConversionsInFlight?.size === 0) this.#kittyConversionsInFlight = undefined;
+					const convertedKittyImages = this.#convertedKittyImages ?? new Map<string, ImageContent>();
+					this.#convertedKittyImages = convertedKittyImages;
+					convertedKittyImages.set(key, converted);
 					if (this.#lastMessage) {
 						this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 					}
 					this.onImageUpdate?.();
 				})
 				.catch(() => {
-					this.#kittyConversionsInFlight.delete(key);
+					this.#kittyConversionsInFlight?.delete(key);
+					if (this.#kittyConversionsInFlight?.size === 0) this.#kittyConversionsInFlight = undefined;
 				});
 		}
 	}
@@ -478,14 +605,14 @@ export class AssistantMessageComponent extends Container {
 		if (!this.#showImages || entries.length === 0) return;
 		this.#convertImagesForKitty(entries);
 
-		if (withLeadingSpacer) this.#contentContainer.addChild(new Spacer(1));
+		if (withLeadingSpacer) this.addChild(new Spacer(1));
 		for (const { image, key } of entries) {
 			const displayImage =
 				TERMINAL.imageProtocol === ImageProtocol.Kitty && image.mimeType !== "image/png"
-					? this.#convertedKittyImages.get(key)
+					? this.#convertedKittyImages?.get(key)
 					: image;
 			if (TERMINAL.imageProtocol && displayImage) {
-				this.#contentContainer.addChild(
+				this.addChild(
 					new Image(
 						displayImage.data,
 						displayImage.mimeType,
@@ -495,12 +622,12 @@ export class AssistantMessageComponent extends Container {
 				);
 				continue;
 			}
-			this.#contentContainer.addChild(new Text(theme.fg("toolOutput", `[Image: ${image.mimeType}]`), 1, 0));
+			this.addChild(new Text(theme.fg("toolOutput", `[Image: ${image.mimeType}]`), 1, 0));
 		}
 	}
 
 	#renderToolImages(): void {
-		if (!this.#showToolResultImages) return;
+		if (!this.#showToolResultImages || !this.#toolImagesByCallId) return;
 		const entries = Array.from(this.#toolImagesByCallId.entries()).flatMap(([toolCallId, images]) =>
 			images.map((image, index) => ({ image, key: `${toolCallId}:${index}` })),
 		);
@@ -520,7 +647,7 @@ export class AssistantMessageComponent extends Container {
 					theme,
 				);
 				if (component) {
-					this.#contentContainer.addChild(component);
+					this.addChild(component);
 				}
 			} catch {}
 		}
@@ -547,7 +674,7 @@ export class AssistantMessageComponent extends Container {
 		for (const content of message.content) {
 			if (content.type === "toolCall" || content.type === "image") return false;
 		}
-		if (this.#toolImagesByCallId.size > 0) return false;
+		if ((this.#toolImagesByCallId?.size ?? 0) > 0) return false;
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		if (errorPresentation.kind === "compact-recovered") return false;
 		if (
@@ -626,6 +753,8 @@ export class AssistantMessageComponent extends Container {
 		this.#onTranscriptBlockChange?.();
 		this.#blockVersion++;
 		this.#lastMessage = message;
+		this.#messagePersistenceKey = undefined;
+		this.#staticTextBlocks = undefined;
 		this.#lastUpdateTransient = opts?.transient === true;
 
 		const isThinkingNow = this.#lastUpdateTransient && this.#shouldAnimateThinking(message);
@@ -661,7 +790,7 @@ export class AssistantMessageComponent extends Container {
 
 		if (this.#tryFastPathUpdate(message, opts)) return;
 
-		this.#contentContainer.clear();
+		this.#clearContent();
 		this.#thinkingDots = undefined;
 		this.#hasTruncatableError = false;
 
@@ -686,8 +815,8 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
 				const trimmed = content.text.trim();
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(), mdOptions);
-				this.#contentContainer.addChild(md);
+				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(), mdOptions, 2, false);
+				this.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 				hasRenderedContent = true;
 			} else if (content.type === "thinking" && resolveThinkingDisplay(content, this.proseOnlyThinking).visible) {
@@ -708,20 +837,17 @@ export class AssistantMessageComponent extends Container {
 
 				if (thinkingIndex === 0) {
 					const label = new Text(theme.fg("muted", "Thinking"), 2, 0);
-					this.#contentContainer.addChild(label);
+					this.addChild(label);
 				}
-				const md = new Markdown(thinkingText, 2, 0, getMarkdownTheme(), {
-					color: (text: string) => theme.fg("thinkingText", text),
-					italic: true,
-				});
+				const md = new Markdown(thinkingText, 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2, false);
 				md.transientRenderCache = this.#lastUpdateTransient;
-				this.#contentContainer.addChild(md);
+				this.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });
 				this.#appendThinkingExtensions(i, thinkingIndex, thinkingText);
 				hasRenderedContent = true;
 				thinkingIndex += 1;
 				if (hasVisibleContentAfter) {
-					this.#contentContainer.addChild(new Spacer(1));
+					this.addChild(new Spacer(1));
 				}
 			} else if (content.type === "image" && content.data && content.mimeType) {
 				this.#renderImageEntries([{ image: content, key: `native:${i}` }], hasRenderedContent);
@@ -730,9 +856,9 @@ export class AssistantMessageComponent extends Container {
 		}
 
 		if (this.#shouldAnimateThinking(message)) {
-			if (hasVisibleContent) this.#contentContainer.addChild(new Spacer(1));
+			if (hasVisibleContent) this.addChild(new Spacer(1));
 			this.#thinkingDots = new Text(this.#thinkingDotsLabel(), 1, 0);
-			this.#contentContainer.addChild(this.#thinkingDots);
+			this.addChild(this.#thinkingDots);
 			this.#startThinkingAnimation();
 		} else {
 			this.#stopThinkingAnimation();
@@ -742,17 +868,17 @@ export class AssistantMessageComponent extends Container {
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasToolCalls = message.content.some(c => c.type === "toolCall");
 		if (errorPresentation.kind === "compact-recovered") {
-			this.#contentContainer.addChild(new Spacer(1));
-			this.#contentContainer.addChild(new Text(theme.fg("dim", errorPresentation.text), 1, 0));
+			this.addChild(new Spacer(1));
+			this.addChild(new Text(theme.fg("dim", errorPresentation.text), 1, 0));
 		} else if (!hasToolCalls && errorPresentation.kind === "full") {
 			if (message.stopReason === "aborted") {
-				this.#contentContainer.addChild(new Spacer(1));
-				this.#contentContainer.addChild(new Text(theme.fg("error", errorPresentation.text), 1, 0));
+				this.addChild(new Spacer(1));
+				this.addChild(new Text(theme.fg("error", errorPresentation.text), 1, 0));
 			} else {
 				this.#hasTruncatableError = true;
 
 				if (!(message.stopReason === "error" && this.#errorPinned) || this.#errorExpanded) {
-					this.#contentContainer.addChild(new Spacer(1));
+					this.addChild(new Spacer(1));
 					this.#appendErrorBlock(errorPresentation.text);
 				}
 			}

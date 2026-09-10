@@ -420,11 +420,14 @@ pub struct ShellExecuteOptions {
 
 pub type ShellExecuteResult = ShellRunResult;
 
+const SHELL_CLOSE_GRACE: Duration = Duration::from_millis(150);
+
 pub struct Shell {
-	xd_runtime:  XdRuntime,
-	session:     Arc<TokioMutex<Option<ShellSessionCore>>>,
-	abort_state: ShellAbortState,
-	config:      ShellConfig,
+	xd_runtime:     XdRuntime,
+	session:        Arc<TokioMutex<Option<ShellSessionCore>>>,
+	abort_state:    ShellAbortState,
+	spawn_registry: Arc<process::SpawnRegistry>,
+	config:         ShellConfig,
 }
 
 impl Shell {
@@ -448,6 +451,7 @@ impl Shell {
 			xd_runtime: Arc::new(parking_lot::Mutex::new(XdRuntimeState::default())),
 			session: Arc::new(TokioMutex::new(None)),
 			abort_state: ShellAbortState::default(),
+			spawn_registry: Arc::new(process::SpawnRegistry::new()),
 			config,
 		}
 	}
@@ -479,6 +483,7 @@ impl Shell {
 			self.session.clone(),
 			self.xd_runtime.clone(),
 			self.abort_state.clone(),
+			self.spawn_registry.clone(),
 			self.config.clone(),
 			run_config,
 			on_chunk,
@@ -489,6 +494,55 @@ impl Shell {
 
 	pub async fn abort(&self) {
 		self.abort_state.abort().await;
+	}
+
+	/// Stop this shell session, allowing background jobs a short grace period
+	/// before forcefully terminating their process groups.
+	pub async fn close(&self) {
+		self.abort().await;
+		let targets = {
+			let mut guard = self.session.lock().await;
+			let Some(mut session) = guard.take() else {
+				return;
+			};
+			let targets = shell_termination_targets(&session.shell);
+			terminate_internal_background_jobs(&mut session.shell);
+			drop(session);
+			targets
+		};
+
+		if targets.is_empty() {
+			return;
+		}
+		targets.signal(process::TERM_SIGNAL);
+		time::sleep(SHELL_CLOSE_GRACE).await;
+		targets.signal(process::KILL_SIGNAL);
+	}
+
+	/// Forcefully stop this shell without waiting. Used from synchronous process
+	/// exit cleanup where asynchronous graceful shutdown cannot be awaited.
+	/// Returns false when the shell session mutex is held before any process
+	/// target has been registered, so callers can report that force-close was
+	/// incomplete.
+	pub fn force_close(&self) -> bool {
+		let registry_targets = self.spawn_registry.build_targets();
+		if !registry_targets.is_empty() {
+			return registry_targets.signal(process::KILL_SIGNAL);
+		}
+
+		let Ok(mut guard) = self.session.try_lock() else {
+			return false;
+		};
+		let Some(mut session) = guard.take() else {
+			return true;
+		};
+		let targets = shell_termination_targets(&session.shell);
+		terminate_internal_background_jobs(&mut session.shell);
+		drop(session);
+		if targets.is_empty() {
+			return true;
+		}
+		targets.signal(process::KILL_SIGNAL)
 	}
 
 	pub async fn live_background_job_count(&self) -> u32 {
@@ -560,13 +614,14 @@ async fn run_shell_session(
 	session: Arc<TokioMutex<Option<ShellSessionCore>>>,
 	xd_runtime: XdRuntime,
 	abort_state: ShellAbortState,
+	force_registry: Arc<process::SpawnRegistry>,
 	config: ShellConfig,
 	run_config: ShellRunConfig,
 	on_chunk: Option<Sender<String>>,
 	ct: &mut CancelToken,
 ) -> Result<ShellRunResult> {
 	let tokio_cancel = CancellationToken::new();
-	let spawn_registry = Arc::new(process::SpawnRegistry::new());
+	let spawn_registry = Arc::new(process::SpawnRegistry::with_parent(force_registry));
 	let process_cancel_bridge = tokio::spawn({
 		let tokio_cancel = tokio_cancel.clone();
 		let spawn_registry = spawn_registry.clone();
@@ -1559,9 +1614,8 @@ fn terminate_internal_background_jobs(shell: &mut BrushShell<XdShellExtensions>)
 	}
 }
 
-fn terminate_background_jobs(shell: &mut BrushShell<XdShellExtensions>) {
+fn shell_termination_targets(shell: &BrushShell<XdShellExtensions>) -> process::TerminationTargets {
 	let mut targets = process::TerminationTargets::new();
-	terminate_internal_background_jobs(shell);
 	for job in &shell.jobs().jobs {
 		if let Some(pgid) = job.process_group_id() {
 			targets.add_pgid(pgid);
@@ -1570,6 +1624,12 @@ fn terminate_background_jobs(shell: &mut BrushShell<XdShellExtensions>) {
 			targets.add_pid(pid);
 		}
 	}
+	targets
+}
+
+fn terminate_background_jobs(shell: &mut BrushShell<XdShellExtensions>) {
+	let targets = shell_termination_targets(shell);
+	terminate_internal_background_jobs(shell);
 	if targets.is_empty() {
 		return;
 	}

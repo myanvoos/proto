@@ -1,4 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { Process } from "@oh-my-pi/pi-natives";
 import { Settings } from "../config/settings";
 import { MonitorManager } from "./manager";
 import type { MonitorEvent } from "./types";
@@ -7,8 +11,8 @@ const settings = await Settings.init();
 
 const managers: MonitorManager[] = [];
 
-afterEach(() => {
-	while (managers.length > 0) managers.pop()?.dispose();
+afterEach(async () => {
+	while (managers.length > 0) await managers.pop()?.dispose();
 });
 
 function createManager(cwd = process.cwd()): { manager: MonitorManager; events: MonitorEvent[] } {
@@ -83,6 +87,17 @@ test("poll mode reports changed output once and skips identical repeats", async 
 	expect(manager.get(started.id)?.status).toBe("running");
 });
 
+test("poll mode lets a healthy slow command finish instead of timing it out", async () => {
+	const { manager, events } = createManager();
+	const started = manager.start({ command: "sleep 4; echo steady", everySeconds: 1 });
+
+	await waitFor(() => events.some(event => event.kind === "output"));
+
+	expect(events).toEqual([expect.objectContaining({ monitorId: started.id, kind: "output", text: "steady" })]);
+	expect(manager.get(started.id)?.status).toBe("running");
+	expect(manager.get(started.id)?.stopReason).toBeUndefined();
+});
+
 test("stop halts delivery and records the manual stop reason", async () => {
 	const { manager, events } = createManager();
 	const started = manager.start({
@@ -111,10 +126,32 @@ test("dispose stops every running monitor without delivering further events", as
 	manager.start({ command: "while true; do echo tick; sleep 0.05; done", maxEvents: 1_000 });
 
 	await waitFor(() => events.length >= 1);
-	manager.dispose();
+	await manager.dispose();
 
 	const seen = events.length;
 	await Bun.sleep(400);
 	expect(events).toHaveLength(seen);
 	expect(manager.hasActive()).toBe(false);
+});
+
+test("dispose waits for a monitor process that ignores graceful termination", async () => {
+	const directory = fs.mkdtempSync(path.join(os.tmpdir(), "proto-monitor-dispose-"));
+	const pidFile = path.join(directory, "pid");
+	try {
+		const { manager } = createManager();
+		manager.start({
+			command: `printf '%s' "$$" > "${pidFile}"; trap '' TERM; while :; do sleep 1; done`,
+		});
+		await waitFor(() => fs.existsSync(pidFile));
+		const pid = Number(await Bun.file(pidFile).text());
+		expect(Number.isInteger(pid)).toBe(true);
+		expect(Process.fromPid(pid)).not.toBeNull();
+
+		await manager.dispose();
+
+		const process = Process.fromPid(pid);
+		expect(process === null || process.status() !== "running").toBe(true);
+	} finally {
+		fs.rmSync(directory, { recursive: true, force: true });
+	}
 });

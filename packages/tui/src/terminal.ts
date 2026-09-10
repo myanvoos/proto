@@ -55,6 +55,10 @@ export class OutputBacklogGuard {
 let activeTerminal: ProcessTerminal | null = null;
 
 let terminalEverStarted = false;
+// Set only after ProcessTerminal.stop() has completed every restoration write.
+// A missing active terminal is otherwise ambiguous: it can be a clean stop or
+// a crash path that still needs the emergency fallback sequence.
+let terminalCleanlyStopped = false;
 
 let altScreenActive = false;
 let terminalRestoreRegistered = false;
@@ -108,7 +112,7 @@ export function emergencyTerminalRestore(): void {
 			}
 			terminal.stop();
 			terminal.showCursor(true);
-		} else if (terminalEverStarted && !isTerminalHeadless()) {
+		} else if (terminalEverStarted && !terminalCleanlyStopped && !isTerminalHeadless()) {
 			process.stdout.write(
 				"\x1b[?2026l" +
 					"\x1b[?7h" +
@@ -377,6 +381,7 @@ export class ProcessTerminal implements Terminal {
 
 		this.#headless = isTerminalHeadless();
 		if (this.#headless) return;
+		terminalCleanlyStopped = false;
 		registerPostmortemTerminalRestore();
 
 		activeTerminal = this;
@@ -1021,6 +1026,7 @@ export class ProcessTerminal implements Terminal {
 		this.#stdoutErrorCleanup = undefined;
 
 		this.#cursorVisible = undefined;
+		if (!this.#dead) terminalCleanlyStopped = true;
 	}
 
 	#ensureStdoutErrorHandler(): void {

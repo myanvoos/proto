@@ -1,5 +1,6 @@
 import { ExponentialYield } from "@oh-my-pi/pi-agent-core/utils/yield";
 import { type FsObservation, type MinimizerOptions, Shell, type ShellRunResult } from "@oh-my-pi/pi-natives";
+import { logger, postmortem, withTimeout } from "@oh-my-pi/pi-utils";
 import { isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings, type ShellMinimizerSettings } from "../config/settings";
 import type { ExecutionMetadata } from "../session/execution-metadata";
@@ -19,6 +20,7 @@ interface BashExecutorOptions {
 	signal?: AbortSignal;
 
 	sessionKey?: string;
+	sessionOwner?: BashSessionOwner;
 
 	env?: Record<string, string>;
 
@@ -102,14 +104,44 @@ export async function applyDirenvPreflight(
 	return { command: `${unsetPrefix}${withPrefix(command)}`, env: mergedEnv };
 }
 
+export interface BashSessionOwner {
+	readonly sessionId: string;
+	disposed: boolean;
+}
+
 const shellSessions = new Map<string, Shell>();
 const brokenShellSessions = new Set<string>();
-const shellSessionQuarantines = new Map<string, Promise<unknown>>();
+const activeBashSessionOwners = new Map<string, BashSessionOwner>();
 
+interface QuarantinedShellSession {
+	shell: Shell;
+	cleanup: Promise<unknown>;
+}
+
+const shellSessionQuarantines = new Map<string, QuarantinedShellSession>();
 const shellSessionsInUse = new Set<string>();
 
-const retainedShells = new Set<Shell>();
+interface RetainedShell {
+	shell: Shell;
+	sessionKey: string;
+	reapTimer?: NodeJS.Timeout;
+	forceReapTimer?: NodeJS.Timeout;
+	disposeRequested: boolean;
+}
+
+const retainedShells = new Map<Shell, RetainedShell>();
+
+interface ActiveShell {
+	sessionKey: string;
+	abortController: AbortController;
+}
+
+const activeShells = new Map<Shell, ActiveShell>();
+const shellClosePromises = new Map<Shell, Promise<void>>();
 const RETAIN_REAP_INTERVAL_MS = 5_000;
+const RETAIN_MAX_AGE_MS = 60_000;
+const RETAIN_PROBE_TIMEOUT_MS = 1_000;
+const SHELL_CLOSE_TIMEOUT_MS = 3_000;
 
 const NATIVE_TIMEOUT_FALLBACK_GRACE_MS = 5_000;
 
@@ -121,50 +153,283 @@ function makeCommandTimeoutMetadata(timeoutMs: number | undefined): ExecutionTim
 	};
 }
 
-async function retainShellWithLiveBackgroundJobs(shell: Shell): Promise<void> {
+function shellOwnerId(sessionKey: string): string | undefined {
+	const separator = sessionKey.indexOf("\n");
+	const owner = separator === -1 ? sessionKey : sessionKey.slice(0, separator);
+	if (!owner) return undefined;
+	const asyncSeparator = owner.indexOf(":async:");
+	return asyncSeparator === -1 ? owner : owner.slice(0, asyncSeparator);
+}
+
+function belongsToSession(sessionKey: string, sessionId: string): boolean {
+	return shellOwnerId(sessionKey) === sessionId;
+}
+
+function getOrCreateBashSessionOwner(sessionId: string): BashSessionOwner {
+	const existing = activeBashSessionOwners.get(sessionId);
+	if (existing) return existing;
+	const owner: BashSessionOwner = { sessionId, disposed: false };
+	activeBashSessionOwners.set(sessionId, owner);
+	return owner;
+}
+
+function isDisposedSessionKey(sessionKey: string, ownerToken?: BashSessionOwner): boolean {
+	const owner = shellOwnerId(sessionKey);
+	if (!owner) return false;
+	const token = ownerToken?.sessionId === owner ? ownerToken : activeBashSessionOwners.get(owner);
+	return token?.disposed === true;
+}
+
+export function registerBashSessionOwner(sessionId: string): BashSessionOwner {
+	const owner = { sessionId, disposed: false };
+	activeBashSessionOwners.set(sessionId, owner);
+	return owner;
+}
+
+function forceCloseShell(shell: Shell): void {
+	try {
+		const forceClose = shell.forceClose;
+		if (typeof forceClose === "function") {
+			forceClose.call(shell);
+			return;
+		}
+	} catch (error) {
+		logger.debug("Failed to force close shell", { error: String(error) });
+	}
+	void shell.abort().catch(() => undefined);
+}
+
+function startShellClose(shell: Shell): Promise<void> {
+	try {
+		const close = shell.close;
+		if (typeof close === "function") return close.call(shell);
+	} catch (error) {
+		return Promise.reject(error);
+	}
+	return shell.abort();
+}
+
+function closeShell(shell: Shell): Promise<void> {
+	const existing = shellClosePromises.get(shell);
+	if (existing) return existing;
+
+	const closing = (async () => {
+		let close: Promise<void>;
+		try {
+			close = startShellClose(shell);
+		} catch {
+			forceCloseShell(shell);
+			return;
+		}
+		void close.catch(() => undefined);
+		try {
+			await withTimeout(close, SHELL_CLOSE_TIMEOUT_MS, "Timed out closing shell session");
+		} catch {
+			forceCloseShell(shell);
+		}
+	})();
+	shellClosePromises.set(shell, closing);
+	void closing.finally(() => {
+		if (shellClosePromises.get(shell) === closing) shellClosePromises.delete(shell);
+	});
+	return closing;
+}
+
+function removeRetainedShell(record: RetainedShell): void {
+	if (retainedShells.get(record.shell) !== record) return;
+	if (record.reapTimer) clearInterval(record.reapTimer);
+	if (record.forceReapTimer) clearTimeout(record.forceReapTimer);
+	retainedShells.delete(record.shell);
+}
+
+function scheduleRetainedForceReap(record: RetainedShell): void {
+	if (record.forceReapTimer) return;
+	record.forceReapTimer = setTimeout(() => {
+		void reapRetainedShell(record, true);
+	}, RETAIN_MAX_AGE_MS);
+	record.forceReapTimer.unref?.();
+}
+
+async function reapRetainedShell(record: RetainedShell, force = false): Promise<void> {
+	if (retainedShells.get(record.shell) !== record) return;
+	if (force) {
+		removeRetainedShell(record);
+		forceCloseShell(record.shell);
+		return;
+	}
+
+	let live: number;
+	try {
+		live = await withTimeout(
+			record.shell.liveBackgroundJobCount(),
+			RETAIN_PROBE_TIMEOUT_MS,
+			"Timed out checking retained shell background jobs",
+		);
+	} catch {
+		scheduleRetainedForceReap(record);
+		return;
+	}
+	if (live > 0) return;
+	removeRetainedShell(record);
+	await closeShell(record.shell);
+}
+
+async function retainShellWithLiveBackgroundJobs(
+	shell: Shell,
+	sessionKey: string,
+	sessionOwner: BashSessionOwner | undefined,
+): Promise<void> {
 	let live: number;
 	try {
 		live = await shell.liveBackgroundJobCount();
 	} catch {
 		return;
 	}
-	if (live <= 0) return;
-	retainedShells.add(shell);
-	const interval = setInterval(() => {
-		void shell
-			.liveBackgroundJobCount()
-			.then(remaining => {
-				if (remaining > 0) return;
-				clearInterval(interval);
-				retainedShells.delete(shell);
-			})
-			.catch(() => {
-				clearInterval(interval);
-				retainedShells.delete(shell);
-			});
+	if (live <= 0 || retainedShells.has(shell)) return;
+	if (isDisposedSessionKey(sessionKey, sessionOwner)) {
+		await closeShell(shell);
+		return;
+	}
+
+	const record: RetainedShell = { shell, sessionKey, disposeRequested: false };
+	record.reapTimer = setInterval(() => {
+		void reapRetainedShell(record);
 	}, RETAIN_REAP_INTERVAL_MS);
-	interval.unref?.();
+	record.reapTimer.unref?.();
+	retainedShells.set(shell, record);
 }
 
 function quarantineShellSession(
 	sessionKey: string,
+	shell: Shell,
 	runPromise: Promise<ShellRunResult>,
 	abortCleanupPromise: Promise<void> | undefined,
+	sessionOwner: BashSessionOwner | undefined,
 ): void {
 	brokenShellSessions.add(sessionKey);
 	const cleanup = abortCleanupPromise
 		? Promise.allSettled([runPromise, abortCleanupPromise])
 		: Promise.allSettled([runPromise]);
-	shellSessionQuarantines.set(sessionKey, cleanup);
+	if (isDisposedSessionKey(sessionKey, sessionOwner)) {
+		void cleanup.catch(() => undefined);
+		return;
+	}
+	const record: QuarantinedShellSession = { shell, cleanup };
+	shellSessionQuarantines.set(sessionKey, record);
 	void cleanup
 		.finally(() => {
-			if (shellSessionQuarantines.get(sessionKey) === cleanup) {
+			if (shellSessionQuarantines.get(sessionKey) === record) {
 				shellSessionQuarantines.delete(sessionKey);
 				brokenShellSessions.delete(sessionKey);
 			}
 		})
 		.catch(() => undefined);
 }
+
+function collectShellsForSession(sessionId: string): Set<Shell> {
+	const shells = new Set<Shell>();
+	for (const [sessionKey, shell] of shellSessions) {
+		if (!belongsToSession(sessionKey, sessionId)) continue;
+		shellSessions.delete(sessionKey);
+		shellSessionsInUse.delete(sessionKey);
+		shells.add(shell);
+	}
+	for (const [sessionKey, record] of shellSessionQuarantines) {
+		if (!belongsToSession(sessionKey, sessionId)) continue;
+		shellSessionQuarantines.delete(sessionKey);
+		brokenShellSessions.delete(sessionKey);
+		shells.add(record.shell);
+	}
+	for (const [shell, active] of activeShells) {
+		if (!belongsToSession(active.sessionKey, sessionId)) continue;
+		active.abortController.abort();
+		activeShells.delete(shell);
+		shells.add(shell);
+	}
+	for (const sessionKey of brokenShellSessions) {
+		if (belongsToSession(sessionKey, sessionId)) brokenShellSessions.delete(sessionKey);
+	}
+	return shells;
+}
+
+export function hasBashSessions(sessionId: string): boolean {
+	if (!sessionId) return false;
+	for (const sessionKey of shellSessions.keys()) {
+		if (belongsToSession(sessionKey, sessionId)) return true;
+	}
+	for (const sessionKey of shellSessionQuarantines.keys()) {
+		if (belongsToSession(sessionKey, sessionId)) return true;
+	}
+	for (const active of activeShells.values()) {
+		if (belongsToSession(active.sessionKey, sessionId)) return true;
+	}
+	for (const record of retainedShells.values()) {
+		if (belongsToSession(record.sessionKey, sessionId)) return true;
+	}
+	for (const sessionKey of brokenShellSessions) {
+		if (belongsToSession(sessionKey, sessionId)) return true;
+	}
+	return false;
+}
+
+export async function disposeBashSessions(sessionId: string, owner?: BashSessionOwner): Promise<void> {
+	if (!sessionId) return;
+	const activeOwner = activeBashSessionOwners.get(sessionId);
+	const sessionOwner = owner ?? activeOwner ?? getOrCreateBashSessionOwner(sessionId);
+	if (owner && activeOwner && activeOwner !== owner) return;
+	sessionOwner.disposed = true;
+	const shells = collectShellsForSession(sessionId);
+	const retainedReaps: Promise<void>[] = [];
+	for (const record of retainedShells.values()) {
+		if (!belongsToSession(record.sessionKey, sessionId)) continue;
+		if (!record.disposeRequested) {
+			record.disposeRequested = true;
+			scheduleRetainedForceReap(record);
+		}
+		retainedReaps.push(reapRetainedShell(record));
+	}
+	await Promise.all([...retainedReaps, ...[...shells].map(shell => closeShell(shell))]);
+}
+
+export async function disposeAllBashSessions(): Promise<void> {
+	const shells = new Set<Shell>(shellSessions.values());
+	for (const record of shellSessionQuarantines.values()) shells.add(record.shell);
+	for (const shell of activeShells.keys()) shells.add(shell);
+	for (const shell of retainedShells.keys()) shells.add(shell);
+	for (const shell of shellClosePromises.keys()) shells.add(shell);
+	shellSessions.clear();
+	for (const active of activeShells.values()) active.abortController.abort();
+	activeShells.clear();
+	shellSessionsInUse.clear();
+	brokenShellSessions.clear();
+	shellSessionQuarantines.clear();
+	for (const record of retainedShells.values()) removeRetainedShell(record);
+	await Promise.all([...shells].map(shell => closeShell(shell)));
+}
+
+function forceDisposeAllBashSessions(): void {
+	const shells = new Set<Shell>(shellSessions.values());
+	for (const record of shellSessionQuarantines.values()) shells.add(record.shell);
+	for (const shell of activeShells.keys()) shells.add(shell);
+	for (const shell of retainedShells.keys()) shells.add(shell);
+	for (const shell of shellClosePromises.keys()) shells.add(shell);
+	shellSessions.clear();
+	for (const active of activeShells.values()) active.abortController.abort();
+	activeShells.clear();
+	shellSessionsInUse.clear();
+	brokenShellSessions.clear();
+	shellSessionQuarantines.clear();
+	for (const record of retainedShells.values()) removeRetainedShell(record);
+	for (const shell of shells) forceCloseShell(shell);
+}
+
+postmortem.register("bash-shell-sessions", reason => {
+	if (reason === postmortem.Reason.EXIT) {
+		forceDisposeAllBashSessions();
+		return;
+	}
+	return disposeAllBashSessions();
+});
 
 function resolveShellCwd(cwd: string | undefined): string | undefined {
 	return cwd;
@@ -370,14 +635,23 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		minimizer,
 	};
 	const sessionKey = buildSessionKey(shell, prefix, snapshotPath, shellEnv, options?.sessionKey, minimizer);
+	const sessionOwnerId = shellOwnerId(sessionKey);
+	const sessionOwner =
+		options?.sessionOwner ?? (sessionOwnerId ? getOrCreateBashSessionOwner(sessionOwnerId) : undefined);
+	const sessionDisposed = isDisposedSessionKey(sessionKey, sessionOwner);
+	if (sessionDisposed) {
+		await sink.dispose();
+		throw new Error("Bash session is disposed");
+	}
 	const persistentSessionBroken = brokenShellSessions.has(sessionKey);
 	if (persistentSessionBroken) {
 		shellSessions.delete(sessionKey);
 	}
 
 	const sessionBusy = shellSessionsInUse.has(sessionKey);
-	let shellSession = persistentSessionBroken || sessionBusy ? undefined : shellSessions.get(sessionKey);
-	if (!shellSession && !persistentSessionBroken && !sessionBusy) {
+	let shellSession =
+		persistentSessionBroken || sessionBusy || sessionDisposed ? undefined : shellSessions.get(sessionKey);
+	if (!shellSession && !persistentSessionBroken && !sessionBusy && !sessionDisposed) {
 		shellSession = new Shell(shellOptions);
 		shellSessions.set(sessionKey, shellSession);
 	}
@@ -388,6 +662,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	}
 	const userSignal = options?.signal;
 	const runAbortController = new AbortController();
+	activeShells.set(executionShell, { sessionKey, abortController: runAbortController });
 	let abortCleanupPromise: Promise<void> | undefined;
 	const abortShell = (): Promise<void> => {
 		abortCleanupPromise ??= executionShell.abort().catch(() => undefined);
@@ -461,7 +736,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			const cleanupPromise = abortShell();
 			if (shellSession) {
 				resetSession = true;
-				quarantineShellSession(sessionKey, runPromise, cleanupPromise);
+				quarantineShellSession(sessionKey, executionShell, runPromise, cleanupPromise, sessionOwner);
 			} else {
 				void Promise.allSettled([runPromise, cleanupPromise]);
 			}
@@ -487,7 +762,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				: "Command timed out";
 			resetSession = true;
 			if (shellSession) {
-				quarantineShellSession(sessionKey, runPromise, abortCleanupPromise);
+				quarantineShellSession(sessionKey, executionShell, runPromise, abortCleanupPromise, sessionOwner);
 			}
 			return withExecutionMetadata({
 				exitCode: undefined,
@@ -500,7 +775,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		if (winner.result.cancelled) {
 			resetSession = true;
 			if (shellSession) {
-				quarantineShellSession(sessionKey, runPromise, abortCleanupPromise);
+				quarantineShellSession(sessionKey, executionShell, runPromise, abortCleanupPromise, sessionOwner);
 			}
 			return withExecutionMetadata({
 				exitCode: undefined,
@@ -537,6 +812,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		resetSession = true;
 		throw err;
 	} finally {
+		activeShells.delete(executionShell);
 		await sink.dispose();
 		if (!runAbortController.signal.aborted) {
 			runAbortController.abort();
@@ -548,12 +824,16 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			userSignal.removeEventListener("abort", abortHandler);
 		}
 		if (ownsPersistentSession) {
-			shellSessionsInUse.delete(sessionKey);
-			if (resetSession || options?.sessionKey?.includes(":async:")) {
-				shellSessions.delete(sessionKey);
+			if (shellSessions.get(sessionKey) === executionShell) shellSessionsInUse.delete(sessionKey);
+			const disposed = isDisposedSessionKey(sessionKey, sessionOwner);
+			const asynchronous = options?.sessionKey?.includes(":async:") === true;
+			if (resetSession || asynchronous || disposed) {
+				if (shellSessions.get(sessionKey) === executionShell) shellSessions.delete(sessionKey);
 
-				if (!resetSession && shellSession) {
-					await retainShellWithLiveBackgroundJobs(shellSession);
+				if (!resetSession && !disposed && shellSession) {
+					await retainShellWithLiveBackgroundJobs(shellSession, sessionKey, sessionOwner);
+				} else if (disposed) {
+					await closeShell(executionShell);
 				}
 			}
 		}

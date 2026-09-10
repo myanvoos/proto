@@ -211,7 +211,7 @@ function appendAssistantToolCalls(pending: Map<string, PendingToolCallRecord>, m
 		};
 		if (typeof message.timestamp === "number") record.assistantTimestamp = message.timestamp;
 		if (part.id) record.toolCallId = part.id;
-		if ("arguments" in part) record.args = part.arguments;
+		if ("arguments" in part) record.args = summarizeToolArguments(part.arguments);
 		toolCalls.push(record);
 	}
 	pending.clear();

@@ -2146,7 +2146,7 @@ export class AcpAgent implements Agent {
 
 	async #configureMcpServers(record: ManagedSessionRecord, servers: McpServer[]): Promise<void> {
 		if (record.mcpManager) {
-			await record.mcpManager.disconnectAll();
+			await record.mcpManager.dispose();
 		}
 
 		await record.mcpRefreshChain;
@@ -2258,7 +2258,7 @@ export class AcpAgent implements Agent {
 		record.lifetimeUnsubscribe?.();
 		if (record.mcpManager) {
 			try {
-				await record.mcpManager.disconnectAll();
+				await record.mcpManager.dispose();
 			} catch (error) {
 				logger.warn("Failed to disconnect ACP MCP servers", { error });
 			}

@@ -295,6 +295,21 @@ impl Shell {
 	}
 
 	#[napi]
+	pub async fn close(&self) -> Result<()> {
+		self.inner.close().await;
+		Ok(())
+	}
+
+	#[napi]
+	pub fn force_close(&self) -> Result<()> {
+		if self.inner.force_close() {
+			Ok(())
+		} else {
+			Err(napi::Error::from_reason("Shell force-close could not acquire a process target"))
+		}
+	}
+
+	#[napi]
 	pub async fn live_background_job_count(&self) -> u32 {
 		self.inner.live_background_job_count().await
 	}

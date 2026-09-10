@@ -1242,6 +1242,7 @@ export class Markdown
 	#defaultTextStyle?: DefaultTextStyle;
 	#theme: MarkdownTheme;
 	#defaultStylePrefix?: string;
+	#cacheRenderedOutput: boolean;
 
 	#codeBlockIndent: number;
 
@@ -1312,6 +1313,31 @@ export class Markdown
 		return this;
 	}
 
+	compact(): void {
+		this.#cachedText = undefined;
+		this.#cachedWidth = undefined;
+		this.#cachedLines = undefined;
+		this.#normalizedTextCache = undefined;
+		this.#appendOnlySinceRender = false;
+		this.#streamPrefixText = undefined;
+		this.#streamTokens = undefined;
+		this.#streamPrefixTokenCount = 0;
+		this.#streamPrefixLineCache = undefined;
+		this.#streamLexedText = undefined;
+		this.#settledExposedText = undefined;
+		this.#streamingHighlightCache = undefined;
+		this.#renderFragmentCacheSignature = undefined;
+		this.#activeRenderFragmentRevision = undefined;
+		this.#clearIncrementalTokenFragments();
+		this.#renderWrappedLinesScratch.length = 0;
+		this.#renderContentLinesScratch.length = 0;
+		this.#renderTokenSegmentsScratch.length = 0;
+	}
+
+	getText(): string {
+		return this.#text;
+	}
+
 	constructor(
 		text: string,
 		paddingX: number,
@@ -1319,12 +1345,14 @@ export class Markdown
 		theme: MarkdownTheme,
 		defaultTextStyle?: DefaultTextStyle,
 		codeBlockIndent: number = 2,
+		cacheRenderedOutput = true,
 	) {
 		this.#text = normalizeOsc8Terminators(text);
 		this.#paddingX = paddingX;
 		this.#paddingY = paddingY;
 		this.#theme = theme;
 		this.#defaultTextStyle = defaultTextStyle;
+		this.#cacheRenderedOutput = cacheRenderedOutput;
 		this.#codeBlockIndent = Math.max(0, Math.floor(codeBlockIndent));
 	}
 
@@ -1400,6 +1428,7 @@ export class Markdown
 			this.#theme,
 			this.#defaultTextStyle,
 			this.#codeBlockIndent,
+			this.#cacheRenderedOutput,
 		);
 		snapshot.#ignoreTight = this.#ignoreTight;
 		snapshot.#transientRenderCache = captured.transientRenderCache;
@@ -1659,7 +1688,12 @@ export class Markdown
 		const signature = this.#renderSignature(width, paddingX);
 
 		let cacheKey: string | undefined;
-		if (!this.transientRenderCache && !this.#appendOnlySinceRender && this.#lockedTableLayouts.size === 0) {
+		if (
+			this.#cacheRenderedOutput &&
+			!this.transientRenderCache &&
+			!this.#appendOnlySinceRender &&
+			this.#lockedTableLayouts.size === 0
+		) {
 			cacheKey = this.#renderCacheKey(normalizedText, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
@@ -1711,7 +1745,7 @@ export class Markdown
 		this.#cachedWidth = width;
 		this.#cachedLines = result;
 
-		if (cacheKey !== undefined) {
+		if (cacheKey !== undefined && this.#cacheRenderedOutput) {
 			renderCache.set(cacheKey, {
 				lines: result,
 				tables: this.#lastRenderedTableLayouts.map(table => ({

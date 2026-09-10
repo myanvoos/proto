@@ -145,6 +145,9 @@ ON CONFLICT(model_key) DO UPDATE SET
 ON CONFLICT(name) DO UPDATE SET count = command_usage.count + 1, last_used_at = ${SQLITE_NOW_EPOCH}`,
 		);
 		this.#listCommandUsageStmt = this.#db.prepare("SELECT name, count FROM command_usage");
+		// Schema migrations can leave a sizable initial WAL. Checkpoint it before
+		// the interactive session so shutdown only handles writes made in-session.
+		checkpointWal(this.#db);
 	}
 
 	#initializeSchema(): void {
