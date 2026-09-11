@@ -1,4 +1,5 @@
-import MODELS from "./models.json" with { type: "json" };
+import { loadProviderModels } from "./models-lazy";
+import { GENERATED_PROVIDERS } from "./models-providers";
 import type { Api, KnownProvider, Model, TokenCost, Usage } from "./types";
 
 const modelRegistry = new Map<string, Map<string, Model<Api>>>();
@@ -6,10 +7,11 @@ const modelRegistry = new Map<string, Map<string, Model<Api>>>();
 function getProviderModels(provider: string): Map<string, Model<Api>> | undefined {
 	const cachedModels = modelRegistry.get(provider);
 	if (cachedModels !== undefined) return cachedModels;
-	if (!Object.hasOwn(MODELS, provider)) return undefined;
+	if (!GENERATED_PROVIDERS.includes(provider as (typeof GENERATED_PROVIDERS)[number])) return undefined;
+	const rawModels = loadProviderModels(provider);
+	if (!rawModels) return undefined;
 
 	const providerModels = new Map<string, Model<Api>>();
-	const rawModels = MODELS[provider as keyof typeof MODELS];
 	for (const id in rawModels) {
 		providerModels.set(id, rawModels[id as keyof typeof rawModels] as unknown as Model<Api>);
 	}
@@ -17,7 +19,7 @@ function getProviderModels(provider: string): Map<string, Model<Api>> | undefine
 	return providerModels;
 }
 
-export type GeneratedProvider = keyof typeof MODELS;
+export type GeneratedProvider = (typeof GENERATED_PROVIDERS)[number];
 
 export function getBundledModel<TApi extends Api = Api>(provider: GeneratedProvider, modelId: string): Model<TApi> {
 	const providerModels = getProviderModels(provider);
@@ -25,7 +27,7 @@ export function getBundledModel<TApi extends Api = Api>(provider: GeneratedProvi
 }
 
 export function getBundledProviders(): KnownProvider[] {
-	return Object.keys(MODELS) as KnownProvider[];
+	return [...GENERATED_PROVIDERS] as KnownProvider[];
 }
 
 export function getBundledModels(provider: GeneratedProvider): Model<Api>[] {

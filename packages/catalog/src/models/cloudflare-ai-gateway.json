@@ -1,0 +1,3579 @@
+{
+	"anthropic/claude-3-5-haiku": {
+		"id": "anthropic/claude-3-5-haiku",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Haiku 3.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.8,
+			"output": 4,
+			"cacheRead": 0.08,
+			"cacheWrite": 1
+		},
+		"contextWindow": 200000,
+		"maxTokens": 8192,
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-3-haiku": {
+		"id": "anthropic/claude-3-haiku",
+		"requiresGlyphTokenization": true,
+		"name": "Claude 3 Haiku",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.25,
+			"output": 1.25,
+			"cacheRead": 0.03,
+			"cacheWrite": 0.3
+		},
+		"contextWindow": 200000,
+		"maxTokens": 4096,
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-3-opus": {
+		"id": "anthropic/claude-3-opus",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Opus 3",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 15,
+			"output": 75,
+			"cacheRead": 1.5,
+			"cacheWrite": 18.75
+		},
+		"contextWindow": 200000,
+		"maxTokens": 4096,
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-3-sonnet": {
+		"id": "anthropic/claude-3-sonnet",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Sonnet 3",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 0.3
+		},
+		"contextWindow": 200000,
+		"maxTokens": 4096,
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-3.5-haiku": {
+		"id": "anthropic/claude-3.5-haiku",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Haiku 3.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.8,
+			"output": 4,
+			"cacheRead": 0.08,
+			"cacheWrite": 1
+		},
+		"contextWindow": 200000,
+		"maxTokens": 8192,
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-3.5-sonnet": {
+		"id": "anthropic/claude-3.5-sonnet",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Sonnet 3.5 v2",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 3.75
+		},
+		"contextWindow": 200000,
+		"maxTokens": 8192,
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-fable-5": {
+		"id": "anthropic/claude-fable-5",
+		"name": "Claude Fable 5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 10,
+			"output": 50,
+			"cacheRead": 1,
+			"cacheWrite": 12.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": false,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"anthropic/claude-haiku-4-5": {
+		"id": "anthropic/claude-haiku-4-5",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Haiku 4.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1,
+			"output": 5,
+			"cacheRead": 0.1,
+			"cacheWrite": 1.25
+		},
+		"contextWindow": 200000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-haiku-4.5": {
+		"id": "anthropic/claude-haiku-4.5",
+		"name": "Claude Haiku 4.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1,
+			"output": 5,
+			"cacheRead": 0.1,
+			"cacheWrite": 1.25
+		},
+		"contextWindow": 200000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"anthropic/claude-opus-4": {
+		"id": "anthropic/claude-opus-4",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Opus 4",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 15,
+			"output": 75,
+			"cacheRead": 1.5,
+			"cacheWrite": 18.75
+		},
+		"contextWindow": 200000,
+		"maxTokens": 32000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-opus-4-1": {
+		"id": "anthropic/claude-opus-4-1",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Opus 4.1",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 15,
+			"output": 75,
+			"cacheRead": 1.5,
+			"cacheWrite": 18.75
+		},
+		"contextWindow": 200000,
+		"maxTokens": 32000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-opus-4-5": {
+		"id": "anthropic/claude-opus-4-5",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Opus 4.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 25,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 200000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "anthropic-budget-effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-opus-4-6": {
+		"id": "anthropic/claude-opus-4-6",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Opus 4.6",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 25,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			]
+		},
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-opus-4-7": {
+		"id": "anthropic/claude-opus-4-7",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Opus 4.7",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 25,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"tokenizer": "claude-v47",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-opus-4-8": {
+		"id": "anthropic/claude-opus-4-8",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Opus 4.8",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 25,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"tokenizer": "claude-v47",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-opus-4.5": {
+		"id": "anthropic/claude-opus-4.5",
+		"name": "Claude Opus 4.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 25,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 200000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "anthropic-budget-effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"anthropic/claude-opus-4.6": {
+		"id": "anthropic/claude-opus-4.6",
+		"name": "Claude Opus 4.6",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 25,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"anthropic/claude-opus-4.7": {
+		"id": "anthropic/claude-opus-4.7",
+		"name": "Claude Opus 4.7",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 25,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v47",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"anthropic/claude-opus-4.8": {
+		"id": "anthropic/claude-opus-4.8",
+		"name": "Claude Opus 4.8",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 25,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v47",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"anthropic/claude-opus-5": {
+		"id": "anthropic/claude-opus-5",
+		"name": "Claude Opus 5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 25,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"anthropic/claude-sonnet-4": {
+		"id": "anthropic/claude-sonnet-4",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Sonnet 4",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 3.75
+		},
+		"contextWindow": 200000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-sonnet-4-5": {
+		"id": "anthropic/claude-sonnet-4-5",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Sonnet 4.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 3.75
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-sonnet-4-6": {
+		"id": "anthropic/claude-sonnet-4-6",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Sonnet 4.6",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 3.75
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"anthropic/claude-sonnet-4.5": {
+		"id": "anthropic/claude-sonnet-4.5",
+		"name": "Claude Sonnet 4.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 3.75
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"anthropic/claude-sonnet-4.6": {
+		"id": "anthropic/claude-sonnet-4.6",
+		"name": "Claude Sonnet 4.6",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 3.75
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"anthropic/claude-sonnet-5": {
+		"id": "anthropic/claude-sonnet-5",
+		"name": "Claude Sonnet 5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"claude-sonnet-4-5": {
+		"id": "claude-sonnet-4-5",
+		"requiresGlyphTokenization": true,
+		"name": "Claude Sonnet 4.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 3.75
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "claude-v3",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"moonshotai/kimi-k3": {
+		"id": "moonshotai/kimi-k3",
+		"requiresGlyphTokenization": false,
+		"name": "Kimi K3",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
+		},
+		"tokenizer": "kimi-k2",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-4": {
+		"id": "openai/gpt-4",
+		"name": "GPT-4",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 30,
+			"output": 60,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 8192,
+		"maxTokens": 8192,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-4-turbo": {
+		"id": "openai/gpt-4-turbo",
+		"name": "GPT-4 Turbo",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 10,
+			"output": 30,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 4096,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-4.1": {
+		"id": "openai/gpt-4.1",
+		"name": "GPT-4.1",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 8,
+			"cacheRead": 0.5,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1047576,
+		"maxTokens": 32768,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-4.1-mini": {
+		"id": "openai/gpt-4.1-mini",
+		"name": "GPT-4.1 mini",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.4,
+			"output": 1.6,
+			"cacheRead": 0.1,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1047576,
+		"maxTokens": 32768,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-4.1-nano": {
+		"id": "openai/gpt-4.1-nano",
+		"name": "GPT-4.1 nano",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.1,
+			"output": 0.4,
+			"cacheRead": 0.025,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1047576,
+		"maxTokens": 32768,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-4o": {
+		"id": "openai/gpt-4o",
+		"name": "GPT-4o",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.25,
+			"output": 5,
+			"cacheRead": 0.625,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 16384,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-4o-mini": {
+		"id": "openai/gpt-4o-mini",
+		"name": "GPT-4o mini",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.075,
+			"output": 0.3,
+			"cacheRead": 0.0375,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 16384,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5": {
+		"id": "openai/gpt-5",
+		"name": "GPT-5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.25,
+			"output": 10,
+			"cacheRead": 0.125,
+			"cacheWrite": 0
+		},
+		"contextWindow": 400000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5-mini": {
+		"id": "openai/gpt-5-mini",
+		"name": "GPT-5 Mini",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.25,
+			"output": 2,
+			"cacheRead": 0.025,
+			"cacheWrite": 0
+		},
+		"contextWindow": 400000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5-nano": {
+		"id": "openai/gpt-5-nano",
+		"name": "GPT-5 Nano",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.05,
+			"output": 0.4,
+			"cacheRead": 0.005,
+			"cacheWrite": 0
+		},
+		"contextWindow": 400000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5-pro": {
+		"id": "openai/gpt-5-pro",
+		"name": "GPT-5 Pro",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 15,
+			"output": 120,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 400000,
+		"maxTokens": 272000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.1": {
+		"id": "openai/gpt-5.1",
+		"name": "GPT-5.1",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.25,
+			"output": 10,
+			"cacheRead": 0.125,
+			"cacheWrite": 0
+		},
+		"contextWindow": 400000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.1-codex": {
+		"id": "openai/gpt-5.1-codex",
+		"requiresGlyphTokenization": false,
+		"name": "GPT-5.1 Codex",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.25,
+			"output": 10,
+			"cacheRead": 0.125,
+			"cacheWrite": 0
+		},
+		"contextWindow": 272000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-5.2": {
+		"id": "openai/gpt-5.2",
+		"name": "GPT-5.2",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.75,
+			"output": 14,
+			"cacheRead": 0.175,
+			"cacheWrite": 0
+		},
+		"contextWindow": 400000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.2-chat-latest": {
+		"id": "openai/gpt-5.2-chat-latest",
+		"name": "GPT-5.2 Chat",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.75,
+			"output": 14,
+			"cacheRead": 0.175,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 16384,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.2-codex": {
+		"id": "openai/gpt-5.2-codex",
+		"requiresGlyphTokenization": false,
+		"name": "GPT-5.2 Codex",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.75,
+			"output": 14,
+			"cacheRead": 0.175,
+			"cacheWrite": 0
+		},
+		"contextWindow": 272000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"openai/gpt-5.2-pro": {
+		"id": "openai/gpt-5.2-pro",
+		"name": "GPT-5.2 Pro",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 21,
+			"output": 168,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 400000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.3-chat-latest": {
+		"id": "openai/gpt-5.3-chat-latest",
+		"name": "GPT-5.3 Chat",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.75,
+			"output": 14,
+			"cacheRead": 0.175,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 16384,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.3-codex": {
+		"id": "openai/gpt-5.3-codex",
+		"name": "GPT-5.3 Codex",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.75,
+			"output": 14,
+			"cacheRead": 0.175,
+			"cacheWrite": 0
+		},
+		"contextWindow": 272000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.3-codex-spark": {
+		"id": "openai/gpt-5.3-codex-spark",
+		"name": "GPT-5.3 Codex Spark",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.75,
+			"output": 14,
+			"cacheRead": 0.175,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 32000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"contextPromotionTarget": "cloudflare-ai-gateway/openai/gpt-5.5",
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.4": {
+		"id": "openai/gpt-5.4",
+		"name": "GPT-5.4",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.5,
+			"output": 15,
+			"cacheRead": 0.25,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.4-mini": {
+		"id": "openai/gpt-5.4-mini",
+		"name": "GPT-5.4 mini",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.75,
+			"output": 4.5,
+			"cacheRead": 0.075,
+			"cacheWrite": 0
+		},
+		"contextWindow": 400000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.4-nano": {
+		"id": "openai/gpt-5.4-nano",
+		"name": "GPT-5.4 nano",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.2,
+			"output": 1.25,
+			"cacheRead": 0.02,
+			"cacheWrite": 0
+		},
+		"contextWindow": 400000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.4-pro": {
+		"id": "openai/gpt-5.4-pro",
+		"name": "GPT-5.4 Pro",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 30,
+			"output": 180,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.5": {
+		"id": "openai/gpt-5.5",
+		"name": "GPT-5.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 30,
+			"cacheRead": 0.5,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"contextPromotionTarget": "cloudflare-ai-gateway/openai/gpt-5.4",
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.5-pro": {
+		"id": "openai/gpt-5.5-pro",
+		"name": "GPT-5.5 Pro",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 30,
+			"output": 180,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"contextPromotionTarget": "cloudflare-ai-gateway/openai/gpt-5.4",
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.6": {
+		"id": "openai/gpt-5.6",
+		"name": "GPT-5.6",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 30,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.6-luna": {
+		"id": "openai/gpt-5.6-luna",
+		"name": "GPT-5.6 Luna",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.2,
+			"output": 1.2,
+			"cacheRead": 0.02,
+			"cacheWrite": 0.25
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.6-sol": {
+		"id": "openai/gpt-5.6-sol",
+		"name": "GPT-5.6 Sol",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5,
+			"output": 30,
+			"cacheRead": 0.5,
+			"cacheWrite": 6.25
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/gpt-5.6-terra": {
+		"id": "openai/gpt-5.6-terra",
+		"name": "GPT-5.6 Terra",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 12,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/o1": {
+		"id": "openai/o1",
+		"name": "o1",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 15,
+			"output": 60,
+			"cacheRead": 7.5,
+			"cacheWrite": 0
+		},
+		"contextWindow": 200000,
+		"maxTokens": 100000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/o1-pro": {
+		"id": "openai/o1-pro",
+		"name": "o1-pro",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 150,
+			"output": 600,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 200000,
+		"maxTokens": 100000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/o3": {
+		"id": "openai/o3",
+		"name": "o3",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 8,
+			"cacheRead": 0.5,
+			"cacheWrite": 0
+		},
+		"contextWindow": 200000,
+		"maxTokens": 100000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/o3-mini": {
+		"id": "openai/o3-mini",
+		"name": "o3-mini",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 1.1,
+			"output": 4.4,
+			"cacheRead": 0.55,
+			"cacheWrite": 0
+		},
+		"contextWindow": 200000,
+		"maxTokens": 100000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/o3-pro": {
+		"id": "openai/o3-pro",
+		"name": "o3-pro",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 20,
+			"output": 80,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 200000,
+		"maxTokens": 100000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"openai/o4-mini": {
+		"id": "openai/o4-mini",
+		"name": "o4-mini",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 1.1,
+			"output": 4.4,
+			"cacheRead": 0.275,
+			"cacheWrite": 0
+		},
+		"contextWindow": 200000,
+		"maxTokens": 100000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/google/gemma-4-26b-a4b-it": {
+		"id": "workers-ai/@cf/google/gemma-4-26b-a4b-it",
+		"name": "Gemma 4 26B A4B IT",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.1,
+			"output": 0.3,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 256000,
+		"maxTokens": 16384,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/ibm-granite/granite-4.0-h-micro": {
+		"id": "workers-ai/@cf/ibm-granite/granite-4.0-h-micro",
+		"name": "Granite 4.0 H Micro",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.017,
+			"output": 0.112,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 131000,
+		"maxTokens": 131000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+		"id": "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+		"name": "Llama 3.3 70B Instruct fp8 Fast",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.293,
+			"output": 2.253,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 24000,
+		"maxTokens": 24000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct": {
+		"id": "workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",
+		"name": "Llama 4 Scout 17B 16E Instruct",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.27,
+			"output": 0.85,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 131000,
+		"maxTokens": 16384,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct": {
+		"id": "workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct",
+		"name": "Mistral Small 3.1 24B Instruct",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.351,
+			"output": 0.555,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 128000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/moonshotai/kimi-k2.5": {
+		"id": "workers-ai/@cf/moonshotai/kimi-k2.5",
+		"requiresGlyphTokenization": false,
+		"name": "Kimi K2.5",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.6,
+			"output": 3,
+			"cacheRead": 0.1,
+			"cacheWrite": 0
+		},
+		"contextWindow": 256000,
+		"maxTokens": 256000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "kimi-k2",
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"workers-ai/@cf/moonshotai/kimi-k2.6": {
+		"id": "workers-ai/@cf/moonshotai/kimi-k2.6",
+		"name": "Kimi K2.6",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.95,
+			"output": 4,
+			"cacheRead": 0.16,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 256000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "kimi-k2",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/moonshotai/kimi-k2.7-code": {
+		"id": "workers-ai/@cf/moonshotai/kimi-k2.7-code",
+		"name": "Kimi K2.7 Code",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.95,
+			"output": 4,
+			"cacheRead": 0.19,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 262144,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "kimi-k2",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/nvidia/nemotron-3-120b-a12b": {
+		"id": "workers-ai/@cf/nvidia/nemotron-3-120b-a12b",
+		"name": "Nemotron 3 Super 120B",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.5,
+			"output": 1.5,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 256000,
+		"maxTokens": 256000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/openai/gpt-oss-120b": {
+		"id": "workers-ai/@cf/openai/gpt-oss-120b",
+		"name": "GPT OSS 120B",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.35,
+			"output": 0.75,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 16384,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/openai/gpt-oss-20b": {
+		"id": "workers-ai/@cf/openai/gpt-oss-20b",
+		"name": "GPT OSS 20B",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.2,
+			"output": 0.3,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 16384,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/qwen/qwen3-30b-a3b-fp8": {
+		"id": "workers-ai/@cf/qwen/qwen3-30b-a3b-fp8",
+		"name": "Qwen3 30B A3b fp8",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.0509,
+			"output": 0.335,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 32768,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/zai-org/glm-4.7-flash": {
+		"id": "workers-ai/@cf/zai-org/glm-4.7-flash",
+		"name": "GLM-4.7-Flash",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.0605,
+			"output": 0.4,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 131072,
+		"maxTokens": 131072,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"workers-ai/@cf/zai-org/glm-5.2": {
+		"id": "workers-ai/@cf/zai-org/glm-5.2",
+		"name": "Glm 5.2",
+		"api": "anthropic-messages",
+		"provider": "cloudflare-ai-gateway",
+		"baseUrl": "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 1.4,
+			"output": 4.4,
+			"cacheRead": 0.26,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 256000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "glm5",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	}
+}

@@ -1,0 +1,473 @@
+{
+	"umans-coder": {
+		"id": "umans-coder",
+		"requiresGlyphTokenization": false,
+		"name": "Umans Coder",
+		"api": "anthropic-messages",
+		"provider": "umans",
+		"baseUrl": "https://api.code.umans.ai",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.95,
+			"output": 4,
+			"cacheRead": 0.19,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"requiresEffort": true
+		},
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": true
+		},
+		"supportsComputerUseConfig": false,
+		"compatConfig": {
+			"escapeBuiltinToolNames": true
+		}
+	},
+	"umans-deepseek-v4-flash-0731": {
+		"id": "umans-deepseek-v4-flash-0731",
+		"requiresGlyphTokenization": false,
+		"name": "Umans DeepSeek V4 Flash",
+		"api": "anthropic-messages",
+		"provider": "umans",
+		"baseUrl": "https://api.code.umans.ai",
+		"reasoning": true,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.14,
+			"output": 0.28,
+			"cacheRead": 0.028,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 393215,
+		"tokenizer": "deepseek-v3",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": true
+		},
+		"supportsComputerUseConfig": false,
+		"compatConfig": {
+			"escapeBuiltinToolNames": true
+		}
+	},
+	"umans-deepseek-v4-pro-0813": {
+		"id": "umans-deepseek-v4-pro-0813",
+		"requiresGlyphTokenization": false,
+		"name": "Umans DeepSeek V4 Pro",
+		"api": "anthropic-messages",
+		"provider": "umans",
+		"baseUrl": "https://api.code.umans.ai",
+		"reasoning": true,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 1.32,
+			"output": 3.96,
+			"cacheRead": 0.044,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 393215,
+		"tokenizer": "deepseek-v3",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": true
+		},
+		"supportsComputerUseConfig": false,
+		"compatConfig": {
+			"escapeBuiltinToolNames": true
+		}
+	},
+	"umans-flash": {
+		"id": "umans-flash",
+		"requiresGlyphTokenization": false,
+		"name": "Umans Flash",
+		"api": "anthropic-messages",
+		"provider": "umans",
+		"baseUrl": "https://api.code.umans.ai",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 1,
+			"cacheRead": 0.05,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": true
+		},
+		"supportsComputerUseConfig": false,
+		"compatConfig": {
+			"escapeBuiltinToolNames": true
+		}
+	},
+	"umans-glm-5.2": {
+		"id": "umans-glm-5.2",
+		"requiresGlyphTokenization": false,
+		"name": "Umans GLM 5.2",
+		"api": "anthropic-messages",
+		"provider": "umans",
+		"baseUrl": "https://api.code.umans.ai",
+		"reasoning": true,
+		"thinking": {
+			"mode": "anthropic-budget-effort",
+			"efforts": [
+				"high",
+				"max"
+			]
+		},
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 1.4,
+			"output": 4.4,
+			"cacheRead": 0.26,
+			"cacheWrite": 0
+		},
+		"contextWindow": 405504,
+		"maxTokens": 131071,
+		"tokenizer": "glm5",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": true
+		},
+		"supportsComputerUseConfig": false,
+		"compatConfig": {
+			"escapeBuiltinToolNames": true
+		}
+	},
+	"umans-kimi-k2.7": {
+		"id": "umans-kimi-k2.7",
+		"requiresGlyphTokenization": false,
+		"name": "Umans Kimi K2.7 Code",
+		"api": "anthropic-messages",
+		"provider": "umans",
+		"baseUrl": "https://api.code.umans.ai",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.95,
+			"output": 4,
+			"cacheRead": 0.19,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"requiresEffort": true
+		},
+		"tokenizer": "kimi-k2",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": true
+		},
+		"supportsComputerUseConfig": false,
+		"compatConfig": {
+			"escapeBuiltinToolNames": true
+		}
+	},
+	"umans-kimi-k3": {
+		"id": "umans-kimi-k3",
+		"requiresGlyphTokenization": false,
+		"name": "Umans Kimi K3",
+		"api": "anthropic-messages",
+		"provider": "umans",
+		"baseUrl": "https://api.code.umans.ai",
+		"reasoning": true,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131071,
+		"tokenizer": "kimi-k2",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": true
+		},
+		"supportsComputerUseConfig": false,
+		"compatConfig": {
+			"escapeBuiltinToolNames": true
+		}
+	},
+	"umans-qwen3.6-35b-a3b": {
+		"id": "umans-qwen3.6-35b-a3b",
+		"requiresGlyphTokenization": false,
+		"name": "Umans Qwen3.6 35B A3B",
+		"api": "anthropic-messages",
+		"provider": "umans",
+		"baseUrl": "https://api.code.umans.ai",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.15,
+			"output": 1,
+			"cacheRead": 0.05,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"tokenizer": "qwen3",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": true
+		},
+		"supportsComputerUseConfig": false,
+		"compatConfig": {
+			"escapeBuiltinToolNames": true
+		}
+	},
+	"umans-qwen3.8-27b-lab": {
+		"id": "umans-qwen3.8-27b-lab",
+		"requiresGlyphTokenization": false,
+		"name": "Umans Qwen3.8 27B (lab)",
+		"api": "anthropic-messages",
+		"provider": "umans",
+		"baseUrl": "https://api.code.umans.ai",
+		"reasoning": true,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			]
+		},
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 131071,
+		"tokenizer": "qwen3",
+		"supportsComputerUse": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": true
+		},
+		"supportsComputerUseConfig": false,
+		"compatConfig": {
+			"escapeBuiltinToolNames": true
+		}
+	}
+}
