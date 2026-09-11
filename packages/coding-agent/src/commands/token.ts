@@ -1,4 +1,4 @@
-import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai";
+import { getProviderRegistry } from "@oh-my-pi/pi-ai";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { tokenHelp as commandHelp } from "../cli/command-help";
@@ -117,7 +117,7 @@ export default class Token extends Command {
 
 			if (!isAuthenticated(apiKey)) {
 				const activeProviders = new Set<string>();
-				for (const p of PROVIDER_REGISTRY) {
+				for (const p of getProviderRegistry()) {
 					if (authStorage.hasAuth(p.id)) {
 						activeProviders.add(p.id);
 					}

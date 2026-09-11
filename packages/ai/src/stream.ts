@@ -53,7 +53,7 @@ import {
 	streamOpenAIResponses,
 } from "./providers/register-builtins";
 import { isSyntheticModel, streamSynthetic } from "./providers/synthetic";
-import { getProviderDefinition, PROVIDER_REGISTRY } from "./registry";
+import { getProviderDefinition, getProviderRegistry } from "./registry";
 import type {
 	Api,
 	AssistantMessage,
@@ -758,7 +758,7 @@ const CATALOG_ENTRY_ENV_KEYS = (CATALOG_PROVIDERS as readonly ProviderCatalogEnt
 const serviceProviderMap: Record<string, KeyResolver> = {
 	...Object.fromEntries(CATALOG_ENTRY_ENV_KEYS),
 	...Object.fromEntries(
-		PROVIDER_REGISTRY.flatMap(provider =>
+		getProviderRegistry().flatMap(provider =>
 			provider.envKeys != null ? [[provider.id, provider.envKeys] as [string, KeyResolver]] : [],
 		),
 	),

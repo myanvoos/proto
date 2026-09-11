@@ -1,5 +1,12 @@
-import { PROVIDER_REGISTRY } from "./registry";
+import { getProviderRegistry } from "./registry";
 
-export const PASTE_CODE_LOGIN_PROVIDERS: ReadonlySet<string> = new Set(
-	PROVIDER_REGISTRY.filter(p => p.pasteCodeFlow).map(p => p.id),
-);
+let pasteCodeLoginProviders: ReadonlySet<string> | undefined;
+
+export function isPasteCodeLoginProvider(id: string): boolean {
+	pasteCodeLoginProviders ??= new Set(
+		getProviderRegistry()
+			.filter(p => p.pasteCodeFlow)
+			.map(p => p.id),
+	);
+	return pasteCodeLoginProviders.has(id);
+}

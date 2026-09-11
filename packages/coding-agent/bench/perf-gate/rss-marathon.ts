@@ -209,6 +209,19 @@ const rssSeries: number[] = [];
 const compactions: number[] = [];
 const gcSamplesMs: number[] = [];
 let prevMessages = 0;
+
+// Idle baseline: session fully constructed, settled, before any turn runs.
+// A short async-GC settle lets the allocator purge transient construction
+// high-water, which is what a session sitting idle actually occupies.
+Bun.gc(true);
+await Bun.sleep(500);
+Bun.gc(false);
+await Bun.sleep(2000);
+Bun.gc(false);
+await Bun.sleep(500);
+const bootIdleMb = process.memoryUsage().rss / 2 ** 20;
+const bootIdleVmHwmMb = readVmHwmKb() / 1024;
+
 const t0 = Date.now();
 for (let r = 0; r < ROUNDS; r++) {
 	await session.prompt(`marathon round ${r}`);
@@ -252,6 +265,9 @@ const result = {
 	durationMs: Date.now() - t0,
 	rssMedianMb: sorted[sorted.length >> 1],
 	rssMaxMb: sorted[sorted.length - 1],
+	bootIdleMb,
+	bootIdleVmHwmMb,
+	gate150Mb: bootIdleMb <= 150,
 	rssFirst10AvgMb: rssSeries.slice(0, 10).reduce((a, b) => a + b, 0) / Math.min(10, rssSeries.length),
 	heapUsedMb: finalMem.heapUsed / 2 ** 20,
 	rssFinalMb: finalMem.rss / 2 ** 20,
@@ -262,6 +278,6 @@ const file = path.join(import.meta.dir, "results", "rss-marathon.json");
 fs.mkdirSync(path.dirname(file), { recursive: true });
 fs.writeFileSync(file, JSON.stringify(result, null, 2));
 console.log(
-	`rss-marathon: VmHWM ${vmHwmMb.toFixed(0)}MB (gate 800MB: ${result.gate800Mb ? "PASS" : "FAIL"})  rss median ${result.rssMedianMb.toFixed(0)}MB  max ${result.rssMaxMb.toFixed(0)}MB  final ${result.rssFinalMb.toFixed(0)}MB  heap ${result.heapUsedMb.toFixed(0)}MB  ${result.durationMs}ms  -> ${file}`,
+	`rss-marathon: idle ${bootIdleMb.toFixed(0)}MB (gate 150MB: ${result.gate150Mb ? "PASS" : "FAIL"})  VmHWM ${vmHwmMb.toFixed(0)}MB (gate 800MB: ${result.gate800Mb ? "PASS" : "FAIL"})  rss median ${result.rssMedianMb.toFixed(0)}MB  max ${result.rssMaxMb.toFixed(0)}MB  final ${result.rssFinalMb.toFixed(0)}MB  heap ${result.heapUsedMb.toFixed(0)}MB  ${result.durationMs}ms  -> ${file}`,
 );
-process.exit(result.gate800Mb ? 0 : 1);
+process.exit(result.gate800Mb && result.gate150Mb ? 0 : 1);

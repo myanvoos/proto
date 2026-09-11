@@ -4,6 +4,19 @@ import type { Api, KnownProvider, Model, TokenCost, Usage } from "./types";
 
 const modelRegistry = new Map<string, Map<string, Model<Api>>>();
 
+// Identical compat/cost payloads repeat across thousands of bundled models
+// (96% of compat objects are duplicates); interning collapses them so a fully
+// materialized catalog shares one object per distinct payload.
+const compatCache = new Map<string, object>();
+const costCache = new Map<string, object>();
+
+function internShared<T extends object>(cache: Map<string, T>, value: T, key: string): T {
+	const existing = cache.get(key);
+	if (existing !== undefined) return existing;
+	cache.set(key, value);
+	return value;
+}
+
 function getProviderModels(provider: string): Map<string, Model<Api>> | undefined {
 	const cachedModels = modelRegistry.get(provider);
 	if (cachedModels !== undefined) return cachedModels;
@@ -13,7 +26,18 @@ function getProviderModels(provider: string): Map<string, Model<Api>> | undefine
 
 	const providerModels = new Map<string, Model<Api>>();
 	for (const id in rawModels) {
-		providerModels.set(id, rawModels[id as keyof typeof rawModels] as unknown as Model<Api>);
+		const model = rawModels[id as keyof typeof rawModels] as unknown as Model<Api>;
+		if (model.compat !== undefined) {
+			model.compat = internShared(
+				compatCache,
+				model.compat as object,
+				JSON.stringify(model.compat),
+			) as typeof model.compat;
+		}
+		if (model.cost !== undefined) {
+			model.cost = internShared(costCache, model.cost as object, JSON.stringify(model.cost)) as typeof model.cost;
+		}
+		providerModels.set(id, model);
 	}
 	modelRegistry.set(provider, providerModels);
 	return providerModels;

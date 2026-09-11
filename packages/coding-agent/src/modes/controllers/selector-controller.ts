@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import { PASTE_CODE_LOGIN_PROVIDERS } from "@oh-my-pi/pi-ai";
+import { isPasteCodeLoginProvider } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import type { Component, OverlayHandle, ResizeScrollbackMode } from "@oh-my-pi/pi-tui";
@@ -1689,7 +1689,7 @@ export class SelectorController {
 
 	async #handleOAuthLogin(providerId: string): Promise<boolean> {
 		this.ctx.showStatus(`Logging in to ${providerId}…`);
-		const useManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(providerId);
+		const useManualInput = isPasteCodeLoginProvider(providerId);
 		let restored = false;
 		const restoreEditor = () => {
 			if (restored) return;

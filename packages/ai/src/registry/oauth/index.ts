@@ -1,5 +1,5 @@
 import * as AIError from "../../error";
-import { getProviderDefinition, PROVIDER_REGISTRY } from "../registry";
+import { getProviderDefinition, getProviderRegistry } from "../registry";
 import type {
 	OAuthCredentials,
 	OAuthProvider,
@@ -12,14 +12,19 @@ export * from "./anthropic";
 export * from "./device-code";
 export type * from "./types";
 
-const builtInOAuthProviders: OAuthProviderInfo[] = PROVIDER_REGISTRY.filter(
-	provider => provider.login && provider.showInLoginList !== false,
-).map(provider => ({
-	id: provider.id,
-	name: provider.name,
-	available: provider.available ?? true,
-	storeCredentialsAs: provider.storeCredentialsAs,
-}));
+let builtInOAuthProviders: OAuthProviderInfo[] | undefined;
+
+function getBuiltInOAuthProviders(): OAuthProviderInfo[] {
+	builtInOAuthProviders ??= getProviderRegistry()
+		.filter(provider => provider.login && provider.showInLoginList !== false)
+		.map(provider => ({
+			id: provider.id,
+			name: provider.name,
+			available: provider.available ?? true,
+			storeCredentialsAs: provider.storeCredentialsAs,
+		}));
+	return builtInOAuthProviders;
+}
 
 const customOAuthProviders = new Map<string, OAuthProviderInterface>();
 
@@ -139,5 +144,5 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 		available: true,
 		storeCredentialsAs: provider.storeCredentialsAs,
 	}));
-	return [...builtInOAuthProviders, ...customProviders];
+	return [...getBuiltInOAuthProviders(), ...customProviders];
 }

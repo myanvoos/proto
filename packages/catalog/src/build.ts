@@ -6,7 +6,7 @@ import { bareModelId, parseOpenAIModel, semverGte } from "./identity/classify";
 import { isClaudeModelId } from "./identity/family";
 import { resolveModelThinking } from "./model-thinking";
 import { resolveModelTokenizer } from "./model-tokenizer";
-import type { Api, CompatOf, Model, ModelSpec } from "./types";
+import type { Api, CompatOf, Model, ModelSpec, ThinkingConfig } from "./types";
 import { cleanModelName } from "./utils";
 
 function isDirectOpenAIResponsesEndpoint(spec: ModelSpec<Api>): boolean {
@@ -49,19 +49,44 @@ function supportsOpenAIGAComputerUse(spec: ModelSpec<Api>, explicitSupport: bool
 }
 
 export function buildModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi> {
-	const compat = buildCompat(spec) as CompatOf<TApi>;
+	const builtCompat = buildCompat(spec) as CompatOf<TApi>;
+	const compatKey = JSON.stringify(builtCompat);
+	const internedCompat = compatInternCache.get(compatKey);
+	const compat = (internedCompat ?? builtCompat) as CompatOf<TApi>;
+	if (internedCompat === undefined) compatInternCache.set(compatKey, builtCompat);
+	const builtThinking = resolveModelThinking(spec, compat);
+	const thinkingKey = builtThinking === undefined ? "undefined" : JSON.stringify(builtThinking);
+	const internedThinking = thinkingInternCache.get(thinkingKey);
+	const thinking = internedThinking === undefined ? builtThinking : internedThinking;
+	if (internedThinking === undefined) thinkingInternCache.set(thinkingKey, builtThinking);
 	const supportsComputerUseConfig = explicitComputerUseConfig(spec);
 	return {
 		...spec,
+		baseUrl: internString(spec.baseUrl),
 		name: cleanModelName(spec.name),
 		requiresGlyphTokenization: isClaudeModelId(spec.id),
 		tokenizer: spec.tokenizer ?? resolveModelTokenizer(spec.requestModelId ?? spec.id),
-		thinking: resolveModelThinking(spec, compat),
+		thinking,
 		supportsComputerUse: supportsOpenAIGAComputerUse(spec, supportsComputerUseConfig),
 		supportsComputerUseConfig,
 		compat,
 		compatConfig: spec.compat,
 	} as Model<TApi>;
+}
+
+// Compat payloads repeat across thousands of bundled models (96% are duplicates
+// when materialized); interning by serialized shape collapses them to one shared
+// object per distinct payload.
+const compatInternCache = new Map<string, CompatOf<Api>>();
+const thinkingInternCache = new Map<string, ThinkingConfig | undefined>();
+const stringPool = new Map<string, string>();
+
+function internString(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const existing = stringPool.get(value);
+	if (existing !== undefined) return existing;
+	stringPool.set(value, value);
+	return value;
 }
 
 export function buildCompat(spec: ModelSpec<Api>): CompatOf<Api> {

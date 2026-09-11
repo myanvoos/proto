@@ -10,7 +10,8 @@ import {
 import type { ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
 import { isUsageLimitOutcome } from "./error/rate-limit";
-import { getProviderDefinition, PASTE_CODE_LOGIN_PROVIDERS } from "./registry";
+import { getProviderDefinition } from "./registry";
+import { isPasteCodeLoginProvider } from "./registry/derived";
 import { getOAuthApiKey, getOAuthProvider, refreshOAuthToken } from "./registry/oauth";
 import type {
 	OAuthAuthInfo,
@@ -2231,7 +2232,7 @@ export class AuthStorage {
 			onPrompt: (prompt: { message: string; placeholder?: string }) => Promise<string>;
 		},
 	): Promise<OAuthLoginIdentity | undefined> {
-		const manualCodeInput = PASTE_CODE_LOGIN_PROVIDERS.has(provider)
+		const manualCodeInput = isPasteCodeLoginProvider(provider)
 			? () => ctrl.onPrompt({ message: "Paste the authorization code (or full redirect URL):" })
 			: undefined;
 

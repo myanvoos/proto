@@ -418,7 +418,7 @@ const ENV_DELIMS: Record<string, readonly [string, string]> = {
 	"equation*": ["", ""],
 };
 
-const SYMBOLS: Record<string, string> = {
+const buildSymbols = (): Record<string, string> => ({
 	alpha: "α",
 	beta: "β",
 	gamma: "γ",
@@ -818,7 +818,14 @@ const SYMBOLS: Record<string, string> = {
 	Natural: "ℕ",
 	Integer: "ℤ",
 	Rational: "ℚ",
-};
+});
+
+let symbols: Record<string, string> | undefined;
+
+function getSymbols(): Record<string, string> {
+	symbols ??= buildSymbols();
+	return symbols;
+}
 
 const ANSI_FG_RESET = "\x1b[39m";
 const ANSI_BG_RESET = "\x1b[49m";
@@ -1570,7 +1577,7 @@ class LatexParser {
 
 		if (FUNCTIONS[name]) return styledText(name + this.#spaceBeforeArg(), current);
 
-		const symbol = SYMBOLS[name];
+		const symbol = getSymbols()[name];
 		if (symbol !== undefined) return styledText(symbol, current);
 
 		switch (name) {
@@ -1801,7 +1808,7 @@ class LatexParser {
 			name += this.#s[this.#i];
 			this.#i++;
 		}
-		return styledText(SYMBOLS[name] ?? name, current);
+		return styledText(getSymbols()[name] ?? name, current);
 	}
 
 	#optionalArgument(style: ParseStyle): Argument | null {

@@ -1,5 +1,5 @@
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
-import { PASTE_CODE_LOGIN_PROVIDERS } from "@oh-my-pi/pi-ai";
+import { isPasteCodeLoginProvider } from "@oh-my-pi/pi-ai";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import {
 	type Component,
@@ -177,7 +177,7 @@ export class SignInTab implements SetupTab {
 
 	async #login(providerId: string): Promise<void> {
 		if (this.#loggingInProvider || this.#disposed) return;
-		const useManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(providerId);
+		const useManualInput = isPasteCodeLoginProvider(providerId);
 		this.#selector.stopValidation();
 		this.#loggingInProvider = providerId;
 		this.#statusLines = [theme.fg("dim", "Starting OAuth flow…")];

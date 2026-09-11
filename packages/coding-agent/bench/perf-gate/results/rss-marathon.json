@@ -1,5 +1,5 @@
 {
-  "ts": "2026-09-11T06:37:30.757Z",
+  "ts": "2026-09-11T07:53:40.419Z",
   "rounds": 120,
   "toolCallsPerRound": 3,
   "compactions": 14,
@@ -19,21 +19,24 @@
     116,
     119
   ],
-  "gcPauseP50Ms": 11.279474,
+  "gcPauseP50Ms": 10.5193005,
   "gcPauseSamplesMs": [
-    9.149231,
-    10.699389,
-    11.859559,
-    12.969393,
-    12.694718,
-    10.381354
+    9.443692,
+    9.015065,
+    11.029768,
+    11.847872,
+    14.158626,
+    10.008833
   ],
-  "durationMs": 12467,
-  "rssMedianMb": 437.83203125,
-  "rssMaxMb": 560.828125,
-  "rssFirst10AvgMb": 303.766796875,
-  "heapUsedMb": 79.23760414123535,
-  "rssFinalMb": 495.08984375,
-  "vmHwmMb": 571.1015625,
+  "durationMs": 12312,
+  "rssMedianMb": 400.83203125,
+  "rssMaxMb": 567.70703125,
+  "bootIdleMb": 180.20703125,
+  "bootIdleVmHwmMb": 208.82421875,
+  "gate150Mb": false,
+  "rssFirst10AvgMb": 296.045703125,
+  "heapUsedMb": 76.56687641143799,
+  "rssFinalMb": 512.18359375,
+  "vmHwmMb": 577.08203125,
   "gate800Mb": true
 }

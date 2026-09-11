@@ -9,12 +9,12 @@ import {
 	type CredentialDisabledEvent,
 	getEnvApiKey,
 	getOAuthProviders,
+	getProviderRegistry,
+	isPasteCodeLoginProvider,
 	listProvidersWithEnvKey,
 	type OAuthCredential,
 	type OAuthProvider,
 	type OAuthProviderInfo,
-	PASTE_CODE_LOGIN_PROVIDERS,
-	PROVIDER_REGISTRY,
 	SqliteAuthCredentialStore,
 } from "@oh-my-pi/pi-ai";
 import { AuthBrokerClient, DEFAULT_AUTH_BROKER_BIND, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
@@ -64,7 +64,7 @@ const ACTIONS: readonly AuthBrokerAction[] = [
 ];
 
 const CALLBACK_PORTS: Record<string, number> = Object.fromEntries(
-	PROVIDER_REGISTRY.flatMap(provider =>
+	getProviderRegistry().flatMap(provider =>
 		provider.callbackPort != null ? [[provider.id, provider.callbackPort] as [string, number]] : [],
 	),
 );
@@ -210,7 +210,7 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 	const storage = new AuthStorage(store);
 	await storage.reload();
 	try {
-		const usesManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(provider);
+		const usesManualInput = isPasteCodeLoginProvider(provider);
 		await storage.login(provider, {
 			onAuth({ url, launchUrl, instructions }) {
 				process.stdout.write("\nOpen this URL in your browser:\n");
