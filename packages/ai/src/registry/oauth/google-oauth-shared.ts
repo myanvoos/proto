@@ -79,7 +79,7 @@ async function getUserEmail(
 }
 
 export class GoogleOAuthFlow extends OAuthCallbackFlow {
-	private readonly config: GoogleOAuthFlowConfig;
+	readonly #config: GoogleOAuthFlowConfig;
 
 	constructor(ctrl: OAuthController, config: GoogleOAuthFlowConfig) {
 		super(ctrl, {
@@ -87,38 +87,38 @@ export class GoogleOAuthFlow extends OAuthCallbackFlow {
 			callbackPath: config.callbackPath,
 			callbackHostname: "127.0.0.1",
 		});
-		this.config = config;
+		this.#config = config;
 	}
 
 	async generateAuthUrl(state: string, redirectUri: string): Promise<{ url: string; instructions?: string }> {
 		const authParams = new URLSearchParams({
-			client_id: this.config.clientId,
+			client_id: this.#config.clientId,
 			response_type: "code",
 			redirect_uri: redirectUri,
-			scope: this.config.scopes.join(" "),
+			scope: this.#config.scopes.join(" "),
 			state,
 			access_type: "offline",
 			prompt: "consent",
 		});
 
-		const url = `${this.config.authUrl}?${authParams.toString()}`;
+		const url = `${this.#config.authUrl}?${authParams.toString()}`;
 		return { url, instructions: "Complete the sign-in in your browser." };
 	}
 
 	async exchangeToken(code: string, _state: string, redirectUri: string): Promise<OAuthCredentials> {
-		const { provider } = this.config;
+		const { provider } = this.#config;
 		const signal = this.ctrl.signal;
 		throwIfLoginCancelled(signal);
 		this.ctrl.onProgress?.("Exchanging authorization code for tokens...");
 
 		const tokenResponse = await oauthFetch(
-			this.config.tokenUrl,
+			this.#config.tokenUrl,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
 				body: new URLSearchParams({
-					client_id: this.config.clientId,
-					client_secret: this.config.clientSecret,
+					client_id: this.#config.clientId,
+					client_secret: this.#config.clientSecret,
 					code,
 					grant_type: "authorization_code",
 					redirect_uri: redirectUri,
@@ -151,7 +151,7 @@ export class GoogleOAuthFlow extends OAuthCallbackFlow {
 		throwIfLoginCancelled(signal);
 		let projectId: string;
 		try {
-			projectId = await this.config.discoverProject(tokenData.access_token, this.ctrl.onProgress, signal);
+			projectId = await this.#config.discoverProject(tokenData.access_token, this.ctrl.onProgress, signal);
 		} catch (err) {
 			const validationUrl = extractGoogleValidationUrl(err instanceof Error ? err.message : String(err));
 			if (!validationUrl) throw err;

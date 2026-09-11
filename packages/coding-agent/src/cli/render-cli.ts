@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { Terminal, TerminalAppearance, TerminalAppearanceRequestToken } from "@oh-my-pi/pi-tui/terminal";
 import type { RenderScheduler } from "@oh-my-pi/pi-tui/tui";
-import { getProjectDir, isEnoent, logger, TempDir } from "@oh-my-pi/pi-utils";
+import { formatBytes, getProjectDir, isEnoent, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
@@ -133,12 +133,6 @@ async function resolveTargetSession(sessionArg: string | undefined, cwd: string)
 	return recent;
 }
 
-function formatBytes(bytes: number): string {
-	if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-	if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-	return `${bytes} B`;
-}
-
 function formatMs(ms: number): string {
 	return `${ms.toFixed(0)} ms`;
 }
@@ -223,10 +217,10 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 			const rows = mode.chatContainer.render(width).length;
 			const report = [
 				`session  ${sourcePath}`,
-				`         ${formatBytes(sourceSize)}, ${entries.length} entries, ${messageCount} messages, ${rows} transcript rows @ ${width}x${height}`,
+				`         ${formatBytes(sourceSize, { style: "spaced-iec" })}, ${entries.length} entries, ${messageCount} messages, ${rows} transcript rows @ ${width}x${height}`,
 				`open     ${formatMs(openMs)}`,
 				`replay   ${formatMs(replayMs)}  (transcript build + component construction)`,
-				`paint    ${formatMs(paintMs)}  (full frame compose + emit: ${formatBytes(paintBytes)}, ${terminal.writes} writes)`,
+				`paint    ${formatMs(paintMs)}  (full frame compose + emit: ${formatBytes(paintBytes, { style: "spaced-iec" })}, ${terminal.writes} writes)`,
 			];
 			if (repaints.length > 0) {
 				const times = repaints.map(r => r.ms);
@@ -235,7 +229,7 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 				const max = Math.max(...times);
 				const bytesPer = repaints[0]!.bytes;
 				report.push(
-					`repaint  ${formatMs(avg)} avg over ${repaints.length} (min ${formatMs(min)}, max ${formatMs(max)}), ${formatBytes(bytesPer)}/frame`,
+					`repaint  ${formatMs(avg)} avg over ${repaints.length} (min ${formatMs(min)}, max ${formatMs(max)}), ${formatBytes(bytesPer, { style: "spaced-iec" })}/frame`,
 				);
 			}
 			process.stderr.write(`${report.join("\n")}\n`);

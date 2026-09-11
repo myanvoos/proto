@@ -74,14 +74,14 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 
 		while (this.waiting.length > 0) {
 			const waiter = this.waiting.shift()!;
-			waiter.resolve({ value: undefined as any, done: true });
+			waiter.resolve({ value: undefined, done: true });
 		}
 	}
 
 	endWaiting(): void {
 		while (this.waiting.length > 0) {
 			const waiter = this.waiting.shift()!;
-			waiter.resolve({ value: undefined as any, done: true });
+			waiter.resolve({ value: undefined, done: true });
 		}
 	}
 
@@ -107,9 +107,9 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 			} else if (this.done) {
 				return;
 			} else {
-				const result = await new Promise<IteratorResult<T>>((resolve, reject) =>
-					this.waiting.push({ resolve, reject }),
-				);
+				const { promise, resolve, reject } = Promise.withResolvers<IteratorResult<T>>();
+				this.waiting.push({ resolve, reject });
+				const result = await promise;
 				if (result.done) return;
 				yield result.value;
 			}

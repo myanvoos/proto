@@ -4,7 +4,7 @@ type TrimLeft<s extends string> = s extends `${Whitespace}${infer rest}` ? TrimL
 type TrimRight<s extends string> = s extends `${infer rest}${Whitespace}` ? TrimRight<rest> : s;
 type Trim<s extends string> = TrimLeft<TrimRight<s>>;
 
-type ArkAny = ReturnType<typeof JSON.parse>;
+type ArkAny = unknown;
 
 interface PrimitiveMap {
 	string: string;

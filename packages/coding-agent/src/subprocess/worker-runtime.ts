@@ -7,6 +7,7 @@ import {
 	getTinyModelsCacheDir,
 	installRuntimeModuleResolver,
 	isCompiledBinary,
+	readPipe,
 	resolveRuntimeModule,
 } from "@oh-my-pi/pi-utils";
 import packageJson from "../../package.json" with { type: "json" };
@@ -147,11 +148,6 @@ async function missingOnnxRuntimeCudaProviderFiles(binDir: string): Promise<stri
 		}
 	}
 	return missing;
-}
-
-async function readPipe(stream: ReadableStream<Uint8Array> | null): Promise<string> {
-	if (!stream) return "";
-	return new Response(stream).text();
 }
 
 async function installOnnxRuntimeCudaProviders(packageDir: string, runtimeDir: string, binDir: string): Promise<void> {

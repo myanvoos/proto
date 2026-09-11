@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import { getBundledModels } from "@oh-my-pi/pi-catalog";
-import { $which, type FetchImpl, getAgentDbPath, isEnoent } from "@oh-my-pi/pi-utils";
+import { $which, type FetchImpl, formatBytes, getAgentDbPath, isEnoent } from "@oh-my-pi/pi-utils";
 import {
 	queryBlobBrokerDoctor,
 	queryBlobBrokerProbe,
@@ -332,13 +332,6 @@ function safeBaseUrl(value: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
 function publicStatus(status: BlobBrokerStatus | null): SafeDaemonStatus {
@@ -713,14 +706,14 @@ function renderStatus(result: ImagesStatusResult): string {
 	if (metrics) {
 		lines.push(
 			`Blobs: ${metrics.activeBlobs} active (${metrics.eagerBlobs} eager, ${metrics.lazyBlobs} lazy)`,
-			`Storage: ${formatBytes(metrics.residentBytes)} resident, ${formatBytes(metrics.diskBytes)} disk`,
+			`Storage: ${formatBytes(metrics.residentBytes, { style: "spaced-iec" })} resident, ${formatBytes(metrics.diskBytes, { style: "spaced-iec" })} disk`,
 			`Fetch: ${metrics.hits} hits, ${metrics.misses} misses, ${metrics.duplicateTokenGets} duplicate GETs`,
-			`Bytes served: ${formatBytes(metrics.bytesServed)}`,
+			`Bytes served: ${formatBytes(metrics.bytesServed, { style: "spaced-iec" })}`,
 		);
 	}
 	lines.push(
-		`Bytes saved: ${formatBytes(result.savings.savedBytes)} (${formatBytes(result.savings.inlineBytes)} inline → ${formatBytes(result.savings.referenceBytes)} references)`,
-		`Provider files: ${result.providerFiles.entries} active, ${formatBytes(result.providerFiles.bytes)}`,
+		`Bytes saved: ${formatBytes(result.savings.savedBytes, { style: "spaced-iec" })} (${formatBytes(result.savings.inlineBytes, { style: "spaced-iec" })} inline → ${formatBytes(result.savings.referenceBytes, { style: "spaced-iec" })} references)`,
+		`Provider files: ${result.providerFiles.entries} active, ${formatBytes(result.providerFiles.bytes, { style: "spaced-iec" })}`,
 	);
 	for (const event of result.daemon.recentFetches ?? []) {
 		lines.push(
@@ -746,8 +739,8 @@ function renderPurge(result: ImagesPurgeResult): string {
 	const daemonBytes = result.daemon?.reclaimedBytes ?? 0;
 	const lines = [
 		result.applied ? "Image purge applied." : "Image purge dry-run; pass --apply to delete.",
-		`Daemon blobs: ${daemonSelected}, ${formatBytes(daemonBytes)}`,
-		`Provider files: ${result.providerFiles.selected} selected, ${result.providerFiles.deleted} deleted, ${formatBytes(result.providerFiles.bytes)}`,
+		`Daemon blobs: ${daemonSelected}, ${formatBytes(daemonBytes, { style: "spaced-iec" })}`,
+		`Provider files: ${result.providerFiles.selected} selected, ${result.providerFiles.deleted} deleted, ${formatBytes(result.providerFiles.bytes, { style: "spaced-iec" })}`,
 	];
 	if (result.providerFiles.skippedAuth > 0) {
 		lines.push(

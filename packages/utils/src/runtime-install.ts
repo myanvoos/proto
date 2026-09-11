@@ -247,7 +247,7 @@ export async function writeRuntimeManifest(runtimeDir: string, install: RuntimeI
 	await Bun.write(path.join(runtimeDir, "package.json"), `${JSON.stringify(manifest, null, "\t")}\n`);
 }
 
-async function readPipe(stream: ReadableStream<Uint8Array> | null): Promise<string> {
+export async function readPipe(stream: ReadableStream<Uint8Array> | null): Promise<string> {
 	if (!stream) return "";
 	return new Response(stream).text();
 }

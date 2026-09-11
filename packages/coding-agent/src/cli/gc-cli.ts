@@ -3,7 +3,14 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, gunzipSync, gzipSync } from "node:zlib";
-import { getAgentDir, getBlobsDir, getHistoryDbPath, getModelDbPath, getSessionsDir } from "@oh-my-pi/pi-utils";
+import {
+	formatBytes,
+	getAgentDir,
+	getBlobsDir,
+	getHistoryDbPath,
+	getModelDbPath,
+	getSessionsDir,
+} from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
 import { listSessionsReadOnly, type SessionInfo, type SessionStatus } from "../session/session-listing";
@@ -979,18 +986,11 @@ async function withGcLock<T>(agentDir: string, fn: (lockPath: string) => Promise
 	return result as T;
 }
 
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
-}
-
 function renderText(result: GcResult): string {
 	const lines = [`GC ${result.apply ? "applied" : "dry-run"} (${result.agentDir})`];
 	if (result.blobs) {
 		lines.push(
-			`blobs: ${result.blobs.deleted}/${result.blobs.wouldDelete} files, ${formatBytes(result.blobs.bytes)}, ${result.blobs.referenced} refs`,
+			`blobs: ${result.blobs.deleted}/${result.blobs.wouldDelete} files, ${formatBytes(result.blobs.bytes, { style: "spaced-iec" })}, ${result.blobs.referenced} refs`,
 		);
 		if (result.blobs.errors.length > 0) lines.push(`blob errors: ${result.blobs.errors.length}`);
 	}
@@ -1003,7 +1003,9 @@ function renderText(result: GcResult): string {
 	}
 	if (result.wal) {
 		const state = result.wal.checkpointed ? "checkpointed" : "checkpoint dry-run";
-		lines.push(`wal: ${state}, ${formatBytes(result.wal.walBytes)} across ${result.wal.databases.length} dbs`);
+		lines.push(
+			`wal: ${state}, ${formatBytes(result.wal.walBytes, { style: "spaced-iec" })} across ${result.wal.databases.length} dbs`,
+		);
 	}
 	return `${lines.join("\n")}\n`;
 }

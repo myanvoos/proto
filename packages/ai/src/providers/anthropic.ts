@@ -499,11 +499,7 @@ const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 
 function createClaudeBillingHeader(firstUserMessageText: string): string {
 	const k = [4, 7, 20].map(i => firstUserMessageText[i] ?? "0").join("");
-	const versionSuffix = nodeCrypto
-		.createHash("sha256")
-		.update(`59cf53e54c78${k}${claudeCodeVersion}`)
-		.digest("hex")
-		.slice(0, 3);
+	const versionSuffix = Bun.SHA256.hash(`59cf53e54c78${k}${claudeCodeVersion}`, "hex").slice(0, 3);
 
 	return `${CLAUDE_BILLING_HEADER_PREFIX} cc_version=${claudeCodeVersion}.${versionSuffix}; cc_entrypoint=claude-desktop; ${CCH_PLACEHOLDER_STR};`;
 }
@@ -594,7 +590,7 @@ const CLAUDE_DEVICE_ID_INSTALL_HASH_DOMAIN = "proto-claude-device-id-v1:";
 const CLAUDE_DEVICE_ID_ACCOUNT_HASH_DOMAIN = "proto-claude-device-id-v2";
 
 export function deriveClaudeDeviceId(installId: string, accountId?: string): string {
-	const hash = nodeCrypto.createHash("sha256");
+	const hash = new Bun.CryptoHasher("sha256");
 	if (accountId && accountId.length > 0) {
 		return hash
 			.update(CLAUDE_DEVICE_ID_ACCOUNT_HASH_DOMAIN)

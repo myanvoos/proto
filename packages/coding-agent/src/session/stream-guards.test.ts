@@ -3,7 +3,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Agent, type AgentTool, type StreamFn } from "@oh-my-pi/pi-agent-core";
-import { type AssistantMessage, createAssistantMessageEventStream, type Model, type ToolCall } from "@oh-my-pi/pi-ai";
+import {
+	type AssistantMessage,
+	type AssistantMessageEventStream,
+	createAssistantMessageEventStream,
+	type Model,
+	type ToolCall,
+} from "@oh-my-pi/pi-ai";
 import { setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type SettingPath, Settings } from "../config/settings";
 import type { StreamedKernelFailure } from "../eval/speculation";
@@ -62,7 +68,7 @@ function toolCall(id: string, rawPartialJson: string, command = ""): ToolCall {
 	return call;
 }
 
-function textResponse(stream: ReturnType<typeof createAssistantMessageEventStream>, model: Model, text: string): void {
+function textResponse(stream: AssistantMessageEventStream, model: Model, text: string): void {
 	const timestamp = Date.now();
 	const empty = assistantMessage(model, timestamp, [], "stop");
 	stream.push({ type: "start", partial: empty });
@@ -187,7 +193,7 @@ function makeHarness(
 }
 
 function pushSingleToolPrefix(
-	stream: ReturnType<typeof createAssistantMessageEventStream>,
+	stream: AssistantMessageEventStream,
 	model: Model,
 	timestamp: number,
 	toolCallId: string,

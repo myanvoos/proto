@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { OmpErrors, type } from "@oh-my-pi/omptype";
@@ -122,11 +121,11 @@ const PersistedIndexSchema = type({
 });
 
 export function hashProviderFileCredential(credential: string): string {
-	return createHash("sha256").update(credential, "utf8").digest("hex");
+	return Bun.SHA256.hash(credential, "hex");
 }
 
 export function hashProviderFileContent(bytes: Uint8Array): string {
-	return createHash("sha256").update(bytes).digest("hex");
+	return Bun.SHA256.hash(bytes, "hex");
 }
 
 export function toProviderFileReference(handle: ProviderFileHandle): ProviderFileReference {

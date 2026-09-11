@@ -51,7 +51,7 @@ export interface ConductorJournalEntry {
 }
 
 /** Collapses a multi-line authored prompt into the journal's one-line headline. */
-function journalHeadline(text: string): string {
+export function journalHeadline(text: string): string {
 	const line = text.split("\n").find(candidate => candidate.trim()) ?? "";
 	const collapsed = line.replace(/\s+/g, " ").trim();
 	return collapsed.length > 120 ? `${collapsed.slice(0, 119)}…` : collapsed;

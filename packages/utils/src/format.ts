@@ -37,7 +37,16 @@ function trim1(n: number): string {
 	return s.endsWith(".0") ? s.slice(0, -2) : s;
 }
 
-export function formatBytes(bytes: number): string {
+export type FormatBytesStyle = "compact" | "spaced-iec";
+
+export function formatBytes(bytes: number, options: { style?: FormatBytesStyle } = {}): string {
+	if (options.style === "spaced-iec") {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+	}
+
 	if (bytes < 1024) return `${bytes}B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
 	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;

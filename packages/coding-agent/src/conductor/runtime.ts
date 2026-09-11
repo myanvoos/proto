@@ -37,7 +37,12 @@ import * as git from "../utils/git";
 import { type ConductorGateRuling, type ConductorRuling, type ConductorTempoRuling, CueTool } from "./cue-tool";
 import { assembleEpochDigest } from "./digest";
 import { type ConductorProposal, ProgramTool, parseConductorObjective } from "./program-tool";
-import { CONDUCTOR_TRANSCRIPT_FILENAME, type ConductorJournalEntry, conductorTranscriptPath } from "./transcript";
+import {
+	CONDUCTOR_TRANSCRIPT_FILENAME,
+	type ConductorJournalEntry,
+	conductorTranscriptPath,
+	journalHeadline,
+} from "./transcript";
 
 /**
  * Investigative grant for a verification turn. `bash` is included because the objective's "## Verification"
@@ -254,13 +259,6 @@ function renderEpochPrompt(goal: Goal, epochNumber: number, wakeReasons: string,
 		timeUsedSeconds: String(goal.timeUsedSeconds),
 		digest,
 	});
-}
-
-/** Collapses a multi-line ruling prompt into the journal's one-line headline. */
-function journalHeadline(text: string): string {
-	const line = text.split("\n").find(candidate => candidate.trim()) ?? "";
-	const collapsed = line.replace(/\s+/g, " ").trim();
-	return collapsed.length > 120 ? `${collapsed.slice(0, 119)}…` : collapsed;
 }
 
 function formatRejectionContent(evidence: string): string {
