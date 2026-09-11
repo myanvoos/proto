@@ -332,10 +332,36 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 	}
 }
 
-function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
+// Streaming providers mutate the block named by each event, while completed blocks stay stable.
+// Reuse a prior snapshot only when the source block is still the same object; otherwise fall back to cloning it.
+function snapshotAssistantMessage(
+	message: AssistantMessage,
+	previousSnapshot?: AssistantMessage,
+	previousMessage?: AssistantMessage,
+	changedContentIndex?: number,
+): AssistantMessage {
+	const canSharePreviousBlocks =
+		previousSnapshot !== undefined &&
+		previousMessage !== undefined &&
+		changedContentIndex !== undefined &&
+		previousSnapshot.content.length <= message.content.length &&
+		changedContentIndex >= 0 &&
+		changedContentIndex < message.content.length;
+	const content = message.content.map((block, index) => {
+		if (
+			canSharePreviousBlocks &&
+			index !== changedContentIndex &&
+			index < previousSnapshot.content.length &&
+			index < previousMessage.content.length &&
+			block === previousMessage.content[index]
+		) {
+			return previousSnapshot.content[index]!;
+		}
+		return snapshotAssistantContentBlock(block);
+	});
 	return {
 		...message,
-		content: message.content.map(snapshotAssistantContentBlock),
+		content,
 		usage: {
 			...message.usage,
 			cost: { ...message.usage.cost },
@@ -1463,6 +1489,7 @@ async function streamAssistantResponse(
 			}
 
 			let partialMessage: AssistantMessage | null = null;
+			let partialSnapshot: AssistantMessage | undefined;
 			let addedPartial = false;
 			const completedToolCallIds = new Set<string>();
 
@@ -1568,20 +1595,20 @@ async function streamAssistantResponse(
 					switch (event.type) {
 						case "start":
 							partialMessage = event.partial;
+							partialSnapshot = snapshotAssistantMessage(partialMessage);
 							if (addedPartial) {
 								context.messages[context.messages.length - 1] = partialMessage;
 								completedToolCallIds.clear();
 
-								const messageSnapshot = snapshotAssistantMessage(partialMessage);
 								stream.push({
 									type: "message_update",
-									assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
-									message: messageSnapshot,
+									assistantMessageEvent: snapshotAssistantMessageEvent(event, partialSnapshot),
+									message: partialSnapshot,
 								});
 							} else {
 								context.messages.push(partialMessage);
 								addedPartial = true;
-								stream.push({ type: "message_start", message: snapshotAssistantMessage(partialMessage) });
+								stream.push({ type: "message_start", message: partialSnapshot });
 							}
 							break;
 
@@ -1599,15 +1626,21 @@ async function streamAssistantResponse(
 								if (event.type === "toolcall_end") {
 									completedToolCallIds.add(event.toolCall.id);
 								}
+								const previousMessage = partialMessage;
 								partialMessage = event.partial;
 								context.messages[context.messages.length - 1] = partialMessage;
 								config.onAssistantMessageEvent?.(partialMessage, event);
 
-								const messageSnapshot = snapshotAssistantMessage(partialMessage);
+								partialSnapshot = snapshotAssistantMessage(
+									partialMessage,
+									partialSnapshot,
+									previousMessage,
+									event.contentIndex,
+								);
 								stream.push({
 									type: "message_update",
-									assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
-									message: messageSnapshot,
+									assistantMessageEvent: snapshotAssistantMessageEvent(event, partialSnapshot),
+									message: partialSnapshot,
 								});
 							}
 							break;

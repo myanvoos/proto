@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Streaming assistant snapshots share settled content blocks instead of deep-cloning the full message on every delta (O(blocks x deltas) clone calls drop to ~1 per delta on long responses).
+
 ## [18.0.1] - 2026-09-07
 
 ### Breaking Changes
