@@ -22,6 +22,7 @@ import { createOpenAICodexCompactionRequestContext } from "@oh-my-pi/pi-ai/provi
 import { convertTools } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import { buildResponsesInput, resolveOpenAICompatPolicy } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { stripOpenAIResponsesOutputOnlyStatusesForReplay } from "@oh-my-pi/pi-ai/utils";
+import { escapeHarmonyControlTokens } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
@@ -541,26 +542,108 @@ interface SummaryWindow {
 	text?: string;
 }
 
+interface SerializedSummaryMessage {
+	text: string;
+	tokens: number;
+}
+
+function canComposeSummaryFragments(messages: Message[], dialect: Dialect | undefined): boolean {
+	if (
+		messages.some(message => message.role === "toolResult" && message.useless === true && message.isError !== true)
+	) {
+		return false;
+	}
+	switch (dialect) {
+		case undefined:
+		case "harmony":
+			return true;
+		case "kimi":
+		case "xml":
+		case "anthropic":
+		case "minimax":
+			return !messages.some(
+				(message, index) => message.role === "toolResult" && messages[index + 1]?.role === "toolResult",
+			);
+		default:
+			return false;
+	}
+}
+
+function hasCrossFragmentEscapedTag(fragments: readonly string[], dialect: Dialect | undefined): boolean {
+	const separator = dialect === undefined ? "\n\n" : "";
+	const escapes =
+		dialect === "harmony" ? [escapeHarmonyControlTokens, escapeSummaryBoundaryTags] : [escapeSummaryBoundaryTags];
+	const nonEmptyFragments = fragments.filter(fragment => fragment.length > 0);
+	for (let i = 0; i + 1 < nonEmptyFragments.length; i++) {
+		const left = nonEmptyFragments[i]!;
+		const right = nonEmptyFragments[i + 1]!;
+		const lastOpen = left.lastIndexOf("<");
+		if (lastOpen < 0) continue;
+		const leftSuffix = left.slice(lastOpen);
+		let rightPrefixLength = 64;
+		if (dialect !== "harmony") {
+			let leadingWhitespace = 0;
+			while (leadingWhitespace < right.length && /\s/.test(right[leadingWhitespace]!)) leadingWhitespace++;
+			rightPrefixLength = leadingWhitespace + 64;
+		}
+		const bridge = `${leftSuffix}${separator}${right.slice(0, rightPrefixLength)}`;
+		if (escapes.some(escape => escape(bridge) !== bridge)) return true;
+	}
+	return false;
+}
+
+function composeSummaryFragments(fragments: string[], dialect: Dialect | undefined): string {
+	if (dialect === undefined) return fragments.filter(fragment => fragment.length > 0).join("\n\n");
+	return fragments.join("");
+}
+
 function planSummaryWindows(
 	messages: Message[],
 	tokenizer: Tokenizer,
 	dialect: Dialect | undefined,
 	budgetTokens: number,
-): Message[][] {
-	const windows: Message[][] = [];
+	composeFragments: boolean,
+	serializedMessages: WeakMap<Message, SerializedSummaryMessage>,
+): SummaryWindow[] {
+	const serialized = messages.map(message => {
+		const cached = serializedMessages.get(message);
+		if (cached !== undefined) return cached;
+		const text = serializeConversationForSummary([message], dialect);
+		const result = { text, tokens: tokenizer.countTokens(text) };
+		serializedMessages.set(message, result);
+		return result;
+	});
+	const canCompose =
+		composeFragments &&
+		!hasCrossFragmentEscapedTag(
+			serialized.map(message => message.text),
+			dialect,
+		);
+	const windows: SummaryWindow[] = [];
 	let current: Message[] = [];
+	let currentFragments: string[] = [];
 	let currentTokens = 0;
-	for (const message of messages) {
-		const tokens = tokenizer.countTokens(serializeConversationForSummary([message], dialect));
-		if (currentTokens > 0 && currentTokens + tokens > budgetTokens) {
-			windows.push(current);
-			current = [];
-			currentTokens = 0;
-		}
+	const pushCurrent = () => {
+		if (current.length === 0) return;
+		windows.push({
+			messages: current,
+			budgetTokens,
+			...(canCompose ? { text: composeSummaryFragments(currentFragments, dialect) } : {}),
+		});
+		current = [];
+		currentFragments = [];
+		currentTokens = 0;
+	};
+
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index]!;
+		const messageText = serialized[index]!;
+		if (currentTokens > 0 && currentTokens + messageText.tokens > budgetTokens) pushCurrent();
 		current.push(message);
-		currentTokens += tokens;
+		currentFragments.push(messageText.text);
+		currentTokens += messageText.tokens;
 	}
-	if (current.length > 0) windows.push(current);
+	pushCurrent();
 	return windows;
 }
 
@@ -582,9 +665,11 @@ export async function generateSummary(
 	const wholeConversation = serializeConversationForSummary(llmMessages, dialect);
 	const budgetTokens = summaryInputBudgetTokens(model, maxTokens);
 
+	const serializedMessages = new WeakMap<Message, SerializedSummaryMessage>();
+	const composeFragments = canComposeSummaryFragments(llmMessages, dialect);
 	const pending: SummaryWindow[] = tokenizer.checkTokenBudget(wholeConversation, budgetTokens).fits
 		? [{ messages: llmMessages, budgetTokens, text: wholeConversation }]
-		: planSummaryWindows(llmMessages, tokenizer, dialect, budgetTokens).map(messages => ({ messages, budgetTokens }));
+		: planSummaryWindows(llmMessages, tokenizer, dialect, budgetTokens, composeFragments, serializedMessages);
 
 	let carriedSummary = previousSummary;
 	while (pending.length > 0) {
@@ -615,10 +700,7 @@ export async function generateSummary(
 			pending.splice(
 				0,
 				1,
-				...planSummaryWindows(window.messages, tokenizer, dialect, halved).map(messages => ({
-					messages,
-					budgetTokens: halved,
-				})),
+				...planSummaryWindows(window.messages, tokenizer, dialect, halved, composeFragments, serializedMessages),
 			);
 			continue;
 		}

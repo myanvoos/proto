@@ -88,6 +88,33 @@ export class AppendOnlyLog {
 	}
 }
 
+interface MessageDigestMemo {
+	digest: number;
+	payload: DigestPayload;
+}
+
+interface DigestArrayEntry {
+	message: unknown;
+	digest: number;
+}
+
+interface DigestArrayMemo {
+	epoch: number;
+	length: number;
+	entries: Array<DigestArrayEntry | undefined>;
+}
+
+interface DigestPayload {
+	r: unknown;
+	c: unknown;
+	pp: unknown;
+	tc: unknown;
+	tcid: unknown;
+	tn: unknown;
+	err: unknown;
+	id: unknown;
+}
+
 export class AppendOnlyContextManager {
 	readonly prefix = new StablePrefix();
 	readonly log = new AppendOnlyLog();
@@ -95,6 +122,9 @@ export class AppendOnlyContextManager {
 	#lastSyncCount = 0;
 
 	#messageDigests: number[] = [];
+	// Nested message fields can be edited in place, so only primitive projections are memoized.
+	#messageDigestMemo = new WeakMap<object, MessageDigestMemo>();
+	#digestArrayMemo = new WeakMap<object, DigestArrayMemo>();
 
 	build(context: AgentContext, options: BuildOptions): Context {
 		this.prefix.build(context, options);
@@ -103,6 +133,7 @@ export class AppendOnlyContextManager {
 	}
 
 	syncMessages(normalizedMessages: readonly Message[]): void {
+		const digestMemo = this.#digestMemoFor(normalizedMessages);
 		if (normalizedMessages.length < this.#lastSyncCount) {
 			this.log.clear();
 			this.#lastSyncCount = 0;
@@ -120,8 +151,10 @@ export class AppendOnlyContextManager {
 
 		for (let i = this.#lastSyncCount; i < normalizedMessages.length; i++) {
 			const msg = normalizedMessages[i];
+			const digest = this.#messageDigest(msg);
 			this.log.append(msg);
-			this.#messageDigests.push(this.#messageDigest(msg));
+			this.#messageDigests.push(digest);
+			digestMemo.entries[i] = { message: msg, digest };
 		}
 		this.#lastSyncCount = normalizedMessages.length;
 	}
@@ -159,12 +192,35 @@ export class AppendOnlyContextManager {
 		this.prefix.build(context, options);
 	}
 
+	#digestMemoFor(normalizedMessages: readonly unknown[]): DigestArrayMemo {
+		const key = normalizedMessages as object;
+		let memo = this.#digestArrayMemo.get(key);
+		if (memo === undefined) {
+			memo = { epoch: 0, length: normalizedMessages.length, entries: [] };
+			this.#digestArrayMemo.set(key, memo);
+			return memo;
+		}
+		if (normalizedMessages.length < memo.length) {
+			memo.epoch++;
+			memo.entries.length = normalizedMessages.length;
+		}
+		memo.length = normalizedMessages.length;
+		return memo;
+	}
+
 	#longestStablePrefix(normalizedMessages: readonly unknown[]): number {
+		const memo = this.#digestMemoFor(normalizedMessages);
 		const bound = Math.min(this.#lastSyncCount, normalizedMessages.length);
 		for (let i = 0; i < bound; i++) {
-			if (this.#messageDigest(normalizedMessages[i]) !== this.#messageDigests[i]) {
-				return i;
+			const message = normalizedMessages[i];
+			const digest = this.#messageDigest(message);
+			const previous = memo.entries[i];
+			if (previous !== undefined && (previous.message !== message || previous.digest !== digest)) {
+				memo.epoch++;
+				memo.entries.length = i;
 			}
+			memo.entries[i] = { message, digest };
+			if (digest !== this.#messageDigests[i]) return i;
 		}
 		return bound;
 	}
@@ -172,7 +228,7 @@ export class AppendOnlyContextManager {
 	#messageDigest(msg: unknown): number {
 		if (!msg || typeof msg !== "object") return 0;
 		const m = msg as Record<string, unknown>;
-		const payload = JSON.stringify({
+		const payload: DigestPayload = {
 			r: m.role ?? null,
 			c: m.content ?? null,
 			pp: m.providerPayload ?? null,
@@ -181,13 +237,51 @@ export class AppendOnlyContextManager {
 			tn: m.toolName ?? m.name ?? null,
 			err: m.isError ?? null,
 			id: m.id ?? null,
-		});
-		let hash = 0;
-		for (let j = 0; j < payload.length; j++) {
-			hash = ((hash << 5) - hash + payload.charCodeAt(j)) | 0;
+		};
+		const cacheable = hasOnlyPrimitiveDigestFields(payload);
+		if (cacheable) {
+			const cached = this.#messageDigestMemo.get(m);
+			if (cached !== undefined && sameDigestPayload(payload, cached.payload)) return cached.digest;
 		}
-		return hash >>> 0;
+		const serialized = JSON.stringify(payload);
+		let hash = 0;
+		for (let j = 0; j < serialized.length; j++) {
+			hash = ((hash << 5) - hash + serialized.charCodeAt(j)) | 0;
+		}
+		const digest = hash >>> 0;
+		if (cacheable) this.#messageDigestMemo.set(m, { digest, payload });
+		return digest;
 	}
+}
+
+function hasOnlyPrimitiveDigestFields(payload: DigestPayload): boolean {
+	return (
+		(isPrimitiveDigestValue(payload.r) || payload.r === null) &&
+		(isPrimitiveDigestValue(payload.c) || payload.c === null) &&
+		(isPrimitiveDigestValue(payload.pp) || payload.pp === null) &&
+		(isPrimitiveDigestValue(payload.tc) || payload.tc === null) &&
+		(isPrimitiveDigestValue(payload.tcid) || payload.tcid === null) &&
+		(isPrimitiveDigestValue(payload.tn) || payload.tn === null) &&
+		(isPrimitiveDigestValue(payload.err) || payload.err === null) &&
+		(isPrimitiveDigestValue(payload.id) || payload.id === null)
+	);
+}
+
+function isPrimitiveDigestValue(value: unknown): value is string | number | boolean | undefined {
+	return value === undefined || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
+function sameDigestPayload(left: DigestPayload, right: DigestPayload): boolean {
+	return (
+		Object.is(left.r, right.r) &&
+		Object.is(left.c, right.c) &&
+		Object.is(left.pp, right.pp) &&
+		Object.is(left.tc, right.tc) &&
+		Object.is(left.tcid, right.tcid) &&
+		Object.is(left.tn, right.tn) &&
+		Object.is(left.err, right.err) &&
+		Object.is(left.id, right.id)
+	);
 }
 
 function takeSnapshot(context: AgentContext, options: BuildOptions): StablePrefixSnapshot {

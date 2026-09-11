@@ -5,6 +5,9 @@
 ### Changed
 - Branch summarization builds retained entries with push+reverse instead of per-entry unshift (O(N^2) -> O(N)).
 - Streaming assistant snapshots share settled content blocks instead of deep-cloning the full message on every delta (O(blocks x deltas) clone calls drop to ~1 per delta on long responses).
+- Summary chunking reuses serialized message fragments instead of rebuilding each window transcript (serializer loop ~42ms -> ~32ms on the 5k-message probe).
+- Remote compaction input trimming precomputes rewrite candidates and builds the trimmed input in one pass instead of repeated full rewrites (50x10KB probe: ~149ms -> ~25ms).
+- Longest-stable-prefix digests memoize per message with identity/epoch validation and primitive-only projections (scalar 10kx20 probe: ~52ms -> ~10ms); non-primitive payloads keep the exact legacy path.
 
 ## [18.0.1] - 2026-09-07
 

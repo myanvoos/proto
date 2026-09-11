@@ -141,6 +141,17 @@ function isToolResultImageAttachment(item: Record<string, unknown>): boolean {
 	return hasLabel && hasImage;
 }
 
+interface RemoteCompactionRewriteCandidate {
+	index: number;
+	rewritten: Record<string, unknown>;
+	shrinksSerializedItem: boolean;
+}
+
+function serializedEstimateItemBytes(item: Record<string, unknown>): number {
+	const normalized = normalizeRemoteCompactionEstimateValue(item).value;
+	return Buffer.byteLength(stringifyJson(normalized) ?? "");
+}
+
 export function trimRemoteCompactionInputToContextWindow(
 	input: Array<Record<string, unknown>>,
 	tokenizer: Tokenizer,
@@ -158,21 +169,20 @@ export function trimRemoteCompactionInputToContextWindow(
 		};
 	}
 
-	let rewrittenInput: Array<Record<string, unknown>> | undefined;
-	let after = before;
-	let rewrittenOutputs = 0;
-	for (let index = input.length - 1; index >= 0 && !after.fits; index--) {
+	const candidates: RemoteCompactionRewriteCandidate[] = [];
+	for (let index = input.length - 1; index >= 0; index--) {
 		const item = input[index];
 		if (isToolResultImageAttachment(item)) continue;
 		const rewritten = rewriteToolOutputForContextWindow(item);
 		if (!rewritten) break;
-		rewrittenInput ??= input.slice();
-		rewrittenInput[index] = rewritten;
-		rewrittenOutputs++;
-		after = probeRemoteCompactionInputBudget(rewrittenInput, tokenizer, instructions, tools, contextWindow);
+		candidates.push({
+			index,
+			rewritten,
+			shrinksSerializedItem: serializedEstimateItemBytes(rewritten) < serializedEstimateItemBytes(item),
+		});
 	}
 
-	if (!rewrittenInput || !after.fits) {
+	if (candidates.length === 0) {
 		return {
 			input,
 			rewrittenOutputs: 0,
@@ -181,9 +191,75 @@ export function trimRemoteCompactionInputToContextWindow(
 		};
 	}
 
+	const candidateInput = input.slice();
+	let applied = 0;
+	const setApplied = (count: number): void => {
+		while (applied < count) {
+			const candidate = candidates[applied];
+			candidateInput[candidate.index] = candidate.rewritten;
+			applied++;
+		}
+		while (applied > count) {
+			applied--;
+			candidateInput[candidates[applied].index] = input[candidates[applied].index];
+		}
+	};
+	const probeCandidate = (count: number): RemoteCompactionBudgetProbe => {
+		setApplied(count);
+		return probeRemoteCompactionInputBudget(candidateInput, tokenizer, instructions, tools, contextWindow);
+	};
+
+	const canBinarySearch = candidates.every(candidate => candidate.shrinksSerializedItem);
+	let firstFittingCount: number | undefined;
+	let after: RemoteCompactionBudgetProbe | undefined;
+	if (canBinarySearch) {
+		const allRewritten = probeCandidate(candidates.length);
+		if (allRewritten.fits) {
+			let low = 1;
+			let high = candidates.length;
+			firstFittingCount = candidates.length;
+			after = allRewritten;
+			while (low <= high) {
+				const middle = Math.floor((low + high) / 2);
+				const candidate = probeCandidate(middle);
+				if (candidate.fits) {
+					firstFittingCount = middle;
+					after = candidate;
+					high = middle - 1;
+				} else {
+					low = middle + 1;
+				}
+			}
+		}
+	} else {
+		for (let count = 1; count <= candidates.length; count++) {
+			const candidate = probeCandidate(count);
+			if (candidate.fits) {
+				firstFittingCount = count;
+				after = candidate;
+				break;
+			}
+		}
+	}
+
+	if (firstFittingCount === undefined || after === undefined) {
+		return {
+			input,
+			rewrittenOutputs: 0,
+			estimatedTokensBefore: before.tokens,
+			estimatedTokensAfter: before.tokens,
+		};
+	}
+
+	const rewritesByIndex = new Map<number, Record<string, unknown>>();
+	for (let index = 0; index < firstFittingCount; index++) {
+		const candidate = candidates[index];
+		rewritesByIndex.set(candidate.index, candidate.rewritten);
+	}
+	const rewrittenInput = input.map((item, index) => rewritesByIndex.get(index) ?? item);
 	return {
 		input: rewrittenInput,
-		rewrittenOutputs,
+		rewrittenOutputs: firstFittingCount,
 		estimatedTokensBefore: before.tokens,
 		estimatedTokensAfter: after.tokens,
 	};
