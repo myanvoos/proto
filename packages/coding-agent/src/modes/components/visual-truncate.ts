@@ -1,4 +1,5 @@
 import { Text } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 interface VisualTruncateResult {
 	visualLines: readonly string[];
@@ -23,7 +24,9 @@ export function truncateToVisualLines(
 	width: number,
 	paddingX: number = 0,
 ): VisualTruncateResult {
-	if (!text) {
+	maxVisualLines = Math.max(0, Math.trunc(maxVisualLines));
+	text = sanitizeText(text);
+	if (!text || maxVisualLines === 0) {
 		return { visualLines: [], skippedCount: 0 };
 	}
 

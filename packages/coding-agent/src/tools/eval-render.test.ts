@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import type { EvalStatusEvent, EvalToolDetails } from "../eval/types";
+import type { EvalCellResult, EvalStatusEvent, EvalToolDetails } from "../eval/types";
+import { createTheme, getBuiltinThemes } from "../modes/theme/loader";
 import { initThemeSync, theme } from "../modes/theme/theme";
 import { generateDiffString } from "../utils/diff";
-import { evalToolRenderer } from "./eval-render";
+import { evalToolRenderer, renderKernelCellLines } from "./eval-render";
 import { previewWindowRows } from "./render-utils";
 
 initThemeSync();
@@ -392,4 +393,90 @@ test("settled collapsed cells retain outlines while expanded cells show source",
 	const expanded = renderCells(cells, { expanded: true, isPartial: false }).join("\n");
 	expect(expanded).not.toContain("· ast");
 	expect(expanded).toContain("def greet(name):");
+});
+
+test("streaming replacement tails retain the added line number", () => {
+	const diff = generateDiffString("old\n", "new\n", 0).diff;
+	const cell: EvalCellResult = {
+		index: 0,
+		title: "cell",
+		code: "pass",
+		language: "python",
+		output: "o\no\no\no\no\no\no\no",
+		status: "running",
+		statusEvents: [{ op: "write", path: FILE, chars: 4, sha: "0", diff }],
+	};
+
+	withTerminalRows(41, () => {
+		const lines = renderCells([cell], { expanded: false, isPartial: true });
+		expect(lines.some(line => line.includes("+1│new"))).toBe(true);
+		expect(lines.some(line => line.includes("+│new"))).toBe(false);
+	});
+});
+
+test("multiline status errors are sanitized, indented, and preview-limited", () => {
+	const error = Array.from({ length: 120 }, (_, index) => `line-${index}\t\x07\x1b[31m`).join("\n");
+	const component = evalToolRenderer.renderResult(
+		{
+			content: [{ type: "text", text: "" }],
+			details: {
+				statusEvents: [{ op: "write", path: FILE, chars: 0, sha: "0", error }],
+			},
+		},
+		{ expanded: false, isPartial: false },
+		theme,
+	);
+	const lines = component.render(80).map(strip);
+	const output = lines.join("\n");
+	expect(lines.length).toBeLessThan(10);
+	expect(output).not.toContain("\t");
+	expect(output).not.toContain("\x07");
+	expect(output).not.toContain("\x1b[31m");
+	expect(output).toContain("… 117 more lines");
+	expect(lines.some(line => line.includes("line-1") && /^\s+/.test(line))).toBe(true);
+	expect(lines.filter(line => line.includes("line-1")).length).toBe(1);
+});
+
+test("cached hunk rows follow the current supplied theme", () => {
+	const makeTheme = (removed: string, added: string) => {
+		const json = structuredClone(getBuiltinThemes().dark);
+		json.colors = { ...json.colors, toolDiffRemoved: removed, toolDiffAdded: added };
+		return createTheme(json, { mode: "256color" });
+	};
+	const firstTheme = makeTheme("#ff0000", "#00ff00");
+	const secondTheme = makeTheme("#0000ff", "#ffff00");
+	const event: EvalStatusEvent = {
+		op: "write",
+		path: FILE,
+		chars: 4,
+		sha: "0",
+		diff: generateDiffString("old\n", "new\n", 0).diff,
+	};
+	const cell: EvalCellResult = {
+		index: 0,
+		title: "cell",
+		code: "pass",
+		language: "python",
+		output: "",
+		status: "complete",
+		durationMs: 1,
+		statusEvents: [event],
+	};
+	const first = renderKernelCellLines(cell, [], firstTheme, {
+		expanded: true,
+		isPartial: false,
+		previewLines: 10,
+		width: 80,
+	});
+	const second = renderKernelCellLines(cell, [], secondTheme, {
+		expanded: true,
+		isPartial: false,
+		previewLines: 10,
+		width: 80,
+	});
+	const firstDiff = first.filter(line => line.includes("old") || line.includes("new")).join("\n");
+	const secondDiff = second.filter(line => line.includes("old") || line.includes("new")).join("\n");
+	expect(firstDiff).toContain(firstTheme.getFgAnsi("toolDiffRemoved"));
+	expect(secondDiff).toContain(secondTheme.getFgAnsi("toolDiffRemoved"));
+	expect(secondDiff).not.toContain(firstTheme.getFgAnsi("toolDiffRemoved"));
 });

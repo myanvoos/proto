@@ -42,6 +42,8 @@ export class BashExecutionComponent extends Container {
 	#onTranscriptBlockChange?: () => void;
 	#displayDirty = false;
 	#chunkGate = false;
+	#chunkGateTimer?: NodeJS.Timeout;
+	#pendingChunk?: string;
 	#contentContainer: Container;
 	#headerText: Text;
 
@@ -89,18 +91,52 @@ export class BashExecutionComponent extends Container {
 	}
 
 	override dispose(): void {
+		if (this.#chunkGateTimer) {
+			clearTimeout(this.#chunkGateTimer);
+			this.#chunkGateTimer = undefined;
+		}
+		this.#chunkGate = false;
+		this.#pendingChunk = undefined;
 		this.#onTranscriptBlockChange?.();
 		this.#onTranscriptBlockChange = undefined;
 		super.dispose();
 	}
 
 	appendOutput(chunk: string): void {
-		if (this.#chunkGate) return;
-		this.#chunkGate = true;
-		setTimeout(() => {
-			this.#chunkGate = false;
-		}, CHUNK_THROTTLE_MS);
+		if (this.#chunkGate) {
+			this.#pendingChunk = `${this.#pendingChunk ?? ""}${chunk}`;
+			return;
+		}
 
+		this.#appendOutputChunk(chunk);
+		this.#armChunkGate();
+	}
+
+	#armChunkGate(): void {
+		this.#chunkGate = true;
+		this.#chunkGateTimer = setTimeout(() => {
+			this.#chunkGateTimer = undefined;
+			this.#chunkGate = false;
+			const pending = this.#pendingChunk;
+			this.#pendingChunk = undefined;
+			if (pending === undefined) return;
+			this.#appendOutputChunk(pending);
+			this.#armChunkGate();
+		}, CHUNK_THROTTLE_MS);
+	}
+
+	#flushPendingOutput(): void {
+		if (this.#chunkGateTimer) {
+			clearTimeout(this.#chunkGateTimer);
+			this.#chunkGateTimer = undefined;
+		}
+		this.#chunkGate = false;
+		const pending = this.#pendingChunk;
+		this.#pendingChunk = undefined;
+		if (pending !== undefined) this.#appendOutputChunk(pending);
+	}
+
+	#appendOutputChunk(chunk: string): void {
 		const incomingLines = chunk.split("\n");
 		if (this.#outputLines.length > 0 && incomingLines.length > 0) {
 			const lastIndex = this.#outputLines.length - 1;
@@ -125,6 +161,7 @@ export class BashExecutionComponent extends Container {
 		cancelled: boolean,
 		options?: { output?: string; truncation?: TruncationMeta; execution?: ExecutionMetadata },
 	): void {
+		this.#flushPendingOutput();
 		this.#exitCode = exitCode;
 		this.#execution = options?.execution ? { ...options.execution, renderer: { state: "complete" } } : undefined;
 		this.#status = resolveExecutionStatus(exitCode, cancelled, this.#execution);

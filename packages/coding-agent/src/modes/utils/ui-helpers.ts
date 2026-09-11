@@ -457,6 +457,17 @@ export class UiHelpers {
 		while (!steps.next().done) {}
 	}
 
+	renderSessionContextWithLiveToolComponents(
+		sessionContext: SessionContext,
+		options: RenderSessionContextOptions,
+		liveToolComponents: ReadonlyMap<string, Component>,
+	): Set<Component> {
+		const inserted = new Set<Component>();
+		const steps = this.#renderSessionContextSteps(sessionContext, options, liveToolComponents, inserted);
+		while (!steps.next().done) {}
+		return inserted;
+	}
+
 	async renderSessionContextIncrementally(
 		sessionContext: SessionContext,
 		options: RenderSessionContextOptions,
@@ -483,6 +494,8 @@ export class UiHelpers {
 	*#renderSessionContextSteps(
 		sessionContext: SessionContext,
 		options: RenderSessionContextOptions = {},
+		liveToolComponents?: ReadonlyMap<string, Component>,
+		insertedLiveToolComponents?: Set<Component>,
 	): Generator<void, void, void> {
 		this.ctx.pendingTools.clear();
 
@@ -606,6 +619,11 @@ export class UiHelpers {
 					}
 					const afterToolSegment = timeline.afterToolCalls.get(content.id);
 					if (options.preservedLiveToolCallIds?.has(content.id)) {
+						const liveComponent = liveToolComponents?.get(content.id);
+						if (liveComponent && !this.ctx.chatContainer.children.includes(liveComponent)) {
+							this.ctx.chatContainer.addChild(liveComponent);
+							insertedLiveToolComponents?.add(liveComponent);
+						}
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}

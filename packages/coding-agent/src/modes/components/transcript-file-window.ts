@@ -26,10 +26,10 @@ function isGroupBoundary(line: Buffer): boolean {
 		return false;
 	}
 }
-function boundaries(buffer: Buffer, absoluteStart: number): number[] {
+function boundaries(buffer: Buffer, absoluteStart: number, firstLineComplete = false): number[] {
 	const found: number[] = [];
-	let lineStart = absoluteStart === 0 ? 0 : buffer.indexOf(0x0a) + 1;
-	if (lineStart === 0 && absoluteStart > 0) return found;
+	let lineStart = absoluteStart === 0 || firstLineComplete ? 0 : buffer.indexOf(0x0a) + 1;
+	if (lineStart === 0 && absoluteStart > 0 && !firstLineComplete) return found;
 	while (lineStart < buffer.byteLength) {
 		const newline = buffer.indexOf(0x0a, lineStart);
 		if (newline < 0) break;
@@ -52,7 +52,8 @@ function alignedStart(file: string, candidate: number, end: number, maxGroups: n
 	let start = candidate;
 	let buffer = readFileRangeSync(file, start, end - start);
 	for (;;) {
-		const found = boundaries(buffer, start);
+		const firstLineComplete = start === 0 || readFileRangeSync(file, start - 1, 1)[0] === 0x0a;
+		const found = boundaries(buffer, start, firstLineComplete);
 		if (found.length > 0) return found[Math.max(0, found.length - maxGroups)];
 		if (start === 0) return 0;
 		const previous = Math.max(0, start - SCAN_BYTES);

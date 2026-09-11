@@ -1875,7 +1875,7 @@ function getPartialJson<TArgs>(args: TArgs | undefined): string | undefined {
 
 function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unknown> | undefined {
 	const partialEnv = extractPartialBashEnv(args.__partialJson);
-	if (partialEnv && args.env) return { ...partialEnv, ...args.env };
+	if (partialEnv && args.env) return { ...args.env, ...partialEnv };
 	return args.env ?? partialEnv;
 }
 

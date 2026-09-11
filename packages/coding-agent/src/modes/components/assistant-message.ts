@@ -10,7 +10,7 @@ import {
 	TERMINAL,
 	Text,
 } from "@oh-my-pi/pi-tui";
-import { formatNumber } from "@oh-my-pi/pi-utils";
+import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
@@ -470,6 +470,8 @@ export class AssistantMessageComponent extends Container {
 		const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
 		for (const text of blocks) this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(), mdOptions, 2, false));
 		this.#renderToolImages();
+		super.invalidate();
+		this.#onTranscriptBlockChange?.();
 	}
 
 	#clearContent(): void {
@@ -495,16 +497,17 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#appendErrorBlock(message: string): void {
+		const safeMessage = replaceTabs(sanitizeText(message));
 		if (this.#errorExpanded) {
-			const [first = "Unknown error", ...rest] = replaceTabs(message.replace(/\s+$/, "")).split("\n");
+			const [first = "Unknown error", ...rest] = safeMessage.replace(/\s+$/, "").split("\n");
 			this.addChild(new Text(theme.fg("error", `Error: ${first}`), 1, 0));
 			for (const line of rest) {
 				this.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
 			}
 			return;
 		}
-		const total = message.split("\n").filter(l => l.trim()).length;
-		const lines = getPreviewLines(message, MAX_TRANSCRIPT_ERROR_LINES, TRUNCATE_LENGTHS.LINE);
+		const total = safeMessage.split("\n").filter(l => l.trim()).length;
+		const lines = getPreviewLines(safeMessage, MAX_TRANSCRIPT_ERROR_LINES, TRUNCATE_LENGTHS.LINE);
 		if (lines.length === 0) lines.push("Unknown error");
 
 		this.addChild(new Text(theme.fg("error", `Error: ${lines[0]}`), 1, 0));
@@ -591,6 +594,8 @@ export class AssistantMessageComponent extends Container {
 					convertedKittyImages.set(key, converted);
 					if (this.#lastMessage) {
 						this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+					} else if (this.#staticTextBlocks !== undefined) {
+						this.#rebuildStaticTextContent();
 					}
 					this.onImageUpdate?.();
 				})

@@ -17,6 +17,17 @@
 
 ### Fixed
 
+- Trailing bash tool output is no longer lost when chunks arrive within the output throttle window.
+- Live bash command previews now show the same streamed arguments as the rebuilt transcript preview.
+- Transcript rebuilds keep parallel tool calls in their original order instead of moving still-live calls to the end.
+- Assistant text following a tool call no longer disappears when a streaming transcript rebuild occurs.
+- Late-arriving tool-result images update finalized assistant messages immediately, in both directions.
+- Streaming diff tails keep the line number visible on retained added rows.
+- Eval status and assistant error blocks sanitize terminal control characters, indent continuation rows, and cap preview lines.
+- Transcript tail windows no longer drop a message group at an exact soft-byte boundary.
+- Eval diff hunk colors follow theme changes, and diffs respect a supplied UI theme.
+- Single-line diff replacements keep the tab indentation marker.
+- Visual truncation honors zero and negative preview budgets instead of returning everything.
 - MCP manager disposal now clears callback slots, notification listeners, and the static singleton on terminal teardown (reload/reconnect flows keep their callbacks), and an owned MCP manager is disposed when session creation fails after registration.
 - Monitor managers track async stream/poll/termination tasks, abort reads on dispose, and bound process-termination waits, so a stalled child can no longer retain the session after exit.
 - Exit diagnostics store a bounded tool-argument summary instead of retaining full raw tool-call arguments at exit.

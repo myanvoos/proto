@@ -163,6 +163,9 @@ export class TranscriptContainer
 
 	#committedRows = 0;
 	#committedRowsDirty = false;
+	// Earliest current-frame row whose committed layout or bytes may differ from
+	// the prior committed prefix. The TUI consumes this after render().
+	#committedDirtyFromRow: number | undefined;
 	#committedDirtySegments = new Set<BlockSegment>();
 	#dirtyComponents = new Set<Component>();
 	#renderDirtyComponents = new Set<Component>();
@@ -337,6 +340,7 @@ export class TranscriptContainer
 		this.#nativeScrollbackLiveRegionPinnedStart = undefined;
 		this.#committedRows = 0;
 		this.#committedRowsDirty = false;
+		this.#committedDirtyFromRow = undefined;
 		this.#committedDirtySegments.clear();
 		this.#renderedChildrenRevision = -1;
 		this.#renderedGeneration = -1;
@@ -351,6 +355,7 @@ export class TranscriptContainer
 		this.#blockListeners = new WeakMap();
 		this.#generation++;
 		this.#stablePrefixLength = 0;
+		this.#committedDirtyFromRow = undefined;
 		super.dispose();
 	}
 
@@ -521,6 +526,17 @@ export class TranscriptContainer
 		return this.#renderRevision;
 	}
 
+	/**
+	 * Return the earliest current-frame row whose committed layout or bytes may
+	 * differ after the most recent render. This includes a changed finalized
+	 * block and a previously empty block that gained rows after later rows had
+	 * crossed its insertion point. The value resets at render start and remains
+	 * available until the next render; consumers must strict-audit from it.
+	 */
+	getNativeScrollbackCommittedDirtyFromRow(): number | undefined {
+		return this.#committedDirtyFromRow;
+	}
+
 	getNativeScrollbackLiveRegionStart(): number | undefined {
 		return this.#nativeScrollbackLiveRegionStart;
 	}
@@ -589,6 +605,7 @@ export class TranscriptContainer
 		this.#nativeScrollbackLiveRegionStart = undefined;
 		this.#nativeScrollbackLiveRegionPinned = false;
 		this.#nativeScrollbackLiveRegionPinnedStart = undefined;
+		this.#committedDirtyFromRow = undefined;
 
 		const dirtyComponents = this.#dirtyComponents;
 		this.#dirtyComponents = this.#renderDirtyComponents;
@@ -666,18 +683,30 @@ export class TranscriptContainer
 				previous.finalized &&
 				previous.generation === this.#generation &&
 				!blockChanged;
-			const previousCommittedRows = previous?.component === child ? previous.committedRows : -1;
 
 			if (canSealCommitted && previous !== undefined) {
 				const bodyStart = previous.startRow + previous.sep;
 				if (bodyStart >= this.#committedRows) canSealCommitted = false;
-				else if (previous.rowCount > 0 && previous.component === child) sealCommittedSnapshot(child);
+				else if (previous.component === child) sealCommittedSnapshot(child);
 			}
 
 			const finalized = reuseBlockMetadata ? previous.finalized : isBlockFinalized(child);
 			if (liveStartIndex < 0 && !finalized) liveStartIndex = i;
 			if (stablePrefixLength === i && finalized && changeTracked) stablePrefixLength = i + 1;
 			const version = reuseBlockMetadata ? previous.version : getBlockVersion(child);
+			const previousCommittedRows = previous?.component === child ? previous.committedRows : -1;
+			const versionChanged =
+				previous?.component === child && previous.version !== undefined && version !== previous.version;
+			const previousRowsCrossedCommit = previous?.component === child && previous.startRow < this.#committedRows;
+			if (
+				previous?.component === child &&
+				previousRowsCrossedCommit &&
+				(blockChanged || versionChanged || previous.finalized !== finalized)
+			) {
+				const dirtyRow = Math.min(previous.startRow, row);
+				this.#committedDirtyFromRow =
+					this.#committedDirtyFromRow === undefined ? dirtyRow : Math.min(this.#committedDirtyFromRow, dirtyRow);
+			}
 			const committedReusable =
 				!blockChanged &&
 				previous !== undefined &&
@@ -827,9 +856,31 @@ export class TranscriptContainer
 			}
 			for (const candidate of pinCandidates) {
 				const block = this.children[candidate.index]! as Component & FinalizableBlock;
-				if (candidate.index < lastVisible && block.isDisplaceableBlock?.() === true) continue;
+				if (candidate.index < lastVisible && block.isDisplaceableBlock?.() === true && !isBlockPinned(block))
+					continue;
 				this.#notePinnedLiveBlock(candidate.pinAt);
 				break;
+			}
+		}
+
+		// A volatile live block followed by finalized rows must pin at the end of
+		// the live run, not at its unstable seam. This lets the live rows scroll
+		// into history while keeping the finalized tail viewport-local; otherwise
+		// every growth frame shifts and re-emits that tail. An already pinned
+		// displaceable block retains its stricter, block-owned boundary.
+		if (!this.#nativeScrollbackLiveRegionPinned && liveStartIndex >= 0) {
+			let lastLiveIndex = liveStartIndex;
+			for (let i = liveStartIndex + 1; i < count; i++) {
+				if (!segments[i]!.finalized) lastLiveIndex = i;
+			}
+			const lastLiveBlock = this.children[lastLiveIndex]! as Component & FinalizableBlock;
+			if (
+				lastLiveBlock.isDisplaceableBlock?.() !== true &&
+				segments.slice(lastLiveIndex + 1).some(segment => (segment?.rowCount ?? 0) > 0)
+			) {
+				this.#nativeScrollbackLiveRegionPinned = true;
+				const lastLive = segments[lastLiveIndex]!;
+				this.#nativeScrollbackLiveRegionPinnedStart = lastLive.startRow + lastLive.rowCount;
 			}
 		}
 		this.#stableRowsFloor = Math.min(stableFloorBefore, stableRows, row);

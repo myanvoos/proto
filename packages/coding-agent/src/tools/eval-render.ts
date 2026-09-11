@@ -1,6 +1,6 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Markdown, Text, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
-import { formatNumber, pluralize } from "@oh-my-pi/pi-utils";
+import { formatNumber, pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -31,9 +31,11 @@ import {
 	formatStatusIcon,
 	formatTitle,
 	getDiffStats,
+	PREVIEW_LIMITS,
 	previewWindowRows,
 	replaceTabs,
 	shortenPath,
+	TRUNCATE_LENGTHS,
 	truncateToWidth,
 	wrapBrackets,
 	wrapCodeFrameLine,
@@ -134,7 +136,7 @@ function formatExecutionMetadataLine(execution: ExecutionMetadata | undefined, t
 	if (execution.timeout) parts.push(`timeout=${execution.timeout.cause}/${execution.timeout.scope}`);
 	parts.push(`collector=${execution.collector.state}`);
 	if (execution.renderer) parts.push(`renderer=${execution.renderer.state}`);
-	if (execution.collector.error) parts.push(`collector error: ${execution.collector.error}`);
+	if (execution.collector.error) parts.push(`collector error: ${statusValue(execution.collector.error)}`);
 	if (execution.output) parts.push(`output=${execution.output.disposition}`);
 	const color =
 		execution.state === "running"
@@ -145,7 +147,46 @@ function formatExecutionMetadataLine(execution: ExecutionMetadata | undefined, t
 	return theme.fg(color, wrapBrackets(`Execution: ${parts.join(" | ")}`, theme));
 }
 function eventString(value: unknown): string | undefined {
-	return typeof value === "string" && value.length > 0 ? value : undefined;
+	if (typeof value !== "string" || value.length === 0) return undefined;
+	const cleaned = sanitizeText(value);
+	return cleaned.length > 0 ? cleaned : undefined;
+}
+
+function statusLineText(value: unknown): string {
+	return replaceTabs(sanitizeText(String(value ?? ""))).replace(/[\r\n]+/gu, " ");
+}
+
+function statusFirstLine(value: unknown, maxWidth: number = TRUNCATE_LENGTHS.LINE): string {
+	const firstLine = sanitizeText(String(value ?? "")).split("\n")[0] ?? "";
+	return truncateToWidth(replaceTabs(firstLine), maxWidth);
+}
+
+function statusValue(value: unknown, maxWidth: number = TRUNCATE_LENGTHS.LINE): string {
+	return truncateToWidth(statusLineText(value), maxWidth);
+}
+
+function statusPath(value: unknown): string {
+	return statusValue(shortenPath(String(value ?? "")));
+}
+
+function statusEventDetailValue(event: EvalStatusEvent): unknown {
+	const { op, ...data } = event;
+	if (data.error !== undefined && data.error !== null) return data.error;
+	if (op === "log") return data.message;
+	if (op === "phase") return data.title;
+	return undefined;
+}
+
+function statusEventDetailLines(event: EvalStatusEvent): string[] {
+	const value = statusEventDetailValue(event);
+	if (value === undefined) return [];
+	const rawLines = sanitizeText(String(value)).split("\n");
+	const maxLines = PREVIEW_LIMITS.OUTPUT_COLLAPSED;
+	const lines = rawLines.slice(1, maxLines).map(line => truncateToWidth(replaceTabs(line), TRUNCATE_LENGTHS.LINE));
+	if (rawLines.length > maxLines) {
+		lines.push(`… ${rawLines.length - maxLines} more lines`);
+	}
+	return lines;
 }
 
 function eventNumber(value: unknown): number {
@@ -265,6 +306,7 @@ function hasEventDiff(event: EvalStatusEvent): boolean {
 
 function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 	const { op, ...data } = event;
+	const displayOp = statusFirstLine(op);
 
 	type AvailableIcon = "icon.file" | "icon.folder" | "icon.git" | "icon.package";
 	const opIcons: Record<string, AvailableIcon> = {
@@ -298,25 +340,25 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 	const parts: string[] = [];
 
 	if (data.error) {
-		return `${icon} ${theme.fg("warning", op)}: ${theme.fg("dim", String(data.error))}`;
+		return `${icon} ${theme.fg("warning", displayOp)}: ${theme.fg("dim", statusFirstLine(data.error))}`;
 	}
 
 	switch (op) {
 		case "read":
 			parts.push(`${data.chars ?? data.bytes ?? 0} chars`);
-			if (data.path) parts.push(`from ${shortenPath(String(data.path))}`);
+			if (data.path) parts.push(`from ${statusPath(data.path)}`);
 			break;
 		case "write":
 			if (typeof data.diff === "string" && data.diff.length > 0) {
-				if (data.path) parts.push(shortenPath(String(data.path)));
+				if (data.path) parts.push(statusPath(data.path));
 			} else {
 				const unit = data.chars === undefined && data.bytes !== undefined ? "bytes" : "chars";
 				parts.push(`${data.chars ?? data.bytes ?? 0} ${unit}`);
-				if (data.path) parts.push(`to ${shortenPath(String(data.path))}`);
+				if (data.path) parts.push(`to ${statusPath(data.path)}`);
 			}
 			break;
 		case "delete":
-			if (data.path) parts.push(shortenPath(String(data.path)));
+			if (data.path) parts.push(statusPath(data.path));
 			break;
 		case "files":
 			if (typeof data.count === "number") {
@@ -334,9 +376,13 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 			break;
 		case "env":
 			if (data.action === "set") {
-				parts.push(`set ${data.key}=${truncateToWidth(String(data.value ?? ""), 30)}`);
+				parts.push(
+					`set ${statusValue(data.key, TRUNCATE_LENGTHS.SHORT)}=${statusValue(data.value, TRUNCATE_LENGTHS.CONTENT)}`,
+				);
 			} else if (data.action === "get") {
-				parts.push(`${data.key}=${truncateToWidth(String(data.value ?? ""), 30)}`);
+				parts.push(
+					`${statusValue(data.key, TRUNCATE_LENGTHS.SHORT)}=${statusValue(data.value, TRUNCATE_LENGTHS.CONTENT)}`,
+				);
 			} else {
 				parts.push(`${data.count} variable${(data.count as number) !== 1 ? "s" : ""}`);
 			}
@@ -351,7 +397,7 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 				if (data.untracked) statusParts.push(`${data.untracked} untracked`);
 				parts.push(statusParts.join(", ") || "unknown");
 			}
-			if (data.branch) parts.push(`on ${data.branch}`);
+			if (data.branch) parts.push(`on ${statusValue(data.branch)}`);
 			break;
 		case "git_log":
 			parts.push(`${data.commits} commit${(data.commits as number) !== 1 ? "s" : ""}`);
@@ -364,8 +410,8 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 			parts.push(`${data.files} file${(data.files as number) !== 1 ? "s" : ""} processed`);
 			break;
 		case "completion":
-			if (data.model) parts.push(String(data.model));
-			if (data.tier && data.tier !== data.model) parts.push(`(${data.tier})`);
+			if (data.model) parts.push(statusValue(data.model));
+			if (data.tier && data.tier !== data.model) parts.push(`(${statusValue(data.tier)})`);
 			parts.push(`${data.chars ?? 0} chars`);
 			break;
 		case "wc":
@@ -375,26 +421,26 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 		case "pwd":
 		case "mkdir":
 		case "touch":
-			if (data.path) parts.push(shortenPath(String(data.path)));
+			if (data.path) parts.push(statusPath(data.path));
 			break;
 		case "log":
-			parts.push(String(data.message ?? ""));
+			parts.push(statusFirstLine(data.message));
 			break;
 		case "phase":
-			parts.push(String(data.title ?? ""));
+			parts.push(statusFirstLine(data.title));
 			break;
 		default:
 			if (data.count !== undefined) {
 				parts.push(String(data.count));
 			}
 			if (data.path) {
-				parts.push(shortenPath(String(data.path)));
+				parts.push(statusPath(data.path));
 			}
 	}
 
 	const desc = parts.length > 0 ? parts.join(" · ") : "";
 	const statsSuffix = hasEventDiff(event) ? formatDiffStatsSuffix(event.diff as string, theme) : "";
-	return `${icon} ${theme.fg("muted", op)}${desc ? ` ${theme.fg("dim", desc)}` : ""}${statsSuffix}`;
+	return `${icon} ${theme.fg("muted", displayOp)}${desc ? ` ${theme.fg("dim", desc)}` : ""}${statsSuffix}`;
 }
 
 function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string[] {
@@ -406,19 +452,20 @@ function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string
 	const addItems = (items: unknown[], formatter: (item: unknown) => string, max = 5) => {
 		const arr = Array.isArray(items) ? items : [];
 		for (let i = 0; i < Math.min(arr.length, max); i++) {
-			lines.push(`   ${theme.fg("dim", formatter(arr[i]))}`);
+			lines.push(`   ${theme.fg("dim", statusValue(formatter(arr[i])))}`);
 		}
 		if (arr.length > max) {
 			lines.push(`   ${theme.fg("dim", `… ${arr.length - max} more`)}`);
 		}
 	};
 
-	const addPreview = (preview: string, maxLines = 3) => {
-		const previewLines = String(preview).split("\n").slice(0, maxLines);
+	const addPreview = (preview: string, maxLines = PREVIEW_LIMITS.OUTPUT_COLLAPSED) => {
+		const safePreview = sanitizeText(String(preview));
+		const previewLines = safePreview.split("\n").slice(0, maxLines);
 		for (const line of previewLines) {
-			lines.push(`   ${theme.fg("toolOutput", truncateToWidth(replaceTabs(line), 80))}`);
+			lines.push(`   ${theme.fg("toolOutput", truncateToWidth(replaceTabs(line), TRUNCATE_LENGTHS.LINE))}`);
 		}
-		const totalLines = String(preview).split("\n").length;
+		const totalLines = safePreview.split("\n").length;
 		if (totalLines > maxLines) {
 			lines.push(`   ${theme.fg("dim", `… ${totalLines - maxLines} more lines`)}`);
 		}
@@ -494,28 +541,46 @@ interface EventHunkRows {
 // the status event array on every output chunk while the event objects stay
 // identical, and re-rendering a capped 32k-char diff per chunk would dominate
 // stream latency. Entries die with their event.
-const eventHunkRowCache = new WeakMap<EvalStatusEvent, { width: number; hunk: EventHunkRows }>();
+const eventHunkRowCache = new WeakMap<
+	EvalStatusEvent,
+	{ width: number; theme: Theme; diff: string; diffTruncated: boolean; hunk: EventHunkRows }
+>();
 
-function renderEventHunkRows(event: EvalStatusEvent, theme: Theme, width: number): EventHunkRows {
-	const cached = eventHunkRowCache.get(event);
-	if (cached && cached.width === width) return cached.hunk;
+function renderEventHunkRows(event: EvalStatusEvent, theme: Theme, width: number, skipSourceLines = 0): EventHunkRows {
+	const diff = typeof event.diff === "string" ? sanitizeText(event.diff) : "";
+	const diffTruncated = event.diffTruncated === true;
+	if (skipSourceLines === 0) {
+		const cached = eventHunkRowCache.get(event);
+		if (
+			cached &&
+			cached.width === width &&
+			cached.theme === theme &&
+			cached.diff === diff &&
+			cached.diffTruncated === diffTruncated
+		) {
+			return cached.hunk;
+		}
+	}
 
-	const diff = typeof event.diff === "string" ? event.diff : "";
+	const sourceLines = diff ? diff.split("\n") : [];
+	const renderedDiff = sourceLines.slice(skipSourceLines).join("\n");
 	const rows: string[] = [];
 	const groupStarts: number[] = [];
-	if (diff) {
+	if (renderedDiff) {
 		const filePath = typeof event.path === "string" ? event.path : undefined;
-		for (const diffLine of renderDiffColored(diff, { filePath }).split("\n")) {
+		for (const diffLine of renderDiffColored(renderedDiff, { filePath, theme }).split("\n")) {
 			groupStarts.push(rows.length);
 			rows.push(...wrapCodeFrameLine(diffLine, width));
 		}
-		if (event.diffTruncated === true) {
-			groupStarts.push(rows.length);
-			rows.push(theme.fg("dim", "… diff truncated"));
-		}
+	}
+	if (diffTruncated) {
+		groupStarts.push(rows.length);
+		rows.push(theme.fg("dim", "… diff truncated"));
 	}
 	const hunk = { rows, groupStarts };
-	eventHunkRowCache.set(event, { width, hunk });
+	if (skipSourceLines === 0) {
+		eventHunkRowCache.set(event, { width, theme, diff, diffTruncated, hunk });
+	}
 	return hunk;
 }
 
@@ -570,6 +635,9 @@ function renderStatusEvents(
 			expanded && !withDiff ? formatStatusEventExpanded(event, theme) : [formatStatusEvent(event, theme)];
 		const headRows = [...wrapTextWithAnsi(`${branch} ${head}`, width)];
 		for (const line of rest) headRows.push(...wrapTextWithAnsi(`${cont}${line}`, width));
+		for (const line of statusEventDetailLines(event)) {
+			headRows.push(...wrapTextWithAnsi(`${cont}${theme.fg("dim", line)}`, width));
+		}
 		blocks.push({ event, cont, headRows, withDiff });
 	}
 
@@ -619,9 +687,11 @@ function renderStatusEvents(
 		const cutRow = hunk.rows.length - budget;
 		const cutAt = hunk.groupStarts.find(start => start >= cutRow);
 		if (cutAt === undefined) break;
-		block.hunkRows = hunk.rows.slice(cutAt);
-		block.hiddenHunkLines = hunk.groupStarts.indexOf(cutAt);
-		budget -= hunk.rows.length - cutAt;
+		const hiddenHunkLines = hunk.groupStarts.indexOf(cutAt);
+		const retained = hiddenHunkLines > 0 ? renderEventHunkRows(block.event, theme, bodyWidth, hiddenHunkLines) : hunk;
+		block.hunkRows = retained.rows;
+		block.hiddenHunkLines = hiddenHunkLines;
+		budget -= retained.rows.length;
 	}
 
 	const lines: string[] = [];
@@ -658,17 +728,18 @@ function formatCellOutputLines(
 		return { lines: [], hiddenCount: 0 };
 	}
 
+	const safeOutput = sanitizeText(cell.output);
 	const innerWidth = outputBlockContentWidth(width);
 
 	if (cell.hasMarkdown && cell.status !== "error") {
-		const md = new Markdown(cell.output, 0, 0, getMarkdownTheme());
+		const md = new Markdown(safeOutput, 0, 0, getMarkdownTheme());
 		const allLines = md.render(innerWidth);
 		const displayLines = expanded ? allLines : allLines.slice(-previewLines);
 		const hiddenCount = allLines.length - displayLines.length;
 		return { lines: displayLines, hiddenCount };
 	}
 
-	const styledOutput = cell.output
+	const styledOutput = safeOutput
 		.split("\n")
 		.map(line => {
 			const cleaned = replaceTabs(line);
@@ -711,7 +782,8 @@ export function renderKernelCellLines(
 	const { expanded, isPartial, spinnerFrame, previewLines, width } = opts;
 	const language = cell.language ?? "python";
 	const cellLive = isPartial || cell.status === "running" || cell.status === "pending";
-	const code = cellLive ? cell.code : formatEvalCodeForDisplay(cell.code, language);
+	const safeCode = sanitizeText(cell.code);
+	const code = cellLive ? safeCode : formatEvalCodeForDisplay(safeCode, language);
 	const allEvents = cell.statusEvents ?? [];
 	const agentEvents = allEvents.filter(e => e.op === "agent");
 	const otherEvents = agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents;
@@ -840,7 +912,7 @@ export const evalToolRenderer = {
 					const cell = cells[i];
 					const cellLines = renderCodeCell(
 						{
-							code: cell.code,
+							code: sanitizeText(cell.code),
 							language: languageForHighlighter(cell.language),
 							showLanguage: true,
 							index: i,
@@ -888,8 +960,9 @@ export const evalToolRenderer = {
 		// (tool-execution keys its display on isPartial), so this stays accurate.
 		const isPartialResult = options.isPartial === true;
 
-		const rawOutput =
-			options.renderContext?.output ?? (result.content?.find(c => c.type === "text")?.text ?? "").trimEnd();
+		const rawOutput = sanitizeText(
+			options.renderContext?.output ?? result.content?.find(c => c.type === "text")?.text ?? "",
+		).trimEnd();
 
 		const output = stripOutputNotice(rawOutput, details?.meta).trimEnd();
 
@@ -914,7 +987,9 @@ export const evalToolRenderer = {
 		if (details?.meta?.truncation) {
 			warningLine = formatStyledTruncationWarning(details.meta, uiTheme) ?? undefined;
 		}
-		const noticeLine = details?.notice ? uiTheme.fg("dim", wrapBrackets(details.notice, uiTheme)) : undefined;
+		const noticeLine = details?.notice
+			? uiTheme.fg("dim", wrapBrackets(statusValue(details.notice), uiTheme))
+			: undefined;
 		const asyncLine =
 			details?.async?.state === "running"
 				? uiTheme.fg("dim", wrapBrackets(`Backgrounded: ${details.async.jobId}`, uiTheme))

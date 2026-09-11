@@ -318,6 +318,11 @@ export class EventController {
 		const existing = this.#postToolAssistantComponents.get(toolCallId);
 		if (existing) {
 			existing.updateContent(segment);
+			if (!this.ctx.chatContainer.children.includes(existing)) {
+				if (!this.#insertAfterTranscriptComponent(this.#toolTimelineComponents.get(toolCallId), existing)) {
+					this.ctx.chatContainer.addChild(existing);
+				}
+			}
 			return existing;
 		}
 		const component = createAssistantMessageComponent(this.ctx);
@@ -413,6 +418,11 @@ export class EventController {
 
 	hasToolExecutionStarted(toolCallId: string): boolean {
 		return this.#executionStartedCallIds.has(toolCallId);
+	}
+
+	getLivePostToolAssistantComponents(): readonly Component[] {
+		if (!this.ctx.streamingMessage) return [];
+		return [...this.#postToolAssistantComponents.values()];
 	}
 
 	resetTranscriptAnchors(): void {

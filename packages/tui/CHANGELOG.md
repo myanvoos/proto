@@ -7,6 +7,19 @@
 - Render scheduling uses a budgeted cadence: ordinary frames wait `max(1000/60, min(200ms, 2x last frame cost))` since the previous frame and input-driven frames use an 8ms floor (with an expedite re-arm when a key arrives behind an armed timer), so keystroke echo no longer quantizes to the 30fps tick while expensive frames keep ~50% duty-cycle backpressure.
 - The output-backlog defer path keeps the render timer delay bookkeeping in sync.
 
+### Fixed
+
+- Emoji and other astral characters no longer split across output chunks, which rendered replacement glyphs instead of the character.
+- Malformed colon-form extended-color SGR sequences (e.g. `ESC[38:5m`) no longer swallow the following SGR's attributes such as bold.
+- Inserting or editing a row at the committed scrollback boundary no longer drops the inserted row or duplicates its neighbor.
+- Content that mutates after being committed to scrollback no longer leaves stale rows on screen; scrollback rebuild mode now reproduces the full tape exactly.
+- Shortening the pane in tmux-style hosts no longer re-prints rows that were already pushed into scrollback history.
+- Ambiguous-width glyphs (e.g. `U+2630`) survive overlay clipping instead of disappearing.
+- Rows below a live (still-streaming) block stay out of the commit seam, so finalized content no longer duplicates while the live block grows.
+- When content shrinks below the viewport, the committed seam retracts and the exposed viewport repaints instead of keeping orphaned rows.
+- Markdown re-wraps correctly after terminal width-mode changes instead of reusing stale cached rows.
+- Markdown input sanitizes terminal control characters and foreign escape sequences before rendering.
+
 ## [18.0.5] - 2026-09-09
 
 ### Fixed

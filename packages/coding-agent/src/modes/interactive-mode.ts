@@ -1675,6 +1675,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				livePendingTools.set(id, component);
 				liveSet.add(component as unknown as Component);
 			}
+			for (const component of this.#eventController.getLivePostToolAssistantComponents()) {
+				liveSet.add(component);
+			}
 			if (liveSet.size > 0) {
 				for (const child of this.chatContainer.children) {
 					if (liveSet.has(child)) liveComponents.push(child);
@@ -1701,11 +1704,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.transcriptMessageComponents = retained;
 		this.#uiHelpers.addTranscriptWindowNotice(this.chatContainer, window);
-		this.renderSessionContext(context, {
-			reuseSettledComponents: options.reuseSettledComponents,
-			preservedLiveToolCallIds,
-		});
-		for (const child of liveComponents) this.chatContainer.addChild(child);
+		const insertedLiveComponents = this.#uiHelpers.renderSessionContextWithLiveToolComponents(
+			context,
+			{
+				reuseSettledComponents: options.reuseSettledComponents,
+				preservedLiveToolCallIds,
+			},
+			livePendingTools,
+		);
+		for (const child of liveComponents) {
+			if (!insertedLiveComponents.has(child)) this.chatContainer.addChild(child);
+		}
 
 		for (const [id, component] of livePendingTools) this.pendingTools.set(id, component);
 

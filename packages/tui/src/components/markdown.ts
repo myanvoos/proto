@@ -1,3 +1,4 @@
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import {
 	Lexer,
@@ -38,6 +39,10 @@ const OSC8_ST_PREFIX_REGEX = /(\x1b\]8;[^\x07\x1b]*)\x1b\\/g;
 
 function normalizeOsc8Terminators(text: string): string {
 	return text.replace(OSC8_ST_PREFIX_REGEX, "$1\x07");
+}
+
+function normalizeMarkdownSource(text: string): string {
+	return normalizeOsc8Terminators(sanitizeText(text));
 }
 
 const MARKDOWN_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
@@ -1248,6 +1253,7 @@ export class Markdown
 
 	#cachedText?: string;
 	#cachedWidth?: number;
+	#cachedWidthConfigEpoch?: number;
 	#cachedLines?: readonly string[];
 	#transientRenderCache = false;
 	#normalizedTextCache?: NormalizedTextCache;
@@ -1316,6 +1322,7 @@ export class Markdown
 	compact(): void {
 		this.#cachedText = undefined;
 		this.#cachedWidth = undefined;
+		this.#cachedWidthConfigEpoch = undefined;
 		this.#cachedLines = undefined;
 		this.#normalizedTextCache = undefined;
 		this.#appendOnlySinceRender = false;
@@ -1347,7 +1354,7 @@ export class Markdown
 		codeBlockIndent: number = 2,
 		cacheRenderedOutput = true,
 	) {
-		this.#text = normalizeOsc8Terminators(text);
+		this.#text = normalizeMarkdownSource(text);
 		this.#paddingX = paddingX;
 		this.#paddingY = paddingY;
 		this.#theme = theme;
@@ -1357,7 +1364,7 @@ export class Markdown
 	}
 
 	setText(text: string): boolean {
-		text = normalizeOsc8Terminators(text);
+		text = normalizeMarkdownSource(text);
 
 		if (text === this.#text) return false;
 		const appended = text.startsWith(this.#text);
@@ -1388,6 +1395,7 @@ export class Markdown
 	invalidate(): void {
 		this.#cachedText = undefined;
 		this.#cachedWidth = undefined;
+		this.#cachedWidthConfigEpoch = undefined;
 		this.#cachedLines = undefined;
 	}
 	get transientRenderCache(): boolean {
@@ -1664,7 +1672,12 @@ export class Markdown
 		}
 		this.#tableLayoutWidth = width;
 
-		if (this.#cachedLines && this.#cachedText === this.#text && this.#cachedWidth === width) {
+		if (
+			this.#cachedLines &&
+			this.#cachedText === this.#text &&
+			this.#cachedWidth === width &&
+			this.#cachedWidthConfigEpoch === getWidthConfigEpoch()
+		) {
 			this.#appendOnlySinceRender = false;
 			this.#recordLastRenderedState(this.#cachedLines.length > 0);
 			return this.#cachedLines;
@@ -1678,6 +1691,7 @@ export class Markdown
 		if (!this.#text || this.#text.trim() === "") {
 			this.#cachedText = this.#text;
 			this.#cachedWidth = width;
+			this.#cachedWidthConfigEpoch = getWidthConfigEpoch();
 			this.#cachedLines = EMPTY_RENDER_LINES;
 			this.#appendOnlySinceRender = false;
 			this.#recordLastRenderedState(false);
@@ -1704,6 +1718,7 @@ export class Markdown
 
 				this.#cachedText = this.#text;
 				this.#cachedWidth = width;
+				this.#cachedWidthConfigEpoch = getWidthConfigEpoch();
 				this.#cachedLines = cached.lines;
 				this.#appendOnlySinceRender = false;
 				this.#recordLastRenderedState(cached.lines.length > 0);
@@ -1743,6 +1758,7 @@ export class Markdown
 
 		this.#cachedText = this.#text;
 		this.#cachedWidth = width;
+		this.#cachedWidthConfigEpoch = getWidthConfigEpoch();
 		this.#cachedLines = result;
 
 		if (cacheKey !== undefined && this.#cacheRenderedOutput) {
@@ -1821,7 +1837,7 @@ export class Markdown
 	}
 
 	#renderCacheKey(normalizedText: string, signature: RenderSignature): string {
-		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}\x00${signature.themeRevision}`;
+		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}\x00${signature.themeRevision}\x00${getWidthConfigEpoch()}`;
 	}
 
 	#renderFragmentPrefix(signature: RenderSignature): string {
@@ -3631,7 +3647,7 @@ export class Markdown
 
 export function renderInlineMarkdown(text: string, mdTheme: MarkdownTheme, baseColor?: (t: string) => string): string {
 	if (typeof text !== "string") return (baseColor ?? (t => t))(text != null ? String(text) : "");
-	const tokens = markdownParser.lexer(normalizeOsc8Terminators(text));
+	const tokens = markdownParser.lexer(normalizeMarkdownSource(text));
 	const applyText = baseColor ?? ((t: string) => t);
 	let result = "";
 	for (const token of tokens) {

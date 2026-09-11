@@ -1,8 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type Component, Container, type NativeScrollbackWidthEpoch } from "@oh-my-pi/pi-tui";
 import { Settings } from "../config/settings";
+import type { SessionContext } from "../session/session-context";
 import { evalToolRenderer } from "../tools/eval-render";
-import type { ToolExecutionHandle } from "./components/tool-execution";
+import type { ToolExecutionHandle, ToolExecutionUi } from "./components/tool-execution";
 import { ToolExecutionComponent } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import { initTheme } from "./theme/theme";
@@ -412,6 +414,56 @@ test("resolvePreservedLiveToolCallIds drops live components the replay settles f
 	expect(preserved.has(CALL_ID), "a settled persisted result must be replayed, not preserved").toBe(false);
 	expect(livePendingTools.has(CALL_ID)).toBe(false);
 	expect(liveComponents, "the dropped live component must not be re-appended after the replay").toHaveLength(0);
+});
+
+test("replay inserts preserved live calls by assistant tool order", () => {
+	const chatContainer = new TranscriptContainer();
+	const pendingTools = new Map<string, ToolExecutionHandle>();
+	const ctx = makeCtx(chatContainer, pendingTools);
+	const helpers = new UiHelpers(ctx);
+	const assistant = {
+		...assistantMessageWithCall(),
+		content: [
+			{ type: "toolCall", id: "A", name: "alpha", arguments: {} },
+			{ type: "toolCall", id: "B", name: "beta", arguments: {} },
+		],
+	};
+	const resultB = {
+		role: "toolResult",
+		toolCallId: "B",
+		toolName: "beta",
+		content: [{ type: "text", text: "B done" }],
+		details: {},
+		isError: false,
+		timestamp: Date.now(),
+	};
+	const liveA = new ToolExecutionComponent(
+		"alpha",
+		{},
+		{ useBuiltInRenderer: false },
+		undefined,
+		stubUi as ToolExecutionUi,
+	);
+	spinnerComponents.push(liveA);
+	const livePendingTools = new Map<string, ToolExecutionHandle>([["A", liveA]]);
+	const liveComponents = [liveA as unknown as Component];
+	const preserved = resolvePreservedLiveToolCallIds({
+		livePendingTools,
+		liveComponents,
+		messages: [assistant, resultB] as unknown as AgentMessage[],
+	});
+	const inserted = helpers.renderSessionContextWithLiveToolComponents(
+		{ messages: [assistant, resultB] } as unknown as SessionContext,
+		{ preservedLiveToolCallIds: preserved },
+		new Map(livePendingTools),
+	);
+	const order = toolComponentsIn(chatContainer).map(component => {
+		const text = component.render(100).join("\n");
+		return text.includes("alpha") ? "alpha" : text.includes("beta") ? "beta" : "unknown";
+	});
+
+	expect(inserted.has(liveA)).toBe(true);
+	expect(order).toEqual(["alpha", "beta"]);
 });
 
 test("replay skips preserved ids and creates components for unpreserved calls", () => {

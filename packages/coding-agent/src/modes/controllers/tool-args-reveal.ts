@@ -343,7 +343,13 @@ function displayArgsForPrefix(entry: RevealEntry, prefix: string, forceParse = f
 	}
 
 	let parsedChanged = false;
-	if (forceParse || (prefix.length > 0 && prefix.length < STREAMING_JSON_PARSE_MIN_GROWTH)) {
+	// Raw-preview renderers consume __partialJson every frame; throttling parsed fields beside it makes the preview stale.
+	const rawPreviewNeedsFreshParse = entry.exposeRawPartialJson;
+	if (
+		forceParse ||
+		rawPreviewNeedsFreshParse ||
+		(prefix.length > 0 && prefix.length < STREAMING_JSON_PARSE_MIN_GROWTH)
+	) {
 		entry.parsedArgs = parseStreamingJson<Record<string, unknown>>(prefix);
 		entry.parsedLen = prefix.length;
 		parsedChanged = true;

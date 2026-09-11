@@ -132,6 +132,10 @@ export interface NativeScrollbackCommittedRows {
 	setNativeScrollbackCommittedRows(rows: number): void;
 }
 
+export interface NativeScrollbackCommittedDirty {
+	getNativeScrollbackCommittedDirtyFromRow(): number | undefined;
+}
+
 export interface NativeScrollbackWidthEpoch {
 	captureNativeScrollbackWidthEpoch(): unknown;
 	resolveNativeScrollbackWidthEpoch(boundary: unknown): number | undefined;
@@ -152,6 +156,13 @@ function prepareNativeScrollbackReplay(component: Component): void {
 
 function setNativeScrollbackCommittedRows(component: Component, rows: number): void {
 	(component as Component & Partial<NativeScrollbackCommittedRows>).setNativeScrollbackCommittedRows?.(rows);
+}
+
+function getNativeScrollbackCommittedDirtyFromRow(component: Component): number | undefined {
+	const row = (
+		component as Component & Partial<NativeScrollbackCommittedDirty>
+	).getNativeScrollbackCommittedDirtyFromRow?.();
+	return row === undefined || !Number.isFinite(row) ? undefined : Math.max(0, Math.trunc(row));
 }
 
 function getNativeScrollbackWidthEpoch(component: Component): NativeScrollbackWidthEpoch | undefined {
@@ -176,6 +187,13 @@ function isOverlayFocusTarget(owner: Component, component: Component | null): bo
 
 function getNativeScrollbackLiveRegionStart(component: Component): number | undefined {
 	return (component as Component & Partial<NativeScrollbackLiveRegion>).getNativeScrollbackLiveRegionStart?.();
+}
+
+function isUnfinalizedTranscriptBlock(component: Component): boolean {
+	return (
+		(component as Component & Partial<{ isTranscriptBlockFinalized(): boolean }>).isTranscriptBlockFinalized?.() ===
+		false
+	);
 }
 
 function getNativeScrollbackLiveRegionPinnedStart(component: Component): number | undefined {
@@ -322,6 +340,7 @@ export class Container
 	#memoLines: string[] | undefined;
 	#memoChildLines: (readonly string[])[] = [];
 	#memoChildWidthEpochRevisions: Array<number | undefined> = [];
+	#memoChildRenderRevisions: Array<number | undefined> = [];
 	#memoWidth = -1;
 
 	#memoChildren: Component[] = [];
@@ -583,20 +602,26 @@ export class Container
 		const count = children.length;
 		let refs = this.#memoChildLines;
 		let revisions = this.#memoChildWidthEpochRevisions;
+		let renderRevisions = this.#memoChildRenderRevisions;
 		let unchanged = this.#memoLines !== undefined && this.#memoWidth === width && refs.length === count;
 		if (refs.length !== count) {
 			refs = new Array(count);
 			this.#memoChildLines = refs;
 			revisions = new Array(count);
 			this.#memoChildWidthEpochRevisions = revisions;
+			renderRevisions = new Array(count);
+			this.#memoChildRenderRevisions = renderRevisions;
 		}
 		for (let i = 0; i < count; i++) {
-			const childLines = children[i]!.render(width);
-			revisions[i] = getNativeScrollbackWidthEpochRevision(children[i]!);
-			if (refs[i] !== childLines) {
+			const child = children[i]!;
+			const childLines = child.render(width);
+			const renderRevision = (child as Component & { getRenderRevision?: () => number }).getRenderRevision?.();
+			revisions[i] = getNativeScrollbackWidthEpochRevision(child);
+			if (refs[i] !== childLines || renderRevisions[i] !== renderRevision) {
 				unchanged = false;
 				refs[i] = childLines;
 			}
+			renderRevisions[i] = renderRevision;
 		}
 		this.#memoChildren = children.slice();
 		this.#memoWidth = width;
@@ -640,6 +665,7 @@ interface FrameSegment {
 	rowCount: number;
 	widthEpochRevision?: number;
 	liveLocalStart?: number;
+	liveRegionFinal?: boolean;
 	liveRegionPinned: boolean;
 
 	liveRegionPinnedStart?: number;
@@ -722,7 +748,11 @@ function frameOutputBoundary(text: string, start: number, maxLength: number): nu
 			const end = frameOutputEscapeEnd(text, cursor);
 			if (end > limit) break;
 			cursor = end;
-		} else if (code >= 0xd800 && code <= 0xdbff && cursor + 1 < limit) {
+		} else if (code >= 0xd800 && code <= 0xdbff) {
+			// Keep a surrogate pair in one terminal write. A high surrogate at the
+			// candidate boundary must wait for the next chunk; emitting it alone
+			// makes UTF-8 writers encode the pair's halves as replacement glyphs.
+			if (cursor + 1 >= limit) break;
 			const low = text.charCodeAt(cursor + 1);
 			if (low >= 0xdc00 && low <= 0xdfff) cursor += 2;
 			else cursor++;
@@ -739,25 +769,42 @@ function isSgrParamByte(c: number): boolean {
 }
 
 function endsWithIncompleteExtendedColor(params: string): boolean {
-	const t = params.split(";");
-	let i = 0;
-	while (i < t.length) {
-		const tok = t[i];
-		if (tok === "38" || tok === "48" || tok === "58") {
-			const mode = t[i + 1];
-			if (mode === undefined) return true;
-			if (mode === "2") {
-				if (i + 4 >= t.length) return true;
-				i += 5;
-				continue;
-			}
+	const semicolonParams = params.split(";");
+	for (let i = 0; i < semicolonParams.length; i++) {
+		const token = semicolonParams[i]!;
+		if (token.includes(":")) {
+			const colonParams = token.split(":");
+			const mode = colonParams[1];
+			if (colonParams[0] !== "38" && colonParams[0] !== "48" && colonParams[0] !== "58") continue;
 			if (mode === "5") {
-				if (i + 2 >= t.length) return true;
-				i += 3;
+				if (colonParams.length < 3 || colonParams[2] === "") return true;
 				continue;
 			}
+			if (mode === "2") {
+				const values = colonParams.slice(2);
+				// Colon truecolor accepts either RGB or an optional color-space
+				// value followed by RGB. Empty channels are never complete.
+				if (values.length < 3) return true;
+				const channels = values.length === 3 ? values : values.slice(-3);
+				if (channels.some(value => value === "")) return true;
+				continue;
+			}
+			return true;
 		}
-		i += 1;
+
+		if (token !== "38" && token !== "48" && token !== "58") continue;
+		const mode = semicolonParams[i + 1];
+		if (mode === undefined) return true;
+		if (mode === "2") {
+			if (i + 4 >= semicolonParams.length) return true;
+			if (semicolonParams.slice(i + 2, i + 5).some(value => value === "")) return true;
+			i += 4;
+			continue;
+		}
+		if (mode === "5") {
+			if (i + 2 >= semicolonParams.length || semicolonParams[i + 2] === "") return true;
+			i += 2;
+		}
 	}
 	return false;
 }
@@ -839,6 +886,7 @@ export function findCommittedPrefixResync(
 	prefix: readonly string[],
 	verifiedTo: number = prefix.length,
 	finalTo: number = verifiedTo,
+	strict = false,
 ): number {
 	const verified = Math.min(prefix.length, Math.max(0, Math.trunc(verifiedTo)));
 	const hardEnd = Math.min(prefix.length, Math.max(verified, Math.trunc(finalTo)));
@@ -851,9 +899,10 @@ export function findCommittedPrefixResync(
 				break;
 			}
 		}
-		if (!hardMismatch) {
+		if (!hardMismatch && !strict) {
 			let samples = 0;
 			let mismatches = 0;
+			let mismatchIndex = -1;
 			for (let j = 1; j <= verified && j <= RESYNC_TAIL_LOOKBACK && samples < RESYNC_TAIL_SAMPLES; j++) {
 				const idx = verified - j;
 				const row = frame[idx]!;
@@ -864,15 +913,29 @@ export function findCommittedPrefixResync(
 				}
 				if (isBlankRow(row) && isBlankRow(old)) continue;
 				samples++;
-				if (!rowsEquivalent(row, old)) mismatches++;
+				if (!rowsEquivalent(row, old)) {
+					mismatches++;
+					if (mismatchIndex < 0) mismatchIndex = idx;
+				}
 			}
 
-			if (samples === 0 || mismatches <= 1) return -1;
+			// A single boundary blank/nonblank mismatch can still be an insertion
+			// or deletion: the shifted row immediately after the audited prefix
+			// repeats the old boundary row. Do not let the single-edit tolerance
+			// swallow that shift, or the next append skips the inserted row.
+			const boundaryShift =
+				mismatches === 1 &&
+				mismatchIndex === verified - 1 &&
+				frame[verified] !== undefined &&
+				isBlankRow(frame[mismatchIndex]!) !== isBlankRow(prefix[mismatchIndex]!) &&
+				rowsEquivalent(frame[verified]!, prefix[mismatchIndex]!);
+			if (samples === 0 || (mismatches <= 1 && !boundaryShift)) return -1;
 		}
 	}
 
 	const limit = Math.min(hardEnd, frame.length);
-	for (let i = 0; i < limit; i++) {
+	const auditStart = strict ? verified : 0;
+	for (let i = auditStart; i < limit; i++) {
 		if (!rowsEquivalent(frame[i]!, prefix[i]!)) return i;
 	}
 	return limit < hardEnd ? limit : -1;
@@ -960,8 +1023,12 @@ export class TUI extends Container {
 	#windowTopRow = 0;
 
 	#previousWindow: string[] = [];
+	#previousLiveRegionSource: Component | undefined;
+	#previousLiveRegionStart: number | undefined;
+	#previousLiveRegionHasTrailingRows = false;
 	#nativeScrollbackLiveRegionStart: number | undefined;
 	#nativeScrollbackLiveRegionPinned = false;
+	#nativeScrollbackCommittedDirtyFromRow: number | undefined;
 
 	#nativeScrollbackPinnedBoundary: number | undefined;
 	#fullRedrawCount = 0;
@@ -976,6 +1043,7 @@ export class TUI extends Container {
 	#hasEverRendered = false;
 	#scrollbackRebuildEnabled =
 		Bun.env.PI_TUI_SCROLLBACK_REBUILD === "1" || Bun.env.PI_TUI_SCROLLBACK_REBUILD === "true";
+	#scrollbackRebuildTransitionPending = false;
 	#resizeScrollbackMode: ResizeScrollbackMode = TUI.#initialResizeScrollbackMode();
 	static #initialResizeScrollbackMode(): ResizeScrollbackMode {
 		const raw = Bun.env.PI_TUI_RESIZE_SCROLLBACK;
@@ -1223,6 +1291,7 @@ export class TUI extends Container {
 		this.#nativeScrollbackLiveRegionStart = undefined;
 		this.#nativeScrollbackLiveRegionPinned = false;
 		this.#nativeScrollbackPinnedBoundary = undefined;
+		this.#nativeScrollbackCommittedDirtyFromRow = undefined;
 		const children = this.children;
 		const previousSegments = this.#frameSegments;
 		const segments = this.#frameSegmentsScratch;
@@ -1247,6 +1316,7 @@ export class TUI extends Container {
 				partialRoots !== null && previous !== undefined && previous.component === child && !partialRoots.has(child);
 			let childLines: readonly string[];
 			let liveLocalStart: number | undefined;
+			let liveRegionFinal = false;
 			let liveRegionPinned = false;
 			let liveRegionPinnedStart: number | undefined;
 			let widthEpochRevision: number | undefined;
@@ -1254,6 +1324,7 @@ export class TUI extends Container {
 			if (reuse) {
 				childLines = previous.lines;
 				liveLocalStart = previous.liveLocalStart;
+				liveRegionFinal = previous.liveRegionFinal === true;
 				liveRegionPinned = previous.liveRegionPinned;
 				liveRegionPinnedStart = previous.liveRegionPinnedStart;
 				widthEpochRevision = previous.widthEpochRevision;
@@ -1267,12 +1338,27 @@ export class TUI extends Container {
 					);
 				}
 				childLines = child.render(width);
+				const committedDirtyFromRow = getNativeScrollbackCommittedDirtyFromRow(child);
+				if (committedDirtyFromRow !== undefined) {
+					const dirtyRow = offset + Math.min(childLines.length, committedDirtyFromRow);
+					this.#nativeScrollbackCommittedDirtyFromRow =
+						this.#nativeScrollbackCommittedDirtyFromRow === undefined
+							? dirtyRow
+							: Math.min(this.#nativeScrollbackCommittedDirtyFromRow, dirtyRow);
+				}
 				widthEpochRevision = getNativeScrollbackWidthEpochRevision(child);
 				const liveRegionStart = getNativeScrollbackLiveRegionStart(child);
 				if (liveRegionStart !== undefined) {
+					liveRegionFinal = liveRegionStart === Number.POSITIVE_INFINITY;
 					liveLocalStart = Number.isFinite(liveRegionStart)
 						? Math.max(0, Math.min(childLines.length, Math.trunc(liveRegionStart)))
 						: childLines.length;
+				} else if (isUnfinalizedTranscriptBlock(child)) {
+					// Transcript blocks such as BashExecutionComponent expose their
+					// finalization state but not a local live-region hook. Treat the
+					// whole block as mutable so shifts of a root-level live block
+					// participate in native-scrollback auditing.
+					liveLocalStart = 0;
 				}
 				if (liveLocalStart !== undefined) {
 					liveRegionPinned =
@@ -1292,7 +1378,12 @@ export class TUI extends Container {
 				reported = getRenderStablePrefixRows(child);
 			}
 
-			if (liveLocalStart !== undefined) {
+			// +Infinity means that every row in this segment is settled/final; it
+			// is not a mutable barrier. Do not let a finalized child at the head
+			// of a container mask a later genuinely live segment. A finite boundary
+			// equal to the segment length remains meaningful: an empty live slot can
+			// still grow and must hold a trailing sibling out of the seam.
+			if (liveLocalStart !== undefined && !liveRegionFinal) {
 				const start = offset + liveLocalStart;
 				if (this.#nativeScrollbackLiveRegionStart === undefined) {
 					this.#nativeScrollbackLiveRegionStart = start;
@@ -1335,6 +1426,7 @@ export class TUI extends Container {
 			segment.rowCount = childLines.length;
 			segment.widthEpochRevision = widthEpochRevision;
 			segment.liveLocalStart = liveLocalStart;
+			segment.liveRegionFinal = liveRegionFinal;
 			segment.liveRegionPinned = liveRegionPinned;
 			segment.liveRegionPinnedStart = liveRegionPinnedStart;
 			segments[index] = segment;
@@ -1376,6 +1468,10 @@ export class TUI extends Container {
 
 	getComposedFrameChangedTo(): number {
 		return this.#composedFrameChangedTo;
+	}
+
+	getNativeScrollbackCommittedDirtyFromRow(): number | undefined {
+		return this.#nativeScrollbackCommittedDirtyFromRow;
 	}
 
 	#pruneFrameCursorMarkers(fromRow: number): void {
@@ -1513,7 +1609,12 @@ export class TUI extends Container {
 	}
 
 	setScrollbackRebuild(enabled: boolean): void {
+		const wasEnabled = this.#scrollbackRebuildEnabled;
 		this.#scrollbackRebuildEnabled = enabled;
+		if (!enabled || wasEnabled || !this.#hasEverRendered || this.#stopped) return;
+
+		this.#scrollbackRebuildTransitionPending = true;
+		this.requestRender(true, { clearScrollback: true });
 	}
 
 	getResizeScrollback(): ResizeScrollbackMode {
@@ -2555,7 +2656,11 @@ export class TUI extends Container {
 		const afterStart = startCol + overlayWidth;
 		const base = extractSegments(baseLine, startCol, afterStart, totalWidth - afterStart, true);
 
-		const overlay = sliceWithWidth(overlayLine, 0, overlayWidth, true);
+		const measuredOverlayWidth = visibleWidth(overlayLine);
+		const overlay =
+			measuredOverlayWidth <= overlayWidth
+				? { text: overlayLine, width: measuredOverlayWidth }
+				: sliceWithWidth(overlayLine, 0, overlayWidth, true);
 
 		const beforePad = Math.max(0, startCol - base.beforeWidth);
 		const overlayPad = Math.max(0, overlayWidth - overlay.width);
@@ -2777,13 +2882,15 @@ export class TUI extends Container {
 			return;
 		}
 
+		const resizeGeometryPending =
+			this.#resizeEventPending ||
+			(this.#previousWidth > 0 && this.#previousWidth !== width) ||
+			(this.#previousHeight > 0 && this.#previousHeight !== height);
 		const replayFullHistory =
 			this.#hasEverRendered &&
-			!this.#resizeRepaintsInPlace() &&
 			(this.#clearScrollbackOnNextRender ||
-				this.#resizeEventPending ||
-				(this.#previousWidth > 0 && this.#previousWidth !== width) ||
-				(this.#previousHeight > 0 && this.#previousHeight !== height));
+				(!this.#resizeRepaintsInPlace() && resizeGeometryPending) ||
+				(this.#scrollbackRebuildEnabled && resizeGeometryPending));
 		if (replayFullHistory) {
 			for (const child of this.children) prepareNativeScrollbackReplay(child);
 		}
@@ -2812,8 +2919,31 @@ export class TUI extends Container {
 
 		const frameLength = rawFrame.length;
 		const finalBoundary = Math.max(0, Math.min(frameLength, liveRegionStart ?? frameLength));
-
-		const commitCeiling = this.#nativeScrollbackPinnedBoundary ?? frameLength;
+		// A mutable barrier protects finalized rows *below* it from entering the
+		// logical committed seam. Rows in an all-live frame (or a barrier at the
+		// frame origin) may still scroll into history as frozen visual records;
+		// otherwise a live preview can grow without ever pushing its head. Pinned
+		// regions remain strict: their pinned boundary is the physical commit
+		// ceiling even when it is row zero.
+		const liveRegionIndex = this.#frameSegments.findIndex(
+			segment => segment.liveLocalStart !== undefined && segment.liveRegionFinal !== true,
+		);
+		const liveRegionHasTrailingRows =
+			liveRegionIndex >= 0 && this.#frameSegments.slice(liveRegionIndex + 1).some(segment => segment.rowCount > 0);
+		const liveRegionComponent = liveRegionIndex >= 0 ? this.#frameSegments[liveRegionIndex]!.component : undefined;
+		const liveRegionIsNested = liveRegionComponent instanceof Container;
+		const liveRegionBoundaryShifted =
+			this.#previousLiveRegionStart !== undefined && this.#previousLiveRegionStart !== liveRegionStart;
+		const liveCommitBoundary = liveRegionPinned
+			? (this.#nativeScrollbackPinnedBoundary ?? liveRegionStart)
+			: liveRegionStart !== undefined &&
+					(liveRegionHasTrailingRows ||
+						liveRegionBoundaryShifted ||
+						(liveRegionIsNested && liveRegionStart === 0)) &&
+					(liveRegionStart > 0 || liveRegionIsNested)
+				? liveRegionStart
+				: undefined;
+		const commitCeiling = Math.max(0, Math.min(frameLength, liveCommitBoundary ?? frameLength));
 
 		let prevWindowTop = this.#windowTopRow;
 		const prevHardwareCursorRow = this.#hardwareCursorRow;
@@ -2901,6 +3031,17 @@ export class TUI extends Container {
 			}
 		}
 		const newlyFinalEnd = Math.min(this.#committedRows, finalBoundary);
+		const activeLiveRegionSource = this.#frameSegments.find(
+			segment => segment.liveLocalStart !== undefined && segment.liveRegionFinal !== true,
+		)?.component;
+		const liveRegionSourceChanged = activeLiveRegionSource !== this.#previousLiveRegionSource;
+		const shiftedCommittedPrefixFrom =
+			this.#hasEverRendered &&
+			(liveRegionSourceChanged ||
+				(activeLiveRegionSource === undefined && this.#previousFrameLength !== frameLength)) &&
+			this.#composedFrameChangedFrom < this.#committedRows
+				? this.#composedFrameChangedFrom
+				: undefined;
 
 		if (this.#widthEpochBaselineRows === undefined && this.#committedPrefixAuditRows > newlyFinalEnd) {
 			this.#committedPrefixAuditRows = newlyFinalEnd;
@@ -2911,10 +3052,13 @@ export class TUI extends Container {
 			this.#widthEpochBaselineRows === undefined &&
 			!this.#clearScrollbackOnNextRender &&
 			(this.#renderStablePrefixRows < this.#committedPrefixAuditRows ||
-				newlyFinalEnd > this.#committedPrefixAuditRows);
+				newlyFinalEnd > this.#committedPrefixAuditRows ||
+				(this.#nativeScrollbackCommittedDirtyFromRow !== undefined &&
+					this.#nativeScrollbackCommittedDirtyFromRow < this.#committedRows) ||
+				shiftedCommittedPrefixFrom !== undefined);
 		if (auditRan) {
 			const committedRowsBeforeAudit = this.#committedRows;
-			this.#auditCommittedPrefix(rawFrame, newlyFinalEnd);
+			this.#auditCommittedPrefix(rawFrame, newlyFinalEnd, shiftedCommittedPrefixFrom);
 			committedRowsResynced = this.#committedRows !== committedRowsBeforeAudit;
 		}
 
@@ -2976,20 +3120,66 @@ export class TUI extends Container {
 		const replaceRequested = this.#clearScrollbackOnNextRender;
 		const geometryRebuild = geometryChanged && !this.#resizeRepaintsInPlace();
 
+		const streamingGrowth =
+			this.#previousFrameLength > 0 &&
+			frameLength > this.#previousFrameLength &&
+			this.#nativeScrollbackCommittedDirtyFromRow === undefined &&
+			liveRegionStart === undefined;
 		const divergenceRebuild =
 			this.#scrollbackRebuildEnabled &&
 			!firstPaint &&
 			!replaceRequested &&
 			!geometryChanged &&
 			!isMultiplexerSession() &&
+			!streamingGrowth &&
 			(committedRowsResynced || frameLength <= this.#committedRows);
 
 		const resizeScrollbackReplay =
 			(widthEpochReset || this.#resizeScrollbackReplayPending) &&
 			!hasVisibleOverlay &&
 			this.#resizeScrollbackMode !== "preserve";
+		const rebuildResizePending =
+			this.#scrollbackRebuildEnabled &&
+			this.#hasEverRendered &&
+			!hasVisibleOverlay &&
+			(resizeEventOccurred || widthChanged || heightChanged);
+		const commitSeamRetractionPending =
+			this.#scrollbackRebuildEnabled &&
+			this.#hasEverRendered &&
+			!this.#clearScrollbackOnNextRender &&
+			!hasVisibleOverlay &&
+			(Math.max(0, frameLength - height) < this.#committedRows || commitCeiling < this.#committedRows);
+		const deferredLiveRegionRows =
+			this.#previousLiveRegionHasTrailingRows &&
+			Math.max(0, this.#previousFrameLength - this.#previousHeight) > this.#committedRows;
+		const liveBarrierRetractionPending =
+			this.#hasEverRendered &&
+			!this.#clearScrollbackOnNextRender &&
+			!hasVisibleOverlay &&
+			liveRegionSourceChanged &&
+			deferredLiveRegionRows &&
+			(this.#scrollbackRebuildEnabled || activeLiveRegionSource !== undefined);
+		// Once a committed-prefix audit proves that the physical seam shifted, the
+		// rows which were previously on screen may now be the only copy of a
+		// committed live header. Re-emit the current viewport rows as part of the
+		// repair instead of applying the mutable live ceiling and dropping them.
+		const structuralCommittedInsertion =
+			committedRowsResynced && frameLength > this.#previousFrameLength && !geometryChanged && !hasVisibleOverlay;
+		const replayAllCurrentRows = liveBarrierRetractionPending || structuralCommittedInsertion;
+		const replayCommitCeiling = liveRegionPinned
+			? (this.#nativeScrollbackPinnedBoundary ?? commitCeiling)
+			: frameLength;
+		const rebuildTransitionPending = this.#scrollbackRebuildTransitionPending;
 		const fullPaint =
-			firstPaint || replaceRequested || geometryRebuild || divergenceRebuild || resizeScrollbackReplay;
+			firstPaint ||
+			replaceRequested ||
+			geometryRebuild ||
+			divergenceRebuild ||
+			resizeScrollbackReplay ||
+			commitSeamRetractionPending ||
+			liveBarrierRetractionPending ||
+			rebuildTransitionPending ||
+			rebuildResizePending;
 
 		if (fullPaint || widthChanged) {
 			this.#muxPushedRows = 0;
@@ -3000,7 +3190,24 @@ export class TUI extends Container {
 		) {
 			if (this.#committedRows !== this.#muxPushSeam) this.#muxPushedRows = 0;
 			if (height < this.#previousHeight) {
-				this.#muxPushedRows += this.#previousHeight - height;
+				const pushed = this.#previousHeight - height;
+				this.#muxPushedRows += pushed;
+				const pushStart = prevWindowTop;
+				let pushedRowsStillAligned = this.#previousWindow.length >= pushed;
+				for (let index = 0; pushedRowsStillAligned && index < pushed; index++) {
+					const currentRow = rawFrame[pushStart + index];
+					const previousRow = this.#previousWindow[index];
+					if (currentRow === undefined || previousRow === undefined || !rowsEquivalent(currentRow, previousRow)) {
+						pushedRowsStillAligned = false;
+					}
+				}
+				if (pushedRowsStillAligned) {
+					const pushedEnd = Math.min(frameLength, pushStart + pushed);
+					for (let row = this.#committedRows; row < pushedEnd; row++) {
+						this.#committedPrefix.push(rawFrame[row]!);
+					}
+					this.#committedRows = Math.max(this.#committedRows, pushedEnd);
+				}
 				this.#muxPushSeam = this.#committedRows;
 			} else if (height > this.#previousHeight) {
 				const pull = height - this.#previousHeight;
@@ -3019,7 +3226,7 @@ export class TUI extends Container {
 		if (fullPaint) {
 			committedPrefixResliced = true;
 			windowTop = Math.max(0, frameLength - height);
-			chunkTo = Math.min(windowTop, commitCeiling);
+			chunkTo = Math.min(windowTop, replayAllCurrentRows ? replayCommitCeiling : commitCeiling);
 		} else if (widthEpochReset) {
 			this.#widthEpochBaselineRows = replayUnresolvedWidthEpoch
 				? 0
@@ -3049,13 +3256,17 @@ export class TUI extends Container {
 		) {
 			committedPrefixResliced = true;
 			windowTop = Math.max(0, frameLength - height);
-			chunkTo = Math.min(windowTop, commitCeiling);
+			chunkTo = Math.min(windowTop, replayAllCurrentRows ? replayCommitCeiling : commitCeiling);
 			this.#committedRows = chunkTo;
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
-		} else if (geometryChanged && Math.max(0, frameLength - height) < this.#committedRows) {
+		} else if (Math.max(0, frameLength - height) < this.#committedRows) {
+			// The frame tail moved above the committed seam. Keep the seam at the
+			// actual viewport top so the update path repaints the newly exposed rows
+			// instead of pinning the viewport to the stale committed row.
 			windowTop = Math.max(0, frameLength - height);
 			chunkTo = windowTop;
 			this.#committedRows = windowTop;
+			committedRowsResynced = true;
 			if (widthChanged) {
 				committedPrefixResliced = true;
 				this.#committedPrefix = rawFrame.slice(0, windowTop);
@@ -3068,7 +3279,10 @@ export class TUI extends Container {
 			chunkTo =
 				hasVisibleOverlay || geometryChanged
 					? this.#committedRows
-					: Math.min(windowTop, Math.max(this.#committedRows, commitCeiling));
+					: Math.min(
+							windowTop,
+							Math.max(this.#committedRows, replayAllCurrentRows ? replayCommitCeiling : commitCeiling),
+						);
 			if (widthChanged) {
 				committedPrefixResliced = true;
 				this.#committedPrefix = rawFrame.slice(0, this.#committedRows);
@@ -3118,7 +3332,12 @@ export class TUI extends Container {
 					clearScrollback:
 						divergenceRebuild ||
 						(resizeScrollbackReplay && this.#resizeScrollbackMode === "rebuild") ||
-						((replaceRequested || geometryRebuild) && !isMultiplexerSession()),
+						(replaceRequested && (this.#scrollbackRebuildEnabled || !isMultiplexerSession())) ||
+						(geometryRebuild && !isMultiplexerSession()) ||
+						commitSeamRetractionPending ||
+						(liveBarrierRetractionPending && this.#scrollbackRebuildEnabled) ||
+						rebuildTransitionPending ||
+						rebuildResizePending,
 				}
 			: { kind: "update", chunkTo, windowTop };
 		this.#logRedraw(intent, frameLength, height);
@@ -3161,6 +3380,7 @@ export class TUI extends Container {
 			this.#widthEpochOverlayBoundary = undefined;
 			this.#widthEpochCommittedPrefix = undefined;
 			this.#resizeScrollbackReplayPending = false;
+			this.#scrollbackRebuildTransitionPending = false;
 			this.#publishCommittedRows();
 			return;
 		}
@@ -3193,7 +3413,11 @@ export class TUI extends Container {
 				const hostHeightShrinkRows = Math.min(windowMovement, Math.max(0, previousViewportRows - height));
 				const appendWindowMovement = windowMovement - hostHeightShrinkRows;
 				const epochGrowthRows = Math.max(0, widthEpochAppendTo - widthEpochAppendFrom);
-				scrollRows = Math.min(appendWindowMovement, epochGrowthRows);
+				// After a mux width reflow, rows leaving the current viewport need a
+				// current-width copy even when no logical append occurred. Otherwise
+				// an old-width committed row can be skipped when a live tail arrives.
+				const replayableRows = Math.max(epochGrowthRows, appendWindowMovement);
+				scrollRows = Math.min(appendWindowMovement, replayableRows);
 				commitFrom = prevWindowTop + hostHeightShrinkRows;
 				commitTo = commitFrom + scrollRows;
 			} else {
@@ -3307,10 +3531,26 @@ export class TUI extends Container {
 		this.#publishCommittedRows();
 	}
 
-	#auditCommittedPrefix(rawFrame: readonly string[], newlyFinalEnd: number): void {
+	#auditCommittedPrefix(
+		rawFrame: readonly string[],
+		newlyFinalEnd: number,
+		shiftedCommittedPrefixFrom?: number,
+	): void {
 		const prefix = this.#committedPrefix;
 		if (prefix.length === 0) return;
-		const resyncTo = findCommittedPrefixResync(rawFrame, prefix, this.#committedPrefixAuditRows, newlyFinalEnd);
+		const childDirtyFromRow = this.#nativeScrollbackCommittedDirtyFromRow;
+		const dirtyFromRow =
+			childDirtyFromRow === undefined
+				? shiftedCommittedPrefixFrom
+				: shiftedCommittedPrefixFrom === undefined
+					? childDirtyFromRow
+					: Math.min(childDirtyFromRow, shiftedCommittedPrefixFrom);
+		const strict = dirtyFromRow !== undefined;
+		const auditFrom = strict
+			? Math.min(this.#committedRows, Math.max(0, dirtyFromRow))
+			: this.#committedPrefixAuditRows;
+		const auditTo = strict ? this.#committedRows : newlyFinalEnd;
+		const resyncTo = findCommittedPrefixResync(rawFrame, prefix, auditFrom, auditTo, strict);
 		if (resyncTo < 0) return;
 		this.#committedRows = resyncTo;
 		this.#committedPrefixAuditRows = Math.min(this.#committedPrefixAuditRows, resyncTo);
@@ -3639,6 +3879,14 @@ export class TUI extends Container {
 		this.#previousWidth = width;
 		this.#previousHeight = height;
 		this.#recordHardwareCursorUpdate(hardwareCursor);
+		const liveRegionIndex = this.#frameSegments.findIndex(
+			segment => segment.liveLocalStart !== undefined && segment.liveRegionFinal !== true,
+		);
+		this.#previousLiveRegionSource =
+			liveRegionIndex >= 0 ? this.#frameSegments[liveRegionIndex]!.component : undefined;
+		this.#previousLiveRegionStart = this.#nativeScrollbackLiveRegionStart;
+		this.#previousLiveRegionHasTrailingRows =
+			liveRegionIndex >= 0 && this.#frameSegments.slice(liveRegionIndex + 1).some(segment => segment.rowCount > 0);
 	}
 
 	#targetHardwareCursorState(

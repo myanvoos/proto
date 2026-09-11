@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SymbolTheme } from "../symbols";
+import { getHangulCompatibilityJamoWidth, setHangulCompatibilityJamoWidth } from "../utils";
 import { Markdown, type MarkdownTheme } from "./markdown";
 
 const symbols: SymbolTheme = {
@@ -275,4 +276,41 @@ describe("Markdown incremental wrapping", () => {
 		themed.setText(themedText);
 		expect(themed.render(64)).toEqual(freshRender(themedText, 64, false, changingTheme));
 	});
+});
+
+test("sanitizes terminal controls before Markdown rendering", () => {
+	const source = "safe\x07bell\x01control\x1b[31mforeign\x1b[0m\ttab";
+	const rows = new Markdown(source, 0, 0, theme).render(80);
+	const output = rows.join("\n");
+	expect(output).toContain("safebellcontrolforeign");
+	expect(output).toContain("tab");
+	expect(output).not.toContain("\x07");
+	expect(output).not.toContain("\x01");
+	expect(output).not.toContain("\x1b[31m");
+	expect(output).not.toContain("\t");
+});
+
+test("invalidates Markdown wrapping when the terminal width mode changes", () => {
+	const previousWidth = getHangulCompatibilityJamoWidth();
+	const source = `width-epoch-${"ㄱ".repeat(20)}-end`;
+	try {
+		setHangulCompatibilityJamoWidth("unicode");
+		const markdown = new Markdown(source, 0, 0, theme, undefined, 2, false);
+		markdown.render(10);
+
+		setHangulCompatibilityJamoWidth(1);
+		const updated = markdown.render(10);
+		const expected = new Markdown(source, 0, 0, theme, undefined, 2, false).render(10);
+		expect(updated).toEqual(expected);
+
+		const cachedSource = `${source}-shared`;
+		setHangulCompatibilityJamoWidth("unicode");
+		new Markdown(cachedSource, 0, 0, theme).render(10);
+		setHangulCompatibilityJamoWidth(1);
+		const shared = new Markdown(cachedSource, 0, 0, theme).render(10);
+		const sharedExpected = new Markdown(cachedSource, 0, 0, theme, undefined, 2, false).render(10);
+		expect(shared).toEqual(sharedExpected);
+	} finally {
+		setHangulCompatibilityJamoWidth(previousWidth);
+	}
 });
