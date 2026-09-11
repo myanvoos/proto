@@ -40,7 +40,7 @@ pub struct PatchHunk {
 	pub lines: Vec<Utf16String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Run {
 	count:   usize,
 	added:   bool,
@@ -118,10 +118,46 @@ fn build_runs(last: Option<Rc<Component>>) -> Vec<Run> {
 	runs
 }
 
-fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
+const MAX_MYERS_EDIT_DISTANCE: usize = 1024;
+
+fn push_run(runs: &mut Vec<Run>, run: Run) {
+	if run.count == 0 {
+		return;
+	}
+	if let Some(last) = runs.last_mut()
+		&& last.added == run.added
+		&& last.removed == run.removed
+	{
+		last.count += run.count;
+	} else {
+		runs.push(run);
+	}
+}
+
+fn trim_common_edges(old: &[u32], new: &[u32]) -> (usize, usize) {
+	let prefix = old
+		.iter()
+		.zip(new)
+		.take_while(|(old, new)| old == new)
+		.count();
+	let max_suffix = old
+		.len()
+		.saturating_sub(prefix)
+		.min(new.len().saturating_sub(prefix));
+	let suffix = old
+		.iter()
+		.rev()
+		.zip(new.iter().rev())
+		.take(max_suffix)
+		.take_while(|(old, new)| old == new)
+		.count();
+	(prefix, suffix)
+}
+
+fn myers_diff_bounded(old: &[u32], new: &[u32], max_edit_distance: usize) -> Option<Vec<Run>> {
 	let old_len = old.len() as isize;
 	let new_len = new.len() as isize;
-	let max_edit = old_len + new_len;
+	let max_edit = old.len().saturating_add(new.len()).min(max_edit_distance) as isize;
 	let offset = max_edit + 1;
 	let mut best: Vec<Option<PathState>> = Vec::new();
 	best.resize_with((2 * max_edit + 3) as usize, || None);
@@ -129,7 +165,7 @@ fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
 	let mut seed = PathState { old_pos: -1, last: None };
 	let seed_new_pos = extract_common(&mut seed, new, old, 0);
 	if seed.old_pos + 1 >= old_len && seed_new_pos + 1 >= new_len {
-		return build_runs(seed.last);
+		return Some(build_runs(seed.last));
 	}
 	best[offset as usize] = Some(seed);
 
@@ -180,7 +216,7 @@ fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
 			};
 			let new_pos = extract_common(&mut base_path, new, old, diagonal);
 			if base_path.old_pos + 1 >= old_len && new_pos + 1 >= new_len {
-				return build_runs(base_path.last);
+				return Some(build_runs(base_path.last));
 			}
 			if base_path.old_pos + 1 >= old_len {
 				max_diagonal = max_diagonal.min(diagonal - 1);
@@ -193,7 +229,30 @@ fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
 		}
 		edit_length += 1;
 	}
-	unreachable!("Myers diff terminates within oldLen + newLen edits")
+	None
+}
+
+fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
+	// Run the original search while it is within the compatibility budget. The
+	// bounded frontier has the same tie-breaking as the unbounded implementation,
+	// so all results at or below the cap remain byte-for-byte compatible.
+	if let Some(runs) = myers_diff_bounded(old, new, MAX_MYERS_EDIT_DISTANCE) {
+		return runs;
+	}
+
+	// Once the budget is exceeded, retain equal edges and replace only the middle.
+	// This keeps large files readable while making the expensive path bounded.
+	let (prefix, suffix) = trim_common_edges(old, new);
+	let old_middle_end = old.len() - suffix;
+	let new_middle_end = new.len() - suffix;
+	let old_middle = &old[prefix..old_middle_end];
+	let new_middle = &new[prefix..new_middle_end];
+	let mut runs = Vec::with_capacity(4);
+	push_run(&mut runs, Run { count: prefix, added: false, removed: false });
+	push_run(&mut runs, Run { count: old_middle.len(), added: false, removed: true });
+	push_run(&mut runs, Run { count: new_middle.len(), added: true, removed: false });
+	push_run(&mut runs, Run { count: suffix, added: false, removed: false });
+	runs
 }
 
 fn intern_exact<'a>(old_tokens: &[&'a [u16]], new_tokens: &[&'a [u16]]) -> (Vec<u32>, Vec<u32>) {
@@ -798,4 +857,79 @@ fn diff_words_impl(old_text: &[u16], new_text: &[u16]) -> Vec<DiffChange> {
 	let mut changes = build_changes(&runs, &old_refs, &new_refs, word_join);
 	word_post_process(&mut changes);
 	changes
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn run(count: usize, added: bool, removed: bool) -> Run {
+		Run { count, added, removed }
+	}
+
+	#[test]
+	fn empty_inputs_have_no_runs() {
+		assert!(myers_diff(&[], &[]).is_empty());
+	}
+
+	#[test]
+	fn under_cap_long_inputs_keep_the_existing_edit_shape() {
+		let len = MAX_MYERS_EDIT_DISTANCE + 128;
+		let changed_at = len / 2;
+		let old: Vec<u32> = (0..len).map(|index| index as u32).collect();
+		let mut new = old.clone();
+		new[changed_at] = u32::MAX;
+
+		assert_eq!(myers_diff(&old, &new), vec![
+			run(changed_at, false, false),
+			run(1, false, true),
+			run(1, true, false),
+			run(len - changed_at - 1, false, false),
+		]);
+	}
+
+	#[test]
+	fn over_cap_replaces_only_the_trimmed_middle() {
+		let prefix = [1, 2, 3];
+		let suffix = [4, 5];
+		let middle_len = MAX_MYERS_EDIT_DISTANCE / 2 + 1;
+		let mut old = prefix.to_vec();
+		old.extend((0..middle_len).map(|index| 100 + index as u32));
+		old.extend(suffix);
+		let mut new = prefix.to_vec();
+		new.extend((0..middle_len).map(|index| 10_000 + index as u32));
+		new.extend(suffix);
+
+		assert_eq!(myers_diff(&old, &new), vec![
+			run(prefix.len(), false, false),
+			run(middle_len, false, true),
+			run(middle_len, true, false),
+			run(suffix.len(), false, false),
+		]);
+	}
+
+	#[test]
+	fn over_cap_without_common_edges_is_a_full_replace() {
+		let len = MAX_MYERS_EDIT_DISTANCE / 2 + 1;
+		let old: Vec<u32> = (0..len).map(|index| 100 + index as u32).collect();
+		let new: Vec<u32> = (0..len).map(|index| 10_000 + index as u32).collect();
+
+		assert_eq!(myers_diff(&old, &new), vec![run(len, false, true), run(len, true, false)]);
+	}
+
+	#[test]
+	fn unicode_word_diff_preserves_utf16_values() {
+		let old: Vec<u16> = "prefix 😀 café".encode_utf16().collect();
+		let new: Vec<u16> = "prefix 😃 café".encode_utf16().collect();
+		let changes = diff_words_impl(&old, &new);
+		let values: Vec<(Vec<u16>, bool, bool)> = changes
+			.iter()
+			.map(|change| (change.value.to_vec(), change.added, change.removed))
+			.collect();
+
+		assert_eq!(values[0], ("prefix ".encode_utf16().collect(), false, false));
+		assert_eq!(values[1], ("😀".encode_utf16().collect(), false, true));
+		assert_eq!(values[2], ("😃".encode_utf16().collect(), true, false));
+		assert_eq!(values[3], (" café".encode_utf16().collect(), false, false));
+	}
 }

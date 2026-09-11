@@ -1053,34 +1053,6 @@ fn build_grep_walk_request(
 		.filter(filter))
 }
 
-fn collect_grep_candidates(
-	search_path: &Path,
-	glob: Option<&str>,
-	type_filter: Option<&TypeFilter>,
-	include_hidden: bool,
-	use_gitignore: bool,
-	skip_node_modules: bool,
-	order: pi_walker::WalkOrder,
-	ct: &task::CancelToken,
-) -> Result<Option<Vec<pi_walker::FileCandidate>>> {
-	let request = build_grep_walk_request(
-		search_path,
-		glob,
-		include_hidden,
-		use_gitignore,
-		skip_node_modules,
-		order,
-	)?;
-	let mut candidates = match request.collect_file_candidates_with_heartbeat(|| ct.heartbeat()) {
-		Ok(candidates) => candidates,
-		Err(err) => return Err(iofs::map_walker_error(err)),
-	};
-	if let Some(filter) = type_filter {
-		candidates.retain(|candidate| matches_type_filter_str(&candidate.relative, filter));
-	}
-	Ok(Some(candidates))
-}
-
 fn file_size_hint(size: Option<f64>) -> Option<u64> {
 	size
 		.filter(|value| value.is_finite() && *value >= 0.0 && *value <= u64::MAX as f64)
@@ -1259,63 +1231,6 @@ fn run_pass<M: Matcher + Sync>(
 	Ok(results)
 }
 
-fn process_candidates<M: Matcher + Sync>(
-	candidates: Vec<pi_walker::FileCandidate>,
-	matcher: &M,
-	params: SearchParams,
-	parallel_allowed: bool,
-	stop_after_matches: Option<u64>,
-	ct: &task::CancelToken,
-) -> Result<(Vec<FileSearchResult>, u64, u64)> {
-	let file_params = per_file_params(params);
-	let state = PassState::default();
-
-	let (normal, oversized_hinted): (Vec<_>, Vec<_>) =
-		candidates
-			.into_iter()
-			.partition(|file| match file_size_hint(file.size) {
-				Some(size) => size <= MAX_FILE_BYTES,
-				None => true,
-			});
-	if !oversized_hinted.is_empty() {
-		state.deferred.lock().extend(oversized_hinted);
-	}
-
-	let mut results = run_pass(
-		&normal,
-		matcher,
-		file_params,
-		ReadPolicy::Full,
-		parallel_allowed,
-		stop_after_matches,
-		&state,
-		ct,
-	)?;
-
-	let deferred = std::mem::take(&mut *state.deferred.lock());
-	let limit_satisfied =
-		stop_after_matches.is_some_and(|stop| state.emitted.load(Ordering::Relaxed) >= stop);
-	if !deferred.is_empty() && !limit_satisfied {
-		let oversized = run_pass(
-			&deferred,
-			matcher,
-			file_params,
-			ReadPolicy::Prefix,
-			parallel_allowed,
-			stop_after_matches,
-			&state,
-			ct,
-		)?;
-		results.extend(oversized);
-	}
-
-	Ok((
-		results,
-		state.skipped_oversized.load(Ordering::Relaxed),
-		state.files_searched.load(Ordering::Relaxed),
-	))
-}
-
 fn run_sequential_grep<M: Matcher + Sync>(
 	search_path: &Path,
 	matcher: &M,
@@ -1328,20 +1243,91 @@ fn run_sequential_grep<M: Matcher + Sync>(
 	ct: &task::CancelToken,
 	stop_after_matches: Option<u64>,
 ) -> Result<(Vec<FileSearchResult>, u64, u64)> {
-	let Some(candidates) = collect_grep_candidates(
+	let request = build_grep_walk_request(
 		search_path,
 		glob,
-		type_filter,
 		include_hidden,
 		use_gitignore,
 		skip_node_modules,
 		pi_walker::WalkOrder::Path,
-		ct,
-	)?
-	else {
-		return Ok((Vec::new(), 0, 0));
-	};
-	process_candidates(candidates, matcher, params, false, stop_after_matches, ct)
+	)?;
+	let file_params = per_file_params(params);
+	let state = PassState::default();
+	let mut worker = SearchWorker::new(file_params);
+	let mut oversized_hinted = Vec::new();
+
+	ct.heartbeat()?;
+	request
+		.for_each_entry_with_heartbeat(
+			|| ct.heartbeat(),
+			|entry| {
+				if stop_after_matches.is_some_and(|stop| state.emitted.load(Ordering::Relaxed) >= stop)
+				{
+					return Ok(pi_walker::WalkDecision::Stop);
+				}
+				if let Some(filter) = type_filter
+					&& !matches_type_filter_str(entry.relative_path, filter)
+				{
+					return Ok(pi_walker::WalkDecision::Include);
+				}
+
+				let file = pi_walker::FileCandidate {
+					path:     entry.absolute_path.into_owned(),
+					relative: entry.relative_path.to_owned(),
+					mtime:    entry.mtime,
+					size:     entry.size,
+				};
+				if file_size_hint(file.size).is_some_and(|size| size > MAX_FILE_BYTES) {
+					oversized_hinted.push(file);
+				} else {
+					handle_file(
+						&file,
+						&mut worker,
+						matcher,
+						file_params,
+						ReadPolicy::Full,
+						stop_after_matches,
+						&state,
+						ct,
+					)?;
+				}
+				if stop_after_matches.is_some_and(|stop| state.emitted.load(Ordering::Relaxed) >= stop)
+				{
+					Ok(pi_walker::WalkDecision::Stop)
+				} else {
+					Ok(pi_walker::WalkDecision::Include)
+				}
+			},
+			|_| Ok(pi_walker::WalkDecision::Include),
+		)
+		.map_err(iofs::map_walker_error)?;
+
+	let mut results = std::mem::take(&mut *state.results.lock());
+	results.sort_unstable_by(|a, b| a.relative_path.cmp(&b.relative_path));
+
+	let mut deferred = oversized_hinted;
+	deferred.extend(std::mem::take(&mut *state.deferred.lock()));
+	let limit_satisfied =
+		stop_after_matches.is_some_and(|stop| state.emitted.load(Ordering::Relaxed) >= stop);
+	if !deferred.is_empty() && !limit_satisfied {
+		let oversized = run_pass(
+			&deferred,
+			matcher,
+			file_params,
+			ReadPolicy::Prefix,
+			false,
+			stop_after_matches,
+			&state,
+			ct,
+		)?;
+		results.extend(oversized);
+	}
+
+	Ok((
+		results,
+		state.skipped_oversized.load(Ordering::Relaxed),
+		state.files_searched.load(Ordering::Relaxed),
+	))
 }
 
 #[allow(
