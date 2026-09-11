@@ -1,7 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { formatCount, prompt, truncate } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../../config/model-registry";
 import { settings } from "../../config/settings";
 import type { CustomTool, CustomToolContext, RenderResultOptions } from "../../extensibility/custom-tools/types";
@@ -46,15 +46,6 @@ export interface SearchQueryParams extends SearchToolParams {
 	provider?: SearchProviderId | "auto";
 }
 
-function truncateText(text: string, maxLen: number): string {
-	if (text.length <= maxLen) return text;
-	return `${text.slice(0, Math.max(0, maxLen - 1))}…`;
-}
-
-function formatCount(label: string, count: number): string {
-	return `${count} ${label}${count === 1 ? "" : "s"}`;
-}
-
 function formatForLLM(response: SearchResponse, notes: readonly string[] = []): string {
 	const parts: string[] = [];
 	for (const note of notes) {
@@ -74,7 +65,7 @@ function formatForLLM(response: SearchResponse, notes: readonly string[] = []): 
 		const agePart = age ? ` (${age})` : "";
 		parts.push(`[${i + 1}] ${src.title}${agePart}\n    ${src.url}`);
 		if (src.snippet) {
-			parts.push(`    ${truncateText(src.snippet, 240)}`);
+			parts.push(`    ${truncate(src.snippet, 240)}`);
 		}
 	}
 
@@ -85,7 +76,7 @@ function formatForLLM(response: SearchResponse, notes: readonly string[] = []): 
 			const title = citation.title || citation.url;
 			parts.push(`[${i + 1}] ${title}\n    ${citation.url}`);
 			if (citation.citedText) {
-				parts.push(`    ${truncateText(citation.citedText, 240)}`);
+				parts.push(`    ${truncate(citation.citedText, 240)}`);
 			}
 		}
 	}
@@ -101,7 +92,7 @@ function formatForLLM(response: SearchResponse, notes: readonly string[] = []): 
 	if (response.searchQueries && response.searchQueries.length > 0) {
 		parts.push(`Search queries: ${response.searchQueries.length}`);
 		for (const query of response.searchQueries.slice(0, 3)) {
-			parts.push(`- ${truncateText(query, 120)}`);
+			parts.push(`- ${truncate(query, 120)}`);
 		}
 	}
 

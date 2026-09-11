@@ -11,6 +11,14 @@ export interface ActiveRepoContext {
 	source: "single-direct-child-repo";
 }
 
+type ReaderResult<T> = T | Promise<T>;
+
+interface ActiveRepoReader {
+	resolveRepository(cwd: string): ReaderResult<GitRepository | null>;
+	readDirectory(cwd: string): ReaderResult<fs.Dirent[]>;
+	stat(filePath: string): ReaderResult<fs.Stats | null>;
+}
+
 function compareEntryNames(left: fs.Dirent, right: fs.Dirent): number {
 	if (left.name < right.name) return -1;
 	if (left.name > right.name) return 1;
@@ -28,116 +36,108 @@ function buildContext(cwd: string, repoRoot: string): ActiveRepoContext {
 	};
 }
 
-async function resolveRepository(cwd: string): Promise<GitRepository | null> {
-	try {
-		return await repo.resolve(cwd);
-	} catch {
-		return null;
-	}
-}
+const asyncReader: ActiveRepoReader = {
+	async resolveRepository(cwd) {
+		try {
+			return await repo.resolve(cwd);
+		} catch {
+			return null;
+		}
+	},
+	async readDirectory(cwd) {
+		try {
+			return await fsPromises.readdir(cwd, { withFileTypes: true });
+		} catch {
+			return [];
+		}
+	},
+	async stat(filePath) {
+		try {
+			return await fsPromises.stat(filePath);
+		} catch {
+			return null;
+		}
+	},
+};
 
-function resolveRepositorySync(cwd: string): GitRepository | null {
-	try {
-		return repo.resolveSync(cwd);
-	} catch {
-		return null;
-	}
-}
+const syncReader: ActiveRepoReader = {
+	resolveRepository(cwd) {
+		try {
+			return repo.resolveSync(cwd);
+		} catch {
+			return null;
+		}
+	},
+	readDirectory(cwd) {
+		try {
+			return fs.readdirSync(cwd, { withFileTypes: true });
+		} catch {
+			return [];
+		}
+	},
+	stat(filePath) {
+		try {
+			return fs.statSync(filePath);
+		} catch {
+			return null;
+		}
+	},
+};
 
-async function readDirectChildren(cwd: string): Promise<fs.Dirent[]> {
-	try {
-		const entries = await fsPromises.readdir(cwd, { withFileTypes: true });
-		entries.sort(compareEntryNames);
-		return entries;
-	} catch {
-		return [];
-	}
-}
+function* resolveActiveRepoContextCore(
+	cwd: string,
+	reader: ActiveRepoReader,
+): Generator<ReaderResult<unknown>, ActiveRepoContext | null, unknown> {
+	const resolvedCwd = path.resolve(cwd);
+	const repository = (yield reader.resolveRepository(resolvedCwd)) as GitRepository | null;
+	if (repository) return null;
 
-function readDirectChildrenSync(cwd: string): fs.Dirent[] {
-	try {
-		const entries = fs.readdirSync(cwd, { withFileTypes: true });
-		entries.sort(compareEntryNames);
-		return entries;
-	} catch {
-		return [];
-	}
-}
+	const entries = (yield reader.readDirectory(resolvedCwd)) as fs.Dirent[];
+	entries.sort(compareEntryNames);
 
-async function resolveDirectChildDirectory(cwd: string, entry: fs.Dirent): Promise<string | null> {
-	const childPath = path.join(cwd, entry.name);
-	if (entry.isDirectory()) return childPath;
-	if (!entry.isSymbolicLink()) return null;
-	try {
-		const stat = await fsPromises.stat(childPath);
-		return stat.isDirectory() ? childPath : null;
-	} catch {
-		return null;
-	}
-}
-
-function resolveDirectChildDirectorySync(cwd: string, entry: fs.Dirent): string | null {
-	const childPath = path.join(cwd, entry.name);
-	if (entry.isDirectory()) return childPath;
-	if (!entry.isSymbolicLink()) return null;
-	try {
-		const stat = fs.statSync(childPath);
-		return stat.isDirectory() ? childPath : null;
-	} catch {
-		return null;
-	}
-}
-
-async function hasGitMarker(childPath: string): Promise<boolean> {
-	try {
-		const stat = await fsPromises.stat(path.join(childPath, ".git"));
-		return stat.isDirectory() || stat.isFile();
-	} catch {
-		return false;
-	}
-}
-
-function hasGitMarkerSync(childPath: string): boolean {
-	try {
-		const stat = fs.statSync(path.join(childPath, ".git"));
-		return stat.isDirectory() || stat.isFile();
-	} catch {
-		return false;
-	}
-}
-
-async function findSingleDirectChildRepo(cwd: string): Promise<ActiveRepoContext | null> {
 	let context: ActiveRepoContext | null = null;
-	for (const entry of await readDirectChildren(cwd)) {
-		const childPath = await resolveDirectChildDirectory(cwd, entry);
-		if (!childPath) continue;
-		if (!(await hasGitMarker(childPath))) continue;
+	for (const entry of entries) {
+		const childPath = path.join(resolvedCwd, entry.name);
+		let resolvedChildPath: string | null;
+		if (entry.isDirectory()) {
+			resolvedChildPath = childPath;
+		} else if (entry.isSymbolicLink()) {
+			const stat = (yield reader.stat(childPath)) as fs.Stats | null;
+			resolvedChildPath = stat?.isDirectory() ? childPath : null;
+		} else {
+			continue;
+		}
+
+		if (!resolvedChildPath) continue;
+		const gitMarker = (yield reader.stat(path.join(resolvedChildPath, ".git"))) as fs.Stats | null;
+		if (!gitMarker || (!gitMarker.isDirectory() && !gitMarker.isFile())) continue;
 		if (context) return null;
-		context = buildContext(cwd, childPath);
+		context = buildContext(resolvedCwd, resolvedChildPath);
 	}
+
 	return context;
 }
 
-function findSingleDirectChildRepoSync(cwd: string): ActiveRepoContext | null {
-	let context: ActiveRepoContext | null = null;
-	for (const entry of readDirectChildrenSync(cwd)) {
-		const childPath = resolveDirectChildDirectorySync(cwd, entry);
-		if (!childPath) continue;
-		if (!hasGitMarkerSync(childPath)) continue;
-		if (context) return null;
-		context = buildContext(cwd, childPath);
+function runSync<T>(operation: Generator<ReaderResult<unknown>, T, unknown>): T {
+	let result = operation.next();
+	while (!result.done) {
+		result = operation.next(result.value);
 	}
-	return context;
+	return result.value;
+}
+
+async function runAsync<T>(operation: Generator<ReaderResult<unknown>, T, unknown>): Promise<T> {
+	let result = operation.next();
+	while (!result.done) {
+		result = operation.next(await result.value);
+	}
+	return result.value;
 }
 
 export async function resolveActiveRepoContext(cwd: string): Promise<ActiveRepoContext | null> {
-	const resolvedCwd = path.resolve(cwd);
-	if (await resolveRepository(resolvedCwd)) return null;
-	return findSingleDirectChildRepo(resolvedCwd);
+	return runAsync(resolveActiveRepoContextCore(cwd, asyncReader));
 }
 
 export function resolveActiveRepoContextSync(cwd: string): ActiveRepoContext | null {
-	const resolvedCwd = path.resolve(cwd);
-	if (resolveRepositorySync(resolvedCwd)) return null;
-	return findSingleDirectChildRepoSync(resolvedCwd);
+	return runSync(resolveActiveRepoContextCore(cwd, syncReader));
 }

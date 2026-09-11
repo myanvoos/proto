@@ -59,6 +59,22 @@ export function truncate(str: string, maxLen: number, ellipsis = "…"): string 
 	return `${str.slice(0, sliceLen)}${ellipsis}`;
 }
 
+export function extractCitationSnippet(
+	text: string | null | undefined,
+	start: number | null | undefined,
+	end: number | null | undefined,
+): string | undefined {
+	if (!text || typeof start !== "number" || typeof end !== "number") return undefined;
+	const before = Math.max(0, start - 100);
+	const after = Math.min(text.length, end + 100);
+	const snippet = text
+		.slice(before, after)
+		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+		.trim();
+	if (!snippet) return undefined;
+	return truncate(snippet, 300, "...");
+}
+
 export function formatCount(label: string, count: number): string {
 	const safeCount = Number.isFinite(count) ? count : 0;
 	return `${safeCount} ${pluralize(label, safeCount)}`;

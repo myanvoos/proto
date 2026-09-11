@@ -14,6 +14,7 @@ import {
 	type TUI,
 } from "@oh-my-pi/pi-tui";
 import { isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
@@ -45,6 +46,27 @@ interface ToolImageBlock {
 	data?: string;
 	mimeType?: string;
 }
+
+type ToolResultContent = {
+	type: string;
+	text?: string;
+	data?: string;
+	mimeType?: string;
+};
+
+type ToolExecutionResult = {
+	content: ToolResultContent[];
+	details?: unknown;
+	isError?: boolean;
+};
+
+type CustomToolCallRenderer = (args: unknown, options: RenderResultOptions, theme: Theme) => unknown;
+type CustomToolResultRenderer = (
+	result: ToolExecutionResult,
+	options: RenderResultOptions,
+	theme: Theme,
+	args?: unknown,
+) => unknown;
 
 function imageBlocksFromDetails(details: unknown): ToolImageBlock[] {
 	if (!isRecord(details) || !Array.isArray(details.images)) return [];
@@ -175,16 +197,8 @@ interface ToolExecutionOptions {
 }
 
 export interface ToolExecutionHandle extends Component {
-	updateArgs(args: any, toolCallId?: string): void;
-	updateResult(
-		result: {
-			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-			details?: any;
-			isError?: boolean;
-		},
-		isPartial?: boolean,
-		toolCallId?: string,
-	): void;
+	updateArgs(args: unknown, toolCallId?: string): void;
+	updateResult(result: ToolExecutionResult, isPartial?: boolean, toolCallId?: string): void;
 	setArgsComplete(toolCallId?: string): void;
 	setExecutionStarted(toolCallId?: string): void;
 	setExpanded(expanded: boolean): void;
@@ -246,7 +260,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	readonly #instanceId = ++toolExecutionInstanceSeq;
 	#toolName: string;
 	#toolLabel: string;
-	#args: any;
+	#args: unknown;
 	#expanded = false;
 	#toolActivityVisible = true;
 	#showImages: boolean;
@@ -265,11 +279,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#tool?: AgentTool;
 	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
-	#result?: {
-		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-		isError?: boolean;
-		details?: any;
-	};
+	#result?: ToolExecutionResult;
 
 	#convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 
@@ -305,7 +315,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 	constructor(
 		toolName: string,
-		args: any,
+		args: unknown,
 		options: ToolExecutionOptions = {},
 		tool: AgentTool | undefined,
 		ui: ToolExecutionUi,
@@ -337,7 +347,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#updateDisplay();
 	}
 
-	updateArgs(args: any, _toolCallId?: string): void {
+	updateArgs(args: unknown, _toolCallId?: string): void {
 		if (args === this.#args) return;
 		this.#args = args;
 		this.#displayInputVersion++;
@@ -366,15 +376,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#onTranscriptBlockChange?.();
 	}
 
-	updateResult(
-		result: {
-			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-			details?: any;
-			isError?: boolean;
-		},
-		isPartial = false,
-		_toolCallId?: string,
-	): void {
+	updateResult(result: ToolExecutionResult, isPartial = false, _toolCallId?: string): void {
 		const hadNoResult = this.#result === undefined;
 		const wasPartialResult = this.#result !== undefined && this.#isPartial;
 		const firstResultRepaintShapePainted = this.#firstResultViewportRepaintShapePainted;
@@ -699,7 +701,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				if (tool.renderCall) {
 					try {
 						const callArgs = this.#getCallArgsForRender();
-						const callComponent = tool.renderCall(callArgs, this.#renderState, theme) as Component | undefined;
+						const renderCall = tool.renderCall as CustomToolCallRenderer;
+						const callComponent = renderCall(callArgs, this.#renderState, theme) as Component | undefined;
 						if (callComponent) {
 							this.#contentBox.addChild(
 								new SafeToolRendererComponent(
@@ -722,22 +725,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 			if (this.#result && tool.renderResult) {
 				try {
-					const renderResult = tool.renderResult as (
-						result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
-						options: { expanded: boolean; isPartial: boolean; spinnerFrame?: number },
-						theme: Theme,
-						args?: unknown,
-					) => Component;
-					const resultComponent = renderResult(
-						{
-							content: this.#result.content as any,
-							details: this.#result.details,
-							isError: this.#result.isError,
-						},
-						this.#renderState,
-						theme,
-						this.#args,
-					);
+					const renderResult = tool.renderResult as unknown as CustomToolResultRenderer;
+					const resultComponent = renderResult(this.#result, this.#renderState, theme, this.#args) as
+						| Component
+						| undefined;
 					if (resultComponent) {
 						this.#contentBox.addChild(
 							new SafeToolRendererComponent(this.#toolName, "result", resultComponent, () => {
@@ -798,7 +789,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				try {
 					const resultComponent = renderer.renderResult(
 						{
-							content: this.#result.content as any,
+							content: this.#result.content,
 							details: this.#result.details,
 							isError: this.#result.isError,
 						},
@@ -869,7 +860,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#renderedImageCount = this.#imageComponents.length;
 	}
 
-	#getCallArgsForRender(): any {
+	#getCallArgsForRender(): unknown {
 		return getArgsWithStreamedTextInput(this.#args);
 	}
 
@@ -887,7 +878,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			}
 			context.expanded = this.#expanded;
 			context.previewLines = BASH_DEFAULT_PREVIEW_LINES;
-			context.timeout = normalizeTimeoutSeconds(this.#args?.timeout, 3600);
+			const args = isRecord(this.#args) ? this.#args : undefined;
+			context.timeout = normalizeTimeoutSeconds(args?.timeout, 3600);
 			const bashTool = this.#tool as { session?: { xdev?: XdevState } } | undefined;
 			const xdev = bashTool?.session?.xdev;
 			if (xdev) {
@@ -907,20 +899,21 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#getTextOutput(): string {
 		if (!this.#result) return "";
 
-		const textBlocks = this.#result.content?.filter((c: any) => c.type === "text") || [];
+		const textBlocks = this.#result.content.filter(c => c.type === "text");
 		const imageBlocks = this.#getAllImageBlocks();
 
 		let output = textBlocks
-			.map((c: any) => {
-				return sanitizeWithOptionalSixelPassthrough(c.text || "", sanitizeText);
+			.map(c => {
+				return sanitizeWithOptionalSixelPassthrough(c.text ?? "", sanitizeText);
 			})
 			.join("\n");
 
 		if (imageBlocks.length > 0 && (!TERMINAL.imageProtocol || !this.#showImages)) {
 			const imageIndicators = imageBlocks
-				.map((img: any) => {
-					const dims = img.data ? (getImageDimensions(img.data, img.mimeType) ?? undefined) : undefined;
-					return imageFallback(img.mimeType, dims);
+				.map(img => {
+					const mimeType = img.mimeType ?? "undefined";
+					const dims = img.data ? (getImageDimensions(img.data, mimeType) ?? undefined) : undefined;
+					return imageFallback(mimeType, dims);
 				})
 				.join("\n");
 			output = output ? `${output}\n${imageIndicators}` : imageIndicators;

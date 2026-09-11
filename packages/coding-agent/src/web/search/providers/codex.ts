@@ -16,7 +16,7 @@ import {
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
-import { $env, readSseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
+import { $env, extractCitationSnippet, readSseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../../config/model-registry";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
@@ -219,18 +219,6 @@ function addSource(sources: SearchSource[], source: SearchSource): void {
 	if (!existing.snippet && normalizedSource.snippet) {
 		existing.snippet = normalizedSource.snippet;
 	}
-}
-
-function extractCitationSnippet(text: string, start: number | undefined, end: number | undefined): string | undefined {
-	if (start === undefined || end === undefined || !text) return undefined;
-	const before = Math.max(0, start - 100);
-	const after = Math.min(text.length, end + 100);
-	const snippet = text
-		.slice(before, after)
-		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-		.trim();
-	if (!snippet) return undefined;
-	return snippet.length > 300 ? `${snippet.slice(0, 297)}...` : snippet;
 }
 
 function countCharacter(text: string, target: string): number {

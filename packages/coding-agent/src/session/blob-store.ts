@@ -37,36 +37,61 @@ function normalizeBlobExtension(extension: string | undefined): string | undefin
 	return normalized.toLowerCase();
 }
 
-async function ensureDisplayPath(blobPath: string, displayPath: string, data: Buffer): Promise<void> {
+function createBlobPutResult(dir: string, data: Buffer, options?: BlobPutOptions): BlobPutResult {
+	const hash = new Bun.SHA256().update(data).digest("hex");
+	const blobPath = path.join(dir, hash);
+	const extension = normalizeBlobExtension(options?.extension);
+	const displayPath = extension ? `${blobPath}.${extension}` : blobPath;
+	return {
+		hash,
+		path: blobPath,
+		displayPath,
+		get ref() {
+			return `${BLOB_PREFIX}${hash}`;
+		},
+	};
+}
+
+function ensureDisplayPathWithIo(
+	blobPath: string,
+	displayPath: string,
+	link: () => void | Promise<void>,
+	copy: () => void | Promise<void>,
+): void | Promise<void> {
 	if (displayPath === blobPath) return;
-	try {
-		await fsp.link(blobPath, displayPath);
-		return;
-	} catch (err) {
+	const handleLinkError = (err: unknown): void | Promise<void> => {
 		if (typeof err === "object" && err !== null && "code" in err && err.code === "EEXIST") return;
 		logger.debug("Blob display hardlink failed; falling back to copy", {
 			blobPath,
 			displayPath,
 			error: err instanceof Error ? err.message : String(err),
 		});
+		return copy();
+	};
+	try {
+		const result = link();
+		return result ? result.then(() => undefined, handleLinkError) : undefined;
+	} catch (err) {
+		return handleLinkError(err);
 	}
-	await Bun.write(displayPath, data);
+}
+
+async function ensureDisplayPath(blobPath: string, displayPath: string, data: Buffer): Promise<void> {
+	await ensureDisplayPathWithIo(
+		blobPath,
+		displayPath,
+		() => fsp.link(blobPath, displayPath),
+		() => Bun.write(displayPath, data).then(() => undefined),
+	);
 }
 
 function ensureDisplayPathSync(blobPath: string, displayPath: string, data: Buffer): void {
-	if (displayPath === blobPath) return;
-	try {
-		fs.linkSync(blobPath, displayPath);
-		return;
-	} catch (err) {
-		if (typeof err === "object" && err !== null && "code" in err && err.code === "EEXIST") return;
-		logger.debug("Blob display hardlink failed; falling back to copy", {
-			blobPath,
-			displayPath,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
-	fs.writeFileSync(displayPath, data);
+	ensureDisplayPathWithIo(
+		blobPath,
+		displayPath,
+		() => fs.linkSync(blobPath, displayPath),
+		() => fs.writeFileSync(displayPath, data),
+	);
 }
 
 export function blobExtensionForImageMimeType(mimeType: string | undefined): string | undefined {
@@ -83,40 +108,17 @@ export class BlobStore {
 	constructor(readonly dir: string) {}
 
 	async put(data: Buffer, options?: BlobPutOptions): Promise<BlobPutResult> {
-		const hash = new Bun.SHA256().update(data).digest("hex");
-		const blobPath = path.join(this.dir, hash);
-		const extension = normalizeBlobExtension(options?.extension);
-		const displayPath = extension ? `${blobPath}.${extension}` : blobPath;
-		const result = {
-			hash,
-			path: blobPath,
-			displayPath,
-			get ref() {
-				return `${BLOB_PREFIX}${hash}`;
-			},
-		};
-
-		await Bun.write(blobPath, data);
-		await ensureDisplayPath(blobPath, displayPath, data);
+		const result = createBlobPutResult(this.dir, data, options);
+		await Bun.write(result.path, data);
+		await ensureDisplayPath(result.path, result.displayPath, data);
 		return result;
 	}
 
 	putSync(data: Buffer, options?: BlobPutOptions): BlobPutResult {
-		const hash = new Bun.SHA256().update(data).digest("hex");
-		const blobPath = path.join(this.dir, hash);
-		const extension = normalizeBlobExtension(options?.extension);
-		const displayPath = extension ? `${blobPath}.${extension}` : blobPath;
-		const result = {
-			hash,
-			path: blobPath,
-			displayPath,
-			get ref() {
-				return `${BLOB_PREFIX}${hash}`;
-			},
-		};
+		const result = createBlobPutResult(this.dir, data, options);
 		fs.mkdirSync(this.dir, { recursive: true });
-		fs.writeFileSync(blobPath, data);
-		ensureDisplayPathSync(blobPath, displayPath, data);
+		fs.writeFileSync(result.path, data);
+		ensureDisplayPathSync(result.path, result.displayPath, data);
 		return result;
 	}
 

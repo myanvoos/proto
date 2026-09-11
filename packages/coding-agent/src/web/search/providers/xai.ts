@@ -1,5 +1,5 @@
 import { type ApiKey, type ApiKeyResolver, type AuthStorage, withAuth } from "@oh-my-pi/pi-ai";
-import { $env } from "@oh-my-pi/pi-utils";
+import { $env, extractCitationSnippet } from "@oh-my-pi/pi-utils";
 import { resolveXAIHttpTransport, type XAIHttpProvider, type XAIHttpTransport } from "../../../lib/xai-http";
 import type { SearchCitation, SearchResponse, SearchSource, SearchUsage } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
@@ -193,21 +193,6 @@ function addCitationSource(
 		citedText: sourceSnippet,
 	});
 }
-function extractSnippetAround(
-	text: string | null | undefined,
-	start: number | null | undefined,
-	end: number | null | undefined,
-): string | undefined {
-	if (!text || typeof start !== "number" || typeof end !== "number") return undefined;
-	const before = Math.max(0, start - 100);
-	const after = Math.min(text.length, end + 100);
-	const snippet = text
-		.slice(before, after)
-		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-		.trim();
-	if (!snippet) return undefined;
-	return snippet.length > 300 ? `${snippet.slice(0, 297)}...` : snippet;
-}
 
 function collectAnnotationSources(
 	annotations: readonly XAIUrlCitationAnnotation[] | null | undefined,
@@ -228,7 +213,7 @@ function collectAnnotationSources(
 			annotation.title,
 			annotation.cited_text ??
 				annotation.text ??
-				extractSnippetAround(contentText, annotation.start_index, annotation.end_index),
+				extractCitationSnippet(contentText, annotation.start_index, annotation.end_index),
 		);
 	}
 }
