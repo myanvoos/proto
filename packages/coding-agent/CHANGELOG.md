@@ -32,6 +32,11 @@
 - Running kernel cells (`eval`/`kernel` and bash-routed `python`/`node`/`bun`) lay out the live block by priority — Status heads, then diff hunks (newest first), then the output tail, then the code tail — so hunks no longer wait on the output preview or the cell settling, and the block stays inside the terminal's live window.
 
 ### Fixed
+- A revert tombstone now also re-observes the path in the kernel mutation ledger, so restoring a file to its pre-cell content no longer trips the stale-write guard on the next cell's legitimate write.
+- Anthropic inband scanner candidate detection follows the full tag grammar (case-insensitive, whitespace-tolerant): an unknown tag before a valid mixed-case tool-call tag no longer swallows the tool call.
+- MCP reconnect cleanup is identity-guarded: an invalidated older reconnect can no longer delete a newer attempt's pending entry after disconnectAll.
+- AgentStorage instances are now WeakRef-backed with a FinalizationRegistry closing each SQLite handle exactly once on collection (300 opened databases: 913 fds -> 13 after GC), with lazy reopen and safe explicit close.
+- Variant-collapse alias indexes and GitLab Duo account state retain authoritative session state again (no eviction); gh default-repo memoizer publishes only the current in-flight request's result; jj structured parsers ignore the 8MiB truncation marker.
 - Kernel file tracking retracts stale events: a file written and then restored to its pre-cell content (or created and deleted) no longer leaves a phantom write/delete in the cell's status events — an upserting `revert` tombstone replaces it.
 - MCP `disconnectAll` invalidates pending connection/tool-load/reconnect entries immediately instead of after awaiting discards, so a hung pending operation can no longer block reconnecting a server; stale pending completions bail via their identity guards.
 - Advisor feed renders no longer restore a stale delivered-prefix snapshot after a later render error (backup is scoped per render and cleared on success/reset/seed).
