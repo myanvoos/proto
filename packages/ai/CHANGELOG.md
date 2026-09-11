@@ -4,8 +4,8 @@
 
 ### Changed
 - Dialect definitions load lazily per dialect id via a require switch (factory import: ~74MB -> ~33MB RSS; only xml/minimax additionally load their anthropic/deepseek scanner dependencies when selected).
-- Anthropic inband scanner candidate detection follows the full tag grammar (case-insensitive, whitespace-tolerant) while keeping unknown-tag runs coalesced (~2.7ms for a 262k-char malformed feed).
-- OpenAI cumulative reasoning dedupe tracks the emitted length with a constant-size seam check instead of re-comparing the whole cumulative snapshot (quadratic -> linear char comparisons over a long stream).
+- Anthropic inband scanner candidate detection follows the full tag grammar (case-insensitive, whitespace-tolerant, namespace-prefix aware): an unknown tag before a valid mixed-case tool-call tag no longer swallows the tool call, and a namespaced invocation split across stream chunks before the colon (`<foo` + `:invoke ...`) parses instead of degrading to text.
+- Anthropic inband scanner coalesces unknown-tag runs into one text event (~2.7ms for a 262k-char malformed feed).
 - Anthropic inband scanner coalesces unknown-tag runs into one text event (262k-char malformed feed: ~585ms/262k events -> ~2ms/1 event).
 - Google/CCA/MCP/Moonshot schema normalization results are cached per input schema object (1000-call probe: 57-147ms -> <0.1ms).
 - `stringifyJson` takes the native fast path and only falls back to the BigInt replacer when plain serialization throws (~5.7x on mixed payloads).

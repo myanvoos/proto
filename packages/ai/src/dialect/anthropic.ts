@@ -595,9 +595,18 @@ function couldBeTagPrefix(buffer: string, prefixes: readonly string[], start = 0
 	return couldBeNamespacedTagPrefix(buffer, bufferIndex, prefixes);
 }
 
+const MAX_NAMESPACE_PREFIX_LENGTH = 256;
+
 function couldBeNamespacedTagPrefix(buffer: string, tagNameStart: number, prefixes: readonly string[]): boolean {
 	let colon = tagNameStart;
 	while (colon < buffer.length && isTagNameContinue(buffer[colon]!)) colon++;
+	if (colon >= buffer.length) {
+		// Buffer ends inside a plausible namespace name: more stream data may
+		// still bring the ":" that turns this into a namespaced tag candidate
+		// (e.g. "<foo" + ":invoke ..."). Bound the hold so pathological long
+		// unknown words cannot stall classification forever.
+		return colon - tagNameStart <= MAX_NAMESPACE_PREFIX_LENGTH;
+	}
 	if (buffer[colon] !== ":") return false;
 
 	const localNameStart = colon + 1;

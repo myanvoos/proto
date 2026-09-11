@@ -842,8 +842,7 @@ const streamOpenAICompletionsOnce = (
 				appendText(output, stream, text);
 			};
 
-			const lastCumulativeReasoningBySignature = new Map<string, { snapshot: string; emittedLength: number }>();
-			const cumulativeReasoningBoundaryLength = 64;
+			const lastCumulativeReasoningBySignature = new Map<string, string>();
 			const appendThinkingDelta = (
 				thinking: string,
 				signature?: string,
@@ -853,25 +852,11 @@ const streamOpenAICompletionsOnce = (
 				let emittedThinking = thinking;
 				if (source === "cumulative") {
 					const key = signature ?? "";
-					const lastState = lastCumulativeReasoningBySignature.get(key);
-					if (lastState) {
-						const emittedLength = lastState.emittedLength;
-						const prefixBoundaryLength = Math.min(emittedLength, cumulativeReasoningBoundaryLength);
-						const seamStart = Math.max(0, emittedLength - cumulativeReasoningBoundaryLength);
-						const isAppending =
-							thinking.length >= emittedLength &&
-							thinking.slice(0, prefixBoundaryLength) === lastState.snapshot.slice(0, prefixBoundaryLength) &&
-							thinking.slice(seamStart, emittedLength) === lastState.snapshot.slice(seamStart, emittedLength);
-						if (isAppending) {
-							emittedThinking = thinking.slice(emittedLength);
-						} else if (thinking.startsWith(lastState.snapshot)) {
-							emittedThinking = thinking.slice(lastState.snapshot.length);
-						}
-						lastState.snapshot = thinking;
-						lastState.emittedLength = thinking.length;
-					} else {
-						lastCumulativeReasoningBySignature.set(key, { snapshot: thinking, emittedLength: thinking.length });
+					const lastSnapshot = lastCumulativeReasoningBySignature.get(key) ?? "";
+					if (thinking.startsWith(lastSnapshot)) {
+						emittedThinking = thinking.slice(lastSnapshot.length);
 					}
+					lastCumulativeReasoningBySignature.set(key, thinking);
 					if (!emittedThinking) return;
 				}
 				if (!firstTokenTime) firstTokenTime = performance.now();
