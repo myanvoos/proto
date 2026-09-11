@@ -8,6 +8,10 @@
 
 ### Changed
 
+- Packaged CLI bundle uses code splitting (`dist/cli.js` 17.4MB monolith -> 9.4KB entry + chunks in the existing `dist/template-*.js` package glob): bundled `--version` median 264ms -> 30ms.
+- Read tool loads PDF/image/URL/archive/profile/markit converters lazily on first special-format use instead of at session boot.
+- Capability filesystem caches are LRU-bounded (256 entries / 8MiB) and idle AgentStorage handles (>10min) are closed and reopen lazily, so multi-project sessions stop retaining unbounded file caches and database handles.
+- Web-search snippet/count/truncation helpers consolidated behind @oh-my-pi/pi-utils (byte-identical output).
 - Prompt payload trimmed by ~10.6KB per session set: conductor commission/verify/epoch turns, workflow notice, reviewer/yield-reminder/analysis prompts, delivery contract, goal continuation, compression prompts, and orchestration tool descriptions were deduplicated against their authoritative schemas/system prompts (judge-verified equivalence).
 - CLI cold start does less module work: license notices load only for `--license`, and worker-process/JS-eval entry imports are deferred to their dispatch branches (~-20ms median on `--version` probes).
 - Long-running processes no longer leak: bash session owners are released on disposal, eval idle-reap notes are capped (32), dead Settings WeakRefs are pruned, task agent-discovery memoization is LRU-capped (16) with the write-only snapshot map removed, and the Mermaid render cache is capped at 128 entries.
