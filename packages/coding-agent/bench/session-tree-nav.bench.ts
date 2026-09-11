@@ -1,5 +1,5 @@
-import type { SessionEntry } from "../src/session/session-manager";
-import { buildSessionContext } from "../src/session/session-manager";
+import { buildSessionContext } from "../src/session/session-context";
+import type { SessionEntry } from "../src/session/session-entries";
 
 const MSG_COUNT = 100;
 const CODE_BLOCKS_PER_MSG = 5;
