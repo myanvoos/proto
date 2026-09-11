@@ -47,7 +47,7 @@ pub mod workspace;
 
 use napi_derive::{module_init, napi};
 
-#[napi(js_name = "__piNativesV18_0_5")]
+#[napi(js_name = "__piNativesV18_0_6")]
 pub const fn pi_natives_version_sentinel() {}
 
 #[module_init]

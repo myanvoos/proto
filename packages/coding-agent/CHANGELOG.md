@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.6] - 2026-09-11
+
 ### Added
 
 - perf-gate benchmark harnesses under `bench/perf-gate/` (startup, keystroke echo, render frames, shutdown, GC/heap, marathon RSS with `run-all.ts` acceptance runner) recording baseline gates for latency and memory work.

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.0.6] - 2026-09-11
+
 ### Changed
 
 - Render scheduling uses a budgeted cadence: ordinary frames wait `max(1000/60, min(200ms, 2x last frame cost))` since the previous frame and input-driven frames use an 8ms floor (with an expedite re-arm when a key arrives behind an armed timer), so keystroke echo no longer quantizes to the 30fps tick while expensive frames keep ~50% duty-cycle backpressure.
