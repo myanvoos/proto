@@ -11,7 +11,7 @@
 - Model-id classification caches, catalog build interns, prompt template compilation cache, and eval kernel registry notes are now LRU-bounded, capping retained heap from dynamic/custom model ids and templates (probe: catalog build interns 141MB -> 22MB heap).
 - Session JSONL loading uses an amortized growing buffer (8MiB single-line session: ~218ms -> ~67ms); agent-proxy streamed tool calls parse via the throttled parser with an exact final flush (32KB args: ~328ms -> ~1.9ms cumulative).
 - images-cli imports bundled models via the catalog subpath instead of the root barrel (~46MB less RSS for that module graph in isolation).
-- jj command output is capped at the same 8MiB limit as git instead of retaining unbounded stream reads.
+- jj command output is capped at the same 8MiB limit as git instead of retaining unbounded stream reads; the capped reader is now shared with the git wrapper instead of duplicated.
 - Packaged CLI bundle uses code splitting (`dist/cli.js` 17.4MB monolith -> 9.4KB entry + chunks in the existing `dist/template-*.js` package glob): bundled `--version` median 264ms -> 30ms.
 - Read tool loads PDF/image/URL/archive/profile/markit converters lazily on first special-format use instead of at session boot.
 - Capability filesystem caches are LRU-bounded (256 entries / 8MiB), so multi-project sessions stop retaining unbounded file caches.
@@ -31,7 +31,9 @@
 - Running kernel cells (`eval`/`kernel` and bash-routed `python`/`node`/`bun`) lay out the live block by priority — Status heads, then diff hunks (newest first), then the output tail, then the code tail — so hunks no longer wait on the output preview or the cell settling, and the block stays inside the terminal's live window.
 
 ### Fixed
-
+- Kernel file tracking retracts stale events: a file written and then restored to its pre-cell content (or created and deleted) no longer leaves a phantom write/delete in the cell's status events — an upserting `revert` tombstone replaces it.
+- MCP `disconnectAll` invalidates pending connection/tool-load/reconnect entries immediately instead of after awaiting discards, so a hung pending operation can no longer block reconnecting a server; stale pending completions bail via their identity guards.
+- Advisor feed renders no longer restore a stale delivered-prefix snapshot after a later render error (backup is scoped per render and cleared on success/reset/seed).
 - PI_TIMING module-timing preload no longer breaks provider loading: its onLoad hook is synchronous, so Bun's sync `require()` of provider modules works again.
 - Native diff no longer goes quadratic on large edits: bounded Myers with prefix/suffix trim keeps any edit distance under ~7ms (8,192-line diff was ~785ms); sequential grep streams candidates instead of materializing the whole tree (cargo-registry-scale tree now on par with rg).
 - MCP disconnect no longer drops connections registered while it was running; tool/resource refreshes from a stale pre-reconnect connection no longer overwrite the new connection's state.

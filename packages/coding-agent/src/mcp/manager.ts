@@ -755,14 +755,18 @@ export class MCPManager {
 			...reconnectHistory.keys(),
 		]);
 
-		const promises = Array.from(connections, ([name, connection]) => this.#discardConnection(name, connection));
-		await Promise.allSettled(promises);
-
-		deleteUnchangedMapEntries(this.#connections, connections);
+		// Invalidate pending work for discarded servers immediately: completion
+		// handlers are identity-guarded and bail once their entry is removed, so
+		// a hung listTools/reconnect backoff must not block later reconnects.
 		deleteUnchangedMapEntries(this.#pendingConnections, pendingConnections);
 		deleteUnchangedMapEntries(this.#pendingToolLoads, pendingToolLoads);
 		deleteUnchangedMapEntries(this.#pendingReconnections, pendingReconnections);
 		deleteUnchangedMapEntries(this.#pendingResourceRefresh, pendingResourceRefresh);
+
+		const promises = Array.from(connections, ([name, connection]) => this.#discardConnection(name, connection));
+		await Promise.allSettled(promises);
+
+		deleteUnchangedMapEntries(this.#connections, connections);
 		deleteUnchangedMapEntries(this.#sources, sources);
 		deleteUnchangedMapEntries(this.#serverConfigs, serverConfigs);
 		deleteUnchangedMapEntries(this.#subscribedResources, subscribedResources);

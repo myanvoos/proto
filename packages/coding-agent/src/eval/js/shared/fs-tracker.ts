@@ -203,7 +203,16 @@ async function reportPath(absPath: string, record: TouchedRecord): Promise<Repor
 		stat = null;
 	}
 	if (!stat?.isFile) {
-		if (!record.existed) return "skipped";
+		if (!record.existed) {
+			// Created in this cell, then deleted: net no file. Retract the
+			// earlier write report with an upserting tombstone.
+			if (reported.has(absPath) && reported.get(absPath) !== null) {
+				reported.set(absPath, null);
+				tracking.emit({ op: "revert", path: absPath, id: eventId(absPath) });
+				return "emitted";
+			}
+			return "skipped";
+		}
 		if (reported.has(absPath)) {
 			if (reported.get(absPath) === null) return "skipped";
 		} else if (reported.size >= MAX_EVENTS) {
@@ -225,7 +234,17 @@ async function reportPath(absPath: string, record: TouchedRecord): Promise<Repor
 	const { text, sha } =
 		stat.size > DIFF_MAX_BYTES ? { text: null, sha: await shaOfFileAsync(absPath) } : await readContentAsync(absPath);
 	if (sha === null) return "skipped";
-	if (record.beforeSha === sha || reported.get(absPath) === sha) return "skipped";
+	if (record.beforeSha === sha) {
+		// Restored to its pre-cell content after an earlier report: retract
+		// the stale write/delete with an upserting tombstone.
+		if (reported.has(absPath)) {
+			reported.set(absPath, sha);
+			tracking.emit({ op: "revert", path: absPath, id: eventId(absPath) });
+			return "emitted";
+		}
+		return "skipped";
+	}
+	if (reported.get(absPath) === sha) return "skipped";
 	if (!reported.has(absPath) && reported.size >= MAX_EVENTS) return "capped";
 	reported.set(absPath, sha);
 	if (text !== null) {

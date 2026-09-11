@@ -1,7 +1,7 @@
 import type { EvalStatusEvent } from "./types";
 
 function isFileOp(event: EvalStatusEvent): boolean {
-	return event.op === "write" || event.op === "delete";
+	return event.op === "write" || event.op === "delete" || event.op === "revert";
 }
 
 // Agent events and file-op reports are snapshots keyed by `id`: an agent's

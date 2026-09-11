@@ -361,6 +361,12 @@ if "__proto_prelude_loaded__" not in globals():
             regular = False
         if not regular:
             if not rec["existed"]:
+                # Created in this cell, then deleted: net no file. Retract the
+                # earlier write report with an upserting tombstone.
+                if ap in reported and reported[ap] is not None:
+                    reported[ap] = None
+                    _emit_status("revert", path=ap, id=_fs_event_id(ap))
+                    return "emitted"
                 return "skipped"
             if ap in reported:
                 if reported[ap] is None:
@@ -393,7 +399,15 @@ if "__proto_prelude_loaded__" not in globals():
             return "skipped"
         finally:
             tls.recording = False
-        if rec["before_sha"] == sha or reported.get(ap) == sha:
+        if rec["before_sha"] == sha:
+            # Restored to its pre-cell content after an earlier report:
+            # retract the stale write/delete with an upserting tombstone.
+            if ap in reported:
+                reported[ap] = sha
+                _emit_status("revert", path=ap, id=_fs_event_id(ap))
+                return "emitted"
+            return "skipped"
+        if reported.get(ap) == sha:
             return "skipped"
         if ap not in reported and len(reported) >= _FS_MAX_EVENTS:
             return "capped"

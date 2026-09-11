@@ -299,9 +299,10 @@ async function waitForExitWithTimeout(
 	}
 }
 
-async function readCappedText(
+export async function readCappedText(
 	stream: ReadableStream<Uint8Array>,
 	maxBytes: number,
+	truncatedMarker = GIT_OUTPUT_TRUNCATED_MARKER,
 ): Promise<{ text: string; truncated: boolean }> {
 	const reader = stream.getReader();
 	const decoder = new TextDecoder();
@@ -324,7 +325,7 @@ async function readCappedText(
 			truncated = true;
 		}
 		chunks.push(decoder.decode());
-		if (truncated) chunks.push(GIT_OUTPUT_TRUNCATED_MARKER);
+		if (truncated) chunks.push(truncatedMarker);
 		return { text: chunks.join(""), truncated };
 	} finally {
 		reader.releaseLock();

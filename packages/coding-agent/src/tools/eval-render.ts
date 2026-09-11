@@ -362,6 +362,9 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 		case "delete":
 			if (data.path) parts.push(statusPath(data.path));
 			break;
+		case "revert":
+			if (data.path) parts.push(`${statusPath(data.path)} restored to pre-cell content`);
+			break;
 		case "files":
 			if (typeof data.count === "number") {
 				parts.push(`${data.count} more file${data.count !== 1 ? "s" : ""} changed`);

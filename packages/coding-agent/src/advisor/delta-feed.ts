@@ -112,6 +112,7 @@ export class DeltaCursorFeed implements ReviewerFeed {
 	}
 
 	seedTo(count: number): void {
+		this.#prefixBackup = undefined;
 		const messages = this.host.snapshotMessages().slice(0, count);
 		this.#lastCount = messages.length;
 		this.#deliveredPrefix = messages.map(message => ({
@@ -121,6 +122,7 @@ export class DeltaCursorFeed implements ReviewerFeed {
 	}
 
 	reset(): void {
+		this.#prefixBackup = undefined;
 		this.#lastCount = 0;
 		this.#deliveredPrefix = [];
 	}
@@ -137,7 +139,9 @@ export class DeltaCursorFeed implements ReviewerFeed {
 	render(messages: AgentMessage[], wip = false): RenderedFeedItem | null {
 		const cursorBefore = this.#lastCount;
 		try {
-			return this.#renderDelta(messages, wip);
+			const result = this.#renderDelta(messages, wip);
+			this.#prefixBackup = undefined;
+			return result;
 		} catch (err) {
 			this.#lastCount = cursorBefore;
 			if (this.#prefixBackup !== undefined) {
