@@ -7,7 +7,6 @@ import {
 	padding,
 	replaceTabs,
 	routeSgrMouseInput,
-	ScrollView,
 	Spacer,
 	Text,
 	truncateToWidth,
@@ -177,8 +176,25 @@ const FUZZY_SCAN_INLINE_COUNT = 100;
 
 const FUZZY_SCAN_CHUNK_COUNT = 150;
 
+const SESSION_MINUTE_MS = 60_000;
+const SESSION_HOUR_MS = 3_600_000;
+const SESSION_DAY_MS = 86_400_000;
+const SESSION_WEEK_MS = 604_800_000;
+
+interface CachedSessionDate {
+	modifiedMs: number;
+	timeBucket: number;
+	value: string;
+}
+
+function sessionItemHeight(session: SessionInfo): number {
+	return session.title ? 4 : 3;
+}
+
 class SessionList implements Component {
 	#filteredSessions: SessionInfo[] = [];
+	#filteredTitlePrefix: number[] = [0];
+	#filteredTotalRows = 0;
 	#selectedIndex: number = 0;
 
 	#hitRows: (number | undefined)[] = [];
@@ -210,6 +226,8 @@ class SessionList implements Component {
 	#scanTimer: NodeJS.Timeout | undefined;
 
 	#selectionMoved = false;
+	#formattedDates = new Map<string, CachedSessionDate>();
+	#normalizedMessages = new Map<string, { source: string; value: string }>();
 
 	constructor(
 		sessions: SessionInfo[],
@@ -223,7 +241,7 @@ class SessionList implements Component {
 		this.#showCwd = showCwd;
 		this.#pinnedIds = pinnedIds;
 		this.#historyMatcher = historyMatcher;
-		this.#filteredSessions = sessions;
+		this.#setFilteredSessions(sessions);
 		this.#searchInput = new Input();
 
 		this.#searchInput.onSubmit = () => {
@@ -232,6 +250,58 @@ class SessionList implements Component {
 				this.onSelect?.(selected);
 			}
 		};
+	}
+
+	#setFilteredSessions(sessions: SessionInfo[]): void {
+		this.#filteredSessions = sessions;
+		const titlePrefix = new Array<number>(sessions.length + 1);
+		titlePrefix[0] = 0;
+		for (let index = 0; index < sessions.length; index++) {
+			titlePrefix[index + 1] = titlePrefix[index]! + (sessions[index]!.title ? 1 : 0);
+		}
+		this.#filteredTitlePrefix = titlePrefix;
+		this.#filteredTotalRows = sessions.length * 3 + titlePrefix[sessions.length]!;
+	}
+
+	#formatDate(session: SessionInfo, nowMs: number): string {
+		const modifiedMs = session.modified.getTime();
+		const ageMs = nowMs - modifiedMs;
+		const timeBucket =
+			ageMs < SESSION_HOUR_MS
+				? Math.floor(nowMs / SESSION_MINUTE_MS)
+				: ageMs < SESSION_DAY_MS
+					? Math.floor(nowMs / SESSION_HOUR_MS)
+					: ageMs < SESSION_WEEK_MS
+						? Math.floor(nowMs / SESSION_DAY_MS)
+						: 0;
+		const cached = this.#formattedDates.get(session.path);
+		if (cached && cached.modifiedMs === modifiedMs && cached.timeBucket === timeBucket) return cached.value;
+
+		const diffMins = Math.floor(ageMs / SESSION_MINUTE_MS);
+		const diffHours = Math.floor(ageMs / SESSION_HOUR_MS);
+		const diffDays = Math.floor(ageMs / SESSION_DAY_MS);
+		const value =
+			diffMins < 1
+				? "just now"
+				: diffMins < 60
+					? `${diffMins} minute${diffMins !== 1 ? "s" : ""} ago`
+					: diffHours < 24
+						? `${diffHours} hour${diffHours !== 1 ? "s" : ""} ago`
+						: diffDays === 1
+							? "1 day ago"
+							: diffDays < 7
+								? `${diffDays} days ago`
+								: session.modified.toLocaleDateString();
+		this.#formattedDates.set(session.path, { modifiedMs, timeBucket, value });
+		return value;
+	}
+
+	#normalizedMessage(session: SessionInfo): string {
+		const cached = this.#normalizedMessages.get(session.path);
+		if (cached?.source === session.firstMessage) return cached.value;
+		const value = session.firstMessage.replace(/\n/g, " ").trim();
+		this.#normalizedMessages.set(session.path, { source: session.firstMessage, value });
+		return value;
 	}
 
 	#lineBudget(): number {
@@ -265,7 +335,7 @@ class SessionList implements Component {
 
 		const tokens = tokenizeSessionQuery(query);
 		if (tokens.length === 0) {
-			this.#filteredSessions = this.#allSessions;
+			this.#setFilteredSessions(this.#allSessions);
 			this.#selectedIndex = Math.min(this.#selectedIndex, Math.max(0, this.#filteredSessions.length - 1));
 			this.#scheduleHistoryMerge(query);
 			return;
@@ -316,8 +386,9 @@ class SessionList implements Component {
 		const base: SessionInfo[] = [];
 		for (const match of this.#literalRanked) base.push(match.session);
 		for (const match of this.#fuzzyRanked) base.push(match.session);
-		this.#filteredSessions =
-			this.#historyIds.length > 0 ? mergeSessionRanking(this.#allSessions, base, this.#historyIds) : base;
+		this.#setFilteredSessions(
+			this.#historyIds.length > 0 ? mergeSessionRanking(this.#allSessions, base, this.#historyIds) : base,
+		);
 		this.#selectedIndex = Math.min(this.#selectedIndex, Math.max(0, this.#filteredSessions.length - 1));
 	}
 
@@ -402,39 +473,22 @@ class SessionList implements Component {
 			return lines;
 		}
 
-		const formatDate = (date: Date): string => {
-			const now = new Date();
-			const diffMs = now.getTime() - date.getTime();
-			const diffMins = Math.floor(diffMs / 60000);
-			const diffHours = Math.floor(diffMs / 3600000);
-			const diffDays = Math.floor(diffMs / 86400000);
-
-			if (diffMins < 1) return "just now";
-			if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? "s" : ""} ago`;
-			if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? "s" : ""} ago`;
-			if (diffDays === 1) return "1 day ago";
-			if (diffDays < 7) return `${diffDays} days ago`;
-
-			return date.toLocaleDateString();
-		};
-
 		const filtered = this.#filteredSessions;
-		const itemHeight = (session: SessionInfo): number => (session.title ? 4 : 3);
 		const budget = this.#lineBudget();
 		let startIndex = this.#selectedIndex;
 		let endIndex = this.#selectedIndex + 1;
-		let used = itemHeight(filtered[this.#selectedIndex]!);
+		let used = sessionItemHeight(filtered[this.#selectedIndex]!);
 
 		for (let preferDown = true; ; preferDown = !preferDown) {
-			const canDown = endIndex < filtered.length && used + itemHeight(filtered[endIndex]!) <= budget;
-			const canUp = startIndex > 0 && used + itemHeight(filtered[startIndex - 1]!) <= budget;
+			const canDown = endIndex < filtered.length && used + sessionItemHeight(filtered[endIndex]!) <= budget;
+			const canUp = startIndex > 0 && used + sessionItemHeight(filtered[startIndex - 1]!) <= budget;
 			if (!canDown && !canUp) break;
 			if (canDown && (preferDown || !canUp)) {
-				used += itemHeight(filtered[endIndex]!);
+				used += sessionItemHeight(filtered[endIndex]!);
 				endIndex++;
 			} else {
 				startIndex--;
-				used += itemHeight(filtered[startIndex]!);
+				used += sessionItemHeight(filtered[startIndex]!);
 			}
 		}
 
@@ -442,22 +496,27 @@ class SessionList implements Component {
 		const sessionRowIndex: number[] = [];
 		const overflow = startIndex > 0 || endIndex < filtered.length;
 		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
+		const nowMs = Date.now();
+		const cursorSymbol = `${theme.nav.cursor} `;
+		const cursorWidth = visibleWidth(cursorSymbol);
+		const dim = (value: string) => theme.fg("dim", value);
+		const dot = dim(theme.sep.dot);
+		const pinPrefixWidth = visibleWidth(`${theme.icon.pin} `);
+		const pinnedPrefix = theme.fg("accent", `${theme.icon.pin} `);
 		for (let i = startIndex; i < endIndex; i++) {
 			const blockStart = sessionLines.length;
 			const session = this.#filteredSessions[i];
 			const isSelected = i === this.#selectedIndex;
 
-			const normalizedMessage = session.firstMessage.replace(/\n/g, " ").trim();
+			const normalizedMessage = this.#normalizedMessage(session);
 
-			const cursorSymbol = `${theme.nav.cursor} `;
-			const cursorWidth = visibleWidth(cursorSymbol);
 			const cursor = isSelected ? theme.fg("accent", cursorSymbol) : padding(cursorWidth);
 			const maxWidth = rowWidth - cursorWidth;
 
 			const isPinned = this.#pinnedIds.has(session.id);
-			const pinPrefix = isPinned ? `${theme.fg("accent", theme.icon.pin)} ` : "";
-			const pinPrefixWidth = isPinned ? visibleWidth(`${theme.icon.pin} `) : 0;
-			const maxTextWidth = Math.max(0, maxWidth - pinPrefixWidth);
+			const pinPrefix = isPinned ? pinnedPrefix : "";
+			const sessionPinWidth = isPinned ? pinPrefixWidth : 0;
+			const maxTextWidth = Math.max(0, maxWidth - sessionPinWidth);
 
 			if (session.title) {
 				const truncatedTitle = truncateToWidth(session.title, maxTextWidth);
@@ -472,9 +531,7 @@ class SessionList implements Component {
 				sessionLines.push(messageLine);
 			}
 
-			const dim = (s: string) => theme.fg("dim", s);
-			const dot = dim(theme.sep.dot);
-			const modified = formatDate(session.modified);
+			const modified = this.#formatDate(session, nowMs);
 			let metadata = `  ${dim(modified)} ${dot} ${dim(formatBytes(session.size))}`;
 			const status = formatSessionStatus(session.status);
 			if (status) {
@@ -494,25 +551,32 @@ class SessionList implements Component {
 			for (let k = blockStart; k < sessionLines.length; k++) sessionRowIndex[k] = i;
 		}
 
-		let totalRows = 0;
-		let offsetRows = 0;
-		for (let i = 0; i < filtered.length; i++) {
-			if (i === startIndex) offsetRows = totalRows;
-			totalRows += itemHeight(filtered[i]!);
-		}
-
-		totalRows -= 1;
-		const sv = new ScrollView(sessionLines, {
-			height: sessionLines.length,
-			scrollbar: "auto",
-			totalRows,
-			theme: { track: t => theme.fg("muted", t), thumb: t => theme.fg("accent", t) },
-		});
-		sv.setScrollOffset(offsetRows);
+		const totalRows = this.#filteredTotalRows - 1;
+		const offsetRows = startIndex * 3 + this.#filteredTitlePrefix[startIndex]!;
+		const height = sessionLines.length;
+		const safeWidth = Number.isFinite(width) ? Math.max(0, Math.trunc(width)) : 0;
+		const showScrollbar = safeWidth > 0 && totalRows > height;
+		const contentWidth = Math.max(0, safeWidth - (showScrollbar ? 1 : 0));
+		const maxScrollOffset = Math.max(0, totalRows - height);
+		const scrollOffset = Math.max(0, Math.min(offsetRows, maxScrollOffset));
+		const thumbSize = showScrollbar ? Math.max(1, Math.min(Math.floor((height * height) / totalRows), height)) : 0;
+		const thumbTravel = height - thumbSize;
+		const thumbStart =
+			showScrollbar && maxScrollOffset > 0 ? Math.round((scrollOffset / maxScrollOffset) * thumbTravel) : 0;
 		const sessionRegionStart = lines.length;
-		const svLines = sv.render(width);
-		for (let k = 0; k < svLines.length; k++) this.#hitRows[sessionRegionStart + k] = sessionRowIndex[k];
-		lines.push(...svLines);
+		for (let row = 0; row < height; row++) {
+			const source = sessionLines[row] ?? "";
+			const truncated = truncateToWidth(replaceTabs(source), contentWidth);
+			if (!showScrollbar) {
+				lines.push(truncated);
+			} else {
+				const content = `${truncated}${" ".repeat(Math.max(0, contentWidth - visibleWidth(truncated)))}`;
+				const isThumb = row >= thumbStart && row < thumbStart + thumbSize;
+				const bar = isThumb ? theme.fg("accent", "█") : theme.fg("muted", "│");
+				lines.push(`${content}${bar}`);
+			}
+			this.#hitRows[sessionRegionStart + row] = sessionRowIndex[row];
+		}
 
 		return lines;
 	}

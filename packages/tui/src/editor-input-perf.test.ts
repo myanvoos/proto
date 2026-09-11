@@ -160,3 +160,31 @@ test("single-char fast path inserts when no printable-char binding exists", () =
 		setKeybindings(previous);
 	}
 });
+
+test("dispose aborts autocomplete and suppresses late updates", async () => {
+	const editor = editorWith();
+	let calls = 0;
+	let updates = 0;
+	editor.onAutocompleteUpdate = () => {
+		updates++;
+	};
+	editor.setAutocompleteProvider({
+		async getSuggestions(_lines, _cursorLine, _cursorCol, signal) {
+			calls++;
+			await Promise.resolve();
+			if (signal?.aborted) return null;
+			return { items: [{ value: "@file", label: "@file" }], prefix: "@" };
+		},
+		applyCompletion(lines, cursorLine, cursorCol) {
+			return { lines, cursorLine, cursorCol };
+		},
+	});
+
+	editor.handleInput("@");
+	editor.dispose();
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(calls).toBe(1);
+	expect(updates).toBe(0);
+});

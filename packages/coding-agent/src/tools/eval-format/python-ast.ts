@@ -1,5 +1,6 @@
 import { codeOutline, type OutlineEntry, supportsLanguage } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { Theme } from "../../modes/theme/theme";
 import { type OutlineNode, renderOutlineLines } from "./outline-render";
 
@@ -42,7 +43,32 @@ function parseOutline(source: string): OutlineNode[] | null {
 	return result.entries.map(toOutlineNode);
 }
 
-const outlineMemo = new Map<string, OutlineNode[] | null>();
+const OUTLINE_CACHE_MAX = 512;
+const OUTLINE_CACHE_MAX_SIZE = 8 * 1024 * 1024;
+const OUTLINE_CACHE_MAX_ENTRY_SIZE = 256 * 1024;
+
+function outlineCacheEntrySize(value: OutlineNode[] | null, key: string): number {
+	let size = key.length + 1;
+	if (value === null) return size;
+	const pending = value.slice();
+	while (pending.length > 0) {
+		const node = pending.pop()!;
+		size += 32 + node.kind.length + (node.modifier?.length ?? 0) + (node.name?.length ?? 0);
+		size += node.detail?.length ?? 0;
+		size += node.doc?.length ?? 0;
+		for (const note of node.notes ?? []) size += note.length;
+		for (const question of node.questions ?? []) size += question.length;
+		for (const child of node.children) pending.push(child);
+	}
+	return size;
+}
+
+const outlineMemo = new LRUCache<string, OutlineNode[] | null>({
+	max: OUTLINE_CACHE_MAX,
+	maxSize: OUTLINE_CACHE_MAX_SIZE,
+	maxEntrySize: OUTLINE_CACHE_MAX_ENTRY_SIZE,
+	sizeCalculation: outlineCacheEntrySize,
+});
 
 function parseMemoized(source: string): OutlineNode[] | null {
 	const hit = outlineMemo.get(source);
@@ -54,7 +80,6 @@ function parseMemoized(source: string): OutlineNode[] | null {
 		logger.debug("Python outline parse failed", { error: String(error) });
 		result = null;
 	}
-	if (outlineMemo.size > 8) outlineMemo.clear();
 	outlineMemo.set(source, result);
 	return result;
 }

@@ -2295,7 +2295,9 @@ export class Markdown
 		let renderedSourceOffset = 0;
 		if (reusablePrefix && reusablePrefix.tokenCount <= frozenTokenCount) {
 			contentLines = reusablePrefix.lines;
-			this.#activeTableRenderSpecs?.push(...reusablePrefix.tables);
+			if (this.#activeTableRenderSpecs) {
+				for (const table of reusablePrefix.tables) this.#activeTableRenderSpecs.push(table);
+			}
 			renderedUntil = reusablePrefix.tokenCount;
 			renderedSourceOffset = reusablePrefix.text.length;
 		}
@@ -2408,7 +2410,7 @@ export class Markdown
 			const cachedToken = this.#cachedTokenFragment(token, nextToken?.type, sourceOffset);
 
 			if (cachedToken !== undefined) {
-				wrappedLines.push(...cachedToken.wrappedLines);
+				for (const line of cachedToken.wrappedLines) wrappedLines.push(line);
 				for (const table of cachedToken.tables) {
 					this.#activeTableRenderSpecs?.push({
 						...table,
@@ -2429,7 +2431,7 @@ export class Markdown
 					this.#appendListFragment(token, nextToken?.type, sourceOffset, contentWidth, signature) ??
 					this.#appendPlainParagraphFragment(token, nextToken?.type, sourceOffset, contentWidth, signature);
 				if (appendedFragment !== undefined) {
-					wrappedLines.push(...appendedFragment.wrappedLines);
+					for (const line of appendedFragment.wrappedLines) wrappedLines.push(line);
 					tokenSegments.push({
 						start: tokenWrappedRowStart,
 						end: wrappedLines.length,
@@ -2570,7 +2572,7 @@ export class Markdown
 				!fragment.hasSpecialLine &&
 				(!previousLineWasOsc66 || !fragment.startsWithEmptyLine)
 			) {
-				contentLines.push(...fragment.contentLines);
+				for (const line of fragment.contentLines) contentLines.push(line);
 				previousLineWasOsc66 = false;
 				continue;
 			}
@@ -2954,7 +2956,7 @@ export class Markdown
 
 			case "list": {
 				const listLines = this.#renderList(token as ListToken, 0, width, styleContext);
-				lines.push(...listLines);
+				for (const line of listLines) lines.push(line);
 
 				break;
 			}
@@ -2987,7 +2989,7 @@ export class Markdown
 						quoteInlineStyleContext,
 						`${tokenKey}/quote:${i}`,
 					);
-					renderedQuoteLines.push(...quoteTokenLines);
+					for (const line of quoteTokenLines) renderedQuoteLines.push(line);
 
 					const tableSpecs = this.#activeTableRenderSpecs;
 					if (tableSpecs !== undefined) {
@@ -3021,7 +3023,7 @@ export class Markdown
 						spec.endRow = quoteRowOffsets[relativeEnd]!;
 					}
 				}
-				lines.push(...borderedQuoteLines);
+				for (const line of borderedQuoteLines) lines.push(line);
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(renderedLine(""));
 				}
@@ -3039,7 +3041,7 @@ export class Markdown
 
 			case "html":
 				if ("raw" in token && typeof token.raw === "string") {
-					lines.push(...this.#renderHtmlBlock(token.raw, width));
+					for (const line of this.#renderHtmlBlock(token.raw, width)) lines.push(line);
 				}
 				break;
 
@@ -3113,7 +3115,7 @@ export class Markdown
 			flushText(raw.slice(lastIndex, match.index));
 			lastIndex = match.index + match[0].length;
 			if (match[1] !== undefined) {
-				lines.push(...this.#renderHtmlBlockquote(match[1], width));
+				for (const line of this.#renderHtmlBlockquote(match[1], width)) lines.push(line);
 			} else {
 				lines.push(renderedLine(this.#renderHrLine(width)));
 			}

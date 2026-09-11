@@ -551,6 +551,35 @@ export class Editor implements Component, Focusable {
 		this.borderColor = theme.borderColor;
 	}
 
+	dispose(): void {
+		this.#cancelAutocomplete();
+		this.#autocompleteAbortController = undefined;
+		this.#autocompleteProvider = undefined;
+		this.#textAssistProvider = undefined;
+		this.#autocompleteList = undefined;
+		this.#historyStorage = undefined;
+		this.#pasteHandler.clear();
+		this.#pastes.clear();
+		this.#atoms.clear();
+		this.#history = [];
+		this.#undoStack.length = 0;
+		this.#wrapCache.clear();
+		this.#layoutCache = [];
+		this.#layoutScratch = [];
+		this.#plainRenderCache = new WeakMap();
+		this.#state = { lines: [""], cursorLine: 0, cursorCol: 0 };
+		this.#widthEpochText = "";
+		this.#promptGutterCache = undefined;
+		this.onAutocompleteUpdate = undefined;
+		this.onAutocompleteCancel = undefined;
+		this.onTextAssistApplied = undefined;
+		this.onSubmit = undefined;
+		this.onAltEnter = undefined;
+		this.onChange = undefined;
+		this.onLargePaste = undefined;
+		this.viewportRowsProvider = undefined;
+	}
+
 	setTheme(theme: EditorTheme): void {
 		this.#theme = theme;
 		this.borderColor = theme.borderColor;

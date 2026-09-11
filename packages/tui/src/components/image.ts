@@ -167,8 +167,7 @@ export class ImageBudget {
 	}
 
 	takeAllTransmittedIds(): readonly number[] {
-		if (this.#transmitted.size === 0) return EMPTY_IDS;
-		const ids = [...this.#transmitted];
+		const ids = this.#transmitted.size === 0 ? EMPTY_IDS : [...this.#transmitted];
 		this.#transmitted.clear();
 		this.#purgeIds = [];
 		this.#pendingTransmits = [];

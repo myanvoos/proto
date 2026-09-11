@@ -461,6 +461,17 @@ export class CustomEditor extends Editor {
 		}
 	}
 
+	override dispose(): void {
+		this.setShimmerRepaintHandler(undefined);
+		this.#spelling.onUpdate = undefined;
+		this.pendingImages = [];
+		this.pendingImageLinks = [];
+		this.pendingTexts = [];
+		this.imageLinks = undefined;
+		this.draftImageLinkMaterializer = undefined;
+		super.dispose();
+	}
+
 	#scheduleShimmerFrame(): void {
 		if (this.#shimmerTimer || !this.#requestShimmerRepaint) return;
 		this.#shimmerTimer = setTimeout(() => {

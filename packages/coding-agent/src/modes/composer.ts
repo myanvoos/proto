@@ -251,7 +251,9 @@ export class Composer {
 	}
 
 	setEditor(editor: CustomEditor): void {
+		const previous = this.#editor;
 		this.#editor = editor;
+		if (previous !== editor) this.#editorSlot.disposeChildren();
 		this.#editorSlot.clear();
 		this.#editorSlot.addChild(editor);
 	}

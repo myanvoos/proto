@@ -8,6 +8,7 @@ import {
 	wrapTextWithAnsi as nativeWrapTextWithAnsi,
 	type SliceResult,
 } from "@oh-my-pi/pi-natives";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { DEFAULT_TAB_WIDTH } from "@oh-my-pi/pi-utils/tab-spacing";
 
 export { Ellipsis } from "@oh-my-pi/pi-natives";
@@ -137,6 +138,18 @@ export function sliceWithWidth(line: string, startCol: number, length: number, s
 	return nativeSliceWithWidth(line, startCol, length, strict ?? null, DEFAULT_TAB_WIDTH);
 }
 
+const TRUNCATE_CACHE_MAX = 512;
+const TRUNCATE_CACHE_MAX_SIZE = 4 * 1024 * 1024;
+const TRUNCATE_CACHE_MAX_ENTRY_SIZE = 64 * 1024;
+const TRUNCATE_CACHE_MAX_TEXT_LENGTH = 8 * 1024;
+
+const truncateCache = new LRUCache<string, string>({
+	max: TRUNCATE_CACHE_MAX,
+	maxSize: TRUNCATE_CACHE_MAX_SIZE,
+	maxEntrySize: TRUNCATE_CACHE_MAX_ENTRY_SIZE,
+	sizeCalculation: (value, key) => key.length + value.length,
+});
+
 export function truncateToWidth(
 	text: string,
 	maxWidth: number,
@@ -144,17 +157,21 @@ export function truncateToWidth(
 	pad?: boolean | null,
 ): string {
 	maxWidth = Math.max(0, maxWidth | 0);
+	const shouldPad = pad ?? false;
+	const ellipsis = (typeof ellipsisKind === "string" ? Ellipsis.Omit : ellipsisKind) ?? Ellipsis.Unicode;
 
-	if (!pad && text.length * 3 <= maxWidth) {
-		return text;
+	if (!shouldPad && text.length <= maxWidth && PRINTABLE_ASCII_REGEX.test(text)) return text;
+	if (!shouldPad && text.length * 3 <= maxWidth) return text;
+	if (!shouldPad && !PRINTABLE_ASCII_REGEX.test(text) && visibleWidth(text) <= maxWidth) return text;
+	if (text.length <= TRUNCATE_CACHE_MAX_TEXT_LENGTH) {
+		const key = `${widthConfigEpoch}:${maxWidth}:${ellipsis}:${shouldPad ? 1 : 0}\x00${text}`;
+		const cached = truncateCache.get(key);
+		if (cached !== undefined) return cached;
+		const result = nativeTruncateToWidth(text, maxWidth, ellipsis, shouldPad, DEFAULT_TAB_WIDTH);
+		truncateCache.set(key, result);
+		return result;
 	}
-	return nativeTruncateToWidth(
-		text,
-		maxWidth,
-		(typeof ellipsisKind === "string" ? Ellipsis.Omit : ellipsisKind) ?? Ellipsis.Unicode,
-		pad ?? false,
-		DEFAULT_TAB_WIDTH,
-	);
+	return nativeTruncateToWidth(text, maxWidth, ellipsis, shouldPad, DEFAULT_TAB_WIDTH);
 }
 
 export function truncateStartToWidth(text: string, maxWidth: number): string {
@@ -167,8 +184,38 @@ export function truncateStartToWidth(text: string, maxWidth: number): string {
 	return ellipsis + sliceByColumn(text, total - budget, budget);
 }
 
+const WRAP_CACHE_MAX = 512;
+const WRAP_CACHE_MAX_SIZE = 4 * 1024 * 1024;
+const WRAP_CACHE_MAX_ENTRY_SIZE = 64 * 1024;
+const WRAP_CACHE_MAX_TEXT_LENGTH = 8 * 1024;
+
+const wrapCache = new LRUCache<string, string[]>({
+	max: WRAP_CACHE_MAX,
+	maxSize: WRAP_CACHE_MAX_SIZE,
+	maxEntrySize: WRAP_CACHE_MAX_ENTRY_SIZE,
+	sizeCalculation: (lines, key) => key.length + lines.reduce((size, line) => size + line.length, 0),
+});
+let wrapCacheEpoch = widthConfigEpoch;
+
 export function wrapTextWithAnsi(text: string, width: number): string[] {
-	return nativeWrapTextWithAnsi(text, width, DEFAULT_TAB_WIDTH);
+	// Wrapping follows the configured terminal cell width (notably Hangul Jamo), so
+	// discard entries rather than serving rows calculated for a prior width mode.
+	if (wrapCacheEpoch !== widthConfigEpoch) {
+		wrapCache.clear();
+		wrapCacheEpoch = widthConfigEpoch;
+	}
+
+	// Short plain ASCII lines are already a complete wrapped row. Besides avoiding
+	// the native call this keeps the common transcript path allocation-free.
+	if (width > 0 && text.length <= width && PRINTABLE_ASCII_REGEX.test(text)) return [text];
+	if (text.length > WRAP_CACHE_MAX_TEXT_LENGTH) return nativeWrapTextWithAnsi(text, width, DEFAULT_TAB_WIDTH);
+
+	const key = `${widthConfigEpoch}:${width}\x00${text}`;
+	const cached = wrapCache.get(key);
+	if (cached !== undefined) return cached;
+	const lines = nativeWrapTextWithAnsi(text, width, DEFAULT_TAB_WIDTH);
+	wrapCache.set(key, lines);
+	return lines;
 }
 
 export function extractSegments(
@@ -252,6 +299,10 @@ function cacheVisibleWidth(str: string, width: number): void {
 
 export function visibleWidth(str: string): number {
 	if (!str) return 0;
+	// Printable ASCII has a one-cell-per-code-unit width; avoid cache churn for
+	// these ubiquitous short labels and let the regex be the complete fast path.
+	if (PRINTABLE_ASCII_REGEX.test(str)) return str.length;
+
 	const cacheable = str.length <= VISIBLE_WIDTH_CACHE_MAX_LEN;
 	if (cacheable) {
 		if (visibleWidthCacheEpoch !== widthConfigEpoch) {
@@ -260,13 +311,6 @@ export function visibleWidth(str: string): number {
 		}
 		const cached = visibleWidthCache.get(str);
 		if (cached !== undefined) return cached;
-	}
-
-	if (PRINTABLE_ASCII_REGEX.test(str)) {
-		if (cacheable) {
-			cacheVisibleWidth(str, str.length);
-		}
-		return str.length;
 	}
 
 	let tabCount = 0;

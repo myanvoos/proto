@@ -34,36 +34,44 @@ function getHighlightColors(t: Theme): NativeHighlightColors {
 	return cachedHighlightColors;
 }
 
-const HIGHLIGHT_CACHE_MAX = 256;
-const highlightCache = new LRUCache<string, string>({ max: HIGHLIGHT_CACHE_MAX });
+const HIGHLIGHT_CACHE_MAX = 1024;
+const HIGHLIGHT_CACHE_MAX_SIZE = 8 * 1024 * 1024;
+const HIGHLIGHT_CACHE_MAX_ENTRY_SIZE = 256 * 1024;
+const highlightCache = new LRUCache<string, readonly string[]>({
+	max: HIGHLIGHT_CACHE_MAX,
+	maxSize: HIGHLIGHT_CACHE_MAX_SIZE,
+	maxEntrySize: HIGHLIGHT_CACHE_MAX_ENTRY_SIZE,
+	sizeCalculation: (lines, key) => key.length + lines.reduce((size, line) => size + line.length, 0),
+});
 let highlightCacheTheme: Theme | undefined;
 
-function highlightCached(code: string, validLang: string | undefined, highlightTheme: Theme): string | null {
-	if (validLang === undefined) return code;
+function highlightCached(code: string, validLang: string | undefined, highlightTheme: Theme): readonly string[] | null {
+	if (validLang === undefined) return code.split("\n");
 	if (highlightCacheTheme !== highlightTheme) {
 		highlightCache.clear();
 		highlightCacheTheme = highlightTheme;
 	}
-	const key = `${validLang ?? ""}\x00${code}`;
+	const key = `${validLang}\x00${code}`;
 	const hit = highlightCache.get(key);
-	if (hit !== undefined) {
-		return hit;
-	}
+	if (hit !== undefined) return hit;
 	let highlighted: string;
 	try {
 		highlighted = nativeHighlightCode(code, validLang, getHighlightColors(highlightTheme));
 	} catch {
 		return null;
 	}
-	highlightCache.set(key, highlighted);
-	return highlighted;
+	const lines = highlighted.split("\n");
+	highlightCache.set(key, lines);
+	return lines;
 }
 
 export function highlightCode(code: string, lang?: string, highlightTheme: Theme = theme): string[] {
 	const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 	const highlighted = highlightCached(code, validLang, highlightTheme);
 
-	return (highlighted ?? code).split("\n");
+	// Callers may annotate line numbers or append hints, so never expose the
+	// shared cache array to mutation.
+	return highlighted === null ? code.split("\n") : highlighted.slice();
 }
 
 export function getSymbolTheme(): SymbolTheme {
@@ -169,7 +177,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 			const highlighted = highlightCached(code, validLang, theme);
-			if (highlighted !== null) return highlighted.split("\n");
+			if (highlighted !== null) return highlighted.slice();
 			return code.split("\n").map(line => theme.fg("mdCodeBlock", line));
 		},
 		createHighlightStream: (lang?: string) => {

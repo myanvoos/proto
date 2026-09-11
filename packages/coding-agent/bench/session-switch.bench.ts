@@ -112,7 +112,7 @@ if (!fixture) {
 // --- selector open: listing scan (warm module cache; cold = first-run of a fresh process)
 if (listDir) {
 	const listSamples: number[] = [];
-	for (let i = 0; i < 5; i++) await timeAsync(listSamples, () => SessionManager.list(listDir, undefined));
+	for (let i = 0; i < 5; i++) await timeAsync(listSamples, () => SessionManager.list(process.cwd(), listDir));
 	row("list", stats(listSamples));
 }
 
@@ -161,6 +161,36 @@ for (let i = 0; i < 10; i++) {
 }
 row("rebuild", stats(rebuildSamples));
 row("render", stats(renderSamples));
+
+// --- steady-state frame cost: retain the same component tree and render repeatedly
+const warmRenderSamples: number[] = [];
+builder.container.render(width); // prime the first post-rebuild frame
+for (let i = 0; i < 30; i++) {
+	const start = performance.now();
+	const lines = builder.container.render(width);
+	warmRenderSamples.push(performance.now() - start);
+	if (lines.length === 0) throw new Error("warm transcript render produced no lines");
+}
+row("warm-render", stats(warmRenderSamples));
+const warmFrames = `warm-render.frames=${warmRenderSamples.map(sample => sample.toFixed(3)).join(",")}`;
+rows.push(warmFrames);
+console.log(warmFrames);
+
+// --- dirty path: invalidate one existing child, then render the retained tree
+const dirtyChild = builder.container.children.find(child => child.invalidate !== undefined);
+if (!dirtyChild) throw new Error("transcript has no invalidatable child");
+const dirtyRenderSamples: number[] = [];
+for (let i = 0; i < 10; i++) {
+	dirtyChild.invalidate?.();
+	const start = performance.now();
+	const lines = builder.container.render(width);
+	dirtyRenderSamples.push(performance.now() - start);
+	if (lines.length === 0) throw new Error("dirty transcript render produced no lines");
+}
+row("dirty-render", stats(dirtyRenderSamples));
+const dirtyFrames = `dirty-render.frames=${dirtyRenderSamples.map(sample => sample.toFixed(3)).join(",")}`;
+rows.push(dirtyFrames);
+console.log(dirtyFrames);
 
 await manager.close?.();
 if (tempDir) await fs.rm(tempDir, { recursive: true, force: true });

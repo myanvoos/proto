@@ -34,6 +34,11 @@ export class BracketedPasteHandler {
 		this.#byteLimit = options.byteLimit ?? DEFAULT_BYTE_LIMIT;
 	}
 
+	clear(): void {
+		this.#buffer = "";
+		this.#active = false;
+	}
+
 	process(data: string): PasteResult {
 		if (data.includes(PASTE_START)) {
 			this.#active = true;

@@ -18,10 +18,21 @@ export class DetachedSessionHolder {
 		return path.resolve(file);
 	}
 
+	async #disposeEntry(entry: DetachedEntry): Promise<void> {
+		try {
+			await entry.session.abort({ goalReason: "internal" });
+		} catch {}
+		try {
+			await entry.session.dispose({ reason: postmortem.Reason.MANUAL });
+		} catch {}
+	}
+
 	park(file: string | null | undefined, session: AgentSession, manager: SessionManager): void {
 		if (!file?.endsWith(".jsonl")) return;
 		const key = this.#key(file);
+		const previous = this.#live.get(key);
 		this.#live.set(key, { session, manager, lastActivity: Date.now() });
+		if (previous && previous.session !== session) void this.#disposeEntry(previous);
 	}
 
 	take(file: string | null | undefined): DetachedEntry | undefined {
@@ -44,21 +55,27 @@ export class DetachedSessionHolder {
 	}
 
 	delete(file: string | null | undefined): void {
-		if (!file?.endsWith(".jsonl")) return;
-		this.#live.delete(this.#key(file));
+		const entry = this.take(file);
+		if (entry) void this.#disposeEntry(entry);
 	}
 
 	async stopAndRemove(file: string | null | undefined): Promise<boolean> {
 		const entry = this.take(file);
 		if (!entry) return false;
-		try {
-			await entry.session.abort({ goalReason: "internal" });
-		} catch {}
+		await this.#disposeEntry(entry);
 		return true;
 	}
 
 	clear(): void {
+		const entries = [...this.#live.values()];
 		this.#live.clear();
+		for (const entry of entries) void this.#disposeEntry(entry);
+	}
+
+	async disposeAll(): Promise<void> {
+		const entries = [...this.#live.values()];
+		this.#live.clear();
+		await Promise.all(entries.map(entry => this.#disposeEntry(entry)));
 	}
 
 	size(): number {
@@ -75,18 +92,7 @@ export class DetachedSessionHolder {
 			evicted.push(key);
 		}
 
-		await Promise.all(
-			toEvict.map(async ([, entry]) => {
-				try {
-					await entry.session.abort({ goalReason: "internal" });
-				} catch {}
-				// Fully tear down the evicted session so its eval kernels,
-				// browser tabs, and MCP connections do not outlive the holder entry.
-				try {
-					await entry.session.dispose({ reason: postmortem.Reason.MANUAL });
-				} catch {}
-			}),
-		);
+		await Promise.all(toEvict.map(([, entry]) => this.#disposeEntry(entry)));
 		return evicted;
 	}
 

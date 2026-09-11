@@ -13,7 +13,8 @@ import {
 	titleUpdateFromSlot,
 } from "./session-title-slot";
 
-const STREAM_LOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
+// Native full-text JSONL parsing is faster below this size; retain streaming for very large resumes.
+const STREAM_LOAD_THRESHOLD_BYTES = 32 * 1024 * 1024;
 const STREAM_YIELD_BYTES = 1 * 1024 * 1024;
 const STREAM_YIELD_ENTRIES = 8_192;
 
@@ -335,17 +336,30 @@ async function resolvePersistedBlobRefs(value: unknown, blobStore: BlobStore, ke
 	);
 }
 
-function containsBlobRef(value: unknown): boolean {
-	if (typeof value === "string") return isBlobRef(value);
+function containsBlobRef(value: unknown, key?: string): boolean {
+	if (typeof value !== "object" || value === null) return false;
 	if (Array.isArray(value)) {
 		for (const item of value) {
-			if (containsBlobRef(item)) return true;
+			if (containsBlobRef(item, key)) return true;
 		}
 		return false;
 	}
-	if (typeof value !== "object" || value === null) return false;
-	for (const key in value) {
-		if (containsBlobRef((value as Record<string, unknown>)[key])) return true;
+
+	if (shouldResolveImagePayload(value, key) && isBlobRef(value.data)) return true;
+	if (
+		"type" in value &&
+		value.type === "image_generation_call" &&
+		"result" in value &&
+		typeof value.result === "string" &&
+		isBlobRef(value.result)
+	) {
+		return true;
+	}
+	if (hasImageUrl(value) && isBlobRef(value.image_url)) return true;
+
+	for (const childKey in value) {
+		const child = (value as Record<string, unknown>)[childKey];
+		if (typeof child === "object" && child !== null && containsBlobRef(child, childKey)) return true;
 	}
 	return false;
 }

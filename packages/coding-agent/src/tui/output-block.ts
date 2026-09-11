@@ -8,6 +8,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { getSixelLineMask } from "../utils/sixel";
 import type { State } from "./types";
@@ -45,6 +46,27 @@ type BlockRow =
 	| { kind: "sixel"; raw: string };
 
 const SEPARATOR_CELLS = 12;
+const OUTPUT_BLOCK_CACHE_MAX = 512;
+const OUTPUT_BLOCK_CACHE_MAX_SIZE = 4 * 1024 * 1024;
+const OUTPUT_BLOCK_CACHE_MAX_ENTRY_SIZE = 128 * 1024;
+
+const outputBlockCache = new LRUCache<string, string[]>({
+	max: OUTPUT_BLOCK_CACHE_MAX,
+	maxSize: OUTPUT_BLOCK_CACHE_MAX_SIZE,
+	maxEntrySize: OUTPUT_BLOCK_CACHE_MAX_ENTRY_SIZE,
+	sizeCalculation: (lines, key) => key.length + lines.reduce((size, line) => size + line.length, 0),
+});
+const outputBlockThemeIds = new WeakMap<object, number>();
+let nextOutputBlockThemeId = 1;
+
+function outputBlockThemeId(theme: Theme): number {
+	const object = theme as object;
+	const existing = outputBlockThemeIds.get(object);
+	if (existing !== undefined) return existing;
+	const id = nextOutputBlockThemeId++;
+	outputBlockThemeIds.set(object, id);
+	return id;
+}
 
 function normalizeContentPaddingLeft(value: number | undefined): number {
 	if (value === undefined || !Number.isFinite(value)) return 1;
@@ -118,7 +140,14 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 		} else if (section.separator && sectionIndex > 0) {
 			rows.push({ kind: "rule" });
 		}
-		const allLines = section.lines.flatMap(l => l.split("\n"));
+		const allLines: string[] = [];
+		for (const rawLine of section.lines) {
+			if (!rawLine.includes("\n")) {
+				allLines.push(rawLine);
+				continue;
+			}
+			for (const line of rawLine.split("\n")) allLines.push(line);
+		}
 		const sixelLineMask = TERMINAL.imageProtocol === ImageProtocol.Sixel ? getSixelLineMask(allLines) : undefined;
 		for (let lineIndex = 0; lineIndex < allLines.length; lineIndex++) {
 			const line = allLines[lineIndex]!;
@@ -177,7 +206,14 @@ export class CachedOutputBlock {
 	render(options: OutputBlockOptions, theme: Theme): readonly string[] {
 		const key = this.#buildKey(options);
 		if (this.#cache?.key === key) return this.#cache.lines;
+		const sharedKey = `${outputBlockThemeId(theme)}:${TERMINAL.imageProtocol}:${key.toString(16)}`;
+		const shared = outputBlockCache.get(sharedKey);
+		if (shared !== undefined) {
+			this.#cache = { key, lines: shared };
+			return shared;
+		}
 		const lines = renderOutputBlock(options, theme);
+		outputBlockCache.set(sharedKey, lines);
 		this.#cache = { key, lines };
 		return lines;
 	}
@@ -194,6 +230,7 @@ export class CachedOutputBlock {
 		h.optional(options.headerMeta);
 		h.optional(options.state);
 		h.optional(options.borderColor);
+		h.str(TERMINAL.imageProtocol ?? "");
 		if (options.sections) {
 			for (const s of options.sections) {
 				h.optional(s.label);

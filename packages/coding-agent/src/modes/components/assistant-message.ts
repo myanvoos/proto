@@ -468,7 +468,7 @@ export class AssistantMessageComponent extends Container {
 		if (blocks === undefined) return;
 		this.#clearContent();
 		const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-		for (const text of blocks) this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(), mdOptions, 2, false));
+		for (const text of blocks) this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(), mdOptions, 2));
 		this.#renderToolImages();
 		super.invalidate();
 		this.#onTranscriptBlockChange?.();
@@ -820,7 +820,7 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
 				const trimmed = content.text.trim();
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(), mdOptions, 2, false);
+				const md = new Markdown(trimmed, 2, 0, getMarkdownTheme(), mdOptions, 2);
 				this.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 				hasRenderedContent = true;
@@ -844,7 +844,7 @@ export class AssistantMessageComponent extends Container {
 					const label = new Text(theme.fg("muted", "Thinking"), 2, 0);
 					this.addChild(label);
 				}
-				const md = new Markdown(thinkingText, 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2, false);
+				const md = new Markdown(thinkingText, 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2);
 				md.transientRenderCache = this.#lastUpdateTransient;
 				this.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });

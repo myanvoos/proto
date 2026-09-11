@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 
-import { detachedSessionHolder } from "./detached-session-holder";
+import { DetachedSessionHolder, detachedSessionHolder } from "./detached-session-holder";
 
 function fakeSession(calls: string[]) {
 	return {
@@ -40,5 +40,32 @@ describe("DetachedSessionHolder eviction", () => {
 		expect(cCalls).toEqual([]);
 		expect(detachedSessionHolder.has(c)).toBe(true);
 		detachedSessionHolder.delete(c);
+	});
+
+	test("disposeAll aborts and disposes every parked session", async () => {
+		const holder = new DetachedSessionHolder();
+		const run = crypto.randomUUID();
+		const aCalls: string[] = [];
+		const bCalls: string[] = [];
+		holder.park(`${run}-a.jsonl`, fakeSession(aCalls), fakeManager());
+		holder.park(`${run}-b.jsonl`, fakeSession(bCalls), fakeManager());
+
+		await holder.disposeAll();
+
+		expect(aCalls).toEqual(["abort", "dispose"]);
+		expect(bCalls).toEqual(["abort", "dispose"]);
+		expect(holder.size()).toBe(0);
+	});
+
+	test("stopAndRemove disposes a parked session instead of only aborting it", async () => {
+		const holder = new DetachedSessionHolder();
+		const file = `${crypto.randomUUID()}.jsonl`;
+		const calls: string[] = [];
+		holder.park(file, fakeSession(calls), fakeManager());
+
+		expect(await holder.stopAndRemove(file)).toBe(true);
+
+		expect(calls).toEqual(["abort", "dispose"]);
+		expect(holder.size()).toBe(0);
 	});
 });

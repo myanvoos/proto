@@ -74,6 +74,7 @@ import guidedGoalInterviewPrompt from "../prompts/goals/guided-goal-interview.md
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AgentSession, AgentSessionEvent, DroppedPrompt } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
+import { detachedSessionHolder } from "../session/detached-session-holder";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
@@ -2678,6 +2679,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		} finally {
 			clearTimeout(stillClosingTimer);
+			await detachedSessionHolder.disposeAll();
 		}
 
 		await this.ui.terminal.drainInput(1000, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
