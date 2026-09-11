@@ -7,6 +7,7 @@ import * as git from "./git";
 import { readCappedText } from "./git";
 
 const JJ_TRUNCATED_MARKER = "\n[jj subprocess output truncated after 8 MiB]\n";
+const JJ_TRUNCATED_MARKER_LINE = JJ_TRUNCATED_MARKER.trim();
 
 interface JjCommandResult {
 	exitCode: number;
@@ -128,9 +129,13 @@ async function runOptionalText(
 	}
 }
 
+function stripTruncationMarker(lines: readonly string[]): readonly string[] {
+	const markerIndex = lines.findIndex(line => line.trim() === JJ_TRUNCATED_MARKER_LINE);
+	return markerIndex === -1 ? lines : lines.slice(0, markerIndex);
+}
+
 function splitLines(text: string): string[] {
-	return text
-		.split("\n")
+	return stripTruncationMarker(text.split("\n"))
 		.map(line => line.trim())
 		.filter(Boolean);
 }
@@ -144,7 +149,7 @@ function buildDiffArgs(options: DiffOptions): string[] {
 
 function parseWorkingCopyLabel(raw: string): string | null {
 	let changeId: string | null = null;
-	for (const line of raw.split("\n")) {
+	for (const line of stripTruncationMarker(raw.split("\n"))) {
 		const sep = line.indexOf("|");
 		const change = (sep === -1 ? line : line.slice(0, sep)).trim();
 		const bookmarks = sep === -1 ? "" : line.slice(sep + 1).trim();
@@ -157,7 +162,7 @@ function parseWorkingCopyLabel(raw: string): string | null {
 function parseStatusSummary(raw: string): git.GitStatusSummary {
 	let unstaged = 0;
 	let untracked = 0;
-	for (const line of raw.split("\n")) {
+	for (const line of stripTruncationMarker(raw.split("\n"))) {
 		const type = line.trim()[0];
 		if (!type) continue;
 		if (type === "A") untracked++;

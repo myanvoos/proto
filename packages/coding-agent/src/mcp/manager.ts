@@ -815,7 +815,11 @@ export class MCPManager {
 
 		const attempt = this.#doReconnect(name, options?.authChallenge);
 		this.#pendingReconnections.set(name, attempt);
-		return attempt.finally(() => this.#pendingReconnections.delete(name));
+		return attempt.finally(() => {
+			if (this.#pendingReconnections.get(name) === attempt) {
+				this.#pendingReconnections.delete(name);
+			}
+		});
 	}
 
 	#tripReconnectBreaker(name: string): boolean {

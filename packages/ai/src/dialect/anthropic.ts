@@ -20,6 +20,7 @@ import type {
 
 const MAX_PARTIAL_TAG_LENGTH = 256;
 const MAX_PARAMETER_VALUE_LENGTH = 1_000_000;
+const TAG_WHITESPACE = /\s/;
 
 const WRAPPER_TAGS: Readonly<Record<string, true>> = { function_calls: true, tool_calls: true };
 const THINKING_TAGS: Record<string, true> = { thinking: true, think: true, scratchpad: true };
@@ -195,7 +196,12 @@ export class AnthropicInbandScanner implements InbandScanner {
 			for (let index = 1; index < this.#buffer.length; index++) {
 				if (this.#buffer[index] !== "<") continue;
 				while (index + 1 < this.#buffer.length && this.#buffer[index + 1] === "<") index++;
-				if (couldBeTagPrefix(this.#buffer.slice(index), relevantPrefixes)) {
+				if (
+					couldBeTagPrefix(this.#buffer, relevantPrefixes, index) ||
+					(index === this.#buffer.length - 1 &&
+						this.#buffer.length <= MAX_PARTIAL_TAG_LENGTH &&
+						isPureLessRun(this.#buffer, index))
+				) {
 					textEnd = index;
 					break;
 				}
@@ -553,12 +559,90 @@ function closePrefixes(localName: string, prefix: string): readonly string[] {
 	return [`</${prefix}:${localName}`, unprefixed, antml];
 }
 
-function couldBeTagPrefix(buffer: string, prefixes: readonly string[]): boolean {
-	if (!buffer.startsWith("<")) return false;
+function couldBeTagPrefix(buffer: string, prefixes: readonly string[], start = 0): boolean {
+	if (buffer[start] !== "<") return false;
+
+	let bufferIndex = start + 1;
+	while (bufferIndex < buffer.length && TAG_WHITESPACE.test(buffer[bufferIndex]!)) bufferIndex++;
+	const closing = buffer[bufferIndex] === "/";
+	if (closing) {
+		bufferIndex++;
+		while (bufferIndex < buffer.length && TAG_WHITESPACE.test(buffer[bufferIndex]!)) bufferIndex++;
+	}
+	if (!isTagNameStart(buffer[bufferIndex])) {
+		if (bufferIndex !== buffer.length) return false;
+		for (let index = start - 1; index >= 0; index--) {
+			if (buffer[index] !== "<") return true;
+		}
+		return start === 0;
+	}
+
 	for (const prefix of prefixes) {
-		if (prefix.startsWith(buffer) || buffer.startsWith(prefix)) return true;
+		const prefixClosing = prefix[1] === "/";
+		if (prefixClosing !== closing) continue;
+		let prefixIndex = prefixClosing ? 2 : 1;
+		let candidateIndex = bufferIndex;
+		while (prefixIndex < prefix.length) {
+			if (candidateIndex >= buffer.length) return true;
+			if (lowerAsciiCode(buffer.charCodeAt(candidateIndex)) !== lowerAsciiCode(prefix.charCodeAt(prefixIndex))) {
+				break;
+			}
+			candidateIndex++;
+			prefixIndex++;
+		}
+		if (prefixIndex === prefix.length) return true;
+	}
+	return couldBeNamespacedTagPrefix(buffer, bufferIndex, prefixes);
+}
+
+function couldBeNamespacedTagPrefix(buffer: string, tagNameStart: number, prefixes: readonly string[]): boolean {
+	let colon = tagNameStart;
+	while (colon < buffer.length && isTagNameContinue(buffer[colon]!)) colon++;
+	if (buffer[colon] !== ":") return false;
+
+	const localNameStart = colon + 1;
+	if (localNameStart >= buffer.length) return true;
+	if (!isTagNameStart(buffer[localNameStart])) return false;
+	for (const prefix of prefixes) {
+		const nameStart = prefix[1] === "/" ? 2 : 1;
+		const separator = prefix.indexOf(":", nameStart);
+		const localName = prefix.slice(separator === -1 ? nameStart : separator + 1);
+		let candidateIndex = localNameStart;
+		let localIndex = 0;
+		while (localIndex < localName.length) {
+			if (candidateIndex >= buffer.length) return true;
+			if (lowerAsciiCode(buffer.charCodeAt(candidateIndex)) !== lowerAsciiCode(localName.charCodeAt(localIndex))) {
+				break;
+			}
+			candidateIndex++;
+			localIndex++;
+		}
+		if (localIndex === localName.length) return true;
 	}
 	return false;
+}
+
+function isPureLessRun(buffer: string, end: number): boolean {
+	for (let index = 0; index < end; index++) {
+		if (buffer[index] !== "<") return false;
+	}
+	return true;
+}
+
+function isTagNameStart(char: string | undefined): boolean {
+	if (char === undefined) return false;
+	const code = char.charCodeAt(0);
+	return (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
+}
+
+function isTagNameContinue(char: string | undefined): boolean {
+	if (char === undefined) return false;
+	const code = char.charCodeAt(0);
+	return isTagNameStart(char) || (code >= 48 && code <= 57) || char === "." || char === "-";
+}
+
+function lowerAsciiCode(code: number): number {
+	return code >= 65 && code <= 90 ? code + 32 : code;
 }
 
 function renderToolCall(call: ToolCall, options: DialectRenderOptions = {}): string {

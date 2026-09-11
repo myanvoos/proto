@@ -80,11 +80,44 @@ function normalizeModelPerfSample(modelKey: string, sample: ModelPerfSample): Mo
 export const SCHEMA_VERSION = 6;
 const SQLITE_NOW_EPOCH = "CAST(strftime('%s','now') AS INTEGER)";
 
-const instances = new Map<string, AgentStorage>();
+type AgentStorageCleanup = {
+	db: Database;
+	closed: boolean;
+};
+
+type AgentStorageEntry = {
+	ref: WeakRef<AgentStorage>;
+	token: object;
+	cleanup: AgentStorageCleanup;
+};
+
+type AgentStorageFinalization = {
+	dbPath: string;
+	token: object;
+	cleanup: AgentStorageCleanup;
+};
+
+function closeDatabase(cleanup: AgentStorageCleanup): void {
+	if (cleanup.closed) return;
+	cleanup.closed = true;
+	try {
+		cleanup.db.close();
+	} catch {
+		// Finalization must not surface errors from a handle that may already be closed.
+	}
+}
+
+const instances = new Map<string, AgentStorageEntry>();
+const instanceFinalizer = new FinalizationRegistry<AgentStorageFinalization>(entry => {
+	closeDatabase(entry.cleanup);
+	const current = instances.get(entry.dbPath);
+	if (current?.token === entry.token) instances.delete(entry.dbPath);
+});
 let cancelExitCleanup: (() => void) | undefined;
 
 export class AgentStorage {
 	#db: Database;
+	#cleanup: AgentStorageCleanup;
 	#authStore: AuthCredentialStore;
 
 	#listSettingsStmt: Statement;
@@ -112,6 +145,7 @@ export class AgentStorage {
 					`Ensure the directory is writable and not corrupted.`,
 			);
 		}
+		this.#cleanup = { db: this.#db, closed: false };
 
 		this.#initializeSchema();
 		this.#hardenPermissions(dbPath);
@@ -302,7 +336,13 @@ FROM model_usage_legacy
 
 	static async open(dbPath: string = getAgentDbPath()): Promise<AgentStorage> {
 		const existing = instances.get(dbPath);
-		if (existing) return existing;
+		const existingStorage = existing?.ref.deref();
+		if (existingStorage) return existingStorage;
+		if (existing) {
+			instances.delete(dbPath);
+			instanceFinalizer.unregister(existing.token);
+			closeDatabase(existing.cleanup);
+		}
 
 		const maxRetries = 4;
 		const baseDelayMs = 100;
@@ -311,8 +351,10 @@ FROM model_usage_legacy
 		for (let attempt = 0; attempt < maxRetries; attempt++) {
 			try {
 				const storage = new AgentStorage(dbPath);
+				const token = {};
 				cancelExitCleanup ??= postmortem.register("agent-storage", () => AgentStorage.close());
-				instances.set(dbPath, storage);
+				instances.set(dbPath, { ref: new WeakRef(storage), token, cleanup: storage.#cleanup });
+				instanceFinalizer.register(storage, { dbPath, token, cleanup: storage.#cleanup }, token);
 				return storage;
 			} catch (err) {
 				if (!isSqliteBusyError(err)) {
@@ -333,13 +375,20 @@ FROM model_usage_legacy
 
 	/** Flushes deferred writes, closes every process-wide database, and permits reopening them. */
 	static close(): void {
-		for (const storage of instances.values()) storage.#close();
+		for (const entry of instances.values()) {
+			const storage = entry.ref.deref();
+			if (storage) storage.#close();
+			else closeDatabase(entry.cleanup);
+			instanceFinalizer.unregister(entry.token);
+		}
 		instances.clear();
 		cancelExitCleanup?.();
 		cancelExitCleanup = undefined;
 	}
 
 	#close(): void {
+		if (this.#cleanup.closed) return;
+		this.#cleanup.closed = true;
 		void this.#perfDrain.flush();
 		checkpointWal(this.#db);
 		this.#listSettingsStmt.finalize();

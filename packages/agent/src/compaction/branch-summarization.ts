@@ -200,7 +200,7 @@ export function prepareBranchEntries(
 		if (tokenBudget > 0 && totalTokens + tokens > tokenBudget) {
 			if (entry.type === "compaction" || entry.type === "branch_summary") {
 				if (totalTokens < tokenBudget * 0.9) {
-					messages.unshift(message);
+					messages.push(message);
 					totalTokens += tokens;
 				}
 			}
@@ -208,9 +208,11 @@ export function prepareBranchEntries(
 			break;
 		}
 
-		messages.unshift(message);
+		messages.push(message);
 		totalTokens += tokens;
 	}
+
+	messages.reverse();
 
 	return { messages, fileOps, totalTokens };
 }

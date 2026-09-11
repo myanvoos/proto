@@ -186,15 +186,16 @@ export async function resolveDefaultRepoMemoized(cwd: string, signal?: AbortSign
 				"-q",
 				".nameWithOwner",
 			]);
-			const value = requireNonEmpty(resolved, "repo");
-			DEFAULT_REPO_RESOLVED.set(key, value);
-			return value;
+			return requireNonEmpty(resolved, "repo");
 		})();
 
 		DEFAULT_REPO_INFLIGHT.set(key, next);
 		void next.then(
-			() => {
-				if (DEFAULT_REPO_INFLIGHT.peek(key) === next) DEFAULT_REPO_INFLIGHT.delete(key);
+			value => {
+				if (DEFAULT_REPO_INFLIGHT.peek(key) === next) {
+					DEFAULT_REPO_RESOLVED.set(key, value);
+					DEFAULT_REPO_INFLIGHT.delete(key);
+				}
 			},
 			() => {
 				if (DEFAULT_REPO_INFLIGHT.peek(key) === next) DEFAULT_REPO_INFLIGHT.delete(key);

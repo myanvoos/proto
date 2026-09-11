@@ -52,8 +52,15 @@ export async function recordMutationEvents(
 	events: readonly EvalStatusEvent[] | undefined,
 ): Promise<void> {
 	for (const event of events ?? []) {
-		if ((event.op === "write" || event.op === "delete") && typeof event.path === "string") {
-			await ledger.recordWrite(path.resolve(cwd, event.path));
+		if (typeof event.path !== "string") continue;
+		const absPath = path.resolve(cwd, event.path);
+		if (event.op === "revert") {
+			// A revert tombstone replaces the earlier write/delete event in the
+			// visible status stream. Re-stat the restored file so the next
+			// Python cell does not compare against the stale pre-cell stamp.
+			await ledger.recordRead(absPath);
+		} else if (event.op === "write" || event.op === "delete") {
+			await ledger.recordWrite(absPath);
 		}
 	}
 }
