@@ -13,11 +13,13 @@ import {
 	checkpointWal,
 	getAgentDbPath,
 	getDbBusyTimeoutMs,
+	getSessionsDir,
 	isRecord,
 	logger,
 	postmortem,
 } from "@oh-my-pi/pi-utils";
 import type { RawSettings as Settings } from "../config/settings";
+import { readSessionLiveState } from "./session-liveness";
 
 type SettingsRow = {
 	key: string;
@@ -80,12 +82,51 @@ function normalizeModelPerfSample(modelKey: string, sample: ModelPerfSample): Mo
 export const SCHEMA_VERSION = 6;
 const SQLITE_NOW_EPOCH = "CAST(strftime('%s','now') AS INTEGER)";
 
-const instances = new Map<string, AgentStorage>();
+const AGENT_STORAGE_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+const AGENT_STORAGE_SWEEP_INTERVAL_MS = 60 * 1000;
+const SESSION_LIVE_SUFFIX = ".live";
+
+interface StorageInstance {
+	storage: AgentStorage;
+	lastUsedAt: number;
+}
+
+const instances = new Map<string, StorageInstance>();
+let lastInstanceSweepAt = 0;
 let cancelExitCleanup: (() => void) | undefined;
+
+function hasActiveSession(dbPath: string, now: number): boolean {
+	const sessionsRoot = getSessionsDir(path.dirname(path.resolve(dbPath)));
+	const directories = [sessionsRoot];
+
+	while (directories.length > 0) {
+		const current = directories.pop()!;
+		let entries: fs.Dirent[];
+		try {
+			entries = fs.readdirSync(current, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+
+		for (const entry of entries) {
+			const entryPath = path.join(current, entry.name);
+			if (entry.isDirectory()) {
+				directories.push(entryPath);
+				continue;
+			}
+			if (!entry.name.endsWith(SESSION_LIVE_SUFFIX)) continue;
+			const sessionFile = entryPath.slice(0, -SESSION_LIVE_SUFFIX.length);
+			if (readSessionLiveState(sessionFile, now).fresh) return true;
+		}
+	}
+
+	return false;
+}
 
 export class AgentStorage {
 	#db: Database;
 	#authStore: AuthCredentialStore;
+	#dbPath: string;
 
 	#listSettingsStmt: Statement;
 	#upsertModelUsageStmt: Statement;
@@ -99,6 +140,7 @@ export class AgentStorage {
 	#perfDrain = new AsyncDrain<ModelPerfInsert>(MODEL_PERF_FLUSH_DELAY_MS);
 
 	private constructor(dbPath: string) {
+		this.#dbPath = dbPath;
 		this.#ensureDir(dbPath);
 		try {
 			this.#db = new Database(dbPath);
@@ -301,8 +343,14 @@ FROM model_usage_legacy
 	}
 
 	static async open(dbPath: string = getAgentDbPath()): Promise<AgentStorage> {
+		const now = Date.now();
+		AgentStorage.#sweepIdle(now);
+
 		const existing = instances.get(dbPath);
-		if (existing) return existing;
+		if (existing) {
+			existing.lastUsedAt = now;
+			return existing.storage;
+		}
 
 		const maxRetries = 4;
 		const baseDelayMs = 100;
@@ -311,8 +359,9 @@ FROM model_usage_legacy
 		for (let attempt = 0; attempt < maxRetries; attempt++) {
 			try {
 				const storage = new AgentStorage(dbPath);
+				const lastUsedAt = Date.now();
 				cancelExitCleanup ??= postmortem.register("agent-storage", () => AgentStorage.close());
-				instances.set(dbPath, storage);
+				instances.set(dbPath, { storage, lastUsedAt });
 				return storage;
 			} catch (err) {
 				if (!isSqliteBusyError(err)) {
@@ -333,10 +382,24 @@ FROM model_usage_legacy
 
 	/** Flushes deferred writes, closes every process-wide database, and permits reopening them. */
 	static close(): void {
-		for (const storage of instances.values()) storage.#close();
+		for (const { storage } of instances.values()) storage.#close();
 		instances.clear();
+		lastInstanceSweepAt = 0;
 		cancelExitCleanup?.();
 		cancelExitCleanup = undefined;
+	}
+
+	static #sweepIdle(now: number): void {
+		if (now >= lastInstanceSweepAt && now - lastInstanceSweepAt < AGENT_STORAGE_SWEEP_INTERVAL_MS) return;
+		lastInstanceSweepAt = now;
+
+		for (const [dbPath, instance] of instances) {
+			if (now - instance.lastUsedAt <= AGENT_STORAGE_IDLE_TIMEOUT_MS) continue;
+			if (hasActiveSession(dbPath, now)) continue;
+			if (instances.get(dbPath) !== instance) continue;
+			instances.delete(dbPath);
+			instance.storage.#close();
+		}
 	}
 
 	#close(): void {
@@ -353,7 +416,15 @@ FROM model_usage_legacy
 		this.#authStore.close();
 	}
 
+	#touch(): void {
+		const now = Date.now();
+		const instance = instances.get(this.#dbPath);
+		if (instance?.storage === this) instance.lastUsedAt = now;
+		AgentStorage.#sweepIdle(now);
+	}
+
 	getSettings(): Settings | null {
+		this.#touch();
 		const rows = (this.#listSettingsStmt.all() as SettingsRow[]) ?? [];
 		if (rows.length === 0) return null;
 		const settings: Record<string, unknown> = {};
@@ -371,6 +442,7 @@ FROM model_usage_legacy
 	}
 
 	recordModelUsage(modelKey: string): void {
+		this.#touch();
 		try {
 			this.#upsertModelUsageStmt.run(modelKey);
 			this.#modelUsageCache = null;
@@ -380,6 +452,7 @@ FROM model_usage_legacy
 	}
 
 	getModelUsageOrder(): string[] {
+		this.#touch();
 		if (this.#modelUsageCache) {
 			return this.#modelUsageCache;
 		}
@@ -394,6 +467,7 @@ FROM model_usage_legacy
 	}
 
 	recordCommandUsage(name: string): void {
+		this.#touch();
 		try {
 			this.#upsertCommandUsageStmt.run(name);
 		} catch (error) {
@@ -402,6 +476,7 @@ FROM model_usage_legacy
 	}
 
 	listCommandUsage(): Record<string, number> {
+		this.#touch();
 		try {
 			const rows = this.#listCommandUsageStmt.all() as Array<{ name: string; count: number }>;
 			const counts: Record<string, number> = {};
@@ -414,6 +489,7 @@ FROM model_usage_legacy
 	}
 
 	recordModelPerf(modelKey: string, sample: ModelPerfSample): Promise<void> {
+		this.#touch();
 		const row = normalizeModelPerfSample(modelKey, sample);
 		if (!row) return Promise.resolve();
 		return this.#perfDrain.push(row, rows => this.#flushModelPerf(rows));
@@ -434,6 +510,7 @@ FROM model_usage_legacy
 	}
 
 	getModelPerf(): Map<string, ModelPerfStats> {
+		this.#touch();
 		const stats = new Map<string, ModelPerfStats>();
 		try {
 			for (const row of this.#listModelPerfStmt.all() as ModelPerfRow[]) {
@@ -451,14 +528,17 @@ FROM model_usage_legacy
 	}
 
 	hasAuthCredentials(): boolean {
+		this.#touch();
 		return this.#authStore.listAuthCredentials().length > 0;
 	}
 
 	get authStore(): AuthCredentialStore {
+		this.#touch();
 		return this.#authStore;
 	}
 
 	listAuthCredentials(provider?: string, includeDisabled = false): StoredAuthCredential[] {
+		this.#touch();
 		const credentials = this.#authStore.listAuthCredentials(provider);
 		if (!includeDisabled) return credentials;
 
@@ -497,30 +577,37 @@ FROM model_usage_legacy
 	}
 
 	replaceAuthCredentialsForProvider(provider: string, credentials: AuthCredential[]): StoredAuthCredential[] {
+		this.#touch();
 		return this.#authStore.replaceAuthCredentialsForProvider(provider, credentials);
 	}
 
 	updateAuthCredential(id: number, credential: AuthCredential): void {
+		this.#touch();
 		this.#authStore.updateAuthCredential(id, credential);
 	}
 
 	deleteAuthCredential(id: number, disabledCause: string): void {
+		this.#touch();
 		this.#authStore.deleteAuthCredential(id, disabledCause);
 	}
 
 	deleteAuthCredentialsForProvider(provider: string, disabledCause: string): void {
+		this.#touch();
 		this.#authStore.deleteAuthCredentialsForProvider(provider, disabledCause);
 	}
 
 	getCache(key: string): string | null {
+		this.#touch();
 		return this.#authStore.getCache(key);
 	}
 
 	setCache(key: string, value: string, expiresAtSec: number): void {
+		this.#touch();
 		this.#authStore.setCache(key, value, expiresAtSec);
 	}
 
 	cleanExpiredCache(): void {
+		this.#touch();
 		this.#authStore.cleanExpiredCache();
 	}
 

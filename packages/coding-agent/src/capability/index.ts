@@ -3,7 +3,13 @@ import * as path from "node:path";
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
 
 import type { Settings } from "../config/settings";
-import { clearCache as clearFsCache, findRepoRoot, cacheStats as fsCacheStats, invalidate as invalidateFs } from "./fs";
+import {
+	type CacheStats,
+	clearCache as clearFsCache,
+	findRepoRoot,
+	cacheStats as fsCacheStats,
+	invalidate as invalidateFs,
+} from "./fs";
 import type {
 	Capability,
 	CapabilityInfo,
@@ -342,7 +348,7 @@ export function invalidate(filePath: string, cwd?: string): void {
 	invalidateFs(resolved);
 }
 
-export function cacheStats(): { content: number; dir: number } {
+export function cacheStats(): CacheStats {
 	return fsCacheStats();
 }
 

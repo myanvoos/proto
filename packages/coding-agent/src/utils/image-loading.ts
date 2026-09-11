@@ -10,7 +10,7 @@ import type {
 import { formatBytes, isRecord, logger, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { resolveReadPath } from "../tools/path-utils";
-import { formatDimensionNote, type ImageResizeOptions, resizeImage } from "./image-resize";
+import type { ImageResizeOptions } from "./image-resize";
 
 export const MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024;
 const SUPPORTED_INPUT_IMAGE_MIME_TYPES = SUPPORTED_IMAGE_MIME_TYPES;
@@ -24,6 +24,10 @@ const modelBoundaryImageCache = new LRUCache<string, NormalizedImagePayload | nu
 });
 const modelBoundaryImageNormalizations = new Map<string, Promise<NormalizedImagePayload | null>>();
 const UNDECODABLE_STB_IMAGE_OMISSION_TEXT = "[image omitted: WebP could not be decoded for this model]";
+
+function loadImageResize() {
+	return import("./image-resize");
+}
 
 function createUndecodableStbImageOmission(): TextContent {
 	return { type: "text", text: UNDECODABLE_STB_IMAGE_OMISSION_TEXT };
@@ -77,7 +81,8 @@ async function memoizedStbImageNormalization(
 
 	let pending = modelBoundaryImageNormalizations.get(key);
 	if (!pending) {
-		pending = resizeImage(image, { ...resize, excludeWebP: true })
+		pending = loadImageResize()
+			.then(({ resizeImage }) => resizeImage(image, { ...resize, excludeWebP: true }))
 			.then(resized => {
 				if (resized.mimeType === "image/webp" || hasWebPMagic(resized.data)) {
 					throw new Error("Image normalization retained WebP for an STB-backed model");
@@ -230,6 +235,7 @@ export async function normalizeModelContextImages(
 		? { ...options?.resize, excludeWebP: true }
 		: options?.resize;
 	const normalized: ImageContent[] = [];
+	const { resizeImage } = await loadImageResize();
 	for (const image of images) {
 		try {
 			if (excludesWebP && isWebPImage(image)) {
@@ -313,6 +319,7 @@ export async function loadImageInput(options: LoadImageInputOptions): Promise<Lo
 	let outputMimeType = mimeType;
 	let outputBytes = inputBuffer.byteLength;
 	let dimensionNote: string | undefined;
+	const { formatDimensionNote, resizeImage } = await loadImageResize();
 
 	const shouldReencodeWebP = options.excludeWebP === true && mimeType === "image/webp";
 	if (options.autoResize || shouldReencodeWebP) {
@@ -360,6 +367,7 @@ export async function loadImageAttachmentInput(
 	let outputMimeType = options.image.mimeType;
 	let outputBytes = inputBytes;
 	let dimensionNote: string | undefined;
+	const { formatDimensionNote, resizeImage } = await loadImageResize();
 
 	const shouldReencodeWebP = options.excludeWebP === true && options.image.mimeType === "image/webp";
 	if (options.autoResize || shouldReencodeWebP) {

@@ -4,10 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { type FetchImpl, getEnvApiKey, type ImageContent, type TextContent } from "@oh-my-pi/pi-ai";
-import { htmlToMarkdown } from "@oh-my-pi/pi-natives";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { $which, ptree, truncate } from "@oh-my-pi/pi-utils";
-import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "@oh-my-pi/pi-utils/ar";
+import type { ArchiveFormat } from "@oh-my-pi/pi-utils/ar";
 import type { Settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { type Theme, theme } from "../modes/theme/theme";
@@ -16,26 +15,51 @@ import type { AgentStorage } from "../session/agent-storage";
 import { DEFAULT_MAX_BYTES, truncateHead } from "../session/streaming-output";
 import { renderStatusLine, urlHyperlink } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
-import { webpExclusionForModel } from "../utils/image-loading";
-import { formatDimensionNote, resizeImage } from "../utils/image-resize";
-import { CONVERTIBLE_EXTENSIONS } from "../utils/markit";
-import { ensureTool } from "../utils/tools-manager";
-import { extractWithParallel, findParallelApiKey, getParallelExtractContent } from "../web/parallel";
 import type { RenderResult, SpecialHandler } from "../web/scrapers/types";
-import { finalizeOutput, loadPage, looksLikeHtml, MAX_BYTES, MAX_OUTPUT_CHARS } from "../web/scrapers/types";
-import { convertWithMarkit, fetchBinary } from "../web/scrapers/utils";
-import { findCredential } from "../web/search/providers/utils";
 import { applyListLimit } from "./list-limit";
-import { readEditableNotebookText } from "./notebook";
 import { formatStyledArtifactReference, type OutputMeta } from "./output-meta";
 import { isReadableUrlPath, type LineRange, parseLineRanges } from "./path-utils";
 import { formatBytes, formatExpandHint, getDomain, replaceTabs } from "./render-utils";
-import { listTables, looksLikeSqlite, openSqliteReadConnection, renderTableList } from "./sqlite-reader";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
 
 const FETCH_DEFAULT_MAX_LINES = 300;
+
+function loadScraperTypes() {
+	return import("../web/scrapers/types");
+}
+
+function loadScraperUtils() {
+	return import("../web/scrapers/utils");
+}
+
+async function fetchBinaryPayload(url: string, timeout: number, signal?: AbortSignal) {
+	const { fetchBinary } = await loadScraperUtils();
+	return fetchBinary(url, timeout, signal);
+}
+
+async function convertWithMarkitPayload(buffer: Uint8Array, extension: string, timeout: number, signal?: AbortSignal) {
+	const { convertWithMarkit } = await loadScraperUtils();
+	return convertWithMarkit(buffer, extension, timeout, signal);
+}
+
+function isPotentialMarkitExtension(extension: string): boolean {
+	return (
+		extension === ".pdf" ||
+		extension === ".docx" ||
+		extension === ".pptx" ||
+		extension === ".xlsx" ||
+		extension === ".epub"
+	);
+}
+
+async function isConvertible(mime: string, extensionHint: string): Promise<boolean> {
+	if (CONVERTIBLE_MIMES.has(mime)) return true;
+	if (!isPotentialMarkitExtension(extensionHint)) return false;
+	const { CONVERTIBLE_EXTENSIONS } = await import("../utils/markit");
+	return CONVERTIBLE_EXTENSIONS.has(extensionHint);
+}
 
 const CONVERTIBLE_MIMES = new Set([
 	"application/pdf",
@@ -230,13 +254,6 @@ function getExtensionHint(url: string, contentDisposition?: string): string {
 	return "";
 }
 
-function isConvertible(mime: string, extensionHint: string): boolean {
-	if (CONVERTIBLE_MIMES.has(mime)) return true;
-	if (mime === "application/octet-stream" && CONVERTIBLE_EXTENSIONS.has(extensionHint)) return true;
-	if (CONVERTIBLE_EXTENSIONS.has(extensionHint)) return true;
-	return false;
-}
-
 function resolveImageMimeType(mime: string, extensionHint: string): string | null {
 	if (mime.startsWith("image/")) return mime;
 	const shouldUseExtensionHint =
@@ -250,6 +267,7 @@ function isInlineImageMimeTypeSupported(mimeType: string): boolean {
 }
 
 async function tryMdSuffix(url: string, timeout: number, signal?: AbortSignal): Promise<string | null> {
+	const { loadPage, looksLikeHtml } = await loadScraperTypes();
 	const candidates: string[] = [];
 
 	try {
@@ -289,6 +307,7 @@ async function tryLlmEndpoints(
 	timeout: number,
 	signal?: AbortSignal,
 ): Promise<{ content: string; endpoint: string } | null> {
+	const { loadPage, looksLikeHtml } = await loadScraperTypes();
 	const endpoints = buildLlmEndpointCandidates(url);
 
 	if (signal?.aborted || endpoints.length === 0) {
@@ -312,6 +331,7 @@ async function tryContentNegotiation(
 	timeout: number,
 	signal?: AbortSignal,
 ): Promise<{ content: string; type: string } | null> {
+	const { loadPage, looksLikeHtml } = await loadScraperTypes();
 	if (signal?.aborted) {
 		return null;
 	}
@@ -396,7 +416,8 @@ function parseAlternateLinks(html: string, pageUrl: string): string[] {
 	return links;
 }
 
-function extractDocumentLinks(html: string, baseUrl: string): string[] {
+async function extractDocumentLinks(html: string, baseUrl: string): Promise<string[]> {
+	const { CONVERTIBLE_EXTENSIONS } = await import("../utils/markit");
 	const links: string[] = [];
 	const seen = new Set<string>();
 
@@ -527,8 +548,12 @@ export async function renderHtmlToText(
 	const fetchImpl = fetchOverride ?? fetch;
 
 	const runners: Record<FetchProvider, () => Promise<string | null>> = {
-		native: () => htmlToMarkdown(html, { cleanContent: true }),
+		native: async () => {
+			const { htmlToMarkdown } = await import("@oh-my-pi/pi-natives");
+			return htmlToMarkdown(html, { cleanContent: true });
+		},
 		trafilatura: async () => {
+			const { ensureTool } = await import("../utils/tools-manager");
 			const trafilatura = await ensureTool("trafilatura", { signal: overallSignal, silent: true });
 			if (!trafilatura) return null;
 			const result = await ptree.exec([trafilatura, "-u", url, "--output-format", "markdown"], execOptions);
@@ -540,6 +565,7 @@ export async function renderHtmlToText(
 			return result.ok ? result.stdout : null;
 		},
 		parallel: async () => {
+			const { extractWithParallel, findParallelApiKey, getParallelExtractContent } = await import("../web/parallel");
 			if (!findParallelApiKey(storage)) return null;
 			const parallelResult = await extractWithParallel(
 				[url],
@@ -556,6 +582,7 @@ export async function renderHtmlToText(
 			return firstDocument ? getParallelExtractContent(firstDocument) : null;
 		},
 		jina: async () => {
+			const { findCredential } = await import("../web/search/providers/utils");
 			const apiKey = findCredential(storage, getEnvApiKey("jina"), "jina");
 			const response = await fetchImpl(`https://r.jina.ai/${url}`, {
 				headers: {
@@ -712,7 +739,7 @@ function buildBinaryNotice(finalUrl: string, mime: string, byteLength?: number):
 	return `[Binary content: ${binaryContentType(mime)}, ${size}] ${finalUrl}`;
 }
 
-function buildBinaryPayloadResult(
+async function buildBinaryPayloadResult(
 	url: string,
 	finalUrl: string,
 	mime: string,
@@ -720,7 +747,8 @@ function buildBinaryPayloadResult(
 	content: string,
 	fetchedAt: string,
 	notes: string[],
-): FetchRenderResult {
+): Promise<FetchRenderResult> {
+	const { finalizeOutput } = await loadScraperTypes();
 	const output = finalizeOutput(content);
 	return {
 		url,
@@ -751,12 +779,14 @@ async function withTempBinaryFile<T>(
 }
 
 async function renderNotebookPayload(bytes: Uint8Array, displayUrl: string): Promise<string> {
+	const { readEditableNotebookText } = await import("./notebook");
 	return withTempBinaryFile("proto-url-notebook-", ".ipynb", bytes, tempPath =>
 		readEditableNotebookText(tempPath, displayUrl),
 	);
 }
 
 async function renderSqlitePayload(bytes: Uint8Array): Promise<string> {
+	const { listTables, openSqliteReadConnection, renderTableList } = await import("./sqlite-reader");
 	return withTempBinaryFile("proto-url-sqlite-", ".sqlite", bytes, async tempPath => {
 		let db: Database | null = null;
 		try {
@@ -767,6 +797,11 @@ async function renderSqlitePayload(bytes: Uint8Array): Promise<string> {
 			db?.close();
 		}
 	});
+}
+
+async function payloadLooksLikeSqlite(bytes: Uint8Array): Promise<boolean> {
+	const { looksLikeSqlite } = await import("./sqlite-reader");
+	return looksLikeSqlite(bytes);
 }
 
 async function tryRenderBinaryPayload(
@@ -790,7 +825,7 @@ async function tryRenderBinaryPayload(
 	}
 
 	const resultNotes = [...notes];
-	const binary = await fetchBinary(finalUrl, timeout, signal);
+	const binary = await fetchBinaryPayload(finalUrl, timeout, signal);
 	if (!binary.ok) {
 		resultNotes.push(binary.error ? `Binary fetch failed: ${binary.error}` : "Binary fetch failed");
 		return buildBinaryPayloadResult(
@@ -830,7 +865,7 @@ async function tryRenderBinaryPayload(
 		}
 	}
 
-	if (isSqliteHint(mime, binaryExtHint) || looksLikeSqlite(binary.buffer)) {
+	if (isSqliteHint(mime, binaryExtHint) || (await payloadLooksLikeSqlite(binary.buffer))) {
 		try {
 			return buildBinaryPayloadResult(
 				url,
@@ -856,8 +891,10 @@ async function tryRenderBinaryPayload(
 	}
 
 	const hintedArchiveFormat = getArchiveFormatHint(mime, binaryExtHint);
-	const shouldArchiveSniff = hintedArchiveFormat !== undefined || !isConvertible(mime, binaryExtHint);
-	const archiveFormat = hintedArchiveFormat ?? (shouldArchiveSniff ? sniffArchiveFormat(binary.buffer) : undefined);
+	const shouldArchiveSniff = hintedArchiveFormat !== undefined || !(await isConvertible(mime, binaryExtHint));
+	const archiveFormat =
+		hintedArchiveFormat ??
+		(shouldArchiveSniff ? (await import("@oh-my-pi/pi-utils/ar")).sniffArchiveFormat(binary.buffer) : undefined);
 	if (archiveFormat) {
 		try {
 			return buildBinaryPayloadResult(
@@ -865,7 +902,9 @@ async function tryRenderBinaryPayload(
 				finalUrl,
 				mime,
 				"archive",
-				await listArchiveRoot(binary.buffer, archiveFormat, { limit: URL_ARCHIVE_LIST_LIMIT }),
+				await (await import("@oh-my-pi/pi-utils/ar")).listArchiveRoot(binary.buffer, archiveFormat, {
+					limit: URL_ARCHIVE_LIST_LIMIT,
+				}),
 				fetchedAt,
 				resultNotes,
 			);
@@ -932,6 +971,7 @@ async function renderUrl(
 	fetchOverride?: FetchImpl,
 	excludeWebP?: true,
 ): Promise<FetchRenderResult> {
+	const { finalizeOutput, loadPage, looksLikeHtml, MAX_BYTES } = await loadScraperTypes();
 	const notes: string[] = [];
 	const fetchedAt = new Date().toISOString();
 	if (signal?.aborted) {
@@ -995,7 +1035,7 @@ async function renderUrl(
 			notes.push("Falling back to textual rendering from initial response");
 			skipConvertibleBinaryRetry = true;
 		} else {
-			const binary = await fetchBinary(finalUrl, timeout, signal);
+			const binary = await fetchBinaryPayload(finalUrl, timeout, signal);
 			if (binary.ok) {
 				notes.push("Fetched image binary");
 
@@ -1018,6 +1058,7 @@ async function renderUrl(
 					};
 				}
 
+				const { formatDimensionNote, resizeImage } = await import("../utils/image-resize");
 				const resized = await resizeImage(
 					{ type: "image", data: Buffer.from(binary.buffer).toBase64(), mimeType: imageMimeType },
 					{ maxBytes: MAX_INLINE_IMAGE_OUTPUT_BYTES, excludeWebP },
@@ -1086,11 +1127,11 @@ async function renderUrl(
 		}
 	}
 
-	if (!skipConvertibleBinaryRetry && isConvertible(mime, extHint)) {
-		const binary = await fetchBinary(finalUrl, timeout, signal);
+	if (!skipConvertibleBinaryRetry && (await isConvertible(mime, extHint))) {
+		const binary = await fetchBinaryPayload(finalUrl, timeout, signal);
 		if (binary.ok) {
 			const ext = getExtensionHint(finalUrl, binary.contentDisposition) || extHint;
-			const converted = await convertWithMarkit(binary.buffer, ext, timeout, signal);
+			const converted = await convertWithMarkitPayload(binary.buffer, ext, timeout, signal);
 			if (converted.ok) {
 				if (converted.content.trim().length > 50) {
 					notes.push("Converted with markit");
@@ -1316,13 +1357,13 @@ async function renderUrl(
 		}
 
 		if (isLowQualityOutput(htmlResult.content)) {
-			const docLinks = extractDocumentLinks(rawContent, finalUrl);
+			const docLinks = await extractDocumentLinks(rawContent, finalUrl);
 			if (docLinks.length > 0) {
 				const docUrl = docLinks[0];
-				const binary = await fetchBinary(docUrl, timeout, signal);
+				const binary = await fetchBinaryPayload(docUrl, timeout, signal);
 				if (binary.ok) {
 					const ext = getExtensionHint(docUrl, binary.contentDisposition);
-					const converted = await convertWithMarkit(binary.buffer, ext, timeout, signal);
+					const converted = await convertWithMarkitPayload(binary.buffer, ext, timeout, signal);
 					if (converted.ok && converted.content.trim().length > htmlResult.content.length) {
 						notes.push(`Extracted and converted document: ${docUrl}`);
 						const output = finalizeOutput(converted.content);
@@ -1458,6 +1499,7 @@ export async function fetchReadUrl(
 	}
 
 	const storage = session.settings.getStorage();
+	const { webpExclusionForModel } = await import("../utils/image-loading");
 	const result = await renderUrl(
 		url,
 		effectiveTimeout,
@@ -1507,6 +1549,7 @@ export async function executeReadUrl(
 	params: { path: string; raw?: boolean },
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<ReadUrlToolDetails>> {
+	const { MAX_OUTPUT_CHARS } = await loadScraperTypes();
 	let entry = await fetchReadUrl(session, params, signal);
 	const truncation = truncateHead(entry.output, {
 		maxBytes: DEFAULT_MAX_BYTES,

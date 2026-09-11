@@ -15,9 +15,7 @@ import {
 	truncateHeadBytes,
 } from "@oh-my-pi/pi-utils";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
-import { InternalUrlRouter, resolveLocalUrlToFile } from "../internal-urls";
-import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls/artifact-protocol";
-import { parseInternalUrl } from "../internal-urls/parse";
+import type { ResolvedArtifactFile } from "../internal-urls/artifact-protocol";
 import type { InternalUrl } from "../internal-urls/types";
 import readDescription from "../prompts/tools/read.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -29,17 +27,8 @@ import {
 	truncateLine,
 } from "../session/streaming-output";
 import { buildLineEntriesWithBlockContext, lineEntriesToPlainText } from "../utils/block-context";
-import { isCpuProfilePath, renderCpuProfile } from "../utils/cpuprofile";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
-import {
-	ImageInputTooLargeError,
-	loadImageInput,
-	MAX_IMAGE_INPUT_BYTES,
-	webpExclusionForModel,
-} from "../utils/image-loading";
 import { isInspectMediaToolActive, modelSupportsImageInput } from "../utils/inspect-media-mode";
-import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
-import { isSampleProfilePath, renderSampleProfile } from "../utils/sample-profile";
 import { normalizeToLF, stripBom } from "../utils/text";
 import { buildDirectoryTree, type DirectoryTree } from "../workspace-tree";
 import {
@@ -53,12 +42,12 @@ import {
 	scanConflictLines,
 	scanFileForConflicts,
 } from "./conflict-detect";
-import { executeReadUrl, fetchReadUrl, parseReadUrlTarget } from "./fetch";
 import { isNotebookPath, readEditableNotebookText } from "./notebook";
 import { type OutputMeta, resolveOutputMaxColumns } from "./output-meta";
 import {
 	expandPath,
 	formatPathRelativeToCwd,
+	isReadableUrlPath,
 	type LineRange,
 	probeLiteralPathExists,
 	resolveReadPath,
@@ -68,7 +57,6 @@ import {
 	splitPathAndSel,
 	splitPathAndSelPreferringLiteral,
 } from "./path-utils";
-import { readArchive, resolveArchiveReadPath } from "./read-archive";
 import {
 	BRACKET_CONTEXT_ELLIPSIS,
 	buildInMemoryMultiRangeResult,
@@ -90,9 +78,8 @@ import {
 	isRemoteMountPath,
 	type SuffixMatchCache,
 } from "./read-path-resolution";
-import { type PdfImageReadTarget, renderPdfPageScreenshot, splitPdfImageReadPath } from "./read-pdf";
+import type { PdfImageReadTarget } from "./read-pdf";
 import { isMultiRange, isRawSelector, type ParsedSelector, parseSel, selToOffsetLimit } from "./read-selector";
-import { readSqlite, resolveSqliteReadPath } from "./read-sqlite";
 import { isProseSummaryPath, renderSummary, routeReadThroughBridge, trySummarize } from "./read-summary";
 import { formatBytes, replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "./render-utils";
 import { REPORT_ISSUE_DEVICE_NAME, reportIssueDeviceUsage } from "./report-tool-issue";
@@ -108,6 +95,51 @@ const MAX_BUFFERED_READ_BYTES = 4 * 1024 * 1024;
 const MAX_ARTIFACT_RAW_INLINE_BYTES = DEFAULT_MAX_BYTES;
 
 const LF_BYTE = 0x0a;
+
+const INTERNAL_URL_SCHEMES: Record<string, true> = {
+	agent: true,
+	artifact: true,
+	history: true,
+	issue: true,
+	local: true,
+	mcp: true,
+	memory: true,
+	proto: true,
+	pr: true,
+	rule: true,
+	security: true,
+	skill: true,
+	ssh: true,
+	vault: true,
+	xd: true,
+};
+
+function isPotentialInternalUrlPath(value: string): boolean {
+	const hierarchicalScheme = /^([a-z][a-z0-9+.-]*):\/{1,2}/i.exec(value)?.[1]?.toLowerCase();
+	if (hierarchicalScheme) {
+		return hierarchicalScheme !== "http" && hierarchicalScheme !== "https" && hierarchicalScheme !== "file";
+	}
+	const opaqueScheme = /^([a-z][a-z0-9+.-]*):/i.exec(value)?.[1]?.toLowerCase();
+	return opaqueScheme !== undefined && INTERNAL_URL_SCHEMES[opaqueScheme] === true;
+}
+
+function isPotentialMarkitExtension(extension: string): boolean {
+	return (
+		extension === ".pdf" ||
+		extension === ".docx" ||
+		extension === ".pptx" ||
+		extension === ".xlsx" ||
+		extension === ".epub"
+	);
+}
+
+function hasArchivePathHint(value: string): boolean {
+	return /\.(?:tar\.gz|tgz|zip|tar|gz)(?=[:]|$)/i.test(value);
+}
+
+function hasSqlitePathHint(value: string): boolean {
+	return /\.(?:sqlite3?|db3?)(?=(?:[:?]|$))/i.test(value);
+}
 
 interface BufferedFileText {
 	readonly bytes: Buffer;
@@ -445,8 +477,6 @@ async function streamLinesFromFile(
 
 const IMAGE_ATTACHMENT_URI_REGEX = /^attachment:\/\/[1-9]\d*$/;
 
-const MAX_IMAGE_SIZE = MAX_IMAGE_INPUT_BYTES;
-
 const readSchema = type({
 	path: type("string").describe("Local path, internal URI (e.g. skill://), or URL. Inline selectors are supported."),
 });
@@ -628,6 +658,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		signal?: AbortSignal;
 	}): Promise<AgentToolResult<ReadToolDetails>> {
 		const { readPath, absolutePdfPath, page, pdfFileSize, suffixResolution, signal } = options;
+		const { renderPdfPageScreenshot } = await import("./read-pdf");
 		const screenshot = await renderPdfPageScreenshot(this.session, absolutePdfPath, page, signal);
 		const screenshotFile = Bun.file(screenshot.dest);
 		const screenshotMetadata = await readImageMetadata(screenshot.dest);
@@ -688,9 +719,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			return { content: [{ type: "text", text: metadataLines.join("\n") }], details: {}, sourcePath: absolutePath };
 		}
 
-		if (fileSize > MAX_IMAGE_SIZE) {
+		const { ImageInputTooLargeError, loadImageInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } = await import(
+			"../utils/image-loading"
+		);
+		if (fileSize > MAX_IMAGE_INPUT_BYTES) {
 			const sizeStr = formatBytes(fileSize);
-			const maxStr = formatBytes(MAX_IMAGE_SIZE);
+			const maxStr = formatBytes(MAX_IMAGE_INPUT_BYTES);
 			throw new ToolError(`Image file too large: ${sizeStr} exceeds ${maxStr} limit.`);
 		}
 		try {
@@ -698,7 +732,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				path: readPath,
 				cwd: this.session.cwd,
 				autoResize: this.#autoResizeImages,
-				maxBytes: MAX_IMAGE_SIZE,
+				maxBytes: MAX_IMAGE_INPUT_BYTES,
 				resolvedPath: absolutePath,
 				detectedMimeType: mimeType,
 				excludeWebP: webpExclusionForModel(this.session.getActiveModel?.()),
@@ -913,17 +947,23 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 		const displayMode = resolveFileDisplayMode(this.session);
 
-		const parsedUrlTarget = parseReadUrlTarget(readPath);
-		if (parsedUrlTarget) {
+		const fetchModule = isReadableUrlPath(readPath) ? await import("./fetch") : undefined;
+		const parsedUrlTarget = fetchModule?.parseReadUrlTarget(readPath);
+		if (fetchModule && parsedUrlTarget) {
 			if (!this.session.settings.get("fetch.enabled")) {
 				throw new ToolError("URL reads are disabled by settings.");
 			}
 			const urlRaw = parsedUrlTarget.raw;
 			const urlRanges = parsedUrlTarget.ranges;
 			if (urlRanges !== undefined && urlRanges.length > 1) {
-				const entry = await fetchReadUrl(this.session, { path: parsedUrlTarget.path, raw: urlRaw }, signal, {
-					ensureArtifact: true,
-				});
+				const entry = await fetchModule.fetchReadUrl(
+					this.session,
+					{ path: parsedUrlTarget.path, raw: urlRaw },
+					signal,
+					{
+						ensureArtifact: true,
+					},
+				);
 				return buildInMemoryMultiRangeResult(this.session, entry.output, urlRanges, {
 					details: { ...entry.details },
 					sourceUrl: entry.details.finalUrl,
@@ -934,9 +974,14 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			const urlOffset = parsedUrlTarget.offset;
 			const urlLimit = parsedUrlTarget.limit;
 			if (urlOffset !== undefined || urlLimit !== undefined) {
-				const entry = await fetchReadUrl(this.session, { path: parsedUrlTarget.path, raw: urlRaw }, signal, {
-					ensureArtifact: true,
-				});
+				const entry = await fetchModule.fetchReadUrl(
+					this.session,
+					{ path: parsedUrlTarget.path, raw: urlRaw },
+					signal,
+					{
+						ensureArtifact: true,
+					},
+				);
 				return buildInMemoryTextResult(this.session, entry.output, urlOffset, urlLimit, {
 					details: { ...entry.details },
 					sourceUrl: entry.details.finalUrl,
@@ -944,17 +989,18 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					raw: urlRaw,
 				});
 			}
-			return executeReadUrl(this.session, { path: parsedUrlTarget.path, raw: urlRaw }, signal);
+			return fetchModule.executeReadUrl(this.session, { path: parsedUrlTarget.path, raw: urlRaw }, signal);
 		}
 
-		const internalRouter = InternalUrlRouter.instance();
-		const delimitedInternalResult = internalRouter.canResolve(readPath)
+		const internalUrlModule = isPotentialInternalUrlPath(readPath) ? await import("../internal-urls") : undefined;
+		const internalRouter = internalUrlModule?.InternalUrlRouter.instance();
+		const delimitedInternalResult = internalRouter?.canResolve(readPath)
 			? await this.#tryReadDelimitedPaths(readPath, signal, entry => internalRouter.canResolve(entry))
 			: null;
 		if (delimitedInternalResult) return delimitedInternalResult;
 
 		let promotedSelector: string | undefined;
-		if (internalRouter.canResolve(readPath)) {
+		if (internalRouter?.canResolve(readPath)) {
 			const internalTarget = splitInternalUrlSel(readPath);
 			const parsed = parseSel(internalTarget.sel);
 			if (internalTarget.sel !== undefined && parsed.kind === "none") {
@@ -962,10 +1008,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					`Invalid selector ':${internalTarget.sel}' on '${internalTarget.path}'. Use :N, :N-M, :N+K, :N- (open-ended), a comma-separated list of ranges, :raw, or a range combined with raw (e.g. :raw:50-100).`,
 				);
 			}
+			const { parseInternalUrl } = await import("../internal-urls/parse");
 			const urlMeta = parseInternalUrl(internalTarget.path);
 			const scheme = urlMeta.protocol.replace(/:$/, "").toLowerCase();
 			if (scheme === "local") {
-				const localFile = await resolveLocalUrlToFile(urlMeta, {
+				const localFile = await internalUrlModule!.resolveLocalUrlToFile(urlMeta, {
 					cwd: this.session.cwd,
 					settings: this.session.settings,
 					signal,
@@ -998,28 +1045,37 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		let pdfImageRead: PdfImageReadTarget | null = null;
 
 		if (!rawPathIsLiteral) {
-			const archivePath = await resolveArchiveReadPath(this.session, readPath, suffixCache, signal);
-			if (archivePath) {
-				const archiveSubPath =
-					promotedSelector === undefined
-						? splitPathAndSel(archivePath.archiveSubPath)
-						: { path: archivePath.archiveSubPath, sel: promotedSelector };
-				const archiveParsed = parseSel(archiveSubPath.sel);
-				return readArchive(
-					this.session,
-					readPath,
-					archiveParsed,
-					{ ...archivePath, archiveSubPath: archiveSubPath.path },
-					signal,
-				);
+			if (hasArchivePathHint(readPath)) {
+				const { readArchive, resolveArchiveReadPath } = await import("./read-archive");
+				const archivePath = await resolveArchiveReadPath(this.session, readPath, suffixCache, signal);
+				if (archivePath) {
+					const archiveSubPath =
+						promotedSelector === undefined
+							? splitPathAndSel(archivePath.archiveSubPath)
+							: { path: archivePath.archiveSubPath, sel: promotedSelector };
+					const archiveParsed = parseSel(archiveSubPath.sel);
+					return readArchive(
+						this.session,
+						readPath,
+						archiveParsed,
+						{ ...archivePath, archiveSubPath: archiveSubPath.path },
+						signal,
+					);
+				}
 			}
 
-			const sqlitePath = await resolveSqliteReadPath(this.session, readPath, suffixCache, signal);
-			if (sqlitePath) {
-				return readSqlite(sqlitePath, signal);
+			if (hasSqlitePathHint(readPath)) {
+				const { readSqlite, resolveSqliteReadPath } = await import("./read-sqlite");
+				const sqlitePath = await resolveSqliteReadPath(this.session, readPath, suffixCache, signal);
+				if (sqlitePath) {
+					return readSqlite(sqlitePath, signal);
+				}
 			}
 
-			const pdfCandidate = literalSplit.sel === undefined ? splitPdfImageReadPath(readPath) : null;
+			const pdfCandidate =
+				literalSplit.sel === undefined && /\.pdf:/i.test(readPath)
+					? (await import("./read-pdf")).splitPdfImageReadPath(readPath)
+					: null;
 			pdfImageRead =
 				pdfCandidate && (await probeLiteralPathExists(readPath, this.session.cwd)) === "missing"
 					? pdfCandidate
@@ -1102,12 +1158,19 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const mimeType = imageMetadata?.mimeType;
 		const ext = path.extname(absolutePath).toLowerCase();
 		const resolvedDisplayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
-		const shouldConvertWithMarkit = CONVERTIBLE_EXTENSIONS.has(ext);
+		const shouldConvertWithMarkit = isPotentialMarkitExtension(ext)
+			? (await import("../utils/markit")).CONVERTIBLE_EXTENSIONS.has(ext)
+			: false;
 
 		if (!mimeType && !isRawSelector(parsed) && fileSize <= MAX_PROFILE_SUMMARY_BYTES) {
 			let rendered: string | null = null;
-			if (isSampleProfilePath(absolutePath)) rendered = renderSampleProfile(await Bun.file(absolutePath).text());
-			else if (isCpuProfilePath(absolutePath)) rendered = renderCpuProfile(await Bun.file(absolutePath).text());
+			if (/\.sample\.txt$/i.test(absolutePath)) {
+				rendered = (await import("../utils/sample-profile")).renderSampleProfile(
+					await Bun.file(absolutePath).text(),
+				);
+			} else if (/\.cpuprofile$/i.test(absolutePath)) {
+				rendered = (await import("../utils/cpuprofile")).renderCpuProfile(await Bun.file(absolutePath).text());
+			}
 			if (rendered) {
 				if (isMultiRange(parsed) && parsed.kind === "lines") {
 					return buildInMemoryMultiRangeResult(this.session, rendered, parsed.ranges, {
@@ -1157,7 +1220,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				entityLabel: "notebook",
 			});
 		} else if (shouldConvertWithMarkit) {
-			const result = await convertFileWithMarkit(absolutePath, signal);
+			const result = await (await import("../utils/markit")).convertFileWithMarkit(absolutePath, signal);
 			if (result.ok) {
 				const renderedContent = result.content;
 
@@ -1612,6 +1675,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		parsedSel: ParsedSelector,
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<ReadToolDetails>> {
+		const { resolveArtifactFile } = await import("../internal-urls/artifact-protocol");
 		const artifact = await resolveArtifactFile(url, {
 			cwd: this.session.cwd,
 			settings: this.session.settings,
@@ -1798,6 +1862,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		parsedSel: ParsedSelector,
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<ReadToolDetails>> {
+		const { InternalUrlRouter } = await import("../internal-urls");
+		const { parseInternalUrl } = await import("../internal-urls/parse");
 		const internalRouter = InternalUrlRouter.instance();
 
 		let urlMeta: InternalUrl;
@@ -1874,6 +1940,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	async #tryReadLocalImage(url: InternalUrl, signal?: AbortSignal): Promise<AgentToolResult<ReadToolDetails> | null> {
 		let file: { path: string; size: number } | null;
 		try {
+			const { resolveLocalUrlToFile } = await import("../internal-urls");
 			file = await resolveLocalUrlToFile(url, {
 				cwd: this.session.cwd,
 				settings: this.session.settings,

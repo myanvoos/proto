@@ -49,6 +49,7 @@ async function cleanBundleOutputs(): Promise<void> {
 					entry === "docs-index.generated.txt" ||
 					entry.endsWith(".node") ||
 					entry.endsWith(".js.map") ||
+					(entry.startsWith("chunk-") && entry.endsWith(".js")) ||
 					(entry.startsWith("CHANGELOG-") && entry.endsWith(".md")) ||
 					legacyHtmlExportAssetPattern.test(entry),
 			)
@@ -66,6 +67,8 @@ async function main(): Promise<void> {
 		entrypoints: [path.join(packageDir, "src/cli.ts")],
 		outdir: outDir,
 		target: "bun",
+		splitting: true,
+		naming: { chunk: "template-split-[hash].[ext]" },
 		external: [...ALWAYS_EXTERNAL, ...RUNTIME_EXTERNAL],
 		define: {
 			"process.env.PI_BUNDLED": JSON.stringify("true"),
