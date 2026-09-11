@@ -525,8 +525,8 @@ test("stale-write guard stays armed past the read-seen cap via FIFO eviction", a
 test("pre-mutation snapshots stop retaining text past the aggregate capture budget", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-capture-budget-"));
 	try {
-		const chunk = `${"x".repeat(1000)}\n`.repeat(5000);
-		// Four saturating snapshots (4 x 5 MB > 16 MB budget) plus a fifth file
+		const chunk = `${"x".repeat(1000)}\n`.repeat(4300);
+		// Four saturating snapshots (4 x ~4.3 MB > 16 MB budget) plus a fifth file
 		// whose pre-mutation content must not be retained.
 		await Promise.all([
 			...Array.from({ length: 4 }, (_, i) => Bun.write(path.join(dir, `big-${i}.txt`), chunk)),
