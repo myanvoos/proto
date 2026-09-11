@@ -14,6 +14,7 @@
 - images-cli imports bundled models via the catalog subpath instead of the root barrel (~46MB less RSS for that module graph in isolation).
 - jj command output is capped at the same 8MiB limit as git instead of retaining unbounded stream reads; the capped reader is now shared with the git wrapper instead of duplicated.
 - Packaged CLI bundle uses code splitting (`dist/cli.js` 17.4MB monolith -> 9.4KB entry + chunks in the existing `dist/template-*.js` package glob): bundled `--version` median 264ms -> 30ms.
+- RPC frame encoding caches serialized messages behind a length/head/tail fingerprint with exact-compare fallback (20k-message agent_end: ~18ms -> ~6.6ms, byte-identical wire output).
 - Read tool loads PDF/image/URL/archive/profile/markit converters lazily on first special-format use instead of at session boot.
 - Capability filesystem caches are LRU-bounded (256 entries / 8MiB), so multi-project sessions stop retaining unbounded file caches.
 - Web-search snippet/count/truncation helpers consolidated behind @oh-my-pi/pi-utils (byte-identical output).

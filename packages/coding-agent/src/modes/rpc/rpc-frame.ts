@@ -76,11 +76,47 @@ function jsonSnapshot(value: unknown): unknown {
 	return json === undefined ? undefined : JSON.parse(json);
 }
 
-function encodedMessageSnapshot(encoded: string): { message: unknown } | undefined {
+interface RpcMessageFingerprint {
+	json: string | undefined;
+	length: number;
+	head: string;
+	tail: string;
+}
+
+const RPC_MESSAGE_FINGERPRINT_SAMPLE_LENGTH = 32;
+
+function rpcMessageFingerprint(value: unknown): RpcMessageFingerprint {
+	const json = JSON.stringify(value);
+	return {
+		json,
+		length: json?.length ?? -1,
+		head: json?.slice(0, RPC_MESSAGE_FINGERPRINT_SAMPLE_LENGTH) ?? "",
+		tail: json?.slice(-RPC_MESSAGE_FINGERPRINT_SAMPLE_LENGTH) ?? "",
+	};
+}
+
+function sameRpcMessageFingerprint(left: RpcMessageFingerprint, right: RpcMessageFingerprint): boolean {
+	return left.length === right.length && left.head === right.head && left.tail === right.tail;
+}
+
+interface EncodedMessageSnapshot {
+	fingerprint: RpcMessageFingerprint;
+}
+
+function messageSnapshotFromValue(value: unknown): EncodedMessageSnapshot {
+	const message = jsonSnapshot(value);
+	return { fingerprint: rpcMessageFingerprint(message) };
+}
+
+function encodedMessageSnapshot(encoded: string): EncodedMessageSnapshot | undefined {
 	const frame = JSON.parse(encoded);
 	return isRecord(frame) && frame.type === "message_end" && Object.hasOwn(frame, "message")
-		? { message: frame.message }
+		? { fingerprint: rpcMessageFingerprint(frame.message) }
 		: undefined;
+}
+
+function parseRpcMessageFingerprint(fingerprint: RpcMessageFingerprint): unknown {
+	return fingerprint.json === undefined ? undefined : JSON.parse(fingerprint.json);
 }
 
 function* encodeChunkedRpcFrames(frame: object, json: string, chunkId: string): Generator<string> {
@@ -184,18 +220,37 @@ function compactTerminalFrame(
 	frame: object,
 	streamedMessageCount: number,
 	streamedMessages?: readonly unknown[],
+	streamedMessageFingerprints?: readonly RpcMessageFingerprint[],
 ): object {
 	if (!isRecord(frame) || frame.type !== "agent_end" || !Array.isArray(frame.messages)) return frame;
 	let streamed = Number.isSafeInteger(streamedMessageCount)
 		? Math.min(Math.max(0, streamedMessageCount), frame.messages.length)
 		: 0;
-	if (streamedMessages) {
+	if (streamedMessages || streamedMessageFingerprints) {
 		streamed = 0;
-		const limit = Math.min(streamedMessages.length, frame.messages.length);
-		while (
-			streamed < limit &&
-			isDeepStrictEqual(streamedMessages[streamed], jsonSnapshot(frame.messages[streamed]))
-		) {
+		const limit = Math.min(
+			streamedMessages?.length ?? streamedMessageFingerprints?.length ?? 0,
+			frame.messages.length,
+		);
+		while (streamed < limit) {
+			const streamedMessage = streamedMessages?.[streamed];
+			const currentMessage = frame.messages[streamed];
+			const streamedFingerprint = streamedMessageFingerprints?.[streamed];
+			if (streamedFingerprint === undefined) {
+				if (!isDeepStrictEqual(streamedMessage, jsonSnapshot(currentMessage))) break;
+			} else {
+				const currentFingerprint = rpcMessageFingerprint(currentMessage);
+				if (sameRpcMessageFingerprint(streamedFingerprint, currentFingerprint)) {
+					if (streamedFingerprint.json !== currentFingerprint.json) {
+						if (!isDeepStrictEqual(parseRpcMessageFingerprint(streamedFingerprint), jsonSnapshot(currentMessage)))
+							break;
+					}
+				} else if (
+					!isDeepStrictEqual(parseRpcMessageFingerprint(streamedFingerprint), jsonSnapshot(currentMessage))
+				) {
+					break;
+				}
+			}
 			streamed++;
 		}
 	}
@@ -236,13 +291,14 @@ function encodeRpcFrameFromJson(
 	json: string,
 	streamedMessageCount: number,
 	streamedMessages?: readonly unknown[],
+	streamedMessageFingerprints?: readonly RpcMessageFingerprint[],
 ): string {
 	if (serializedFrameBytes(json) <= MAX_RPC_FRAME_BYTES) return `${json}\n`;
 	if (isRecord(frame) && frame.type === "response") {
 		return `${JSON.stringify(overflowFrame(frame))}\n`;
 	}
 
-	const compacted = compactTerminalFrame(frame, streamedMessageCount, streamedMessages);
+	const compacted = compactTerminalFrame(frame, streamedMessageCount, streamedMessages, streamedMessageFingerprints);
 	json = JSON.stringify(compacted);
 	if (serializedFrameBytes(json) <= MAX_RPC_FRAME_BYTES) return `${json}\n`;
 
@@ -259,7 +315,7 @@ export function encodeRpcFrame(frame: object, streamedMessageCount = 0, streamed
 }
 
 export class RpcFrameEncoder {
-	#streamedMessages: unknown[] = [];
+	#streamedMessageFingerprints: RpcMessageFingerprint[] = [];
 	#protocolVersion: RpcProtocolVersion = 1;
 	#chunkCounter = 0;
 
@@ -269,12 +325,17 @@ export class RpcFrameEncoder {
 	}
 
 	encodeFrames(frame: object): Iterable<string> {
-		if (isRecord(frame) && frame.type === "agent_start") this.#streamedMessages = [];
+		if (isRecord(frame) && frame.type === "agent_start") this.#streamedMessageFingerprints = [];
 		const json = JSON.stringify(frame);
 		let frames: Iterable<string>;
 		let singleFrame: string | undefined;
 		if (this.#protocolVersion === 2 && serializedFrameBytes(json) > MAX_RPC_FRAME_BYTES) {
-			const compacted = compactTerminalFrame(frame, this.#streamedMessages.length, this.#streamedMessages);
+			const compacted = compactTerminalFrame(
+				frame,
+				this.#streamedMessageFingerprints.length,
+				undefined,
+				this.#streamedMessageFingerprints,
+			);
 
 			const compactedJson = compacted === frame ? json : JSON.stringify(compacted);
 			if (serializedFrameBytes(compactedJson) > MAX_RPC_FRAME_BYTES) {
@@ -284,19 +345,27 @@ export class RpcFrameEncoder {
 				frames = [singleFrame];
 			}
 		} else {
-			singleFrame = encodeRpcFrameFromJson(frame, json, this.#streamedMessages.length, this.#streamedMessages);
+			singleFrame = encodeRpcFrameFromJson(
+				frame,
+				json,
+				this.#streamedMessageFingerprints.length,
+				undefined,
+				this.#streamedMessageFingerprints,
+			);
 			frames = [singleFrame];
 		}
 		if (!isRecord(frame)) return frames;
 		if (frame.type === "message_end") {
 			const snapshot =
 				this.#protocolVersion === 2 && Object.hasOwn(frame, "message")
-					? (encodedMessageSnapshot(json) ?? { message: jsonSnapshot(frame.message) })
+					? (encodedMessageSnapshot(json) ?? messageSnapshotFromValue(frame.message))
 					: singleFrame !== undefined
 						? encodedMessageSnapshot(singleFrame)
 						: undefined;
-			if (snapshot) this.#streamedMessages.push(snapshot.message);
-		} else if (frame.type === "agent_end" && frame.willContinue !== true) this.#streamedMessages = [];
+			if (snapshot) this.#streamedMessageFingerprints.push(snapshot.fingerprint);
+		} else if (frame.type === "agent_end" && frame.willContinue !== true) {
+			this.#streamedMessageFingerprints = [];
+		}
 		return frames;
 	}
 
