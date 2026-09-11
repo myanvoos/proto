@@ -1,3 +1,5 @@
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+
 export type SemVer = {
 	major: number;
 	minor: number;
@@ -43,7 +45,10 @@ export interface UnknownModel {
 
 export type ParsedModel = GeminiModel | AnthropicModel | OpenAIModel | UnknownModel;
 
-const bareModelIdCache = new Map<string, string>();
+const MAX_BARE_MODEL_ID_CACHE_ENTRIES = 4_096;
+const MAX_MODEL_PARSER_CACHE_ENTRIES = 1_024;
+
+const bareModelIdCache = new LRUCache<string, string>({ max: MAX_BARE_MODEL_ID_CACHE_ENTRIES });
 export function bareModelId(modelId: string): string {
 	const cached = bareModelIdCache.get(modelId);
 	if (cached !== undefined) return cached;
@@ -63,7 +68,7 @@ export function parseKnownModel(modelId: string): ParsedModel {
 }
 
 function parser<T>(parse: (modelId: string) => T | null): (modelId: string) => T | null {
-	const cache = new Map<string, T | null>();
+	const cache = new LRUCache<string, T | null>({ max: MAX_MODEL_PARSER_CACHE_ENTRIES });
 	return modelId => {
 		const hit = cache.get(modelId);
 		if (hit !== undefined || cache.has(modelId)) {

@@ -1,3 +1,4 @@
+import { LRUCache } from "./lru";
 import type { HelperDelegate, Template } from "./template";
 import * as Handlebars from "./template";
 
@@ -412,7 +413,10 @@ export function registerPartial(name: string, fn: Template): void {
 	handlebars.registerPartial(name, fn);
 }
 
-const compiledTemplateCache = new Map<string, (context: TemplateContext) => string>();
+const MAX_COMPILED_TEMPLATE_CACHE_ENTRIES = 512;
+const compiledTemplateCache = new LRUCache<string, (context: TemplateContext) => string>({
+	max: MAX_COMPILED_TEMPLATE_CACHE_ENTRIES,
+});
 
 export function compile(template: string): (context: TemplateContext) => string {
 	const cached = compiledTemplateCache.get(template);

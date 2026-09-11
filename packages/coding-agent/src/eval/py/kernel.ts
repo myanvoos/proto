@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { $flag, isBunTestRuntime, logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { $ } from "bun";
 import { Settings } from "../../config/settings";
 import { BaseKernel, getRemainingTimeMs, type KernelStartOptions } from "../kernel-base";
@@ -40,7 +41,10 @@ interface PythonKernelAvailability {
 	runtime?: PythonRuntime;
 }
 
-const availabilityCache = new Map<string, Promise<PythonKernelAvailability>>();
+const MAX_AVAILABILITY_CACHE_ENTRIES = 32;
+const availabilityCache = new LRUCache<string, Promise<PythonKernelAvailability>>({
+	max: MAX_AVAILABILITY_CACHE_ENTRIES,
+});
 
 export async function checkPythonKernelAvailability(
 	cwd: string,

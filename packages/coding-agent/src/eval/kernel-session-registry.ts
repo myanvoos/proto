@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import {
 	attachSessionOwner,
 	type CancelledErrorClass,
@@ -10,6 +11,8 @@ import {
 	type SessionOwners,
 } from "./executor-base";
 import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "./idle-timeout";
+
+const MAX_REAP_NOTES = 32;
 
 export interface KernelSessionRegistryOptions {
 	sessionId?: string;
@@ -146,7 +149,7 @@ export function createKernelSessionRegistry<
 	const idleReapMs = descriptor.idleReapMs ?? DEFAULT_KERNEL_IDLE_REAP_MS;
 	const reapTimers = new Map<string, NodeJS.Timeout>();
 	const executingDepth = new Map<string, number>();
-	const reapedNotes = new Map<string, KernelReapNote>();
+	const reapedNotes = new LRUCache<string, KernelReapNote>({ max: MAX_REAP_NOTES });
 
 	function armReap(sessionKey: string): void {
 		const existing = reapTimers.get(sessionKey);

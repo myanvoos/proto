@@ -1,3 +1,4 @@
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { buildAnthropicCompat } from "./compat/anthropic";
 import { buildBedrockCompat } from "./compat/bedrock";
 import { buildDevinCompat } from "./compat/devin";
@@ -76,10 +77,12 @@ export function buildModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi>
 
 // Compat payloads repeat across thousands of bundled models (96% are duplicates
 // when materialized); interning by serialized shape collapses them to one shared
-// object per distinct payload.
-const compatInternCache = new Map<string, CompatOf<Api>>();
-const thinkingInternCache = new Map<string, ThinkingConfig | undefined>();
-const stringPool = new Map<string, string>();
+// object per distinct payload. Keep the pools bounded because extension-provided
+// model specs can otherwise supply an unbounded stream of unique values.
+const MAX_INTERN_CACHE_ENTRIES = 2_048;
+const compatInternCache = new LRUCache<string, CompatOf<Api>>({ max: MAX_INTERN_CACHE_ENTRIES });
+const thinkingInternCache = new LRUCache<string, ThinkingConfig | undefined>({ max: MAX_INTERN_CACHE_ENTRIES });
+const stringPool = new LRUCache<string, string>({ max: MAX_INTERN_CACHE_ENTRIES });
 
 function internString(value: string | undefined): string | undefined {
 	if (value === undefined) return undefined;
