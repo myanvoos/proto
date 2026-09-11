@@ -1,5 +1,5 @@
 import * as url from "node:url";
-import { TERMINAL } from "@oh-my-pi/pi-tui";
+import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { LocalProtocolHandler, resolveLocalUrlToPath } from "../internal-urls";
 

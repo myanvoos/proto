@@ -1,12 +1,14 @@
 import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import { type Tool as AiTool, jsonSchemaToTypeScript, toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
-import { type Component, Container } from "@oh-my-pi/pi-tui";
+import type { Component } from "@oh-my-pi/pi-tui/tui";
+import { Container } from "@oh-my-pi/pi-tui/tui";
 import { parseStreamingJson, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
-import { renderStatusLine, WidthAwareText } from "../tui";
+import { renderStatusLine } from "../tui/status-line";
+import { WidthAwareText } from "../tui/width-aware-text";
 import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool, ToolSession } from "./index";
 import { isReadableUrlPath, resolveToCwd, splitPathAndSel } from "./path-utils";

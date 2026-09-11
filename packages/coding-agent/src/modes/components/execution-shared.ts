@@ -1,4 +1,6 @@
-import { type Component, Container, Loader, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { Loader } from "@oh-my-pi/pi-tui/components/loader";
+import { Text } from "@oh-my-pi/pi-tui/components/text";
+import { type Component, Container, type TUI } from "@oh-my-pi/pi-tui/tui";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { ExecutionMetadata } from "../../session/execution-metadata";

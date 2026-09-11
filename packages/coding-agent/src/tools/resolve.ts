@@ -1,12 +1,13 @@
 import type { AgentToolResult, CustomMessage } from "@oh-my-pi/pi-agent-core";
-import type { Component } from "@oh-my-pi/pi-tui";
-import { Text } from "@oh-my-pi/pi-tui";
+import { Text } from "@oh-my-pi/pi-tui/components/text";
+import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import type { Theme } from "../modes/theme/theme";
 import resolveReminderPrompt from "../prompts/system/resolve-device-reminder.md" with { type: "text" };
-import { Ellipsis, padToWidth, renderStatusLine, truncateToWidth } from "../tui";
+import { renderStatusLine } from "../tui/status-line";
+import { Ellipsis, padToWidth, truncateToWidth } from "../tui/utils";
 import type { ToolSession } from ".";
 import { replaceTabs } from "./render-utils";
 import { tokenizeShellSegments } from "./shell-tokenize";

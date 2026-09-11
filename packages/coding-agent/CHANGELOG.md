@@ -13,6 +13,9 @@
 - Transcript rebuilds reuse bounded highlight/outline/wrap caches across sessions; a 3,400-message transcript renders in ~330ms vs ~1,068ms (stress-harness p50; real windowed switches complete in ~250ms end-to-end), with warm frames at ~5.5ms and dirty-child frames at ~7ms.
 - Editors, the composer, and parked detached sessions dispose deterministically on replacement and shutdown (`DetachedSessionHolder.disposeAll` runs during `InteractiveMode.shutdown`).
 - Orchestrator bounds idle worker payload memory (32-record window) while keeping every worker ID addressable; lifecycle bench now asserts handle/fd stability.
+- Sessions load optional capability graphs lazily: the extension host API surface, orchestrator runtime, structured subagent, persisted subagent registry, and SDK barrel edge in web search now load on first use, cutting the session import floor by ~37MB.
+- Bundled model catalog loads lazily per provider with compat/cost/thinking payload interning (96% of compat payloads are duplicates).
+- `bench/perf-gate/rss-marathon.ts` now reports a steady-state idle baseline (post-construction settle) alongside peak VmHWM, gated at 150MB idle / 800MB peak.
 
 ## [18.0.6] - 2026-09-11
 

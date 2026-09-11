@@ -1,4 +1,4 @@
-import { Markdown } from "@oh-my-pi/pi-tui";
+import { Markdown } from "@oh-my-pi/pi-tui/components/markdown";
 import { getMarkdownTheme, highlightCode, type Theme } from "../modes/theme/theme";
 import {
 	formatDuration,

@@ -1,4 +1,5 @@
-import { type Component, Markdown } from "@oh-my-pi/pi-tui";
+import { Markdown } from "@oh-my-pi/pi-tui/components/markdown";
+import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
@@ -14,7 +15,8 @@ import {
 } from "../tools/json-tree";
 import { formatStyledTruncationWarning, stripOutputNotice } from "../tools/output-meta";
 import { formatExpandHint, truncateToWidth } from "../tools/render-utils";
-import { renderStatusLine, WidthAwareText } from "../tui";
+import { renderStatusLine } from "../tui/status-line";
+import { WidthAwareText } from "../tui/width-aware-text";
 import type { MCPToolDetails } from "./tool-bridge";
 
 export function renderMCPCall(args: Record<string, unknown>, theme: Theme, label: string): Component {

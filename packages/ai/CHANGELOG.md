@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Provider definitions (76 registry entries) now materialize lazily per provider id instead of eagerly at import, cutting tens of MB of resident memory for sessions that use a single provider.
+
 ## [18.0.5] - 2026-09-09
 
 ### Fixed

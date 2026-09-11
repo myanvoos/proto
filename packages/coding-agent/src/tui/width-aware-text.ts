@@ -1,4 +1,6 @@
-import { type Component, getPaddingX, Text } from "@oh-my-pi/pi-tui";
+import { Text } from "@oh-my-pi/pi-tui/components/text";
+import type { Component } from "@oh-my-pi/pi-tui/tui";
+import { getPaddingX } from "@oh-my-pi/pi-tui/utils";
 
 export class WidthAwareText implements Component {
 	#format: (contentWidth: number) => string;

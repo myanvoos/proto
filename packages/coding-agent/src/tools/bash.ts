@@ -3,8 +3,8 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import type { Component } from "@oh-my-pi/pi-tui";
-import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
+import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { getProjectDir, isEnoent, isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import {
 	DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
@@ -47,8 +47,8 @@ import type {
 	ClientBridgeTerminalOutput,
 } from "../session/client-bridge";
 import { DEFAULT_MAX_BYTES, enforceInlineByteCap, TailBuffer } from "../session/streaming-output";
-import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
+import { renderStatusLine } from "../tui/status-line";
 import { webpExclusionForModel } from "../utils/image-loading";
 import { resizeImage } from "../utils/image-resize";
 import { getSixelLineMask } from "../utils/sixel";

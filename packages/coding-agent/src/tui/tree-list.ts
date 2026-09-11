@@ -1,4 +1,4 @@
-import { replaceTabs } from "@oh-my-pi/pi-tui";
+import { replaceTabs } from "@oh-my-pi/pi-tui/utils";
 import type { Theme } from "../modes/theme/theme";
 import { formatMoreItems } from "../tools/render-utils";
 import type { TreeContext } from "./types";

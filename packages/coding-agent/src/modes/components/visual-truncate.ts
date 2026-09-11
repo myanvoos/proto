@@ -1,4 +1,4 @@
-import { Text } from "@oh-my-pi/pi-tui";
+import { Text } from "@oh-my-pi/pi-tui/components/text";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 interface VisualTruncateResult {

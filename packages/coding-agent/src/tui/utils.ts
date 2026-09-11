@@ -1,7 +1,8 @@
-import { padding, visibleWidth } from "@oh-my-pi/pi-tui";
+import { padding, visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import type { Theme } from "../modes/theme/theme";
 
-export { Ellipsis, truncateToWidth } from "@oh-my-pi/pi-tui";
+export { Ellipsis } from "@oh-my-pi/pi-natives";
+export { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
 
 const hashBuf = new ArrayBuffer(8);
 const hashView = new DataView(hashBuf);

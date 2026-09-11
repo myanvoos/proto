@@ -1,13 +1,6 @@
-import type { Component } from "@oh-my-pi/pi-tui";
-import {
-	ImageProtocol,
-	padding,
-	replaceTabs,
-	TERMINAL,
-	truncateToWidth,
-	visibleWidth,
-	wrapTextWithAnsi,
-} from "@oh-my-pi/pi-tui";
+import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import type { Component } from "@oh-my-pi/pi-tui/tui";
+import { padding, replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui/utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { getSixelLineMask } from "../utils/sixel";

@@ -7,7 +7,7 @@
 - Bounded memoization caches now cover ANSI wrapping, truncation, and output-block composition, with printable-ASCII and SGR-only fast paths for visible-width measurement; full-frame renders drop ~27% at p50 and ~54% at p90, keystroke frames ~26% at p50 and ~60% at p99, and cold first frame ~29%.
 - Markdown and syntax-highlighted code render through shared content-addressed caches that survive transcript rebuilds (bounded LRU with explicit entry/total caps), cutting cold compose of a 3,400-message transcript by ~70% at p50 (1.07s -> ~0.33s in the stress harness; per-frame warm renders ~5ms).
 - Large tool outputs and code blocks (up to 4 MiB per entry, 16 MiB total) stay cached across renders so oversized blocks no longer re-highlight on every frame.
-
+- LaTeX-to-Unicode symbol tables allocate lazily on first use instead of at module import.
 ## [18.0.6] - 2026-09-11
 
 ### Changed

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getTerminalId } from "@oh-my-pi/pi-tui";
+import { getTerminalId } from "@oh-my-pi/pi-tui/ttyid";
 import { getSessionsDir, getTerminalSessionsDir, isEnoent, logger, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
 import type { SessionStorage } from "./session-storage";
 

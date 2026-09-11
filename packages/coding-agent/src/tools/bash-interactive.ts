@@ -1,15 +1,8 @@
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
-import {
-	type Component,
-	extractPrintableText,
-	matchesKey,
-	padding,
-	parseKey,
-	parseKittySequence,
-	truncateToWidth,
-	visibleWidth,
-} from "@oh-my-pi/pi-tui";
+import { extractPrintableText, matchesKey, parseKey, parseKittySequence } from "@oh-my-pi/pi-tui/keys";
+import type { Component } from "@oh-my-pi/pi-tui/tui";
+import { padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type * as XtermModule from "@oh-my-pi/pi-utils/vterm";
 import type { Terminal as XtermTerminalType } from "@oh-my-pi/pi-utils/vterm";

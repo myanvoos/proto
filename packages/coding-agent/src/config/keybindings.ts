@@ -1,14 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { Keybinding, KeybindingDefinitions, KeybindingsConfig, KeyId } from "@oh-my-pi/pi-tui/keybindings";
 import {
-	type Keybinding,
-	type KeybindingDefinitions,
-	type KeybindingsConfig,
-	type KeyId,
 	setKeybindings,
 	TUI_KEYBINDINGS,
 	KeybindingsManager as TuiKeybindingsManager,
-} from "@oh-my-pi/pi-tui";
+} from "@oh-my-pi/pi-tui/keybindings";
 import { getActiveProfile, getAgentDir, getProfileRootDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { JSONC, YAML } from "bun";
 

@@ -1,9 +1,10 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Ellipsis } from "@oh-my-pi/pi-natives";
-import type { Component } from "@oh-my-pi/pi-tui";
-import { getKeybindings, replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { SGR_FG_RESET } from "@oh-my-pi/pi-tui/ansi";
+import { getKeybindings } from "@oh-my-pi/pi-tui/keybindings";
+import type { Component } from "@oh-my-pi/pi-tui/tui";
+import { replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui/utils";
 import { pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
@@ -13,7 +14,7 @@ import { Hasher } from "../tui/utils";
 import { formatDimensionNote, type ResizedImage } from "../utils/image-resize";
 
 export { Ellipsis } from "@oh-my-pi/pi-natives";
-export { replaceTabs, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+export { replaceTabs, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui/utils";
 
 export function resolveImageOptions(): { maxWidthCells: number; maxHeightCells?: number } {
 	const activeSettings = isSettingsInitialized() ? settings : undefined;

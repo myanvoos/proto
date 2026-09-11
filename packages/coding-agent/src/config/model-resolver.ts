@@ -7,7 +7,7 @@ import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family"
 import { type GeneratedProvider, getBundledModels, modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
 import { resolveBareVariantAlias, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
-import { fuzzyMatch } from "@oh-my-pi/pi-tui";
+import { fuzzyMatch } from "@oh-my-pi/pi-tui/fuzzy";
 import { logger } from "@oh-my-pi/pi-utils";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import { parseThinkingLevel, resolveThinkingLevelForModel } from "../thinking";

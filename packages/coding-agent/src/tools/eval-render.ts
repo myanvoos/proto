@@ -1,5 +1,7 @@
-import type { Component } from "@oh-my-pi/pi-tui";
-import { Markdown, Text, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { Markdown } from "@oh-my-pi/pi-tui/components/markdown";
+import { Text } from "@oh-my-pi/pi-tui/components/text";
+import type { Component } from "@oh-my-pi/pi-tui/tui";
+import { wrapTextWithAnsi } from "@oh-my-pi/pi-tui/utils";
 import { formatNumber, pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
@@ -9,7 +11,8 @@ import { formatContextUsage } from "../modes/components/status-line/context-thre
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import type { ExecutionMetadata } from "../session/execution-metadata";
-import { markFramedBlockComponent, outputBlockContentWidth, renderCodeCell } from "../tui";
+import { renderCodeCell } from "../tui/code-cell";
+import { markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
 import { formatEvalCodeForDisplay } from "./eval-format";
 import { renderJavaScriptAstLines } from "./eval-format/javascript-ast";
 import { renderPythonAstLines } from "./eval-format/python-ast";
