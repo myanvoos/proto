@@ -66,7 +66,6 @@ import { YieldTool } from "./yield";
 
 export * from "../goals";
 export * from "../session/streaming-output";
-export * from "../task";
 export * from "../web/search";
 export * from "./ask";
 export * from "./bash";

@@ -7,7 +7,6 @@ import { getConfigDirs } from "../../config";
 
 import { execCommand } from "../../exec/exec";
 
-import * as PiCodingAgent from "../../index";
 import { ReviewCommand } from "./bundled/review";
 import type {
 	CustomCommand,
@@ -158,7 +157,7 @@ export async function loadCustomCommands(options: LoadCustomCommandsOptions = {}
 			execCommand(command, args, execOptions?.cwd ?? cwd, execOptions),
 		arktype,
 		zod,
-		pi: PiCodingAgent,
+		pi: await import("../../index"),
 	};
 
 	for (const loaded of loadBundledCommands(sharedApi)) {

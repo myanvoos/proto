@@ -6,7 +6,7 @@ import type { ToolSession } from "../index";
 import { expandPath } from "../path-utils";
 import { ToolAbortError, ToolError } from "../tool-errors";
 import { pickElectronTarget, shouldPreserveConnectedBrowserFocus } from "./attach";
-import { CmuxTab, runCmuxCode } from "./cmux/cmux-tab";
+import type { CmuxTab } from "./cmux/cmux-tab";
 import { mapWaitUntil } from "./cmux/rpc";
 import { DEFAULT_VIEWPORT } from "./launch";
 import {
@@ -341,7 +341,8 @@ async function acquireCmuxTab(
 			}
 		}
 
-		const cmuxTab = new CmuxTab({ client: browser.client, surfaceId, url: initialUrl });
+		const { CmuxTab: CmuxTabImpl } = await import("./cmux/cmux-tab");
+		const cmuxTab = new CmuxTabImpl({ client: browser.client, surfaceId, url: initialUrl });
 		if (attachedSurface && opts.url) {
 			await cmuxTab.goto(opts.url, { waitUntil: opts.waitUntil ?? "load", timeoutMs: opts.timeoutMs });
 		}
@@ -419,6 +420,7 @@ async function runInTabWithSnapshot(
 	if (tab.backend === "cmux") {
 		const runSignal = opts.signal ? AbortSignal.any([opts.signal, closeAc.signal]) : closeAc.signal;
 		try {
+			const { runCmuxCode } = await import("./cmux/cmux-tab");
 			runCmuxCode(tab.cmuxTab, {
 				code: opts.code,
 				timeoutMs: opts.timeoutMs,

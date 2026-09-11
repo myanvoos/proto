@@ -23,13 +23,25 @@ import { getExtensionNameFromPath } from "../../discovery/helpers";
 import type { ExecOptions } from "../../exec/exec";
 import { execCommand } from "../../exec/exec";
 
-import * as PiCodingAgent from "../../index";
+import type * as PiCodingAgent from "../../index";
 import type { CustomMessagePayload } from "../../session/messages";
 import { EventBus } from "../../utils/event-bus";
-import { installHostModuleResolution, loadHostModule } from "../plugins/host-module-compat";
+import type {
+	installHostModuleResolution as InstallHostModuleResolution,
+	loadHostModule as LoadHostModule,
+} from "../plugins/host-module-compat";
 import { getAllPluginExtensionPaths } from "../plugins/loader";
 
 import { resolvePath, withHostGuard } from "../utils";
+
+let hostCompat:
+	| { installHostModuleResolution: typeof InstallHostModuleResolution; loadHostModule: typeof LoadHostModule }
+	| undefined;
+async function getHostModuleCompat() {
+	hostCompat ??= await import("../plugins/host-module-compat");
+	return hostCompat;
+}
+
 import type {
 	AssistantThinkingRenderer,
 	Extension,
@@ -44,8 +56,6 @@ import type {
 	ToolDefinition,
 	ToolInfo,
 } from "./types";
-
-installHostModuleResolution();
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 type LoadedExtensionModule = ExtensionFactory | { default?: ExtensionFactory };
@@ -337,8 +347,10 @@ interface ImportedExtensionModule {
 
 async function importExtensionModule(extensionPath: string, cwd: string): Promise<ImportedExtensionModule> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
+	const host = await getHostModuleCompat();
+	host.installHostModuleResolution();
 	try {
-		const module = (await withHostGuard(() => loadHostModule(resolvedPath))) as LoadedExtensionModule;
+		const module = (await withHostGuard(() => host.loadHostModule(resolvedPath))) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
 		if (typeof factory !== "function") {
 			return {
@@ -367,8 +379,10 @@ async function bindExtension(
 		return { extension: null, error: imported.error };
 	}
 	try {
+		(await getHostModuleCompat()).installHostModuleResolution();
 		const extension = createExtension(extensionPath, imported.resolvedPath);
-		const api = new ConcreteExtensionAPI(PiCodingAgent, extension, runtime, cwd, eventBus);
+		const pi = await import("../../index");
+		const api = new ConcreteExtensionAPI(pi, extension, runtime, cwd, eventBus);
 		await withHostGuard(() => runExtensionFactory(factory, api, runtime));
 
 		return { extension, error: null };
@@ -385,8 +399,10 @@ export async function loadExtensionFromFactory(
 	runtime: IExtensionRuntime,
 	name = "<inline>",
 ): Promise<Extension> {
+	(await getHostModuleCompat()).installHostModuleResolution();
 	const extension = createExtension(name, name);
-	const api = new ConcreteExtensionAPI(PiCodingAgent, extension, runtime, cwd, eventBus);
+	const pi = await import("../../index");
+	const api = new ConcreteExtensionAPI(pi, extension, runtime, cwd, eventBus);
 	await runExtensionFactory(factory, api, runtime);
 	return extension;
 }

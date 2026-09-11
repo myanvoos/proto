@@ -10,7 +10,7 @@ import { execCommand } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
 import { getAllPluginToolPaths } from "../../extensibility/plugins/loader";
 
-import * as PiCodingAgent from "../../index";
+import type * as PiCodingAgent from "../../index";
 import { createNoOpUIContext, resolvePath, withHostGuard } from "../utils";
 import type { CustomToolAPI, CustomToolFactory, LoadedCustomTool, ToolLoadError } from "./types";
 
@@ -182,7 +182,7 @@ export async function loadCustomTools(
 		reject?(reason: string): Promise<AgentToolResult<unknown> | undefined>;
 	}) => void,
 ) {
-	const loader = new CustomToolLoader(PiCodingAgent, cwd, builtInToolNames, pushPendingAction);
+	const loader = new CustomToolLoader(await import("../../index"), cwd, builtInToolNames, pushPendingAction);
 	await loader.load(pathsWithSources);
 	return {
 		tools: loader.tools,

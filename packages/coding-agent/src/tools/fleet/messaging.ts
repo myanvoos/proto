@@ -6,7 +6,6 @@ import type { RenderResultOptions } from "../../extensibility/custom-tools/types
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
 import { type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
-import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import {
 	createCachedComponent,
@@ -62,6 +61,7 @@ export async function executeList(
 ): Promise<AgentToolResult<CoordinationDetails>> {
 	let refs = registry.list();
 	if (!refs.some(ref => ref.id !== senderId && ref.status !== "aborted" && ref.kind !== "advisor")) {
+		const { registerPersistedSubagents } = await import("../../registry/persisted-agents");
 		await registerPersistedSubagents(registry, registry.get(senderId)?.sessionFile);
 		refs = registry.list();
 	}

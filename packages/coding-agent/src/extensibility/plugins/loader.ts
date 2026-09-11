@@ -3,15 +3,12 @@ import * as path from "node:path";
 import { getPluginsDir, getPluginsLockfile, isEnoent } from "@oh-my-pi/pi-utils";
 import { getConfigDirPaths } from "../../config";
 import { registerPluginCacheInvalidator, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
-import { installHostModuleResolution } from "./host-module-compat";
 import { normalizePluginRuntimeConfig } from "./runtime-config";
 import type { InstalledPlugin, PluginManifest, PluginRuntimeConfig, ProjectPluginOverrides } from "./types";
 
 interface ScopedInstalledPlugin extends InstalledPlugin {
 	scope: "user" | "project";
 }
-
-installHostModuleResolution();
 
 const enabledPluginsCache = new Map<string, Promise<ScopedInstalledPlugin[]>>();
 

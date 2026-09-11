@@ -6,7 +6,6 @@ import { hookCapability } from "../../capability/hook";
 import type { Hook } from "../../discovery";
 import { loadCapability } from "../../discovery";
 
-import * as PiCodingAgent from "../../index";
 import type { CustomMessagePayload } from "../../session/messages";
 import { resolvePath, withHostGuard } from "../utils";
 import { execCommand } from "./runner";
@@ -94,7 +93,7 @@ async function createHookAPI(
 		logger,
 		arktype: type,
 		zod,
-		pi: PiCodingAgent,
+		pi: await import("../../index"),
 	} as HookAPI;
 
 	return {

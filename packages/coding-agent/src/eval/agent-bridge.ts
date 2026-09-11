@@ -1,10 +1,5 @@
 import { type } from "@oh-my-pi/omptype";
-import {
-	buildStructuredSubagentRecoveryHint,
-	runStructuredSubagent,
-	StructuredSubagentError,
-	type StructuredSubagentSchemaMode,
-} from "../task/structured-subagent";
+import type { StructuredSubagentSchemaMode } from "../task/structured-subagent";
 import type { AgentProgress, SingleResult } from "../task/types";
 import type { NestedRepoPatch } from "../task/worktree";
 import type { ToolSession } from "../tools";
@@ -120,6 +115,9 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 			`agent() blocked: turn token budget exhausted (${turnBudget.spent}/${turnBudget.total} output tokens). Raise or drop the +Nk! ceiling to continue.`,
 		);
 	}
+	const { buildStructuredSubagentRecoveryHint, runStructuredSubagent, StructuredSubagentError } = await import(
+		"../task/structured-subagent"
+	);
 	const isolation =
 		Object.hasOwn(parsed, "isolated") || Object.hasOwn(parsed, "apply") || Object.hasOwn(parsed, "merge")
 			? {

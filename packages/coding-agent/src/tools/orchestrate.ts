@@ -6,23 +6,23 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
-import {
-	type KillOutcome,
+import type {
+	KillOutcome,
 	OrchestratorRuntime,
-	type SendOutcome,
-	type WaitOutcome,
-	type WorkerReceipt,
-	type WorkerScreen,
-	type WorkerState,
+	SendOutcome,
+	WaitOutcome,
+	WorkerReceipt,
+	WorkerScreen,
+	WorkerState,
 } from "../orchestrator/runtime";
 import orchestrateKillDescription from "../prompts/tools/orchestrate-kill.md" with { type: "text" };
 import orchestrateListDescription from "../prompts/tools/orchestrate-list.md" with { type: "text" };
 import orchestrateSendDescription from "../prompts/tools/orchestrate-send.md" with { type: "text" };
 import orchestrateSpawnDescription from "../prompts/tools/orchestrate-spawn.md" with { type: "text" };
 import orchestrateWaitDescription from "../prompts/tools/orchestrate-wait.md" with { type: "text" };
-import { renderSpawnSummary } from "../task";
 import { discoverAgents } from "../task/discovery";
-import { runStructuredSubagent } from "../task/structured-subagent";
+import { renderSpawnSummary } from "../task/spawn-summary";
+import type { runStructuredSubagent as RunStructuredSubagent } from "../task/structured-subagent";
 import { oneLineLabel } from "../task/types";
 import { WORKER_EFFORTS, type WorkerEffort } from "../thinking";
 import { renderStatusLine } from "../tui";
@@ -104,8 +104,21 @@ export interface OrchestrateToolDetails {
 	killed?: KillOutcome;
 }
 
-function screensOf(session: ToolSession, ids?: string[]): WorkerScreen[] {
-	return OrchestratorRuntime.global().screens(session, ids);
+let orchestratorRuntimeModule: { OrchestratorRuntime: { global: () => OrchestratorRuntime } } | undefined;
+async function getOrchestratorRuntimeModule() {
+	orchestratorRuntimeModule ??= await import("../orchestrator/runtime");
+	return orchestratorRuntimeModule;
+}
+
+let spawnSubagentModule: { runStructuredSubagent: typeof RunStructuredSubagent } | undefined;
+async function getSpawnSubagentModule() {
+	spawnSubagentModule ??= await import("../task/structured-subagent");
+	return spawnSubagentModule;
+}
+
+async function screensOf(session: ToolSession, ids?: string[]): Promise<WorkerScreen[]> {
+	const runtime = (await getOrchestratorRuntimeModule()).OrchestratorRuntime;
+	return runtime.global().screens(session, ids);
 }
 
 function textResult(text: string, details: OrchestrateToolDetails): AgentToolResult<OrchestrateToolDetails> {
@@ -143,13 +156,13 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 		if (params.effort !== undefined && !WORKER_EFFORTS.includes(params.effort as WorkerEffort)) {
 			return textResult(`Invalid effort ${JSON.stringify(params.effort)}. Use "lo", "med", or "hi".`, {
 				op: "spawn",
-				screens: screensOf(this.session),
+				screens: await screensOf(this.session),
 			});
 		}
-		const registry = OrchestratorRuntime.global();
+		const registry = (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global();
 		if (params.isolated === true) {
 			try {
-				const execution = await runStructuredSubagent({
+				const execution = await (await getSpawnSubagentModule()).runStructuredSubagent({
 					session: this.session,
 					invocationKind: "worker",
 					assignment: params.prompt.trim(),
@@ -173,14 +186,14 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 				});
 				return textResult(`${summary}\n\nThe isolated worker is terminal — spawn a new one for further work.`, {
 					op: "spawn",
-					screens: screensOf(this.session),
+					screens: await screensOf(this.session),
 				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return {
 					...textResult(`Isolated worker failed: ${message}`, {
 						op: "spawn",
-						screens: screensOf(this.session),
+						screens: await screensOf(this.session),
 					}),
 					isError: true,
 				};
@@ -197,7 +210,7 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 		const agentName = params.agent?.trim() || "worker";
 		return textResult(
 			`Spawned \`${agentName}\` worker \`${id}\` (label \`${label}\`, turn job \`${jobId}\`). The immutable worker id is the only routing address; its result will be delivered when the turn finishes. Continue this worker with orchestrate_send \`${id}\`.`,
-			{ op: "spawn", screens: screensOf(this.session), spawned: { id, label, agent: agentName, jobId } },
+			{ op: "spawn", screens: await screensOf(this.session), spawned: { id, label, agent: agentName, jobId } },
 		);
 	}
 }
@@ -218,7 +231,7 @@ export class OrchestrateSendTool implements AgentTool<typeof orchestrateSendSche
 		_toolCallId: string,
 		params: typeof orchestrateSendSchema.infer,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
-		const outcome = await OrchestratorRuntime.global().send(this.session, {
+		const outcome = await (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global().send(this.session, {
 			session: params.worker,
 			message: params.message,
 		});
@@ -228,7 +241,7 @@ export class OrchestrateSendTool implements AgentTool<typeof orchestrateSendSche
 				: outcome.mode === "steered"
 					? `Accepted steer for worker \`${outcome.id}\` (label \`${outcome.label}\`, turn ${outcome.receipt.turn}, job \`${outcome.jobId}\`). Receipt: accepted.`
 					: `Accepted message for worker \`${outcome.id}\` (label \`${outcome.label}\`) as queued turn ${outcome.receipt.turn}; receipt: queued.`;
-		return textResult(ack, { op: "send", screens: screensOf(this.session), send: outcome });
+		return textResult(ack, { op: "send", screens: await screensOf(this.session), send: outcome });
 	}
 }
 
@@ -253,14 +266,15 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<OrchestrateToolDetails>,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
-		const registry = OrchestratorRuntime.global();
+		const registry = (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global();
+		const progressScreens = await screensOf(this.session, params.workers);
 
 		const emitProgress = (): void => {
 			onUpdate?.({
 				content: [{ type: "text", text: "" }],
 				details: {
 					op: "wait",
-					screens: screensOf(this.session, params.workers),
+					screens: progressScreens,
 					wait: { settled: [], stillRunning: [], timedOut: false, waiting: true },
 				},
 			});
@@ -279,7 +293,7 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 		}
 		const details: OrchestrateToolDetails = {
 			op: "wait",
-			screens: screensOf(this.session, params.workers),
+			screens: await screensOf(this.session, params.workers),
 			wait: {
 				settled: outcome.settled.map(({ id, label, jobId, status, receipt }) => ({
 					id,
@@ -331,13 +345,16 @@ export class OrchestrateKillTool implements AgentTool<typeof orchestrateKillSche
 		_toolCallId: string,
 		params: typeof orchestrateKillSchema.infer,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
-		const outcome = await OrchestratorRuntime.global().kill(this.session, params.worker);
+		const outcome = await (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global().kill(
+			this.session,
+			params.worker,
+		);
 		const cancelNote = outcome.cancelledTurn ? " Its in-flight turn was cancelled." : "";
 		return textResult(
 			`Worker \`${outcome.id}\` (label \`${outcome.label}\`) is terminal; receipt=${outcome.receipt.status}, reason=${outcome.receipt.reason ?? "explicit-kill"}.${cancelNote} Recover at history://${outcome.id} or agent://${outcome.id}.`,
 			{
 				op: "kill",
-				screens: screensOf(this.session),
+				screens: await screensOf(this.session),
 				killed: outcome,
 			},
 		);
@@ -357,7 +374,7 @@ export class OrchestrateListTool implements AgentTool<typeof orchestrateListSche
 	}
 
 	async execute(): Promise<AgentToolResult<OrchestrateToolDetails>> {
-		const screens = screensOf(this.session);
+		const screens = await screensOf(this.session);
 		const details: OrchestrateToolDetails = { op: "list", screens };
 		if (screens.length === 0) {
 			return textResult("No workers. Spawn one with orchestrate_spawn.", details);

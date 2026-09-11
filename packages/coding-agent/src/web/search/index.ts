@@ -8,7 +8,7 @@ import type { CustomTool, CustomToolContext, RenderResultOptions } from "../../e
 import type { Theme } from "../../modes/theme/theme";
 import webSearchSystemPrompt from "../../prompts/system/web-search.md" with { type: "text" };
 import webSearchDescription from "../../prompts/tools/web-search.md" with { type: "text" };
-import { discoverAuthStorage } from "../../sdk";
+import { discoverAuthStorage } from "../../session/auth-broker-config";
 import type { ToolSession } from "../../tools";
 import { formatAge } from "../../tools/render-utils";
 import { throwIfAborted } from "../../tools/tool-errors";
