@@ -33,11 +33,22 @@ export function createAbortSourceTracker(callerSignal?: AbortSignal): AbortSourc
 	};
 }
 
-export function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-	if (!signal) return promise;
-	if (signal.aborted) return Promise.reject(signal.reason ?? new AIError.AbortError());
+export function raceWithSignal<T>(
+	promise: Promise<T>,
+	signal: AbortSignal | undefined,
+	createAbortError: () => unknown = () => signal?.reason ?? new AIError.AbortError(),
+	onCleanup?: () => void,
+): Promise<T> {
+	if (!signal) return onCleanup ? promise.finally(onCleanup) : promise;
+	if (signal.aborted) {
+		onCleanup?.();
+		return Promise.reject(createAbortError());
+	}
 	const { promise: aborted, reject } = Promise.withResolvers<never>();
-	const onAbort = () => reject(signal.reason ?? new AIError.AbortError());
+	const onAbort = (): void => reject(createAbortError());
 	signal.addEventListener("abort", onAbort, { once: true });
-	return Promise.race([promise, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
+	return Promise.race([promise, aborted]).finally(() => {
+		signal.removeEventListener("abort", onAbort);
+		onCleanup?.();
+	});
 }

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { $env, $envExact, extractRetryHint, getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
 import {
 	isSqliteCorruptionError,
@@ -61,6 +60,7 @@ import { syntheticUsageProvider } from "./usage/synthetic";
 import { umansUsageProvider } from "./usage/umans";
 import { xaiOauthUsageProvider } from "./usage/xai-oauth";
 import { zaiRankingStrategy, zaiUsageProvider } from "./usage/zai";
+import { raceWithSignal } from "./utils/abort";
 
 export {
 	isSqliteBusyError,
@@ -74,7 +74,7 @@ const PRIMARY_WINDOW_HOT_FRACTION = 0.85;
 const OAUTH_BEARER_FINGERPRINT_HISTORY_LIMIT = 8;
 
 function fingerprintOAuthBearer(bearer: string): string {
-	return createHash("sha256").update(bearer).digest("base64url");
+	return new Bun.CryptoHasher("sha256").update(bearer).digest("base64url");
 }
 const SESSION_STICKY_CACHE_PREFIX = "session:sticky:";
 
@@ -737,43 +737,6 @@ function parseUsageCacheEntry<T>(raw: string): UsageCacheEntry<T> | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-function raceUsageWithSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-	if (!signal) return promise;
-	if (signal.aborted) return Promise.reject(new AIError.AbortError("usage fetch aborted"));
-	return new Promise<T>((resolve, reject) => {
-		const onAbort = (): void => {
-			signal.removeEventListener("abort", onAbort);
-			reject(new AIError.AbortError("usage fetch aborted"));
-		};
-		signal.addEventListener("abort", onAbort, { once: true });
-		promise.then(
-			value => {
-				signal.removeEventListener("abort", onAbort);
-				resolve(value);
-			},
-			err => {
-				signal.removeEventListener("abort", onAbort);
-				reject(err);
-			},
-		);
-	});
-}
-
-function raceCredentialRefreshWithSignal<T>(
-	promise: Promise<T>,
-	signal: AbortSignal | undefined,
-	message = "credential refresh aborted",
-): Promise<T> {
-	if (!signal) return promise;
-	if (signal.aborted) return Promise.reject(new AIError.AbortError(message));
-	const abort = Promise.withResolvers<never>();
-	const onAbort = (): void => abort.reject(new AIError.AbortError(message));
-	signal.addEventListener("abort", onAbort, { once: true });
-	return Promise.race([promise, abort.promise]).finally(() => {
-		signal.removeEventListener("abort", onAbort);
-	});
 }
 
 function authCredentialEquals(left: AuthCredential, right: AuthCredential): boolean {
@@ -1892,10 +1855,10 @@ export class AuthStorage {
 				leaseExpiresAt === undefined
 					? OAUTH_REFRESH_LEASE_POLL_MS
 					: Math.min(Math.max(leaseExpiresAt - Date.now(), OAUTH_REFRESH_LEASE_POLL_MS), 250);
-			await raceCredentialRefreshWithSignal(
+			await raceWithSignal(
 				Bun.sleep(waitMs),
 				options.signal,
-				"OAuth refresh ownership wait aborted by caller",
+				() => new AIError.AbortError("OAuth refresh ownership wait aborted by caller"),
 			);
 		}
 
@@ -3149,13 +3112,14 @@ export class AuthStorage {
 
 				let report: UsageReport | null;
 				try {
-					report = await raceUsageWithSignal(
+					report = await raceWithSignal(
 						this.#getUsageReport(provider, entry.credential, {
 							baseUrl: options.baseUrl,
 							timeoutMs: this.#usageRequestTimeoutMs,
 							signal: options.signal,
 						}),
 						options.signal,
+						() => new AIError.AbortError("usage fetch aborted"),
 					);
 				} catch (error) {
 					if (options.signal?.aborted) throw error;
@@ -3283,7 +3247,11 @@ export class AuthStorage {
 				});
 				this.#usageReportsInFlight.set(overrideKey, shared);
 			}
-			const reports = await raceUsageWithSignal(shared, options?.signal);
+			const reports = await raceWithSignal(
+				shared,
+				options?.signal,
+				() => new AIError.AbortError("usage fetch aborted"),
+			);
 			if (shouldReconcileStoreHookReports && reports) this.#reconcileCodexUsageBlocksFromReports(reports);
 			return reports;
 		}
@@ -3626,9 +3594,10 @@ export class AuthStorage {
 		let blockedUntil = now + (options?.retryAfterMs ?? AuthStorage.#defaultBackoffMs);
 
 		if (credentialType === "oauth" && target.credential.type === "oauth" && routing.strategy) {
-			const report = await raceUsageWithSignal(
+			const report = await raceWithSignal(
 				this.#getUsageReport(provider, target.credential, options),
 				options?.signal,
+				() => new AIError.AbortError("usage fetch aborted"),
 			);
 			if (report) {
 				const scopedLimits = this.#getScopedUsageLimits(routing.strategy, report, routing.rankingContext);
@@ -4131,7 +4100,8 @@ export class AuthStorage {
 	): Promise<OAuthCredentials> {
 		if (credentialId !== undefined) {
 			const existing = this.#oauthCredentialRefreshInFlight.get(credentialId);
-			if (existing) return raceCredentialRefreshWithSignal(existing, signal);
+			if (existing)
+				return raceWithSignal(existing, signal, () => new AIError.AbortError("credential refresh aborted"));
 		}
 		if (Date.now() + OAUTH_REFRESH_SKEW_MS < credential.expires) return credential;
 		if (credentialId === undefined) {
@@ -4141,7 +4111,7 @@ export class AuthStorage {
 			this.#oauthCredentialRefreshInFlight.delete(credentialId);
 		});
 		this.#oauthCredentialRefreshInFlight.set(credentialId, promise);
-		return raceCredentialRefreshWithSignal(promise, signal);
+		return raceWithSignal(promise, signal, () => new AIError.AbortError("credential refresh aborted"));
 	}
 
 	async #refreshOAuthCredentialUnshared(
@@ -5313,7 +5283,7 @@ export class AuthStorage {
 
 	async refreshCredentialById(id: number, signal?: AbortSignal): Promise<AuthCredentialSnapshotEntry> {
 		const existing = this.#oauthRefreshInFlight.get(id);
-		if (existing) return raceCredentialRefreshWithSignal(existing, signal);
+		if (existing) return raceWithSignal(existing, signal, () => new AIError.AbortError("credential refresh aborted"));
 
 		const promise = (async () => {
 			this.#bumpGeneration("credential-refresh-start");
@@ -5327,7 +5297,7 @@ export class AuthStorage {
 			}
 		})();
 		this.#oauthRefreshInFlight.set(id, promise);
-		return raceCredentialRefreshWithSignal(promise, signal);
+		return raceWithSignal(promise, signal, () => new AIError.AbortError("credential refresh aborted"));
 	}
 
 	async forceRefreshCredentialById(id: number, signal?: AbortSignal): Promise<AuthCredentialSnapshotEntry> {

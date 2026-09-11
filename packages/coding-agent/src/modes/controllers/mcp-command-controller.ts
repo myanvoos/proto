@@ -1,6 +1,7 @@
 import * as path from "node:path";
+import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
 import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
-import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
+import { getMCPConfigPath, getProjectDir, withTimeout } from "@oh-my-pi/pi-utils";
 import { clearCache as clearFsCache } from "../../capability/fs";
 import type { SourceMeta } from "../../capability/types";
 import { expandEnvVarsDeep } from "../../discovery/helpers";
@@ -79,24 +80,6 @@ class MutableHintBlock extends TranscriptBlock {
 	seal(): void {
 		this.#sealed = true;
 	}
-}
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string, onTimeout?: () => void): Promise<T> {
-	const { promise: timeoutPromise, reject } = Promise.withResolvers<T>();
-	const timer = setTimeout(() => {
-		onTimeout?.();
-		reject(new Error(message));
-	}, timeoutMs);
-	return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
-}
-function raceAbortSignal<T>(promise: Promise<T>, signal: AbortSignal, createError: () => Error): Promise<T> {
-	if (signal.aborted) return Promise.reject(createError());
-
-	const aborted = Promise.withResolvers<never>();
-	const onAbort = (): void => aborted.reject(createError());
-	signal.addEventListener("abort", onAbort, { once: true });
-	return Promise.race([promise, aborted.promise]).finally(() => {
-		signal.removeEventListener("abort", onAbort);
-	});
 }
 
 type ActiveMCPOAuthFlow = {
@@ -839,11 +822,9 @@ export class MCPCommandController {
 			};
 			if (oauthTimeout.signal.aborted) throw createAbortError();
 
-			const credentials = await withTimeout(
-				raceAbortSignal(flow.login(), oauthTimeout.signal, createAbortError),
-				5 * 60 * 1000,
-				"OAuth flow timed out after 5 minutes",
-				() => oauthTimeout.abort("MCP OAuth flow timed out"),
+			const timeout = setTimeout(() => oauthTimeout.abort("MCP OAuth flow timed out"), 5 * 60 * 1000);
+			const credentials = await raceWithSignal(flow.login(), oauthTimeout.signal, createAbortError, () =>
+				clearTimeout(timeout),
 			);
 
 			this.ctx.present([

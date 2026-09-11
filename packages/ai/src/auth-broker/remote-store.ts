@@ -15,6 +15,7 @@ import * as AIError from "../error";
 import type { OAuthCredentials } from "../registry/oauth/types";
 import type { Provider } from "../types";
 import type { ObservedUsageEntry, UsageReport } from "../usage";
+import { raceWithSignal } from "../utils/abort";
 import { type AuthBrokerClient, AuthBrokerError, AuthBrokerStreamUnsupportedError } from "./client";
 import type {
 	CredentialBlockSnapshot,
@@ -849,7 +850,11 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	}
 
 	async fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
-		const reports = await this.#raceWithSignal(this.#loadUsageReports(), signal);
+		const reports = await raceWithSignal(
+			this.#loadUsageReports(),
+			signal,
+			() => new AIError.AbortError("auth-broker request aborted"),
+		);
 		if (!reports) return null;
 		return this.#filterUsageReports(this.#applyUsageOverlays(reports));
 	}
@@ -859,7 +864,11 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		credential: OAuthCredential,
 		signal?: AbortSignal,
 	): Promise<UsageReport | null> {
-		const reports = await this.#raceWithSignal(this.#loadUsageReports(), signal);
+		const reports = await raceWithSignal(
+			this.#loadUsageReports(),
+			signal,
+			() => new AIError.AbortError("auth-broker request aborted"),
+		);
 		const visibleReports = reports ? this.#filterUsageReports(reports) : null;
 		const matched = visibleReports ? matchUsageReport(visibleReports, provider, credential) : null;
 		const overlay = this.#getActiveUsageOverlay(provider, credential);
@@ -930,28 +939,6 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			}
 		}
 		return merged;
-	}
-
-	#raceWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-		if (!signal) return promise;
-		if (signal.aborted) return Promise.reject(new AIError.AbortError("auth-broker request aborted"));
-		return new Promise<T>((resolve, reject) => {
-			const onAbort = (): void => {
-				signal.removeEventListener("abort", onAbort);
-				reject(new AIError.AbortError("auth-broker request aborted"));
-			};
-			signal.addEventListener("abort", onAbort, { once: true });
-			promise.then(
-				value => {
-					signal.removeEventListener("abort", onAbort);
-					resolve(value);
-				},
-				err => {
-					signal.removeEventListener("abort", onAbort);
-					reject(err);
-				},
-			);
-		});
 	}
 
 	#replaceBrokerUsageAccounts(entries: readonly SnapshotEntry[]): void {
