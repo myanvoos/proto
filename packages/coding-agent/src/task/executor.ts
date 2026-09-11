@@ -372,7 +372,6 @@ export interface ExecutorOptions {
 	parentServiceTier?: ServiceTierByFamily | null;
 
 	localProtocolOptions?: LocalProtocolOptions;
-	preferPersistedRevive?: boolean;
 
 	parentArtifactManager?: ArtifactManager;
 
@@ -2053,7 +2052,6 @@ export async function finalizeSubagentLifecycle(args: {
 	isolated: boolean;
 	agentIdleTtlMs: number;
 	reviveSession: AgentReviver | null;
-	preferPersistedRevive: boolean;
 	cleanupDeadlineAt?: number;
 	onCleanupDeferred?: (completion: Promise<void>) => void;
 }): Promise<void> {
@@ -2131,7 +2129,6 @@ export async function finalizeSubagentLifecycle(args: {
 		{
 			idleTtlMs: args.agentIdleTtlMs,
 			revive: args.reviveSession ?? undefined,
-			preferPersistedRevive: args.preferPersistedRevive,
 		},
 		ref,
 	);
@@ -2236,6 +2233,91 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		sessionFile,
 		startTime,
 	});
+}
+
+interface SubagentSystemPromptInputs {
+	agent: string;
+	context: string;
+	worktree: string;
+	outputSchema: unknown;
+	outputSchemaOverridesAgent: boolean;
+	ircEnabled: boolean;
+	id: string;
+}
+
+/**
+ * Everything a worker session needs that is known before its run starts. Built once per spawn and
+ * shared by the initial session and the run-local reviver. Holds only parent-owned inputs and plain
+ * data, so a reviver built from it never retains the completed run (session, monitor, progress).
+ */
+interface SubagentSessionBlueprint {
+	session: Omit<
+		CreateAgentSessionOptions,
+		"sessionManager" | "expectedAgentRef" | "onFirstChatDispatch" | "systemPrompt"
+	>;
+	prompt: SubagentSystemPromptInputs;
+}
+
+function createSubagentSessionOptions(
+	blueprint: SubagentSessionBlueprint,
+	sessionManager: SessionManager,
+	expectedAgentRef: CreateAgentSessionOptions["expectedAgentRef"],
+	onFirstChatDispatch?: () => void,
+): CreateAgentSessionOptions {
+	const inputs = blueprint.prompt;
+	return {
+		...blueprint.session,
+		sessionManager,
+		expectedAgentRef,
+		systemPrompt: defaultPrompt => {
+			const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
+				agent: inputs.agent,
+				context: inputs.context,
+				worktree: inputs.worktree,
+				outputSchema: inputs.outputSchema,
+				outputSchemaOverridesAgent: inputs.outputSchemaOverridesAgent,
+				ircPeers: inputs.ircEnabled ? renderIrcPeerRoster(inputs.id) : "",
+				ircSelfId: inputs.ircEnabled ? inputs.id : "",
+			});
+			return defaultPrompt.length === 0
+				? [subagentPrompt]
+				: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];
+		},
+		...(onFirstChatDispatch ? { onFirstChatDispatch } : undefined),
+	};
+}
+
+/**
+ * Reviver for a parked worker that reopens its transcript and rebuilds the session from the spawn-time
+ * blueprint. Created at module scope on purpose: a closure created inside `runSubprocess` shares that
+ * scope's environment record and would keep the finished session's whole context graph alive while parked.
+ */
+function createRunLocalReviver(args: {
+	id: string;
+	sessionFile: string;
+	parentArtifactManager: ArtifactManager | undefined;
+	blueprint: SubagentSessionBlueprint;
+	wake: IrcWakeTurnMonitorOptions;
+}): AgentReviver {
+	return async expectedAgentRef => {
+		const reopened = await SessionManager.open(args.sessionFile, undefined, undefined, {
+			suppressBreadcrumb: true,
+		});
+		if (args.parentArtifactManager) {
+			reopened.adoptArtifactManager(args.parentArtifactManager);
+		}
+		const { session: revived } = await createAgentSession(
+			createSubagentSessionOptions(args.blueprint, reopened, expectedAgentRef),
+		);
+
+		await initializeExtensions(revived, {
+			reportSendError: (action, err) => logger.error("Extension send failed", { action, error: err.message }),
+			reportRuntimeError: err => logger.error("Extension error", { path: err.extensionPath, error: err.error }),
+		});
+		AgentRegistry.global().syncSessionStatus(args.id, revived);
+		attachIrcWakeTurnMonitor(revived, args.wake);
+		return revived;
+	};
 }
 
 export async function runSubprocess(options: ExecutorOptions): Promise<SingleResult> {
@@ -2391,23 +2473,21 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const progress = monitor.progress;
 	let unsubscribe: (() => void) | null = null;
 	let reviveSession: AgentReviver | null = null;
-	const installIrcWakeTurnMonitor = (target: AgentSession): void => {
-		attachIrcWakeTurnMonitor(target, {
-			id,
-			index,
-			agent,
-			description: options.description,
-			modelOverride,
-			modelRole,
-			eventBus: options.eventBus,
-			parentToolCallId: options.parentToolCallId,
-			sessionFile: subtaskSessionFile,
-			maxRuntimeMs,
-			outputSchema,
-			outputSchemaMode: options.outputSchemaMode,
-			outputSchemaSource: options.outputSchemaSource,
-			artifactsDir: options.artifactsDir,
-		});
+	const ircWakeOptions: IrcWakeTurnMonitorOptions = {
+		id,
+		index,
+		agent,
+		description: options.description,
+		modelOverride,
+		modelRole,
+		eventBus: options.eventBus,
+		parentToolCallId: options.parentToolCallId,
+		sessionFile: subtaskSessionFile,
+		maxRuntimeMs,
+		outputSchema,
+		outputSchemaMode: options.outputSchemaMode,
+		outputSchemaSource: options.outputSchemaSource,
+		artifactsDir: options.artifactsDir,
 	};
 
 	const runSubagent = async (): Promise<{
@@ -2625,78 +2705,67 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			const { normalized: normalizedOutputSchema } = normalizeSchema(outputSchema);
 
-			const buildSubagentSessionOptions = (
-				sessionManagerForRun: SessionManager,
-				expectedAgentRef: CreateAgentSessionOptions["expectedAgentRef"],
-			): CreateAgentSessionOptions => ({
-				cwd: worktree ?? cwd,
-				additionalDirectories: worktree !== undefined ? undefined : options.additionalDirectories,
-				authStorage,
-				modelRegistry,
-				getApiKey: options.getApiKey,
-				streamFn: options.streamFn,
-				settings: subagentSettings,
-				model,
-				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
-				modelPatternAuthFallback:
-					model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
-				modelPatternFallbackRole:
-					model || modelOverride === undefined ? undefined : `${SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX}${id}`,
-				modelPatternDefaultFallbackChain:
-					model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
-				thinkingLevel: effectiveThinkingLevel,
-				thinkingLevelCeiling: spawnEffortCeiling,
-				toolNames,
-				outputSchema,
-				outputSchemaMode: options.outputSchemaMode,
-				restrictToolNames: options.restrictToolNames,
-				requireYieldTool: true,
-				contextFiles: options.contextFiles,
-				skills: options.skills,
-				promptTemplates: options.promptTemplates,
-				workspaceTree: options.workspaceTree,
-				rules: options.rules,
-				preloadedExtensionPaths: restrictToolNames ? [] : options.preloadedExtensionPaths,
-				preloadedCustomToolPaths: restrictToolNames ? [] : options.preloadedCustomToolPaths,
-				systemPrompt: defaultPrompt => {
-					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
-						agent: agent.systemPrompt,
-						context: options.context?.trim() ?? "",
-						worktree: worktree ?? "",
-						outputSchema: normalizedOutputSchema,
-						outputSchemaOverridesAgent: options.outputSchemaOverridesAgent === true,
-						ircPeers: ircEnabled ? renderIrcPeerRoster(id) : "",
-						ircSelfId: ircEnabled ? id : "",
-					});
-					return defaultPrompt.length === 0
-						? [subagentPrompt]
-						: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];
+			const blueprint: SubagentSessionBlueprint = {
+				session: {
+					cwd: worktree ?? cwd,
+					additionalDirectories: worktree !== undefined ? undefined : options.additionalDirectories,
+					authStorage,
+					modelRegistry,
+					getApiKey: options.getApiKey,
+					streamFn: options.streamFn,
+					settings: subagentSettings,
+					model,
+					modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
+					modelPatternAuthFallback:
+						model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
+					modelPatternFallbackRole:
+						model || modelOverride === undefined ? undefined : `${SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX}${id}`,
+					modelPatternDefaultFallbackChain:
+						model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
+					thinkingLevel: effectiveThinkingLevel,
+					thinkingLevelCeiling: spawnEffortCeiling,
+					toolNames,
+					outputSchema,
+					outputSchemaMode: options.outputSchemaMode,
+					restrictToolNames: options.restrictToolNames,
+					requireYieldTool: true,
+					contextFiles: options.contextFiles,
+					skills: options.skills,
+					promptTemplates: options.promptTemplates,
+					workspaceTree: options.workspaceTree,
+					rules: options.rules,
+					preloadedExtensionPaths: restrictToolNames ? [] : options.preloadedExtensionPaths,
+					preloadedCustomToolPaths: restrictToolNames ? [] : options.preloadedCustomToolPaths,
+					hasUI: false,
+					prewalk,
+					spawns: spawnsEnv,
+					taskDepth: childDepth,
+					parentTaskPrefix: id,
+					parentAgentId: options.parentAgentId,
+					agentId: id,
+					agentDisplayName: options.agentDisplayName ?? agent.name,
+					enableIrc: options.enableIrc,
+					skipPythonPreflight,
+					enableMCP,
+					mcpManager,
+					customTools:
+						options.customTools || mcpProxyTools.length > 0
+							? [...(options.customTools ?? []), ...mcpProxyTools]
+							: undefined,
+					localProtocolOptions: options.localProtocolOptions,
+					telemetry: subagentTelemetry,
+					parentEvalSessionId: options.parentEvalSessionId,
 				},
-				sessionManager: sessionManagerForRun,
-				hasUI: false,
-				prewalk,
-				spawns: spawnsEnv,
-				taskDepth: childDepth,
-				parentTaskPrefix: id,
-				parentAgentId: options.parentAgentId,
-				agentId: id,
-				agentDisplayName: options.agentDisplayName ?? agent.name,
-				expectedAgentRef,
-				enableIrc: options.enableIrc,
-				skipPythonPreflight,
-				enableMCP,
-				mcpManager,
-				customTools:
-					options.customTools || mcpProxyTools.length > 0
-						? [...(options.customTools ?? []), ...mcpProxyTools]
-						: undefined,
-				localProtocolOptions: options.localProtocolOptions,
-				telemetry: subagentTelemetry,
-				parentEvalSessionId: options.parentEvalSessionId,
-				onFirstChatDispatch: () => {
-					firstChatDispatchAt ??= performance.now();
+				prompt: {
+					agent: agent.systemPrompt,
+					context: options.context?.trim() ?? "",
+					worktree: worktree ?? "",
+					outputSchema: normalizedOutputSchema,
+					outputSchemaOverridesAgent: options.outputSchemaOverridesAgent === true,
+					ircEnabled,
+					id,
 				},
-			});
+			};
 
 			const sessionManager = await awaitAbortable(sessionManagerPromise);
 			if (options.parentArtifactManager) {
@@ -2704,7 +2773,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 			sessionOpenedAt = performance.now();
 
-			const sessionPromise = createAgentSession(buildSubagentSessionOptions(sessionManager, null));
+			const sessionPromise = createAgentSession(
+				createSubagentSessionOptions(blueprint, sessionManager, null, () => {
+					firstChatDispatchAt ??= performance.now();
+				}),
+			);
 			let session: AgentSession;
 			try {
 				({ session } = await awaitAbortable(sessionPromise));
@@ -2718,27 +2791,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			AgentRegistry.global().syncSessionStatus(id, session);
 			if (sessionFile !== null && worktree === undefined) {
-				reviveSession = async expectedAgentRef => {
-					const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
-						suppressBreadcrumb: true,
-					});
-					if (options.parentArtifactManager) {
-						reopened.adoptArtifactManager(options.parentArtifactManager);
-					}
-					const { session: revived } = await createAgentSession(
-						buildSubagentSessionOptions(reopened, expectedAgentRef),
-					);
-
-					await initializeExtensions(revived, {
-						reportSendError: (action, err) =>
-							logger.error("Extension send failed", { action, error: err.message }),
-						reportRuntimeError: err =>
-							logger.error("Extension error", { path: err.extensionPath, error: err.error }),
-					});
-					AgentRegistry.global().syncSessionStatus(id, revived);
-					installIrcWakeTurnMonitor(revived);
-					return revived;
-				};
+				reviveSession = createRunLocalReviver({
+					id,
+					sessionFile,
+					parentArtifactManager: options.parentArtifactManager,
+					blueprint,
+					wake: ircWakeOptions,
+				});
 			}
 
 			if (options.eventBus) {
@@ -2943,7 +3002,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (session) {
 				monitor.captureSalvage(session);
 				if (options.keepAlive !== false && worktree === undefined) {
-					installIrcWakeTurnMonitor(session);
+					attachIrcWakeTurnMonitor(session, ircWakeOptions);
 				}
 				await finalizeSubagentLifecycle({
 					id,
@@ -2954,7 +3013,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					isolated: worktree !== undefined,
 					agentIdleTtlMs,
 					reviveSession,
-					preferPersistedRevive: options.preferPersistedRevive === true,
 					cleanupDeadlineAt,
 					onCleanupDeferred: completion => {
 						deferredSessionShutdown = completion;

@@ -87,6 +87,10 @@ function isErrnoCode(error: unknown, code: string): boolean {
 	return error.code === code;
 }
 
+function abortReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("Aborted");
+}
+
 function signalStdioProcess(proc: KillableSubprocess, detached: boolean, signal: NodeJS.Signals): void {
 	if (detached) {
 		try {
@@ -141,7 +145,15 @@ export class StdioTransport implements MCPTransport {
 		return this.#connected;
 	}
 
-	async connect(): Promise<void> {
+	#clearCallbacks(): void {
+		this.onClose = undefined;
+		this.onError = undefined;
+		this.onNotification = undefined;
+		this.onRequest = undefined;
+	}
+
+	async connect(options?: MCPRequestOptions): Promise<void> {
+		if (options?.signal?.aborted) throw abortReason(options.signal);
 		if (this.#connected) return;
 
 		const env = {
@@ -151,7 +163,7 @@ export class StdioTransport implements MCPTransport {
 		const cwd = this.config.cwd ?? getProjectDir();
 		const spawnCommand = await resolveStdioSpawnCommand(this.config, { platform: process.platform });
 
-		this.#process = Bun.spawn(spawnCommand.cmd, {
+		const proc = Bun.spawn(spawnCommand.cmd, {
 			cwd,
 			env,
 			stdin: "pipe",
@@ -159,6 +171,11 @@ export class StdioTransport implements MCPTransport {
 			stderr: "pipe",
 			detached: spawnCommand.detached,
 		});
+		if (options?.signal?.aborted) {
+			await terminateStdioProcess(proc, spawnCommand.detached);
+			throw abortReason(options.signal);
+		}
+		this.#process = proc;
 		this.#detached = spawnCommand.detached;
 
 		this.#connected = true;
@@ -269,7 +286,9 @@ export class StdioTransport implements MCPTransport {
 		}
 		this.#pendingRequests.clear();
 
-		this.onClose?.();
+		const onClose = this.onClose;
+		this.#clearCallbacks();
+		onClose?.();
 	}
 
 	async request<T = unknown>(
@@ -361,11 +380,12 @@ export class StdioTransport implements MCPTransport {
 		return promise;
 	}
 
-	async notify(method: string, params?: Record<string, unknown>): Promise<void> {
+	async notify(method: string, params?: Record<string, unknown>, options?: MCPRequestOptions): Promise<void> {
 		if (!this.#connected || !this.#process?.stdin) {
 			throw new Error("Transport not connected");
 		}
 
+		if (options?.signal?.aborted) throw abortReason(options.signal);
 		const notification = {
 			jsonrpc: "2.0" as const,
 			method,
@@ -378,7 +398,7 @@ export class StdioTransport implements MCPTransport {
 		}
 	}
 
-	async close(): Promise<void> {
+	async close(_options?: MCPRequestOptions): Promise<void> {
 		if (this.#connected) {
 			this.#handleClose();
 		}
@@ -399,10 +419,4 @@ export class StdioTransport implements MCPTransport {
 			this.#readLoop = null;
 		}
 	}
-}
-
-export async function createStdioTransport(config: MCPStdioServerConfig): Promise<StdioTransport> {
-	const transport = new StdioTransport(config);
-	await transport.connect();
-	return transport;
 }

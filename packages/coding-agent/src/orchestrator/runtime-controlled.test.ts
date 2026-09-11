@@ -12,12 +12,15 @@ import {
 	type ToolCall,
 } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { withTimeout } from "@oh-my-pi/pi-utils";
 import { AsyncJobManager } from "../async/job-manager";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import type { CustomTool } from "../extensibility/custom-tools/types";
+import * as mcpConfig from "../mcp/config";
+import { MCPManager } from "../mcp/manager";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
 import { discoverAuthStorage } from "../sdk";
@@ -27,7 +30,7 @@ import { getBundledAgent } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 import type { ToolSession } from "../tools";
 import { EvalTool } from "../tools/eval";
-import { OrchestratorRuntime, prefersPersistedWorkerRevival } from "./runtime";
+import { OrchestratorRuntime } from "./runtime";
 
 const OWNER_PREFIX = `orchestrator-controlled-${process.pid}`;
 const usage = {
@@ -157,6 +160,9 @@ function parentSession(args: {
 		streamFn: args.streamFn,
 		customTools: args.customTools,
 		sessionManager: args.sessionManager,
+		// Workers proxy the parent's MCP manager, as in production; without one each worker would
+		// discover and dial the developer's real MCP servers.
+		mcpManager: new MCPManager(args.cwd, null),
 		getSessionFile: () => args.file,
 		getSessionId: () => "parent-session",
 		getAsyncJobOwnerId: () => "parent-session",
@@ -241,21 +247,122 @@ async function controlledFixture(options: { streamFn?: StreamFn; maxConcurrency?
 	return { runtime, session, manager, sessionManager, agent, model: model! };
 }
 
-test("default parent protocol fallbacks remain eligible for disk-backed parking", () => {
-	const fallbackOnly = {
-		getArtifactsDir: () => null,
-		getSessionId: () => null,
-		customTools: [],
-	} as unknown as ToolSession;
-	expect(prefersPersistedWorkerRevival(fallbackOnly)).toBe(true);
-	expect(prefersPersistedWorkerRevival({ ...fallbackOnly, localProtocolOptions: {} } as unknown as ToolSession)).toBe(
-		false,
-	);
-	expect(prefersPersistedWorkerRevival({ ...fallbackOnly, streamFn: controlledProvider() })).toBe(false);
-	expect(
-		prefersPersistedWorkerRevival({ ...fallbackOnly, customTools: [{} as CustomTool] } as unknown as ToolSession),
-	).toBe(false);
-});
+async function collectWeakRefs(refs: WeakRef<object>[]): Promise<number> {
+	let alive = refs.length;
+	for (let attempt = 0; attempt < 20 && alive > 0; attempt++) {
+		Bun.gc(true);
+		await Bun.sleep(25);
+		alive = refs.filter(ref => ref.deref() !== undefined).length;
+	}
+	return alive;
+}
+
+test("parking releases a worker's session from memory while it stays resumable in place", async () => {
+	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
+	const ids = [
+		(await runtime.spawn(session, { prompt: "first worker" })).id,
+		(await runtime.spawn(session, { prompt: "second worker" })).id,
+	];
+	await manager.waitForAll();
+	await runtime.wait(session, { sessions: ids });
+	const registry = AgentRegistry.global();
+	const sessions = ids.map(id => new WeakRef<object>(registry.get(id)!.session!));
+
+	for (const id of ids) await AgentLifecycleManager.global().park(id);
+	expect(ids.map(id => registry.get(id)?.status)).toEqual(["parked", "parked"]);
+	expect(await collectWeakRefs(sessions)).toBe(0);
+
+	const resumed = await runtime.send(session, { session: ids[0]!, message: "resume after park" });
+	expect(resumed.id).toBe(ids[0]);
+	await manager.waitForAll();
+	const settled = await runtime.wait(session, { sessions: [ids[0]!], timeoutMs: 1_000 });
+	expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 2 } }]);
+	expect(settled.settled[0]?.resultText).toContain("controlled turn complete");
+	expect(registry.get(ids[1])).toMatchObject({ status: "parked", session: null });
+}, 30_000);
+
+test("parking cancels a worker-owned MCP handshake, collects the session, and preserves revival", async () => {
+	const received = Promise.withResolvers<void>();
+	const aborted = Promise.withResolvers<void>();
+	let hang = true;
+	let completedHandshakes = 0;
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			if (request.method !== "POST") return new Response(null, { status: 405 });
+			const body = (await request.json()) as { id?: string | number; method: string };
+			if (body.method === "initialize") {
+				if (hang) {
+					const response = Promise.withResolvers<Response>();
+					request.signal.addEventListener(
+						"abort",
+						() => {
+							aborted.resolve();
+							response.resolve(new Response(null, { status: 499 }));
+						},
+						{ once: true },
+					);
+					received.resolve();
+					return response.promise;
+				}
+				completedHandshakes++;
+				return Response.json({
+					jsonrpc: "2.0",
+					id: body.id,
+					result: {
+						protocolVersion: "2025-03-26",
+						capabilities: { tools: {} },
+						serverInfo: { name: "owned", version: "1" },
+					},
+				});
+			}
+			if (body.method === "tools/list") {
+				return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: [] } });
+			}
+			return new Response(null, { status: 202 });
+		},
+	});
+	const discover = spyOn(mcpConfig, "loadAllMCPConfigs").mockResolvedValue({
+		configs: { slow: { type: "http", url: server.url.href, timeout: 0 } },
+		sources: {},
+		exaApiKeys: [],
+	});
+	const singleton = spyOn(MCPManager, "instance").mockReturnValue(undefined);
+	try {
+		const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
+		// No parent proxy: use the SDK's real owned-manager discovery and teardown.
+		session.mcpManager = undefined;
+		const { id } = await runtime.spawn(session, { prompt: "worker with pending MCP initialization" });
+		await manager.waitForAll();
+		await runtime.wait(session, { sessions: [id] });
+		await withTimeout(received.promise, 5_000, "Worker did not start its owned MCP handshake");
+		const registry = AgentRegistry.global();
+		const sessions = [new WeakRef<object>(registry.get(id)!.session!)];
+
+		await AgentLifecycleManager.global().park(id);
+		await withTimeout(aborted.promise, 5_000, "Parking did not abort the owned MCP handshake");
+		expect(registry.get(id)).toMatchObject({ status: "parked", session: null });
+		expect(await collectWeakRefs(sessions)).toBe(0);
+
+		hang = false;
+		const resumed = await runtime.send(session, { session: id, message: "resume after cancelled MCP handshake" });
+		expect(resumed.id).toBe(id);
+		await manager.waitForAll();
+		const settled = await runtime.wait(session, { sessions: [id], timeoutMs: 1_000 });
+		expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 2 } }]);
+		expect(completedHandshakes).toBe(1);
+	} finally {
+		try {
+			await cleanupFixture?.();
+			cleanupFixture = undefined;
+		} finally {
+			discover.mockRestore();
+			singleton.mockRestore();
+			server.stop(true);
+		}
+	}
+}, 30_000);
 
 test("orchestrator-created workers isolate Python and JS kernels while preserving explicit sharing", async () => {
 	const { runtime, session, manager } = await controlledFixture();

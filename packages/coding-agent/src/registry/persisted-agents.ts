@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor/transcript-recorder";
 import { isConductorTranscriptName } from "../conductor/transcript";
 import { resolveExplicitModelRole } from "../config/model-resolver";
@@ -21,6 +22,43 @@ import {
 } from "./agent-registry";
 
 const MAX_METADATA_LINES = 64;
+const TRANSCRIPT_SCAN_CACHE_MAX = 2048;
+
+interface TranscriptScanCacheEntry<T> {
+	mtimeMs: number;
+	size: number;
+	value: T;
+}
+
+/**
+ * Full-transcript scans are the dominant cost of registering persisted subagents: every pass
+ * re-parses each child transcript end to end. Finished workers never change, so results are
+ * memoized per file and invalidated by (mtime, size).
+ */
+async function scanTranscriptMemoized<T>(
+	cache: LRUCache<string, TranscriptScanCacheEntry<T>>,
+	sessionFile: string,
+	scan: () => Promise<T | undefined>,
+): Promise<T | undefined> {
+	let stat: fs.Stats | undefined;
+	try {
+		stat = await fs.promises.stat(sessionFile);
+	} catch {
+		return scan();
+	}
+	const cached = cache.get(sessionFile);
+	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.value;
+	const value = await scan();
+	if (value !== undefined) cache.set(sessionFile, { mtimeMs: stat.mtimeMs, size: stat.size, value });
+	return value;
+}
+
+const orchestratorWorkerLabelCache = new LRUCache<string, TranscriptScanCacheEntry<ReadonlyMap<string, string>>>({
+	max: TRANSCRIPT_SCAN_CACHE_MAX,
+});
+const agentHistoryCache = new LRUCache<string, TranscriptScanCacheEntry<AgentHistorySummary>>({
+	max: TRANSCRIPT_SCAN_CACHE_MAX,
+});
 
 interface PersistedAgentMetadata {
 	activity?: string;
@@ -122,6 +160,17 @@ async function readPersistedAgentHistory(
 	transcript: PersistedTranscript,
 	shouldContinue: () => boolean,
 ): Promise<AgentHistorySummary> {
+	const history = await scanTranscriptMemoized(agentHistoryCache, transcript.sessionFile, async () => {
+		const scanned = await scanPersistedAgentHistory(transcript, shouldContinue);
+		return scanned !== undefined && shouldContinue() ? scanned : undefined;
+	});
+	return history ?? {};
+}
+
+async function scanPersistedAgentHistory(
+	transcript: PersistedTranscript,
+	shouldContinue: () => boolean,
+): Promise<AgentHistorySummary | undefined> {
 	const parents = new Map<string, string | undefined>();
 	const assistantById = new Map<string, AssistantMetrics>();
 	const modelChangeById = new Map<string, { model: string; role?: string; resolvedModelIsFallback: boolean }>();
@@ -155,7 +204,7 @@ async function readPersistedAgentHistory(
 			{ shouldContinue },
 		);
 	} catch {
-		return {};
+		return undefined;
 	}
 
 	const metrics: AgentMetricsSummary = {
@@ -312,20 +361,23 @@ export async function readAgentSpawnTask(sessionFile: string): Promise<string | 
 async function readPersistedOrchestratorWorkerLabels(
 	sessionFile: string,
 	shouldContinue: () => boolean,
-): Promise<Map<string, string>> {
-	const labels = new Map<string, string>();
-	try {
-		await visitEntriesFromFileStream(
-			sessionFile,
-			entry => {
-				for (const [id, label] of persistedOrchestratorWorkerLabels([entry])) labels.set(id, label);
-			},
-			{ shouldContinue },
-		);
-		return labels;
-	} catch {
-		return new Map();
-	}
+): Promise<ReadonlyMap<string, string>> {
+	const labels = await scanTranscriptMemoized(orchestratorWorkerLabelCache, sessionFile, async () => {
+		const found = new Map<string, string>();
+		try {
+			await visitEntriesFromFileStream(
+				sessionFile,
+				entry => {
+					for (const [id, label] of persistedOrchestratorWorkerLabels([entry])) found.set(id, label);
+				},
+				{ shouldContinue },
+			);
+		} catch {
+			return undefined;
+		}
+		return shouldContinue() ? found : undefined;
+	});
+	return labels ?? new Map();
 }
 export async function registerPersistedSubagents(
 	registry: AgentRegistry,

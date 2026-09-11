@@ -93,8 +93,34 @@ export function formatModelCellLabel(model: { provider: string; id: string }, le
 	return `${model.provider}/${model.id}:${level}`;
 }
 
+const FILE_IDENTITY_PREFIX = "file:";
+
 function fileIdentity(sessionPath: string): string {
-	return `file:${path.resolve(sessionPath)}`;
+	return `${FILE_IDENTITY_PREFIX}${path.resolve(sessionPath)}`;
+}
+
+export function sessionFileFromIdentity(identity: string): string | undefined {
+	return identity.startsWith(FILE_IDENTITY_PREFIX) ? identity.slice(FILE_IDENTITY_PREFIX.length) : undefined;
+}
+
+/**
+ * Transcripts whose artifact directories the view must scan for nested subagents.
+ * Unscoped: every transcript. Scoped: only the root and transcripts inside its artifact tree —
+ * scanning unrelated sessions would parse the whole corpus for rows the view never shows.
+ */
+export function sessionPathsWithinScope(
+	sessionPaths: readonly string[],
+	scopeRootIdentity: string | undefined,
+): string[] {
+	const transcripts = sessionPaths.filter(sessionPath => sessionPath.endsWith(".jsonl"));
+	if (scopeRootIdentity === undefined) return transcripts;
+	const root = sessionFileFromIdentity(scopeRootIdentity);
+	if (root === undefined) return [];
+	const subtree = `${root.slice(0, -".jsonl".length)}${path.sep}`;
+	return transcripts.filter(sessionPath => {
+		const resolved = path.resolve(sessionPath);
+		return resolved === root || resolved.startsWith(subtree);
+	});
 }
 
 function derivedParentSessionFile(sessionFile: string): string | undefined {
@@ -378,11 +404,24 @@ function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow): number {
 	return a.identity.localeCompare(b.identity);
 }
 
+export const DETAILS_COLUMN_WIDTH = 12;
+
 export function formatRowDetails(row: AgentsViewRow): string {
 	const age = formatRelativeAge(getLastActivity(row.record));
-	if (row.section !== "inactive") return age;
-	const count = row.record?.session?.messageCount;
-	return count !== undefined ? `${count} · ${age}` : age;
+	switch (row.section) {
+		case "idle": {
+			// Idle workers stay live in memory until their idle TTL parks them to disk; the
+			// distinction is what a user asking "is this still holding resources?" needs.
+			const status = row.record?.ref?.status;
+			return status === "parked" || status === "idle" ? `${status} · ${age}` : age;
+		}
+		case "inactive": {
+			const count = row.record?.session?.messageCount;
+			return count !== undefined ? `${count} · ${age}` : age;
+		}
+		default:
+			return age;
+	}
 }
 
 export function formatRelativeAge(valueMs: number, now = Date.now()): string {
@@ -564,7 +603,7 @@ export function buildAgentsViewRows(
 			title: getRecordTitle(record),
 			subtitle: getStatusLabel(record),
 			details: "",
-			detailsWidth: 10,
+			detailsWidth: DETAILS_COLUMN_WIDTH,
 			depth: 0,
 			selectable: true,
 			runningSubagentCount: 0,

@@ -230,8 +230,6 @@ export interface RenderRequestOptions {
 	clearScrollback?: boolean;
 }
 
-export type ResizeScrollbackMode = "rebuild" | "append" | "preserve";
-
 export function isFocusable(component: Component | null): component is Component & Focusable {
 	return component !== null && "focused" in component;
 }
@@ -1048,17 +1046,6 @@ export class TUI extends Container {
 
 	#forceViewportRepaintOnNextRender = false;
 	#hasEverRendered = false;
-	#scrollbackRebuildEnabled =
-		Bun.env.PI_TUI_SCROLLBACK_REBUILD === "1" || Bun.env.PI_TUI_SCROLLBACK_REBUILD === "true";
-	#scrollbackRebuildTransitionPending = false;
-	#resizeScrollbackMode: ResizeScrollbackMode = TUI.#initialResizeScrollbackMode();
-	static #initialResizeScrollbackMode(): ResizeScrollbackMode {
-		const raw = Bun.env.PI_TUI_RESIZE_SCROLLBACK;
-		return raw === "rebuild" || raw === "preserve" || raw === "append" ? raw : "preserve";
-	}
-
-	#resizeScrollbackReplayPending = false;
-
 	#resizeEventPending = false;
 
 	#multiplexerResizeTimer: RenderTimer | undefined;
@@ -1609,27 +1596,6 @@ export class TUI extends Container {
 		for (const id of transmittedIds) {
 			this.terminal.write(encodeKittyDeleteImage(id));
 		}
-	}
-
-	getScrollbackRebuild(): boolean {
-		return this.#scrollbackRebuildEnabled;
-	}
-
-	setScrollbackRebuild(enabled: boolean): void {
-		const wasEnabled = this.#scrollbackRebuildEnabled;
-		this.#scrollbackRebuildEnabled = enabled;
-		if (!enabled || wasEnabled || !this.#hasEverRendered || this.#stopped) return;
-
-		this.#scrollbackRebuildTransitionPending = true;
-		this.requestRender(true, { clearScrollback: true });
-	}
-
-	getResizeScrollback(): ResizeScrollbackMode {
-		return this.#resizeScrollbackMode;
-	}
-
-	setResizeScrollback(mode: ResizeScrollbackMode): void {
-		this.#resizeScrollbackMode = mode;
 	}
 
 	getShowHardwareCursor(): boolean {
@@ -2895,9 +2861,7 @@ export class TUI extends Container {
 			(this.#previousHeight > 0 && this.#previousHeight !== height);
 		const replayFullHistory =
 			this.#hasEverRendered &&
-			(this.#clearScrollbackOnNextRender ||
-				(!this.#resizeRepaintsInPlace() && resizeGeometryPending) ||
-				(this.#scrollbackRebuildEnabled && resizeGeometryPending));
+			(this.#clearScrollbackOnNextRender || (!this.#resizeRepaintsInPlace() && resizeGeometryPending));
 		if (replayFullHistory) {
 			for (const child of this.children) prepareNativeScrollbackReplay(child);
 		}
@@ -3112,9 +3076,6 @@ export class TUI extends Container {
 			this.#widthEpochOverlayBoundary = capturedWidthEpochBoundary;
 		}
 
-		if (widthEpochReset && hasVisibleOverlay && this.#resizeScrollbackMode !== "preserve") {
-			this.#resizeScrollbackReplayPending = true;
-		}
 		const replayUnresolvedOverlayFrame = widthEpochReset && this.#widthEpochOverlayReplayPending;
 		const replayUnresolvedWidthEpoch =
 			replayUnresolvedOverlayFrame ||
@@ -3129,35 +3090,6 @@ export class TUI extends Container {
 		const replaceRequested = this.#clearScrollbackOnNextRender;
 		const geometryRebuild = geometryChanged && !this.#resizeRepaintsInPlace();
 
-		const streamingGrowth =
-			this.#previousFrameLength > 0 &&
-			frameLength > this.#previousFrameLength &&
-			this.#nativeScrollbackCommittedDirtyFromRow === undefined &&
-			liveRegionStart === undefined;
-		const divergenceRebuild =
-			this.#scrollbackRebuildEnabled &&
-			!firstPaint &&
-			!replaceRequested &&
-			!geometryChanged &&
-			!isMultiplexerSession() &&
-			!streamingGrowth &&
-			(committedRowsResynced || frameLength <= this.#committedRows);
-
-		const resizeScrollbackReplay =
-			(widthEpochReset || this.#resizeScrollbackReplayPending) &&
-			!hasVisibleOverlay &&
-			this.#resizeScrollbackMode !== "preserve";
-		const rebuildResizePending =
-			this.#scrollbackRebuildEnabled &&
-			this.#hasEverRendered &&
-			!hasVisibleOverlay &&
-			(resizeEventOccurred || widthChanged || heightChanged);
-		const commitSeamRetractionPending =
-			this.#scrollbackRebuildEnabled &&
-			this.#hasEverRendered &&
-			!this.#clearScrollbackOnNextRender &&
-			!hasVisibleOverlay &&
-			(Math.max(0, frameLength - height) < this.#committedRows || commitCeiling < this.#committedRows);
 		const deferredLiveRegionRows =
 			this.#previousLiveRegionHasTrailingRows &&
 			Math.max(0, this.#previousFrameLength - this.#previousHeight) > this.#committedRows;
@@ -3167,7 +3099,7 @@ export class TUI extends Container {
 			!hasVisibleOverlay &&
 			liveRegionSourceChanged &&
 			deferredLiveRegionRows &&
-			(this.#scrollbackRebuildEnabled || activeLiveRegionSource !== undefined);
+			activeLiveRegionSource !== undefined;
 		// Once a committed-prefix audit proves that the physical seam shifted, the
 		// rows which were previously on screen may now be the only copy of a
 		// committed live header. Re-emit the current viewport rows as part of the
@@ -3178,17 +3110,7 @@ export class TUI extends Container {
 		const replayCommitCeiling = liveRegionPinned
 			? (this.#nativeScrollbackPinnedBoundary ?? commitCeiling)
 			: frameLength;
-		const rebuildTransitionPending = this.#scrollbackRebuildTransitionPending;
-		const fullPaint =
-			firstPaint ||
-			replaceRequested ||
-			geometryRebuild ||
-			divergenceRebuild ||
-			resizeScrollbackReplay ||
-			commitSeamRetractionPending ||
-			liveBarrierRetractionPending ||
-			rebuildTransitionPending ||
-			rebuildResizePending;
+		const fullPaint = firstPaint || replaceRequested || geometryRebuild || liveBarrierRetractionPending;
 
 		if (fullPaint || widthChanged) {
 			this.#muxPushedRows = 0;
@@ -3323,7 +3245,6 @@ export class TUI extends Container {
 			this.#widthEpochCommittedPrefix !== undefined ||
 			this.#widthEpochOverlayReplayPending ||
 			this.#widthEpochOverlayBoundary !== undefined ||
-			this.#resizeScrollbackReplayPending ||
 			hasVisibleOverlay;
 		const frame = this.#prepareFrame(rawFrame, width, height, preparedReuseBlocked, hasVisibleOverlay);
 		const window = this.#acquireWindow(height);
@@ -3342,15 +3263,7 @@ export class TUI extends Container {
 		const intent: RenderIntent = fullPaint
 			? {
 					kind: "fullPaint",
-					clearScrollback:
-						divergenceRebuild ||
-						(resizeScrollbackReplay && this.#resizeScrollbackMode === "rebuild") ||
-						(replaceRequested && (this.#scrollbackRebuildEnabled || !isMultiplexerSession())) ||
-						(geometryRebuild && !isMultiplexerSession()) ||
-						commitSeamRetractionPending ||
-						(liveBarrierRetractionPending && this.#scrollbackRebuildEnabled) ||
-						rebuildTransitionPending ||
-						rebuildResizePending,
+					clearScrollback: replaceRequested || (geometryRebuild && !isMultiplexerSession()),
 				}
 			: { kind: "update", chunkTo, windowTop };
 		this.#logRedraw(intent, frameLength, height);
@@ -3380,7 +3293,7 @@ export class TUI extends Container {
 				cursorTrackingLineCount,
 				leadingSequence: deferredAltExit,
 
-				copyScreenToScrollback: !resizeScrollbackReplay,
+				copyScreenToScrollback: true,
 			});
 			this.#pendingAltExit = "";
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
@@ -3392,8 +3305,6 @@ export class TUI extends Container {
 			this.#widthEpochOverlayReplayPending = false;
 			this.#widthEpochOverlayBoundary = undefined;
 			this.#widthEpochCommittedPrefix = undefined;
-			this.#resizeScrollbackReplayPending = false;
-			this.#scrollbackRebuildTransitionPending = false;
 			this.#publishCommittedRows();
 			return;
 		}

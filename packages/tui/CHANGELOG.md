@@ -19,7 +19,11 @@
 ### Fixed
 
 - A live block that outgrows the terminal no longer hides its head until it settles: rows of a root-level live segment scroll into native scrollback while rows below it stay viewport-local, an unpinned nested container clamps at its live start, and a scrollback-clearing repaint keeps live rows that sit above the viewport.
-- Content shrinking below the committed seam (a spinner row disappearing at turn end) no longer repaints an already committed row onto the screen, which left a duplicated line in scrollback; the viewport stays pinned at the seam in default mode.
+- Content shrinking below the committed seam (a spinner row disappearing at turn end) no longer repaints an already committed row onto the screen, which left a duplicated line in scrollback; the viewport stays pinned at the seam.
+
+### Removed
+
+- Removed the alternate `setScrollbackRebuild()` / `setResizeScrollback()` APIs and their `PI_TUI_SCROLLBACK_REBUILD` / `PI_TUI_RESIZE_SCROLLBACK` erase-and-replay modes; native history now has one non-destructive live-transcript and resize path, while explicit scrollback-clear requests remain available to callers.
 
 ## [18.0.6] - 2026-09-11
 

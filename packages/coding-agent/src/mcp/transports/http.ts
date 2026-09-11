@@ -47,10 +47,29 @@ function resolveSSEConnectTimeoutMs(configTimeout?: number): number {
 	return Math.max(1, boundedTimeout);
 }
 
+function abortReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("Aborted");
+}
+
+function abortPromise(signal: AbortSignal): { promise: Promise<null>; dispose: () => void } {
+	const { promise, resolve } = Promise.withResolvers<null>();
+	const onAbort = () => resolve(null);
+	if (signal.aborted) {
+		resolve(null);
+	} else {
+		signal.addEventListener("abort", onAbort, { once: true });
+	}
+	return {
+		promise,
+		dispose: () => signal.removeEventListener("abort", onAbort),
+	};
+}
+
 export class HttpTransport implements MCPTransport {
 	#connected = false;
 	#sessionId: string | null = null;
 	#sseConnection: AbortController | null = null;
+	#lifetime = new AbortController();
 	readonly #requestIds = new RequestIdAllocator();
 
 	#protocolVersion: string | null = null;
@@ -63,6 +82,19 @@ export class HttpTransport implements MCPTransport {
 	onAuthError?: () => Promise<Record<string, string> | null>;
 
 	constructor(private config: MCPHttpServerConfig | MCPSseServerConfig) {}
+
+	#signal(signal?: AbortSignal): AbortSignal {
+		if (!signal) return this.#lifetime.signal;
+		return AbortSignal.any([this.#lifetime.signal, signal]);
+	}
+
+	#clearCallbacks(): void {
+		this.onClose = undefined;
+		this.onError = undefined;
+		this.onNotification = undefined;
+		this.onRequest = undefined;
+		this.onAuthError = undefined;
+	}
 
 	#fetch(init: MCPFetchInit, generated: Record<string, string>): Promise<Response> {
 		const configured = withoutHeader(this.config.headers, "MCP-Protocol-Version");
@@ -88,16 +120,20 @@ export class HttpTransport implements MCPTransport {
 		return this.config.url;
 	}
 
-	async connect(): Promise<void> {
+	async connect(options?: MCPRequestOptions): Promise<void> {
+		if (options?.signal?.aborted) throw abortReason(options.signal);
 		if (this.#connected) return;
+		if (this.#lifetime.signal.aborted) throw abortReason(this.#lifetime.signal);
 		this.#connected = true;
 	}
 
-	async startSSEListener(): Promise<void> {
+	async startSSEListener(options?: MCPRequestOptions): Promise<void> {
 		if (!this.#connected) return;
+		if (options?.signal?.aborted) throw abortReason(options.signal);
 		if (this.#sseConnection) return;
 
-		this.#sseConnection = new AbortController();
+		const connection = new AbortController();
+		this.#sseConnection = connection;
 		const generated: Record<string, string> = {
 			Accept: "text/event-stream",
 		};
@@ -106,41 +142,44 @@ export class HttpTransport implements MCPTransport {
 			generated["Mcp-Session-Id"] = this.#sessionId;
 		}
 
-		let response: Response | null;
-		let timedOut = false;
-		let startupFinished = false;
-		const connection = this.#sseConnection;
 		const startupTimeoutMs = resolveSSEConnectTimeoutMs(this.config.timeout);
-		const fetchPromise = this.#fetch({ method: "GET", signal: connection.signal }, generated);
-		const timeoutPromise =
-			startupTimeoutMs > 0
-				? new Promise<null>(resolve => {
-						setTimeout(() => {
-							if (!startupFinished) {
-								timedOut = true;
-								connection.abort();
-							}
-							resolve(null);
-						}, startupTimeoutMs);
-					})
-				: null;
+		const startup = createMCPTimeout(startupTimeoutMs, options?.signal);
+		const startupSignal = this.#signal(startup.signal);
+		const aborted = abortPromise(startupSignal);
+		const fetchPromise = this.#fetch({ method: "GET", signal: startupSignal }, generated);
+		let response: Response | null;
 		try {
-			response = timeoutPromise === null ? await fetchPromise : await Promise.race([fetchPromise, timeoutPromise]);
+			response = await Promise.race([fetchPromise, aborted.promise]);
 		} catch (error) {
 			if (this.#sseConnection === connection) this.#sseConnection = null;
-			if (error instanceof Error && error.name !== "AbortError" && !timedOut) {
+			void fetchPromise.then(lateResponse => lateResponse.body?.cancel()).catch(() => {});
+			if (options?.signal?.aborted) throw abortReason(options.signal);
+			if (
+				!startup.timedOut() &&
+				!this.#lifetime.signal.aborted &&
+				error instanceof Error &&
+				error.name !== "AbortError"
+			) {
 				this.onError?.(error);
 			}
 			return;
 		} finally {
-			startupFinished = true;
+			aborted.dispose();
+			startup.clear();
 		}
+
 		if (response === null) {
 			if (this.#sseConnection === connection) this.#sseConnection = null;
 			void fetchPromise.then(lateResponse => lateResponse.body?.cancel()).catch(() => {});
+			if (options?.signal?.aborted) throw abortReason(options.signal);
 			return;
 		}
 
+		if (options?.signal?.aborted) {
+			await response.body?.cancel();
+			if (this.#sseConnection === connection) this.#sseConnection = null;
+			throw abortReason(options.signal);
+		}
 		if (this.#sseConnection !== connection) {
 			await response.body?.cancel();
 			return;
@@ -151,13 +190,20 @@ export class HttpTransport implements MCPTransport {
 			return;
 		}
 
-		const signal = connection.signal;
-		void this.#runSSEListener(response.body!, signal).finally(() => {
-			const wasConnected = this.#connected;
-			if (this.#sseConnection === connection) this.#sseConnection = null;
-			if (wasConnected) this.onClose?.();
-		});
+		const signal = this.#signal(options?.signal);
+		void this.#runSSEListener(response.body, signal)
+			.finally(() => {
+				const wasConnected = this.#connected;
+				if (this.#sseConnection === connection) this.#sseConnection = null;
+				if (wasConnected) {
+					const onClose = this.onClose;
+					this.#clearCallbacks();
+					onClose?.();
+				}
+			})
+			.catch(() => {});
 	}
+
 	async #readSSEStream(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<void> {
 		try {
 			for await (const message of readSseJson<JsonRpcMessage>(body, signal)) {
@@ -310,7 +356,7 @@ export class HttpTransport implements MCPTransport {
 		}
 
 		const timeout = resolveMCPTimeoutMs(this.config.timeout);
-		const operation = createMCPTimeout(timeout, options?.signal);
+		const operation = createMCPTimeout(timeout, this.#signal(options?.signal));
 
 		try {
 			const response = await this.#fetch(
@@ -340,7 +386,7 @@ export class HttpTransport implements MCPTransport {
 			const contentType = response.headers.get("Content-Type") ?? "";
 
 			if (contentType.includes("text/event-stream")) {
-				return this.#parseSSEResponse<T>(response, id, options);
+				return this.#parseSSEResponse<T>(response, id, this.#signal(options?.signal));
 			}
 
 			const result = (await response.json()) as JsonRpcResponse;
@@ -360,14 +406,14 @@ export class HttpTransport implements MCPTransport {
 		}
 	}
 
-	#parseSSEResponse<T>(response: Response, expectedId: string | number, options?: MCPRequestOptions): Promise<T> {
+	#parseSSEResponse<T>(response: Response, expectedId: string | number, signal: AbortSignal): Promise<T> {
 		if (!response.body) {
 			throw new Error("No response body");
 		}
 
 		const timeout = resolveMCPTimeoutMs(this.config.timeout);
-		const operation = createMCPTimeout(timeout, options?.signal);
-		const signal = operation.signal ?? getNeverAbortSignal();
+		const operation = createMCPTimeout(timeout, signal);
+		const responseSignal = operation.signal ?? getNeverAbortSignal();
 
 		const { promise, resolve, reject } = Promise.withResolvers<T>();
 		const resume: SSEResumeState = { lastEventId: null, retryMs: DEFAULT_SSE_RETRY_MS };
@@ -379,7 +425,7 @@ export class HttpTransport implements MCPTransport {
 				for (;;) {
 					if (!current.body) throw new Error("SSE response did not include a body");
 					try {
-						for await (const event of readSseEvents(current.body, signal)) {
+						for await (const event of readSseEvents(current.body, responseSignal)) {
 							if (event.id !== undefined) resume.lastEventId = event.id || null;
 							if (event.retry !== undefined) resume.retryMs = event.retry;
 							if (event.data === "") continue;
@@ -411,7 +457,7 @@ export class HttpTransport implements MCPTransport {
 						}
 					} catch (error) {
 						if (captured) return;
-						if (signal.aborted || resume.lastEventId === null) throw error;
+						if (responseSignal.aborted || resume.lastEventId === null) throw error;
 						logger.debug("MCP SSE response stream dropped; resuming", {
 							url: this.config.url,
 							error: error instanceof Error ? error.message : String(error),
@@ -421,7 +467,7 @@ export class HttpTransport implements MCPTransport {
 					if (resume.lastEventId === null) {
 						throw new Error(`No response received for request ID ${expectedId}`);
 					}
-					current = await this.#fetchSSEResume(resume, signal);
+					current = await this.#fetchSSEResume(resume, responseSignal);
 				}
 			} catch (error) {
 				if (captured) return;
@@ -466,7 +512,7 @@ export class HttpTransport implements MCPTransport {
 		}
 		const payload = JSON.stringify(body);
 		const timeout = resolveMCPTimeoutMs(this.config.timeout);
-		const operation = createMCPTimeout(timeout);
+		const operation = createMCPTimeout(timeout, this.#signal());
 		try {
 			const resp = await this.#fetch({ method: "POST", body: payload, signal: operation.signal }, generated);
 
@@ -477,7 +523,7 @@ export class HttpTransport implements MCPTransport {
 					this.config.headers ??= {};
 					Object.assign(this.config.headers, newHeaders);
 					operation.clear();
-					const retryOperation = createMCPTimeout(timeout);
+					const retryOperation = createMCPTimeout(timeout, this.#signal());
 					try {
 						const retry = await this.#fetch(
 							{ method: "POST", body: payload, signal: retryOperation.signal },
@@ -497,7 +543,7 @@ export class HttpTransport implements MCPTransport {
 		}
 	}
 
-	async notify(method: string, params?: Record<string, unknown>): Promise<void> {
+	async notify(method: string, params?: Record<string, unknown>, options?: MCPRequestOptions): Promise<void> {
 		if (!this.#connected) {
 			throw new Error("Transport not connected");
 		}
@@ -518,7 +564,7 @@ export class HttpTransport implements MCPTransport {
 		}
 
 		const timeout = resolveMCPTimeoutMs(this.config.timeout);
-		const operation = createMCPTimeout(timeout);
+		const operation = createMCPTimeout(timeout, this.#signal(options?.signal));
 
 		try {
 			const response = await this.#fetch(
@@ -536,9 +582,11 @@ export class HttpTransport implements MCPTransport {
 				if (this.#sseConnection) {
 					void this.#readSSEStream(response.body, this.#sseConnection.signal);
 				} else {
-					const readOperation = createMCPTimeout(timeout);
+					const readOperation = createMCPTimeout(timeout, this.#signal());
 					const signal = readOperation.signal ?? getNeverAbortSignal();
-					void this.#readSSEStream(response.body, signal).finally(() => readOperation.clear());
+					void this.#readSSEStream(response.body, signal)
+						.finally(() => readOperation.clear())
+						.catch(() => {});
 				}
 			} else {
 				await response.body?.cancel();
@@ -553,34 +601,36 @@ export class HttpTransport implements MCPTransport {
 		}
 	}
 
-	async close(): Promise<void> {
-		if (!this.#connected) return;
+	async close(options?: MCPRequestOptions): Promise<void> {
+		if (!this.#connected && !this.#sseConnection && !this.#sessionId) {
+			this.#clearCallbacks();
+			return;
+		}
+		const wasConnected = this.#connected;
 		this.#connected = false;
+		this.#lifetime.abort();
 
 		if (this.#sseConnection) {
 			this.#sseConnection.abort();
 			this.#sseConnection = null;
 		}
 
-		if (this.#sessionId) {
+		const sessionId = this.#sessionId;
+		this.#sessionId = null;
+		if (sessionId) {
 			const timeout = resolveMCPTimeoutMs(this.config.timeout);
-			const operation = createMCPTimeout(timeout);
+			const operation = createMCPTimeout(timeout, options?.signal);
 			try {
-				await this.#fetch({ method: "DELETE", signal: operation.signal }, { "Mcp-Session-Id": this.#sessionId });
-				operation.clear();
+				await this.#fetch({ method: "DELETE", signal: operation.signal }, { "Mcp-Session-Id": sessionId });
 			} catch {
+				// Session cleanup is best effort; the transport is already closed.
+			} finally {
 				operation.clear();
 			}
-			this.#sessionId = null;
 		}
 
-		this.onClose?.();
-		this.onClose = undefined;
+		const onClose = this.onClose;
+		this.#clearCallbacks();
+		if (wasConnected) onClose?.();
 	}
-}
-
-export async function createHttpTransport(config: MCPHttpServerConfig | MCPSseServerConfig): Promise<HttpTransport> {
-	const transport = new HttpTransport(config);
-	await transport.connect();
-	return transport;
 }

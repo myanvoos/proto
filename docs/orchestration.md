@@ -28,7 +28,9 @@ A child transcript's `.tombstone` is authoritative during restoration, even with
 
 Workers remain addressable after a turn, but their live sessions need not stay in memory indefinitely. `orchestrator.agentIdleTtlMs` defaults to **60,000 ms**: after one idle minute the lifecycle manager parks the worker and disposes its live session. A later message revives the worker from its retained state. Explicit timeout overrides are unchanged; **0 disables automatic parking**, rather than parking immediately.
 
-Ordinary disk-resumable workers release their run-local revival callbacks when parked and reconstruct the session only when messaged. Workers with custom runtime-only callbacks keep their original revival path; parking does not discard injected stream functions, explicit local-protocol callbacks, or custom tools.
+A parked worker keeps only its spawn-time blueprint (parent-owned inputs: model, tools, settings, prompts, injected stream functions, local-protocol callbacks, custom tools) plus the path of its transcript; the disposed session, its context, and the run's monitor state are released. Messaging the worker reopens the transcript and rebuilds the session from that blueprint, so revival is faithful to the original spawn regardless of how the parent was configured. Workers that outlive the process (or whose lifecycle was disposed) are rebuilt from the transcript's init record instead.
+
+If a worker owns its MCP manager rather than sharing the parent's, parking also cancels pending MCP connection attempts. A stalled handshake no longer keeps the disposed session alive until the MCP timeout, even when that timeout is disabled. Shared parent MCP connections remain available to other workers.
 
 `orchestrator.maxConcurrency` remains **32**. Lowering it limits simultaneous running turns, while shortening the idle TTL reduces how long completed workers retain live resources. These address different parts of the memory footprint. Neither setting truncates persisted conversation history, and releasing objects does not guarantee that the allocator immediately returns resident pages to the operating system.
 

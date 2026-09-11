@@ -1,10 +1,10 @@
 import * as path from "node:path";
 import * as url from "node:url";
-import { getProjectDir, logger, withTimeout } from "@oh-my-pi/pi-utils";
-import { describeMCPTimeout, isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "./timeout";
-import { createHttpTransport } from "./transports/http";
-import { createSseTransport } from "./transports/sse";
-import { createStdioTransport } from "./transports/stdio";
+import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import { createMCPTimeout, describeMCPTimeout, resolveMCPTimeoutMs } from "./timeout";
+import { HttpTransport } from "./transports/http";
+import { LegacySseTransport } from "./transports/sse";
+import { StdioTransport } from "./transports/stdio";
 import type {
 	MCPGetPromptParams,
 	MCPGetPromptResult,
@@ -55,19 +55,27 @@ async function defaultRequestHandler(method: string, _params: unknown): Promise<
 	}
 }
 
-async function createTransport(config: MCPServerConfig): Promise<MCPTransport> {
+function createTransport(config: MCPServerConfig): MCPTransport {
 	const serverType = config.type ?? "stdio";
 
 	switch (serverType) {
 		case "stdio":
-			return createStdioTransport(config as MCPStdioServerConfig);
+			return new StdioTransport(config as MCPStdioServerConfig);
 		case "http":
-			return createHttpTransport(config as MCPHttpServerConfig);
+			return new HttpTransport(config as MCPHttpServerConfig);
 		case "sse":
-			return createSseTransport(config as MCPSseServerConfig);
+			return new LegacySseTransport(config as MCPSseServerConfig);
 		default:
 			throw new Error(`Unknown server type: ${serverType}`);
 	}
+}
+
+function abortReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("Aborted");
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) throw abortReason(signal);
 }
 
 async function initializeConnection(
@@ -92,15 +100,15 @@ async function initializeConnection(
 		{ signal: options?.signal },
 	);
 
-	if (options?.signal?.aborted) {
-		throw options.signal.reason instanceof Error ? options.signal.reason : new Error("Aborted");
-	}
+	throwIfAborted(options?.signal);
 
 	transport.setProtocolVersion?.(result.protocolVersion);
 
-	await transport.notify("notifications/initialized");
+	await transport.notify("notifications/initialized", undefined, { signal: options?.signal });
+	throwIfAborted(options?.signal);
 
 	await options?.onInitialized?.();
+	throwIfAborted(options?.signal);
 
 	return result;
 }
@@ -115,55 +123,48 @@ export async function connectToServer(
 	},
 ): Promise<MCPServerConnection> {
 	const timeoutMs = resolveMCPTimeoutMs(config.timeout);
-	let transport: MCPTransport | undefined;
+	const timeout = createMCPTimeout(timeoutMs, options?.signal);
+	const signal = timeout.signal;
 
-	const connect = async (): Promise<MCPServerConnection> => {
-		transport = await createTransport(config);
-		if (options?.onNotification) {
-			transport.onNotification = options.onNotification;
-		}
-
-		transport.onRequest = options?.onRequest ?? defaultRequestHandler;
-
+	try {
+		throwIfAborted(signal);
+		const connectedTransport = createTransport(config);
 		try {
-			const initResult = await initializeConnection(transport, {
-				signal: options?.signal,
+			await connectedTransport.connect({ signal });
+			throwIfAborted(signal);
+
+			if (options?.onNotification) {
+				connectedTransport.onNotification = options.onNotification;
+			}
+
+			connectedTransport.onRequest = options?.onRequest ?? defaultRequestHandler;
+
+			const initResult = await initializeConnection(connectedTransport, {
+				signal,
 				async onInitialized() {
-					if ("startSSEListener" in transport! && typeof transport!.startSSEListener === "function") {
-						await (transport as { startSSEListener(): Promise<void> }).startSSEListener();
-					}
+					if (connectedTransport.startSSEListener) await connectedTransport.startSSEListener({ signal });
 				},
 			});
 
 			return {
 				name,
 				config,
-				transport,
+				transport: connectedTransport,
 				serverInfo: initResult.serverInfo,
 				capabilities: initResult.capabilities,
 				instructions: initResult.instructions,
 			};
 		} catch (error) {
-			await transport.close();
+			await connectedTransport.close({ signal }).catch(() => {});
 			throw error;
 		}
-	};
-
-	try {
-		if (!isMCPTimeoutEnabled(timeoutMs)) {
-			return await connect();
-		}
-		return await withTimeout(
-			connect(),
-			timeoutMs,
-			`Connection to MCP server "${name}" timed out after ${describeMCPTimeout(timeoutMs)}`,
-			options?.signal,
-		);
 	} catch (error) {
-		if (transport) {
-			void transport.close().catch(() => {});
+		if (timeout.timedOut()) {
+			throw new Error(`Connection to MCP server "${name}" timed out after ${describeMCPTimeout(timeoutMs)}`);
 		}
 		throw error;
+	} finally {
+		timeout.clear();
 	}
 }
 

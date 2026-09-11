@@ -624,8 +624,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			quiet: settings.get("startup.quiet"),
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
-			scrollbackRebuild: settings.get("tui.scrollbackRebuild"),
-			resizeScrollback: settings.get("tui.resizeScrollback"),
 			imeSafeCursor: settings.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
 			spellingTypoDetection: settings.get("spelling.typoDetection"),
@@ -676,8 +674,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
 
 		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
-		this.ui.setScrollbackRebuild(settings.get("tui.scrollbackRebuild"));
-		this.ui.setResizeScrollback(settings.get("tui.resizeScrollback"));
 		this.ui.setShowHardwareCursor(settings.get("showHardwareCursor"));
 
 		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.supportsTextSizing);
@@ -1688,9 +1684,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const previousChildren = [...this.chatContainer.children];
 		this.chatContainer.clear();
 
-		const fullContext = this.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
-		});
+		const fullContext = this.viewSession.buildTranscriptSessionContext();
 		const preservedLiveToolCallIds = resolvePreservedLiveToolCallIds({
 			livePendingTools,
 			liveComponents,

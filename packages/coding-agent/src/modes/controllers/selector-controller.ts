@@ -4,7 +4,7 @@ import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import { isPasteCodeLoginProvider } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
-import type { Component, OverlayHandle, ResizeScrollbackMode } from "@oh-my-pi/pi-tui";
+import type { Component, OverlayHandle } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
 import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison, VERSION } from "@oh-my-pi/pi-utils";
 import {
@@ -579,10 +579,6 @@ export class SelectorController {
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
-			case "display.collapseCompacted":
-				this.ctx.rebuildChatFromMessages();
-				this.ctx.ui.resetDisplay();
-				break;
 			case "display.showTokenUsage":
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
@@ -591,14 +587,6 @@ export class SelectorController {
 				setTuiTight(value as boolean);
 				this.ctx.ui.invalidate();
 				this.ctx.ui.requestRender();
-				break;
-
-			case "tui.scrollbackRebuild":
-				this.ctx.ui.setScrollbackRebuild(value as boolean);
-				break;
-
-			case "tui.resizeScrollback":
-				this.ctx.ui.setResizeScrollback(value as ResizeScrollbackMode);
 				break;
 
 			case "tui.renderMermaid":

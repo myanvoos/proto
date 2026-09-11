@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { type Component, Container, type RenderScheduler, type Terminal, TUI } from "@oh-my-pi/pi-tui";
+import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
 import { TranscriptContainer } from "./transcript-container";
 
 class TrackedBlock implements Component {
@@ -96,6 +97,23 @@ class CaptureTerminal implements Terminal {
 	onPrivateModeReport(_callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void {}
 }
 
+class BufferTerminal extends CaptureTerminal {
+	readonly vt = new VTermTerminal({ cols: this.columns, rows: this.rows, scrollback: 1_000 });
+
+	override write(data: string): void {
+		super.write(data);
+		this.vt.write(data);
+	}
+
+	normalLines(): string[] {
+		const lines = this.vt.buffer.normal;
+		return Array.from(
+			{ length: lines.length },
+			(_value, index) => lines.getLine(index)?.translateToString(true) ?? "",
+		);
+	}
+}
+
 const IMMEDIATE_SCHEDULER: RenderScheduler = {
 	now: () => 100,
 	scheduleImmediate(callback): void {
@@ -126,16 +144,6 @@ class DisplaceableBlock extends TrackedBlock {
 }
 
 class PinnedDisplaceableBlock extends DisplaceableBlock {
-	isNativeScrollbackLiveRegionPinned(): boolean {
-		return true;
-	}
-}
-
-class PinnedLiveBlock extends TrackedBlock {
-	isDisplaceableBlock(): boolean {
-		return true;
-	}
-
 	isNativeScrollbackLiveRegionPinned(): boolean {
 		return true;
 	}
@@ -195,48 +203,42 @@ test("empty displaceable blocks defer trailing-tail commitment until they seal",
 	expect(tail.committedRows, "the finalized tail becomes eligible after the slot seals").toBe(3);
 });
 
-test("deferred empty-slot frame stays exact in both scrollback modes", () => {
+test("deferred empty-slot frame stays exact without rewriting scrollback", () => {
 	const tailRows = Array.from({ length: 12 }, (_value, index) => `tail-${index}`);
 	const expected = ["poll", "", ...tailRows];
-	for (const scrollbackRebuild of [false, true]) {
-		const terminal = new CaptureTerminal();
-		const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
-		const empty = new DisplaceableBlock([], false);
-		const tail = new TrackedBlock(tailRows, true);
-		const transcript = new TranscriptContainer();
-		transcript.addChild(empty);
-		transcript.addChild(tail);
-		tui.addChild(transcript);
-		tui.setScrollbackRebuild(scrollbackRebuild);
-		tui.start({ deferInput: true });
-		expect(tail.committedRows, "the empty displaceable slot owns the initial commit boundary").toBe(0);
-		terminal.writes.length = 0;
+	const terminal = new CaptureTerminal();
+	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
+	const empty = new DisplaceableBlock([], false);
+	const tail = new TrackedBlock(tailRows, true);
+	const transcript = new TranscriptContainer();
+	transcript.addChild(empty);
+	transcript.addChild(tail);
+	tui.addChild(transcript);
+	tui.start({ deferInput: true });
+	expect(tail.committedRows, "the empty displaceable slot owns the initial commit boundary").toBe(0);
+	terminal.writes.length = 0;
 
-		empty.setLines(["poll"], false);
-		tui.requestRender(true);
-		expect(transcript.render(20)).toEqual(expected);
-		// The live slot stays retractable, so finalized tail rows remain outside
-		// native history while the slot can still grow.
-		for (const row of tailRows.slice(-4)) expect(terminal.writes.join("")).toContain(row);
-		expect(empty.sealed, "the live slot stays retractable while no rows crossed its boundary").toBe(false);
-		expect(tail.committedRows, "the finalized tail remains deferred in both modes").toBe(0);
+	empty.setLines(["poll"], false);
+	tui.requestRender(true);
+	expect(transcript.render(20)).toEqual(expected);
+	// The live slot stays retractable, so finalized tail rows remain outside
+	// native history while the slot can still grow.
+	for (const row of tailRows.slice(-4)) expect(terminal.writes.join("")).toContain(row);
+	expect(empty.sealed, "the live slot stays retractable while no rows crossed its boundary").toBe(false);
+	expect(tail.committedRows, "the finalized tail remains deferred").toBe(0);
 
-		empty.seal();
-		tui.requestRender(true);
-		terminal.writes.length = 0;
-		empty.setLines(["P2"], true);
-		tui.requestRender(true);
-		const finalizedEditOutput = terminal.writes.join("");
-		expect(transcript.render(20)).toEqual(["P2", "", ...tailRows]);
-		expect(finalizedEditOutput).toContain("P2");
-		expect(finalizedEditOutput).toContain("tail-11");
-		expect(finalizedEditOutput.includes("\x1b[3J"), "rebuild mode erases stale native history").toBe(
-			scrollbackRebuild,
-		);
-		tui.stop();
-	}
+	empty.seal();
+	tui.requestRender(true);
+	terminal.writes.length = 0;
+	empty.setLines(["P2"], true);
+	tui.requestRender(true);
+	const finalizedEditOutput = terminal.writes.join("");
+	expect(transcript.render(20)).toEqual(["P2", "", ...tailRows]);
+	expect(finalizedEditOutput).toContain("P2");
+	expect(finalizedEditOutput).toContain("tail-11");
+	expect(finalizedEditOutput, "settling a slot must not erase terminal history").not.toContain("\x1b[3J");
+	tui.stop();
 });
-
 test("an explicitly pinned displaceable interior block keeps the tail out of the seam", () => {
 	const live = new PinnedDisplaceableBlock(["live"], false);
 	const tail = new TrackedBlock(["tail-0", "tail-1"]);
@@ -247,30 +249,6 @@ test("an explicitly pinned displaceable interior block keeps the tail out of the
 	expect(transcript.render(40)).toEqual(["live", "", "tail-0", "tail-1"]);
 	expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
 	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(0);
-});
-
-test("rebuild mode retracts a tail when a pinned interior block becomes live", () => {
-	const terminal = new CaptureTerminal();
-	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
-	const live = new PinnedLiveBlock(["live"], true);
-	const tail = new TrackedBlock(Array.from({ length: 12 }, (_value, index) => `tail-${index}`));
-	const transcript = new TranscriptContainer();
-	transcript.addChild(live);
-	transcript.addChild(tail);
-	tui.addChild(transcript);
-	tui.setScrollbackRebuild(true);
-	tui.start({ deferInput: true });
-	expect(tail.committedRows).toBeGreaterThan(0);
-	terminal.writes.length = 0;
-
-	live.setLines(["live"], false);
-	tui.requestRender(true);
-
-	expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
-	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(0);
-	expect(tail.committedRows).toBe(0);
-	expect(terminal.writes.join(""), "rebuild mode must erase history beyond the new pinned seam").toContain("\x1b[3J");
-	tui.stop();
 });
 
 test("a live run pins before a finalized trailing tail", () => {
@@ -292,62 +270,43 @@ test("a live run pins before a finalized trailing tail", () => {
 	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(4);
 });
 
-class AppendOnlyBlock extends TrackedBlock {
-	isTranscriptBlockAppendOnly(): boolean {
-		return true;
-	}
-}
-
-test("a trailing live run pins at its end so a stream that outgrows the viewport scrolls into history", () => {
-	const terminal = new CaptureTerminal();
+test("a completed tall tool block remains in scrollback while the next reply streams", () => {
+	const terminal = new BufferTerminal();
 	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
-	const history = new TrackedBlock(["history"]);
-	const live = new AppendOnlyBlock([], false);
 	const transcript = new TranscriptContainer();
-	transcript.addChild(history);
-	transcript.addChild(live);
-	const chrome = new TrackedBlock(["editor"]);
+	transcript.addChild(new TrackedBlock(["thinking-before"]));
+	const tool = new TrackedBlock([], false);
+	transcript.addChild(tool);
 	tui.addChild(transcript);
-	tui.addChild(chrome);
+	tui.addChild(new TrackedBlock(["todo", "editor"]));
 	tui.start({ deferInput: true });
 
-	const body = Array.from({ length: 10 }, (_value, index) => `stream-${index}`);
-	for (let n = 1; n <= body.length; n++) {
-		terminal.writes.length = 0;
-		live.setLines(body.slice(0, n), false);
+	const preview = Array.from({ length: 12 }, (_value, index) => `tool-preview-${index}`);
+	for (let count = 1; count <= preview.length; count++) {
+		tool.setLines(preview.slice(0, count), false);
 		tui.requestRender(true);
 	}
-	expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
-	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(2 + body.length);
-	// With a 4-row viewport the head of the stream must already have been
-	// written, not withheld until the block settles.
-	const streamed = terminal.writes.join("");
-	expect(streamed).toContain("stream-6");
-	expect(streamed).toContain("stream-9");
-	expect(live.committedRows, "rows that scrolled above the viewport are committed").toBeGreaterThan(0);
+	expect(
+		tool.committedRows,
+		"the tool head crosses the seam instead of entering a hidden live window",
+	).toBeGreaterThan(0);
 
-	terminal.writes.length = 0;
-	live.setLines(body, true);
+	const result = Array.from({ length: 9 }, (_value, index) => `tool-result-${index}`);
+	tool.setLines(result, true);
 	tui.requestRender(true);
-	const settledOutput = terminal.writes.join("");
-	for (const row of body.slice(0, 6)) {
-		expect(settledOutput, "settling an append-only stream must not re-emit rows that already scrolled").not.toContain(
-			row,
-		);
+	const reply = new TrackedBlock([], false);
+	transcript.addChild(reply);
+	const response = Array.from({ length: 12 }, (_value, index) => `reply-${index}`);
+	for (let count = 1; count <= response.length; count++) {
+		reply.setLines(response.slice(0, count), false);
+		tui.requestRender(true);
 	}
+
+	const lines = terminal.normalLines();
+	const resultStart = lines.indexOf(result[0]!);
+	expect(resultStart, "the settled tool block remains in native scrollback").toBeGreaterThanOrEqual(0);
+	expect(lines.slice(resultStart, resultStart + result.length)).toEqual(result);
+	for (const row of response) expect(lines).toContain(row);
+	expect(lines.slice(-2)).toEqual(["todo", "editor"]);
 	tui.stop();
-});
-
-test("a trailing live block whose preview is rewritten on settle stays unpinned", () => {
-	const history = new TrackedBlock(["history"]);
-	const card = new TrackedBlock(["progress-0", "progress-1"], false);
-	const transcript = new TranscriptContainer();
-	transcript.addChild(history);
-	transcript.addChild(card);
-
-	expect(transcript.render(40)).toEqual(["history", "", "progress-0", "progress-1"]);
-	expect(transcript.getNativeScrollbackLiveRegionStart()).toBe(2);
-	expect(transcript.isNativeScrollbackLiveRegionPinned(), "a trailing card keeps the strict live-start ceiling").toBe(
-		false,
-	);
 });

@@ -30,14 +30,12 @@ interface AdoptOptions {
 	idleTtlMs: number;
 
 	revive?: AgentReviver;
-	preferPersistedRevive?: boolean;
 }
 
 interface AdoptedAgent {
 	ref: AgentRef;
 	idleTtlMs: number;
 	revive?: AgentReviver;
-	preferPersistedRevive?: boolean;
 	timer?: NodeJS.Timeout;
 }
 
@@ -120,7 +118,6 @@ export class AgentLifecycleManager {
 			ref,
 			idleTtlMs: opts.idleTtlMs,
 			revive: opts.revive,
-			preferPersistedRevive: opts.preferPersistedRevive,
 		};
 		this.#adopted.set(id, adopted);
 		this.#armTimer(id, adopted);
@@ -199,18 +196,6 @@ export class AgentLifecycleManager {
 					await session.dispose();
 				} catch (error) {
 					logger.warn("AgentLifecycleManager.park: session dispose failed", { id, error: String(error) });
-				} finally {
-					// A run-local reviver closes over the completed executor and its session resources.
-					// Disk-backed revival can recreate it lazily without retaining that completed run.
-					const current = this.#adopted.get(id);
-					if (
-						current?.ref === ref &&
-						current.preferPersistedRevive &&
-						ref.sessionFile &&
-						this.#persistedReviverFactory
-					) {
-						current.revive = undefined;
-					}
 				}
 			} finally {
 				if (this.#parks.get(id) === park) this.#parks.delete(id);

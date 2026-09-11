@@ -662,11 +662,7 @@ export class CommandController {
 
 			this.ctx.statusLine.invalidate();
 
-			if (this.ctx.settings.get("display.collapseCompacted")) {
-				this.ctx.ui.requestRender(true, { clearScrollback: true });
-			} else {
-				this.ctx.ui.requestRender();
-			}
+			this.ctx.ui.requestRender();
 		} catch (error) {
 			if (error instanceof CompactionCancelledError) {
 				outcome = "cancelled";

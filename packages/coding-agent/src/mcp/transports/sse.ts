@@ -18,6 +18,7 @@ interface MCPTimeoutOperation {
 	signal?: AbortSignal;
 	clear: () => void;
 	isTimeoutAbort: (error: unknown) => boolean;
+	timedOut: () => boolean;
 }
 
 interface PendingLegacySseRequest {
@@ -27,10 +28,15 @@ interface PendingLegacySseRequest {
 	abortHandler?: () => void;
 }
 
+function abortReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("Aborted");
+}
+
 export class LegacySseTransport implements MCPTransport {
 	#connected = false;
 	#endpointUrl: string | null = null;
 	#sseConnection: AbortController | null = null;
+	#lifetime = new AbortController();
 	#pending = new Map<string | number, PendingLegacySseRequest>();
 	#config: MCPSseServerConfig;
 	readonly #requestIds = new RequestIdAllocator();
@@ -44,6 +50,19 @@ export class LegacySseTransport implements MCPTransport {
 
 	constructor(config: MCPSseServerConfig) {
 		this.#config = config;
+	}
+
+	#signal(signal?: AbortSignal): AbortSignal {
+		if (!signal) return this.#lifetime.signal;
+		return AbortSignal.any([this.#lifetime.signal, signal]);
+	}
+
+	#clearCallbacks(): void {
+		this.onClose = undefined;
+		this.onError = undefined;
+		this.onNotification = undefined;
+		this.onRequest = undefined;
+		this.onAuthError = undefined;
 	}
 
 	#fetch(url: string, init: MCPFetchInit, generated: Record<string, string>): Promise<Response> {
@@ -63,20 +82,24 @@ export class LegacySseTransport implements MCPTransport {
 		return this.#config.url;
 	}
 
-	async connect(): Promise<void> {
+	async connect(options?: MCPRequestOptions): Promise<void> {
+		if (options?.signal?.aborted) throw abortReason(options.signal);
 		if (this.#connected) return;
 		if (this.#sseConnection) return;
+		if (this.#lifetime.signal.aborted) throw abortReason(this.#lifetime.signal);
 
 		const connection = new AbortController();
 		const timeout = resolveMCPTimeoutMs(this.#config.timeout);
-		const operation = createMCPTimeout(timeout, connection.signal);
+		const operation = createMCPTimeout(timeout, this.#signal(options?.signal));
 		const endpointReady = Promise.withResolvers<void>();
 		this.#sseConnection = connection;
+		let readPromise: Promise<void> | undefined;
 
 		try {
+			const signal = AbortSignal.any([connection.signal, operation.signal ?? this.#lifetime.signal]);
 			const response = await this.#fetch(
 				this.#config.url,
-				{ method: "GET", signal: operation.signal },
+				{ method: "GET", signal },
 				{ Accept: "text/event-stream" },
 			);
 
@@ -88,17 +111,26 @@ export class LegacySseTransport implements MCPTransport {
 				throw new Error("Legacy SSE response did not include a body");
 			}
 
-			void this.#readSSEStream(response.body, operation, endpointReady).finally(() => {
-				const wasConnected = this.#connected;
-				if (this.#sseConnection === connection) this.#sseConnection = null;
-				if (wasConnected) this.onClose?.();
-			});
+			readPromise = this.#readSSEStream(response.body, operation, endpointReady);
+			void readPromise
+				.finally(() => {
+					const wasConnected = this.#connected;
+					if (this.#sseConnection === connection) this.#sseConnection = null;
+					if (wasConnected) {
+						const onClose = this.onClose;
+						this.#clearCallbacks();
+						if (!operation.signal?.aborted) onClose?.();
+					}
+				})
+				.catch(() => {});
 			await endpointReady.promise;
 		} catch (error) {
 			operation.clear();
 			if (this.#sseConnection === connection) this.#sseConnection = null;
 			connection.abort();
-			if (operation.isTimeoutAbort(error)) {
+			await readPromise?.catch(() => {});
+			if (options?.signal?.aborted) throw abortReason(options.signal);
+			if (operation.isTimeoutAbort(error) || operation.timedOut()) {
 				throw new Error(`Legacy SSE endpoint timeout after ${timeout}ms`);
 			}
 			throw error;
@@ -150,7 +182,9 @@ export class LegacySseTransport implements MCPTransport {
 				}
 			}
 			if (!endpointReceived) {
-				endpointReady.reject(new Error("Legacy SSE endpoint event not received"));
+				endpointReady.reject(
+					signal.aborted ? abortReason(signal) : new Error("Legacy SSE endpoint event not received"),
+				);
 			}
 		} catch (error) {
 			if (!endpointReceived) {
@@ -210,7 +244,7 @@ export class LegacySseTransport implements MCPTransport {
 			params: params ?? {},
 		};
 		const timeout = resolveMCPTimeoutMs(this.#config.timeout);
-		const operation = createMCPTimeout(timeout, options?.signal);
+		const operation = createMCPTimeout(timeout, this.#signal(options?.signal));
 		const deferred = Promise.withResolvers<unknown>();
 
 		void deferred.promise.catch(() => undefined);
@@ -252,13 +286,13 @@ export class LegacySseTransport implements MCPTransport {
 		}
 	}
 
-	async notify(method: string, params?: Record<string, unknown>): Promise<void> {
+	async notify(method: string, params?: Record<string, unknown>, options?: MCPRequestOptions): Promise<void> {
 		if (!this.#connected || !this.#endpointUrl) {
 			throw new Error("Transport not connected");
 		}
 
 		const timeout = resolveMCPTimeoutMs(this.#config.timeout);
-		const operation = createMCPTimeout(timeout);
+		const operation = createMCPTimeout(timeout, this.#signal(options?.signal));
 		try {
 			const response = await this.#postJson(
 				{
@@ -322,7 +356,7 @@ export class LegacySseTransport implements MCPTransport {
 	async #sendServerResponse(id: string | number, result?: unknown, error?: JsonRpcError): Promise<void> {
 		if (!this.#connected) return;
 		const timeout = resolveMCPTimeoutMs(this.#config.timeout);
-		const operation = createMCPTimeout(timeout);
+		const operation = createMCPTimeout(timeout, this.#signal());
 		try {
 			const response = await this.#postJson(
 				error ? { jsonrpc: "2.0" as const, id, error } : { jsonrpc: "2.0" as const, id, result: result ?? {} },
@@ -344,23 +378,23 @@ export class LegacySseTransport implements MCPTransport {
 		}
 	}
 
-	async close(): Promise<void> {
-		if (!this.#connected && !this.#sseConnection) return;
+	async close(_options?: MCPRequestOptions): Promise<void> {
+		if (!this.#connected && !this.#sseConnection) {
+			this.#lifetime.abort();
+			this.#clearCallbacks();
+			return;
+		}
 		const wasConnected = this.#connected;
 		this.#connected = false;
 		this.#endpointUrl = null;
+		this.#lifetime.abort();
 		if (this.#sseConnection) {
 			this.#sseConnection.abort();
 			this.#sseConnection = null;
 		}
 		this.#rejectPending(new Error("Transport closed"));
-		if (wasConnected) this.onClose?.();
-		this.onClose = undefined;
+		const onClose = this.onClose;
+		this.#clearCallbacks();
+		if (wasConnected) onClose?.();
 	}
-}
-
-export async function createSseTransport(config: MCPSseServerConfig): Promise<LegacySseTransport> {
-	const transport = new LegacySseTransport(config);
-	await transport.connect();
-	return transport;
 }

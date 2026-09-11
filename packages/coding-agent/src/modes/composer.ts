@@ -2,7 +2,6 @@ import {
 	type Component,
 	Container,
 	ProcessTerminal,
-	type ResizeScrollbackMode,
 	Spacer,
 	type Terminal,
 	TUI,
@@ -22,8 +21,6 @@ export interface ComposerPreferences {
 	readonly quiet: boolean;
 	readonly showHardwareCursor: boolean;
 	readonly maxInlineImages: number;
-	readonly scrollbackRebuild: boolean;
-	readonly resizeScrollback: ResizeScrollbackMode;
 	readonly imeSafeCursor: boolean;
 	readonly autocompleteMaxVisible: number;
 	readonly spellingTypoDetection: boolean;
@@ -35,8 +32,6 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	quiet: false,
 	showHardwareCursor: true,
 	maxInlineImages: 8,
-	scrollbackRebuild: false,
-	resizeScrollback: "append",
 	imeSafeCursor: false,
 	autocompleteMaxVisible: 10,
 	spellingTypoDetection: true,
@@ -141,8 +136,6 @@ export class Composer {
 			options.tuiOptions,
 		);
 		this.ui.setMaxInlineImages(this.#preferences.maxInlineImages);
-		this.ui.setScrollbackRebuild(this.#preferences.scrollbackRebuild);
-		this.ui.setResizeScrollback(this.#preferences.resizeScrollback);
 
 		this.#editor = new CustomEditor(getEditorTheme());
 		this.#editorSlot.addChild(this.editor);
@@ -208,8 +201,6 @@ export class Composer {
 		this.ui.setShowHardwareCursor(this.#preferences.showHardwareCursor);
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.ui.setMaxInlineImages(this.#preferences.maxInlineImages);
-		this.ui.setScrollbackRebuild(this.#preferences.scrollbackRebuild);
-		this.ui.setResizeScrollback(this.#preferences.resizeScrollback);
 		this.editor.setImeSafeCursorLayout(this.#preferences.imeSafeCursor);
 		this.editor.setAutocompleteMaxVisible(this.#preferences.autocompleteMaxVisible);
 		this.editor.setSpellingFeatures({

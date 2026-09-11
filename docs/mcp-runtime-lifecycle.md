@@ -67,6 +67,7 @@ So startup does not fail the whole agent session when individual MCP servers fai
 - `#pendingReconnections: Map<string, Promise<MCPServerConnection | null>>` — reconnects in progress after a dropped transport or explicit reconnect.
 - `#serverConfigs: Map<string, MCPServerConfig>` — original unresolved configs preserved so reconnect can re-resolve credentials without leaking resolved tokens.
 - `#reconnectHistory: Map<string, number[]>` plus `#epoch` — per-server crash-window accounting and invalidation of reconnect attempts that outlive a global disconnect.
+- per-server cancellation controllers covering initial connect/tool loading and the complete reconnect sequence, including credential resolution and retry backoff.
 - listener/callback state, including a bounded pending-notification FIFO and tracked resource subscriptions/refreshes.
 
 `getConnectionStatus(name)` derives status from these maps:
@@ -86,9 +87,9 @@ For each discovered server in `connectServers()`:
 3. validate transport fields (`validateServerConfig`),
 4. save the unresolved config for possible reconnect,
 5. resolve managed OAuth credentials and env/header shell substitutions (`#resolveAuthConfig`),
-6. call `connectToServer(name, resolvedConfig)` with manager notification/request handlers,
+6. call `connectToServer(name, resolvedConfig, { signal, ... })` with the attempt signal and manager notification/request handlers,
 7. wire HTTP OAuth refresh and transport `onClose` reconnect handling,
-8. call `listTools(connection)`,
+8. call `listTools(connection, { signal })`,
 9. cache tool definitions (`MCPToolCache.set`) best-effort,
 10. best-effort load resources, resource templates, prompts, and subscriptions after tools load.
 
@@ -100,7 +101,8 @@ For each discovered server in `connectServers()`:
 - sends `notifications/initialized` before any further session traffic,
 - for Streamable HTTP, starts the background SSE listener only after `notifications/initialized`,
 - uses timeout precedence `PROTO_MCP_TIMEOUT_MS`, then `config.timeout`, then 30s; `0` disables the client-side timeout,
-- closes transport on init failure.
+- uses the same attempt signal through transport setup, initialization, initialized notification, and listener startup; cancellation still works with a disabled timeout,
+- closes the transport on startup failure or cancellation rather than leaving an orphaned handshake running.
 
 ### Fast startup gate + deferred fallback
 
@@ -201,7 +203,8 @@ Operationally:
 
 `disconnectServer(name)`:
 
-- removes pending connect/tool-load/reconnect entries, source metadata, saved config, reconnect history, and resource refresh/subscription state,
+- invalidates pending connect/tool-load/reconnect entries, source metadata, saved config, reconnect history, and resource refresh/subscription state before aborting the captured attempts,
+- aborts connection I/O and reconnect backoff so the removed server cannot retry or publish stale tools/status; cleanup leaves a fresh same-name attempt intact,
 - detaches `onClose` so explicit close does not trigger reconnect,
 - closes the transport if connected,
 - removes tools by their exact `mcpServerName` owner (not by a sanitized name prefix) and notifies tool consumers,
@@ -211,11 +214,14 @@ Operationally:
 
 `disconnectAll()`:
 
-- increments a lifecycle epoch so reconnect attempts that finish later cannot resurrect old connections,
-- detaches `onClose` for all active transports, then closes them with `Promise.allSettled`,
-- clears pending maps, sources, saved configs, connections, subscriptions, resource refreshes, reconnect history, and manager tools.
+- increments a lifecycle epoch and invalidates the captured pending work so old completions cannot resurrect connections or publish stale tools/status,
+- aborts captured connection and reconnect attempts immediately, including pending handshakes and backoff, without cancelling fresh attempts started during teardown,
+- detaches `onClose` for captured active transports, then closes them with `Promise.allSettled`,
+- removes captured sources, saved configs, connections, subscriptions, resource refreshes, reconnect history, and tools without deleting newer replacements.
 
 Top-level sessions own managers they create. `AgentSession.dispose()` disconnects that owned manager with a 3-second cleanup timeout and logs cleanup failure; a subagent/session given `options.mcpManager` borrows the parent manager and does not disconnect it. `/mcp reload` deliberately reuses the manager object after `disconnectAll`, so installed callbacks/listeners remain available for the next discovery cycle.
+
+`dispose()` is terminal: it also releases callbacks/listeners and prevents later discovery, connects, or reconnects from restarting work. Parking a worker with an owned manager cancels its pending handshakes through session disposal; messaging that worker reconstructs the session and its owned manager.
 
 ## Failure modes and guarantees
 

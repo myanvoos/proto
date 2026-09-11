@@ -315,7 +315,7 @@ test("keeps ambiguous-is-narrow overlay glyphs when the measured line fits", () 
 	}
 });
 
-test("strictly audits committed rows reported dirty by a child", () => {
+test("preserves a frozen row and appends its corrected form without erasing history", () => {
 	const terminal = new FakeTerminal(8, 2);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -324,40 +324,36 @@ test("strictly audits committed rows reported dirty by a child", () => {
 
 	try {
 		tui.start({ deferInput: true });
-		tui.setScrollbackRebuild(true);
 		component.rows = ["A0", "B1", "C0", "D0"];
 		component.dirtyRow = 1;
 		tui.requestRender(true);
-		expect(terminal.normalLines()).toEqual(["A0", "B1", "C0", "D0"]);
+		expect(terminal.normalLines()).toEqual(["A0", "B0", "B1", "C0", "D0"]);
+		expect(terminal.writes.join(""), "correcting a frozen row must not erase scrollback").not.toContain("\x1b[3J");
 	} finally {
 		tui.stop();
 	}
 });
 
 test("keeps the seam pinned when the content tail moves above it without a geometry change", () => {
-	for (const rebuild of [false, true]) {
-		const terminal = new FakeTerminal(8, 2);
-		const scheduler = new TestScheduler();
-		const tui = new TUI(terminal, false, { renderScheduler: scheduler });
-		const component = new ProtocolRows(["A", "B", "C"]);
-		tui.setScrollbackRebuild(rebuild);
-		tui.addChild(component);
+	const terminal = new FakeTerminal(8, 2);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const component = new ProtocolRows(["A", "B", "C"]);
+	tui.addChild(component);
 
-		try {
-			tui.start({ deferInput: true });
-			component.rows = ["A", "B"];
-			tui.requestRender(true);
-			// Default mode must not repaint the committed "A" onto the screen (it
-			// is already in native scrollback); rebuild mode rewrites the exact tape.
-			expect(terminal.normalLines()).toEqual(rebuild ? ["A", "B"] : ["A", "B", ""]);
-		} finally {
-			tui.stop();
-		}
+	try {
+		tui.start({ deferInput: true });
+		component.rows = ["A", "B"];
+		tui.requestRender(true);
+		// "A" is already in native scrollback, so repainting it onto the screen
+		// would leave a duplicate seam row in history.
+		expect(terminal.normalLines()).toEqual(["A", "B", ""]);
+	} finally {
+		tui.stop();
 	}
 });
 
 test("scrolls an unpinned live region into history but keeps finalized rows below it viewport-local", () => {
-	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
 	const terminal = new FakeTerminal(20, 4);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -398,12 +394,10 @@ test("scrolls an unpinned live region into history but keeps finalized rows belo
 		]);
 	} finally {
 		tui.stop();
-		restore();
 	}
 });
 
 test("pushes the head of a joined live block into history before trailing chrome", () => {
-	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
 	const terminal = new FakeTerminal(20, 5);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -434,12 +428,10 @@ test("pushes the head of a joined live block into history before trailing chrome
 		expect(terminal.normalLines()).toEqual(["U0", "", ...body, "editor", "status"]);
 	} finally {
 		tui.stop();
-		restore();
 	}
 });
 
 test("a scrollback-clearing repaint keeps live rows that sit above the viewport", () => {
-	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
 	const terminal = new FakeTerminal(20, 5);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -460,12 +452,10 @@ test("a scrollback-clearing repaint keeps live rows that sit above the viewport"
 		expect(terminal.normalLines()).toEqual(["U0", "", ...stream.rows, "editor"]);
 	} finally {
 		tui.stop();
-		restore();
 	}
 });
 
 test("clamps an unpinned nested container at its live start", () => {
-	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
 	const terminal = new FakeTerminal(20, 3);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -498,54 +488,10 @@ test("clamps an unpinned nested container at its live start", () => {
 		expect(terminal.normalLines()).toEqual(["H0", "S0", "S1", "I0", "I1", "I2", "I3", "editor"]);
 	} finally {
 		tui.stop();
-		restore();
 	}
 });
 
-test("clears physical scrollback when rebuild mode retracts the seam", () => {
-	const terminal = new FakeTerminal(8, 2);
-	const scheduler = new TestScheduler();
-	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
-	const component = new ProtocolRows(["A", "B", "C"]);
-	tui.addChild(component);
-
-	try {
-		tui.start({ deferInput: true });
-		tui.setScrollbackRebuild(true);
-		component.rows = ["A", "B"];
-		tui.requestRender(true);
-		expect(terminal.normalLines()).toEqual(["A", "B"]);
-	} finally {
-		tui.stop();
-	}
-});
-
-test("replays the tape when rebuild mode is enabled mid-session", () => {
-	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
-	const terminal = new FakeTerminal(8, 2);
-	const scheduler = new TestScheduler();
-	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
-	const first = new ProtocolRows(["A"]);
-	const second = new ProtocolRows(["B"]);
-	const progress = new ProtocolRows(["p0", "p1", "p2", "p3"]);
-	tui.addChild(first);
-	tui.addChild(second);
-	tui.addChild(progress);
-
-	try {
-		tui.start({ deferInput: true });
-		first.rows = ["A", "X"];
-		tui.requestRender(true);
-		tui.setScrollbackRebuild(true);
-		expect(terminal.normalLines()).toEqual(["A", "X", "B", "p0", "p1", "p2", "p3"]);
-	} finally {
-		tui.stop();
-		restore();
-	}
-});
-
-test("does not erase scrollback during rebuild-mode streaming growth", () => {
-	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: "true" });
+test("does not erase scrollback during streaming growth", () => {
 	const terminal = new FakeTerminal(40, 4);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -562,38 +508,10 @@ test("does not erase scrollback during rebuild-mode streaming growth", () => {
 		expect(terminal.normalLines().slice(-4)).toEqual(["stream-27", "stream-28", "stream-29", "prompt"]);
 	} finally {
 		tui.stop();
-		restore();
 	}
 });
 
-test("replays every result row when a provisional preview is finalized", () => {
-	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: "true" });
-	const terminal = new FakeTerminal(20, 4);
-	const scheduler = new TestScheduler();
-	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
-	const root = new ProtocolRows([]);
-	root.liveStart = 0;
-	tui.addChild(root);
-
-	try {
-		tui.start({ deferInput: true });
-		terminal.writes.length = 0;
-		root.rows = Array.from({ length: 10 }, (_value, index) => `preview-${index}`);
-		tui.requestRender(true);
-		root.rows = Array.from({ length: 9 }, (_value, index) => `result-${index}`);
-		root.liveStart = undefined;
-		tui.requestRender(true);
-
-		expect(terminal.normalLines()).toEqual(Array.from({ length: 9 }, (_value, index) => `result-${index}`));
-		expect(terminal.writes.join(""), "finalization must repair the provisional tape").toContain("\x1b[3J");
-	} finally {
-		tui.stop();
-		restore();
-	}
-});
-
-test("keeps all current result rows in default scrollback mode", () => {
-	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
+test("keeps all current result rows when a provisional preview finalizes", () => {
 	const terminal = new FakeTerminal(20, 4);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -617,11 +535,10 @@ test("keeps all current result rows in default scrollback mode", () => {
 		expect(terminal.writes.join(""), "default finalization must not erase scrollback").not.toContain("\x1b[3J");
 	} finally {
 		tui.stop();
-		restore();
 	}
 });
 
-test("replays a committed progress header after a finalized block is inserted before it", () => {
+test("keeps inserted rows and a live tail after a frozen progress header", () => {
 	const terminal = new FakeTerminal(21, 2);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -630,13 +547,13 @@ test("replays a committed progress header after a finalized block is inserted be
 	const progress = new UnfinalizedRows(["progress", "p1", "waiting"]);
 	tui.addChild(transcript);
 	tui.addChild(progress);
-	tui.setScrollbackRebuild(true);
 
 	try {
 		tui.start({ deferInput: true });
 		transcript.children.splice(1, 0, { render: () => ["B0", "B1"] });
 		tui.requestRender(true);
-		expect(terminal.normalLines()).toEqual(["A0", "A1", "", "B0", "B1", "progress", "p1", "waiting"]);
+		expect(terminal.normalLines().slice(-6)).toEqual(["", "B0", "B1", "progress", "p1", "waiting"]);
+		expect(terminal.writes.join(""), "insertion must not erase frozen history").not.toContain("\x1b[3J");
 	} finally {
 		tui.stop();
 	}
@@ -652,7 +569,6 @@ test("replays a committed tool header after insertion inside a live container", 
 	tool.liveStart = 0;
 	transcript.addChild(tool);
 	tui.addChild(transcript);
-	tui.setScrollbackRebuild(true);
 
 	try {
 		tui.start({ deferInput: true });
@@ -664,7 +580,7 @@ test("replays a committed tool header after insertion inside a live container", 
 	}
 });
 
-test("caps insertion replay at a pinned settled boundary", () => {
+test("keeps inserted rows after a frozen pinned prefix", () => {
 	const terminal = new FakeTerminal(20, 4);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -677,15 +593,12 @@ test("caps insertion replay at a pinned settled boundary", () => {
 	tui.addChild(before);
 	tui.addChild(pinned);
 	tui.addChild(tail);
-	tui.setScrollbackRebuild(true);
 
 	try {
 		tui.start({ deferInput: true });
 		tui.children.splice(1, 0, { render: () => ["B0", "B1"] });
 		tui.requestRender(true);
-		expect(terminal.normalLines()).toEqual([
-			"A0",
-			"A1",
+		expect(terminal.normalLines().slice(-11)).toEqual([
 			"B0",
 			"B1",
 			"s0",
@@ -698,63 +611,50 @@ test("caps insertion replay at a pinned settled boundary", () => {
 			"tail4",
 			"tail5",
 		]);
+		expect(terminal.writes.join(""), "insertion must not erase frozen history").not.toContain("\x1b[3J");
 	} finally {
 		tui.stop();
 	}
 });
 
 test("keeps current rows when a committed live block is removed", () => {
-	for (const rebuild of [false, true]) {
-		const terminal = new FakeTerminal(27, 2);
-		const scheduler = new TestScheduler();
-		const tui = new TUI(terminal, false, { renderScheduler: scheduler });
-		const live = new ProtocolRows(["r1x1y0 live"]);
-		const body = new ProtocolRows(["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three"]);
-		const progress = new ProtocolRows(["progress", "p1", "p2"]);
-		progress.liveStart = 0;
-		tui.addChild(live);
-		tui.addChild(body);
-		tui.addChild(progress);
+	const terminal = new FakeTerminal(27, 2);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const live = new ProtocolRows(["r1x1y0 live"]);
+	const body = new ProtocolRows(["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three"]);
+	const progress = new ProtocolRows(["progress", "p1", "p2"]);
+	progress.liveStart = 0;
+	tui.addChild(live);
+	tui.addChild(body);
+	tui.addChild(progress);
 
-		try {
-			tui.start({ deferInput: true });
-			if (rebuild) tui.setScrollbackRebuild(true);
-			tui.removeChild(live);
-			tui.requestRender(true);
-			const lines = terminal.normalLines();
-			if (rebuild) {
-				expect(lines).toEqual(["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three", "progress", "p1", "p2"]);
-			} else {
-				expect(lines.slice(-2)).toEqual(["p1", "p2"]);
-				for (const row of ["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three"]) {
-					expect(lines).toContain(row);
-				}
-			}
-
-			// The frozen live header is reconciled once the block settles differently.
-			progress.rows = ["done", "d1"];
-			progress.liveStart = undefined;
-			tui.requestRender(true);
-			const settled = terminal.normalLines();
-			if (rebuild) {
-				expect(settled).toEqual(["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three", "done", "d1"]);
-			} else {
-				expect(settled.slice(-2)).toEqual(["done", "d1"]);
-			}
-		} finally {
-			tui.stop();
+	try {
+		tui.start({ deferInput: true });
+		tui.removeChild(live);
+		tui.requestRender(true);
+		const lines = terminal.normalLines();
+		expect(lines.slice(-2)).toEqual(["p1", "p2"]);
+		for (const row of ["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three"]) {
+			expect(lines).toContain(row);
 		}
+
+		// The frozen live header is reconciled once the block settles differently.
+		progress.rows = ["done", "d1"];
+		progress.liveStart = undefined;
+		tui.requestRender(true);
+		expect(terminal.normalLines().slice(-2)).toEqual(["done", "d1"]);
+	} finally {
+		tui.stop();
 	}
 });
 
-test("rebuilds exact mux tape after a width and height resize", () => {
+test("keeps the exact mux tape after a width and height resize", () => {
 	const restore = setEnvironment({ TMUX: "1", TERM: "xterm-256color", PI_NO_SYNC_OUTPUT: "1" });
 	const terminal = new FakeTerminal(8, 2);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
 	const component = new ProtocolRows(["A", "B", "C"]);
-	tui.setResizeScrollback("preserve");
-	tui.setScrollbackRebuild(true);
 	tui.addChild(component);
 
 	try {
@@ -769,13 +669,12 @@ test("rebuilds exact mux tape after a width and height resize", () => {
 	}
 });
 
-test("clears mux tape for an explicit rebuild-mode clear", () => {
+test("clears mux tape for an explicit scrollback clear", () => {
 	const restore = setEnvironment({ TMUX: "1", TERM: "xterm-256color", PI_NO_SYNC_OUTPUT: "1" });
 	const terminal = new FakeTerminal(10, 2);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
 	const component = new ProtocolRows(["r1a", "r1b", "r1c", "r1d"]);
-	tui.setScrollbackRebuild(true);
 	tui.addChild(component);
 
 	try {
@@ -797,7 +696,6 @@ test("recommits current rows after a mux width epoch before a live progress tail
 	const body = new ProtocolRows(["y0", "y1", "y2", "y3", "y4"]);
 	const progress = new ProtocolRows(["progress", "p1", ""]);
 	progress.liveStart = 0;
-	tui.setResizeScrollback("preserve");
 	tui.addChild(body);
 
 	try {

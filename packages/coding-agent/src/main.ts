@@ -1222,8 +1222,6 @@ export async function runRootCommand(
 			quiet: settingsInstance.get("startup.quiet"),
 			showHardwareCursor: settingsInstance.get("showHardwareCursor"),
 			maxInlineImages: settingsInstance.get("tui.maxInlineImages"),
-			scrollbackRebuild: settingsInstance.get("tui.scrollbackRebuild"),
-			resizeScrollback: settingsInstance.get("tui.resizeScrollback"),
 			imeSafeCursor: settingsInstance.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settingsInstance.get("autocompleteMaxVisible"),
 			spellingTypoDetection: settingsInstance.get("spelling.typoDetection"),

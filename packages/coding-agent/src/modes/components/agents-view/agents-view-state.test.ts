@@ -70,6 +70,23 @@ describe("agents view live-session classification", () => {
 	});
 });
 
+describe("agents view idle lifecycle details", () => {
+	test("idle rows tell a live idle worker apart from one parked to disk", () => {
+		const live = fakeRef({ id: "live", status: "idle", sessionFile: "/tmp/proto-view/live.jsonl" });
+		const parked = fakeRef({ id: "parked", status: "parked", sessionFile: "/tmp/proto-view/parked.jsonl" });
+		const rows = buildAgentsViewRows(
+			reconcileAgentsViewRecords([live, parked], []),
+			new Set(),
+			new Set(),
+			new Map(),
+			undefined,
+		);
+		const details = new Map(rows.map(row => [row.identity, row.details]));
+		expect(details.get("file:/tmp/proto-view/live.jsonl")).toMatch(/^idle · /);
+		expect(details.get("file:/tmp/proto-view/parked.jsonl")).toMatch(/^parked · /);
+	});
+});
+
 describe("agents view section counts", () => {
 	test("children count toward the section they are displayed in, not their own", () => {
 		const base = "/tmp/proto-view/sess.jsonl";

@@ -46,10 +46,10 @@ function branch(firstKeptEntryId: string): SessionEntry[] {
 	];
 }
 
-function textsOf(firstKeptEntryId: string, transcript: boolean): string[] {
+function textsOf(firstKeptEntryId: string, transcript: boolean, collapseCompactedHistory?: boolean): string[] {
 	const context = buildSessionContext(branch(firstKeptEntryId), "c1", undefined, {
 		transcript: transcript || undefined,
-		collapseCompactedHistory: transcript || undefined,
+		collapseCompactedHistory,
 	});
 	return context.messages.map(msg => {
 		if (msg.role === "compactionSummary") return "<summary>";
@@ -60,13 +60,23 @@ function textsOf(firstKeptEntryId: string, transcript: boolean): string[] {
 	});
 }
 
-describe("compaction boundary in the collapsed transcript", () => {
+describe("compaction boundaries", () => {
+	test("the transcript keeps pre-compaction messages unless collapse is explicitly requested", () => {
+		expect(textsOf("u2", true)).toEqual([
+			"first request",
+			"first answer",
+			"second request",
+			"second answer",
+			"<summary>",
+		]);
+	});
+
 	test("keeps history from the boundary when it resolves", () => {
-		expect(textsOf("u2", true)).toEqual(["second request", "second answer", "<summary>"]);
+		expect(textsOf("u2", true, true)).toEqual(["second request", "second answer", "<summary>"]);
 	});
 
 	test("keeps the full scrollback when an extension folds the whole window", () => {
-		expect(textsOf("", true)).toEqual([
+		expect(textsOf("", true, true)).toEqual([
 			"first request",
 			"first answer",
 			"second request",
@@ -76,7 +86,7 @@ describe("compaction boundary in the collapsed transcript", () => {
 	});
 
 	test("keeps the full scrollback when the boundary id is stale", () => {
-		expect(textsOf("rewritten-away", true)).toEqual([
+		expect(textsOf("rewritten-away", true, true)).toEqual([
 			"first request",
 			"first answer",
 			"second request",

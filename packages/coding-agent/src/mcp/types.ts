@@ -197,11 +197,15 @@ export interface MCPRequestOptions {
 }
 
 export interface MCPTransport {
+	connect(options?: MCPRequestOptions): Promise<void>;
+
+	startSSEListener?(options?: MCPRequestOptions): Promise<void>;
+
 	request<T = unknown>(method: string, params?: Record<string, unknown>, options?: MCPRequestOptions): Promise<T>;
 
-	notify(method: string, params?: Record<string, unknown>): Promise<void>;
+	notify(method: string, params?: Record<string, unknown>, options?: MCPRequestOptions): Promise<void>;
 
-	close(): Promise<void>;
+	close(options?: MCPRequestOptions): Promise<void>;
 
 	setProtocolVersion?(version: string): void;
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Direct MCP transport consumers must construct `StdioTransport`, `HttpTransport`, or `LegacySseTransport` and call `connect({ signal })`; the `createStdioTransport`, `createHttpTransport`, and `createSseTransport` factory exports have been removed.
+
 ### Added
 
 - `bench/session-switch.bench.ts` (session open/context/rebuild/render on real fixtures), `bench/session-selector.bench.ts` (browser row render/navigation/search), `scripts/pty-echo-probe.ts` and `scripts/pty-switch-probe.ts` (real-terminal keystroke echo and session-switch latency), and `packages/tui/bench/rss-soak-probe.ts` (10k-frame RSS growth classification).
@@ -33,6 +37,11 @@
 - Running kernel cells (`eval`/`kernel` and bash-routed `python`/`node`/`bun`) lay out the live block by priority — Status heads, then diff hunks (newest first), then the output tail, then the code tail — so hunks no longer wait on the output preview or the cell settling, and the block stays inside the terminal's live window.
 
 ### Fixed
+- `/session` and `/agents` no longer stall arrow-key navigation for seconds after opening: the session list stops scanning every session's subagent transcripts (~1 GB of JSONL on a 300-session corpus), the agents view scans only the scoped session's tree, and repeated scans of unchanged transcripts are memoized.
+- Ctrl+X on a live or parked subagent in the agents view now stops it (tombstoned into the inactive section, transcript kept) instead of deleting its transcript; Ctrl+X on an inactive row deletes, and the row disappears immediately rather than lingering.
+- Idle rows in the agents view show whether a worker is still live in memory (`idle`) or parked to disk (`parked`).
+- Parking workers now cancels pending worker-owned MCP connections instead of retaining their sessions until a connection timeout; parked workers remain resumable.
+- Parking an idle worker now actually frees its session: the revival callback no longer pins the disposed session's context, so memory drops after `orchestrator.agentIdleTtlMs` instead of only on kill; parked workers still resume in place with their original spawn configuration.
 - A revert tombstone now also re-observes the path in the kernel mutation ledger, so restoring a file to its pre-cell content no longer trips the stale-write guard on the next cell's legitimate write.
 - Anthropic inband scanner candidate detection follows the full tag grammar (case-insensitive, whitespace-tolerant): an unknown tag before a valid mixed-case tool-call tag no longer swallows the tool call.
 - MCP reconnect cleanup is identity-guarded: an invalidated older reconnect can no longer delete a newer attempt's pending entry after disconnectAll.
@@ -49,7 +58,12 @@
 - Large changed lines no longer stall the TUI: intra-line word diffs above 512 words collapse to a replace-all hunk (~480ms -> ~0.6ms per line).
 - Advisor feed render no longer copies the full delivered-prefix array on every message event; streamed tool-arg previews append deltas in bulk instead of per character (100KB arg decode ~2.2ms -> ~0.04ms).
 - Kernel file writes made with `open()`/`Path.write_text` (Python) or `fs.writeFile`/`Bun.write` (JS) now show their diff hunk as soon as the write completes instead of only after the whole cell finishes; a file written several times in one cell still reports one net diff.
-- Long streaming replies (a code block or list taller than the terminal) no longer lose their top: the rows scroll into scrollback as they stream instead of being withheld until the reply settles, and a compaction rebuild mid-reply keeps them too.
+- Long streaming replies and live tool previews taller than the terminal no longer lose their top: their own rows cross into native scrollback instead of entering a hidden viewport gap, and the completed tool block remains visible while the next reply streams.
+- Compaction no longer clears or collapses the visible transcript: pre-compaction turns remain in terminal history with the summary divider inline, independently of the model's compacted context.
+
+### Removed
+
+- Removed the `tui.scrollbackRebuild`, `tui.resizeScrollback`, and `display.collapseCompacted` compatibility settings; the lossless native-history transcript and preserve-on-resize behavior are now the only display path.
 
 ## [18.0.6] - 2026-09-11
 

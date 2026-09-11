@@ -1,5 +1,5 @@
 import * as fs from "node:fs/promises";
-import { resolve as pathResolve } from "node:path";
+import { resolve as pathResolve, sep as pathSep } from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
 	type Component,
@@ -60,6 +60,8 @@ import {
 	resolveAgentsViewSelectionIndex,
 	scopeToRecordSubtree,
 	sectionTitle,
+	sessionFileFromIdentity,
+	sessionPathsWithinScope,
 } from "./agents-view-state";
 import { matchSearchText, type ParsedSearchQuery, parseSearchQuery } from "./session-view-search";
 
@@ -179,6 +181,7 @@ export interface AgentsViewDeps extends AgentsViewActions {
 
 	registry?: AgentRegistry;
 
+	/** Scope root whose persisted subagents the caller has already registered into `registry`. */
 	initialScopeIdentity?: string;
 	initialScopeTitle?: string;
 
@@ -270,6 +273,8 @@ export class AgentsViewComponent implements Component {
 		if (deps.initialScopeIdentity) {
 			this.#scopedAtMount = true;
 			this.#scopeFrames = [{ identity: deps.initialScopeIdentity, rootTitle: deps.initialScopeTitle ?? "scoped" }];
+			const rootFile = sessionFileFromIdentity(deps.initialScopeIdentity);
+			if (rootFile !== undefined) this.#persistSeededPaths.add(rootFile);
 		} else if (persistent?.scopeFrames) {
 			this.#scopeFrames = persistent.scopeFrames;
 			persistent.scopeFrames = this.#scopeFrames;
@@ -297,8 +302,14 @@ export class AgentsViewComponent implements Component {
 		this.#animationTimer.unref?.();
 	}
 
+	#seedableSessionPaths(sessionPaths: readonly string[]): string[] {
+		// The global view filters every subagent row out, so scanning artifact trees there only costs latency.
+		if (this.#deps.hideSubagents) return [];
+		return sessionPathsWithinScope(sessionPaths, this.#scopeFrames.at(-1)?.identity);
+	}
+
 	async #seedPersistedSubagents(sessionPaths: readonly string[]): Promise<void> {
-		const jsonlPaths = sessionPaths.filter(path => path.endsWith(".jsonl"));
+		const jsonlPaths = this.#seedableSessionPaths(sessionPaths);
 		const pending = jsonlPaths.filter(path => !this.#persistSeededPaths.has(path));
 		const refreshDue = Date.now() - this.#lastChildSessionRefresh >= CHILD_SESSIONS_REFRESH_MS;
 		if (pending.length === 0 && !refreshDue) return;
@@ -952,7 +963,7 @@ export class AgentsViewComponent implements Component {
 
 	#handleDeleteRequested(): void {
 		const row = this.#rows[this.#selectedIndex];
-		if (row?.kind !== "agent" || !row.record) return;
+		if ((row?.kind !== "agent" && row?.kind !== "subagent") || !row.record) return;
 		const identity = row.identity;
 		if (this.#pendingDelete?.identity === identity) {
 			void this.#executeDelete(row.record);
@@ -1002,11 +1013,31 @@ export class AgentsViewComponent implements Component {
 			this.#deps.requestRender();
 			return;
 		}
+		if (ref && agentRemovalAction(record) === "stop") await this.#stopAgent(record, ref);
+		else await this.#deleteSession(record, sessionPath);
+		this.#deps.requestRender();
+	}
+
+	/** Tombstones the agent: it moves to the inactive section with its transcript intact and can be deleted from there. */
+	async #stopAgent(record: AgentsViewRecord, ref: AgentRef): Promise<void> {
+		try {
+			if (ref.status === "running" && ref.session) {
+				await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
+			}
+			await AgentLifecycleManager.global().release(ref.id, ref, { tombstone: true });
+			if (this.#replyTarget?.identity === record.identity) this.#disarmComposer();
+			this.#lastSignature = "";
+			await this.refresh();
+			this.#setStatusMessage("Stopped", "muted");
+		} catch (error) {
+			this.#setStatusMessage(`Stop failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+		}
+	}
+
+	async #deleteSession(record: AgentsViewRecord, sessionPath: string): Promise<void> {
+		const ref = record.ref;
 		try {
 			if (ref) {
-				if (ref.status === "running" && ref.session) {
-					await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
-				}
 				await AgentLifecycleManager.global().release(ref.id, ref);
 				this.#registry.unregister(ref.id, ref);
 			}
@@ -1017,12 +1048,24 @@ export class AgentsViewComponent implements Component {
 			await fs.rm(getAgentTombstonePath(sessionPath), { force: true }).catch(() => undefined);
 			await fs.rm(getSessionLivePath(sessionPath), { force: true }).catch(() => undefined);
 			if (this.#replyTarget?.identity === record.identity) this.#disarmComposer();
+			this.#forgetDeletedSession(sessionPath);
 			await this.refresh();
 			this.#setStatusMessage("Deleted", "muted");
 		} catch (error) {
 			this.#setStatusMessage(`Delete failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
-		this.#deps.requestRender();
+	}
+
+	#forgetDeletedSession(sessionPath: string): void {
+		// The nested-session cache is refreshed on a slow cadence; without this the deleted
+		// transcript would linger as an inactive row until the next relist.
+		const artifactsPrefix = `${sessionPath.slice(0, -".jsonl".length)}${pathSep}`;
+		this.#persistedChildSessions = this.#persistedChildSessions.filter(
+			info => info.path !== sessionPath && !info.path.startsWith(artifactsPrefix),
+		);
+		this.#persistSeededPaths.delete(sessionPath);
+		this.#lastChildSessionRefresh = 0;
+		this.#lastSignature = "";
 	}
 
 	#setQuery(query: string, options: { render?: boolean } = {}): void {
@@ -1277,7 +1320,7 @@ export class AgentsViewComponent implements Component {
 			const label = `${theme.fg("dim", `${row.expanded ? "▾" : "▸"} ${row.title}`)}${modelCell}${hint}`;
 			return `${SELECTED_ROW_MARKER}${padLine(truncateToWidth(`${indent}${label}`, width), width)}`;
 		}
-		const pendingDelete = row.kind === "agent" && this.#pendingDelete?.identity === row.identity;
+		const pendingDelete = this.#pendingDelete?.identity === row.identity;
 
 		const settledChild =
 			row.kind === "subagent" && row.record?.ref !== undefined && row.record.ref.status !== "running";
@@ -1286,8 +1329,9 @@ export class AgentsViewComponent implements Component {
 		const indent = "  ".repeat(row.depth);
 		const record = row.record;
 		const details = formatRowDetails(row);
-		const detailsWidth = row.detailsWidth > 0 ? row.detailsWidth : 10;
-		const title = pendingDelete ? `${formatViewKey("ctrl+x")} again to remove` : this.#styleRowTitle(row);
+		const title = pendingDelete
+			? `${formatViewKey("ctrl+x")} again to ${record ? agentRemovalAction(record) : "remove"}`
+			: this.#styleRowTitle(row);
 		const suffixes: string[] = [];
 		const identityVisible =
 			!pendingDelete &&
@@ -1301,10 +1345,10 @@ export class AgentsViewComponent implements Component {
 			if (!pendingDelete && row.subtitle) suffixes.push(row.subtitle);
 		}
 		const titleContent = suffixes.length > 0 ? `${title} ${theme.fg("dim", `· ${suffixes.join(" · ")}`)}` : title;
-		const titleWidth = Math.max(0, width - visibleWidth(indent) - visibleWidth(rawIcon) - detailsWidth - 2);
+		const titleWidth = Math.max(0, width - visibleWidth(indent) - visibleWidth(rawIcon) - row.detailsWidth - 2);
 		const titleCell = formatTableCell(pendingDelete ? theme.fg("error", titleContent) : titleContent, titleWidth);
 		const marked = selected ? SELECTED_ROW_MARKER : "";
-		const base = `${indent}${icon} ${titleCell} ${formatRightTableCell(details, detailsWidth)}`;
+		const base = `${indent}${icon} ${titleCell} ${formatRightTableCell(details, row.detailsWidth)}`;
 		return `${marked}${padLine(truncateToWidth(base, width), width)}`;
 	}
 
@@ -1385,10 +1429,9 @@ export class AgentsViewComponent implements Component {
 			selectedAgent ? `${formatViewKey("space")} ${row?.section === "inactive" ? "resume" : "reply"}` : undefined,
 			`${formatViewKey("ctrl+n")} new`,
 			selectedAgent ? `${formatViewKey("ctrl+r")} rename` : undefined,
-			selectedAgent
-				? `${formatViewKey("ctrl+x")} ${row?.section === "inactive" ? "delete" : "stop/deactivate"}`
+			(selectedAgent || selectedSubagent) && row?.record
+				? `${formatViewKey("ctrl+x")} ${agentRemovalAction(row.record)}`
 				: undefined,
-			selectedSubagent ? `${formatViewKey("ctrl+x")} ${row.section === "running" ? "stop" : "delete"}` : undefined,
 			this.#selectedRowCanShowProgram() ? `${formatViewKey("ctrl+o")} program` : undefined,
 		]
 			.filter(hint => hint !== undefined)
@@ -1434,6 +1477,15 @@ function formatTableCell(value: string, width: number): string {
 function formatRightTableCell(value: string, width: number): string {
 	const truncated = truncateToWidth(value, width, "");
 	return " ".repeat(Math.max(0, width - visibleWidth(truncated))) + truncated;
+}
+
+/**
+ * Ctrl+X stops a live or parked agent (tombstone → inactive, transcript kept) and only deletes
+ * transcripts that are already settled: advisors are read-only records and aborted refs are done.
+ */
+function agentRemovalAction(record: AgentsViewRecord): "stop" | "delete" {
+	const ref = record.ref;
+	return ref !== undefined && ref.kind !== "advisor" && ref.status !== "aborted" ? "stop" : "delete";
 }
 
 function isCurrentSessionFile(candidate: string, currentFile: string | null): boolean {

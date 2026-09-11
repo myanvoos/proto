@@ -42,9 +42,11 @@ Does not cover extension authoring UX or command UI.
 
 `MCPTransport` abstracts delivery and lifecycle:
 
+- `connect(options?) -> Promise<void>`
 - `request(method, params, options?) -> Promise<T>`
-- `notify(method, params?) -> Promise<void>`
-- `close()`
+- `notify(method, params?, options?) -> Promise<void>`
+- `close(options?) -> Promise<void>`
+- optional `startSSEListener(options?) -> Promise<void>`
 - `connected`
 - optional callbacks: `onClose`, `onError`, `onNotification`, `onRequest`
 
@@ -62,9 +64,11 @@ Transport implementations own framing and I/O details:
 
 `client.ts:createTransport()` chooses transport from config:
 
-- `type` omitted or `"stdio"` -> `createStdioTransport`
-- `"http"` -> `createHttpTransport`
-- `"sse"` -> `createSseTransport`
+- `type` omitted or `"stdio"` -> `new StdioTransport(config)`
+- `"http"` -> `new HttpTransport(config)`
+- `"sse"` -> `new LegacySseTransport(config)`
+
+Construction does not start I/O. `connectToServer()` owns the transport before awaiting `connect()`, and carries one cancellation signal and timeout through connection setup, `initialize`, `notifications/initialized`, and listener startup. Direct transport consumers construct a class and call `connect({ signal })`; the former `createStdioTransport`, `createHttpTransport`, and `createSseTransport` exports have been removed.
 
 `"sse"` uses the legacy HTTP+SSE transport: it opens the configured URL with GET, reads the `endpoint` event's plain-text URL/path, POSTs JSON-RPC requests to that endpoint, and receives JSON-RPC responses on the stream.
 
@@ -93,7 +97,7 @@ Unknown response IDs are ignored (no rejection, no error callback).
 - SSE messages with `method` and no `id` are treated as notifications.
 - SSE messages with both `method` and `id` are treated as server-to-client requests and answered with a POSTed JSON-RPC response.
 
-If SSE stream ends before matching response, request fails with `No response received for request ID ...`. After the matching response is captured, the transport drains remaining SSE messages in the background.
+If SSE stream ends before matching response, request fails with `No response received for request ID ...`. After the matching response is captured, the transport drains remaining SSE messages in the background, bounded by the transport lifetime: `close()` aborts the drain even after the request promise has resolved.
 
 ## Notifications
 
@@ -183,8 +187,9 @@ For `request()`:
 
 For `notify()`:
 
-- timeout uses an internal `AbortController` with the same resolved timeout
-- there is no external abort option on the transport interface
+- timeout uses the same resolved request timeout
+- `options.signal` propagates caller cancellation, combined with the transport lifetime signal
+- `close()` aborts pending POSTs, response drains, and SSE listeners and clears callbacks; an already-aborted close signal skips best-effort HTTP session deletion
 
 For HTTP-like OAuth configs managed by `MCPManager`, outbound requests and best-effort server-request responses retry once on `HTTP 401`/`403` if token refresh returns replacement headers.
 
@@ -214,7 +219,7 @@ Two SSE paths exist:
    - optional GET listener for server-initiated notifications and server-to-client requests
    - `connectToServer()` starts it for Streamable HTTP transports after the `notifications/initialized` notification
    - listener startup waits up to one second, or less for very small request timeouts; `timeout: 0` / `PROTO_MCP_TIMEOUT_MS=0` disables that startup deadline
-   - if GET returns `405`, another non-OK status, no body, or times out, listener silently disables itself
+   - if GET returns `405`, another non-OK status, no body, or its optional-listener deadline expires, listener silently disables itself; caller cancellation instead aborts the handshake
 
 ## Malformed payload and disconnect handling
 

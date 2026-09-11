@@ -842,9 +842,7 @@ export class UiHelpers {
 			if (!chat.isBlockUncommitted(chat.children[i]!)) return false;
 		}
 
-		const context = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
-		});
+		const context = this.ctx.viewSession.buildTranscriptSessionContext();
 		for (const remaining of context.messages) {
 			if (remaining === message) return false;
 		}
@@ -942,7 +940,6 @@ export class UiHelpers {
 		this.ctx.pendingPythonComponents = [];
 
 		let fullContext = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
 		let selection = this.selectVisibleTranscriptContext(fullContext);
@@ -973,7 +970,6 @@ export class UiHelpers {
 				this.ctx.pendingBashComponents = [];
 				this.ctx.pendingPythonComponents = [];
 				fullContext = this.ctx.viewSession.buildTranscriptSessionContext({
-					collapseCompactedHistory: settings.get("display.collapseCompacted"),
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 				});
 				selection = this.selectVisibleTranscriptContext(fullContext);

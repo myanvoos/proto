@@ -420,10 +420,6 @@ function mergeTrace(turn: WorkerTurn, progress: AgentProgress): void {
 
 class WorkerTurnError extends Error {}
 
-export function prefersPersistedWorkerRevival(session: ToolSession): boolean {
-	return !session.streamFn && !session.localProtocolOptions && (session.customTools?.length ?? 0) === 0;
-}
-
 export class OrchestratorRuntime {
 	static #global: OrchestratorRuntime | undefined;
 
@@ -1592,7 +1588,6 @@ export class OrchestratorRuntime {
 			getArtifactsDir: session.getArtifactsDir ?? (() => null),
 			getSessionId: session.getSessionId ?? (() => null),
 		};
-		const preferPersistedRevive = prefersPersistedWorkerRevival(session);
 		return {
 			cwd: session.cwd,
 			agent,
@@ -1634,7 +1629,6 @@ export class OrchestratorRuntime {
 			preloadedExtensionPaths: session.extensionPaths,
 			preloadedCustomToolPaths: session.customToolPaths,
 			localProtocolOptions,
-			preferPersistedRevive,
 			parentArtifactManager: session.getArtifactManager?.() ?? undefined,
 			parentTelemetry: session.getTelemetry?.(),
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
