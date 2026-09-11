@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- `bench/session-switch.bench.ts` (session open/context/rebuild/render on real fixtures), `bench/session-selector.bench.ts` (browser row render/navigation/search), `scripts/pty-echo-probe.ts` and `scripts/pty-switch-probe.ts` (real-terminal keystroke echo and session-switch latency), and `packages/tui/bench/rss-soak-probe.ts` (10k-frame RSS growth classification).
+
+### Changed
+
+- Session browser rows render from cached composed blocks; cursor movement is ~2.5x faster and search ranking ~1.8x faster at p50.
+- Sessions up to 32 MiB load via full-text parse (25 MiB session opens in ~58ms vs ~100ms); blob-reference scanning only inspects candidate payloads.
+- Transcript rebuilds reuse bounded highlight/outline/wrap caches across sessions; a 3,400-message transcript renders in ~330ms vs ~1,068ms (stress-harness p50; real windowed switches complete in ~250ms end-to-end), with warm frames at ~5.5ms and dirty-child frames at ~7ms.
+- Editors, the composer, and parked detached sessions dispose deterministically on replacement and shutdown (`DetachedSessionHolder.disposeAll` runs during `InteractiveMode.shutdown`).
+- Orchestrator bounds idle worker payload memory (32-record window) while keeping every worker ID addressable; lifecycle bench now asserts handle/fd stability.
+
 ## [18.0.6] - 2026-09-11
 
 ### Added

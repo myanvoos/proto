@@ -46,9 +46,9 @@ type BlockRow =
 	| { kind: "sixel"; raw: string };
 
 const SEPARATOR_CELLS = 12;
-const OUTPUT_BLOCK_CACHE_MAX = 512;
-const OUTPUT_BLOCK_CACHE_MAX_SIZE = 16 * 1024 * 1024;
-const OUTPUT_BLOCK_CACHE_MAX_ENTRY_SIZE = 2 * 1024 * 1024;
+const OUTPUT_BLOCK_CACHE_MAX = 4096;
+const OUTPUT_BLOCK_CACHE_MAX_SIZE = 24 * 1024 * 1024;
+const OUTPUT_BLOCK_CACHE_MAX_ENTRY_SIZE = 4 * 1024 * 1024;
 
 const outputBlockCache = new LRUCache<string, string[]>({
 	max: OUTPUT_BLOCK_CACHE_MAX,
