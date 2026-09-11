@@ -229,38 +229,24 @@ struct FuzzyFindConfig {
 	cache:       Option<bool>,
 }
 
-fn score_entries<I>(
-	entries: I,
+fn score_entry(
+	scored: &mut TopMatches,
+	path: &str,
+	is_directory: bool,
 	query_lower: &str,
 	normalized_query: &str,
 	query_chars: &[char],
-	max_results: usize,
-	ct: &task::CancelToken,
-) -> Result<TopMatches>
-where
-	I: IntoIterator<Item = iofs::GlobMatch>,
-{
-	let mut scored = TopMatches::new(max_results);
-	for entry in entries {
-		ct.heartbeat()?;
-		if entry.file_type == iofs::FileType::Symlink {
-			continue;
-		}
-
-		let is_directory = entry.file_type == iofs::FileType::Dir;
-		let score =
-			score_fuzzy_path(&entry.path, is_directory, query_lower, normalized_query, query_chars);
-		if score == 0 {
-			continue;
-		}
-
-		let mut path = entry.path;
-		if is_directory {
-			path.push('/');
-		}
-		scored.push(FuzzyFindMatch { path, is_directory, score });
+) {
+	let score = score_fuzzy_path(path, is_directory, query_lower, normalized_query, query_chars);
+	if score == 0 {
+		return;
 	}
-	Ok(scored)
+
+	let mut path = path.to_owned();
+	if is_directory {
+		path.push('/');
+	}
+	scored.push(FuzzyFindMatch { path, is_directory, score });
 }
 
 fn fuzzy_find_sync(config: FuzzyFindConfig, ct: task::CancelToken) -> Result<FuzzyFindResult> {
@@ -279,7 +265,8 @@ fn fuzzy_find_sync(config: FuzzyFindConfig, ct: task::CancelToken) -> Result<Fuz
 		return Ok(FuzzyFindResult { matches: Vec::new(), total_matches: 0 });
 	}
 
-	let outcome = pi_walker::WalkRequest::new(root)
+	let mut scored = TopMatches::new(max_results);
+	pi_walker::WalkRequest::new(root)
 		.hidden(include_hidden)
 		.gitignore(respect_gitignore)
 		.skip_git(true)
@@ -292,16 +279,26 @@ fn fuzzy_find_sync(config: FuzzyFindConfig, ct: task::CancelToken) -> Result<Fuz
 		.directory_errors(pi_walker::DirectoryErrorMode::SkipSkippable)
 		.cache(config.cache.unwrap_or(false))
 		.empty_recheck(pi_walker::EmptyRecheck::Configured)
-		.collect_with_heartbeat(|| ct.heartbeat())
+		.for_each_entry_with_heartbeat(
+			|| ct.heartbeat(),
+			|entry| {
+				ct.heartbeat()?;
+				if entry.file_type != pi_walker::FileType::Symlink {
+					let is_directory = entry.file_type == pi_walker::FileType::Dir;
+					score_entry(
+						&mut scored,
+						entry.relative_path,
+						is_directory,
+						&query_lower,
+						&normalized_query,
+						&query_chars,
+					);
+				}
+				Ok(pi_walker::WalkDecision::Include)
+			},
+			|_error| Ok(pi_walker::WalkDecision::Include),
+		)
 		.map_err(iofs::map_walker_error)?;
-	let scored = score_entries(
-		outcome.entries.into_iter().map(iofs::GlobMatch::from),
-		&query_lower,
-		&normalized_query,
-		&query_chars,
-		max_results,
-		&ct,
-	)?;
 
 	let total_matches = scored.total_matches();
 	let matches = scored.into_sorted_matches();
