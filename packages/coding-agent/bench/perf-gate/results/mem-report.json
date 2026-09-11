@@ -1,0 +1,60 @@
+{
+	"branch": "perf/memory-reduction",
+	"baselineSha": "f10d0cd1294e6d621b220d1939257608698e6082",
+	"generatedAt": "2026-09-11T18:45:00+12:00",
+	"method": "bun bench/perf-gate/rss-marathon.ts (pinned profiler): in-process AgentSession, 120 rounds x 3 tool calls, forced compaction every 20 rounds; baseline proxy = rssFirst10AvgMb, peak = VmHWM via /proc/self/status",
+	"targets": {
+		"baselineRssMb": 150,
+		"peakRssMb": 800
+	},
+	"baselineMeasurement": {
+		"ts": "2026-09-11T16:44:00+12:00",
+		"commit": "f10d0cd129",
+		"first10AvgMb": 378.4,
+		"vmHwmMb": 781,
+		"rssMedianMb": 541,
+		"rssFinalMb": 628,
+		"heapUsedMb": 88
+	},
+	"currentMeasurement": {
+		"ts": "2026-09-11T18:38:00+12:00",
+		"commit": "900c142949",
+		"first10AvgMb": 362.2,
+		"vmHwmMb": 647.6,
+		"rssMedianMb": 489.1,
+		"rssFinalMb": 571.3,
+		"heapUsedMb": 84
+	},
+	"delta": {
+		"vmHwmMb": -133.4,
+		"rssMedianMb": -51.9,
+		"rssFinalMb": -56.7,
+		"importFloorAnonMb": -31
+	},
+	"criteria": {
+		"peakUnder800": true,
+		"baselineUnder150": false
+	},
+	"floorAnalysis": {
+		"bareBunProcessMb": 30,
+		"importFloorAfterCatalogFixMb": 179,
+		"realCliOneShotBootMaxRssMb": 320,
+		"importBreakdownMb": {
+			"pi-agent-core+pi-ai incl catalog": 52,
+			"settings remainder incl pi-tui": 47,
+			"agent-session tools/components": 61,
+			"misc": 19
+		},
+		"notes": [
+			"Catalog: 9.6MB models.json materialized at import (+56MB anon, zero JSC objects) -> split into per-provider JSON with static-require lazy loader; only looked-up providers materialize.",
+			"Remaining baseline drivers: pi-tui import (+30MB anon, spread across latex tables/tui core), agent-session tool+component registry (200k objects), first-prompt transient churn (~180MB watermark from 60-180KB tool payload strings and session persistence buffers).",
+			"Per-round growth ~2MB/round is allocator retention (smaps anon), not JSC heap (jscHeapSize ~65MB flat, object count flat); MALLOC_ARENA_MAX=2 shaves ~30MB; heap policy knobs (--smol) shave ~5%."
+		]
+	},
+	"nextSteps": [
+		"Lazy-load pi-tui latex tables and heavy editor submodules from the barrel (~10MB).",
+		"Incremental/session-scoped tool registry construction in agent-session (~60MB JS objects at import).",
+		"Stream tool outputs instead of whole-string payloads to cut transient watermark (~180MB on first turn).",
+		" Allocator-level: periodic Bun.gc(false) on turn end; investigate mimalloc purge behavior for anon retention."
+	]
+}
