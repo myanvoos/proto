@@ -2400,7 +2400,7 @@ export class SessionManager {
 			} else {
 				let newestInTargetDir = await findMostRecentSession(dir, storage);
 				const breadcrumbFile = path.resolve(breadcrumb.sessionFile);
-				const breadcrumbCwdMissing = !fs.existsSync(breadcrumbCwd);
+				const breadcrumbCwdMissing = !(await directoryExists(breadcrumbCwd));
 				const newestIsBreadcrumb = newestInTargetDir ? path.resolve(newestInTargetDir) === breadcrumbFile : false;
 				let currentProjectAlreadyHasSession = false;
 

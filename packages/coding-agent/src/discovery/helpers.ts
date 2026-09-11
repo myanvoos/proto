@@ -359,7 +359,7 @@ export async function scanSkillsFromDir(
 	const work: Promise<void>[] = [];
 	if (options.includeSelf) {
 		const selfSkillPath = path.join(dir, "SKILL.md");
-		if (fs.existsSync(selfSkillPath)) {
+		if (await Bun.file(selfSkillPath).exists()) {
 			work.push(loadSkill(selfSkillPath));
 		}
 	}
@@ -367,7 +367,7 @@ export async function scanSkillsFromDir(
 		if (entry.name.startsWith(".")) continue;
 		if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
 		const skillPath = path.join(dir, entry.name, "SKILL.md");
-		if (fs.existsSync(skillPath)) {
+		if (await Bun.file(skillPath).exists()) {
 			work.push(loadSkill(skillPath));
 		}
 	}

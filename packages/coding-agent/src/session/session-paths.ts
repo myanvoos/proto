@@ -211,7 +211,7 @@ export async function readTerminalBreadcrumbEntry(): Promise<TerminalBreadcrumb 
 		const sessionFile = lines[1];
 		const fresh = lines[2] === "fresh";
 
-		const stat = fs.statSync(sessionFile, { throwIfNoEntry: false });
+		const stat = await fs.promises.stat(sessionFile, { throwIfNoEntry: false });
 		const exists = stat?.isFile() === true;
 
 		if (exists || fresh) return { cwd: breadcrumbCwd, sessionFile, exists, fresh };

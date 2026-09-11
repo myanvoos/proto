@@ -755,7 +755,7 @@ function countSkipped(skipped: ScanSkipSummary): number {
 
 async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<void> {
 	const scanDir = args.directory ? path.resolve(cwd, args.directory) : cwd;
-	if (!fs.existsSync(scanDir)) {
+	if (!(await fs.promises.stat(scanDir).catch(() => undefined))) {
 		if (json) {
 			process.stdout.write(`${JSON.stringify({ error: `Directory not found: ${scanDir}` })}\n`);
 		} else {
