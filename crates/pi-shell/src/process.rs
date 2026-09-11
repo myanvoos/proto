@@ -907,7 +907,7 @@ struct RegistryState {
 #[derive(Default)]
 pub struct SpawnRegistry {
 	state:  Mutex<RegistryState>,
-	parent: Option<Arc<SpawnRegistry>>,
+	parent: Option<Arc<Self>>,
 }
 
 impl SpawnRegistry {
@@ -919,7 +919,7 @@ impl SpawnRegistry {
 	}
 
 	#[must_use]
-	pub fn with_parent(parent: Arc<SpawnRegistry>) -> Self {
+	pub fn with_parent(parent: Arc<Self>) -> Self {
 		Self { state: Mutex::new(RegistryState::default()), parent: Some(parent) }
 	}
 
