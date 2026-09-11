@@ -198,8 +198,8 @@ interface CachedSessionRows {
 	parentSessionPath: string | undefined;
 	cwd: string;
 	pinned: boolean;
-	normal: string[];
-	selected: string[];
+	normalRendered: string[];
+	selectedRendered: string[];
 }
 
 function sessionItemHeight(session: SessionInfo): number {
@@ -375,8 +375,8 @@ class SessionList implements Component {
 			parentSessionPath: session.parentSessionPath,
 			cwd: session.cwd,
 			pinned,
-			normal,
-			selected,
+			normalRendered: normal.map(line => truncateToWidth(replaceTabs(line), rowWidth)),
+			selectedRendered: selected.map(line => truncateToWidth(replaceTabs(line), rowWidth)),
 		};
 	}
 
@@ -574,14 +574,16 @@ class SessionList implements Component {
 		const sessionLines: string[] = [];
 		const sessionRowIndex: number[] = [];
 		const overflow = startIndex > 0 || endIndex < filtered.length;
-		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
+		const safeWidth = Number.isFinite(width) ? Math.max(0, Math.trunc(width)) : 0;
+		const rowWidth = Math.max(0, safeWidth - (overflow ? 1 : 0));
 		const nowMs = Date.now();
 		const cursorSymbol = `${theme.nav.cursor} `;
 		const cursorWidth = visibleWidth(cursorSymbol);
 		const dim = (value: string) => theme.fg("dim", value);
 		const dot = dim(theme.sep.dot);
-		const pinPrefixWidth = visibleWidth(`${theme.icon.pin} `);
-		const pinnedPrefix = theme.fg("accent", `${theme.icon.pin} `);
+		const hasPinnedSessions = this.#pinnedIds.size > 0;
+		const pinPrefixWidth = hasPinnedSessions ? visibleWidth(`${theme.icon.pin} `) : 0;
+		const pinnedPrefix = hasPinnedSessions ? theme.fg("accent", `${theme.icon.pin} `) : "";
 		for (let i = startIndex; i < endIndex; i++) {
 			const blockStart = sessionLines.length;
 			const session = this.#filteredSessions[i];
@@ -615,7 +617,7 @@ class SessionList implements Component {
 				);
 				this.#renderedRows.set(session.path, cached);
 			}
-			sessionLines.push(...(isSelected ? cached.selected : cached.normal));
+			sessionLines.push(...(isSelected ? cached.selectedRendered : cached.normalRendered));
 
 			if (i < endIndex - 1) sessionLines.push("");
 			for (let k = blockStart; k < sessionLines.length; k++) sessionRowIndex[k] = i;
@@ -623,7 +625,6 @@ class SessionList implements Component {
 		const totalRows = this.#filteredTotalRows - 1;
 		const offsetRows = startIndex * 3 + this.#filteredTitlePrefix[startIndex]!;
 		const height = sessionLines.length;
-		const safeWidth = Number.isFinite(width) ? Math.max(0, Math.trunc(width)) : 0;
 		const showScrollbar = safeWidth > 0 && totalRows > height;
 		const contentWidth = Math.max(0, safeWidth - (showScrollbar ? 1 : 0));
 		const maxScrollOffset = Math.max(0, totalRows - height);
@@ -632,17 +633,17 @@ class SessionList implements Component {
 		const thumbTravel = height - thumbSize;
 		const thumbStart =
 			showScrollbar && maxScrollOffset > 0 ? Math.round((scrollOffset / maxScrollOffset) * thumbTravel) : 0;
+		const trackBar = showScrollbar ? theme.fg("muted", "│") : "";
+		const thumbBar = showScrollbar ? theme.fg("accent", "█") : "";
 		const sessionRegionStart = lines.length;
 		for (let row = 0; row < height; row++) {
-			const source = sessionLines[row] ?? "";
-			const truncated = truncateToWidth(replaceTabs(source), contentWidth);
+			const truncated = sessionLines[row] ?? "";
 			if (!showScrollbar) {
 				lines.push(truncated);
 			} else {
 				const content = `${truncated}${" ".repeat(Math.max(0, contentWidth - visibleWidth(truncated)))}`;
 				const isThumb = row >= thumbStart && row < thumbStart + thumbSize;
-				const bar = isThumb ? theme.fg("accent", "█") : theme.fg("muted", "│");
-				lines.push(`${content}${bar}`);
+				lines.push(`${content}${isThumb ? thumbBar : trackBar}`);
 			}
 			this.#hitRows[sessionRegionStart + row] = sessionRowIndex[row];
 		}
