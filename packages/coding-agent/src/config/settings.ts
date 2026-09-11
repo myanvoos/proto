@@ -337,6 +337,9 @@ export class Settings {
 		if (options.configFiles) configFiles.push(...options.configFiles);
 		this.#configFiles = configFiles.map(file => path.resolve(this.#cwd, expandTilde(file)));
 		this.#persist = !options.inMemory && options.readOnly !== true;
+		for (const ref of liveSettingsInstances) {
+			if (ref.deref() === undefined) liveSettingsInstances.delete(ref);
+		}
 		liveSettingsInstances.add(new WeakRef(this));
 
 		if (options.overrides) {
@@ -1957,7 +1960,9 @@ export function isSettingsInitialized(): boolean {
 
 export function resetSettingsForTest(): void {
 	for (const ref of liveSettingsInstances) {
-		ref.deref()?.cancelPendingSaves();
+		const instance = ref.deref();
+		if (instance) instance.cancelPendingSaves();
+		else liveSettingsInstances.delete(ref);
 	}
 	liveSettingsInstances.clear();
 	globalInstance = null;

@@ -389,6 +389,9 @@ export async function disposeBashSessions(sessionId: string, owner?: BashSession
 		retainedReaps.push(reapRetainedShell(record));
 	}
 	await Promise.all([...retainedReaps, ...[...shells].map(shell => closeShell(shell))]);
+	if (owner !== undefined && activeBashSessionOwners.get(sessionId) === sessionOwner) {
+		activeBashSessionOwners.delete(sessionId);
+	}
 }
 
 export async function disposeAllBashSessions(): Promise<void> {

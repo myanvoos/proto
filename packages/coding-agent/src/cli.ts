@@ -21,13 +21,9 @@ import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from
 import { BLOB_BROKER_WORKER_ARG } from "./blob-broker/protocol";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
-import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
-import rootLicense from "./tools/browser/relay/extension-assets/LICENSE.txt" with { type: "text" };
-import thirdPartyNotices from "./tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt" with { type: "text" };
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
-import { startComputerWorker } from "./tools/computer/worker-entry";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
@@ -39,10 +35,6 @@ if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 setProcessName(BINARY_NAME);
 
 const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
-
-function formatLicenseOutput(): string {
-	return `PROTO License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`;
-}
 
 async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
 	const [{ renderRootHelp }, { getExtraHelpText }] = await Promise.all([
@@ -73,6 +65,8 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	}
 	if (arg === COMPUTER_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
+		// Keep this worker-only dependency out of the regular CLI startup graph.
+		const { startComputerWorker } = await import("./tools/computer/worker-entry");
 		startComputerWorker();
 		return true;
 	}
@@ -82,6 +76,8 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		return true;
 	}
 	if (arg === JS_EVAL_PROCESS_ARG) {
+		// Keep this worker-only dependency out of the regular CLI startup graph.
+		const { startJsEvalProcess } = await import("./eval/js/process-entry");
 		await runIpcSubprocessWorker<JsWorkerInbound, JsWorkerOutbound>(
 			transport => startJsEvalProcess(transport, interceptUnhandledRejections),
 			{ rethrowConnectedSendErrors: true },
@@ -219,7 +215,14 @@ export async function runCli(argv: string[]): Promise<void> {
 	installGlobalProxyFetch();
 
 	if (resolvedArgv[0] === "--license") {
-		process.stdout.write(formatLicenseOutput());
+		// Keep these large assets out of normal startup; they are only needed for --license.
+		const [{ default: rootLicense }, { default: thirdPartyNotices }] = await Promise.all([
+			import("./tools/browser/relay/extension-assets/LICENSE.txt", { with: { type: "text" } }),
+			import("./tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt", { with: { type: "text" } }),
+		]);
+		process.stdout.write(
+			`PROTO License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`,
+		);
 		return;
 	}
 	let stopStartupComposer: (() => void) | undefined;

@@ -4,6 +4,7 @@ interface MermaidResolveOptions extends MermaidAsciiRenderOptions {
 	maxWidth?: number;
 }
 
+const MAX_CACHE_ENTRIES = 128;
 const cache = new Map<string, string | null>();
 
 function asciiDisplayWidth(ascii: string): number {
@@ -23,10 +24,19 @@ function renderVariant(
 ): string | null {
 	const key = `${baseKey}\x00${direction ?? ""}\x00${source}`;
 	const cached = cache.get(key);
-	if (cached !== undefined) return cached;
+	if (cached !== undefined) {
+		cache.delete(key);
+		cache.set(key, cached);
+		return cached;
+	}
 
 	const ascii = renderMermaidAsciiSafe(source, direction ? { ...baseOptions, direction } : baseOptions);
 	cache.set(key, ascii);
+	while (cache.size > MAX_CACHE_ENTRIES) {
+		const oldestKey = cache.keys().next().value;
+		if (oldestKey === undefined) break;
+		cache.delete(oldestKey);
+	}
 	return ascii;
 }
 

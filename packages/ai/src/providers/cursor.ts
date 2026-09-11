@@ -292,11 +292,42 @@ const RESOURCE_EXHAUSTED_PATTERN = /resource.?exhausted/i;
 const CURSOR_MODEL_NOT_FOUND_PATTERN = /^(?:Connect error not_found:|gRPC error 5:)/i;
 const NOT_IMPLEMENTED = `Not implemented by this client`;
 
+const CURSOR_CONVERSATION_CACHE_LIMIT = 8;
+const CURSOR_WARNED_REPLAY_KEY_LIMIT = 64;
+
 const conversationStateCache = new Map<string, ConversationStateStructure>();
 const conversationBlobStores = new Map<string, Map<string, Uint8Array>>();
 const warnedCursorKimiK3ReplayMessages = new Set<string>();
 
 const rotatedConversationIds = new Map<string, string>();
+const conversationLru = new Map<string, string>();
+
+function touchConversationCache(baseConversationId: string, conversationId: string): void {
+	conversationLru.delete(baseConversationId);
+	conversationLru.set(baseConversationId, conversationId);
+
+	while (conversationLru.size > CURSOR_CONVERSATION_CACHE_LIMIT) {
+		const oldest = conversationLru.entries().next().value;
+		if (!oldest) break;
+		const [evictedBaseConversationId, evictedConversationId] = oldest;
+		conversationLru.delete(evictedBaseConversationId);
+		conversationStateCache.delete(evictedConversationId);
+		conversationBlobStores.delete(evictedConversationId);
+		if (rotatedConversationIds.get(evictedBaseConversationId) === evictedConversationId) {
+			rotatedConversationIds.delete(evictedBaseConversationId);
+		}
+	}
+}
+
+function rememberCursorKimiK3ReplayWarning(key: string): void {
+	if (warnedCursorKimiK3ReplayMessages.has(key)) return;
+	warnedCursorKimiK3ReplayMessages.add(key);
+	while (warnedCursorKimiK3ReplayMessages.size > CURSOR_WARNED_REPLAY_KEY_LIMIT) {
+		const oldest = warnedCursorKimiK3ReplayMessages.values().next().value;
+		if (oldest === undefined) break;
+		warnedCursorKimiK3ReplayMessages.delete(oldest);
+	}
+}
 
 export interface CursorOptions extends StreamOptions {
 	customSystemPrompt?: string;
@@ -608,6 +639,7 @@ function streamCursorWithWireMode(
 			conversationId = rotatedConversationIds.get(baseConversationId) ?? baseConversationId;
 			const blobStore = conversationBlobStores.get(conversationId) ?? new Map<string, Uint8Array>();
 			conversationBlobStores.set(conversationId, blobStore);
+			touchConversationCache(baseConversationId, conversationId);
 			const cachedState = conversationStateCache.get(conversationId);
 			const builtRequest = await buildGrpcRequestForWireMode(
 				model,
@@ -622,7 +654,9 @@ function streamCursorWithWireMode(
 			);
 			const { requestBytes, conversationState } = builtRequest;
 			serializedFallbackWireModelId = builtRequest.fallbackWireModelId;
+			conversationBlobStores.set(conversationId, blobStore);
 			conversationStateCache.set(conversationId, conversationState);
+			touchConversationCache(baseConversationId, conversationId);
 			const requestContextTools = buildMcpToolDefinitions(context.tools);
 			const requestContextRules = buildCursorRequestContextRules(context.systemPrompt);
 
@@ -711,7 +745,9 @@ function streamCursorWithWireMode(
 			openBlockState = state;
 
 			const onConversationCheckpoint = (checkpoint: ConversationStateStructure) => {
+				conversationBlobStores.set(conversationId!, blobStore);
 				conversationStateCache.set(conversationId!, checkpoint);
+				touchConversationCache(baseConversationId!, conversationId!);
 			};
 
 			h2Request.on("response", headers => {
@@ -905,11 +941,14 @@ function streamCursorWithWireMode(
 				!rotatedConversationIds.has(baseConversationId)
 			) {
 				const rotated = crypto.randomUUID();
-				rotatedConversationIds.set(baseConversationId, rotated);
 				const state = conversationStateCache.get(conversationId);
-				if (state) conversationStateCache.set(rotated, state);
 				const blobs = conversationBlobStores.get(conversationId);
+				conversationStateCache.delete(conversationId);
+				conversationBlobStores.delete(conversationId);
+				if (state) conversationStateCache.set(rotated, state);
 				if (blobs) conversationBlobStores.set(rotated, blobs);
+				rotatedConversationIds.set(baseConversationId, rotated);
+				touchConversationCache(baseConversationId, rotated);
 			}
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
@@ -3998,7 +4037,7 @@ function assertCursorKimiK3HistoryReplayable(
 		newlyWarnedKeys.push(warningKey);
 	}
 	if (missingThinkingTurns.length === 0) return;
-	for (const key of newlyWarnedKeys) warnedCursorKimiK3ReplayMessages.add(key);
+	for (const key of newlyWarnedKeys) rememberCursorKimiK3ReplayWarning(key);
 	logger.warn(
 		`Cursor kimi-k3 history contains same-model assistant turn(s) ${missingThinkingTurns.join(", ")} without thinking blocks; replaying those spans without reasoning may make generation less stable`,
 		{ model: targetModelId, assistantTurns: missingThinkingTurns },

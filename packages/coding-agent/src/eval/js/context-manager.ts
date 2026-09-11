@@ -86,6 +86,7 @@ const WORKER_CLOSE_TIMEOUT_MS = 1_000;
 const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
 
 const workerCloseTimeoutMs: number = WORKER_CLOSE_TIMEOUT_MS;
+const MAX_REAP_NOTES = 32;
 const reapNotes = new Map<string, KernelReapNote>();
 
 function armSessionReap(session: JsSession): void {
@@ -121,6 +122,10 @@ async function reapSessionFire(session: JsSession): Promise<void> {
 		idleMs: DEFAULT_KERNEL_IDLE_REAP_MS,
 	});
 	reapNotes.set(session.sessionKey, { idleMs: DEFAULT_KERNEL_IDLE_REAP_MS, reapedAt: Date.now() });
+	if (reapNotes.size > MAX_REAP_NOTES) {
+		const oldestSessionKey = reapNotes.keys().next().value;
+		if (oldestSessionKey !== undefined) reapNotes.delete(oldestSessionKey);
+	}
 }
 const useWorkerThreadForTests = false;
 
