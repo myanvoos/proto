@@ -1548,7 +1548,7 @@ export class SelectorController {
 			const live = readSessionLiveState(sessionPath);
 			if (live.fresh && live.pid !== process.pid) {
 				this.ctx.showError(
-					`Session is open in another proto process (pid ${live.pid}) — close it there before resuming here.`,
+					`Another proto process (pid ${live.pid}) is currently using this session — release it there before resuming here.`,
 				);
 				return false;
 			}

@@ -50,6 +50,25 @@ describe("session liveness markers", () => {
 		expect(readSessionLiveState(file).fresh).toBe(false);
 	});
 
+	test("fresh marker stops reporting live as soon as its owner process exits", async () => {
+		const file = makeTempSession();
+		const moduleUrl = JSON.stringify(new URL("./session-liveness.ts", import.meta.url).href);
+		const source = `
+import { createSessionLiveHeartbeat } from ${moduleUrl};
+createSessionLiveHeartbeat(process.env.PROTO_TEST_SESSION_FILE);
+`;
+		const child = Bun.spawn([process.execPath, "-e", source], {
+			env: { ...Bun.env, PROTO_TEST_SESSION_FILE: file },
+			stdout: "ignore",
+			stderr: "pipe",
+		});
+
+		expect(await child.exited).toBe(0);
+		const marker = JSON.parse(fs.readFileSync(getSessionLivePath(file), "utf8")) as { pid?: unknown };
+		expect(marker.pid).toBe(child.pid);
+		expect(readSessionLiveState(file).fresh).toBe(false);
+	});
+
 	test("unparseable marker content stays fresh but reports no streaming state", () => {
 		const file = makeTempSession();
 		fs.writeFileSync(getSessionLivePath(file), "torn write", { encoding: "utf8" });

@@ -931,7 +931,7 @@ export class AgentsViewComponent implements Component {
 			const live = readSessionLiveState(sessionPath);
 			if (live.fresh && live.pid !== process.pid) {
 				this.#setStatusMessage(
-					`Session is open in another proto process (pid ${live.pid}) — close it there before renaming`,
+					`Another proto process (pid ${live.pid}) is currently using this session — release it there before renaming`,
 					"warning",
 				);
 				this.#deps.requestRender();
@@ -1007,7 +1007,7 @@ export class AgentsViewComponent implements Component {
 		const live = readSessionLiveState(sessionPath);
 		if (live.fresh && live.pid !== process.pid) {
 			this.#setStatusMessage(
-				`Session is open in another proto process (pid ${live.pid}) — stop it there before deleting`,
+				`Another proto process (pid ${live.pid}) is currently using this session — release it there before deleting`,
 				"warning",
 			);
 			this.#deps.requestRender();

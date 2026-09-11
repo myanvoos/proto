@@ -36,6 +36,16 @@ function parseLiveMarker(content: string): LiveMarkerContent | undefined {
 	}
 }
 
+function processExists(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code !== "ESRCH" && code !== "EINVAL";
+	}
+}
+
 function writeLiveMarker(sessionFile: string, streaming: boolean): void {
 	const livePath = getSessionLivePath(sessionFile);
 	const tmpPath = `${livePath}.${process.pid}.tmp`;
@@ -82,6 +92,7 @@ export function readSessionLiveState(sessionFile: string, now = Date.now()): Ses
 	} catch {
 		marker = undefined;
 	}
+	if (marker && !processExists(marker.pid)) return NOT_LIVE;
 	return { fresh: true, streaming: marker?.streaming ?? false, pid: marker?.pid };
 }
 

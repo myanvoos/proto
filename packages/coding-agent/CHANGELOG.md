@@ -37,6 +37,7 @@
 - Running kernel cells (`eval`/`kernel` and bash-routed `python`/`node`/`bun`) lay out the live block by priority — Status heads, then diff hunks (newest first), then the output tail, then the code tail — so hunks no longer wait on the output preview or the cell settling, and the block stays inside the terminal's live window.
 
 ### Fixed
+- Session ownership now clears as soon as the owning process exits instead of lingering for the heartbeat timeout; cross-process warnings say the session is currently in use rather than merely open.
 - `/session` and `/agents` no longer stall arrow-key navigation for seconds after opening: the session list stops scanning every session's subagent transcripts (~1 GB of JSONL on a 300-session corpus), the agents view scans only the scoped session's tree, and repeated scans of unchanged transcripts are memoized.
 - Ctrl+X on a live or parked subagent in the agents view now stops it (tombstoned into the inactive section, transcript kept) instead of deleting its transcript; Ctrl+X on an inactive row deletes, and the row disappears immediately rather than lingering.
 - Idle rows in the agents view show whether a worker is still live in memory (`idle`) or parked to disk (`parked`).
