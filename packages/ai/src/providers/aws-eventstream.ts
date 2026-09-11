@@ -5,6 +5,7 @@ const PRELUDE_CRC_LEN = 4;
 const MESSAGE_CRC_LEN = 4;
 const HEADER_BLOCK_OFFSET = PRELUDE_LEN + PRELUDE_CRC_LEN;
 const MIN_MESSAGE_LEN = HEADER_BLOCK_OFFSET + MESSAGE_CRC_LEN;
+const EMPTY_BUFFER = new Uint8Array(0);
 
 export interface EventStreamMessage {
 	headers: Record<string, string>;
@@ -111,29 +112,79 @@ function bigIntFromBytes(b: Uint8Array): bigint {
 	return v;
 }
 
+class GrowingBuffer {
+	#space: Uint8Array | undefined;
+	#start = 0;
+	#end = 0;
+
+	get length(): number {
+		return this.#end - this.#start;
+	}
+
+	get bytes(): Uint8Array {
+		return this.#space?.subarray(this.#start, this.#end) ?? EMPTY_BUFFER;
+	}
+
+	append(chunk: Uint8Array): void {
+		const n = chunk.length;
+		if (n === 0) return;
+		if (!this.#space) {
+			this.#space = chunk;
+			this.#end = n;
+			return;
+		}
+
+		const space = this.#space;
+		const required = this.#end + n;
+		if (space.length < required) {
+			const length = this.length;
+			const nextSize = Math.max(length + n, space.length * 2);
+			const next = Buffer.allocUnsafe(nextSize);
+			next.set(space.subarray(this.#start, this.#end));
+			this.#space = next;
+			this.#start = 0;
+			this.#end = length;
+		}
+		this.#space!.set(chunk, this.#end);
+		this.#end += n;
+	}
+
+	consume(offset: number): void {
+		if (offset <= 0) return;
+		if (offset >= this.length) {
+			this.#space = undefined;
+			this.#start = 0;
+			this.#end = 0;
+			return;
+		}
+		this.#start += offset;
+	}
+}
+
 export async function* decodeEventStream(source: ReadableStream<Uint8Array>): AsyncGenerator<EventStreamMessage> {
 	const reader = source.getReader();
 
-	let buf: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+	const buffer = new GrowingBuffer();
 	let completed = false;
 	try {
 		while (true) {
 			const { value, done } = await reader.read();
-			if (value && value.length > 0) buf = buf.length === 0 ? value : Buffer.concat([buf, value]);
+			if (value && value.length > 0) buffer.append(value);
+			const bytes = buffer.bytes;
 			let offset = 0;
-			while (buf.length - offset >= 4) {
-				const dv = new DataView(buf.buffer, buf.byteOffset + offset, buf.length - offset);
+			while (bytes.length - offset >= 4) {
+				const dv = new DataView(bytes.buffer, bytes.byteOffset + offset, bytes.length - offset);
 				const total = dv.getUint32(0, false);
 				if (total < MIN_MESSAGE_LEN) throw new AIError.EventStreamFrameError(`total length ${total} below minimum`);
-				if (buf.length - offset < total) break;
-				const frame = buf.subarray(offset, offset + total);
+				if (bytes.length - offset < total) break;
+				const frame = bytes.subarray(offset, offset + total);
 				yield decodeMessage(frame);
 				offset += total;
 			}
-			if (offset > 0) buf = buf.slice(offset);
+			buffer.consume(offset);
 			if (done) break;
 		}
-		if (buf.length > 0) throw new AIError.EventStreamFrameError("truncated message at end of stream");
+		if (buffer.length > 0) throw new AIError.EventStreamFrameError("truncated message at end of stream");
 		completed = true;
 	} finally {
 		if (!completed) await reader.cancel().catch(() => {});

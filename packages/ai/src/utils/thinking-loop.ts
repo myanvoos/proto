@@ -344,22 +344,37 @@ function buildThinkingLoopError(model: Model<Api>, detail: string): AssistantMes
 	};
 }
 
+// Scratch buffers for detectExactSuffixCycle, reused across checks: the exact
+// scan runs every EXACT_CHECK_STRIDE characters on the stream hot path, so a
+// per-check split().reverse().join("") plus a fresh Z table is measurable
+// overhead. Code units are exactly what split("") yields, so results are
+// bit-identical to the string-domain version.
+let exactRevBuf = new Uint16Array(512);
+let exactZBuf = new Uint16Array(512);
+
 function detectExactSuffixCycle(text: string): [unit: string, count: number] | null {
 	if (text.length < EXACT_SHORT_MIN_REPEATED_CHARS) return null;
-	const reversed = text.split("").reverse().join("");
-	const z = new Uint16Array(reversed.length);
+	const n = text.length;
+	if (exactRevBuf.length < n) {
+		exactRevBuf = new Uint16Array(n * 2);
+		exactZBuf = new Uint16Array(n * 2);
+	}
+	const reversed = exactRevBuf;
+	for (let i = 0; i < n; i++) reversed[i] = text.charCodeAt(n - 1 - i);
+	const z = exactZBuf;
 	let left = 0;
 	let right = 0;
-	for (let i = 1; i < reversed.length; i++) {
+	for (let i = 1; i < n; i++) {
 		if (i <= right) z[i] = Math.min(right - i + 1, z[i - left]);
-		while (i + z[i] < reversed.length && reversed[z[i]] === reversed[i + z[i]]) z[i]++;
+		else z[i] = 0;
+		while (i + z[i] < n && reversed[z[i]] === reversed[i + z[i]]) z[i]++;
 		if (i + z[i] - 1 > right) {
 			left = i;
 			right = i + z[i] - 1;
 		}
 	}
 
-	const maxUnit = Math.min(EXACT_MAX_UNIT, Math.floor(reversed.length / 3));
+	const maxUnit = Math.min(EXACT_MAX_UNIT, Math.floor(n / 3));
 	for (let len = 2; len <= maxUnit; len++) {
 		const count = 1 + Math.floor(z[len] / len);
 		const minCount = len <= EXACT_SHORT_MAX_UNIT ? 4 : 3;

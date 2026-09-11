@@ -172,8 +172,14 @@ type VisibleHit =
 	| { readonly kind: "hold"; readonly index: number }
 	| { readonly kind: "none" };
 
+export function findThinkingMarkupMarker(text: string, from = 0): number {
+	const tagMarker = text.indexOf("<", from);
+	const codeMarker = text.indexOf("`", from);
+	return tagMarker === -1 ? codeMarker : codeMarker === -1 ? tagMarker : Math.min(tagMarker, codeMarker);
+}
+
 function scanVisible(buffer: string, final: boolean): VisibleHit {
-	for (let i = 0; i < buffer.length; i++) {
+	for (let i = findThinkingMarkupMarker(buffer); i !== -1; i = findThinkingMarkupMarker(buffer, i + 1)) {
 		const tag = TAGS.find(candidate => buffer.startsWith(candidate.open, i));
 		if (tag) return { kind: "tag", index: i, tag };
 		if (!final) {
@@ -182,11 +188,10 @@ function scanVisible(buffer: string, final: boolean): VisibleHit {
 				return { kind: "hold", index: i };
 			}
 		}
-		if (buffer[i] === "`") {
-			const ticks = backtickRun(buffer, i);
-			if (!final && i + ticks === buffer.length) return { kind: "hold", index: i };
-			return { kind: "code", index: i, ticks };
-		}
+		if (buffer[i] === "<") continue;
+		const ticks = backtickRun(buffer, i);
+		if (!final && i + ticks === buffer.length) return { kind: "hold", index: i };
+		return { kind: "code", index: i, ticks };
 	}
 	return { kind: "none" };
 }

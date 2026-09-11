@@ -625,7 +625,9 @@ const streamOllamaOnce = (
 				const chunkContent = chunk.message?.content;
 				const structuredCalls = chunk.message?.tool_calls?.length ? chunk.message.tool_calls : undefined;
 				if (chunkContent) {
-					if (streamMarkupHealing) {
+					if (streamMarkupHealing?.tryPassThroughVisibleText(chunkContent)) {
+						appendVisibleText(chunkContent);
+					} else if (streamMarkupHealing) {
 						const healingEvents = structuredCalls
 							? streamMarkupHealing.feedEventsWithoutCalls(chunkContent)
 							: streamMarkupHealing.feedEvents(chunkContent);

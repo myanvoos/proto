@@ -50,42 +50,36 @@ import {
 
 export type { GoogleThinkingLevel };
 
-function isPlanningLeakPrefix(text: string): boolean {
-	const trimmed = text.trimStart();
-	if (!trimmed.startsWith("{")) {
-		return false;
-	}
-	const afterBrace = trimmed.slice(1).trimStart();
-	if (afterBrace === "") {
-		return trimmed.length <= 100;
-	}
-	if (afterBrace[0] !== '"') {
-		return false;
-	}
-	const nextQuoteIndex = afterBrace.indexOf('"', 1);
-	if (nextQuoteIndex === -1) {
-		const keyPrefix = afterBrace.slice(1);
-		return "thought".startsWith(keyPrefix) && trimmed.length <= 100;
-	}
-	const key = afterBrace.slice(1, nextQuoteIndex);
-	if (key !== "thought") {
-		return false;
-	}
-	const afterKey = afterBrace.slice(nextQuoteIndex + 1).trimStart();
-	if (afterKey === "") {
-		return trimmed.length <= 100;
-	}
-	if (afterKey[0] !== ":") {
-		return false;
-	}
-	return true;
-}
+type PlanningPrefixState = "possible" | "valid" | "invalid";
+type PlanningPrefixPhase = "leading" | "after-brace" | "key" | "after-key" | "valid" | "invalid";
 
 type BufferedPlanningResult =
 	| { kind: "incomplete" }
 	| { kind: "plain"; visibleText: string }
 	| { kind: "leak"; visibleText: string };
 
+type PlanningBufferState = {
+	chunks: string[];
+	totalLength: number;
+	prefixState: PlanningPrefixState;
+	prefixPhase: PlanningPrefixPhase;
+	prefixTrimmedLength: number;
+	prefixKey: string;
+	leadingOffset: number | undefined;
+	quotedStarted: boolean;
+	quotedDepth: number;
+	quotedInString: boolean;
+	quotedEscaped: boolean;
+	quotedCompleteAt: number | undefined;
+	fallbackStarted: boolean;
+	fallbackDepth: number;
+	fallbackCompleteAt: number | undefined;
+	result: BufferedPlanningResult | undefined;
+};
+
+function isTrimWhitespace(ch: string): boolean {
+	return ch.trim() === "";
+}
 function isPlanningLeakObject(parsed: unknown, toolNames: Set<string>): boolean {
 	if (!parsed || typeof parsed !== "object") return false;
 	const record = parsed as Record<string, unknown>;
@@ -96,131 +90,183 @@ function isPlanningLeakObject(parsed: unknown, toolNames: Set<string>): boolean 
 	return hasThought || isOmpTool || hasToolSignature;
 }
 
-function splitLeadingJsonObject(text: string): { prefixLength: number; jsonText: string; rest: string } | undefined {
-	const prefixLength = text.length - text.trimStart().length;
-	const trimmed = text.slice(prefixLength);
-	if (!trimmed.startsWith("{")) return undefined;
-
-	let depth = 0;
-	let inString = false;
-	let escaped = false;
-
-	for (let index = 0; index < trimmed.length; index += 1) {
-		const ch = trimmed[index];
-		if (inString) {
-			if (escaped) {
-				escaped = false;
-				continue;
-			}
-			if (ch === "\\") {
-				escaped = true;
-				continue;
-			}
-			if (ch === '"') inString = false;
-			continue;
-		}
-		if (ch === '"') {
-			inString = true;
-			continue;
-		}
-		if (ch === "{") {
-			depth += 1;
-			continue;
-		}
-		if (ch !== "}") continue;
-		depth -= 1;
-		if (depth !== 0) continue;
-
-		const jsonText = trimmed.slice(0, index + 1);
-		return {
-			prefixLength: prefixLength + index + 1,
-			jsonText,
-			rest: trimmed.slice(index + 1),
-		};
-	}
-
-	return undefined;
+function createPlanningBuffer(text: string): PlanningBufferState {
+	const state: PlanningBufferState = {
+		chunks: [],
+		totalLength: 0,
+		prefixState: "possible",
+		prefixPhase: "leading",
+		prefixTrimmedLength: 0,
+		prefixKey: "",
+		leadingOffset: undefined,
+		quotedStarted: false,
+		quotedDepth: 0,
+		quotedInString: false,
+		quotedEscaped: false,
+		quotedCompleteAt: undefined,
+		fallbackStarted: false,
+		fallbackDepth: 0,
+		fallbackCompleteAt: undefined,
+		result: undefined,
+	};
+	appendPlanningBuffer(state, text);
+	return state;
 }
 
-function splitLeadingJsonObjectIgnoringQuotes(
+function appendPlanningBuffer(state: PlanningBufferState, text: string): void {
+	if (!text) return;
+
+	if (state.prefixState === "possible") {
+		for (const ch of text) {
+			if (state.prefixPhase === "valid" || state.prefixPhase === "invalid") break;
+			if (state.prefixPhase === "leading") {
+				if (isTrimWhitespace(ch)) continue;
+				state.prefixTrimmedLength = 1;
+				state.prefixPhase = ch === "{" ? "after-brace" : "invalid";
+				continue;
+			}
+
+			state.prefixTrimmedLength += 1;
+			if (state.prefixPhase === "after-brace") {
+				if (isTrimWhitespace(ch)) continue;
+				state.prefixPhase = ch === '"' ? "key" : "invalid";
+			} else if (state.prefixPhase === "key") {
+				if (ch === '"') {
+					state.prefixPhase = state.prefixKey === "thought" ? "after-key" : "invalid";
+				} else {
+					state.prefixKey += ch;
+					if (!"thought".startsWith(state.prefixKey)) state.prefixPhase = "invalid";
+				}
+			} else if (state.prefixPhase === "after-key") {
+				if (isTrimWhitespace(ch)) continue;
+				state.prefixPhase = ch === ":" ? "valid" : "invalid";
+			}
+		}
+		state.prefixState =
+			state.prefixPhase === "valid"
+				? "valid"
+				: state.prefixPhase === "invalid" || state.prefixTrimmedLength > 100
+					? "invalid"
+					: "possible";
+	}
+
+	const offset = state.totalLength;
+	state.chunks.push(text);
+	state.totalLength += text.length;
+
+	for (let index = 0; index < text.length; index += 1) {
+		const absoluteIndex = offset + index;
+		const ch = text[index];
+
+		if (state.quotedCompleteAt === undefined) {
+			if (!state.quotedStarted) {
+				if (ch === "{") {
+					state.quotedStarted = true;
+					state.quotedDepth = 1;
+					state.leadingOffset ??= absoluteIndex;
+				}
+			} else if (state.quotedInString) {
+				if (state.quotedEscaped) {
+					state.quotedEscaped = false;
+				} else if (ch === "\\") {
+					state.quotedEscaped = true;
+				} else if (ch === '"') {
+					state.quotedInString = false;
+				}
+			} else if (ch === '"') {
+				state.quotedInString = true;
+			} else if (ch === "{") {
+				state.quotedDepth += 1;
+			} else if (ch === "}") {
+				state.quotedDepth -= 1;
+				if (state.quotedDepth === 0) state.quotedCompleteAt = absoluteIndex + 1;
+			}
+		}
+
+		if (state.fallbackCompleteAt === undefined) {
+			if (!state.fallbackStarted) {
+				if (ch === "{") {
+					state.fallbackStarted = true;
+					state.fallbackDepth = 1;
+					state.leadingOffset ??= absoluteIndex;
+				}
+			} else if (ch === "{") {
+				state.fallbackDepth += 1;
+			} else if (ch === "}") {
+				state.fallbackDepth -= 1;
+				if (state.fallbackDepth === 0) state.fallbackCompleteAt = absoluteIndex + 1;
+			}
+		}
+	}
+}
+
+function materializePlanningBuffer(state: PlanningBufferState): string {
+	return state.chunks.join("");
+}
+
+function classifyPlanningBuffer(
 	text: string,
-): { prefixLength: number; jsonText: string; rest: string } | undefined {
-	const prefixLength = text.length - text.trimStart().length;
-	const trimmed = text.slice(prefixLength);
-	if (!trimmed.startsWith("{")) return undefined;
-
-	let depth = 0;
-	for (let index = 0; index < trimmed.length; index += 1) {
-		const ch = trimmed[index];
-		if (ch === "{") {
-			depth += 1;
-		} else if (ch === "}") {
-			depth -= 1;
-			if (depth === 0) {
-				return {
-					prefixLength: prefixLength + index + 1,
-					jsonText: trimmed.slice(0, index + 1),
-					rest: trimmed.slice(index + 1),
-				};
-			}
-		}
-	}
-	return undefined;
-}
-
-function consumePlanningBuffer(text: string, toolNames: Set<string>, isFinal = false): BufferedPlanningResult {
-	if (!isPlanningLeakPrefix(text)) {
-		return { kind: "plain", visibleText: text };
-	}
-
-	let leading = splitLeadingJsonObject(text);
-
-	if (!leading) {
-		leading = splitLeadingJsonObjectIgnoringQuotes(text);
-	}
-
-	if (!leading) {
-		if (isFinal) {
-			const trimmed = text.trim();
-			const hasThoughtKey = trimmed.includes('"thought"');
-			const hasToolKey = Array.from(toolNames).some(name => trimmed.includes(`"${name}"`));
-			const hasToolSignature =
-				trimmed.includes('"_i"') ||
-				trimmed.includes('"paths"') ||
-				trimmed.includes('"command"') ||
-				(trimmed.includes('"path"') && trimmed.includes('"content"'));
-			if (hasThoughtKey || hasToolKey || hasToolSignature) {
-				return { kind: "leak", visibleText: "" };
-			}
-			return { kind: "plain", visibleText: text };
-		}
-		return { kind: "incomplete" };
-	}
-
+	jsonText: string,
+	rest: string,
+	toolNames: Set<string>,
+): BufferedPlanningResult {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(leading.jsonText);
+		parsed = JSON.parse(jsonText);
 	} catch {
-		const hasThoughtKey = leading.jsonText.includes('"thought"');
-		const hasToolKey = Array.from(toolNames).some(name => leading.jsonText.includes(`"${name}"`));
+		const hasThoughtKey = jsonText.includes('"thought"');
+		const hasToolKey = Array.from(toolNames).some(name => jsonText.includes(`"${name}"`));
 		const hasToolSignature =
-			leading.jsonText.includes('"_i"') ||
-			leading.jsonText.includes('"paths"') ||
-			leading.jsonText.includes('"command"') ||
-			(leading.jsonText.includes('"path"') && leading.jsonText.includes('"content"'));
-		const isLeak = hasThoughtKey || hasToolKey || hasToolSignature;
-		if (isLeak) {
-			return { kind: "leak", visibleText: leading.rest };
-		}
-
-		return { kind: "plain", visibleText: text };
+			jsonText.includes('"_i"') ||
+			jsonText.includes('"paths"') ||
+			jsonText.includes('"command"') ||
+			(jsonText.includes('"path"') && jsonText.includes('"content"'));
+		return hasThoughtKey || hasToolKey || hasToolSignature
+			? { kind: "leak", visibleText: rest }
+			: { kind: "plain", visibleText: text };
 	}
 
 	return isPlanningLeakObject(parsed, toolNames)
-		? { kind: "leak", visibleText: leading.rest }
+		? { kind: "leak", visibleText: rest }
 		: { kind: "plain", visibleText: text };
 }
 
+function consumePlanningBuffer(
+	state: PlanningBufferState,
+	toolNames: Set<string>,
+	isFinal = false,
+): BufferedPlanningResult {
+	if (state.result) return state.result;
+	if (state.prefixState === "invalid") {
+		state.result = { kind: "plain", visibleText: materializePlanningBuffer(state) };
+		return state.result;
+	}
+
+	const completeAt = state.quotedCompleteAt ?? state.fallbackCompleteAt;
+	if (completeAt === undefined) {
+		if (!isFinal) return { kind: "incomplete" };
+
+		const text = materializePlanningBuffer(state);
+		const trimmed = text.trim();
+		const hasThoughtKey = trimmed.includes('"thought"');
+		const hasToolKey = Array.from(toolNames).some(name => trimmed.includes(`"${name}"`));
+		const hasToolSignature =
+			trimmed.includes('"_i"') ||
+			trimmed.includes('"paths"') ||
+			trimmed.includes('"command"') ||
+			(trimmed.includes('"path"') && trimmed.includes('"content"'));
+		state.result =
+			hasThoughtKey || hasToolKey || hasToolSignature
+				? { kind: "leak", visibleText: "" }
+				: { kind: "plain", visibleText: text };
+		return state.result;
+	}
+
+	const text = materializePlanningBuffer(state);
+	const prefixLength = state.leadingOffset ?? text.length - text.trimStart().length;
+	state.result = classifyPlanningBuffer(text, text.slice(prefixLength, completeAt), text.slice(completeAt), toolNames);
+	return state.result;
+}
 export interface GoogleGeminiCliOptions extends StreamOptions {
 	toolChoice?: "auto" | "none" | "any" | { mode: "ANY"; allowedFunctionNames: [string, ...string[]] };
 
@@ -618,7 +664,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				const visibleTextHealing = new StreamMarkupHealing({ pattern: "thinking" });
 
 				let isBuffering = false;
-				let textBuffer = "";
+				let planningBuffer: PlanningBufferState | undefined;
 				let bufferedTextSignature: string | undefined;
 				let strippedPlanningLeak = false;
 
@@ -760,26 +806,28 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 									});
 								} else {
 									if (isBuffering) {
-										textBuffer += part.text;
+										if (planningBuffer) appendPlanningBuffer(planningBuffer, part.text);
 										bufferedTextSignature = retainThoughtSignature(
 											bufferedTextSignature,
 											part.thoughtSignature,
 										);
 									} else if (isFlashLeakModel && part.text.trimStart().startsWith("{")) {
 										isBuffering = true;
-										textBuffer = part.text;
+										planningBuffer = createPlanningBuffer(part.text);
 										bufferedTextSignature = part.thoughtSignature;
 									} else {
 										feedVisibleText(part.text, part.thoughtSignature);
 									}
 
 									if (isBuffering) {
-										const buffered = consumePlanningBuffer(textBuffer, toolNames);
+										const buffered = planningBuffer
+											? consumePlanningBuffer(planningBuffer, toolNames)
+											: { kind: "incomplete" as const };
 										if (buffered.kind !== "incomplete") {
 											if (buffered.kind === "leak") strippedPlanningLeak = true;
 											const visibleSignature = bufferedTextSignature;
 											isBuffering = false;
-											textBuffer = "";
+											planningBuffer = undefined;
 											bufferedTextSignature = undefined;
 											feedVisibleText(buffered.visibleText, visibleSignature);
 										}
@@ -793,7 +841,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 								flushVisibleText();
 								endCurrentBlock();
 								isBuffering = false;
-								textBuffer = "";
+								planningBuffer = undefined;
 								const providedId = part.functionCall.id;
 								const needsNewId =
 									!providedId || output.content.some(b => b.type === "toolCall" && b.id === providedId);
@@ -851,8 +899,8 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 				}
 
-				if (isBuffering && textBuffer !== "") {
-					const buffered = consumePlanningBuffer(textBuffer, toolNames, true);
+				if (isBuffering && planningBuffer) {
+					const buffered = consumePlanningBuffer(planningBuffer, toolNames, true);
 
 					if (buffered.kind !== "incomplete") {
 						if (buffered.kind === "leak") strippedPlanningLeak = true;
@@ -860,7 +908,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 					bufferedTextSignature = undefined;
 					isBuffering = false;
-					textBuffer = "";
+					planningBuffer = undefined;
 				}
 
 				flushVisibleText(bufferedTextSignature);

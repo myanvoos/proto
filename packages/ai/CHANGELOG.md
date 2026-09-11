@@ -4,6 +4,11 @@
 
 ### Changed
 - Dialect definitions load lazily per dialect id via a require switch (factory import: ~74MB -> ~33MB RSS; only xml/minimax additionally load their anthropic/deepseek scanner dependencies when selected).
+- Thinking-loop exact-cycle detection reuses preallocated UTF-16 code-unit buffers instead of rebuilding a reversed string and Z table every 128 characters (949k-char stream in 20-char deltas: ~228ms -> ~95ms; 1000-char deltas: ~29ms -> ~6ms); detection results are bit-identical.
+- Thinking scanner skips marker-free spans with exact indexOf scanning instead of re-slicing and re-checking tag prefixes per character (1M-char plain delta: ~56ms -> ~0.05ms; 20-char feeds ~95ms -> ~8ms).
+- AWS EventStream and Devin Connect frame readers grow an accumulator geometrically instead of Buffer.concat per chunk (1MiB frame in 1KiB chunks: ~75-86ms -> ~0.6-1.5ms).
+- Gemini CLI planning-leak buffering tracks brace/quote/escape state incrementally instead of rescanning the accumulated text per delta (80k-char leak in 100-char deltas: ~81ms -> sub-millisecond), with streamed chunk-boundary tests.
+- Ollama thinking-stream scanning shares the marker fast path (no behavior change for wide/zero-width content).
 - Anthropic inband scanner candidate detection follows the full tag grammar (case-insensitive, whitespace-tolerant, namespace-prefix aware): an unknown tag before a valid mixed-case tool-call tag no longer swallows the tool call, and a namespaced invocation split across stream chunks before the colon (`<foo` + `:invoke ...`) parses instead of degrading to text.
 - Anthropic inband scanner coalesces unknown-tag runs into one text event (~2.7ms for a 262k-char malformed feed).
 - Anthropic inband scanner coalesces unknown-tag runs into one text event (262k-char malformed feed: ~585ms/262k events -> ~2ms/1 event).

@@ -2,7 +2,7 @@ import { isDeepseekModelIdOrName } from "@oh-my-pi/pi-catalog/identity";
 
 import { createInbandScanner } from "../dialect/factory";
 import { QwenXmlInbandScanner } from "../dialect/qwen-xml";
-import { ThinkingInbandScanner } from "../dialect/thinking";
+import { findThinkingMarkupMarker, ThinkingInbandScanner } from "../dialect/thinking";
 import type { InbandScanEvent, InbandScanner } from "../dialect/types";
 
 const KIMI_SECTION_END = "<|tool_calls_section_end|>";
@@ -32,6 +32,7 @@ export class StreamMarkupHealing {
 	readonly #toolScanner: InbandScanner | undefined;
 
 	readonly #thinkingScanner = new ThinkingInbandScanner();
+	#hasSeenMarkup = false;
 	#sectionTerminated = false;
 	readonly #completed: HealedToolCall[] = [];
 
@@ -65,9 +66,20 @@ export class StreamMarkupHealing {
 
 	feedEvents(text: string): StreamMarkupHealingEvent[] {
 		if (text.length === 0) return [];
+		if (this.tryPassThroughVisibleText(text)) return [{ type: "text", text }];
 		this.#markSectionClosed(text);
 		if (!this.#toolScanner) return this.#convertScannerEvents(this.#thinkingScanner.feed(text));
 		return this.#convertScannerEvents(this.#healThinking(this.#toolScanner.feed(text)));
+	}
+
+	tryPassThroughVisibleText(text: string): boolean {
+		if (text.length === 0) return false;
+		if (this.#hasSeenMarkup || findThinkingMarkupMarker(text) !== -1) {
+			this.#hasSeenMarkup = true;
+			return false;
+		}
+		this.#thinkingScanner.feed(text);
+		return true;
 	}
 
 	feedEventsWithoutCalls(text: string): StreamMarkupHealingEvent[] {

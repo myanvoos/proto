@@ -69,6 +69,58 @@ const MAX_CONNECT_FRAME_PAYLOAD = 16 * 1024 * 1024;
 
 const LARGE_HISTORY_RECOVERY_BYTES = 512 * 1024;
 
+const EMPTY_BUFFER = Buffer.alloc(0);
+
+class GrowingBuffer {
+	#space: Buffer | undefined;
+	#start = 0;
+	#end = 0;
+
+	get length(): number {
+		return this.#end - this.#start;
+	}
+
+	get bytes(): Buffer {
+		return this.#space?.subarray(this.#start, this.#end) ?? EMPTY_BUFFER;
+	}
+
+	append(chunk: Uint8Array): void {
+		const n = chunk.length;
+		if (n === 0) return;
+		if (!this.#space) {
+			this.#space = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+			this.#end = n;
+			return;
+		}
+
+		const space = this.#space;
+		const required = this.#end + n;
+		if (space.length < required) {
+			const length = this.length;
+			const nextSize = Math.max(length + n, space.length * 2);
+			const next = Buffer.allocUnsafe(nextSize);
+			next.set(space.subarray(this.#start, this.#end));
+			this.#space = next;
+			this.#start = 0;
+			this.#end = length;
+		}
+
+		this.#space!.set(chunk, this.#end);
+		this.#end += n;
+	}
+
+	consume(n: number): void {
+		if (n <= 0) return;
+		if (n >= this.length) {
+			this.#space = undefined;
+			this.#start = 0;
+			this.#end = 0;
+			return;
+		}
+		this.#start += n;
+	}
+}
+
 export const streamDevin: StreamFunction<"devin-agent"> = (
 	model: Model<"devin-agent">,
 	context: Context,
@@ -189,20 +241,16 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 			stream.push({ type: "start", partial: output });
 
 			const reader = body.getReader();
-			let pending = Buffer.alloc(0);
+			const pending = new GrowingBuffer();
 
 			for (;;) {
 				const { done, value } = await reader.read();
-				if (value && value.length > 0) {
-					pending =
-						pending.length === 0
-							? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
-							: Buffer.concat([pending, value]);
-				}
+				if (value && value.length > 0) pending.append(value);
 
 				while (pending.length >= 5) {
-					const flag = pending[0];
-					const len = pending.readUInt32BE(1);
+					const bytes = pending.bytes;
+					const flag = bytes[0];
+					const len = bytes.readUInt32BE(1);
 					if (len > MAX_CONNECT_FRAME_PAYLOAD) {
 						throw new AIError.ProviderResponseError(
 							`Devin Connect frame length ${len} exceeds ${MAX_CONNECT_FRAME_PAYLOAD}-byte cap`,
@@ -210,8 +258,8 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 						);
 					}
 					if (pending.length < 5 + len) break;
-					const payload = pending.subarray(5, 5 + len);
-					pending = pending.subarray(5 + len);
+					const payload = bytes.subarray(5, 5 + len);
+					pending.consume(5 + len);
 
 					if (flag & CONNECT_END_STREAM_FLAG) {
 						const trailerBytes = flag & CONNECT_COMPRESSED_FLAG ? gunzipSync(payload) : payload;
