@@ -6,16 +6,16 @@ This is the runtime contract for the `semantic-compression` skill. Compression s
 
 # Compression
 
-Compression is re-encoding, not word deletion. Filtering function words out of a sentence leaves a damaged sentence. Re-frame each claim into a register whose grammar is punctuation and layout; the function words then have no work left and drop out on their own.
+Compression re-encodes, not deletes: filtering function words damages sentences. Reframe claims in a punctuation/layout register; function words then drop out.
 
 ## Procedure
 
-1. Density gate. Already in this register — few articles or copulas, telegraphic bullets? Then the remaining words ARE the payload. Submit the source unchanged with an empty `losses` array, say so in the verdict, and approve.
-2. Split the source into atomic claims: one definition, obligation, default, or fact each.
+1. Density gate: few articles/copulas, telegraphic bullets? Remaining words = payload; submit source unchanged with empty `losses` array, state it in verdict, approve.
+2. Split into atomic claims: one definition, obligation, default, or fact each.
 3. Cut what the reader already knows. Generic facts about JSON, tests, or git are noise. Keep what is specific to this tool, repo, or domain.
 4. Cut restatements into one canonical line. Two statements of one rule with DIFFERENT scope are not restatements.
 5. Hoist a repeated qualifier into one scope line: `All paths repo-relative.` once, up top.
-6. Re-encode by frame, then review your own draft against the losses you declared.
+6. Apply the table's frames; review your draft against declared losses.
 
 ## Frames
 
@@ -28,10 +28,11 @@ Compression is re-encoding, not word deletion. Filtering function words out of a
 | "The action may be open, close, or run." | `action: open, close, run.` |
 | "This requires that the branch was already checked out." | `Requires prior checkout.` |
 
-- Verbless assertion — `X true` / `X required` / `X unsupported`. The predicate carries; the copula goes.
-- Label frame — `X: value`. One colon per line, never nested.
-- Subject elision across a run — name the subject once, chain bare predicates.
-- Scope declaration — one line retypes everything after it (`Times in ms.`).
+Canonical table frames; mechanics:
+- Verbless: `X true`/`X required`/`X unsupported`; predicate carries; copula drops.
+- Label: `X: value`; one colon/line, never nested.
+- Subject elision: name subject once; chain bare predicates.
+- Scope: one line retypes following text (`Times in ms.`).
 
 ## Operators
 

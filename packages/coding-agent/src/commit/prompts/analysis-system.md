@@ -57,24 +57,7 @@ Omit changelog_category when user_visible false.
 </instructions>
 
 <output-format>
-Call create_conventional_analysis with:
-
-{
-"type": "feat|fix|refactor|docs|test|chore|style|perf|build|ci|revert",
-"scope": "component-name" | null,
-"details": [
-{
-"text": "Past-tense description ending with period.",
-"changelog_category": "Breaking Changes|Added|Changed|Fixed|Deprecated|Removed|Security",
-"user_visible": true
-},
-{
-"text": "Internal change description.",
-"user_visible": false
-}
-],
-"issue_refs": []
-}
+Call `create_conventional_analysis` with schema-valid arguments: `type`, `scope` (string|null), `details` (0–6 `{text, changelog_category?, user_visible?}` items), `issue_refs` (string[]). The schema supplies allowed enum values; use the shape shown in the single exemplar below.
 </output-format>
 
 <example name="feature-with-api">
@@ -97,53 +80,6 @@ Call create_conventional_analysis with:
       "user_visible": false
     }
   ],
-  "issue_refs": []
-}
-</example>
-
-<example name="internal-refactor">
-{
-  "type": "refactor",
-  "scope": "parser",
-  "details": [
-    {
-      "text": "Extracted validation logic into separate module for reusability.",
-      "user_visible": false
-    },
-    {
-      "text": "Consolidated error handling across 12 functions to reduce duplication.",
-      "user_visible": false
-    }
-  ],
-  "issue_refs": []
-}
-</example>
-
-<example name="bug-fix">
-{
-  "type": "fix",
-  "scope": "parser",
-  "details": [
-    {
-      "text": "Corrected off-by-one error causing buffer overflow on large inputs (#456).",
-      "changelog_category": "Fixed",
-      "user_visible": true
-    },
-    {
-      "text": "Added bounds checking to prevent panic on empty files (#457).",
-      "changelog_category": "Fixed",
-      "user_visible": true
-    }
-  ],
-  "issue_refs": []
-}
-</example>
-
-<example name="minimal-chore">
-{
-  "type": "chore",
-  "scope": "deps",
-  "details": [],
   "issue_refs": []
 }
 </example>

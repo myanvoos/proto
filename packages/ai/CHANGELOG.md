@@ -4,6 +4,8 @@
 
 ### Changed
 - Provider definitions (76 registry entries) now materialize lazily per provider id instead of eagerly at import, cutting tens of MB of resident memory for sessions that use a single provider.
+- Cursor provider conversation/blob/warning caches are now LRU-bounded (8 conversations, 64 warning keys) with oldest-eviction on rotation, so long-lived daemon processes no longer retain unbounded conversation state.
+- Abort-signal promise races across usage tracking, credential refresh, the remote auth broker, and the MCP controller are centralized in one `raceWithSignal` helper with optional abort-error factory and cleanup callback (-51 lines of bespoke race code).
 
 ## [18.0.5] - 2026-09-09
 

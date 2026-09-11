@@ -1,3 +1,3 @@
 Blocks until ONE watched worker finishes its current turn, times out, or is interrupted — re-issue to continue waiting.
 
-Settled results carry immutable worker id, display label, turn, job, and receipt status. `delivered` means the result was returned by this wait; `rejected`/`terminal` identify cancellation or lost ownership. A normal worker remains addressable after delivery; continue it with orchestrate_send using its id.
+Settled results carry immutable worker id, display label, turn, job, and receipt status. `delivered` means the result was returned by this wait; `rejected`/`terminal` identify cancellation or lost ownership. Use immutable worker id; NEVER label.

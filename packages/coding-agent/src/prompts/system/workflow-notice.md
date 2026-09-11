@@ -11,84 +11,45 @@ Use for decomposition + parallel coverage or independent/adversarial pre-commit 
 </when>
 
 <helpers>
-State persists across `eval` calls;{{#if scoutAvailable}} scout one call, fan out next.{{else}} explore one call, fan out next.{{/if}} Default for multi-step orchestration: write the script to `fleet://<name>.py` and run `python fleet://<name>.py` in bash — fleet scripts execute in the same kernel with the same helpers. Every call provides:
+State persists across `eval` calls. {{#if scoutAvailable}}Scout{{else}}explore{{/if}} inline FIRST; fan out next. One call = one well-scoped fan-out; chain phases across calls; read each result before the next decision.
 
-- `agent(prompt, *, agent="worker", label=None, schema=None, isolated=None, apply=None, merge=None, handle=False)`: run ONE subagent; return final text, or validated object with `schema` (JSON Schema dict). `schema` forces validated structured output: branch on object, not parsed prose. `agent` selects discovered agent{{#if scoutAvailable}} (`"scout"`, `"reviewer"`, …){{/if}}; `label`: artifact name. Put shared background in `local://` file referenced by each prompt, not a parameter. Subagents' final text is return value: raw data. `agent()` blocks. Recursion: `orchestrator.maxRecursionDepth`, default 2; negative disables cap.
-- `parallel(thunks)`: concurrently run zero-arg callables in bounded pool; preserve input order; return after all finish. Pool: session orchestrator concurrency — NEVER hand-tune; fan out as work divides. Raised thunk propagates; risky thunk: `try/except` for partial results. Loop closures: bind default arg (`lambda d=d: …`), else all capture final value.
-- `pipeline(items, *stages)`: map items through stages left→right; BARRIER between stages — ALL items complete N before N+1. Stages: one-arg callable; stage 1 gets original item, later stages prior result. Same pool width as `parallel()`.
-- `completion(prompt, *, model="default", system=None, schema=None)`: oneshot stateless model call; no tools/history. Tiers: `"smol"`, `"default"`, `"slow"`. Use for cheap fan-out classification/scoring.
-- `log(message)`: progress line above status tree. `phase(title)`: phase; following status lines group under it.
-- `budget`: `budget.total` output-token ceiling/`None` if unset; `budget.spent()` tokens spent this turn (main loop + eval subagents); `budget.remaining()`/`math.inf` if total `None`; `budget.hard` enforcement. User `+Nk`: advisory, self-limit via `budget.remaining()`; `+Nk!`/Goal Mode: hard, `agent()` refuses spawn at spent ceiling. Gate loops on `budget.total` first: no user budget → `None`.
+Agent results: `schema=` → validated object; branch on it, not parsed prose. Labels name artifacts; share background via `local://`; `agent()` blocks. Follow persistent workers by immutable id, NEVER display label; recursion obeys configured cap.
 
-Orchestration calls are synchronous within an eval cell; eval cells MAY auto-background when `eval.autoBackground.enabled` is true and its configured threshold is reached. Follow the eval tool's async job notice and result. One call: one well-scoped fan-out. Chain calls/turns for phases; read each result before next-phase decision.
+`parallel()` preserves input order; closure-bind loop values; exceptions propagate—wrap risky thunks when partial results matter. `completion()` is stateless/no-tools; use for cheap classification/scoring. `log()` marks progress; `phase()` groups following status lines.
+
+Eval-cell calls synchronous; auto-backgrounded cells → follow the eval job notice/result. Budgeted loops gate on `budget.total`; self-limit `budget.remaining()`; `+Nk!` hard—spawn refused at spent ceiling.
 </helpers>
 
 <structure>
-Independent per-item chains (review → verify, fetch → extract → score): wrap WHOLE chain in one function; `parallel()` functions so items proceed independently.
-
-**Python (`eval`, Python backend):**
-
+Per-item chains (review → verify; fetch → extract → score): whole chain in one function; outer parallel() keeps items independent. Capture vars (lambda x=x;JS async()=>)
+**Python, review → verify:**
 ```python
-DIMENSIONS = [{"key": "bugs", "prompt": "…"}, {"key": "perf", "prompt": "…"}]
-def review_and_verify(d):
-    found = agent(d["prompt"], label=f"review:{d['key']}", schema=FINDINGS_SCHEMA)
-    return parallel([lambda f=f: {**f, "verdict": agent(
-        f"Refute if you can (default refuted when unsure): {f['title']}",
-        label=f"verify:{f['file']}", schema=VERDICT_SCHEMA)} for f in found["findings"]])
-phase("Review")
-results = parallel([lambda d=d: review_and_verify(d) for d in DIMENSIONS])
-confirmed = [f for group in results for f in group if f["verdict"]["is_real"]]
+def review_verify(d):
+    found = agent(d["prompt"], schema=FINDINGS_SCHEMA)
+    return parallel([lambda f=f: {**f, "verdict": agent(verify_prompt(f), schema=VERDICT_SCHEMA)} for f in found["findings"]])
+results = parallel([lambda d=d: review_verify(d) for d in DIMENSIONS])
+confirmed = [f for g in results for f in g if f["verdict"]["is_real"]]
 ```
-
-**JavaScript (`eval`, JavaScript backend):**
-
+**JavaScript:**
 ```js
-const DIMENSIONS = [{ key: "bugs", prompt: "…" }, { key: "perf", prompt: "…" }];
-async function reviewAndVerify(d) {
-    const found = await agent(d.prompt, {
-        label: `review:${d.key}`,
-        schema: FINDINGS_SCHEMA,
-    });
-    return await parallel(found.findings.map((f) => async () => ({
-        ...f,
-        verdict: await agent(
-            `Refute if you can (default refuted when unsure): ${f.title}`,
-            { label: `verify:${f.file}`, schema: VERDICT_SCHEMA },
-        ),
-    })));
+async function reviewVerify(d) {
+  const found = await agent(d.prompt, {schema:FINDINGS_SCHEMA});
+  return await parallel(found.findings.map((f) => async () => ({...f, verdict: await agent(verifyPrompt(f), {schema:VERDICT_SCHEMA})})));
 }
-phase("Review");
-const results = await parallel(DIMENSIONS.map((d) => async () => reviewAndVerify(d)));
+const results = await parallel(DIMENSIONS.map((d) => async () => reviewVerify(d)));
 const confirmed = results.flat().filter((f) => f.verdict.is_real);
 ```
 
-`pipeline()` only if a stage needs ALL prior-stage results: whole-set dedup/merge, zero early exit, or comparison with other findings. Its barrier waits for slowest peer.
+`pipeline()` only when a stage needs ALL prior-stage results (dedup/merge, zero early exit, cross-finding comparison); BARRIER waits for the slowest peer. Flatten/map/filter needs no barrier; nested pools cap independently; keep fan-out sane.
 
-**Python (`eval`, Python backend):**
-
+**Python, barriered find → dedupe → verify:**
 ```python
-phase("Find")
-found = parallel([lambda d=d: agent(d["prompt"], schema=FINDINGS_SCHEMA) for d in DIMENSIONS])
-findings = dedupe([f for r in found for f in r["findings"]])   # needs everything at once
-phase("Verify")
-verdicts = parallel([lambda f=f: agent(verify_prompt(f), schema=VERDICT_SCHEMA) for f in findings])
+found = parallel([lambda d=d: agent(d["prompt"], schema=FINDINGS_SCHEMA) for d in DIMENSIONS]); findings = dedupe([f for r in found for f in r["findings"]]); verdicts = parallel([lambda f=f: agent(verify_prompt(f), schema=VERDICT_SCHEMA) for f in findings])
 ```
-
-**JavaScript (`eval`, JavaScript backend):**
-
+**JavaScript:**
 ```js
-phase("Find");
-const found = await parallel(DIMENSIONS.map((d) => async () =>
-    await agent(d.prompt, { schema: FINDINGS_SCHEMA }),
-));
-const findings = dedupe(found.flatMap((r) => r.findings)); // needs everything at once
-phase("Verify");
-const verdicts = await parallel(findings.map((f) => async () =>
-    await agent(verifyPrompt(f), { schema: VERDICT_SCHEMA }),
-));
+const found = await parallel(DIMENSIONS.map((d) => async () => agent(d.prompt, {schema:FINDINGS_SCHEMA}))); const findings = dedupe(found.flatMap((r) => r.findings)); const verdicts = await parallel(findings.map((f) => async () => agent(verifyPrompt(f), {schema:VERDICT_SCHEMA})));
 ```
-
-Flatten/map/filter with ordinary code between calls; no barrier merely for that. Nested `parallel()` pools cap independently: keep total fan-out sane.
 </structure>
 
 <patterns>

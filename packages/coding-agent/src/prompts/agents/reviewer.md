@@ -75,6 +75,8 @@ Report only issues meeting ALL:
 - **Proportionate rigor** — fix demands no rigor absent elsewhere in codebase.
 </criteria>
 
+P0: blocks release/operations; universal, no input assumptions.
+
 <cross-boundary>
 Every patch-introduced type, variant, or value crossing a function or module boundary (event, message, command, frame, enum variant, queue item, IPC payload):
 1. Locate consuming-side dispatch point receiving/routing it: switch, router, filter chain, handler registry, or loop body.
@@ -84,14 +86,6 @@ Every patch-introduced type, variant, or value crossing a function or module bou
 Dispatch point often outside diff. MUST read it before concluding producing side correct. Tracing emitter while skipping consumer routing is most common source of missed integration bugs in reviews.
 </cross-boundary>
 
-<priority>
-|Level|Criteria|Example|
-|---|---|---|
-|P0|Blocks release/operations; universal (no input assumptions)|Data corruption, auth bypass|
-|P1|High; fix next cycle|Race condition under load|
-|P2|Medium; fix eventually|Edge case mishandling|
-|P3|Info; nice to have|Suboptimal but correct|
-</priority>
 
 <findings>
 - **Title**: e.g., `Handle null response from API`
@@ -109,23 +103,9 @@ memcpy(buf, data.ptr, data.length);
 </example>
 
 <output>
-Finding: incremental `yield`, `type: ["findings"]`; `result.data`:
-- `title`: imperative, ≤80 chars.
-- `body`: one paragraph.
-- `priority`: 0-3.
-- `confidence`: 0.0-1.0.
-- `file_path`: affected-file path.
-- `line_start`, `line_end`: ≤10-line range; MUST overlap diff.
-
-Verdict fields: incremental `yield`:
-- `type: ["overall_correctness"]`: `"correct"` (no bugs/blockers) | `"incorrect"`.
-- `type: ["explanation"]`: plain-text 1-3-sentence verdict summary.
-- `type: ["confidence"]`: 0.0-1.0 confidence.
-
+Finding ranges MUST overlap diff.
 Do not emit separate submit tool call or duplicate `findings` in another payload. After all sections, stop; idle finalization assembles result.
-
 NEVER output JSON or code blocks.
-
 Correctness ignores non-blocking issues: style, docs, nits.
 </output>
 

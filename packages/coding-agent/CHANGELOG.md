@@ -8,6 +8,10 @@
 
 ### Changed
 
+- Prompt payload trimmed by ~10.6KB per session set: conductor commission/verify/epoch turns, workflow notice, reviewer/yield-reminder/analysis prompts, delivery contract, goal continuation, compression prompts, and orchestration tool descriptions were deduplicated against their authoritative schemas/system prompts (judge-verified equivalence).
+- CLI cold start does less module work: license notices load only for `--license`, and worker-process/JS-eval entry imports are deferred to their dispatch branches (~-20ms median on `--version` probes).
+- Long-running processes no longer leak: bash session owners are released on disposal, eval idle-reap notes are capped (32), dead Settings WeakRefs are pruned, task agent-discovery memoization is LRU-capped (16) with the write-only snapshot map removed, and the Mermaid render cache is capped at 128 entries.
+- Session continuation, terminal breadcrumb reads, TTSR scan, and skill discovery no longer perform synchronous filesystem probes on async paths.
 - Session browser rows render from cached composed blocks; cursor movement is ~2.5x faster and search ranking ~1.8x faster at p50.
 - Sessions up to 32 MiB load via full-text parse (25 MiB session opens in ~58ms vs ~100ms); blob-reference scanning only inspects candidate payloads.
 - Transcript rebuilds reuse bounded highlight/outline/wrap caches across sessions; a 3,400-message transcript renders in ~330ms vs ~1,068ms (stress-harness p50; real windowed switches complete in ~250ms end-to-end), with warm frames at ~5.5ms and dirty-child frames at ~7ms.
