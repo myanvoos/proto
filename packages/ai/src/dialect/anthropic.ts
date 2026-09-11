@@ -157,11 +157,11 @@ export class AnthropicInbandScanner implements InbandScanner {
 			return true;
 		}
 
-		const tag = this.#peekTag(final, this.#relevantPrefixes());
+		const relevantPrefixes = this.#relevantPrefixes();
+		const tag = this.#peekTag(final, relevantPrefixes);
 		if (tag === "partial") return false;
 		if (!tag) {
-			this.#emitText(this.#buffer[0]!, events);
-			this.#buffer = this.#buffer.slice(1);
+			this.#consumeUnknownText(final, relevantPrefixes, events);
 			return true;
 		}
 
@@ -185,9 +185,24 @@ export class AnthropicInbandScanner implements InbandScanner {
 			return true;
 		}
 
-		this.#emitText(this.#buffer[0]!, events);
-		this.#buffer = this.#buffer.slice(1);
+		this.#consumeUnknownText(final, relevantPrefixes, events);
 		return true;
+	}
+
+	#consumeUnknownText(final: boolean, relevantPrefixes: readonly string[], events: InbandScanEvent[]): void {
+		let textEnd = this.#buffer.length;
+		if (!final) {
+			for (let index = 1; index < this.#buffer.length; index++) {
+				if (this.#buffer[index] !== "<") continue;
+				while (index + 1 < this.#buffer.length && this.#buffer[index + 1] === "<") index++;
+				if (couldBeTagPrefix(this.#buffer.slice(index), relevantPrefixes)) {
+					textEnd = index;
+					break;
+				}
+			}
+		}
+		this.#emitText(this.#buffer.slice(0, textEnd), events);
+		this.#buffer = this.#buffer.slice(textEnd);
 	}
 
 	#consumeSection(final: boolean, events: InbandScanEvent[]): boolean {

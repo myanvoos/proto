@@ -6,6 +6,19 @@ import { type CodeFrameMarker, formatCodeFrameLine, replaceTabs } from "../../to
 const DIM = "\x1b[2m";
 const DIM_OFF = "\x1b[22m";
 
+// Myers diff can become quadratic when both sides contain many changed words.
+// Keep intra-line rendering bounded while preserving the existing diff for small lines.
+const MAX_INTRA_LINE_DIFF_WORDS = 512;
+
+function countWords(text: string, limit: number): number {
+	let count = 0;
+	for (const _match of text.matchAll(/\S+/gu)) {
+		count++;
+		if (count > limit) return count;
+	}
+	return count;
+}
+
 function visualizeIndent(text: string): string {
 	const match = text.match(/^([ \t]+)/);
 	if (!match) return replaceTabs(text);
@@ -41,6 +54,19 @@ function renderIntraLineDiff(
 	newContent: string,
 	renderTheme: Theme,
 ): { removedLine: string; addedLine: string } {
+	const oldWordCount = countWords(oldContent, MAX_INTRA_LINE_DIFF_WORDS);
+	const tooManyWords =
+		oldWordCount > MAX_INTRA_LINE_DIFF_WORDS ||
+		oldWordCount + countWords(newContent, MAX_INTRA_LINE_DIFF_WORDS - oldWordCount) > MAX_INTRA_LINE_DIFF_WORDS;
+	if (tooManyWords) {
+		const renderReplaceAll = (content: string): string => {
+			const leadingWs = content.match(/^(\s*)/u)?.[1] ?? "";
+			const changed = content.slice(leadingWs.length);
+			return changed ? `${leadingWs}${renderTheme.inverse(changed)}` : leadingWs;
+		};
+		return { removedLine: renderReplaceAll(oldContent), addedLine: renderReplaceAll(newContent) };
+	}
+
 	const wordDiff = diffWords(oldContent, newContent);
 
 	let removedLine = "";

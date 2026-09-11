@@ -1021,94 +1021,121 @@ export function normalizeSchema(value: unknown, options: NormalizeSchemaOptions)
 	return normalized;
 }
 
+// Tool schemas are stable for their registration lifetime. These caches therefore assume schema objects,
+// and the normalized values returned from them, are not mutated after the first normalization.
+function normalizeSchemaWithCache(
+	value: unknown,
+	options: NormalizeSchemaOptions,
+	cache: WeakMap<object, unknown>,
+): unknown {
+	if (value === null || typeof value !== "object") return normalizeSchema(value, options);
+	if (cache.has(value)) return cache.get(value);
+	const normalized = normalizeSchema(value, options);
+	cache.set(value, normalized);
+	return normalized;
+}
+
+const googleSchemaCache = new WeakMap<object, unknown>();
+const ccaSchemaCache = new WeakMap<object, unknown>();
+const mcpSchemaCache = new WeakMap<object, unknown>();
+const moonshotSchemaCache = new WeakMap<object, unknown>();
+
+const GOOGLE_SCHEMA_OPTIONS: NormalizeSchemaOptions = {
+	coerceBooleanSubschemas: "standard",
+	unsupportedFields: isGoogleUnsupportedSchemaField,
+	normalizeFieldNames: true,
+	collapseNullFields: true,
+	normalizeTypeArrayToNullable: true,
+	stripNullableKeyword: false,
+	autoPropertyOrdering: true,
+	ensureObjectProperties: true,
+	liftStrippedToDescription: { format: "spill" },
+	mergeObjectCombiners: false,
+	collapseSameTypeCombiners: false,
+	collapseMixedTypeCombiners: false,
+	stripResidualCombinersFixpoint: false,
+	extractNullableFromUnions: false,
+	inferTypeForBareEnum: true,
+	dropNonScalarEnum: false,
+	stringEnumsOnly: true,
+	foldOneOfIntoAnyOf: false,
+};
+
+const CCA_SCHEMA_OPTIONS: NormalizeSchemaOptions = {
+	coerceBooleanSubschemas: "standard",
+	unsupportedFields: isGoogleUnsupportedSchemaField,
+	normalizeFieldNames: true,
+	collapseNullFields: false,
+	normalizeTypeArrayToNullable: true,
+	stripNullableKeyword: true,
+	autoPropertyOrdering: false,
+	ensureObjectProperties: true,
+	liftStrippedToDescription: { format: "spill" },
+	mergeObjectCombiners: true,
+	collapseSameTypeCombiners: true,
+	collapseMixedTypeCombiners: true,
+	stripResidualCombinersFixpoint: true,
+	extractNullableFromUnions: true,
+	inferTypeForBareEnum: true,
+	dropNonScalarEnum: false,
+	foldOneOfIntoAnyOf: false,
+	rejectResidualIncompatibilities: ["type-array", "type-null", "nullable", "combiners", "not"],
+	validateAndFallback: { fallback: CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA },
+};
+
+const MCP_SCHEMA_OPTIONS: NormalizeSchemaOptions = {
+	unsupportedFields: isMcpUnsupportedSchemaField,
+	normalizeFieldNames: false,
+	collapseNullFields: false,
+	normalizeTypeArrayToNullable: false,
+	foldOneOfIntoAnyOf: false,
+	stripNullableKeyword: true,
+	autoPropertyOrdering: false,
+	ensureObjectProperties: false,
+	liftStrippedToDescription: false,
+	mergeObjectCombiners: false,
+	collapseSameTypeCombiners: false,
+	collapseMixedTypeCombiners: false,
+	stripResidualCombinersFixpoint: false,
+	extractNullableFromUnions: false,
+	inferTypeForBareEnum: false,
+	dropNonScalarEnum: false,
+};
+
+const MOONSHOT_SCHEMA_OPTIONS: NormalizeSchemaOptions = {
+	coerceBooleanSubschemas: "permissive",
+	unsupportedFields: isMoonshotUnsupportedSchemaField,
+	normalizeFieldNames: false,
+	collapseNullFields: false,
+	normalizeTypeArrayToNullable: true,
+	stripNullableKeyword: true,
+	autoPropertyOrdering: false,
+	ensureObjectProperties: false,
+	liftStrippedToDescription: { format: "spill" },
+	mergeObjectCombiners: false,
+	collapseSameTypeCombiners: false,
+	collapseMixedTypeCombiners: false,
+	stripResidualCombinersFixpoint: false,
+	extractNullableFromUnions: false,
+	inferTypeForBareEnum: true,
+	dropNonScalarEnum: true,
+	foldOneOfIntoAnyOf: true,
+};
+
 export function normalizeSchemaForGoogle(value: unknown): unknown {
-	return normalizeSchema(value, {
-		coerceBooleanSubschemas: "standard",
-		unsupportedFields: isGoogleUnsupportedSchemaField,
-		normalizeFieldNames: true,
-		collapseNullFields: true,
-		normalizeTypeArrayToNullable: true,
-		stripNullableKeyword: false,
-		autoPropertyOrdering: true,
-		ensureObjectProperties: true,
-		liftStrippedToDescription: { format: "spill" },
-		mergeObjectCombiners: false,
-		collapseSameTypeCombiners: false,
-		collapseMixedTypeCombiners: false,
-		stripResidualCombinersFixpoint: false,
-		extractNullableFromUnions: false,
-		inferTypeForBareEnum: true,
-		dropNonScalarEnum: false,
-		stringEnumsOnly: true,
-		foldOneOfIntoAnyOf: false,
-	});
+	return normalizeSchemaWithCache(value, GOOGLE_SCHEMA_OPTIONS, googleSchemaCache);
 }
 
 export function normalizeSchemaForCCA(value: unknown): unknown {
-	return normalizeSchema(value, {
-		coerceBooleanSubschemas: "standard",
-		unsupportedFields: isGoogleUnsupportedSchemaField,
-		normalizeFieldNames: true,
-		collapseNullFields: false,
-		normalizeTypeArrayToNullable: true,
-		stripNullableKeyword: true,
-		autoPropertyOrdering: false,
-		ensureObjectProperties: true,
-		liftStrippedToDescription: { format: "spill" },
-		mergeObjectCombiners: true,
-		collapseSameTypeCombiners: true,
-		collapseMixedTypeCombiners: true,
-		stripResidualCombinersFixpoint: true,
-		extractNullableFromUnions: true,
-		inferTypeForBareEnum: true,
-		dropNonScalarEnum: false,
-		foldOneOfIntoAnyOf: false,
-		rejectResidualIncompatibilities: ["type-array", "type-null", "nullable", "combiners", "not"],
-		validateAndFallback: { fallback: CLOUD_CODE_ASSIST_CLAUDE_FALLBACK_SCHEMA },
-	});
+	return normalizeSchemaWithCache(value, CCA_SCHEMA_OPTIONS, ccaSchemaCache);
 }
 
 export function normalizeSchemaForMCP(value: unknown): unknown {
-	return normalizeSchema(value, {
-		unsupportedFields: isMcpUnsupportedSchemaField,
-		normalizeFieldNames: false,
-		collapseNullFields: false,
-		normalizeTypeArrayToNullable: false,
-		foldOneOfIntoAnyOf: false,
-		stripNullableKeyword: true,
-		autoPropertyOrdering: false,
-		ensureObjectProperties: false,
-		liftStrippedToDescription: false,
-		mergeObjectCombiners: false,
-		collapseSameTypeCombiners: false,
-		collapseMixedTypeCombiners: false,
-		stripResidualCombinersFixpoint: false,
-		extractNullableFromUnions: false,
-		inferTypeForBareEnum: false,
-		dropNonScalarEnum: false,
-	});
+	return normalizeSchemaWithCache(value, MCP_SCHEMA_OPTIONS, mcpSchemaCache);
 }
 
 export function normalizeSchemaForMoonshot(value: unknown): unknown {
-	return normalizeSchema(value, {
-		coerceBooleanSubschemas: "permissive",
-		unsupportedFields: isMoonshotUnsupportedSchemaField,
-		normalizeFieldNames: false,
-		collapseNullFields: false,
-		normalizeTypeArrayToNullable: true,
-		stripNullableKeyword: true,
-		autoPropertyOrdering: false,
-		ensureObjectProperties: false,
-		liftStrippedToDescription: { format: "spill" },
-		mergeObjectCombiners: false,
-		collapseSameTypeCombiners: false,
-		collapseMixedTypeCombiners: false,
-		stripResidualCombinersFixpoint: false,
-		extractNullableFromUnions: false,
-		inferTypeForBareEnum: true,
-		dropNonScalarEnum: true,
-		foldOneOfIntoAnyOf: true,
-	});
+	return normalizeSchemaWithCache(value, MOONSHOT_SCHEMA_OPTIONS, moonshotSchemaCache);
 }
 
 const OLLAMA_SCHEMA_VALUE_KEYS = new Set([

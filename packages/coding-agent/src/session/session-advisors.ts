@@ -207,6 +207,7 @@ export class SessionAdvisors {
 	#advisorConfigs: AdvisorConfig[] | undefined;
 	#advisorStatuses = new Map<string, { name: string; status: AdvisorRuntimeStatus }>();
 	#advisorProviderSessionIds = new Map<string, string>();
+	#advisorProviderSessionPrimaryId: string | undefined;
 	#advisorCosts = new Map<string, number>();
 	#advisorRecorderClosed: Promise<void> = Promise.resolve();
 	#advisorAutoResumeSuppressed = false;
@@ -371,6 +372,10 @@ export class SessionAdvisors {
 
 	#refreshAdvisorProviderIdentity(advisor: ActiveAdvisor): void {
 		const primaryProviderSessionId = this.#host.sessionId();
+		if (this.#advisorProviderSessionPrimaryId !== primaryProviderSessionId) {
+			this.#advisorProviderSessionIds.clear();
+			this.#advisorProviderSessionPrimaryId = primaryProviderSessionId;
+		}
 		const providerSessionId = getOrCreateAdvisorProviderSessionId(
 			this.#advisorProviderSessionIds,
 			primaryProviderSessionId,
@@ -741,6 +746,10 @@ export class SessionAdvisors {
 		}
 		this.#advisorRecorderClosed = Promise.all(closes).then(() => {});
 		this.#advisors = [];
+		if (this.#host.isDisposed()) {
+			this.#advisorProviderSessionIds.clear();
+			this.#advisorProviderSessionPrimaryId = undefined;
+		}
 		this.#advisorYieldQueueUnsubscribe?.();
 		this.#advisorYieldQueueUnsubscribe = undefined;
 	}

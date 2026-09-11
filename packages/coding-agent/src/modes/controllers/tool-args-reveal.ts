@@ -112,7 +112,7 @@ class StreamingJsonStringExtractor {
 					this.#beforeValue(ch);
 					break;
 				case "target":
-					this.#readTarget(ch);
+					this.#readTarget(prefix);
 					break;
 			}
 		}
@@ -215,7 +215,8 @@ class StreamingJsonStringExtractor {
 		this.#state = "scan";
 	}
 
-	#readTarget(ch: string): void {
+	#readTarget(prefix: string): void {
+		const ch = prefix[this.#offset]!;
 		if (this.#targetUnicode) {
 			this.#readTargetUnicode(ch);
 			return;
@@ -241,8 +242,15 @@ class StreamingJsonStringExtractor {
 			this.#offset++;
 			return;
 		}
-		this.#appendTarget(ch);
-		this.#offset++;
+
+		// Consume ordinary value text in one slice; appending each code unit makes long streams quadratic.
+		const nextEscape = prefix.indexOf("\\", this.#offset);
+		const nextQuote = prefix.indexOf('"', this.#offset);
+		let end = prefix.length;
+		if (nextEscape >= 0) end = nextEscape;
+		if (nextQuote >= 0 && nextQuote < end) end = nextQuote;
+		this.#appendTarget(prefix.slice(this.#offset, end));
+		this.#offset = end;
 	}
 
 	#readTargetUnicode(ch: string): void {

@@ -11,6 +11,8 @@ interface JjCommandResult {
 	stdout: string;
 
 	stderr: string;
+
+	truncated: boolean;
 }
 
 interface JjRepository {
@@ -32,6 +34,7 @@ interface JjCommandOptions {
 }
 
 const JJ_COMMAND_TIMEOUT_MS = 5_000;
+const JJ_OUTPUT_TRUNCATED_MARKER = "\n[jj subprocess output truncated after 8 MiB]\n";
 
 class JjCommandError extends Error {
 	readonly args: readonly string[];
@@ -66,6 +69,38 @@ function formatCommandFailure(
 	return `jj ${args.join(" ")} failed with exit code ${result.exitCode}`;
 }
 
+async function readCappedText(
+	stream: ReadableStream<Uint8Array>,
+	maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	const chunks: string[] = [];
+	let remaining = maxBytes;
+	let truncated = false;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!truncated && value.length <= remaining) {
+				chunks.push(decoder.decode(value, { stream: true }));
+				remaining -= value.length;
+				continue;
+			}
+			if (!truncated && remaining > 0) {
+				chunks.push(decoder.decode(value.subarray(0, remaining), { stream: true }));
+				remaining = 0;
+			}
+			truncated = true;
+		}
+		chunks.push(decoder.decode());
+		if (truncated) chunks.push(JJ_OUTPUT_TRUNCATED_MARKER);
+		return { text: chunks.join(""), truncated };
+	} finally {
+		reader.releaseLock();
+	}
+}
+
 async function jj(cwd: string, args: readonly string[], options: JjCommandOptions = {}): Promise<JjCommandResult> {
 	const child = Bun.spawn(["jj", "--no-pager", "--color=never", ...args], {
 		cwd,
@@ -80,12 +115,17 @@ async function jj(cwd: string, args: readonly string[], options: JjCommandOption
 	}
 
 	const [stdout, stderr, exitCode] = await Promise.all([
-		new Response(child.stdout).text(),
-		new Response(child.stderr).text(),
+		readCappedText(child.stdout, git.GIT_COMMAND_OUTPUT_LIMIT_BYTES),
+		readCappedText(child.stderr, git.GIT_COMMAND_OUTPUT_LIMIT_BYTES),
 		child.exited,
 	]);
 
-	return { exitCode: exitCode ?? 0, stdout, stderr };
+	return {
+		exitCode: exitCode ?? 0,
+		stdout: stdout.text,
+		stderr: stderr.text,
+		truncated: stdout.truncated || stderr.truncated,
+	};
 }
 
 async function runChecked(

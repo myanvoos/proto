@@ -7,5 +7,9 @@ export function tryParseJson<T = unknown>(content: string): T | null {
 }
 
 export function stringifyJson(value: unknown, space?: string | number): string | undefined {
-	return JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item), space);
+	try {
+		return JSON.stringify(value, null, space);
+	} catch {
+		return JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item), space);
+	}
 }

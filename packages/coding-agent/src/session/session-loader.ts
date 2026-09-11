@@ -17,6 +17,59 @@ import {
 const STREAM_LOAD_THRESHOLD_BYTES = 32 * 1024 * 1024;
 const STREAM_YIELD_BYTES = 1 * 1024 * 1024;
 const STREAM_YIELD_ENTRIES = 8_192;
+const EMPTY_BUFFER = new Uint8Array(0);
+const NEWLINE = new Uint8Array([0x0a]);
+
+class GrowingBuffer {
+	#space: Uint8Array | undefined;
+	#length = 0;
+
+	get length(): number {
+		return this.#length;
+	}
+
+	get bytes(): Uint8Array {
+		return this.#space?.subarray(0, this.#length) ?? EMPTY_BUFFER;
+	}
+
+	append(chunk: Uint8Array, exact = false): void {
+		const n = chunk.length;
+		if (n === 0) return;
+		if (this.#length === 0) {
+			this.#space = chunk;
+			this.#length = n;
+			return;
+		}
+
+		const offset = this.#length;
+		const required = offset + n;
+		const space = this.#space;
+		if (!space || space.length < required) {
+			const nextSize = exact || !space ? required : Math.max(required, space.length * 2);
+			const next = Buffer.allocUnsafe(nextSize);
+			if (space) next.set(space.subarray(0, offset));
+			this.#space = next;
+		}
+		this.#space!.set(chunk, offset);
+		this.#length = required;
+	}
+
+	consume(offset: number): void {
+		if (offset <= 0) return;
+		if (offset >= this.#length) {
+			this.clear();
+			return;
+		}
+		const space = this.#space!;
+		space.copyWithin(0, offset, this.#length);
+		this.#length -= offset;
+	}
+
+	clear(): void {
+		this.#space = undefined;
+		this.#length = 0;
+	}
+}
 
 interface VisitEntriesFromFileStreamOptions {
 	shouldContinue?: () => boolean;
@@ -97,7 +150,7 @@ export async function visitEntriesFromFileStream(
 	const yieldEveryBytes = Math.max(0, options.yieldEveryBytes ?? STREAM_YIELD_BYTES);
 	const yieldEveryEntries = Math.max(0, options.yieldEveryEntries ?? STREAM_YIELD_ENTRIES);
 
-	let buffer: Uint8Array = new Uint8Array();
+	const buffer = new GrowingBuffer();
 	const decoder = new TextDecoder();
 
 	const yieldToMacrotask = async (): Promise<void> => {
@@ -118,7 +171,8 @@ export async function visitEntriesFromFileStream(
 				stopped = true;
 				break;
 			}
-			const { values, error, read, done } = Bun.JSONL.parseChunk(buffer);
+			const bytes = buffer.bytes;
+			const { values, error, read, done } = Bun.JSONL.parseChunk(bytes);
 			for (const value of values) {
 				if (recordsSeen >= maxRecords) {
 					stopped = true;
@@ -152,11 +206,11 @@ export async function visitEntriesFromFileStream(
 			}
 			if (stopped) break;
 			if (error) {
-				const nextNewline = buffer.indexOf(0x0a, read);
+				const nextNewline = bytes.indexOf(0x0a, read);
 				if (nextNewline === -1) break;
 				let nonWhitespace = false;
 				for (let index = read; index < nextNewline; index++) {
-					const byte = buffer[index];
+					const byte = bytes[index];
 					if (byte !== 0x09 && byte !== 0x0d && byte !== 0x20) {
 						nonWhitespace = true;
 						break;
@@ -164,7 +218,7 @@ export async function visitEntriesFromFileStream(
 				}
 				if (nonWhitespace) options.onMalformedRecord?.();
 				recordsSeen++;
-				buffer = buffer.subarray(nextNewline + 1);
+				buffer.consume(nextNewline + 1);
 				if (recordsSeen >= maxRecords) {
 					stopped = true;
 					break;
@@ -172,9 +226,9 @@ export async function visitEntriesFromFileStream(
 				continue;
 			}
 			if (read === 0) break;
-			buffer = buffer.subarray(read);
+			buffer.consume(read);
 			if (done) {
-				buffer = new Uint8Array();
+				buffer.clear();
 				break;
 			}
 		}
@@ -184,18 +238,18 @@ export async function visitEntriesFromFileStream(
 		for await (const chunk of Bun.file(filePath).stream()) {
 			if (stopped) break;
 			bytesSinceYield += chunk.byteLength;
-			buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
+			buffer.append(chunk);
 
 			if (!sawFirstLine) {
-				const newline = buffer.indexOf(0x0a);
+				const newline = buffer.bytes.indexOf(0x0a);
 				if (newline !== -1) {
 					sawFirstLine = true;
-					const firstLine = decoder.decode(buffer.subarray(0, newline)).trim();
+					const firstLine = decoder.decode(buffer.bytes.subarray(0, newline)).trim();
 					if (firstLine) {
 						const slot = parseTitleSlotLine(firstLine);
 						if (slot) {
 							titleSlot = titleUpdateFromSlot(slot);
-							buffer = buffer.subarray(newline + 1);
+							buffer.consume(newline + 1);
 						}
 					}
 				}
@@ -204,8 +258,8 @@ export async function visitEntriesFromFileStream(
 			await yieldToMacrotask();
 		}
 
-		if (!stopped && buffer.length > 0 && buffer[buffer.length - 1] !== 0x0a) {
-			buffer = Buffer.concat([buffer, new Uint8Array([0x0a])]);
+		if (!stopped && buffer.length > 0 && buffer.bytes[buffer.length - 1] !== 0x0a) {
+			buffer.append(NEWLINE, true);
 			await drain();
 		}
 	} catch (err) {

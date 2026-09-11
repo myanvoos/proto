@@ -92,6 +92,7 @@ export class DeltaCursorFeed implements ReviewerFeed {
 	#lastCount = 0;
 
 	#deliveredPrefix: DeliveredMessage[] = [];
+	#prefixBackup: DeliveredMessage[] | undefined;
 
 	#renderRevision = 0;
 
@@ -135,14 +136,20 @@ export class DeltaCursorFeed implements ReviewerFeed {
 
 	render(messages: AgentMessage[], wip = false): RenderedFeedItem | null {
 		const cursorBefore = this.#lastCount;
-		const prefixBefore = this.#deliveredPrefix.slice();
 		try {
 			return this.#renderDelta(messages, wip);
 		} catch (err) {
 			this.#lastCount = cursorBefore;
-			this.#deliveredPrefix = prefixBefore;
+			if (this.#prefixBackup !== undefined) {
+				this.#deliveredPrefix = this.#prefixBackup;
+				this.#prefixBackup = undefined;
+			}
 			throw err;
 		}
+	}
+
+	#beginMutate(): void {
+		if (this.#prefixBackup === undefined) this.#prefixBackup = this.#deliveredPrefix.slice();
 	}
 
 	#renderDelta(all: AgentMessage[], wip: boolean): RenderedFeedItem | null {
@@ -174,12 +181,14 @@ export class DeltaCursorFeed implements ReviewerFeed {
 				} catch {}
 				break;
 			}
+			this.#beginMutate();
 			delivered.message = current;
 		}
 		if (prefixChanged) {
 			this.owner.onDeliveredPrefixChanged();
 		}
 		const rawMessages = all.slice(this.#lastCount);
+		if (rawMessages.length > 0) this.#beginMutate();
 		for (let i = this.#lastCount; i < all.length; i++) {
 			const message = all[i];
 			if (message === undefined) continue;
