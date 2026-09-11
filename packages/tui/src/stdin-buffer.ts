@@ -44,24 +44,6 @@ const SGR_MOUSE_COMPLETE = /^<\d+;\d+;\d+[Mm]$/;
 
 const RAW_PASTE_CLASSIFICATION_TIMEOUT_MS = 10;
 
-function isRawMultilineBurst(text: string): boolean {
-	let breaks = 0;
-	for (let i = 0; i < text.length; i++) {
-		const code = text.charCodeAt(i);
-		if (code === 0x0d) {
-			breaks++;
-			if (text.charCodeAt(i + 1) === 0x0a) i++;
-			continue;
-		}
-		if (code === 0x0a) {
-			breaks++;
-			continue;
-		}
-		if (breaks >= 2) return true;
-	}
-	return false;
-}
-
 function resolveEscapeEnd(buffer: string, pos: number, length: number, resumeSearchFrom: number): number {
 	if (pos + 1 >= length) return -1;
 	const next = buffer.charCodeAt(pos + 1);
