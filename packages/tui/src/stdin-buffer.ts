@@ -254,6 +254,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	#pendingKittyPrintableAtMs = 0;
 	#escapeSearchOffset = 0;
 	#rawPasteCandidate = "";
+	#rawPasteBreaks = 0;
+	#rawPasteEndsWithCR = false;
+	#rawPasteBurst = false;
 	#rawPasteTimer?: NodeJS.Timeout;
 	#stringDiscardActive = false;
 	#stringDiscardBytes = 0;
@@ -306,7 +309,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				this.#flushRawPasteCandidate();
 			} else {
 				this.#rawPasteCandidate += str;
-				if (isRawMultilineBurst(this.#rawPasteCandidate)) {
+				this.#countRawBreaks(str);
+				if (this.#rawPasteBurst) {
 					this.#emitRawPasteCandidate();
 				}
 				return;
@@ -319,7 +323,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			(str.indexOf("\r") !== -1 || str.indexOf("\n") !== -1)
 		) {
 			this.#rawPasteCandidate = str;
-			if (isRawMultilineBurst(str)) {
+			this.#resetRawBreaks();
+			this.#countRawBreaks(str);
+			if (this.#rawPasteBurst) {
 				this.#emitRawPasteCandidate();
 			} else {
 				this.#armRawPasteTimer();
@@ -457,6 +463,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#clearRawPasteTimer();
 		const content = this.#rawPasteCandidate;
 		this.#rawPasteCandidate = "";
+		this.#resetRawBreaks();
 		return content;
 	}
 
@@ -464,6 +471,37 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		const content = this.#takeRawPasteCandidate();
 		this.#pendingKittyPrintableCodepoint = undefined;
 		this.emit("paste", content);
+	}
+
+	#resetRawBreaks(): void {
+		this.#rawPasteBreaks = 0;
+		this.#rawPasteEndsWithCR = false;
+		this.#rawPasteBurst = false;
+	}
+
+	/**
+	 * Incrementally maintain the line-break count for the accumulated raw-paste
+	 * candidate (\r\n counts as one break, matching isRawMultilineBurst) so an
+	 * append costs O(chunk) instead of rescanning the whole candidate.
+	 */
+	#countRawBreaks(chunk: string): void {
+		for (let i = 0; i < chunk.length; i++) {
+			const code = chunk.charCodeAt(i);
+			if (code === 0x0d) {
+				this.#rawPasteBreaks++;
+				this.#rawPasteEndsWithCR = true;
+				continue;
+			}
+			if (code === 0x0a) {
+				if (!this.#rawPasteEndsWithCR) this.#rawPasteBreaks++;
+				this.#rawPasteEndsWithCR = false;
+				continue;
+			}
+			this.#rawPasteEndsWithCR = false;
+			// isRawMultilineBurst fires on the first non-break char after the
+			// second line break — trailing breaks alone never classify as a burst.
+			if (this.#rawPasteBreaks >= 2) this.#rawPasteBurst = true;
+		}
 	}
 
 	#flushRawPasteCandidate(): void {
@@ -645,6 +683,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#exitStringDiscard();
 		this.#buffer = "";
 		this.#rawPasteCandidate = "";
+		this.#resetRawBreaks();
 		this.#pasteMode = false;
 		this.#pasteChunks = [];
 		this.#pasteOverlap = "";
