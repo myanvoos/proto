@@ -1,7 +1,9 @@
 import { executeShell } from "@oh-my-pi/pi-natives";
 import { $envExact } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 
-const commandResultCache = new Map<string, string>();
+const MAX_COMMAND_CACHE_ENTRIES = 512;
+const commandResultCache = new LRUCache<string, string>({ max: MAX_COMMAND_CACHE_ENTRIES });
 
 const commandInFlight = new Map<string, Promise<string | undefined>>();
 

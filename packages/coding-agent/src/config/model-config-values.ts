@@ -1,10 +1,12 @@
 import { execSync } from "node:child_process";
 import { $envExact } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 
-const commandValueCache = new Map<string, string>();
+const MAX_COMMAND_CACHE_ENTRIES = 512;
+const commandValueCache = new LRUCache<string, string>({ max: MAX_COMMAND_CACHE_ENTRIES });
 
 const COMMAND_FAILURE_RETRY_MS = 30_000;
-const commandFailureRetryAt = new Map<string, number>();
+const commandFailureRetryAt = new LRUCache<string, number>({ max: MAX_COMMAND_CACHE_ENTRIES });
 
 interface ResolveConfigValueOptions {
 	forceCommandRefresh?: boolean;

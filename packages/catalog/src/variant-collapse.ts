@@ -1,3 +1,4 @@
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { buildCompat, buildModel } from "./build";
 import { Effort, THINKING_EFFORTS } from "./effort";
 import { stripThinkingVariantToken } from "./identity/family";
@@ -1175,7 +1176,8 @@ interface VariantAliasIndex {
 	familyIds: Set<string>;
 }
 
-const dynamicAliasIndexes = new Map<string, VariantAliasIndex>();
+const MAX_DYNAMIC_ALIAS_INDEXES = 256;
+const dynamicAliasIndexes = new LRUCache<string, VariantAliasIndex>({ max: MAX_DYNAMIC_ALIAS_INDEXES });
 const VARIANT_ROUTING_KEYS: readonly (Effort | "off")[] = ["off", ...THINKING_EFFORTS];
 
 const kAliasIndex = Symbol("variant-collapse.aliasIndex");

@@ -4,6 +4,7 @@ import {
 	discoverGitLabDuoWorkflowRuntimeNamespace,
 	type GitLabDuoWorkflowNamespaceSelection,
 } from "@oh-my-pi/pi-catalog/discovery/gitlab-duo-workflow";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import * as AIError from "../error";
 import type {
 	Api,
@@ -705,7 +706,10 @@ interface GitLabDuoWorkflowAccountState {
 	settingsEnsured?: boolean;
 }
 
-const gitLabDuoWorkflowAccountState = new Map<string, GitLabDuoWorkflowAccountState>();
+const MAX_GITLAB_DUO_WORKFLOW_ACCOUNT_STATES = 256;
+const gitLabDuoWorkflowAccountState = new LRUCache<string, GitLabDuoWorkflowAccountState>({
+	max: MAX_GITLAB_DUO_WORKFLOW_ACCOUNT_STATES,
+});
 
 function gitLabDuoWorkflowAccountKey(apiKey: string, baseUrl: string, cwd: string | undefined): string {
 	return `${Bun.hash(apiKey).toString(36)}\u0000${baseUrl}\u0000${cwd ?? ""}`;

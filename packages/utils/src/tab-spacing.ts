@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isFsError } from "./fs-error";
+import { LRUCache } from "./lru";
 
 export const MIN_TAB_WIDTH = 1;
 export const MAX_TAB_WIDTH = 16;
@@ -10,8 +11,14 @@ const NAME_MAX_BYTES = 255;
 
 const EDITORCONFIG_NAME = ".editorconfig";
 
-const editorConfigCache = new Map<string, ParsedEditorConfig | null>();
-const editorConfigChainCache = new Map<string, ChainEntry[]>();
+const MAX_EDITOR_CONFIG_CACHE_ENTRIES = 512;
+
+const editorConfigCache = new LRUCache<string, ParsedEditorConfig | null>({
+	max: MAX_EDITOR_CONFIG_CACHE_ENTRIES,
+});
+const editorConfigChainCache = new LRUCache<string, ChainEntry[]>({
+	max: MAX_EDITOR_CONFIG_CACHE_ENTRIES,
+});
 
 interface EditorConfigSection {
 	pattern: string;

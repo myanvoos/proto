@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { untilAborted } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import * as git from "../utils/git";
 import type { ToolSession } from ".";
 import type { GhToolDetails } from "./gh";
@@ -166,8 +167,9 @@ export async function resolveGitHubRepo(
 	return requireNonEmpty(resolved, "repo");
 }
 
-const DEFAULT_REPO_RESOLVED = new Map<string, string>();
-const DEFAULT_REPO_INFLIGHT = new Map<string, Promise<string>>();
+const DEFAULT_REPO_CACHE_MAX_ENTRIES = 256;
+const DEFAULT_REPO_RESOLVED = new LRUCache<string, string>({ max: DEFAULT_REPO_CACHE_MAX_ENTRIES });
+const DEFAULT_REPO_INFLIGHT = new LRUCache<string, Promise<string>>({ max: DEFAULT_REPO_CACHE_MAX_ENTRIES });
 
 export async function resolveDefaultRepoMemoized(cwd: string, signal?: AbortSignal): Promise<string> {
 	const key = path.resolve(cwd);
@@ -175,7 +177,7 @@ export async function resolveDefaultRepoMemoized(cwd: string, signal?: AbortSign
 	if (ready) return ready;
 	let pending = DEFAULT_REPO_INFLIGHT.get(key);
 	if (!pending) {
-		pending = (async () => {
+		const next = (async () => {
 			const resolved = await git.github.text(cwd, [
 				"repo",
 				"view",
@@ -189,11 +191,16 @@ export async function resolveDefaultRepoMemoized(cwd: string, signal?: AbortSign
 			return value;
 		})();
 
-		void pending.then(
-			() => DEFAULT_REPO_INFLIGHT.delete(key),
-			() => DEFAULT_REPO_INFLIGHT.delete(key),
+		DEFAULT_REPO_INFLIGHT.set(key, next);
+		void next.then(
+			() => {
+				if (DEFAULT_REPO_INFLIGHT.peek(key) === next) DEFAULT_REPO_INFLIGHT.delete(key);
+			},
+			() => {
+				if (DEFAULT_REPO_INFLIGHT.peek(key) === next) DEFAULT_REPO_INFLIGHT.delete(key);
+			},
 		);
-		DEFAULT_REPO_INFLIGHT.set(key, pending);
+		pending = next;
 	}
 	return untilAborted(signal, pending);
 }

@@ -8,6 +8,7 @@
 
 ### Changed
 
+- Config resolution, tool lookup, tab-spacing, GitHub/GitLab/searxng/discovery/Foundry/variant-alias lookups are now LRU-bounded, capping retained heap from dynamic keys (credential caches intentionally unbounded — no eviction lifecycle exists for in-use credentials).
 - Model-id classification caches, catalog build interns, prompt template compilation cache, and eval kernel registry notes are now LRU-bounded, capping retained heap from dynamic/custom model ids and templates (probe: catalog build interns 141MB -> 22MB heap).
 - Session JSONL loading uses an amortized growing buffer (8MiB single-line session: ~218ms -> ~67ms); agent-proxy streamed tool calls parse via the throttled parser with an exact final flush (32KB args: ~328ms -> ~1.9ms cumulative).
 - images-cli imports bundled models via the catalog subpath instead of the root barrel (~46MB less RSS for that module graph in isolation).

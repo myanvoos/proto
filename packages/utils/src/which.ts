@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { LRUCache } from "./lru";
 
 type CacheKey = string | bigint | number;
 
@@ -117,7 +118,8 @@ function getMacosToolPaths(): Map<string, string> {
 	return macosToolPaths;
 }
 
-const toolCache = new Map<CacheKey, string | null>();
+const MAX_TOOL_CACHE_ENTRIES = 2_048;
+const toolCache = new LRUCache<CacheKey, string | null>({ max: MAX_TOOL_CACHE_ENTRIES });
 
 export const enum WhichCachePolicy {
 	Cached = 0,

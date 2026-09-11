@@ -1,4 +1,5 @@
 import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 
 import { settings } from "../../../config/settings";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
@@ -131,7 +132,10 @@ function buildHeaders(auth: SearXNGAuth | null): Record<string, string> {
 	return headers;
 }
 
-const engineNameMapCache = new Map<string, Promise<Map<string, string> | null>>();
+const ENGINE_NAME_MAP_CACHE_MAX_ENTRIES = 256;
+const engineNameMapCache = new LRUCache<string, Promise<Map<string, string> | null>>({
+	max: ENGINE_NAME_MAP_CACHE_MAX_ENTRIES,
+});
 
 async function fetchEngineNameMap(
 	base: string,
@@ -167,15 +171,15 @@ function getEngineNameMap(
 	timeoutMs?: number,
 ): Promise<Map<string, string> | null> {
 	const base = endpoint.replace(/\/+$/, "");
-	let cached = engineNameMapCache.get(base);
-	if (!cached) {
-		cached = fetchEngineNameMap(base, auth, fetchImpl, signal, timeoutMs).then(map => {
-			if (!map) engineNameMapCache.delete(base);
-			return map;
-		});
-		engineNameMapCache.set(base, cached);
-	}
-	return cached;
+	const cached = engineNameMapCache.get(base);
+	if (cached) return cached;
+
+	const pending = fetchEngineNameMap(base, auth, fetchImpl, signal, timeoutMs).then(map => {
+		if (!map && engineNameMapCache.peek(base) === pending) engineNameMapCache.delete(base);
+		return map;
+	});
+	engineNameMapCache.set(base, pending);
+	return pending;
 }
 
 async function resolveEngineNames(

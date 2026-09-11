@@ -17,6 +17,7 @@ import {
 	parseStreamingJsonThrottled,
 	readSseEvents,
 } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
@@ -988,7 +989,10 @@ type FoundryTlsOptions = {
 	key?: string;
 };
 
-const foundryTlsOptionsCache = new Map<string, FoundryTlsOptions | undefined>();
+const MAX_FOUNDRY_TLS_CACHE_ENTRIES = 64;
+const foundryTlsOptionsCache = new LRUCache<string, FoundryTlsOptions | null>({
+	max: MAX_FOUNDRY_TLS_CACHE_ENTRIES,
+});
 
 function foundryTlsCacheKeyComponent(value: string | undefined): string | null {
 	if (!value) return null;
@@ -1109,7 +1113,8 @@ function resolveFoundryTlsOptions(model: Model<"anthropic-messages">): FoundryTl
 	if (!isFoundryEnabled()) return undefined;
 
 	const cacheKey = foundryTlsOptionsCacheKey();
-	if (foundryTlsOptionsCache.has(cacheKey)) return foundryTlsOptionsCache.get(cacheKey);
+	const cached = foundryTlsOptionsCache.get(cacheKey);
+	if (cached !== undefined) return cached ?? undefined;
 
 	const ca = resolvePemValue($env.NODE_EXTRA_CA_CERTS, "NODE_EXTRA_CA_CERTS");
 	const cert = resolvePemValue($env.CLAUDE_CODE_CLIENT_CERT, "CLAUDE_CODE_CLIENT_CERT");
@@ -1126,7 +1131,7 @@ function resolveFoundryTlsOptions(model: Model<"anthropic-messages">): FoundryTl
 	if (cert) options.cert = cert;
 	if (key) options.key = key;
 	const resolved = Object.keys(options).length > 0 ? options : undefined;
-	foundryTlsOptionsCache.set(cacheKey, resolved);
+	foundryTlsOptionsCache.set(cacheKey, resolved ?? null);
 	return resolved;
 }
 

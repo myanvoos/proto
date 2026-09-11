@@ -11,6 +11,7 @@ import {
 	parseFrontmatter,
 	tryParseJson,
 } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { ExtensionModule } from "../capability/extension-module";
 import { invalidate as invalidateFsCache, readDirEntries, readFile } from "../capability/fs";
 import { parseRuleConditionAndScope, type Rule, type RuleFrontmatter } from "../capability/rule";
@@ -769,7 +770,10 @@ async function readClaudeEnabledPlugins(
 	return { enabled, sources };
 }
 
-const pluginRootsCache = new Map<string, { roots: ClaudePluginRoot[]; warnings: string[] }>();
+const PLUGIN_ROOTS_CACHE_MAX_ENTRIES = 256;
+const pluginRootsCache = new LRUCache<string, { roots: ClaudePluginRoot[]; warnings: string[] }>({
+	max: PLUGIN_ROOTS_CACHE_MAX_ENTRIES,
+});
 
 const pluginCacheInvalidators = new Set<() => void>();
 

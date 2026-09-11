@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getGithubCacheDbPath, logger } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { Settings } from "../config/settings";
 import { ToolAbortError } from "./tool-errors";
 
@@ -151,7 +152,8 @@ interface AuthKeyMemoEntry {
 	value: string | undefined;
 }
 const AUTH_KEY_TOKEN_ENV_VARS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
-const authKeyMemo = new Map<string, AuthKeyMemoEntry>();
+const AUTH_KEY_MEMO_MAX_ENTRIES = 256;
+const authKeyMemo = new LRUCache<string, AuthKeyMemoEntry>({ max: AUTH_KEY_MEMO_MAX_ENTRIES });
 
 export function resolveGithubCacheAuthKey(host: string = process.env.GH_HOST || "github.com"): string | undefined {
 	const hostsPath = path.join(getGhConfigDir(), "hosts.yml");
