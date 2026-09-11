@@ -31,7 +31,7 @@ __all__ = [
 if "__proto_prelude_loaded__" not in globals():
     __proto_prelude_loaded__ = True
     from pathlib import Path
-    import os, json, math, re, hashlib, stat, sys, threading
+    import os, json, math, re, hashlib, stat, sys, threading, weakref
     from urllib.parse import unquote
 
     INTENT_FIELD = "i"
@@ -72,26 +72,34 @@ if "__proto_prelude_loaded__" not in globals():
     # --- filesystem mutation tracking ----------------------------------------
     # The host diffs cell-time filesystem changes with a walker rooted at the
     # session cwd (eval/cell-file-diff.ts). A CPython audit hook sees every
-    # in-process mutation (open() with write flags, os.remove/rename/truncate);
-    # the prelude snapshots each touched path's pre-mutation content and
-    # flushes per-cell status events carrying the hunk diffs for every write.
-    # The stale-write guard aborts write-mode opens of paths that changed since
-    # the kernel last read them (see _fs_check_stale_raw). Tracked events also
-    # record the
-    # content they already showed a diff for, and the flush diffs from that
-    # last-reported content so it never re-prints hunks the cell has seen.
-    # State lives on the sys module so a prelude re-exec reuses the
-    # already-installed hook's records.
+    # in-process mutation (open() with write flags, os.remove/rename/truncate)
+    # and the prelude snapshots each touched path's pre-mutation content. The
+    # hunk diff for a write is reported as soon as the file handle closes
+    # (open() is wrapped so write-mode handles report on close — see
+    # _fs_install_open), so a cell that edits a file and then runs for a
+    # while shows the edit immediately; mutations with no handle to observe
+    # (os.replace, os.remove, os.truncate, fd-level writes) are reported by
+    # the per-cell flush after the user code settles. Both paths share
+    # _fs_report_path, and every report is the NET diff from the pre-cell
+    # content, carrying an id of run id + path so the host replaces the
+    # earlier report of the same path (eval/status-events.ts): a cell that
+    # writes a file twice still exposes one structured mutation. The
+    # stale-write guard aborts write-mode opens of paths that changed since
+    # the kernel last read them (see _fs_check_stale_raw). State lives on the
+    # sys module so a prelude re-exec reuses the already-installed hooks'
+    # records.
     _FS_DIFF_MAX_BYTES = 8 * 1024 * 1024
-    # Aggregate budget for cached helper-write contents kept as flush diff
-    # bases; past it the flush falls back to pre-cell snapshots.
-    _FS_REPORT_TEXT_BUDGET = 32 * 1024 * 1024
     # Aggregate budget for pre-mutation snapshots kept per cell (mirrors
     # MAX_CAPTURE_CONTENT_BYTES in eval/cell-file-diff.ts); past it
     # _fs_record stores only the content sha — dedupe still works and the
     # flush emits the write without a diff.
     _FS_CAPTURE_TEXT_BUDGET = 16 * 1024 * 1024
+    # Distinct paths a cell may report; further changed paths collapse into
+    # one "files … truncated" event.
     _FS_MAX_EVENTS = 50
+    # Close-time reports per path per cell; past it a hot loop rewriting one
+    # file leaves the net diff to the flush instead of re-diffing every write.
+    _FS_EAGER_REPORTS_PER_PATH = 8
     # Cache/build noise by directory-name component; cross-language mirror
     # of PRUNED_DIRS in eval/fs-policy.ts (update in the same change).
     _FS_PRUNED_DIRS = frozenset({
@@ -114,16 +122,20 @@ if "__proto_prelude_loaded__" not in globals():
     _FS_STATE = getattr(sys, "_proto_fs_state", None)
     if _FS_STATE is None:
         _FS_STATE = {
+            # abspath -> pre-mutation record for every path the cell touched
             "touched": {},
+            # abspath -> content sha last reported this cell (None: reported
+            # deleted); bounds the cell at _FS_MAX_EVENTS distinct paths
             "reported": {},
-            "reported_text_bytes": 0,
+            # abspath -> close-time reports made this cell
+            "eager": {},
             "captured_text_bytes": 0,
             "lock": threading.Lock(),
             "tls": threading.local(),
         }
         sys._proto_fs_state = _FS_STATE
-    _FS_STATE.setdefault("reported_text_bytes", 0)
     _FS_STATE.setdefault("captured_text_bytes", 0)
+    _FS_STATE.setdefault("eager", {})
     # Stale-write guard: abspath -> (st_mtime_ns, st_size) at the agent's
     # last observation of the file. Armed by any read-mode open the audit hook
     # sees (`open(p).read()`, `Path(p).read_text()`, imports, ...) and by
@@ -326,84 +338,185 @@ if "__proto_prelude_loaded__" not in globals():
         except Exception:
             pass
 
+    def _fs_event_id(ap: str) -> str:
+        """Identity of a path's mutation within the running cell; a later
+        report with the same id replaces the earlier one host-side."""
+        getter = globals().get("__proto_current_run_id__")
+        run_id = getter() if callable(getter) else None
+        return f"{run_id}:{ap}"
+
+    def _fs_report_path(ap: str, rec: dict) -> str:
+        """Report one touched path's current state as a write/delete status
+        event carrying the net diff from its pre-cell content. Returns
+        "emitted", "skipped" (unchanged, already reported at this content, or
+        unreadable) or "capped" (the cell already reports _FS_MAX_EVENTS
+        paths; the flush counts these for its truncation marker)."""
+        state = _FS_STATE
+        reported = state["reported"]
+        try:
+            st = os.stat(ap)
+            regular = stat.S_ISREG(st.st_mode)
+        except OSError:
+            st = None
+            regular = False
+        if not regular:
+            if not rec["existed"]:
+                return "skipped"
+            if ap in reported:
+                if reported[ap] is None:
+                    return "skipped"
+            elif len(reported) >= _FS_MAX_EVENTS:
+                return "capped"
+            data = {"op": "delete", "path": ap, "id": _fs_event_id(ap)}
+            if rec["before"] is not None:
+                rows, _ = _capped_numbered_diff(rec["before"], "")
+                if rows:
+                    data["diff"] = "\n".join(rows)
+            reported[ap] = None
+            _emit_status(data.pop("op"), **data)
+            return "emitted"
+        if rec["key"] is not None and (st.st_mtime_ns, st.st_size) == rec["key"]:
+            return "skipped"  # opened but never written
+        tls = state["tls"]
+        tls.recording = True  # machinery read: must not arm the stale-write guard
+        try:
+            if st.st_size > _FS_DIFF_MAX_BYTES:
+                # Past the diff cap only the sha is needed (walker dedupe);
+                # stream it so a multi-GB write never lands in memory.
+                data = None
+                sha = _fs_sha_file(ap)
+            else:
+                with open(ap, "rb") as fh:
+                    data = fh.read()
+                sha = hashlib.sha256(data).hexdigest()[:16]
+        except OSError:
+            return "skipped"
+        finally:
+            tls.recording = False
+        if rec["before_sha"] == sha or reported.get(ap) == sha:
+            return "skipped"
+        if ap not in reported and len(reported) >= _FS_MAX_EVENTS:
+            return "capped"
+        if data is not None and len(data) <= _FS_DIFF_MAX_BYTES and b"\x00" not in data[:8192]:
+            # An existed file whose pre-mutation content was not captured
+            # (over budget, or the snapshot read failed) gets no diff rather
+            # than a fake one diffed against "".
+            before = rec["before"] if rec["before"] is not None else ("" if not rec["existed"] else None)
+            _emit_file_status("write", ap, before=before, after=data.decode("utf-8", errors="replace"))
+        else:
+            reported[ap] = sha
+            _emit_status("write", path=ap, bytes=st.st_size, sha=sha, id=_fs_event_id(ap))
+        return "emitted"
+
+    def _fs_report_on_close(ap: str) -> None:
+        """Eager report for a write-mode handle that just closed. Only from
+        the cell's own thread: display frames are tied to the current run id,
+        which a user-spawned thread does not carry — its writes wait for the
+        flush. The record stays in `touched` so the flush re-checks the path
+        (a later rewrite diffs from this report; an unchanged file dedupes)."""
+        if threading.current_thread() is not threading.main_thread():
+            return
+        state = _FS_STATE
+        with state["lock"]:
+            rec = state["touched"].get(ap)
+            if rec is None:
+                return
+            count = state["eager"].get(ap, 0)
+            if count >= _FS_EAGER_REPORTS_PER_PATH:
+                return
+            state["eager"][ap] = count + 1
+        try:
+            _fs_report_path(ap, rec)
+        except Exception:
+            pass  # reporting must never break the close it observes
+
+    def _fs_track_close(handle, ap: str) -> None:
+        """Make `handle.close()` — also reached by `with` exit and by the io
+        finalizer on drop — report the path once the real close has flushed
+        it to disk. The hook holds only a weak reference so it never keeps
+        the handle alive past user code dropping it."""
+        ref = weakref.ref(handle)
+        reported = False
+
+        def _close():
+            nonlocal reported
+            obj = ref()
+            if obj is None:
+                return None
+            try:
+                return type(obj).close(obj)
+            finally:
+                if not reported:
+                    reported = True
+                    _fs_report_on_close(ap)
+
+        try:
+            handle.close = _close
+        except (AttributeError, TypeError):
+            pass
+
+    def _fs_install_open() -> None:
+        """Wrap io.open/builtins.open (one object; pathlib and every user
+        open() reach it) so write-mode handles report on close."""
+        if getattr(sys, "_proto_fs_open_installed", False):
+            return
+        import builtins, functools, io
+
+        real_open = io.open
+
+        @functools.wraps(real_open)
+        def _fs_open(
+            file,
+            mode="r",
+            buffering=-1,
+            encoding=None,
+            errors=None,
+            newline=None,
+            closefd=True,
+            opener=None,
+        ):
+            handle = real_open(file, mode, buffering, encoding, errors, newline, closefd, opener)
+            if isinstance(mode, str) and any(c in mode for c in "wax+") and not isinstance(file, int):
+                try:
+                    ap = _fs_norm_path(file)
+                except Exception:
+                    ap = None
+                if ap is not None:
+                    _fs_track_close(handle, ap)
+            return handle
+
+        io.open = _fs_open
+        builtins.open = _fs_open
+        sys._proto_fs_real_open = real_open
+        sys._proto_fs_open_installed = True
+
+    _fs_install_open()
+
     def _flush_fs_status() -> None:
         """Report filesystem mutations made without a helper API as status
         events (same shape as a helper write's). Called by the runner after the
-        cell's user code settles, before the done frame."""
+        cell's user code settles, before the done frame. Paths already reported
+        on close dedupe here by content sha."""
         state = _FS_STATE
         with state["lock"]:
             paths = sorted(state["touched"])
             pending = {ap: state["touched"].pop(ap) for ap in paths}
             state["captured_text_bytes"] = 0
-        emitted = 0
-        processed = 0
-        truncated = False
+            state["eager"].clear()
+        capped = 0
         for ap in paths:
-            if emitted >= _FS_MAX_EVENTS:
-                truncated = True
-                break
-            processed += 1
-            rec = pending[ap]
-            try:
-                st = os.stat(ap)
-                regular = stat.S_ISREG(st.st_mode)
-            except OSError:
-                st = None
-                regular = False
-            if not regular:
-                if not rec["existed"]:
-                    continue
-                data = {"op": "delete", "path": ap}
-                if rec["before"] is not None:
-                    rows, _ = _capped_numbered_diff(rec["before"], "")
-                    if rows:
-                        data["diff"] = "\n".join(rows)
-                _emit_status(data.pop("op"), **data)
-                emitted += 1
-                continue
-            if rec["key"] is not None and (st.st_mtime_ns, st.st_size) == rec["key"]:
-                continue  # opened but never written
-            tls = state["tls"]
-            tls.recording = True  # machinery read: must not arm the stale-write guard
-            try:
-                if st.st_size > _FS_DIFF_MAX_BYTES:
-                    # Past the diff cap only the sha is needed (walker dedupe);
-                    # stream it so a multi-GB write never lands in memory.
-                    data = None
-                    sha = _fs_sha_file(ap)
-                else:
-                    with open(ap, "rb") as fh:
-                        data = fh.read()
-                    sha = hashlib.sha256(data).hexdigest()[:16]
-            except OSError:
-                continue
-            finally:
-                tls.recording = False
-            reported = state["reported"].get(ap)
-            if rec["before_sha"] == sha or (reported is not None and reported["sha"] == sha):
-                continue
-            if data is not None and len(data) <= _FS_DIFF_MAX_BYTES and b"\x00" not in data[:8192]:
-                before = reported["text"] if reported is not None else None
-                if before is None:
-                    # An existed file whose pre-mutation content was not
-                    # captured (over budget, or the snapshot read failed)
-                    # gets no diff rather than a fake one diffed against "".
-                    before = rec["before"] if rec["before"] is not None else ("" if not rec["existed"] else None)
-                _emit_file_status("write", ap, before=before, after=data.decode("utf-8", errors="replace"))
-            else:
-                _emit_status("write", path=ap, bytes=st.st_size, sha=sha)
-            emitted += 1
-        if truncated:
-            _emit_status("files", count=len(paths) - processed, action="truncated")
+            if _fs_report_path(ap, pending[ap]) == "capped":
+                capped += 1
+        if capped:
+            _emit_status("files", count=capped, action="truncated")
         state["reported"].clear()
-        state["reported_text_bytes"] = 0
 
     def _reset_fs_status() -> None:
         """Drop records left by runner machinery between requests so they are
         never attributed to the next cell."""
         _FS_STATE["touched"].clear()
         _FS_STATE["reported"].clear()
-        _FS_STATE["reported_text_bytes"] = 0
+        _FS_STATE["eager"].clear()
         _FS_STATE["captured_text_bytes"] = 0
 
     def _numbered_diff(before: str, after: str, context: int = 2) -> list[str]:
@@ -488,14 +601,9 @@ if "__proto_prelude_loaded__" not in globals():
             "path": str(path),
             "chars": len(after),
             "sha": hashlib.sha256(after.encode()).hexdigest()[:16],
+            "id": _fs_event_id(str(path)),
         }
-        state = getattr(sys, "_proto_fs_state", None)
-        if state is not None:
-            entry = {"sha": data["sha"], "text": None}
-            if len(after) <= _FS_DIFF_MAX_BYTES and state["reported_text_bytes"] <= _FS_REPORT_TEXT_BUDGET:
-                entry["text"] = after
-                state["reported_text_bytes"] += len(after)
-            state["reported"][str(path)] = entry
+        _FS_STATE["reported"][str(path)] = data["sha"]
         if before is not None and before != after:
             rows, truncated = _capped_numbered_diff(before, after)
             if rows:

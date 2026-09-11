@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import type { EvalToolDetails } from "../eval/types";
 import type { ToolSession } from ".";
 import { EvalTool } from "./eval";
 import { KernelTool } from "./kernel";
@@ -712,3 +713,58 @@ test("running Eval updates carry pipeline metadata separately from output", asyn
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 }, 30000);
+
+// The live view must show a write's hunk when the write happens, not when the
+// cell settles: a cell that edits a file and then keeps running for a while
+// used to withhold every hunk until its last line printed.
+for (const [language, code] of [
+	[
+		"py",
+		[
+			"import time",
+			'open("live.txt", "w").write("first\\n")',
+			'print("wrote")',
+			"time.sleep(0.4)",
+			'print("end")',
+		].join("\n"),
+	],
+	[
+		"js",
+		[
+			'import * as fs from "node:fs";',
+			'fs.writeFileSync("live.txt", "first\\n");',
+			'print("wrote");',
+			"await Bun.sleep(400);",
+			'print("end");',
+		].join("\n"),
+	],
+] as const) {
+	test(`${language} write hunks stream before the cell finishes`, async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `eval-live-${language}-`));
+		try {
+			const updates: Array<{ output: string; writes: number }> = [];
+			const result = await new EvalTool(stubSession(dir)).execute(
+				`eval-live-${language}`,
+				{ language, code, timeout: 30 },
+				undefined,
+				update => {
+					const cell = (update.details as EvalToolDetails | undefined)?.cells?.[0];
+					updates.push({
+						output: cell?.output ?? "",
+						writes: (cell?.statusEvents ?? []).filter(event => event.op === "write").length,
+					});
+				},
+			);
+			const firstWrite = updates.find(update => update.writes > 0);
+			expect(firstWrite, "a write event reaches the live update stream").toBeDefined();
+			expect(firstWrite?.output ?? "", "the hunk arrives before the cell's final line prints").not.toContain("end");
+			const writes = (result.details?.cells?.[0]?.statusEvents ?? []).filter(
+				event => event.op === "write" && event.path === path.join(dir, "live.txt"),
+			);
+			expect(writes.length, "the settled cell still reports the path once").toBe(1);
+			expect(String(writes[0]?.diff)).toContain("+1|first");
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	}, 30000);
+}

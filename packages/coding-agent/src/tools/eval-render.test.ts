@@ -3,7 +3,12 @@ import type { EvalCellResult, EvalStatusEvent, EvalToolDetails } from "../eval/t
 import { createTheme, getBuiltinThemes } from "../modes/theme/loader";
 import { initThemeSync, theme } from "../modes/theme/theme";
 import { generateDiffString } from "../utils/diff";
-import { evalToolRenderer, renderKernelCellLines } from "./eval-render";
+import {
+	EVAL_DEFAULT_PREVIEW_LINES,
+	EVAL_LIVE_FLOOR_LINES,
+	evalToolRenderer,
+	renderKernelCellLines,
+} from "./eval-render";
 import { previewWindowRows } from "./render-utils";
 
 initThemeSync();
@@ -193,7 +198,7 @@ test("a streaming cell reveals delivered hunk bodies within the live window", ()
 		// The whole live block must stay inside the streaming window (the
 		// window is measured from the terminal rows, so a committed mid-stream
 		// block — and the settle-time double print it causes — can't happen).
-		expect(partial.length).toBeLessThanOrEqual(previewWindowRows() + 6);
+		expect(partial.length).toBeLessThanOrEqual(previewWindowRows());
 
 		// Once the call settles, the finalized render keeps the complete diff.
 		const final = renderCells(
@@ -247,7 +252,7 @@ test("ctrl+o expansion is deferred while a cell still streams", () => {
 		// Expanded live cells render like collapsed ones — windowed, with the
 		// hunk tail revealed — and a note that the expansion applies on settle.
 		expect(lines.filter(line => /[+-]\s*\d+│/.test(line)).length).toBeGreaterThan(0);
-		expect(lines.length).toBeLessThanOrEqual(previewWindowRows() + 6);
+		expect(lines.length).toBeLessThanOrEqual(previewWindowRows());
 		expect(lines.some(line => line.includes("expanded view once the cell settles"))).toBe(true);
 
 		// Settling applies the same expanded toggle with no note and no cap.
@@ -396,7 +401,7 @@ test("settled collapsed cells retain outlines while expanded cells show source",
 });
 
 test("streaming replacement tails retain the added line number", () => {
-	const diff = generateDiffString("old\n", "new\n", 0).diff;
+	const diff = generateDiffString("old1\nold2\n", "new1\nnew2\n", 0).diff;
 	const cell: EvalCellResult = {
 		index: 0,
 		title: "cell",
@@ -407,10 +412,88 @@ test("streaming replacement tails retain the added line number", () => {
 		statusEvents: [{ op: "write", path: FILE, chars: 4, sha: "0", diff }],
 	};
 
-	withTerminalRows(41, () => {
+	// 33 rows → a 13-row live window: header, output floor, code floor and the
+	// Status head leave room for the marker plus two hunk rows, so the cut
+	// lands between the removed and added lines of the replacement.
+	withTerminalRows(33, () => {
 		const lines = renderCells([cell], { expanded: false, isPartial: true });
-		expect(lines.some(line => line.includes("+1│new"))).toBe(true);
-		expect(lines.some(line => line.includes("+│new"))).toBe(false);
+		expect(lines.some(line => line.includes("2 earlier diff lines"))).toBe(true);
+		expect(lines.some(line => line.includes("+1│new1"))).toBe(true);
+		expect(lines.some(line => line.includes("+│new1"))).toBe(false);
+		expect(lines.length).toBeLessThanOrEqual(previewWindowRows());
+	});
+});
+
+test("a live cell gives hunk bodies priority over the output and code tails", () => {
+	const code = Array.from({ length: 30 }, (_, i) => `step_${i} = ${i}`).join("\n");
+	const output = Array.from({ length: 30 }, (_, i) => `out ${i}`).join("\n");
+	// 8 removed + 9 added rows: exactly what a 50-row terminal's live window
+	// leaves once the header, floors and Status head are placed.
+	const diff = generateDiffString(
+		Array.from({ length: 8 }, (_, i) => `old ${i}`).join("\n"),
+		Array.from({ length: 9 }, (_, i) => `new ${i}`).join("\n"),
+		0,
+	).diff;
+	const base: EvalCellResult = { index: 0, title: "cell", code, language: "python", output, status: "running" };
+	withTerminalRows(50, () => {
+		// No writes yet: the output tail fills its preview cap and the code tail
+		// absorbs the rest of the window.
+		const quiet = renderCells([base], { expanded: false, isPartial: true });
+		expect(quiet.filter(line => /^▏\s+out \d+/.test(line)).length).toBe(EVAL_DEFAULT_PREVIEW_LINES);
+		expect(quiet.filter(line => /step_\d+ = /.test(line)).length).toBeGreaterThan(EVAL_LIVE_FLOOR_LINES);
+		expect(quiet.length).toBeLessThanOrEqual(previewWindowRows());
+
+		// A write lands: its hunk renders whole and the output and code tails
+		// shrink toward their floors to make room — the hunk never waits on
+		// the output growing or the cell settling.
+		const writing = renderCells(
+			[{ ...base, statusEvents: [{ op: "write", path: FILE, chars: 1, sha: "0", diff }] }],
+			{
+				expanded: false,
+				isPartial: true,
+			},
+		);
+		expect(writing.filter(line => /[+-]\s*\d+│/.test(line)).length).toBe(17);
+		expect(writing.some(line => line.includes("earlier diff line"))).toBe(false);
+		expect(writing.filter(line => /^▏\s+out \d+/.test(line)).length).toBe(EVAL_LIVE_FLOOR_LINES);
+		expect(
+			writing.some(line => line.includes("out 29")),
+			"output keeps its newest line",
+		).toBe(true);
+		expect(writing.filter(line => /step_\d+ = /.test(line)).length).toBe(EVAL_LIVE_FLOOR_LINES);
+		expect(
+			writing.some(line => line.includes("step_29 = 29")),
+			"code keeps its last line",
+		).toBe(true);
+		expect(writing.length).toBeLessThanOrEqual(previewWindowRows());
+	});
+});
+
+test("a newer write takes hunk rows first and earlier writes keep their heads", () => {
+	const mk = (seed: string, n: number) => Array.from({ length: n }, (_, i) => `${seed} ${i}`).join("\n");
+	const first = diffEvent(FILE.replace("x.py", "a.py"), mk("old-a", 20), mk("new-a", 20));
+	const second = diffEvent(FILE.replace("x.py", "b.py"), mk("old-b", 20), mk("new-b", 20));
+	const cell: EvalCellResult = {
+		index: 0,
+		title: "cell",
+		code: "pass",
+		language: "python",
+		output: "",
+		status: "running",
+	};
+	withTerminalRows(45, () => {
+		const lines = renderCells([{ ...cell, statusEvents: [first, second] }], { expanded: false, isPartial: true });
+		expect(lines.some(line => line.includes("a.py") && line.includes("+20/-20"))).toBe(true);
+		expect(lines.some(line => line.includes("b.py") && line.includes("+20/-20"))).toBe(true);
+		expect(
+			lines.some(line => line.includes("new-b 19")),
+			"newest hunk tail visible",
+		).toBe(true);
+		expect(
+			lines.some(line => line.includes("new-a")),
+			"earlier hunk yields its rows to the newest",
+		).toBe(false);
+		expect(lines.length).toBeLessThanOrEqual(previewWindowRows());
 	});
 });
 

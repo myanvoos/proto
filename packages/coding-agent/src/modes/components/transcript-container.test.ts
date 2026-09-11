@@ -291,3 +291,63 @@ test("a live run pins before a finalized trailing tail", () => {
 	expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
 	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(4);
 });
+
+class AppendOnlyBlock extends TrackedBlock {
+	isTranscriptBlockAppendOnly(): boolean {
+		return true;
+	}
+}
+
+test("a trailing live run pins at its end so a stream that outgrows the viewport scrolls into history", () => {
+	const terminal = new CaptureTerminal();
+	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
+	const history = new TrackedBlock(["history"]);
+	const live = new AppendOnlyBlock([], false);
+	const transcript = new TranscriptContainer();
+	transcript.addChild(history);
+	transcript.addChild(live);
+	const chrome = new TrackedBlock(["editor"]);
+	tui.addChild(transcript);
+	tui.addChild(chrome);
+	tui.start({ deferInput: true });
+
+	const body = Array.from({ length: 10 }, (_value, index) => `stream-${index}`);
+	for (let n = 1; n <= body.length; n++) {
+		terminal.writes.length = 0;
+		live.setLines(body.slice(0, n), false);
+		tui.requestRender(true);
+	}
+	expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
+	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(2 + body.length);
+	// With a 4-row viewport the head of the stream must already have been
+	// written, not withheld until the block settles.
+	const streamed = terminal.writes.join("");
+	expect(streamed).toContain("stream-6");
+	expect(streamed).toContain("stream-9");
+	expect(live.committedRows, "rows that scrolled above the viewport are committed").toBeGreaterThan(0);
+
+	terminal.writes.length = 0;
+	live.setLines(body, true);
+	tui.requestRender(true);
+	const settledOutput = terminal.writes.join("");
+	for (const row of body.slice(0, 6)) {
+		expect(settledOutput, "settling an append-only stream must not re-emit rows that already scrolled").not.toContain(
+			row,
+		);
+	}
+	tui.stop();
+});
+
+test("a trailing live block whose preview is rewritten on settle stays unpinned", () => {
+	const history = new TrackedBlock(["history"]);
+	const card = new TrackedBlock(["progress-0", "progress-1"], false);
+	const transcript = new TranscriptContainer();
+	transcript.addChild(history);
+	transcript.addChild(card);
+
+	expect(transcript.render(40)).toEqual(["history", "", "progress-0", "progress-1"]);
+	expect(transcript.getNativeScrollbackLiveRegionStart()).toBe(2);
+	expect(transcript.isNativeScrollbackLiveRegionPinned(), "a trailing card keeps the strict live-start ceiling").toBe(
+		false,
+	);
+});

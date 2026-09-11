@@ -16,6 +16,12 @@
 - Sessions load optional capability graphs lazily: the extension host API surface, orchestrator runtime, structured subagent, persisted subagent registry, and SDK barrel edge in web search now load on first use, cutting the session import floor by ~37MB.
 - Bundled model catalog loads lazily per provider with compat/cost/thinking payload interning (96% of compat payloads are duplicates).
 - `bench/perf-gate/rss-marathon.ts` now reports a steady-state idle baseline (post-construction settle) alongside peak VmHWM, gated at 150MB idle / 800MB peak.
+- Running kernel cells (`eval`/`kernel` and bash-routed `python`/`node`/`bun`) lay out the live block by priority — Status heads, then diff hunks (newest first), then the output tail, then the code tail — so hunks no longer wait on the output preview or the cell settling, and the block stays inside the terminal's live window.
+
+### Fixed
+
+- Kernel file writes made with `open()`/`Path.write_text` (Python) or `fs.writeFile`/`Bun.write` (JS) now show their diff hunk as soon as the write completes instead of only after the whole cell finishes; a file written several times in one cell still reports one net diff.
+- Long streaming replies (a code block or list taller than the terminal) no longer lose their top: the rows scroll into scrollback as they stream instead of being withheld until the reply settles, and a compaction rebuild mid-reply keeps them too.
 
 ## [18.0.6] - 2026-09-11
 

@@ -9,10 +9,10 @@ import * as util from "node:util";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 
 import {
+	beginFileTracking,
 	flushFileTracking,
 	installBunWriteTracking,
 	maybeTrackedModule,
-	resetFileTracking,
 	trackedFsModule,
 } from "./fs-tracker";
 import { createHelpers, type HelperBundle } from "./helpers";
@@ -221,7 +221,7 @@ export class JsRuntime {
 			finalExpressionValue: undefined,
 			completionInvocationCount: 0,
 		};
-		resetFileTracking();
+		beginFileTracking(context.runId, event => hooks.onDisplay({ type: "status", event }));
 		try {
 			return await this.#als.run(context, async () => {
 				const wrapped = await wrapCode(code);
@@ -240,7 +240,7 @@ export class JsRuntime {
 			});
 		} finally {
 			leaveRun();
-			await flushFileTracking(event => hooks.onDisplay({ type: "status", event }));
+			await flushFileTracking();
 		}
 	}
 

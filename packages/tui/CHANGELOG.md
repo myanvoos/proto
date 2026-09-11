@@ -8,6 +8,12 @@
 - Markdown and syntax-highlighted code render through shared content-addressed caches that survive transcript rebuilds (bounded LRU with explicit entry/total caps), cutting cold compose of a 3,400-message transcript by ~70% at p50 (1.07s -> ~0.33s in the stress harness; per-frame warm renders ~5ms).
 - Large tool outputs and code blocks (up to 4 MiB per entry, 16 MiB total) stay cached across renders so oversized blocks no longer re-highlight on every frame.
 - LaTeX-to-Unicode symbol tables allocate lazily on first use instead of at module import.
+
+### Fixed
+
+- A live block that outgrows the terminal no longer hides its head until it settles: rows of a root-level live segment scroll into native scrollback while rows below it stay viewport-local, an unpinned nested container clamps at its live start, and a scrollback-clearing repaint keeps live rows that sit above the viewport.
+- Content shrinking below the committed seam (a spinner row disappearing at turn end) no longer repaints an already committed row onto the screen, which left a duplicated line in scrollback; the viewport stays pinned at the seam in default mode.
+
 ## [18.0.6] - 2026-09-11
 
 ### Changed

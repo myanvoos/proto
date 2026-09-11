@@ -1024,7 +1024,6 @@ export class TUI extends Container {
 
 	#previousWindow: string[] = [];
 	#previousLiveRegionSource: Component | undefined;
-	#previousLiveRegionStart: number | undefined;
 	#previousLiveRegionHasTrailingRows = false;
 	#nativeScrollbackLiveRegionStart: number | undefined;
 	#nativeScrollbackLiveRegionPinned = false;
@@ -2920,29 +2919,31 @@ export class TUI extends Container {
 		const frameLength = rawFrame.length;
 		const finalBoundary = Math.max(0, Math.min(frameLength, liveRegionStart ?? frameLength));
 		// A mutable barrier protects finalized rows *below* it from entering the
-		// logical committed seam. Rows in an all-live frame (or a barrier at the
-		// frame origin) may still scroll into history as frozen visual records;
-		// otherwise a live preview can grow without ever pushing its head. Pinned
+		// logical committed seam. For a root-level live segment that boundary is
+		// the segment's end: sibling rows after it stay viewport-local while the
+		// live rows themselves may scroll into history as frozen visual records
+		// (the committed-prefix audit reconciles them once they settle); holding
+		// them instead would hide the head of an append-only stream that outgrew
+		// the viewport until it settles. A nested container may hold finalized
+		// rows of its own after the live run, which the root cannot see, so an
+		// unpinned nested barrier clamps at the live start; a container that
+		// wants its live rows to scroll pins at the end of the run. Pinned
 		// regions remain strict: their pinned boundary is the physical commit
 		// ceiling even when it is row zero.
 		const liveRegionIndex = this.#frameSegments.findIndex(
 			segment => segment.liveLocalStart !== undefined && segment.liveRegionFinal !== true,
 		);
+		const liveRegionSegment = liveRegionIndex >= 0 ? this.#frameSegments[liveRegionIndex] : undefined;
 		const liveRegionHasTrailingRows =
 			liveRegionIndex >= 0 && this.#frameSegments.slice(liveRegionIndex + 1).some(segment => segment.rowCount > 0);
-		const liveRegionComponent = liveRegionIndex >= 0 ? this.#frameSegments[liveRegionIndex]!.component : undefined;
-		const liveRegionIsNested = liveRegionComponent instanceof Container;
-		const liveRegionBoundaryShifted =
-			this.#previousLiveRegionStart !== undefined && this.#previousLiveRegionStart !== liveRegionStart;
-		const liveCommitBoundary = liveRegionPinned
-			? (this.#nativeScrollbackPinnedBoundary ?? liveRegionStart)
-			: liveRegionStart !== undefined &&
-					(liveRegionHasTrailingRows ||
-						liveRegionBoundaryShifted ||
-						(liveRegionIsNested && liveRegionStart === 0)) &&
-					(liveRegionStart > 0 || liveRegionIsNested)
-				? liveRegionStart
-				: undefined;
+		let liveCommitBoundary: number | undefined;
+		if (liveRegionPinned) {
+			liveCommitBoundary = this.#nativeScrollbackPinnedBoundary ?? liveRegionStart;
+		} else if (liveRegionSegment !== undefined && liveRegionSegment.component instanceof Container) {
+			liveCommitBoundary = liveRegionStart;
+		} else if (liveRegionSegment !== undefined && liveRegionHasTrailingRows) {
+			liveCommitBoundary = liveRegionSegment.start + liveRegionSegment.rowCount;
+		}
 		const commitCeiling = Math.max(0, Math.min(frameLength, liveCommitBoundary ?? frameLength));
 
 		let prevWindowTop = this.#windowTopRow;
@@ -3259,10 +3260,14 @@ export class TUI extends Container {
 			chunkTo = Math.min(windowTop, replayAllCurrentRows ? replayCommitCeiling : commitCeiling);
 			this.#committedRows = chunkTo;
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
-		} else if (Math.max(0, frameLength - height) < this.#committedRows) {
-			// The frame tail moved above the committed seam. Keep the seam at the
-			// actual viewport top so the update path repaints the newly exposed rows
-			// instead of pinning the viewport to the stale committed row.
+		} else if (geometryChanged && Math.max(0, frameLength - height) < this.#committedRows) {
+			// The frame tail moved above the committed seam under a new geometry:
+			// the terminal reflowed the physical rows, so keep the seam at the
+			// actual viewport top and let the update path repaint the newly
+			// exposed rows. Without a geometry change the viewport stays pinned at
+			// the seam instead (blank rows below the tail until the frame grows
+			// again): repainting rows that are already in native scrollback would
+			// leave a duplicated seam row in history.
 			windowTop = Math.max(0, frameLength - height);
 			chunkTo = windowTop;
 			this.#committedRows = windowTop;
@@ -3884,7 +3889,6 @@ export class TUI extends Container {
 		);
 		this.#previousLiveRegionSource =
 			liveRegionIndex >= 0 ? this.#frameSegments[liveRegionIndex]!.component : undefined;
-		this.#previousLiveRegionStart = this.#nativeScrollbackLiveRegionStart;
 		this.#previousLiveRegionHasTrailingRows =
 			liveRegionIndex >= 0 && this.#frameSegments.slice(liveRegionIndex + 1).some(segment => segment.rowCount > 0);
 	}

@@ -387,6 +387,12 @@ export class AssistantMessageComponent extends Container {
 		return this.#transcriptBlockFinalized;
 	}
 
+	isTranscriptBlockAppendOnly(): boolean {
+		// Streamed markdown only grows; a mermaid diagram is re-laid out from
+		// its full source on every update, so it is not append-only.
+		return !this.#containsMermaidSource;
+	}
+
 	getTranscriptBlockSettledRows(): number {
 		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return 0;
 		if (this.#containsMermaidSource) return 0;

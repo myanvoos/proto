@@ -16,6 +16,14 @@ interface FinalizableBlock {
 
 	getTranscriptBlockSettledRows?(): number;
 
+	/**
+	 * True when the block's live rows only ever grow (a streaming reply), so
+	 * rows that scroll above the viewport may enter native scrollback before
+	 * the block settles. Blocks whose live preview is rewritten on settle
+	 * (tool cards) must stay viewport-local instead.
+	 */
+	isTranscriptBlockAppendOnly?(): boolean;
+
 	isDisplaceableBlock?(): boolean;
 
 	seal?(): void;
@@ -866,17 +874,23 @@ export class TranscriptContainer
 		// A volatile live block followed by finalized rows must pin at the end of
 		// the live run, not at its unstable seam. This lets the live rows scroll
 		// into history while keeping the finalized tail viewport-local; otherwise
-		// every growth frame shifts and re-emits that tail. An already pinned
-		// displaceable block retains its stricter, block-owned boundary.
+		// every growth frame shifts and re-emits that tail. A trailing live run
+		// pins the same way when its last block is append-only, so a streaming
+		// reply that outgrows the viewport pushes its head into scrollback
+		// instead of hiding it until it settles; a trailing tool card keeps the
+		// root's strict live-start ceiling because its preview is rewritten on
+		// settle. An already pinned displaceable block retains its stricter,
+		// block-owned boundary.
 		if (!this.#nativeScrollbackLiveRegionPinned && liveStartIndex >= 0) {
 			let lastLiveIndex = liveStartIndex;
 			for (let i = liveStartIndex + 1; i < count; i++) {
 				if (!segments[i]!.finalized) lastLiveIndex = i;
 			}
 			const lastLiveBlock = this.children[lastLiveIndex]! as Component & FinalizableBlock;
+			const hasFinalizedTail = segments.slice(lastLiveIndex + 1).some(segment => (segment?.rowCount ?? 0) > 0);
 			if (
 				lastLiveBlock.isDisplaceableBlock?.() !== true &&
-				segments.slice(lastLiveIndex + 1).some(segment => (segment?.rowCount ?? 0) > 0)
+				(hasFinalizedTail || lastLiveBlock.isTranscriptBlockAppendOnly?.() === true)
 			) {
 				this.#nativeScrollbackLiveRegionPinned = true;
 				const lastLive = segments[lastLiveIndex]!;

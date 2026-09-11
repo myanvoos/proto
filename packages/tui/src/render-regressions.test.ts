@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
-import { type Component, coalesceAdjacentSgr, findCommittedPrefixResync, TUI } from "./tui";
+import { type Component, Container, coalesceAdjacentSgr, findCommittedPrefixResync, TUI } from "./tui";
 
 type ResizeCallback = () => void;
 
@@ -334,24 +334,29 @@ test("strictly audits committed rows reported dirty by a child", () => {
 	}
 });
 
-test("retracts the commit seam when content tail moves above it", () => {
-	const terminal = new FakeTerminal(8, 2);
-	const scheduler = new TestScheduler();
-	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
-	const component = new ProtocolRows(["A", "B", "C"]);
-	tui.addChild(component);
+test("keeps the seam pinned when the content tail moves above it without a geometry change", () => {
+	for (const rebuild of [false, true]) {
+		const terminal = new FakeTerminal(8, 2);
+		const scheduler = new TestScheduler();
+		const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+		const component = new ProtocolRows(["A", "B", "C"]);
+		tui.setScrollbackRebuild(rebuild);
+		tui.addChild(component);
 
-	try {
-		tui.start({ deferInput: true });
-		component.rows = ["A", "B"];
-		tui.requestRender(true);
-		expect(terminal.normalLines().slice(-2)).toEqual(["A", "B"]);
-	} finally {
-		tui.stop();
+		try {
+			tui.start({ deferInput: true });
+			component.rows = ["A", "B"];
+			tui.requestRender(true);
+			// Default mode must not repaint the committed "A" onto the screen (it
+			// is already in native scrollback); rebuild mode rewrites the exact tape.
+			expect(terminal.normalLines()).toEqual(rebuild ? ["A", "B"] : ["A", "B", ""]);
+		} finally {
+			tui.stop();
+		}
 	}
 });
 
-test("does not commit finalized rows below an unpinned live region", () => {
+test("scrolls an unpinned live region into history but keeps finalized rows below it viewport-local", () => {
 	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
 	const terminal = new FakeTerminal(20, 4);
 	const scheduler = new TestScheduler();
@@ -367,19 +372,21 @@ test("does not commit finalized rows below an unpinned live region", () => {
 	try {
 		tui.start({ deferInput: true });
 		for (let n = 1; n <= 8; n++) {
-			live.rows = Array.from({ length: n }, (_value, index) => `L${n}-${index}`);
+			live.rows = Array.from({ length: n }, (_value, index) => `L-${index}`);
 			tui.requestRender(true);
 		}
-		expect(terminal.normalLines()).toEqual(["P0", "P1", "P2", "T4", "T5", "T6", "T7"]);
+		// The live rows that outgrew the viewport are in history; the finalized
+		// tail below the live segment never entered the committed seam.
+		const liveRows = Array.from({ length: 8 }, (_value, index) => `L-${index}`);
+		expect(terminal.normalLines()).toEqual(["P0", "P1", "P2", ...liveRows, "T4", "T5", "T6", "T7"]);
 
-		live.rows = ["DONE"];
 		live.liveStart = undefined;
 		tui.requestRender(true);
 		expect(terminal.normalLines()).toEqual([
 			"P0",
 			"P1",
 			"P2",
-			"DONE",
+			...liveRows,
 			"T0",
 			"T1",
 			"T2",
@@ -389,6 +396,106 @@ test("does not commit finalized rows below an unpinned live region", () => {
 			"T6",
 			"T7",
 		]);
+	} finally {
+		tui.stop();
+		restore();
+	}
+});
+
+test("pushes the head of a joined live block into history before trailing chrome", () => {
+	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
+	const terminal = new FakeTerminal(20, 5);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const transcript = new JoinedRows();
+	transcript.addChild({ render: () => ["U0"] });
+	const stream = new ProtocolRows([]);
+	stream.liveStart = 0;
+	transcript.addChild(stream);
+	const chrome = new ProtocolRows(["editor", "status"]);
+	tui.addChild(transcript);
+	tui.addChild(chrome);
+
+	try {
+		tui.start({ deferInput: true });
+		const body = Array.from({ length: 12 }, (_value, index) => `S-${index}`);
+		for (let n = 1; n <= body.length; n++) {
+			stream.rows = body.slice(0, n);
+			tui.requestRender(true);
+		}
+		const lines = terminal.normalLines();
+		expect(lines.slice(0, 2)).toEqual(["U0", ""]);
+		for (const row of body) expect(lines).toContain(row);
+		expect(lines.filter(line => line === "editor")).toHaveLength(1);
+		expect(lines.slice(-2)).toEqual(["editor", "status"]);
+
+		stream.liveStart = undefined;
+		tui.requestRender(true);
+		expect(terminal.normalLines()).toEqual(["U0", "", ...body, "editor", "status"]);
+	} finally {
+		tui.stop();
+		restore();
+	}
+});
+
+test("a scrollback-clearing repaint keeps live rows that sit above the viewport", () => {
+	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
+	const terminal = new FakeTerminal(20, 5);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const transcript = new JoinedRows();
+	transcript.addChild({ render: () => ["U0"] });
+	const stream = new ProtocolRows(Array.from({ length: 12 }, (_value, index) => `S-${index}`));
+	stream.liveStart = 0;
+	transcript.addChild(stream);
+	tui.addChild(transcript);
+	tui.addChild(new ProtocolRows(["editor"]));
+
+	try {
+		tui.start({ deferInput: true });
+		// Rebuilding the transcript mid-stream (compaction) clears scrollback and
+		// repaints; the head of the still-live block must be repainted too, not
+		// dropped between the commit ceiling and the viewport top.
+		tui.requestRender(true, { clearScrollback: true });
+		expect(terminal.normalLines()).toEqual(["U0", "", ...stream.rows, "editor"]);
+	} finally {
+		tui.stop();
+		restore();
+	}
+});
+
+test("clamps an unpinned nested container at its live start", () => {
+	const restore = setEnvironment({ PI_TUI_SCROLLBACK_REBUILD: undefined });
+	const terminal = new FakeTerminal(20, 3);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	class LiveContainer extends Container {
+		liveStart: number | undefined;
+		getNativeScrollbackLiveRegionStart(): number | undefined {
+			return this.liveStart;
+		}
+	}
+	const nested = new LiveContainer();
+	const slot = new ProtocolRows([]);
+	const innerTail = new ProtocolRows(["I0", "I1", "I2", "I3"]);
+	nested.addChild(new ProtocolRows(["H0"]));
+	nested.addChild(slot);
+	nested.addChild(innerTail);
+	nested.liveStart = 1;
+	tui.addChild(nested);
+	tui.addChild(new ProtocolRows(["editor"]));
+
+	try {
+		tui.start({ deferInput: true });
+		// The root cannot see that I0..I3 are finalized rows inside the
+		// container, so nothing past the live start may enter history.
+		expect(terminal.normalLines()).toEqual(["H0", "I2", "I3", "editor"]);
+		slot.rows = ["S0", "S1"];
+		tui.requestRender(true);
+		expect(terminal.normalLines()).toEqual(["H0", "I2", "I3", "editor"]);
+		nested.liveStart = undefined;
+		tui.requestRender(true);
+		expect(terminal.normalLines()).toEqual(["H0", "S0", "S1", "I0", "I1", "I2", "I3", "editor"]);
 	} finally {
 		tui.stop();
 		restore();
@@ -616,12 +723,23 @@ test("keeps current rows when a committed live block is removed", () => {
 			tui.requestRender(true);
 			const lines = terminal.normalLines();
 			if (rebuild) {
-				expect(lines).toEqual(["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three", "p1", "p2"]);
+				expect(lines).toEqual(["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three", "progress", "p1", "p2"]);
 			} else {
 				expect(lines.slice(-2)).toEqual(["p1", "p2"]);
 				for (const row of ["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three"]) {
 					expect(lines).toContain(row);
 				}
+			}
+
+			// The frozen live header is reconciled once the block settles differently.
+			progress.rows = ["done", "d1"];
+			progress.liveStart = undefined;
+			tui.requestRender(true);
+			const settled = terminal.normalLines();
+			if (rebuild) {
+				expect(settled).toEqual(["r2x0y0 zero", "r2x0y1 one", "r2x0y2 two", "r2x0y3 three", "done", "d1"]);
+			} else {
+				expect(settled.slice(-2)).toEqual(["done", "d1"]);
 			}
 		} finally {
 			tui.stop();
