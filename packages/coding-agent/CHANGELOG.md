@@ -10,6 +10,7 @@
 
 - Model-id classification caches, catalog build interns, prompt template compilation cache, and eval kernel registry notes are now LRU-bounded, capping retained heap from dynamic/custom model ids and templates (probe: catalog build interns 141MB -> 22MB heap).
 - Session JSONL loading uses an amortized growing buffer (8MiB single-line session: ~218ms -> ~67ms); agent-proxy streamed tool calls parse via the throttled parser with an exact final flush (32KB args: ~328ms -> ~1.9ms cumulative).
+- images-cli imports bundled models via the catalog subpath instead of the root barrel (~46MB less RSS for that module graph in isolation).
 - jj command output is capped at the same 8MiB limit as git instead of retaining unbounded stream reads.
 - Packaged CLI bundle uses code splitting (`dist/cli.js` 17.4MB monolith -> 9.4KB entry + chunks in the existing `dist/template-*.js` package glob): bundled `--version` median 264ms -> 30ms.
 - Read tool loads PDF/image/URL/archive/profile/markit converters lazily on first special-format use instead of at session boot.
@@ -32,6 +33,10 @@
 ### Fixed
 
 - PI_TIMING module-timing preload no longer breaks provider loading: its onLoad hook is synchronous, so Bun's sync `require()` of provider modules works again.
+- Native diff no longer goes quadratic on large edits: bounded Myers with prefix/suffix trim keeps any edit distance under ~7ms (8,192-line diff was ~785ms); sequential grep streams candidates instead of materializing the whole tree (cargo-registry-scale tree now on par with rg).
+- MCP disconnect no longer drops connections registered while it was running; tool/resource refreshes from a stale pre-reconnect connection no longer overwrite the new connection's state.
+- Session-focus controller routes events through the same serialized/coalesced dispatch as the main transcript; queued events from an old session can no longer mutate a newly attached transcript after a switch.
+- Forking a session with malformed lines now preserves valid entries and warns instead of silently producing an empty fork.
 - Large changed lines no longer stall the TUI: intra-line word diffs above 512 words collapse to a replace-all hunk (~480ms -> ~0.6ms per line).
 - Advisor feed render no longer copies the full delivered-prefix array on every message event; streamed tool-arg previews append deltas in bulk instead of per character (100KB arg decode ~2.2ms -> ~0.04ms).
 - Kernel file writes made with `open()`/`Path.write_text` (Python) or `fs.writeFile`/`Bun.write` (JS) now show their diff hunk as soon as the write completes instead of only after the whole cell finishes; a file written several times in one cell still reports one net diff.
