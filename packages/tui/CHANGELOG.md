@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Changed
+- Container skips the unconditional children-array copy on unchanged frames; transcript viewport-tail extraction reads from cached segments instead of re-rendering children per frame.
+
+### Changed
 
 - Bounded memoization caches now cover ANSI wrapping, truncation, and output-block composition, with printable-ASCII and SGR-only fast paths for visible-width measurement; full-frame renders drop ~27% at p50 and ~54% at p90, keystroke frames ~26% at p50 and ~60% at p99, and cold first frame ~29%.
 - Markdown and syntax-highlighted code render through shared content-addressed caches that survive transcript rebuilds (bounded LRU with explicit entry/total caps), cutting cold compose of a 3,400-message transcript by ~70% at p50 (1.07s -> ~0.33s in the stress harness; per-frame warm renders ~5ms).

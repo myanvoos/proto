@@ -344,6 +344,7 @@ export class Container
 	#memoWidth = -1;
 
 	#memoChildren: Component[] = [];
+	#memoChildrenSource: Component[] | undefined;
 	#widthEpochBoundaries = new WeakMap<
 		object,
 		{
@@ -604,6 +605,7 @@ export class Container
 		let revisions = this.#memoChildWidthEpochRevisions;
 		let renderRevisions = this.#memoChildRenderRevisions;
 		let unchanged = this.#memoLines !== undefined && this.#memoWidth === width && refs.length === count;
+		let childrenChanged = this.#memoChildrenSource !== children || this.#memoChildren.length !== count;
 		if (refs.length !== count) {
 			refs = new Array(count);
 			this.#memoChildLines = refs;
@@ -614,16 +616,22 @@ export class Container
 		}
 		for (let i = 0; i < count; i++) {
 			const child = children[i]!;
+			if (this.#memoChildren[i] !== child) {
+				childrenChanged = true;
+				unchanged = false;
+			}
 			const childLines = child.render(width);
 			const renderRevision = (child as Component & { getRenderRevision?: () => number }).getRenderRevision?.();
 			revisions[i] = getNativeScrollbackWidthEpochRevision(child);
 			if (refs[i] !== childLines || renderRevisions[i] !== renderRevision) {
 				unchanged = false;
 				refs[i] = childLines;
+				childrenChanged = true;
 			}
 			renderRevisions[i] = renderRevision;
 		}
-		this.#memoChildren = children.slice();
+		if (childrenChanged) this.#memoChildren = children.slice();
+		this.#memoChildrenSource = children;
 		this.#memoWidth = width;
 		if (unchanged) return this.#memoLines!;
 		const lines: string[] = [];

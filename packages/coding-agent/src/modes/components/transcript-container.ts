@@ -587,7 +587,17 @@ export class TranscriptContainer
 
 	renderViewportTail(width: number, maxRows: number): readonly string[] {
 		width = Math.max(1, width);
-		if (maxRows <= 0) return EMPTY_TAIL;
+		if (!(maxRows > 0)) return EMPTY_TAIL;
+		if (
+			this.#renderWidth === width &&
+			this.#renderedGeneration === this.#generation &&
+			this.#renderedChildrenRevision === this.#childrenRevision &&
+			this.#segments.length === this.children.length &&
+			this.#dirtyComponents.size === 0
+		) {
+			const start = Math.max(0, this.#lines.length - maxRows);
+			return this.#lines.length <= maxRows ? this.#lines : this.#lines.slice(start);
+		}
 		const collected: (readonly string[])[] = [];
 		let total = 0;
 		for (let i = this.children.length - 1; i >= 0 && total < maxRows; i--) {
