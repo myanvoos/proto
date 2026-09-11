@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import { plugin } from "bun";
 import { moduleLoadBuffer } from "./timing-buffer";
 
@@ -83,10 +84,10 @@ if (process.env.PI_TIMING) {
 	plugin({
 		name: "pi-module-load-timer",
 		setup(build) {
-			build.onLoad({ filter: MODULE_LOADER_FILTER }, async args => {
+			build.onLoad({ filter: MODULE_LOADER_FILTER }, args => {
 				starts.set(args.path, performance.now());
 				childSetFor(importsByPath, args.path);
-				const contents = await Bun.file(args.path).text();
+				const contents = fs.readFileSync(args.path, "utf8");
 				addImportEdges(importsByPath, args.path, contents);
 				return {
 					contents: instrumentContents(args.path, contents),
