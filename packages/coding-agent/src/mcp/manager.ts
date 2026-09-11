@@ -96,6 +96,12 @@ function trackPromise<T>(promise: Promise<T>): TrackedPromise<T> {
 	return tracked;
 }
 
+function deleteUnchangedMapEntries<K, V>(map: Map<K, V>, snapshot: ReadonlyMap<K, V>): void {
+	for (const [key, value] of snapshot) {
+		if (map.get(key) === value) map.delete(key);
+	}
+}
+
 function delay(ms: number): Promise<void> {
 	return Bun.sleep(ms);
 }
@@ -727,18 +733,45 @@ export class MCPManager {
 
 	async disconnectAll(): Promise<void> {
 		this.#epoch++;
-		const promises = Array.from(this.#connections, ([name, connection]) => this.#discardConnection(name, connection));
+		const connections = new Map(this.#connections);
+		const pendingConnections = new Map(this.#pendingConnections);
+		const pendingToolLoads = new Map(this.#pendingToolLoads);
+		const pendingReconnections = new Map(this.#pendingReconnections);
+		const pendingResourceRefresh = new Map(this.#pendingResourceRefresh);
+		const sources = new Map(this.#sources);
+		const serverConfigs = new Map(this.#serverConfigs);
+		const subscribedResources = new Map(this.#subscribedResources);
+		const reconnectHistory = new Map(this.#reconnectHistory);
+		const tools = new Set(this.#tools);
+		const discardedServerNames = new Set([
+			...connections.keys(),
+			...pendingConnections.keys(),
+			...pendingToolLoads.keys(),
+			...pendingReconnections.keys(),
+			...pendingResourceRefresh.keys(),
+			...sources.keys(),
+			...serverConfigs.keys(),
+			...subscribedResources.keys(),
+			...reconnectHistory.keys(),
+		]);
+
+		const promises = Array.from(connections, ([name, connection]) => this.#discardConnection(name, connection));
 		await Promise.allSettled(promises);
 
-		this.#pendingConnections.clear();
-		this.#pendingToolLoads.clear();
-		this.#pendingReconnections.clear();
-		this.#pendingResourceRefresh.clear();
-		this.#sources.clear();
-		this.#serverConfigs.clear();
-		this.#tools = [];
-		this.#subscribedResources.clear();
-		this.#reconnectHistory.clear();
+		deleteUnchangedMapEntries(this.#connections, connections);
+		deleteUnchangedMapEntries(this.#pendingConnections, pendingConnections);
+		deleteUnchangedMapEntries(this.#pendingToolLoads, pendingToolLoads);
+		deleteUnchangedMapEntries(this.#pendingReconnections, pendingReconnections);
+		deleteUnchangedMapEntries(this.#pendingResourceRefresh, pendingResourceRefresh);
+		deleteUnchangedMapEntries(this.#sources, sources);
+		deleteUnchangedMapEntries(this.#serverConfigs, serverConfigs);
+		deleteUnchangedMapEntries(this.#subscribedResources, subscribedResources);
+		deleteUnchangedMapEntries(this.#reconnectHistory, reconnectHistory);
+		this.#tools = this.#tools.filter(tool => {
+			if (tools.has(tool)) return false;
+			const serverName = tool.mcpServerName;
+			return serverName === undefined || !discardedServerNames.has(serverName) || this.#connections.has(serverName);
+		});
 	}
 
 	async dispose(): Promise<void> {
@@ -961,6 +994,8 @@ export class MCPManager {
 		connection.tools = undefined;
 
 		const serverTools = await listTools(connection);
+		if (this.#connections.get(name) !== connection) return;
+
 		const reconnect = () => this.reconnectServer(name);
 		const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 		void this.toolCache?.set(name, connection.config, serverTools);
@@ -996,6 +1031,7 @@ export class MCPManager {
 				});
 			}
 			if (resourcesResult.status === "rejected") throw resourcesResult.reason;
+			if (this.#connections.get(name) !== connection) return;
 			const resources = resourcesResult.value;
 			if (this.#notificationsEnabled && connection.capabilities.resources?.subscribe) {
 				const newUris = new Set(resources.map(r => r.uri));
@@ -1013,9 +1049,17 @@ export class MCPManager {
 					}
 				}
 
+				if (this.#connections.get(name) !== connection) return;
+
 				try {
 					const allUris = [...newUris];
 					await subscribeToResources(connection, allUris);
+					if (this.#connections.get(name) !== connection) {
+						await unsubscribeFromResources(connection, allUris).catch(error => {
+							logger.debug("Failed to rollback stale MCP resource subscription", { path: `mcp:${name}`, error });
+						});
+						return;
+					}
 					const action = resolveSubscriptionPostAction(
 						this.#notificationsEnabled,
 						this.#notificationsEpoch,

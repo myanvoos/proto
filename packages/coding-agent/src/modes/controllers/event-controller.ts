@@ -111,6 +111,7 @@ export class EventController {
 	#dispatchTail: Promise<void> = Promise.resolve();
 
 	#dispatchInFlight = false;
+	#transcriptAnchor = 0;
 	static readonly #MESSAGE_UPDATE_COALESCE_MS = 33;
 
 	constructor(private ctx: InteractiveModeContext) {
@@ -346,14 +347,21 @@ export class EventController {
 
 	subscribeToAgent(): void {
 		this.ctx.unsubscribe = this.ctx.session.subscribe(async (event: AgentSessionEvent) => {
-			if (event.type === "message_update") {
-				this.#enqueueMessageUpdate(event);
-				return;
-			}
-			await this.#runSerialized(async () => {
-				await this.#flushPendingMessageUpdate();
-				await this.handleEvent(event);
-			});
+			await this.dispatchEvent(event);
+		});
+	}
+
+	async dispatchEvent(event: AgentSessionEvent, transcriptAnchor = this.#transcriptAnchor): Promise<void> {
+		if (transcriptAnchor !== this.#transcriptAnchor) return;
+		if (event.type === "message_update") {
+			this.#enqueueMessageUpdate(event, transcriptAnchor);
+			return;
+		}
+		await this.#runSerialized(async () => {
+			if (transcriptAnchor !== this.#transcriptAnchor) return;
+			await this.#flushPendingMessageUpdate(transcriptAnchor);
+			if (transcriptAnchor !== this.#transcriptAnchor) return;
+			await this.handleEvent(event, transcriptAnchor);
 		});
 	}
 
@@ -389,23 +397,31 @@ export class EventController {
 		await link;
 	}
 
-	#enqueueMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
+	#enqueueMessageUpdate(
+		event: Extract<AgentSessionEvent, { type: "message_update" }>,
+		transcriptAnchor: number,
+	): void {
+		if (transcriptAnchor !== this.#transcriptAnchor) return;
 		this.#pendingMessageUpdate = event;
 		if (this.#messageUpdateTimer) return;
-		this.#messageUpdateTimer = setTimeout(() => {
+		const timer = setTimeout(() => {
+			if (this.#messageUpdateTimer !== timer) return;
 			this.#messageUpdateTimer = undefined;
 
 			void this.#runSerialized(async () => {
-				await this.#flushPendingMessageUpdate();
+				if (transcriptAnchor !== this.#transcriptAnchor) return;
+				await this.#flushPendingMessageUpdate(transcriptAnchor);
 			}).catch(err => {
 				logger.warn("Message update flush rejected", {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			});
 		}, EventController.#MESSAGE_UPDATE_COALESCE_MS);
+		this.#messageUpdateTimer = timer;
 	}
 
-	async #flushPendingMessageUpdate(): Promise<void> {
+	async #flushPendingMessageUpdate(transcriptAnchor: number): Promise<void> {
+		if (transcriptAnchor !== this.#transcriptAnchor) return;
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -413,7 +429,7 @@ export class EventController {
 		const event = this.#pendingMessageUpdate;
 		if (!event) return;
 		this.#pendingMessageUpdate = undefined;
-		await this.handleEvent(event);
+		await this.handleEvent(event, transcriptAnchor);
 	}
 
 	hasToolExecutionStarted(toolCallId: string): boolean {
@@ -425,7 +441,8 @@ export class EventController {
 		return [...this.#postToolAssistantComponents.values()];
 	}
 
-	resetTranscriptAnchors(): void {
+	resetTranscriptAnchors(): number {
+		this.#transcriptAnchor++;
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -462,11 +479,14 @@ export class EventController {
 		this.#lastTtsrNotification = undefined;
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
+		return this.#transcriptAnchor;
 	}
 
-	async handleEvent(event: AgentSessionEvent): Promise<void> {
+	async handleEvent(event: AgentSessionEvent, transcriptAnchor = this.#transcriptAnchor): Promise<void> {
+		if (transcriptAnchor !== this.#transcriptAnchor) return;
 		if (!this.ctx.isInitialized) {
 			await this.ctx.init();
+			if (transcriptAnchor !== this.#transcriptAnchor) return;
 		}
 
 		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;

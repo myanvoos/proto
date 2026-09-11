@@ -301,19 +301,30 @@ function shouldStreamEntries(storage: SessionStorage, size: number): boolean {
 	return storage instanceof FileSessionStorage && size >= STREAM_LOAD_THRESHOLD_BYTES;
 }
 
-async function loadWithKnownSize(filePath: string, storage: SessionStorage, size: number): Promise<SessionLoadResult> {
+async function loadWithKnownSize(
+	filePath: string,
+	storage: SessionStorage,
+	size: number,
+	preserveInvalidHeader: boolean,
+): Promise<SessionLoadResult> {
 	const loaded = shouldStreamEntries(storage, size)
 		? await loadEntriesFromFileStream(filePath)
 		: parseSessionContent(await storage.readText(filePath));
-	return loaded.invalidHeader ? { ...loaded, entries: [] } : loaded;
+	return loaded.invalidHeader && !preserveInvalidHeader ? { ...loaded, entries: [] } : loaded;
 }
 
 export async function loadSessionFile(
 	filePath: string,
 	storage: SessionStorage = new FileSessionStorage(),
+	options?: { preserveInvalidHeader?: boolean },
 ): Promise<SessionLoadResult> {
 	try {
-		return await loadWithKnownSize(filePath, storage, storage.statSync(filePath).size);
+		return await loadWithKnownSize(
+			filePath,
+			storage,
+			storage.statSync(filePath).size,
+			options?.preserveInvalidHeader === true,
+		);
 	} catch (err) {
 		if (isEnoent(err)) return { entries: [], titleSlot: undefined, malformedRecords: 0, invalidHeader: false };
 		throw err;
@@ -345,7 +356,7 @@ export async function visitEntriesFromFile(
 		return;
 	}
 
-	for (const entry of (await loadWithKnownSize(filePath, storage, size)).entries) {
+	for (const entry of (await loadWithKnownSize(filePath, storage, size, false)).entries) {
 		if (visit(entry) === false) return;
 	}
 }

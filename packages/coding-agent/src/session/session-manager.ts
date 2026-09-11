@@ -61,7 +61,6 @@ import {
 } from "./session-entries";
 import { findMostRecentSession, listAllSessions, listSessions, type SessionInfo } from "./session-listing";
 import {
-	loadEntriesFromFile,
 	loadSessionFile,
 	resolveBlobRefsInEntries,
 	type SessionLoadResult,
@@ -2252,7 +2251,14 @@ export class SessionManager {
 		const manager = new SessionManager(cwd, dir, true, storage);
 		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
 
-		const sourceEntries = structuredClone(await loadEntriesFromFile(sourcePath, storage)) as FileEntry[];
+		const loadedSource = await loadSessionFile(sourcePath, storage, { preserveInvalidHeader: true });
+		if (loadedSource.malformedRecords > 0 || loadedSource.invalidHeader) {
+			logger.warn("Fork source contains malformed records; preserving valid entries", {
+				count: Math.max(loadedSource.malformedRecords, loadedSource.invalidHeader ? 1 : 0),
+				path: path.resolve(sourcePath),
+			});
+		}
+		const sourceEntries = structuredClone(loadedSource.entries) as FileEntry[];
 		migrateToCurrentVersion(sourceEntries);
 		await resolveBlobRefsInEntries(sourceEntries, manager.#blobs);
 

@@ -76,7 +76,7 @@ export class SessionFocusController {
 	async #attach(target: AgentSession): Promise<void> {
 		this.ctx.unsubscribe?.();
 		this.ctx.clearTransientSessionUi();
-		this.ctx.eventController.resetTranscriptAnchors();
+		const transcriptAnchor = this.ctx.eventController.resetTranscriptAnchors();
 
 		let assistantStreamSynced = false;
 		this.ctx.unsubscribe = target.subscribe(async event => {
@@ -84,15 +84,19 @@ export class SessionFocusController {
 				assistantStreamSynced = true;
 			} else if (event.type === "message_update" && event.message.role === "assistant" && !assistantStreamSynced) {
 				assistantStreamSynced = true;
-				await this.ctx.eventController.handleEvent({ type: "message_start", message: event.message });
+				await this.ctx.eventController.dispatchEvent(
+					{ type: "message_start", message: event.message },
+					transcriptAnchor,
+				);
 			}
-			await this.ctx.eventController.handleEvent(event);
+			await this.ctx.eventController.dispatchEvent(event, transcriptAnchor);
 		});
 		this.ctx.statusLine.setSession(target, this.#focusedAgentId);
 		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 
-		if (target.isStreaming) await this.ctx.eventController.handleEvent({ type: "agent_start" });
-		else setTerminalTitleState("idle");
+		if (target.isStreaming) {
+			await this.ctx.eventController.dispatchEvent({ type: "agent_start" }, transcriptAnchor);
+		} else setTerminalTitleState("idle");
 		this.ctx.updateEditorBorderColor();
 		this.ctx.ui.requestRender();
 	}
