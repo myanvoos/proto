@@ -64,6 +64,41 @@ function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
 }
 
+function needsPersistenceTraversal(obj: unknown, key?: string): boolean {
+	if (obj === null || obj === undefined) return false;
+	if (typeof obj === "string") {
+		return obj.length > MAX_PERSIST_CHARS || isBlobRef(obj) || (key === "image_url" && isImageDataUrl(obj));
+	}
+	if (typeof obj !== "object") return false;
+
+	if (
+		"type" in obj &&
+		obj.type === "image_generation_call" &&
+		"result" in obj &&
+		typeof obj.result === "string" &&
+		!isBlobRef(obj.result) &&
+		obj.result.length >= BLOB_EXTERNALIZE_THRESHOLD
+	) {
+		return true;
+	}
+	if (shouldExternalizeImagePayload(obj, key)) return true;
+
+	if (Array.isArray(obj)) {
+		for (let i = 0; i < obj.length; i++) {
+			if (needsPersistenceTraversal(obj[i], key)) return true;
+		}
+		return false;
+	}
+
+	const record = obj as Record<string, unknown>;
+	for (const childKey in record) {
+		if (!Object.hasOwn(record, childKey)) continue;
+		if (childKey === "jsonlEvents") return true;
+		if (needsPersistenceTraversal(record[childKey], childKey)) return true;
+	}
+	return false;
+}
+
 function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string): unknown {
 	if (obj === null || obj === undefined) return obj;
 	if (
@@ -234,5 +269,7 @@ function stripReplayedReasoningSignatures(entry: FileEntry): FileEntry {
 }
 
 export function prepareEntryForPersistence(entry: FileEntry, blobStore: BlobStore): FileEntry {
-	return truncateForPersistence(stripReplayedReasoningSignatures(entry), blobStore) as FileEntry;
+	const stripped = stripReplayedReasoningSignatures(entry);
+	if (!needsPersistenceTraversal(stripped)) return stripped;
+	return truncateForPersistence(stripped, blobStore) as FileEntry;
 }

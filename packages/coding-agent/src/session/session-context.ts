@@ -147,11 +147,15 @@ export function buildSessionContext(
 	const injectedTtsrRulesSet = new Set<string>();
 	let mode = "none";
 	let modeData: Record<string, unknown> | undefined;
+	let resetBoundaryIdx = -1;
 
 	let hasExplicitDefaultModel = false;
 
-	for (const entry of path) {
-		if (entry.type === "thinking_level_change") {
+	for (let i = 0; i < path.length; i++) {
+		const entry = path[i];
+		if (entry.type === "reset_boundary") {
+			resetBoundaryIdx = i;
+		} else if (entry.type === "thinking_level_change") {
 			thinkingLevel = entry.thinkingLevel ?? "off";
 			configuredThinkingLevel = entry.configured ?? entry.thinkingLevel ?? undefined;
 		} else if (entry.type === "model_change") {
@@ -182,7 +186,27 @@ export function buildSessionContext(
 
 	const injectedTtsrRules = Array.from(injectedTtsrRulesSet);
 
-	const resetBoundaryIdx = path.reduce((latest, entry, i) => (entry.type === "reset_boundary" ? i : latest), -1);
+	let compactionIdx = -1;
+	let firstKeptIdx = -1;
+	let replayThroughIdx = -1;
+	// The latest compaction's boundary IDs are only known after the state scan; resolve all indexes together.
+	if (compaction && (!options?.transcript || options.collapseCompactedHistory)) {
+		const firstKeptEntryId = compaction.firstKeptEntryId;
+		const replayThroughEntryId = compaction.providerReplayThroughEntryId;
+		for (let i = 0; i < path.length; i++) {
+			const entry = path[i];
+			if (compactionIdx < 0 && entry.type === "compaction" && entry.id === compaction.id) {
+				compactionIdx = i;
+			}
+			if (firstKeptIdx < 0 && entry.id === firstKeptEntryId) {
+				firstKeptIdx = i;
+			}
+			if (replayThroughIdx < 0 && replayThroughEntryId && entry.id === replayThroughEntryId) {
+				replayThroughIdx = i;
+			}
+			if (compactionIdx >= 0 && firstKeptIdx >= 0 && (!replayThroughEntryId || replayThroughIdx >= 0)) break;
+		}
+	}
 
 	const messages: AgentMessage[] = [];
 	const cacheMissExplainedAt: boolean[] = [];
@@ -260,10 +284,7 @@ export function buildSessionContext(
 				appendMessage(entry);
 			}
 		}
-	} else if (
-		resetBoundaryIdx >= 0 &&
-		resetBoundaryIdx > (compaction ? path.findIndex(e => e.type === "compaction" && e.id === compaction.id) : -1)
-	) {
+	} else if (resetBoundaryIdx >= 0 && resetBoundaryIdx > (compaction ? compactionIdx : -1)) {
 		for (let i = resetBoundaryIdx + 1; i < path.length; i++) {
 			appendMessage(path[i]);
 		}
@@ -287,11 +308,7 @@ export function buildSessionContext(
 			pushMessage(compactionSummaryMsg);
 		}
 
-		const compactionIdx = path.findIndex(e => e.type === "compaction" && e.id === compaction.id);
-
 		if (!remoteReplacementHistory || options?.transcript) {
-			const firstKeptIdx = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
-
 			// An extension compactor may fold the whole window by reporting an empty boundary, and a
 			// rewritten history can leave the id stale. Dropping everything is correct for the model
 			// context (the summary replaces it) but would erase display-only scrollback.
@@ -300,7 +317,6 @@ export function buildSessionContext(
 				appendMessage(path[i]);
 			}
 		} else if (compaction.providerReplayThroughEntryId) {
-			const replayThroughIdx = path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId);
 			if (replayThroughIdx >= 0 && replayThroughIdx < compactionIdx) {
 				for (let i = replayThroughIdx + 1; i < compactionIdx; i++) {
 					appendMessage(path[i]);

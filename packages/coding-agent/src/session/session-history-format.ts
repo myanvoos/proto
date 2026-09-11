@@ -8,6 +8,7 @@ import type {
 	VideoContent,
 } from "@oh-my-pi/pi-ai";
 import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
+import { countTextLines } from "../tools/read-format";
 import type {
 	BashExecutionMessage,
 	BranchSummaryMessage,
@@ -77,11 +78,6 @@ function contentToText(
 	return parts.join("\n");
 }
 
-function lineCount(text: string): number {
-	if (!text) return 0;
-	return text.split("\n").length;
-}
-
 function primaryArgValue(value: unknown): string {
 	if (typeof value === "string" && value.length > 0) return value;
 	if (Array.isArray(value) && value.length > 0 && value.every(v => typeof v === "string")) {
@@ -128,8 +124,13 @@ function formatToolCallIntentPreview(args: Record<string, unknown> | undefined):
 	return typeof intent === "string" && intent.trim() ? oneLine(intent, 80) : undefined;
 }
 
+function formatToolResultErrorPreviewText(text: string): string {
+	const newlineIndex = text.indexOf("\n");
+	return oneLine(newlineIndex === -1 ? text : text.slice(0, newlineIndex));
+}
+
 export function formatToolResultErrorPreview(content: string | readonly (TextContent | ImageContent)[]): string {
-	return oneLine(contentToText(content).split("\n", 1)[0] ?? "");
+	return formatToolResultErrorPreviewText(contentToText(content));
 }
 
 function fenceDiff(diff: string): string {
@@ -151,10 +152,10 @@ function toolCallLine(
 		base = `${head} ⇒ pending`;
 	} else {
 		const text = contentToText(result.content);
-		const lines = lineCount(text);
+		const lines = countTextLines(text);
 		const count = `${lines} ${lines === 1 ? "line" : "lines"}`;
 		if (result.isError) {
-			const firstLine = formatToolResultErrorPreview(result.content);
+			const firstLine = formatToolResultErrorPreviewText(text);
 			base = firstLine ? `${head} ⇒ error · ${count} — ${firstLine}` : `${head} ⇒ error · ${count}`;
 		} else {
 			base = `${head} ⇒ ok · ${count}`;
@@ -200,7 +201,7 @@ function executionLine(
 	if (execution?.timeout) details.push(`timeout ${execution.timeout.cause}/${execution.timeout.scope}`);
 	if (execution?.collector.state === "failed") details.push("collector failed");
 	if (execution?.renderer?.state === "failed") details.push("renderer failed");
-	const lines = lineCount(msg.output);
+	const lines = countTextLines(msg.output);
 	const sourcePreview = formatExecutionSourcePreview(source);
 	const suffix = details.length > 0 ? ` · ${details.join(", ")}` : "";
 	return `→ user-${kind}! ${sourcePreview} ⇒ ${status}${suffix} · ${lines} ${lines === 1 ? "line" : "lines"}`;
