@@ -3310,6 +3310,9 @@ export class TUI extends Container {
 				break;
 			}
 		}
+		// Live-region commit boundaries affect scrollback accounting, not row
+		// preparation. Keep content-addressed rows reusable while the mutable tail
+		// grows; compose's dirty range still invalidates changed logical rows.
 		const preparedReuseBlocked =
 			resizeEventOccurred ||
 			geometryChanged ||
@@ -3321,9 +3324,6 @@ export class TUI extends Container {
 			this.#widthEpochOverlayReplayPending ||
 			this.#widthEpochOverlayBoundary !== undefined ||
 			this.#resizeScrollbackReplayPending ||
-			liveRegionStart !== undefined ||
-			liveRegionPinned ||
-			commitCeiling !== frameLength ||
 			hasVisibleOverlay;
 		const frame = this.#prepareFrame(rawFrame, width, height, preparedReuseBlocked, hasVisibleOverlay);
 		const window = this.#acquireWindow(height);

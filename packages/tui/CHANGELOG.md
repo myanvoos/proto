@@ -4,6 +4,9 @@
 
 ### Changed
 - Raw-paste classification no longer rescans the whole accumulated candidate per terminal chunk (quadratic -> linear): a 2,000-chunk 2MB paste stops costing ~1.3s of scanning.
+- Input rendering takes a printable-ASCII viewport-only fast path (5MB value: ~18.3ms/frame -> ~0.003ms/frame); all other content runs the unchanged renderer.
+- Editor caches the joined document text behind an internal line-mutation API (500k-line keystroke frame: ~3.6ms -> ~0.001ms warm).
+- Live-region streaming reuses prepared rows when content and width are unchanged (300-update ANSI-heavy probe: ~130ms -> ~7ms).
 - Container skips the unconditional children-array copy on unchanged frames; transcript viewport-tail extraction reads from cached segments instead of re-rendering children per frame.
 
 ### Changed

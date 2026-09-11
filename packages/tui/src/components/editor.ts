@@ -460,6 +460,9 @@ export class Editor implements Component, Focusable {
 		cursorLine: 0,
 		cursorCol: 0,
 	};
+	#linesRevision = 0;
+	#joinedTextRevision = -1;
+	#joinedText = "";
 	#widthEpochText = "";
 	#widthEpochRevision = 0;
 
@@ -568,6 +571,9 @@ export class Editor implements Component, Focusable {
 		this.#layoutScratch = [];
 		this.#plainRenderCache = new WeakMap();
 		this.#state = { lines: [""], cursorLine: 0, cursorCol: 0 };
+		this.#linesRevision = 0;
+		this.#joinedTextRevision = -1;
+		this.#joinedText = "";
 		this.#widthEpochText = "";
 		this.#promptGutterCache = undefined;
 		this.onAutocompleteUpdate = undefined;
@@ -677,6 +683,23 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
+	#setLines(lines: string[]): void {
+		this.#state.lines = lines.slice();
+		this.#linesRevision++;
+	}
+
+	#setLine(index: number, line: string): void {
+		if (this.#state.lines[index] === line) return;
+		this.#state.lines[index] = line;
+		this.#linesRevision++;
+	}
+
+	#spliceLines(start: number, deleteCount: number, ...items: string[]): void {
+		if (deleteCount === 0 && items.length === 0) return;
+		this.#state.lines.splice(start, deleteCount, ...items);
+		this.#linesRevision++;
+	}
+
 	#isEditorEmpty(): boolean {
 		return this.#state.lines.length === 1 && this.#state.lines[0] === "";
 	}
@@ -710,7 +733,7 @@ export class Editor implements Component, Focusable {
 	#setTextInternal(text: string, cursorAnchor: HistoryCursorAnchor = "end"): void {
 		this.#undoStack.length = 0;
 		const lines = sanitizeLoadedText(text).split("\n");
-		this.#state.lines = lines.length === 0 ? [""] : lines;
+		this.#setLines(lines.length === 0 ? [""] : lines);
 		if (cursorAnchor === "start") {
 			this.#state.cursorLine = 0;
 			this.#setCursorCol(0);
@@ -1251,14 +1274,14 @@ export class Editor implements Component, Focusable {
 					if (selected && this.#autocompleteProvider) {
 						const shouldChainSlashCommandAutocomplete = this.#isSlashCommandNameAutocompleteSelection();
 						const result = this.#autocompleteProvider.applyCompletion(
-							this.#state.lines,
+							this.#state.lines.slice(),
 							this.#state.cursorLine,
 							this.#state.cursorCol,
 							selected,
 							this.#autocompletePrefix,
 						);
 
-						this.#state.lines = result.lines;
+						this.#setLines(result.lines);
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
 
@@ -1294,14 +1317,14 @@ export class Editor implements Component, Focusable {
 					} else {
 						if (selected && this.#autocompleteProvider) {
 							const result = this.#autocompleteProvider.applyCompletion(
-								this.#state.lines,
+								this.#state.lines.slice(),
 								this.#state.cursorLine,
 								this.#state.cursorCol,
 								selected,
 								this.#autocompletePrefix,
 							);
 
-							this.#state.lines = result.lines;
+							this.#setLines(result.lines);
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
 							result.onApplied?.();
@@ -1319,14 +1342,14 @@ export class Editor implements Component, Focusable {
 						if (selected && this.#autocompleteProvider) {
 							const shouldChainSlashCommandAutocomplete = this.#isSlashCommandNameAutocompleteSelection();
 							const result = this.#autocompleteProvider.applyCompletion(
-								this.#state.lines,
+								this.#state.lines.slice(),
 								this.#state.cursorLine,
 								this.#state.cursorCol,
 								selected,
 								this.#autocompletePrefix,
 							);
 
-							this.#state.lines = result.lines;
+							this.#setLines(result.lines);
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
 
@@ -1415,13 +1438,13 @@ export class Editor implements Component, Focusable {
 
 						const selected = syncResult.items[0]!;
 						const result = this.#autocompleteProvider.applyCompletion(
-							this.#state.lines,
+							this.#state.lines.slice(),
 							this.#state.cursorLine,
 							this.#state.cursorCol,
 							selected,
 							syncResult.prefix,
 						);
-						this.#state.lines = result.lines;
+						this.#setLines(result.lines);
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
 						result.onApplied?.();
@@ -1641,7 +1664,11 @@ export class Editor implements Component, Focusable {
 	}
 
 	getText(): string {
-		return this.#state.lines.join("\n");
+		if (this.#joinedTextRevision !== this.#linesRevision) {
+			this.#joinedText = this.#state.lines.join("\n");
+			this.#joinedTextRevision = this.#linesRevision;
+		}
+		return this.#joinedText;
 	}
 
 	getNativeScrollbackWidthEpochRevision(): number {
@@ -1695,7 +1722,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	getExpandedText(): string {
-		return this.#expandPasteMarkers(this.#state.lines.join("\n"));
+		return this.#expandPasteMarkers(this.getText());
 	}
 
 	getLines(): string[] {
@@ -1740,7 +1767,7 @@ export class Editor implements Component, Focusable {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		this.#preferredVisualCol = null;
-		this.#state.lines[this.#state.cursorLine] = beforeTransient + afterTransient;
+		this.#setLine(this.#state.cursorLine, beforeTransient + afterTransient);
 		this.#setCursorCol(transientStartCol);
 
 		while (true) {
@@ -1801,8 +1828,10 @@ export class Editor implements Component, Focusable {
 		this.#exitHistoryForEditing();
 		this.#recordUndoState();
 		const line = this.#state.lines[this.#state.cursorLine] ?? "";
-		this.#state.lines[this.#state.cursorLine] =
-			line.slice(0, this.#state.cursorCol - removable) + line.slice(this.#state.cursorCol);
+		this.#setLine(
+			this.#state.cursorLine,
+			line.slice(0, this.#state.cursorCol - removable) + line.slice(this.#state.cursorCol),
+		);
 		this.#setCursorCol(this.#state.cursorCol - removable);
 		this.#lastAction = null;
 		if (this.onChange) {
@@ -1843,15 +1872,17 @@ export class Editor implements Component, Focusable {
 			if (this.#state.cursorCol > 0) {
 				const removable = Math.min(remaining, this.#state.cursorCol);
 				const line = this.#state.lines[this.#state.cursorLine] ?? "";
-				this.#state.lines[this.#state.cursorLine] =
-					line.slice(0, this.#state.cursorCol - removable) + line.slice(this.#state.cursorCol);
+				this.#setLine(
+					this.#state.cursorLine,
+					line.slice(0, this.#state.cursorCol - removable) + line.slice(this.#state.cursorCol),
+				);
 				this.#setCursorCol(this.#state.cursorCol - removable);
 				remaining -= removable;
 			} else if (this.#state.cursorLine > 0) {
 				const prev = this.#state.lines[this.#state.cursorLine - 1] ?? "";
 				const cur = this.#state.lines[this.#state.cursorLine] ?? "";
-				this.#state.lines[this.#state.cursorLine - 1] = prev + cur;
-				this.#state.lines.splice(this.#state.cursorLine, 1);
+				this.#setLine(this.#state.cursorLine - 1, prev + cur);
+				this.#spliceLines(this.#state.cursorLine, 1);
 				this.#state.cursorLine -= 1;
 				this.#setCursorCol(prev.length);
 				remaining -= 1;
@@ -1885,7 +1916,7 @@ export class Editor implements Component, Focusable {
 		const line = this.#state.lines[this.#state.cursorLine] || "";
 		const before = line.slice(0, this.#state.cursorCol - replacement.replaceLen);
 		const after = line.slice(this.#state.cursorCol);
-		this.#state.lines[this.#state.cursorLine] = before + replacement.insert + after;
+		this.#setLine(this.#state.cursorLine, before + replacement.insert + after);
 		this.#setCursorCol(before.length + replacement.insert.length);
 		this.onChange?.(this.getText());
 		if (this.#autocompleteState) {
@@ -1909,12 +1940,14 @@ export class Editor implements Component, Focusable {
 
 		const line = this.#state.lines[this.#state.cursorLine] || "";
 		const cursorCol = this.#state.cursorCol;
-		this.#state.lines[this.#state.cursorLine] =
+		this.#setLine(
+			this.#state.cursorLine,
 			cursorCol === line.length
 				? line + char
 				: cursorCol === 0
 					? char + line
-					: line.slice(0, cursorCol) + char + line.slice(cursorCol);
+					: line.slice(0, cursorCol) + char + line.slice(cursorCol),
+		);
 		this.#setCursorCol(cursorCol + char.length);
 
 		if (this.onChange) {
@@ -1929,7 +1962,11 @@ export class Editor implements Component, Focusable {
 			const cursorLine = this.#state.cursorLine;
 			const cursorCol = this.#state.cursorCol;
 			const currentLine = this.#state.lines[cursorLine] ?? "";
-			const autocorrection = this.#textAssistProvider?.tryAutocorrect?.(this.#state.lines, cursorLine, cursorCol);
+			const autocorrection = this.#textAssistProvider?.tryAutocorrect?.(
+				this.#state.lines.slice(),
+				cursorLine,
+				cursorCol,
+			);
 			if (autocorrection instanceof Promise) {
 				autocorrection
 					.then(replacement => {
@@ -2074,8 +2111,8 @@ export class Editor implements Component, Focusable {
 		const before = currentLine.slice(0, this.#state.cursorCol);
 		const after = currentLine.slice(this.#state.cursorCol);
 
-		this.#state.lines[this.#state.cursorLine] = before;
-		this.#state.lines.splice(this.#state.cursorLine + 1, 0, after);
+		this.#setLine(this.#state.cursorLine, before);
+		this.#spliceLines(this.#state.cursorLine + 1, 0, after);
 
 		this.#state.cursorLine++;
 		this.#setCursorCol(0);
@@ -2099,9 +2136,11 @@ export class Editor implements Component, Focusable {
 	#submitValue(): void {
 		this.#resetKillSequence();
 
-		const result = this.#expandPasteMarkers(this.#state.lines.join("\n")).trim();
+		const result = this.#expandPasteMarkers(this.getText()).trim();
 
-		this.#state = { lines: [""], cursorLine: 0, cursorCol: 0 };
+		this.#setLines([""]);
+		this.#state.cursorLine = 0;
+		this.#state.cursorCol = 0;
 		this.#pastes.clear();
 		this.#pasteCounter = 0;
 		this.#atoms.clear();
@@ -2178,7 +2217,7 @@ export class Editor implements Component, Focusable {
 
 			const token = this.#atomicTokenAt(line, this.#state.cursorCol - 1);
 			if (token !== undefined) {
-				this.#state.lines[this.#state.cursorLine] = line.slice(0, token.start) + line.slice(token.end);
+				this.#setLine(this.#state.cursorLine, line.slice(0, token.start) + line.slice(token.end));
 				this.#setCursorCol(token.start);
 			} else {
 				const beforeCursor = line.slice(0, this.#state.cursorCol);
@@ -2190,15 +2229,15 @@ export class Editor implements Component, Focusable {
 				const before = line.slice(0, this.#state.cursorCol - graphemeLength);
 				const after = line.slice(this.#state.cursorCol);
 
-				this.#state.lines[this.#state.cursorLine] = before + after;
+				this.#setLine(this.#state.cursorLine, before + after);
 				this.#setCursorCol(this.#state.cursorCol - graphemeLength);
 			}
 		} else if (this.#state.cursorLine > 0) {
 			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 			const previousLine = this.#state.lines[this.#state.cursorLine - 1] || "";
 
-			this.#state.lines[this.#state.cursorLine - 1] = previousLine + currentLine;
-			this.#state.lines.splice(this.#state.cursorLine, 1);
+			this.#setLine(this.#state.cursorLine - 1, previousLine + currentLine);
+			this.#spliceLines(this.#state.cursorLine, 1);
 
 			this.#state.cursorLine--;
 			this.#setCursorCol(previousLine.length);
@@ -2358,7 +2397,9 @@ export class Editor implements Component, Focusable {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		this.#preferredVisualCol = null;
-		Object.assign(this.#state, snapshot);
+		this.#setLines(snapshot.lines);
+		this.#state.cursorLine = snapshot.cursorLine;
+		this.#state.cursorCol = snapshot.cursorCol;
 
 		if (this.onChange) {
 			this.onChange(this.getText());
@@ -2423,7 +2464,7 @@ export class Editor implements Component, Focusable {
 			const line = this.#state.lines[this.#state.cursorLine] || "";
 			const before = line.slice(0, this.#state.cursorCol);
 			const after = line.slice(this.#state.cursorCol);
-			this.#state.lines[this.#state.cursorLine] = before + normalized + after;
+			this.#setLine(this.#state.cursorLine, before + normalized + after);
 			this.#setCursorCol(this.#state.cursorCol + normalized.length);
 		} else {
 			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -2445,7 +2486,7 @@ export class Editor implements Component, Focusable {
 				newLines.push(this.#state.lines[i] || "");
 			}
 
-			this.#state.lines = newLines;
+			this.#setLines(newLines);
 			this.#state.cursorLine += lines.length - 1;
 			this.#setCursorCol((lines[lines.length - 1] || "").length);
 		}
@@ -2498,7 +2539,7 @@ export class Editor implements Component, Focusable {
 			if (startCol < 0) return false;
 			if (line.slice(startCol, endCol) !== yankedText) return false;
 
-			this.#state.lines[endLine] = line.slice(0, startCol) + line.slice(endCol);
+			this.#setLine(endLine, line.slice(0, startCol) + line.slice(endCol));
 			this.#state.cursorLine = endLine;
 			this.#setCursorCol(startCol);
 			return true;
@@ -2519,7 +2560,7 @@ export class Editor implements Component, Focusable {
 		const suffix = lastLineText.slice(endCol);
 		const newLine = firstLineText.slice(0, startCol) + suffix;
 
-		this.#state.lines.splice(startLine, yankLines.length, newLine);
+		this.#spliceLines(startLine, yankLines.length, newLine);
 		this.#state.cursorLine = startLine;
 		this.#setCursorCol(startCol);
 		return true;
@@ -2535,13 +2576,13 @@ export class Editor implements Component, Focusable {
 		if (this.#state.cursorCol > 0) {
 			const { end } = this.#expandRangeOverAtomicTokens(currentLine, 0, this.#state.cursorCol);
 			deletedText = currentLine.slice(0, end);
-			this.#state.lines[this.#state.cursorLine] = currentLine.slice(end);
+			this.#setLine(this.#state.cursorLine, currentLine.slice(end));
 			this.#setCursorCol(0);
 		} else if (this.#state.cursorLine > 0) {
 			deletedText = "\n";
 			const previousLine = this.#state.lines[this.#state.cursorLine - 1] || "";
-			this.#state.lines[this.#state.cursorLine - 1] = previousLine + currentLine;
-			this.#state.lines.splice(this.#state.cursorLine, 1);
+			this.#setLine(this.#state.cursorLine - 1, previousLine + currentLine);
+			this.#spliceLines(this.#state.cursorLine, 1);
 			this.#state.cursorLine--;
 			this.#setCursorCol(previousLine.length);
 		}
@@ -2564,15 +2605,15 @@ export class Editor implements Component, Focusable {
 		if (this.#state.cursorCol < currentLine.length) {
 			const { start } = this.#expandRangeOverAtomicTokens(currentLine, this.#state.cursorCol, currentLine.length);
 			deletedText = currentLine.slice(start);
-			this.#state.lines[this.#state.cursorLine] = currentLine.slice(0, start);
+			this.#setLine(this.#state.cursorLine, currentLine.slice(0, start));
 			if (start < this.#state.cursorCol) {
 				this.#setCursorCol(start);
 			}
 		} else if (this.#state.cursorLine < this.#state.lines.length - 1) {
 			const nextLine = this.#state.lines[this.#state.cursorLine + 1] || "";
 			deletedText = "\n";
-			this.#state.lines[this.#state.cursorLine] = currentLine + nextLine;
-			this.#state.lines.splice(this.#state.cursorLine + 1, 1);
+			this.#setLine(this.#state.cursorLine, currentLine + nextLine);
+			this.#spliceLines(this.#state.cursorLine + 1, 1);
 		}
 
 		this.#recordKill(deletedText, "forward");
@@ -2593,8 +2634,8 @@ export class Editor implements Component, Focusable {
 			if (this.#state.cursorLine > 0) {
 				this.#recordKill("\n", "backward");
 				const previousLine = this.#state.lines[this.#state.cursorLine - 1] || "";
-				this.#state.lines[this.#state.cursorLine - 1] = previousLine + currentLine;
-				this.#state.lines.splice(this.#state.cursorLine, 1);
+				this.#setLine(this.#state.cursorLine - 1, previousLine + currentLine);
+				this.#spliceLines(this.#state.cursorLine, 1);
 				this.#state.cursorLine--;
 				this.#setCursorCol(previousLine.length);
 			}
@@ -2605,7 +2646,7 @@ export class Editor implements Component, Focusable {
 			const range = this.#expandRangeOverAtomicTokens(currentLine, this.#state.cursorCol, oldCursorCol);
 
 			const deletedText = currentLine.slice(range.start, range.end);
-			this.#state.lines[this.#state.cursorLine] = currentLine.slice(0, range.start) + currentLine.slice(range.end);
+			this.#setLine(this.#state.cursorLine, currentLine.slice(0, range.start) + currentLine.slice(range.end));
 			this.#setCursorCol(range.start);
 			this.#recordKill(deletedText, "backward");
 		}
@@ -2626,8 +2667,8 @@ export class Editor implements Component, Focusable {
 			if (this.#state.cursorLine < this.#state.lines.length - 1) {
 				this.#recordKill("\n", "forward");
 				const nextLine = this.#state.lines[this.#state.cursorLine + 1] || "";
-				this.#state.lines[this.#state.cursorLine] = currentLine + nextLine;
-				this.#state.lines.splice(this.#state.cursorLine + 1, 1);
+				this.#setLine(this.#state.cursorLine, currentLine + nextLine);
+				this.#spliceLines(this.#state.cursorLine + 1, 1);
 			}
 		} else {
 			const oldCursorCol = this.#state.cursorCol;
@@ -2636,7 +2677,7 @@ export class Editor implements Component, Focusable {
 			const range = this.#expandRangeOverAtomicTokens(currentLine, oldCursorCol, this.#state.cursorCol);
 
 			const deletedText = currentLine.slice(range.start, range.end);
-			this.#state.lines[this.#state.cursorLine] = currentLine.slice(0, range.start) + currentLine.slice(range.end);
+			this.#setLine(this.#state.cursorLine, currentLine.slice(0, range.start) + currentLine.slice(range.end));
 			this.#setCursorCol(range.start);
 			this.#recordKill(deletedText, "forward");
 		}
@@ -2657,8 +2698,7 @@ export class Editor implements Component, Focusable {
 		if (this.#state.cursorCol < currentLine.length) {
 			const token = this.#atomicTokenAt(currentLine, this.#state.cursorCol);
 			if (token !== undefined) {
-				this.#state.lines[this.#state.cursorLine] =
-					currentLine.slice(0, token.start) + currentLine.slice(token.end);
+				this.#setLine(this.#state.cursorLine, currentLine.slice(0, token.start) + currentLine.slice(token.end));
 				this.#setCursorCol(token.start);
 			} else {
 				const afterCursor = currentLine.slice(this.#state.cursorCol);
@@ -2669,12 +2709,12 @@ export class Editor implements Component, Focusable {
 
 				const before = currentLine.slice(0, this.#state.cursorCol);
 				const after = currentLine.slice(this.#state.cursorCol + graphemeLength);
-				this.#state.lines[this.#state.cursorLine] = before + after;
+				this.#setLine(this.#state.cursorLine, before + after);
 			}
 		} else if (this.#state.cursorLine < this.#state.lines.length - 1) {
 			const nextLine = this.#state.lines[this.#state.cursorLine + 1] || "";
-			this.#state.lines[this.#state.cursorLine] = currentLine + nextLine;
-			this.#state.lines.splice(this.#state.cursorLine + 1, 1);
+			this.#setLine(this.#state.cursorLine, currentLine + nextLine);
+			this.#spliceLines(this.#state.cursorLine + 1, 1);
 		}
 
 		if (this.onChange) {
@@ -2972,7 +3012,7 @@ export class Editor implements Component, Focusable {
 			explicitTab &&
 			this.#autocompleteProvider.shouldTriggerFileCompletion &&
 			!this.#autocompleteProvider.shouldTriggerFileCompletion(
-				this.#state.lines,
+				this.#state.lines.slice(),
 				this.#state.cursorLine,
 				this.#state.cursorCol,
 			)
@@ -3066,8 +3106,10 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 		this.#recordUndoState();
-		this.#state.lines[replacement.line] =
-			line.slice(0, replacement.startCol) + selected.value + line.slice(replacement.endCol);
+		this.#setLine(
+			replacement.line,
+			line.slice(0, replacement.startCol) + selected.value + line.slice(replacement.endCol),
+		);
 		this.#state.cursorLine = replacement.line;
 		this.#setCursorCol(replacement.startCol + selected.value.length + replacement.cursorOffset);
 		this.#lastAction = null;
@@ -3230,7 +3272,7 @@ export class Editor implements Component, Focusable {
 
 		if (this.#autocompleteProvider?.getInlineHint) {
 			const hint = this.#autocompleteProvider.getInlineHint(
-				this.#state.lines,
+				this.#state.lines.slice(),
 				this.#state.cursorLine,
 				this.#state.cursorCol,
 			);
@@ -3242,7 +3284,7 @@ export class Editor implements Component, Focusable {
 	#getWordCompletion(): string | null {
 		return (
 			this.#textAssistProvider?.getWordCompletion?.(
-				this.#state.lines,
+				this.#state.lines.slice(),
 				this.#state.cursorLine,
 				this.#state.cursorCol,
 			) ?? null

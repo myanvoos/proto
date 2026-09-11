@@ -21,11 +21,15 @@ const segmenter = getSegmenter();
 interface InputState {
 	value: string;
 	cursor: number;
+	isSimpleValue: boolean;
 }
+
+const SIMPLE_VALUE_PATTERN = /^[\x20-\x7e]*$/u;
 
 export class Input implements Component, Focusable {
 	#value: string = "";
 	#cursor: number = 0;
+	#isSimpleValue = true;
 	#useTerminalCursor = false;
 
 	prompt = "> ";
@@ -51,6 +55,7 @@ export class Input implements Component, Focusable {
 		this.#undoStack.length = 0;
 		this.#lastAction = null;
 		this.#value = value;
+		this.#isSimpleValue = SIMPLE_VALUE_PATTERN.test(value);
 
 		this.#cursor = value.length;
 	}
@@ -194,6 +199,7 @@ export class Input implements Component, Focusable {
 		this.#lastAction = "type-word";
 
 		this.#value = this.#value.slice(0, this.#cursor) + text + this.#value.slice(this.#cursor);
+		this.#isSimpleValue &&= SIMPLE_VALUE_PATTERN.test(text);
 		this.#cursor += text.length;
 	}
 
@@ -306,6 +312,7 @@ export class Input implements Component, Focusable {
 
 		this.#pushUndo();
 		this.#value = this.#value.slice(0, this.#cursor) + text + this.#value.slice(this.#cursor);
+		this.#isSimpleValue &&= SIMPLE_VALUE_PATTERN.test(text);
 		this.#cursor += text.length;
 		this.#lastAction = "yank";
 	}
@@ -324,12 +331,13 @@ export class Input implements Component, Focusable {
 		this.#killRing.rotate();
 		const text = this.#killRing.peek() ?? "";
 		this.#value = this.#value.slice(0, this.#cursor) + text + this.#value.slice(this.#cursor);
+		this.#isSimpleValue &&= SIMPLE_VALUE_PATTERN.test(text);
 		this.#cursor += text.length;
 		this.#lastAction = "yank";
 	}
 
 	#pushUndo(): void {
-		this.#undoStack.push({ value: this.#value, cursor: this.#cursor });
+		this.#undoStack.push({ value: this.#value, cursor: this.#cursor, isSimpleValue: this.#isSimpleValue });
 	}
 
 	#undo(): void {
@@ -339,6 +347,7 @@ export class Input implements Component, Focusable {
 		}
 		this.#value = snapshot.value;
 		this.#cursor = snapshot.cursor;
+		this.#isSimpleValue = snapshot.isSimpleValue;
 		this.#lastAction = null;
 	}
 
@@ -369,10 +378,60 @@ export class Input implements Component, Focusable {
 			.replace(/[\x00-\x1F\x7F]/g, "");
 
 		this.#value = this.#value.slice(0, this.#cursor) + cleanText + this.#value.slice(this.#cursor);
+		this.#isSimpleValue &&= SIMPLE_VALUE_PATTERN.test(cleanText);
 		this.#cursor += cleanText.length;
 	}
 
 	invalidate(): void {}
+
+	#sliceSimpleDisplay(start: number, end: number, displayLength: number): string {
+		if (start >= displayLength || end <= start) return "";
+		const valueEnd = Math.min(this.#value.length, end);
+		const valueText = start < valueEnd ? this.#value.slice(start, valueEnd) : "";
+		return end > this.#value.length && start <= this.#value.length ? `${valueText} ` : valueText;
+	}
+
+	#renderSimple(prompt: string, availableWidth: number): readonly string[] {
+		const cursorIndex = this.#cursor;
+		const displayLength = this.#value.length + (cursorIndex >= this.#value.length ? 1 : 0);
+		const totalCols = displayLength;
+		const cursorCols = cursorIndex;
+
+		const maxStart = Math.max(0, totalCols - availableWidth);
+		let startCol = 0;
+		if (totalCols > availableWidth) {
+			const half = Math.floor(availableWidth / 2);
+			startCol = Math.max(0, Math.min(maxStart, cursorCols - half));
+
+			const maxCursorRel = Math.max(0, availableWidth - 1);
+			const cursorRel = cursorCols - startCol;
+			if (cursorRel > maxCursorRel) {
+				startCol = Math.max(0, Math.min(maxStart, cursorCols - maxCursorRel));
+			}
+		}
+
+		const visibleText = this.#sliceSimpleDisplay(startCol, startCol + availableWidth, displayLength);
+		const prefixText = cursorCols > startCol ? this.#sliceSimpleDisplay(startCol, cursorCols, displayLength) : "";
+		let cursorDisplay = prefixText.length;
+		cursorDisplay = Math.max(0, Math.min(cursorDisplay, visibleText.length));
+
+		const beforeCursor = visibleText.slice(0, cursorDisplay);
+		const atCursor = visibleText.slice(cursorDisplay, cursorDisplay + 1);
+		const afterCursor = visibleText.slice(cursorDisplay + atCursor.length);
+
+		const marker = this.focused ? CURSOR_MARKER : "";
+		const cursorChar = this.#useTerminalCursor ? atCursor : `\x1b[7m${atCursor || " "}\x1b[27m`;
+
+		const beforeWidth = beforeCursor.length;
+		const cursorWidth = this.#useTerminalCursor ? atCursor.length : atCursor.length || 1;
+		const remainingAfterWidth = Math.max(0, availableWidth - beforeWidth - cursorWidth);
+		const clampedAfterCursor = afterCursor.slice(0, remainingAfterWidth);
+		const textWithCursor = beforeCursor + marker + cursorChar + clampedAfterCursor;
+
+		const visualLength = beforeWidth + cursorWidth + clampedAfterCursor.length;
+		const pad = padding(Math.max(0, availableWidth - visualLength));
+		return [prompt + textWithCursor + pad];
+	}
 
 	render(width: number): readonly string[] {
 		const prompt = this.prompt;
@@ -380,6 +439,10 @@ export class Input implements Component, Focusable {
 
 		if (availableWidth <= 0) {
 			return [truncateToWidth(prompt, width, Ellipsis.Omit)];
+		}
+
+		if (this.#isSimpleValue && !this.mask && Number.isSafeInteger(width)) {
+			return this.#renderSimple(prompt, availableWidth);
 		}
 
 		let cursorIndex = this.#cursor;
