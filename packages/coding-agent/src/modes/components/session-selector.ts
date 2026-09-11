@@ -187,6 +187,21 @@ interface CachedSessionDate {
 	value: string;
 }
 
+interface CachedSessionRows {
+	rowWidth: number;
+	modifiedMs: number;
+	modified: string;
+	title: string | undefined;
+	firstMessage: string;
+	size: number;
+	status: SessionStatus | undefined;
+	parentSessionPath: string | undefined;
+	cwd: string;
+	pinned: boolean;
+	normal: string[];
+	selected: string[];
+}
+
 function sessionItemHeight(session: SessionInfo): number {
 	return session.title ? 4 : 3;
 }
@@ -228,6 +243,7 @@ class SessionList implements Component {
 	#selectionMoved = false;
 	#formattedDates = new Map<string, CachedSessionDate>();
 	#normalizedMessages = new Map<string, { source: string; value: string }>();
+	#renderedRows = new Map<string, CachedSessionRows>();
 
 	constructor(
 		sessions: SessionInfo[],
@@ -304,6 +320,66 @@ class SessionList implements Component {
 		return value;
 	}
 
+	#buildSessionRows(
+		session: SessionInfo,
+		rowWidth: number,
+		cursorSymbol: string,
+		cursorWidth: number,
+		pinPrefixWidth: number,
+		pinnedPrefix: string,
+		dot: string,
+		modified: string,
+	): CachedSessionRows {
+		const normalizedMessage = this.#normalizedMessage(session);
+		const normalCursor = padding(cursorWidth);
+		const selectedCursor = theme.fg("accent", cursorSymbol);
+		const maxWidth = rowWidth - cursorWidth;
+		const pinned = this.#pinnedIds.has(session.id);
+		const pinPrefix = pinned ? pinnedPrefix : "";
+		const sessionPinWidth = pinned ? pinPrefixWidth : 0;
+		const maxTextWidth = Math.max(0, maxWidth - sessionPinWidth);
+		const normal: string[] = [];
+		const selected: string[] = [];
+
+		if (session.title) {
+			const truncatedTitle = truncateToWidth(session.title, maxTextWidth);
+			const truncatedPreview = truncateToWidth(normalizedMessage, maxWidth);
+			normal.push(`${normalCursor}${pinPrefix}${truncatedTitle}`);
+			selected.push(`${selectedCursor}${pinPrefix}${theme.bold(truncatedTitle)}`);
+			normal.push(`  ${theme.fg("dim", truncatedPreview)}`);
+			selected.push(normal[1]!);
+		} else {
+			const truncatedMessage = truncateToWidth(normalizedMessage, maxTextWidth);
+			normal.push(`${normalCursor}${pinPrefix}${truncatedMessage}`);
+			selected.push(`${selectedCursor}${pinPrefix}${theme.bold(truncatedMessage)}`);
+		}
+
+		const dim = (value: string) => theme.fg("dim", value);
+		let metadata = `  ${dim(modified)} ${dot} ${dim(formatBytes(session.size))}`;
+		const status = formatSessionStatus(session.status);
+		if (status) metadata += ` ${dot} ${status}`;
+		if (session.parentSessionPath) metadata += ` ${dot} ${dim(`${theme.icon.branch} fork`)}`;
+		if (this.#showCwd && session.cwd) metadata += ` ${dot} ${dim(shortenPath(session.cwd))}`;
+		const metadataLine = truncateToWidth(metadata, rowWidth);
+		normal.push(metadataLine);
+		selected.push(metadataLine);
+
+		return {
+			rowWidth,
+			modifiedMs: session.modified.getTime(),
+			modified,
+			title: session.title,
+			firstMessage: session.firstMessage,
+			size: session.size,
+			status: session.status,
+			parentSessionPath: session.parentSessionPath,
+			cwd: session.cwd,
+			pinned,
+			normal,
+			selected,
+		};
+	}
+
 	#lineBudget(): number {
 		const CHROME = 7;
 		const RESERVE = 1;
@@ -315,6 +391,7 @@ class SessionList implements Component {
 	}
 
 	setSessions(sessions: SessionInfo[], showCwd: boolean, pinnedIds?: ReadonlySet<string>): void {
+		this.#renderedRows.clear();
 		this.#allSessions = sessions;
 		this.#showCwd = showCwd;
 		if (pinnedIds !== undefined) this.#pinnedIds = pinnedIds;
@@ -453,7 +530,9 @@ class SessionList implements Component {
 		this.onSelect?.(session);
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.#renderedRows.clear();
+	}
 
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
@@ -507,50 +586,40 @@ class SessionList implements Component {
 			const blockStart = sessionLines.length;
 			const session = this.#filteredSessions[i];
 			const isSelected = i === this.#selectedIndex;
-
-			const normalizedMessage = this.#normalizedMessage(session);
-
-			const cursor = isSelected ? theme.fg("accent", cursorSymbol) : padding(cursorWidth);
-			const maxWidth = rowWidth - cursorWidth;
-
-			const isPinned = this.#pinnedIds.has(session.id);
-			const pinPrefix = isPinned ? pinnedPrefix : "";
-			const sessionPinWidth = isPinned ? pinPrefixWidth : 0;
-			const maxTextWidth = Math.max(0, maxWidth - sessionPinWidth);
-
-			if (session.title) {
-				const truncatedTitle = truncateToWidth(session.title, maxTextWidth);
-				const titleLine = `${cursor}${pinPrefix}${isSelected ? theme.bold(truncatedTitle) : truncatedTitle}`;
-				sessionLines.push(titleLine);
-
-				const truncatedPreview = truncateToWidth(normalizedMessage, maxWidth);
-				sessionLines.push(`  ${theme.fg("dim", truncatedPreview)}`);
-			} else {
-				const truncatedMsg = truncateToWidth(normalizedMessage, maxTextWidth);
-				const messageLine = `${cursor}${pinPrefix}${isSelected ? theme.bold(truncatedMsg) : truncatedMsg}`;
-				sessionLines.push(messageLine);
-			}
-
 			const modified = this.#formatDate(session, nowMs);
-			let metadata = `  ${dim(modified)} ${dot} ${dim(formatBytes(session.size))}`;
-			const status = formatSessionStatus(session.status);
-			if (status) {
-				metadata += ` ${dot} ${status}`;
+			const modifiedMs = session.modified.getTime();
+			const pinned = this.#pinnedIds.has(session.id);
+			let cached = this.#renderedRows.get(session.path);
+			if (
+				!cached ||
+				cached.rowWidth !== rowWidth ||
+				cached.modifiedMs !== modifiedMs ||
+				cached.modified !== modified ||
+				cached.title !== session.title ||
+				cached.firstMessage !== session.firstMessage ||
+				cached.size !== session.size ||
+				cached.status !== session.status ||
+				cached.parentSessionPath !== session.parentSessionPath ||
+				cached.cwd !== session.cwd ||
+				cached.pinned !== pinned
+			) {
+				cached = this.#buildSessionRows(
+					session,
+					rowWidth,
+					cursorSymbol,
+					cursorWidth,
+					pinPrefixWidth,
+					pinnedPrefix,
+					dot,
+					modified,
+				);
+				this.#renderedRows.set(session.path, cached);
 			}
-			if (session.parentSessionPath) {
-				metadata += ` ${dot} ${dim(`${theme.icon.branch} fork`)}`;
-			}
-			if (this.#showCwd && session.cwd) {
-				metadata += ` ${dot} ${dim(shortenPath(session.cwd))}`;
-			}
-			const metadataLine = truncateToWidth(metadata, rowWidth);
-
-			sessionLines.push(metadataLine);
+			sessionLines.push(...(isSelected ? cached.selected : cached.normal));
 
 			if (i < endIndex - 1) sessionLines.push("");
 			for (let k = blockStart; k < sessionLines.length; k++) sessionRowIndex[k] = i;
 		}
-
 		const totalRows = this.#filteredTotalRows - 1;
 		const offsetRows = startIndex * 3 + this.#filteredTitlePrefix[startIndex]!;
 		const height = sessionLines.length;

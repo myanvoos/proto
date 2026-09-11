@@ -29,6 +29,9 @@ interface MemorySample {
 	external: number;
 	rss: number;
 	pss: number | null;
+	activeHandles: number;
+	activeRequests: number;
+	fdCount: number | null;
 }
 
 interface WorkerMemoryRun {
@@ -72,8 +75,20 @@ async function sampleMemory(): Promise<MemorySample> {
 	await Bun.sleep(20);
 	Bun.gc(true);
 	const memory = process.memoryUsage();
+	const processWithHandleCounters = process as NodeJS.Process & {
+		_getActiveHandles?: () => unknown[];
+		_getActiveRequests?: () => unknown[];
+	};
+	const activeHandles = processWithHandleCounters._getActiveHandles?.().length ?? 0;
+	const activeRequests = processWithHandleCounters._getActiveRequests?.().length ?? 0;
+	let fdCount: number | null = null;
 	let pss: number | null = null;
 	if (process.platform === "linux") {
+		try {
+			fdCount = (await fs.readdir("/proc/self/fd")).length;
+		} catch {
+			// Some Linux sandboxes restrict procfs; null explicitly means unavailable.
+		}
 		try {
 			const rollup = await Bun.file("/proc/self/smaps_rollup").text();
 			const match = /^Pss:\s+(\d+) kB$/m.exec(rollup);
@@ -82,7 +97,15 @@ async function sampleMemory(): Promise<MemorySample> {
 			// Some Linux sandboxes restrict procfs; null explicitly means unavailable.
 		}
 	}
-	return { heapUsed: memory.heapUsed, external: memory.external, rss: memory.rss, pss };
+	return {
+		heapUsed: memory.heapUsed,
+		external: memory.external,
+		rss: memory.rss,
+		pss,
+		activeHandles,
+		activeRequests,
+		fdCount,
+	};
 }
 
 function assistantMessage(model: Model, content: AssistantMessage["content"]): AssistantMessage {

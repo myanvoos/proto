@@ -345,7 +345,7 @@ function containsBlobRef(value: unknown, key?: string): boolean {
 		return false;
 	}
 
-	if (shouldResolveImagePayload(value, key) && isBlobRef(value.data)) return true;
+	if (shouldResolveImagePayload(value, key)) return true;
 	if (
 		"type" in value &&
 		value.type === "image_generation_call" &&
@@ -357,7 +357,7 @@ function containsBlobRef(value: unknown, key?: string): boolean {
 	}
 	if (hasImageUrl(value) && isBlobRef(value.image_url)) return true;
 
-	for (const childKey in value) {
+	for (const childKey of Object.keys(value)) {
 		const child = (value as Record<string, unknown>)[childKey];
 		if (typeof child === "object" && child !== null && containsBlobRef(child, childKey)) return true;
 	}

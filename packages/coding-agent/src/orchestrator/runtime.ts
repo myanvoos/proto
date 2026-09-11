@@ -44,6 +44,8 @@ const RESPONSE_PREVIEW_MAX = 6000;
 
 const TEARDOWN_GRACE_MS = 5_000;
 
+export const ORCHESTRATOR_IDLE_PAYLOAD_WINDOW = 32;
+
 const ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE = "orchestrator-worker-lifecycle";
 const WORKER_LIFECYCLE_VERSION = 1;
 
@@ -164,6 +166,7 @@ interface WorkerRecord {
 	outputSchema?: unknown;
 	outputSchemaMode: StructuredSubagentSchemaMode;
 	outputSchemaSource: StructuredSubagentSchemaSource;
+	payloadStubbed: boolean;
 	state: WorkerState;
 	createdAt: number;
 	lastActivityAt: number;
@@ -465,6 +468,7 @@ export class OrchestratorRuntime {
 			...(record.outputSchema !== undefined ? { outputSchema: record.outputSchema } : {}),
 			outputSchemaMode: "permissive",
 			outputSchemaSource: "none",
+			payloadStubbed: false,
 			state: record.state ?? "running",
 			createdAt: now,
 			lastActivityAt: now,
@@ -706,6 +710,24 @@ export class OrchestratorRuntime {
 		}
 	}
 
+	#compactIdleRecord(record: WorkerRecord): void {
+		record.agent = undefined;
+		record.model = undefined;
+		record.modelOverride = undefined;
+		record.modelRole = undefined;
+		record.outputSchema = undefined;
+		record.live = undefined;
+		record.queue.length = 0;
+		record.payloadStubbed = true;
+	}
+
+	#compactIdleRecords(): void {
+		const idle = [...this.#records.values()]
+			.filter(record => record.state === "idle" && record.turn === undefined && !record.payloadStubbed)
+			.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+		for (const record of idle.slice(ORCHESTRATOR_IDLE_PAYLOAD_WINDOW)) this.#compactIdleRecord(record);
+	}
+
 	#markRecordTerminal(record: WorkerRecord, reason: WorkerTombstoneReason, activity?: string): void {
 		record.state = "dead";
 		record.terminal = this.#terminalInfo(record, reason);
@@ -768,6 +790,7 @@ export class OrchestratorRuntime {
 	}
 
 	listIds(session: ToolSession): string[] {
+		this.#compactIdleRecords();
 		return this.#listIds(this.ownerScope(session));
 	}
 
@@ -787,6 +810,7 @@ export class OrchestratorRuntime {
 				this.#markRecordTerminal(record, "ownership-lost", "terminal: worker ownership is no longer addressable");
 			}
 		}
+		this.#compactIdleRecords();
 		return records.map(record => ({
 			id: record.id,
 			label: record.label,
@@ -1053,6 +1077,7 @@ export class OrchestratorRuntime {
 				modelRole,
 				...(spawn.effort !== undefined ? { effort: spawn.effort } : {}),
 				...schema,
+				payloadStubbed: false,
 				state: "idle",
 				createdAt: spawn.createdAt,
 				lastActivityAt: candidate.lastActivityAt,
@@ -1065,6 +1090,7 @@ export class OrchestratorRuntime {
 			});
 			restored++;
 		}
+		this.#compactIdleRecords();
 		return restored;
 	}
 
@@ -1143,6 +1169,7 @@ export class OrchestratorRuntime {
 			modelRole,
 			...(args.effort !== undefined ? { effort: args.effort } : {}),
 			...schema,
+			payloadStubbed: false,
 			state: "starting",
 			createdAt,
 			lastActivityAt: createdAt,
@@ -1196,6 +1223,11 @@ export class OrchestratorRuntime {
 		const record = this.#record(scope, args.session);
 		if (record.state === "dead" || record.terminal) {
 			throw this.#terminalError(record);
+		}
+		if (record.payloadStubbed) {
+			throw new ToolError(
+				`Worker "${record.id}" is retained as compact history and cannot accept a follow-up turn; read history://${record.id} or spawn a new worker.`,
+			);
 		}
 		const message = args.message.trim();
 		if (!message) throw new ToolError("Message must not be empty.");
@@ -1790,7 +1822,10 @@ export class OrchestratorRuntime {
 			return;
 		}
 		record.turn = undefined;
-		if (record.queue.length === 0) return;
+		if (record.queue.length === 0) {
+			this.#compactIdleRecords();
+			return;
+		}
 		const nextMessage = record.queue.splice(0, record.queue.length).join("\n\n");
 		try {
 			this.#registerTurnJob(session, manager, record, nextMessage, { first: false });

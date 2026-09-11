@@ -35,8 +35,8 @@ function getHighlightColors(t: Theme): NativeHighlightColors {
 }
 
 const HIGHLIGHT_CACHE_MAX = 1024;
-const HIGHLIGHT_CACHE_MAX_SIZE = 8 * 1024 * 1024;
-const HIGHLIGHT_CACHE_MAX_ENTRY_SIZE = 256 * 1024;
+const HIGHLIGHT_CACHE_MAX_SIZE = 16 * 1024 * 1024;
+const HIGHLIGHT_CACHE_MAX_ENTRY_SIZE = 2 * 1024 * 1024;
 const highlightCache = new LRUCache<string, readonly string[]>({
 	max: HIGHLIGHT_CACHE_MAX,
 	maxSize: HIGHLIGHT_CACHE_MAX_SIZE,

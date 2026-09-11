@@ -185,9 +185,9 @@ export function truncateStartToWidth(text: string, maxWidth: number): string {
 }
 
 const WRAP_CACHE_MAX = 512;
-const WRAP_CACHE_MAX_SIZE = 4 * 1024 * 1024;
-const WRAP_CACHE_MAX_ENTRY_SIZE = 64 * 1024;
-const WRAP_CACHE_MAX_TEXT_LENGTH = 8 * 1024;
+const WRAP_CACHE_MAX_SIZE = 16 * 1024 * 1024;
+const WRAP_CACHE_MAX_ENTRY_SIZE = 512 * 1024;
+const WRAP_CACHE_MAX_TEXT_LENGTH = 64 * 1024;
 
 const wrapCache = new LRUCache<string, string[]>({
 	max: WRAP_CACHE_MAX,
@@ -206,7 +206,7 @@ export function wrapTextWithAnsi(text: string, width: number): string[] {
 	}
 
 	// Short plain ASCII lines are already a complete wrapped row. Besides avoiding
-	// the native call this keeps the common transcript path allocation-free.
+	// the native call this keeps the common transcript path on a cheap JS path.
 	if (width > 0 && text.length <= width && PRINTABLE_ASCII_REGEX.test(text)) return [text];
 	if (text.length > WRAP_CACHE_MAX_TEXT_LENGTH) return nativeWrapTextWithAnsi(text, width, DEFAULT_TAB_WIDTH);
 
@@ -260,6 +260,31 @@ const HANGUL_FILLER_CODE_POINT = 0x3164;
 
 const HANGUL_COMPAT_JAMO_BUN_WIDTH = 2;
 
+function printableAsciiSgrWidth(str: string): number | undefined {
+	let width = 0;
+	for (let i = 0; i < str.length; i++) {
+		const code = str.charCodeAt(i);
+		if (code === 0x1b) {
+			if (str.charCodeAt(i + 1) !== 0x5b) return undefined;
+			i += 2;
+			let terminated = false;
+			for (; i < str.length; i++) {
+				const final = str.charCodeAt(i);
+				if (final >= 0x40 && final <= 0x7e) {
+					if (final !== 0x6d) return undefined;
+					terminated = true;
+					break;
+				}
+			}
+			if (!terminated) return undefined;
+			continue;
+		}
+		if (code < 0x20 || code > 0x7e) return undefined;
+		width++;
+	}
+	return width;
+}
+
 function hangulCompatibilityJamoTargetWidth(): 1 | 2 | null {
 	switch (hangulCompatibilityJamoWidth) {
 		case 1:
@@ -284,7 +309,7 @@ function correctHangulCompatibilityJamoWidth(
 }
 
 const VISIBLE_WIDTH_CACHE_MAX = 2048;
-const VISIBLE_WIDTH_CACHE_MAX_LEN = 512;
+const VISIBLE_WIDTH_CACHE_MAX_LEN = 64;
 const visibleWidthCache = new Map<string, number>();
 let visibleWidthCacheEpoch = widthConfigEpoch;
 
@@ -302,6 +327,10 @@ export function visibleWidth(str: string): number {
 	// Printable ASCII has a one-cell-per-code-unit width; avoid cache churn for
 	// these ubiquitous short labels and let the regex be the complete fast path.
 	if (PRINTABLE_ASCII_REGEX.test(str)) return str.length;
+	if (str.indexOf("\x1b") !== -1) {
+		const sgrWidth = printableAsciiSgrWidth(str);
+		if (sgrWidth !== undefined) return sgrWidth;
+	}
 
 	const cacheable = str.length <= VISIBLE_WIDTH_CACHE_MAX_LEN;
 	if (cacheable) {

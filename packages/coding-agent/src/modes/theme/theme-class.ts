@@ -121,6 +121,10 @@ const BACKGROUND_RESET_PATTERN = /\x1b\[(?:0|49)m/g;
 export class Theme {
 	#fgColors: Record<ThemeColor, string>;
 	#bgColors: Record<ThemeBg, string>;
+	readonly #boldBuilder = chalk.bold;
+	readonly #italicBuilder = chalk.italic;
+	readonly #underlineBuilder = chalk.underline;
+	readonly #strikethroughBuilder = chalk.strikethrough;
 
 	readonly #hexFgColors: Record<ThemeColor, string>;
 
@@ -209,19 +213,19 @@ export class Theme {
 	}
 
 	bold(text: string): string {
-		return chalk.bold(text);
+		return this.#boldBuilder(text);
 	}
 
 	italic(text: string): string {
-		return chalk.italic(text);
+		return this.#italicBuilder(text);
 	}
 
 	underline(text: string): string {
-		return chalk.underline(text);
+		return this.#underlineBuilder(text);
 	}
 
 	strikethrough(text: string): string {
-		return chalk.strikethrough(text);
+		return this.#strikethroughBuilder(text);
 	}
 
 	inverse(text: string): string {

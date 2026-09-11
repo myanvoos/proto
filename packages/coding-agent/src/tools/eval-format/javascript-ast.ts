@@ -65,8 +65,8 @@ function parseOutline(source: string): OutlineNode[] | null {
 }
 
 const OUTLINE_CACHE_MAX = 512;
-const OUTLINE_CACHE_MAX_SIZE = 8 * 1024 * 1024;
-const OUTLINE_CACHE_MAX_ENTRY_SIZE = 256 * 1024;
+const OUTLINE_CACHE_MAX_SIZE = 16 * 1024 * 1024;
+const OUTLINE_CACHE_MAX_ENTRY_SIZE = 2 * 1024 * 1024;
 
 function outlineCacheEntrySize(value: OutlineNode[] | null, key: string): number {
 	let size = key.length + 1;

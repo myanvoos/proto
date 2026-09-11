@@ -753,8 +753,8 @@ for (const table of [Lexer.rules.block.normal, Lexer.rules.block.gfm]) {
 }
 
 const RENDER_CACHE_MAX = 256;
-const RENDER_CACHE_MAX_SIZE = 4 * 1024 * 1024;
-const RENDER_CACHE_MAX_ENTRY_SIZE = 256 * 1024;
+const RENDER_CACHE_MAX_SIZE = 16 * 1024 * 1024;
+const RENDER_CACHE_MAX_ENTRY_SIZE = 2 * 1024 * 1024;
 const INCREMENTAL_FRAGMENT_CACHE_MAX_SIZE = RENDER_CACHE_MAX_SIZE;
 const EMPTY_RENDER_LINES: readonly string[] = [];
 

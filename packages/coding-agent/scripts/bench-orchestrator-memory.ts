@@ -1,7 +1,7 @@
 import type { Model } from "@oh-my-pi/pi-ai";
 import { AsyncJobManager } from "../src/async/job-manager";
 import { Settings } from "../src/config/settings";
-import { OrchestratorRuntime } from "../src/orchestrator/runtime";
+import { ORCHESTRATOR_IDLE_PAYLOAD_WINDOW, OrchestratorRuntime } from "../src/orchestrator/runtime";
 import { AgentLifecycleManager } from "../src/registry/agent-lifecycle";
 import { AgentRegistry } from "../src/registry/agent-registry";
 
@@ -72,6 +72,7 @@ const session = {
 
 const runtime = new OrchestratorRuntime();
 const before = collectMemory();
+const schemaRefs: WeakRef<object>[] = [];
 const ordinaryPrompt = "ordinary task prompt ".repeat(Math.ceil(ordinaryPromptSize / 22)).slice(0, ordinaryPromptSize);
 for (let worker = 0; worker < ordinaryWorkers; worker++) {
 	const agent = {
@@ -103,16 +104,29 @@ for (let worker = 0; worker < stressWorkers; worker++) {
 		tools: [],
 	};
 	runtime.setWorkerResolutionForTesting(agent, {} as Model);
+	const outputSchema = { type: "object", properties };
+	schemaRefs.push(new WeakRef(outputSchema));
 	const spawned = await runtime.spawn(session, {
 		agent: "worker",
 		name: `stress-${worker}`,
 		prompt: `stress task ${worker}: ${ordinaryPrompt}`,
-		outputSchema: { type: "object", properties },
+		outputSchema,
 	});
 	manager.cancel(spawned.jobId, { ownerId: "memory-benchmark-parent" });
 }
 await manager.waitForAll();
+const retainedWorkerIds = runtime.listIds(session).length;
 const after = collectMemory();
+const retainedOutputSchemas = schemaRefs.filter(ref => ref.deref() !== undefined).length;
+const expectedWorkerIds = ordinaryWorkers + stressWorkers;
+if (retainedWorkerIds !== expectedWorkerIds) {
+	throw new Error(`Worker records lost addressability: expected ${expectedWorkerIds}, got ${retainedWorkerIds}`);
+}
+if (expectedWorkerIds > ORCHESTRATOR_IDLE_PAYLOAD_WINDOW && retainedOutputSchemas > ORCHESTRATOR_IDLE_PAYLOAD_WINDOW) {
+	throw new Error(
+		`Worker payload window exceeded: ${retainedOutputSchemas} output schemas retained (cap ${ORCHESTRATOR_IDLE_PAYLOAD_WINDOW})`,
+	);
+}
 console.log(
 	JSON.stringify({
 		lifecycleWorkers,
@@ -128,7 +142,8 @@ console.log(
 		after,
 		heapUsedDelta: after.heapUsed - before.heapUsed,
 		rssDelta: after.rss - before.rss,
-		retainedWorkerIds: runtime.listIds(session).length,
+		retainedWorkerIds,
+		retainedOutputSchemas,
 		retainedJobs: manager.getAllJobs().length,
 	}),
 );
