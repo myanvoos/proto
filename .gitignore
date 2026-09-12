@@ -41,8 +41,6 @@ packages/ai/test/.temp-images/
 .opencode/
 .worktrees/
 .worktree/
-compaction-results/
-changes/
 __pycache__/
 
 syntax.jsonl
@@ -56,12 +54,4 @@ packages/natives/npm/
 python/proto-rpc/src/proto_rpc.egg-info/
 python/proto-rpc/build/
 .wt/
-CPU*.md
-packages/coding-agent/binaries/
 
-/verify-out/
-
-packages/coding-agent/bench/boot-baseline.json
-
-
-/target-review-ci/

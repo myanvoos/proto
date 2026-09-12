@@ -84,43 +84,6 @@ const ZodUser = z.object({ name: z.string() });
 const user = ZodUser.parse({ name: "Ada" });
 ```
 
-## Performance
-
-Run the benchmark from the repository root:
-
-```sh
-bun packages/omptype/bench/bench.ts
-```
-
-The harness first requires every candidate to accept, reject, and transform the
-same fixtures correctly. Compile and cold-start results use 400 unique object
-schemas and report the fastest of five repetitions. Hot validation mixes valid
-and invalid inputs after 2,000 warmup calls. The valid-only row uses each
-library's public boolean path after 20,000 warmup calls.
-
-Representative result on an Apple M4 Max with Darwin 25.6.0 and Bun 1.3.14:
-
-| Phase                   |    omptype |           ArkType |         TypeBox |
-| ----------------------- | ---------: | ----------------: | --------------: |
-| Compile `type()`        |  **509ns** | 271.08µs (532.3×) | 27.36µs (53.7×) |
-| Compile + 2 validations | **2.18µs** | 526.46µs (241.5×) | 46.90µs (21.5×) |
-
-| Hot workload               |  omptype |         ArkType |         TypeBox |
-| -------------------------- | -------: | --------------: | --------------: |
-| `flat-small`               | **25ns** | 5.10µs (203.7×) |  1.23µs (49.2×) |
-| `enum-union`               | **27ns** | 4.92µs (185.0×) |  2.20µs (83.0×) |
-| `nested-arrays`            | **29ns** | 4.80µs (163.0×) | 3.01µs (102.2×) |
-| `strict-defaults`          | **40ns** | 4.85µs (122.1×) | 4.92µs (123.9×) |
-| `delete-extras`            | **22ns** | 4.12µs (191.6×) |  2.07µs (96.0×) |
-| `record-mixed`             | **43ns** | 4.32µs (100.4×) |  3.35µs (77.9×) |
-| `deep-message`             | **31ns** | 6.32µs (202.5×) | 5.13µs (164.5×) |
-| `nested-arrays` valid-only | **15ns** |     28ns (1.8×) |     45ns (2.9×) |
-
-Lower times are better. Parenthetical values show how many times slower each
-candidate was than omptype in this run. Results vary with hardware, runtime,
-thermal state, and dependency versions; use the command above for local
-measurements.
-
 ## License
 
 MIT

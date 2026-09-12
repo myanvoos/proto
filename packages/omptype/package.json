@@ -19,11 +19,9 @@
     "check:types": "tsgo -p tsconfig.json --noEmit",
     "lint": "biome lint .",
     "fix": "biome check --write --unsafe .",
-    "fmt": "biome format --write .",
-    "bench": "bun bench/bench.ts"
+    "fmt": "biome format --write ."
   },
   "devDependencies": {
-    "@sinclair/typebox": "^0.34.0",
     "@types/bun": "catalog:"
   },
   "engines": {

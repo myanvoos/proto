@@ -19,7 +19,6 @@
 		"node_modules",
 		"test",
 		"tests",
-		"scripts",
-		"bench"
+		"scripts"
 	]
 }
