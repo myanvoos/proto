@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.6] - 2026-09-12
+
 ### Breaking Changes
 
 - Direct MCP transport consumers must construct `StdioTransport`, `HttpTransport`, or `LegacySseTransport` and call `connect({ signal })`; the `createStdioTransport`, `createHttpTransport`, and `createSseTransport` factory exports have been removed.
@@ -37,6 +39,7 @@
 - Running kernel cells (`eval`/`kernel` and bash-routed `python`/`node`/`bun`) lay out the live block by priority — Status heads, then diff hunks (newest first), then the output tail, then the code tail — so hunks no longer wait on the output preview or the cell settling, and the block stays inside the terminal's live window.
 
 ### Fixed
+
 - Detached sessions keep their active main turn, subagents, and Fleet/IRC state when another session runs, and restore the live stream when reattached.
 - Fresh sessions no longer inherit prior sessions’ Fleet peers, queued IRC messages, or kernel bridge capabilities.
 - Session ownership now clears as soon as the owning process exits instead of lingering for the heartbeat timeout; cross-process warnings say the session is currently in use rather than merely open.

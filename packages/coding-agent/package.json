@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/pi-coding-agent",
-  "version": "18.0.6",
+  "version": "18.1.6",
   "description": "Coding agent CLI with bash, read tools and session management",
   "homepage": "https://github.com/myanvoos/proto",
   "author": "Stencil Labs, Inc.",

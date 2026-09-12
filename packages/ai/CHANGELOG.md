@@ -2,7 +2,10 @@
 
 ## [Unreleased]
 
+## [18.1.6] - 2026-09-12
+
 ### Changed
+
 - Dialect definitions load lazily per dialect id via a require switch (factory import: ~74MB -> ~33MB RSS; only xml/minimax additionally load their anthropic/deepseek scanner dependencies when selected).
 - Thinking-loop exact-cycle detection reuses preallocated UTF-16 code-unit buffers instead of rebuilding a reversed string and Z table every 128 characters (949k-char stream in 20-char deltas: ~228ms -> ~95ms; 1000-char deltas: ~29ms -> ~6ms); detection results are bit-identical.
 - Thinking scanner skips marker-free spans with exact indexOf scanning instead of re-slicing and re-checking tag prefixes per character (1M-char plain delta: ~56ms -> ~0.05ms; 20-char feeds ~95ms -> ~8ms).

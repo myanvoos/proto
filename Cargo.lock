@@ -732,9 +732,9 @@ dependencies = [
 
 [[package]]
 name = "bytemuck_derive"
-version = "1.12.0"
+version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc0e56a716f1e132ff6bf4bdac1c944a3fcdc1cae65f70a4a2a1ac3b401d2d1f"
+checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3452,9 +3452,9 @@ dependencies = [
 
 [[package]]
 name = "napi"
-version = "3.12.3"
+version = "3.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2862d9586f6afe036f7f7fd03d017d3c11d948a4e34702c212dd9ef62ed98b58"
+checksum = "3d2c1d080c842ec1347ebf3cfb9347c15f8c2262f143cc30eea41ddf1c7da720"
 dependencies = [
  "bitflags 2.13.2",
  "ctor",
@@ -3475,9 +3475,9 @@ checksum = "860e7c40864f95cfb83cde99f9ebadd88ef3d9bdccd7dd2cee0cc96a2dd4ffa7"
 
 [[package]]
 name = "napi-derive"
-version = "3.6.4"
+version = "3.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3be5cc49fdef0239132348d2a2991d4e24b643ff6976ada349b20823b161ab28"
+checksum = "350057056a30368aa76c11a0d406b0aa61321710be2c36656ab4f6efe0b785a2"
 dependencies = [
  "convert_case 0.12.0",
  "ctor",
@@ -4388,7 +4388,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ast"
-version = "18.0.6"
+version = "18.1.6"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -4455,7 +4455,7 @@ dependencies = [
 
 [[package]]
 name = "pi-builtins"
-version = "18.0.6"
+version = "18.1.6"
 dependencies = [
  "ansi-width",
  "argmax",
@@ -4535,7 +4535,7 @@ dependencies = [
 
 [[package]]
 name = "pi-iso"
-version = "18.0.6"
+version = "18.1.6"
 dependencies = [
  "async-trait",
  "libc",
@@ -4546,7 +4546,7 @@ dependencies = [
 
 [[package]]
 name = "pi-natives"
-version = "18.0.6"
+version = "18.1.6"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4604,7 +4604,7 @@ dependencies = [
 
 [[package]]
 name = "pi-shell"
-version = "18.0.6"
+version = "18.1.6"
 dependencies = [
  "anyhow",
  "brush-core",
@@ -4626,7 +4626,7 @@ dependencies = [
 
 [[package]]
 name = "pi-walker"
-version = "18.0.6"
+version = "18.1.6"
 dependencies = [
  "dashmap",
  "globset",
@@ -5405,9 +5405,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.16.0"
+version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
+checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 dependencies = [
  "serde",
 ]
@@ -5842,9 +5842,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.14+spec-1.1.0"
+version = "0.25.15+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2195eec204e2764644a4ea619704f9fbe5e0673038eded55ad9956f24fca0cc"
+checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
 dependencies = [
  "indexmap",
  "toml_datetime",

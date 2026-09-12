@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.6] - 2026-09-12
+
 ### Changed
 
 - Bundled model catalog now loads lazily per provider: sessions and tools only materialize the providers they actually look up, cutting ~30MB of resident memory at startup.

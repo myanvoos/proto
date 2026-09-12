@@ -2,15 +2,15 @@
 
 ## [Unreleased]
 
+## [18.1.6] - 2026-09-12
+
 ### Changed
+
 - Raw-paste classification no longer rescans the whole accumulated candidate per terminal chunk (quadratic -> linear): a 2,000-chunk 2MB paste stops costing ~1.3s of scanning.
 - Input rendering takes a printable-ASCII viewport-only fast path (5MB value: ~18.3ms/frame -> ~0.003ms/frame); all other content runs the unchanged renderer.
 - Editor caches the joined document text behind an internal line-mutation API (500k-line keystroke frame: ~3.6ms -> ~0.001ms warm).
 - Live-region streaming reuses prepared rows when content and width are unchanged (300-update ANSI-heavy probe: ~130ms -> ~7ms).
 - Container skips the unconditional children-array copy on unchanged frames; transcript viewport-tail extraction reads from cached segments instead of re-rendering children per frame.
-
-### Changed
-
 - Bounded memoization caches now cover ANSI wrapping, truncation, and output-block composition, with printable-ASCII and SGR-only fast paths for visible-width measurement; full-frame renders drop ~27% at p50 and ~54% at p90, keystroke frames ~26% at p50 and ~60% at p99, and cold first frame ~29%.
 - Markdown and syntax-highlighted code render through shared content-addressed caches that survive transcript rebuilds (bounded LRU with explicit entry/total caps), cutting cold compose of a 3,400-message transcript by ~70% at p50 (1.07s -> ~0.33s in the stress harness; per-frame warm renders ~5ms).
 - Large tool outputs and code blocks (up to 4 MiB per entry, 16 MiB total) stay cached across renders so oversized blocks no longer re-highlight on every frame.

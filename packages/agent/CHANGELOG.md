@@ -2,7 +2,10 @@
 
 ## [Unreleased]
 
+## [18.1.6] - 2026-09-12
+
 ### Changed
+
 - Branch summarization builds retained entries with push+reverse instead of per-entry unshift (O(N^2) -> O(N)).
 - Streaming assistant snapshots share settled content blocks instead of deep-cloning the full message on every delta (O(blocks x deltas) clone calls drop to ~1 per delta on long responses).
 - Summary chunking reuses serialized message fragments instead of rebuilding each window transcript (serializer loop ~42ms -> ~32ms on the 5k-message probe).
