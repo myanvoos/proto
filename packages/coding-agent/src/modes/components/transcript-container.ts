@@ -873,12 +873,12 @@ export class TranscriptContainer
 			}
 		}
 
-		// Pin a non-displaceable live run at its end, including when it is the
-		// trailing transcript block. Its own rows can then cross the native
-		// scrollback seam as they leave the viewport; only rows after the live run
-		// stay viewport-local. Anchoring at the run's start would create an
-		// invisible gap once a long tool preview or reply outgrew the viewport.
-		if (!this.#nativeScrollbackLiveRegionPinned && liveStartIndex >= 0) {
+		// Pin a live run ending in a non-displaceable block at that block's end,
+		// including when an earlier displaceable block supplied a stricter pin.
+		// Once later transcript content exists the earlier block can no longer be
+		// removed without rewriting history, so retaining its start boundary would
+		// turn the growing reply into a viewport-only window until finalization.
+		if (liveStartIndex >= 0) {
 			let lastLiveIndex = liveStartIndex;
 			for (let i = liveStartIndex + 1; i < count; i++) {
 				if (!segments[i]!.finalized) lastLiveIndex = i;

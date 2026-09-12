@@ -1,6 +1,8 @@
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionFactory } from "../../extensibility/extensions/types";
 
+export const MEMORY_THINKING_LEVEL: "low";
+
 export function resolveMemoryModelCandidates(context: {
 	model?: Model;
 	models: { resolve(spec: string): Model | undefined };

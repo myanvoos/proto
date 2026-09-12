@@ -11,7 +11,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import { CONDUCTOR_TRANSCRIPT_FILENAME } from "../../../conductor/transcript";
 import type { Keybinding, KeyId } from "../../../config/keybindings";
 import type { MessageRenderer } from "../../../extensibility/extensions/types";
@@ -208,6 +208,9 @@ export class AgentsViewComponent implements Component {
 	#selectedIdentity: string | undefined;
 
 	#scopeFrames: AgentsViewScopeFrame[] = [];
+	#sessionListScope: "cwd" | "all" = "cwd";
+	readonly #cwdKey: string;
+	#cwdKeys = new Map<string, string>();
 
 	#scopedAtMount = false;
 
@@ -251,6 +254,7 @@ export class AgentsViewComponent implements Component {
 		this.#deps = deps;
 		this.#registry = deps.registry ?? AgentRegistry.global();
 		this.#initialSessions = deps.initialSessions;
+		this.#cwdKey = normalizePathForComparison(deps.cwd);
 
 		const editorTheme = { ...getEditorTheme(), symbols: { ...getSymbolTheme(), inputCursor: "" } };
 		editorTheme.hintStyle = text => text;
@@ -387,6 +391,7 @@ export class AgentsViewComponent implements Component {
 		this.#rows = [];
 		this.#persistedChildSessions = [];
 		this.#persistSeededPaths.clear();
+		this.#cwdKeys.clear();
 		this.#spawnTasks.clear();
 		this.#childSessionsFingerprint = "";
 	}
@@ -448,9 +453,23 @@ export class AgentsViewComponent implements Component {
 		this.#rebuildRows();
 	}
 
+	#recordMatchesCwd(record: AgentsViewRecord): boolean {
+		const cwd = record.session?.cwd ?? record.ref?.session?.sessionManager.getCwd();
+		if (cwd === undefined) return false;
+		let key = this.#cwdKeys.get(cwd);
+		if (key === undefined) {
+			key = normalizePathForComparison(cwd);
+			this.#cwdKeys.set(cwd, key);
+		}
+		return key === this.#cwdKey;
+	}
+
 	#rebuildRows(): void {
 		const scopedIdentity = this.#scopeFrames.at(-1)?.identity;
 		let records = scopeToRecordSubtree(this.#records, scopedIdentity, this.#index);
+		if (this.#deps.hideSubagents && this.#sessionListScope === "cwd") {
+			records = records.filter(record => this.#recordMatchesCwd(record));
+		}
 		if (this.#parsedQuery.error !== undefined) {
 			records = [];
 		} else if (this.#query.trim().length > 0) {
@@ -558,6 +577,13 @@ export class AgentsViewComponent implements Component {
 		}
 		if (matchesKey(data, "pageUp")) {
 			this.#moveSelection(-this.#visibleListRows());
+			return;
+		}
+		if (matchesKey(data, "tab") && this.#deps.hideSubagents) {
+			this.#clearPendingDelete();
+			this.#sessionListScope = this.#sessionListScope === "cwd" ? "all" : "cwd";
+			this.#rebuildRows();
+			this.#deps.requestRender();
 			return;
 		}
 
@@ -1202,6 +1228,9 @@ export class AgentsViewComponent implements Component {
 		const resolvedModel = selected?.record?.ref?.history?.resolvedModel;
 		const modelId = resolvedModel ? resolvedModel.split("@")[0]?.split("/").pop() : this.#deps.modelName;
 		const scopeRoot = this.#scopeFrames.at(-1);
+		const scopeLabel =
+			scopeRoot?.rootTitle ??
+			(this.#deps.hideSubagents ? (this.#sessionListScope === "cwd" ? "current folder" : "all projects") : "global");
 		const counts = countAgentsBySection(this.#rows);
 		const cwd = selected?.record?.session?.cwd ?? this.#deps.cwd;
 		const metaLines = [
@@ -1212,7 +1241,7 @@ export class AgentsViewComponent implements Component {
 				"agents",
 				`${counts.running} running, ${counts.idle} idle, ${counts.current} current, ${counts.inactive} inactive`,
 			),
-			labelled("scope", scopeRoot ? scopeRoot.rootTitle : "global"),
+			labelled("scope", scopeLabel),
 			labelled("depth", String(this.#scopeFrames.length)),
 			"",
 			theme.fg("dim", "type to search sessions"),
@@ -1258,10 +1287,13 @@ export class AgentsViewComponent implements Component {
 		if (maxRows <= 0) return [];
 		if (this.#rows.length === 0) {
 			const emptyHeading = this.#deps.hideSubagents ? "inactive" : "running";
-			return [theme.bold(sectionTitle(emptyHeading)), theme.fg("dim", "  No sessions match your search.")].slice(
-				0,
-				maxRows,
-			);
+			const emptyMessage =
+				this.#deps.hideSubagents && this.#query.trim().length === 0
+					? this.#sessionListScope === "cwd"
+						? "  No sessions in current folder. Press Tab to view all."
+						: "  No sessions found."
+					: "  No sessions match your search.";
+			return [theme.bold(sectionTitle(emptyHeading)), theme.fg("dim", emptyMessage)].slice(0, maxRows);
 		}
 
 		const wantedSections: AgentsViewSection[] = this.#deps.hideSubagents
@@ -1426,6 +1458,9 @@ export class AgentsViewComponent implements Component {
 			selectedSummary
 				? `${this.#keyText("tui.select.confirm")} ${row?.expanded ? "collapse" : "expand"}`
 				: `${this.#keyText("tui.select.confirm")} open`,
+			this.#deps.hideSubagents
+				? `${formatViewKey("tab")} ${this.#sessionListScope === "cwd" ? "all projects" : "current folder"}`
+				: undefined,
 			selectedAgent ? `${formatViewKey("space")} ${row?.section === "inactive" ? "resume" : "reply"}` : undefined,
 			`${formatViewKey("ctrl+n")} new`,
 			selectedAgent ? `${formatViewKey("ctrl+r")} rename` : undefined,

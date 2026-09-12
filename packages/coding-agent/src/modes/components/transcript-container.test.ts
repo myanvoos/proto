@@ -270,6 +270,31 @@ test("a live run pins before a finalized trailing tail", () => {
 	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(4);
 });
 
+test("a reply crosses the seam while an earlier displaceable block remains live", () => {
+	const terminal = new BufferTerminal();
+	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
+	const transcript = new TranscriptContainer();
+	const poll = new PinnedDisplaceableBlock(["polling"], false);
+	const reply = new TrackedBlock([], false);
+	transcript.addChild(poll);
+	transcript.addChild(reply);
+	tui.addChild(transcript);
+	tui.addChild(new TrackedBlock(["todo", "editor"]));
+	tui.start({ deferInput: true });
+
+	const response = Array.from({ length: 12 }, (_value, index) => `stream-${index}`);
+	for (let count = 1; count <= response.length; count++) {
+		reply.setLines(response.slice(0, count), false);
+		tui.requestRender(true);
+	}
+
+	expect(reply.committedRows, "the active reply enters native history before it finalizes").toBeGreaterThan(0);
+	const lines = terminal.normalLines();
+	for (const row of response) expect(lines).toContain(row);
+	expect(lines.slice(-2)).toEqual(["todo", "editor"]);
+	tui.stop();
+});
+
 test("a completed tall tool block remains in scrollback while the next reply streams", () => {
 	const terminal = new BufferTerminal();
 	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });

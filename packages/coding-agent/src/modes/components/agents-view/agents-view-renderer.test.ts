@@ -96,6 +96,47 @@ async function waitForRow(view: { render(width: number): readonly string[] }, te
 	throw new Error(`Timed out waiting for rendered row containing ${text}`);
 }
 
+describe("global session scope", () => {
+	test("starts in the current folder and Tab toggles all projects", async () => {
+		const registry = new AgentRegistry();
+		const localSession = sessionInfo(
+			"/tmp/proto-identity/local.jsonl",
+			"local",
+			"local session message",
+			"local session",
+		);
+		const remoteSession = {
+			...sessionInfo("/tmp/other-project/remote.jsonl", "remote", "remote session message", "remote session"),
+			cwd: "/tmp/other-project",
+		};
+		const view = new AgentsViewComponent({
+			...agentsDeps(registry),
+			initialSessions: [localSession, remoteSession],
+			hideSubagents: true,
+		});
+		mounted.push(view);
+		await waitForRow(view, "local session");
+
+		let output = renderPlain(view, 180);
+		expect(output).toContain("local session");
+		expect(output).not.toContain("remote session");
+		expect(output).toMatch(/scope\s+current folder/);
+		expect(output).toContain("Tab all projects");
+
+		view.handleInput("\t");
+		output = renderPlain(view, 180);
+		expect(output).toContain("local session");
+		expect(output).toContain("remote session");
+		expect(output).toMatch(/scope\s+all projects/);
+		expect(output).toContain("Tab current folder");
+
+		view.handleInput("\t");
+		output = renderPlain(view, 180);
+		expect(output).toContain("local session");
+		expect(output).not.toContain("remote session");
+	});
+});
+
 describe("subagent identity rendering", () => {
 	test("AgentsView renders the task and stable id instead of a generic worker label", async () => {
 		const genericPath = "/tmp/proto-identity/worker-123.jsonl";

@@ -2,8 +2,12 @@ import { expect, test } from "bun:test";
 import * as path from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { resolveMemoryModelCandidates } from "../../vendor/pi-blackhole/index.js";
+import { MEMORY_THINKING_LEVEL, resolveMemoryModelCandidates } from "../../vendor/pi-blackhole/index.js";
 import { runExtensionCompact } from "./compact-handler";
+
+test("memory workers use a provider-compatible thinking effort", () => {
+	expect(MEMORY_THINKING_LEVEL).toBe("low");
+});
 
 test("memory candidates use existing role resolution and preserve an active role model", () => {
 	const active = { provider: "active", id: "large" } as Model;
@@ -65,6 +69,24 @@ const branchEntries = [
   message("m3", "toolResult", "updated file"),
   message("m4", "assistant", "Tests pass"),
 ];
+const notices = [];
+const observerEntries = [
+  message("observer-user", "user", "Remember this context"),
+  message("observer-source", "assistant", "context ".repeat(10000)),
+];
+const observerContext = {
+  cwd: process.cwd(),
+  hasUI: true,
+  ui: { notify(message) { notices.push(message); } },
+  model: { provider: "missing", id: "active", api: "test" },
+  models: { resolve(spec) { return { provider: "missing", id: spec === "@smol" ? "smol" : "tiny", api: "test" }; } },
+  modelRegistry: created.session.modelRegistry,
+  sessionManager: { getSessionId() { return "observer-regression"; }, getBranch() { return observerEntries; } },
+};
+for (const agentStartHandler of extension.handlers.get("agent_start") ?? []) {
+  await agentStartHandler({ type: "agent_start" }, observerContext);
+}
+await Bun.sleep(500);
 const result = await handler(
   {
     type: "session_before_compact",
@@ -85,6 +107,7 @@ console.log(JSON.stringify({
   command: Boolean(created.session.extensionRunner?.getCommand("memory")),
   tool: Boolean(created.session.extensionRunner?.getRegisteredTool("recall")),
   failureEvent,
+  notices,
   result,
 }));
 await created.session.dispose();
@@ -92,7 +115,7 @@ authStorage.close();
 `;
 	const child = Bun.spawn([process.execPath, "-e", source], {
 		cwd: packageDir,
-		env: { ...Bun.env, PI_CODING_AGENT_DIR: agentDir.path() },
+		env: { ...Bun.env, PI_CODING_AGENT_DIR: agentDir.path(), PI_BLACKHOLE_OBSERVE_AFTER_TOKENS: "1000" },
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -107,6 +130,7 @@ authStorage.close();
 		command: boolean;
 		tool: boolean;
 		failureEvent: { type: string; reason: string; aborted: boolean; willRetry: boolean };
+		notices: string[];
 		result: {
 			compaction: { summary: string; firstKeptEntryId: string; details: { compactor: string } };
 		};
@@ -114,6 +138,7 @@ authStorage.close();
 	expect(output.extensions).toContain("<builtin-memory>");
 	expect(output.command).toBe(true);
 	expect(output.tool).toBe(true);
+	expect(output.notices.some(notice => notice.includes("undefined is not an object"))).toBe(false);
 	expect(output.failureEvent).toMatchObject({
 		type: "session_compact_failed",
 		reason: "manual",

@@ -4,6 +4,7 @@
 
 ### Changed
 
+- The global session screen now starts with sessions from the current folder; press Tab to toggle all projects.
 - xd:// tool discovery now defaults to catalog-only prompt docs, keeping mounted schemas on demand.
 
 ## [18.1.6] - 2026-09-12
@@ -44,6 +45,7 @@
 
 ### Fixed
 
+- Browser tool timeouts no longer crash the agent when cancellation races with tab-worker termination.
 - Detached sessions keep their active main turn, subagents, and Fleet/IRC state when another session runs, and restore the live stream when reattached.
 - Fresh sessions no longer inherit prior sessions’ Fleet peers, queued IRC messages, or kernel bridge capabilities.
 - Session ownership now clears as soon as the owning process exits instead of lingering for the heartbeat timeout; cross-process warnings say the session is currently in use rather than merely open.
@@ -68,7 +70,7 @@
 - Large changed lines no longer stall the TUI: intra-line word diffs above 512 words collapse to a replace-all hunk (~480ms -> ~0.6ms per line).
 - Advisor feed render no longer copies the full delivered-prefix array on every message event; streamed tool-arg previews append deltas in bulk instead of per character (100KB arg decode ~2.2ms -> ~0.04ms).
 - Kernel file writes made with `open()`/`Path.write_text` (Python) or `fs.writeFile`/`Bun.write` (JS) now show their diff hunk as soon as the write completes instead of only after the whole cell finishes; a file written several times in one cell still reports one net diff.
-- Long streaming replies and live tool previews taller than the terminal no longer lose their top: their own rows cross into native scrollback instead of entering a hidden viewport gap, and the completed tool block remains visible while the next reply streams.
+- Long streaming replies and live tool previews taller than the terminal no longer lose their top: their own rows cross into native scrollback even when an earlier replaceable Todo/Fleet card is still live, and completed tool blocks remain visible while the next reply streams.
 - Compaction no longer clears or collapses the visible transcript: pre-compaction turns remain in terminal history with the summary divider inline, independently of the model's compacted context.
 
 ### Removed

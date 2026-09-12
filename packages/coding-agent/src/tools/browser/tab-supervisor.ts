@@ -434,7 +434,7 @@ async function runInTabWithSnapshot(
 		}
 	}
 	const abort = (): void => {
-		tab.worker.send({ type: "abort", id });
+		safeSend(tab, { type: "abort", id });
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(opts.signal?.reason);
 	};
 	if (opts.signal?.aborted) abort();

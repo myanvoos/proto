@@ -11758,12 +11758,13 @@ function resolveMemoryModelCandidates(ctx) {
     return true;
   });
 }
-function stageThinkingLevel(runtime, stage, modelConfig) {
-  return modelConfig?.thinking ?? "low";
+var MEMORY_THINKING_LEVEL = "low";
+function stageThinkingLevel() {
+  return MEMORY_THINKING_LEVEL;
 }
 function makeModelResolver(runtime, ctx) {
   return async (stage) => {
-    const candidates = resolveMemoryModelCandidates(ctx);
+    const candidates = ctx.modelCandidates;
     const resolved = await runtime.resolveModel({
       modelRegistry: ctx.modelRegistry,
       hasUI: ctx.hasUI,
@@ -11875,6 +11876,7 @@ function maybeLaunchConsolidation(pi, runtime, ctx) {
     hasUI: ctx.hasUI,
     ui: ctx.ui,
     model: ctx.model,
+    modelCandidates: resolveMemoryModelCandidates(ctx),
     modelRegistry: ctx.modelRegistry,
     sessionManager: ctx.sessionManager
   };
@@ -12038,7 +12040,7 @@ async function runObserverStage(pi, runtime, ctx, resolveModel) {
       priorObservations: priorObservations.length
     });
     const stageModelForThinking = runtime.findCandidateConfig(resolved.model, {
-      candidates: resolveMemoryModelCandidates(ctx)
+      candidates: ctx.modelCandidates
     });
     const effectiveObsCtx = effectiveContextWindow(resolved.model, stageModelForThinking);
     const observerEstimatedInput = chunkTokens + AGENT_LOOP_RESERVE;
@@ -12130,7 +12132,7 @@ async function runObserverStage(pi, runtime, ctx, resolveModel) {
         return "abort";
       }
       const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        candidates: resolveMemoryModelCandidates(ctx)
+        candidates: ctx.modelCandidates
       });
       runtime.recordRetryableError(candidateConfig, error, "observer");
       debugLog("observer.error", {
@@ -12238,7 +12240,7 @@ async function runReflectorStage(pi, runtime, ctx, resolveModel) {
       `Observational memory: reflector running (~${effectiveReflectionTokens.toLocaleString()} tokens accumulated, ~${reflectorInputTokens.toLocaleString()}-token input)`
     );
     const stageModelForThinking = runtime.findCandidateConfig(resolved.model, {
-      candidates: resolveMemoryModelCandidates(ctx)
+      candidates: ctx.modelCandidates
     });
     const effectiveRefCtx = effectiveContextWindow(resolved.model, stageModelForThinking);
     const reflectorEstimatedInput = reflectorInputTokens + AGENT_LOOP_RESERVE;
@@ -12332,7 +12334,7 @@ async function runReflectorStage(pi, runtime, ctx, resolveModel) {
         return { outcome: "abort", sameRunReflections: [] };
       }
       const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        candidates: resolveMemoryModelCandidates(ctx)
+        candidates: ctx.modelCandidates
       });
       runtime.recordRetryableError(candidateConfig, error, "reflector");
       debugLog("reflector.error", {
@@ -12451,7 +12453,7 @@ async function runDropperStage(pi, runtime, ctx, resolveModel, sameRunReflection
       ] : folded.reflections;
       const reflectionsForDropper = mergeReflections(pendingReflections, sameRunReflections);
       const stageModelForThinking = runtime.findCandidateConfig(resolved.model, {
-        candidates: resolveMemoryModelCandidates(ctx)
+        candidates: ctx.modelCandidates
       });
       const effectiveDropCtx = effectiveContextWindow(resolved.model, stageModelForThinking);
       const dropperEstimatedInput = dropperInputTokens + AGENT_LOOP_RESERVE;
@@ -12517,7 +12519,7 @@ async function runDropperStage(pi, runtime, ctx, resolveModel, sameRunReflection
         return "abort";
       }
       const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        candidates: resolveMemoryModelCandidates(ctx)
+        candidates: ctx.modelCandidates
       });
       runtime.recordRetryableError(candidateConfig, error, "dropper");
       debugLog("dropper.error", {
@@ -13966,7 +13968,11 @@ function expireCooldowns() {
   let changed = false;
   for (const [key, entry] of Object.entries(map)) {
     const until = new Date(entry.until);
-    if (isNaN(until.getTime()) || now >= until) {
+    if (
+      isNaN(until.getTime()) ||
+      now >= until ||
+      entry.reason?.includes("Thinking effort [object Object] is not supported")
+    ) {
       delete map[key];
       changed = true;
     }
@@ -14309,6 +14315,6 @@ var index_default = async (pi) => {
   registerRecallTool(pi);
 };
 
-export { index_default as default, resolveMemoryModelCandidates };
+export { MEMORY_THINKING_LEVEL, index_default as default, resolveMemoryModelCandidates };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

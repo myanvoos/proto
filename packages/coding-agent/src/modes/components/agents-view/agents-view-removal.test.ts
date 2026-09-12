@@ -156,7 +156,7 @@ describe("agents view persisted subagent seeding", () => {
 	test("the global session list never registers other sessions' persisted subagents", async () => {
 		const { parentInfo } = writeSessionTree();
 		listAllSpy = spyOn(SessionManager, "listAll").mockResolvedValue([parentInfo]);
-		const view = mountView({ hideSubagents: true });
+		const view = mountView({ cwd: parentInfo.cwd, hideSubagents: true });
 		await waitFor(() => renderPlain(view).includes("parent task"), "the parent session row");
 		await Bun.sleep(50);
 		expect(AgentRegistry.global().list()).toEqual([]);
