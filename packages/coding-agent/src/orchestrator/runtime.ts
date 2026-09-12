@@ -14,7 +14,7 @@ import { type AgentRef, AgentRegistry, hasAgentTombstone, MAIN_AGENT_ID } from "
 import { SessionManager, SessionPersistenceIndeterminateError } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
 import { discoverAgents, getAgent } from "../task/discovery";
-import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
+import type { ExecutorOptions } from "../task/executor";
 import { generateWorkerName } from "../task/name-generator";
 import { Semaphore } from "../task/parallel";
 import { describeUnknownAgent, resolveSpawnPreflight } from "../task/spawn-policy";
@@ -1701,6 +1701,7 @@ export class OrchestratorRuntime {
 						if (record.childSessionFile && !turnStartedPersisted) {
 							throw new ToolError(`Worker "${record.id}" changed parent scope before its turn started.`);
 						}
+						const { runSubagentFollowUpTurn, runSubprocess } = await import("../task/executor");
 						const result = options.first
 							? await runSubprocess(await this.#buildSpawnOptions(session, record, message, signal, onProgress))
 							: await runSubagentFollowUpTurn({

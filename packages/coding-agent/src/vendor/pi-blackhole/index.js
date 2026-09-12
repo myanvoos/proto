@@ -1,7 +1,10 @@
 import { mkdirSync, appendFileSync, existsSync, statSync, unlinkSync, renameSync, readFileSync, writeFileSync, rmSync, mkdtempSync, realpathSync, readdirSync, openSync, readSync, closeSync } from 'fs';
 import { join, dirname, sep, isAbsolute, resolve, relative, basename, parse } from 'path';
 import { tmpdir } from 'os';
-import { getAgentDir, getSelectListTheme, convertToLlm, AgentSession } from '@oh-my-pi/pi-coding-agent';
+import { getAgentDir } from '@oh-my-pi/pi-utils/dirs';
+import { getSelectListTheme } from '@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters';
+import { convertToLlm } from '@oh-my-pi/pi-coding-agent/session/messages';
+import { AgentSession } from '@oh-my-pi/pi-coding-agent/session/agent-session';
 import { fuzzyMatch, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, Editor, SelectList, decodeKittyPrintable } from '@oh-my-pi/pi-tui';
 import { AsyncLocalStorage } from 'async_hooks';
 import { appendFile } from 'fs/promises';
