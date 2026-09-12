@@ -553,6 +553,12 @@ function canComposeSummaryFragments(messages: Message[], dialect: Dialect | unde
 	) {
 		return false;
 	}
+	// The legacy whole-window renderer inserts a separator before developer
+	// messages; per-message fragments cannot reproduce it, so those windows
+	// must fall back to the exact serializer.
+	if (messages.some(message => message.role === "developer")) {
+		return false;
+	}
 	switch (dialect) {
 		case undefined:
 		case "harmony":

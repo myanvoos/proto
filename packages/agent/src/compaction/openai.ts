@@ -144,7 +144,6 @@ function isToolResultImageAttachment(item: Record<string, unknown>): boolean {
 interface RemoteCompactionRewriteCandidate {
 	index: number;
 	rewritten: Record<string, unknown>;
-	shrinksSerializedItem: boolean;
 }
 
 function serializedEstimateItemBytes(item: Record<string, unknown>): number {
@@ -178,7 +177,6 @@ export function trimRemoteCompactionInputToContextWindow(
 		candidates.push({
 			index,
 			rewritten,
-			shrinksSerializedItem: serializedEstimateItemBytes(rewritten) < serializedEstimateItemBytes(item),
 		});
 	}
 
@@ -209,36 +207,17 @@ export function trimRemoteCompactionInputToContextWindow(
 		return probeRemoteCompactionInputBudget(candidateInput, tokenizer, instructions, tools, contextWindow);
 	};
 
-	const canBinarySearch = candidates.every(candidate => candidate.shrinksSerializedItem);
+	// Sequential first-fit scan: strict tokenizer counts are not monotonic in the
+	// number of rewritten items even when every rewrite shrinks serialized bytes,
+	// so a binary search can return a non-minimal (or over-rewritten) fit.
 	let firstFittingCount: number | undefined;
 	let after: RemoteCompactionBudgetProbe | undefined;
-	if (canBinarySearch) {
-		const allRewritten = probeCandidate(candidates.length);
-		if (allRewritten.fits) {
-			let low = 1;
-			let high = candidates.length;
-			firstFittingCount = candidates.length;
-			after = allRewritten;
-			while (low <= high) {
-				const middle = Math.floor((low + high) / 2);
-				const candidate = probeCandidate(middle);
-				if (candidate.fits) {
-					firstFittingCount = middle;
-					after = candidate;
-					high = middle - 1;
-				} else {
-					low = middle + 1;
-				}
-			}
-		}
-	} else {
-		for (let count = 1; count <= candidates.length; count++) {
-			const candidate = probeCandidate(count);
-			if (candidate.fits) {
-				firstFittingCount = count;
-				after = candidate;
-				break;
-			}
+	for (let count = 1; count <= candidates.length; count++) {
+		const candidate = probeCandidate(count);
+		if (candidate.fits) {
+			firstFittingCount = count;
+			after = candidate;
+			break;
 		}
 	}
 
