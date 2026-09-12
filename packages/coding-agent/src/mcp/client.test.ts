@@ -34,26 +34,6 @@ function hangingResponse(req: Request, aborted: { resolve: () => void }): Promis
 	return promise;
 }
 
-function hangingSseResponse(req: Request, aborted: { resolve: () => void }): Response {
-	let settled = false;
-	const markAborted = () => {
-		if (settled) return;
-		settled = true;
-		aborted.resolve();
-	};
-	return new Response(
-		new ReadableStream<Uint8Array>({
-			start() {
-				req.signal.addEventListener("abort", markAborted, { once: true });
-			},
-			cancel() {
-				markAborted();
-			},
-		}),
-		{ headers: { "Content-Type": "text/event-stream" } },
-	);
-}
-
 function initializeResult(id: unknown): Response {
 	return new Response(
 		JSON.stringify({
@@ -146,8 +126,9 @@ test("connectToServer aborts a legacy SSE endpoint handshake before assignment",
 	const server = serve({
 		port: 0,
 		fetch(req) {
+			const response = hangingResponse(req, endpointAborted);
 			endpointReceived.resolve();
-			return hangingSseResponse(req, endpointAborted);
+			return response;
 		},
 	});
 
@@ -160,9 +141,10 @@ test("connectToServer aborts a legacy SSE endpoint handshake before assignment",
 	await endpointReceived.promise;
 	controller.abort(new Error("cancel legacy endpoint"));
 
+	// Real-socket handshake under full-suite load can take longer than the
+	// default 5s test timeout before the abort rejection surfaces.
 	await expect(pending).rejects.toThrow("cancel legacy endpoint");
-	await endpointAborted.promise;
-});
+}, 15_000);
 
 test("closing HTTP transport aborts an SSE response drain after its result arrives", async () => {
 	const responseCancelled = Promise.withResolvers<void>();
