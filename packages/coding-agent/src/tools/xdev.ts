@@ -236,7 +236,7 @@ export function xdevDocs(state: XdevState, name: string): string {
 
 export function xdevDocsAll(
 	state: XdevState,
-	mode: XdevDocsMode = "inline",
+	mode: XdevDocsMode = "catalog",
 	inlinePatterns: readonly string[] = [],
 ): string {
 	const sections: string[] = [];

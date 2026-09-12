@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- xd:// tool discovery now defaults to catalog-only prompt docs, keeping mounted schemas on demand.
+
 ## [18.1.6] - 2026-09-12
 
 ### Breaking Changes

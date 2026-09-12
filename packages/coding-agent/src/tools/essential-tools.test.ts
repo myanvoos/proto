@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
+import { Settings } from "../config/settings";
+import type { Tool } from ".";
 import { BUILTIN_TOOL_NAMES } from "./builtin-names";
 import { defaultLoadModeForToolName, ESSENTIAL_BUILTIN_TOOL_NAMES } from "./essential-tools";
-import { isMountableUnderXdev } from "./xdev";
+import { isMountableUnderXdev, xdevDocsAll } from "./xdev";
 
 // Contract: only these built-ins ship their schemas as native tools on every request. Everything
 // else mounts under xd:// and is dispatched from bash. If this set drifts, every session silently
@@ -55,5 +58,28 @@ describe("isMountableUnderXdev", () => {
 		expect(isMountableUnderXdev({ name: "orchestrate_spawn", loadMode: "discoverable" })).toBe(true);
 		expect(isMountableUnderXdev({ name: "orchestrate_spawn", loadMode: "essential" })).toBe(false);
 		expect(isMountableUnderXdev({ name: "orchestrate_spawn" })).toBe(false);
+	});
+});
+
+describe("xdevDocsAll", () => {
+	test("default settings keep mounted schemas on demand", () => {
+		const tool = {
+			name: "probe",
+			label: "Probe",
+			description: "Returns the supplied value.",
+			parameters: type({ value: "string" }),
+		} as unknown as Tool;
+		const state = {
+			tools: new Map([[tool.name, tool]]),
+			mountedNames: new Set([tool.name]),
+			builtInNames: new Set<string>(),
+			isActive: () => false,
+		};
+
+		expect(Settings.isolated().get("tools.xdevDocs")).toBe("catalog");
+		const docs = xdevDocsAll(state);
+		expect(docs).toContain("## Additional devices (docs on demand)");
+		expect(docs).toContain("- xd://probe — Returns the supplied value.");
+		expect(docs).not.toContain("type Args =");
 	});
 });
