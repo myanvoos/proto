@@ -826,6 +826,10 @@ const fn normalize_env_key(key: &str) -> &str {
 	key
 }
 
+fn is_session_bridge_env_var(key: &str) -> bool {
+	matches!(key, "PI_KERNEL_BRIDGE_ADDR" | "PI_KERNEL_BRIDGE_TOKEN" | "PI_KERNEL_FLEET_ROOT")
+}
+
 fn copy_env_into_shell(
 	shell: &mut BrushShell<XdShellExtensions>,
 	env: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
@@ -844,7 +848,9 @@ fn copy_env_into_shell(
 			continue;
 		}
 		let mut var = ShellVariable::new(ShellValue::String(value.to_string()));
-		var.export();
+		if !is_session_bridge_env_var(normalized_key) {
+			var.export();
+		}
 		shell
 			.env_mut()
 			.set_global(normalized_key, var)
@@ -925,7 +931,9 @@ async fn create_session_for_run(
 				continue;
 			}
 			let mut var = ShellVariable::new(ShellValue::String(value.clone()));
-			var.export();
+			if !is_session_bridge_env_var(normalized_key) {
+				var.export();
+			}
 			shell
 				.env_mut()
 				.set_global(normalized_key, var)
@@ -1655,7 +1663,9 @@ fn apply_command_env(
 			continue;
 		}
 		let mut var = ShellVariable::new(ShellValue::String(value.clone()));
-		var.export();
+		if !is_session_bridge_env_var(normalized_key) {
+			var.export();
+		}
 		if let Err(err) = shell
 			.env_mut()
 			.add(normalized_key, var, EnvironmentScope::Command)

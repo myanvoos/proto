@@ -12,7 +12,9 @@ import {
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Process } from "@oh-my-pi/pi-natives";
 import type { ExtensionFactory } from "../extensibility/extensions";
+import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
+import { executeList } from "../tools/fleet/messaging";
 import type { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
 import { readSessionLiveState } from "./session-liveness";
@@ -37,7 +39,11 @@ function branchMessages(sessionManager: SessionManager): UserMessage[] {
 		.flatMap(entry => (entry.type === "message" && entry.message.role === "user" ? [entry.message] : []));
 }
 
-async function createHarness(persist = false, extensions: ExtensionFactory[] = []): Promise<Harness> {
+async function createHarness(
+	persist = false,
+	extensions: ExtensionFactory[] = [],
+	agentRegistry?: AgentRegistry,
+): Promise<Harness> {
 	const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-session-persistence-"));
 	const authStorage = await AuthStorage.create(path.join(agentDir, "auth.db"));
 	let sessionManager = SessionManager.inMemory(process.cwd());
@@ -50,6 +56,7 @@ async function createHarness(persist = false, extensions: ExtensionFactory[] = [
 		}
 		const { session } = await createAgentSession({
 			cwd: process.cwd(),
+			agentRegistry,
 			agentDir,
 			authStorage,
 			sessionManager,
@@ -347,6 +354,43 @@ test.each(["new", "fork", "move"])("moves the live marker after a %s session tra
 		expect(nextFile).not.toBe(previousFile);
 		expect(readSessionLiveState(nextFile).fresh).toBe(true);
 		expect(readSessionLiveState(previousFile).fresh).toBe(false);
+	} finally {
+		await closeHarness(harness);
+	}
+});
+
+test("a new session cannot list parked agents from the previous session fleet", async () => {
+	const registry = new AgentRegistry();
+	const harness = await createHarness(true, [], registry);
+	try {
+		const previousFile = harness.session.sessionFile!;
+		const previousFleetRoot = path.resolve(previousFile.slice(0, -".jsonl".length), "fleet");
+		registry.register({
+			id: "old-peer",
+			displayName: "old-peer",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: null,
+			sessionFile: path.join(previousFleetRoot, "old-peer.jsonl"),
+			fleetRoot: previousFleetRoot,
+			status: "parked",
+		});
+		const before = await executeList(registry, MAIN_AGENT_ID);
+		const beforeText = before.content.find(part => part.type === "text")?.text ?? "";
+		expect(beforeText).toContain("old-peer");
+
+		expect(await harness.session.newSession()).toBe(true);
+
+		const currentFile = harness.session.sessionFile!;
+		const currentFleetRoot = path.resolve(currentFile.slice(0, -".jsonl".length), "fleet");
+		expect(currentFleetRoot).not.toBe(previousFleetRoot);
+		expect(registry.get(MAIN_AGENT_ID)).toMatchObject({
+			fleetRoot: currentFleetRoot,
+			sessionFile: currentFile,
+		});
+		const after = await executeList(registry, MAIN_AGENT_ID);
+		const afterText = after.content.find(part => part.type === "text")?.text ?? "";
+		expect(afterText).toBe("No other agents.");
 	} finally {
 		await closeHarness(harness);
 	}

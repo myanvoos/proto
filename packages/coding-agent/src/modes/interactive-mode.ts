@@ -922,7 +922,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#eventBus) {
 			this.#observerRegistry.subscribeToEventBus(this.#eventBus);
 		}
-		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
+		this.resetObserverRegistry();
 		this.syncRunningSubagentBadge();
 		this.#observerRegistry.onChange(kind => {
 			this.#scheduleObserverUiSync(kind);
@@ -1612,6 +1612,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		const running = activity.status === "running";
 		const refStatus = running ? "running" : "parked";
+		const parent = registry.get(this.session.getAgentId() ?? MAIN_AGENT_ID);
 		const existing = registry.get(refId);
 		if (!existing) {
 			registry.register({
@@ -1621,10 +1622,18 @@ export class InteractiveMode implements InteractiveModeContext {
 				parentId: this.session.getAgentId() ?? MAIN_AGENT_ID,
 				session: null,
 				sessionFile: activity.sessionFile ?? null,
+				fleetRoot: parent?.fleetRoot,
 				status: refStatus,
 				history: { readOnly: true, modelRole: "conductor" },
 			});
 		} else {
+			if (parent?.fleetRoot) {
+				registry.updateSessionScope(
+					refId,
+					{ fleetRoot: parent.fleetRoot, sessionFile: activity.sessionFile ?? null },
+					existing,
+				);
+			}
 			registry.setStatus(refId, refStatus);
 		}
 		const gist =
@@ -1657,7 +1666,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.syncRunningSubagentBadge();
 			});
 		}
-		const count = countRunningSubagentBadgeAgents(registry);
+		const count = countRunningSubagentBadgeAgents(registry, this.session.getAgentId() ?? MAIN_AGENT_ID);
 		this.statusLine.setSubagentCount(count);
 		if (options.requestRender !== false) this.ui.requestRender();
 	}
@@ -3073,8 +3082,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	resetObserverRegistry(): void {
+		const registry = AgentRegistry.global();
+		const agentId = this.session.getAgentId() ?? MAIN_AGENT_ID;
+		const fleetRoot = registry.get(agentId, this.session)?.fleetRoot;
 		this.#observerRegistry.resetSessions();
-		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
+		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined, fleetRoot);
+		this.#observerRegistry.seedAgentRefs(registry.listInFleet(agentId, fleetRoot));
 	}
 
 	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void> {
@@ -3169,8 +3182,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		this.#sideQuestionController.dispose();
-		this.resetObserverRegistry();
-		await this.#selectorController.handleResumeSession(sessionPath, { settingsFlushed: true });
+		if (await this.#selectorController.handleResumeSession(sessionPath, { settingsFlushed: true })) {
+			this.resetObserverRegistry();
+		}
 	}
 
 	handleSessionDeleteCommand(): Promise<void> {

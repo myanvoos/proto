@@ -82,9 +82,9 @@ Do not add a wrapper merely to rename a generated root export.
 - Switch every intended caller and remove the obsolete implementation in the same change.
 - Keep user-facing policy and rendering in the consumer when the native primitive does not own it.
 
-### 5. Benchmark representative work
+### 5. Measure representative work
 
-Place a durable benchmark with the owning package (`packages/natives/bench`, `packages/tui/bench`, `packages/coding-agent/bench`, or another existing package bench directory). Run JS and native implementations in the same process on identical prepared input. Separate setup/conversion from the timed operation when callers can reuse that setup.
+Use a focused local harness while developing the port rather than adding a package benchmark suite. Run the JS and native implementations in the same process on identical prepared input, and separate setup/conversion from the timed operation when callers can reuse that setup. Keep the harness scoped to the migration and remove it after recording the comparison.
 
 ```ts
 const ITERATIONS = 2_000;
@@ -103,7 +103,7 @@ bench("feature/js", () => jsImpl(sample));
 bench("feature/native", () => nativeImpl(sample));
 ```
 
-For Promise-returning operations, use an async benchmark loop and await every call; do not time promise creation alone.
+For Promise-returning operations, use an async measurement loop and await every call; do not time promise creation alone.
 
 ### 6. Verify the loaded artifact
 

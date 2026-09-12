@@ -6,12 +6,9 @@
 
 - Direct MCP transport consumers must construct `StdioTransport`, `HttpTransport`, or `LegacySseTransport` and call `connect({ signal })`; the `createStdioTransport`, `createHttpTransport`, and `createSseTransport` factory exports have been removed.
 
-### Added
-
-- `bench/session-switch.bench.ts` (session open/context/rebuild/render on real fixtures), `bench/session-selector.bench.ts` (browser row render/navigation/search), `scripts/pty-echo-probe.ts` and `scripts/pty-switch-probe.ts` (real-terminal keystroke echo and session-switch latency), and `packages/tui/bench/rss-soak-probe.ts` (10k-frame RSS growth classification).
-
 ### Changed
 
+- Observational memory now uses the configured `smol` and `tiny` model roles before falling back to the active model.
 - Config resolution, tool lookup, tab-spacing, GitHub/GitLab/searxng/discovery/Foundry/variant-alias lookups are now LRU-bounded, capping retained heap from dynamic keys (credential caches intentionally unbounded — no eviction lifecycle exists for in-use credentials).
 - Model-id classification caches, catalog build interns, prompt template compilation cache, and eval kernel registry notes are now LRU-bounded, capping retained heap from dynamic/custom model ids and templates (probe: catalog build interns 141MB -> 22MB heap).
 - Session JSONL loading uses an amortized growing buffer (8MiB single-line session: ~218ms -> ~67ms); agent-proxy streamed tool calls parse via the throttled parser with an exact final flush (32KB args: ~328ms -> ~1.9ms cumulative).
@@ -19,6 +16,10 @@
 - jj command output is capped at the same 8MiB limit as git instead of retaining unbounded stream reads; the capped reader is now shared with the git wrapper instead of duplicated.
 - Packaged CLI bundle uses code splitting (`dist/cli.js` 17.4MB monolith -> 9.4KB entry + chunks in the existing `dist/template-*.js` package glob): bundled `--version` median 264ms -> 30ms.
 - RPC frame encoding caches serialized messages behind a length/head/tail fingerprint with exact-compare fallback (20k-message agent_end: ~18ms -> ~6.6ms, byte-identical wire output).
+- Session-context building fuses reset-boundary, compaction, first-kept, and replay-boundary resolution into one pass over history (100k-entry context: ~62ms -> ~28ms).
+- Session history formatting counts lines without splitting entire tool outputs and reuses first-line previews for errors (20 x 10MiB multiline results: ~1.26s -> ~0.14s).
+- Session persistence normalization skips deep object traversal when nothing needs truncation, blob externalization, or event stripping (~3x less overhead per persisted entry).
+- fuzzy_find collects bounded candidates instead of materializing the full recursive tree (100k-file no-match query: ~61ms -> ~40ms); workspace tree builds apply exclusions and truncation in a single pass (30k files: ~51ms -> ~39ms).
 - Read tool loads PDF/image/URL/archive/profile/markit converters lazily on first special-format use instead of at session boot.
 - Capability filesystem caches are LRU-bounded (256 entries / 8MiB), so multi-project sessions stop retaining unbounded file caches.
 - Web-search snippet/count/truncation helpers consolidated behind @oh-my-pi/pi-utils (byte-identical output).
@@ -30,13 +31,14 @@
 - Sessions up to 32 MiB load via full-text parse (25 MiB session opens in ~58ms vs ~100ms); blob-reference scanning only inspects candidate payloads.
 - Transcript rebuilds reuse bounded highlight/outline/wrap caches across sessions; a 3,400-message transcript renders in ~330ms vs ~1,068ms (stress-harness p50; real windowed switches complete in ~250ms end-to-end), with warm frames at ~5.5ms and dirty-child frames at ~7ms.
 - Editors, the composer, and parked detached sessions dispose deterministically on replacement and shutdown (`DetachedSessionHolder.disposeAll` runs during `InteractiveMode.shutdown`).
-- Orchestrator bounds idle worker payload memory (32-record window) while keeping every worker ID addressable; lifecycle bench now asserts handle/fd stability.
+- Orchestrator bounds idle worker payload memory (32-record window) while keeping every worker ID addressable.
 - Sessions load optional capability graphs lazily: the extension host API surface, orchestrator runtime, structured subagent, persisted subagent registry, and SDK barrel edge in web search now load on first use, cutting the session import floor by ~37MB.
 - Bundled model catalog loads lazily per provider with compat/cost/thinking payload interning (96% of compat payloads are duplicates).
-- `bench/perf-gate/rss-marathon.ts` now reports a steady-state idle baseline (post-construction settle) alongside peak VmHWM, gated at 150MB idle / 800MB peak.
 - Running kernel cells (`eval`/`kernel` and bash-routed `python`/`node`/`bun`) lay out the live block by priority — Status heads, then diff hunks (newest first), then the output tail, then the code tail — so hunks no longer wait on the output preview or the cell settling, and the block stays inside the terminal's live window.
 
 ### Fixed
+- Detached sessions keep their active main turn, subagents, and Fleet/IRC state when another session runs, and restore the live stream when reattached.
+- Fresh sessions no longer inherit prior sessions’ Fleet peers, queued IRC messages, or kernel bridge capabilities.
 - Session ownership now clears as soon as the owning process exits instead of lingering for the heartbeat timeout; cross-process warnings say the session is currently in use rather than merely open.
 - `/session` and `/agents` no longer stall arrow-key navigation for seconds after opening: the session list stops scanning every session's subagent transcripts (~1 GB of JSONL on a 300-session corpus), the agents view scans only the scoped session's tree, and repeated scans of unchanged transcripts are memoized.
 - Ctrl+X on a live or parked subagent in the agents view now stops it (tombstoned into the inactive section, transcript kept) instead of deleting its transcript; Ctrl+X on an inactive row deletes, and the row disappears immediately rather than lingering.

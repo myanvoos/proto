@@ -78,7 +78,7 @@ function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySnapshot[]
 	}
 	const now = Date.now();
 	const out: AgentActivitySnapshot[] = [];
-	for (const ref of registry.list()) {
+	for (const ref of selfId ? registry.listInFleet(selfId, session.getAgentFleetRoot?.()) : []) {
 		if (ref.kind !== "sub" || ref.status !== "running") continue;
 		if (ref.id === selfId || covered.has(ref.id)) continue;
 		const live = ref.session !== null || (ref.sessionFile ? readSessionLiveState(ref.sessionFile).fresh : false);

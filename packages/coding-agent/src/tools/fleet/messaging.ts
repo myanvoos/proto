@@ -41,8 +41,13 @@ function resolveMessageTimeoutMs(settings: Settings, explicit?: number): number 
 	return normalizeIrcTimeoutMs(settings.get("irc.timeoutMs"));
 }
 
-export function drainPendingInbox(registry: AgentRegistry, senderId: string, from?: string): IrcMessage | undefined {
-	const session = registry.get(senderId)?.session;
+export function drainPendingInbox(
+	registry: AgentRegistry,
+	senderId: string,
+	from?: string,
+	fleetRoot?: string,
+): IrcMessage | undefined {
+	const session = fleetRoot ? registry.getInFleet(senderId, fleetRoot)?.session : registry.get(senderId)?.session;
 	return typeof session?.drainPendingIrcInboxMessages === "function"
 		? session.drainPendingIrcInboxMessages(senderId, { from, limit: 1 })[0]
 		: undefined;
@@ -58,12 +63,14 @@ export function messageResult(senderId: string, waited: IrcMessage): AgentToolRe
 export async function executeList(
 	registry: AgentRegistry,
 	senderId: string,
+	fleetRoot?: string,
 ): Promise<AgentToolResult<CoordinationDetails>> {
-	let refs = registry.list();
+	let refs = registry.listInFleet(senderId, fleetRoot);
 	if (!refs.some(ref => ref.id !== senderId && ref.status !== "aborted" && ref.kind !== "advisor")) {
 		const { registerPersistedSubagents } = await import("../../registry/persisted-agents");
-		await registerPersistedSubagents(registry, registry.get(senderId)?.sessionFile);
-		refs = registry.list();
+		const sender = fleetRoot ? registry.getInFleet(senderId, fleetRoot) : registry.get(senderId);
+		await registerPersistedSubagents(registry, sender?.sessionFile);
+		refs = registry.listInFleet(senderId, fleetRoot);
 	}
 
 	const bus = IrcBus.global();
@@ -75,7 +82,7 @@ export async function executeList(
 			kind: ref.kind,
 			status: ref.status,
 			parentId: ref.parentId,
-			unread: bus.unreadCount(ref.id),
+			unread: bus.unreadCount(ref.id, fleetRoot),
 			lastActivity: ref.lastActivity,
 			activity: ref.activity,
 		}));
@@ -113,11 +120,11 @@ interface FleetSendParams {
 }
 
 export async function executeSend(
-	deps: { registry: AgentRegistry; senderId: string; settings: Settings },
+	deps: { registry: AgentRegistry; senderId: string; fleetRoot?: string; settings: Settings },
 	params: FleetSendParams,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {
-	const { registry, senderId, settings } = deps;
+	const { registry, senderId, fleetRoot, settings } = deps;
 	const to = params.to?.trim();
 	const message = params.message?.trim();
 	if (!to) {
@@ -148,6 +155,7 @@ export async function executeSend(
 		? bus
 				.wait(senderId, { from: to }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
 					drainPending: false,
+					fleetRoot,
 				})
 				.then(
 					message => ({ message, error: null as Error | null }),
@@ -170,7 +178,7 @@ export async function executeSend(
 	}
 
 	try {
-		const targets = isBroadcast ? registry.listVisibleTo(senderId).map(ref => ref.id) : [to];
+		const targets = isBroadcast ? registry.listVisibleTo(senderId, fleetRoot).map(ref => ref.id) : [to];
 
 		const suppressRelay = isBroadcast && targets.includes(MAIN_AGENT_ID);
 		const receipts = await Promise.all(
@@ -178,7 +186,7 @@ export async function executeSend(
 				bus.send(
 					{ from: senderId, to: target, body: message, replyTo: params.replyTo },
 
-					{ expectsReply: params.await || undefined, suppressRelay: suppressRelay || undefined },
+					{ expectsReply: params.await || undefined, suppressRelay: suppressRelay || undefined, fleetRoot },
 				),
 			),
 		);
@@ -250,15 +258,16 @@ export async function executeSend(
 }
 
 export async function executeMessageWait(
-	deps: { registry: AgentRegistry; senderId: string; settings: Settings },
+	deps: { registry: AgentRegistry; senderId: string; fleetRoot?: string; settings: Settings },
 	params: { from?: string; timeoutMs?: number },
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {
-	const { registry, senderId, settings } = deps;
+	const { registry, senderId, fleetRoot, settings } = deps;
 	const from = params.from?.trim() || undefined;
 	const timeoutMs = resolveMessageTimeoutMs(settings, params.timeoutMs);
 	try {
 		const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal, {
+			fleetRoot,
 			liveness: { registry, senderId },
 		});
 		if (!waited) {
@@ -283,9 +292,10 @@ export function executeInbox(
 	registry: AgentRegistry,
 	senderId: string,
 	peek?: boolean,
+	fleetRoot?: string,
 ): AgentToolResult<CoordinationDetails> {
-	const busMessages = IrcBus.global().inbox(senderId, { peek });
-	const session = registry.get(senderId)?.session;
+	const busMessages = IrcBus.global().inbox(senderId, { peek, fleetRoot });
+	const session = fleetRoot ? registry.getInFleet(senderId, fleetRoot)?.session : registry.get(senderId)?.session;
 	const pendingMessages =
 		typeof session?.drainPendingIrcInboxMessages === "function" ? session.drainPendingIrcInboxMessages(senderId) : [];
 	const messages = [...busMessages, ...pendingMessages].sort((a, b) => a.ts - b.ts);

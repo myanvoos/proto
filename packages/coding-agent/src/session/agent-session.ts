@@ -471,6 +471,8 @@ export class AgentSession {
 
 	readonly #ownedAsyncJobManager: AsyncJobManager | undefined;
 
+	readonly #shouldDisposeOwnedAsyncJobManager: (() => boolean) | undefined;
+
 	readonly #asyncJobManager: AsyncJobManager | undefined;
 
 	#unregisterAsyncDeliverySink: (() => void) | undefined;
@@ -802,6 +804,7 @@ export class AgentSession {
 			runEphemeralTurn: args => this.runEphemeralTurn(args),
 		};
 		this.#irc = new IrcBridge(ircHost);
+		this.registerSessionChangeCallback(() => this.#irc.reset());
 		const prewalkHost: PrewalkCoordinatorHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -835,6 +838,7 @@ export class AgentSession {
 		};
 		this.#todo = new TodoTracker(todoHost);
 		this.#ownedAsyncJobManager = config.ownedAsyncJobManager;
+		this.#shouldDisposeOwnedAsyncJobManager = config.shouldDisposeOwnedAsyncJobManager;
 		this.#asyncJobManager = config.asyncJobManager ?? config.ownedAsyncJobManager;
 		const modelControlsHost: ModelControlsHost = {
 			agent: this.agent,
@@ -3150,7 +3154,7 @@ export class AgentSession {
 		const manager = this.#ownedAsyncJobManager;
 
 		this.#cancelOwnAsyncJobs(manager ? ASYNC_JOB_MANAGER_SHUTDOWN_REASON : undefined);
-		if (!manager) return;
+		if (!manager || this.#shouldDisposeOwnedAsyncJobManager?.() === false) return;
 
 		try {
 			const drained = await manager.dispose({ timeoutMs: 3_000 });

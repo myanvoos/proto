@@ -63,6 +63,7 @@ export interface AgentRef {
 
 	session: AgentSession | null;
 	sessionFile: string | null;
+	fleetRoot?: string;
 	createdAt: number;
 	lastActivity: number;
 
@@ -88,6 +89,7 @@ interface RegisterInput {
 	parentId?: string;
 	session: AgentSession | null;
 	sessionFile?: string | null;
+	fleetRoot?: string;
 	status?: AgentStatus;
 
 	activity?: string;
@@ -114,10 +116,31 @@ export class AgentRegistry {
 	}
 
 	readonly #refs = new Map<string, AgentRef>();
+	readonly #mainRefs = new Set<AgentRef>();
 	readonly #listeners = new Set<RegistryListener>();
 
 	#matchesExpected(ref: AgentRef, expected?: AgentRefExpectation): boolean {
 		return expected === undefined || ref === expected || ref.session === expected;
+	}
+
+	#resolveRef(id: string, expected?: AgentRefExpectation): AgentRef | undefined {
+		const current = this.#refs.get(id);
+		if (current && this.#matchesExpected(current, expected)) return current;
+		if (id !== MAIN_AGENT_ID || expected === undefined) return undefined;
+		for (const ref of this.#mainRefs) {
+			if (this.#matchesExpected(ref, expected)) return ref;
+		}
+		return undefined;
+	}
+
+	#resolveRefBySessionFile(id: string, sessionFile: string): AgentRef | undefined {
+		const current = this.#refs.get(id);
+		if (current?.sessionFile === sessionFile) return current;
+		if (id !== MAIN_AGENT_ID) return undefined;
+		for (const ref of this.#mainRefs) {
+			if (ref.sessionFile === sessionFile) return ref;
+		}
+		return undefined;
 	}
 
 	#rejectStatusUpdate(id: string, status: AgentStatus, reason: string): false {
@@ -127,6 +150,7 @@ export class AgentRegistry {
 
 	register(input: RegisterInput): AgentRef {
 		const now = Date.now();
+		const parentFleetRoot = input.parentId ? this.#refs.get(input.parentId)?.fleetRoot : undefined;
 		const ref: AgentRef = {
 			id: input.id,
 			displayName: input.displayName,
@@ -135,11 +159,13 @@ export class AgentRegistry {
 			status: input.status ?? "running",
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
+			fleetRoot: input.fleetRoot ?? parentFleetRoot,
 			createdAt: input.createdAt ?? now,
 			lastActivity: input.lastActivity ?? now,
 			activity: input.activity,
 			history: input.history,
 		};
+		if (ref.id === MAIN_AGENT_ID) this.#mainRefs.add(ref);
 		this.#refs.set(ref.id, ref);
 		this.#emit({ type: "registered", ref });
 		return ref;
@@ -152,8 +178,11 @@ export class AgentRegistry {
 	}
 
 	setHistory(id: string, history: AgentHistorySummary, expectedSessionFile?: string): boolean {
-		const ref = this.#refs.get(id);
-		if (!ref || (expectedSessionFile !== undefined && ref.sessionFile !== expectedSessionFile)) return false;
+		const ref =
+			expectedSessionFile === undefined
+				? this.#refs.get(id)
+				: this.#resolveRefBySessionFile(id, expectedSessionFile);
+		if (!ref) return false;
 		const definedHistory = Object.fromEntries(
 			Object.entries(history).filter(([, value]) => value !== undefined),
 		) as AgentHistorySummary;
@@ -163,25 +192,37 @@ export class AgentRegistry {
 	}
 
 	setDisplayName(id: string, displayName: string, expectedSessionFile?: string): boolean {
-		const ref = this.#refs.get(id);
+		const ref =
+			expectedSessionFile === undefined
+				? this.#refs.get(id)
+				: this.#resolveRefBySessionFile(id, expectedSessionFile);
 		const normalized = displayName.trim();
-		if (
-			!ref ||
-			!normalized ||
-			(expectedSessionFile !== undefined && ref.sessionFile !== expectedSessionFile) ||
-			ref.displayName === normalized
-		)
-			return false;
+		if (!ref || !normalized || ref.displayName === normalized) return false;
 		ref.displayName = normalized;
 		this.#emit({ type: "metadata_changed", ref });
 		return true;
 	}
 
+	updateSessionScope(
+		id: string,
+		scope: { fleetRoot: string; sessionFile: string | null },
+		expected?: AgentRefExpectation,
+	): boolean {
+		const ref = this.#resolveRef(id, expected);
+		if (!ref) return false;
+		if (ref.fleetRoot === scope.fleetRoot && ref.sessionFile === scope.sessionFile) return true;
+		ref.fleetRoot = scope.fleetRoot;
+		ref.sessionFile = scope.sessionFile;
+		ref.lastActivity = Date.now();
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
+	}
+
 	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean {
-		const ref = this.#refs.get(id);
-		if (!ref) return this.#rejectStatusUpdate(id, status, "missing-ref");
-		if (!this.#matchesExpected(ref, expected)) {
-			return this.#rejectStatusUpdate(id, status, "session-ownership-changed");
+		const ref = this.#resolveRef(id, expected);
+		if (!ref) {
+			const reason = this.#refs.has(id) ? "session-ownership-changed" : "missing-ref";
+			return this.#rejectStatusUpdate(id, status, reason);
 		}
 
 		if (ref.status === "aborted") {
@@ -216,9 +257,9 @@ export class AgentRegistry {
 		sessionFile?: string | null,
 		expected?: AgentRefExpectation,
 	): boolean {
-		const ref = this.#refs.get(id);
+		const ref = this.#resolveRef(id, expected);
 
-		if (!ref || ref.status === "aborted" || !this.#matchesExpected(ref, expected)) return false;
+		if (!ref || ref.status === "aborted") return false;
 		ref.session = session;
 		if (sessionFile !== undefined) ref.sessionFile = sessionFile;
 		ref.lastActivity = Date.now();
@@ -226,30 +267,76 @@ export class AgentRegistry {
 	}
 
 	detachSession(id: string, expected?: AgentRefExpectation): boolean {
-		const ref = this.#refs.get(id);
-		if (!ref || !this.#matchesExpected(ref, expected)) return false;
+		const ref = this.#resolveRef(id, expected);
+		if (!ref) return false;
 		ref.session = null;
 		return true;
 	}
 
 	unregister(id: string, expected?: AgentRefExpectation): boolean {
-		const ref = this.#refs.get(id);
-		if (!ref || !this.#matchesExpected(ref, expected)) return false;
-		this.#refs.delete(id);
+		const ref = this.#resolveRef(id, expected);
+		if (!ref) return false;
+		if (id === MAIN_AGENT_ID) this.#mainRefs.delete(ref);
+		if (this.#refs.get(id) === ref) this.#refs.delete(id);
 		this.#emit({ type: "removed", ref });
 		return true;
 	}
 
-	get(id: string): AgentRef | undefined {
-		return this.#refs.get(id);
+	get(id: string, expected?: AgentRefExpectation): AgentRef | undefined {
+		return this.#resolveRef(id, expected);
+	}
+
+	getInFleet(id: string, fleetRoot: string): AgentRef | undefined {
+		const current = this.#refs.get(id);
+		if (current?.fleetRoot === fleetRoot) return current;
+		if (id !== MAIN_AGENT_ID) return undefined;
+		for (const ref of this.#mainRefs) {
+			if (ref.fleetRoot === fleetRoot) return ref;
+		}
+		return undefined;
+	}
+
+	activateSession(id: string, session: AgentSession): boolean {
+		const ref = this.#resolveRef(id, session);
+		if (!ref || ref.status === "aborted") return false;
+		this.#refs.set(id, ref);
+		ref.lastActivity = Date.now();
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
+	}
+
+	hasOtherRegistration(id: string, expected: AgentRefExpectation): boolean {
+		const owned = this.#resolveRef(id, expected);
+		if (!owned || id !== MAIN_AGENT_ID) return false;
+		for (const ref of this.#mainRefs) {
+			if (ref !== owned) return true;
+		}
+		return false;
 	}
 
 	list(): AgentRef[] {
 		return [...this.#refs.values()];
 	}
 
-	listVisibleTo(id: string): AgentRef[] {
-		return this.list().filter(
+	listInFleet(id: string, scopedFleetRoot?: string): AgentRef[] {
+		const fleetRoot = scopedFleetRoot ?? this.#refs.get(id)?.fleetRoot;
+		if (!fleetRoot) return [];
+		const refs = this.list().filter(ref => ref.id !== MAIN_AGENT_ID && ref.fleetRoot === fleetRoot);
+		const main = this.getInFleet(MAIN_AGENT_ID, fleetRoot);
+		if (main) refs.unshift(main);
+		return refs;
+	}
+
+	sharesFleet(firstId: string, secondId: string, scopedFleetRoot?: string): boolean {
+		const first = scopedFleetRoot ? this.getInFleet(firstId, scopedFleetRoot) : this.#refs.get(firstId);
+		const fleetRoot = scopedFleetRoot ?? first?.fleetRoot;
+		if (!fleetRoot) return false;
+		const second = this.getInFleet(secondId, fleetRoot);
+		return first?.fleetRoot === fleetRoot && second?.fleetRoot === fleetRoot;
+	}
+
+	listVisibleTo(id: string, scopedFleetRoot?: string): AgentRef[] {
+		return this.listInFleet(id, scopedFleetRoot).filter(
 			ref => ref.id !== id && ref.kind !== "advisor" && (ref.status === "running" || ref.status === "idle"),
 		);
 	}

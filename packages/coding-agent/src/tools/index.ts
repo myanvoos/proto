@@ -179,6 +179,8 @@ export interface ToolSession {
 
 	getAgentId?: () => string | null;
 
+	getAgentFleetRoot?: () => string | undefined;
+
 	/** Stable session-scoped owner key for async jobs and completion delivery. */
 	getAsyncJobOwnerId?: () => string | null;
 	getToolByName?: (name: string) => AgentTool | undefined;

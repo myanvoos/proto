@@ -7,6 +7,22 @@ export * from "./worker-host";
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+const SESSION_BRIDGE_ENV_NAMES = new Set([
+	"PI_ARTIFACTS_DIR",
+	"PI_EVAL_LOCAL_ROOTS",
+	"PI_KERNEL_BRIDGE_ADDR",
+	"PI_KERNEL_BRIDGE_TOKEN",
+	"PI_KERNEL_FLEET_ROOT",
+	"PI_SESSION_FILE",
+	"PI_TOOL_BRIDGE_SESSION",
+	"PI_TOOL_BRIDGE_TOKEN",
+	"PI_TOOL_BRIDGE_URL",
+]);
+
+export function isSessionBridgeEnvName(name: string): boolean {
+	return SESSION_BRIDGE_ENV_NAMES.has(name);
+}
+
 export function isValidEnvName(name: string): boolean {
 	return ENV_NAME_RE.test(name);
 }
@@ -85,6 +101,7 @@ export function filterChildShellEnv(
 ): Record<string, string> {
 	const runtimeLaunchEnvValues = env === Bun.env || env === process.env ? launchEnvValues : undefined;
 	const result = filterProcessEnv(env);
+	for (const name of SESSION_BRIDGE_ENV_NAMES) delete result[name];
 	const projectEnv = parseEnvFile(path.join(cwd, ".env"));
 	const launchNodeEnv = runtimeLaunchEnvValues ? runtimeLaunchEnvValues.get("NODE_ENV") : env.NODE_ENV;
 	const nodeEnvName = `.env.${launchNodeEnv || "development"}`;

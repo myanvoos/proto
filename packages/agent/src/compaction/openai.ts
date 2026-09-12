@@ -146,11 +146,6 @@ interface RemoteCompactionRewriteCandidate {
 	rewritten: Record<string, unknown>;
 }
 
-function serializedEstimateItemBytes(item: Record<string, unknown>): number {
-	const normalized = normalizeRemoteCompactionEstimateValue(item).value;
-	return Buffer.byteLength(stringifyJson(normalized) ?? "");
-}
-
 export function trimRemoteCompactionInputToContextWindow(
 	input: Array<Record<string, unknown>>,
 	tokenizer: Tokenizer,

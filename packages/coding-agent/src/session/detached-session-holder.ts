@@ -75,7 +75,7 @@ export class DetachedSessionHolder {
 	async disposeAll(): Promise<void> {
 		const entries = [...this.#live.values()];
 		this.#live.clear();
-		await Promise.all(entries.map(entry => this.#disposeEntry(entry)));
+		for (const entry of entries) await this.#disposeEntry(entry);
 	}
 
 	size(): number {

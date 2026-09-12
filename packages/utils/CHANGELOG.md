@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Child shell environments no longer inherit session-scoped kernel and tool bridge paths or credentials.
+
 ## [18.0.5] - 2026-09-09
 
 ### Fixed

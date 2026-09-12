@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import * as path from "node:path";
 
 test("parking and terminating revived workers release their live session graphs", async () => {
-	const script = path.resolve(import.meta.dir, "../../scripts/bench-worker-lifecycle-memory.ts");
+	const script = path.resolve(import.meta.dir, "../../test/fixtures/worker-lifecycle.ts");
 	const child = Bun.spawn(
 		[process.execPath, "--expose-gc", script, "--child", "--workers", "1", "--payload-kib", "16"],
 		{ stdout: "pipe", stderr: "pipe", timeout: 30_000 },

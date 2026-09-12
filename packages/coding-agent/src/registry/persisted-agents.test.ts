@@ -74,7 +74,7 @@ describe("registerPersistedSubagents", () => {
 
 	test("skips registration while the transcript is live in another process", async () => {
 		const { parentFile, childFile } = makeSessionTree();
-		writeLiveMarker(childFile, true, 999_999);
+		writeLiveMarker(childFile, true, process.pid);
 		const registry = new AgentRegistry();
 		await registerPersistedSubagents(registry, parentFile);
 		expect(registry.get("worker")).toBeUndefined();

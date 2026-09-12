@@ -1556,7 +1556,7 @@ export class SelectorController {
 
 		const canPark =
 			switchingToDifferentSession &&
-			wasStreaming &&
+			this.#hasDetachedSessionWork() &&
 			!!previousFile?.endsWith(".jsonl") &&
 			this.ctx.settings.get("session.detachedMainSessions") !== false;
 
@@ -1571,10 +1571,15 @@ export class SelectorController {
 		const mutableCtx = this.ctx as unknown as { session: unknown; agent: unknown };
 		let swappedIn = false;
 		if (parkedTarget) {
+			if (!parkedOurs) await this.ctx.session.dispose();
+			if (!AgentRegistry.global().activateSession(MAIN_AGENT_ID, parkedTarget.session)) {
+				detachedSessionHolder.park(sessionPath, parkedTarget.session, parkedTarget.manager);
+				throw new Error(`Cannot reattach ${shortenPath(sessionPath)}: its live agent ownership was lost`);
+			}
+			this.ctx.clearTransientSessionUi();
 			mutableCtx.session = parkedTarget.session;
 			mutableCtx.agent = parkedTarget.session.agent;
 			await this.ctx.attachSessionView(parkedTarget.session);
-			AgentRegistry.global().attachSession(MAIN_AGENT_ID, parkedTarget.session, sessionPath);
 			swappedIn = true;
 		} else if (!parkedOurs) {
 			await this.ctx.session.switchSession(sessionPath);
@@ -1586,12 +1591,13 @@ export class SelectorController {
 				detachedSessionHolder.delete(previousFile);
 				throw error;
 			}
+			this.ctx.clearTransientSessionUi();
 			mutableCtx.session = created;
 			mutableCtx.agent = created.agent;
 			await this.ctx.attachSessionView(created);
 			swappedIn = true;
 		}
-		this.ctx.clearTransientSessionUi();
+		if (!swappedIn) this.ctx.clearTransientSessionUi();
 		const newCwd = this.ctx.sessionManager.getCwd();
 		const movedProject = normalizePathForComparison(newCwd) !== normalizePathForComparison(previousCwd);
 		if (movedProject) {
@@ -1620,6 +1626,18 @@ export class SelectorController {
 		}
 		this.ctx.showStatus(`${status}${evictionNote}`);
 		return true;
+	}
+
+	#hasDetachedSessionWork(): boolean {
+		if (this.ctx.session.isStreaming || this.ctx.session.hasActiveMonitors()) return true;
+		if ((this.ctx.session.getAsyncJobSnapshot()?.running.length ?? 0) > 0) return true;
+		return AgentRegistry.global()
+			.listInFleet(this.ctx.session.getAgentId() ?? MAIN_AGENT_ID)
+			.some(
+				ref =>
+					(ref.kind === "sub" && (ref.status === "running" || ref.status === "idle")) ||
+					(ref.kind === "advisor" && ref.status === "running"),
+			);
 	}
 
 	async #createResumedForegroundSession(sessionPath: string): Promise<AgentSession> {

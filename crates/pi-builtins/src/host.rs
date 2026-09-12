@@ -104,6 +104,7 @@ pub(crate) struct Host {
 	name:                  String,
 	cwd:                   PathBuf,
 	env:                   HashMap<String, String>,
+	private_env:           HashMap<String, String>,
 	cancel:                Arc<AtomicBool>,
 	exit_code:             i32,
 	stdin_is_search_input: bool,
@@ -253,7 +254,10 @@ impl Host {
 
 
 	pub fn var(&self, key: &str) -> Option<&str> {
-		self.env.get(key).map(String::as_str)
+		self.env
+			.get(key)
+			.or_else(|| self.private_env.get(key))
+			.map(String::as_str)
 	}
 
 
@@ -963,6 +967,15 @@ fn build_host<SE: ShellExtensions>(
 		}
 	}
 
+	let mut private_env = HashMap::new();
+	for key in ["PI_KERNEL_BRIDGE_ADDR", "PI_KERNEL_BRIDGE_TOKEN", "PI_KERNEL_FLEET_ROOT"] {
+		if let Some((_, var)) = context.shell.env().get(key)
+			&& var.value().is_set()
+		{
+			private_env.insert(key.to_string(), var.value().to_cow_str(context.shell).into_owned());
+		}
+	}
+
 	let invoked = if context.command_name.is_empty() {
 		name.to_string()
 	} else {
@@ -998,6 +1011,7 @@ fn build_host<SE: ShellExtensions>(
 		name: invoked,
 		cwd: context.shell.working_dir().to_path_buf(),
 		env,
+		private_env,
 		cancel,
 		exit_code: 0,
 		stdin_is_search_input,
@@ -1140,6 +1154,7 @@ mod tests {
 			name: "long-writer".to_string(),
 			cwd: PathBuf::from("/"),
 			env: HashMap::new(),
+			private_env: HashMap::new(),
 			cancel,
 			exit_code: 0,
 			stdin_is_search_input: false,

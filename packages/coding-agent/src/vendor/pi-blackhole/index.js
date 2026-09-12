@@ -383,7 +383,6 @@ var DECLARATIVE_ENV_OVERRIDES = {
   memory: "PI_BLACKHOLE_MEMORY",
   debug: "PI_BLACKHOLE_DEBUG",
   debugLog: "PI_BLACKHOLE_DEBUG_LOG",
-  sessionFallback: "PI_BLACKHOLE_SESSION_FALLBACK",
   fullFoldAlways: "PI_BLACKHOLE_FULL_FOLD_ALWAYS",
   // Positive integers
   compactAfterTokens: "PI_BLACKHOLE_COMPACT_AFTER_TOKENS",
@@ -472,7 +471,6 @@ function configPath() {
 }
 var DEFAULTS = {
   debug: false,
-  sessionFallback: true,
   // New config surface
   compaction: "auto",
   compactionEngine: "blackhole",
@@ -496,7 +494,6 @@ var DEFAULTS = {
   memory: true,
   debugLog: false
 };
-var THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 var COMPACTION_VALUES = ["auto", "manual", "off"];
 var COMPACTION_ENGINE_VALUES = ["blackhole", "pi-default"];
 var COMPACTION_SUMMARY_MODE_VALUES = ["default", "append"];
@@ -520,35 +517,11 @@ function isMidRunCompaction(v) {
 function isRecord(v) {
   return typeof v === "object" && v !== null;
 }
-function nonEmptyString(v) {
-  return typeof v === "string" && v.length > 0 ? v : void 0;
-}
-function isThinkingLevel(v) {
-  return typeof v === "string" && THINKING_LEVELS.includes(v);
-}
 function positiveInt(v) {
   return Number.isInteger(v) && typeof v === "number" && v > 0 ? v : void 0;
 }
 function nonNegativeInt(v) {
   return Number.isInteger(v) && typeof v === "number" && v >= 0 ? v : void 0;
-}
-function parseModel(v) {
-  if (!isRecord(v)) return void 0;
-  const provider = nonEmptyString(v.provider);
-  const id = nonEmptyString(v.id);
-  if (!provider || !id) return void 0;
-  const model = { provider, id };
-  if (isThinkingLevel(v.thinking)) model.thinking = v.thinking;
-  const cooldown = nonNegativeInt(v.cooldownHours);
-  if (cooldown !== void 0) model.cooldownHours = cooldown;
-  const ctxWindow = positiveInt(v.contextWindow);
-  if (ctxWindow !== void 0) model.contextWindow = ctxWindow;
-  return model;
-}
-function parseModelArray(v) {
-  if (!Array.isArray(v)) return void 0;
-  const parsed = v.map(parseModel).filter((m) => m !== void 0);
-  return parsed.length > 0 ? parsed : void 0;
 }
 function parseConfig(raw) {
   const c = {};
@@ -565,7 +538,6 @@ function parseConfig(raw) {
   if (typeof raw.overrideDefaultCompaction === "boolean")
     c.overrideDefaultCompaction = raw.overrideDefaultCompaction;
   if (typeof raw.debug === "boolean") c.debug = raw.debug;
-  if (typeof raw.sessionFallback === "boolean") c.sessionFallback = raw.sessionFallback;
   if (typeof raw.noAutoCompact === "boolean") c.noAutoCompact = raw.noAutoCompact;
   if (typeof raw.passive === "boolean") c.passive = raw.passive;
   if (typeof raw.memory === "boolean") c.memory = raw.memory;
@@ -595,20 +567,6 @@ function parseConfig(raw) {
     const v = validator(raw[k]);
     if (v !== void 0) c[k] = v;
   }
-  const model = parseModel(raw.model);
-  if (model) c.model = model;
-  const obsModel = parseModel(raw.observerModel);
-  if (obsModel) c.observerModel = obsModel;
-  const refModel = parseModel(raw.reflectorModel);
-  if (refModel) c.reflectorModel = refModel;
-  const dropModel = parseModel(raw.dropperModel);
-  if (dropModel) c.dropperModel = dropModel;
-  const obsFallback = parseModelArray(raw.observerFallbackModels);
-  if (obsFallback) c.observerFallbackModels = obsFallback;
-  const refFallback = parseModelArray(raw.reflectorFallbackModels);
-  if (refFallback) c.reflectorFallbackModels = refFallback;
-  const dropFallback = parseModelArray(raw.dropperFallbackModels);
-  if (dropFallback) c.dropperFallbackModels = dropFallback;
   return c;
 }
 function migrateOldKnobs(parsed) {
@@ -8729,13 +8687,6 @@ var config = new ConfigManager({
       }
     },
     {
-      key: "sessionFallback",
-      type: "boolean",
-      label: "Session model fallback",
-      description: "off=skip stage when all OM models fail, instead of falling back to the main coding model",
-      value: cfg.sessionFallback ?? true
-    },
-    {
       key: "observeAfterTokens",
       type: "number",
       label: "Observer threshold",
@@ -11793,30 +11744,20 @@ function anyStageDue(entries, runtime, pending) {
   })();
   return observerDue || reflectorDue || dropperDue;
 }
-function stageModelConfig(runtime, stage) {
-  if (stage === "observer") return runtime.config.observerModel;
-  if (stage === "reflector") return runtime.config.reflectorModel;
-  return runtime.config.dropperModel;
-}
-function stageFallbackModels(runtime, stage) {
-  if (stage === "observer") return runtime.config.observerFallbackModels ?? [];
-  if (stage === "reflector") return runtime.config.reflectorFallbackModels ?? [];
-  return runtime.config.dropperFallbackModels ?? [];
+function memoryModelCandidates(ctx) {
+  return ctx.models.roleCandidates(["smol", "tiny"]);
 }
 function stageThinkingLevel(runtime, stage, modelConfig) {
-  const stageModel = modelConfig ?? stageModelConfig(runtime, stage);
-  return stageModel?.thinking ?? runtime.config.model?.thinking ?? "low";
+  return modelConfig?.thinking ?? "low";
 }
 function makeModelResolver(runtime, ctx) {
   return async (stage) => {
-    const stageFallbacks = stageFallbackModels(runtime, stage);
+    const candidates = memoryModelCandidates(ctx);
     const resolved = await runtime.resolveModel({
-      model: ctx.model,
       modelRegistry: ctx.modelRegistry,
       hasUI: ctx.hasUI,
       ui: ctx.ui,
-      stageModel: stageModelConfig(runtime, stage),
-      stageFallbacks
+      candidates
     });
     if (resolved.ok) {
       runtime.resolveFailureNotified = false;
@@ -11825,11 +11766,10 @@ function makeModelResolver(runtime, ctx) {
     debugLog(`${stage}.model_unavailable`, { reason: resolved.reason });
     if (!runtime.resolveFailureNotified && ctx.hasUI && ctx.ui) {
       if (runtime.failedInCycle.size > 0 && resolved.reason.includes("all candidates exhausted")) {
-        const fallbackMsg = stageFallbacks.length === 0 ? "no fallbacks configured" : "no available fallbacks";
         runtime.tryEmitInfo(
           true,
           ctx.ui,
-          `Observational memory: ${stage} skipped \u2014 model unavailable (cooldown set to 0, ${fallbackMsg}, will retry next run)`
+          `Observational memory: ${stage} skipped \u2014 model unavailable (cooldown set to 0, smol/tiny role candidates exhausted, will retry next run)`
         );
       } else {
         ctx.ui.notify(`Observational memory: ${stage} skipped \u2014 ${resolved.reason}`, "warning");
@@ -12087,12 +12027,7 @@ async function runObserverStage(pi, runtime, ctx, resolveModel) {
       priorObservations: priorObservations.length
     });
     const stageModelForThinking = runtime.findCandidateConfig(resolved.model, {
-      model: ctx.model,
-      modelRegistry: ctx.modelRegistry,
-      hasUI: ctx.hasUI,
-      ui: ctx.ui,
-      stageModel: stageModelConfig(runtime, "observer"),
-      stageFallbacks: stageFallbackModels(runtime, "observer")
+      candidates: memoryModelCandidates(ctx)
     });
     const effectiveObsCtx = effectiveContextWindow(resolved.model, stageModelForThinking);
     const observerEstimatedInput = chunkTokens + AGENT_LOOP_RESERVE;
@@ -12184,12 +12119,7 @@ async function runObserverStage(pi, runtime, ctx, resolveModel) {
         return "abort";
       }
       const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        model: ctx.model,
-        modelRegistry: ctx.modelRegistry,
-        hasUI: ctx.hasUI,
-        ui: ctx.ui,
-        stageModel: stageModelConfig(runtime, "observer"),
-        stageFallbacks: stageFallbackModels(runtime, "observer")
+        candidates: memoryModelCandidates(ctx)
       });
       runtime.recordRetryableError(candidateConfig, error, "observer");
       debugLog("observer.error", {
@@ -12297,12 +12227,7 @@ async function runReflectorStage(pi, runtime, ctx, resolveModel) {
       `Observational memory: reflector running (~${effectiveReflectionTokens.toLocaleString()} tokens accumulated, ~${reflectorInputTokens.toLocaleString()}-token input)`
     );
     const stageModelForThinking = runtime.findCandidateConfig(resolved.model, {
-      model: ctx.model,
-      modelRegistry: ctx.modelRegistry,
-      hasUI: ctx.hasUI,
-      ui: ctx.ui,
-      stageModel: stageModelConfig(runtime, "reflector"),
-      stageFallbacks: stageFallbackModels(runtime, "reflector")
+      candidates: memoryModelCandidates(ctx)
     });
     const effectiveRefCtx = effectiveContextWindow(resolved.model, stageModelForThinking);
     const reflectorEstimatedInput = reflectorInputTokens + AGENT_LOOP_RESERVE;
@@ -12396,12 +12321,7 @@ async function runReflectorStage(pi, runtime, ctx, resolveModel) {
         return { outcome: "abort", sameRunReflections: [] };
       }
       const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        model: ctx.model,
-        modelRegistry: ctx.modelRegistry,
-        hasUI: ctx.hasUI,
-        ui: ctx.ui,
-        stageModel: stageModelConfig(runtime, "reflector"),
-        stageFallbacks: stageFallbackModels(runtime, "reflector")
+        candidates: memoryModelCandidates(ctx)
       });
       runtime.recordRetryableError(candidateConfig, error, "reflector");
       debugLog("reflector.error", {
@@ -12520,12 +12440,7 @@ async function runDropperStage(pi, runtime, ctx, resolveModel, sameRunReflection
       ] : folded.reflections;
       const reflectionsForDropper = mergeReflections(pendingReflections, sameRunReflections);
       const stageModelForThinking = runtime.findCandidateConfig(resolved.model, {
-        model: ctx.model,
-        modelRegistry: ctx.modelRegistry,
-        hasUI: ctx.hasUI,
-        ui: ctx.ui,
-        stageModel: stageModelConfig(runtime, "dropper"),
-        stageFallbacks: stageFallbackModels(runtime, "dropper")
+        candidates: memoryModelCandidates(ctx)
       });
       const effectiveDropCtx = effectiveContextWindow(resolved.model, stageModelForThinking);
       const dropperEstimatedInput = dropperInputTokens + AGENT_LOOP_RESERVE;
@@ -12591,12 +12506,7 @@ async function runDropperStage(pi, runtime, ctx, resolveModel, sameRunReflection
         return "abort";
       }
       const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        model: ctx.model,
-        modelRegistry: ctx.modelRegistry,
-        hasUI: ctx.hasUI,
-        ui: ctx.ui,
-        stageModel: stageModelConfig(runtime, "dropper"),
-        stageFallbacks: stageFallbackModels(runtime, "dropper")
+        candidates: memoryModelCandidates(ctx)
       });
       runtime.recordRetryableError(candidateConfig, error, "dropper");
       debugLog("dropper.error", {
@@ -14166,40 +14076,12 @@ var Runtime = class {
     this.ensureConfig(cwd, warn);
   }
   /**
-   * Build the ordered model candidate list for a stage:
-   * 1. Primary stage model (observerModel, reflectorModel, dropperModel)
-   * 2. Stage fallbacks (observerFallbackModels, etc.)
-   * 3. Base config.model
-   *
-   * Session model (ctx.model) is only used as the last resort inside resolveModel.
-   */
-  buildCandidateList(stageModel, stageFallbacks) {
-    const candidates = [];
-    if (stageModel) candidates.push(stageModel);
-    if (stageFallbacks) candidates.push(...stageFallbacks);
-    if (this.config.model) candidates.push(this.config.model);
-    return candidates;
-  }
-  /**
-   * Resolve a model for a consolidation stage.
-   *
-   * Tries the candidate list in order:
-   * 1. Primary stage model → 2. Stage fallbacks → 3. Base config.model → 4. Session model.
-   *
-   * Session model fallback can be disabled via config.sessionFallback: false.
-   * When disabled, returns { ok: false } instead of using the session model,
-   * allowing the stage to be skipped entirely when all configured OM models fail.
-   *
-   * Skips models that are currently in a cooldown window.
-   * On retryable error (after the agent runs), the model that failed is cooled down
-   * and the next candidate is tried.  The caller must call `recordRetryableError`
-   * after the API attempt to mark the failed model.
-   *
-   * Returns `ok: true` with the resolved model, or `ok: false` with a reason
-   * if all candidates (including session model, if enabled) are exhausted or unavailable.
+   * Resolve a model for an observational-memory stage from Proto's shared model roles.
+   * The caller orders candidates as smol, tiny, then the active session model, except
+   * that an active model already assigned to smol or tiny remains first.
    */
   async resolveModel(ctx) {
-    const candidates = this.buildCandidateList(ctx.stageModel, ctx.stageFallbacks);
+    const candidates = ctx.candidates;
     const stageName = this.consolidationPhase ?? "unknown";
     for (const candidate of candidates) {
       const key = modelKey(candidate);
@@ -14251,57 +14133,24 @@ var Runtime = class {
         cooldownApplied: false
       };
     }
-    if (this.config.sessionFallback !== false) {
-      const sessionModel = ctx.model;
-      if (!sessionModel) {
-        return {
-          ok: false,
-          reason: `no model available for ${stageName} (all candidates exhausted, no session model)`
-        };
-      }
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(sessionModel);
-      const hasAuth = ctx.modelRegistry.hasConfiguredAuth?.(sessionModel) ?? true;
-      if (!auth.ok || !hasAuth) {
-        const provider = sessionModel.provider ?? "unknown";
-        return {
-          ok: false,
-          reason: `no auth for session model provider "${provider}"`
-        };
-      }
-      const resolvedModel = await withResolvedAuthEndpoint(ctx.modelRegistry, sessionModel, auth);
-      return {
-        ok: true,
-        model: resolvedModel,
-        apiKey: auth.apiKey ?? "",
-        headers: auth.headers,
-        cooldownApplied: false
-      };
-    }
-    this.tryEmitInfo(
-      ctx.hasUI,
-      ctx.ui,
-      `Observational memory: ${stageName} skipped \u2014 all candidates failed (sessionFallback disabled, won't use main model)`
-    );
     this.resolveFailureNotified = true;
     return {
       ok: false,
-      reason: `no model available for ${stageName} (all candidates exhausted, sessionFallback disabled)`
+      reason: `no model available for ${stageName} (smol, tiny, and session candidates exhausted)`
     };
   }
   /**
    * Get the model config for the currently resolved model (used for cooldown recording).
-   * Returns the candidate config if the model was from the candidate list,
-   * or undefined if it's the session model.
+   * Returns the matching role/session candidate for cooldown handling.
    */
   findCandidateConfig(resolvedModel, ctx) {
-    const candidates = this.buildCandidateList(ctx.stageModel, ctx.stageFallbacks);
+    const candidates = ctx.candidates;
     const model = resolvedModel;
     if (!model.provider || !model.id) return void 0;
-    return candidates.find((c) => c.provider === model.provider && c.id === model.id) ?? (this.config.model?.provider === model.provider && this.config.model?.id === model.id ? this.config.model : void 0);
+    return candidates.find((candidate) => candidate.provider === model.provider && candidate.id === model.id);
   }
   /**
-   * Record a retryable error for a model.  The model must be one of the candidates
-   * (not the session model).  If it's the session model we don't cool it down.
+   * Record a retryable error for a role/session candidate.
    *
    * When cooldownHours is explicitly 0, the model is tracked in-memory for the
    * current consolidation stage (no disk writes). Otherwise a persisted cooldown

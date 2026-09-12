@@ -65,6 +65,31 @@ describe("filterChildShellEnv", () => {
 		expect(child).toEqual({ UNCHANGED: "parent-value" });
 	});
 
+	test("does not forward session bridge capabilities into child shells", async () => {
+		const cwd = await makeEnvDir({ ".env": "" });
+		const script = [
+			`import { filterChildShellEnv } from ${JSON.stringify(envModulePath)};`,
+			"const child = filterChildShellEnv({",
+			'  PI_KERNEL_BRIDGE_ADDR: "127.0.0.1:1234",',
+			'  PI_KERNEL_BRIDGE_TOKEN: "secret",',
+			'  PI_KERNEL_FLEET_ROOT: "/previous/session/fleet",',
+			'  PI_SESSION_FILE: "/previous/session.jsonl",',
+			'  PI_ARTIFACTS_DIR: "/previous/session",',
+			'  PI_TOOL_BRIDGE_URL: "http://127.0.0.1:5678",',
+			'  PI_TOOL_BRIDGE_TOKEN: "tool-secret",',
+			'  PI_TOOL_BRIDGE_SESSION: "previous",',
+			'  PI_EVAL_LOCAL_ROOTS: "{}",',
+			'  PI_DEBUG_STARTUP: "1",',
+			'  UNCHANGED: "parent-value",',
+			`}, ${JSON.stringify(cwd)});`,
+			"process.stdout.write(JSON.stringify(child));",
+		].join("\n");
+
+		const child = await runProbe(script, {}, { noEnvFile: true });
+
+		expect(child).toEqual({ PI_DEBUG_STARTUP: "1", UNCHANGED: "parent-value" });
+	});
+
 	test("keeps launch provenance when filtering the live process environment", async () => {
 		const cwd = await makeEnvDir({
 			".env": "NODE_ENV=production\n",

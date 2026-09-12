@@ -355,21 +355,26 @@ export class LocalProtocolHandler implements ProtocolHandler {
 	readonly scheme = "local";
 	readonly immutable = false;
 
-	static #override: LocalProtocolOptions | undefined;
+	static #overrides: Array<{ owner: object; value: LocalProtocolOptions | undefined }> = [];
 
-	static setOverride(value: LocalProtocolOptions | undefined): void {
-		LocalProtocolHandler.#override = value;
+	static setOverride(value: LocalProtocolOptions | undefined): () => void {
+		const owner = {};
+		LocalProtocolHandler.#overrides.push({ owner, value });
+		return () => {
+			const index = LocalProtocolHandler.#overrides.findIndex(entry => entry.owner === owner);
+			if (index !== -1) LocalProtocolHandler.#overrides.splice(index, 1);
+		};
 	}
 
 	static resetOverrideForTests(): void {
-		LocalProtocolHandler.#override = undefined;
+		LocalProtocolHandler.#overrides = [];
 	}
 
 	static resolveOptions(context?: ResolveContext): LocalProtocolOptions | undefined {
 		const fromContext = context?.localProtocolOptions;
 		if (fromContext) return fromContext;
-		const override = LocalProtocolHandler.#override;
-		if (override) return override;
+		const override = LocalProtocolHandler.#overrides.at(-1);
+		if (override) return override.value;
 		const main = AgentRegistry.global()
 			.list()
 			.find(ref => ref.kind === "main");

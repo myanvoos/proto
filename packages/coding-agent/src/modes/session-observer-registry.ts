@@ -1,3 +1,4 @@
+import type { AgentRef } from "../registry/agent-registry";
 import type { ObservableAgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
 import { projectAgentProgress, WORKER_SUBAGENT_LIFECYCLE_CHANNEL, WORKER_SUBAGENT_PROGRESS_CHANNEL } from "../task";
 import type { EventBus } from "../utils/event-bus";
@@ -33,6 +34,7 @@ const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 
 export class SessionObserverRegistry {
 	#sessions = new Map<string, ObservableSession>();
+	#fleetRoot: string | undefined;
 	#listeners = new Set<(kind: SessionObserverChangeKind) => void>();
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#sortOrderById = new Map<string, number>();
@@ -73,8 +75,9 @@ export class SessionObserverRegistry {
 		return parentOrder ?? this.#getStableOrder(session);
 	}
 
-	setMainSession(sessionFile?: string): void {
+	setMainSession(sessionFile?: string, fleetRoot?: string): void {
 		const existing = this.#sessions.get("main");
+		this.#fleetRoot = fleetRoot;
 		this.#ensureSortOrder("main");
 		this.#sessions.set("main", {
 			id: "main",
@@ -136,8 +139,30 @@ export class SessionObserverRegistry {
 		return count;
 	}
 
+	seedAgentRefs(refs: Iterable<AgentRef>): void {
+		let changed = false;
+		for (const ref of refs) {
+			if (ref.kind !== "sub") continue;
+			const status: ObservableSession["status"] =
+				ref.status === "running" ? "active" : ref.status === "aborted" ? "aborted" : "completed";
+			this.#ensureSortOrder(ref.id);
+			this.#sessions.set(ref.id, {
+				id: ref.id,
+				kind: "subagent",
+				label: ref.displayName,
+				description: ref.activity,
+				status,
+				sessionFile: ref.sessionFile ?? undefined,
+				lastUpdate: ref.lastActivity,
+			});
+			changed = true;
+		}
+		if (changed) this.#notifyListeners("lifecycle");
+	}
+
 	resetSessions(): void {
 		this.#sessions.clear();
+		this.#fleetRoot = undefined;
 		this.#sortOrderById.clear();
 		this.#parentSortOrderById.clear();
 		this.#nextSortOrder = 0;
@@ -148,6 +173,7 @@ export class SessionObserverRegistry {
 		for (const unsub of this.#eventBusUnsubscribers) unsub();
 		this.#eventBusUnsubscribers = [];
 		this.#sessions.clear();
+		this.#fleetRoot = undefined;
 		this.#sortOrderById.clear();
 		this.#parentSortOrderById.clear();
 		this.#nextSortOrder = 0;
@@ -161,6 +187,7 @@ export class SessionObserverRegistry {
 		this.#eventBusUnsubscribers.push(
 			eventBus.on(WORKER_SUBAGENT_LIFECYCLE_CHANNEL, data => {
 				const payload = data as SubagentLifecyclePayload;
+				if (payload.fleetRoot && this.#fleetRoot && payload.fleetRoot !== this.#fleetRoot) return;
 				const status = STATUS_MAP[payload.status];
 				if (!status) return;
 
@@ -197,6 +224,7 @@ export class SessionObserverRegistry {
 		this.#eventBusUnsubscribers.push(
 			eventBus.on(WORKER_SUBAGENT_PROGRESS_CHANNEL, data => {
 				const payload = data as SubagentProgressPayload;
+				if (payload.fleetRoot && this.#fleetRoot && payload.fleetRoot !== this.#fleetRoot) return;
 				const progress = projectAgentProgress(payload.progress);
 				const id = progress.id;
 				const existing = this.#sessions.get(id);

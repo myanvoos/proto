@@ -31,7 +31,7 @@ import type { CustomTool } from "../extensibility/custom-tools/types";
 import { runExtensionCompact, runExtensionSetModel } from "../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../extensibility/extensions/get-commands-handler";
 import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
-import type { LocalProtocolOptions } from "../internal-urls";
+import { type LocalProtocolOptions, resolveFleetRoot } from "../internal-urls";
 import type { MCPManager } from "../mcp/manager";
 import { initializeExtensions } from "../modes/runtime-init";
 import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
@@ -240,7 +240,7 @@ function installSubagentRetryFallbackChain(args: {
 
 function renderIrcPeerRoster(selfId: string): string {
 	const peers = AgentRegistry.global()
-		.list()
+		.listInFleet(selfId)
 		.filter(ref => ref.id !== selfId && ref.status !== "aborted" && ref.kind !== "advisor");
 	if (peers.length === 0) return "- (no other agents)";
 	const lines = peers.map(
@@ -777,6 +777,7 @@ interface RunMonitorArgs {
 	parentToolCallId?: string;
 	detached?: boolean;
 	sessionFile?: string;
+	fleetRoot?: string;
 
 	softRequestBudget: number;
 
@@ -1063,6 +1064,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				assignment,
 				progress: projectAgentProgress(progress),
 				sessionFile: args.sessionFile,
+				fleetRoot: args.fleetRoot,
 			});
 		}
 		lastProgressEmitMs = Date.now();
@@ -1788,6 +1790,7 @@ interface FinalizeRunArgs {
 	parentToolCallId?: string;
 	detached?: boolean;
 	sessionFile?: string;
+	fleetRoot?: string;
 	startTime: number;
 }
 
@@ -1881,6 +1884,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			description: progress.description,
 			status: progress.status as "completed" | "failed" | "aborted",
 			sessionFile: args.sessionFile,
+			fleetRoot: args.fleetRoot,
 			index,
 		});
 	}
@@ -1931,6 +1935,7 @@ interface IrcWakeTurnMonitorOptions {
 	parentToolCallId?: string;
 
 	sessionFile?: string;
+	fleetRoot?: string;
 	maxRuntimeMs?: number;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -1968,6 +1973,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
 			sessionFile,
+			fleetRoot: options.fleetRoot,
 			softRequestBudget: 0,
 			softRequestBudgetNotice: false,
 			maxRuntimeMs,
@@ -1983,6 +1989,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				description: options.description,
 				status: "started",
 				sessionFile,
+				fleetRoot: options.fleetRoot,
 				index,
 			});
 		}
@@ -2030,6 +2037,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					parentToolCallId: options.parentToolCallId,
 					detached: true,
 					sessionFile,
+					fleetRoot: options.fleetRoot,
 					startTime: turnStartTime,
 				});
 			} catch (finalizeError) {
@@ -2152,6 +2160,7 @@ interface FollowUpTurnOptions {
 	onProgress?: (progress: AgentProgress) => void;
 	eventBus?: EventBus;
 	parentToolCallId?: string;
+	fleetRoot?: string;
 
 	artifactsDir?: string;
 
@@ -2166,6 +2175,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	if (session.isStreaming) await untilAborted(signal, () => session.waitForStreamingIdle());
 	const ref = AgentRegistry.global().get(id);
 	const sessionFile = ref?.sessionFile ?? undefined;
+	const fleetRoot = ref?.fleetRoot ?? options.fleetRoot;
 
 	const monitor = createSubagentRunMonitor({
 		index,
@@ -2180,6 +2190,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
 		sessionFile,
+		fleetRoot,
 		softRequestBudget: 0,
 		softRequestBudgetNotice: false,
 		maxRuntimeMs: options.maxRuntimeMs ?? 0,
@@ -2195,6 +2206,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 			description: options.description,
 			status: "started",
 			sessionFile,
+			fleetRoot,
 			index,
 		});
 	}
@@ -2231,6 +2243,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
 		sessionFile,
+		fleetRoot,
 		startTime,
 	});
 }
@@ -2439,6 +2452,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 	const modelPatterns = normalizeModelPatterns(modelOverride ?? agent.model);
 	const sessionFile = subtaskSessionFile ?? null;
+	const fleetRoot = options.localProtocolOptions ? resolveFleetRoot(options.localProtocolOptions) : undefined;
 	const spawnsEnv = atMaxDepth
 		? ""
 		: agent.spawns === undefined
@@ -2466,6 +2480,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		parentToolCallId: options.parentToolCallId,
 		detached: options.detached,
 		sessionFile: subtaskSessionFile,
+		fleetRoot,
 		softRequestBudget,
 		softRequestBudgetNotice,
 		maxRuntimeMs,
@@ -2483,6 +2498,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		eventBus: options.eventBus,
 		parentToolCallId: options.parentToolCallId,
 		sessionFile: subtaskSessionFile,
+		fleetRoot,
 		maxRuntimeMs,
 		outputSchema,
 		outputSchemaMode: options.outputSchemaMode,
@@ -2810,6 +2826,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					description: options.description,
 					status: "started",
 					sessionFile: subtaskSessionFile,
+					fleetRoot,
 					index,
 				});
 			}
@@ -3101,6 +3118,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		parentToolCallId: options.parentToolCallId,
 		detached: options.detached,
 		sessionFile: subtaskSessionFile,
+		fleetRoot,
 		startTime,
 	});
 	AgentRegistry.global().setHistory(id, { outputPath: result.outputPath });

@@ -21,7 +21,7 @@ test("parallel stream owners survive client churn, release the broker, and recov
 		const child = Bun.spawn(
 			[
 				process.execPath,
-				path.resolve(import.meta.dir, "../../scripts/bench-daemon-memory.ts"),
+				path.resolve(import.meta.dir, "../../test/fixtures/daemon-lifecycle.ts"),
 				"--clients",
 				"4",
 				"--terminal",

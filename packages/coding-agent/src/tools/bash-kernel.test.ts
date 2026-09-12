@@ -236,6 +236,25 @@ test("node script paths fall through to the real node with argv", async () => {
 	}
 }, 60000);
 
+test("kernel bridge capabilities are shell-local and not inherited by child processes", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-env-scope-"));
+	try {
+		const result = await new BashTool(stubSession(dir)).execute("env-scope", {
+			command: [
+				`printf 'shell=%s\n' "$PI_KERNEL_FLEET_ROOT"`,
+				`if test -n "$PI_KERNEL_BRIDGE_ADDR" && test -n "$PI_KERNEL_BRIDGE_TOKEN"; then echo shell-bridge=set; else echo shell-bridge=unset; fi`,
+				`sh -c 'if test -n "$PI_KERNEL_BRIDGE_ADDR$PI_KERNEL_BRIDGE_TOKEN$PI_KERNEL_FLEET_ROOT"; then echo child=set; else echo child=unset; fi'`,
+			].join("; "),
+		});
+		const output = textOf(result);
+		expect(output).toContain(`shell=${path.join(dir, "artifacts", "fleet")}`);
+		expect(output).toContain("shell-bridge=set");
+		expect(output).toContain("child=unset");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
 test("fleet python scripts execute as kernel orchestration", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-py-"));
 	try {

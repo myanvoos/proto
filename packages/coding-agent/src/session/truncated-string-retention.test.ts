@@ -7,7 +7,7 @@ interface ProbeResult {
 }
 
 const MAX_RETAINED_BYTES = 32 * 1024 * 1024;
-const probePath = path.resolve(import.meta.dir, "truncated-string-retention-probe.ts");
+const probePath = path.resolve(import.meta.dir, "../../test/fixtures/truncated-string-retention.ts");
 
 async function runProbe(mode: "raw-sse" | "tool-output"): Promise<ProbeResult> {
 	const proc = Bun.spawn([process.execPath, "--smol", probePath, mode], {

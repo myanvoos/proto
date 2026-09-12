@@ -30,6 +30,11 @@ export class IrcBridge {
 		this.#host = host;
 	}
 
+	reset(): void {
+		this.#interrupts = [];
+		this.#asides = [];
+	}
+
 	hasInterrupts(): boolean {
 		return this.#interrupts.length > 0;
 	}
@@ -151,6 +156,7 @@ export class IrcBridge {
 	}
 
 	async #runAutoReply(msg: IrcMessage): Promise<void> {
+		const sessionId = this.#host.sessionManager.getSessionId();
 		try {
 			const { replyText } = await this.#host.runEphemeralTurn({
 				promptText: prompt.render(ircAutoReplyTemplate, {
@@ -160,7 +166,7 @@ export class IrcBridge {
 				}),
 			});
 			const body = replyText.trim();
-			if (!body || this.#host.isDisposed()) return;
+			if (!body || this.#host.isDisposed() || this.#host.sessionManager.getSessionId() !== sessionId) return;
 			const record: CustomMessage = {
 				role: "custom",
 				customType: "irc:autoreply",
@@ -172,7 +178,11 @@ export class IrcBridge {
 			};
 			void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 			this.#asides.push(record);
-			const receipt = await IrcBus.global().send({ from: msg.to, to: msg.from, body, replyTo: msg.id });
+			const fleetRoot = AgentRegistry.global().get(msg.from)?.fleetRoot;
+			const receipt = await IrcBus.global().send(
+				{ from: msg.to, to: msg.from, body, replyTo: msg.id },
+				{ fleetRoot },
+			);
 			if (receipt.outcome === "failed") {
 				logger.warn("IRC auto-reply delivery failed", { to: msg.from, error: receipt.error });
 			}

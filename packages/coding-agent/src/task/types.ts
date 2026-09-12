@@ -52,6 +52,7 @@ export interface SubagentProgressPayload {
 	assignment?: string;
 	progress: ObservableAgentProgress;
 	sessionFile?: string;
+	fleetRoot?: string;
 
 	detached?: boolean;
 }
@@ -68,6 +69,7 @@ export interface SubagentLifecyclePayload {
 	description?: string;
 	status: "started" | "completed" | "failed" | "aborted";
 	sessionFile?: string;
+	fleetRoot?: string;
 	parentToolCallId?: string;
 	index: number;
 

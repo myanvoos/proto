@@ -1,7 +1,15 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $env, isBunTestRuntime, isCompiledBinary, logger, postmortem, workerHostEntry } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	isBunTestRuntime,
+	isCompiledBinary,
+	isSessionBridgeEnvName,
+	logger,
+	postmortem,
+	workerHostEntry,
+} from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 
 type WorkerLogMessage = {
@@ -62,10 +70,12 @@ export function workerEnvFromParent(overlay?: Record<string, string>): Record<st
 	const merged: Record<string, string> = {};
 	for (const key in base) {
 		const value = base[key];
-		if (typeof value === "string") merged[key] = value;
+		if (typeof value === "string" && !isSessionBridgeEnvName(key)) merged[key] = value;
 	}
 	if (overlay) {
-		for (const key in overlay) merged[key] = overlay[key];
+		for (const key in overlay) {
+			if (!isSessionBridgeEnvName(key)) merged[key] = overlay[key];
+		}
 	}
 	return merged;
 }

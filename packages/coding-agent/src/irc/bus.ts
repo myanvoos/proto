@@ -23,8 +23,14 @@ export interface IrcDeliveryReceipt {
 
 interface IrcWaiter {
 	from?: string;
+	fleetRoot: string;
 	resolve: (msg: IrcMessage) => void;
 	cancel: () => void;
+}
+
+interface IrcMailboxEntry {
+	message: IrcMessage;
+	fleetRoot: string;
 }
 
 const MAILBOX_CAP = 100;
@@ -45,7 +51,7 @@ export class IrcBus {
 
 	readonly #registry: AgentRegistry;
 	readonly #lifecycle: () => AgentLifecycleManager;
-	readonly #mailboxes = new Map<string, IrcMessage[]>();
+	readonly #mailboxes = new Map<string, IrcMailboxEntry[]>();
 	readonly #waiters = new Map<string, IrcWaiter[]>();
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
@@ -56,11 +62,15 @@ export class IrcBus {
 
 	async send(
 		msg: Omit<IrcMessage, "id" | "ts">,
-		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
+		opts?: { expectsReply?: boolean; suppressRelay?: boolean; fleetRoot?: string },
 	): Promise<IrcDeliveryReceipt> {
 		const message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
-		const ref = this.#registry.get(message.to);
-		if (!ref) {
+		const source = opts?.fleetRoot
+			? this.#registry.getInFleet(message.from, opts.fleetRoot)
+			: this.#registry.get(message.from);
+		const fleetRoot = opts?.fleetRoot ?? source?.fleetRoot;
+		const ref = fleetRoot ? this.#registry.getInFleet(message.to, fleetRoot) : undefined;
+		if (!source || !ref || !fleetRoot) {
 			return {
 				to: message.to,
 				outcome: "failed",
@@ -105,24 +115,35 @@ export class IrcBus {
 			}
 		}
 
-		const waiter = this.#takeMatchingWaiter(message.to, message.from);
+		if (
+			this.#registry.getInFleet(message.from, fleetRoot) !== source ||
+			this.#registry.getInFleet(message.to, fleetRoot) !== ref
+		) {
+			return {
+				to: message.to,
+				outcome: "failed",
+				error: `Agent "${message.to}" changed sessions before delivery.`,
+			};
+		}
+
+		const waiter = this.#takeMatchingWaiter(message.to, message.from, fleetRoot);
 		if (waiter) {
 			waiter.resolve(message);
-			if (!opts?.suppressRelay) this.#relayToMainUi(message);
+			if (!opts?.suppressRelay) this.#relayToMainUi(message, fleetRoot);
 			return { to: message.to, outcome: revived ? "revived" : "injected" };
 		}
 
-		const session = this.#registry.get(message.to)?.session;
+		const session = ref.session;
 		if (!session) {
 			return { to: message.to, outcome: "failed", error: `Agent "${message.to}" has no live session.` };
 		}
 
 		try {
 			const delivery = await session.deliverIrcMessage(message, opts);
-			if (!opts?.suppressRelay) this.#relayToMainUi(message);
+			if (!opts?.suppressRelay) this.#relayToMainUi(message, fleetRoot);
 			return { to: message.to, outcome: revived ? "revived" : delivery };
 		} catch (error) {
-			this.#enqueue(message);
+			this.#enqueue(message, fleetRoot);
 			return {
 				to: message.to,
 				outcome: "failed",
@@ -136,14 +157,22 @@ export class IrcBus {
 		filter: { from?: string },
 		timeoutMs: number,
 		signal?: AbortSignal,
-		options?: { drainPending?: boolean; liveness?: { registry: AgentRegistry; senderId: string } },
+		options?: {
+			drainPending?: boolean;
+			fleetRoot?: string;
+			liveness?: { registry: AgentRegistry; senderId: string };
+		},
 	): Promise<IrcMessage | null> {
 		if (signal?.aborted) {
 			throw signal.reason instanceof Error ? signal.reason : new Error("IRC wait aborted");
 		}
+		const fleetRoot = options?.fleetRoot ?? this.#registry.get(agentId)?.fleetRoot;
+		if (!fleetRoot || !this.#registry.getInFleet(agentId, fleetRoot)) {
+			throw new Error("IRC wait aborted: agent session is unavailable");
+		}
 
 		if (options?.drainPending !== false) {
-			const pending = this.#takeFromMailbox(agentId, filter.from);
+			const pending = this.#takeFromMailbox(agentId, filter.from, fleetRoot);
 			if (pending) return pending;
 		}
 
@@ -151,6 +180,7 @@ export class IrcBus {
 		let timer: NodeJS.Timeout | undefined;
 		let onAbort: (() => void) | undefined;
 		let unsubscribeLiveness: (() => void) | undefined;
+		let unsubscribeScope: (() => void) | undefined;
 
 		const liveness = options?.liveness;
 		const livenessReason = filter.from
@@ -175,10 +205,12 @@ export class IrcBus {
 			clearTimeout(timer);
 			if (signal && onAbort) signal.removeEventListener("abort", onAbort);
 			unsubscribeLiveness?.();
+			unsubscribeScope?.();
 		};
 
 		const waiter: IrcWaiter = {
 			from: filter.from,
+			fleetRoot,
 			resolve: msg => settle({ kind: "message", msg }),
 			cancel: () => cleanup(),
 		};
@@ -203,10 +235,20 @@ export class IrcBus {
 		}
 		waiters.push(waiter);
 
+		const scopeChanged = (): boolean => !this.#registry.getInFleet(agentId, fleetRoot);
+		unsubscribeScope = this.#registry.onChange(event => {
+			if (event.ref.id !== agentId || !scopeChanged()) return;
+			settle({ kind: "abort", error: new Error("IRC wait aborted: agent session changed") });
+		});
+		if (scopeChanged()) {
+			settle({ kind: "abort", error: new Error("IRC wait aborted: agent session changed") });
+			return promise;
+		}
+
 		if (liveness) {
 			const { registry, senderId } = liveness;
 			const hasActiveSender = (from?: string): boolean =>
-				registry.listVisibleTo(senderId).some(ref => !from || ref.id === from);
+				registry.listVisibleTo(senderId, fleetRoot).some(ref => !from || ref.id === from);
 			const check = filter.from ? () => hasActiveSender(filter.from) : () => hasActiveSender();
 			unsubscribeLiveness = registry.onChange(() => {
 				if (!check()) {
@@ -221,43 +263,67 @@ export class IrcBus {
 		return promise;
 	}
 
-	inbox(agentId: string, opts?: { peek?: boolean }): IrcMessage[] {
+	inbox(agentId: string, opts?: { peek?: boolean; fleetRoot?: string }): IrcMessage[] {
+		const entries = this.#visibleMailbox(agentId, opts?.fleetRoot);
+		if (!entries || entries.length === 0) return [];
+		if (opts?.peek) return entries.map(entry => entry.message);
+		const visible = new Set(entries);
+		const retained = (this.#mailboxes.get(agentId) ?? []).filter(entry => !visible.has(entry));
+		if (retained.length > 0) this.#mailboxes.set(agentId, retained);
+		else this.#mailboxes.delete(agentId);
+		return entries.map(entry => entry.message);
+	}
+
+	take(agentId: string, from?: string, fleetRoot?: string): IrcMessage | undefined {
+		return this.#takeFromMailbox(agentId, from, fleetRoot);
+	}
+
+	unreadCount(agentId: string, fleetRoot?: string): number {
+		return this.#visibleMailbox(agentId, fleetRoot)?.length ?? 0;
+	}
+
+	#visibleMailbox(agentId: string, scopedFleetRoot?: string): IrcMailboxEntry[] | undefined {
 		const mailbox = this.#mailboxes.get(agentId);
-		if (!mailbox || mailbox.length === 0) return [];
-		if (opts?.peek) return [...mailbox];
-		this.#mailboxes.delete(agentId);
-		return mailbox;
+		if (!mailbox) return undefined;
+		const fleetRoot = scopedFleetRoot ?? this.#registry.get(agentId)?.fleetRoot;
+		if (!fleetRoot) return undefined;
+		const visible = mailbox.filter(
+			entry =>
+				entry.fleetRoot === fleetRoot &&
+				this.#registry.getInFleet(entry.message.from, fleetRoot) !== undefined &&
+				this.#registry.getInFleet(entry.message.to, fleetRoot) !== undefined,
+		);
+		const retained = mailbox.filter(entry => entry.fleetRoot !== fleetRoot || visible.includes(entry));
+		if (retained.length !== mailbox.length) {
+			if (retained.length > 0) this.#mailboxes.set(agentId, retained);
+			else this.#mailboxes.delete(agentId);
+		}
+		return visible.length > 0 ? visible : undefined;
 	}
 
-	take(agentId: string, from?: string): IrcMessage | undefined {
-		return this.#takeFromMailbox(agentId, from);
-	}
-
-	unreadCount(agentId: string): number {
-		return this.#mailboxes.get(agentId)?.length ?? 0;
-	}
-
-	#enqueue(message: IrcMessage): void {
+	#enqueue(message: IrcMessage, fleetRoot: string): void {
 		let mailbox = this.#mailboxes.get(message.to);
 		if (!mailbox) {
 			mailbox = [];
 			this.#mailboxes.set(message.to, mailbox);
 		}
-		mailbox.push(message);
+		mailbox.push({ message, fleetRoot });
 		if (mailbox.length > MAILBOX_CAP) {
 			const dropped = mailbox.shift();
 			logger.debug("IrcBus: mailbox full, dropped oldest message", {
 				agentId: message.to,
-				droppedId: dropped?.id,
-				droppedFrom: dropped?.from,
+				droppedId: dropped?.message.id,
+				droppedFrom: dropped?.message.from,
 			});
 		}
 	}
 
-	#takeMatchingWaiter(agentId: string, from: string): IrcWaiter | undefined {
+	#takeMatchingWaiter(agentId: string, from: string, fleetRoot: string): IrcWaiter | undefined {
 		const waiters = this.#waiters.get(agentId);
 		if (!waiters) return undefined;
-		const index = waiters.findIndex(waiter => !waiter.from || waiter.from === from);
+		const index = waiters.findIndex(
+			waiter => waiter.fleetRoot === fleetRoot && (!waiter.from || waiter.from === from),
+		);
 		if (index === -1) return undefined;
 		const [waiter] = waiters.splice(index, 1);
 		if (waiters.length === 0) this.#waiters.delete(agentId);
@@ -272,19 +338,23 @@ export class IrcBus {
 		if (waiters.length === 0) this.#waiters.delete(agentId);
 	}
 
-	#takeFromMailbox(agentId: string, from?: string): IrcMessage | undefined {
+	#takeFromMailbox(agentId: string, from?: string, fleetRoot?: string): IrcMessage | undefined {
+		const visible = this.#visibleMailbox(agentId, fleetRoot);
+		if (!visible) return undefined;
+		const entry = from ? visible.find(candidate => candidate.message.from === from) : visible[0];
+		if (!entry) return undefined;
 		const mailbox = this.#mailboxes.get(agentId);
 		if (!mailbox) return undefined;
-		const index = from ? mailbox.findIndex(msg => msg.from === from) : 0;
-		if (index === -1 || mailbox.length === 0) return undefined;
-		const [message] = mailbox.splice(index, 1);
+		const index = mailbox.indexOf(entry);
+		if (index === -1) return undefined;
+		mailbox.splice(index, 1);
 		if (mailbox.length === 0) this.#mailboxes.delete(agentId);
-		return message;
+		return entry.message;
 	}
 
-	#relayToMainUi(message: IrcMessage): void {
+	#relayToMainUi(message: IrcMessage, fleetRoot: string): void {
 		if (message.to === MAIN_AGENT_ID || message.from === MAIN_AGENT_ID) return;
-		const mainSession = this.#registry.get(MAIN_AGENT_ID)?.session;
+		const mainSession = this.#registry.getInFleet(MAIN_AGENT_ID, fleetRoot)?.session;
 		if (!mainSession) return;
 		const record: CustomMessage = {
 			role: "custom",

@@ -183,6 +183,8 @@ export interface AgentSessionConfig {
 
 	ownedAsyncJobManager?: AsyncJobManager;
 
+	shouldDisposeOwnedAsyncJobManager?: () => boolean;
+
 	asyncJobManager?: AsyncJobManager;
 
 	agentId?: string;

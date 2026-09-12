@@ -388,6 +388,7 @@ export async function registerPersistedSubagents(
 	const shouldContinue = options.shouldContinue ?? (() => true);
 	if (!shouldContinue()) return;
 	const root = sessionFile.slice(0, -6);
+	const fleetRoot = path.resolve(root, "fleet");
 	let rootEntries: fs.Dirent[];
 	try {
 		rootEntries = await fs.promises.readdir(root, { withFileTypes: true });
@@ -402,6 +403,7 @@ export async function registerPersistedSubagents(
 	await registerPersistedSubagentsFromDir(
 		registry,
 		root,
+		fleetRoot,
 		undefined,
 		orchestratorWorkerLabels,
 		transcripts,
@@ -426,6 +428,7 @@ export async function registerPersistedSubagents(
 async function registerPersistedSubagentsFromDir(
 	registry: AgentRegistry,
 	dir: string,
+	fleetRoot: string,
 	parentId: string | undefined,
 	orchestratorWorkerLabels: ReadonlyMap<string, string>,
 	transcripts: PersistedTranscript[],
@@ -463,7 +466,14 @@ async function registerPersistedSubagentsFromDir(
 			// IRC send, revive/kill), so it is fail-closed here instead of by extending a dozen predicates.
 			const displayName = isConductor ? "conductor" : slug ? `advisor:${slug}` : "advisor";
 			const advisorId = `${owner}/${displayName}`;
-			const existing = registry.get(advisorId);
+			let existing = registry.get(advisorId);
+			if (existing && existing.fleetRoot === undefined && !existing.session) {
+				registry.updateSessionScope(advisorId, { fleetRoot, sessionFile: existing.sessionFile }, existing);
+			}
+			if (existing && existing.fleetRoot !== fleetRoot && !existing.session) {
+				registry.unregister(advisorId, existing);
+				existing = undefined;
+			}
 
 			if (existing && existing.kind !== "advisor") continue;
 			if (existing?.sessionFile !== sessionFile) {
@@ -478,6 +488,7 @@ async function registerPersistedSubagentsFromDir(
 					parentId: owner,
 					session: null,
 					sessionFile,
+					fleetRoot,
 					activity: metadata.activity,
 					createdAt: metadata.createdAt,
 					lastActivity: metadata.lastActivity,
@@ -498,7 +509,14 @@ async function registerPersistedSubagentsFromDir(
 		if (!id || id === "." || id === "..") continue;
 		const orchestratorLabel = orchestratorWorkerLabels.get(id);
 		const orchestratorOwned = orchestratorLabel !== undefined;
-		const existing = registry.get(id);
+		let existing = registry.get(id);
+		if (existing && existing.fleetRoot === undefined && !existing.session) {
+			registry.updateSessionScope(id, { fleetRoot, sessionFile: existing.sessionFile }, existing);
+		}
+		if (existing && existing.fleetRoot !== fleetRoot && !existing.session) {
+			registry.unregister(id, existing);
+			existing = undefined;
+		}
 		if (orchestratorLabel && existing?.displayName === id) {
 			registry.setDisplayName(id, orchestratorLabel, sessionFile);
 		}
@@ -506,6 +524,7 @@ async function registerPersistedSubagentsFromDir(
 			await registerPersistedSubagentsFromDir(
 				registry,
 				path.join(dir, id),
+				fleetRoot,
 				id,
 				await readPersistedOrchestratorWorkerLabels(sessionFile, shouldContinue),
 				transcripts,
@@ -540,6 +559,7 @@ async function registerPersistedSubagentsFromDir(
 						parentId: parentId ?? MAIN_AGENT_ID,
 						session: null,
 						sessionFile,
+						fleetRoot,
 						activity: metadata.activity,
 						createdAt: metadata.createdAt,
 						lastActivity: metadata.lastActivity,
@@ -559,6 +579,7 @@ async function registerPersistedSubagentsFromDir(
 		await registerPersistedSubagentsFromDir(
 			registry,
 			path.join(dir, id),
+			fleetRoot,
 			id,
 			await readPersistedOrchestratorWorkerLabels(sessionFile, shouldContinue),
 			transcripts,

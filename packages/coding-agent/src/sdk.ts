@@ -115,7 +115,7 @@ import {
 	setActiveSkills,
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
-import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
+import { LocalProtocolHandler, type LocalProtocolOptions, resolveFleetRoot } from "./internal-urls";
 import {
 	deduplicateMCPToolsByName,
 	discoverAndLoadMCPTools,
@@ -1252,12 +1252,23 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 	const unregisterUnlessParked = (): void => {
 		const ref = registeredAgentRef;
-		if (!ref || agentRegistry.get(resolvedAgentId) !== ref) return;
+		if (!ref || agentRegistry.get(resolvedAgentId, ref) !== ref) return;
 		if (ref.status === "parked" || (ref.status === "aborted" && !ref.session)) return;
 		if (AgentLifecycleManager.global().isParking(resolvedAgentId, ref)) return;
 		agentRegistry.unregister(resolvedAgentId, ref);
 	};
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
+	const disposeCallbacks = new Set<() => void>();
+	const runDisposeCallbacks = (): void => {
+		for (const callback of disposeCallbacks) {
+			try {
+				callback();
+			} catch (error) {
+				logger.warn("Session cleanup callback failed", { error: String(error) });
+			}
+		}
+		disposeCallbacks.clear();
+	};
 
 	try {
 		const getActiveModelString = (): string | undefined => {
@@ -1268,7 +1279,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		};
 
 		const fileMutationVersions = new Map<string, number>();
-		const disposeCallbacks = new Set<() => void>();
 		const activeToolNames = new Set<string>();
 		const toolRegistry = new Map<string, Tool & Pick<ToolDefinition, "defaultInactive">>();
 		const setActiveToolNames = (names: Iterable<string>): void => {
@@ -1404,10 +1414,23 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getArtifactsDir,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
 		};
-		if (options.localProtocolOptions && !options.parentTaskPrefix) {
-			LocalProtocolHandler.setOverride(options.localProtocolOptions);
+		const syncAgentRegistrySessionScope = (): void => {
+			const ref = registeredAgentRef;
+			if (!ref) return;
+			agentRegistry.updateSessionScope(
+				resolvedAgentId,
+				{
+					fleetRoot: resolveFleetRoot(localProtocolOptions),
+					sessionFile: sessionManager.getSessionFile() ?? null,
+				},
+				ref,
+			);
+		};
+		if (!options.parentTaskPrefix) {
+			disposeCallbacks.add(LocalProtocolHandler.setOverride(localProtocolOptions));
 		}
 		toolSession.getArtifactsDir = getArtifactsDir;
+		toolSession.getAgentFleetRoot = () => resolveFleetRoot(localProtocolOptions);
 		toolSession.localProtocolOptions = localProtocolOptions;
 		toolSession.agentOutputManager = new AgentOutputManager(
 			getArtifactsDir,
@@ -2346,6 +2369,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			parentId: options.parentAgentId,
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
+			fleetRoot: resolveFleetRoot(localProtocolOptions),
 			status: "running" as const,
 		};
 		registeredAgentRef =
@@ -2687,6 +2711,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			evalKernelOwnerId,
 
 			ownedAsyncJobManager: asyncJobManager,
+			shouldDisposeOwnedAsyncJobManager: () =>
+				!registeredAgentRef || !agentRegistry.hasOtherRegistration(resolvedAgentId, registeredAgentRef),
 			asyncJobManager: scopedAsyncJobManager,
 			scopedModels: options.scopedModels,
 			promptTemplates,
@@ -2753,6 +2779,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
 		hasSession = true;
+		disposeCallbacks.add(session.registerSessionChangeCallback(syncAgentRegistrySessionScope));
 		if (agentKind === "main") {
 			const orchestratorParent = (): OrchestratorParent => ({
 				cwd: sessionManager.getCwd(),
@@ -2770,6 +2797,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				await runtime.suspendScope(runtime.ownerScope(parent), scopedAsyncJobManager);
 			});
 			session.setSessionSwitchReconciler(async () => {
+				syncAgentRegistrySessionScope();
 				await OrchestratorRuntime.global().rehydrate(orchestratorParent());
 			});
 		}
@@ -2907,6 +2935,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		{
 			const originalDispose = session.dispose.bind(session);
 			session.dispose = async () => {
+				let shouldDisposeSharedAsyncJobManager = false;
 				try {
 					session.beginDispose();
 					if (agentKind === "main") {
@@ -2921,17 +2950,35 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							getActiveModelString,
 						};
 						await orchestrator.suspendScope(orchestrator.ownerScope(parentSession), scopedAsyncJobManager);
-						await AgentLifecycleManager.global().dispose();
+						const hasOtherMain =
+							registeredAgentRef !== undefined &&
+							agentRegistry.hasOtherRegistration(resolvedAgentId, registeredAgentRef);
+						shouldDisposeSharedAsyncJobManager = !hasOtherMain;
+						const lifecycle = AgentLifecycleManager.global();
+						if (lifecycle.manages(agentRegistry)) {
+							if (hasOtherMain && registeredAgentRef?.fleetRoot) {
+								await lifecycle.disposeFleet(registeredAgentRef.fleetRoot);
+							} else {
+								await lifecycle.dispose();
+							}
+						}
 					}
 					await originalDispose();
+					if (
+						shouldDisposeSharedAsyncJobManager &&
+						scopedAsyncJobManager &&
+						AsyncJobManager.instance() === scopedAsyncJobManager
+					) {
+						AsyncJobManager.setInstance(undefined);
+						await scopedAsyncJobManager.dispose({ timeoutMs: 3_000 });
+					}
 				} finally {
 					unregisterUnlessParked();
 					unsubscribeCredentialDisabled?.();
 					unsubscribeMcpNotifications?.();
 					unregisterMcpDebouncePostmortem?.();
 					unregisterMcpPostmortem?.();
-					for (const callback of disposeCallbacks) callback();
-					disposeCallbacks.clear();
+					runDisposeCallbacks();
 
 					unsubscribeMcpNotifications = undefined;
 					unregisterMcpDebouncePostmortem = undefined;
@@ -3127,6 +3174,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
 			});
 		}
+		runDisposeCallbacks();
 		throw error;
 	}
 }

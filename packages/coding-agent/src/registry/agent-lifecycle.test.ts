@@ -41,7 +41,7 @@ describe("reclaimDeadCorpse", () => {
 		const registry = new AgentRegistry();
 		const lifecycle = new AgentLifecycleManager(registry);
 		const ref = registerParked(registry, sessionFile);
-		writeLiveMarker(sessionFile, true, 999_999);
+		writeLiveMarker(sessionFile, true, process.pid);
 
 		expect(await lifecycle.reclaimDeadCorpse("worker", ref)).toBe(false);
 		expect(registry.get("worker")).toBe(ref);
@@ -55,7 +55,7 @@ describe("reclaimDeadCorpse", () => {
 		const registry = new AgentRegistry();
 		const lifecycle = new AgentLifecycleManager(registry);
 		const ref = registerParked(registry, sessionFile);
-		writeLiveMarker(sessionFile, true, 999_999);
+		writeLiveMarker(sessionFile, true, process.pid);
 		const stale = Date.now() - 60_000;
 		fs.utimesSync(getSessionLivePath(sessionFile), new Date(stale), new Date(stale));
 
@@ -157,5 +157,39 @@ describe("parking", () => {
 		expect(ref.session).toBe(revivedSession);
 		expect(ref.status).toBe("idle");
 		await lifecycle.dispose();
+	});
+});
+
+describe("fleet-scoped disposal", () => {
+	test("releasing one detached main fleet leaves another fleet live", async () => {
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const disposed: string[] = [];
+		const register = (id: string, fleetRoot: string): AgentRef =>
+			registry.register({
+				id,
+				displayName: id,
+				kind: "sub",
+				fleetRoot,
+				status: "idle",
+				session: {
+					dispose: async () => {
+						disposed.push(id);
+					},
+				} as unknown as AgentSession,
+			});
+		const workerA = register("worker-a", "/session-a/fleet");
+		const workerB = register("worker-b", "/session-b/fleet");
+		lifecycle.adopt(workerA.id, { idleTtlMs: 0 }, workerA);
+		lifecycle.adopt(workerB.id, { idleTtlMs: 0 }, workerB);
+
+		await lifecycle.disposeFleet("/session-a/fleet");
+
+		expect(disposed).toEqual(["worker-a"]);
+		expect(registry.get("worker-a")).toBeUndefined();
+		expect(registry.get("worker-b")).toBe(workerB);
+		expect(lifecycle.has("worker-b", workerB)).toBe(true);
+		await lifecycle.dispose();
+		expect(disposed).toEqual(["worker-a", "worker-b"]);
 	});
 });

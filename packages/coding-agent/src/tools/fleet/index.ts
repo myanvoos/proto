@@ -97,6 +97,7 @@ type FleetParams = typeof fleetSchema.infer;
 interface MessagingDeps {
 	registry: AgentRegistry;
 	senderId: string;
+	fleetRoot?: string;
 	settings: ToolSession["settings"];
 }
 
@@ -189,7 +190,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		const registry = this.session.agentRegistry;
 		const senderId = this.session.getAgentId?.() ?? null;
 		if (!registry || !senderId) return null;
-		return { registry, senderId, settings: this.session.settings };
+		return { registry, senderId, fleetRoot: this.session.getAgentFleetRoot?.(), settings: this.session.settings };
 	}
 
 	async execute(
@@ -203,7 +204,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			case "list": {
 				const messaging = this.#messaging();
 				if (!messaging) return fleetErrorResult("Peer messaging is unavailable in this session.", { op: "list" });
-				return executeList(messaging.registry, messaging.senderId);
+				return executeList(messaging.registry, messaging.senderId, messaging.fleetRoot);
 			}
 			case "send": {
 				const toPeer = params.to?.trim();
@@ -221,7 +222,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			case "inbox": {
 				const messaging = this.#messaging();
 				if (!messaging) return fleetErrorResult("Peer messaging is unavailable in this session.", { op: "inbox" });
-				return executeInbox(messaging.registry, messaging.senderId, params.peek);
+				return executeInbox(messaging.registry, messaging.senderId, params.peek, messaging.fleetRoot);
 			}
 			case "wait":
 				if (params.name?.trim()) return this.#launch(params, "wait", signal);
@@ -285,7 +286,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		const from = params.from?.trim() || undefined;
 
 		if (messaging) {
-			const pending = drainPendingInbox(messaging.registry, messaging.senderId, from);
+			const pending = drainPendingInbox(messaging.registry, messaging.senderId, from, messaging.fleetRoot);
 			if (pending) return messageResult(messaging.senderId, pending);
 		}
 
@@ -306,10 +307,10 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		if (!manager || runningJobs.length === 0) {
 			if (!messaging) return nothingToWaitForResult(this.session);
 
-			const queued = IrcBus.global().take(messaging.senderId, from);
+			const queued = IrcBus.global().take(messaging.senderId, from, messaging.fleetRoot);
 			if (queued) return messageResult(messaging.senderId, queued);
 			if (!from) {
-				const hasActivePeer = messaging.registry.listVisibleTo(messaging.senderId).length > 0;
+				const hasActivePeer = messaging.registry.listVisibleTo(messaging.senderId, messaging.fleetRoot).length > 0;
 				if (!hasActivePeer) return nothingToWaitForResult(this.session);
 			}
 			return executeMessageWait(messaging, { from, timeoutMs: params.timeoutMs }, signal);
@@ -327,7 +328,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		const busLeg =
 			messaging && busAbort
 				? IrcBus.global()
-						.wait(messaging.senderId, { from }, 0, busAbort.signal)
+						.wait(messaging.senderId, { from }, 0, busAbort.signal, { fleetRoot: messaging.fleetRoot })
 						.then(
 							message => ({ message, error: null as Error | null }),
 							error => ({

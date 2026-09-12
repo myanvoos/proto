@@ -314,11 +314,7 @@ export class AgentLifecycleManager {
 		return true;
 	}
 
-	async dispose(deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
-		this.#unsubscribe?.();
-		this.#disposed = true;
-		this.#unsubscribe = undefined;
-		const ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])];
+	async #releaseWithinDeadline(ids: string[], deadlineAt: number): Promise<void> {
 		await Promise.all(
 			ids.map(async id => {
 				const release = this.release(id).then(() => {});
@@ -335,6 +331,22 @@ export class AgentLifecycleManager {
 				}
 			}),
 		);
+	}
+
+	disposeFleet(fleetRoot: string, deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
+		const ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])].filter(id => {
+			const ref = this.#adopted.get(id)?.ref ?? this.#parks.get(id)?.ref;
+			return ref?.fleetRoot === fleetRoot;
+		});
+		return this.#releaseWithinDeadline(ids, deadlineAt);
+	}
+
+	async dispose(deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
+		this.#unsubscribe?.();
+		this.#disposed = true;
+		this.#unsubscribe = undefined;
+		const ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])];
+		await this.#releaseWithinDeadline(ids, deadlineAt);
 		this.#revivals.clear();
 		this.#parks.clear();
 		this.#persistedReviverFactory = undefined;
