@@ -1,48 +1,14 @@
-import { type ResolvedThinkingLevel, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import { Effort, type Model, THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
+import { type ResolvedThinkingLevel, ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
+import type { Model } from "@oh-my-pi/pi-ai";
+import { Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 
-export { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+export { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 
 export { CLI_THINKING_LEVELS } from "./cli/thinking-levels";
 
-interface ThinkingLevelMetadata {
-	value: ThinkingLevel;
-	label: string;
-	description: string;
-}
-
-const THINKING_LEVEL_METADATA: Record<ThinkingLevel, ThinkingLevelMetadata> = {
-	[ThinkingLevel.Inherit]: {
-		value: ThinkingLevel.Inherit,
-		label: "inherit",
-		description: "Inherit session default",
-	},
-	[ThinkingLevel.Off]: { value: ThinkingLevel.Off, label: "off", description: "No reasoning" },
-	[ThinkingLevel.Minimal]: {
-		value: ThinkingLevel.Minimal,
-		label: "min",
-		description: "Very brief reasoning (~1k tokens)",
-	},
-	[ThinkingLevel.Low]: { value: ThinkingLevel.Low, label: "low", description: "Light reasoning (~2k tokens)" },
-	[ThinkingLevel.Medium]: {
-		value: ThinkingLevel.Medium,
-		label: "medium",
-		description: "Moderate reasoning (~8k tokens)",
-	},
-	[ThinkingLevel.High]: { value: ThinkingLevel.High, label: "high", description: "Deep reasoning (~16k tokens)" },
-	[ThinkingLevel.XHigh]: {
-		value: ThinkingLevel.XHigh,
-		label: "xhigh",
-		description: "Extended reasoning (~32k tokens)",
-	},
-	[ThinkingLevel.Max]: {
-		value: ThinkingLevel.Max,
-		label: "max",
-		description: "Maximum reasoning the model supports",
-	},
-};
+export * from "./thinking-level-metadata";
 
 const EFFORT_BY_SELECTOR: Readonly<Record<string, Effort>> = {
 	[Effort.Minimal]: Effort.Minimal,
@@ -78,10 +44,6 @@ export function parseEffort(value: string | null | undefined): Effort | undefine
 
 export function parseThinkingLevel(value: string | null | undefined): ThinkingLevel | undefined {
 	return getOwnSelector(THINKING_LEVEL_BY_SELECTOR, value);
-}
-
-export function getThinkingLevelMetadata(level: ThinkingLevel): ThinkingLevelMetadata {
-	return THINKING_LEVEL_METADATA[level];
 }
 
 export function toReasoningEffort(level: ThinkingLevel | undefined): Effort | undefined {

@@ -1,4 +1,4 @@
-import { THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
+import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import {
 	type BlobDestinationId,
 	type BlobDestinationMetadata,
@@ -9,8 +9,8 @@ import {
 	COMPACTION_METHOD_CHOICES,
 	type CompactionMethod,
 	DEFAULT_COMPACTION_METHOD_ORDER,
-} from "../session/compaction-methods";
-import { getThinkingLevelMetadata } from "../thinking";
+} from "../session/compaction-method-config";
+import { getThinkingLevelMetadata } from "../thinking-level-metadata";
 import {
 	TINY_MODEL_DEVICE_DEFAULT,
 	TINY_MODEL_DEVICE_SETTING_OPTIONS,
