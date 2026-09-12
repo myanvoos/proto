@@ -50,6 +50,7 @@ pi-*.html
 .close_issue.sh
 
 packages/natives/npm/
+packages/coding-agent/binaries/
 /runs/
 python/proto-rpc/src/proto_rpc.egg-info/
 python/proto-rpc/build/

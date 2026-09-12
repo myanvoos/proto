@@ -9,7 +9,6 @@
 	"entry": [
 		"packages/*/test/**/*.{ts,tsx}",
 		"packages/*/test/**/*.test.{ts,tsx}",
-		"packages/*/bench/**/*.{ts,tsx}",
 		"packages/*/scripts/**/*.ts"
 	],
 	"ignoreDependencies": [

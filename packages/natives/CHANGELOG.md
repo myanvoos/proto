@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Kernel and fleet bridge variables no longer leak into child command environments while remaining available to in-process builtins.
+
 ## [18.0.5] - 2026-09-09
 
 ### Fixed
