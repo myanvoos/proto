@@ -1,7 +1,19 @@
 import { expect, test } from "bun:test";
 import * as path from "node:path";
+import type { Model } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { resolveMemoryModelCandidates } from "../../vendor/pi-blackhole/index.js";
 import { runExtensionCompact } from "./compact-handler";
+
+test("memory candidates use existing role resolution and preserve an active role model", () => {
+	const active = { provider: "active", id: "large" } as Model;
+	const smol = { provider: "fast", id: "small" } as Model;
+	const tiny = { provider: "local", id: "tiny" } as Model;
+	const models = { resolve: (spec: string) => (spec === "@smol" ? smol : tiny) };
+
+	expect(resolveMemoryModelCandidates({ model: active, models })).toEqual([smol, tiny, active]);
+	expect(resolveMemoryModelCandidates({ model: tiny, models })).toEqual([tiny, smol]);
+});
 
 test("compact options preserve extension-provided instructions", async () => {
 	let receivedInstructions: string | undefined;

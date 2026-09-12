@@ -19,26 +19,6 @@ export function createExtensionModelQuery(
 				settings,
 				matchPreferences: getModelMatchPreferences(settings),
 			}).model,
-		roleCandidates: (roles: string[]): Model<Api>[] => {
-			const available = modelRegistry.getAvailable();
-			const matchPreferences = getModelMatchPreferences(settings);
-			const current = getModel();
-			const roleModels = roles
-				.map(role => resolveModelRoleValue(`@${role}`, available, { settings, matchPreferences }).model)
-				.filter((model): model is Model<Api> => model !== undefined);
-			const currentHasRole =
-				current !== undefined &&
-				roleModels.some(model => model.provider === current.provider && model.id === current.id);
-			const ordered = currentHasRole ? [current, ...roleModels] : [...roleModels, current];
-			const seen = new Set<string>();
-			return ordered.filter((model): model is Model<Api> => {
-				if (!model) return false;
-				const key = `${model.provider}/${model.id}`;
-				if (seen.has(key)) return false;
-				seen.add(key);
-				return true;
-			});
-		},
 		family: (model: Model<Api>): string => modelFamilyToken(model.id) || model.provider.toLowerCase(),
 	};
 }

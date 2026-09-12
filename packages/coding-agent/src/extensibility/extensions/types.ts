@@ -297,8 +297,6 @@ export interface ExtensionModelQuery {
 
 	resolve(spec: string): Model | undefined;
 
-	roleCandidates(roles: string[]): Model[];
-
 	family(model: Model): string;
 }
 

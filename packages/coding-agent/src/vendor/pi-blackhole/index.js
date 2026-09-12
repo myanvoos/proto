@@ -11744,15 +11744,26 @@ function anyStageDue(entries, runtime, pending) {
   })();
   return observerDue || reflectorDue || dropperDue;
 }
-function memoryModelCandidates(ctx) {
-  return ctx.models.roleCandidates(["smol", "tiny"]);
+function resolveMemoryModelCandidates(ctx) {
+  const current = ctx.model;
+  const roles = [ctx.models.resolve("@smol"), ctx.models.resolve("@tiny")].filter(Boolean);
+  const currentUsesMemoryRole = current && roles.some((model) => model.provider === current.provider && model.id === current.id);
+  const ordered = currentUsesMemoryRole ? [current, ...roles] : [...roles, current];
+  const seen = /* @__PURE__ */ new Set();
+  return ordered.filter((model) => {
+    if (!model) return false;
+    const key = modelKey(model);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 function stageThinkingLevel(runtime, stage, modelConfig) {
   return modelConfig?.thinking ?? "low";
 }
 function makeModelResolver(runtime, ctx) {
   return async (stage) => {
-    const candidates = memoryModelCandidates(ctx);
+    const candidates = resolveMemoryModelCandidates(ctx);
     const resolved = await runtime.resolveModel({
       modelRegistry: ctx.modelRegistry,
       hasUI: ctx.hasUI,
@@ -12027,7 +12038,7 @@ async function runObserverStage(pi, runtime, ctx, resolveModel) {
       priorObservations: priorObservations.length
     });
     const stageModelForThinking = runtime.findCandidateConfig(resolved.model, {
-      candidates: memoryModelCandidates(ctx)
+      candidates: resolveMemoryModelCandidates(ctx)
     });
     const effectiveObsCtx = effectiveContextWindow(resolved.model, stageModelForThinking);
     const observerEstimatedInput = chunkTokens + AGENT_LOOP_RESERVE;
@@ -12119,7 +12130,7 @@ async function runObserverStage(pi, runtime, ctx, resolveModel) {
         return "abort";
       }
       const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        candidates: memoryModelCandidates(ctx)
+        candidates: resolveMemoryModelCandidates(ctx)
       });
       runtime.recordRetryableError(candidateConfig, error, "observer");
       debugLog("observer.error", {
@@ -12227,7 +12238,7 @@ async function runReflectorStage(pi, runtime, ctx, resolveModel) {
       `Observational memory: reflector running (~${effectiveReflectionTokens.toLocaleString()} tokens accumulated, ~${reflectorInputTokens.toLocaleString()}-token input)`
     );
     const stageModelForThinking = runtime.findCandidateConfig(resolved.model, {
-      candidates: memoryModelCandidates(ctx)
+      candidates: resolveMemoryModelCandidates(ctx)
     });
     const effectiveRefCtx = effectiveContextWindow(resolved.model, stageModelForThinking);
     const reflectorEstimatedInput = reflectorInputTokens + AGENT_LOOP_RESERVE;
@@ -12321,7 +12332,7 @@ async function runReflectorStage(pi, runtime, ctx, resolveModel) {
         return { outcome: "abort", sameRunReflections: [] };
       }
       const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        candidates: memoryModelCandidates(ctx)
+        candidates: resolveMemoryModelCandidates(ctx)
       });
       runtime.recordRetryableError(candidateConfig, error, "reflector");
       debugLog("reflector.error", {
@@ -12440,7 +12451,7 @@ async function runDropperStage(pi, runtime, ctx, resolveModel, sameRunReflection
       ] : folded.reflections;
       const reflectionsForDropper = mergeReflections(pendingReflections, sameRunReflections);
       const stageModelForThinking = runtime.findCandidateConfig(resolved.model, {
-        candidates: memoryModelCandidates(ctx)
+        candidates: resolveMemoryModelCandidates(ctx)
       });
       const effectiveDropCtx = effectiveContextWindow(resolved.model, stageModelForThinking);
       const dropperEstimatedInput = dropperInputTokens + AGENT_LOOP_RESERVE;
@@ -12506,7 +12517,7 @@ async function runDropperStage(pi, runtime, ctx, resolveModel, sameRunReflection
         return "abort";
       }
       const candidateConfig = runtime.findCandidateConfig(resolved.model, {
-        candidates: memoryModelCandidates(ctx)
+        candidates: resolveMemoryModelCandidates(ctx)
       });
       runtime.recordRetryableError(candidateConfig, error, "dropper");
       debugLog("dropper.error", {
@@ -14298,6 +14309,6 @@ var index_default = async (pi) => {
   registerRecallTool(pi);
 };
 
-export { index_default as default };
+export { index_default as default, resolveMemoryModelCandidates };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map
