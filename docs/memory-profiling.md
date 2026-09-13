@@ -90,6 +90,11 @@ A subsequent startup trace found that `ModelRegistry` parsed roughly 2,000 cache
 
 Profile services and allocator variation make these observations unsuitable as narrow regression gates. Use repeated RSS and anonymous-RSS measurements, and exercise both provider-scoped startup and the all-model selector path when changing catalog composition.
 
+
+At the optimized compiled idle point, `smaps` attributed approximately 141 MiB RSS to JavaScriptCore's `WKFastMalloc`, 15 MiB to other anonymous mappings, 54 MiB to the executable's resident mappings, and 10 MiB to the native addon. A live V8-format heap snapshot accounted for about 51 MiB of JavaScriptCore objects: roughly 23 MiB code, 17 MiB objects, 4 MiB strings, and the remainder structures and closures. The minified bundle reduced source module records from about 1,900 to 248 but had a similar live JavaScript heap, so further large reductions require fewer retained runtime objects/code rather than another bundling mode.
+
+A one-shot `Bun.gc(true)` after startup decommitted an additional 8–10 MiB in about 10 ms, but it was not retained as an optimization: forced collection treats allocator pressure rather than its source and adds a stop-the-world pause. Bun bytecode compilation was also rejected: with the required split chunks it produced invalid cross-chunk references on Bun 1.3.14 and increased the executable from roughly 147 MiB to 247 MiB.
+
 ## Interpretation and safeguards
 
 - Terminal-worker cleanup must preserve identifying metadata and persisted history; parked/resumable workers still need their revival state.
