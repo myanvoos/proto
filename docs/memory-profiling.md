@@ -76,6 +76,16 @@ Additional Linux arm64 / Bun 1.3.14 probes used an isolated source TUI with onbo
 
 These negative results are not a claim that idle startup is optimized. They justify leaving the measured import refactor and runtime mode unchanged, rather than accepting complexity without demonstrated savings. Source-mode measurements must not be presented as a before/after comparison with a compiled binary. Broader static loading remains a separate investigation.
 
+## Import-graph and native-load findings
+
+A Linux arm64 / Bun 1.3.14 source-mode import probe measured each module in a fresh process after a one-second settling interval. These isolated graphs overlap and their savings are not additive. Narrowing the built-in memory host imports and loading the subagent executor on the first worker turn reduced the orchestrator import from about 198 MiB to 125–130 MiB RSS, the SDK import from about 200–207 MiB to 181–183 MiB, and the bundled memory module from about 202–206 MiB to 177–183 MiB. The complete interactive process did not retain a corresponding saving because its normal startup graph reaches the deferred modules by other paths.
+
+Settings-only consumers had a separate heavy edge: thinking metadata imported the pi-ai root through the `Effort` value, and compaction choice metadata imported the complete compaction engine. Moving effort values to the catalog source of truth and separating lightweight choice/label metadata reduced the isolated thinking module from about 107 MiB to 43 MiB RSS and the settings schema from about 111 MiB to 83 MiB. A same-tree interactive sample remained approximately 300 MiB in source mode, so this is an SDK/schema-consumer improvement rather than a claimed interactive-idle reduction.
+
+The first interactive native-addon access was traced to the macOS spelling availability check in the startup composer. Platform-gating that check moved the first access immediately to `TtyWriter` construction when the terminal output pump starts. Rendering then uses other native text operations, so the experiment did not defer the addon beyond startup and was reverted. The current `__ompInstallTokioRuntime` Rust export is a no-op; removing its loader call would not avoid loading the N-API addon. A meaningful steady-state reduction requires a lightweight TTY/text addon, a proven non-native output path, or another native-package split—not a platform special case.
+
+After the retained import changes, three four-second PTY samples of the same working tree had median RSS/PSS of approximately 300/273 MiB for source TypeScript, 249/229 MiB for the minified Bun bundle, and 256/250 MiB for the compiled executable. Profile services and allocator variation make these observations unsuitable as narrow regression gates; they confirm that raw TypeScript evaluation remains costlier and that the retained changes do not reduce the full interactive steady state.
+
 ## Interpretation and safeguards
 
 - Terminal-worker cleanup must preserve identifying metadata and persisted history; parked/resumable workers still need their revival state.
