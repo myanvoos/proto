@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.7] - 2026-09-13
+
 ### Changed
 
 - Thinking-level imports no longer initialize the full AI provider runtime.

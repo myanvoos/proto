@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.7] - 2026-09-13
+
 ### Changed
 
 - Interactive sessions use ~23–30 MiB less idle memory by loading unavailable provider model catalogs and cache entries only when requested.
@@ -9,6 +11,10 @@
 - SDK initialization avoids re-entering the full coding-agent barrel through built-in memory and defers subagent execution until the first worker turn (~20 MiB lower source-mode RSS for SDK-only imports).
 - The global session screen now starts with sessions from the current folder; press Tab to toggle all projects.
 - xd:// tool discovery now defaults to catalog-only prompt docs, keeping mounted schemas on demand.
+
+### Fixed
+
+- Browser tool timeouts no longer crash the agent when cancellation races with tab-worker termination.
 
 ## [18.1.6] - 2026-09-12
 
@@ -48,7 +54,6 @@
 
 ### Fixed
 
-- Browser tool timeouts no longer crash the agent when cancellation races with tab-worker termination.
 - Detached sessions keep their active main turn, subagents, and Fleet/IRC state when another session runs, and restore the live stream when reattached.
 - Fresh sessions no longer inherit prior sessions’ Fleet peers, queued IRC messages, or kernel bridge capabilities.
 - Session ownership now clears as soon as the owning process exits instead of lingering for the heartbeat timeout; cross-process warnings say the session is currently in use rather than merely open.
