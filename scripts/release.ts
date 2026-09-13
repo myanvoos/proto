@@ -278,8 +278,11 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	}
 	console.log(`  sentinel: ${sentinelName}\n`);
 
-	console.log("Regenerating lockfiles...");
-	await $`rm -f bun.lock`;
+	console.log("Updating lockfiles...");
+	// Never delete bun.lock here: a from-scratch resolution re-resolves floating
+	// specs (bun-types' "@types/node": "*") and can hoist versions that contradict
+	// the committed lockfile's dedupe, breaking the type check this script runs
+	// next. `bun install` alone applies the version bump to the lock.
 	await $`bun install`;
 	await $`cargo generate-lockfile`;
 	console.log();
