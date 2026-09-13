@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Interactive sessions use ~23–30 MiB less idle memory by loading unavailable provider model catalogs and cache entries only when requested.
 - Settings metadata no longer loads the full AI and compaction runtimes through effort and choice-table imports (~28 MiB lower source-mode RSS for schema-only consumers).
 - SDK initialization avoids re-entering the full coding-agent barrel through built-in memory and defers subagent execution until the first worker turn (~20 MiB lower source-mode RSS for SDK-only imports).
 - The global session screen now starts with sessions from the current folder; press Tab to toggle all projects.

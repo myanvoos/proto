@@ -158,6 +158,7 @@ export class ModelRegistry {
 	#unprojectedModels: Model<Api>[] = [];
 	#hasFullSnapshot = false;
 	#cachedStandardModels: Model<Api>[] = [];
+	#loadedStandardCacheProviders: Set<string> = new Set();
 	#cachedDiscoverableModels: Model<Api>[] = [];
 	#cachedAuthoritativeProviders: Set<string> = new Set();
 	#internedStaticModels: Map<string, Model<Api>> = new Map();
@@ -180,6 +181,8 @@ export class ModelRegistry {
 	#policyReapply?: Promise<void>;
 	#lastDiscoveryWarnings: Map<string, string> = new Map();
 
+	#runtimeDiscoveredModels: Model<Api>[] = [];
+	#runtimeAuthoritativeProviders: Set<string> = new Set();
 	#runtimeModelOverlays: CustomModelOverlay[] = [];
 	#runtimeProviderApiKeys: Map<string, string> = new Map();
 	#runtimeProviderOverrides: Map<string, ProviderOverride> = new Map();
@@ -473,21 +476,10 @@ export class ModelRegistry {
 		this.#modelOverrides = modelOverrides;
 
 		this.#addImplicitDiscoverableProviders(configuredProviders);
-		const cachedStandardResult = this.#loadCachedStandardProviderModels();
-		this.#cachedStandardModels = this.#applyHardcodedModelPolicies(cachedStandardResult.models);
+		this.#cachedStandardModels = [];
+		this.#loadedStandardCacheProviders.clear();
+		this.#cachedAuthoritativeProviders.clear();
 		this.#cachedDiscoverableModels = this.#applyHardcodedModelPolicies(this.#loadCachedDiscoverableModels());
-
-		this.#cachedAuthoritativeProviders = new Set<string>();
-		for (const provider of providersWithAuthoritativeProjectCatalog(this.#cachedStandardModels)) {
-			if (cachedStandardResult.authoritativeFreshProviders.has(provider)) {
-				this.#cachedAuthoritativeProviders.add(provider);
-			}
-		}
-		for (const provider of cachedStandardResult.authoritativeFreshProviders) {
-			if (AUTHORITATIVE_RUNTIME_CATALOG_PROVIDERS.has(provider)) {
-				this.#cachedAuthoritativeProviders.add(provider);
-			}
-		}
 		this.#lastStaticLoadMtime = this.#modelsConfigFile.getMtimeMs();
 	}
 
@@ -501,9 +493,11 @@ export class ModelRegistry {
 
 	#knownStaticProviders(): string[] {
 		const providers = new Set<string>(getBundledProviders());
+		for (const provider of STARTUP_MODEL_CACHE_PROVIDER_IDS) providers.add(provider);
 		for (const model of this.#cachedStandardModels) providers.add(model.provider);
 		for (const model of this.#cachedDiscoverableModels) providers.add(model.provider);
 		for (const model of this.#customModelOverlays) providers.add(model.provider);
+		for (const model of this.#runtimeDiscoveredModels) providers.add(model.provider);
 		for (const model of this.#runtimeModelOverlays) providers.add(model.provider);
 		return [...providers];
 	}
@@ -550,6 +544,7 @@ export class ModelRegistry {
 	}
 
 	#composeUnprojectedStaticModels(providerFilter?: ReadonlySet<string>): Model<Api>[] {
+		this.#ensureStandardProviderCaches(providerFilter);
 		const select = <T extends { provider: string }>(models: readonly T[]): T[] =>
 			providerFilter ? models.filter(model => providerFilter.has(model.provider)) : [...models];
 		let builtInModels = this.#applyHardcodedModelPolicies(
@@ -558,11 +553,18 @@ export class ModelRegistry {
 		if (this.#cachedAuthoritativeProviders.size > 0) {
 			builtInModels = dropProviderModels(builtInModels, this.#cachedAuthoritativeProviders);
 		}
-		const resolvedDefaults = this.#mergeResolvedModels(
+		let resolvedDefaults = this.#mergeResolvedModels(
 			this.#mergeResolvedModels(builtInModels, select(this.#cachedStandardModels)),
 			select(this.#cachedDiscoverableModels),
 		);
-		const withConfigModels = this.#mergeCustomModels(resolvedDefaults, select(this.#customModelOverlays));
+		if (this.#runtimeAuthoritativeProviders.size > 0) {
+			const authoritativeProviders = providerFilter
+				? new Set([...this.#runtimeAuthoritativeProviders].filter(provider => providerFilter.has(provider)))
+				: this.#runtimeAuthoritativeProviders;
+			resolvedDefaults = dropProviderModels(resolvedDefaults, authoritativeProviders);
+		}
+		const withDiscoveredModels = this.#mergeResolvedModels(resolvedDefaults, select(this.#runtimeDiscoveredModels));
+		const withConfigModels = this.#mergeCustomModels(withDiscoveredModels, select(this.#customModelOverlays));
 		const combined = this.#mergeCustomModels(withConfigModels, select(this.#runtimeModelOverlays));
 		const withModelOverrides = this.#applyModelOverrides(collapseBuiltModelVariants(combined), this.#modelOverrides);
 		return this.#applyLlamaCppModelFixups(this.#applyRuntimeProviderOverrides(withModelOverrides));
@@ -651,12 +653,40 @@ export class ModelRegistry {
 		return resolveModelCacheProviderId(providerId, { baseUrl });
 	}
 
-	#loadCachedStandardProviderModels(): { models: Model<Api>[]; authoritativeFreshProviders: Set<string> } {
+	#ensureStandardProviderCaches(providerFilter?: ReadonlySet<string>): void {
+		const providersToLoad = new Set(
+			STARTUP_MODEL_CACHE_PROVIDER_IDS.filter(
+				provider =>
+					!this.#loadedStandardCacheProviders.has(provider) && (!providerFilter || providerFilter.has(provider)),
+			),
+		);
+		if (providersToLoad.size === 0) return;
+
+		for (const provider of providersToLoad) this.#loadedStandardCacheProviders.add(provider);
+		const cached = this.#loadCachedStandardProviderModels(providersToLoad);
+		const cachedModels = this.#applyHardcodedModelPolicies(cached.models);
+		this.#cachedStandardModels.push(...cachedModels);
+		for (const provider of providersWithAuthoritativeProjectCatalog(cachedModels)) {
+			if (cached.authoritativeFreshProviders.has(provider)) this.#cachedAuthoritativeProviders.add(provider);
+		}
+		for (const provider of cached.authoritativeFreshProviders) {
+			if (AUTHORITATIVE_RUNTIME_CATALOG_PROVIDERS.has(provider)) this.#cachedAuthoritativeProviders.add(provider);
+		}
+	}
+
+	#loadCachedStandardProviderModels(providerFilter: ReadonlySet<string>): {
+		models: Model<Api>[];
+		authoritativeFreshProviders: Set<string>;
+	} {
 		const configuredDiscoveryProviders = new Set(this.#discoverableProviders.map(provider => provider.provider));
 		const cachedModels: Model<Api>[] = [];
 		const authoritativeFreshProviders = new Set<string>();
 		for (const providerId of STARTUP_MODEL_CACHE_PROVIDER_IDS) {
-			if (configuredDiscoveryProviders.has(providerId) || isCredentialScopedModelCacheProvider(providerId)) {
+			if (
+				!providerFilter.has(providerId) ||
+				configuredDiscoveryProviders.has(providerId) ||
+				isCredentialScopedModelCacheProvider(providerId)
+			) {
 				continue;
 			}
 			const cacheProviderId = this.#resolveStartupModelCacheProviderId(providerId);
@@ -1025,12 +1055,15 @@ export class ModelRegistry {
 		if (discovered.length === 0 && builtInDiscovery.authoritativeProviders.size === 0) {
 			return;
 		}
-		this.#ensureFullSnapshot();
+		const discoveredProviders = new Set(discovered.map(model => model.provider));
+		for (const provider of builtInDiscovery.authoritativeProviders) discoveredProviders.add(provider);
+		const currentProviderModels =
+			discoveredProviders.size > 0 ? this.#composeUnprojectedStaticModels(discoveredProviders) : [];
 		const discoveredModels = this.#applyHardcodedModelPolicies(
 			discovered.map(model =>
 				mergeDiscoveredModel(
 					model,
-					resolveProviderModelReference(model.provider, model.id, this.#unprojectedModels),
+					resolveProviderModelReference(model.provider, model.id, currentProviderModels),
 					this.#providerOverrides.get(model.provider),
 				),
 			),
@@ -1039,16 +1072,17 @@ export class ModelRegistry {
 		for (const provider of builtInDiscovery.authoritativeProviders) {
 			authoritativeProviders.add(provider);
 		}
-		const baseModels =
-			authoritativeProviders.size > 0
-				? dropProviderModels(this.#unprojectedModels, authoritativeProviders)
-				: this.#unprojectedModels;
-		const resolved = this.#mergeResolvedModels(baseModels, discoveredModels);
-		const withConfigModels = this.#mergeCustomModels(resolved, this.#customModelOverlays);
-		const combined = this.#mergeCustomModels(withConfigModels, this.#runtimeModelOverlays);
-		const withModelOverrides = this.#applyModelOverrides(collapseBuiltModelVariants(combined), this.#modelOverrides);
-		this.#unprojectedModels = this.#applyLlamaCppModelFixups(this.#applyRuntimeProviderOverrides(withModelOverrides));
-		this.#models = this.#applyRuntimeModelModifiers(this.#unprojectedModels);
+		if (authoritativeProviders.size > 0) {
+			this.#runtimeDiscoveredModels = this.#runtimeDiscoveredModels.filter(
+				model => !authoritativeProviders.has(model.provider),
+			);
+			for (const provider of authoritativeProviders) this.#runtimeAuthoritativeProviders.add(provider);
+		}
+		this.#runtimeDiscoveredModels = this.#mergeResolvedModels(this.#runtimeDiscoveredModels, discoveredModels);
+
+		const hadFullSnapshot = this.#hasFullSnapshot;
+		this.#resetStaticComposition();
+		if (hadFullSnapshot) this.#ensureFullSnapshot();
 	}
 
 	#configuredDiscoveryCacheProviderId(providerConfig: DiscoveryProviderConfig): string {
@@ -1755,6 +1789,8 @@ export class ModelRegistry {
 	}
 
 	#clearRuntimeProviderState(providerName: string): void {
+		this.#runtimeDiscoveredModels = this.#runtimeDiscoveredModels.filter(model => model.provider !== providerName);
+		this.#runtimeAuthoritativeProviders.delete(providerName);
 		this.#runtimeProviderApiKeys.delete(providerName);
 		this.#runtimeProviderOverrides.delete(providerName);
 		this.#runtimeModelOverlays = this.#runtimeModelOverlays.filter(overlay => overlay.provider !== providerName);
