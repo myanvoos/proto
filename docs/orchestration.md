@@ -2,7 +2,7 @@
 
 Every top-level coding agent is an **Orchestrator**. It keeps its ordinary coding tools and always exposes five parent-owned worker controls:
 
-- `orchestrate_spawn` starts one persistent worker using any discovered agent type. Optional controls include `name`, `effort`, `outputSchema`, `schemaMode`, and `isolated`.
+- `orchestrate_spawn` starts one persistent worker using any discovered agent type. Optional controls include `name`, `model`, `effort`, `outputSchema`, `schemaMode`, and `isolated`. `model` selects the worker's model (role alias like `@worker` or concrete model id) and is validated against the effective role's `modelRoleBank` when one is configured; the selection persists across park/revive.
 - `orchestrate_send` continues an idle or parked worker in the same transcript, steers a streaming turn, or queues a follow-up.
 - `orchestrate_wait` waits for the first snapshotted turn to settle and consumes that delivery exactly once.
 - `orchestrate_kill` terminates a worker while retaining its transcript tombstone.

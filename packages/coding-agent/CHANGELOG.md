@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Role model banks: `modelRoleBank.<role>` lists the models a role may use, `orchestrate_spawn` accepts a `model=` parameter (`@worker` alias or concrete model id) validated against the worker role's bank, and eval `agent({model})` gains the same per-call override and bank validation; roles without a bank accept any model.
+
+### Changed
+
+- Bash tool prompt no longer confines file edits to kernel APIs; external file-modifying commands (e.g. `ruff --fix`, formatter write mode) are allowed again, while in-kernel edits keep the read-first/anchor and stale-write rules.
+- Trimmed bash tool guidance: removed elementary shell/tool knowledge and schema-restating parameter examples.
+- `orchestrate_wait` now waits up to 15 minutes by default instead of 30 seconds when no `timeout` is given.
+- `read` is now an always-enabled native tool whose schema ships on every request, alongside `bash`, instead of mounting under `xd://` as a bash-dispatched device.
+- The system prompt's Orchestration section no longer opens with an "You are the Orchestrator" paragraph; it leads directly with the operating-rule bullets.
+- System prompt no longer repeats the MCP-route dispatch sentence, xdev docs-on-demand line, skills-first workflow line, or the pre-yield verification bullet; each still appears once in its owning section.
+
 ### Fixed
 
 - Bash calls combining Python or JavaScript kernel cells with shell commands now show the full shell source in live previews and restored transcripts, while preserving kernel diffs and structured output.

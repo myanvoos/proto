@@ -7,6 +7,8 @@ Available agent types:
 - `{{name}}`: {{description}}
 {{/each}}
 {{/if}}
+`model` picks the worker's model: a role alias (`@worker`) or a concrete model id. When the effective role has a model bank configured, `model` must be one of its entries (the role's default is always allowed; a role alias in `model` switches the effective role); otherwise any model pattern is accepted. The selection persists across park/revive.
+
 `prompt` is the worker's ONLY context; include files, constraints, acceptance criteria. Results self-deliver on completion; direct other workers meanwhile. The worker persists after normal turn completion — continue with orchestrate_send using the returned immutable id, NEVER the display label. Labels may repeat across parent sessions.
 
 Isolated workers are terminal after completion and use an independent eval kernel; spawn a persistent worker when you need follow-up turns.

@@ -1,7 +1,6 @@
 ## MCP Tool Routes
 
 {{#if tools.length}}
-Execute each mounted tool from bash: run `xd <tool> '<json-args>'`.
 {{#each tools}}
 - {{mcpToolName}} → `{{path}}`
 {{/each}}

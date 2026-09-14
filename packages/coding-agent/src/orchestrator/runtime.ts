@@ -4,7 +4,7 @@ import * as path from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { $env, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
-import { resolveAgentModelSelection } from "../config/model-resolver";
+import { resolveAgentSpawnModelSelection } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
@@ -38,7 +38,7 @@ const TURN_TRACE_CAP = 40;
 
 const TRACE_LINE_MAX = 120;
 
-const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+const DEFAULT_WAIT_TIMEOUT_MS = 15 * 60_000;
 
 const RESPONSE_PREVIEW_MAX = 6000;
 
@@ -96,6 +96,7 @@ interface WorkerSpawnEvent extends WorkerLifecycleBase {
 	action: "spawn";
 	agent: string;
 	label: string;
+	model?: string;
 	childSessionFile: string;
 	createdAt: number;
 	effort?: WorkerEffort;
@@ -361,6 +362,7 @@ function parseLifecycleEvent(value: unknown): WorkerLifecycleEvent | undefined {
 			label,
 			childSessionFile: data.childSessionFile,
 			createdAt: data.createdAt,
+			...(typeof data.model === "string" && data.model.trim() ? { model: data.model.trim() } : {}),
 			...(effort !== undefined ? { effort } : {}),
 			...(Object.hasOwn(data, "outputSchema") ? { outputSchema: data.outputSchema } : {}),
 			...(schemaMode !== undefined ? { schemaMode } : {}),
@@ -543,6 +545,7 @@ export class OrchestratorRuntime {
 		session: OrchestratorParent,
 		cwd: string,
 		agentName: string | undefined,
+		requestModel?: string,
 	): Promise<ResolvedWorker> {
 		if (this.#testResolvedWorker) return this.#testResolvedWorker;
 		const requested = agentName?.trim() || "worker";
@@ -552,13 +555,15 @@ export class OrchestratorRuntime {
 			throw new ToolError(describeUnknownAgent(requested, agents));
 		}
 		const agentModelOverrides = session.settings.get("orchestrator.agentModelOverrides");
-		const { patterns, role } = resolveAgentModelSelection({
+		const { patterns, role, bankError } = resolveAgentSpawnModelSelection({
+			requestModel,
 			settingsOverride: agentModelOverrides[requested],
 			agentModel: agent.model,
 			settings: session.settings,
 			activeModelPattern: session.getActiveModelString?.(),
 			fallbackModelPattern: session.getModelString?.(),
 		});
+		if (bankError) throw new ToolError(bankError);
 		return { agent, modelOverride: patterns, modelRole: role };
 	}
 
@@ -816,7 +821,13 @@ export class OrchestratorRuntime {
 			...(record.terminal ? { terminal: record.terminal } : {}),
 			agent: record.agentName,
 			state: record.state,
-			model: record.resolvedModel,
+			model:
+				record.resolvedModel ??
+				(record.modelOverride === undefined
+					? undefined
+					: Array.isArray(record.modelOverride)
+						? record.modelOverride.join(",")
+						: record.modelOverride),
 			turns: record.turnCount,
 			queued: record.queue.length,
 			turnStartedAt: record.turn?.startedAt,
@@ -1033,7 +1044,7 @@ export class OrchestratorRuntime {
 			if (existing && !existingIsResumable) continue;
 			let resolved: ResolvedWorker | undefined;
 			try {
-				resolved = await this.#resolveWorker(session, session.cwd ?? process.cwd(), spawn.agent);
+				resolved = await this.#resolveWorker(session, session.cwd ?? process.cwd(), spawn.agent, spawn.model);
 			} catch {
 				resolved = undefined;
 			}
@@ -1096,6 +1107,7 @@ export class OrchestratorRuntime {
 			agent?: string;
 			name?: string;
 			prompt: string;
+			model?: string;
 			effort?: WorkerEffort;
 			outputSchema?: unknown;
 			schemaMode?: StructuredSubagentSchemaMode;
@@ -1112,6 +1124,7 @@ export class OrchestratorRuntime {
 			agent?: string;
 			name?: string;
 			prompt: string;
+			model?: string;
 			effort?: WorkerEffort;
 			outputSchema?: unknown;
 			schemaMode?: StructuredSubagentSchemaMode;
@@ -1136,6 +1149,7 @@ export class OrchestratorRuntime {
 			session,
 			session.cwd,
 			requestedAgent,
+			args.model,
 		);
 		const schema = this.#resolveOutputSchema(session, agent, args);
 		const reservedIds = this.#persistedIds(session, scope);
@@ -1188,6 +1202,7 @@ export class OrchestratorRuntime {
 						label,
 						childSessionFile: childSessionName,
 						createdAt,
+						...(args.model !== undefined ? { model: args.model } : {}),
 						...(record.effort !== undefined ? { effort: record.effort } : {}),
 						...(record.outputSchemaSource === "caller" ? { outputSchema: record.outputSchema } : {}),
 						schemaMode: record.outputSchemaMode,

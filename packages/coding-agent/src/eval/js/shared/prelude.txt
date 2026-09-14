@@ -80,8 +80,8 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 			"agent",
 			opts,
 			rest,
-			["agent", "label", "schema", "isolated", "apply", "merge", "schemaMode"],
-			"{ agent, label, schema, isolated, apply, merge, schemaMode, handle }",
+			["agent", "model", "label", "schema", "isolated", "apply", "merge", "schemaMode"],
+			"{ agent, model, label, schema, isolated, apply, merge, schemaMode, handle }",
 		);
 		const { handle, ...callArgs } = o;
 		const res = await globalThis.__proto_call_tool__("__agent__", { prompt, ...callArgs, handle: Boolean(handle) });

@@ -1093,6 +1093,7 @@ if "__proto_prelude_loaded__" not in globals():
         prompt,
         *,
         agent=None,
+        model=None,
         label=None,
         schema=None,
         schema_mode=None,
@@ -1104,12 +1105,16 @@ if "__proto_prelude_loaded__" not in globals():
         """Run a subagent and return its final output or structured data.
 
         `schema` overrides agent and session schemas. `schema_mode` is
-        `"permissive"` or `"strict"`. `handle=True` returns the child output
+        `"permissive"` or `"strict"`. `model` overrides the worker's model
+        (role alias like `@worker` or concrete id); it is validated against
+        the effective role's model bank when one is configured. `handle=True` returns the child output
         reference and metadata, with parsed data under `"data"` when available.
         """
         args = {"prompt": prompt}
         if agent is not None:
             args["agent"] = agent
+        if model is not None:
+            args["model"] = model
         if label is not None:
             args["label"] = label
         if schema is not None:

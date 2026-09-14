@@ -981,6 +981,60 @@ export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOp
 	return resolveEffectiveAgentModelSelection(options).patterns;
 }
 
+export interface AgentSpawnModelResolution {
+	patterns: string[];
+
+	role: string | undefined;
+
+	bankError: string | undefined;
+}
+
+/**
+ * Resolves the model for a spawned agent and enforces the role model bank: when the effective
+ * role has a `modelRoleBank` configured, an explicit `model=` request must resolve into that
+ * bank (the role's primary model is always allowed). Without a bank, any model is accepted.
+ * The role survives a concrete `model=` request: it falls back to the role declared by the
+ * agent/settings source when the request itself carries no role alias.
+ */
+export function resolveAgentSpawnModelSelection(
+	options: AgentModelPatternResolutionOptions,
+): AgentSpawnModelResolution {
+	const settings = options.settings;
+	const requestWon = resolveConfiguredModelPatterns(options.requestModel, settings).length > 0;
+	const selection = resolveAgentModelSelection(options);
+	const sourceRole = requestWon
+		? (resolveExplicitModelRole(options.settingsOverride, settings) ??
+			resolveExplicitModelRole(options.agentModel, settings))
+		: selection.role;
+	const role = selection.role ?? sourceRole;
+
+	let bankError: string | undefined;
+	if (requestWon && role) {
+		const bank = settings?.getModelRoleBank(role);
+		if (bank && bank.length > 0) {
+			const candidates = [...bank];
+			const primary = settings?.getModelRole(role);
+			if (primary) candidates.push(primary);
+			// Banks list models; a thinking suffix on the request or an entry is effort, not
+			// identity — compare suffix-stripped base ids.
+			const bankKey = (pattern: string): string =>
+				splitThinkingSuffix(pattern, -1, MAX_THINKING_SUFFIX_OPTIONS).base.toLowerCase();
+			const allowed = new Set(
+				candidates
+					.map(entry => entry.trim())
+					.filter(Boolean)
+					.flatMap(entry => resolveConfiguredModelPatterns(entry, settings))
+					.map(bankKey),
+			);
+			const violations = selection.patterns.filter(pattern => !allowed.has(bankKey(pattern)));
+			if (violations.length > 0) {
+				bankError = `Model ${violations.join(", ")} is not in the \`${role}\` role model bank. Available models: ${bank.join(", ")}.`;
+			}
+		}
+	}
+	return { patterns: selection.patterns, role, bankError };
+}
+
 export const DEFAULT_PREWALK_TARGET = "@smol";
 
 interface AgentPrewalkResolutionOptions {

@@ -43,6 +43,7 @@ export function renderSpawnSummary(args: {
 		agentName: args.agentName,
 		id: result.id,
 		status,
+		model: result.resolvedModel,
 		duration: formatDuration(totalDurationMs),
 		abortReason: result.aborted ? result.abortReason : undefined,
 		resumable,

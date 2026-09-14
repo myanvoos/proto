@@ -495,6 +495,8 @@ export const SETTINGS_SCHEMA = {
 
 	modelRoles: { type: "record", default: EMPTY_STRING_RECORD },
 
+	modelRoleBank: { type: "record", default: {} as Record<string, string[]> },
+
 	modelTags: { type: "record", default: EMPTY_MODEL_TAGS_RECORD },
 
 	modelProviderOrder: { type: "array", default: EMPTY_STRING_ARRAY },
@@ -4523,6 +4525,7 @@ export interface GroupTypeMap {
 	statusLine: StatusLineSettings;
 	thinkingBudgets: ThinkingBudgetsSettings;
 	modelRoles: Record<string, string>;
+	modelRoleBank: Record<string, string[]>;
 	modelTags: ModelTagsSettings;
 	cycleOrder: string[];
 	shellMinimizer: ShellMinimizerSettings;

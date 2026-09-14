@@ -173,6 +173,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 
 	modelRole?: string;
 
+	modelOverride?: string;
+
 	resolvedModel?: string;
 
 	readOnly?: boolean;

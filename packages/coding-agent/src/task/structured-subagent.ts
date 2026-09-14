@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
-import { resolveAgentModelSelection } from "../config/model-resolver";
+import { resolveAgentSpawnModelSelection } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
@@ -199,7 +199,8 @@ export async function resolveEffectiveSubagentPolicy(
 		fallbackModelPattern: request.session.getModelString?.(),
 	};
 
-	const { patterns: modelOverride, role: modelRole } = resolveAgentModelSelection(modelResolution);
+	const { patterns: modelOverride, role: modelRole, bankError } = resolveAgentSpawnModelSelection(modelResolution);
+	if (bankError) throw new StructuredSubagentError("preflight", bankError);
 	const isolationMode = request.session.settings.get("orchestrator.isolation.mode");
 	const isIsolated = request.isolation?.requested === true;
 	if (isIsolated && isolationMode === "none") {

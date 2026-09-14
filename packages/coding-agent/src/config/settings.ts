@@ -800,6 +800,18 @@ export class Settings {
 		return modelRoleValueFromUnknown(roles[role]);
 	}
 
+	getModelRoleBank(role: ModelRole | string): string[] | undefined {
+		const banks: unknown = this.get("modelRoleBank");
+		if (!isRecord(banks)) return undefined;
+		const value = banks[role];
+		if (!Array.isArray(value)) return undefined;
+		const entries = value
+			.filter((entry): entry is string => typeof entry === "string")
+			.map(entry => entry.trim())
+			.filter(Boolean);
+		return entries.length > 0 ? entries : undefined;
+	}
+
 	getGlobalModelRole(role: ModelRole | string): string | undefined {
 		const modelId = this.#modelRolesFromLayer(this.#global)[role];
 		return modelId || undefined;

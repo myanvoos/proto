@@ -481,8 +481,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		const wrappedRead = wrapToolWithMetaNotice(readTool);
 		toolRegistry.set(wrappedRead.name, wrappedRead);
 		builtInNames.add(wrappedRead.name);
-		// read declares itself discoverable, so it joins the mount pass below and leaves the native
-		// tool list when xdev mounting is active; it stays top-level otherwise.
 		tools.push(wrappedRead);
 	}
 

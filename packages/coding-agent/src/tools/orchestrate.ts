@@ -56,6 +56,9 @@ const orchestrateSpawnSchema = type({
 	),
 	"name?": type("string <= 48").describe("optional worker name; generated when omitted"),
 	prompt: type("string > 0").describe("first instruction; the worker starts with no other context"),
+	"model?": type("string > 0").describe(
+		"model for this worker: a role alias like `@worker` or a concrete model id; validated against the effective role's model bank when one is configured (a role alias switches the effective role)",
+	),
 	"effort?": type("'lo' | 'med' | 'hi'").describe("thinking-effort hint for the worker's turns"),
 	"outputSchema?": outputSchemaInput.describe("optional JSON Schema for each worker turn's final response"),
 	"schemaMode?": type("'permissive' | 'strict'").describe("schema enforcement policy; default permissive"),
@@ -71,7 +74,7 @@ const orchestrateSendSchema = type({
 
 const orchestrateWaitSchema = type({
 	"workers?": type("string[]").describe("worker ids to watch; omit to watch every worker with a turn in flight"),
-	"timeout?": type("number > 0").describe("max seconds to wait (default 30)"),
+	"timeout?": type("number > 0").describe("max seconds to wait (default 900 = 15 min)"),
 });
 
 const orchestrateKillSchema = type({
@@ -167,6 +170,7 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 					invocationKind: "worker",
 					assignment: params.prompt.trim(),
 					agent: params.agent,
+					...(params.model !== undefined ? { model: params.model } : {}),
 					...(params.effort !== undefined ? { effort: params.effort as WorkerEffort } : {}),
 					...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
 					...(params.schemaMode !== undefined ? { schemaMode: params.schemaMode } : {}),
@@ -203,13 +207,15 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 			agent: params.agent,
 			name: params.name,
 			prompt: params.prompt,
+			...(params.model !== undefined ? { model: params.model } : {}),
 			...(params.effort !== undefined ? { effort: params.effort as WorkerEffort } : {}),
 			...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
 			...(params.schemaMode !== undefined ? { schemaMode: params.schemaMode } : {}),
 		});
 		const agentName = params.agent?.trim() || "worker";
+		const modelNote = params.model !== undefined ? `model \`${params.model}\`, ` : "";
 		return textResult(
-			`Spawned \`${agentName}\` worker \`${id}\` (label \`${label}\`, turn job \`${jobId}\`). The immutable worker id is the only routing address; its result will be delivered when the turn finishes. Continue this worker with orchestrate_send \`${id}\`.`,
+			`Spawned \`${agentName}\` worker \`${id}\` (label \`${label}\`, ${modelNote}turn job \`${jobId}\`). The immutable worker id is the only routing address; its result will be delivered when the turn finishes. Continue this worker with orchestrate_send \`${id}\`.`,
 			{ op: "spawn", screens: await screensOf(this.session), spawned: { id, label, agent: agentName, jobId } },
 		);
 	}

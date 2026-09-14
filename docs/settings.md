@@ -300,6 +300,12 @@ modelRoles:
   plan: anthropic/claude-opus-4-5
   advisor: anthropic/claude-sonnet-4-5:medium
 
+# Optional per-role allowlist for spawned workers (`orchestrate_spawn` `model=`).
+modelRoleBank:
+  worker:
+    - anthropic/claude-sonnet-4-5
+    - openai/gpt-4.1
+
 cycleOrder:
   - smol
   - default
@@ -316,6 +322,7 @@ enabledModels:
 | Key                    | Type    | Default                     | Notes                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ---------------------- | ------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `modelRoles`           | record  | `{}`                        | Map of role name -> model id. Built-in roles: `default`, `smol`, `slow`, `vision`, `designer`, `commit`, `tiny`, `task`, `advisor`. The `tiny` role overrides the online model for lightweight background tasks (titles, memory, auto-thinking, unexpected-stop), else `@smol`. Per-role env/flags exist only for `--model`/`--smol`/`--slow`; configure the advisor with `modelRoles.advisor`. |
+| `modelRoleBank`        | record  | `{}`                        | Optional allowlist per role: an `orchestrate_spawn` `model=` request must resolve into the role's bank (the role's primary model is always allowed); roles without a bank are unrestricted. |
 | `modelRoleStorage`     | enum    | `global`                    | `global` saves model-selector role assignments in the active global/profile config; `project` saves only those role assignments in `<cwd>/.proto/config.yml`. Missing project roles fall back to global roles.                                                                                                                                                                                                     |
 | `modelTags`            | record  | `{}`                        | Custom role/tag metadata; can introduce additional roles.                                                                                                                                                                                                                                                                                                                                                        |
 | `modelProviderOrder`   | array   | `[]`                        | Preferred provider order when a model id is ambiguous.                                                                                                                                                                                                                                                                                                                                                           |

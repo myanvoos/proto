@@ -1,4 +1,4 @@
-<worker-result id="{{id}}" agent="{{agentName}}" status="{{status}}" duration="{{duration}}">
+<worker-result id="{{id}}" agent="{{agentName}}" status="{{status}}" duration="{{duration}}"{{#if model}} model="{{model}}"{{/if}}>
 {{#if meta}}<meta lines="{{meta.lineCount}}" size="{{meta.charSize}}" />{{/if}}
 {{#if abortReason}}
 <abort-reason>{{abortReason}}{{#if resumable}} — the agent is still live with its full context; message it via `orchestrate_send` to resume instead of redoing the work.{{/if}}</abort-reason>

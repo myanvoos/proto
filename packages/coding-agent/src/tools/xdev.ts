@@ -31,6 +31,7 @@ import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-e
  * discoverable — mirrors ESSENTIAL_BUILTIN_TOOL_NAMES minus the bash transport.
  */
 export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
+	read: true,
 	ask: true,
 	todo: true,
 	web_search: true,
@@ -265,8 +266,6 @@ export function xdevDocsAll(
 					const maxBytes = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
 					return `- ${XD_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxBytes)}`;
 				}),
-				"",
-				`Docs + JSON schema on demand: run \`xd <tool> ?\` in bash before first use.`,
 			].join("\n"),
 		);
 	}

@@ -9,7 +9,7 @@ import { isMountableUnderXdev, xdevDocsAll } from "./xdev";
 // Contract: only these built-ins ship their schemas as native tools on every request. Everything
 // else mounts under xd:// and is dispatched from bash. If this set drifts, every session silently
 // gains or loses native tool schemas.
-const ALWAYS_NATIVE_TOOL_NAMES = ["bash", "ask", "todo", "web_search", "inspect_media"] as const;
+const ALWAYS_NATIVE_TOOL_NAMES = ["bash", "read", "ask", "todo", "web_search", "inspect_media"] as const;
 
 describe("ESSENTIAL_BUILTIN_TOOL_NAMES", () => {
 	test("contains exactly the always-native built-ins", () => {
@@ -53,8 +53,7 @@ describe("isMountableUnderXdev", () => {
 		}
 	});
 
-	test("mounts discoverable non-transport tools — including read — and keeps essential tools native", () => {
-		expect(isMountableUnderXdev({ name: "read", loadMode: "discoverable" })).toBe(true);
+	test("mounts discoverable non-transport tools and keeps essential tools native", () => {
 		expect(isMountableUnderXdev({ name: "orchestrate_spawn", loadMode: "discoverable" })).toBe(true);
 		expect(isMountableUnderXdev({ name: "orchestrate_spawn", loadMode: "essential" })).toBe(false);
 		expect(isMountableUnderXdev({ name: "orchestrate_spawn" })).toBe(false);

@@ -1894,6 +1894,7 @@ export class SessionManager {
 		tools: string[];
 		agent?: string;
 		modelRole?: string;
+		modelOverride?: string;
 		resolvedModel?: string;
 		readOnly?: boolean;
 		outputSchema?: unknown;
@@ -2325,6 +2326,7 @@ export class SessionManager {
 			tools: string[];
 			agent?: string;
 			modelRole?: string;
+			modelOverride?: string;
 			resolvedModel?: string;
 			outputSchema?: unknown;
 			outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -2341,6 +2343,7 @@ export class SessionManager {
 			tools: string[];
 			agent?: string;
 			modelRole?: string;
+			modelOverride?: string;
 			resolvedModel?: string;
 			outputSchema?: unknown;
 			outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -2361,6 +2364,7 @@ export class SessionManager {
 					tools: entry.tools,
 					agent: entry.agent,
 					modelRole: entry.modelRole,
+					modelOverride: entry.modelOverride,
 					resolvedModel: entry.resolvedModel,
 					outputSchema: entry.outputSchema,
 					outputSchemaMode: entry.outputSchemaMode,

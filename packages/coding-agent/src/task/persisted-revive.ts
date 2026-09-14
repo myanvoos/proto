@@ -61,10 +61,19 @@ export function createPersistedSubagentReviverFactory(
 					}
 				: undefined),
 		});
+		const explicitOverride =
+			typeof init.modelOverride === "string"
+				? init.modelOverride
+						.split(",")
+						.map(entry => entry.trim())
+						.filter(Boolean)
+				: undefined;
 		const persistedModelPattern =
-			init.modelRole && init.modelRole !== "default"
-				? [formatModelRoleAlias(init.modelRole), ...(init.resolvedModel ? [init.resolvedModel] : [])]
-				: init.resolvedModel;
+			explicitOverride && explicitOverride.length > 0
+				? explicitOverride
+				: init.modelRole && init.modelRole !== "default"
+					? [formatModelRoleAlias(init.modelRole), ...(init.resolvedModel ? [init.resolvedModel] : [])]
+					: init.resolvedModel;
 		return async expectedRef => {
 			const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
 				suppressBreadcrumb: true,

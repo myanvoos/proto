@@ -64,20 +64,20 @@ Use Bun APIs where they provide a cleaner alternative; fall back to `node:*` onl
 
 ### Quick reference
 
-| Operation       | Use                                       | Not                                |
-| --------------- | ----------------------------------------- | ---------------------------------- |
-| File read/write | `Bun.file()`, `Bun.write()`               | `readFileSync`, `writeFileSync`    |
-| Spawn process   | `` $`cmd` ``, `Bun.spawn()`               | `child_process`                    |
-| Sleep           | `Bun.sleep(ms)`                           | `setTimeout` promise               |
-| Binary lookup   | `$which("git")` from `@oh-my-pi/pi-utils` | `spawnSync(["which", "git"])`      |
-| HTTP server     | `Bun.serve()`                             | `http.createServer()`              |
-| SQLite          | `bun:sqlite`                              | `better-sqlite3`                   |
-| Hashing         | `Bun.hash()`, `Bun.password.*`, WebCrypto | `node:crypto`                      |
-| Path resolution | `import.meta.dir`, `import.meta.path`     | `fileURLToPath` dance              |
-| JSON5           | `Bun.JSON5.parse()` / `.stringify()`      | `json5` package                    |
-| JSONL           | `Bun.JSONL.parse()` / `.parseChunk()`     | `text.split("\n").map(JSON.parse)` |
-| String width    | `Bun.stringWidth()`                       | `get-east-asian-width`, custom     |
-| Text wrapping   | `Bun.wrapAnsi()`                          | custom ANSI-aware wrappers         |
+| Operation       | Use                                                           | Not                                |
+|-----------------|---------------------------------------------------------------|------------------------------------|
+| File read/write | `Bun.file()`, `Bun.write()`                                   | `readFileSync`, `writeFileSync`    |
+| Spawn process   | `` $`cmd` ``, `Bun.spawn()`                                   | `child_process`                    |
+| Sleep           | `Bun.sleep(ms)`                                               | `setTimeout` promise               |
+| Binary lookup   | `$which("git")` from `@oh-my-pi/pi-utils`                     | `spawnSync(["which", "git"])`      |
+| HTTP server     | `Bun.serve()`                                                 | `http.createServer()`              |
+| SQLite          | `bun:sqlite`                                                  | `better-sqlite3`                   |
+| Hashing         | `Bun.hash()`, `Bun.password.hash/.verify (bcrypt)`, WebCrypto | `node:crypto`                      |
+| Path resolution | `import.meta.dir`, `import.meta.path`                         | `fileURLToPath` dance              |
+| JSON5           | `Bun.JSON5.parse()` / `.stringify()`                          | `json5` package                    |
+| JSONL           | `Bun.JSONL.parse()` / `.parseChunk()`                         | `text.split("\n").map(JSON.parse)` |
+| String width    | `Bun.stringWidth(text, {countAnsiEscapeCodes?})`              | `get-east-asian-width`, custom     |
+| Text wrapping   | `Bun.wrapAnsi(text, width, {wordWrap, hard, trim})`           | custom ANSI-aware wrappers         |
 
 ### Process execution
 
@@ -160,13 +160,6 @@ for await (const bytes of readLines(stream)) {
 ```
 
 Manual reader loops only when the protocol requires it (SSE, streaming JSON-RPC).
-
-### Misc
-
-- **Sleep**: `await Bun.sleep(ms)`, never `new Promise(r => setTimeout(r, ms))`.
-- **Password hashing**: `Bun.password.hash(pw, "bcrypt")` / `Bun.password.verify(pw, hash)`.
-- **String width**: `Bun.stringWidth(text, { countAnsiEscapeCodes?: false })`.
-- **Wrapping**: `Bun.wrapAnsi(text, width, { wordWrap, hard, trim })`.
 
 ## Generated Files
 
