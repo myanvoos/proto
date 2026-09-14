@@ -24,5 +24,11 @@ export class CancellableLoader extends Loader {
 
 	override dispose(): void {
 		this.stop();
+		// Disposal means the owned operation is dead: abort its signal so
+		// in-flight work observes cancellation. The user-facing onAbort
+		// callback stays reserved for explicit Esc handling.
+		if (!this.#abortController.signal.aborted) {
+			this.#abortController.abort();
+		}
 	}
 }

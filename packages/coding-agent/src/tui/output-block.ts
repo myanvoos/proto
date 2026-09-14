@@ -1,6 +1,13 @@
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
-import { padding, replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui/utils";
+import {
+	getWidthConfigEpoch,
+	padding,
+	replaceTabs,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@oh-my-pi/pi-tui/utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { getSixelLineMask } from "../utils/sixel";
@@ -218,6 +225,7 @@ export class CachedOutputBlock {
 	#buildKey(options: OutputBlockOptions): bigint {
 		const h = new Hasher();
 		h.u32(options.width);
+		h.u32(getWidthConfigEpoch());
 		h.u32(normalizeContentPaddingLeft(options.contentPaddingLeft));
 		h.optional(options.header);
 		h.optional(options.headerMeta);

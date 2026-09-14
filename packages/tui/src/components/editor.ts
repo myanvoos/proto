@@ -45,32 +45,35 @@ const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 };
 
 function sanitizeLoadedText(text: string): string {
-	return replaceTabs(text.replace(/\r\n?/g, "\n")).replace(/[\x00-\x09\x0b-\x1f]/g, "");
+	return replaceTabs(text.replace(/\r\n?/g, "\n")).replace(/[\x00-\x09\x0b-\x1f\x7f\x80-\x9f]/g, "");
 }
 
 const segmenter = getSegmenter();
-const printableBindingCache = new WeakMap<KeybindingsManager, boolean>();
+const printableBindingCache = new WeakMap<KeybindingsManager, { revision: number; hasPrintable: boolean }>();
+
+function isPrintableBindingId(key: string): boolean {
+	if (key.length === 1) return true;
+	if (key === "space" || key === "shift+space") return true;
+	// Modified printables (e.g. "shift+z") still arrive as one raw printable
+	// character on legacy terminals.
+	return /^shift\+.$/.test(key);
+}
 
 function hasPrintableSingleCharBinding(keybindings: KeybindingsManager): boolean {
 	const cached = printableBindingCache.get(keybindings);
-	if (cached !== undefined) return cached;
+	if (cached && cached.revision === keybindings.revision) return cached.hasPrintable;
 
+	let hasPrintable = false;
 	const resolved = keybindings.getResolvedBindings();
 	for (const keys of Object.values(resolved)) {
-		if (typeof keys === "string") {
-			if (keys.length === 1) {
-				printableBindingCache.set(keybindings, true);
-				return true;
-			}
-			continue;
-		}
-		if (keys?.some(key => key.length === 1)) {
-			printableBindingCache.set(keybindings, true);
-			return true;
+		const candidates = typeof keys === "string" ? [keys] : (keys ?? []);
+		if (candidates.some(isPrintableBindingId)) {
+			hasPrintable = true;
+			break;
 		}
 	}
-	printableBindingCache.set(keybindings, false);
-	return false;
+	printableBindingCache.set(keybindings, { revision: keybindings.revision, hasPrintable });
+	return hasPrintable;
 }
 
 interface TextChunk {
@@ -1281,6 +1284,7 @@ export class Editor implements Component, Focusable {
 							this.#autocompletePrefix,
 						);
 
+						this.#recordUndoState();
 						this.#setLines(result.lines);
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
@@ -1324,6 +1328,7 @@ export class Editor implements Component, Focusable {
 								this.#autocompletePrefix,
 							);
 
+							this.#recordUndoState();
 							this.#setLines(result.lines);
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
@@ -1349,6 +1354,7 @@ export class Editor implements Component, Focusable {
 								this.#autocompletePrefix,
 							);
 
+							this.#recordUndoState();
 							this.#setLines(result.lines);
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
@@ -1393,10 +1399,6 @@ export class Editor implements Component, Focusable {
 			this.#yankFromKillRing();
 		} else if (kb.matchesCanonical(canonical, "tui.editor.yankPop")) {
 			this.#yankPop();
-		} else if (matchesKey(data, "ctrl+a")) {
-			this.#moveToLineStart();
-		} else if (matchesKey(data, "ctrl+e")) {
-			this.#moveToLineEnd();
 		} else if (matchesKey(data, "alt+enter")) {
 			if (this.onAltEnter) {
 				this.onAltEnter(this.getText());
@@ -1444,6 +1446,7 @@ export class Editor implements Component, Focusable {
 							selected,
 							syncResult.prefix,
 						);
+						this.#recordUndoState();
 						this.#setLines(result.lines);
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
@@ -1800,6 +1803,8 @@ export class Editor implements Component, Focusable {
 	setText(text: string): void {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
+		this.#pasteHandler.clear();
+		this.#cancelAutocomplete();
 		this.#setTextInternal(text);
 	}
 	submit(): void {
@@ -2070,7 +2075,7 @@ export class Editor implements Component, Focusable {
 
 		const tabExpandedText = cleanText.replace(/\t/g, "   ");
 
-		return tabExpandedText.replace(/[\x00-\x09\x0B-\x1F]/g, "");
+		return tabExpandedText.replace(/[\x00-\x09\x0B-\x1F\x7F\x80-\x9F]/g, "");
 	}
 
 	#storePasteMarker(content: string, lineCount: number): void {
@@ -2134,6 +2139,8 @@ export class Editor implements Component, Focusable {
 	}
 
 	#submitValue(): void {
+		// A submit during a split bracketed paste ends the paste transaction.
+		this.#pasteHandler.clear();
 		this.#resetKillSequence();
 
 		const result = this.#expandPasteMarkers(this.getText()).trim();
@@ -2205,6 +2212,7 @@ export class Editor implements Component, Focusable {
 	#handleBackspace(): void {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
+		if (this.#state.cursorCol === 0 && this.#state.cursorLine === 0) return;
 		this.#recordUndoState();
 
 		let removedSlashTrigger = false;
@@ -2568,6 +2576,7 @@ export class Editor implements Component, Focusable {
 
 	#deleteToStartOfLine(): void {
 		this.#historyIndex = -1;
+		if (this.#state.cursorCol === 0 && this.#state.cursorLine === 0) return;
 		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -2597,6 +2606,10 @@ export class Editor implements Component, Focusable {
 
 	#deleteToEndOfLine(): void {
 		this.#historyIndex = -1;
+		const lineToEnd = this.#state.lines[this.#state.cursorLine] ?? "";
+		if (this.#state.cursorCol >= lineToEnd.length && this.#state.cursorLine >= this.#state.lines.length - 1) {
+			return;
+		}
 		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -2626,6 +2639,7 @@ export class Editor implements Component, Focusable {
 
 	#deleteWordBackwards(): void {
 		this.#historyIndex = -1;
+		if (this.#state.cursorCol === 0 && this.#state.cursorLine === 0) return;
 		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -2659,6 +2673,10 @@ export class Editor implements Component, Focusable {
 
 	#deleteWordForwards(): void {
 		this.#historyIndex = -1;
+		const lineForGuard = this.#state.lines[this.#state.cursorLine] ?? "";
+		if (this.#state.cursorCol >= lineForGuard.length && this.#state.cursorLine >= this.#state.lines.length - 1) {
+			return;
+		}
 		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -2691,6 +2709,13 @@ export class Editor implements Component, Focusable {
 	#handleForwardDelete(): void {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
+		const currentLineForGuard = this.#state.lines[this.#state.cursorLine] ?? "";
+		if (
+			this.#state.cursorCol >= currentLineForGuard.length &&
+			this.#state.cursorLine >= this.#state.lines.length - 1
+		) {
+			return;
+		}
 		this.#recordUndoState();
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";

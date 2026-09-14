@@ -273,17 +273,22 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 		onUpdate?: AgentToolUpdateCallback<OrchestrateToolDetails>,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
 		const registry = (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global();
-		const progressScreens = await screensOf(this.session, params.workers);
 
 		const emitProgress = (): void => {
-			onUpdate?.({
-				content: [{ type: "text", text: "" }],
-				details: {
-					op: "wait",
-					screens: progressScreens,
-					wait: { settled: [], stillRunning: [], timedOut: false, waiting: true },
-				},
-			});
+			// Re-snapshot per tick: worker state/tool/turn fields are live, and
+			// a pre-wait snapshot would freeze the TV panel for the whole wait.
+			void screensOf(this.session, params.workers)
+				.then(progressScreens => {
+					onUpdate?.({
+						content: [{ type: "text", text: "" }],
+						details: {
+							op: "wait",
+							screens: progressScreens,
+							wait: { settled: [], stillRunning: [], timedOut: false, waiting: true },
+						},
+					});
+				})
+				.catch(() => {});
 		};
 		const progressTimer = onUpdate ? setInterval(emitProgress, WAIT_PROGRESS_INTERVAL_MS) : undefined;
 		emitProgress();

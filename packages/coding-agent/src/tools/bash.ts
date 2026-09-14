@@ -53,7 +53,6 @@ import { webpExclusionForModel } from "../utils/image-loading";
 import { resizeImage } from "../utils/image-resize";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
-import { checkBashCommandAllowlist } from "./bash-allowlist";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
 import { type BashKernelCell, detectBashKernelCell, isBashKernelCellMixed } from "./bash-kernel-cell";
@@ -178,6 +177,7 @@ export interface BashToolDetails {
 	meta?: OutputMeta;
 	execution?: ExecutionMetadata;
 	statusEvents?: EvalStatusEvent[];
+	mutatedPaths?: string[];
 	jsonOutputs?: unknown[];
 	timeoutSeconds?: number;
 	requestedTimeoutSeconds?: number;
@@ -1023,6 +1023,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const outputText = outputLines.join("\n");
 
 		const details: BashToolDetails = { execution };
+		const fsObservations = "fsObservations" in result ? result.fsObservations : undefined;
+		const mutatedPaths = fsObservations
+			?.filter(observation => observation.kind === "write" && path.isAbsolute(observation.path))
+			.map(observation => observation.path);
+		if (mutatedPaths && mutatedPaths.length > 0) details.mutatedPaths = [...new Set(mutatedPaths)];
 		if (timeoutSec === undefined) {
 			details.timeoutDisabled = true;
 		} else {
@@ -1319,16 +1324,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 		if (asyncRequested && !this.#asyncEnabled) {
 			throw new ToolError("Async bash execution is disabled. Enable async.enabled to use async mode.");
-		}
-
-		const bashPolicy = this.session.bashCommandPolicy;
-		const bashAllowlist = this.session.bashCommandAllowlist;
-		if (bashPolicy) {
-			const verdict = bashPolicy(command);
-			if (!verdict.allowed) throw new ToolError(verdict.reason ?? "Command blocked by the bash policy.");
-		} else if (bashAllowlist) {
-			const verdict = checkBashCommandAllowlist(command, bashAllowlist);
-			if (!verdict.allowed) throw new ToolError(verdict.reason ?? "Command blocked by the bash allowlist.");
 		}
 
 		if (this.session.settings.get("bashInterceptor.enabled")) {
@@ -2016,19 +2011,26 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const details = result.details;
 			const execution = details?.execution;
 			const isPartial = options.isPartial === true;
-			const isError = execution
-				? execution.state === "exited" && execution.exitCode !== undefined && execution.exitCode !== 0
-				: result.isError === true;
+			// An explicit result error (e.g. xd transport failure) outranks a
+			// zero shell exit code.
+			const isError =
+				result.isError === true ||
+				(execution
+					? execution.state === "exited" && execution.exitCode !== undefined && execution.exitCode !== 0
+					: false);
 			const isUnknown = execution
 				? execution.state === "unknown" || (execution.state === "exited" && execution.exitCode === undefined)
 				: false;
 			const success =
-				!isPartial && (execution ? execution.state === "exited" && execution.exitCode === 0 : !isError);
+				!isPartial && !isError && (execution ? execution.state === "exited" && execution.exitCode === 0 : true);
+			// A backgrounded command reports a running execution: it has neither
+			// failed nor finished, so it gets the pending treatment, not the red one.
+			const isRunning = execution?.state === "running";
 			const isTimeout = details?.timedOut === true || execution?.timeout !== undefined;
 			const warningStatus = isTimeout || isUnknown;
 			const header =
 				config.showHeader === false
-					? success || isPartial
+					? success || isPartial || isRunning
 						? undefined
 						: renderStatusLine(
 								{
@@ -2045,7 +2047,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 										title: config.resolveTitle(args, options),
 									}
 								: {
-										icon: isPartial ? "pending" : warningStatus ? "warning" : "error",
+										icon: isPartial || isRunning ? "pending" : warningStatus ? "warning" : "error",
 										title: config.resolveTitle(args, options),
 									},
 							uiTheme,
@@ -2199,7 +2201,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const framed = outputBlock.render(
 						{
 							header,
-							state: isPartial ? "pending" : isError ? (isTimeout ? "warning" : "error") : "success",
+							state:
+								isPartial || isRunning ? "pending" : isError ? (isTimeout ? "warning" : "error") : "success",
 							sections: [
 								{
 									lines: capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),

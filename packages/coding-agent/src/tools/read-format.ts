@@ -2,8 +2,14 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import { isMarkdownPath } from "../modes/theme/theme";
 import type { ToolSession } from "../sdk";
-import { DEFAULT_MAX_BYTES, noTruncResult, type TruncationResult, truncateHead } from "../session/streaming-output";
-import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainText } from "../utils/block-context";
+import {
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+	noTruncResult,
+	type TruncationResult,
+	truncateHead,
+} from "../session/streaming-output";
+import { buildLineEntriesWithBlockContext, type LineEntry } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { type LineRange, shouldExpandRangeContext } from "./path-utils";
 import type { ReadToolDetails } from "./read";
@@ -27,14 +33,27 @@ export function formatTextWithMode(text: string, startNum: number, shouldAddLine
 }
 
 export const BRACKET_CONTEXT_ELLIPSIS = "…";
+export const BRACKET_CONTEXT_MARKER = "⋮";
 
 function formatLineEntryWithMode(entry: LineEntry, shouldAddLineNumbers: boolean): string {
 	if (entry.kind === "ellipsis") return BRACKET_CONTEXT_ELLIPSIS;
-	return formatSingleLine(entry.lineNumber, entry.text, shouldAddLineNumbers);
+	return formatSingleLine(entry.lineNumber, entry.text, shouldAddLineNumbers, entry.context);
 }
 
 export function formatLineEntriesWithMode(entries: readonly LineEntry[], shouldAddLineNumbers: boolean): string {
 	return entries.map(entry => formatLineEntryWithMode(entry, shouldAddLineNumbers)).join("\n");
+}
+
+export function lineEntriesToDisplayText(entries: readonly LineEntry[]): string {
+	return entries
+		.map(entry =>
+			entry.kind === "ellipsis"
+				? BRACKET_CONTEXT_ELLIPSIS
+				: entry.context
+					? `${BRACKET_CONTEXT_MARKER} ${entry.text}`
+					: entry.text,
+		)
+		.join("\n");
 }
 
 const BRACE_PAIRS: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
@@ -50,9 +69,10 @@ export function canMergeBracePair(headLine: string, tailLine: string): boolean {
 	return BRACE_TAIL_TRAILING_RE.test(tail.slice(closer.length));
 }
 
-export function formatSingleLine(line: number, text: string, shouldAddLineNumbers: boolean): string {
-	if (shouldAddLineNumbers) return `${line}|${text}`;
-	return text;
+export function formatSingleLine(line: number, text: string, shouldAddLineNumbers: boolean, isContext = false): string {
+	const marker = isContext ? `${BRACKET_CONTEXT_MARKER} ` : "";
+	if (shouldAddLineNumbers) return `${line}|${marker}${text}`;
+	return `${marker}${text}`;
 }
 
 export function formatMergedBraceLine(
@@ -76,7 +96,7 @@ export function countTextLines(text: string): number {
 	for (let i = 0; i < text.length; i++) {
 		if (text.charCodeAt(i) === 10) lines++;
 	}
-	return lines;
+	return text.charCodeAt(text.length - 1) === 10 ? lines - 1 : lines;
 }
 
 export interface ElidedRange {
@@ -84,7 +104,7 @@ export interface ElidedRange {
 	end: number;
 }
 
-const FOOTER_RANGE_SAMPLES = 2;
+const FOOTER_RANGE_SAMPLES = 3;
 
 export function formatSummaryElisionFooter(
 	readPath: string,
@@ -94,8 +114,11 @@ export function formatSummaryElisionFooter(
 	if (elidedRanges.length === 0) return "";
 	const sampleCount = Math.min(elidedRanges.length, FOOTER_RANGE_SAMPLES);
 	const selector = elidedRanges
+		.map((range, index) => ({ range, index, size: range.end - range.start + 1 }))
+		.sort((left, right) => right.size - left.size || left.index - right.index)
 		.slice(0, sampleCount)
-		.map(r => `${r.start}-${r.end}`)
+		.sort((left, right) => left.index - right.index)
+		.map(({ range }) => `${range.start}-${range.end}`)
 		.join(",");
 	const example = `${readPath}:${selector}`;
 	const tail = elidedRanges.length > sampleCount ? `, e.g. ${example}` : ` with ${example}`;
@@ -137,8 +160,10 @@ export function buildInMemoryTextResult(
 ): AgentToolResult<ReadToolDetails> {
 	const displayMode = resolveFileDisplayMode(session, { raw: options.raw });
 	const details = options.details ?? {};
-	const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
-	const totalLines = allLines.length;
+	const addressableLines = splitAddressableFileLines(text);
+	const preserveWholeRaw = options.raw === true && offset === undefined && limit === undefined;
+	const allLines = preserveWholeRaw ? text.split("\n") : addressableLines;
+	const totalLines = addressableLines.length;
 	details.totalLines = totalLines;
 
 	const requestedStart = offset ? Math.max(0, offset - 1) : 0;
@@ -170,14 +195,14 @@ export function buildInMemoryTextResult(
 		resultBuilder.sourceInternal(options.sourceInternal);
 	}
 
-	if (requestedStart >= allLines.length) {
+	if (requestedStart >= totalLines) {
 		const suggestion =
-			allLines.length === 0
+			totalLines === 0
 				? `The ${options.entityLabel} is empty.`
-				: `Use :1 to read from the start, or :${allLines.length} to read the last line.`;
+				: `Use :1 to read from the start, or :${totalLines} to read the last line.`;
 		return resultBuilder
 			.text(
-				`Line ${requestedStart + 1} is beyond end of ${options.entityLabel} (${allLines.length} lines total). ${suggestion}`,
+				`Line ${requestedStart + 1} is beyond end of ${options.entityLabel} (${totalLines} lines total). ${suggestion}`,
 			)
 			.done();
 	}
@@ -185,7 +210,19 @@ export function buildInMemoryTextResult(
 	const endLine = endLineExpanded;
 	const selectedContent = allLines.slice(startLine, endLine).join("\n");
 	const userLimitedLines = limit !== undefined ? endLine - startLine : undefined;
-	const truncation = ignoreResultLimits ? noTruncResult(selectedContent) : truncateHead(selectedContent);
+	// A raw whole-file read keeps its trailing newline out of the line budget:
+	// truncateHead drops a terminal empty element, so the previous +1
+	// allowance admitted one extra real line past the cap.
+	const rawTrailingNewline = rawDisplay && selectedContent.endsWith("\n");
+	const truncation = ignoreResultLimits
+		? noTruncResult(selectedContent)
+		: truncateHead(rawTrailingNewline ? selectedContent.slice(0, -1) : selectedContent, {
+				maxLines: DEFAULT_MAX_LINES,
+			});
+	// An untruncated whole raw read must round-trip byte-for-byte, including
+	// every trailing newline that was kept out of the line budget.
+	if (rawTrailingNewline && !truncation.truncated) truncation.content = selectedContent;
+	if (rawTrailingNewline) truncation.totalLines = countTextLines(selectedContent);
 
 	const shouldAddLineNumbers = displayMode.lineNumbers;
 	const formatText = (content: string, startNum: number): string => {
@@ -200,7 +237,7 @@ export function buildInMemoryTextResult(
 	const formatLineEntries = (entries: readonly LineEntry[], startNum: number): string => {
 		const firstLine = entries.find(entry => entry.kind === "line");
 		details.displayContent = {
-			text: lineEntriesToPlainText(entries, BRACKET_CONTEXT_ELLIPSIS),
+			text: lineEntriesToDisplayText(entries),
 			startLine: firstLine?.kind === "line" ? firstLine.lineNumber : startNum,
 			lineNumbers: entries.map(entry => (entry.kind === "line" ? entry.lineNumber : null)),
 		};
@@ -271,6 +308,17 @@ export function buildInMemoryTextResult(
 		}
 	}
 
+	if (
+		rawDisplay &&
+		limit === undefined &&
+		requestedEnd >= addressableLines.length &&
+		!truncation.truncated &&
+		text.endsWith("\n") &&
+		!outputText.endsWith("\n")
+	) {
+		outputText += "\n";
+	}
+
 	resultBuilder.text(outputText);
 	if (truncationInfo) {
 		resultBuilder.truncation(truncationInfo.result, truncationInfo.options);
@@ -294,7 +342,7 @@ export function buildInMemoryMultiRangeResult(
 ): AgentToolResult<ReadToolDetails> {
 	const displayMode = resolveFileDisplayMode(session, { raw: options.raw });
 	const details = options.details ?? {};
-	const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
+	const allLines = splitAddressableFileLines(text);
 	const totalLines = allLines.length;
 	details.totalLines = totalLines;
 	const shouldAddLineNumbers = displayMode.lineNumbers;
@@ -332,7 +380,7 @@ export function buildInMemoryMultiRangeResult(
 		const firstLine = entries.find(entry => entry.kind === "line");
 		if (firstLine?.kind === "line") {
 			details.displayContent = {
-				text: lineEntriesToPlainText(entries, BRACKET_CONTEXT_ELLIPSIS),
+				text: lineEntriesToDisplayText(entries),
 				startLine: firstLine.lineNumber,
 				lineNumbers: entries.map(entry => (entry.kind === "line" ? entry.lineNumber : null)),
 			};

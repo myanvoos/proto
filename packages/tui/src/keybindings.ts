@@ -244,6 +244,7 @@ export class KeybindingsManager {
 	#keysById = new Map<Keybinding, KeyId[]>();
 	#matchKeysById = new Map<Keybinding, Set<string>>();
 	#conflicts: KeybindingConflict[] = [];
+	#revision = 0;
 
 	constructor(definitions: KeybindingDefinitions, userBindings: KeybindingsConfig = {}) {
 		this.#definitions = definitions;
@@ -251,7 +252,13 @@ export class KeybindingsManager {
 		this.#rebuild();
 	}
 
+	/** Increments whenever resolved bindings change, for cache invalidation. */
+	get revision(): number {
+		return this.#revision;
+	}
+
 	#rebuild(): void {
+		this.#revision++;
 		this.#keysById.clear();
 		this.#matchKeysById.clear();
 		this.#conflicts = [];

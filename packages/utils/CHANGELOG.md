@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `sanitizeText` gains `stripControlChars` for protocol payloads and single-line render fields
+
 ## [18.1.6] - 2026-09-12
 
 ### Fixed

@@ -9,8 +9,13 @@ import { ScrollView } from "./scroll-view";
 function sanitizeSingleLine(text: string): string {
 	return replaceTabs(text)
 		.replace(/[\r\n]+/g, " ")
+		.replace(/[\x00-\x1f\x7f\x80-\x9f]/g, "")
 		.replace(/\s+/g, " ")
 		.trim();
+}
+
+function sanitizeFlowText(text: string): string {
+	return text.replace(/\r\n?/g, "\n").replace(/[\x00-\x09\x0b-\x1f\x7f\x80-\x9f]/g, "");
 }
 
 export interface SettingItem {
@@ -540,12 +545,12 @@ export class SettingsList implements Component {
 			if (selectedItem.warning) {
 				const warningStyle = this.#theme.warning ?? this.#theme.description;
 				const mark = this.#theme.warningMark ? `${this.#theme.warningMark} ` : "";
-				for (const line of wrapTextWithAnsi(`${mark}${selectedItem.warning}`, width - 4)) {
+				for (const line of wrapTextWithAnsi(`${mark}${sanitizeFlowText(selectedItem.warning)}`, width - 4)) {
 					descLines.push(warningStyle(`  ${line}`));
 				}
 			}
 			if (selectedItem.description) {
-				for (const line of wrapTextWithAnsi(selectedItem.description, width - 4)) {
+				for (const line of wrapTextWithAnsi(sanitizeFlowText(selectedItem.description), width - 4)) {
 					descLines.push(this.#theme.description(`  ${line}`));
 				}
 			}

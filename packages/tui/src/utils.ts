@@ -408,9 +408,64 @@ export function osc66MaxScale(line: string): number {
 
 const THAI_LAO_AM_GLOBAL_REGEX = /[\u0e33\u0eb3]/g;
 
+function normalizeThaiLaoAmText(text: string): string {
+	return text.replace(THAI_LAO_AM_GLOBAL_REGEX, char => (char === "\u0e33" ? "\u0e4d\u0e32" : "\u0ecd\u0eb2"));
+}
+
+function ansiSequenceEndAt(str: string, start: number): number {
+	const next = str.charCodeAt(start + 1);
+	if (next === 0x5b) {
+		let i = start + 2;
+		while (i < str.length) {
+			const final = str.charCodeAt(i);
+			if (final >= 0x40 && final <= 0x7e) return i + 1;
+			i++;
+		}
+		return -1;
+	}
+	if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
+		let i = start + 2;
+		while (i < str.length) {
+			const osc = str.charCodeAt(i);
+			if (osc === 0x07) return i + 1;
+			if (osc === 0x1b && str.charCodeAt(i + 1) === 0x5c) return i + 2;
+			i++;
+		}
+		return -1;
+	}
+	return start + 2 <= str.length ? start + 2 : -1;
+}
+
 export function normalizeTerminalOutput(str: string): string {
 	if (str.indexOf("\u0e33") === -1 && str.indexOf("\u0eb3") === -1) return str;
-	return str.replace(THAI_LAO_AM_GLOBAL_REGEX, char => (char === "\u0e33" ? "\u0e4d\u0e32" : "\u0ecd\u0eb2"));
+	if (!str.includes("\x1b")) {
+		return normalizeThaiLaoAmText(str);
+	}
+	// Thai/Lao Sara Am decomposition applies to visible text only; escape
+	// payloads (OSC 8 URIs, DCS data) must stay byte-for-byte intact.
+	let out = "";
+	let textStart = 0;
+	let i = 0;
+	while (i < str.length) {
+		if (str.charCodeAt(i) !== 0x1b) {
+			i++;
+			continue;
+		}
+		const end = ansiSequenceEndAt(str, i);
+		if (end < 0) {
+			// Unterminated escape: the malformed tail stays byte-for-byte
+			// opaque instead of being normalized as visible text.
+			if (textStart < i) out += normalizeThaiLaoAmText(str.slice(textStart, i));
+			out += str.slice(i);
+			return out;
+		}
+		if (textStart < i) out += normalizeThaiLaoAmText(str.slice(textStart, i));
+		out += str.slice(i, end);
+		i = end;
+		textStart = end;
+	}
+	if (textStart < str.length) out += normalizeThaiLaoAmText(str.slice(textStart));
+	return out;
 }
 
 const makeBoolArray = (chars: string): Uint8Array => {

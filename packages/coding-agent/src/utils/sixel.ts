@@ -30,6 +30,31 @@ export function getSixelLineMask(lines: string[]): boolean[] {
 	});
 }
 
+/**
+ * Split a trailing incomplete sixel sequence (a DCS introducer with no
+ * terminator yet) off `text` so streaming callers can hold it until the next
+ * chunk completes the envelope. Returns the renderable text before the
+ * introducer and the held tail (empty when nothing is pending).
+ */
+export function splitIncompleteSixelTail(text: string): { text: string; heldTail: string } {
+	const start = text.lastIndexOf("\x1bP");
+	if (start === -1) return { text, heldTail: "" };
+	const head = text.slice(start);
+	const introducer = /^\x1bP(?:[0-9;]*)q/.exec(head);
+	if (introducer) {
+		const afterIntroducer = head.slice(introducer[0].length);
+		if (afterIntroducer.includes(SIXEL_END_SEQUENCE) || afterIntroducer.includes(SIXEL_END_BELL)) {
+			return { text, heldTail: "" };
+		}
+		return { text: text.slice(0, start), heldTail: head };
+	}
+	if (/^\x1bP[0-9;]*$/.test(head)) {
+		// Introducer still accumulating its parameters across the chunk edge.
+		return { text: text.slice(0, start), heldTail: head };
+	}
+	return { text, heldTail: "" };
+}
+
 export function sanitizeWithOptionalSixelPassthrough(text: string, sanitize: (text: string) => string): string {
 	if (!isSixelPassthroughEnabled() || !containsSixelSequence(text)) {
 		return sanitize(text);

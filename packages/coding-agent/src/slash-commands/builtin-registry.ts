@@ -108,7 +108,11 @@ export async function executeBuiltinSlashCommand(
 	const command = BUILTIN_SLASH_COMMAND_LOOKUP.get(parsed.name);
 	if (!command) return false;
 	if (parsed.args.length > 0 && !command.allowArgs) {
-		return false;
+		// A known builtin invoked with unsupported arguments is a usage error,
+		// not an unknown command: consume it instead of leaking the literal
+		// text to the model as a prompt.
+		runtime.ctx.showStatus(`/${parsed.name} does not take arguments`);
+		return true;
 	}
 	if (command.handleTui) {
 		const result = await command.handleTui(parsed, runtime);

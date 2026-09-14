@@ -115,6 +115,14 @@ def _emit(frame: dict) -> None:
         _RAW_STDOUT.flush()
 
 
+def _emit_kernel_note(note: str) -> None:
+    """Send one model-visible note through the current cell's stderr stream."""
+    rid = _CURRENT_RID.get()
+    if rid is None:
+        return
+    _emit({"type": "stderr", "id": rid, "data": f"<kernel> note: {note}\n"})
+
+
 # ---------------------------------------------------------------------------
 # User stdout/stderr proxies
 # ---------------------------------------------------------------------------
@@ -1399,7 +1407,12 @@ def _mime_bundle(value: Any) -> dict:
         if isinstance(data, tuple):
             data = data[0]
         if isinstance(data, dict):
-            bundle.update({str(k): v for k, v in data.items()})
+            for key, mime_value in data.items():
+                key_str = str(key)
+                if key_str in ("image/png", "image/jpeg"):
+                    bundle[key_str] = _coerce_image_bytes(mime_value)
+                else:
+                    bundle[key_str] = mime_value
 
     for attr, mime in _REPR_MIMES:
         if mime in bundle:
@@ -1553,6 +1566,7 @@ def _load_prelude(source: str) -> None:
         "__name__": "__proto_prelude__",
         "__builtins__": builtins,
         "__proto_display": __proto_display,
+        "__proto_kernel_note": _emit_kernel_note,
         "__proto_current_run_id__": _current_run_id,
     }
     exec(compile(source, "<prelude>", "exec"), ns)

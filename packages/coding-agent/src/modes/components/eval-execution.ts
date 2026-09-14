@@ -94,7 +94,10 @@ export class EvalExecutionComponent extends Container {
 	}
 
 	appendOutput(chunk: string): void {
-		const newLines = chunk.split("\n").map(line => this.#clampDisplayLine(line));
+		// Streaming chunks render before completion; sanitize like #setOutput.
+		const newLines = sanitizeText(chunk)
+			.split("\n")
+			.map(line => this.#clampDisplayLine(line));
 		if (this.#outputLines.length > 0 && newLines.length > 0) {
 			this.#outputLines[this.#outputLines.length - 1] = this.#clampDisplayLine(
 				`${this.#outputLines[this.#outputLines.length - 1]}${newLines[0]}`,

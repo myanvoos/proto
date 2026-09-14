@@ -22,9 +22,11 @@ import {
 	synchronizedOutputUserOverride,
 	TERMINAL,
 } from "./terminal-capabilities";
+import { wrapTmuxPassthroughIfNeeded } from "./tmux";
 import {
 	Ellipsis,
 	extractSegments,
+	getWidthConfigEpoch,
 	isOsc66Line,
 	normalizeTerminalOutput,
 	osc66MaxScale,
@@ -646,6 +648,18 @@ type RenderIntent =
 	| { kind: "fullPaint"; clearScrollback: boolean }
 	| { kind: "update"; chunkTo: number; windowTop: number };
 
+interface ResizeCursorProbe {
+	/** Screen row the engine last parked the hardware cursor on before the host resized. */
+	before: number;
+	token: number;
+	deadline: number;
+	/** Screen row reported by the terminal after the resize. */
+	after?: number;
+	failed: boolean;
+	/** Resize-timer hops spent waiting for the report; bounds the wait when the clock stalls. */
+	polls: number;
+}
+
 interface HardwareCursorState {
 	row: number;
 	col: number;
@@ -876,7 +890,14 @@ export function coalesceAdjacentSgr(line: string): string {
 
 function rowsEquivalent(a: string, b: string): boolean {
 	if (a === b) return true;
-	return a.replace(SGR_SEQUENCE, "") === b.replace(SGR_SEQUENCE, "");
+	// Committed rows persist in scrollback byte-for-byte, so a style-only
+	// change (e.g. a re-themed row) is a real difference. Coalescing still
+	// tolerates benign SGR-grouping differences between renders.
+	return coalesceAdjacentSgr(a) === coalesceAdjacentSgr(b);
+}
+
+function visibleRowText(row: string): string {
+	return row.replace(SGR_SEQUENCE, "");
 }
 
 function isBlankRow(row: string): boolean {
@@ -909,6 +930,7 @@ export function findCommittedPrefixResync(
 			let samples = 0;
 			let mismatches = 0;
 			let mismatchIndex = -1;
+			let styleOnlyMismatch = false;
 			for (let j = 1; j <= verified && j <= RESYNC_TAIL_LOOKBACK && samples < RESYNC_TAIL_SAMPLES; j++) {
 				const idx = verified - j;
 				const row = frame[idx]!;
@@ -921,6 +943,10 @@ export function findCommittedPrefixResync(
 				samples++;
 				if (!rowsEquivalent(row, old)) {
 					mismatches++;
+					// A style-only difference is a real edit to scrollback, not
+					// an insertion/deletion; never let the one-edit tolerance
+					// swallow it.
+					if (visibleRowText(row) === visibleRowText(old)) styleOnlyMismatch = true;
 					if (mismatchIndex < 0) mismatchIndex = idx;
 				}
 			}
@@ -935,7 +961,7 @@ export function findCommittedPrefixResync(
 				frame[verified] !== undefined &&
 				isBlankRow(frame[mismatchIndex]!) !== isBlankRow(prefix[mismatchIndex]!) &&
 				rowsEquivalent(frame[verified]!, prefix[mismatchIndex]!);
-			if (samples === 0 || (mismatches <= 1 && !boundaryShift)) return -1;
+			if (samples === 0 || (mismatches <= 1 && !boundaryShift && !styleOnlyMismatch)) return -1;
 		}
 	}
 
@@ -1054,6 +1080,18 @@ export class TUI extends Container {
 
 	#muxPushedRows = 0;
 	#muxPushSeam = 0;
+	// In-place resizes cannot be modelled without knowing whether the host
+	// pushed rows into history (shrink) or pulled them back / padded with
+	// blanks (grow); terminal families disagree and the ledger cannot observe
+	// scrollback. A cursor-position report taken after the host resized
+	// measures that displacement directly: the cursor rides the same physical
+	// row as the content, so `before - after` is the number of rows the host
+	// moved between the screen and history.
+	#resizeCursorProbe: ResizeCursorProbe | undefined;
+	#resizeCursorProbeToken = 0;
+	static readonly #RESIZE_CURSOR_PROBE_TIMEOUT_MS = 150;
+	static readonly #RESIZE_CURSOR_PROBE_POLL_MS = 10;
+	static readonly #RESIZE_CURSOR_PROBE_MAX_POLLS = 20;
 
 	#resizeViewportActive = false;
 
@@ -1073,6 +1111,8 @@ export class TUI extends Container {
 	#altActive = false;
 	#altMouseTrackingActive = false;
 	#altPreviousLines: string[] = [];
+	#altPreviousMarker: { row: number; col: number } | undefined = undefined;
+	#altPhysicalCursorRow: number | undefined = undefined;
 	#altEnterWidth = 0;
 	#altEnterHeight = 0;
 
@@ -1120,6 +1160,7 @@ export class TUI extends Container {
 	#preparedCacheOverlay = false;
 	#preparedCacheAlt = false;
 	#preparedCacheImageProtocol: ImageProtocol | null | undefined;
+	#preparedCacheWidthEpoch = -1;
 	#preparedCacheValid = false;
 	#windowScratchA: string[] = [];
 	#windowScratchB: string[] = [];
@@ -1141,7 +1182,9 @@ export class TUI extends Container {
 	}
 
 	override captureNativeScrollbackWidthEpoch(): unknown {
-		const liveSource = this.#frameSegments.findIndex(segment => segment.liveLocalStart !== undefined);
+		const liveSource = this.#frameSegments.findIndex(
+			segment => segment.liveLocalStart !== undefined && segment.liveRegionFinal !== true,
+		);
 		const indices = Array.from({ length: this.#frameSegments.length }, (_value, index) => index)
 			.reverse()
 			.filter(index => index !== liveSource);
@@ -1569,6 +1612,11 @@ export class TUI extends Container {
 		return this.#fullRedrawCount;
 	}
 
+	/** Frame rows that have entered native scrollback and can no longer move. */
+	get committedRows(): number {
+		return this.#committedRows;
+	}
+
 	get resizeViewportPaints(): number {
 		return this.#resizeViewportPaintCount;
 	}
@@ -1776,10 +1824,13 @@ export class TUI extends Container {
 					return;
 				}
 				if (this.#previousWidth > 0 && this.terminal.columns !== this.#previousWidth) {
+					this.#resizeCursorProbe = undefined;
 					this.#multiplexerWidthEpochPending = true;
 					if (this.#multiplexerWidthEpochBoundary === undefined) {
 						this.#multiplexerWidthEpochBoundary = this.captureNativeScrollbackWidthEpoch();
 					}
+				} else {
+					this.#beginResizeCursorProbe();
 				}
 				this.#armMultiplexerResizeTimer({
 					clearScrollback: false,
@@ -1982,6 +2033,12 @@ export class TUI extends Container {
 		}
 		this.#resizeViewportActive = false;
 		this.#deferredForcedClearScrollback = false;
+
+		// Shut the component tree down with the TUI so timers owned by children
+		// (spinners, watchdogs) cannot outlive the terminal session.
+		for (const child of this.children) {
+			child.dispose?.();
+		}
 
 		if (this.#previousFrameLength > 0) {
 			const targetRow = this.#previousFrameLength;
@@ -2260,6 +2317,10 @@ export class TUI extends Container {
 			this.#renderTimer = undefined;
 		}
 		this.#renderRequested = false;
+		this.#scheduleMultiplexerResizeRender(TUI.#MULTIPLEXER_RESIZE_DEBOUNCE_MS);
+	}
+
+	#scheduleMultiplexerResizeRender(delayMs: number): void {
 		if (this.#multiplexerResizeTimer) {
 			this.#multiplexerResizeTimer.cancel();
 		}
@@ -2269,10 +2330,64 @@ export class TUI extends Container {
 				this.#deferredForcedClearScrollback = false;
 				return;
 			}
+			const probe = this.#resizeCursorProbe;
+			if (
+				probe !== undefined &&
+				probe.after === undefined &&
+				!probe.failed &&
+				probe.polls < TUI.#RESIZE_CURSOR_PROBE_MAX_POLLS &&
+				this.#renderScheduler.now() < probe.deadline
+			) {
+				probe.polls++;
+				this.#scheduleMultiplexerResizeRender(TUI.#RESIZE_CURSOR_PROBE_POLL_MS);
+				return;
+			}
 			const deferredClearScrollback = this.#deferredForcedClearScrollback;
 			this.#deferredForcedClearScrollback = false;
 			this.requestRender(true, { clearScrollback: deferredClearScrollback });
-		}, TUI.#MULTIPLEXER_RESIZE_DEBOUNCE_MS);
+		}, delayMs);
+	}
+
+	#beginResizeCursorProbe(): void {
+		const query = this.terminal.queryCursorPosition;
+		if (query === undefined || !this.#hasEverRendered || this.#previousHeight <= 0) return;
+		const token = ++this.#resizeCursorProbeToken;
+		// Several resize events may land before a frame is painted; the cursor
+		// has not moved since the first one, so keep that baseline.
+		const before =
+			this.#resizeCursorProbe?.before ??
+			Math.max(0, Math.min(this.#previousHeight - 1, this.#hardwareCursorRow - this.#windowTopRow));
+		const probe: ResizeCursorProbe = {
+			before,
+			token,
+			deadline: this.#renderScheduler.now() + TUI.#RESIZE_CURSOR_PROBE_TIMEOUT_MS,
+			failed: false,
+			polls: 0,
+		};
+		this.#resizeCursorProbe = probe;
+		void query.call(this.terminal).then(
+			position => {
+				if (this.#resizeCursorProbe !== probe || probe.token !== token) return;
+				if (position === undefined) probe.failed = true;
+				else probe.after = position.row;
+			},
+			() => {
+				if (this.#resizeCursorProbe === probe) probe.failed = true;
+			},
+		);
+	}
+
+	/**
+	 * Consume the pending resize probe. Returns how many screen rows the host
+	 * moved into history (positive) or back out of it (negative) across the
+	 * resize burst, or `undefined` when no measurement is available.
+	 */
+	#takeResizeCursorShift(resizeEventOccurred: boolean, widthChanged: boolean): number | undefined {
+		const probe = this.#resizeCursorProbe;
+		this.#resizeCursorProbe = undefined;
+		this.#resizeCursorProbeToken++;
+		if (!resizeEventOccurred || widthChanged || probe === undefined || probe.after === undefined) return undefined;
+		return probe.before - probe.after;
 	}
 
 	#maybeDeferGhosttyInitialImagePaint(): boolean {
@@ -2690,14 +2805,16 @@ export class TUI extends Container {
 			committedTo,
 		);
 		if (!placement) return line;
-		return encodeKittyPlacementLine({
-			imageId: parsed.imageId,
-			placementId: placement.placementId,
-			columns: parsed.columns,
-			rows: parsed.rows,
-			screenRow,
-			imageHeightPx: placement.heightPx,
-		});
+		return wrapTmuxPassthroughIfNeeded(
+			encodeKittyPlacementLine({
+				imageId: parsed.imageId,
+				placementId: placement.placementId,
+				columns: parsed.columns,
+				rows: parsed.rows,
+				screenRow,
+				imageHeightPx: placement.heightPx,
+			}),
+		);
 	}
 
 	#terminalLine(line: string, screenRow = -1, frameRow = -1, committedTo = -1): string {
@@ -2871,10 +2988,12 @@ export class TUI extends Container {
 		let rawFrame: readonly string[];
 		if (partialRoots !== null) {
 			this.#partialComposeRoots = partialRoots;
+			this.#imageBudget.beginPass();
 			try {
 				rawFrame = this.render(width);
 			} finally {
 				this.#partialComposeRoots = null;
+				this.#imageBudget.endPass();
 			}
 		} else {
 			this.#imageBudget.beginPass();
@@ -2926,6 +3045,7 @@ export class TUI extends Container {
 		this.#multiplexerResizeHasPendingRender = false;
 		if (resizeEventOccurred) this.#forgetHardwareCursorState();
 		const widthChanged = this.#previousWidth > 0 && this.#previousWidth !== width;
+		const hostRowShift = this.#takeResizeCursorShift(resizeEventOccurred, widthChanged);
 		const widthEpochOccurred = widthChanged || (resizeEventOccurred && this.#multiplexerWidthEpochPending);
 		const capturedWidthEpochBoundary = this.#multiplexerWidthEpochBoundary;
 		const widthEpochBoundary = this.#widthEpochOverlayBoundary ?? capturedWidthEpochBoundary;
@@ -3112,8 +3232,52 @@ export class TUI extends Container {
 			: frameLength;
 		const fullPaint = firstPaint || replaceRequested || geometryRebuild || liveBarrierRetractionPending;
 
+		let hostWindowTop: number | undefined;
 		if (fullPaint || widthChanged) {
 			this.#muxPushedRows = 0;
+		} else if (geometryChanged && hostRowShift !== undefined) {
+			// Measured host displacement: the screen now starts at
+			// prevWindowTop + shift. Rows the host scrolled into history commit
+			// when they still match the frame; rows it pulled back leave the
+			// ledger so they are not appended a second time.
+			this.#muxPushedRows = 0;
+			const hostTop = Math.max(0, prevWindowTop + hostRowShift);
+			let hostRowsAligned = true;
+			if (hostRowShift > 0) {
+				hostRowsAligned = this.#previousWindow.length >= hostRowShift;
+				for (let index = 0; hostRowsAligned && index < hostRowShift; index++) {
+					const currentRow = rawFrame[prevWindowTop + index];
+					const previousRow = this.#previousWindow[index];
+					if (currentRow === undefined || previousRow === undefined || !rowsEquivalent(currentRow, previousRow)) {
+						hostRowsAligned = false;
+					}
+				}
+				if (hostRowsAligned) {
+					const pushedEnd = Math.min(frameLength, hostTop);
+					for (let row = this.#committedRows; row < pushedEnd; row++) {
+						this.#committedPrefix.push(rawFrame[row]!);
+					}
+					this.#committedRows = Math.max(this.#committedRows, pushedEnd);
+				}
+			} else if (hostRowShift < 0) {
+				hostRowsAligned = this.#committedPrefix.length >= prevWindowTop;
+				for (let row = hostTop; hostRowsAligned && row < prevWindowTop; row++) {
+					const currentRow = rawFrame[row];
+					if (currentRow === undefined || !rowsEquivalent(currentRow, this.#committedPrefix[row]!)) {
+						hostRowsAligned = false;
+					}
+				}
+				if (this.#committedRows > hostTop) {
+					this.#committedRows = hostTop;
+					this.#committedPrefix.length = hostTop;
+					this.#committedPrefixAuditRows = Math.min(this.#committedPrefixAuditRows, hostTop);
+				}
+			}
+			this.#muxPushSeam = this.#committedRows;
+			// A frame that changed above the seam leaves history stale whatever
+			// the host did; re-anchor at the ledger seam so the current rows are
+			// appended rather than skipped.
+			hostWindowTop = hostRowsAligned ? hostTop : this.#committedRows;
 		} else if (
 			geometryChanged &&
 			this.#previousHeight > 0 &&
@@ -3190,6 +3354,17 @@ export class TUI extends Container {
 			chunkTo = Math.min(windowTop, replayAllCurrentRows ? replayCommitCeiling : commitCeiling);
 			this.#committedRows = chunkTo;
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
+		} else if (hostWindowTop !== undefined) {
+			// The host's screen top is known: never paint above it (those rows
+			// are already in history) and never leave rows between it and the
+			// frame tail unwritten (they would fall out of the tape).
+			windowTop = Math.max(hostWindowTop, frameLength - height, this.#committedRows, 0);
+			chunkTo = hasVisibleOverlay
+				? this.#committedRows
+				: Math.min(
+						windowTop,
+						Math.max(this.#committedRows, replayAllCurrentRows ? replayCommitCeiling : commitCeiling),
+					);
 		} else if (geometryChanged && Math.max(0, frameLength - height) < this.#committedRows) {
 			// The frame tail moved above the committed seam under a new geometry:
 			// the terminal reflowed the physical rows, so keep the seam at the
@@ -3266,7 +3441,7 @@ export class TUI extends Container {
 					clearScrollback: replaceRequested || (geometryRebuild && !isMultiplexerSession()),
 				}
 			: { kind: "update", chunkTo, windowTop };
-		this.#logRedraw(intent, frameLength, height);
+		this.#logRedraw(intent, frameLength, width, height);
 
 		let imageTransmitBuffer = "";
 		for (const seq of this.#imageBudget.takeTransmits()) imageTransmitBuffer += seq;
@@ -3352,6 +3527,11 @@ export class TUI extends Container {
 				scrollRows = Math.min(logicalSuffixRows, appendWindowMovement);
 				commitTo = commitFrom + scrollRows;
 			}
+			// Rows beyond the live commit seam stay viewport-local even during
+			// width-epoch replay; never commit past the ceiling.
+			commitTo = Math.min(commitTo, commitCeiling);
+			commitFrom = Math.min(commitFrom, commitTo);
+			scrollRows = commitTo - commitFrom;
 			if (hasVisibleOverlay) {
 				scrollRows = 0;
 				commitTo = commitFrom;
@@ -3374,6 +3554,13 @@ export class TUI extends Container {
 				if (liveRegionPinned) {
 					this.#widthEpochBaselineRows = this.#widthEpochReplayUnresolved ? commitTo : widthEpochAppendTo;
 					this.#windowTopRow = logicalAppend ? windowTop : prevWindowTop + scrollRows;
+				} else if (commitTo < windowTop) {
+					// The clamp withheld rows between the commit seam and the
+					// viewport top (live barrier overhead); keep the epoch replay
+					// pending so they commit when the ceiling advances.
+					this.#widthEpochBaselineRows = commitTo;
+					this.#widthEpochReplayUnresolved = true;
+					this.#windowTopRow = windowTop;
 				} else {
 					this.#widthEpochBaselineRows = frameLength;
 					this.#widthEpochReplayUnresolved = false;
@@ -3427,7 +3614,9 @@ export class TUI extends Container {
 			}
 			this.#clearScrollbackOnNextRender = false;
 			this.#hasEverRendered = true;
-			this.#publishCommittedRows(this.#windowTopRow);
+			// Withheld rows between the seam and the viewport top are not in
+			// scrollback yet; publish the actual committed watermark.
+			this.#publishCommittedRows(Math.min(this.#windowTopRow, this.#committedRows));
 			return;
 		}
 		if (imageTransmitBuffer.length > 0) {
@@ -3514,7 +3703,8 @@ export class TUI extends Container {
 			this.#preparedCacheHeight === height &&
 			this.#preparedCacheOverlay === overlayVisible &&
 			this.#preparedCacheAlt === this.#altActive &&
-			this.#preparedCacheImageProtocol === TERMINAL.imageProtocol;
+			this.#preparedCacheImageProtocol === TERMINAL.imageProtocol &&
+			this.#preparedCacheWidthEpoch === getWidthConfigEpoch();
 
 		if (prepared.length > frame.length) prepared.length = frame.length;
 		if (meta.length > frame.length) meta.length = frame.length;
@@ -3550,6 +3740,7 @@ export class TUI extends Container {
 		this.#preparedCacheOverlay = overlayVisible;
 		this.#preparedCacheAlt = this.#altActive;
 		this.#preparedCacheImageProtocol = TERMINAL.imageProtocol;
+		this.#preparedCacheWidthEpoch = getWidthConfigEpoch();
 		this.#preparedCacheValid = true;
 		return prepared;
 	}
@@ -3605,15 +3796,38 @@ export class TUI extends Container {
 
 		let output = "";
 		let cells = 0;
+		let hyperlinkOpen = false;
+		let retainedOsc66 = false;
 		for (let i = 0; i < raw.length && cells < safeWidth; ) {
 			if (raw.charCodeAt(i) === 0x1b) {
 				const end = this.#ansiSequenceEnd(raw, i);
 				if (end < 0) break;
-				if (this.#ansiSequenceHasVisiblePayload(raw, i)) {
+				if (this.#ansiSequenceIsZeroWidthStyling(raw, i, end)) {
 					const sequence = raw.slice(i, end);
-					if (output.length + sequence.length <= maxSourceLength) {
+					// Reserve source budget for the remaining visible cells so a
+					// flood of retained styling cannot crowd the text out.
+					const reservedForCells = (safeWidth - cells) * 2;
+					// One oversized OSC 66 text-sizing span with visible payload
+					// is kept when nothing visible was emitted yet: dropping it
+					// blanks the row even though downstream width truncation
+					// could show the visible prefix. A span that fits the normal
+					// budget must not consume the allowance.
+					const fitsBudget = output.length + sequence.length <= maxSourceLength - reservedForCells;
+					const keepOversizedOsc66 =
+						!fitsBudget &&
+						cells === 0 &&
+						!retainedOsc66 &&
+						raw.charCodeAt(i + 1) === 0x5d &&
+						raw.charCodeAt(i + 2) === 0x36 &&
+						raw.charCodeAt(i + 3) === 0x36 &&
+						visibleWidth(sequence) > 0;
+					if (keepOversizedOsc66 || fitsBudget) {
 						output += sequence;
+						if (keepOversizedOsc66) retainedOsc66 = true;
 						cells += visibleWidth(sequence);
+						if (this.#ansiSequenceIsOsc8(raw, i)) {
+							hyperlinkOpen = this.#ansiSequenceOpensHyperlink(raw, i, end);
+						}
 					}
 				}
 				i = end;
@@ -3658,6 +3872,7 @@ export class TUI extends Container {
 			i = next;
 		}
 
+		if (hyperlinkOpen) output += "\x1b]8;;\x07";
 		return output + SEGMENT_RESET;
 	}
 
@@ -3685,13 +3900,32 @@ export class TUI extends Container {
 		return start + 2 <= line.length ? start + 2 : -1;
 	}
 
-	#ansiSequenceHasVisiblePayload(line: string, start: number): boolean {
+	#ansiSequenceIsZeroWidthStyling(line: string, start: number, end: number): boolean {
+		const b1 = line.charCodeAt(start + 1);
+		if (b1 === 0x5b) return line.charCodeAt(end - 1) === 0x6d; // SGR: ESC[...m
+		if (b1 === 0x5d) {
+			const b2 = line.charCodeAt(start + 2);
+			const b3 = line.charCodeAt(start + 3);
+			// OSC 66 text sizing and OSC 8 hyperlinks carry no control function.
+			return (b2 === 0x36 && b3 === 0x36) || (b2 === 0x38 && b3 === 0x3b);
+		}
+		return false;
+	}
+
+	#ansiSequenceIsOsc8(line: string, start: number): boolean {
 		return (
 			line.charCodeAt(start + 1) === 0x5d &&
-			line.charCodeAt(start + 2) === 0x36 &&
-			line.charCodeAt(start + 3) === 0x36 &&
-			line.charCodeAt(start + 4) === 0x3b
+			line.charCodeAt(start + 2) === 0x38 &&
+			line.charCodeAt(start + 3) === 0x3b
 		);
+	}
+
+	#ansiSequenceOpensHyperlink(line: string, start: number, end: number): boolean {
+		const semi = line.indexOf(";", start + 4);
+		if (semi === -1 || semi >= end) return false;
+		const stTerminator = line.charCodeAt(end - 1) === 0x5c && line.charCodeAt(end - 2) === 0x1b;
+		const uriEnd = stTerminator ? end - 2 : end - 1;
+		return uriEnd - 1 > semi; // at least one URI character before the terminator
 	}
 
 	#ansiAsciiLineWidth(line: string, maxWidth: number): number | undefined {
@@ -4134,6 +4368,23 @@ export class TUI extends Container {
 
 		this.#imageBudget.beginPass(true);
 		const { framed, viewportTop, contentRows } = this.#composeResizeViewport(width, height);
+		// Deletes must precede any placement that could reuse an image id, and
+		// payloads must precede the placement rows emitted below, or the
+		// resized frame shows stale/blank graphics.
+		const resizePurgeIds = this.#imageBudget.takePurgeIds();
+		if (resizePurgeIds.length > 0 && TERMINAL.imageProtocol === ImageProtocol.Kitty) {
+			let resizePurgeBuffer = "";
+			for (const id of resizePurgeIds) resizePurgeBuffer += encodeKittyDeleteImage(id);
+			this.terminal.write(resizePurgeBuffer);
+		} else {
+			this.#imageBudget.takePurgeIds();
+		}
+		const resizeTransmits = this.#imageBudget.takeTransmits();
+		if (resizeTransmits.length > 0) {
+			let resizeTransmitBuffer = "";
+			for (const seq of resizeTransmits) resizeTransmitBuffer += seq;
+			this.terminal.write(resizeTransmitBuffer);
+		}
 		this.#emitResizeViewport(framed, viewportTop, height, contentRows, width);
 		this.#resizeViewportPaintCount += 1;
 	}
@@ -4234,16 +4485,33 @@ export class TUI extends Container {
 
 	#renderAltFrame(width: number, height: number): void {
 		this.#invalidatePreparedRowCache();
+		// Alt frames can compose Image components; observe them under a stable
+		// budget pass (as #renderResizeViewport does) instead of with stale
+		// full-frame pass state. Stable passes intentionally skip endPass.
+		this.#imageBudget.beginPass(true);
 		const base: string[] = new Array(Math.max(0, height)).fill("");
 		let lines = this.#compositeOverlaysIntoWindow(base, width, height);
-		this.#extractCursorMarkers(lines);
+		const cursorMarkers = this.#extractCursorMarkers(lines);
 		lines = this.#prepareLinesArray(lines, width);
-		this.#emitAltFrame(lines, width, height);
+		this.#emitAltFrame(lines, width, height, cursorMarkers[0]);
+		this.#altPreviousMarker = cursorMarkers[0];
 	}
 
-	#emitAltFrame(lines: string[], width: number, height: number): void {
+	#altMarkerEquals(a: { row: number; col: number } | undefined, b: { row: number; col: number } | undefined): boolean {
+		if (a === undefined || b === undefined) return a === b;
+		return a.row === b.row && a.col === b.col;
+	}
+
+	#emitAltFrame(lines: string[], width: number, height: number, cursorMarker?: { row: number; col: number }): void {
 		const fitted: string[] = new Array(height);
 		for (let r = 0; r < height; r++) fitted[r] = lines[r] ?? "";
+
+		const altPurgeIds = this.#imageBudget.takePurgeIds();
+		if (altPurgeIds.length > 0 && TERMINAL.imageProtocol === ImageProtocol.Kitty) {
+			let altPurgeBuffer = "";
+			for (const id of altPurgeIds) altPurgeBuffer += encodeKittyDeleteImage(id);
+			this.terminal.write(altPurgeBuffer);
+		}
 
 		const imageTransmits = this.#imageBudget.takeTransmits();
 		if (imageTransmits.length > 0) {
@@ -4262,12 +4530,34 @@ export class TUI extends Container {
 					break;
 				}
 			}
-			if (same) return;
+			if (same) {
+				// Identical rows can still move (or remove) the caret.
+				if (cursorMarker && !this.#altMarkerEquals(this.#altPreviousMarker, cursorMarker)) {
+					const fromRow = this.#altPhysicalCursorRow ?? height - 1;
+					this.terminal.write(this.#cursorControlSequence(cursorMarker, height, fromRow).seq);
+					this.#altPhysicalCursorRow = cursorMarker.row;
+					this.#altPreviousMarker = cursorMarker;
+				} else if (!cursorMarker && this.#altPreviousMarker !== undefined) {
+					this.terminal.hideCursor();
+					this.#altPreviousMarker = undefined;
+				}
+				return;
+			}
 		}
 		const output = this.#beginFrameOutput(`${this.#paintBeginSequence}\x1b[H`);
 		for (let r = 0; r < height; r++) {
 			if (r > 0) output.push("\r\n");
 			this.#appendLineRewrite(output, fitted[r], width, r, -1, -1, this.#osc66SpacerGlyphWidth(fitted, r));
+		}
+		if (cursorMarker) {
+			// After a full paint the physical cursor sits on the last row; move
+			// to the focused marker inside the synchronized paint transaction.
+			const cursorControl = this.#cursorControlSequence(cursorMarker, height, height - 1);
+			output.push(cursorControl.seq);
+			this.#altPhysicalCursorRow = cursorMarker.row;
+		} else if (this.#altPreviousMarker !== undefined) {
+			output.push("\x1b[?25l");
+			this.#altPhysicalCursorRow = height - 1;
 		}
 		output.push(this.#paintEndSequence);
 		this.#writeFrameOutput();
@@ -4393,10 +4683,22 @@ export class TUI extends Container {
 				this.#writeCursorPosition(cursorPos, cursorTrackingLineCount);
 				this.#previousWidth = width;
 				this.#previousHeight = height;
+				// Metadata-only transitions (live-region finalization, frame
+				// growth with identical pixels) must still advance the commit
+				// ledger or the next growth render misclassifies the seam.
+				const target = this.#targetHardwareCursorState(cursorPos, cursorTrackingLineCount);
+				this.#commit(frame, window, width, height, {
+					toRow: target?.row ?? this.#hardwareCursorRow,
+					state: target,
+					visible: target?.visible ?? false,
+				});
 				return;
 			}
 			const output = this.#beginFrameOutput(this.#paintBeginSequence, purgeSequence);
-			if (inPlaceRewrite) {
+			if (inPlaceRewrite || forceWindowRewrite) {
+				// A full-window rewrite starts at screen row 0. Reach it with an
+				// overshooting CUU: after a host resize the physical cursor row can
+				// differ from the row this engine last parked it on.
 				if (height > 1) output.push(`\x1b[${height - 1}A`);
 			} else {
 				const rowDelta = firstChanged - currentScreenRow;
@@ -4444,7 +4746,7 @@ export class TUI extends Container {
 
 		this.#fullRedrawCount += 1;
 		const output = this.#beginFrameOutput(this.#paintBeginSequence, purgeSequence);
-		if (currentScreenRow > 0) output.push(`\x1b[${currentScreenRow}A`);
+		if (height > 1) output.push(`\x1b[${height - 1}A`);
 		output.push("\r");
 		let wroteLine = false;
 		for (let i = chunkFrom; i < chunkTo; i++) {
@@ -4483,7 +4785,7 @@ export class TUI extends Container {
 		this.#commit(frame, window, width, height, cursorControl);
 	}
 
-	#logRedraw(intent: RenderIntent, newLength: number, height: number): void {
+	#logRedraw(intent: RenderIntent, newLength: number, width: number, height: number): void {
 		if (!$flag("PI_DEBUG_REDRAW")) return;
 		const detail =
 			intent.kind === "update"
@@ -4492,7 +4794,7 @@ export class TUI extends Container {
 		const state =
 			`committed=${this.#committedRows}, windowTop=${this.#windowTopRow}, ` +
 			`lrStart=${this.#nativeScrollbackLiveRegionStart}`;
-		const msg = `[${new Date().toISOString()}] render: ${detail} (prev=${this.#previousFrameLength}, new=${newLength}, height=${height}, ${state})\n`;
+		const msg = `[${new Date().toISOString()}] render: ${detail} (prev=${this.#previousFrameLength}, new=${newLength}, width=${width}, height=${height}, ${state})\n`;
 		fs.appendFileSync(getDebugLogPath(), msg);
 	}
 

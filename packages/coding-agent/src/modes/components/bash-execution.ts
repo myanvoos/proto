@@ -13,7 +13,12 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import type { ExecutionMetadata } from "../../session/execution-metadata";
 import type { TruncationMeta } from "../../tools/output-meta";
-import { getSixelLineMask, isSixelPassthroughEnabled, sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
+import {
+	getSixelLineMask,
+	isSixelPassthroughEnabled,
+	sanitizeWithOptionalSixelPassthrough,
+	splitIncompleteSixelTail,
+} from "../../utils/sixel";
 import {
 	buildExecutionFrame,
 	buildStatusFooter,
@@ -46,6 +51,7 @@ export class BashExecutionComponent extends Container {
 	#pendingChunk?: string;
 	#contentContainer: Container;
 	#headerText: Text;
+	#headerColorKey: "dim" | "bashMode";
 
 	constructor(
 		private readonly command: string,
@@ -55,6 +61,7 @@ export class BashExecutionComponent extends Container {
 		super();
 
 		const colorKey = excludeFromContext ? "dim" : "bashMode";
+		this.#headerColorKey = colorKey;
 		const { contentContainer, loader } = buildExecutionFrame(this, ui, colorKey);
 		this.#contentContainer = contentContainer;
 		this.#loader = loader;
@@ -97,6 +104,7 @@ export class BashExecutionComponent extends Container {
 		}
 		this.#chunkGate = false;
 		this.#pendingChunk = undefined;
+		this.#sixelHold = "";
 		this.#onTranscriptBlockChange?.();
 		this.#onTranscriptBlockChange = undefined;
 		super.dispose();
@@ -134,10 +142,41 @@ export class BashExecutionComponent extends Container {
 		const pending = this.#pendingChunk;
 		this.#pendingChunk = undefined;
 		if (pending !== undefined) this.#appendOutputChunk(pending);
+		if (this.#sixelHold !== "") {
+			// Completion ends the wait for the envelope tail; render what
+			// arrived (sanitized) instead of dropping it silently.
+			const held = this.#sixelHold;
+			this.#sixelHold = "";
+			const lines = sanitizeWithOptionalSixelPassthrough(held, sanitizeText)
+				.split("\n")
+				.filter(line => line !== "");
+			if (lines.length > 0) {
+				this.#outputLines.push(...this.#clampLinesPreservingSixel(lines));
+				if (this.#outputLines.length > STREAMING_LINE_CAP) {
+					this.#outputLines = this.#outputLines.slice(-STREAMING_LINE_CAP);
+				}
+				this.#displayDirty = true;
+				this.#onTranscriptBlockChange?.();
+			}
+		}
 	}
 
+	#sixelHold = "";
+
 	#appendOutputChunk(chunk: string): void {
-		const incomingLines = chunk.split("\n");
+		// Streaming chunks render before completion; apply the same sanitization
+		// policy as #setOutput so control bytes never reach the screen. A sixel
+		// sequence split across chunks is held back so the passthrough
+		// sanitizer always sees a complete envelope.
+		let data = this.#sixelHold + chunk;
+		this.#sixelHold = "";
+		if (isSixelPassthroughEnabled()) {
+			const split = splitIncompleteSixelTail(data);
+			data = split.text;
+			this.#sixelHold = split.heldTail;
+		}
+		if (data === "") return;
+		const incomingLines = sanitizeWithOptionalSixelPassthrough(data, sanitizeText).split("\n");
 		if (this.#outputLines.length > 0 && incomingLines.length > 0) {
 			const lastIndex = this.#outputLines.length - 1;
 			const mergedLines = [`${this.#outputLines[lastIndex]}${incomingLines[0]}`, ...incomingLines.slice(1)];
@@ -185,6 +224,8 @@ export class BashExecutionComponent extends Container {
 	}
 
 	#updateDisplay(): void {
+		// Recolor under the current theme; the cached Text would otherwise keep stale ANSI.
+		this.#headerText.setText(theme.fg(this.#headerColorKey, theme.bold(`$ ${this.command}`)));
 		const availableLines = this.#outputLines;
 
 		const previewLogicalLines = availableLines.slice(-PREVIEW_LINES);

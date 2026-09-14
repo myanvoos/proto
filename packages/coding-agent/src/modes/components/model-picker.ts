@@ -1,5 +1,5 @@
 import type { Model } from "@oh-my-pi/pi-ai";
-import type { Component, TUI } from "@oh-my-pi/pi-tui";
+import { type Component, type MouseRoutable, routeSgrMouseInput, type SgrMouseEvent, type TUI } from "@oh-my-pi/pi-tui";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
 import type { ResolvedRoleModel } from "../../session/agent-session";
@@ -180,9 +180,20 @@ export class ModelPickerComponent implements Component {
 		}
 	}
 
+	#bodyRowStart = 2;
+
 	handleInput(data: string): void {
-		if (data.startsWith("\x1b[<")) return;
+		if (routeSgrMouseInput(data, event => this.#routeMouseEvent(event))) return;
 		this.#browser.handleInput(data);
+	}
+
+	#routeMouseEvent(event: SgrMouseEvent): boolean {
+		const browser = this.#browser as Component & Partial<MouseRoutable>;
+		if (typeof browser.routeMouse === "function") {
+			browser.routeMouse(event, event.row - this.#bodyRowStart, event.col);
+			return true;
+		}
+		return false;
 	}
 
 	render(width: number): string[] {
@@ -198,6 +209,7 @@ export class ModelPickerComponent implements Component {
 		const out: string[] = [];
 		out.push(topBorder(width, "Switch Model"));
 		out.push(row(status, width));
+		this.#bodyRowStart = out.length;
 		for (const line of this.#browser.render(inner)) {
 			out.push(row(line, width));
 		}

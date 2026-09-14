@@ -1,11 +1,12 @@
 import type { Component } from "../tui";
-import { padding, truncateToWidth } from "../utils";
+import { getWidthConfigEpoch, padding, truncateToWidth } from "../utils";
 
 export class TruncatedText implements Component {
 	#text: string;
 	#paddingX: number;
 	#paddingY: number;
 	#cachedWidth = -1;
+	#cachedWidthEpoch = -1;
 	#cachedLines: string[] | undefined;
 
 	constructor(text: string, paddingX: number = 0, paddingY: number = 0) {
@@ -20,7 +21,7 @@ export class TruncatedText implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		if (this.#cachedLines && this.#cachedWidth === width) {
+		if (this.#cachedLines && this.#cachedWidth === width && this.#cachedWidthEpoch === getWidthConfigEpoch()) {
 			return this.#cachedLines;
 		}
 		const result: string[] = [];
@@ -52,6 +53,7 @@ export class TruncatedText implements Component {
 		}
 
 		this.#cachedWidth = width;
+		this.#cachedWidthEpoch = getWidthConfigEpoch();
 		this.#cachedLines = result;
 		return result;
 	}

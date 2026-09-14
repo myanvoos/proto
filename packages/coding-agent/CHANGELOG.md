@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Inspect Media, Ask, status line, and Advisor renderers sanitize remote/model/peer-controlled fields against terminal control injection
+- Interactive `$` Python no longer duplicates PNG+JPEG MIME alternatives
+- Agents View reply falls back to session resume for aborted refs and PageUp/PageDown moves to the nearest selectable row; session selector keeps the highlighted session pinned during background fuzzy scans
+- bash tool renders transport errors as errors even with exit code 0 and shows backgrounded commands as pending instead of failed; GitHub collapsed previews and run-watch states match reality
+- Raw file reads respect the 3000-line cap and round-trip trailing newlines; deferred `!`/`$` command cards flush on agent end and clear on session switch
+- `orchestrate_wait` refreshes worker screens on every progress tick
+- Known slash commands invoked with unsupported arguments show a usage message instead of leaking the text to the model
+- Editor/Input whole-value replacement clears pending paste state; accepted completions get an undo boundary; no-op edits stop polluting undo history; user keybindings override the hardwired Ctrl+A/E cursor chords
+- Move overlay sorts matches, shows only navigable entries, and edits emoji paths by grapheme
+- The blank rows that anchor the first reply to the bottom of a fresh screen stay fixed once transcript rows have entered native scrollback, so a later resize can no longer shift committed history and re-append it
+
 ## [18.1.8] - 2026-09-14
 
 ### Added

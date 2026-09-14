@@ -109,12 +109,15 @@ export class Text implements Component {
 		const normalizedText = replaceTabs(this.#styleFn ? this.#styleFn(this.#text) : this.#text);
 
 		const paddingX = this.#ignoreTight ? this.#paddingX : getPaddingX(this.#paddingX);
-		const contentWidth = Math.max(1, width - paddingX * 2);
+		// Narrow widths cannot fit the full horizontal padding; degrade the
+		// margins so no row ever exceeds the requested width.
+		const marginX = Math.min(paddingX, Math.floor(Math.max(0, width - 1) / 2));
+		const contentWidth = Math.max(1, width - marginX * 2);
 
 		const wrappedLines = wrapTextWithAnsi(normalizedText, contentWidth);
 
-		const leftMargin = padding(paddingX);
-		const rightMargin = padding(paddingX);
+		const leftMargin = padding(marginX);
+		const rightMargin = padding(marginX);
 		const contentLines: string[] = [];
 
 		const resultWidths: number[] | undefined = this.#customBgFn ? undefined : [];

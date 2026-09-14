@@ -54,6 +54,7 @@ export class Input implements Component, Focusable {
 	setValue(value: string): void {
 		this.#undoStack.length = 0;
 		this.#lastAction = null;
+		this.#pasteHandler.clear();
 		this.#value = value;
 		this.#isSimpleValue = SIMPLE_VALUE_PATTERN.test(value);
 
@@ -369,13 +370,15 @@ export class Input implements Component, Focusable {
 
 	#handlePaste(pastedText: string): void {
 		this.#lastAction = null;
-		this.#pushUndo();
 
 		const cleanText = replaceTabs(
 			decodeReencodedPasteControls(pastedText).replace(/\r\n/g, "").replace(/\r/g, "").replace(/\n/g, ""),
 		)
 			.normalize("NFC")
-			.replace(/[\x00-\x1F\x7F]/g, "");
+			.replace(/[\x00-\x1F\x7F\x80-\x9F]/g, "");
+
+		if (cleanText.length === 0) return;
+		this.#pushUndo();
 
 		this.#value = this.#value.slice(0, this.#cursor) + cleanText + this.#value.slice(this.#cursor);
 		this.#isSimpleValue &&= SIMPLE_VALUE_PATTERN.test(cleanText);

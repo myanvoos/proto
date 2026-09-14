@@ -133,7 +133,11 @@ function hasReferenceDefinitionAtAppendBoundary(source: string, suffix: string):
 function normalizeHtmlEntitiesForTerminal(raw: string): string {
 	if (!raw.includes("&")) return raw;
 	const parseCodePoint = (value: number): string => {
-		if (Number.isFinite(value) && value >= 0 && value <= 0x10ffff) {
+		// Entity decoding runs after sanitizeText, so refuse code points that
+		// would resurrect control bytes (tab/newline stay allowed).
+		const isControl =
+			value === 0x7f || (value < 0x20 && value !== 0x09 && value !== 0x0a) || (value >= 0x80 && value <= 0x9f);
+		if (Number.isFinite(value) && value >= 0 && value <= 0x10ffff && !isControl) {
 			try {
 				return String.fromCodePoint(value);
 			} catch (_) {}
@@ -1191,6 +1195,8 @@ interface RenderSignature {
 	bgColorProbe: string;
 	headingProbe: string;
 	themeRevision: string;
+	widthEpoch: number;
+	styleProbes: string;
 }
 
 interface StreamPrefixLineCache extends RenderSignature {
@@ -1780,7 +1786,15 @@ export class Markdown
 		const bgColorProbe = this.#defaultTextStyle?.bgColor ? this.#defaultTextStyle.bgColor("\x01") : "";
 		const headingProbe = this.#theme.heading("");
 		const themeRevision = this.#themeRevision();
+		// Probe the callbacks that color frozen streaming rows; closures over a
+		// mutable global theme keep stable identities, so only probe output can
+		// detect a theme switch (e.g. dark/light poimandres share headings).
+		const styleProbes = [this.#theme.code(""), this.#theme.codeBlockBorder(""), this.#theme.quoteBorder("")].join(
+			"\x00",
+		);
 		return {
+			widthEpoch: getWidthConfigEpoch(),
+			styleProbes,
 			width,
 			paddingX,
 			paddingY: this.#paddingY,
@@ -1854,7 +1868,8 @@ export class Markdown
 			signature.bgColorProbe,
 			signature.headingProbe,
 			signature.themeRevision,
-			getWidthConfigEpoch(),
+			signature.styleProbes,
+			signature.widthEpoch,
 		]
 			.map(value => {
 				const text = String(value);
@@ -2380,6 +2395,8 @@ export class Markdown
 		if (cache.bgColorProbe !== signature.bgColorProbe) return undefined;
 		if (cache.headingProbe !== signature.headingProbe) return undefined;
 		if (cache.themeRevision !== signature.themeRevision) return undefined;
+		if (cache.widthEpoch !== signature.widthEpoch) return undefined;
+		if (cache.styleProbes !== signature.styleProbes) return undefined;
 		return cache;
 	}
 
@@ -2731,7 +2748,9 @@ export class Markdown
 			cache.textSizing === signature.textSizing &&
 			cache.bgColorProbe === signature.bgColorProbe &&
 			cache.headingProbe === signature.headingProbe &&
-			cache.themeRevision === signature.themeRevision
+			cache.themeRevision === signature.themeRevision &&
+			cache.styleProbes === signature.styleProbes &&
+			cache.widthEpoch === signature.widthEpoch
 		) {
 			if (completedText.length === cache.text.length) return cache.lines;
 

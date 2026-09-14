@@ -1697,15 +1697,22 @@ export class InputController {
 		for (const [keyId, shortcut] of shortcuts) {
 			this.ctx.editor.setCustomKeyHandler(keyId, () => {
 				const ctx = runner.createCommandContext();
-				try {
-					shortcut.handler(ctx);
-				} catch (err) {
+				const emitShortcutError = (err: unknown): void => {
 					runner.emitError({
 						extensionPath: shortcut.extensionPath,
 						event: "shortcut",
 						error: err instanceof Error ? err.message : String(err),
 						stack: err instanceof Error ? err.stack : undefined,
 					});
+				};
+				try {
+					// The public shortcut contract allows async handlers: an
+					// unhandled rejection must hit the extension error boundary,
+					// not terminate the process. Promise.resolve assimilates
+					// thenables from any realm.
+					Promise.resolve(shortcut.handler(ctx)).catch(emitShortcutError);
+				} catch (err) {
+					emitShortcutError(err);
 				}
 			});
 		}

@@ -66,7 +66,9 @@ export class Loader extends Text {
 	override render(width: number): readonly string[] {
 		const source = super.render(width);
 		if (source !== this.#layoutSource) {
-			const paddingX = getPaddingX(1);
+			// Match Text's width-dependent margin degradation so the split never
+			// consumes a visible cell on narrow terminals.
+			const paddingX = Math.min(getPaddingX(1), Math.floor(Math.max(0, width - 1) / 2));
 			this.#layoutSource = source;
 			this.#layout = source.map(line => {
 				const clamped = visibleWidth(line) > width ? sliceByColumn(line, 0, width, true) : line;
@@ -152,6 +154,8 @@ export class Loader extends Text {
 			const backpressureDelayMs = frameCostMs * RENDER_BACKPRESSURE_MULTIPLIER;
 			this.#scheduleTick(intervalMs, Math.max(cadenceDelayMs, backpressureDelayMs));
 		}, delayMs);
+		// A spinner tick must never keep the process alive on its own.
+		timer.unref?.();
 		this.#intervalId = timer;
 	}
 

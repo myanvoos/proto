@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Terminal title, notification, and image-fallback payloads are stripped of control bytes, closing OSC/CSI injection from extension, tool, and MCP content
+- Stdin decoding keeps split UTF-8 characters intact across reads, normalizes 8-bit C1 replies, recognizes SOS/PM strings, and discards oversized control strings instead of leaking their payload as input or paste
+- Bracketed-paste memory is capped byte-accurately (UTF-8 aware, over-limit state consumes the terminator) instead of bypassing the limit or freezing input
+- Raw multiline paste classification debounce re-arms on appended chunks while keeping the two-break Enter protection
+- `maxInlineImages` is enforced in alt-screen and resize-viewport stable passes
+- Very narrow terminals no longer overflow rows in Text, Box, Loader, and overlay chrome
+- Fullscreen alt frames track the hardware cursor across unchanged repaints, moves, and marker removal
+- Width-epoch replay clamps commits to the live-region seam and republishes the real committed watermark
+- Style-only changes to committed scrollback rows now resync instead of leaving stale colors
+- Markdown streaming/transcript caches key on width-profile epoch and theme probes, preventing mixed-theme and stale-wrap output
+- Web Search-style sanitization applied to rendered titles, dates, models, paths, and notes across core widgets
+- LaTeX `\ref` renders without parentheses and `\url{...}` preserves literal tildes
+- Desktop notifications honor `expiresMs` and skip the fallback toast for VS Code
+- Fuzzy ranking rescans past a non-boundary first occurrence; `@` directory completion no longer terminates the token
+
+### Fixed
+
+- In-place resizes (Herdr, tmux-style hosts) no longer duplicate or drop scrollback rows when the terminal height changes: the renderer now measures how many rows the host moved between the screen and history with a cursor-position report instead of assuming every host pulls history back on growth, so height flapping (mobile keyboards, pane splits, resizes mid-stream) keeps native history exact.
+- Full-window repaints after a resize home the cursor with an overshooting cursor-up, so a host that left the cursor on a different row cannot make the repaint start mid-screen.
+
 ## [18.1.6] - 2026-09-12
 
 ### Changed

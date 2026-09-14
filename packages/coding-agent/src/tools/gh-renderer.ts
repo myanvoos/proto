@@ -364,7 +364,7 @@ function renderFallbackComponent(
 	return framedBlock(theme, width => {
 		const lineWidth = outputBlockContentWidth(width || FALLBACK_WIDTH);
 		const expanded = options.expanded;
-		const limit = expanded ? allLines.length : Math.min(allLines.length, PREVIEW_LIMITS.OUTPUT_EXPANDED);
+		const limit = expanded ? allLines.length : Math.min(allLines.length, PREVIEW_LIMITS.OUTPUT_COLLAPSED);
 		const visible = allLines.slice(0, limit);
 		const remaining = allLines.length - visible.length;
 
@@ -441,6 +441,9 @@ export const githubToolRenderer = {
 		const watch = result.details?.watch;
 		if (watch) {
 			const isError = result.isError === true;
+			// Partial watching updates are still polling: only a completed watch
+			// may render the finished-success state.
+			const watching = !isError && (options.isPartial === true || watch.state === "watching");
 			const header = renderStatusLine(
 				isError
 					? {
@@ -449,12 +452,18 @@ export const githubToolRenderer = {
 							titleColor: "error",
 							meta: [getWatchHeader(watch)],
 						}
-					: {
-							iconOverride: uiTheme.styledSymbol("tool.gh", "accent"),
-							title: "GitHub Run Watch",
-							titleColor: "accent",
-							meta: [getWatchHeader(watch)],
-						},
+					: watching
+						? {
+								icon: "pending",
+								title: "GitHub Run Watch",
+								meta: [getWatchHeader(watch)],
+							}
+						: {
+								iconOverride: uiTheme.styledSymbol("tool.gh", "accent"),
+								title: "GitHub Run Watch",
+								titleColor: "accent",
+								meta: [getWatchHeader(watch)],
+							},
 				uiTheme,
 			);
 			return framedBlock(uiTheme, width => {
@@ -463,7 +472,7 @@ export const githubToolRenderer = {
 				return {
 					header,
 					sections,
-					state: isError ? "error" : "success",
+					state: isError ? "error" : watching ? "pending" : "success",
 					borderColor: isError ? "error" : "borderMuted",
 					width,
 				};

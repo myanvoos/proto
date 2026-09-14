@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { TtyWriter } from "@oh-my-pi/pi-natives";
+import { stripControlChars } from "@oh-my-pi/pi-utils";
 import { $env, isBunTestRuntime, isTerminalHeadless } from "@oh-my-pi/pi-utils/env";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
@@ -11,6 +12,7 @@ import {
 	NotifyProtocol,
 	setCellDimensions,
 	setOsc99Supported,
+	setOutboundWriter,
 	TERMINAL,
 } from "./terminal-capabilities";
 import { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
@@ -86,6 +88,10 @@ let stdoutErrorListenerInstalled = false;
 
 function onStdoutError(err: Error): void {
 	for (const handler of stdoutErrorHandlers) handler(err);
+}
+
+function writeOutboundViaActiveTerminal(data: string): void {
+	if (!writeThroughActiveTerminal(data)) process.stdout.write(data);
 }
 
 function registerStdoutErrorHandler(handler: (err: Error) => void): () => void {
@@ -197,13 +203,27 @@ export interface Terminal {
 	get appearance(): TerminalAppearance | undefined;
 
 	onPrivateModeReport?(callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void;
+
+	/**
+	 * Ask the terminal where its cursor is (CPR, `CSI 6 n`). Resolves with the
+	 * zero-based screen position, or `undefined` when the terminal answers the
+	 * DA1 sentinel first (no CPR support) or the terminal goes away.
+	 */
+	queryCursorPosition?(): Promise<TerminalCursorPosition | undefined>;
+}
+
+export interface TerminalCursorPosition {
+	row: number;
+	col: number;
 }
 
 type Da1SentinelOwner =
 	| { kind: "keyboard" }
 	| { kind: "osc11" }
 	| { kind: "privateMode"; mode: number }
-	| { kind: "osc99Probe"; id: string };
+	| { kind: "osc99Probe"; id: string }
+	| { kind: "cursorPosition"; resolve: (position: TerminalCursorPosition | undefined) => void }
+	| { kind: "cursorPositionSettled" };
 
 let nextOsc99ProbeId = 1;
 
@@ -294,6 +314,7 @@ export class ProcessTerminal implements Terminal {
 	#osc99ResponseBuffer = "";
 	#osc99Capabilities = new Map<string, string>();
 	#privateCsiResponseBuffer = "";
+	#cursorPositionResponseBuffer = "";
 	#da1SentinelOwners: Da1SentinelOwner[] = [];
 
 	#privateModeSupport = new Map<number, boolean>();
@@ -386,6 +407,7 @@ export class ProcessTerminal implements Terminal {
 
 		activeTerminal = this;
 		terminalEverStarted = true;
+		setOutboundWriter(writeOutboundViaActiveTerminal);
 
 		if (process.stdout.isTTY && !isBunTestRuntime() && !this.#outputPump) {
 			try {
@@ -467,8 +489,9 @@ export class ProcessTerminal implements Terminal {
 
 		const appearanceDsrPattern = /^\x1b\[\?997;([12])n$/;
 
+		// The trailing alpha channel is optional: WezTerm/rxvt reply rgba:R/G/B/A.
 		const osc11ResponsePattern =
-			/^\x1b\]11;rgba?:([0-9a-fA-F]{1,4})\/([0-9a-fA-F]{1,4})\/([0-9a-fA-F]{1,4})(?:\x07|\x1b\\)$/;
+			/^\x1b\]11;rgba?:([0-9a-fA-F]{1,4})\/([0-9a-fA-F]{1,4})\/([0-9a-fA-F]{1,4})(?:\/[0-9a-fA-F]{1,4})?(?:\x07|\x1b\\)$/;
 
 		const da1ResponsePattern = /^\x1b\[\?[\d;]*c$/;
 
@@ -478,11 +501,15 @@ export class ProcessTerminal implements Terminal {
 
 		const inBandResizePattern = /^\x1b\[48;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?t$/;
 
+		const cursorPositionPattern = /^\x1b\[(\d+);(\d+)R$/;
+		const cursorPositionPartialPattern = /^\x1b\[[\d;]*$/;
+
 		this.#stdinBuffer.on("data", (sequence: string) => {
 			if (
 				(sequence.length === 0 || sequence.charCodeAt(0) !== 0x1b) &&
 				this.#privateCsiResponseBuffer.length === 0 &&
 				this.#inBandResizeBuffer.length === 0 &&
+				this.#cursorPositionResponseBuffer.length === 0 &&
 				this.#osc11ResponseBuffer.length === 0 &&
 				this.#osc99ResponseBuffer.length === 0
 			) {
@@ -545,6 +572,40 @@ export class ProcessTerminal implements Terminal {
 				return;
 			}
 
+			if (this.#hasPendingCursorPositionQuery()) {
+				const isPartial = cursorPositionPartialPattern.test(sequence);
+				if (this.#cursorPositionResponseBuffer && sequence.startsWith("\x1b")) {
+					this.#cursorPositionResponseBuffer = isPartial ? sequence : "";
+					if (isPartial) return;
+				} else if (this.#cursorPositionResponseBuffer || isPartial) {
+					this.#cursorPositionResponseBuffer += sequence;
+					if (this.#cursorPositionResponseBuffer.length > 64) {
+						this.#cursorPositionResponseBuffer = "";
+						return;
+					}
+					const lastCode = this.#cursorPositionResponseBuffer.charCodeAt(
+						this.#cursorPositionResponseBuffer.length - 1,
+					);
+					if (lastCode >= 0x40 && lastCode <= 0x7e) {
+						sequence = this.#cursorPositionResponseBuffer;
+						this.#cursorPositionResponseBuffer = "";
+					} else if (!cursorPositionPartialPattern.test(this.#cursorPositionResponseBuffer)) {
+						this.#cursorPositionResponseBuffer = "";
+						return;
+					} else {
+						return;
+					}
+				}
+				const cursorMatch = sequence.match(cursorPositionPattern);
+				if (cursorMatch) {
+					this.#resolveCursorPositionQuery({
+						row: Math.max(0, parseInt(cursorMatch[1]!, 10) - 1),
+						col: Math.max(0, parseInt(cursorMatch[2]!, 10) - 1),
+					});
+					return;
+				}
+			}
+
 			const decrpmMatch = sequence.match(decrpmResponsePattern);
 			if (decrpmMatch) {
 				this.#handlePrivateModeReport(parseInt(decrpmMatch[1]!, 10), decrpmMatch[2]!);
@@ -592,6 +653,12 @@ export class ProcessTerminal implements Terminal {
 						this.#resolveOsc99Support(owner.id, false);
 						break;
 					}
+					case "cursorPosition": {
+						owner.resolve(undefined);
+						break;
+					}
+					case "cursorPositionSettled":
+						break;
 				}
 				return;
 			}
@@ -627,7 +694,22 @@ export class ProcessTerminal implements Terminal {
 				} else {
 					this.#osc11ResponseBuffer += sequence;
 					const osc11Match = this.#osc11ResponseBuffer.match(osc11ResponsePattern);
-					if (!osc11Match) return;
+					if (!osc11Match) {
+						// A terminated but malformed reply must not wedge the parser:
+						// drop it and release ordinary input instead of buffering on.
+						if (/(\x07|\x1b\\)$/.test(this.#osc11ResponseBuffer)) {
+							this.#osc11Pending = false;
+							this.#osc11ActiveToken = undefined;
+							this.#osc11ResponseBuffer = "";
+							// A refresh queued behind the wedged query must not
+							// strand: settle it now that the pending state is
+							// cleared.
+							const queued = this.#osc11QueuedQuery;
+							this.#osc11QueuedQuery = undefined;
+							if (queued) this.#queryBackgroundColor(queued.route, queued.token);
+						}
+						return;
+					}
 					const [, rHex, gHex, bHex] = osc11Match;
 					this.#osc11Pending = false;
 					const requestToken = this.#osc11ActiveToken;
@@ -696,6 +778,10 @@ export class ProcessTerminal implements Terminal {
 		this.#osc11ActiveToken = token;
 		this.#osc11ResponseBuffer = "";
 		if (route === "tmux") {
+			if (this.#osc11TmuxRefreshTimer) {
+				clearTimeout(this.#osc11TmuxRefreshTimer);
+				this.#osc11TmuxRefreshTimer = undefined;
+			}
 			this.#safeWrite(wrapTmuxPassthrough("\x1b]11;?\x07"));
 			this.#osc11TmuxRefreshTimer = setTimeout(() => {
 				this.#osc11TmuxRefreshTimer = undefined;
@@ -796,6 +882,29 @@ export class ProcessTerminal implements Terminal {
 			this.#modifyOtherKeysTimeout = undefined;
 			this.#enableModifyOtherKeysFallback();
 		}, 150);
+	}
+
+	queryCursorPosition(): Promise<TerminalCursorPosition | undefined> {
+		if (this.#dead || !this.#active || !this.#stdinBuffer) return Promise.resolve(undefined);
+		const { promise, resolve } = Promise.withResolvers<TerminalCursorPosition | undefined>();
+		this.#da1SentinelOwners.push({ kind: "cursorPosition", resolve });
+		this.#safeWrite("\x1b[6n\x1b[c");
+		return promise;
+	}
+
+	#hasPendingCursorPositionQuery(): boolean {
+		return this.#da1SentinelOwners.some(owner => owner.kind === "cursorPosition");
+	}
+
+	#resolveCursorPositionQuery(position: TerminalCursorPosition | undefined): void {
+		const index = this.#da1SentinelOwners.findIndex(owner => owner.kind === "cursorPosition");
+		if (index < 0) return;
+		const owner = this.#da1SentinelOwners[index]!;
+		if (owner.kind !== "cursorPosition") return;
+		// The CPR reply lands before this query's DA1 sentinel; leave the sentinel
+		// in the FIFO so its DA1 reply is consumed instead of leaking as input.
+		this.#da1SentinelOwners[index] = { kind: "cursorPositionSettled" };
+		owner.resolve(position);
 	}
 
 	#queryPrivateMode(mode: number): void {
@@ -915,6 +1024,7 @@ export class ProcessTerminal implements Terminal {
 
 		if (activeTerminal === this) {
 			activeTerminal = null;
+			setOutboundWriter(null);
 		}
 
 		restoreTerminalStderr();
@@ -963,6 +1073,10 @@ export class ProcessTerminal implements Terminal {
 		setOsc99Supported(false);
 		this.#privateCsiResponseBuffer = "";
 		this.#inBandResizeBuffer = "";
+		this.#cursorPositionResponseBuffer = "";
+		for (const owner of this.#da1SentinelOwners) {
+			if (owner.kind === "cursorPosition") owner.resolve(undefined);
+		}
 		this.#da1SentinelOwners.length = 0;
 		this.#privateModeCallbacks = [];
 		this.#privateModeSupport.clear();
@@ -1162,7 +1276,9 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	setTitle(title: string): void {
-		this.#safeWrite(`\x1b]0;${title}\x07`);
+		// A title containing ESC/BEL/C1 could terminate the OSC and inject
+		// terminal commands; strip every control byte before interpolating.
+		this.#safeWrite(`\x1b]0;${stripControlChars(title)}\x07`);
 	}
 
 	setProgress(active: boolean): void {

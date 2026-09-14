@@ -10,6 +10,7 @@ import {
 	TruncatedText,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
+import { stripControlChars } from "@oh-my-pi/pi-utils";
 import type { TreeFilterMode } from "../../config/settings-schema";
 import { theme } from "../../modes/theme/theme";
 import {
@@ -532,7 +533,11 @@ class TreeList implements Component {
 		const entry = node.entry;
 		let result: string;
 
-		const normalize = (s: string) => s.replace(/[\n\t]/g, " ").trim();
+		const normalize = (s: string) =>
+			s
+				.replace(/[\n\t]/g, " ")
+				.replace(/[\x00-\x1f\x7f\x80-\x9f]/g, "")
+				.trim();
 
 		switch (entry.type) {
 			case "message": {
@@ -558,7 +563,8 @@ class TreeList implements Component {
 						result = theme.fg("success", "assistant: ") + textContent;
 					} else if (presentation.kind === "full") {
 						result =
-							theme.fg("success", "assistant: ") + theme.fg("error", normalize(presentation.text).slice(0, 80));
+							theme.fg("success", "assistant: ") +
+							theme.fg("error", truncateCodePoints(normalize(presentation.text), 80));
 					} else if (msgWithContent.stopReason === "aborted") {
 						result = theme.fg("success", "assistant: ") + theme.fg("muted", "(aborted)");
 					} else {
@@ -638,13 +644,13 @@ class TreeList implements Component {
 
 	#extractContent(content: unknown): string {
 		const maxLen = 200;
-		if (typeof content === "string") return content.slice(0, maxLen);
+		if (typeof content === "string") return truncateCodePoints(content, maxLen);
 		if (Array.isArray(content)) {
 			let result = "";
 			for (const c of content) {
 				if (typeof c === "object" && c !== null && "type" in c && c.type === "text") {
 					result += (c as { text: string }).text;
-					if (result.length >= maxLen) return result.slice(0, maxLen);
+					if (codePointLength(result) >= maxLen) return truncateCodePoints(result, maxLen);
 				}
 			}
 			return result;
@@ -668,7 +674,7 @@ class TreeList implements Component {
 	#formatToolCall(name: string, args: Record<string, unknown>): string {
 		switch (name) {
 			case "read": {
-				const path = shortenPath(String(args.path || args.file_path || ""));
+				const path = shortenPath(stripControlChars(String(args.path || args.file_path || "")));
 				const offset = args.offset as number | undefined;
 				const limit = args.limit as number | undefined;
 				let display = path;
@@ -681,19 +687,18 @@ class TreeList implements Component {
 			}
 			case "bash": {
 				const rawCmd = String(args.command || "");
-				const cmd = rawCmd
-					.replace(/[\n\t]/g, " ")
-					.trim()
-					.slice(0, 50);
-				return `[bash: ${cmd}${rawCmd.length > 50 ? "..." : ""}]`;
+				const flatCmd = stripControlChars(rawCmd.replace(/[\n\t]/g, " ")).trim();
+				const cmd = truncateCodePoints(flatCmd, 50);
+				return `[bash: ${cmd}${codePointLength(flatCmd) > 50 ? "..." : ""}]`;
 			}
 			case "ls": {
-				const path = shortenPath(String(args.path || "."));
+				const path = shortenPath(stripControlChars(String(args.path || ".")));
 				return `[ls: ${path}]`;
 			}
 			default: {
-				const argsStr = JSON.stringify(args).slice(0, 40);
-				return `[${name}: ${argsStr}${JSON.stringify(args).length > 40 ? "..." : ""}]`;
+				const argsJson = JSON.stringify(args);
+				const argsStr = truncateCodePoints(argsJson, 40);
+				return `[${name}: ${argsStr}${codePointLength(argsJson) > 40 ? "..." : ""}]`;
 			}
 		}
 	}
@@ -849,6 +854,15 @@ class LabelInput implements Component {
 			this.#input.handleInput(keyData);
 		}
 	}
+}
+
+function truncateCodePoints(text: string, max: number): string {
+	if (text.length <= max) return text;
+	return Array.from(text).slice(0, max).join("");
+}
+
+function codePointLength(text: string): number {
+	return Array.from(text).length;
 }
 
 export class TreeSelectorComponent extends OverlayPanel {

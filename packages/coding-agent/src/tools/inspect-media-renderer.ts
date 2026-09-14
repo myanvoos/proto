@@ -1,5 +1,6 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import { framedBlock, renderStatusLine } from "../tui";
@@ -28,13 +29,13 @@ const INSPECT_OUTPUT_EXPANDED_LINES = 16;
 const INSPECT_OUTPUT_LINE_WIDTH = 120;
 
 function questionLine(question: string, uiTheme: Theme): string {
-	return `${uiTheme.fg("dim", "Question:")} ${uiTheme.fg("accent", truncateToWidth(replaceTabs(question), INSPECT_QUESTION_PREVIEW_WIDTH))}`;
+	return `${uiTheme.fg("dim", "Question:")} ${uiTheme.fg("accent", truncateToWidth(replaceTabs(sanitizeText(question)), INSPECT_QUESTION_PREVIEW_WIDTH))}`;
 }
 
 export const inspectMediaToolRenderer = {
 	renderCall(args: InspectMediaRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const rawPath = typeof args.path === "string" ? args.path : "";
-		const pathDisplay = rawPath ? shortenPath(rawPath) : "…";
+		const pathDisplay = rawPath ? shortenPath(sanitizeText(rawPath)) : "…";
 		const header = renderStatusLine({ icon: "pending", title: "Inspect", description: pathDisplay }, uiTheme);
 		const question = typeof args.question === "string" ? args.question.trim() : "";
 
@@ -52,7 +53,7 @@ export const inspectMediaToolRenderer = {
 		const details = result.details;
 		const rawPath =
 			typeof details?.mediaPath === "string" ? details.mediaPath : typeof args?.path === "string" ? args.path : "";
-		const pathDisplay = rawPath ? shortenPath(rawPath) : "media";
+		const pathDisplay = rawPath ? shortenPath(sanitizeText(rawPath)) : "media";
 		const success = !result.isError;
 		const header = renderStatusLine(
 			success
@@ -88,8 +89,8 @@ export const inspectMediaToolRenderer = {
 		}
 
 		const metaParts: string[] = [];
-		if (details?.model) metaParts.push(details.model);
-		if (details?.mimeType) metaParts.push(details.mimeType);
+		if (details?.model) metaParts.push(sanitizeText(details.model));
+		if (details?.mimeType) metaParts.push(sanitizeText(details.mimeType));
 		const metaLine = metaParts.length > 0 ? uiTheme.fg("dim", metaParts.join(" · ")) : "";
 
 		if (!outputText) {
@@ -103,7 +104,7 @@ export const inspectMediaToolRenderer = {
 				bodyLines.push("");
 			}
 
-			const outputLines = replaceTabs(outputText).split("\n");
+			const outputLines = replaceTabs(sanitizeText(outputText)).split("\n");
 			const maxLines = options.expanded ? INSPECT_OUTPUT_EXPANDED_LINES : INSPECT_OUTPUT_COLLAPSED_LINES;
 			for (const line of outputLines.slice(0, maxLines)) {
 				bodyLines.push(uiTheme.fg("toolOutput", truncateToWidth(line, INSPECT_OUTPUT_LINE_WIDTH)));

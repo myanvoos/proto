@@ -653,7 +653,15 @@ export class StatusLineComponent implements Component {
 		}
 
 		const lookupBranch = this.#cachedPrBranch;
-		if (!lookupBranch || this.#isDefaultBranch(lookupBranch, gitCwd) || this.#prLookupInFlight) {
+		if (!lookupBranch) return stalePr ?? null;
+		if (this.#isDefaultBranch(lookupBranch, gitCwd)) {
+			// PRs belong to feature branches; a default branch never keeps one,
+			// so drop the stale cache instead of re-rendering the old PR.
+			this.#cachedPr = null;
+			this.#cachedPrContext = undefined;
+			return null;
+		}
+		if (this.#prLookupInFlight) {
 			return stalePr ?? null;
 		}
 

@@ -1,6 +1,7 @@
 import {
 	type Component,
 	Container,
+	getWidthConfigEpoch,
 	type NativeScrollbackCommittedRows,
 	type NativeScrollbackLiveRegion,
 	type NativeScrollbackWidthEpoch,
@@ -159,6 +160,7 @@ export class TranscriptContainer
 	#lines: string[] = [];
 	#segments: BlockSegment[] = EMPTY_SEGMENTS;
 	#renderWidth = -1;
+	#renderedWidthEpoch = -1;
 	#renderRevision = 0;
 
 	#committedRows = 0;
@@ -635,12 +637,14 @@ export class TranscriptContainer
 			this.#renderedChildrenRevision !== this.#childrenRevision ||
 			previousSegments.length !== count;
 		if (structureChanged) this.#reconcileBlockListeners();
+		const widthEpoch = getWidthConfigEpoch();
 		const canReusePrefix =
 			!widthChanged &&
 			!this.#childrenExternallyAssigned &&
 			!structureChanged &&
 			this.#renderedGeneration === this.#generation &&
-			this.#renderedCommittedRows === this.#committedRows;
+			this.#renderedCommittedRows === this.#committedRows &&
+			this.#renderedWidthEpoch === widthEpoch;
 		const prefixLength = canReusePrefix ? Math.min(this.#stablePrefixLength, count) : 0;
 		const startIndex = canReusePrefix ? Math.min(prefixLength, dirtyFromIndex) : 0;
 		const segments =
@@ -652,6 +656,7 @@ export class TranscriptContainer
 
 		let chainStable = !widthChanged;
 		this.#renderWidth = width;
+		this.#renderedWidthEpoch = widthEpoch;
 		const lines = this.#lines;
 		if (!chainStable) lines.length = 0;
 

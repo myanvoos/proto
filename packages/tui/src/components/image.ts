@@ -74,6 +74,8 @@ export class ImageBudget {
 
 	#suppressedIds = new Set<number>();
 
+	#generation = 0;
+
 	#placementState = new Map<number, PlacementEmitState>();
 
 	#watchedPlacements = new Set<PlacementEmitState>();
@@ -125,9 +127,20 @@ export class ImageBudget {
 
 	observe(imageId: number): boolean {
 		if (this.#stablePass) {
-			const suppressed = this.#cap > 0 && this.#suppressedIds.has(imageId);
-			if (suppressed) this.#forgetKeyForId(imageId);
-			return suppressed;
+			// Already-suppressed ids replay suppression; already-transmitted ids
+			// repaint without a new charge (#onTerminal is a demoted count, not
+			// a live-image count, so it must not offset here). Genuinely new
+			// stable ids render uncharged: eviction here repeatedly regressed
+			// (cached placements, pending transmits) and is a documented
+			// deferral pending an ImageBudget lifecycle redesign.
+			if (this.#suppressedIds.has(imageId)) {
+				this.#forgetKeyForId(imageId);
+				return true;
+			}
+			if (this.#transmitted.has(imageId)) {
+				return false;
+			}
+			return false;
 		}
 		const index = this.#passIds.length;
 		this.#passIds.push(imageId);
@@ -166,6 +179,10 @@ export class ImageBudget {
 		return ids;
 	}
 
+	get generation(): number {
+		return this.#generation;
+	}
+
 	takeAllTransmittedIds(): readonly number[] {
 		const ids = this.#transmitted.size === 0 ? EMPTY_IDS : [...this.#transmitted];
 		this.#transmitted.clear();
@@ -173,6 +190,7 @@ export class ImageBudget {
 		this.#pendingTransmits = [];
 		this.#keyToId.clear();
 		this.#idToKey.clear();
+		this.#generation++;
 		this.#placementState.clear();
 		this.#watchedPlacements.clear();
 		return ids;
@@ -326,6 +344,7 @@ export class Image implements Component {
 	#cachedLines?: string[];
 	#cachedWidth?: number;
 	#cachedSuppressed = false;
+	#cachedBudgetGeneration = -1;
 	#cachedImageProtocol: typeof TERMINAL.imageProtocol = null;
 	#cachedCellWidthPx = 0;
 	#cachedCellHeightPx = 0;
@@ -369,7 +388,8 @@ export class Image implements Component {
 			this.#cachedImageProtocol === imageProtocol &&
 			this.#cachedCellWidthPx === cellDimensions.widthPx &&
 			this.#cachedCellHeightPx === cellDimensions.heightPx &&
-			this.#cachedKittyUnicodePlaceholders === kittyUnicodePlaceholders
+			this.#cachedKittyUnicodePlaceholders === kittyUnicodePlaceholders &&
+			this.#cachedBudgetGeneration === (this.#budget?.generation ?? -1)
 		) {
 			return this.#cachedLines;
 		}
@@ -421,6 +441,7 @@ export class Image implements Component {
 		this.#cachedLines = lines;
 		this.#cachedWidth = width;
 		this.#cachedSuppressed = suppressed;
+		this.#cachedBudgetGeneration = this.#budget?.generation ?? -1;
 		this.#cachedImageProtocol = imageProtocol;
 		this.#cachedCellWidthPx = cellDimensions.widthPx;
 		this.#cachedCellHeightPx = cellDimensions.heightPx;

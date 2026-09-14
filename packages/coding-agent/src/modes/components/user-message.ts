@@ -1,4 +1,4 @@
-import { type Component, Container, Markdown } from "@oh-my-pi/pi-tui";
+import { type Component, Container, getWidthConfigEpoch, Markdown } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { attachmentSgr, collapseImageMarkers, renderPlaceholders } from "../composer-attachments";
@@ -98,7 +98,7 @@ export class UserMessageComponent extends Container {
 
 export class CollapsedSyntheticMessageComponent implements Component {
 	#expanded = false;
-	#cache?: { width: number; lines: readonly string[] };
+	#cache?: { width: number; widthEpoch: number; lines: readonly string[] };
 	#body?: UserMessageComponent;
 	readonly #summary: string;
 
@@ -126,9 +126,10 @@ export class CollapsedSyntheticMessageComponent implements Component {
 
 	render(width: number): readonly string[] {
 		width = Math.max(1, width);
-		if (this.#cache?.width === width) return this.#cache.lines;
+		const widthEpoch = getWidthConfigEpoch();
+		if (this.#cache?.width === width && this.#cache.widthEpoch === widthEpoch) return this.#cache.lines;
 		const lines = this.#expanded ? this.#renderExpanded(width) : [` ${this.#summaryRow(width)}`];
-		this.#cache = { width, lines };
+		this.#cache = { width, widthEpoch, lines };
 		return lines;
 	}
 

@@ -17,6 +17,7 @@ const DEFAULT_CURSOR_SYMBOL = ">";
 function sanitizeSingleLine(text: string): string {
 	return replaceTabs(text)
 		.replace(/[\r\n]+/g, " ")
+		.replace(/[\x00-\x1f\x7f\x80-\x9f]/g, "")
 		.replace(/\s+/g, " ")
 		.trim();
 }

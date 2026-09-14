@@ -2,8 +2,12 @@ import { describe, expect, it } from "bun:test";
 import {
 	detectTerminalId,
 	ImageProtocol,
+	parseKittyDirectPlacementLine,
+	renderImage,
 	resolveImageProtocol,
+	setTerminalImageProtocol,
 	shouldEnableSynchronizedOutputByDefault,
+	TERMINAL,
 } from "./terminal-capabilities";
 
 const TERMINAL_ENV_KEYS = [
@@ -90,5 +94,54 @@ describe("Herdr synchronized output policy", () => {
 		expect(
 			shouldEnableSynchronizedOutputByDefault({ HERDR_SOCKET_PATH: "/tmp/herdr.sock", TMUX: "1" }, "kitty"),
 		).toBe(false);
+	});
+});
+
+describe("image protocol fallback", () => {
+	it("does not infer Kitty graphics from a bare screen/tmux TERM", () => {
+		expect(resolveImageProtocol("base", subprocessEnv({ TERM: "screen-256color" }), true)).toBeNull();
+		expect(resolveImageProtocol("base", subprocessEnv({ TERM: "tmux-256color" }), true)).toBeNull();
+	});
+
+	it("still infers Kitty graphics from a ghostty TERM", () => {
+		expect(resolveImageProtocol("base", subprocessEnv({ TERM: "xterm-ghostty" }), true)).toBe(ImageProtocol.Kitty);
+	});
+});
+
+describe("kitty placement parsing", () => {
+	it("parses tmux-wrapped placements for viewport clipping", () => {
+		const inner = "\x1b7\x1b[4A\x1b_Ga=p,q=2,C=1,i=7,p=9,c=10,r=3\x1b\\\x1b8";
+		const wrapped = `\x1bPtmux;${inner.replaceAll("\x1b", "\x1b\x1b")}\x1b\\`;
+		expect(parseKittyDirectPlacementLine(wrapped)).toEqual({
+			imageId: 7,
+			placementId: 9,
+			columns: 10,
+			rows: 3,
+		});
+	});
+
+	it("still parses unwrapped placements", () => {
+		expect(parseKittyDirectPlacementLine("\x1b7\x1b[4A\x1b_Ga=p,q=2,C=1,i=7,c=10,r=3\x1b\\")).toEqual({
+			imageId: 7,
+			placementId: undefined,
+			columns: 10,
+			rows: 3,
+		});
+	});
+});
+
+describe("renderImage dimension validation", () => {
+	it("rejects non-positive or non-finite dimensions instead of emitting NaN geometry", () => {
+		const previous = TERMINAL.imageProtocol;
+		setTerminalImageProtocol(ImageProtocol.Kitty);
+		try {
+			expect(renderImage("aGk=", { widthPx: 0, heightPx: 10 })).toBeNull();
+			expect(renderImage("aGk=", { widthPx: 10, heightPx: 0 })).toBeNull();
+			expect(renderImage("aGk=", { widthPx: -5, heightPx: 10 })).toBeNull();
+			expect(renderImage("aGk=", { widthPx: Number.NaN, heightPx: 10 })).toBeNull();
+			expect(renderImage("aGk=", { widthPx: 8, heightPx: 8 })).not.toBeNull();
+		} finally {
+			setTerminalImageProtocol(previous);
+		}
 	});
 });

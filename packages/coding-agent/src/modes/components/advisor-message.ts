@@ -1,4 +1,5 @@
 import { type Component, visibleWidth } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails, AdvisorSeverity } from "../../advisor";
 import {
 	createCachedComponent,
@@ -64,7 +65,7 @@ export function createAdvisorMessageCard(
 
 				const who =
 					entry.advisor && entry.advisor !== "default"
-						? `${uiTheme.fg("dim", `[${replaceTabs(entry.advisor)}]`)} `
+						? `${uiTheme.fg("dim", `[${replaceTabs(sanitizeText(entry.advisor))}]`)} `
 						: "";
 				const rail = uiTheme.fg(severityColor(entry.severity), railGlyph);
 				const quoteWidth = visibleWidth(`  ${railGlyph} `);
@@ -73,7 +74,9 @@ export function createAdvisorMessageCard(
 				const w1 = Math.max(10, Math.min(NOTE_LINE_WIDTH, width) - quoteWidth - badgeWidth - whoWidth);
 				const w2 = Math.max(10, Math.min(NOTE_LINE_WIDTH, width) - quoteWidth);
 
-				const paragraphs = entry.note.split("\n").filter(p => p.trim());
+				const paragraphs = sanitizeText(entry.note)
+					.split("\n")
+					.filter(p => p.trim());
 				const bodyLines: string[] = [];
 				for (let i = 0; i < paragraphs.length; i++) {
 					const p = paragraphs[i];

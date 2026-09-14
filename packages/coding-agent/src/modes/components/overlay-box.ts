@@ -17,6 +17,9 @@ function paint(s: string): string {
 
 export function topBorder(width: number, title: string): string {
 	const box = theme.boxRound;
+	if (width <= 0) return "";
+	if (width === 1) return paint(box.topLeft);
+	if (width === 2) return paint(box.topLeft + box.topRight);
 	const inner = Math.max(0, width - 2);
 	if (!title) return paint(box.topLeft + box.horizontal.repeat(inner) + box.topRight);
 	const shown = truncateToWidth(` ${title} `, Math.max(0, inner - 2));
@@ -30,16 +33,22 @@ export function topBorder(width: number, title: string): string {
 
 export function divider(width: number): string {
 	const box = theme.boxRound;
+	if (width <= 1) return paint(box.horizontal.repeat(Math.max(0, width)));
 	return paint(box.teeRight + box.horizontal.repeat(Math.max(0, width - 2)) + box.teeLeft);
 }
 
 export function bottomBorder(width: number): string {
 	const box = theme.boxRound;
+	if (width <= 1) return paint(box.horizontal.repeat(Math.max(0, width)));
 	return paint(box.bottomLeft + box.horizontal.repeat(Math.max(0, width - 2)) + box.bottomRight);
 }
 
 export function row(content: string, width: number): string {
 	const box = theme.boxRound;
+	if (width <= 0) return "";
+	if (width === 1) return paint(box.vertical);
+	if (width === 2) return paint(box.vertical + box.vertical);
+	if (width === 3) return `${paint(box.vertical)} ${paint(box.vertical)}`;
 	return `${paint(box.vertical)} ${fit(content, Math.max(0, width - 4))} ${paint(box.vertical)}`;
 }
 

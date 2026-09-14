@@ -54,7 +54,7 @@ export class IrcBridge {
 		this.#asides.push(...records);
 	}
 
-	drainInboxMessages(agentId: string, opts?: { from?: string; limit?: number }): IrcMessage[] {
+	drainInboxMessages(agentId: string, opts?: { from?: string; limit?: number; peek?: boolean }): IrcMessage[] {
 		const messages: IrcMessage[] = [];
 		const remainingInterrupts: CustomMessage[] = [];
 		const remainingAsides: CustomMessage[] = [];
@@ -88,6 +88,10 @@ export class IrcBridge {
 				if (opts?.limit !== undefined && messages.length >= opts.limit) {
 					queue.remaining.push(record);
 					continue;
+				}
+				if (opts?.peek) {
+					// Peek reads must not consume the queued record.
+					queue.remaining.push(record);
 				}
 				messages.push({
 					id,

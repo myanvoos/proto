@@ -152,7 +152,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		const height = Math.max(14, process.stdout.rows || 40);
+		// The overlay renders inside the (possibly injected) TUI terminal, so
+		// its geometry must follow that terminal, not process.stdout.
+		const height = Math.max(14, this.#tui.terminal?.rows || process.stdout.rows || 40);
 		const bodyRows = Math.max(3, height - 4);
 		const title = `Advisor configuration · ${this.#scope}${this.#dirty ? "  ● unsaved" : ""}`;
 		const out: string[] = [];

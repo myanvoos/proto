@@ -108,6 +108,12 @@ export class Box implements Component {
 		}
 	}
 
+	dispose(): void {
+		for (const child of this.children) {
+			child.dispose?.();
+		}
+	}
+
 	render(width: number): readonly string[] {
 		const children = this.children;
 		const count = children.length;
@@ -115,7 +121,9 @@ export class Box implements Component {
 
 		const border = this.#border && width - 2 >= paddingX * 2 + 1 ? this.#border : undefined;
 		const innerWidth = border ? width - 2 : width;
-		const contentWidth = Math.max(1, innerWidth - paddingX * 2);
+		// Degrade horizontal padding before letting rows overflow the width.
+		const marginX = Math.min(paddingX, Math.floor(Math.max(0, innerWidth - 1) / 2));
+		const contentWidth = Math.max(1, innerWidth - marginX * 2);
 
 		const bgSample = this.#bgFn ? this.#bgFn("test") : undefined;
 		const borderSample = border
@@ -161,7 +169,7 @@ export class Box implements Component {
 
 		const resultWidths: number[] | undefined = !border && !this.#bgFn ? [] : undefined;
 		if (contentRows > 0) {
-			const leftPad = padding(paddingX);
+			const leftPad = padding(marginX);
 			const interior: string[] = [];
 			const pushRow = (row: string, visLen: number): void => {
 				const padNeeded = Math.max(0, innerWidth - visLen);

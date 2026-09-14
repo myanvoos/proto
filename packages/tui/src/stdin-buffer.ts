@@ -38,9 +38,61 @@ const MAX_STRING_SEQ_BYTES = 16 * 1024 * 1024;
 const STRING_DISCARD_MAX_BYTES = 2 * MAX_STRING_SEQ_BYTES;
 const STRING_DISCARD_INACTIVITY_MS = 1000;
 
-const STRING_SEQ_PARTIAL = /^\x1b[\]P_]/;
+const STRING_SEQ_PARTIAL = /^\x1b[\]P_^X]/;
+
+/**
+ * 8-bit C1 introducers that cannot be UTF-8 continuation bytes, normalized to
+ * their 7-bit ESC forms so the protocol scanner recognizes the reply. This
+ * serves direct byte callers: production stdin is string-oriented
+ * (setEncoding("utf8") upstream), and terminals emit 7-bit control replies.
+ */
+function c1SevenBitForm(byte: number): string | undefined {
+	switch (byte) {
+		case 0x90:
+			return "\x1bP"; // DCS
+		case 0x98:
+			return "\x1bX"; // SOS
+		case 0x9b:
+			return "\x1b["; // CSI
+		case 0x9c:
+			return "\x1b\\"; // ST
+		case 0x9d:
+			return "\x1b]"; // OSC
+		case 0x9e:
+			return "\x1b^"; // PM
+		case 0x9f:
+			return "\x1b_"; // APC
+		default:
+			return undefined;
+	}
+}
 
 const SGR_MOUSE_COMPLETE = /^<\d+;\d+;\d+[Mm]$/;
+
+export type StringSequenceKind = "osc" | "dcs" | "apc" | "sos" | "pm";
+
+/**
+ * Clip `text` to at most `maxBytes` UTF-8 bytes without splitting a code
+ * point (a naive subarray would decode a replacement character and can even
+ * re-encode larger than the cap).
+ */
+function utf8Clip(text: string, maxBytes: number): string {
+	if (maxBytes <= 0) return "";
+	const bytes = Buffer.from(text, "utf8");
+	if (bytes.length <= maxBytes) return text;
+	let cut = maxBytes;
+	while (cut > 0 && (bytes[cut]! & 0xc0) === 0x80) cut--;
+	return bytes.subarray(0, cut).toString("utf8");
+}
+
+function stringDiscardKindFor(sequence: string): StringSequenceKind {
+	const second = sequence.charCodeAt(1);
+	if (second === 0x50) return "dcs";
+	if (second === 0x58) return "sos";
+	if (second === 0x5e) return "pm";
+	if (second === 0x5f) return "apc";
+	return "osc";
+}
 
 const RAW_PASTE_CLASSIFICATION_TIMEOUT_MS = 10;
 
@@ -95,8 +147,11 @@ function resolveEscapeEnd(buffer: string, pos: number, length: number, resumeSea
 			}
 			return length - pos >= MAX_STRING_SEQ_BYTES ? -2 : -1;
 		}
-		case 0x50:
+		case 0x50: // DCS
+		case 0x58: // SOS
+		case 0x5e: // PM
 		case 0x5f: {
+			// APC
 			const searchFrom = Math.max(pos + 2, resumeSearchFrom - 1);
 			const scanLimit = Math.min(length, pos + MAX_STRING_SEQ_BYTES);
 			for (let i = searchFrom; i < scanLimit; i++) {
@@ -124,7 +179,13 @@ function parseUnmodifiedKittyPrintableCodepoint(sequence: string): number | unde
 function extractCompleteSequences(
 	buffer: string,
 	resumeSearchFrom: number,
-): { sequences: string[]; remainder: string; resumeSearchFrom: number; discardFrom?: number } {
+): {
+	sequences: string[];
+	remainder: string;
+	resumeSearchFrom: number;
+	discardFrom?: number;
+	discardKind?: StringSequenceKind;
+} {
 	const sequences: string[] = [];
 	const length = buffer.length;
 	let pos = 0;
@@ -181,13 +242,22 @@ function extractCompleteSequences(
 		const end = resolveEscapeEnd(buffer, pos, length, pos === 0 ? hint : 0);
 		if (end === -1) {
 			const next = pos + 1 < length ? buffer.charCodeAt(pos + 1) : -1;
-			const nextHint = pos === 0 && (next === 0x5d || next === 0x50 || next === 0x5f) ? length : 0;
+			const nextHint =
+				pos === 0 && (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f)
+					? length
+					: 0;
 			return { sequences, remainder: buffer.slice(pos), resumeSearchFrom: nextHint };
 		}
 		if (end === -2) {
 			const next = buffer.charCodeAt(pos + 1);
-			if (next === 0x5d || next === 0x50 || next === 0x5f) {
-				return { sequences, remainder: "", resumeSearchFrom: 0, discardFrom: pos };
+			if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
+				return {
+					sequences,
+					remainder: "",
+					resumeSearchFrom: 0,
+					discardFrom: pos,
+					discardKind: stringDiscardKindFor(buffer.slice(pos, pos + 2)),
+				};
 			}
 			const flushEnd = Math.min(length, pos + MAX_CSI_BYTES);
 			sequences.push(buffer.slice(pos, flushEnd));
@@ -228,6 +298,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	readonly #pasteTimeoutMs: number;
 	readonly #pasteByteLimit: number;
 	#pasteMode: boolean = false;
+	#pasteOverLimit = false;
+	#pastePendingMarker: string = "";
+	#pastePendingMatched = 0;
 	#pasteChunks: string[] = [];
 	#pasteOverlap: string = "";
 	#pasteBytes = 0;
@@ -241,9 +314,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	#rawPasteBurst = false;
 	#rawPasteTimer?: NodeJS.Timeout;
 	#stringDiscardActive = false;
+	#stringDiscardKind: StringSequenceKind = "osc";
 	#stringDiscardBytes = 0;
 	#stringDiscardEscHeld = false;
 	#stringDiscardWatchdog?: NodeJS.Timeout;
+	#utf8Held: Buffer = Buffer.alloc(0);
 
 	constructor(options: StdinBufferOptions = {}) {
 		super();
@@ -256,11 +331,17 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	process(data: string | Buffer): void {
 		let str: string;
 		if (Buffer.isBuffer(data)) {
-			if (data.length === 1 && data[0]! > 127) {
-				const byte = data[0]! - 128;
-				str = `\x1b${String.fromCharCode(byte)}`;
-			} else {
-				str = data.toString();
+			str = this.#decodeStdinBytes(data);
+			if (str.length === 0 && data.length > 0) {
+				// Every byte began an incomplete UTF-8 sequence; hold until the
+				// continuation bytes arrive in a later chunk. Held bytes still
+				// count as input activity: keep any active parser mode's timers
+				// alive so classification and watchdogs do not expire
+				// mid-character.
+				if (this.#pasteMode) this.#armPasteWatchdog();
+				else if (this.#rawPasteCandidate.length > 0) this.#armRawPasteTimer();
+				else if (this.#stringDiscardActive) this.#armStringDiscardWatchdog();
+				return;
 			}
 		} else {
 			str = data;
@@ -274,6 +355,12 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			this.#flushExpired();
 		} else {
 			this.#clearFlushTimer();
+		}
+		if (this.#stringDiscardActive) {
+			// The expired flush may have entered discard mode; route this chunk
+			// through the discard consumer instead of the normal parser.
+			str = this.#consumeStringDiscard(str);
+			if (str.length === 0) return;
 		}
 
 		if (str.length === 0 && this.#buffer.length === 0 && this.#rawPasteCandidate.length === 0) {
@@ -294,6 +381,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				this.#countRawBreaks(str);
 				if (this.#rawPasteBurst) {
 					this.#emitRawPasteCandidate();
+				} else {
+					this.#armRawPasteTimer();
 				}
 				return;
 			}
@@ -322,8 +411,49 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			if (startIndex > 0) {
 				const beforePaste = this.#buffer.slice(0, startIndex);
 				const result = extractCompleteSequences(beforePaste, 0);
+				if (result.remainder.length > 0) {
+					// The prefix ends inside a control string whose terminator
+					// may sit past the marker. Re-parse the whole buffer BEFORE
+					// emitting anything: a terminator after the marker proves the
+					// marker was payload, and holding must never double-emit the
+					// prefix (the held buffer re-parses from scratch on retry).
+					const full = extractCompleteSequences(this.#buffer, 0);
+					if (full.remainder.length === 0) {
+						this.#escapeSearchOffset = 0;
+						const junkStart = full.discardFrom;
+						const junk = junkStart !== undefined ? this.#buffer.slice(junkStart) : "";
+						this.#buffer = "";
+						for (const sequence of full.sequences) {
+							this.#emitDataSequence(sequence);
+						}
+						if (junkStart !== undefined) {
+							this.#pendingKittyPrintableCodepoint = undefined;
+							this.#enterStringDiscard(full.discardKind ?? "osc");
+							const after = this.#consumeStringDiscard(junk);
+							if (after.length > 0) this.process(after);
+						}
+						return;
+					}
+					// Genuinely incomplete string: hold the buffer whole; the
+					// flush timer or the next chunk re-parses it from the start.
+					this.#armFlushTimer();
+					return;
+				}
 				for (const sequence of result.sequences) {
 					this.#emitDataSequence(sequence);
+				}
+				if (result.discardFrom !== undefined) {
+					// The prefix contains an oversized/unterminated control string:
+					// the paste marker is payload inside it, so discard the whole
+					// string instead of classifying a paste.
+					this.#escapeSearchOffset = 0;
+					this.#pendingKittyPrintableCodepoint = undefined;
+					const junk = this.#buffer.slice(result.discardFrom);
+					this.#buffer = "";
+					this.#enterStringDiscard(result.discardKind ?? "osc");
+					const after = this.#consumeStringDiscard(junk);
+					if (after.length > 0) this.process(after);
+					return;
 				}
 			}
 
@@ -348,7 +478,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			for (const sequence of result.sequences) {
 				this.#emitDataSequence(sequence);
 			}
-			this.#enterStringDiscard();
+			// Reset after the replay: emitting the preceding sequences may
+			// re-establish a pending Kitty printable that must not leak into
+			// the discarded string's tail.
+			this.#pendingKittyPrintableCodepoint = undefined;
+			this.#enterStringDiscard(result.discardKind ?? "osc");
 			const after = this.#consumeStringDiscard(junk);
 			if (after.length > 0) this.process(after);
 			return;
@@ -367,17 +501,221 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 	}
 
+	/**
+	 * Decode stdin bytes with UTF-8 sequence state carried across chunks: a
+	 * multibyte character split across reads must survive intact instead of
+	 * degrading into Meta escapes or replacement characters. Tail bytes that
+	 * begin a valid but incomplete sequence are held for the next chunk. Lone
+	 * 8-bit C1 introducers that are not valid continuation bytes normalize to
+	 * their 7-bit ESC forms; continuation bytes of a pending sequence always
+	 * take precedence over C1 interpretation.
+	 */
+	#decodeStdinBytes(data: Buffer): string {
+		let bytes = data;
+		if (this.#utf8Held.length > 0) {
+			bytes = Buffer.concat([this.#utf8Held, data]);
+			this.#utf8Held = Buffer.alloc(0);
+		}
+		const len = bytes.length;
+		let text = "";
+		let runStart = 0;
+		let i = 0;
+		let pendingContinuations = 0;
+		const flushRun = (end: number): void => {
+			if (end > runStart) text += bytes.toString("utf8", runStart, end);
+			runStart = end;
+		};
+		while (i < len) {
+			const byte = bytes[i]!;
+			if (pendingContinuations > 0) {
+				if (byte >= 0x80 && byte <= 0xbf) {
+					pendingContinuations--;
+					i++;
+					continue;
+				}
+				// Invalid sequence: leave the run to be decoded with replacement
+				// characters and resume scanning at this byte.
+				pendingContinuations = 0;
+				i++;
+				continue;
+			}
+			if (byte < 0x80) {
+				i++;
+				continue;
+			}
+			const c1 = c1SevenBitForm(byte);
+			if (c1 !== undefined) {
+				flushRun(i);
+				text += c1;
+				i++;
+				runStart = i;
+				continue;
+			}
+			const seqLen =
+				byte >= 0xc2 && byte <= 0xdf ? 2 : byte >= 0xe0 && byte <= 0xef ? 3 : byte >= 0xf0 && byte <= 0xf4 ? 4 : 0;
+			if (seqLen === 0) {
+				// Invalid lead or orphan continuation: replacement character via
+				// the batched run decode.
+				i++;
+				continue;
+			}
+			if (i + seqLen > len) break; // incomplete tail: hold for the next chunk
+			let valid = true;
+			for (let j = 1; j < seqLen; j++) {
+				const cont = bytes[i + j]!;
+				if (cont < 0x80 || cont > 0xbf) {
+					valid = false;
+					break;
+				}
+			}
+			if (!valid) {
+				i++; // invalid lead stays in the run and decodes as replacement
+				continue;
+			}
+			pendingContinuations = seqLen - 1;
+			i++;
+		}
+		if (i < len) {
+			flushRun(i);
+			this.#utf8Held = Buffer.from(bytes.subarray(i));
+		} else {
+			flushRun(len);
+		}
+		return text;
+	}
+
+	/**
+	 * An explicit flush ends the wait for continuation bytes: materialize any
+	 * held incomplete UTF-8 tail (always one sequence by construction) as a
+	 * replacement character so it can neither silently vanish nor complete
+	 * after the flush boundary.
+	 */
+	#materializeHeldUtf8(): void {
+		if (this.#utf8Held.length === 0) return;
+		this.#utf8Held = Buffer.alloc(0);
+		this.#buffer += "\ufffd";
+	}
+
 	#consumePasteChunk(chunk: string): void {
 		const probe = this.#pasteOverlap + chunk;
-		if (probe.indexOf(BRACKETED_PASTE_END) === -1) {
-			this.#pasteChunks.push(chunk);
-			this.#pasteBytes += chunk.length;
-			const keep = BRACKETED_PASTE_END.length - 1;
-			this.#pasteOverlap = probe.length > keep ? probe.slice(probe.length - keep) : probe;
-			if (this.#pasteBytes > this.#pasteByteLimit) {
-				this.#abortPaste();
+		if (this.#pasteOverLimit) {
+			if (this.#pastePendingMarker.length > 0) {
+				// Continue matching the withheld candidate from its accumulated
+				// offset. A mismatch restores the withheld bytes as ordinary
+				// in-cap payload; completion accepts them as the real
+				// terminator. The candidate resolves BEFORE any independent
+				// terminator in the same chunk is accepted.
+				const base = this.#pastePendingMarker.length + this.#pastePendingMatched;
+				let consumed = 0;
+				while (
+					consumed < chunk.length &&
+					base + consumed < BRACKETED_PASTE_END.length &&
+					chunk.charCodeAt(consumed) === BRACKETED_PASTE_END.charCodeAt(base + consumed)
+				) {
+					consumed++;
+				}
+				if (base + consumed >= BRACKETED_PASTE_END.length) {
+					// The candidate completed as the real terminator.
+					const delivered = this.#pasteChunks.join("");
+					const remaining = chunk.slice(consumed);
+					this.#clearPasteWatchdog();
+					this.#pasteMode = false;
+					this.#pasteOverLimit = false;
+					this.#pastePendingMarker = "";
+					this.#pastePendingMatched = 0;
+					this.#pasteChunks = [];
+					this.#pasteOverlap = "";
+					this.#pasteBytes = 0;
+					this.#pendingKittyPrintableCodepoint = undefined;
+					this.emit("paste", delivered);
+					if (remaining.length > 0) this.process(remaining);
+					return;
+				}
+				if (consumed < chunk.length) {
+					// Mismatch: the withheld suffix was ordinary in-cap payload.
+					const restored = `${this.#pasteChunks.join("")}${this.#pastePendingMarker}`;
+					this.#pasteChunks = restored.length > 0 ? [restored] : [];
+					this.#pasteBytes = Buffer.byteLength(restored, "utf8");
+					this.#pastePendingMarker = "";
+					this.#pastePendingMatched = 0;
+					const rest = chunk.slice(consumed);
+					if (rest.length > 0) {
+						this.#consumePasteChunk(rest);
+					} else {
+						this.#armPasteWatchdog();
+					}
+					return;
+				}
+				// The entire chunk continues the candidate.
+				this.#pastePendingMatched += consumed;
+				this.#armPasteWatchdog();
 				return;
 			}
+			const endInProbe = probe.indexOf(BRACKETED_PASTE_END);
+			if (endInProbe === -1) {
+				// Over-cap paste: keep consuming paste-mode bytes (so the
+				// terminator is swallowed by this state machine, not leaked to
+				// the app) without accumulating payload. The overlap still
+				// tracks the chunk tail or a split terminator is never seen.
+				const keep = BRACKETED_PASTE_END.length - 1;
+				this.#pasteOverlap = probe.length > keep ? probe.slice(probe.length - keep) : probe;
+				this.#armPasteWatchdog();
+				return;
+			}
+			// Terminator found: deliver the frozen bounded prefix. The marker
+			// may straddle the overlap, so the post-terminator tail is measured
+			// in probe coordinates, and the dropped gap is never concatenated.
+			const tailStart = Math.max(0, endInProbe + BRACKETED_PASTE_END.length - this.#pasteOverlap.length);
+			const remaining = chunk.slice(tailStart);
+			const delivered = this.#pasteChunks.join("");
+			this.#clearPasteWatchdog();
+			this.#pasteMode = false;
+			this.#pasteOverLimit = false;
+			this.#pastePendingMarker = "";
+			this.#pastePendingMatched = 0;
+			this.#pasteChunks = [];
+			this.#pasteOverlap = "";
+			this.#pasteBytes = 0;
+			this.#pendingKittyPrintableCodepoint = undefined;
+			this.emit("paste", delivered);
+			if (remaining.length > 0) this.process(remaining);
+			return;
+		}
+		if (probe.indexOf(BRACKETED_PASTE_END) === -1) {
+			// Enforce the accumulation cap (in UTF-8 bytes) before storing more
+			// payload so a hostile paste cannot grow memory unbounded. The
+			// crossing chunk is clipped to the room left and the payload freezes;
+			// later chunks are scanned only for the terminator.
+			const chunkBytes = Buffer.byteLength(chunk, "utf8");
+			if (this.#pasteBytes + chunkBytes > this.#pasteByteLimit) {
+				// Freeze against the ACCUMULATED payload: an under-cap chunk may
+				// already have committed a terminator prefix at its tail, so the
+				// combined payload is trimmed of any trailing BRACKETED_PASTE_END
+				// prefix before the UTF-8-byte clip. The trimmed suffix is only
+				// WITHHELD (it may yet be proven to be data by following bytes).
+				const markerGuard = BRACKETED_PASTE_END.length - 1;
+				const combined = `${this.#pasteChunks.join("")}${chunk}`;
+				let frozen = utf8Clip(combined, this.#pasteByteLimit);
+				this.#pastePendingMarker = "";
+				for (let trim = Math.min(markerGuard, frozen.length); trim > 0; trim--) {
+					if (BRACKETED_PASTE_END.startsWith(frozen.slice(frozen.length - trim))) {
+						this.#pastePendingMarker = frozen.slice(frozen.length - trim);
+						frozen = frozen.slice(0, frozen.length - trim);
+						break;
+					}
+				}
+				this.#pasteChunks = frozen.length > 0 ? [frozen] : [];
+				this.#pasteBytes = Buffer.byteLength(frozen, "utf8");
+				this.#pasteOverLimit = true;
+				const keep = markerGuard;
+				this.#pasteOverlap = probe.length > keep ? probe.slice(probe.length - keep) : probe;
+				this.#armPasteWatchdog();
+				return;
+			}
+			this.#pasteChunks.push(chunk);
+			this.#pasteBytes += chunkBytes;
+			const keep = BRACKETED_PASTE_END.length - 1;
+			this.#pasteOverlap = probe.length > keep ? probe.slice(probe.length - keep) : probe;
 			this.#armPasteWatchdog();
 			return;
 		}
@@ -387,14 +725,23 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		const pastedContent = flat.slice(0, endIndex);
 		const remaining = flat.slice(endIndex + BRACKETED_PASTE_END.length);
 
+		// The complete-marker path must honor the same cap as accumulation;
+		// pastedContent already includes the stored chunks, so compare it
+		// directly and deliver a byte-bounded prefix when it exceeds the cap.
+		const overLimit = Buffer.byteLength(pastedContent, "utf8") > this.#pasteByteLimit;
+		const delivered = overLimit ? utf8Clip(pastedContent, this.#pasteByteLimit) : pastedContent;
+
 		this.#clearPasteWatchdog();
 		this.#pasteMode = false;
+		this.#pasteOverLimit = false;
+		this.#pastePendingMarker = "";
+		this.#pastePendingMatched = 0;
 		this.#pasteChunks = [];
 		this.#pasteOverlap = "";
 		this.#pasteBytes = 0;
 		this.#pendingKittyPrintableCodepoint = undefined;
 
-		this.emit("paste", pastedContent);
+		this.emit("paste", delivered);
 
 		if (remaining.length > 0) {
 			this.process(remaining);
@@ -420,6 +767,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#clearPasteWatchdog();
 		const content = this.#pasteChunks.join("");
 		this.#pasteMode = false;
+		this.#pasteOverLimit = false;
+		this.#pastePendingMarker = "";
+		this.#pastePendingMatched = 0;
 		this.#pasteChunks = [];
 		this.#pasteOverlap = "";
 		this.#pasteBytes = 0;
@@ -427,7 +777,10 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	}
 
 	#armRawPasteTimer(): void {
-		if (this.#rawPasteTimer) return;
+		// Classification debounces on inactivity: every appended chunk pushes
+		// the cutoff out so a paste delivered over several reads still
+		// classifies as one burst.
+		this.#clearRawPasteTimer();
 		this.#rawPasteTimer = setTimeout(() => {
 			this.#rawPasteTimer = undefined;
 			this.#flushRawPasteCandidate();
@@ -480,8 +833,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				continue;
 			}
 			this.#rawPasteEndsWithCR = false;
-			// isRawMultilineBurst fires on the first non-break char after the
-			// second line break — trailing breaks alone never classify as a burst.
+			// isRawMultilineBurst requires two logical breaks plus a later
+			// non-break char: a lone Enter followed by fast typing must stay
+			// key events, never a paste. Trailing breaks alone never burst.
 			if (this.#rawPasteBreaks >= 2) this.#rawPasteBurst = true;
 		}
 	}
@@ -496,7 +850,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	}
 
 	#emitDataSequence(sequence: string): void {
-		const rawCodepoint = sequence.length === 1 ? sequence.codePointAt(0) : undefined;
+		// One printable code point, whether BMP (1 UTF-16 unit) or astral (2).
+		const rawCodepoint =
+			sequence.length === 1 || (sequence.length === 2 && sequence.codePointAt(0)! > 0xffff)
+				? sequence.codePointAt(0)
+				: undefined;
 		if (
 			rawCodepoint !== undefined &&
 			rawCodepoint === this.#pendingKittyPrintableCodepoint &&
@@ -540,6 +898,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			str.startsWith(`${ESC}\\`) &&
 			(this.#buffer.startsWith(`${ESC}]`) ||
 				this.#buffer.startsWith(`${ESC}P`) ||
+				this.#buffer.startsWith(`${ESC}X`) ||
+				this.#buffer.startsWith(`${ESC}^`) ||
 				this.#buffer.startsWith(`${ESC}_`))
 		) {
 			return false;
@@ -570,6 +930,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	}
 
 	flush(): string[] {
+		this.#materializeHeldUtf8();
 		return this.#drainBuffered(false);
 	}
 
@@ -592,15 +953,39 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		if (buffered === `${ESC}${ESC}`) {
 			sequences.push(ESC, ESC);
 		} else if (isKittyProtocolActive() && STRING_SEQ_PARTIAL.test(buffered)) {
-			if (discardTornString) this.#enterStringDiscard();
+			if (discardTornString) this.#enterStringDiscard(stringDiscardKindFor(buffered));
+		} else if (buffered.includes(ESC) && !buffered.startsWith(ESC)) {
+			// Mixed buffer: a complete prefix precedes a torn control string.
+			// Re-parse so the prefix emits exactly once and the torn tail is
+			// handled by string kind instead of leaking markers wholesale.
+			const parsed = extractCompleteSequences(buffered, 0);
+			for (const sequence of parsed.sequences) {
+				sequences.push(sequence);
+			}
+			if (parsed.discardFrom !== undefined) {
+				this.#enterStringDiscard(parsed.discardKind ?? "osc");
+				const after = this.#consumeStringDiscard(buffered.slice(parsed.discardFrom));
+				if (after.length > 0) sequences.push(after);
+			} else if (parsed.remainder.length > 0 && STRING_SEQ_PARTIAL.test(parsed.remainder)) {
+				if (discardTornString) {
+					this.#enterStringDiscard(stringDiscardKindFor(parsed.remainder));
+					const after = this.#consumeStringDiscard(parsed.remainder);
+					if (after.length > 0) sequences.push(after);
+				} else {
+					sequences.push(parsed.remainder);
+				}
+			} else if (parsed.remainder.length > 0) {
+				sequences.push(parsed.remainder);
+			}
 		} else {
 			sequences.push(buffered);
 		}
 		return sequences;
 	}
 
-	#enterStringDiscard(): void {
+	#enterStringDiscard(kind: StringSequenceKind): void {
 		this.#stringDiscardActive = true;
+		this.#stringDiscardKind = kind;
 		this.#stringDiscardBytes = 0;
 		this.#stringDiscardEscHeld = false;
 		this.#armStringDiscardWatchdog();
@@ -608,6 +993,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 	#exitStringDiscard(): void {
 		this.#stringDiscardActive = false;
+		this.#stringDiscardKind = "osc";
 		this.#stringDiscardBytes = 0;
 		this.#stringDiscardEscHeld = false;
 		if (this.#stringDiscardWatchdog) {
@@ -627,8 +1013,13 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		for (let i = 0; i < str.length; i++) {
 			const code = str.charCodeAt(i);
 			if (code === 0x07) {
-				this.#exitStringDiscard();
-				return str.slice(i + 1);
+				// BEL terminates only OSC strings; DCS/APC require ST (STX/BEL is
+				// payload there), matching resolveEscapeEnd's terminator policy.
+				if (this.#stringDiscardKind === "osc") {
+					this.#exitStringDiscard();
+					return str.slice(i + 1);
+				}
+				continue;
 			}
 			if (code === 0x1b) {
 				if (i + 1 === str.length) {
@@ -667,12 +1058,16 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#rawPasteCandidate = "";
 		this.#resetRawBreaks();
 		this.#pasteMode = false;
+		this.#pasteOverLimit = false;
+		this.#pastePendingMarker = "";
+		this.#pastePendingMatched = 0;
 		this.#pasteChunks = [];
 		this.#pasteOverlap = "";
 		this.#pasteBytes = 0;
 		this.#pendingKittyPrintableCodepoint = undefined;
 		this.#partialHoldStartMs = 0;
 		this.#escapeSearchOffset = 0;
+		this.#utf8Held = Buffer.alloc(0);
 	}
 
 	getBuffer(): string {

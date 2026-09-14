@@ -12,7 +12,6 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { logger, normalizePathForComparison } from "@oh-my-pi/pi-utils";
-import { CONDUCTOR_TRANSCRIPT_FILENAME } from "../../../conductor/transcript";
 import type { Keybinding, KeyId } from "../../../config/keybindings";
 import type { MessageRenderer } from "../../../extensibility/extensions/types";
 import { AgentLifecycleManager } from "../../../registry/agent-lifecycle";
@@ -497,7 +496,6 @@ export class AgentsViewComponent implements Component {
 				if (!record) return false;
 				if (record.ref?.kind === "advisor") return false;
 				if (record.session?.path.endsWith("__advisor.jsonl")) return false;
-				if (record.session?.path.endsWith(CONDUCTOR_TRANSCRIPT_FILENAME)) return false;
 				if (getRecordTitle(record) === "(no messages)") return false;
 				const session = record.session;
 				if (session && !session.title?.trim() && !session.firstMessage.trim()) return false;
@@ -638,13 +636,20 @@ export class AgentsViewComponent implements Component {
 		let index = this.#selectedIndex;
 		let remaining = Math.abs(delta);
 		const step = delta >= 0 ? 1 : -1;
+		let lastSelectable = -1;
 		while (remaining > 0) {
 			index += step;
-			if (index < 0 || index >= this.#rows.length) return;
-			if (this.#rows[index]?.selectable) remaining--;
+			if (index < 0 || index >= this.#rows.length) break;
+			if (this.#rows[index]?.selectable) {
+				remaining--;
+				lastSelectable = index;
+			}
 		}
-		this.#selectedIndex = index;
-		this.#setSelectedIdentity(this.#rows[index]?.identity);
+		// A full page delta can outrun the list; commit the furthest reachable
+		// selectable row instead of ignoring the key press entirely.
+		if (lastSelectable === -1) return;
+		this.#selectedIndex = lastSelectable;
+		this.#setSelectedIdentity(this.#rows[lastSelectable]?.identity);
 		this.#deps.requestRender();
 	}
 
@@ -841,11 +846,17 @@ export class AgentsViewComponent implements Component {
 
 				await session.prompt(trimmed, { streamingBehavior: delivery });
 				this.#setStatusMessage(delivery === "followUp" ? "Reply queued" : "Reply sent", "muted");
+				this.#deps.requestRender();
+				return;
 			} catch (error) {
-				this.#setStatusMessage(error instanceof Error ? error.message : String(error), "error");
+				if (!target.sessionPath) {
+					this.#setStatusMessage(error instanceof Error ? error.message : String(error), "error");
+					this.#deps.requestRender();
+					return;
+				}
+				// Aborted/tombstoned refs cannot revive; fall through to the
+				// session-transcript resume the composer advertised.
 			}
-			this.#deps.requestRender();
-			return;
 		}
 		if (target.sessionPath) {
 			const sessionPath = target.sessionPath;

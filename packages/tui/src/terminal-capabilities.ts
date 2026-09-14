@@ -1,4 +1,5 @@
 import { encodeSixel } from "@oh-my-pi/pi-natives";
+import { stripControlChars } from "@oh-my-pi/pi-utils";
 import { $env, isBunTestRuntime, isTerminalHeadless } from "@oh-my-pi/pi-utils/env";
 import { sendDesktopNotification, shouldDeliverDesktopNotification } from "./desktop-notify";
 import {
@@ -9,7 +10,7 @@ import {
 	renderKittyPlaceholderLines,
 	setKittyGraphics,
 } from "./kitty-graphics";
-import { isInsideTmux, wrapTmuxPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
+import { isInsideTmux, unwrapTmuxPassthrough, wrapTmuxPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import { isInsideHerdr, isInsideTerminalMultiplexer } from "./ttyid";
 import type { HangulCompatibilityJamoWidth } from "./utils";
 
@@ -26,6 +27,22 @@ export enum NotifyProtocol {
 	Bell = "\x07",
 	Osc99 = "\x1b]99;;",
 	Osc9 = "\x1b]9;",
+}
+
+let outboundWriter: ((data: string) => void) | null = null;
+
+/**
+ * Route out-of-band terminal writes (notifications) through the active
+ * ProcessTerminal writer when one exists so they stay ordered outside
+ * differential frame transactions; falls back to direct stdout.
+ */
+export function setOutboundWriter(write: ((data: string) => void) | null): void {
+	outboundWriter = write;
+}
+
+function writeOutbound(data: string): void {
+	if (outboundWriter) outboundWriter(data);
+	else process.stdout.write(data);
 }
 
 export type TerminalId =
@@ -125,9 +142,9 @@ export class TerminalInfo {
 			if (this.notifyProtocol === NotifyProtocol.Osc99 && osc99CapabilitiesConfirmed) {
 				return formatOsc99Notification(message);
 			}
-			return `${this.notifyProtocol}${notificationToLine(message)}\x1b\\`;
+			return `${this.notifyProtocol}${stripControlChars(notificationToLine(message))}\x1b\\`;
 		}
-		return `${this.notifyProtocol}${message}\x1b\\`;
+		return `${this.notifyProtocol}${stripControlChars(message)}\x1b\\`;
 	}
 
 	sendNotification(message: string | TerminalNotification): void {
@@ -136,15 +153,15 @@ export class TerminalInfo {
 		const formatted = this.formatNotification(message);
 
 		if (this.notifyProtocol !== NotifyProtocol.Bell && isInsideTmux()) {
-			process.stdout.write(`${wrapTmuxPassthrough(formatted)}\x07`);
+			writeOutbound(`${wrapTmuxPassthrough(formatted)}\x07`);
 			return;
 		}
 
 		if (this.notifyProtocol !== NotifyProtocol.Bell && isInsideZellij()) {
-			process.stdout.write(`${formatted}\x07`);
+			writeOutbound(`${formatted}\x07`);
 			return;
 		}
-		process.stdout.write(formatted);
+		writeOutbound(formatted);
 
 		if (this.notifyProtocol === NotifyProtocol.Bell && shouldDeliverDesktopNotification(this.id, true)) {
 			sendDesktopNotification(message);
@@ -276,9 +293,10 @@ function getFallbackImageProtocol(
 	if (!isTTY) return null;
 	if (terminalId === "vscode" || terminalId === "alacritty") return null;
 	const term = env.TERM?.toLowerCase() ?? "";
-	if (term.includes("screen") || term.includes("tmux") || term.includes("ghostty")) {
-		return ImageProtocol.Kitty;
-	}
+	// Ghostty always supports the Kitty graphics protocol. A bare screen/tmux
+	// TERM reveals nothing about the outer terminal, so leave images off
+	// instead of gambling that passthrough reaches a Kitty-capable client.
+	if (term.includes("ghostty")) return ImageProtocol.Kitty;
 	return null;
 }
 
@@ -526,7 +544,8 @@ export interface ParsedKittyPlacementLine {
 }
 
 export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacementLine | null {
-	const m = KITTY_DIRECT_PLACEMENT_LINE.exec(line);
+	const decoded = unwrapTmuxPassthrough(line) ?? line;
+	const m = KITTY_DIRECT_PLACEMENT_LINE.exec(decoded);
 	if (!m) return null;
 	const columns = m[4] !== undefined ? Number(m[4]) : 0;
 	const rows = m[5] !== undefined ? Number(m[5]) : 0;
@@ -765,6 +784,14 @@ export function getWebpDimensions(base64Data: string): ImageDimensions | null {
 }
 
 export function getImageDimensions(base64Data: string, mimeType: string): ImageDimensions | null {
+	const dimensions = readImageDimensions(base64Data, mimeType);
+	// Zero (or nonsensical) header dimensions produce NaN/Infinity geometry
+	// downstream; treat the image as unreadable and fall back to text.
+	if (dimensions && (dimensions.widthPx <= 0 || dimensions.heightPx <= 0)) return null;
+	return dimensions;
+}
+
+function readImageDimensions(base64Data: string, mimeType: string): ImageDimensions | null {
 	if (mimeType === "image/png") {
 		return getPngDimensions(base64Data);
 	}
@@ -786,6 +813,14 @@ export function renderImage(
 	options: ImageRenderOptions = {},
 ): { sequence?: string; lines?: string[]; rows: number; transmit?: string } | null {
 	if (!TERMINAL.imageProtocol) {
+		return null;
+	}
+	if (
+		!Number.isFinite(imageDimensions.widthPx) ||
+		!Number.isFinite(imageDimensions.heightPx) ||
+		imageDimensions.widthPx <= 0 ||
+		imageDimensions.heightPx <= 0
+	) {
 		return null;
 	}
 
@@ -855,9 +890,11 @@ export function renderImage(
 }
 
 export function imageFallback(mimeType: string, dimensions?: ImageDimensions, filename?: string): string {
+	// Filename and MIME type can come from tool/MCP output; strip control
+	// bytes before they reach styled TUI rows.
 	const parts: string[] = [];
-	if (filename) parts.push(filename);
-	parts.push(`[${mimeType}]`);
+	if (filename) parts.push(stripControlChars(filename));
+	parts.push(`[${stripControlChars(mimeType)}]`);
 	if (dimensions) parts.push(`${dimensions.widthPx}x${dimensions.heightPx}`);
 	return `[Image: ${parts.join(" ")}]`;
 }

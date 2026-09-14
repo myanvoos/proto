@@ -1,12 +1,13 @@
 import { Text } from "@oh-my-pi/pi-tui/components/text";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
-import { getPaddingX } from "@oh-my-pi/pi-tui/utils";
+import { getPaddingX, getWidthConfigEpoch } from "@oh-my-pi/pi-tui/utils";
 
 export class WidthAwareText implements Component {
 	#format: (contentWidth: number) => string;
 	readonly #paddingX: number;
 	#inner: Text;
 	#cachedContentWidth = -1;
+	#cachedWidthEpoch = -1;
 	#cachedText: string | undefined;
 	#ignoreTight = false;
 
@@ -36,8 +37,13 @@ export class WidthAwareText implements Component {
 	render(width: number): readonly string[] {
 		const paddingX = this.#ignoreTight ? this.#paddingX : getPaddingX(this.#paddingX);
 		const contentWidth = Math.max(1, width - paddingX * 2);
-		if (this.#cachedText === undefined || contentWidth !== this.#cachedContentWidth) {
+		if (
+			this.#cachedText === undefined ||
+			contentWidth !== this.#cachedContentWidth ||
+			this.#cachedWidthEpoch !== getWidthConfigEpoch()
+		) {
 			this.#cachedContentWidth = contentWidth;
+			this.#cachedWidthEpoch = getWidthConfigEpoch();
 			this.#cachedText = this.#format(contentWidth);
 			this.#inner.setText(this.#cachedText);
 		}

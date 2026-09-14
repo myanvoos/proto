@@ -12,6 +12,18 @@ export function sanitizeText(text: string): string {
 	return sanitizeWellFormedText(text);
 }
 
+const ALL_CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/g;
+
+/**
+ * Strip every C0 control, DEL, and C1 control (U+0000-U+001F, U+007F,
+ * U+0080-U+009F). Unlike sanitizeText this also removes tab and newline; use
+ * for protocol payloads (terminal titles, notifications) and single-line
+ * render fields.
+ */
+export function stripControlChars(text: string): string {
+	return text.replace(ALL_CONTROL_RE, "");
+}
+
 function sanitizeWellFormedText(text: string): string {
 	CONTROL_RE.lastIndex = 0;
 	if (CONTROL_RE.exec(text) === null) return text;

@@ -13,7 +13,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
 import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
@@ -1071,7 +1071,7 @@ function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["ques
 }
 
 function renderCustomInputLines(uiTheme: Theme, customInput: string): string[] {
-	const lines = customInput.split("\n");
+	const lines = sanitizeText(customInput).split("\n");
 	const out: string[] = [
 		` ${uiTheme.styledSymbol("status.success", "success")} ${uiTheme.fg("toolOutput", lines[0] ?? "")}`,
 	];
@@ -1084,7 +1084,7 @@ function renderNoteLines(uiTheme: Theme, note: string, width: number): string[] 
 	const continuationPrefix = "       ";
 	const firstLineWidth = Math.max(1, width - visibleWidth(prefix));
 	const continuationWidth = Math.max(1, width - visibleWidth(continuationPrefix));
-	return replaceTabs(note)
+	return replaceTabs(sanitizeText(note))
 		.split("\n")
 		.map((line, index) => {
 			const linePrefix = index === 0 ? `${uiTheme.fg("dim", " Note:")} ` : continuationPrefix;
@@ -1172,7 +1172,7 @@ export const askToolRenderer = {
 					const lines = q.options?.length
 						? [...mdLines, ...renderQuestionOptionLines(uiTheme, mdTheme, q.options, q.multi)]
 						: mdLines;
-					return { label: `${uiTheme.fg("dim", `[${q.id}]`)}${metaStr}`, lines };
+					return { label: `${uiTheme.fg("dim", `[${sanitizeText(q.id)}]`)}${metaStr}`, lines };
 				});
 				return { header, sections, state: "pending", borderColor: "borderMuted", width };
 			});
@@ -1226,7 +1226,7 @@ export const askToolRenderer = {
 			const txt = result.content[0];
 			const fallback = txt?.type === "text" && txt.text ? txt.text : "";
 			const header = renderStatusLine({ icon: "warning", title: "Ask" }, uiTheme);
-			const body = fallback ? `\n${uiTheme.fg("dim", fallback)}` : "";
+			const body = fallback ? `\n${uiTheme.fg("dim", sanitizeText(fallback))}` : "";
 			return new Text(`${header}${body}`, 0, 0);
 		}
 

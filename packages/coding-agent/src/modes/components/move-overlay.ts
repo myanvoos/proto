@@ -1,10 +1,34 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type Component, CURSOR_MARKER, type Focusable, Key, matchesKey } from "@oh-my-pi/pi-tui";
+import { type Component, CURSOR_MARKER, type Focusable, getSegmenter, Key, matchesKey } from "@oh-my-pi/pi-tui";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import { bottomBorder, row, topBorder } from "./overlay-box";
+
+function graphemeBoundaries(text: string): number[] {
+	const boundaries = [0];
+	for (const segment of getSegmenter().segment(text)) {
+		boundaries.push(segment.index + segment.segment.length);
+	}
+	return boundaries;
+}
+
+function previousGraphemeBoundary(boundaries: number[], index: number): number {
+	let previous = 0;
+	for (const boundary of boundaries) {
+		if (boundary >= index) break;
+		previous = boundary;
+	}
+	return previous;
+}
+
+function nextGraphemeBoundary(boundaries: number[], index: number): number {
+	for (const boundary of boundaries) {
+		if (boundary > index) return boundary;
+	}
+	return boundaries[boundaries.length - 1] ?? 0;
+}
 
 export interface MoveOverlayResult {
 	directory: string;
@@ -80,14 +104,13 @@ function listChildDirectories(dirPath: string, max: number, includeHidden = fals
 	const results: DirEntry[] = [];
 	const entries = readDirCached(dirPath);
 	for (const entry of entries) {
-		if (results.length >= max) break;
 		const { name } = entry;
 		if (!includeHidden && name.startsWith(".")) continue;
 		if (!entryIsDirectory(dirPath, entry)) continue;
 		results.push({ value: path.join(dirPath, name), label: `${name}/` });
 	}
 	results.sort((a, b) => a.label.localeCompare(b.label));
-	return results;
+	return results.slice(0, max);
 }
 
 function searchDirectories(prefix: string, cwd: string, max: number): DirEntry[] {
@@ -115,14 +138,14 @@ function searchDirectories(prefix: string, cwd: string, max: number): DirEntry[]
 	const results: DirEntry[] = [];
 	const entries = readDirCached(baseDir);
 	for (const entry of entries) {
-		if (results.length >= max) break;
 		const { name } = entry;
 		if (!includeHidden && name.startsWith(".")) continue;
 		if (query && !name.toLowerCase().includes(lower)) continue;
 		if (!entryIsDirectory(baseDir, entry)) continue;
 		results.push({ value: path.join(baseDir, name), label: `${name}/` });
 	}
-	return results;
+	results.sort((a, b) => a.label.localeCompare(b.label));
+	return results.slice(0, max);
 }
 
 export class MoveOverlay implements Component, Focusable {
@@ -179,16 +202,17 @@ export class MoveOverlay implements Component, Focusable {
 			return;
 		}
 		if (matchesKey(data, Key.left)) {
-			this.#cursor = Math.max(0, this.#cursor - 1);
+			this.#cursor = previousGraphemeBoundary(graphemeBoundaries(this.#input), this.#cursor);
 			return;
 		}
 		if (matchesKey(data, Key.right)) {
-			this.#cursor = Math.min(this.#input.length, this.#cursor + 1);
+			this.#cursor = nextGraphemeBoundary(graphemeBoundaries(this.#input), this.#cursor);
 			return;
 		}
 		if (matchesKey(data, Key.backspace) && this.#cursor > 0) {
-			this.#input = this.#input.slice(0, this.#cursor - 1) + this.#input.slice(this.#cursor);
-			this.#cursor--;
+			const previous = previousGraphemeBoundary(graphemeBoundaries(this.#input), this.#cursor);
+			this.#input = this.#input.slice(0, previous) + this.#input.slice(this.#cursor);
+			this.#cursor = previous;
 			this.#selectedIndex = 0;
 			this.#updateResults();
 			return;
@@ -237,15 +261,19 @@ export class MoveOverlay implements Component, Focusable {
 			const marker = this.#focused ? CURSOR_MARKER : "";
 			return `${prompt}${placeholder}${marker}\x1b[7m \x1b[27m`;
 		}
+		const boundaries = graphemeBoundaries(this.#input);
 		const before = this.#input.slice(0, this.#cursor);
-		const cursorChar = this.#cursor < this.#input.length ? this.#input[this.#cursor] : " ";
-		const after = this.#input.slice(this.#cursor + 1);
+		const cursorEnd = nextGraphemeBoundary(boundaries, this.#cursor);
+		const cursorChar = this.#cursor < this.#input.length ? this.#input.slice(this.#cursor, cursorEnd) : " ";
+		const after = this.#input.slice(cursorEnd);
 		const marker = this.#focused ? CURSOR_MARKER : "";
 		return `${prompt}${before}${marker}\x1b[7m${cursorChar}\x1b[27m${after}`;
 	}
 
 	#updateResults(): void {
-		this.#results = searchDirectories(this.#input, this.#cwd, MAX_RESULTS + 5);
+		// The navigable set must equal the rendered set: request exactly the
+		// rows the list paints so selection can never land on a hidden entry.
+		this.#results = searchDirectories(this.#input, this.#cwd, MAX_RESULTS);
 		if (this.#selectedIndex >= this.#results.length) {
 			this.#selectedIndex = Math.max(0, this.#results.length - 1);
 		}

@@ -579,14 +579,17 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				beforePrefix = currentLine.slice(0, cursorCol - liveAtPrefix.length);
 			}
 
-			const newLine = `${beforePrefix + item.value} ${afterCursor}`;
+			// A directory completion ends in "/": keep the token open so child
+			// suggestions can continue instead of terminating it with a space.
+			const separator = item.value.endsWith("/") ? "" : " ";
+			const newLine = `${beforePrefix + item.value}${separator}${afterCursor}`;
 			const newLines = [...lines];
 			newLines[cursorLine] = newLine;
 
 			return {
 				lines: newLines,
 				cursorLine,
-				cursorCol: beforePrefix.length + item.value.length + 1,
+				cursorCol: beforePrefix.length + item.value.length + separator.length,
 			};
 		}
 

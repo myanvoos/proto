@@ -459,6 +459,7 @@ class SessionList implements Component {
 	}
 
 	#composeFiltered(): void {
+		const previouslySelected = this.#filteredSessions[this.#selectedIndex];
 		this.#fuzzyRanked.sort(compareFuzzyRank);
 		const base: SessionInfo[] = [];
 		for (const match of this.#literalRanked) base.push(match.session);
@@ -466,6 +467,12 @@ class SessionList implements Component {
 		this.#setFilteredSessions(
 			this.#historyIds.length > 0 ? mergeSessionRanking(this.#allSessions, base, this.#historyIds) : base,
 		);
+		// A background fuzzy-scan slice reorders the list; once the user has
+		// moved, the highlighted session - not the numeric slot - must stay put.
+		if (this.#selectionMoved && previouslySelected !== undefined) {
+			const pinned = this.#filteredSessions.indexOf(previouslySelected);
+			if (pinned >= 0) this.#selectedIndex = pinned;
+		}
 		this.#selectedIndex = Math.min(this.#selectedIndex, Math.max(0, this.#filteredSessions.length - 1));
 	}
 

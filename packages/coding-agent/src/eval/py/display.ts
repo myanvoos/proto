@@ -34,15 +34,21 @@ export async function renderKernelDisplay(content: Record<string, unknown>): Pro
 		return { text: "", outputs };
 	}
 
+	// A MIME bundle's image entries are alternatives for the same render, not
+	// independent displays; prefer PNG and skip the JPEG duplicate.
 	if (typeof data["image/png"] === "string") {
 		outputs.push({ type: "image", data: data["image/png"] as string, mimeType: "image/png" });
-	}
-	if (typeof data["image/jpeg"] === "string") {
+	} else if (typeof data["image/jpeg"] === "string") {
 		outputs.push({ type: "image", data: data["image/jpeg"] as string, mimeType: "image/jpeg" });
 	}
-	if (data["application/json"] !== undefined) {
+	const hasJson = data["application/json"] !== undefined;
+	if (hasJson) {
 		outputs.push({ type: "json", data: data["application/json"] });
 	}
+
+	// JSON is the canonical model-visible representation. Keep text/plain in
+	// the bundle for TUI consumers, but do not return it as a second text chunk.
+	if (hasJson) return { text: "", outputs };
 
 	if (typeof data["text/markdown"] === "string") {
 		outputs.push({ type: "markdown" });

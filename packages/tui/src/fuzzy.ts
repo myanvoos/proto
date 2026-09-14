@@ -156,7 +156,8 @@ function findWordBoundaryPhrase(normalized: string, phrase: string): number {
 	const first = normalized.indexOf(phrase);
 	if (first < 0) return -1;
 	if (isWordBoundaryPhrase(normalized, first, phrase.length)) return first;
-	if (first === 0 || normalized[first - 1] === " ") return -1;
+	// A boundary-start-but-not-end first occurrence ("foo" in "foobar foo")
+	// must not stop the scan: a later occurrence can still be a whole word.
 	if (phrase.length < MIN_SHADOW_RESCAN_LENGTH) return -1;
 	for (let at = normalized.indexOf(phrase, first + 1); at >= 0; at = normalized.indexOf(phrase, at + 1)) {
 		if (isWordBoundaryPhrase(normalized, at, phrase.length)) return at;
