@@ -79,13 +79,6 @@ import {
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
 import { reset as resetCapabilities } from "../capability";
-import {
-	type ConductorCommissionOutcome,
-	type ConductorStats,
-	loadConductorJournal,
-	loadConductorTranscriptCost,
-	SessionConductor,
-} from "../conductor";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
@@ -305,6 +298,7 @@ export * from "./agent-session-types";
 export type { AdvisorStats, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
+const TODO_ERROR_REMINDER_TYPE = "todo-error-reminder";
 
 import { LoopGuards, type StreamGuardsHost } from "./stream-guards";
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
@@ -441,7 +435,6 @@ export class AgentSession {
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
 	readonly #advisors: SessionAdvisors;
-	readonly #conductor: SessionConductor;
 	#goalTurnCounter = 0;
 	#clientBridge: ClientBridge | undefined;
 	#allowAcpAgentInitiatedTurns = false;
@@ -980,7 +973,6 @@ export class AgentSession {
 			this.#loopGuards.recordTurn(messages, context);
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
 			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal);
-			this.#conductor.onPrimaryTurnEnd(context?.willContinue);
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
@@ -1174,7 +1166,6 @@ export class AgentSession {
 			},
 			emit: event => {
 				if (event.type === "goal_updated") {
-					this.#conductor.onGoalUpdated(event.goal);
 					return this.#emitSessionEvent({ type: "goal_updated", goal: event.goal, state: event.state });
 				}
 			},
@@ -1196,7 +1187,6 @@ export class AgentSession {
 					{ deliverAs: message.deliverAs },
 				);
 			},
-			completionAuthority: goal => this.#conductor.completionAuthority(goal),
 		});
 		this.#cancelExitRecorder = postmortem.register(`agent-session:${this.sessionManager.getSessionId()}`, reason => {
 			this.#recordSessionExit(reason);
@@ -1267,31 +1257,6 @@ export class AgentSession {
 			initialCosts: config.initialAdvisorCosts,
 		});
 
-		this.#conductor = new SessionConductor(
-			{
-				...advisorsHost,
-				goalRuntime: () => this.#goalRuntime,
-				currentGoal: () => this.#goalModeState?.goal,
-				requestCompaction: () => this.compact(),
-				emitConductorActivity: activity => {
-					void this.#emitSessionEvent({ type: "conductor_activity", activity }).catch(error => {
-						logger.debug("conductor activity emit failed", { err: String(error) });
-					});
-				},
-			},
-			{
-				enabled: this.settings.get("conductor.enabled"),
-				initialCost: config.initialConductorCost,
-				toolsFactory: config.conductorToolsFactory,
-				setBashCommandPolicy: config.conductorSetBashCommandPolicy,
-				getToolContext: config.advisorGetToolContext,
-				mcpResources: config.advisorMcpResources,
-				contextPrompt: config.advisorContextPrompt,
-				streamFn: config.advisorStreamFn,
-				transformProviderContext: config.transformProviderContext,
-			},
-		);
-
 		const maintenanceHost: SessionMaintenanceHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1330,10 +1295,7 @@ export class AgentSession {
 			syncTodoPhasesFromBranch: () => this.#todo.syncFromBranch(),
 			resetAdvisorRuntimes: (reason?: string) => {
 				this.#advisors.resetAllRuntimes(reason);
-				this.#conductor.resetAllRuntimes(reason);
 			},
-			suspendConductorForTransition: () => this.#conductor.suspendForTransition(),
-			resumeConductorAfterTransition: () => this.#conductor.resumeFromTransition(),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
 			getContextBreakdown: options => this.getContextBreakdown(options),
@@ -1357,7 +1319,6 @@ export class AgentSession {
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
 		this.#unsubscribeModelRoles = onModelRolesChanged(() => {
 			this.#advisors.onModelRolesChanged();
-			this.#conductor.onModelRolesChanged();
 		});
 
 		this.#unsubscribeExtendedContext = onExtendedContextChanged(() => void this.#reapplyExtendedContextPolicy());
@@ -1996,7 +1957,7 @@ export class AgentSession {
 		}
 
 		if (event.type === "message_end" && event.message.role === "toolResult") {
-			this.#todo.onToolResult(event.message.toolName, event.message.isError);
+			this.#todo.onToolResult(event.message.toolName, event.message.isError, event.message.details);
 		}
 
 		if (event.type === "message_end" && event.message.role === "assistant") {
@@ -2182,8 +2143,13 @@ export class AgentSession {
 				const semanticResult = semanticToolResult(toolName, event.message);
 				const semanticDetails = isRecord(semanticResult?.details) ? semanticResult.details : undefined;
 
-				if (toolName === "todo" && !isError && details && this.#todo.onTodoResultDetails(details, toolCallId)) {
-					this.#scheduleReplanTitleRefresh();
+				if (toolName === "todo" && !isError) {
+					this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(
+						message => message.customType !== TODO_ERROR_REMINDER_TYPE,
+					);
+					if (details && this.#todo.onTodoResultDetails(details, toolCallId)) {
+						this.#scheduleReplanTitleRefresh();
+					}
 				}
 				if (toolName === "todo" && isError) {
 					const errorText = content.find(part => part.type === "text")?.text;
@@ -2196,7 +2162,7 @@ export class AgentSession {
 					].join("\n");
 					await this.sendCustomMessage(
 						{
-							customType: "todo-error-reminder",
+							customType: TODO_ERROR_REMINDER_TYPE,
 							content: reminderText,
 							display: false,
 							details: { toolName, errorText },
@@ -3062,7 +3028,6 @@ export class AgentSession {
 		}
 
 		if (this.#advisors) this.#advisors.refreshProviderIdentity();
-		if (this.#conductor) this.#conductor.refreshProviderIdentity();
 	}
 
 	#notifySessionChangeCallbacks(): void {
@@ -3137,7 +3102,6 @@ export class AgentSession {
 		this.agent.setAsideMessageProvider(undefined);
 		this.agent.hasIrcInterrupts = undefined;
 		this.#advisors.stopRuntime();
-		this.#conductor.stopRuntime();
 		this.#monitorDisposeTask ??= this.#monitors.dispose();
 		this.#eval.beginDispose();
 	}
@@ -3240,7 +3204,6 @@ export class AgentSession {
 		}
 		await this.#drainAutolearnCapture();
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
-		const conductorRecorderClosed = this.#conductor.recorderClosed();
 		const results = await Promise.allSettled([
 			this.#bash.dispose(),
 			this.#disposeOwnedAsyncJobs(),
@@ -3251,7 +3214,6 @@ export class AgentSession {
 			shutdownTinyTitleClient(),
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
-			conductorRecorderClosed,
 		]);
 		for (const result of results) {
 			if (result.status === "rejected") {
@@ -3358,7 +3320,6 @@ export class AgentSession {
 		this.#syncAgentSessionId();
 
 		this.#advisors.resetSessionState();
-		this.#conductor.resetSessionState();
 
 		this.sessionManager.appendResetBoundary();
 
@@ -5270,7 +5231,6 @@ export class AgentSession {
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
-			await this.#conductor.suspendForTransition();
 			try {
 				this.agent.reset();
 				await this.sessionManager.flush();
@@ -5281,7 +5241,6 @@ export class AgentSession {
 				this.#bash.markSessionTransition(bashTransition);
 
 				this.#advisors.clearCost();
-				this.#conductor.clearCost();
 				sessionTransitioned = true;
 			} finally {
 				this.#syncLiveHeartbeat();
@@ -5302,8 +5261,6 @@ export class AgentSession {
 
 			this.#todo.resetCycle();
 			this.#advisors.resetSessionState();
-			this.#conductor.resetSessionState();
-			this.#conductor.resumeFromTransition();
 			advisorRecordersDetached = false;
 			this.#reconnectToAgent();
 			sessionReconciled = true;
@@ -5326,11 +5283,8 @@ export class AgentSession {
 			if (advisorRecordersDetached) {
 				if (sessionTransitioned) {
 					this.#advisors.resetSessionState();
-					this.#conductor.resetSessionState();
-					this.#conductor.resumeFromTransition();
 				} else {
 					this.#advisors.reattachRecorderFeeds();
-					this.#conductor.resumeFromTransition();
 				}
 			}
 		}
@@ -5366,7 +5320,6 @@ export class AgentSession {
 			advisorRecordersDetached = true;
 
 			await this.#advisors.drainAndDetachRecorders();
-			await this.#conductor.suspendForTransition();
 			const bashTransition = this.#bash.beginSessionTransition();
 
 			let forkResult: { oldSessionFile: string; newSessionFile: string } | undefined;
@@ -5395,7 +5348,6 @@ export class AgentSession {
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
 			this.#advisors.reattachRecorderFeeds();
-			this.#conductor.resumeFromTransition();
 			advisorRecordersDetached = false;
 			await this.#afterSessionSwitch();
 			sessionReconciled = true;
@@ -5413,7 +5365,6 @@ export class AgentSession {
 			if (!sessionReconciled) await this.#afterSessionSwitch();
 			if (advisorRecordersDetached) {
 				this.#advisors.reattachRecorderFeeds();
-				this.#conductor.resumeFromTransition();
 			}
 		}
 	}
@@ -5642,7 +5593,6 @@ export class AgentSession {
 		}
 		this.agent.replaceMessages(activeMessages ?? sessionContext.messages);
 		this.#advisors.resetSessionState({ preserveCost: true });
-		this.#conductor.resetSessionState({ preserveCost: true });
 		this.#todo.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		this.#checkpointState = undefined;
@@ -5874,7 +5824,10 @@ export class AgentSession {
 		return this.#eval.hasPendingMessages;
 	}
 
-	drainPendingIrcInboxMessages(agentId: string, opts?: { from?: string; limit?: number }): IrcMessage[] {
+	drainPendingIrcInboxMessages(
+		agentId: string,
+		opts?: { from?: string; limit?: number; peek?: boolean },
+	): IrcMessage[] {
 		return this.#irc.drainInboxMessages(agentId, opts);
 	}
 
@@ -6060,7 +6013,6 @@ export class AgentSession {
 		await this.sessionManager.flush();
 		const previousSessionState = this.sessionManager.captureState();
 		const bashTransition = this.#bash.beginSessionTransition();
-		let conductorSuspended = false;
 
 		const previousSessionContext = switchingToDifferentSession ? undefined : this.buildDisplaySessionContext();
 
@@ -6096,8 +6048,6 @@ export class AgentSession {
 		try {
 			if (switchingToDifferentSession) {
 				await this.#advisors.drainAndDetachRecorders();
-				await this.#conductor.suspendForTransition();
-				conductorSuspended = true;
 			}
 			await this.sessionManager.setSessionFile(sessionPath);
 			this.#syncLiveHeartbeat();
@@ -6125,7 +6075,6 @@ export class AgentSession {
 
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#advisors.resetSessionState({ preserveCost: true });
-			this.#conductor.resetSessionState({ preserveCost: true });
 			this.#todo.syncFromBranch();
 			if (switchingToDifferentSession) {
 				this.#closeAllProviderSessions("session switch");
@@ -6223,10 +6172,7 @@ export class AgentSession {
 
 			if (switchingToDifferentSession) {
 				this.#advisors.restoreCost(await loadAdvisorTranscriptCosts(this.sessionFile));
-				this.#conductor.restoreCost(await loadConductorTranscriptCost(this.sessionFile));
-				this.#conductor.restoreJournal(await loadConductorJournal(this.sessionFile));
 			}
-			if (conductorSuspended) this.#conductor.resumeFromTransition();
 			this.#bash.finishSessionTransition(bashTransition, true);
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
 				this.#notifySessionChangeCallbacks();
@@ -6266,10 +6212,7 @@ export class AgentSession {
 			}
 			this.#todo.syncFromBranch();
 			this.#advisors.resetAllRuntimes();
-			this.#conductor.resetAllRuntimes();
 			this.#advisors.reattachRecorderFeeds();
-			this.#conductor.reattachRecorderFeeds();
-			if (conductorSuspended) this.#conductor.resumeFromTransition();
 			this.#reconnectToAgent();
 			try {
 				await this.#afterSessionSwitch();
@@ -6331,7 +6274,6 @@ export class AgentSession {
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
-			await this.#conductor.suspendForTransition();
 			try {
 				if (!selectedEntry.parentId) {
 					const title = this.sessionManager.getSessionName();
@@ -6343,7 +6285,6 @@ export class AgentSession {
 				}
 				this.#bash.markSessionTransition(bashTransition);
 				this.#advisors.clearCost();
-				this.#conductor.clearCost();
 				sessionTransitioned = true;
 			} finally {
 				this.#syncLiveHeartbeat();
@@ -6370,23 +6311,18 @@ export class AgentSession {
 			if (!skipConversationRestore) {
 				this.agent.replaceMessages(sessionContext.messages);
 				this.#advisors.resetSessionState();
-				this.#conductor.resetSessionState();
 				this.#closeCodexProviderSessionsForHistoryRewrite();
 			}
 
 			this.#advisors.reattachRecorderFeeds();
-			this.#conductor.resumeFromTransition();
 			advisorRecordersDetached = false;
 			return { selectedText, selectedImages, cancelled: false };
 		} finally {
 			if (advisorRecordersDetached) {
 				if (sessionTransitioned) {
 					this.#advisors.resetSessionState();
-					this.#conductor.resetSessionState();
-					this.#conductor.resumeFromTransition();
 				} else {
 					this.#advisors.reattachRecorderFeeds();
-					this.#conductor.resumeFromTransition();
 				}
 			}
 		}
@@ -6452,7 +6388,6 @@ export class AgentSession {
 		try {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
-			await this.#conductor.suspendForTransition();
 			try {
 				if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
 					throw new Error("Cannot branch /side: session changed since /side started");
@@ -6460,7 +6395,6 @@ export class AgentSession {
 				this.sessionManager.createBranchedSession(leafId);
 				this.#bash.markSessionTransition(bashTransition);
 				this.#advisors.clearCost();
-				this.#conductor.clearCost();
 				sessionTransitioned = true;
 			} finally {
 				this.#syncLiveHeartbeat();
@@ -6491,8 +6425,6 @@ export class AgentSession {
 
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#advisors.resetSessionState();
-			this.#conductor.resetSessionState();
-			this.#conductor.resumeFromTransition();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 			advisorRecordersDetached = false;
 
@@ -6501,11 +6433,8 @@ export class AgentSession {
 			if (advisorRecordersDetached) {
 				if (sessionTransitioned) {
 					this.#advisors.resetSessionState();
-					this.#conductor.resetSessionState();
-					this.#conductor.resumeFromTransition();
 				} else {
 					this.#advisors.reattachRecorderFeeds();
-					this.#conductor.resumeFromTransition();
 				}
 			}
 		}
@@ -6695,9 +6624,6 @@ export class AgentSession {
 			newLeafId = targetId;
 		}
 
-		// The branch rewrite rebinds leaf/parent wiring under the live conversation; an in-flight conductor audit
-		// must not deliver a verdict (or restart) into that window.
-		await this.#conductor.suspendForTransition();
 		let summaryEntry: BranchSummaryEntry | undefined;
 		let stateContext: SessionContext | undefined;
 		try {
@@ -6728,11 +6654,9 @@ export class AgentSession {
 			this.agent.replaceMessages(displayContext.messages);
 			this.#rehydrateCheckpointRewindState();
 			this.#advisors.resetSessionState({ preserveCost: true });
-			this.#conductor.resetSessionState({ preserveCost: true });
 			this.#todo.syncFromBranch();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 		} finally {
-			this.#conductor.resumeFromTransition();
 		}
 
 		this.#branchSummaryAbortController = undefined;
@@ -7251,38 +7175,6 @@ export class AgentSession {
 
 	getAdvisorAvailableToolNames(): string[] {
 		return this.#advisors.getAdvisorAvailableToolNames();
-	}
-
-	setConductorEnabled(enabled: boolean): boolean {
-		return this.#conductor.setEnabled(enabled);
-	}
-
-	toggleConductorEnabled(): boolean {
-		return this.#conductor.toggleEnabled();
-	}
-
-	isConductorEnabled(): boolean {
-		return this.#conductor.isEnabled();
-	}
-
-	getConductorStats(): ConductorStats {
-		return this.#conductor.getStats();
-	}
-
-	getConductorCost(): number {
-		return this.#conductor.getCost();
-	}
-
-	formatConductorStatus(): string {
-		return this.#conductor.formatStatus();
-	}
-
-	/**
-	 * Runs one commissioning turn and returns the drafted contract. Nothing is persisted here: the host decides
-	 * whether the proposal becomes a goal, and creates it through the same path `/goal set` uses.
-	 */
-	commissionConductorProgram(ask: string): Promise<ConductorCommissionOutcome> {
-		return this.#conductor.commission(ask);
 	}
 
 	getAdvisorAgent(): Agent | undefined {

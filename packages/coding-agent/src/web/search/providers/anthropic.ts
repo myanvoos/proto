@@ -19,11 +19,18 @@ import type {
 	AnthropicApiResponse,
 	AnthropicCitation,
 	SearchCitation,
+	SearchConstraintApplication,
 	SearchResponse,
 	SearchSource,
 } from "../../../web/search/types";
-import { SearchProviderError } from "../../../web/search/types";
-import { formatQuery, parseSearchQuery, type QuerySyntax, type StructuredQuery } from "../query";
+import { mergeSearchReferences, SearchProviderError } from "../../../web/search/types";
+import {
+	formatQuery,
+	getQueryConstraintLabels,
+	parseSearchQuery,
+	type QuerySyntax,
+	type StructuredQuery,
+} from "../query";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
@@ -47,10 +54,11 @@ interface AnthropicQueryPlan {
 	query: string;
 	allowedDomains?: string[];
 	blockedDomains?: string[];
+	constraintApplications: SearchConstraintApplication[];
 }
 
 function planQuery(rawQuery: string, parsed: StructuredQuery): AnthropicQueryPlan {
-	if (!parsed.hasDirectives) return { query: rawQuery };
+	if (!parsed.hasDirectives) return { query: rawQuery, constraintApplications: [] };
 	const hosts = (sites: readonly string[]) => {
 		const unique = new Set<string>();
 		for (const site of sites) {
@@ -62,10 +70,26 @@ function planQuery(rawQuery: string, parsed: StructuredQuery): AnthropicQueryPla
 	};
 	const allowed = hosts(parsed.sites);
 	const blocked = allowed.length === 0 ? hosts(parsed.excludedSites) : [];
+	const nativeOperators = new Map<string, string>();
+	if (parsed.sites.length > 0 && allowed.length > 0) {
+		nativeOperators.set(parsed.sites.map(site => `site:${site}`).join(" OR "), "allowed_domains");
+	}
+	if (parsed.excludedSites.length > 0 && blocked.length > 0) {
+		nativeOperators.set(parsed.excludedSites.map(site => `-site:${site}`).join(" "), "blocked_domains");
+	}
+	const applications = getQueryConstraintLabels(parsed).map(operator => {
+		const nativeDetail = nativeOperators.get(operator);
+		if (nativeDetail) return { operator, mode: "native" as const, detail: nativeDetail };
+		if (/^(?:-)?intext:|^lang:/i.test(operator)) {
+			return { operator, mode: "unsupported" as const, relaxed: true };
+		}
+		return { operator, mode: "post-filtered" as const };
+	});
 	return {
 		query: formatQuery(parsed, ANTHROPIC_QUERY_SYNTAX),
 		allowedDomains: allowed.length > 0 ? allowed : undefined,
 		blockedDomains: blocked.length > 0 ? blocked : undefined,
+		constraintApplications: applications,
 	};
 }
 
@@ -194,22 +218,77 @@ function parsePageAge(pageAge: string | null | undefined): number | undefined {
 	return value * (multipliers[unit] ?? 86400);
 }
 
-function parseResponse(response: AnthropicApiResponse): SearchResponse {
+const NARRATION_PREFIXES = [
+	/^let me\b/i,
+	/^i['’]ll\b/i,
+	/^i will\b/i,
+	/^now i\b/i,
+	/^based on the search results,\s*i can\b/i,
+	/^based on (?:the|these) search results,\b/i,
+] as const;
+
+function isSearchBlock(block: AnthropicApiResponse["content"][number]): boolean {
+	return block.type === "server_tool_use" || block.type === "web_search_tool_result";
+}
+
+function isPunctuationOnly(text: string): boolean {
+	return /^[^\p{L}\p{N}]+$/u.test(text);
+}
+
+function isInterstitialNarration(text: string): boolean {
+	const normalized = text.trim().replace(/\s+/g, " ");
+	if (!normalized || normalized.length > 320 || !NARRATION_PREFIXES.some(pattern => pattern.test(normalized)))
+		return false;
+	const sentenceCount = normalized.match(/[^.!?]+(?:[.!?]+|$)/g)?.filter(sentence => sentence.trim()).length ?? 0;
+	return sentenceCount <= 2;
+}
+
+function joinAnswerParts(parts: readonly string[]): string | undefined {
+	let answer = "";
+	let previousBlock = "";
+	for (const rawPart of parts) {
+		const part = rawPart.trim();
+		if (!part) continue;
+		if (!answer) {
+			if (isPunctuationOnly(part)) continue;
+			answer = part;
+			previousBlock = rawPart;
+			continue;
+		}
+		if (isPunctuationOnly(part)) {
+			answer += part;
+			previousBlock += rawPart;
+			continue;
+		}
+		const previousEndsTerminal = /(?:[.!?]|\n)\s*$/.test(previousBlock);
+		const nextStartsLowerOrPunctuation = /^[\p{Ll}\p{P}]/u.test(part);
+		answer += !previousEndsTerminal && nextStartsLowerOrPunctuation ? ` ${part}` : `\n\n${part}`;
+		previousBlock = rawPart;
+	}
+	return answer.trim() || undefined;
+}
+
+export function parseAnthropicResponse(
+	response: AnthropicApiResponse,
+	constraintApplications: SearchConstraintApplication[] = [],
+): SearchResponse {
 	const answerParts: string[] = [];
 	const searchQueries: string[] = [];
 	const sources: SearchSource[] = [];
 	const citations: SearchCitation[] = [];
+	const firstSearchIndex = response.content.findIndex(isSearchBlock);
 
-	for (const block of response.content) {
+	for (let index = 0; index < response.content.length; index++) {
+		const block = response.content[index];
 		if (
 			block.type === "server_tool_use" &&
 			block.name &&
 			stripClaudeToolPrefix(block.name) === WEB_SEARCH_TOOL_NAME
 		) {
-			if (block.input?.query) {
-				searchQueries.push(block.input.query);
-			}
-		} else if (block.type === "web_search_tool_result" && block.content) {
+			if (block.input?.query) searchQueries.push(block.input.query);
+			continue;
+		}
+		if (block.type === "web_search_tool_result" && block.content) {
 			for (const result of block.content) {
 				if (result.type === "web_search_result") {
 					sources.push({
@@ -221,25 +300,29 @@ function parseResponse(response: AnthropicApiResponse): SearchResponse {
 					});
 				}
 			}
-		} else if (block.type === "text" && block.text) {
-			answerParts.push(block.text);
-			if (block.citations) {
-				for (const c of block.citations as AnthropicCitation[]) {
-					citations.push({
-						url: c.url,
-						title: c.title,
-						citedText: c.cited_text,
-					});
-				}
+			continue;
+		}
+		if (block.type !== "text" || !block.text) continue;
+		if (firstSearchIndex >= 0 && index < firstSearchIndex) continue;
+		const adjacentToSearch =
+			firstSearchIndex < 0 ||
+			(index > 0 && isSearchBlock(response.content[index - 1])) ||
+			(index + 1 < response.content.length && isSearchBlock(response.content[index + 1]));
+		if (adjacentToSearch && isInterstitialNarration(block.text)) continue;
+		answerParts.push(block.text);
+		if (block.citations) {
+			for (const c of block.citations as AnthropicCitation[]) {
+				citations.push({ url: c.url, title: c.title, citedText: c.cited_text });
 			}
 		}
 	}
 
-	return {
+	return mergeSearchReferences({
 		provider: "anthropic",
-		answer: answerParts.join("\n\n") || undefined,
+		answer: joinAnswerParts(answerParts),
 		sources,
 		citations: citations.length > 0 ? citations : undefined,
+		constraintApplications: constraintApplications.length > 0 ? constraintApplications : undefined,
 		searchQueries: searchQueries.length > 0 ? searchQueries : undefined,
 		usage: {
 			inputTokens: response.usage.input_tokens,
@@ -248,7 +331,7 @@ function parseResponse(response: AnthropicApiResponse): SearchResponse {
 		},
 		model: response.model,
 		requestId: response.id,
-	};
+	});
 }
 
 export async function searchAnthropic(
@@ -308,11 +391,12 @@ export async function searchAnthropic(
 		},
 	);
 
-	const result = parseResponse(response);
+	const result = parseAnthropicResponse(response, plan.constraintApplications);
 
 	const numResults = "authStorage" in params ? (params.numSearchResults ?? params.limit) : params.num_results;
-	if (numResults && result.sources.length > numResults) {
-		result.sources = result.sources.slice(0, numResults);
+	if (numResults !== undefined) {
+		result.requestedResultCount = numResults;
+		if (result.sources.length > numResults) result.sources = result.sources.slice(0, numResults);
 	}
 
 	return result;

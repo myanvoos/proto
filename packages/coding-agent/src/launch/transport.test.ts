@@ -7,11 +7,11 @@ import { executeLaunch } from "../tools/fleet/launch";
 import { closeDaemonClients, daemonClientForProject } from "./client";
 import { daemonRuntimeDir } from "./paths";
 
-function testSession(cwd: string): ToolSession {
+function testSession(cwd: string, sessionId = `launch-transport-test:${cwd}`): ToolSession {
 	return {
 		cwd,
 		settings: { get: (key: string) => (key === "launch.enabled" ? true : undefined) },
-		getSessionId: () => `launch-transport-test:${cwd}`,
+		getSessionId: () => sessionId,
 	} as unknown as ToolSession;
 }
 
@@ -127,6 +127,58 @@ test("PTY launch send keeps terminal Enter as carriage return", async () => {
 		await cleanupDaemon(cwd, runtimeDir, session, name, started);
 	}
 }, 30000);
+
+test("ps lists this session's exited records unless all is requested", async () => {
+	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-launch-ps-scope-"));
+	const runtimeDir = daemonRuntimeDir(cwd);
+	const first = testSession(cwd, "launch-ps-session-a");
+	const second = testSession(cwd, "launch-ps-session-b");
+	const firstName = "ps-session-a";
+	const secondName = "ps-session-b";
+	try {
+		await fs.rm(runtimeDir, { recursive: true, force: true });
+		for (const [session, name] of [
+			[first, firstName],
+			[second, secondName],
+		] as const) {
+			await executeLaunch(session, {
+				op: "start",
+				name,
+				application: process.execPath,
+				args: ["-e", "process.exit(0)"],
+				pty: false,
+			});
+			await executeLaunch(session, { op: "wait", name, timeout: 5 });
+		}
+		const firstList = await executeLaunch(first, { op: "list" });
+		const secondList = await executeLaunch(second, { op: "list" });
+		expect(firstList.details?.daemons?.map(daemon => daemon.name)).toEqual([firstName]);
+		expect(secondList.details?.daemons?.map(daemon => daemon.name)).toEqual([secondName]);
+
+		for (let index = 0; index < 11; index += 1) {
+			const name = `ps-all-${index}`;
+			await executeLaunch(first, {
+				op: "start",
+				name,
+				application: process.execPath,
+				args: ["-e", "process.exit(0)"],
+				pty: false,
+			});
+			await executeLaunch(first, { op: "wait", name, timeout: 5 });
+		}
+		const allList = await executeLaunch(first, { op: "list", all: true });
+		const allNames = allList.details?.daemons?.map(daemon => daemon.name) ?? [];
+		expect(allNames).toHaveLength(13);
+		expect(allNames).toContain(firstName);
+		expect(allNames).toContain(secondName);
+	} finally {
+		const client = await daemonClientForProject(cwd).catch(() => undefined);
+		await client?.request({ op: "shutdown" }).catch(() => undefined);
+		await closeDaemonClients();
+		await fs.rm(runtimeDir, { recursive: true, force: true });
+		await fs.rm(cwd, { recursive: true, force: true });
+	}
+}, 30_000);
 
 test("a shutting-down broker rejects new launches before reporting a doomed process as running", async () => {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "proto-launch-shutdown-"));

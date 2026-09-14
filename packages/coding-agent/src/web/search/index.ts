@@ -21,11 +21,20 @@ import {
 	type SearchProvider,
 	type SearchProviderCandidate,
 } from "./provider";
-import { applyQueryConstraints, parseSearchQuery } from "./query";
-import { renderSearchCall, renderSearchResult, type SearchRenderDetails } from "./render";
+import { applyQueryConstraints, getQueryConstraintLabels, parseSearchQuery, type StructuredQuery } from "./query";
+import {
+	formatConstraintLine,
+	formatSearchResultCount,
+	renderSearchCall,
+	renderSearchResult,
+	type SearchRenderDetails,
+	stripSearchReferenceSections,
+} from "./render";
 import {
 	DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS,
 	MAX_WEB_SEARCH_TIMEOUT_SECONDS,
+	mergeSearchReferences,
+	type SearchConstraintApplication,
 	SearchProviderError,
 	type SearchProviderId,
 	type SearchResponse,
@@ -46,54 +55,53 @@ export interface SearchQueryParams extends SearchToolParams {
 	provider?: SearchProviderId | "auto";
 }
 
-function formatForLLM(response: SearchResponse, notes: readonly string[] = []): string {
+export function formatForLLM(response: SearchResponse): string {
+	const normalized = mergeSearchReferences(response);
 	const parts: string[] = [];
-	for (const note of notes) {
-		parts.push(`Note: ${note}`);
-	}
+	const hasReferences = normalized.sources.length > 0 || (normalized.citations?.length ?? 0) > 0;
+	const answer = normalized.answer
+		? hasReferences
+			? stripSearchReferenceSections(normalized.answer)
+			: normalized.answer.trim()
+		: "";
+	if (answer) parts.push(answer);
 
-	if (response.answer) {
-		parts.push(response.answer);
-		if (response.sources.length > 0) {
-			parts.push("\n## Sources");
-			parts.push(formatCount("source", response.sources.length));
+	const constraintLine = normalized.constraintApplications
+		? formatConstraintLine(normalized.constraintApplications)
+		: undefined;
+	if (constraintLine) parts.push(constraintLine);
+
+	if (normalized.sources.length > 0) {
+		parts.push("\n## Sources");
+		parts.push(formatSearchResultCount(normalized.sources.length, normalized.requestedResultCount));
+		for (const [i, src] of normalized.sources.entries()) {
+			const age = formatAge(src.ageSeconds) || src.publishedDate;
+			const agePart = age ? ` (${age})` : "";
+			parts.push(`[${i + 1}] ${src.title}${agePart}\n    ${src.url}`);
+			if (src.snippet) parts.push(`    ${truncate(src.snippet, 240)}`);
 		}
 	}
 
-	for (const [i, src] of response.sources.entries()) {
-		const age = formatAge(src.ageSeconds) || src.publishedDate;
-		const agePart = age ? ` (${age})` : "";
-		parts.push(`[${i + 1}] ${src.title}${agePart}\n    ${src.url}`);
-		if (src.snippet) {
-			parts.push(`    ${truncate(src.snippet, 240)}`);
-		}
-	}
-
-	if (response.citations && response.citations.length > 0) {
+	if (normalized.citations && normalized.citations.length > 0) {
 		parts.push("\n## Citations");
-		parts.push(formatCount("citation", response.citations.length));
-		for (const [i, citation] of response.citations.entries()) {
+		parts.push(formatCount("citation", normalized.citations.length));
+		for (const [i, citation] of normalized.citations.entries()) {
 			const title = citation.title || citation.url;
-			parts.push(`[${i + 1}] ${title}\n    ${citation.url}`);
-			if (citation.citedText) {
-				parts.push(`    ${truncate(citation.citedText, 240)}`);
-			}
+			const number = normalized.sources.length + i + 1;
+			parts.push(`[${number}] ${title}\n    ${citation.url}`);
+			if (citation.citedText) parts.push(`    ${truncate(citation.citedText, 240)}`);
 		}
 	}
 
-	if (response.relatedQuestions && response.relatedQuestions.length > 0) {
+	if (normalized.relatedQuestions && normalized.relatedQuestions.length > 0) {
 		parts.push("\n## Related");
-		parts.push(formatCount("question", response.relatedQuestions.length));
-		for (const q of response.relatedQuestions) {
-			parts.push(`- ${q}`);
-		}
+		parts.push(formatCount("question", normalized.relatedQuestions.length));
+		for (const q of normalized.relatedQuestions) parts.push(`- ${q}`);
 	}
 
-	if (response.searchQueries && response.searchQueries.length > 0) {
-		parts.push(`Search queries: ${response.searchQueries.length}`);
-		for (const query of response.searchQueries.slice(0, 3)) {
-			parts.push(`- ${truncate(query, 120)}`);
-		}
+	if (normalized.searchQueries && normalized.searchQueries.length > 0) {
+		parts.push(`Search queries: ${normalized.searchQueries.length}`);
+		for (const query of normalized.searchQueries.slice(0, 3)) parts.push(`- ${truncate(query, 120)}`);
 	}
 
 	return parts.join("\n");
@@ -113,6 +121,31 @@ interface ExecuteSearchOptions {
 	modelRegistry?: ModelRegistry;
 	sessionId?: string;
 	signal?: AbortSignal;
+}
+
+function buildConstraintApplications(
+	parsedQuery: StructuredQuery,
+	providerId: SearchProviderId,
+	existing: readonly SearchConstraintApplication[] | undefined,
+): SearchConstraintApplication[] {
+	if (!parsedQuery.hasConstraints) return [];
+	const existingByOperator = new Map((existing ?? []).map(application => [application.operator, application]));
+	const nativeOperators = new Map<string, string>();
+	if (providerId === "anthropic") {
+		if (parsedQuery.sites.length > 0) {
+			nativeOperators.set(parsedQuery.sites.map(site => `site:${site}`).join(" OR "), "allowed_domains");
+		} else if (parsedQuery.excludedSites.length > 0) {
+			nativeOperators.set(parsedQuery.excludedSites.map(site => `-site:${site}`).join(" "), "blocked_domains");
+		}
+	}
+	return getQueryConstraintLabels(parsedQuery).map(operator => {
+		const known = existingByOperator.get(operator);
+		if (known) return { ...known };
+		const nativeDetail = nativeOperators.get(operator);
+		if (nativeDetail) return { operator, mode: "native", detail: nativeDetail };
+		if (/^(?:-)?intext:|^lang:/i.test(operator)) return { operator, mode: "unsupported", relaxed: true };
+		return { operator, mode: "post-filtered" };
+	});
 }
 
 async function executeSearch(
@@ -193,23 +226,31 @@ async function executeSearch(
 				geminiModel,
 			});
 
-			let finalResponse = response;
-			const constraintNotes: string[] = [];
-			if (parsedQuery.hasConstraints && response.sources.length > 0) {
-				const filtered = applyQueryConstraints(response.sources, parsedQuery);
-				if (filtered.sources.length !== response.sources.length) {
-					finalResponse = { ...response, sources: filtered.sources };
-				}
-				for (const label of filtered.dropped) {
-					constraintNotes.push(`no results matched \`${label}\`; the constraint was relaxed`);
-				}
+			let finalResponse = mergeSearchReferences(response);
+			const constraintApplications = buildConstraintApplications(
+				parsedQuery,
+				provider.id,
+				finalResponse.constraintApplications,
+			);
+			const requestedResultCount = params.num_search_results ?? params.limit;
+			if (requestedResultCount !== undefined) {
+				finalResponse = { ...finalResponse, requestedResultCount };
+			}
+			if (parsedQuery.hasConstraints) {
+				const filtered = applyQueryConstraints(finalResponse.sources, parsedQuery);
+				const applications = constraintApplications.map(application =>
+					filtered.dropped.includes(application.operator) ? { ...application, relaxed: true } : application,
+				);
+				finalResponse = { ...finalResponse, sources: filtered.sources, constraintApplications: applications };
+			} else if (constraintApplications.length > 0) {
+				finalResponse = { ...finalResponse, constraintApplications };
 			}
 
 			if (!hasRenderableSearchContent(finalResponse)) {
 				throw new SearchProviderError(provider.id, `${provider.label} returned no renderable search content.`, 204);
 			}
 
-			const text = formatForLLM(finalResponse, constraintNotes);
+			const text = formatForLLM(finalResponse);
 
 			return {
 				content: [{ type: "text" as const, text }],

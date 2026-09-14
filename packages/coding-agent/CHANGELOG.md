@@ -4,16 +4,43 @@
 
 ### Fixed
 
-- Inspect Media, Ask, status line, and Advisor renderers sanitize remote/model/peer-controlled fields against terminal control injection
-- Interactive `$` Python no longer duplicates PNG+JPEG MIME alternatives
+- Web Search, Inspect Media, Ask, status line, Fleet, and Advisor renderers sanitize remote/model/peer-controlled fields against terminal control injection
+- Web Search citation stripping recognizes tilde-fenced code blocks (CommonMark close rules) so answers after them are no longer dropped
+- Interactive `$` Python no longer duplicates PNG+JPEG MIME alternatives; async extension shortcut rejections hit the extension error boundary instead of crashing the process
 - Agents View reply falls back to session resume for aborted refs and PageUp/PageDown moves to the nearest selectable row; session selector keeps the highlighted session pinned during background fuzzy scans
-- bash tool renders transport errors as errors even with exit code 0 and shows backgrounded commands as pending instead of failed; GitHub collapsed previews and run-watch states match reality
+- Status line PR badge clears when switching to the default branch; bash tool renders transport errors as errors even with exit code 0; GitHub collapsed previews and run-watch states match reality
 - Raw file reads respect the 3000-line cap and round-trip trailing newlines; deferred `!`/`$` command cards flush on agent end and clear on session switch
-- `orchestrate_wait` refreshes worker screens on every progress tick
+- `orchestrate_wait` refreshes worker screens on every progress tick; `fleet inbox` peek no longer consumes session-queued messages
 - Known slash commands invoked with unsupported arguments show a usage message instead of leaking the text to the model
 - Editor/Input whole-value replacement clears pending paste state; accepted completions get an undo boundary; no-op edits stop polluting undo history; user keybindings override the hardwired Ctrl+A/E cursor chords
 - Move overlay sorts matches, shows only navigable entries, and edits emoji paths by grapheme
-- The blank rows that anchor the first reply to the bottom of a fresh screen stay fixed once transcript rows have entered native scrollback, so a later resize can no longer shift committed history and re-append it
+
+### Changed
+
+- `todo` state-changing ops now return a one-line acknowledgement (task, progress count, next in-progress task) instead of re-echoing the whole list; `view` keeps the full tree.
+- Structural `read` summaries and kernel `symbols()` keep class/impl/trait/module member signatures visible and fold only member bodies; the elision footer now names the largest elided spans.
+- Kernel `block_range()` returns the enclosing declaration/block for lines inside a body instead of a single-line span.
+- Non-raw range reads mark bracket-context anchor lines with `⋮` so they cannot be mistaken for adjacent file lines; raw and non-raw reads report the same total line count.
+- `read proto://` lists each document's line count.
+- `xd` validation failures append only the schema block, and unknown top-level keys are rejected with the accepted key list and sibling-tool alias hints (`ids`→`workers`, `timeoutMs`→`timeout`, `prompt`↔`message`); the `xd` docs footer shows the stdin/heredoc payload route.
+- `fleet ps` lists only the current session's processes by default; `all: true` shows every record for the project.
+- `orchestrate_list` shows the same effective model/effort string as the worker turn result.
+- `web_search` strips provider narration from synthesized answers, merges duplicate Sources/Citations into one numbered list, reports how each query operator was applied (native vs post-filtered vs relaxed), and notes when fewer results than requested were returned.
+- Kernel `display()` of dict/list values renders once (JSON tree) instead of repr plus JSON.
+- Kernel file writes, deletes, and reverts emit one compact `<kernel> note:` line per mutated path in the cell output; `recall mode:touched` indexes those kernel/bash mutations.
+- Prelude `output()` accepts numeric ids, validates `format`, and explains that it reads agent/task outputs (bash artifacts use `read artifact://N:A-B`).
+- Mid-run todo nudges count only tool results that actually wrote files; stale "todo failed" reminders are dropped once a later `todo` call succeeds in the same turn.
+- Bash/eval prompts describe the lifecycle signals the model can actually see (exit-code, timeout, background, truncation lines) instead of hidden `details.execution` fields, and warn that kernel cells in parallel bash calls run unordered.
+
+### Fixed
+
+- Backgrounded bash commands (`async: true` or auto-background) no longer render a red "failed" header; they show as pending with the job id.
+- The blank rows that anchor the first reply to the bottom of a fresh screen stay fixed once transcript rows have entered native scrollback, so a later resize can no longer shift committed history and re-append it.
+- Browser `tab.click`/`tab.fill` with CSS or `aria/` selectors no longer hang on puppeteer's stable-bounding-box precondition; `text/` selectors work for click/type/fill; per-call `{ timeout }` (ms) is honored; the headless browser can open `file://` URLs and reports an actionable hint when it cannot.
+
+### Removed
+
+- The conductor (`/conduct`, `conductor.*` settings, the `conductor` model role, and the independent goal-completion verification gate) is removed; `/goal` completes by its own audit as before, and `goal({op:"complete"})` no longer pends.
 
 ## [18.1.8] - 2026-09-14
 

@@ -8,6 +8,8 @@ Background jobs auto-deliver on finish — NEVER poll. `jobs`/`wait` observing a
 
 Processes: a service, watcher, debugger, REPL, or process needing later input MUST use `op: "start"`, not `bash`. Ops `ps`/`logs`/`wait`/`send`/`stop`/`restart`/`describe` address the stable `name`.
 
+`ps` shows this session's process records by default, including exited ones; pass `all: true` to list every record in the project directory.
+
 - Readiness MUST be observed — process creation alone is not readiness. `ready.log`/`pattern`/`grep` are JS `RegExp` (`u` flag; PCRE inline modifiers like `(?i)` REJECTED — use `[Rr]eady`); multiple conditions ALL must pass.
 - Names unique per project dir: completed name MAY restart, live name MUST be stopped first.
 - `stop`: graceful process-tree termination before hard-kill; NEVER kill an unverified PID through bash. `restart` reuses the retained launch spec.

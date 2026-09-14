@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tree_sitter::{Point, TreeCursor};
+use tree_sitter::{Node, Point, TreeCursor};
 
 use crate::{
 	parse_cache::parse_cached,
@@ -61,6 +61,9 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 		return Ok(None);
 	};
 
+	// A closing delimiter or a continuation line has no node that starts on the
+	// requested line. Preserve the existing unresolved result for those lines;
+	// the enclosing lookup below applies once a node starting on the line exists.
 	if leaf.start_position().row != row {
 		return Ok(None);
 	}
@@ -79,10 +82,135 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 	if node.has_error() {
 		return Ok(None);
 	}
+	let selected = if is_multiline(node) {
+		node
+	} else {
+		find_enclosing_block(node, root).unwrap_or(node)
+	};
+	if selected.has_error() || !selected.is_named() {
+		return Ok(None);
+	}
 	Ok(Some(BlockRange {
-		start_line: node_start_line(node),
-		end_line:   node_content_end_line(node),
+		start_line: node_start_line(selected),
+		end_line:   node_content_end_line(selected),
 	}))
+}
+
+fn is_multiline(node: Node<'_>) -> bool {
+	node_start_line(node) < node_content_end_line(node)
+}
+
+/// Prefer a declaration/statement wrapper over its body node. For example, a
+/// statement inside a TypeScript method has a `statement_block` ancestor, but
+/// the edit/read operation should resolve the enclosing `method_definition`.
+fn find_enclosing_block<'tree>(node: Node<'tree>, root: Node<'tree>) -> Option<Node<'tree>> {
+	let mut body_fallback = None;
+	let mut current = node.parent();
+	while let Some(ancestor) = current {
+		if ancestor.id() == root.id() {
+			break;
+		}
+		if ancestor.is_named()
+			&& !ancestor.is_error()
+			&& !ancestor.is_missing()
+			&& is_multiline(ancestor)
+		{
+			if is_block_declaration_kind(ancestor.kind()) {
+				return Some(ancestor);
+			}
+			if body_fallback.is_none() && is_block_container_kind(ancestor.kind()) {
+				body_fallback = Some(ancestor);
+			}
+		}
+		current = ancestor.parent();
+	}
+	body_fallback
+}
+
+fn is_block_declaration_kind(kind: &str) -> bool {
+	matches!(
+		kind,
+		"function_declaration"
+			| "function_definition"
+			| "function_item"
+			| "function_expression"
+			| "method_definition"
+			| "method_declaration"
+			| "constructor_declaration"
+			| "constructor_definition"
+			| "class_declaration"
+			| "class_definition"
+			| "struct_declaration"
+			| "struct_definition"
+			| "struct_item"
+			| "impl_item"
+			| "trait_item"
+			| "mod_item"
+			| "interface_declaration"
+			| "interface_definition"
+			| "enum_declaration"
+			| "enum_definition"
+			| "enum_item"
+			| "type_declaration"
+			| "type_definition"
+			| "namespace_declaration"
+			| "module_declaration"
+			| "protocol_declaration"
+			| "extension_declaration"
+			| "record_declaration"
+			| "object_declaration"
+			| "object_definition"
+			| "if_statement"
+			| "for_statement"
+			| "for_in_statement"
+			| "while_statement"
+			| "do_statement"
+			| "repeat_statement"
+			| "switch_statement"
+			| "switch_expression"
+			| "try_statement"
+			| "catch_clause"
+			| "with_statement"
+			| "match_statement"
+			| "match_expression"
+			| "expression_switch_statement"
+			| "type_switch_statement"
+			| "select_statement"
+			| "loop_expression"
+			| "for_expression"
+			| "while_expression"
+			| "synchronized_statement"
+			| "lock_statement"
+			| "using_statement"
+			| "unsafe_block"
+	)
+}
+
+fn is_block_container_kind(kind: &str) -> bool {
+	matches!(
+		kind,
+		"block"
+			| "statement_block"
+			| "compound_statement"
+			| "function_body"
+			| "constructor_body"
+			| "class_body"
+			| "interface_body"
+			| "enum_body"
+			| "declaration_list"
+			| "template_body"
+			| "protocol_body"
+			| "enum_class_body"
+			| "extension_body"
+			| "mixin_body"
+			| "method_body"
+			| "switch_body"
+			| "switch_block"
+			| "match_block"
+			| "match_body"
+			| "do_block"
+			| "seq_block"
+	)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -247,4 +375,31 @@ pub fn node_chain_at(options: BlockRangeOptions) -> Result<Option<Vec<NodeSpan>>
 		node = current.parent();
 	}
 	Ok(Some(chain))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{BlockRange, BlockRangeOptions, block_range_at};
+
+	fn range(code: &str, lang: &str, line: u32) -> Option<BlockRange> {
+		block_range_at(BlockRangeOptions {
+			code: code.to_string(),
+			lang: Some(lang.to_string()),
+			path: None,
+			line,
+		})
+		.expect("source should parse")
+	}
+
+	#[test]
+	fn mid_function_body_line_resolves_the_enclosing_function() {
+		let code = "function top() {\n  const value = 1;\n  return value;\n}\n";
+		assert_eq!(range(code, "ts", 3), Some(BlockRange { start_line: 1, end_line: 4 }));
+	}
+
+	#[test]
+	fn class_header_resolves_the_whole_class() {
+		let code = "class Foo {\n  bar() {\n    return 1;\n  }\n}\nfunction top() {}\n";
+		assert_eq!(range(code, "ts", 1), Some(BlockRange { start_line: 1, end_line: 5 }));
+	}
 }

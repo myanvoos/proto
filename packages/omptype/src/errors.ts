@@ -90,7 +90,7 @@ export class OmpError {
 		const actual = this.actual;
 		const fallback =
 			this.data === MISSING
-				? `must be ${expected} (was missing)`
+				? `is required (${expected})`
 				: actual === ""
 					? `must be ${expected}`
 					: `must be ${expected} (was ${actual})`;

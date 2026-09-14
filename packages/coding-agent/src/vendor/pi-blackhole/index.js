@@ -9653,7 +9653,24 @@ function extractToolCallText(args) {
   if (typeof args.newText === "string" && !Array.isArray(args.edits)) text += args.newText + "\n";
   return text;
 }
+// proto: index persisted eval/bash mutation status events from tool results.
+function getToolResultFileIndicators(msg) {
+  if (msg?.role !== "toolResult" || !msg.details || typeof msg.details !== "object") return [];
+  const statusEvents = msg.details.statusEvents;
+  if (!Array.isArray(statusEvents)) return [];
+  const paths = /* @__PURE__ */ new Set();
+  for (const event of statusEvents) {
+    if (!event || typeof event !== "object") continue;
+    if (event.op !== "write" && event.op !== "delete" && event.op !== "revert") continue;
+    if (typeof event.path !== "string" || event.path.length === 0) continue;
+    paths.add(event.path);
+  }
+  const toolName = typeof msg.toolName === "string" ? msg.toolName : "";
+  return Array.from(paths, (path) => ({ toolName, path, lineCount: 0 }));
+}
 function getFileIndicators(msg) {
+  // proto: feed toolResult status paths into touched-file aggregation.
+  if (msg?.role === "toolResult") return getToolResultFileIndicators(msg);
   if (!msg?.content || typeof msg.content === "string") return [];
   const fileMatches = [];
   for (const part of msg.content) {

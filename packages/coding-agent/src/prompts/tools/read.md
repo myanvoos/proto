@@ -3,6 +3,8 @@ Read files, directories, archives, SQLite, images, documents, internal resources
 Selectors — append `:<sel>` to `path` (e.g. `src/foo.ts:50-200`, `db.sqlite:users:42`):
 `N`/`N-`/`N-M` inclusive/`N+K` K lines/`5-16,960-973` multi-range | `:raw` verbatim, no anchors (composes: `:2-4:raw`) | `:conflicts` one line per unresolved merge conflict
 
+Non-raw code-range anchors are prefixed with `⋮` (after the `|` in numbered mode); they are context, not selected lines.
+
 - Code without selector → structural summary (declarations only, bodies elided); footer names recovery ranges — re-issue ONLY those, NEVER guess elided content.
 - Directory → depth-limited listing. Documents → text; notebooks → editable cells; images → {{#if IMAGES_INLINE}}decoded inline{{else}}metadata{{#if INSPECT_MEDIA_ENABLED}} (use `inspect_media`){{/if}}{{/if}}; `:raw` bypasses converters.
 - SQLite: `file.db[:table[:key]]`; `?limit=`/`?where=`/`?q=SELECT`. Archives → `archive.ext:member/path` (zip/tar/rar/7z/iso families; single-stream `.gz`/`.bz2`/`.xz`/`.zst`).

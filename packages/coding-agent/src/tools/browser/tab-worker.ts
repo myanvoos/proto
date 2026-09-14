@@ -186,6 +186,10 @@ interface ScreenshotOptions {
 	silent?: boolean;
 }
 
+interface TabActionOptions {
+	timeout?: number;
+}
+
 interface TabApi {
 	readonly name: string;
 	readonly page: Page;
@@ -194,16 +198,16 @@ interface TabApi {
 	title(): Promise<string>;
 	goto(
 		url: string,
-		opts?: { waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2" },
+		opts?: { waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2"; timeout?: number },
 	): Promise<void>;
 	observe(opts?: { includeAll?: boolean; viewportOnly?: boolean }): Promise<Observation>;
 	ariaSnapshot(selector?: string, opts?: AriaSnapshotOptions): Promise<string>;
 	screenshot(opts?: ScreenshotOptions): Promise<string>;
 	extract(format?: ReadableFormat): Promise<string>;
-	click(selector: string): Promise<void>;
-	type(selector: string, text: string): Promise<void>;
-	fill(selector: string, value: string): Promise<void>;
-	press(key: KeyInput, opts?: { selector?: string }): Promise<void>;
+	click(selector: string, opts?: TabActionOptions): Promise<void>;
+	type(selector: string, text: string, opts?: TabActionOptions): Promise<void>;
+	fill(selector: string, value: string, opts?: TabActionOptions): Promise<void>;
+	press(key: KeyInput, opts?: TabActionOptions & { selector?: string }): Promise<void>;
 	scroll(deltaX: number, deltaY: number): Promise<void>;
 	drag(from: DragTarget, to: DragTarget): Promise<void>;
 	waitFor(selector: string, opts?: { timeout?: number }): Promise<ActionableHandle>;
@@ -212,7 +216,7 @@ interface TabApi {
 		...args: TArgs
 	): Promise<TResult>;
 	scrollIntoView(selector: string): Promise<void>;
-	select(selector: string, ...values: string[]): Promise<string[]>;
+	select(selector: string, ...values: Array<string | TabActionOptions>): Promise<string[]>;
 	uploadFile(selector: string, ...filePaths: string[]): Promise<void>;
 	waitForUrl(pattern: string | RegExp, opts?: { timeout?: number }): Promise<string>;
 	waitForResponse(
@@ -287,12 +291,29 @@ export function toActionableHandle(handle: ElementHandle): ActionableHandle {
 async function fillViaHandle(handle: ElementHandle, value: string, signal?: AbortSignal): Promise<void> {
 	await untilAborted(signal, () =>
 		handle.evaluate(el => {
-			const node = el as unknown as { value?: string; focus?: () => void };
+			const node = el as unknown as {
+				tagName?: string;
+				value?: string;
+				textContent?: string | null;
+				focus?: () => void;
+				isContentEditable?: boolean;
+			};
+			if (node.tagName === "SELECT")
+				throw new Error("tab.fill() does not support <select>; use tab.select() instead");
 			node.focus?.();
 			if ("value" in node) node.value = "";
+			else if (node.isContentEditable) node.textContent = "";
 		}),
 	);
 	await untilAborted(signal, () => handle.type(value, { delay: 0 }));
+}
+
+function fileUrlNavigationError(url: string, error: unknown): ToolError {
+	const detail = error instanceof Error ? error.message : String(error);
+	return new ToolError(
+		`Unable to open ${url}: ${detail}. file:// is not reachable from the shared headless browser; ` +
+			"serve the file over HTTP (for example, fleet start python3 -m http.server) or pass app.path for a local Chromium.",
+	);
 }
 
 function redactUrlCredentials(url: string): string {
@@ -581,49 +602,174 @@ async function isClickActionable(handle: ElementHandle): Promise<ActionabilityRe
 	})) as ActionabilityResult;
 }
 
+async function queryTextSelectorAll(page: Page, text: string): Promise<ElementHandle[]> {
+	const handles = (await page.$$("*")) as ElementHandle[];
+	const matched: ElementHandle[] = [];
+	for (const handle of handles) {
+		try {
+			const isMatch = (await handle.evaluate((element, needle) => {
+				const node = element as unknown as {
+					tagName?: string;
+					textContent?: string | null;
+					value?: unknown;
+					closest?: (selector: string) => Element | null;
+					querySelectorAll?: (selector: string) => ArrayLike<Element>;
+				};
+				const tagName = node.tagName?.toLowerCase();
+				if (tagName === "script" || tagName === "style" || node.closest?.("head")) return false;
+				const content = typeof node.value === "string" ? node.value : (node.textContent ?? "");
+				if (!content.includes(needle)) return false;
+				for (const child of Array.from(node.querySelectorAll?.("*") ?? [])) {
+					const childNode = child as unknown as {
+						tagName?: string;
+						textContent?: string | null;
+						value?: unknown;
+						closest?: (selector: string) => Element | null;
+					};
+					const childTagName = childNode.tagName?.toLowerCase();
+					if (
+						childTagName !== "script" &&
+						childTagName !== "style" &&
+						!childNode.closest?.("head") &&
+						(typeof childNode.value === "string" ? childNode.value : (childNode.textContent ?? "")).includes(
+							needle,
+						)
+					)
+						return false;
+				}
+				return true;
+			}, text)) as boolean;
+			if (isMatch) matched.push(handle);
+			else await handle.dispose().catch(() => undefined);
+		} catch {
+			await handle.dispose().catch(() => undefined);
+		}
+	}
+	return matched;
+}
+
+async function querySelectorAll(page: Page, selector: string): Promise<ElementHandle[]> {
+	const normalized = normalizeSelector(selector);
+	if (normalized.startsWith("text/")) return queryTextSelectorAll(page, normalized.slice("text/".length));
+	return (await page.$$(normalized)) as ElementHandle[];
+}
+
+async function querySelector(page: Page, selector: string): Promise<ElementHandle | null> {
+	const handles = await querySelectorAll(page, selector);
+	const first = handles[0] ?? null;
+	await Promise.all(handles.slice(1).map(async handle => handle.dispose().catch(() => undefined)));
+	return first;
+}
+
+class ActionabilityTimeoutError extends ToolError {
+	constructor(action: string, selector: string, timeoutMs: number, seen: number, reason: string) {
+		super(
+			`Timed out ${action} ${JSON.stringify(selector)} after ${timeoutMs}ms ` +
+				`(seen ${seen} matches; last reason: ${reason})${formatSelectorMatchHint(seen)}`,
+		);
+	}
+}
+
+function isTimeoutAbort(reason: unknown): boolean {
+	return reason instanceof Error && reason.name === "TimeoutError";
+}
+
+async function waitForActionableHandle(
+	page: Page,
+	selector: string,
+	timeoutMs: number,
+	signal: AbortSignal,
+	op: "clicking" | "resolving",
+	clickTarget: boolean,
+): Promise<ElementHandle> {
+	const deadline = Date.now() + timeoutMs;
+	let lastSeen = 0;
+	let lastReason = "no-matches";
+	try {
+		while (Date.now() < deadline) {
+			throwIfAborted(signal);
+			const handles = await untilAborted(signal, () => querySelectorAll(page, selector));
+			lastSeen = handles.length;
+			let selected: ElementHandle | null = null;
+			try {
+				if (clickTarget) {
+					const candidate = await resolveActionableQueryHandlerClickTarget(handles);
+					if (candidate) {
+						const actionability = await isClickActionable(candidate);
+						if (actionability.ok) selected = candidate;
+						else {
+							lastReason = actionability.reason;
+							await candidate.dispose().catch(() => undefined);
+						}
+					} else if (!handles.length) lastReason = "no-matches";
+					else {
+						for (const handle of handles) {
+							try {
+								const actionability = await isClickActionable(handle);
+								if (!actionability.ok) lastReason = actionability.reason;
+							} catch (error) {
+								lastReason = error instanceof Error ? error.message : String(error);
+							}
+						}
+						if (lastReason === "no-matches") lastReason = "no-visible-candidate";
+					}
+				} else {
+					for (const handle of handles) {
+						try {
+							const actionability = await isClickActionable(handle);
+							if (actionability.ok) {
+								selected = handle;
+								break;
+							}
+							lastReason = actionability.reason;
+						} catch (error) {
+							lastReason = error instanceof Error ? error.message : String(error);
+						}
+					}
+				}
+				if (selected) {
+					await Promise.all(
+						handles
+							.filter(handle => handle !== selected)
+							.map(async handle => handle.dispose().catch(() => undefined)),
+					);
+					return selected;
+				}
+			} finally {
+				if (!selected) {
+					await Promise.all(handles.map(async handle => handle.dispose().catch(() => undefined)));
+				}
+			}
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) break;
+			await untilAborted(signal, () => Bun.sleep(Math.min(100, remaining)));
+		}
+	} catch (error) {
+		if (Date.now() >= deadline && signal.aborted && isTimeoutAbort(signal.reason)) {
+			throw new ActionabilityTimeoutError(op, selector, timeoutMs, lastSeen, lastReason);
+		}
+		throw error;
+	}
+	throw new ActionabilityTimeoutError(op, selector, timeoutMs, lastSeen, lastReason);
+}
+
+async function clickSelector(page: Page, selector: string, timeoutMs: number, signal: AbortSignal): Promise<void> {
+	const handle = await waitForActionableHandle(page, selector, timeoutMs, signal, "clicking", true);
+	try {
+		await untilAborted(signal, () => handle.click());
+	} finally {
+		await handle.dispose().catch(() => undefined);
+	}
+}
+
 async function clickQueryHandlerText(
 	page: Page,
 	selector: string,
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const timeoutSignal = AbortSignal.timeout(timeoutMs);
-	const clickSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-	const start = Date.now();
-	let lastSeen = 0;
-	let lastReason: string | null = null;
-	while (Date.now() - start < timeoutMs) {
-		throwIfAborted(clickSignal);
-		const handles = (await untilAborted(clickSignal, () => page.$$(selector))) as ElementHandle[];
-		try {
-			lastSeen = handles.length;
-			const target = await resolveActionableQueryHandlerClickTarget(handles);
-			if (!target) {
-				lastReason = handles.length ? "no-visible-candidate" : "no-matches";
-				await untilAborted(clickSignal, () => Bun.sleep(100));
-				continue;
-			}
-			const actionability = await isClickActionable(target);
-			if (!actionability.ok) {
-				lastReason = actionability.reason;
-				await untilAborted(clickSignal, () => Bun.sleep(100));
-				continue;
-			}
-			try {
-				await untilAborted(clickSignal, () => target.click());
-				return;
-			} catch (err) {
-				lastReason = err instanceof Error ? err.message : String(err);
-				await untilAborted(clickSignal, () => Bun.sleep(100));
-			}
-		} finally {
-			await Promise.all(handles.map(async handle => handle.dispose().catch(() => undefined)));
-		}
-	}
-	throw new ToolError(
-		`Timed out clicking ${selector} (seen ${lastSeen} matches; last reason: ${lastReason ?? "unknown"}). ` +
-			"If there are multiple matching elements, use observe + tab.id() or a more specific selector.",
-	);
+	const clickSignal = signal ?? AbortSignal.timeout(timeoutMs);
+	await clickSelector(page, selector, timeoutMs, clickSignal);
 }
 
 export function formatSelectorMatchHint(count: number): string {
@@ -814,10 +960,15 @@ export class WorkerCore {
 				await applyViewport(this.#page, payload.viewport);
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 				if (payload.url) {
-					await this.#page.goto(payload.url, {
-						waitUntil: payload.waitUntil ?? "load",
-						timeout: payload.timeoutMs,
-					});
+					try {
+						await this.#page.goto(payload.url, {
+							waitUntil: payload.waitUntil ?? "load",
+							timeout: payload.timeoutMs,
+						});
+					} catch (error) {
+						if (payload.url.startsWith("file:")) throw fileUrlNavigationError(payload.url, error);
+						throw error;
+					}
 				}
 			} else {
 				const target = await this.#findAttachedTarget(payload.targetId);
@@ -830,10 +981,15 @@ export class WorkerCore {
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 				if (payload.url) {
-					await this.#page.goto(payload.url, {
-						waitUntil: payload.waitUntil ?? "load",
-						timeout: payload.timeoutMs,
-					});
+					try {
+						await this.#page.goto(payload.url, {
+							waitUntil: payload.waitUntil ?? "load",
+							timeout: payload.timeoutMs,
+						});
+					} catch (error) {
+						if (payload.url.startsWith("file:")) throw fileUrlNavigationError(payload.url, error);
+						throw error;
+					}
 				}
 			}
 			this.#targetId = await targetIdForPage(this.#page);
@@ -1156,6 +1312,9 @@ export class WorkerCore {
 				this.#zeroMatchWatchdog(watchdog.selector, label, watchdog.afterMs, racedSignal),
 			]);
 		} catch (err) {
+			if (err instanceof ActionabilityTimeoutError) {
+				throw markBrowserRunRejection(err, active.rejectionOwner);
+			}
 			if (
 				capped &&
 				!cellSignal.aborted &&
@@ -1181,7 +1340,7 @@ export class WorkerCore {
 		while (!signal.aborted) {
 			let count: number | null = null;
 			try {
-				const handles = await page.$$(resolved);
+				const handles = await querySelectorAll(page, resolved);
 				count = handles.length;
 				for (const handle of handles) void handle.dispose().catch(() => undefined);
 			} catch {}
@@ -1202,7 +1361,7 @@ export class WorkerCore {
 		if (parseAriaRefSelector(selector) !== null) return "";
 		try {
 			const handles = await Promise.race([
-				this.#requirePage().$$(normalizeSelector(selector)),
+				querySelectorAll(this.#requirePage(), selector),
 				Bun.sleep(1_000).then(() => null),
 			]);
 			if (!handles) return "";
@@ -1239,23 +1398,25 @@ export class WorkerCore {
 			signal,
 			url: () => page.url(),
 			title: () => op("tab.title()", INF, sig => untilAborted(sig, () => page.title())),
-			goto: (url, opts) =>
-				op(`tab.goto(${JSON.stringify(url)})`, INF, async sig => {
+			goto: (url, opts) => {
+				const navigationTimeoutMs = opts?.timeout === undefined ? budgetBound : waitMs(opts.timeout);
+				return op(`tab.goto(${JSON.stringify(url)})`, navigationTimeoutMs, async sig => {
 					this.#clearElementCache();
 					try {
 						await untilAborted(sig, () =>
-							page.goto(url, { waitUntil: opts?.waitUntil ?? "load", timeout: budgetBound }),
+							page.goto(url, { waitUntil: opts?.waitUntil ?? "load", timeout: navigationTimeoutMs }),
 						);
 					} catch (err) {
 						if (err instanceof Error && err.name === "TimeoutError") {
 							await this.#stopLoading();
 							throw new ToolError(
-								`tab.goto(${JSON.stringify(url)}) timed out after ${budgetBound}ms; pending navigation stopped — retry with a longer tool timeout or waitUntil:"domcontentloaded"`,
+								`tab.goto(${JSON.stringify(url)}) timed out after ${navigationTimeoutMs}ms; pending navigation stopped — retry with a longer tool timeout or waitUntil:"domcontentloaded"`,
 							);
 						}
 						throw err;
 					}
-				}),
+				});
+			},
 			observe: opts => op("tab.observe()", quickOpMs, sig => this.#collectObservation({ ...opts, signal: sig })),
 			ariaSnapshot: (selector, opts) =>
 				op(
@@ -1264,9 +1425,7 @@ export class WorkerCore {
 					async sig => {
 						let root: ElementHandle | null = null;
 						if (selector) {
-							root = (await untilAborted(sig, () =>
-								page.$(normalizeSelector(selector)),
-							)) as ElementHandle | null;
+							root = await untilAborted(sig, () => querySelector(page, selector));
 							if (!root)
 								throw new ToolError(
 									`tab.ariaSnapshot: selector ${JSON.stringify(selector)} matched no element`,
@@ -1300,10 +1459,11 @@ export class WorkerCore {
 					}
 					return content;
 				}),
-			click: selector =>
-				op(
+			click: (selector, opts) => {
+				const w = waitMs(opts?.timeout);
+				return op(
 					`tab.click(${JSON.stringify(selector)})`,
-					actionOpMs,
+					w,
 					async sig => {
 						if (parseAriaRefSelector(selector) !== null) {
 							const handle = await this.#resolveAriaRef(selector);
@@ -1315,20 +1475,19 @@ export class WorkerCore {
 							return;
 						}
 						const resolved = normalizeSelector(selector);
-						if (resolved.startsWith("text/")) await clickQueryHandlerText(page, resolved, actionOpMs, sig);
-						else
-							await untilAborted(sig, () =>
-								page.locator(resolved).setTimeout(actionOpMs).click({ signal: sig }),
-							);
+						if (resolved.startsWith("text/")) await clickQueryHandlerText(page, resolved, w, sig);
+						else await clickSelector(page, resolved, w, sig);
 					},
 					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
-				),
-			type: (selector, text) =>
-				op(
+				);
+			},
+			type: (selector, text, opts) => {
+				const w = waitMs(opts?.timeout);
+				return op(
 					`tab.type(${JSON.stringify(selector)})`,
-					actionOpMs,
+					w,
 					async sig => {
-						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
+						const handle = await this.#resolveActionHandle(selector, w, sig);
 						try {
 							await untilAborted(sig, () => handle.type(text, { delay: 0 }));
 						} finally {
@@ -1336,42 +1495,53 @@ export class WorkerCore {
 						}
 					},
 					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
-				),
-			fill: (selector, value) =>
-				op(
+				);
+			},
+			fill: (selector, value, opts) => {
+				const w = waitMs(opts?.timeout);
+				return op(
 					`tab.fill(${JSON.stringify(selector)})`,
-					actionOpMs,
+					w,
 					async sig => {
-						if (parseAriaRefSelector(selector) !== null) {
-							const handle = await this.#resolveAriaRef(selector);
-							try {
-								await fillViaHandle(handle, value, sig);
-							} finally {
-								await handle.dispose().catch(() => undefined);
-							}
-							return;
+						const handle = await this.#resolveActionHandle(selector, w, sig);
+						try {
+							await fillViaHandle(handle, value, sig);
+						} finally {
+							await handle.dispose().catch(() => undefined);
 						}
-						await untilAborted(sig, () =>
-							page.locator(normalizeSelector(selector)).setTimeout(actionOpMs).fill(value, { signal: sig }),
-						);
 					},
 					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
-				),
-			press: (key, opts) =>
-				op(`tab.press(${JSON.stringify(key)})`, actionOpMs, async sig => {
-					const selector = opts?.selector;
-					if (selector) {
-						if (parseAriaRefSelector(selector) !== null) {
-							const handle = await this.#resolveAriaRef(selector);
-							try {
-								await untilAborted(sig, () => handle.focus());
-							} finally {
-								await handle.dispose().catch(() => undefined);
+				);
+			},
+			press: (key, opts) => {
+				const w = waitMs(opts?.timeout);
+				return op(
+					`tab.press(${JSON.stringify(key)})`,
+					w,
+					async sig => {
+						const selector = opts?.selector;
+						if (selector) {
+							if (parseAriaRefSelector(selector) !== null) {
+								const handle = await this.#resolveAriaRef(selector);
+								try {
+									await untilAborted(sig, () => handle.focus());
+								} finally {
+									await handle.dispose().catch(() => undefined);
+								}
+							} else {
+								const handle = await this.#resolveActionHandle(selector, w, sig);
+								try {
+									await untilAborted(sig, () => handle.focus());
+								} finally {
+									await handle.dispose().catch(() => undefined);
+								}
 							}
-						} else await untilAborted(sig, () => page.focus(normalizeSelector(selector)));
-					}
-					await untilAborted(sig, () => page.keyboard.press(key));
-				}),
+						}
+						await untilAborted(sig, () => page.keyboard.press(key));
+					},
+					{ selector: opts?.selector, zeroMatchAfterMs: opts?.selector ? ZERO_MATCH_FAIL_FAST_MS : undefined },
+				);
+			},
 			scroll: (deltaX, deltaY) =>
 				op("tab.scroll()", actionOpMs, sig =>
 					untilAborted(sig, () => dispatchScroll(() => page.mouse.wheel({ deltaX, deltaY }))),
@@ -1451,13 +1621,21 @@ export class WorkerCore {
 					},
 					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
 				),
-			select: (selector, ...values) =>
-				op(
+			select: (selector, ...valuesAndOptions) => {
+				const values = [...valuesAndOptions];
+				const maybeOptions = values.at(-1);
+				const opts =
+					typeof maybeOptions === "object" && maybeOptions !== null
+						? (values.pop() as TabActionOptions)
+						: undefined;
+				const w = waitMs(opts?.timeout);
+				return op(
 					`tab.select(${JSON.stringify(selector)})`,
-					actionOpMs,
-					sig => this.#select(selector, values, actionOpMs, sig),
+					w,
+					sig => this.#select(selector, values as string[], w, sig),
 					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
-				),
+				);
+			},
 			uploadFile: (selector, ...filePaths) =>
 				op(
 					`tab.uploadFile(${JSON.stringify(selector)})`,
@@ -1540,7 +1718,7 @@ export class WorkerCore {
 			const handle =
 				parseAriaRefSelector(opts.selector) !== null
 					? await this.#resolveAriaRef(opts.selector)
-					: asElementHandle(await untilAborted(signal, () => page.$(normalizeSelector(opts.selector!))));
+					: asElementHandle(await untilAborted(signal, () => querySelector(page, opts.selector!)));
 			if (!handle) throw new ToolError("Screenshot selector did not resolve to an element");
 			try {
 				await untilAborted(signal, () =>
@@ -1608,7 +1786,7 @@ export class WorkerCore {
 				const handle =
 					parseAriaRefSelector(target) !== null
 						? await this.#resolveAriaRef(target)
-						: asElementHandle(await untilAborted(signal, () => page.$(normalizeSelector(target))));
+						: asElementHandle(await untilAborted(signal, () => querySelector(page, target)));
 				if (!handle) throw new ToolError(`Drag ${role} selector did not resolve: ${target}`);
 				const box = (await untilAborted(signal, () => handle.boundingBox())) as {
 					x: number;
@@ -1778,9 +1956,7 @@ export class WorkerCore {
 
 	async #resolveActionHandle(selector: string, timeoutMs: number, sig: AbortSignal): Promise<ElementHandle> {
 		if (parseAriaRefSelector(selector) !== null) return this.#resolveAriaRef(selector);
-		return (await untilAborted(sig, () =>
-			this.#requirePage().locator(normalizeSelector(selector)).setTimeout(timeoutMs).waitHandle({ signal: sig }),
-		)) as ElementHandle;
+		return await waitForActionableHandle(this.#requirePage(), selector, timeoutMs, sig, "resolving", false);
 	}
 	#clearElementCache(): void {
 		if (this.#elementCache.size === 0) {

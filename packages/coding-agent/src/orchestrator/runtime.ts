@@ -1,10 +1,16 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { $env, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
-import { resolveAgentSpawnModelSelection } from "../config/model-resolver";
+import {
+	formatModelSelectorValue,
+	formatModelStringWithRouting,
+	resolveAgentSpawnModelSelection,
+	resolveModelOverride,
+} from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
@@ -20,7 +26,7 @@ import { Semaphore } from "../task/parallel";
 import { describeUnknownAgent, resolveSpawnPreflight } from "../task/spawn-policy";
 import type { StructuredSubagentSchemaMode, StructuredSubagentSchemaSource } from "../task/structured-subagent";
 import { type AgentDefinition, type AgentProgress, oneLineLabel, type SingleResult } from "../task/types";
-import type { WorkerEffort } from "../thinking";
+import { resolveWorkerEffortLevel, type WorkerEffort } from "../thinking";
 import type { ToolSession } from "../tools";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { formatDuration } from "../tools/render-utils";
@@ -790,6 +796,41 @@ export class OrchestratorRuntime {
 		return ids;
 	}
 
+	#displayModel(session: ToolSession, record: WorkerRecord): string | undefined {
+		if (record.resolvedModel) return record.resolvedModel;
+		let model = record.model;
+		let selectedLevel: ThinkingLevel | undefined;
+		let explicitLevel = false;
+		if (!model && record.modelOverride !== undefined && session.modelRegistry) {
+			const patterns = Array.isArray(record.modelOverride) ? record.modelOverride : [record.modelOverride];
+			const resolved = resolveModelOverride(patterns, session.modelRegistry, session.settings);
+			model = resolved.model;
+			selectedLevel = resolved.thinkingLevel;
+			explicitLevel = resolved.explicitThinkingLevel;
+		}
+		if (!model) {
+			return record.modelOverride === undefined
+				? undefined
+				: Array.isArray(record.modelOverride)
+					? record.modelOverride.join(",")
+					: record.modelOverride;
+		}
+		let effortLevel: ThinkingLevel | undefined;
+		if (record.effort !== undefined) {
+			try {
+				effortLevel = resolveWorkerEffortLevel(
+					model,
+					record.effort,
+					session.settings.get("orchestrator.maxEffort"),
+				);
+			} catch {
+				// The turn will surface an invalid effort ceiling; keep list rendering available meanwhile.
+			}
+		}
+		const displayLevel = effortLevel ?? (explicitLevel ? selectedLevel : undefined);
+		return formatModelSelectorValue(formatModelStringWithRouting(model), displayLevel);
+	}
+
 	listIds(session: ToolSession): string[] {
 		this.#compactIdleRecords();
 		return this.#listIds(this.ownerScope(session));
@@ -821,13 +862,7 @@ export class OrchestratorRuntime {
 			...(record.terminal ? { terminal: record.terminal } : {}),
 			agent: record.agentName,
 			state: record.state,
-			model:
-				record.resolvedModel ??
-				(record.modelOverride === undefined
-					? undefined
-					: Array.isArray(record.modelOverride)
-						? record.modelOverride.join(",")
-						: record.modelOverride),
+			model: this.#displayModel(session, record),
 			turns: record.turnCount,
 			queued: record.queue.length,
 			turnStartedAt: record.turn?.startedAt,
@@ -1859,6 +1894,7 @@ export class OrchestratorRuntime {
 	): Promise<string> {
 		const failed = result.exitCode !== 0 || result.aborted === true;
 		const status = result.aborted ? "aborted" : failed ? "failed" : "completed";
+		record.resolvedModel = result.resolvedModel ?? record.resolvedModel;
 		record.lastActivity = firstLine(
 			failed
 				? `turn ${turnIndex} ${status}: ${result.abortReason ?? result.error ?? ""}`

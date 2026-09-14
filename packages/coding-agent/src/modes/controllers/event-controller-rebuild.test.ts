@@ -77,7 +77,6 @@ test("rebuild reinserts a cached post-tool assistant segment before its next upd
 		optimisticSkillMessagePending: false,
 		optimisticUserMessageSignature: undefined,
 		locallySubmittedUserSignatures: new Set<string>(),
-		syncConductorDisplay: NOOP,
 		flushPendingCommandOutput: NOOP,
 		setTodos: NOOP,
 		addMessageToChat: () => [],

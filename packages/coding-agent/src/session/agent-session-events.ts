@@ -1,7 +1,6 @@
 import type { AgentEvent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Rule } from "../capability/rule";
-import type { ConductorActivity } from "../conductor/runtime";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import type { Goal, GoalModeState } from "../goals/state";
 import type { TodoItem } from "../tools/todo";
@@ -54,8 +53,6 @@ export type AgentSessionEvent =
 			type: "thinking_level_changed";
 			thinkingLevel: ThinkingLevel | undefined;
 	  }
-	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState }
-	/** Live streaming display payload for the conductor's current run; terminal status ends the display. */
-	| { type: "conductor_activity"; activity: ConductorActivity };
+	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;

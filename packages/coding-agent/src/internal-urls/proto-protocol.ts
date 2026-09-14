@@ -2,6 +2,25 @@ import * as path from "node:path";
 import { getDocFilenames, getEmbeddedDoc } from "./docs-index";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
+const docLineCountCache = new Map<string, Promise<number>>();
+
+function countDocLines(text: string): number {
+	if (text.length === 0) return 0;
+	let lines = 1;
+	for (let index = 0; index < text.length; index++) {
+		if (text.charCodeAt(index) === 10) lines++;
+	}
+	return text.charCodeAt(text.length - 1) === 10 ? lines - 1 : lines;
+}
+
+function getDocLineCount(filename: string): Promise<number> {
+	const cached = docLineCountCache.get(filename);
+	if (cached) return cached;
+	const count = getEmbeddedDoc(filename).then(content => (content === undefined ? 0 : countDocLines(content)));
+	docLineCountCache.set(filename, count);
+	return count;
+}
+
 export class ProtoProtocolHandler implements ProtocolHandler {
 	readonly scheme = "proto";
 	readonly immutable = true;
@@ -28,7 +47,12 @@ export class ProtoProtocolHandler implements ProtocolHandler {
 			throw new Error("No documentation files found");
 		}
 
-		const listing = filenames.map(f => `- [${f}](proto://${f})`).join("\n");
+		const entries = await Promise.all(
+			filenames.map(
+				async filename => `- [${filename}](proto://${filename}) (${await getDocLineCount(filename)} lines)`,
+			),
+		);
+		const listing = entries.join("\n");
 		const content = `# Documentation\n\n${filenames.length} files available:\n\n${listing}\n`;
 
 		return {

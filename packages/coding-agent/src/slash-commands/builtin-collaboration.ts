@@ -2,7 +2,7 @@ import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
 import { copyToClipboard } from "../utils/clipboard";
-import { refreshStatusLine, runWithDetachedModeDraft } from "./builtin-modes";
+import { refreshStatusLine } from "./builtin-modes";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
 
@@ -108,110 +108,6 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			}
 			runtime.ctx.showStatus("Usage: /advisor [on|off|status|configure]");
 			runtime.ctx.editor.setText("");
-		},
-	},
-	{
-		name: "conduct",
-		description:
-			"Commission an autonomous stretch (the conductor drafts the contract), or toggle independent verification of goal completion claims",
-		acpDescription: "Toggle conductor",
-		acpInputHint: "[on|off|status]",
-		inlineHint: "[rough ask]",
-		subcommands: [
-			{ name: "on", description: "Enable the conductor" },
-			{ name: "off", description: "Disable the conductor" },
-			{ name: "status", description: "Show conductor status" },
-		],
-		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => {
-			const stats = runtime.ctx.session.getConductorStats();
-			if (!stats.configured) return "Conductor: off";
-			if (!stats.model) return "Conductor: configured, no model";
-			return `Conductor: on (${stats.model.provider}/${stats.model.id})`;
-		},
-		handle: async (command, runtime) => {
-			const { verb } = parseSubcommand(command.args);
-			if (!verb || verb === "toggle") {
-				const active = runtime.session.toggleConductorEnabled();
-				const configured = runtime.session.isConductorEnabled();
-				if (active) {
-					await runtime.output("Conductor enabled.");
-				} else if (configured) {
-					await runtime.output("Conductor setting enabled, but no model is assigned to the 'conductor' role.");
-				} else {
-					await runtime.output("Conductor disabled.");
-				}
-				return commandConsumed();
-			}
-			if (verb === "on") {
-				const active = runtime.session.setConductorEnabled(true);
-				await runtime.output(
-					active
-						? "Conductor enabled."
-						: "Conductor setting enabled, but no model is assigned to the 'conductor' role.",
-				);
-				return commandConsumed();
-			}
-			if (verb === "off") {
-				runtime.session.setConductorEnabled(false);
-				await runtime.output("Conductor disabled.");
-				return commandConsumed();
-			}
-			if (verb === "status") {
-				await runtime.output(runtime.session.formatConductorStatus());
-				return commandConsumed();
-			}
-			// Commissioning needs the contract approval dialog, so it mirrors `/advisor configure`: TUI-only.
-			await runtime.output(
-				"/conduct <rough ask> commissions a contract interactively and is only available in the interactive TUI.",
-			);
-			return commandConsumed();
-		},
-		handleTui: async (command, runtime) => {
-			const { verb } = parseSubcommand(command.args);
-			if (!verb || verb === "toggle") {
-				const active = runtime.ctx.session.toggleConductorEnabled();
-				const configured = runtime.ctx.session.isConductorEnabled();
-				if (active) {
-					runtime.ctx.showStatus("Conductor enabled.");
-				} else if (configured) {
-					runtime.ctx.showStatus("Conductor setting enabled, but no model is assigned to the 'conductor' role.");
-				} else {
-					runtime.ctx.showStatus("Conductor disabled.");
-				}
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (verb === "on") {
-				const active = runtime.ctx.session.setConductorEnabled(true);
-				runtime.ctx.showStatus(
-					active
-						? "Conductor enabled."
-						: "Conductor setting enabled, but no model is assigned to the 'conductor' role.",
-				);
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (verb === "off") {
-				runtime.ctx.session.setConductorEnabled(false);
-				runtime.ctx.showStatus("Conductor disabled.");
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (verb === "status") {
-				// TUI-light: the same one-line status the non-TUI host prints; no configure overlay in this slice.
-				runtime.ctx.showStatus(runtime.ctx.session.formatConductorStatus());
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			// Anything else is the rough ask. Same draft handling as `/goal set`: the draft is detached for the
-			// duration and restored if commissioning throws, so a failed run leaves the typed line intact.
-			await runWithDetachedModeDraft(command, runtime, () =>
-				runtime.ctx.handleConductCommission(command.args, runtime.input),
-			);
 		},
 	},
 	{

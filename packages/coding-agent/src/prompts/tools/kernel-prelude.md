@@ -7,7 +7,7 @@ defs() → dict    kernel-defined names → cell number
 {{#if js}}protoPath(path) → string    JS twin of proto_path{{/if}}
 {{#if py}}block_range(path, line) → (start, end) | None
 {{/if}}env(key?=None, value?=None) → str | None | dict
-output(*ids, format?="raw", query?=None, offset?=None, limit?=None) → str | dict | list[dict]
+output(*ids, format?="raw"|"json"|"stripped", query?=<jq path>, offset?, limit?) → reads agent/task outputs by id (e.g. "scout_0"); `query` is exclusive with `offset`/`limit`; bash artifacts are read with `read artifact://N:A-B`, not `output()`.
 tool.<name>(args) → unknown    invoke any session tool; `args` = its parameter object
 completion(prompt, model?="default"|"smol"|"slow", system?=None, schema?=None) → str | dict    oneshot, stateless; `schema` → parsed object
 {{#if spawns}}agent(prompt, agent?="{{spawnDefaultAgent}}", model?=None, label?=None, schema?=None, schema{{#if js}}Mode{{else}}_mode{{/if}}?="permissive", isolated?=None, apply?=None, merge?=None, handle?=False) → str | dict

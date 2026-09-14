@@ -2,7 +2,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL, truncateStartToWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
+import {
+	formatDuration,
+	formatNumber,
+	getProjectDir,
+	pathIsWithin,
+	relativePathWithinRoot,
+	sanitizeText,
+} from "@oh-my-pi/pi-utils";
 import { PRIORITY_TIER_LABEL } from "../../../config/service-tier";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { sanitizeStatusText } from "../../shared";
@@ -179,8 +186,6 @@ function renderGoalMode(ctx: SegmentContext, mode: { enabled: boolean; paused: b
 			color = "dim";
 			break;
 		case "active":
-		case "verifying":
-			// keeps the goal icon and mode accent; "verifying" is not running, so no spinner/near-budget warning
 			break;
 		default:
 			persistedStatus satisfies never;
@@ -278,9 +283,10 @@ const pathSegment: StatusLineSegment = {
 		if (opts.abbreviate !== false) {
 			pwd = shortenPath(pwd);
 		}
+		pwd = sanitizeText(pwd);
 		pwd = truncateStartToWidth(pwd, opts.maxLength ?? 40);
 		if (repoSuffix) {
-			pwd = `${pwd}${repoSuffix}`;
+			pwd = `${pwd}${sanitizeText(repoSuffix)}`;
 		}
 
 		const showScratchIcon = scratch && stripPrefix;

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Shell } from "@oh-my-pi/pi-natives";
+import { formatBackgroundNotice } from "../async";
 import type { Skill } from "../extensibility/skills";
 import { initTheme, theme } from "../modes/theme/theme";
 import type { Tool, ToolSession } from ".";
@@ -287,7 +288,7 @@ test("piped stdin supplies the xd JSON args when no positional args are given", 
 test("xd text output is newline-terminated so following commands start on their own line", async () => {
 	await withBash(async bash => {
 		const docs = await bash.execute("xd-docs-newline", { command: `xd probe ?; printf next` });
-		expect(textOf(docs)).toContain("for these docs).\nnext");
+		expect(textOf(docs)).toContain("for these docs).\nFor payloads with quotes/newlines");
 		const failure = await bash.execute("xd-error-newline", { command: `xd missing '{}'; printf next` });
 		expect(textOf(failure)).toContain("No such tool: xd://missing.");
 		expect(textOf(failure)).toMatch(/xd:\/\/<tool>\.\nnext/);
@@ -619,6 +620,53 @@ test("chained xd execute calls render one line per dispatch with their output", 
 	});
 });
 
+test("xd rejects unknown top-level keys without appending schema docs", async () => {
+	await withBash(async bash => {
+		const result = await bash.execute("xd-unknown-key", {
+			command: `xd probe '{"value":"ok","ids":["worker-1"]}'`,
+		});
+		const output = textOf(result);
+		expect(output).toContain("unknown top-level key: ids");
+		expect(output).toContain("Accepted keys: value");
+		expect(output).not.toContain("## Schema");
+	});
+});
+
+test("xd unknown-key errors suggest sibling orchestration parameter names", async () => {
+	await withBash(async (bash, _state, session) => {
+		const waitDevice = {
+			name: "orchestrate_wait",
+			label: "Wait",
+			description: "Wait for workers.",
+			parameters: type({ "workers?": type("string[]"), "timeout?": type("number > 0") }),
+			async execute() {
+				throw new Error("must not execute");
+			},
+		} as unknown as Tool;
+		session.xdev?.tools.set(waitDevice.name, waitDevice);
+		session.xdev?.mountedNames.add(waitDevice.name);
+		const result = await bash.execute("xd-key-hint", {
+			command: `xd orchestrate_wait '{"ids":["worker-1"],"timeoutMs":1}'`,
+		});
+		const output = textOf(result);
+		expect(output).toContain("use `workers` instead of `ids`");
+		expect(output).toContain("use `timeout` (seconds) instead of `timeoutMs`");
+		expect(output).not.toContain("## Schema");
+	});
+});
+
+test("xd validation failures append only the schema block", async () => {
+	await withBash(async bash => {
+		const result = await bash.execute("xd-schema-error", {
+			command: `xd probe '{"value":null}'`,
+		});
+		const output = textOf(result);
+		expect(output).toContain("## Schema");
+		expect(output).toContain("type Args =");
+		expect(output).not.toContain("Returns the supplied value");
+	});
+});
+
 test("failed xd dispatches are flagged in composite cards", async () => {
 	await withBash(async (bash, _state, session) => {
 		const command = `xd probe '{"value":"fail"}'; xd probe '{"value":"ok"}'`;
@@ -635,4 +683,18 @@ test("failed xd dispatches are flagged in composite cards", async () => {
 		expect(rendered).toContain("probe:fail");
 		expect(rendered).toContain("probe:ok");
 	});
+});
+
+test("a backgrounded command renders as pending, not failed", () => {
+	const jobId = "bg_1";
+	const result = {
+		content: [{ type: "text", text: formatBackgroundNotice(jobId) }],
+		details: {
+			execution: { state: "running", collector: { state: "complete" }, output: { disposition: "unavailable" } },
+			async: { state: "running", jobId, type: "bash" },
+		},
+	};
+	const rendered = renderBashResult(result, "sleep 30", false);
+	expect(rendered).not.toContain("failed");
+	expect(rendered).toContain(`Backgrounded: ${jobId}`);
 });

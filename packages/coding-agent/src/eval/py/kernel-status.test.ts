@@ -1,10 +1,43 @@
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { disposeKernelSessionsByOwner, executePython } from "./executor";
 import { checkPythonKernelAvailability, PythonKernel } from "./kernel";
 
 describe("PythonKernel status probe", () => {
+	test("output coerces numbered IDs and explains bash artifact lookup", async () => {
+		using tempDir = TempDir.createSync("@python-kernel-output-");
+		const artifactsDir = path.join(tempDir.path(), "artifacts");
+		await fs.mkdir(artifactsDir, { recursive: true });
+		await Bun.write(path.join(artifactsDir, "8.md"), "numbered agent output\n");
+		const ownerId = `test-owner:${crypto.randomUUID()}`;
+		const options = {
+			cwd: tempDir.path(),
+			artifactsDir,
+			sessionId: `test-session:${crypto.randomUUID()}`,
+			kernelOwnerId: ownerId,
+			kernelMode: "session" as const,
+			timeoutMs: 10_000,
+		};
+
+		try {
+			const numbered = await executePython("print(output(8))", options);
+			expect(numbered.output).toContain("numbered agent output");
+
+			const missing = await executePython(
+				"try:\n    output(9)\nexcept Exception as error:\n    print(type(error).__name__)\n    print(error)",
+				options,
+			);
+			expect(missing.output).toContain("FileNotFoundError");
+			expect(missing.output).toContain("output() reads an agent/task output id such as 'scout_0'");
+			expect(missing.output).toContain("read artifact://9:A-B");
+			expect(missing.output).toContain('tool.read({"path": "artifact://9:A-B"})');
+		} finally {
+			await disposeKernelSessionsByOwner(ownerId);
+		}
+	});
+
 	test("reports in-flight request tasks and quiescence", async () => {
 		// Real probe (bun-test flag normally short-circuits availability checks).
 		const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });

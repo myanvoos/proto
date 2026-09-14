@@ -621,56 +621,18 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 	return { phases, errors };
 }
 
-function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false): string {
-	const tasks = phases.flatMap(phase => phase.tasks);
-	if (tasks.length === 0) {
-		if (errors.length > 0) return `Errors: ${errors.join("; ")}`;
-		return readOnly ? "Todo list is empty." : "Todo list cleared.";
-	}
+const TODO_VIEW_HINT = 'Use op:"view" to see exact task names.';
 
-	const remainingByPhase = phases
-		.map(phase => ({
-			name: phase.name,
-			tasks: phase.tasks.filter(task => task.status === "pending" || task.status === "in_progress"),
-		}))
-		.filter(phase => phase.tasks.length > 0);
-	const remainingTasks = remainingByPhase.flatMap(phase => phase.tasks.map(task => ({ ...task, phase: phase.name })));
+function quoteTodo(value: string): string {
+	return JSON.stringify(value);
+}
 
-	let currentIdx = phases.findIndex(phase =>
-		phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
-	);
-	if (currentIdx === -1) currentIdx = phases.length - 1;
-	const current = phases[currentIdx];
-	const done = current.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+function isOpenTodo(task: TodoItem): boolean {
+	return task.status === "pending" || task.status === "in_progress";
+}
 
+function formatTodoTree(phases: TodoPhase[]): string[] {
 	const lines: string[] = [];
-	if (errors.length > 0) lines.push(`Errors: ${errors.join("; ")}`);
-	if (remainingTasks.length === 0) {
-		lines.push("Remaining items: none.");
-	} else {
-		lines.push(`Remaining items (${remainingTasks.length}):`);
-		for (const task of remainingTasks) {
-			lines.push(`  - ${task.content} [${task.status}] (${task.phase})`);
-		}
-	}
-
-	const closedAll = tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
-	const blockedAll = tasks.filter(task => task.status === "blocked").length;
-
-	const workedAhead = phases.some(
-		(phase, idx) =>
-			idx > currentIdx && phase.tasks.some(task => task.status === "completed" || task.status === "abandoned"),
-	);
-	lines.push(
-		`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${blockedAll > 0 ? `, ${blockedAll} blocked` : ""}.`,
-	);
-	lines.push(
-		`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
-			workedAhead
-				? " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
-				: "."
-		}`,
-	);
 	for (const phase of phases) {
 		lines.push(`  ${phase.name}:`);
 		for (const task of phase.tasks) {
@@ -688,9 +650,119 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 			lines.push(`    - ${checkbox} ${task.content}${tag}`);
 		}
 	}
-	return lines.join("\n");
+	return lines;
 }
 
+function phaseCompletionTransition(previous: TodoPhase[], updated: TodoPhase[]): TodoPhase | undefined {
+	for (const phase of updated) {
+		const before = previous.find(candidate => candidate.name === phase.name);
+		if (!before?.tasks.some(isOpenTodo)) continue;
+		if (phase.tasks.length > 0 && phase.tasks.every(isClosedTodo)) return phase;
+	}
+	return undefined;
+}
+
+function phaseForTask(phases: TodoPhase[], task: TodoItem): TodoPhase | undefined {
+	return phases.find(phase => phase.tasks.includes(task));
+}
+
+function formatTodoTarget(entry: TodoOpEntryValue): string {
+	if (entry.task) return quoteTodo(entry.task);
+	if (entry.phase) return `phase ${quoteTodo(entry.phase)}`;
+	return "all tasks";
+}
+
+function formatMutationAck(phases: TodoPhase[], previous: TodoPhase[], entry: TodoOpEntryValue): string {
+	const tasks = phases.flatMap(phase => phase.tasks);
+	const closed = tasks.filter(isClosedTodo).length;
+	const next = nextActionableTask(phases);
+	const target = formatTodoTarget(entry);
+	const verbs: Record<TodoOperation, string> = {
+		init: "initialized",
+		start: "started",
+		done: "done",
+		rm: "removed",
+		drop: "dropped",
+		block: "blocked",
+		unblock: "unblocked",
+		append: "appended",
+		view: "viewed",
+	};
+	let summary: string;
+	if (entry.op === "append") {
+		const count = entry.items?.length ?? 0;
+		summary = `${verbs.append} ${count} task${count === 1 ? "" : "s"} to ${target}`;
+	} else if (entry.op === "rm" && !entry.task && !entry.phase && tasks.length === 0) {
+		return "Removed all tasks.";
+	} else {
+		summary = `${verbs[entry.op]} ${target}`;
+	}
+	if (entry.op === "block") {
+		const reason = entry.reason?.replace(/\s+/g, " ").trim() || "no reason provided";
+		summary += `: ${reason}`;
+	}
+	summary += ` (${closed}/${tasks.length} done)`;
+
+	const completedPhase = phaseCompletionTransition(previous, phases);
+	if (completedPhase) {
+		const nextPhase = next ? phaseForTask(phases, next)?.name : undefined;
+		summary += `; phase ${quoteTodo(completedPhase.name)} complete`;
+		if (nextPhase) summary += ` → next phase ${quoteTodo(nextPhase)}`;
+		return summary;
+	}
+	return `${summary} → in progress: ${next ? quoteTodo(next.content) : "none"}`;
+}
+
+function formatSummary(
+	phases: TodoPhase[],
+	errors: string[],
+	readOnly = false,
+	entry?: TodoOpEntryValue,
+	previous: TodoPhase[] = [],
+): string {
+	if (errors.length > 0) return `${errors.join("; ")}\n${TODO_VIEW_HINT}`;
+
+	const tasks = phases.flatMap(phase => phase.tasks);
+	if (readOnly) {
+		if (tasks.length === 0) return "Todo list is empty.";
+		const remainingByPhase = phases
+			.map(phase => ({
+				name: phase.name,
+				tasks: phase.tasks.filter(isOpenTodo),
+			}))
+			.filter(phase => phase.tasks.length > 0);
+		const remainingTasks = remainingByPhase.flatMap(phase => phase.tasks);
+		let currentIdx = phases.findIndex(phase => phase.tasks.some(isOpenTodo));
+		if (currentIdx === -1) currentIdx = phases.length - 1;
+		const current = phases[currentIdx];
+		const done = current.tasks.filter(isClosedTodo).length;
+		const closedAll = tasks.filter(isClosedTodo).length;
+		const blockedAll = tasks.filter(task => task.status === "blocked").length;
+		const workedAhead = phases.some((phase, idx) => idx > currentIdx && phase.tasks.some(task => isClosedTodo(task)));
+		const lines = [
+			`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${
+				blockedAll > 0 ? `, ${blockedAll} blocked` : ""
+			}.`,
+			`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
+				workedAhead
+					? " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
+					: "."
+			}`,
+		];
+		lines.push(...formatTodoTree(phases));
+		return lines.join("\n");
+	}
+
+	if (!entry) return tasks.length === 0 ? "Todo list cleared." : "Todo list updated.";
+	if (entry.op === "init") {
+		const next = nextActionableTask(phases);
+		return [
+			`Initialized ${tasks.length} tasks in ${phases.length} phases; in progress: ${next ? quoteTodo(next.content) : "none"}`,
+			...formatTodoTree(phases),
+		].join("\n");
+	}
+	return formatMutationAck(phases, previous, entry);
+}
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly name = "todo";
 	readonly label = "Todo";
@@ -763,7 +835,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
 			return {
-				content: [{ type: "text", text: resolved }],
+				content: [{ type: "text", text: `${resolved}\n${TODO_VIEW_HINT}` }],
 				details: { phases: previousPhases, storage },
 				isError: true,
 			};
@@ -784,7 +856,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {
-			content: [{ type: "text", text: formatSummary(effective, errors, readOnly) }],
+			content: [{ type: "text", text: formatSummary(effective, errors, readOnly, entry, previousPhases) }],
 			details,
 			isError: errors.length > 0 ? true : undefined,
 		};

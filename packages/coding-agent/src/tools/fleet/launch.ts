@@ -127,6 +127,7 @@ export interface LaunchParams {
 	keys?: string[];
 	signal?: "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKILL";
 	timeout?: number;
+	all?: boolean;
 }
 
 const KEY_INPUT: Record<string, string> = {
@@ -222,8 +223,11 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 	switch (params.op) {
 		case "start":
 			return { op: "start", spec: commandSpec(params, session), owner: session.getSessionId?.() ?? undefined };
-		case "list":
-			return { op: "list" };
+		case "list": {
+			const owner = session.getSessionId?.() ?? undefined;
+			if (params.all === true) return { op: "list", all: true };
+			return owner === undefined ? { op: "list" } : { op: "list", owner };
+		}
 		case "logs":
 			return {
 				op: "logs",
@@ -395,7 +399,7 @@ export async function executeLaunch(
 		if (params.op === "list" && resumedOwner && !resumedDaemonFound) completionLease?.reject(true);
 		else completionLease?.retain();
 		return {
-			content: [{ type: "text", text: replaceTabs(toolContent(result, params)) }],
+			content: [{ type: "text", text: replaceTabs(sanitizeText(toolContent(result, params))) }],
 			details: await toolDetails(result),
 		};
 	} catch (error) {
@@ -472,7 +476,7 @@ function callMeta(args: LaunchRenderArgs): string[] {
 			if (args.keys?.length) meta.push(args.keys.join(" "));
 			break;
 	}
-	return meta.map(entry => previewLine(replaceTabs(entry), TRUNCATE_LENGTHS.SHORT));
+	return meta.map(entry => previewLine(replaceTabs(sanitizeText(entry)), TRUNCATE_LENGTHS.SHORT));
 }
 
 export function launchRenderCall(args: LaunchRenderArgs, options: RenderResultOptions, theme: Theme): Component {
@@ -482,7 +486,7 @@ export function launchRenderCall(args: LaunchRenderArgs, options: RenderResultOp
 			icon: options.spinnerFrame !== undefined ? "running" : "pending",
 			spinnerFrame: options.spinnerFrame,
 			title: `Launch ${args.op ?? "…"}`,
-			description: target ? replaceTabs(target) : undefined,
+			description: target ? replaceTabs(sanitizeText(target)) : undefined,
 			meta: callMeta(args),
 		},
 		theme,
@@ -513,22 +517,23 @@ export function launchRenderResult(
 	let description = params.name ?? daemon?.name;
 
 	if (isError) {
-		for (const line of replaceTabs(text.trimEnd()).split("\n")) body.push(theme.fg("error", line));
+		for (const line of replaceTabs(sanitizeText(text.trimEnd())).split("\n")) body.push(theme.fg("error", line));
 	} else {
 		switch (op) {
 			case "start": {
 				meta.push(...callMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
-				if (daemon?.readyMatch) body.push(theme.fg("dim", `log matched: ${replaceTabs(daemon.readyMatch)}`));
+				if (daemon?.readyMatch)
+					body.push(theme.fg("dim", `log matched: ${replaceTabs(sanitizeText(daemon.readyMatch))}`));
 				if (daemon?.state === "failed" && daemon.exitReason)
-					body.push(theme.fg("error", replaceTabs(daemon.exitReason)));
+					body.push(theme.fg("error", replaceTabs(sanitizeText(daemon.exitReason))));
 				if (details?.timedOut) {
 					const pending = daemon ? readyPendingSummary(daemon, params.ready) : [];
 					body.push(
 						theme.fg(
 							"warning",
 							pending.length > 0
-								? `Not ready — ${pending.join("; ")}. Still running.`
+								? `Not ready — ${pending.map(entry => sanitizeText(entry)).join("; ")}. Still running.`
 								: "Readiness timed out; the process is still running.",
 						),
 					);
@@ -548,7 +553,7 @@ export function launchRenderResult(
 			case "wait": {
 				meta.push(...callMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
-				if (details?.matched) body.push(theme.fg("dim", `matched: ${replaceTabs(details.matched)}`));
+				if (details?.matched) body.push(theme.fg("dim", `matched: ${replaceTabs(sanitizeText(details.matched))}`));
 				if (details?.timedOut) {
 					const pending = daemon ? readyPendingSummary(daemon) : [];
 					body.push(
@@ -567,7 +572,7 @@ export function launchRenderResult(
 				description = `${daemons.length || "no"} ${pluralize("process", daemons.length)}`;
 				for (const item of daemons) {
 					body.push(
-						`${theme.fg("accent", replaceTabs(item.name))} ${theme.fg("dim", daemonMeta(item, theme).join(theme.sep.dot))}`,
+						`${theme.fg("accent", replaceTabs(sanitizeText(item.name)))} ${theme.fg("dim", daemonMeta(item, theme).join(theme.sep.dot))}`,
 					);
 				}
 				break;
@@ -582,7 +587,8 @@ export function launchRenderResult(
 				if (terminalRows) {
 					for (const row of terminalRows) body.push(styleTerminalRow(row, theme.getFgAnsi("toolOutput")));
 				} else if (logText) {
-					for (const line of logText.split("\n")) body.push(theme.fg("toolOutput", replaceTabs(line)));
+					for (const line of sanitizeText(logText).split("\n"))
+						body.push(theme.fg("toolOutput", replaceTabs(line)));
 				}
 				break;
 			}
@@ -590,8 +596,8 @@ export function launchRenderResult(
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
 				const spec = details?.spec;
 				if (spec) {
-					body.push(theme.fg("toolOutput", replaceTabs([spec.application, ...spec.args].join(" "))));
-					body.push(theme.fg("dim", `cwd ${shortenPath(spec.cwd)}`));
+					body.push(theme.fg("toolOutput", replaceTabs(sanitizeText([spec.application, ...spec.args].join(" ")))));
+					body.push(theme.fg("dim", `cwd ${shortenPath(sanitizeText(spec.cwd))}`));
 					const flags = [`pty ${spec.pty}`, `restart ${spec.restart}`];
 					if (spec.detached) flags.push("detached");
 					else if (spec.persist) flags.push("persistent");
@@ -601,7 +607,9 @@ export function launchRenderResult(
 			}
 			default:
 				if (text.trim()) {
-					for (const line of replaceTabs(text.trimEnd()).split("\n")) body.push(theme.fg("toolOutput", line));
+					for (const line of replaceTabs(sanitizeText(text.trimEnd())).split("\n")) {
+						body.push(theme.fg("toolOutput", line));
+					}
 				}
 		}
 	}
@@ -614,7 +622,7 @@ export function launchRenderResult(
 					? { icon: "pending" as const }
 					: { iconOverride: theme.styledSymbol("tool.launch", "accent") }),
 			title: `Launch ${op ?? ""}`.trimEnd(),
-			description: description ? replaceTabs(description) : undefined,
+			description: description ? replaceTabs(sanitizeText(description)) : undefined,
 			meta,
 		},
 		theme,

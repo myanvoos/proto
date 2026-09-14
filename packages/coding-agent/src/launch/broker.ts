@@ -132,7 +132,7 @@ function publishesCompletionOwners(request: DaemonWireRequest): boolean {
 	return request.completionEvents === true && (request.completionAcks?.length ?? 0) === 0;
 }
 
-function orderDaemonsForListing(snapshots: DaemonSnapshot[]): DaemonSnapshot[] {
+function orderDaemonsForListing(snapshots: DaemonSnapshot[], includeAllTerminal: boolean): DaemonSnapshot[] {
 	const active: DaemonSnapshot[] = [];
 	const terminal: DaemonSnapshot[] = [];
 	for (const snapshot of snapshots) {
@@ -140,7 +140,7 @@ function orderDaemonsForListing(snapshots: DaemonSnapshot[]): DaemonSnapshot[] {
 	}
 	active.sort((left, right) => left.createdAt - right.createdAt);
 	terminal.sort((left, right) => (right.exitedAt ?? right.createdAt) - (left.exitedAt ?? left.createdAt));
-	return [...active, ...terminal.slice(0, MAX_TERMINAL_DAEMONS_LISTED)];
+	return [...active, ...(includeAllTerminal ? terminal : terminal.slice(0, MAX_TERMINAL_DAEMONS_LISTED))];
 }
 
 function reapRecoveredSnapshot(snapshot: DaemonSnapshot, now: number): boolean {
@@ -645,9 +645,15 @@ class DaemonBroker {
 				return this.#start(operation.spec, operation.owner);
 			case "list": {
 				await Promise.all([...this.#records.values()].map(record => this.#refreshDetached(record)));
+				const snapshots = [...this.#records.values()]
+					.map(record => record.snapshot)
+					.filter(
+						snapshot =>
+							operation.all === true || operation.owner === undefined || snapshot.owner === operation.owner,
+					);
 				return {
 					op: "list",
-					daemons: orderDaemonsForListing([...this.#records.values()].map(record => record.snapshot)),
+					daemons: orderDaemonsForListing(snapshots, operation.all === true),
 				};
 			}
 			case "logs":

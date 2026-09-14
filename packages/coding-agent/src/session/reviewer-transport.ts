@@ -76,7 +76,7 @@ export interface AdvisorRetryFallbackState {
 }
 
 export interface ReviewerIdentity {
-	role: "advisor" | "conductor";
+	role: "advisor";
 	name: string;
 	slug: string;
 

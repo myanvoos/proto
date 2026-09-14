@@ -317,9 +317,20 @@ export class Composer {
 		}
 		const slack = Math.max(0, rows - content);
 
-		const top = conversationChildCount > 0 ? slack : this.#welcome !== undefined ? Math.floor((slack * 2) / 5) : 0;
+		// Once transcript rows have entered native scrollback the top fill sits
+		// above them in history; resizing it would shift every committed row and
+		// make the append-only ledger re-emit them.
+		const topFrozen = conversationChildCount > 0 && this.ui.committedRows > 0;
+		const top = topFrozen
+			? currentTop
+			: conversationChildCount > 0
+				? slack
+				: this.#welcome !== undefined
+					? Math.floor((slack * 2) / 5)
+					: 0;
+		const bottom = Math.max(0, slack - top);
 		if (top !== currentTop) this.#topFill.setLines(top);
-		if (slack - top !== currentBottom) this.#bottomFill.setLines(slack - top);
+		if (bottom !== currentBottom) this.#bottomFill.setLines(bottom);
 	}
 
 	stop(): void {

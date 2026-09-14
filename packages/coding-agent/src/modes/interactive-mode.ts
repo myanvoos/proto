@@ -31,19 +31,9 @@ import {
 } from "@oh-my-pi/pi-tui";
 import type { TerminalAppearanceRequestToken } from "@oh-my-pi/pi-tui/terminal";
 import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilities";
-import {
-	$env,
-	formatNumber,
-	getProjectDir,
-	logger,
-	postmortem,
-	prompt,
-	sanitizeText,
-	setProjectDir,
-} from "@oh-my-pi/pi-utils";
+import { $env, getProjectDir, logger, postmortem, prompt, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "../capability";
-import type { ConductorActivity } from "../conductor/runtime";
 import { KeybindingsManager } from "../config/keybindings";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { isSettingsInitialized, Settings, settings } from "../config/settings";
@@ -107,7 +97,6 @@ import {
 	setSessionTerminalTitle,
 	setTerminalTitleStateEnabled,
 } from "../utils/title-generator";
-import { formatCost } from "./components/agent-fleet-renderer";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import { AttachmentChipsBand } from "./components/attachment-chips";
 import type { BashExecutionComponent } from "./components/bash-execution";
@@ -147,7 +136,6 @@ import {
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { countRunningSubagentBadgeAgents } from "./running-subagent-badge";
 import {
-	CONDUCTOR_SESSION_ID,
 	type ObservableSession,
 	type SessionObserverChangeKind,
 	SessionObserverRegistry,
@@ -297,14 +285,6 @@ const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 
-/** Conductor run status → observable session status. */
-const CONDUCTOR_OBSERVABLE_STATUS: Record<ConductorActivity["status"], ObservableSession["status"]> = {
-	running: "active",
-	completed: "completed",
-	failed: "failed",
-	aborted: "aborted",
-};
-
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
 	const running = sessions.filter(
 		session => session.kind === "subagent" && session.status === "active" && session.detached === true,
@@ -349,33 +329,6 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 		rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Fleet for full list`));
 	}
 	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
-}
-
-/**
- * Live conductor line for the HUD, shown while a verification or commissioning run streams. Mirrors the
- * subagent rows above: one status dot, the agent name, what it is doing, and its live spend.
- */
-export function renderConductorHudLines(sessions: ObservableSession[], columns: number): string[] {
-	const active = sessions.filter(session => session.kind === "conductor" && session.status === "active");
-	if (active.length === 0) return [];
-
-	const dot = theme.styledSymbol("status.done", "accent");
-	const rows: string[] = [];
-	for (const session of active) {
-		const progress = session.progress;
-		const tool = progress?.currentTool
-			? progress.currentToolArgs
-				? `${progress.currentTool}: ${progress.currentToolArgs}`
-				: progress.currentTool
-			: (progress?.lastIntent ?? undefined);
-		const parts: string[] = [theme.fg("accent", theme.bold(session.label || "Conductor"))];
-		if (tool) parts.push(theme.fg("muted", replaceTabs(tool).replace(/\s*[\r\n]+\s*/g, " ↵ ")));
-		if (progress && progress.tokens > 0) parts.push(theme.fg("muted", `${formatNumber(progress.tokens)} tok`));
-		if (progress && progress.cost > 0) parts.push(theme.fg("muted", formatCost(progress.cost)));
-		const budget = Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(dot) - 2);
-		rows.push(`${dot} ${truncateToWidth(parts.join(theme.sep.dot), budget)}`);
-	}
-	return ["", theme.bold(theme.fg("accent", "Conductor")), ...rows.map(row => ` ${row}`)];
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
@@ -584,6 +537,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#pendingCommandOutput = [];
 		this.#pendingCommandOutputSessionId = undefined;
 		this.#pendingCommandOutputCommands = 0;
+		this.pendingBashComponents = [];
+		this.pendingPythonComponents = [];
+		this.bashComponent = undefined;
+		this.pythonComponent = undefined;
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
@@ -1596,67 +1553,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
-	/**
-	 * Streams one conductor run into the display surfaces: a live fleet row (kind `advisor`, so every
-	 * agent-facing surface stays fail-closed against it) plus a conductor observable that drives the HUD line and
-	 * the fleet's progress metrics. `undefined` clears the display.
-	 */
-	syncConductorDisplay(activity: ConductorActivity | undefined): void {
-		const registry = AgentRegistry.global();
-		const refId = `${this.session.getAgentId() ?? MAIN_AGENT_ID}/conductor`;
-		if (!activity) {
-			registry.setStatus(refId, "parked");
-			this.#observerRegistry.setConductor(undefined);
-			return;
-		}
-
-		const running = activity.status === "running";
-		const refStatus = running ? "running" : "parked";
-		const parent = registry.get(this.session.getAgentId() ?? MAIN_AGENT_ID);
-		const existing = registry.get(refId);
-		if (!existing) {
-			registry.register({
-				id: refId,
-				displayName: "conductor",
-				kind: "advisor",
-				parentId: this.session.getAgentId() ?? MAIN_AGENT_ID,
-				session: null,
-				sessionFile: activity.sessionFile ?? null,
-				fleetRoot: parent?.fleetRoot,
-				status: refStatus,
-				history: { readOnly: true, modelRole: "conductor" },
-			});
-		} else {
-			if (parent?.fleetRoot) {
-				registry.updateSessionScope(
-					refId,
-					{ fleetRoot: parent.fleetRoot, sessionFile: activity.sessionFile ?? null },
-					existing,
-				);
-			}
-			registry.setStatus(refId, refStatus);
-		}
-		const gist =
-			activity.progress.lastIntent ??
-			(activity.progress.currentTool ? `running ${activity.progress.currentTool}` : undefined);
-		if (running && gist) registry.setActivity(refId, gist);
-
-		const displayLabel =
-			activity.mode === "verify" ? `verifying — ${activity.label}` : `commissioning — ${activity.label}`;
-		this.#observerRegistry.setConductor({
-			id: CONDUCTOR_SESSION_ID,
-			kind: "conductor",
-			label: displayLabel,
-			agent: "conductor",
-			description: displayLabel,
-			status: CONDUCTOR_OBSERVABLE_STATUS[activity.status],
-			sessionFile: activity.sessionFile,
-			index: 0,
-			lastUpdate: Date.now(),
-			progress: { ...activity.progress, task: displayLabel, description: displayLabel },
-		});
-	}
-
 	syncRunningSubagentBadge(options: { requestRender?: boolean } = {}): void {
 		const registry = AgentRegistry.global();
 		if (this.#agentRegistrySubscriptionTarget !== registry) {
@@ -2007,7 +1903,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.subagentContainer.clear();
 		const sessions = this.#observerRegistry.getSessions();
 		const columns = this.ui.terminal.columns;
-		const lines = [...renderConductorHudLines(sessions, columns), ...renderSubagentHudLines(sessions, columns)];
+		const lines = renderSubagentHudLines(sessions, columns);
 		if (lines.length === 0) return;
 		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
@@ -2088,10 +1984,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.#exitGoalMode({ reason: "dropped", silent: true });
 				return;
 			}
-			// A completion committed while the primary is idle (an out-of-band conductor accept) has no
-			// following `agent_end` to run the teardown, and `getUserInput()` only checks once on entry — so it
-			// would strand `mode: "exiting"` until the user's next submission. While streaming, the existing
-			// `agent_end` path still owns teardown, so the non-conducted path is untouched.
+			// A completion committed while the primary is idle has no following `agent_end` to run the teardown,
+			// and `getUserInput()` only checks once on entry — so it would strand `mode: "exiting"` until the
+			// user's next submission. While streaming, the existing `agent_end` path still owns teardown.
 			if (event.state?.mode === "exiting" && !this.session.isStreaming) {
 				await this.#exitGoalMode({ reason: "completed", silent: true });
 				return;
@@ -2510,73 +2405,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!objective) return false;
 		if (this.goalModeEnabled) return await this.#replaceGoalFromObjective(objective, input);
 		return await this.#startGoalFromObjective(objective, input);
-	}
-
-	/**
-	 * `/conduct <rough ask>`: one read-only commissioning turn, the user's decision, then the ordinary `/goal set`
-	 * path. Creation deliberately runs through {@link #startGoalFromObjective} rather than `goalRuntime.createGoal`,
-	 * so tool exposure, goal-mode context injection, the status line, continuation, and persistence are identical to
-	 * a hand-written goal. Every failure path leaves nothing behind — the contract is only ever in memory until then.
-	 */
-	async handleConductCommission(
-		ask: string,
-		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
-	): Promise<boolean> {
-		const trimmed = ask.trim();
-		if (!trimmed) return false;
-		if (!this.session.settings.get("goal.enabled")) {
-			this.showWarning("Goal mode is disabled. Enable it in settings (goal.enabled).");
-			return false;
-		}
-		if (!this.session.isConductorEnabled()) {
-			this.showWarning(
-				"Conductor is disabled. Run /conduct on to enable it, or /goal to set an objective yourself.",
-			);
-			return false;
-		}
-		if (this.goalModeEnabled) {
-			this.showStatus("Goal mode is already active. Use /goal to manage it, or /goal drop to start over.");
-			return false;
-		}
-		if (this.#getPausedGoalState()) {
-			this.showWarning("Resume the current goal first, or drop it before commissioning a new one.");
-			return false;
-		}
-
-		this.showStatus(`Commissioning a contract for: ${trimmed}`);
-		const outcome = await this.session.commissionConductorProgram(trimmed);
-		if (outcome.status !== "proposed") {
-			this.showWarning(`Commissioning stopped: ${outcome.reason} Use /goal to set an objective yourself.`);
-			return false;
-		}
-
-		if (this.session.settings.get("conductor.approveContract")) {
-			// The selector renders only its first title line as the panel heading and the rest as short accent rows,
-			// so a five-section contract goes to the transcript first — the same way `/goal show` renders an
-			// objective — and the dialog carries only the decision.
-			this.showStatus(
-				[
-					"Conductor contract:",
-					"",
-					outcome.objective,
-					"",
-					outcome.tokenBudget === undefined
-						? "Token budget: none"
-						: `Token budget: ${outcome.tokenBudget.toLocaleString()}`,
-				].join("\n"),
-			);
-			// Same primitive `#confirmAndDropGoal` uses, with `#openGoalMenu`'s named choices instead of Yes/No.
-			// Escape cancels, and cancelling a contract is a rejection.
-			const choice = await this.showHookSelector(
-				"Start this conducted goal?\nApprove to enter goal mode with the contract above; reject to discard it.",
-				["Approve", "Reject"],
-			);
-			if (choice !== "Approve") {
-				this.showStatus("Contract rejected. No goal was created.");
-				return false;
-			}
-		}
-		return await this.#startGoalFromObjective(outcome.objective, input, outcome.tokenBudget);
 	}
 
 	static #AUTOQA_CONSENT_PROMPTS: ReadonlyArray<readonly [string, string]> = [

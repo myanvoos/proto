@@ -8,7 +8,7 @@ export const LAUNCH_COMPLETION_MESSAGE_TYPE = "launch-completion";
 export type LaunchCompletionEntry = DaemonCompletionNotification;
 
 export function isLaunchCompletionOwner(owner: string, sessionId: string): boolean {
-	return owner === sessionId || owner === `${sessionId}-advisor` || owner === `${sessionId}-conductor`;
+	return owner === sessionId || owner === `${sessionId}-advisor`;
 }
 
 export function buildLaunchCompletionBatchMessage(entries: LaunchCompletionEntry[]): CustomMessage {

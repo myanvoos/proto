@@ -38,7 +38,6 @@ import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
 import { BashTool, kernelBridgeAvailable } from "./bash";
-import type { BashCommandPolicy } from "./bash-allowlist";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
@@ -192,14 +191,6 @@ export interface ToolSession {
 	getEvalBridgeToolNames?: () => readonly string[];
 
 	getCodeModeDirectToolNames?: () => readonly string[] | undefined;
-
-	/**
-	 * When set, every bash command must be a plain read-only exploration command from this list — enforced by
-	 * {@link checkBashCommandAllowlist} before execution. Used by the conductor's commissioning turns.
-	 */
-	bashCommandAllowlist?: readonly string[];
-
-	bashCommandPolicy?: BashCommandPolicy;
 
 	isToolActive?: (name: string) => boolean;
 
@@ -402,7 +393,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "goal") {
 			if (!goalEnabled || restrictToolNames) return false;
 			const goalState = session.getGoalModeState?.();
-			if (goalState?.goal.status === "verifying") return false;
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
 		if (name === "kernel") return effectivePythonAllowed && !bridgeServesKernel;

@@ -70,7 +70,7 @@ export type DaemonSignal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKIL
 export type DaemonOperation =
 	| { op: "ping" }
 	| { op: "start"; spec: DaemonSpec; owner?: string }
-	| { op: "list" }
+	| { op: "list"; owner?: string; all?: boolean }
 	| {
 			op: "logs";
 			name: string;
@@ -357,9 +357,17 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 	const op = stringValue(source.op, "operation.op");
 	switch (op) {
 		case "ping":
-		case "list":
 		case "shutdown":
 			return { op };
+		case "list": {
+			const owner = optionalString(source.owner, "operation.owner");
+			const all = optionalBoolean(source.all, "operation.all");
+			return {
+				op,
+				...(owner === undefined ? {} : { owner }),
+				...(all === undefined ? {} : { all }),
+			};
+		}
 		case "start":
 			return {
 				op,

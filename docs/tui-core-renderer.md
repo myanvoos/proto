@@ -77,7 +77,19 @@ needs to know whether the user has scrolled away from the tail.
   and no old viewport row is recommitted. Components without the source
   contract retain the conservative physical-row fallback. Visible overlays
   freeze the seam and pinned live regions clip advancement at their final
-  boundary. Height-only resizes retain the existing ledger. Direct HerdR panes
+  boundary. Height-only resizes retain the existing ledger, but hosts disagree
+  about what a height change does to the physical rows: tmux and alacritty
+  pull history back on growth, while ghostty (Herdr panes) and xterm.js pad
+  the bottom with blank rows unless the cursor sits on the last row, and
+  shrinks differ in whether rows below the cursor are pushed or dropped. The
+  renderer therefore measures the displacement instead of guessing: after the
+  host resized it issues a cursor-position report (`CSI 6 n`, fused with the
+  DA1 sentinel) and compares the reported row with the row it last parked the
+  cursor on. `before - after` is exactly the number of rows the host moved
+  into history (positive) or back out of it (negative); pushed rows commit
+  when they still match the frame, pulled rows leave the ledger, and the
+  window never starts above the host's screen top. A host that answers the
+  sentinel without a report falls back to the pull assumption. Direct HerdR panes
   use this path because clearing and replaying scrollback flickers in its
   host-owned pane. What the settled frame then does to native history is
   governed by `ResizeScrollbackMode` (`setResizeScrollback`; engine default
@@ -218,10 +230,13 @@ contract, not a terminal-specific optimization.
    height shrink, only occupied old-frame rows actually moved into history by
    the host are excluded from the append-owned seam; empty viewport rows do
    not consume content-driven movement. Height-only resizes do not terminate
-   the epoch.
+   the epoch; they are reconciled from the measured cursor displacement (§1),
+   never from `oldRows - newRows` arithmetic when a report is available.
 5. **NEVER probe the viewport position or fork on platform in the update
    path.** win32 behaves like POSIX. The probe APIs are gone; do not
-   reintroduce them.
+   reintroduce them. The resize cursor-position report is not a viewport
+   probe: it runs only between a resize event and its repaint, measures the
+   cursor row the engine itself parked, and degrades to the pull assumption.
 6. **Only declare rows exact when their bytes are stable.** Mutable transcript
    content may commit as an unpinned frozen snapshot, but rows before the seam
    remain under the exact-prefix audit.

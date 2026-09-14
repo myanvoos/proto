@@ -5,7 +5,13 @@ import * as path from "node:path";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import type { ToolSession } from ".";
 import { ReadTool } from "./read";
-import { buildInMemoryMultiRangeResult, buildInMemoryTextResult } from "./read-format";
+import {
+	buildInMemoryMultiRangeResult,
+	buildInMemoryTextResult,
+	countTextLines,
+	formatLineEntriesWithMode,
+	formatSummaryElisionFooter,
+} from "./read-format";
 import { dispatchXdTarget } from "./xdev";
 
 const settingsValues: Record<string, unknown> = {
@@ -104,6 +110,14 @@ test("plain text range policy stays consistent for in-memory and artifact reads"
 			entityLabel: "file",
 		});
 		expect(textOf(inMemory)).toBe("B");
+
+		const rawWhole = buildInMemoryTextResult(session, plainText, undefined, undefined, {
+			sourcePath: plainPath,
+			entityLabel: "file",
+			raw: true,
+		});
+		expect(rawWhole.details?.totalLines).toBe(3);
+		expect(textOf(rawWhole)).toBe(plainText);
 
 		const inMemoryMulti = buildInMemoryMultiRangeResult(
 			session,
@@ -215,5 +229,85 @@ test("delimited read errors remove terminal control characters", async () => {
 		expect(output).not.toContain("\t");
 		expect(output).not.toContain("\r");
 		expect(result.details?.displayReadTargets).toEqual(["ok.txt", "missing   name"]);
+	});
+});
+
+test("bracket-context anchors carry a marker distinct from selected lines", () => {
+	const entries = [
+		{ kind: "line" as const, lineNumber: 1, text: "opening", context: true },
+		{ kind: "line" as const, lineNumber: 2, text: "selected", context: false },
+		{ kind: "ellipsis" as const },
+		{ kind: "line" as const, lineNumber: 30, text: "closing", context: true },
+	];
+
+	expect(formatLineEntriesWithMode(entries, false)).toBe("⋮ opening\nselected\n…\n⋮ closing");
+	expect(formatLineEntriesWithMode(entries, true)).toBe("1|⋮ opening\n2|selected\n…\n30|⋮ closing");
+});
+
+test("raw and non-raw totals agree when the file ends with a newline", async () => {
+	await withReadSession(async (_session, read, root) => {
+		await fs.writeFile(path.join(root, "file.txt"), "A\nB\nC\n");
+
+		const plain = await read.execute("line-count-plain", { path: "file.txt:2-2" });
+		const raw = await read.execute("line-count-raw", { path: "file.txt:2-2:raw" });
+		const rawWhole = await read.execute("line-count-raw-whole", { path: "file.txt:raw" });
+
+		expect(countTextLines("A\nB\nC\n")).toBe(3);
+		expect(plain.details?.totalLines).toBe(3);
+		expect(raw.details?.totalLines).toBe(3);
+		expect(rawWhole.details?.totalLines).toBe(3);
+		expect(textOf(plain)).toBe("B");
+		expect(textOf(raw)).toBe("B");
+		expect(textOf(rawWhole)).toBe("A\nB\nC\n");
+	});
+});
+
+test("summary footer samples the largest elided ranges in file order", () => {
+	const footer = formatSummaryElisionFooter(
+		"src/read.ts",
+		[
+			{ start: 2, end: 88 },
+			{ start: 99, end: 115 },
+			{ start: 547, end: 2042 },
+			{ start: 3000, end: 3500 },
+		],
+		2090,
+	);
+
+	expect(footer).toContain("src/read.ts:2-88,547-2042,3000-3500");
+	expect(footer).not.toContain("99-115");
+});
+
+test("file code ranges mark opening and closing bracket anchors", async () => {
+	await withReadSession(async (_session, read, root) => {
+		await fs.writeFile(
+			path.join(root, "code.ts"),
+			[
+				"function f() {",
+				"  const a = 1;",
+				"  const b = 2;",
+				"  const c = 3;",
+				"  const d = 4;",
+				"  const e = 5;",
+				"  const g = 6;",
+				"  return a + b;",
+				"}",
+			].join("\n"),
+		);
+
+		const result = await read.execute("anchor-read", { path: "code.ts:2-2" });
+		const output = textOf(result);
+		expect(output).toContain("function f() {");
+		expect(output).toContain("⋮ }");
+		expect(result.details?.displayContent?.text).toContain("⋮ }");
+	});
+});
+
+test("proto documentation index includes cached line-count hints", async () => {
+	await withReadSession(async (_session, read) => {
+		const result = await read.execute("proto-list", { path: "proto://" });
+		const output = textOf(result);
+		expect(output).toContain("# Documentation");
+		expect(output).toMatch(/- \[.+\]\(proto:\/\/[^)]+\) \(\d+ lines\)/);
 	});
 });

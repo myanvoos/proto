@@ -174,7 +174,6 @@ export class EventController {
 				this.ctx.ui.resetDisplay();
 			},
 			goal_updated: async () => {},
-			conductor_activity: e => this.#handleConductorActivity(e),
 		} satisfies AgentSessionEventHandlers;
 	}
 
@@ -579,7 +578,10 @@ export class EventController {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.message.role === "assistant") this.#updateWorkingSpinnerFrames(event.message);
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
-			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
+			// Same-millisecond distinct messages must not collide: fold a
+			// deterministic full-content fingerprint into the dedupe signature.
+			const contentText = JSON.stringify((event.message as { content?: unknown }).content ?? null);
+			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}:${contentText.length}:${Bun.hash(contentText)}`;
 			if (this.#renderedCustomMessages.has(signature)) {
 				return;
 			}
@@ -745,10 +747,6 @@ export class EventController {
 
 	inheritDisplaceableTodo(component: ToolExecutionComponent | null | undefined): void {
 		this.#displaceableTodoComponent = component?.canBeDisplacedBy("todo") ? component : undefined;
-	}
-
-	async #handleConductorActivity(event: Extract<AgentSessionEvent, { type: "conductor_activity" }>): Promise<void> {
-		this.ctx.syncConductorDisplay(event.activity);
 	}
 
 	async #handleNotice(event: Extract<AgentSessionEvent, { type: "notice" }>): Promise<void> {
@@ -1246,6 +1244,7 @@ export class EventController {
 		this.#resolveDisplaceablePoll();
 		this.#resolveDisplaceableTodo();
 		this.ctx.flushPendingCommandOutput();
+		this.ctx.flushPendingBashComponents();
 		this.#lastAssistantComponent = undefined;
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();

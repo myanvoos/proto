@@ -68,34 +68,105 @@ export function setXdevRendererLookup(lookup: (name: string) => ToolRenderer | u
 function schemaDeclaresIntentField(schema: unknown): boolean {
 	if (!schema || typeof schema !== "object" || !("properties" in schema)) return false;
 	const props = schema.properties;
-	return !!props && typeof props === "object" && "i" in props;
+	return !!props && typeof props === "object" && !Array.isArray(props) && "i" in props;
 }
 
-function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string {
+interface RenderedDocs {
+	prose: string;
+	schema: string;
+	footer: string;
+}
+
+function renderDocsParts(inst: Tool, heading = "#", descriptionCap?: number): RenderedDocs {
 	const schema = jsonSchemaToTypeScript(toolWireSchema(inst as AiTool));
 	let description = inst.description ?? "";
 	if (descriptionCap !== undefined && description.length > descriptionCap) {
 		description = `${description.slice(0, descriptionCap).trimEnd()}… (full docs: \`xd ${inst.name} ?\`)`;
 	}
-	return [
-		`${heading} ${inst.name}${inst.label ? ` — ${inst.label}` : ""}`,
-		"",
-		description,
-		"",
-		`${heading}# Schema`,
-		"```ts",
-		`type Args = ${schema};`,
-		"```",
-		`Execute from bash: \`xd ${inst.name} '<json>'\` (or \`xd ${inst.name} ?\` for these docs).`,
-	].join("\n");
+	return {
+		prose: [`${heading} ${inst.name}${inst.label ? ` — ${inst.label}` : ""}`, "", description].join("\n"),
+		schema: [`${heading}# Schema`, "```ts", `type Args = ${schema};`, "```"].join("\n"),
+		footer: [
+			`Execute from bash: \`xd ${inst.name} '<json>'\` (or \`xd ${inst.name} ?\` for these docs).`,
+			`For payloads with quotes/newlines, pipe JSON on stdin: \`xd ${inst.name} <<'EOF'\` … \`EOF\` (or \`jq -cn '{…}' | xd ${inst.name}\`).`,
+		].join("\n"),
+	};
 }
 
-function parseDeviceArgs(
+function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string {
+	const parts = renderDocsParts(inst, heading, descriptionCap);
+	return [parts.prose, parts.schema, parts.footer].join("\n\n");
+}
+
+type XdKeyHint = { from: string; to: string; suffix?: string };
+
+const XD_KEY_HINTS: Record<string, readonly XdKeyHint[]> = {
+	orchestrate_wait: [
+		{ from: "ids", to: "workers" },
+		{ from: "timeoutMs", to: "timeout", suffix: " (seconds)" },
+	],
+	orchestrate_send: [
+		{ from: "prompt", to: "message" },
+		{ from: "to", to: "worker" },
+	],
+	orchestrate_spawn: [{ from: "message", to: "prompt" }],
+	orchestrate_kill: [{ from: "to", to: "worker" }],
+};
+
+function schemaProperties(schema: Record<string, unknown>): string[] | undefined {
+	if (schema.additionalProperties === true) return undefined;
+	const properties = schema.properties;
+	if (properties === null || typeof properties !== "object" || Array.isArray(properties)) return undefined;
+	return Object.keys(properties as Record<string, unknown>);
+}
+
+function unknownXdKeys(args: Record<string, unknown>, schema: Record<string, unknown>): string[] {
+	const accepted = schemaProperties(schema);
+	if (!accepted) return [];
+	const declared = new Set(accepted);
+	return Object.keys(args).filter(key => !declared.has(key));
+}
+
+function xdKeyHint(device: AiTool, unknown: readonly string[]): string | undefined {
+	const hints = XD_KEY_HINTS[device.name];
+	if (!hints) return undefined;
+	const suggestions = unknown.flatMap(key => {
+		const hint = hints.find(candidate => candidate.from === key);
+		return hint ? [`use \`${hint.to}\`${hint.suffix ?? ""} instead of \`${hint.from}\``] : [];
+	});
+	return suggestions.length > 0 ? `Hint: ${suggestions.join("; ")}.` : undefined;
+}
+
+function validateXdArgs(
 	device: AiTool,
-	content: string,
+	args: Record<string, unknown>,
 	toolCallId: string,
-	docs: () => string,
+	schema: Record<string, unknown>,
+	validationDocs: () => string,
 ): Record<string, unknown> {
+	const unknown = unknownXdKeys(args, schema);
+	if (unknown.length > 0) {
+		const accepted = schemaProperties(schema) ?? [];
+		const acceptedText = accepted.length > 0 ? accepted.join(", ") : "(none)";
+		const hint = xdKeyHint(device, unknown);
+		throw new ToolError(
+			`Invalid args for ${XD_URL_PREFIX}${device.name}: unknown top-level key${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Accepted keys: ${acceptedText}.${hint ? ` ${hint}` : ""}`,
+		);
+	}
+	try {
+		return validateToolArguments(device, {
+			type: "toolCall",
+			id: toolCallId,
+			name: device.name,
+			arguments: args,
+		});
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new ToolError(`Invalid args for ${XD_URL_PREFIX}${device.name}: ${message}\n\n${validationDocs()}`);
+	}
+}
+
+function parseDeviceArgs(device: AiTool, content: string, toolCallId: string): Record<string, unknown> {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(content);
@@ -111,18 +182,9 @@ function parseDeviceArgs(
 	}
 
 	const args: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
-	if ("i" in args && !schemaDeclaresIntentField(toolWireSchema(device))) delete args.i;
-	try {
-		return validateToolArguments(device, {
-			type: "toolCall",
-			id: toolCallId,
-			name: device.name,
-			arguments: args,
-		});
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		throw new ToolError(`Invalid args for ${XD_URL_PREFIX}${device.name}: ${message}\n\n${docs()}`);
-	}
+	const schema = toolWireSchema(device);
+	if ("i" in args && !schemaDeclaresIntentField(schema)) delete args.i;
+	return validateXdArgs(device, args, toolCallId, schema, () => renderDocsParts(device as Tool).schema);
 }
 
 function toolSummary(inst: Tool): string {
@@ -351,7 +413,7 @@ export async function dispatchXdevTool(
 			};
 		}
 
-		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId, () => renderDocs(canonical));
+		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId);
 		throwIfAborted(signal);
 		xdev = { ...xdev, args: validated };
 		const innerOnUpdate: AgentToolUpdateCallback | undefined = onUpdate

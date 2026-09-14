@@ -18,6 +18,19 @@ const MUTATING_TOOLS: Record<string, true> = {
 	write: true,
 };
 const MID_RUN_NUDGE_MESSAGE_TYPE = "mid-run-todo-nudge";
+
+function hasFileMutation(details: unknown): boolean {
+	if (!isRecord(details)) return false;
+	const statusEvents = details.statusEvents;
+	if (
+		Array.isArray(statusEvents) &&
+		statusEvents.some(event => isRecord(event) && (event.op === "write" || event.op === "delete"))
+	) {
+		return true;
+	}
+	const mutatedPaths = details.mutatedPaths;
+	return Array.isArray(mutatedPaths) && mutatedPaths.some(path => typeof path === "string" && path.length > 0);
+}
 const MARKDOWN_PROMPT_PREFIX_RE = /^(?:>\s*)?(?:(?:[-*+]|\d+[.)])\s+)*/;
 const PROMPT_LABEL_RE = /^(?:q(?:uestion)?|ask)\s*\d*\s*[:.)-]\s*/i;
 const QUESTION_PROMPT_RE =
@@ -84,11 +97,12 @@ export class TodoTracker {
 		this.#midRunNudgeCount = 0;
 	}
 
-	onToolResult(toolName: string, isError: boolean): void {
+	onToolResult(toolName: string, isError: boolean, details?: unknown): void {
 		if (toolName === "todo") {
 			this.#mutationsSinceLastTouch = 0;
 		} else if (!isError && MUTATING_TOOLS[toolName]) {
-			this.#mutationsSinceLastTouch++;
+			const mutatesFiles = toolName === "edit" || toolName === "write" || hasFileMutation(details);
+			if (mutatesFiles) this.#mutationsSinceLastTouch++;
 		}
 		this.#reminderAwaitingProgress = false;
 	}

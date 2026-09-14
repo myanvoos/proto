@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Missing required properties now report `<key> is required (<expected>)` instead of `<key> must be <expected> (was missing)`.
+
 ## [18.0.1] - 2026-09-07
 
 ### Breaking Changes

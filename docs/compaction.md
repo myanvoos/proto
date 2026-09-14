@@ -220,7 +220,7 @@ By default, the built-in pi-blackhole `session_before_compact` hook returns the 
 4. Folds observations and reflections from the session ledger.
 5. Adds `recall` instructions so compacted source evidence remains recoverable.
 
-The stored entry keeps Proto's normal `CompactionEntry` boundary and token fields. Blackhole-specific metadata is stored in `details`, including `compactor: "blackhole"` and the folded observational-memory snapshot. Existing session replay, TUI dividers, conductor transitions, SDK events, and RPC results therefore keep the same outer contract.
+The stored entry keeps Proto's normal `CompactionEntry` boundary and token fields. Blackhole-specific metadata is stored in `details`, including `compactor: "blackhole"` and the folded observational-memory snapshot. Existing session replay, TUI dividers, SDK events, and RPC results therefore keep the same outer contract.
 
 pi-blackhole also adds:
 

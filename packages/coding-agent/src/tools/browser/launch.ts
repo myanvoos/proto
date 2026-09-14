@@ -353,6 +353,7 @@ function buildHeadlessLaunchArgs(viewport: { width: number; height: number }): s
 	const launchArgs = [
 		"--no-sandbox",
 		"--disable-setuid-sandbox",
+		"--allow-file-access-from-files",
 		"--disable-blink-features=AutomationControlled",
 		`--window-size=${viewport.width},${viewport.height}`,
 	];

@@ -98,6 +98,10 @@ test("kernel audit hook reports each written file exactly once per cell", async 
 		expect(plain.length, "plain open() write is reported exactly once (hook + walker dedupe)").toBe(1);
 		expect(String(plain[0]?.diff)).toContain("appended by plain open");
 		expect(String(plain[0]?.diff)).toContain("original line");
+		const mutationNotes = String(result.details?.cells?.[0]?.output ?? "")
+			.split("\n")
+			.filter(line => line.includes("<kernel> note:") && line.includes("plain.txt"));
+		expect(mutationNotes, "one model-visible mutation note is emitted per path per cell").toHaveLength(1);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

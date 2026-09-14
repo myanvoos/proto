@@ -462,10 +462,13 @@ export function parseSearchQuery(raw: string): StructuredQuery {
 		q.excludedInUrl.length > 0 ||
 		q.inTitle.length > 0 ||
 		q.excludedInTitle.length > 0 ||
+		q.inText.length > 0 ||
+		q.excludedInText.length > 0 ||
 		q.filetypes.length > 0 ||
 		q.excludedFiletypes.length > 0 ||
 		q.before !== undefined ||
-		q.after !== undefined;
+		q.after !== undefined ||
+		q.lang !== undefined;
 	return q;
 }
 
@@ -628,6 +631,14 @@ export function matchesQueryConstraints(source: SearchSource, q: StructuredQuery
 interface ConstraintDimension {
 	label: string;
 	pred: (source: SearchSource) => boolean;
+}
+
+export function getQueryConstraintLabels(q: StructuredQuery): string[] {
+	const labels = constraintDimensions(q).map(dimension => dimension.label);
+	if (q.inText.length > 0) labels.push(q.inText.map(v => `intext:${v}`).join(" "));
+	if (q.excludedInText.length > 0) labels.push(q.excludedInText.map(v => `-intext:${v}`).join(" "));
+	if (q.lang) labels.push(`lang:${q.lang}`);
+	return labels;
 }
 
 function constraintDimensions(q: StructuredQuery): ConstraintDimension[] {

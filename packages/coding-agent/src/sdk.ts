@@ -55,7 +55,6 @@ import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/con
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
-import { loadConductorTranscriptCost } from "./conductor";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -2637,43 +2636,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			.filter((tool): tool is Tool => tool != null)
 			.map(tool => new ExtensionToolWrapper(wrapToolWithMetaNotice(tool), extensionRunner) as Tool);
 
-		// Deferred on purpose: the conductor's isolated ToolSession and tool pool are built the first time a
-		// completion claim actually needs verifying, so a session with `conductor.enabled` off pays nothing.
-		let conductorToolsPromise: Promise<Tool[]> | undefined;
-		let conductorToolSessionRef: ToolSession | undefined;
-		const buildConductorTools = (): Promise<Tool[]> => {
-			conductorToolsPromise ??= (async () => {
-				const conductorToolSession: ToolSession = {
-					...toolSession,
-					get cwd() {
-						return sessionManager.getCwd();
-					},
-					requireYieldTool: false,
-					getSessionId: () => {
-						const id = sessionManager.getSessionId?.();
-						return id ? `${id}-conductor` : null;
-					},
-					queueLaunchCompletion: notification =>
-						session?.queueLaunchCompletion(notification) ??
-						Promise.reject(new Error("Session unavailable for launch completion delivery")),
-					getAgentId: () => "conductor",
-
-					xdev: undefined,
-					isToolActive: name => name !== "inspect_media" && toolSession.isToolActive?.(name) === true,
-				};
-				conductorToolSessionRef = conductorToolSession;
-				const conductorToolBuilds: Array<Tool | null | Promise<Tool | null>> = [];
-				for (const name in BUILTIN_TOOLS) {
-					conductorToolBuilds.push(BUILTIN_TOOLS[name as keyof typeof BUILTIN_TOOLS](conductorToolSession));
-				}
-				const conductorBuilt = await Promise.all(conductorToolBuilds);
-				return conductorBuilt
-					.filter((tool): tool is Tool => tool != null)
-					.map(tool => new ExtensionToolWrapper(wrapToolWithMetaNotice(tool), extensionRunner) as Tool);
-			})();
-			return conductorToolsPromise;
-		};
-
 		const advisorWatchdogPrompts = [...watchdogFiles];
 		if (initialActiveRepoContext) {
 			advisorWatchdogPrompts.push(formatActiveRepoWatchdogPrompt(initialActiveRepoContext));
@@ -2686,17 +2648,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const sessionFile = sessionManager.getSessionFile();
 		const initialAdvisorCosts = await loadAdvisorTranscriptCosts(sessionFile);
-		const initialConductorCost = await loadConductorTranscriptCost(sessionFile);
 		session = new AgentSession({
 			codeModeState,
 			advisorWatchdogPrompt,
 			advisorContextPrompt,
 			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
 			advisorConfigs: discoveredAdvisors.advisors,
-			conductorToolsFactory: buildConductorTools,
-			conductorSetBashCommandPolicy: policy => {
-				if (conductorToolSessionRef) conductorToolSessionRef.bashCommandPolicy = policy;
-			},
 			agent,
 			thinkingLevel: effectiveThinkingLevel,
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
@@ -2705,7 +2662,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			initialAdvisorCosts,
-			initialConductorCost,
 			settings,
 			scoutAllowedBySpawnPolicy: isScoutSpawnable(undefined, options.spawns ?? "*"),
 			evalKernelOwnerId,

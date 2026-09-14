@@ -63,11 +63,12 @@ The tool returns a single text content block plus structured `details`.
 `text` is produced by `formatForLLM()` in `packages/coding-agent/src/web/search/index.ts`. Notes about relaxed query constraints are emitted first:
 
 - If `response.answer` exists, it is emitted first.
-- If sources exist, one entry per source follows (the `## Sources` header with a source count is emitted only when an answer was also produced):
+- A `Constraints:` line reports how each parsed query operator was applied for the chosen provider (native filter, post-filtered, or relaxed).
+- Sources and citations are merged by normalized URL into one numbered `## Sources` list (citation `citedText` rides on the matching source); `## Citations` lists only URLs not already present, so `[n]` markers in the answer stay stable. The count line notes a shortfall against the requested result count (`provider returned 2 of 4 requested`).
   - `[n] <title> (<formatted age or published date>)`
   - `    <url>`
-  - optional snippet line truncated to 240 chars.
-- If citations exist, a `## Citations` section follows with URL/title plus optional cited text truncated to 240 chars.
+  - optional snippet/cited-text line truncated to 240 chars.
+- Provider-synthesized answers have leading/interstitial narration paragraphs (`Let me search…`, `Based on the search results, I can…`) stripped and citation-split sentences rejoined before rendering.
 - If related questions exist, a `## Related` bullet list follows.
 - If search queries exist, a `Search queries: <n>` section follows, capped to the first 3 queries and 120 chars each.
 

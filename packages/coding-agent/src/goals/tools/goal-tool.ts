@@ -151,7 +151,6 @@ function goalBadgeColor(status: GoalStatus): ThemeColor {
 		case "dropped":
 			return "muted";
 		case "active":
-		case "verifying":
 			return "accent";
 		default:
 			status satisfies never;

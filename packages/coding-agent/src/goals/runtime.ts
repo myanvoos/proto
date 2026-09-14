@@ -15,7 +15,6 @@ export interface GoalRuntimeHost {
 		content: string;
 		deliverAs?: "steer" | "followUp" | "nextTurn";
 	}): Promise<void>;
-	completionAuthority?(goal: Goal): "commit" | "pend";
 	now?(): number;
 }
 
@@ -230,10 +229,7 @@ export class GoalRuntime {
 	async onTaskAborted(options?: { reason?: "interrupted" | "internal" }): Promise<void> {
 		const state = this.#host.getState();
 		const needsAccounting = state?.enabled && isAccountingStatus(state.goal);
-		const needsPause =
-			options?.reason === "interrupted" &&
-			state?.enabled &&
-			(state.goal.status === "active" || state.goal.status === "verifying");
+		const needsPause = options?.reason === "interrupted" && state?.enabled && state.goal.status === "active";
 		if (!needsAccounting && !needsPause) {
 			this.#turnSnapshot = undefined;
 			return;
@@ -243,7 +239,7 @@ export class GoalRuntime {
 			this.#turnSnapshot = undefined;
 			if (options?.reason !== "interrupted") return;
 			const cloned = this.#getStateClone();
-			if (!cloned?.enabled || (cloned.goal.status !== "active" && cloned.goal.status !== "verifying")) return;
+			if (!cloned?.enabled || cloned.goal.status !== "active") return;
 			cloned.enabled = false;
 			cloned.goal.status = "paused";
 			cloned.goal.updatedAt = this.#now();
@@ -261,9 +257,8 @@ export class GoalRuntime {
 			await this.#commitState(state, { emit: true });
 			return state;
 		}
-		// A pending verification cannot survive a thread switch (its verdict source is gone), so it pauses here too;
-		// this also covers preserveActiveGoal, whose branch above only preserves a truly "active" goal.
-		if (state.goal.status === "active" || state.goal.status === "verifying") {
+		// This also covers preserveActiveGoal, whose branch above only preserves a truly "active" goal.
+		if (state.goal.status === "active") {
 			state.enabled = false;
 			state.goal.status = "paused";
 			state.goal.updatedAt = this.#now();
@@ -439,11 +434,7 @@ export class GoalRuntime {
 			state.enabled = false;
 			state.mode = "active";
 			state.reason = undefined;
-			if (
-				state.goal.status === "active" ||
-				state.goal.status === "budget-limited" ||
-				state.goal.status === "verifying"
-			) {
+			if (state.goal.status === "active" || state.goal.status === "budget-limited") {
 				state.goal.status = "paused";
 			}
 			state.goal.updatedAt = this.#now();
@@ -473,11 +464,6 @@ export class GoalRuntime {
 	}
 
 	async completeGoalFromTool(): Promise<Goal> {
-		if (this.#host.completionAuthority) {
-			const goal = this.#host.getState()?.goal;
-			const decision = goal ? this.#host.completionAuthority(cloneGoal(goal)) : undefined;
-			if (decision === "pend") return await this.#pendCompletion();
-		}
 		return await this.#commitCompletion();
 	}
 
@@ -503,72 +489,6 @@ export class GoalRuntime {
 			this.#budgetReportedFor = undefined;
 			await this.#commitState(state, { persist: "goal" });
 			return state.goal;
-		});
-	}
-
-	async #pendCompletion(): Promise<Goal> {
-		return await this.#withAccounting(async () => {
-			await this.#flushUsageLocked("suppressed");
-			const state = this.#getStateClone();
-			if (!state?.goal) {
-				throw new Error("cannot complete goal because no goal is active");
-			}
-			if (state.goal.status === "complete") {
-				throw new Error("goal is already complete");
-			}
-			if (state.goal.status === "dropped") {
-				throw new Error("cannot complete a dropped goal");
-			}
-			if (state.goal.status === "verifying") {
-				throw new Error("goal completion is already pending verification");
-			}
-			// Stays enabled and in "active" mode so goal mode is not torn down while the verdict is outstanding;
-			// "verifying" is not an accounting status, so the budget freezes at the gate.
-			state.goal.status = "verifying";
-			state.goal.updatedAt = this.#now();
-			this.#clearActiveAccounting();
-			await this.#commitState(state, { persist: "goal" });
-			return state.goal;
-		});
-	}
-
-	async acceptCompletion(expectedUpdatedAt?: number): Promise<Goal> {
-		return await this.#withAccounting(async () => {
-			const state = this.#getStateClone();
-			if (state?.goal.status !== "verifying") {
-				throw new Error("no completion is pending verification");
-			}
-			if (expectedUpdatedAt !== undefined && state.goal.updatedAt !== expectedUpdatedAt) {
-				throw new Error("the pended completion changed while the verdict was being applied");
-			}
-			state.enabled = false;
-			state.goal.status = "complete";
-			state.goal.updatedAt = this.#now();
-			state.mode = "exiting";
-			state.reason = "completed";
-			this.#clearActiveAccounting();
-			this.#budgetReportedFor = undefined;
-			await this.#commitState(state, { persist: "goal" });
-			return state.goal;
-		});
-	}
-
-	async rejectCompletion(expectedUpdatedAt?: number): Promise<GoalModeState> {
-		return await this.#withAccounting(async () => {
-			const state = this.#getStateClone();
-			if (state?.goal.status !== "verifying") {
-				throw new Error("no completion is pending verification");
-			}
-			if (expectedUpdatedAt !== undefined && state.goal.updatedAt !== expectedUpdatedAt) {
-				throw new Error("the pended completion changed while the verdict was being applied");
-			}
-			state.enabled = true;
-			state.goal.status = "active";
-			state.goal.updatedAt = this.#now();
-			this.#budgetReportedFor = undefined;
-			this.#markActiveAccounting(state.goal);
-			await this.#commitState(state, { persist: "goal" });
-			return state;
 		});
 	}
 

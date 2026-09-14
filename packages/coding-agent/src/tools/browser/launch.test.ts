@@ -26,6 +26,17 @@ function isSnapHost(executablePath: string | undefined): boolean {
 	return executablePath === SNAP_EXECUTABLE;
 }
 
+describe("Chromium launch flags", () => {
+	test("allows file URLs for tool-owned browsers", async () => {
+		const launch = await resolveSharedBrowserLaunchSpec({
+			headless: true,
+			userDataDir: path.join(os.tmpdir(), "proto-browser-file-url-profile-test"),
+		});
+		if (!launch) return;
+		expect(launch.args).toContain("--allow-file-access-from-files");
+	});
+});
+
 describe("Snap Chromium profile paths", () => {
 	test("recognizes the supported Snap executable spellings", () => {
 		expect(isSnapChromiumExecutable("/snap/bin/chromium")).toBe(true);

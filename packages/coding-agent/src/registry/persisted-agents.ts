@@ -4,7 +4,6 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor/transcript-recorder";
-import { isConductorTranscriptName } from "../conductor/transcript";
 import { resolveExplicitModelRole } from "../config/model-resolver";
 import { persistedOrchestratorWorkerLabels } from "../orchestrator/runtime";
 import { assistantTurnProducedOutput } from "../session/messages";
@@ -453,18 +452,15 @@ async function registerPersistedSubagentsFromDir(
 		if (!entry.isFile() || !entry.name.endsWith(".jsonl") || entry.name.includes(".bak")) continue;
 		const sessionFile = path.join(dir, entry.name);
 
-		const isConductor = isConductorTranscriptName(entry.name);
-		if (isAdvisorTranscriptName(entry.name) || isConductor) {
+		if (isAdvisorTranscriptName(entry.name)) {
 			const owner = parentId ?? MAIN_AGENT_ID;
 
 			const slug =
-				isConductor || entry.name === ADVISOR_TRANSCRIPT_FILENAME
-					? ""
-					: entry.name.slice("__advisor.".length, -".jsonl".length);
-			// The conductor registers under the read-only `advisor` kind on purpose: every agent-facing surface
-			// already excludes that kind (fleet roster, broadcast targets, subagent peer prompt, `history://`,
-			// IRC send, revive/kill), so it is fail-closed here instead of by extending a dozen predicates.
-			const displayName = isConductor ? "conductor" : slug ? `advisor:${slug}` : "advisor";
+				entry.name === ADVISOR_TRANSCRIPT_FILENAME ? "" : entry.name.slice("__advisor.".length, -".jsonl".length);
+			// Advisors register under the read-only `advisor` kind on purpose: every agent-facing surface already
+			// excludes that kind (fleet roster, broadcast targets, subagent peer prompt, `history://`, IRC send,
+			// revive/kill), so they are fail-closed here instead of by extending a dozen predicates.
+			const displayName = slug ? `advisor:${slug}` : "advisor";
 			const advisorId = `${owner}/${displayName}`;
 			let existing = registry.get(advisorId);
 			if (existing && existing.fleetRoot === undefined && !existing.session) {

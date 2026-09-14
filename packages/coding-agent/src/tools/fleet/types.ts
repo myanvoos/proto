@@ -86,6 +86,7 @@ export type FleetRenderArgs = {
 	timeoutMs?: number;
 	peek?: boolean;
 	ids?: string[];
+	all?: boolean;
 } & Partial<Omit<LaunchParams, "op">>;
 
 export function fleetErrorResult(text: string, details: CoordinationDetails): AgentToolResult<FleetDetails> {

@@ -79,3 +79,17 @@ test("an active monitor suppresses the incomplete-todo reminder without consumin
 	expect(await resumed.tracker.checkCompletion(finishedTurn)).toBe(true);
 	expect(resumed.continues).toBe(1);
 });
+
+test("mid-run nudge counts file writes, not read-only bash results", () => {
+	const reads = createTracker({ hasActiveMonitors: false });
+	for (let index = 0; index < 12; index++) {
+		reads.tracker.onToolResult("bash", false, { statusEvents: [] });
+	}
+	expect(reads.tracker.takeMidRunNudge()).toBeNull();
+
+	const writes = createTracker({ hasActiveMonitors: false });
+	for (let index = 0; index < 12; index++) {
+		writes.tracker.onToolResult("bash", false, { mutatedPaths: [`/tmp/file-${index}`] });
+	}
+	expect(writes.tracker.takeMidRunNudge()).not.toBeNull();
+});

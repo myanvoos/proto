@@ -135,6 +135,15 @@ export interface SearchUsage {
 	totalTokens?: number;
 }
 
+export type SearchConstraintMode = "native" | "post-filtered" | "unsupported";
+
+export interface SearchConstraintApplication {
+	operator: string;
+	mode: SearchConstraintMode;
+	detail?: string;
+	relaxed?: boolean;
+}
+
 export interface SearchResponse {
 	provider: SearchProviderId | "none";
 
@@ -143,6 +152,10 @@ export interface SearchResponse {
 	sources: SearchSource[];
 
 	citations?: SearchCitation[];
+
+	constraintApplications?: SearchConstraintApplication[];
+
+	requestedResultCount?: number;
 
 	searchQueries?: string[];
 
@@ -155,6 +168,66 @@ export interface SearchResponse {
 	requestId?: string;
 
 	authMode?: string;
+}
+
+export function normalizeSearchReferenceUrl(rawUrl: string): string {
+	try {
+		const url = new URL(rawUrl);
+		url.hash = "";
+		if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+		return url.href;
+	} catch {
+		return rawUrl.replace(/#.*$/, "").replace(/\/+$/, "");
+	}
+}
+
+export function mergeSearchReferences(response: SearchResponse): SearchResponse {
+	const sources: SearchSource[] = [];
+	const sourcesByUrl = new Map<string, SearchSource>();
+
+	for (const source of response.sources) {
+		const key = normalizeSearchReferenceUrl(source.url);
+		const existing = sourcesByUrl.get(key);
+		if (existing) {
+			if (!existing.title.trim() && source.title.trim()) existing.title = source.title;
+			if (!existing.snippet && source.snippet) existing.snippet = source.snippet;
+			if (!existing.publishedDate && source.publishedDate) existing.publishedDate = source.publishedDate;
+			if (existing.ageSeconds === undefined && source.ageSeconds !== undefined)
+				existing.ageSeconds = source.ageSeconds;
+			if (!existing.author && source.author) existing.author = source.author;
+			continue;
+		}
+		const copy = { ...source };
+		sources.push(copy);
+		sourcesByUrl.set(key, copy);
+	}
+
+	const citations: SearchCitation[] = [];
+	const citationsByUrl = new Map<string, SearchCitation>();
+	for (const citation of response.citations ?? []) {
+		const key = normalizeSearchReferenceUrl(citation.url);
+		const source = sourcesByUrl.get(key);
+		if (source) {
+			if (!source.snippet && citation.citedText) source.snippet = citation.citedText;
+			if (!source.title.trim() && citation.title.trim()) source.title = citation.title;
+			continue;
+		}
+		const existing = citationsByUrl.get(key);
+		if (existing) {
+			if (!existing.title.trim() && citation.title.trim()) existing.title = citation.title;
+			if (!existing.citedText && citation.citedText) existing.citedText = citation.citedText;
+			continue;
+		}
+		const copy = { ...citation };
+		citations.push(copy);
+		citationsByUrl.set(key, copy);
+	}
+
+	return {
+		...response,
+		sources,
+		citations: citations.length > 0 ? citations : undefined,
+	};
 }
 
 export class SearchProviderError extends Error {

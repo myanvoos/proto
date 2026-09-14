@@ -104,12 +104,14 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 - No selector: if summarization is enabled and the file is eligible, `#trySummarize()` calls `summarizeCode()`.
   - Defaults: `read.summarize.enabled = true`; prose (`.md` variants and `.txt`) stays unsummarized unless `read.summarize.prose = true`; files below `read.summarize.minTotalLines = 100` stay verbatim.
   - Hard guards: file size `<= 2 MiB` (`MAX_SUMMARY_BYTES`), line count `<= 20_000` (`MAX_SUMMARY_LINES`).
-  - Summary output keeps selected declarations and replaces elided spans with `…` or merged brace-pair lines containing `{ … }`. When at least one span is elided, the text content ends with a footer like `[…NNln elided; re-read needed ranges, e.g. <path>:5-16,40-80]` using concrete ranges from the actual elisions.
+  - Summary output keeps selected declarations and replaces elided spans with `…` or merged brace-pair lines containing `{ … }`. When at least one span is elided, the text content ends with a footer like `[…NNln elided; re-read needed ranges, e.g. <path>:5-16,40-80,900-1200]` using up to three largest concrete ranges from the actual elisions, listed in file order.
   - When an elided block sits between matching brace lines, `#renderSummary()` may merge them into one anchored line rather than emitting separate opener/closer lines.
 - Explicit selector or summarization miss: streamed text read.
   - Default open-ended limit is `read.defaultLimit = 300`, clamped to `[1, DEFAULT_MAX_LINES]`.
   - Single bounded non-raw ranges on paths detected as code add `RANGE_LEADING_CONTEXT_LINES = 1` / `RANGE_TRAILING_CONTEXT_LINES = 3` on constrained sides. Paths detected as plaintext stay exact; raw and multi-range reads are exact. Directory listing selectors slice rendered entries without context.
   - Non-raw output uses `resolveFileDisplayMode()`: line numbers are prepended only when the `readLineNumbers` setting is `true`; `:raw` reads never get them.
+  - Non-raw code-range anchors are prefixed with `⋮` (after the `|` in numbered mode); they are context, not selected lines.
+  - A terminal newline terminates the preceding line and is not addressable; totals and `Use :N` continuation hints use that same addressable-line count.
 - With `readLineNumbers` enabled, output is plain text where each line is prefixed with its 1-indexed line number and a `|` separator, e.g. `41|def alpha():` (`prependLineNumbers()` in `packages/coding-agent/src/tools/read-format.ts`).
 
 ### Directory listings

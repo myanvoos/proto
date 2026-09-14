@@ -6,6 +6,10 @@
 
 - `sanitizeText` gains `stripControlChars` for protocol payloads and single-line render fields
 
+### Added
+
+- `vterm` accepts `growPullsHistory: "cursorOnLastRow"` to model terminals (xterm.js, ghostty) that pad a height-only grow with blank rows unless the cursor is on the last row.
+
 ## [18.1.6] - 2026-09-12
 
 ### Fixed

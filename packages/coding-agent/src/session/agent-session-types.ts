@@ -33,7 +33,6 @@ import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { SecretObfuscator } from "../secrets/obfuscator";
-import type { BashCommandPolicy } from "../tools/bash-allowlist";
 import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SessionManager } from "./session-manager";
@@ -141,9 +140,6 @@ export interface AgentSessionConfig {
 
 	initialAdvisorCosts?: ReadonlyMap<string, number>;
 
-	/** Restored conductor spend for the session being loaded (see `loadConductorTranscriptCost`). */
-	initialConductorCost?: number;
-
 	preferWebsockets?: boolean;
 
 	codexResetCoordinator?: CodexAutoRedeemCoordinator;
@@ -208,12 +204,6 @@ export interface AgentSessionConfig {
 	advisorContextPrompt?: string;
 
 	advisorConfigs?: AdvisorConfig[];
-
-	/** Deferred conductor tool-pool build; never invoked unless a verification turn needs it. */
-	conductorToolsFactory?: () => Promise<AgentTool[]>;
-
-	/** Arms/disarms the conductor's fail-closed bash policy; see {@link SessionConductorOptions}. */
-	conductorSetBashCommandPolicy?: (policy: BashCommandPolicy | undefined) => void;
 
 	disconnectOwnedMcpManager?: () => Promise<void>;
 

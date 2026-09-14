@@ -26,7 +26,7 @@ import {
 	truncateHead,
 	truncateLine,
 } from "../session/streaming-output";
-import { buildLineEntriesWithBlockContext, lineEntriesToPlainText } from "../utils/block-context";
+import { buildLineEntriesWithBlockContext } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { isInspectMediaToolActive, modelSupportsImageInput } from "../utils/inspect-media-mode";
 import { normalizeToLF, stripBom } from "../utils/text";
@@ -58,13 +58,13 @@ import {
 	splitPathAndSelPreferringLiteral,
 } from "./path-utils";
 import {
-	BRACKET_CONTEXT_ELLIPSIS,
 	buildInMemoryMultiRangeResult,
 	buildInMemoryTextResult,
 	countTextLines,
 	formatLineEntriesWithMode,
 	formatSummaryElisionFooter,
 	formatTextWithMode,
+	lineEntriesToDisplayText,
 	markMarkdownContentType,
 	prependSuffixResolutionNotice,
 	RANGE_LEADING_CONTEXT_LINES,
@@ -206,10 +206,8 @@ function collectLineWindowFromBuffer(
 ): ReadLineWindow {
 	const { bytes, rawSegments, endsWithNewline } = file;
 
-	const totalFileLines =
-		endsWithNewline && !includeTerminalNewline && rawSegments.length > 1
-			? rawSegments.length - 1
-			: rawSegments.length;
+	const totalFileLines = endsWithNewline && rawSegments.length > 1 ? rawSegments.length - 1 : rawSegments.length;
+	const collectionLineCount = includeTerminalNewline ? rawSegments.length : totalFileLines;
 	const window: ReadLineWindow = {
 		lines: [],
 		totalFileLines,
@@ -232,12 +230,12 @@ function collectLineWindowFromBuffer(
 
 	let doneCollecting = false;
 	let selectedLinesSeen = 0;
-	for (let index = startLine; index < totalFileLines; index++) {
+	for (let index = startLine; index < collectionLineCount; index++) {
 		const newlineAt = bytes.indexOf(LF_BYTE, lineStart);
 		const lineEnd = newlineAt === -1 ? bytes.length : newlineAt;
 		const lineByteLength = lineEnd - lineStart;
 
-		if (selectedLinesSeen < selectedLineLimit) selectedLinesSeen++;
+		if (index < totalFileLines && selectedLinesSeen < selectedLineLimit) selectedLinesSeen++;
 
 		if (window.lines.length === 0 && window.firstLinePreview === undefined && lineByteLength > 0) {
 			const previewEnd = Math.min(lineEnd, lineStart + maxBytes);
@@ -463,9 +461,11 @@ async function streamLinesFromFile(
 		firstLinePreview = { text, bytes };
 	}
 
+	const totalFileLines = reachedEof && endedWithNewline && lineIndex > 1 ? lineIndex - 1 : lineIndex;
+
 	return {
 		lines: collectedLines,
-		totalFileLines: lineIndex,
+		totalFileLines,
 		collectedBytes,
 		stoppedByByteLimit,
 		firstLinePreview,
@@ -886,7 +886,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			);
 			const firstLine = entries.find(entry => entry.kind === "line");
 			displayContent = {
-				text: lineEntriesToPlainText(entries, BRACKET_CONTEXT_ELLIPSIS),
+				text: lineEntriesToDisplayText(entries),
 				startLine: firstLine?.kind === "line" ? firstLine.lineNumber : (visibleSpans[0]?.startLine ?? 1),
 				lineNumbers: entries.map(entry => (entry.kind === "line" ? entry.lineNumber : null)),
 			};
@@ -1394,6 +1394,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						firstLinePreview,
 						firstLineByteLength,
 						reachedEof,
+						hasTrailingNewline,
 					} = lineWindow;
 
 					if (requestedStart >= totalFileLines) {
@@ -1486,7 +1487,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						);
 						const firstLine = entries.find(entry => entry.kind === "line");
 						capturedDisplayContent = {
-							text: lineEntriesToPlainText(entries, BRACKET_CONTEXT_ELLIPSIS),
+							text: lineEntriesToDisplayText(entries),
 							startLine: firstLine?.kind === "line" ? firstLine.lineNumber : startLineDisplay,
 							lineNumbers: entries.map(entry => (entry.kind === "line" ? entry.lineNumber : null)),
 						};
@@ -1540,6 +1541,16 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						outputText = formatBracketAwareText() ?? formatText(truncation.content, startLineDisplay);
 						details = {};
 						sourcePath = absolutePath;
+					}
+					if (
+						rawSelector &&
+						limit === undefined &&
+						reachedEof &&
+						hasTrailingNewline &&
+						!truncation.truncated &&
+						!outputText.endsWith("\n")
+					) {
+						outputText += "\n";
 					}
 					if (reachedEof) details.totalLines = totalFileLines;
 
@@ -1761,6 +1772,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			firstLinePreview,
 			firstLineByteLength,
 			reachedEof,
+			hasTrailingNewline,
 		} = streamResult;
 
 		if (requestedStart >= totalFileLines) {
@@ -1843,6 +1855,16 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 		}
 
+		if (
+			rawSelector &&
+			limit === undefined &&
+			reachedEof &&
+			hasTrailingNewline &&
+			!truncation.truncated &&
+			!outputText.endsWith("\n")
+		) {
+			outputText += "\n";
+		}
 		if (!rawSelector && artifact.size > MAX_ARTIFACT_RAW_INLINE_BYTES) {
 			outputText += `\n\n[${this.#formatArtifactWorkflowNotice(artifact, artifactUrl)}]`;
 		}

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { ToolSession } from "../index";
 import { ToolAbortError } from "../tool-errors";
 import { getTabsMapForTest, type PendingRun, runInTab } from "./tab-supervisor";
+import { formatSelectorMatchHint, normalizeSelector, resolveWaitTimeout } from "./tab-worker";
 
 test("aborting after tab worker termination does not escape as an uncaught exception", async () => {
 	const name = `terminated-worker-${crypto.randomUUID()}`;
@@ -53,4 +54,12 @@ test("aborting after tab worker termination does not escape as an uncaught excep
 	} finally {
 		tabs.delete(name);
 	}
+});
+
+test("browser selector normalization keeps text handlers and timeout options observable", () => {
+	expect(normalizeSelector("p-text/Go")).toBe("text/Go");
+	expect(normalizeSelector("text/Go")).toBe("text/Go");
+	expect(resolveWaitTimeout(10_000, 1_500)).toBe(1_500);
+	expect(resolveWaitTimeout(10_000, 0)).toBe(resolveWaitTimeout(10_000, Number.POSITIVE_INFINITY));
+	expect(formatSelectorMatchHint(2)).toContain("matches 2 element(s)");
 });

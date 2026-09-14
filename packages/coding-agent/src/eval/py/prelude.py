@@ -127,6 +127,10 @@ if "__proto_prelude_loaded__" not in globals():
             # abspath -> content sha last reported this cell (None: reported
             # deleted); bounds the cell at _FS_MAX_EVENTS distinct paths
             "reported": {},
+            # abspath -> compact metadata for the last status event. The
+            # runner uses this at the cell flush to emit one model-visible
+            # mutation note even when an eager close-time event already ran.
+            "reported_meta": {},
             # abspath -> close-time reports made this cell
             "eager": {},
             "captured_text_bytes": 0,
@@ -135,6 +139,7 @@ if "__proto_prelude_loaded__" not in globals():
         }
         sys._proto_fs_state = _FS_STATE
     _FS_STATE.setdefault("captured_text_bytes", 0)
+    _FS_STATE.setdefault("reported_meta", {})
     _FS_STATE.setdefault("eager", {})
     # Stale-write guard: abspath -> (st_mtime_ns, st_size) at the agent's
     # last observation of the file. Armed by any read-mode open the audit hook
@@ -345,6 +350,14 @@ if "__proto_prelude_loaded__" not in globals():
         run_id = getter() if callable(getter) else None
         return f"{run_id}:{ap}"
 
+    def _fs_set_report_meta(ap: str, op: str, rows: list[str] | None = None) -> None:
+        """Keep compact status metadata for the flush-time kernel note."""
+        meta = {"op": op, "diff": rows is not None and bool(rows)}
+        if rows:
+            meta["added"] = sum(row.startswith("+") for row in rows)
+            meta["removed"] = sum(row.startswith("-") for row in rows)
+        _FS_STATE["reported_meta"][ap] = meta
+
     def _fs_report_path(ap: str, rec: dict) -> str:
         """Report one touched path's current state as a write/delete status
         event carrying the net diff from its pre-cell content. Returns
@@ -365,6 +378,7 @@ if "__proto_prelude_loaded__" not in globals():
                 # earlier write report with an upserting tombstone.
                 if ap in reported and reported[ap] is not None:
                     reported[ap] = None
+                    _fs_set_report_meta(ap, "revert")
                     _emit_status("revert", path=ap, id=_fs_event_id(ap))
                     return "emitted"
                 return "skipped"
@@ -374,11 +388,13 @@ if "__proto_prelude_loaded__" not in globals():
             elif len(reported) >= _FS_MAX_EVENTS:
                 return "capped"
             data = {"op": "delete", "path": ap, "id": _fs_event_id(ap)}
+            rows = None
             if rec["before"] is not None:
                 rows, _ = _capped_numbered_diff(rec["before"], "")
                 if rows:
                     data["diff"] = "\n".join(rows)
             reported[ap] = None
+            _fs_set_report_meta(ap, "delete", rows)
             _emit_status(data.pop("op"), **data)
             return "emitted"
         if rec["key"] is not None and (st.st_mtime_ns, st.st_size) == rec["key"]:
@@ -404,6 +420,7 @@ if "__proto_prelude_loaded__" not in globals():
             # retract the stale write/delete with an upserting tombstone.
             if ap in reported:
                 reported[ap] = sha
+                _fs_set_report_meta(ap, "revert")
                 _emit_status("revert", path=ap, id=_fs_event_id(ap))
                 return "emitted"
             return "skipped"
@@ -419,6 +436,7 @@ if "__proto_prelude_loaded__" not in globals():
             _emit_file_status("write", ap, before=before, after=data.decode("utf-8", errors="replace"))
         else:
             reported[ap] = sha
+            _fs_set_report_meta(ap, "write")
             _emit_status("write", path=ap, bytes=st.st_size, sha=sha, id=_fs_event_id(ap))
         return "emitted"
 
@@ -506,11 +524,51 @@ if "__proto_prelude_loaded__" not in globals():
 
     _fs_install_open()
 
+    def _fs_note_path(ap: str) -> str:
+        """Use a cwd-relative path in the compact model-visible note when safe."""
+        try:
+            relative = os.path.relpath(ap, os.getcwd())
+        except (OSError, ValueError):
+            return ap
+        if relative == ".." or relative.startswith(".." + os.sep):
+            return ap
+        return relative
+
+    def _fs_emit_mutation_note(ap: str, rec: dict) -> None:
+        """Emit exactly one compact stderr note for a flushed mutation."""
+        meta = _FS_STATE["reported_meta"].get(ap)
+        if not isinstance(meta, dict):
+            return
+        emit_note = globals().get("__proto_kernel_note")
+        if not callable(emit_note):
+            return
+        op = meta.get("op")
+        if op == "write":
+            if not rec.get("existed", False):
+                verb = "created"
+                suffix = ""
+                if meta.get("diff"):
+                    lines = int(meta.get("added", 0))
+                    suffix = f" ({lines} line{'s' if lines != 1 else ''})"
+            else:
+                verb = "wrote"
+                suffix = ""
+                if meta.get("diff"):
+                    suffix = f" (+{int(meta.get('added', 0))} \u2212{int(meta.get('removed', 0))})"
+        elif op == "delete":
+            verb, suffix = "deleted", ""
+        elif op == "revert":
+            verb, suffix = "reverted", ""
+        else:
+            return
+        emit_note(f"{verb} {_fs_note_path(ap)}{suffix}")
+
     def _flush_fs_status() -> None:
         """Report filesystem mutations made without a helper API as status
         events (same shape as a helper write's). Called by the runner after the
         cell's user code settles, before the done frame. Paths already reported
-        on close dedupe here by content sha."""
+        on close dedupe here by content sha; each net event also gets one
+        compact ``<kernel> note:`` line for model-visible output."""
         state = _FS_STATE
         with state["lock"]:
             paths = sorted(state["touched"])
@@ -521,15 +579,18 @@ if "__proto_prelude_loaded__" not in globals():
         for ap in paths:
             if _fs_report_path(ap, pending[ap]) == "capped":
                 capped += 1
+            _fs_emit_mutation_note(ap, pending[ap])
         if capped:
             _emit_status("files", count=capped, action="truncated")
         state["reported"].clear()
+        state["reported_meta"].clear()
 
     def _reset_fs_status() -> None:
         """Drop records left by runner machinery between requests so they are
         never attributed to the next cell."""
         _FS_STATE["touched"].clear()
         _FS_STATE["reported"].clear()
+        _FS_STATE["reported_meta"].clear()
         _FS_STATE["eager"].clear()
         _FS_STATE["captured_text_bytes"] = 0
 
@@ -611,19 +672,22 @@ if "__proto_prelude_loaded__" not in globals():
 
     def _emit_file_status(op: str, path, *, before: str | None, after: str) -> None:
         """Emit a file-op status event, attaching a capped hunk diff when content changed."""
+        path_str = str(path)
         data: dict = {
-            "path": str(path),
+            "path": path_str,
             "chars": len(after),
             "sha": hashlib.sha256(after.encode()).hexdigest()[:16],
-            "id": _fs_event_id(str(path)),
+            "id": _fs_event_id(path_str),
         }
-        _FS_STATE["reported"][str(path)] = data["sha"]
+        _FS_STATE["reported"][path_str] = data["sha"]
+        rows = None
         if before is not None and before != after:
             rows, truncated = _capped_numbered_diff(before, after)
             if rows:
                 data["diff"] = "\n".join(rows)
                 if truncated:
                     data["diffTruncated"] = True
+        _fs_set_report_meta(path_str, op, rows)
         _emit_status(op, **data)
 
     def env(key: str | None = None, value: str | None = None):
@@ -756,32 +820,43 @@ if "__proto_prelude_loaded__" not in globals():
         return "\n".join(lines)
 
     def output(
-        *ids: str,
+        *ids: object,
         format: str = "raw",
         query: str | None = None,
         offset: int | None = None,
         limit: int | None = None,
     ) -> str | dict | list[dict]:
-        """Read task/agent output by ID. Returns text or JSON depending on format.
+        """Read agent/task output by ID. This does not read bash artifacts.
 
         Args:
-            *ids: Output IDs to read (e.g., 'scout_0', 'reviewer_1')
-            format: 'raw' (default), 'json' (dict with metadata), 'stripped' (no ANSI)
-            query: jq-like query for JSON outputs (e.g., '.endpoints[0].file')
-            offset: Line number to start reading from (1-indexed)
-            limit: Maximum number of lines to read
+            *ids: Output IDs to read (e.g., ``'scout_0'``, ``'reviewer_1'``).
+                IDs are coerced with ``str()`` so numbered IDs are accepted.
+            format: ``'raw'`` (default) returns text as stored; ``'stripped'``
+                removes ANSI color escapes; ``'json'`` returns metadata and
+                content in a dictionary (or a list for multiple IDs).
+            query: jq-style query on the output parsed as JSON (for example,
+                ``'.endpoints[0].file'``). ``query`` is exclusive with
+                ``offset``/``limit``.
+            offset: Line number to start reading from (1-indexed).
+            limit: Maximum number of lines to read.
 
         Returns:
-            Single ID: str (format='raw'/'stripped') or dict (format='json')
-            Multiple IDs: list of dict with 'id' and 'content'/'data' keys
+            Single ID: str (``format='raw'``/``'stripped'``) or dict
+            (``format='json'``). Multiple IDs: a list of dictionaries.
 
         Examples:
             output('scout_0')  # Read as raw text
             output('reviewer_0', format='json')  # Read with metadata
-            output('scout_0', query='.files[0]')  # Extract JSON field
+            output('scout_0', query='.files[0]')  # Extract a JSON field
             output('scout_0', offset=10, limit=20)  # Lines 10-29
             output('scout_0', 'reviewer_1')  # Read multiple outputs
         """
+        if format not in ("raw", "json", "stripped"):
+            _emit_status("output", error=f"Invalid format: {format!r}")
+            raise ValueError(
+                f"Invalid output format {format!r}; expected one of: raw, json, stripped"
+            )
+        output_ids = tuple(str(output_id) for output_id in ids)
         artifacts_dir = os.environ.get("PI_ARTIFACTS_DIR")
         if not artifacts_dir:
             session_file = os.environ.get("PI_SESSION_FILE")
@@ -795,18 +870,18 @@ if "__proto_prelude_loaded__" not in globals():
             )
             raise RuntimeError(f"No artifacts directory found: {artifacts_dir}")
 
-        if not ids:
+        if not output_ids:
             _emit_status("output", error="No IDs provided")
             raise ValueError("At least one output ID is required")
 
-        if query and (offset is not None or limit is not None):
+        if query is not None and (offset is not None or limit is not None):
             _emit_status("output", error="query cannot be combined with offset/limit")
             raise ValueError("query cannot be combined with offset/limit")
 
         results: list[dict] = []
         not_found: list[str] = []
 
-        for output_id in ids:
+        for output_id in output_ids:
             output_path = Path(artifacts_dir) / f"{output_id}.md"
             if not output_path.exists():
                 not_found.append(output_id)
@@ -885,7 +960,24 @@ if "__proto_prelude_loaded__" not in globals():
 
         if not_found:
             available = sorted([f.stem for f in Path(artifacts_dir).glob("*.md")])
-            error_msg = f"Output not found: {', '.join(not_found)}"
+            error_msg = (
+                f"Agent/task output not found: {', '.join(not_found)}. "
+                "output() reads an agent/task output id such as 'scout_0', not bash artifacts."
+            )
+            artifact_ids = [
+                output_id
+                for output_id in not_found
+                if output_id.isdigit() or re.fullmatch(r"artifact://\d+", output_id)
+            ]
+            if artifact_ids:
+                references = []
+                for output_id in artifact_ids:
+                    artifact_number = output_id.removeprefix("artifact://")
+                    references.append(
+                        f"read artifact://{artifact_number}:A-B or "
+                        f'tool.read({{"path": "artifact://{artifact_number}:A-B"}})'
+                    )
+                error_msg += " For bash artifact numbers, use " + "; ".join(references) + " instead."
             if available:
                 error_msg += f"\n\nAvailable outputs: {', '.join(available[:20])}"
                 if len(available) > 20:
@@ -893,11 +985,11 @@ if "__proto_prelude_loaded__" not in globals():
             _emit_status("output", not_found=not_found, available_count=len(available))
             raise FileNotFoundError(error_msg)
 
-        if len(ids) == 1:
+        if len(output_ids) == 1:
             if format == "json":
-                _emit_status("output", id=ids[0], chars=results[0]["char_count"])
+                _emit_status("output", id=output_ids[0], chars=results[0]["char_count"])
                 return results[0]
-            _emit_status("output", id=ids[0], chars=len(results[0]["content"]))
+            _emit_status("output", id=output_ids[0], chars=len(results[0]["content"]))
             return results[0]["content"]
 
         if format == "json":

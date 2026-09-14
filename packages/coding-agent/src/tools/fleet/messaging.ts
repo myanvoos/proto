@@ -1,6 +1,6 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { formatAge, formatDuration } from "@oh-my-pi/pi-utils";
+import { formatAge, formatDuration, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus";
@@ -297,7 +297,9 @@ export function executeInbox(
 	const busMessages = IrcBus.global().inbox(senderId, { peek, fleetRoot });
 	const session = fleetRoot ? registry.getInFleet(senderId, fleetRoot)?.session : registry.get(senderId)?.session;
 	const pendingMessages =
-		typeof session?.drainPendingIrcInboxMessages === "function" ? session.drainPendingIrcInboxMessages(senderId) : [];
+		typeof session?.drainPendingIrcInboxMessages === "function"
+			? session.drainPendingIrcInboxMessages(senderId, peek ? { peek: true } : undefined)
+			: [];
 	const messages = [...busMessages, ...pendingMessages].sort((a, b) => a.ts - b.ts);
 	if (messages.length === 0) {
 		return {
@@ -372,7 +374,7 @@ function bodyLines(
 	const total = body.split("\n").filter(line => line.trim()).length;
 	const quote = theme.fg("dim", theme.md.quoteBorder);
 	const lines = getPreviewLines(body, max, BODY_LINE_WIDTH, Ellipsis.Unicode).map(
-		line => `${indent}${quote} ${theme.fg(tone, replaceTabs(line))}`,
+		line => `${indent}${quote} ${theme.fg(tone, replaceTabs(sanitizeText(line)))}`,
 	);
 	const hidden = total - Math.min(total, max);
 	if (hidden > 0) {
@@ -384,9 +386,9 @@ function bodyLines(
 function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
 		case "send":
-			return `IRC ${theme.nav.selected} ${args.to?.trim() || "…"}`;
+			return `IRC ${theme.nav.selected} ${sanitizeText(args.to?.trim() || "…")}`;
 		case "wait":
-			return `IRC ${theme.nav.back} ${args.from?.trim() || "anyone"}`;
+			return `IRC ${theme.nav.back} ${sanitizeText(args.from?.trim() || "anyone")}`;
 		case "inbox":
 			return "IRC inbox";
 		case "list":
@@ -432,13 +434,13 @@ export function createIrcMessageCard(
 	getExpanded: () => boolean,
 	uiTheme: Theme,
 ): Component {
-	const from = card.from?.trim() || "?";
+	const from = sanitizeText(card.from?.trim() || "?");
 	const title =
 		card.kind === "incoming"
 			? `IRC ${uiTheme.nav.back} ${from}`
 			: card.kind === "autoreply"
-				? `IRC ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
-				: `IRC ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
+				? `IRC ${uiTheme.nav.selected} ${sanitizeText(card.to?.trim() || "?")}`
+				: `IRC ${from} ${uiTheme.nav.selected} ${sanitizeText(card.to?.trim() || "?")}`;
 	const body = card.body ?? "";
 	const meta: string[] = [];
 	if (card.kind === "autoreply") meta.push("auto");
@@ -466,7 +468,7 @@ function renderSendResult(
 	theme: Theme,
 ): string[] {
 	const receipts = details.receipts ?? [];
-	const to = details.to ?? args?.to?.trim() ?? "?";
+	const to = sanitizeText(details.to ?? args?.to?.trim() ?? "?");
 	const title = `IRC ${theme.nav.selected} ${to}`;
 
 	if (receipts.length === 0) {
@@ -515,9 +517,9 @@ function renderSendResult(
 						const badge = formatBadge(receipt.outcome, outcomeColor(receipt.outcome), theme);
 						const error =
 							receipt.outcome === "failed" && receipt.error
-								? ` ${theme.fg("error", `${theme.format.dash} ${receipt.error}`)}`
+								? ` ${theme.fg("error", `${theme.format.dash} ${sanitizeText(receipt.error)}`)}`
 								: "";
-						return `${theme.fg("toolOutput", receipt.to)} ${badge}${error}`;
+						return `${theme.fg("toolOutput", sanitizeText(receipt.to))} ${badge}${error}`;
 					},
 				},
 				theme,
@@ -528,7 +530,7 @@ function renderSendResult(
 	if (waited) {
 		const age = messageAge(waited.ts);
 		lines.push(
-			`  ${theme.fg("dim", theme.nav.back)} ${theme.fg("accent", waited.from)}${age ? ` ${theme.fg("dim", age)}` : ""}`,
+			`  ${theme.fg("dim", theme.nav.back)} ${theme.fg("accent", sanitizeText(waited.from))}${age ? ` ${theme.fg("dim", age)}` : ""}`,
 		);
 		lines.push(...bodyLines(waited.body, expanded, theme, { indent: "  " }));
 	} else if (timedOut) {
@@ -585,7 +587,7 @@ function renderInboxResult(
 			renderItem: msg => {
 				const age = messageAge(msg.ts);
 				const replyBadge = msg.replyTo ? ` ${formatBadge("reply", "muted", theme)}` : "";
-				const head = `${theme.fg("accent", msg.from)}${age ? ` ${theme.fg("dim", age)}` : ""}${replyBadge}`;
+				const head = `${theme.fg("accent", sanitizeText(msg.from))}${age ? ` ${theme.fg("dim", age)}` : ""}${replyBadge}`;
 				return [head, ...bodyLines(msg.body, expanded, theme, { collapsedLines: 1 })];
 			},
 		},
@@ -615,12 +617,14 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 			maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
 			itemType: "peer",
 			renderItem: peer => {
-				const kindText = peer.parentId ? `${peer.kind}${theme.sep.dot}of ${peer.parentId}` : peer.kind;
+				const kindText = peer.parentId
+					? `${peer.kind}${theme.sep.dot}of ${sanitizeText(peer.parentId)}`
+					: peer.kind;
 				const unread = peer.unread > 0 ? ` ${formatBadge(`${peer.unread} unread`, "warning", theme)}` : "";
 				const age = messageAge(peer.lastActivity);
-				const activity = peer.activity ? ` ${theme.fg("dim", replaceTabs(peer.activity))}` : "";
-				const name = theme.fg("dim", replaceTabs(peer.displayName));
-				return `${peerStatusBadge(peer.status, theme)} ${theme.bold(replaceTabs(peer.id))} ${name} ${theme.fg("dim", kindText)}${activity}${unread}${age ? ` ${theme.fg("dim", age)}` : ""}`;
+				const activity = peer.activity ? ` ${theme.fg("dim", replaceTabs(sanitizeText(peer.activity)))}` : "";
+				const name = theme.fg("dim", replaceTabs(sanitizeText(peer.displayName)));
+				return `${peerStatusBadge(peer.status, theme)} ${theme.bold(replaceTabs(sanitizeText(peer.id)))} ${name} ${theme.fg("dim", kindText)}${activity}${unread}${age ? ` ${theme.fg("dim", age)}` : ""}`;
 			},
 		},
 		theme,

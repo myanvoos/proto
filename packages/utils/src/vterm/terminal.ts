@@ -16,6 +16,13 @@ export interface TerminalOptions {
 	scrollback?: number;
 	allowProposedApi?: boolean;
 	disableStdin?: boolean;
+	/**
+	 * How a height-only grow fills the new rows. `"always"` (tmux, alacritty)
+	 * pulls rows back out of history; `"cursorOnLastRow"` (xterm.js, ghostty)
+	 * pulls only when the cursor sits on the last row and pads with blank rows
+	 * at the bottom otherwise.
+	 */
+	growPullsHistory?: "always" | "cursorOnLastRow";
 }
 
 export interface Disposable {
@@ -62,6 +69,7 @@ export class Terminal {
 	readonly modes: TerminalModes = { applicationCursorKeysMode: false };
 
 	#scrollback: number;
+	#growPullsHistory: "always" | "cursorOnLastRow";
 	#normal: BufferState;
 	#alternate: BufferState;
 	#active: BufferState;
@@ -86,6 +94,7 @@ export class Terminal {
 		this.cols = Math.max(2, Math.floor(options.cols ?? 80));
 		this.rows = Math.max(1, Math.floor(options.rows ?? 24));
 		this.#scrollback = Math.max(0, Math.floor(options.scrollback ?? 1_000));
+		this.#growPullsHistory = options.growPullsHistory ?? "always";
 		this.#scrollBottom = this.rows - 1;
 		this.#normal = createState(this.cols, this.rows);
 		this.#alternate = createState(this.cols, this.rows);
@@ -737,6 +746,14 @@ export class Terminal {
 			this.#usedColumns(lines.at(-1)!) === 0
 		) {
 			lines.pop();
+		}
+		const padBottomOnGrow =
+			this.#growPullsHistory === "cursorOnLastRow" &&
+			columns === this.cols &&
+			rows > this.rows &&
+			state.cursorY < this.rows - 1;
+		if (padBottomOnGrow) {
+			while (lines.length < state.baseY + rows) lines.push(new BufferLine(columns));
 		}
 		while (lines.length < rows) lines.push(new BufferLine(columns));
 		const capacity = rows + (retainHistory ? this.#scrollback : 0);

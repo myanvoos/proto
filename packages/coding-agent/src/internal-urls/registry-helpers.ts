@@ -52,7 +52,7 @@ export async function sessionFilesFromDisk(): Promise<Map<string, string>> {
 			if (!entry.isFile()) continue;
 			const name = entry.name;
 			if (!name.endsWith(".jsonl")) continue;
-			if (name.startsWith("__advisor") || name.startsWith("__conductor")) continue;
+			if (name.startsWith("__advisor")) continue;
 			const id = name.slice(0, -".jsonl".length);
 			if (!found.has(id)) found.set(id, path.join(dir, name));
 		}

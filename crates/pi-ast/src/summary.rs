@@ -230,7 +230,10 @@ fn collect_elidable_tree(
 	}
 
 	let mut current_parent = elidable_parent;
-	if is_elidable_kind(language, node.kind()) && total_lines >= min_body_lines {
+	if is_elidable_kind(language, node.kind())
+		&& !is_declaration_container_kind(language, node)
+		&& total_lines >= min_body_lines
+	{
 		let start_line = node_start_line(node) + 1;
 		let end_line = node_end_line(node).saturating_sub(1);
 		if start_line <= end_line {
@@ -362,6 +365,36 @@ fn is_comment_kind(language: SupportLang, kind: &str) -> bool {
 		SupportLang::Scala => kind == "block_comment",
 		SupportLang::Lua => kind == "comment",
 		SupportLang::EmacsLisp => kind == "comment",
+		_ => false,
+	}
+}
+
+/// Declaration containers keep their member declarations visible. Their
+/// children still participate in collection so method/function bodies can be
+/// folded independently.
+fn is_declaration_container_kind(language: SupportLang, node: Node<'_>) -> bool {
+	let kind = node.kind();
+	match language {
+		SupportLang::TypeScript | SupportLang::Tsx | SupportLang::JavaScript => kind == "class_body",
+		SupportLang::Python => {
+			kind == "block"
+				&& node
+					.parent()
+					.is_some_and(|parent| parent.kind() == "class_definition")
+		},
+		SupportLang::Rust => {
+			kind == "declaration_list"
+				&& node.parent().is_some_and(|parent| {
+					matches!(parent.kind(), "impl_item" | "trait_item" | "mod_item")
+				})
+		},
+		SupportLang::Java => matches!(kind, "class_body" | "interface_body" | "enum_body"),
+		SupportLang::CSharp => kind == "declaration_list",
+		SupportLang::Kotlin => matches!(kind, "class_body" | "enum_class_body"),
+		SupportLang::Swift => matches!(kind, "class_body" | "protocol_body" | "enum_class_body"),
+		SupportLang::Dart => matches!(kind, "class_body" | "extension_body" | "mixin_body"),
+		SupportLang::Scala => kind == "template_body",
+		SupportLang::Php => kind == "declaration_list",
 		_ => false,
 	}
 }
@@ -818,4 +851,84 @@ fn push_segment(
 		end_line,
 		text: (kind == "kept").then(|| lines.join("\n")),
 	});
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{SummaryOptions, summarize_code};
+
+	fn summary(code: &str, lang: &str) -> super::SummaryResult {
+		summarize_code(SummaryOptions {
+			code:               code.to_string(),
+			lang:               Some(lang.to_string()),
+			path:               None,
+			min_body_lines:     None,
+			min_comment_lines:  None,
+			unfold_until_lines: None,
+			unfold_limit_lines: None,
+		})
+		.expect("source should parse")
+	}
+
+	fn kept_text(result: &super::SummaryResult) -> String {
+		result
+			.segments
+			.iter()
+			.filter_map(|segment| segment.text.as_deref())
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
+	#[test]
+	fn typescript_class_members_remain_visible_while_method_bodies_fold() {
+		let result = summary(
+			"class Foo {\n  bar() {\n    const value = 1;\n    return value;\n  }\n  #baz() {\n    \
+			 const value = 2;\n    return value;\n  }\n}\nfunction top() {}\n",
+			"ts",
+		);
+		let kept = kept_text(&result);
+		assert!(kept.contains("class Foo {"));
+		assert!(kept.contains("bar() {"));
+		assert!(kept.contains("#baz() {"));
+		assert!(kept.contains("function top() {}"));
+		assert!(
+			result
+				.segments
+				.iter()
+				.any(|segment| segment.kind == "elided" && segment.start_line == 3)
+		);
+		assert!(
+			result
+				.segments
+				.iter()
+				.any(|segment| segment.kind == "elided" && segment.start_line == 7)
+		);
+	}
+
+	#[test]
+	fn python_class_methods_remain_visible_while_method_bodies_fold() {
+		let result = summary(
+			"class Foo:\n    def bar(self):\n        value = 1\n        value += 1\n        value += \
+			 2\n        return value\n\ndef top():\n    return 2\n",
+			"python",
+		);
+		let kept = kept_text(&result);
+		assert!(kept.contains("class Foo:"));
+		assert!(kept.contains("def bar(self):"));
+		assert!(kept.contains("def top():"));
+		assert!(!kept.contains("value += 1"));
+	}
+
+	#[test]
+	fn rust_impl_methods_remain_visible_while_method_bodies_fold() {
+		let result = summary(
+			"struct Foo;\n\nimpl Foo {\n    fn bar(&self) {\n        let value = 1;\n        \
+			 println!(\"{value}\");\n    }\n}\n",
+			"rust",
+		);
+		let kept = kept_text(&result);
+		assert!(kept.contains("impl Foo {"));
+		assert!(kept.contains("fn bar(&self) {"));
+		assert!(!kept.contains("let value = 1;"));
+	}
 }
