@@ -4389,7 +4389,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ast"
-version = "18.1.7"
+version = "18.1.8"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -4456,7 +4456,7 @@ dependencies = [
 
 [[package]]
 name = "pi-builtins"
-version = "18.1.7"
+version = "18.1.8"
 dependencies = [
  "ansi-width",
  "argmax",
@@ -4536,7 +4536,7 @@ dependencies = [
 
 [[package]]
 name = "pi-iso"
-version = "18.1.7"
+version = "18.1.8"
 dependencies = [
  "async-trait",
  "libc",
@@ -4547,7 +4547,7 @@ dependencies = [
 
 [[package]]
 name = "pi-natives"
-version = "18.1.7"
+version = "18.1.8"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4605,7 +4605,7 @@ dependencies = [
 
 [[package]]
 name = "pi-shell"
-version = "18.1.7"
+version = "18.1.8"
 dependencies = [
  "anyhow",
  "brush-core",
@@ -4627,7 +4627,7 @@ dependencies = [
 
 [[package]]
 name = "pi-walker"
-version = "18.1.7"
+version = "18.1.8"
 dependencies = [
  "dashmap",
  "globset",
@@ -5757,18 +5757,9 @@ dependencies = [
 
 [[package]]
 name = "tinyvec"
-version = "1.13.2"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cf0ded5c4e56918d8f8a339e1bb67d038d3bc6d144ac407904015ba2e4cde9b"
-dependencies = [
- "tinyvec_macros",
-]
-
-[[package]]
-name = "tinyvec_macros"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
@@ -5966,9 +5957,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-cmake"
-version = "0.7.4"
+version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "164e0c4f4236ec5ceff14824a5528615cf462e100467e49826442ff57d327061"
+checksum = "d22893fac54133fdb93497efc45713d53a96d93b035288c7a8ab0c2af77c0ddd"
 dependencies = [
  "cc",
  "tree-sitter-language",

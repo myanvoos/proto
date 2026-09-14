@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.8] - 2026-09-14
+
 ### Added
 
 - Role model banks: `modelRoleBank.<role>` lists the models a role may use, `orchestrate_spawn` accepts a `model=` parameter (`@worker` alias or concrete model id) validated against the worker role's bank, and eval `agent({model})` gains the same per-call override and bank validation; roles without a bank accept any model.
