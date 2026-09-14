@@ -208,9 +208,9 @@ export function renderJsonTreeLines(
 	};
 
 	if (isRecord(value)) {
-		for (const key in value) {
-			if (key in HIDDEN_ARG_KEYS) continue;
-			renderNode(value[key], key, [], true, 1);
+		const keys = Object.keys(value).filter(key => !(key in HIDDEN_ARG_KEYS));
+		for (let i = 0; i < keys.length; i++) {
+			renderNode(value[keys[i]!], keys[i], [], i === keys.length - 1, 1);
 			if (lines.length >= maxLines) {
 				truncated = true;
 				break;

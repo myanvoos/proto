@@ -78,6 +78,36 @@ test("plain shell commands keep the normal $ command rendering (no AST)", () => 
 	expect(plain).not.toContain("Module");
 });
 
+test("mixed shell and kernel commands keep the full bash source", () => {
+	const command = "printf 'before\\n'; python <<'PY'\nprint('kernel')\nPY\nprintf 'after\\n'";
+	const preview = renderBashCall(command);
+	expect(preview).toContain("printf 'before");
+	expect(preview).toContain("printf 'after");
+	expect(preview).toContain("Bash");
+	expect(preview).not.toContain("· ast");
+});
+
+test("mixed kernel results keep status hunks and JSON alongside Bash source", () => {
+	const command = "printf 'before\\n'; python <<'PY'\nprint('kernel')\nPY\nprintf 'after\\n'";
+	const rendered = renderBashResult(
+		{
+			content: [{ type: "text", text: "before\n3\nafter\n" }],
+			details: {
+				statusEvents: [{ op: "write", path: "mixed.txt", diff: "@@ -1 +1 @@\n-old\n+new" }],
+				jsonOutputs: [{ result: "ok" }],
+			},
+		},
+		command,
+	);
+	expect(rendered).toContain("printf 'before");
+	expect(rendered).toContain("printf 'after");
+	expect(rendered).toContain("Bash");
+	expect(rendered).toContain("Status");
+	expect(rendered).toContain("mixed.txt");
+	expect(rendered).toContain("result");
+	expect(rendered).not.toContain("· ast");
+});
+
 // The settled phase (renderResult) is compared byte-for-byte against the eval
 // tool rendering the same code, so the two can never drift.
 async function assertJavaScriptParity(label: string, code: string): Promise<void> {

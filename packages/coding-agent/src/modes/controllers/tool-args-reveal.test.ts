@@ -25,6 +25,46 @@ function renderedEnvLine(args: Record<string, unknown>): string {
 	}
 }
 
+test("a shell suffix arriving after a kernel cell stays visible live and after rebuilding", () => {
+	const reveal = new ToolArgsRevealController({
+		getSmoothStreaming: () => false,
+		requestRender: NOOP,
+	});
+	const kernelCommand = "python3 <<'PY'\nprint(1 + 2)\nPY";
+	const command = `${kernelCommand}\nprintf 'shell suffix\\n'`;
+	const target = { rawInput: false, exposeRawPartialJson: true };
+	const firstArgs = reveal.setTarget("mixed-bash", JSON.stringify({ command: kernelCommand }).slice(0, -2), target);
+	const live = new ToolExecutionComponent("bash", firstArgs, {}, undefined, UI);
+	let rebuilt: ToolExecutionComponent | undefined;
+	const rendered = (component: ToolExecutionComponent) => component.render(100).map(Bun.stripANSI).join("\n");
+	try {
+		expect(rendered(live)).toContain("print(1 + 2)");
+		const partialJson = JSON.stringify({ command }).slice(0, -2);
+		const liveArgs = reveal.setTarget("mixed-bash", partialJson, target);
+		live.updateArgs(liveArgs);
+		rebuilt = new ToolExecutionComponent(
+			"bash",
+			decodeStreamedToolArgs(partialJson, { rawInput: false, fullArgs: firstArgs }),
+			{},
+			undefined,
+			UI,
+		);
+		for (const component of [live, rebuilt]) {
+			expect(rendered(component)).toContain("printf 'shell suffix");
+			component.setArgsComplete();
+			component.setExecutionStarted();
+			component.updateResult({ content: [{ type: "text", text: "3\nshell suffix\n" }] }, true);
+			expect(rendered(component)).toContain("printf 'shell suffix");
+			component.updateResult({ content: [{ type: "text", text: "3\nshell suffix\n" }] }, false);
+			expect(rendered(component)).toContain("printf 'shell suffix");
+		}
+	} finally {
+		reveal.stop();
+		live.dispose();
+		rebuilt?.dispose();
+	}
+});
+
 test("bash live and rebuilt previews prefer raw partial env values", () => {
 	const reveal = new ToolArgsRevealController({
 		getSmoothStreaming: () => false,

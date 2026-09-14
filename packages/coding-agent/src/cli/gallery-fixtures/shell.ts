@@ -55,6 +55,21 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
+	bash_kernel_mixed: {
+		label: "Bash with a Python kernel cell",
+		renderer: "bash",
+		streamingArgs: {
+			command: "printf 'before\\n'\npython3 <<'PY'\nprint(1 + 2)\nPY\nprintf 'after",
+		},
+		args: {
+			command: "printf 'before\\n'\npython3 <<'PY'\nprint(1 + 2)\nPY\nprintf 'after\\n'",
+		},
+		result: {
+			content: [{ type: "text", text: "before\n3\nafter\n" }],
+			details: { exitCode: 0, wallTimeMs: 42 },
+		},
+	},
+
 	fleet_start: {
 		label: "Fleet start",
 		renderer: "fleet",

@@ -492,6 +492,37 @@ test("replay skips preserved ids and creates components for unpreserved calls", 
 	expect(ctx2.pendingTools.get(CALL_ID), "preserved call must stay pending on the live component").toBeUndefined();
 });
 
+test("replaying a completed mixed bash call retains shell commands around its kernel cell", () => {
+	const chatContainer = new TranscriptContainer();
+	const ctx = makeCtx(chatContainer, new Map<string, ToolExecutionHandle>());
+	ctx.viewSession.hasBuiltInTool = (name: string) => name === "bash";
+	const helpers = new UiHelpers(ctx);
+	const command = "printf 'before\\n'\npython3 <<'PY'\nprint(1 + 2)\nPY\nprintf 'after\\n'";
+	const sessionContext = {
+		messages: [
+			{
+				...assistantMessageWithCall(),
+				content: [{ type: "toolCall", id: CALL_ID, name: "bash", arguments: { command } }],
+			},
+			{
+				...settledToolResultMessage(),
+				toolName: "bash",
+				content: [{ type: "text", text: "before\n3\nafter\n" }],
+				details: { exitCode: 0 },
+			},
+		],
+	} as SessionContext;
+	try {
+		helpers.renderSessionContext(sessionContext, {});
+		const text = chatContainer.render(100).map(Bun.stripANSI).join("\n");
+		expect(text).toContain("printf 'before");
+		expect(text).toContain("print(1 + 2)");
+		expect(text).toContain("printf 'after");
+	} finally {
+		chatContainer.dispose();
+	}
+});
+
 test("a tracked block reusing mutable rows updates the transcript instead of claiming a stale stable prefix", () => {
 	const rows = ["before"];
 	const block = new TrackedBlock(rows);

@@ -1,3 +1,4 @@
+import { replaceTabs } from "@oh-my-pi/pi-tui";
 import type { Theme } from "../../modes/theme/theme";
 import { truncateToWidth } from "../render-utils";
 
@@ -16,6 +17,25 @@ export interface OutlineNode {
 
 export function outlineNode(kind: string, line: number, name?: string, detail?: string): OutlineNode {
 	return { kind, name, detail, line, children: [] };
+}
+
+// Source-derived outline strings may contain literal tabs (docstrings, string
+// literals in details); tabs corrupt differential TUI rendering, so expand them
+// to spaces before any width math or truncation.
+function sanitizeOutlineNode(node: OutlineNode): OutlineNode {
+	const clean: OutlineNode = {
+		kind: node.kind,
+		line: node.line,
+		children: node.children.map(sanitizeOutlineNode),
+	};
+	if (node.modifier !== undefined) clean.modifier = replaceTabs(node.modifier);
+	if (node.name !== undefined) clean.name = replaceTabs(node.name);
+	if (node.detail !== undefined) clean.detail = replaceTabs(node.detail);
+	if (node.doc !== undefined) clean.doc = replaceTabs(node.doc);
+	if (node.rawString !== undefined) clean.rawString = replaceTabs(node.rawString);
+	if (node.notes !== undefined) clean.notes = node.notes.map(replaceTabs);
+	if (node.questions !== undefined) clean.questions = node.questions.map(replaceTabs);
+	return clean;
 }
 
 export function countLeaves(children: OutlineNode[]): number {
@@ -38,7 +58,10 @@ export function renderOutlineLines(
 	config: OutlineRenderConfig,
 ): string[] {
 	const total = countLeaves(root.children);
-	const lines: string[] = [`${theme.fg("dim", "Module")} ${theme.fg("dim", `· ${total} nodes`)}`];
+	const lines: string[] = [
+		`${theme.fg("dim", "Module")} ${theme.fg("dim", `· ${total} node${total === 1 ? "" : "s"}`)}`,
+	];
+	const sanitized = sanitizeOutlineNode(root);
 	const walk = (children: OutlineNode[], prefix: string) => {
 		children.forEach((child, index) => {
 			const last = index === children.length - 1;
@@ -55,7 +78,7 @@ export function renderOutlineLines(
 			}
 		});
 	};
-	walk(root.children, "");
+	walk(sanitized.children, "");
 	return lines;
 }
 

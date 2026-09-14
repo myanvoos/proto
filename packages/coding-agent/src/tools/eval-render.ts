@@ -899,13 +899,18 @@ export function renderKernelCellLines(
 		width: number;
 		index?: number;
 		total?: number;
+		/** Use an enclosing tool source instead of the kernel code for display. */
+		displayCode?: string;
+		displayLanguage?: string;
 	},
 ): string[] {
 	const { expanded, isPartial, spinnerFrame, previewLines, width } = opts;
 	const language = cell.language ?? "python";
+	const hasDisplayCode = opts.displayCode !== undefined;
+	const displayLanguage = opts.displayLanguage ?? languageForHighlighter(language);
 	const cellLive = isPartial || cell.status === "running" || cell.status === "pending";
-	const safeCode = sanitizeText(cell.code);
-	const code = cellLive ? safeCode : formatEvalCodeForDisplay(safeCode, language);
+	const safeCode = sanitizeText(opts.displayCode ?? cell.code);
+	const code = cellLive || hasDisplayCode ? safeCode : formatEvalCodeForDisplay(safeCode, language);
 	const allEvents = cell.statusEvents ?? [];
 	const agentEvents = allEvents.filter(e => e.op === "agent");
 	const otherEvents = agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents;
@@ -962,12 +967,13 @@ export function renderKernelCellLines(
 		statusLines = renderStatusEvents(otherEvents, theme, cellExpanded, outputBlockContentWidth(width));
 		codeMaxLines = liveWindow;
 	}
-	const astLines = cellLive || cellExpanded ? undefined : astPreviewLines(code, language, theme, width);
+	const astLines =
+		hasDisplayCode || cellLive || cellExpanded ? undefined : astPreviewLines(code, language, theme, width);
 
 	const cellLines = renderCodeCell(
 		{
 			code,
-			language: languageForHighlighter(language),
+			language: displayLanguage,
 			showLanguage: true,
 			index: opts.index ?? 0,
 			total: opts.total ?? 1,

@@ -22,65 +22,252 @@ const FLAGS_BEFORE_CODE: Record<"python" | "js", RegExp> = {
 
 const CODE_FLAG: Record<"python" | "js", string> = { python: "-c", js: "-e" };
 
+// Assignment and wrapper tokens the shell absorbs before the interpreter that
+// still route the invocation to a kernel cell: `FOO=1 BAR='a b' timeout 5
+// python -c ...` executes the cell (env-prefix builtins and the timeout/nohup/
+// time/command/builtin wrappers dispatch the interpreter builtin). `env` and
+// `sudo` are deliberately absent — they exec a real interpreter.
+const CELL_PREFIX_SOURCE =
+	String.raw`(?:(?:[A-Za-z_][A-Za-z0-9_]*\+?=(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|<>()"'])+)\s+)*` +
+	String.raw`(?:(?:command|builtin|nohup|time|timeout)(?:\s+\S+)*\s+)*`;
+
+const ANCHOR_SOURCE = String.raw`(?:^|[\n;&|({])`;
+
+interface CellMatch {
+	cell: BashKernelCell;
+	mixed: boolean;
+}
+
+/**
+ * Find the first kernel cell embedded in a bash command. The renderer uses
+ * this to keep kernel status/diff/JSON affordances for a command that also
+ * contains ordinary shell syntax; it must not be used to execute the shell.
+ */
 export function detectBashKernelCell(command: string): BashKernelCell | undefined {
-	return detectHeredocCell(command) ?? detectFlagCell(command);
+	return findBashKernelCell(command)?.cell;
 }
 
-function detectHeredocCell(command: string): BashKernelCell | undefined {
-	const open = command.match(
-		/(?:^|[\n;&|]|&&|\|\|)\s*(python3?|node|bun)\b([^\n]*?)<<(-?)\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\4[^\n]*\n/,
+/** Whether the detected cell has shell source outside the interpreter call. */
+export function isBashKernelCellMixed(command: string): boolean {
+	return findBashKernelCell(command)?.mixed === true;
+}
+
+function findBashKernelCell(command: string): CellMatch | undefined {
+	return findHeredocCell(command) ?? findFlagCell(command);
+}
+
+function findHeredocCell(command: string): CellMatch | undefined {
+	const openRe = new RegExp(
+		String.raw`${ANCHOR_SOURCE}\s*(${CELL_PREFIX_SOURCE})(\\?)(python3?|node|bun)\b([^\n]*?)<<(-?)\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\6([^\n]*)\n`,
+		"g",
 	);
-	if (!open) return undefined;
-	const language = LANG_BY_CMD[open[1]];
-	if (!language) return undefined;
-	if (!PASSTHROUGH_BEFORE_STDIN[language].test(open[2])) return undefined;
-	const delimiter = open[5];
-	const bodyStart = open.index! + open[0].length;
-	const rest = command.slice(bodyStart);
-	const closeRe = new RegExp(`\\n${open[3] ? "\\t*" : ""}${delimiter}[ \\t]*(?:\\n|$)`);
-	const close = rest.match(closeRe);
-	const code = close ? rest.slice(0, close.index) : rest.replace(/\n?$/, "");
-	if (code.trim().length === 0) return undefined;
-	return { language, code };
-}
+	for (const open of command.matchAll(openRe)) {
+		const openIndex = open.index ?? 0;
+		const language = LANG_BY_CMD[open[3]!];
+		if (!language) continue;
+		if (!PASSTHROUGH_BEFORE_STDIN[language].test(open[4]!)) continue;
+		if (!isShellContinuation(open[8]!)) continue;
 
-function detectFlagCell(command: string): BashKernelCell | undefined {
-	const m = command.match(/(?:^|[\n;&|]|&&|\|\|)\s*(python3?|node|bun)\b((?:\s+-[A-Za-z]+)*)\s+(-c|-e)\s+(.*)$/s);
-	if (!m) return undefined;
-	const language = LANG_BY_CMD[m[1]];
-	if (!language) return undefined;
-	if (m[3] !== CODE_FLAG[language] || !FLAGS_BEFORE_CODE[language].test(m[2])) return undefined;
-	const parsed = parseFirstShellWord(m[4].trimStart());
-	if (!parsed || parsed.word.trim().length === 0) return undefined;
-	if (parsed.rest.trim().length > 0) return undefined;
-	return { language, code: parsed.word };
-}
+		const dash = open[5] === "-";
+		const delimiter = open[7]!;
+		const bodyStart = openIndex + open[0].length;
+		const rest = command.slice(bodyStart);
+		// An empty heredoc body closes on the very first line, so the body may
+		// start at `^` rather than after a newline.
+		const closeRe = new RegExp(String.raw`(?:^|\n)${dash ? "\t*" : ""}${delimiter}[ \t]*\r?(?:\n|$)`);
+		const close = rest.match(closeRe);
+		let code = close ? rest.slice(0, close.index) : rest.replace(/\n?$/, "");
+		if (dash) code = code.replace(/^\t+/gm, "");
+		if (code.trim().length === 0) continue;
 
-function parseFirstShellWord(input: string): { word: string; rest: string } | undefined {
-	const quote = input[0];
-	if (quote === "'") {
-		const end = input.indexOf("'", 1);
-		if (end < 0) return undefined;
-		return { word: input.slice(1, end), rest: input.slice(end + 1) };
+		// A closed heredoc consumes the newline after its delimiter. Anything
+		// after that newline is another shell command, not an interpreter arg.
+		const suffix = close ? command.slice(bodyStart + close.index! + close[0].length) : "";
+		const prefixIsShell = command.slice(0, openIndex).trim().length > 0;
+		const mixed = prefixIsShell || open[1]!.length > 0 || open[8]!.trim().length > 0 || suffix.trim().length > 0;
+		return { cell: { language, code }, mixed };
 	}
-	if (quote === '"') {
-		let word = "";
-		let i = 1;
-		while (i < input.length) {
-			const ch = input[i];
-			if (ch === "\\" && i + 1 < input.length) {
-				const next = input[i + 1];
-				word += '"$`\\'.includes(next) ? next : `\\${next}`;
-				i += 2;
+	return undefined;
+}
+
+function findFlagCell(command: string): CellMatch | undefined {
+	const openRe = new RegExp(
+		String.raw`${ANCHOR_SOURCE}\s*(${CELL_PREFIX_SOURCE})(\\?)(python3?|node|bun)\b((?:\s+-[A-Za-z]+)*)\s+(-c|-e)\s+`,
+		"g",
+	);
+	for (const open of command.matchAll(openRe)) {
+		const openIndex = open.index ?? 0;
+		const language = LANG_BY_CMD[open[3]!];
+		if (!language) continue;
+		if (open[5] !== CODE_FLAG[language] || !FLAGS_BEFORE_CODE[language].test(open[4]!)) continue;
+
+		const codeInput = command.slice(open.index + open[0].length).trimStart();
+		const parsed = parseFirstShellWord(codeInput);
+		if (!parsed || parsed.word.trim().length === 0) continue;
+		if (!isShellContinuation(parsed.rest)) continue;
+
+		const prefixIsShell = command.slice(0, openIndex).trim().length > 0;
+		const mixed = prefixIsShell || open[1]!.length > 0 || parsed.rest.trim().length > 0;
+		return { cell: { language, code: parsed.word }, mixed };
+	}
+	return undefined;
+}
+
+/**
+ * A shell separator/redirection (or the closing `)`/`}` of a subshell or brace
+ * group) after the code word makes the remainder shell syntax. Plain words are
+ * deliberately rejected: `python -c 'x' extra` is a real interpreter
+ * invocation, not a kernel cell.
+ */
+function isShellContinuation(input: string): boolean {
+	if (/^[ \t]*\\?\r?\n/u.test(input)) return true;
+	const trimmed = input.trimStart();
+	if (trimmed.length === 0 || trimmed.startsWith("#") || trimmed === "\\") return true;
+	return /^(?:&&|\|\||[|;&)}]|\d*>{1,2}|\d*<{1,3}|&>>?|\d+>&\d+)/u.test(trimmed);
+}
+
+const ANSI_C_SIMPLE: Record<string, string> = {
+	a: "\x07",
+	b: "\b",
+	e: "\x1b",
+	E: "\x1b",
+	f: "\f",
+	n: "\n",
+	r: "\r",
+	t: "\t",
+	v: "\v",
+	"\\": "\\",
+	"'": "'",
+	'"': '"',
+	"?": "?",
+};
+
+/** Bash `$'...'` ANSI-C quoting: escapes the shell strips before the argv reaches the interpreter. */
+function ansiCUnescape(body: string): string {
+	let out = "";
+	for (let i = 0; i < body.length; i++) {
+		const ch = body[i]!;
+		if (ch !== "\\") {
+			out += ch;
+			continue;
+		}
+		const next = body[i + 1];
+		if (next === undefined) {
+			out += ch;
+			break;
+		}
+		i += 1;
+		if (next === "x") {
+			const hex = /^[\da-fA-F]{1,2}/u.exec(body.slice(i + 1, i + 3))?.[0];
+			if (hex) {
+				out += String.fromCharCode(Number.parseInt(hex, 16));
+				i += hex.length;
 				continue;
 			}
-			if (ch === '"') return { word, rest: input.slice(i + 1) };
-			word += ch;
-			i += 1;
+			out += "x";
+			continue;
 		}
-		return undefined;
+		if (next === "u" || next === "U") {
+			const width = next === "u" ? 4 : 8;
+			const hex = new RegExp(String.raw`^[\da-fA-F]{${width}}`, "u").exec(body.slice(i + 1, i + 1 + width))?.[0];
+			if (hex) {
+				out += String.fromCodePoint(Number.parseInt(hex, 16));
+				i += width;
+				continue;
+			}
+			out += next;
+			continue;
+		}
+		if (/[0-7]/.test(next)) {
+			const oct = /^[0-7]{1,3}/u.exec(body.slice(i, i + 3))?.[0] ?? next;
+			out += String.fromCharCode(Number.parseInt(oct, 8));
+			i += oct.length - 1;
+			continue;
+		}
+		if (next === "c") {
+			const ctrl = body[i + 1];
+			if (ctrl !== undefined) {
+				out += String.fromCharCode(ctrl.toUpperCase().charCodeAt(0) & 0x1f);
+				i += 1;
+				continue;
+			}
+			out += next;
+			continue;
+		}
+		out += ANSI_C_SIMPLE[next] ?? next;
 	}
-	const match = input.match(/^\S+/);
-	if (!match) return undefined;
-	return { word: match[0], rest: input.slice(match[0].length) };
+	return out;
+}
+
+/**
+ * Shell word extraction matching what word-splitting hands the interpreter:
+ * quoted segments concatenate into one argv word, `$'...'` unescapes ANSI-C
+ * sequences, and backslashes escape the next character. `$` and backticks
+ * inside double quotes stay raw (the kernel receives them expanded).
+ */
+function parseFirstShellWord(input: string): { word: string; rest: string } | undefined {
+	let word = "";
+	let i = 0;
+	while (i < input.length) {
+		const ch = input[i]!;
+		if (ch === "'") {
+			const end = input.indexOf("'", i + 1);
+			if (end < 0) return undefined;
+			word += input.slice(i + 1, end);
+			i = end + 1;
+			continue;
+		}
+		if (ch === '"') {
+			let j = i + 1;
+			while (j < input.length) {
+				const next = input[j]!;
+				if (next === "\\" && j + 1 < input.length) {
+					const escaped = input[j + 1]!;
+					word += '"$`\\'.includes(escaped) ? escaped : `\\${escaped}`;
+					j += 2;
+					continue;
+				}
+				if (next === '"') break;
+				word += next;
+				j += 1;
+			}
+			if (j >= input.length) return undefined;
+			i = j + 1;
+			continue;
+		}
+		if (ch === "$" && input[i + 1] === "'") {
+			let j = i + 2;
+			let body = "";
+			while (j < input.length) {
+				const next = input[j]!;
+				if (next === "\\" && j + 1 < input.length) {
+					body += input.slice(j, j + 2);
+					j += 2;
+					continue;
+				}
+				if (next === "'") break;
+				body += next;
+				j += 1;
+			}
+			if (j >= input.length) return undefined;
+			word += ansiCUnescape(body);
+			i = j + 1;
+			continue;
+		}
+		if (ch === "\\") {
+			if (i + 1 >= input.length) {
+				word += "\\";
+				i += 1;
+				continue;
+			}
+			word += input[i + 1]!;
+			i += 2;
+			continue;
+		}
+		if (ch === "(") return undefined;
+		if (ch === ")" || ch === "}" || /\s/.test(ch) || ";|&<>".includes(ch)) break;
+		word += ch;
+		i += 1;
+	}
+	return { word, rest: input.slice(i) };
 }

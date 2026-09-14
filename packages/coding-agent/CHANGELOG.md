@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Bash calls combining Python or JavaScript kernel cells with shell commands now show the full shell source in live previews and restored transcripts, while preserving kernel diffs and structured output.
+- Bash kernel-cell rendering now recognizes env-assignment prefixes (`FOO=1 python -c …`), `timeout`/`nohup`/`time`/`command`/`builtin` wrappers, subshells and command substitution, and `\python` — forms the embedded shell routes to the kernel — instead of falling back to plain command rendering.
+- `-c`/`-e` code words display after shell unquoting (`$'…'` ANSI-C escapes, backslash-escaped words, concatenated quote segments), matching the code the kernel actually receives; `<<-` heredoc bodies display tab-stripped and CRLF terminators close the cell.
+- Empty-body heredocs no longer render the delimiter as phantom kernel code.
+- Kernel AST previews no longer emit literal tabs from docstrings or string details (they render as spaces), and the node count reads `1 node` for single-node outlines.
+- Kernel JSON display trees use branch/last connectors correctly between top-level keys instead of a chain of last-connectors.
+
 ## [18.1.7] - 2026-09-13
 
 ### Changed

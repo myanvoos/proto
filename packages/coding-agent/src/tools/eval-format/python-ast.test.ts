@@ -162,3 +162,21 @@ test("empty and unparseable input yield null so the renderer falls back to raw c
 	expect(renderPythonAstLines("   \n  ", theme, 100)).toBeNull();
 	expect(renderPythonAstLines("))) ??? @@@ (((", theme, 100)).toBeNull();
 });
+
+test("tabs in source-derived outline strings are expanded before rendering", () => {
+	// Docstrings and details come verbatim from source; a literal tab reaching
+	// the terminal breaks differential rendering (renders as a visual hole).
+	const lines = render(`def f():
+    """first\ttabbed doc"""
+    return 1
+`);
+	expect(lines.some(line => line.includes("\t"))).toBe(false);
+	expect(lines.some(line => line.includes("first   tabbed doc"))).toBe(true);
+	const detail = render(`x = "a\tb"\n`);
+	expect(detail.some(line => line.includes("\t"))).toBe(false);
+});
+
+test("node count is singular for single-node outlines", () => {
+	expect(plain("print(1)")[0]).toContain("· 1 node");
+	expect(plain("a = 1\nb = 2\n")[0]).toContain("· 2 nodes");
+});

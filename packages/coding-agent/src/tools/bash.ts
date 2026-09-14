@@ -56,7 +56,7 @@ import type { ToolSession } from ".";
 import { checkBashCommandAllowlist } from "./bash-allowlist";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
-import { type BashKernelCell, detectBashKernelCell } from "./bash-kernel-cell";
+import { type BashKernelCell, detectBashKernelCell, isBashKernelCellMixed } from "./bash-kernel-cell";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
@@ -1908,10 +1908,12 @@ function kernelCellLines(
 		spinnerFrame?: number;
 		previewLines: number;
 		width: number;
+		displayCode?: string;
 	},
 ): string[] {
 	const cell: EvalCellResult = {
 		index: 0,
+		title: opts.displayCode === undefined ? undefined : "Bash",
 		code: kernelCell.code,
 		language: kernelCell.language === "js" ? "js" : "python",
 		output: opts.output,
@@ -1926,6 +1928,8 @@ function kernelCellLines(
 		spinnerFrame: opts.spinnerFrame,
 		previewLines: opts.previewLines,
 		width: opts.width,
+		displayCode: opts.displayCode,
+		displayLanguage: opts.displayCode === undefined ? undefined : "bash",
 	});
 }
 
@@ -1951,6 +1955,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
 			const kernelCell = renderArgs.command ? detectBashKernelCell(renderArgs.command) : undefined;
+			const mixedKernelCell = renderArgs.command ? isBashKernelCellMixed(renderArgs.command) : false;
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
@@ -1964,6 +1969,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							spinnerFrame: options.spinnerFrame,
 							previewLines: EVAL_DEFAULT_PREVIEW_LINES,
 							width,
+							displayCode: mixedKernelCell ? renderArgs.command : undefined,
 						});
 					}
 					const cmdLines = formatBashCommandLines(renderArgs, uiTheme);
@@ -2006,6 +2012,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		): Component {
 			const renderArgs = toBashRenderArgs(args, config);
 			const kernelCell = renderArgs.command ? detectBashKernelCell(renderArgs.command) : undefined;
+			const mixedKernelCell = renderArgs.command ? isBashKernelCellMixed(renderArgs.command) : false;
 			const details = result.details;
 			const execution = details?.execution;
 			const isPartial = options.isPartial === true;
@@ -2093,6 +2100,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							spinnerFrame: options.spinnerFrame,
 							previewLines: EVAL_DEFAULT_PREVIEW_LINES,
 							width,
+							displayCode: mixedKernelCell ? renderArgs.command : undefined,
 						});
 						cachedWidth = width;
 						cachedPreviewLines = previewLines;
