@@ -16,7 +16,6 @@ import type {
 	UrlCompletion,
 	WriteContext,
 } from "./types";
-import { VaultProtocolHandler } from "./vault-protocol";
 import { XdProtocolHandler } from "./xd-protocol";
 
 export class InternalUrlRouter {
@@ -29,7 +28,6 @@ export class InternalUrlRouter {
 		this.register(new AgentProtocolHandler());
 		this.register(new ArtifactProtocolHandler());
 		this.register(new LocalProtocolHandler());
-		this.register(new VaultProtocolHandler());
 		this.register(new SkillProtocolHandler());
 		this.register(new RuleProtocolHandler());
 		this.register(new McpProtocolHandler());

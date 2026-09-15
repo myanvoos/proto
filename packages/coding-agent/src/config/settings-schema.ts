@@ -2828,18 +2828,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"vault.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "Obsidian Vault",
-			description:
-				"Enable the vault:// internal URL for reading and editing Obsidian vault content via the Obsidian CLI. When disabled, vault:// resolution is refused and the vault:// entry is omitted from the system prompt.",
-		},
-	},
-
 	"web_search.enabled": {
 		type: "boolean",
 		default: true,

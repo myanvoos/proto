@@ -8,6 +8,7 @@
 - Sessions started with `bash.enabled: false` now have no code-execution surface at all, where they previously fell back to the `kernel` tool.
 - The `github` tool and the `issue://` / `pr://` internal URL schemes are gone; use the `gh` and `git` CLIs through `bash` instead.
 - Removed the `github.enabled`, `github.cache.enabled`, `github.cache.softTtlSec`, and `github.cache.hardTtlSec` settings; configs setting them will no longer take effect.
+- The `vault://` internal URL scheme for Obsidian is gone, along with the `vault.enabled` setting; configs setting it will no longer take effect.
 
 ### Changed
 
@@ -25,6 +26,7 @@
 - Removed the `github` tool (`repo_view`, `file_read`, `pr_create`, `pr_checkout`, `pr_push`, `search_*`, `run_watch`) and its TUI renderer.
 - Removed the `issue://` / `pr://` internal URL schemes, their SQLite view cache at `~/.proto/cache/github-cache.db`, and the `bash` hook that invalidated it after mutating `gh` commands.
 - Removed the `#<number>` prompt autocomplete that expanded to `pr://` / `issue://` URLs.
+- Removed the `vault://` Obsidian integration: vault and note reads/edits, the `?op=` outline/backlinks/links/tags/properties/tasks/search/daily/orphans/bases operations, and the Obsidian CLI binary lookup. The unrelated `obsidian` colour theme is unaffected.
 
 ## [18.1.9] - 2026-09-15
 

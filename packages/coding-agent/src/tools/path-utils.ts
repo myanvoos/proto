@@ -48,7 +48,6 @@ const TOP_LEVEL_INTERNAL_URL_PREFIXES = [
 	"fleet://",
 	"mcp://",
 	"ssh://",
-	"vault://",
 ] as const;
 
 function normalizeUnicodeSpaces(str: string): string {

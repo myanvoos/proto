@@ -43,9 +43,6 @@ Most file tools auto-resolve these to FS paths.
 - `history://<id>`: read-only transcript (live|parked|released); bare: all agents. Process-wide + persisted subagents via artifact trees; unregistered top-level sessions not via bare files.
 - `artifact://<id>`: content
 - `local://<name>.md`: plan artifacts/shared subagent content
-{{#if hasObsidian}}
-- `vault://<vault>/<path>`: Obsidian read/edit; `vault://`: vault list; `vault://_/…`: active vault. File `?op=outline|backlinks|links|tags|properties|tasks|base|…`; vault `?op=search&q=…|daily|tasks|orphans|unresolved|bases|…`.
-{{/if}}
 - `mcp://<uri>`: MCP resource
 - `proto://`: harness docs; AVOID unless user asks about harness.
 
