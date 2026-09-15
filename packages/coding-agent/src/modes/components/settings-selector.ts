@@ -91,6 +91,11 @@ class SelectSubmenu extends Container {
 	#previewText: Text | null = null;
 	#previewUpdateRequestId: number = 0;
 	#selectListLineOffset = 0;
+	readonly #title: string;
+	readonly #description: string;
+	#titleText: Text;
+	#descriptionText: Text | null = null;
+	#hintText: Text;
 
 	constructor(
 		title: string,
@@ -105,11 +110,15 @@ class SelectSubmenu extends Container {
 	) {
 		super();
 
-		this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
+		this.#title = title;
+		this.#description = description;
+		this.#titleText = new Text(theme.bold(theme.fg("accent", title)), 0, 0);
+		this.addChild(this.#titleText);
 
 		if (description) {
 			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("muted", description), 0, 0));
+			this.#descriptionText = new Text(theme.fg("muted", description), 0, 0);
+			this.addChild(this.#descriptionText);
 		}
 
 		if (getPreview) {
@@ -155,7 +164,8 @@ class SelectSubmenu extends Container {
 		this.addChild(this.#selectList);
 
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0));
+		this.#hintText = new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0);
+		this.addChild(this.#hintText);
 
 		if (footer) {
 			this.addChild(new Spacer(1));
@@ -167,6 +177,14 @@ class SelectSubmenu extends Container {
 		if (this.#previewText && this.getPreview) {
 			this.#previewText.setText(this.getPreview());
 		}
+	}
+
+	/** Re-resolve theme-derived state after a runtime theme switch. */
+	setTheme(): void {
+		this.#titleText.setText(theme.bold(theme.fg("accent", this.#title)));
+		this.#descriptionText?.setText(theme.fg("muted", this.#description));
+		this.#hintText.setText(theme.fg("dim", "  Enter to select · Esc to go back"));
+		this.#selectList.setTheme(getSelectListTheme());
 	}
 
 	override render(width: number): readonly string[] {
@@ -209,6 +227,11 @@ class MultiSelectSubmenu extends Container {
 		super();
 
 		this.#value = initial.filter(id => options.some(option => option.value === id));
+		this.#rebuild();
+	}
+
+	/** Re-resolve theme-derived state after a runtime theme switch. */
+	setTheme(): void {
 		this.#rebuild();
 	}
 
@@ -538,6 +561,10 @@ export class SettingsSelectorComponent implements Component {
 
 	#searchInput = new Input();
 	#searchMatchCount = 0;
+	// Inputs used to build the query-derived tab bar; retained so a runtime
+	// theme switch can rebuild the tabs (symbols are ANSI-baked labels).
+	#searchTabCounts: Map<SettingTab, number> | null = null;
+	#searchTabOrder: SettingTab[] = [];
 
 	#searchFirstMatch = new Map<string, string>();
 	#textInputActive = false;
@@ -568,9 +595,28 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	invalidate(): void {
+		// Tab labels/icons snapshot theme symbols at construction: re-resolve
+		// them (and the tab-bar theme) so a runtime theme switch is visible.
+		this.#tabBar.setTheme(getTabBarTheme());
+		// While search mode is active the tab bar shows query-derived tabs
+		// (#buildSearchTabs); re-applying the static settings tabs would both
+		// lose them and break searchFirstMatch. Rebuild them from the
+		// retained query results so their baked symbols pick up the new theme.
+		if (this.#searchList && this.#searchTabCounts) {
+			this.#tabBar.setTabs(this.#buildSearchTabs(this.#searchTabCounts, this.#searchTabOrder));
+		} else if (!this.#searchList) {
+			this.#tabBar.setTabs(getSettingsTabs(), this.#tabBar.getActiveTab().id);
+		}
 		this.#tabBar.invalidate();
+		// Lists capture a concrete theme object at construction: re-apply the
+		// current theme so cursor colors and glyphs follow runtime switches.
+		this.#currentList?.setTheme(getSettingsListTheme());
+		this.#searchList?.setTheme(getSettingsListTheme());
 		this.#currentList?.invalidate();
 		this.#searchList?.invalidate();
+		// The plugin panel captures themes and bakes ANSI-styled rows at
+		// construction; dispatch setTheme before generic invalidation.
+		this.#pluginComponent?.setTheme();
 		this.#pluginComponent?.invalidate();
 	}
 
@@ -792,12 +838,9 @@ export class SettingsSelectorComponent implements Component {
 
 		this.#searchList.setItems(items);
 		this.#searchMatchCount = total;
-		this.#tabBar.setTabs(
-			this.#buildSearchTabs(
-				counts,
-				tabResults.map(result => result.tab),
-			),
-		);
+		this.#searchTabCounts = counts;
+		this.#searchTabOrder = tabResults.map(result => result.tab);
+		this.#tabBar.setTabs(this.#buildSearchTabs(counts, this.#searchTabOrder));
 		this.#syncTabBarToSelection(this.#searchList.getSelectedItem());
 	}
 
@@ -810,6 +853,8 @@ export class SettingsSelectorComponent implements Component {
 		this.#searchQuery = "";
 		this.#searchFirstMatch.clear();
 		this.#searchMatchCount = 0;
+		this.#searchTabCounts = null;
+		this.#searchTabOrder = [];
 		this.#tabBar.setTabs(getSettingsTabs(), targetTab);
 		this.#switchToTab(targetTab);
 		if (selectedDef) {

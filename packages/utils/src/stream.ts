@@ -140,14 +140,18 @@ class ConcatSink {
 	}
 
 	*appendAndFlushLines(chunk: Uint8Array) {
+		// Snapshot newline-bearing chunks before the first yield. The stream source
+		// may reuse its backing storage while this generator is suspended between
+		// lines, so copying each direct suffix at its eventual yield is too late.
+		const source = chunk.indexOf(LF) === -1 ? chunk : Buffer.from(chunk);
 		let pos = 0;
-		while (pos < chunk.length) {
-			const nl = chunk.indexOf(LF, pos);
+		while (pos < source.length) {
+			const nl = source.indexOf(LF, pos);
 			if (nl === -1) {
-				this.append(chunk.subarray(pos));
+				this.append(source.subarray(pos));
 				return;
 			}
-			const suffix = chunk.subarray(pos, nl);
+			const suffix = source.subarray(pos, nl);
 			pos = nl + 1;
 			if (this.isEmpty) {
 				yield suffix;
@@ -155,7 +159,10 @@ class ConcatSink {
 				this.append(suffix);
 				const payload = this.flush();
 				if (payload) {
-					yield payload;
+					// Copy before yielding: the consumer may outlive this
+					// generator step, and later appends would otherwise
+					// mutate the retained line in place.
+					yield Buffer.from(payload);
 					this.clear();
 				}
 			}

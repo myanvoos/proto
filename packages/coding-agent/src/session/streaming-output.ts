@@ -1,7 +1,12 @@
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { materializeString, sanitizeText, truncateHeadBytes, truncateTailBytes } from "@oh-my-pi/pi-utils";
 import { formatBytes } from "../tools/render-utils";
-import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
+import {
+	isSixelPassthroughEnabled,
+	sanitizeWithOptionalSixelPassthrough,
+	splitIncompleteSixelTail,
+	splitSixelSequences,
+} from "../utils/sixel";
 import type { ExecutionCollectorMetadata, ExecutionOutputDisposition } from "./execution-metadata";
 
 export const DEFAULT_MAX_LINES = 3000;
@@ -18,6 +23,7 @@ const ELLIPSIS = "…";
 
 const MAX_ACTIONABLE_DIAGNOSTIC_BYTES = 16 * 1024;
 const MAX_ACTIONABLE_DIAGNOSTIC_LINE_BYTES = MAX_ACTIONABLE_DIAGNOSTIC_BYTES - 1;
+const MAX_HELD_SIXEL_BYTES = 64 * 1024;
 
 function isActionableDiagnostic(line: string): boolean {
 	if (!line.trim()) return false;
@@ -545,6 +551,11 @@ export class OutputSink {
 	#fileCreation?: Promise<void>;
 
 	#finalized = false;
+	// A trailing incomplete sixel envelope held back until the next push
+	// completes it (only while sixel passthrough is enabled).
+	#heldSixelTail = "";
+	// Bytes already included in #totalBytes while the held tail was pending.
+	#heldSixelAccountedBytes = 0;
 
 	readonly #artifactPath?: string;
 	readonly #artifactId?: string;
@@ -700,7 +711,75 @@ export class OutputSink {
 
 	push(chunk: string): void {
 		if (this.#finalized) return;
-		chunk = sanitizeWithOptionalSixelPassthrough(chunk, text => sanitizeText(this.#normalizeCarriageReturns(text)));
+		if (isSixelPassthroughEnabled()) {
+			const previousHeld = this.#heldSixelTail;
+			const previousHeldBytes = this.#heldSixelAccountedBytes;
+			const combined = previousHeld + chunk;
+			const split = splitIncompleteSixelTail(combined);
+			const accountedPrefixBytes =
+				previousHeld.length > 0 && split.text.startsWith(previousHeld) ? previousHeldBytes : 0;
+			if (split.text.length > 0) {
+				this.#pushChunk(split.text, true, false, false, accountedPrefixBytes);
+			}
+
+			const heldText = split.heldTail;
+			const heldStart = combined.length - heldText.length;
+			const oldHeldOverlapLength = Math.max(0, Math.min(heldText.length, previousHeld.length - heldStart));
+			const oldHeldOverlapBytes =
+				oldHeldOverlapLength > 0 ? Buffer.byteLength(heldText.slice(0, oldHeldOverlapLength), "utf-8") : 0;
+			const newlyHeldBytes = Math.max(
+				0,
+				Buffer.byteLength(heldText, "utf-8") - Math.min(previousHeldBytes, oldHeldOverlapBytes),
+			);
+			const isSixelTail = heldText.startsWith("\x1bP") || previousHeldBytes > 0;
+			if (isSixelTail && newlyHeldBytes > 0) this.#totalBytes += newlyHeldBytes;
+
+			const heldBytes = Buffer.byteLength(heldText, "utf-8");
+			const holdLimit = this.#maxHeldSixelBytes();
+			if (heldBytes > holdLimit) this.#truncated = true;
+			if (heldBytes > Math.max(0, this.#spillThreshold - this.#headBytes - this.#bufferBytes)) {
+				this.#truncated = true;
+			}
+			if (heldBytes > holdLimit) {
+				this.#heldSixelTail = truncateTailBytes(heldText, holdLimit).text;
+			} else {
+				this.#heldSixelTail = heldText;
+			}
+			this.#heldSixelAccountedBytes = isSixelTail ? Buffer.byteLength(this.#heldSixelTail, "utf-8") : 0;
+			return;
+		}
+		this.#pushChunk(chunk, true);
+	}
+	#maxHeldSixelBytes(): number {
+		if (this.#spillThreshold <= 0) return MAX_HELD_SIXEL_BYTES;
+		return Math.max(1, Math.min(MAX_HELD_SIXEL_BYTES, this.#spillThreshold));
+	}
+
+	#flushHeldSixelTail(): void {
+		if (this.#heldSixelTail.length === 0) return;
+		const held = this.#heldSixelTail;
+		const accountedBytes = this.#heldSixelAccountedBytes;
+		this.#heldSixelTail = "";
+		this.#heldSixelAccountedBytes = 0;
+		// A sixel tail is intentionally materialized at EOF. Preserve a DCS
+		// prefix verbatim; a lone speculative ESC still goes through normal
+		// sanitization instead of leaking an arbitrary control byte.
+		const normalizedHeld = held.startsWith("\x1bP") ? held.replace(/\r\n?/gu, "\n") : held;
+		this.#pushChunk(normalizedHeld, true, held.startsWith("\x1bP"), held.startsWith("\x1bP"), accountedBytes);
+	}
+
+	#pushChunk(
+		chunk: string,
+		accountTotals: boolean,
+		preserveRaw = false,
+		atomicSixel = false,
+		accountedBytes = 0,
+	): void {
+		if (!preserveRaw) {
+			chunk = sanitizeWithOptionalSixelPassthrough(chunk, text =>
+				sanitizeText(this.#normalizeCarriageReturns(text)),
+			);
+		}
 		this.#collectActionableDiagnostics(chunk);
 
 		if (this.#onChunk) {
@@ -714,19 +793,23 @@ export class OutputSink {
 		}
 
 		const rawBytes = Buffer.byteLength(chunk, "utf-8");
-		this.#totalBytes += rawBytes;
+		if (accountTotals) this.#totalBytes = Math.max(0, this.#totalBytes + rawBytes - accountedBytes);
 
 		if (chunk.length > 0) {
 			this.#sawData = true;
-			this.#totalLines += countNewlines(chunk);
+			if (accountTotals) this.#totalLines += countNewlines(chunk);
 		}
 
-		const capped = this.#maxColumns > 0 ? this.#applyColumnCap(chunk) : chunk;
+		const capped = this.#maxColumns > 0 && !atomicSixel ? this.#applyColumnCap(chunk) : chunk;
 		const cappedBytes = capped === chunk ? rawBytes : Buffer.byteLength(capped, "utf-8");
 		const cappedThisChunk = cappedBytes < rawBytes;
 		if (cappedThisChunk) this.#truncated = true;
 
-		if (this.#artifactPath && (this.#file != null || cappedThisChunk || this.#willOverflow(cappedBytes))) {
+		const forcedHeldSpill = accountedBytes > 0 && this.#truncated;
+		if (
+			this.#artifactPath &&
+			(this.#file != null || cappedThisChunk || this.#willOverflow(cappedBytes) || forcedHeldSpill)
+		) {
 			this.#writeToFile(chunk);
 		}
 
@@ -755,53 +838,67 @@ export class OutputSink {
 
 		this.#pushTail(tailChunk, tailBytes);
 	}
-
 	#applyColumnCap(chunk: string): string {
 		if (chunk.length === 0) return chunk;
 		const max = this.#maxColumns;
 		const parts: string[] = [];
-		let cursor = 0;
-		while (cursor < chunk.length) {
-			const nlIdx = chunk.indexOf(NL, cursor);
-			const segEnd = nlIdx === -1 ? chunk.length : nlIdx;
-			if (segEnd > cursor) {
-				const segment = chunk.substring(cursor, segEnd);
-				if (this.#columnEllipsisAdded) {
-					this.#columnDroppedBytes += Buffer.byteLength(segment, "utf-8");
-				} else {
-					const segBytes = Buffer.byteLength(segment, "utf-8");
-					const remaining = max - this.#currentLineBytes;
-					if (segBytes <= remaining) {
-						parts.push(segment);
-						this.#currentLineBytes += segBytes;
+		const applyText = (text: string): void => {
+			let cursor = 0;
+			while (cursor < text.length) {
+				const nlIdx = text.indexOf(NL, cursor);
+				const segEnd = nlIdx === -1 ? text.length : nlIdx;
+				if (segEnd > cursor) {
+					const segment = text.substring(cursor, segEnd);
+					if (this.#columnEllipsisAdded) {
+						this.#columnDroppedBytes += Buffer.byteLength(segment, "utf-8");
 					} else {
-						const ellipsisBytes = 3;
-						const headRoom = Math.max(0, remaining - ellipsisBytes);
-						let kept = "";
-						let keptBytes = 0;
-						if (headRoom > 0) {
-							const sliced = truncateHeadBytes(segment, headRoom);
-							kept = sliced.text;
-							keptBytes = sliced.bytes;
-							parts.push(kept);
+						const segBytes = Buffer.byteLength(segment, "utf-8");
+						const remaining = max - this.#currentLineBytes;
+						if (segBytes <= remaining) {
+							parts.push(segment);
+							this.#currentLineBytes += segBytes;
+						} else {
+							const ellipsisBytes = 3;
+							const headRoom = Math.max(0, remaining - ellipsisBytes);
+							let kept = "";
+							let keptBytes = 0;
+							if (headRoom > 0) {
+								const sliced = truncateHeadBytes(segment, headRoom);
+								kept = sliced.text;
+								keptBytes = sliced.bytes;
+								parts.push(kept);
+							}
+							parts.push(ELLIPSIS);
+							this.#columnDroppedBytes += segBytes - keptBytes;
+							this.#columnTruncatedLines++;
+							this.#currentLineBytes += keptBytes + ellipsisBytes;
+							this.#columnEllipsisAdded = true;
 						}
-						parts.push(ELLIPSIS);
-						this.#columnDroppedBytes += segBytes - keptBytes;
-						this.#columnTruncatedLines++;
-						this.#currentLineBytes += keptBytes + ellipsisBytes;
-						this.#columnEllipsisAdded = true;
 					}
 				}
+				if (nlIdx === -1) break;
+				parts.push(NL);
+				this.#currentLineBytes = 0;
+				this.#columnEllipsisAdded = false;
+				cursor = nlIdx + 1;
 			}
-			if (nlIdx === -1) break;
-			parts.push(NL);
-			this.#currentLineBytes = 0;
-			this.#columnEllipsisAdded = false;
-			cursor = nlIdx + 1;
+		};
+
+		for (const part of splitSixelSequences(chunk)) {
+			if (!part.isSixel) {
+				applyText(part.text);
+				continue;
+			}
+			// Sixel is a terminal control envelope, not line text. Keep it as
+			// one atomic unit so a column cap can never leave an open DCS.
+			if (this.#columnEllipsisAdded) {
+				this.#columnDroppedBytes += Buffer.byteLength(part.text, "utf-8");
+			} else {
+				parts.push(part.text);
+			}
 		}
 		return parts.join("");
 	}
-
 	#willOverflow(dataBytes: number): boolean {
 		return this.#bufferBytes + dataBytes > this.#spillThreshold - this.#headBytes;
 	}
@@ -983,6 +1080,8 @@ export class OutputSink {
 		this.#columnTruncatedLines = 0;
 		this.#pendingChunk = "";
 		this.#pendingCarriageReturn = false;
+		this.#heldSixelTail = "";
+		this.#heldSixelAccountedBytes = 0;
 	}
 
 	#clearPendingChunkTimer(): void {
@@ -1047,8 +1146,9 @@ export class OutputSink {
 	async dump(notice?: string): Promise<OutputSummary> {
 		if (this.#pendingCarriageReturn) {
 			this.#pendingCarriageReturn = false;
-			this.push(NL);
+			this.#pushChunk(NL, true);
 		}
+		this.#flushHeldSixelTail();
 		const noticeLine = notice ? `[${notice}]\n` : "";
 
 		this.#flushPendingChunk();
@@ -1149,6 +1249,11 @@ export class OutputSink {
 
 	async dispose(): Promise<void> {
 		this.#clearPendingChunkTimer();
+		if (this.#pendingCarriageReturn) {
+			this.#pendingCarriageReturn = false;
+			this.#pushChunk(NL, true);
+		}
+		this.#flushHeldSixelTail();
 		await this.#finalizeFile();
 	}
 }

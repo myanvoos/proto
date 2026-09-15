@@ -3,6 +3,12 @@ export interface BashKernelCell {
 	code: string;
 }
 
+/** A kernel cell plus the offsets of its raw code region (heredoc body or `-c` word) inside the command. */
+export interface BashKernelCellSpan extends BashKernelCell {
+	start: number;
+	end: number;
+}
+
 const LANG_BY_CMD: Record<string, "python" | "js"> = {
 	python: "python",
 	python3: "python",
@@ -34,8 +40,10 @@ const CELL_PREFIX_SOURCE =
 const ANCHOR_SOURCE = String.raw`(?:^|[\n;&|({])`;
 
 interface CellMatch {
-	cell: BashKernelCell;
+	cell: BashKernelCellSpan;
 	mixed: boolean;
+	/** Command range the match owns (heredoc: open line through delimiter line); later matches inside it are body text. */
+	consumedEnd: number;
 }
 
 /**
@@ -44,73 +52,109 @@ interface CellMatch {
  * contains ordinary shell syntax; it must not be used to execute the shell.
  */
 export function detectBashKernelCell(command: string): BashKernelCell | undefined {
-	return findBashKernelCell(command)?.cell;
+	const first = collectCellMatches(command)[0];
+	return first ? { language: first.cell.language, code: first.cell.code } : undefined;
 }
 
 /** Whether the detected cell has shell source outside the interpreter call. */
 export function isBashKernelCellMixed(command: string): boolean {
-	return findBashKernelCell(command)?.mixed === true;
+	return collectCellMatches(command)[0]?.mixed === true;
 }
 
-function findBashKernelCell(command: string): CellMatch | undefined {
-	return findHeredocCell(command) ?? findFlagCell(command);
+/** Every kernel cell in the command with its raw code span, in source order. */
+export function findBashKernelCells(command: string): BashKernelCellSpan[] {
+	return collectCellMatches(command).map(match => match.cell);
 }
 
-function findHeredocCell(command: string): CellMatch | undefined {
+function collectCellMatches(command: string): CellMatch[] {
+	const matches = findHeredocCells(command);
+	for (const flag of findFlagCells(command)) {
+		// A `-c` word inside a heredoc body is interpreter input, not a shell call.
+		if (matches.some(heredoc => flag.cell.start >= heredoc.cell.start && flag.cell.start < heredoc.consumedEnd)) {
+			continue;
+		}
+		matches.push(flag);
+	}
+	return matches.sort((a, b) => a.cell.start - b.cell.start);
+}
+
+function findHeredocCells(command: string): CellMatch[] {
 	const openRe = new RegExp(
 		String.raw`${ANCHOR_SOURCE}\s*(${CELL_PREFIX_SOURCE})(\\?)(python3?|node|bun)\b([^\n]*?)<<(-?)\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\6([^\n]*)\n`,
 		"g",
 	);
-	for (const open of command.matchAll(openRe)) {
-		const openIndex = open.index ?? 0;
+	const matches: CellMatch[] = [];
+	let open: RegExpExecArray | null = openRe.exec(command);
+	while (open) {
+		const openIndex = open.index;
+		// Retry just past this anchor on rejection so a later interpreter call on
+		// the same line (or a later line the lazy match swallowed) still gets seen.
+		openRe.lastIndex = openIndex + 1;
 		const language = LANG_BY_CMD[open[3]!];
-		if (!language) continue;
-		if (!PASSTHROUGH_BEFORE_STDIN[language].test(open[4]!)) continue;
-		if (!isShellContinuation(open[8]!)) continue;
-
-		const dash = open[5] === "-";
-		const delimiter = open[7]!;
-		const bodyStart = openIndex + open[0].length;
-		const rest = command.slice(bodyStart);
-		// An empty heredoc body closes on the very first line, so the body may
-		// start at `^` rather than after a newline.
-		const closeRe = new RegExp(String.raw`(?:^|\n)${dash ? "\t*" : ""}${delimiter}[ \t]*\r?(?:\n|$)`);
-		const close = rest.match(closeRe);
-		let code = close ? rest.slice(0, close.index) : rest.replace(/\n?$/, "");
-		if (dash) code = code.replace(/^\t+/gm, "");
-		if (code.trim().length === 0) continue;
-
-		// A closed heredoc consumes the newline after its delimiter. Anything
-		// after that newline is another shell command, not an interpreter arg.
-		const suffix = close ? command.slice(bodyStart + close.index! + close[0].length) : "";
-		const prefixIsShell = command.slice(0, openIndex).trim().length > 0;
-		const mixed = prefixIsShell || open[1]!.length > 0 || open[8]!.trim().length > 0 || suffix.trim().length > 0;
-		return { cell: { language, code }, mixed };
+		const accepted =
+			language !== undefined && PASSTHROUGH_BEFORE_STDIN[language].test(open[4]!) && isShellContinuation(open[8]!);
+		if (accepted) {
+			const dash = open[5] === "-";
+			const delimiter = open[7]!;
+			const bodyStart = openIndex + open[0].length;
+			const rest = command.slice(bodyStart);
+			// An empty heredoc body closes on the very first line, so the body may
+			// start at `^` rather than after a newline.
+			const closeRe = new RegExp(String.raw`(?:^|\n)${dash ? "\t*" : ""}${delimiter}[ \t]*\r?(?:\n|$)`);
+			const close = rest.match(closeRe);
+			const rawBody = close ? rest.slice(0, close.index) : rest.replace(/\n?$/, "");
+			const code = dash ? rawBody.replace(/^\t+/gm, "") : rawBody;
+			// A closed heredoc consumes the newline after its delimiter. Anything
+			// after that newline is another shell command, not an interpreter arg.
+			const consumedEnd = close ? bodyStart + close.index! + close[0].length : command.length;
+			if (code.trim().length > 0) {
+				const suffix = command.slice(consumedEnd);
+				const prefixIsShell = command.slice(0, openIndex).trim().length > 0;
+				const mixed =
+					prefixIsShell || open[1]!.length > 0 || open[8]!.trim().length > 0 || suffix.trim().length > 0;
+				matches.push({
+					cell: { language, code, start: bodyStart, end: bodyStart + rawBody.length },
+					mixed,
+					consumedEnd,
+				});
+				// Leave the delimiter line's newline in place: it anchors the next call.
+				openRe.lastIndex = Math.max(openRe.lastIndex, consumedEnd - 1);
+			}
+		}
+		open = openRe.exec(command);
 	}
-	return undefined;
+	return matches;
 }
 
-function findFlagCell(command: string): CellMatch | undefined {
+function findFlagCells(command: string): CellMatch[] {
 	const openRe = new RegExp(
 		String.raw`${ANCHOR_SOURCE}\s*(${CELL_PREFIX_SOURCE})(\\?)(python3?|node|bun)\b((?:\s+-[A-Za-z]+)*)\s+(-c|-e)\s+`,
 		"g",
 	);
-	for (const open of command.matchAll(openRe)) {
-		const openIndex = open.index ?? 0;
+	const matches: CellMatch[] = [];
+	let open: RegExpExecArray | null = openRe.exec(command);
+	while (open) {
+		const openIndex = open.index;
+		openRe.lastIndex = openIndex + 1;
 		const language = LANG_BY_CMD[open[3]!];
-		if (!language) continue;
-		if (open[5] !== CODE_FLAG[language] || !FLAGS_BEFORE_CODE[language].test(open[4]!)) continue;
-
-		const codeInput = command.slice(open.index + open[0].length).trimStart();
-		const parsed = parseFirstShellWord(codeInput);
-		if (!parsed || parsed.word.trim().length === 0) continue;
-		if (!isShellContinuation(parsed.rest)) continue;
-
-		const prefixIsShell = command.slice(0, openIndex).trim().length > 0;
-		const mixed = prefixIsShell || open[1]!.length > 0 || parsed.rest.trim().length > 0;
-		return { cell: { language, code: parsed.word }, mixed };
+		if (language && open[5] === CODE_FLAG[language] && FLAGS_BEFORE_CODE[language].test(open[4]!)) {
+			const wordStart = openIndex + open[0].length;
+			const parsed = parseFirstShellWord(command.slice(wordStart));
+			if (parsed && parsed.word.trim().length > 0 && isShellContinuation(parsed.rest)) {
+				const wordEnd = command.length - parsed.rest.length;
+				const prefixIsShell = command.slice(0, openIndex).trim().length > 0;
+				const mixed = prefixIsShell || open[1]!.length > 0 || parsed.rest.trim().length > 0;
+				matches.push({
+					cell: { language, code: parsed.word, start: wordStart, end: wordEnd },
+					mixed,
+					consumedEnd: wordEnd,
+				});
+				openRe.lastIndex = Math.max(openRe.lastIndex, wordEnd);
+			}
+		}
+		open = openRe.exec(command);
 	}
-	return undefined;
+	return matches;
 }
 
 /**

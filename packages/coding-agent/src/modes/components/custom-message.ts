@@ -36,10 +36,10 @@ export class CustomMessageComponent extends Container {
 
 	#rebuild(): void {
 		if (this.#customComponent) {
-			this.removeChild(this.#customComponent);
+			this.disposeAndRemoveChild(this.#customComponent);
 			this.#customComponent = undefined;
 		}
-		this.removeChild(this.#box);
+		this.disposeAndRemoveChild(this.#box);
 
 		const isHook = (this.message.role as string) === "hookMessage";
 		const isLiveDelegation = this.message.customType === LIVE_DELEGATION_MESSAGE_TYPE;

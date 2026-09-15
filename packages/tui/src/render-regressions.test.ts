@@ -267,12 +267,37 @@ test("reanchors when a blank row shifts the committed prefix boundary", () => {
 		tui.start({ deferInput: true });
 		terminal.writes.length = 0;
 		rows = ["A", "", "", "", "B", "tail1", "tail2", "tail3"];
-		expect(findCommittedPrefixResync(rows, ["A", "", "", "B"], 4, 4)).toBe(3);
+		expect(
+			findCommittedPrefixResync(rows, ["A", "", "", "B"], {
+				auditFrom: 4,
+				finalTo: 4,
+				tailPolicy: "sample-one-edit",
+			}),
+		).toBe(3);
 		tui.requestRender(true);
 		expect(terminal.normalLines()).toEqual(["A", "", "", "B", "", "B", "tail1", "tail2", "tail3"]);
 	} finally {
 		tui.stop();
 	}
+});
+
+test("committed prefix audit resyncs on a single style-only change beyond the sampled lookback", () => {
+	const rows = ["A", "B", "\x1b[31mone", "C"];
+	const prefix = ["A", "B", "\x1b[32mone", "C"];
+	// Exact policy (width-epoch path): the style-only change must resync even
+	// though it sits far above any sampled tail window.
+	expect(findCommittedPrefixResync(rows, prefix, { auditFrom: 0, finalTo: 4, tailPolicy: "exact" })).toBe(2);
+});
+
+test("committed prefix audit resyncs on an ordinary change beyond the sampled lookback", () => {
+	const rows = ["A", "X", "C"];
+	const prefix = ["A", "B", "C"];
+	expect(findCommittedPrefixResync(rows, prefix, { auditFrom: 0, finalTo: 3, tailPolicy: "exact" })).toBe(1);
+	// The sampled policy still tolerates a single ordinary edit in the tail
+	// window it actually samples (insertion heuristic unchanged).
+	expect(findCommittedPrefixResync(rows, prefix, { auditFrom: 3, finalTo: 3, tailPolicy: "sample-one-edit" })).toBe(
+		-1,
+	);
 });
 
 test("accounts for rows pushed by a mux height shrink before appending", () => {

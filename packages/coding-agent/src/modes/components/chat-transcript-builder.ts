@@ -137,7 +137,7 @@ export class ChatTranscriptBuilder {
 		if (!previous) return;
 		this.#waitingPoll = null;
 		if (nextToolName === "fleet" && previous.isDisplaceableBlock() && this.container.isBlockUncommitted(previous)) {
-			this.container.removeChild(previous);
+			this.container.disposeAndRemoveChild(previous);
 		}
 		previous.seal();
 	}
@@ -152,7 +152,7 @@ export class ChatTranscriptBuilder {
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#todoSnapshot = null;
 			if (this.container.isBlockUncommitted(previous)) {
-				this.container.removeChild(previous);
+				this.container.disposeAndRemoveChild(previous);
 			}
 			previous.seal();
 			return;
@@ -253,6 +253,8 @@ export class ChatTranscriptBuilder {
 				component.setComplete(message.exitCode, message.cancelled, {
 					output: message.output || undefined,
 					truncation: message.meta?.truncation,
+					execution: message.execution,
+					displayOutputs: message.displayOutputs,
 				});
 				this.container.addChild(component);
 				break;

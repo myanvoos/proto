@@ -220,10 +220,14 @@ export function wrapCodeFrameLine(line: string, width: number): string[] {
 	}
 
 	const [, gutter, separator, content] = diffMatch;
-	const prefix = `${gutter}${separator}`;
+	let prefix = `${gutter}${separator}`;
 	const prefixWidth = visibleWidth(prefix);
-	const contentWidth = Math.max(1, width - prefixWidth);
-	const continuationPrefix = `${" ".repeat(Math.max(0, prefixWidth - 1))}${separator}`;
+	// A wide diff gutter inside a narrow frame would push every row past the
+	// requested width: drop the gutter entirely and keep only the separator.
+	if (prefixWidth >= width) prefix = separator;
+	const effectivePrefixWidth = visibleWidth(prefix);
+	const contentWidth = Math.max(1, width - effectivePrefixWidth);
+	const continuationPrefix = `${" ".repeat(Math.max(0, effectivePrefixWidth - 1))}${separator}`;
 	const wrappedContent = wrapTextWithAnsi(content ?? "", contentWidth);
 
 	return wrappedContent.map(
@@ -289,6 +293,19 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 		}
 	}
 	return filePath;
+}
+
+/**
+ * Sanitize text that carries trusted ANSI styling: strips raw control
+ * sequences while preserving intentional styling, then normalizes tabs.
+ */
+export function sanitizeDisplayText(value: string): string {
+	return replaceTabs(sanitizeText(value));
+}
+
+/** Sanitize text destined for a single display row: control-safe, tabs and CR/LF flattened. */
+export function sanitizeSingleLine(value: string): string {
+	return sanitizeDisplayText(value.replace(/[\r\n]+/g, " "));
 }
 
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {

@@ -20,6 +20,8 @@ import { setHangulCompatibilityJamoWidth } from "./utils";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
+const IN_BAND_RESIZE_WATCHDOG_MS = 1000;
+const IN_BAND_RESIZE_PREFIX = "\x1b[48;";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
 function shouldEnableModifyOtherKeysFallback(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	if (!env.SSH_CONNECTION && !env.SSH_TTY && !env.SSH_CLIENT) return true;
@@ -321,6 +323,7 @@ export class ProcessTerminal implements Terminal {
 	#privateModeCallbacks: Array<(mode: number, supported: boolean, confirmed: boolean) => void> = [];
 
 	#inBandResizeActive = false;
+	#inBandResizeWatchdog?: Timer;
 
 	#inBandResizeBuffer = "";
 	#reportedColumns?: number;
@@ -545,24 +548,47 @@ export class ProcessTerminal implements Terminal {
 
 			const inBandResizePartialPattern = /^\x1b\[4[\d;:]*$/;
 			const isInBandResizePartial = this.#inBandResizeActive && inBandResizePartialPattern.test(sequence);
+			let abandonedInBandResize: string | undefined;
 			if (this.#inBandResizeBuffer && sequence.startsWith("\x1b")) {
-				this.#inBandResizeBuffer = isInBandResizePartial ? sequence : "";
-				if (isInBandResizePartial) return;
+				const stale = this.#inBandResizeBuffer;
+				this.#inBandResizeBuffer = "";
+				this.#clearInBandResizeWatchdog();
+				// A new partial CSI replaces the stale resize prefix, but the
+				// ordinary-looking bytes accumulated after that prefix must not
+				// be lost. Replay them before holding the new sequence.
+				if (isInBandResizePartial) {
+					this.#releaseInBandResizeSuffix(stale);
+					this.#inBandResizeBuffer = sequence;
+					this.#armInBandResizeWatchdog();
+					return;
+				}
+				// A fresh complete escape likewise abandons the stale prefix,
+				// while the fresh sequence continues through normal parsing.
+				this.#releaseInBandResizeSuffix(stale);
 			} else if (this.#inBandResizeBuffer || isInBandResizePartial) {
 				this.#inBandResizeBuffer += sequence;
 				if (this.#inBandResizeBuffer.length > 256) {
+					abandonedInBandResize = this.#inBandResizeBuffer;
 					this.#inBandResizeBuffer = "";
-					return;
-				}
-				const lastCode = this.#inBandResizeBuffer.charCodeAt(this.#inBandResizeBuffer.length - 1);
-				if (lastCode >= 0x40 && lastCode <= 0x7e) {
-					sequence = this.#inBandResizeBuffer;
-					this.#inBandResizeBuffer = "";
-				} else if (!inBandResizePartialPattern.test(this.#inBandResizeBuffer)) {
-					this.#inBandResizeBuffer = "";
-					return;
+					this.#clearInBandResizeWatchdog();
 				} else {
-					return;
+					const lastCode = this.#inBandResizeBuffer.charCodeAt(this.#inBandResizeBuffer.length - 1);
+					if (lastCode >= 0x40 && lastCode <= 0x7e) {
+						abandonedInBandResize = this.#inBandResizeBuffer;
+						sequence = this.#inBandResizeBuffer;
+						this.#inBandResizeBuffer = "";
+						this.#clearInBandResizeWatchdog();
+					} else if (!inBandResizePartialPattern.test(this.#inBandResizeBuffer)) {
+						// The accumulated bytes are a torn report prefix (they
+						// began with ESC): abandon only that prefix and replay the
+						// typed suffix as ordinary input.
+						abandonedInBandResize = this.#inBandResizeBuffer;
+						this.#inBandResizeBuffer = "";
+						this.#clearInBandResizeWatchdog();
+					} else {
+						this.#armInBandResizeWatchdog();
+						return;
+					}
 				}
 			}
 
@@ -570,6 +596,11 @@ export class ProcessTerminal implements Terminal {
 			if (resizeMatch) {
 				this.#handleInBandResizeReport(resizeMatch[1]!, resizeMatch[2]!, resizeMatch[3]!, resizeMatch[4]!);
 				return;
+			}
+			if (abandonedInBandResize !== undefined) {
+				sequence = abandonedInBandResize.startsWith(IN_BAND_RESIZE_PREFIX)
+					? abandonedInBandResize.slice(IN_BAND_RESIZE_PREFIX.length)
+					: abandonedInBandResize;
 			}
 
 			if (this.#hasPendingCursorPositionQuery()) {
@@ -689,9 +720,22 @@ export class ProcessTerminal implements Terminal {
 			}
 
 			if (this.#osc11Pending && (this.#osc11ResponseBuffer || sequence.startsWith("\x1b]11;"))) {
-				if (this.#osc11ResponseBuffer && sequence.startsWith("\x1b") && sequence !== "\x1b\\") {
+				const osc11Start = "\x1b]11;";
+				const replacementStart = sequence.indexOf(osc11Start, osc11Start.length);
+				if (replacementStart !== -1) {
+					// StdinBuffer may hold a torn reply while Kitty parsing is
+					// active, then emit the stale prefix and its replacement as
+					// one sequence. Keep only the newest OSC11 reply.
 					this.#osc11ResponseBuffer = "";
-				} else {
+					sequence = sequence.slice(replacementStart);
+				}
+				if (this.#osc11ResponseBuffer && sequence.startsWith("\x1b") && sequence !== "\x1b\\") {
+					// A fresh ESC-starting sequence replaces a torn OSC11 reply.
+					// Clear only the stale prefix, then process this sequence
+					// through the normal OSC11 parser below.
+					this.#osc11ResponseBuffer = "";
+				}
+				if (this.#osc11ResponseBuffer || sequence.startsWith("\x1b]11;")) {
 					this.#osc11ResponseBuffer += sequence;
 					const osc11Match = this.#osc11ResponseBuffer.match(osc11ResponsePattern);
 					if (!osc11Match) {
@@ -701,6 +745,16 @@ export class ProcessTerminal implements Terminal {
 							this.#osc11Pending = false;
 							this.#osc11ActiveToken = undefined;
 							this.#osc11ResponseBuffer = "";
+							// The sentinel owner for the abandoned query must
+							// not linger either, or later refreshes queue
+							// forever behind it.
+							const staleOwner = this.#da1SentinelOwners.findIndex(o => o.kind === "osc11");
+							if (staleOwner !== -1) {
+								// Keep the entry in the FIFO. The terminal may still answer
+								// the query's DA1 sentinel after OSC11; removing it would
+								// shift that reply onto the next query owner.
+								this.#da1SentinelOwners[staleOwner] = { kind: "cursorPositionSettled" };
+							}
 							// A refresh queued behind the wedged query must not
 							// strand: settle it now that the pending state is
 							// cleared.
@@ -715,7 +769,19 @@ export class ProcessTerminal implements Terminal {
 					const requestToken = this.#osc11ActiveToken;
 					this.#osc11ActiveToken = undefined;
 					this.#osc11ResponseBuffer = "";
+					// A terminal that answers OSC11 but has not replied to the
+					// DA1 sentinel may still send that sentinel later. Tombstone
+					// the owner in place so the late reply cannot shift FIFO
+					// matching onto an unrelated query.
+					const ownerIndex = this.#da1SentinelOwners.findIndex(o => o.kind === "osc11");
+					if (ownerIndex !== -1) {
+						this.#da1SentinelOwners[ownerIndex] = { kind: "cursorPositionSettled" };
+					}
 					this.#handleOsc11Response(rHex!, gHex!, bHex!, requestToken);
+					// A refresh queued behind the pending query starts now.
+					const queued = this.#osc11QueuedQuery;
+					this.#osc11QueuedQuery = undefined;
+					if (queued && !this.#dead) this.#queryBackgroundColor(queued.route, queued.token);
 					return;
 				}
 			}
@@ -944,6 +1010,29 @@ export class ProcessTerminal implements Terminal {
 		this.#safeWrite("\x1b[?2048h");
 	}
 
+	#clearInBandResizeWatchdog(): void {
+		if (!this.#inBandResizeWatchdog) return;
+		clearTimeout(this.#inBandResizeWatchdog);
+		this.#inBandResizeWatchdog = undefined;
+	}
+
+	#releaseInBandResizeSuffix(abandoned: string): void {
+		const suffix = abandoned.startsWith(IN_BAND_RESIZE_PREFIX)
+			? abandoned.slice(IN_BAND_RESIZE_PREFIX.length)
+			: abandoned;
+		if (suffix.length > 0) this.#inputHandler?.(suffix);
+	}
+
+	#armInBandResizeWatchdog(): void {
+		this.#clearInBandResizeWatchdog();
+		this.#inBandResizeWatchdog = setTimeout(() => {
+			this.#inBandResizeWatchdog = undefined;
+			const abandoned = this.#inBandResizeBuffer;
+			this.#inBandResizeBuffer = "";
+			if (abandoned) this.#releaseInBandResizeSuffix(abandoned);
+		}, IN_BAND_RESIZE_WATCHDOG_MS);
+	}
+
 	#handleInBandResizeReport(rowsRaw: string, colsRaw: string, yPixelsRaw: string, xPixelsRaw: string): void {
 		const previousRows = this.rows;
 		const previousColumns = this.columns;
@@ -1072,6 +1161,7 @@ export class ProcessTerminal implements Terminal {
 		this.#osc99Capabilities.clear();
 		setOsc99Supported(false);
 		this.#privateCsiResponseBuffer = "";
+		this.#clearInBandResizeWatchdog();
 		this.#inBandResizeBuffer = "";
 		this.#cursorPositionResponseBuffer = "";
 		for (const owner of this.#da1SentinelOwners) {

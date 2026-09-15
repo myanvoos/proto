@@ -62,9 +62,18 @@ export function splitBodyWidth(width: number, sidebarWidth: number): number {
 
 export function topBorderSplit(width: number, title: string, sidebarWidth: number): string {
 	const box = theme.boxRound;
+	// Mirror topBorder's narrow degradation: below four cells there is no
+	// room for the three fixed glyphs plus content, so fall back to the
+	// plain (unsplit) border shape.
+	if (width <= 0) return "";
+	if (width === 1) return paint(box.topLeft);
+	if (width === 2) return paint(box.topLeft + box.topRight);
+	if (width === 3 && title) return paint(box.topLeft + box.horizontal + box.topRight);
 	const dividerCol = splitDividerCol(sidebarWidth);
-	const leftLen = Math.max(0, dividerCol - 1);
-	const rightLen = Math.max(0, width - 2 - dividerCol);
+	// Three fixed cells (left corner, tee, right corner) are always emitted,
+	// so the dashes must fit width - 3 for the row to stay within width.
+	const leftLen = Math.max(0, Math.min(dividerCol - 1, width - 3));
+	const rightLen = Math.max(0, width - 3 - leftLen);
 	let left: string;
 	if (!title) {
 		left = paint(box.topLeft + box.horizontal.repeat(leftLen));
@@ -81,9 +90,15 @@ export function topBorderSplit(width: number, title: string, sidebarWidth: numbe
 
 export function dividerSplit(width: number, sidebarWidth: number): string {
 	const box = theme.boxRound;
+	// Mirror the top-border narrow degradation (three fixed glyphs).
+	if (width <= 0) return "";
+	if (width === 1) return paint(box.teeRight);
+	if (width === 2) return paint(box.teeRight + box.teeLeft);
 	const dividerCol = splitDividerCol(sidebarWidth);
-	const leftLen = Math.max(0, dividerCol - 1);
-	const rightLen = Math.max(0, width - 2 - dividerCol);
+	// Three fixed cells (left corner, tee, right corner) are always emitted,
+	// so the dashes must fit width - 3 for the row to stay within width.
+	const leftLen = Math.max(0, Math.min(dividerCol - 1, width - 3));
+	const rightLen = Math.max(0, width - 3 - leftLen);
 	return paint(
 		box.teeRight + box.horizontal.repeat(leftLen) + box.teeUp + box.horizontal.repeat(rightLen) + box.teeLeft,
 	);
@@ -91,9 +106,15 @@ export function dividerSplit(width: number, sidebarWidth: number): string {
 
 export function splitRow(sidebar: string, body: string, width: number, sidebarWidth: number): string {
 	const box = theme.boxRound;
-	const bodyWidth = splitBodyWidth(width, sidebarWidth);
 	const bar = paint(box.vertical);
-	return `${bar} ${fit(sidebar, sidebarWidth)} ${bar} ${fit(body, bodyWidth)} ${bar}`;
+	// Chrome costs bar+space on each side of each cell (7 cells). Below that
+	// the full frame cannot fit: shrink the cells, and degrade to a clamped
+	// row when even the chrome does not fit.
+	const cellBudget = Math.max(0, width - 7);
+	const sidebarCell = Math.min(sidebarWidth, cellBudget);
+	const bodyCell = Math.max(0, Math.min(splitBodyWidth(width, sidebarWidth), cellBudget - sidebarCell));
+	const row = `${bar} ${fit(sidebar, sidebarCell)} ${bar} ${fit(body, bodyCell)} ${bar}`;
+	return width < 7 ? truncateToWidth(row, Math.max(1, width)) : row;
 }
 
 export class PanelDivider implements Component {

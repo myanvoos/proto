@@ -385,9 +385,10 @@ export async function runInteractiveBashPty(
 						},
 						(err, chunk) => {
 							if (finished || err || !chunk) return;
-							component.appendOutput(chunk);
-							const normalizedChunk = normalizeCaptureChunk(chunk);
-							sink.push(normalizedChunk);
+							// Feed raw PTY bytes to the sink first so split sixel envelopes
+							// remain intact across arbitrary capture chunk boundaries.
+							sink.push(chunk);
+							component.appendOutput(normalizeCaptureChunk(chunk));
 							tui.requestRender();
 						},
 					)

@@ -821,11 +821,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		}
 
 		for (const img of this.#imageComponents) {
-			this.removeChild(img);
+			this.disposeAndRemoveChild(img);
 		}
 		this.#imageComponents = [];
 		for (const spacer of this.#imageSpacers) {
-			this.removeChild(spacer);
+			this.disposeAndRemoveChild(spacer);
 		}
 		this.#imageSpacers = [];
 

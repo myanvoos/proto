@@ -15,6 +15,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, type ThemeColor, theme } from "../../modes/theme/theme";
 import {
 	matchesAppExternalEditor,
@@ -78,6 +79,10 @@ function normalizeHookSelectorOption(option: HookSelectorOptionInput): HookSelec
 		return { label: option.label, description: option.description.trim() };
 	}
 	return { label: option.label };
+}
+
+function sanitizeSliderText(value: string): string {
+	return replaceTabs(sanitizeText(value.replace(/[\r\n]+/g, " ")));
 }
 
 function splitLeadingSpacesForWrap(line: string, width: number): { indent: string; body: string } {
@@ -161,7 +166,8 @@ export class HookSelectorComponent extends OverlayPanel {
 		onCancel: () => void,
 		opts?: HookSelectorOptions,
 	) {
-		super(title.split(/\r?\n/, 1)[0] ?? "");
+		const sanitizedTitle = sanitizeText(title);
+		super(sanitizedTitle.split(/\r?\n/, 1)[0] ?? "");
 
 		this.#options = options.map(normalizeHookSelectorOption);
 		this.#filteredOptions = this.#options.map((option, index) => ({ option, index }));
@@ -187,12 +193,22 @@ export class HookSelectorComponent extends OverlayPanel {
 		this.#onExternalEditorCallback = opts?.onExternalEditor;
 		this.#onTimeoutResetCallback = opts?.onTimeoutReset;
 		if (opts?.slider && opts.slider.segments.length > 0) {
-			this.#slider = opts.slider;
-			this.#sliderIndex = Math.max(0, Math.min(opts.slider.index, opts.slider.segments.length - 1));
+			// Segment labels are interpolated inside renderSegmentTrack's styling;
+			// sanitize once at this boundary rather than after ANSI has been added.
+			this.#slider = {
+				...opts.slider,
+				caption: opts.slider.caption === undefined ? undefined : sanitizeSliderText(opts.slider.caption),
+				segments: opts.slider.segments.map(segment => ({
+					...segment,
+					label: sanitizeSliderText(segment.label),
+					detail: segment.detail === undefined ? undefined : sanitizeSliderText(segment.detail),
+				})),
+			};
+			this.#sliderIndex = Math.max(0, Math.min(this.#slider.index, this.#slider.segments.length - 1));
 		}
 
 		this.addChild(new Spacer(1));
-		for (const line of title.split(/\r?\n/).slice(1)) {
+		for (const line of sanitizedTitle.split(/\r?\n/).slice(1)) {
 			this.addChild(new Text(theme.fg("accent", line), 0, 0));
 		}
 		this.addChild(new Spacer(1));
@@ -231,7 +247,7 @@ export class HookSelectorComponent extends OverlayPanel {
 		}
 		this.addChild(new Spacer(1));
 		const controlsHint = opts?.helpText ?? "up/down navigate  enter select  esc cancel";
-		this.addChild(new Text(theme.fg("dim", controlsHint), 0, 0));
+		this.addChild(new Text(theme.fg("dim", sanitizeText(controlsHint)), 0, 0));
 		this.addChild(new Spacer(1));
 
 		this.#updateList();
@@ -286,14 +302,16 @@ export class HookSelectorComponent extends OverlayPanel {
 	): string[] {
 		const textColor = isDisabled ? "dim" : isSelected ? "accent" : "text";
 		const prefixColor = isDisabled ? "dim" : "accent";
-		const label = renderInlineMarkdown(option.label, mdTheme, t => theme.fg(textColor, t));
+		const label = renderInlineMarkdown(sanitizeText(option.label), mdTheme, t => theme.fg(textColor, t));
 		const marker = index !== undefined ? this.#renderMarkerPrefix(index, isSelected, isDisabled) : undefined;
 		const prefix = marker ?? (isSelected ? theme.fg(prefixColor, `${theme.nav.cursor} `) : "  ");
 		const lines = [prefix + label];
 		if (option.description && descRows !== 0) {
 			const descriptionColor: ThemeColor = isDisabled ? "dim" : "muted";
 			if (descRows === "full") {
-				const description = renderInlineMarkdown(option.description, mdTheme, t => theme.fg(descriptionColor, t));
+				const description = renderInlineMarkdown(sanitizeText(option.description), mdTheme, t =>
+					theme.fg(descriptionColor, t),
+				);
 				lines.push(`    ${description}`);
 			} else {
 				lines.push(
@@ -328,7 +346,7 @@ export class HookSelectorComponent extends OverlayPanel {
 		const indent = "    ";
 		const innerWidth = Math.max(1, (renderWidth ?? 80) - 2);
 		const bodyWidth = Math.max(1, innerWidth - indent.length);
-		const colored = renderInlineMarkdown(description, mdTheme, t => theme.fg(color, t));
+		const colored = renderInlineMarkdown(sanitizeText(description), mdTheme, t => theme.fg(color, t));
 		const wrapped = wrapTextWithAnsi(colored, bodyWidth);
 		if (wrapped.length <= maxRows) return wrapped.map(row => indent + row);
 		const kept = wrapped.slice(0, maxRows);

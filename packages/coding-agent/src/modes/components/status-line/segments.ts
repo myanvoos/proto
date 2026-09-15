@@ -263,7 +263,14 @@ const pathSegment: StatusLineSegment = {
 
 		if (stripPrefix && ctx.worktree) {
 			const { projectName, worktreeName } = ctx.worktree;
-			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
+			// Basenames come from the filesystem: collapse control bytes before
+			// the label reaches the single-line status row (the worktree branch
+			// returns early, so the normal-path sanitizeText below never runs).
+			const safeProject = sanitizeStatusText(projectName);
+			const safeWorktree = sanitizeStatusText(worktreeName);
+			if (!safeProject && !safeWorktree) return { content: "", visible: false };
+			const label =
+				ctx.git.branch === safeWorktree ? safeProject : `${safeProject}/${safeWorktree}`.replace(/\/+$/, "");
 			const content = withIcon(theme.icon.worktree, truncateStartToWidth(label, opts.maxLength ?? 40));
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}

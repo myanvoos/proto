@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fuzzyFind } from "@oh-my-pi/pi-natives";
+import { untilAborted } from "@oh-my-pi/pi-utils";
 import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 
 const PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
@@ -175,7 +176,7 @@ export interface SlashCommand {
 
 	getAutocompleteDescription?: () => string | undefined;
 
-	getArgumentCompletions?(argumentPrefix: string): Awaitable<AutocompleteItem[] | null>;
+	getArgumentCompletions?(argumentPrefix: string, signal?: AbortSignal): Awaitable<AutocompleteItem[] | null>;
 
 	getInlineHint?(argumentText: string): string | null;
 }
@@ -386,7 +387,14 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	#commandUsage?: (name: string) => number;
 
 	#dirCache: Map<string, { entries: fs.Dirent[]; timestamp: number }> = new Map();
+	#dirInflight: Map<string, Promise<fs.Dirent[]>> = new Map();
+	#dirInflightGeneration: Map<string, number> = new Map();
+	// Epoch-based invalidation: every invalidateDirCache() bumps one counter
+	// so even not-yet-registered in-flight reads are invalidated (a per-key
+	// generation map misses keys whose read started before the key existed).
+	#dirCacheEpoch = 0;
 	readonly #DIR_CACHE_TTL = 2000;
+	readonly #SYMLINK_STAT_CONCURRENCY = 8;
 
 	constructor(
 		commands: CommandEntry[] = [],
@@ -461,7 +469,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 					"getArgumentCompletions" in command &&
 					command.getArgumentCompletions
 				) {
-					const argumentSuggestions = await command.getArgumentCompletions(argumentText);
+					const argumentSuggestions = await command.getArgumentCompletions(argumentText, signal);
 					if (Array.isArray(argumentSuggestions) && argumentSuggestions.length > 0) {
 						return {
 							items: argumentSuggestions,
@@ -477,16 +485,16 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			const { rawPrefix, isQuotedPrefix } = parsePathPrefix(atPrefix);
 
 			if (rawPrefix.length > 0 && this.#isOutsideCwd(rawPrefix)) {
-				const items = await this.#getFileSuggestions(atPrefix);
+				const items = await this.#getFileSuggestions(atPrefix, signal);
 				if (items.length === 0) return null;
 				return { items, prefix: atPrefix };
 			}
 			const suggestions =
 				rawPrefix.length > 0
 					? await this.#getFuzzyFileSuggestions(rawPrefix, { isQuotedPrefix, signal })
-					: await this.#getFileSuggestions("@");
+					: await this.#getFileSuggestions("@", signal);
 			if (suggestions.length === 0 && rawPrefix.length > 0) {
-				const fallback = await this.#getFileSuggestions(atPrefix);
+				const fallback = await this.#getFileSuggestions(atPrefix, signal);
 				if (fallback.length === 0) return null;
 				return { items: fallback, prefix: atPrefix };
 			}
@@ -501,7 +509,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const pathMatch = this.#extractPathPrefix(textBeforeCursor, false);
 
 		if (pathMatch !== null) {
-			const suggestions = await this.#getFileSuggestions(pathMatch);
+			const suggestions = await this.#getFileSuggestions(pathMatch, signal);
 			if (suggestions.length === 0) return null;
 
 			if (suggestions.length === 1 && suggestions[0]?.value === pathMatch && !pathMatch.endsWith("/")) {
@@ -677,6 +685,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 	async #resolveScopedFuzzyQuery(
 		rawQuery: string,
+		signal?: AbortSignal,
 	): Promise<{ baseDir: string; query: string; displayBase: string } | null> {
 		const slashIndex = rawQuery.lastIndexOf("/");
 		if (slashIndex === -1) {
@@ -696,7 +705,8 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		try {
-			if (!(await fs.promises.stat(baseDir)).isDirectory()) {
+			if (signal?.aborted) return null;
+			if (!(await untilAborted(signal, fs.promises.stat(baseDir))).isDirectory()) {
 				return null;
 			}
 		} catch {
@@ -713,39 +723,70 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		return `${displayBase}${relativePath}`;
 	}
 
-	async #getCachedDirEntries(searchDir: string): Promise<fs.Dirent[]> {
+	async #getCachedDirEntries(searchDir: string, signal?: AbortSignal): Promise<fs.Dirent[]> {
+		const key = path.resolve(searchDir);
 		const now = Date.now();
-		const cached = this.#dirCache.get(searchDir);
+		const cached = this.#dirCache.get(key);
 
 		if (cached && now - cached.timestamp < this.#DIR_CACHE_TTL) {
 			return cached.entries;
 		}
 
-		const entries = await fs.promises.readdir(searchDir, { withFileTypes: true });
-		this.#dirCache.set(searchDir, { entries, timestamp: now });
-
-		if (this.#dirCache.size > 100) {
-			const sortedKeys = [...this.#dirCache.entries()]
-				.sort((a, b) => a[1].timestamp - b[1].timestamp)
-				.slice(0, 50)
-				.map(([key]) => key);
-			for (const key of sortedKeys) {
-				this.#dirCache.delete(key);
-			}
+		// Deduplicate concurrent physical reads of the same directory: rapid
+		// token changes must not stack readdir round trips for one path.
+		const generation = this.#dirCacheEpoch;
+		// An in-flight read started before the current generation must not be
+		// reused: its entries were computed against invalidated state.
+		const inflight = this.#dirInflight.get(key);
+		if (inflight && this.#dirInflightGeneration.get(key) === generation) {
+			return untilAborted(signal, inflight);
 		}
+		const read = fs.promises
+			.readdir(searchDir, { withFileTypes: true })
+			.then(entries => {
+				// A cache entry computed against a stale generation (the
+				// directory was invalidated mid-read) must not be published.
+				if (this.#dirCacheEpoch === generation) {
+					this.#dirCache.set(key, { entries, timestamp: Date.now() });
+					this.#evictDirCacheOverflow();
+				}
+				return entries;
+			})
+			.finally(() => {
+				if (this.#dirInflight.get(key) === read) {
+					this.#dirInflight.delete(key);
+					this.#dirInflightGeneration.delete(key);
+				}
+			});
+		this.#dirInflight.set(key, read);
+		this.#dirInflightGeneration.set(key, generation);
+		return untilAborted(signal, read);
+	}
 
-		return entries;
+	#evictDirCacheOverflow(): void {
+		if (this.#dirCache.size <= 100) return;
+		const sortedKeys = [...this.#dirCache.entries()]
+			.sort((a, b) => a[1].timestamp - b[1].timestamp)
+			.slice(0, 50)
+			.map(([key]) => key);
+		for (const key of sortedKeys) {
+			this.#dirCache.delete(key);
+		}
 	}
 
 	invalidateDirCache(dir?: string): void {
+		// Bump the epoch unconditionally: in-flight reads started before this
+		// call must not publish into the cache afterwards. A targeted
+		// invalidation also drops that directory's cached entries.
+		this.#dirCacheEpoch++;
 		if (dir) {
-			this.#dirCache.delete(dir);
+			this.#dirCache.delete(path.resolve(dir));
 		} else {
 			this.#dirCache.clear();
 		}
 	}
 
-	async #getFileSuggestions(prefix: string): Promise<AutocompleteItem[]> {
+	async #getFileSuggestions(prefix: string, signal?: AbortSignal): Promise<AutocompleteItem[]> {
 		try {
 			let searchDir: string;
 			let searchPrefix: string;
@@ -794,26 +835,50 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				searchPrefix = file;
 			}
 
-			const entries = await this.#getCachedDirEntries(searchDir);
+			if (signal?.aborted) return [];
+			const entries = await this.#getCachedDirEntries(searchDir, signal);
+			if (signal?.aborted) return [];
 			const suggestions: AutocompleteItem[] = [];
 
-			for (const entry of entries) {
-				if (!entry.name.toLowerCase().startsWith(searchPrefix.toLowerCase())) {
-					continue;
-				}
+			const matched = entries.filter(
+				entry => entry.name !== ".git" && entry.name.toLowerCase().startsWith(searchPrefix.toLowerCase()),
+			);
 
-				if (entry.name === ".git") {
-					continue;
+			// Symlink classification costs one stat per link; bound the
+			// concurrency and stop scheduling once the request is aborted so a
+			// directory of N links cannot serialize N round trips per keystroke.
+			const symlinkFullPaths = new Map<string, string>();
+			for (const entry of matched) {
+				if (!entry.isDirectory() && entry.isSymbolicLink()) {
+					symlinkFullPaths.set(entry.name, path.join(searchDir, entry.name));
 				}
+			}
+			const symlinkIsDir = new Map<string, boolean>();
+			const symlinkNames = [...symlinkFullPaths.keys()];
+			let classifyCursor = 0;
+			const classifyNext = async (): Promise<void> => {
+				while (classifyCursor < symlinkNames.length) {
+					if (signal?.aborted) return;
+					const name = symlinkNames[classifyCursor++];
+					try {
+						const stat = await untilAborted(signal, fs.promises.stat(symlinkFullPaths.get(name)!));
+						symlinkIsDir.set(name, stat.isDirectory());
+					} catch {
+						// Broken link or aborted: dropped from suggestions below.
+					}
+				}
+			};
+			await Promise.all(
+				Array.from({ length: Math.min(this.#SYMLINK_STAT_CONCURRENCY, symlinkFullPaths.size) }, classifyNext),
+			);
+			if (signal?.aborted) return [];
 
+			for (const entry of matched) {
 				let isDirectory = entry.isDirectory();
 				if (!isDirectory && entry.isSymbolicLink()) {
-					try {
-						const fullPath = path.join(searchDir, entry.name);
-						isDirectory = (await fs.promises.stat(fullPath)).isDirectory();
-					} catch {
-						continue;
-					}
+					const classified = symlinkIsDir.get(entry.name);
+					if (classified === undefined) continue;
+					isDirectory = classified;
 				}
 
 				let relativePath: string;
@@ -877,7 +942,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		options: { isQuotedPrefix: boolean; signal?: AbortSignal },
 	): Promise<AutocompleteItem[]> {
 		try {
-			const scopedQuery = await this.#resolveScopedFuzzyQuery(query);
+			const scopedQuery = await this.#resolveScopedFuzzyQuery(query, options.signal);
 			if (options.signal?.aborted) return [];
 			const searchPath = scopedQuery?.baseDir ?? this.#basePath;
 			const fuzzyQuery = scopedQuery?.query ?? query;
@@ -934,7 +999,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 		const pathMatch = this.#extractPathPrefix(textBeforeCursor, true);
 		if (pathMatch !== null) {
-			const suggestions = await this.#getFileSuggestions(pathMatch);
+			const suggestions = await this.#getFileSuggestions(pathMatch, signal);
 			if (suggestions.length === 0) return null;
 
 			return {

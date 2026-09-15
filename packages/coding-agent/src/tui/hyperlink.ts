@@ -33,8 +33,10 @@ export function isHyperlinkEnabled(): boolean {
 	return TERMINAL.hyperlinks;
 }
 
-function safeHyperlinkUri(uri: string): string | undefined {
-	if (!uri || /[\x00-\x1f\x7f]/.test(uri)) return undefined;
+export function safeHyperlinkUri(uri: string): string | undefined {
+	// C1 controls (\x80-\x9f) can terminate/inject OSC payloads just like
+	// C0: reject the whole C0+C1+DEL range.
+	if (!uri || /[\x00-\x1f\x7f-\x9f]/.test(uri)) return undefined;
 	return uri;
 }
 

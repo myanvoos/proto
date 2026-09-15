@@ -247,6 +247,20 @@ export function getSegmenter(): Intl.Segmenter {
 	return segmenter;
 }
 
+/**
+ * Start offset (UTF-16 index) of the grapheme cluster containing `index`.
+ * A cursor or match landing mid-cluster (e.g. on a combining mark) snaps
+ * back to the cluster start so edits never split the cluster.
+ */
+export function graphemeStartAt(text: string, index: number): number {
+	let start = 0;
+	for (const { segment, index: segmentIndex } of segmenter.segment(text)) {
+		start = segmentIndex;
+		if (segmentIndex + segment.length > index) break;
+	}
+	return start;
+}
+
 const OSC66_SPAN_REGEX = /\x1b\]66;([^;]*);([\s\S]*?)(?:\x07|\x1b\\)/g;
 const OSC66_PREFIX = "\x1b]66;";
 

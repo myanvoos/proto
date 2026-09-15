@@ -1,4 +1,5 @@
 import { Markdown } from "@oh-my-pi/pi-tui/components/markdown";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, highlightCode, type Theme } from "../modes/theme/theme";
 import {
 	formatDuration,
@@ -20,6 +21,13 @@ interface CodeCellOptions {
 	spinnerFrame?: number;
 	duration?: number;
 	output?: string;
+	/**
+	 * Output rows and the title are already render-trusted (built from
+	 * theme.fg of sanitized sources, e.g. eval stream cards and read links):
+	 * preserve their styling and only normalize carriage returns. Default
+	 * treats both as untrusted content and strips ESC/C0/C1.
+	 */
+	outputTrusted?: boolean;
 	outputMaxLines?: number;
 	codeMaxLines?: number;
 
@@ -45,7 +53,13 @@ function getState(status?: CodeCellOptions["status"]): State | undefined {
 }
 
 function formatHeader(options: CodeCellOptions, theme: Theme): { title: string; meta?: string } {
-	const { index, total, title, status, spinnerFrame, duration, language, showLanguage, codeVariant } = options;
+	// Raw titles derive from external sources (tool args, browser URLs):
+	// sanitize before they are styled — theme.fg does not strip controls.
+	// Trusted callers (for example, read-renderer) pass a composite containing
+	// intentional OSC8/SGR styling that must survive this outer header pass.
+	const title = options.title === undefined || options.outputTrusted ? options.title : sanitizeText(options.title);
+	const codeVariant = options.codeVariant === undefined ? undefined : sanitizeText(options.codeVariant);
+	const { index, total, status, spinnerFrame, duration, language, showLanguage } = options;
 	const parts: string[] = [];
 	if (showLanguage && language) {
 		const langIcon = theme.getLangIconStyled(language);
@@ -91,7 +105,10 @@ function formatHeader(options: CodeCellOptions, theme: Theme): { title: string; 
 }
 
 function sanitizeTerminalLines(text: string): string[] {
-	return text.split(/\r?\n/).map(collapseCarriageReturns);
+	// Per-line sanitizeText strips ESC/C0/C1 (file content is untrusted: a
+	// read file can carry terminal-executing sequences); tabs are handled by
+	// the callers' replaceTabs and newlines were already split.
+	return text.split(/\r?\n/).map(line => sanitizeText(collapseCarriageReturns(line)));
 }
 
 function collapseCarriageReturns(line: string): string {
@@ -163,7 +180,10 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 
 	const outputLines: string[] = [];
 	if (output?.trim()) {
-		const rawLines = sanitizeTerminalLines(output);
+		const rawLines =
+			options.outputTrusted === true
+				? output.split(/\r?\n/).map(collapseCarriageReturns)
+				: sanitizeTerminalLines(output);
 		const maxLines = expanded ? rawLines.length : Math.min(rawLines.length, outputMaxLines);
 		const displayLines = rawLines
 			.slice(0, maxLines)
@@ -197,6 +217,13 @@ interface MarkdownCellOptions {
 	spinnerFrame?: number;
 	duration?: number;
 	output?: string;
+	/**
+	 * Output rows and the title are already render-trusted (built from
+	 * theme.fg of sanitized sources, e.g. eval stream cards and read links):
+	 * preserve their styling and only normalize carriage returns. Default
+	 * treats both as untrusted content and strips ESC/C0/C1.
+	 */
+	outputTrusted?: boolean;
 	outputMaxLines?: number;
 	contentMaxLines?: number;
 	expanded?: boolean;
@@ -213,6 +240,7 @@ export function renderMarkdownCell(options: MarkdownCellOptions, theme: Theme): 
 		status: options.status,
 		spinnerFrame: options.spinnerFrame,
 		duration: options.duration,
+		outputTrusted: options.outputTrusted,
 		width,
 	};
 	const { title, meta } = formatHeader(codeOptions, theme);
@@ -231,7 +259,10 @@ export function renderMarkdownCell(options: MarkdownCellOptions, theme: Theme): 
 
 	const outputLines: string[] = [];
 	if (output?.trim()) {
-		const rawLines = sanitizeTerminalLines(output);
+		const rawLines =
+			options.outputTrusted === true
+				? output.split(/\r?\n/).map(collapseCarriageReturns)
+				: sanitizeTerminalLines(output);
 		const maxLines = expanded ? rawLines.length : Math.min(rawLines.length, outputMaxLines);
 		const displayLines = rawLines
 			.slice(0, maxLines)

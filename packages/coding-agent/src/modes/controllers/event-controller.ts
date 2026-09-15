@@ -235,7 +235,7 @@ export class EventController {
 			removeComponent = component.removeEntry(toolCallId);
 			if (component === this.#lastReadGroup) this.#resetReadGroup();
 		}
-		if (removeComponent) this.ctx.chatContainer.removeChild(component);
+		if (removeComponent) this.ctx.chatContainer.disposeAndRemoveChild(component);
 		this.ctx.pendingTools.delete(toolCallId);
 		this.#toolTimelineComponents.delete(toolCallId);
 		this.#clearReadToolCall(toolCallId);
@@ -578,10 +578,7 @@ export class EventController {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.message.role === "assistant") this.#updateWorkingSpinnerFrames(event.message);
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
-			// Same-millisecond distinct messages must not collide: fold a
-			// deterministic full-content fingerprint into the dedupe signature.
-			const contentText = JSON.stringify((event.message as { content?: unknown }).content ?? null);
-			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}:${contentText.length}:${Bun.hash(contentText)}`;
+			const signature = this.#customMessageSignature(event.message);
 			if (this.#renderedCustomMessages.has(signature)) {
 				return;
 			}
@@ -657,8 +654,34 @@ export class EventController {
 		}
 	}
 
+	// One dedupe signature for every path that renders a custom record
+	// (message_start events, irc_message events, deferred flush replays).
+	// Same-millisecond distinct records must not collide, and the same record
+	// delivered through two event types must dedupe: prefer the stable IRC
+	// details.id, then fall back to a deterministic content fingerprint.
+	#customMessageSignature(message: {
+		role: string;
+		customType: string;
+		timestamp: number;
+		content: unknown;
+		details?: unknown;
+	}): string {
+		// Only IRC records have immutable delivery ids: the same record
+		// arrives as irc_message and then through message_start. Extension
+		// progress records reuse generic ids (e.g. job counters) where id
+		// equality does NOT imply content equality.
+		if (message.customType.startsWith("irc:")) {
+			const details = (message.details ?? {}) as { id?: unknown };
+			if (typeof details.id === "string" && details.id.length > 0) {
+				return `${message.role}:${message.customType}:id:${details.id}`;
+			}
+		}
+		const contentText = JSON.stringify(message.content ?? null);
+		return `${message.role}:${message.customType}:${message.timestamp}:${contentText.length}:${Bun.hash(contentText)}`;
+	}
+
 	async #handleIrcMessage(event: Extract<AgentSessionEvent, { type: "irc_message" }>): Promise<void> {
-		const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
+		const signature = this.#customMessageSignature(event.message);
 		if (this.#renderedCustomMessages.has(signature)) {
 			return;
 		}
@@ -688,7 +711,7 @@ export class EventController {
 		let removed = false;
 		for (const component of components) {
 			if (!this.ctx.chatContainer.isBlockUncommitted(component)) continue;
-			this.ctx.chatContainer.removeChild(component);
+			this.ctx.chatContainer.disposeAndRemoveChild(component);
 			removed = true;
 		}
 		if (removed) this.ctx.ui.requestRender();
@@ -716,7 +739,7 @@ export class EventController {
 			previous.isDisplaceableBlock() &&
 			this.ctx.chatContainer.isBlockUncommitted(previous)
 		) {
-			this.ctx.chatContainer.removeChild(previous);
+			this.ctx.chatContainer.disposeAndRemoveChild(previous);
 		}
 
 		previous.seal();
@@ -733,7 +756,7 @@ export class EventController {
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#displaceableTodoComponent = undefined;
 			if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
-				this.ctx.chatContainer.removeChild(previous);
+				this.ctx.chatContainer.disposeAndRemoveChild(previous);
 			}
 			previous.seal();
 			this.ctx.ui.requestRender();
@@ -1096,7 +1119,7 @@ export class EventController {
 			if (previous && previous !== component && previous.isDisplaceableBlock()) {
 				this.#displaceableTodoComponent = undefined;
 				if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
-					this.ctx.chatContainer.removeChild(previous);
+					this.ctx.chatContainer.disposeAndRemoveChild(previous);
 				}
 				previous.seal();
 			}
@@ -1164,7 +1187,7 @@ export class EventController {
 						if (previous && previous !== component && previous.isDisplaceableBlock()) {
 							this.#displaceableTodoComponent = undefined;
 							if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
-								this.ctx.chatContainer.removeChild(previous);
+								this.ctx.chatContainer.disposeAndRemoveChild(previous);
 							}
 							previous.seal();
 						}

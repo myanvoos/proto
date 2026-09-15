@@ -16,7 +16,7 @@ import { formatBytes } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { SessionInfo, SessionStatus } from "../../session/session-listing";
-import { shortenPath } from "../../tools/render-utils";
+import { sanitizeSingleLine, shortenPath } from "../../tools/render-utils";
 import { HookSelectorComponent } from "./hook-selector";
 import { bottomBorder, OverlayPanel, row, topBorder } from "./overlay-box";
 
@@ -202,8 +202,12 @@ interface CachedSessionRows {
 	selectedRendered: string[];
 }
 
+function hasRenderableTitle(session: SessionInfo): boolean {
+	return sanitizeSingleLine(session.title ?? "") !== "";
+}
+
 function sessionItemHeight(session: SessionInfo): number {
-	return session.title ? 4 : 3;
+	return hasRenderableTitle(session) ? 4 : 3;
 }
 
 class SessionList implements Component {
@@ -273,7 +277,7 @@ class SessionList implements Component {
 		const titlePrefix = new Array<number>(sessions.length + 1);
 		titlePrefix[0] = 0;
 		for (let index = 0; index < sessions.length; index++) {
-			titlePrefix[index + 1] = titlePrefix[index]! + (sessions[index]!.title ? 1 : 0);
+			titlePrefix[index + 1] = titlePrefix[index]! + (hasRenderableTitle(sessions[index]!) ? 1 : 0);
 		}
 		this.#filteredTitlePrefix = titlePrefix;
 		this.#filteredTotalRows = sessions.length * 3 + titlePrefix[sessions.length]!;
@@ -315,7 +319,7 @@ class SessionList implements Component {
 	#normalizedMessage(session: SessionInfo): string {
 		const cached = this.#normalizedMessages.get(session.path);
 		if (cached?.source === session.firstMessage) return cached.value;
-		const value = session.firstMessage.replace(/\n/g, " ").trim();
+		const value = session.firstMessage.replace(/[\r\n]+/g, " ").trim();
 		this.#normalizedMessages.set(session.path, { source: session.firstMessage, value });
 		return value;
 	}
@@ -330,7 +334,8 @@ class SessionList implements Component {
 		dot: string,
 		modified: string,
 	): CachedSessionRows {
-		const normalizedMessage = this.#normalizedMessage(session);
+		const sessionTitle = sanitizeSingleLine(session.title ?? "");
+		const normalizedMessage = sanitizeSingleLine(this.#normalizedMessage(session));
 		const normalCursor = padding(cursorWidth);
 		const selectedCursor = theme.fg("accent", cursorSymbol);
 		const maxWidth = rowWidth - cursorWidth;
@@ -341,8 +346,8 @@ class SessionList implements Component {
 		const normal: string[] = [];
 		const selected: string[] = [];
 
-		if (session.title) {
-			const truncatedTitle = truncateToWidth(session.title, maxTextWidth);
+		if (sessionTitle) {
+			const truncatedTitle = truncateToWidth(sessionTitle, maxTextWidth);
 			const truncatedPreview = truncateToWidth(normalizedMessage, maxWidth);
 			normal.push(`${normalCursor}${pinPrefix}${truncatedTitle}`);
 			selected.push(`${selectedCursor}${pinPrefix}${theme.bold(truncatedTitle)}`);
@@ -359,7 +364,7 @@ class SessionList implements Component {
 		const status = formatSessionStatus(session.status);
 		if (status) metadata += ` ${dot} ${status}`;
 		if (session.parentSessionPath) metadata += ` ${dot} ${dim(`${theme.icon.branch} fork`)}`;
-		if (this.#showCwd && session.cwd) metadata += ` ${dot} ${dim(shortenPath(session.cwd))}`;
+		if (this.#showCwd && session.cwd) metadata += ` ${dot} ${dim(shortenPath(sanitizeSingleLine(session.cwd)))}`;
 		const metadataLine = truncateToWidth(metadata, rowWidth);
 		normal.push(metadataLine);
 		selected.push(metadataLine);
@@ -775,7 +780,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 		onExit: () => void,
 		options: SessionSelectorOptions = {},
 	) {
-		super(options.title ?? "Resume Session");
+		super(sanitizeSingleLine(options.title ?? "Resume Session"));
 
 		this.#messageContainer = new Container();
 		this.#onDelete = options.onDelete;
@@ -784,7 +789,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 		this.#globalSessions = options.allSessions ?? null;
 		this.#getTerminalRows = options.getTerminalRows ?? (() => 24);
 		this.#fillHeight = options.fillHeight ?? false;
-		this.#title = options.title ?? "Resume Session";
+		this.#title = sanitizeSingleLine(options.title ?? "Resume Session");
 		this.#scopeLabel = options.scopeLabel;
 		this.title = this.#headerLabel();
 
@@ -828,7 +833,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 	#headerLabel(): string {
 		if (this.#scopeLabel === false) return this.#title;
 		const scopeLabel = this.#scopeLabel ?? (this.#scope === "all" ? "all projects" : "current folder");
-		return `${this.#title} (${scopeLabel})`;
+		return `${this.#title} (${sanitizeSingleLine(scopeLabel)})`;
 	}
 
 	async #toggleScope(): Promise<void> {
@@ -886,7 +891,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 
 	#showError(message: string): void {
 		this.#messageContainer.clear();
-		this.#messageContainer.addChild(new Text(theme.fg("error", `Error: ${replaceTabs(message)}`), 0, 0));
+		this.#messageContainer.addChild(new Text(theme.fg("error", `Error: ${sanitizeSingleLine(message)}`), 0, 0));
 		this.#messageContainer.addChild(new Spacer(1));
 	}
 

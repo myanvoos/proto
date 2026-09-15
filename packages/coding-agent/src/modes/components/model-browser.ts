@@ -707,8 +707,11 @@ export class ModelBrowser implements Component {
 		const lines: string[] = [];
 
 		const searchIcon = theme.fg("accent", theme.symbol("icon.search"));
-		const inputWidth = Math.max(4, width - visibleWidth(theme.symbol("icon.search")) - 2);
-		lines.push(` ${searchIcon} ${this.#searchInput.render(inputWidth)[0] ?? ""}`);
+		const prefix = ` ${searchIcon} `;
+		const inputWidth = Math.max(1, width - visibleWidth(prefix));
+		// Clamp the composed row: the fixed prefix would overflow below its
+		// natural minimum width.
+		lines.push(truncateToWidth(`${prefix}${this.#searchInput.render(inputWidth)[0] ?? ""}`, width));
 		lines.push("");
 
 		const total = this.#visibleItems.length;

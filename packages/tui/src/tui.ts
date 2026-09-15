@@ -5,6 +5,7 @@ import { $flag } from "@oh-my-pi/pi-utils/env";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
+import { KITTY_PLACEHOLDER } from "./kitty-graphics";
 import { LoopWatchdog } from "./loop-watchdog";
 import { setAltScreenActive, type Terminal } from "./terminal";
 import {
@@ -22,7 +23,7 @@ import {
 	synchronizedOutputUserOverride,
 	TERMINAL,
 } from "./terminal-capabilities";
-import { wrapTmuxPassthroughIfNeeded } from "./tmux";
+import { unwrapTmuxPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import {
 	Ellipsis,
 	extractSegments,
@@ -64,6 +65,37 @@ const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
+
+const KITTY_APC_IMAGE_ID = /\x1b_G[^\x1b]*\bi=(\d+)/gu;
+const KITTY_PLACEHOLDER_RGB = /\x1b\[38;2;(\d+);(\d+);(\d+)m/gu;
+
+function imageIdsInRows(lines: readonly string[]): Set<number> {
+	const ids = new Set<number>();
+	for (const line of lines) {
+		const decoded = unwrapTmuxPassthrough(line) ?? line;
+		const parsed = parseKittyDirectPlacementLine(decoded);
+		if (parsed) ids.add(parsed.imageId);
+		if (!TERMINAL.isImageLine(line)) continue;
+		// A row may contain multiple side-by-side Kitty placements (for example,
+		// attachment chips). Collect every APC id rather than stopping at the
+		// first match.
+		for (const apc of decoded.matchAll(KITTY_APC_IMAGE_ID)) {
+			const imageId = apc[1];
+			if (imageId !== undefined) ids.add(Number(imageId));
+		}
+		// Kitty unicode-placeholder rows encode each image id in its RGB
+		// foreground. This also covers cropped rows after virtual-placement APCs
+		// were emitted above the viewport.
+		if (!decoded.includes(KITTY_PLACEHOLDER)) continue;
+		for (const rgb of decoded.matchAll(KITTY_PLACEHOLDER_RGB)) {
+			const red = Number(rgb[1]);
+			const green = Number(rgb[2]);
+			const blue = Number(rgb[3]);
+			if (red <= 255 && green <= 255 && blue <= 255) ids.add((red << 16) | (green << 8) | blue);
+		}
+	}
+	return ids;
+}
 
 type InputListenerResult = { consume?: boolean; data?: string } | undefined;
 type InputListener = (data: string) => InputListenerResult;
@@ -393,6 +425,13 @@ export class Container
 		}
 	}
 
+	/** Remove a child that is being discarded, releasing its resources exactly once. */
+	disposeAndRemoveChild(component: Component): void {
+		if (!this.children.includes(component)) return;
+		this.removeChild(component);
+		component.dispose?.();
+	}
+
 	clear(): void {
 		if (this.children.length > 0) this.#widthEpochRevision++;
 		this.children = [];
@@ -400,7 +439,8 @@ export class Container
 	}
 
 	disposeChildren(): void {
-		this.dispose();
+		const children = [...this.children];
+		for (const child of children) child.dispose?.();
 		this.clear();
 	}
 
@@ -908,15 +948,29 @@ function isBlankRow(row: string): boolean {
 const RESYNC_TAIL_LOOKBACK = 24;
 const RESYNC_TAIL_SAMPLES = 8;
 
+export interface CommittedPrefixAudit {
+	/** First tracked row that must match exactly (hard-audited range start). */
+	auditFrom: number;
+	/** Exclusive end of the hard-audited range. */
+	finalTo: number;
+	/** Row the sampled old-row tail reaches back from; defaults to auditFrom. */
+	tailAnchor?: number;
+	/**
+	 * 'exact' leaves no tolerance anywhere. 'sample-one-edit' tolerates a
+	 * single ordinary edited row in the sampled old tail only — style-only
+	 * differences and boundary shifts always resync.
+	 */
+	tailPolicy: "exact" | "sample-one-edit";
+}
+
 export function findCommittedPrefixResync(
 	frame: readonly string[],
 	prefix: readonly string[],
-	verifiedTo: number = prefix.length,
-	finalTo: number = verifiedTo,
-	strict = false,
+	options: CommittedPrefixAudit,
 ): number {
-	const verified = Math.min(prefix.length, Math.max(0, Math.trunc(verifiedTo)));
-	const hardEnd = Math.min(prefix.length, Math.max(verified, Math.trunc(finalTo)));
+	const tailPolicy = options.tailPolicy;
+	const verified = Math.min(prefix.length, Math.max(0, Math.trunc(options.auditFrom)));
+	const hardEnd = Math.min(prefix.length, Math.max(verified, Math.trunc(options.finalTo)));
 	if (hardEnd === 0) return -1;
 	if (frame.length >= hardEnd) {
 		let hardMismatch = false;
@@ -926,7 +980,7 @@ export function findCommittedPrefixResync(
 				break;
 			}
 		}
-		if (!hardMismatch && !strict) {
+		if (!hardMismatch && tailPolicy === "sample-one-edit") {
 			let samples = 0;
 			let mismatches = 0;
 			let mismatchIndex = -1;
@@ -966,7 +1020,7 @@ export function findCommittedPrefixResync(
 	}
 
 	const limit = Math.min(hardEnd, frame.length);
-	const auditStart = strict ? verified : 0;
+	const auditStart = tailPolicy === "exact" ? verified : 0;
 	for (let i = auditStart; i < limit; i++) {
 		if (!rowsEquivalent(frame[i]!, prefix[i]!)) return i;
 	}
@@ -1639,9 +1693,9 @@ export class TUI extends Container {
 	}
 
 	#purgeInlineImages(): void {
-		const transmittedIds = this.#imageBudget.takeAllTransmittedIds();
+		const residentIds = this.#imageBudget.takeAllForProtocolReset();
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
-		for (const id of transmittedIds) {
+		for (const id of residentIds) {
 			this.terminal.write(encodeKittyDeleteImage(id));
 		}
 	}
@@ -2185,7 +2239,16 @@ export class TUI extends Container {
 		}
 
 		this.#invalidatePreparedRowCache();
-		const nextLines = root.render(width);
+		// Direct-written rows reach the viewport (not scrollback): image
+		// observations must run under partial overlay semantics, and any
+		// admitted payload must be written before the placement rows emit.
+		this.#imageBudget.beginOverlayPass();
+		let nextLines: readonly string[];
+		try {
+			nextLines = root.render(width);
+		} finally {
+			this.#imageBudget.endOverlayPass();
+		}
 		if (nextLines.length !== segment.rowCount) {
 			this.requestComponentRender(component);
 			return;
@@ -2212,6 +2275,36 @@ export class TUI extends Container {
 		this.#preparedValidRows = Math.max(this.#preparedValidRows, segment.start + nextLines.length);
 		this.#renderStablePrefixRows = Math.min(this.#renderStablePrefixRows, segment.start);
 
+		// Filter against every visible row, not only changed rows: a protocol
+		// reset can queue a payload whose placement bytes are unchanged.
+		const directIds = imageIdsInRows(nextLines);
+		const drainDirectImageWork = (): readonly number[] => {
+			const directPurge = this.#imageBudget.takePurgeIds();
+			if (directPurge.length > 0 && TERMINAL.imageProtocol === ImageProtocol.Kitty) {
+				let directPurgeBuffer = "";
+				for (const id of directPurge) directPurgeBuffer += encodeKittyDeleteImage(id);
+				this.terminal.write(directPurgeBuffer);
+			}
+			const directBatch = this.#imageBudget.takeTransmitBatch(id => directIds.has(id));
+			if (directBatch.sequences.length > 0) {
+				let directTransmitBuffer = "";
+				for (const seq of directBatch.sequences) directTransmitBuffer += seq;
+				this.terminal.write(directTransmitBuffer);
+				this.#imageBudget.markTransmitWritten(directBatch.ids);
+			}
+			return directBatch.ids;
+		};
+		const forceRowsForTransmits = (ids: readonly number[]): void => {
+			if (ids.length === 0) return;
+			const transmitted = new Set(ids);
+			for (let i = 0; i < nextLines.length; i++) {
+				const rowIds = imageIdsInRows([nextLines[i]!]);
+				if (![...rowIds].some(id => transmitted.has(id))) continue;
+				if (firstChanged === -1) firstChanged = i;
+				lastChanged = Math.max(lastChanged, i);
+			}
+		};
+
 		let cursorPos: { row: number; col: number } | null = null;
 		for (let i = this.#frameCursorMarkers.length - 1; i >= 0; i--) {
 			const marker = this.#frameCursorMarkers[i]!;
@@ -2222,11 +2315,20 @@ export class TUI extends Container {
 		}
 
 		if (firstChanged === -1) {
-			this.#writeCursorPosition(cursorPos, this.#composedFrame.length);
-			this.#previousWidth = width;
-			this.#previousHeight = height;
-			return;
+			forceRowsForTransmits(drainDirectImageWork());
+			if (firstChanged === -1) {
+				this.#writeCursorPosition(cursorPos, this.#composedFrame.length);
+				this.#previousWidth = width;
+				this.#previousHeight = height;
+				return;
+			}
 		}
+
+		// Payloads must precede the placement rows that reference them, and
+		// purge commands must precede transmits that may reuse an id. A protocol
+		// reset can leave placement bytes unchanged, so force those image rows
+		// through the rewrite path when their payload is retransmitted.
+		forceRowsForTransmits(drainDirectImageWork());
 
 		const currentScreenRow = Math.max(0, Math.min(height - 1, this.#hardwareCursorRow - windowTop));
 		const targetScreenRow = screenStart + firstChanged;
@@ -2803,6 +2905,7 @@ export class TUI extends Container {
 			parsed.imageId,
 			frameRow >= 0 ? frameRow - Math.min(parsed.rows - 1, screenRow) : -1,
 			committedTo,
+			parsed.placementId,
 		);
 		if (!placement) return line;
 		return wrapTmuxPassthroughIfNeeded(
@@ -2914,11 +3017,14 @@ export class TUI extends Container {
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 
-		const componentScopedOnly = this.#pendingRenderComponentsOnly;
+		// A budget-driven full pass outranks the component-scoped request:
+		// admission policy may only be recomputed by a full-frame compose.
+		const componentScopedOnly = this.#pendingRenderComponentsOnly && !this.#imageBudget.needsFullPass;
 		this.#pendingRenderComponentsOnly = false;
 
 		let deferredAltExit = this.#pendingAltExit;
 		const topOverlay = this.#getTopmostVisibleOverlay();
+		this.#imageBudget.setOverlayPresence(topOverlay !== undefined);
 		const wantAlt = topOverlay?.options?.fullscreen === true;
 		const wantMouseTracking = wantAlt && topOverlay.options?.mouseTracking !== false;
 		if (wantAlt && !this.#altActive) {
@@ -2988,7 +3094,9 @@ export class TUI extends Container {
 		let rawFrame: readonly string[];
 		if (partialRoots !== null) {
 			this.#partialComposeRoots = partialRoots;
-			this.#imageBudget.beginPass();
+			// A component-scoped compose observes only a subset of the frame:
+			// it must never be finalized as a global policy pass.
+			this.#imageBudget.beginPass("partial");
 			try {
 				rawFrame = this.render(width);
 			} finally {
@@ -2996,9 +3104,18 @@ export class TUI extends Container {
 				this.#imageBudget.endPass();
 			}
 		} else {
-			this.#imageBudget.beginPass();
+			// Mid-pass admission is provisional: endPass settles the actual
+			// policy (cap changes, first over-cap render). If it changed,
+			// recompose so the frame we emit already respects the settled
+			// policy instead of painting an over-cap frame with a corrective
+			// render later.
+			this.#imageBudget.beginPass("full");
 			rawFrame = this.render(width);
-			this.#imageBudget.endPass();
+			if (this.#imageBudget.endPass()) {
+				this.#imageBudget.beginPass("full");
+				rawFrame = this.render(width);
+				this.#imageBudget.endPass();
+			}
 		}
 
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
@@ -3100,12 +3217,18 @@ export class TUI extends Container {
 				if (resyncTo < 0) resyncTo = firstMissing;
 			} else if (shouldAudit) {
 				const current = widthEpochPrefix.frameRows.map(row => rawFrame[row]!);
-				resyncTo = findCommittedPrefixResync(
-					current,
-					widthEpochPrefix.prefix,
-					widthEpochPrefix.auditRows,
-					newlyFinalRows,
-				);
+				// The live seam can rewrite tracked rows below the audit
+				// watermark: re-verify from the first tracked row at or below
+				// the seam, exactly, so neither a tolerated ordinary edit nor a
+				// row outside the sampled lookback can hide a real change.
+				const dirtyIndex = widthEpochPrefix.frameRows.findIndex(row => row >= this.#renderStablePrefixRows);
+				const auditFrom =
+					dirtyIndex < 0 ? widthEpochPrefix.auditRows : Math.min(widthEpochPrefix.auditRows, dirtyIndex);
+				resyncTo = findCommittedPrefixResync(current, widthEpochPrefix.prefix, {
+					auditFrom,
+					finalTo: newlyFinalRows,
+					tailPolicy: "exact",
+				});
 				if (resyncTo < 0) widthEpochPrefix.auditRows = newlyFinalRows;
 			}
 			if (resyncTo >= 0) {
@@ -3425,7 +3548,12 @@ export class TUI extends Container {
 		const window = this.#acquireWindow(height);
 		for (let r = 0; r < height; r++) window[r] = frame[windowTop + r] ?? "";
 		if (hasVisibleOverlay) {
-			this.#compositeOverlaysIntoWindow(window, width, height);
+			this.#imageBudget.beginOverlayPass();
+			try {
+				this.#compositeOverlaysIntoWindow(window, width, height);
+			} finally {
+				this.#imageBudget.endOverlayPass();
+			}
 			const overlayMarkers = this.#extractCursorMarkers(window);
 			if (overlayMarkers.length > 0) {
 				cursorPos = { row: windowTop + overlayMarkers[0]!.row, col: overlayMarkers[0]!.col };
@@ -3444,7 +3572,8 @@ export class TUI extends Container {
 		this.#logRedraw(intent, frameLength, width, height);
 
 		let imageTransmitBuffer = "";
-		for (const seq of this.#imageBudget.takeTransmits()) imageTransmitBuffer += seq;
+		const transmitBatch = this.#imageBudget.takeTransmitBatch();
+		for (const seq of transmitBatch.sequences) imageTransmitBuffer += seq;
 
 		let purgeSequence = "";
 		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
@@ -3461,15 +3590,25 @@ export class TUI extends Container {
 		}
 
 		if (intent.kind === "fullPaint") {
-			this.#emitFullPaint(frame, window, width, height, cursorPos, purgeSequence, imageTransmitBuffer, {
-				clearScrollback: intent.clearScrollback,
-				chunkTo,
-				windowTop,
-				cursorTrackingLineCount,
-				leadingSequence: deferredAltExit,
+			this.#emitFullPaint(
+				frame,
+				window,
+				width,
+				height,
+				cursorPos,
+				purgeSequence,
+				imageTransmitBuffer,
+				transmitBatch.ids,
+				{
+					clearScrollback: intent.clearScrollback,
+					chunkTo,
+					windowTop,
+					cursorTrackingLineCount,
+					leadingSequence: deferredAltExit,
 
-				copyScreenToScrollback: true,
-			});
+					copyScreenToScrollback: true,
+				},
+			);
 			this.#pendingAltExit = "";
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
 			this.#committedPrefixAuditRows = Math.min(chunkTo, finalBoundary);
@@ -3537,16 +3676,26 @@ export class TUI extends Container {
 				commitTo = commitFrom;
 			}
 			this.#imageBudget.observeCommitWatermark(commitTo);
-			this.#emitWidthEpochBaseline(frame, window, width, height, cursorPos, purgeSequence, imageTransmitBuffer, {
-				repaintFromScreenRow: 0,
-				commitFrom,
-				commitTo,
-				appendOnly: logicalAppend,
-				prepaintWindowTop: logicalAppend && !logicalPrefixAppend && !hasVisibleOverlay ? commitFrom : undefined,
-				windowTop,
-				cursorTrackingLineCount,
-				leadingSequence: deferredAltExit,
-			});
+			this.#emitWidthEpochBaseline(
+				frame,
+				window,
+				width,
+				height,
+				cursorPos,
+				purgeSequence,
+				imageTransmitBuffer,
+				transmitBatch.ids,
+				{
+					repaintFromScreenRow: 0,
+					commitFrom,
+					commitTo,
+					appendOnly: logicalAppend,
+					prepaintWindowTop: logicalAppend && !logicalPrefixAppend && !hasVisibleOverlay ? commitFrom : undefined,
+					windowTop,
+					cursorTrackingLineCount,
+					leadingSequence: deferredAltExit,
+				},
+			);
 			this.#pendingAltExit = "";
 			if (!hasVisibleOverlay) {
 				this.#widthEpochOverlayReplayPending = false;
@@ -3619,16 +3768,29 @@ export class TUI extends Container {
 			this.#publishCommittedRows(Math.min(this.#windowTopRow, this.#committedRows));
 			return;
 		}
+		// Delete commands must precede new payload transmits (a transmit may
+		// reuse a just-evicted id); the placement rows emitted by #emitUpdate
+		// then find their payloads resident.
+		if (purgeSequence.length > 0) this.terminal.write(purgeSequence);
 		if (imageTransmitBuffer.length > 0) {
 			this.terminal.write(imageTransmitBuffer);
+			this.#imageBudget.markTransmitWritten(transmitBatch.ids);
 		}
-		this.#emitUpdate(frame, window, width, height, cursorPos, purgeSequence, {
+		// The purge bytes were just written above; #emitUpdate must not repeat
+		// them (its output branches would emit the same delete twice).
+		this.#emitUpdate(frame, window, width, height, cursorPos, "", {
 			chunkTo,
 			windowTop,
 			prevWindowTop,
 			prevHardwareCursorRow,
+			// A protocol reset/retransmit can leave the prepared row bytes
+			// unchanged while the terminal payload and placement state are gone.
+			// Force the update path to rewrite the viewport so direct Kitty
+			// placements are emitted again (including scoped/fallback renders).
 			forceWindowRewrite:
-				this.#forceViewportRepaintOnNextRender || (geometryChanged && this.#resizeRepaintsInPlace()),
+				this.#forceViewportRepaintOnNextRender ||
+				(geometryChanged && this.#resizeRepaintsInPlace()) ||
+				transmitBatch.ids.length > 0,
 			repaintVirtualScrollInPlace: hasVisibleOverlay,
 			cursorTrackingLineCount,
 		});
@@ -3663,7 +3825,11 @@ export class TUI extends Container {
 			? Math.min(this.#committedRows, Math.max(0, dirtyFromRow))
 			: this.#committedPrefixAuditRows;
 		const auditTo = strict ? this.#committedRows : newlyFinalEnd;
-		const resyncTo = findCommittedPrefixResync(rawFrame, prefix, auditFrom, auditTo, strict);
+		const resyncTo = findCommittedPrefixResync(rawFrame, prefix, {
+			auditFrom,
+			finalTo: auditTo,
+			tailPolicy: strict ? "exact" : "sample-one-edit",
+		});
 		if (resyncTo < 0) return;
 		this.#committedRows = resyncTo;
 		this.#committedPrefixAuditRows = Math.min(this.#committedPrefixAuditRows, resyncTo);
@@ -4109,6 +4275,7 @@ export class TUI extends Container {
 		cursorPos: { row: number; col: number } | null,
 		purgeSequence: string,
 		imageTransmitBuffer: string,
+		transmitIds: readonly number[],
 		options: {
 			repaintFromScreenRow: number;
 			commitFrom: number;
@@ -4214,6 +4381,7 @@ export class TUI extends Container {
 		}
 		output.push(this.#paintEndSequence);
 		this.#writeFrameOutput();
+		this.#imageBudget.markTransmitWritten(transmitIds);
 
 		this.#commit(frame, window, width, height, {
 			toRow: target?.row ?? contentBottomRow,
@@ -4230,6 +4398,7 @@ export class TUI extends Container {
 		cursorPos: { row: number; col: number } | null,
 		purgeSequence: string,
 		imageTransmitBuffer: string,
+		transmitIds: readonly number[],
 		options: {
 			clearScrollback: boolean;
 			chunkTo: number;
@@ -4261,8 +4430,8 @@ export class TUI extends Container {
 		);
 		if (options.clearScrollback) {
 			output.push("\x1b[H\x1b[3J");
-			for (const { imageId, lastEpoch } of this.#imageBudget.resetPlacementEpochs()) {
-				for (let placementId = 1; placementId <= lastEpoch; placementId++) {
+			for (const { imageId, placementIds } of this.#imageBudget.resetPlacementEpochs()) {
+				for (const placementId of placementIds) {
 					output.push(encodeKittyDeletePlacement(imageId, placementId));
 				}
 			}
@@ -4321,6 +4490,7 @@ export class TUI extends Container {
 		const cursorControl = this.#cursorControlSequence(paintCursorPos, paintLineCount, paintContentBottomRow);
 		output.push(cursorControl.seq, this.#paintEndSequence);
 		this.#writeFrameOutput();
+		this.#imageBudget.markTransmitWritten(transmitIds);
 
 		const committedCursorState = paintCursorPos
 			? this.#targetHardwareCursorState(cursorPos, cursorTrackingLineCount)
@@ -4366,8 +4536,17 @@ export class TUI extends Container {
 		if (width <= 0 || height <= 0) return;
 		this.#invalidatePreparedRowCache();
 
-		this.#imageBudget.beginPass(true);
-		const { framed, viewportTop, contentRows } = this.#composeResizeViewport(width, height);
+		// A pending policy change (cap adjustment) must settle here: a stable
+		// pass alone would keep replaying stale admission decisions for the
+		// whole resize-viewport interval.
+		const resizePassKind = this.#imageBudget.needsFullPass ? "full" : "stable";
+		this.#imageBudget.beginPass(resizePassKind);
+		let { framed, viewportTop, contentRows } = this.#composeResizeViewport(width, height);
+		if (resizePassKind === "full" && this.#imageBudget.endPass()) {
+			this.#imageBudget.beginPass("full");
+			({ framed, viewportTop, contentRows } = this.#composeResizeViewport(width, height));
+			this.#imageBudget.endPass();
+		}
 		// Deletes must precede any placement that could reuse an image id, and
 		// payloads must precede the placement rows emitted below, or the
 		// resized frame shows stale/blank graphics.
@@ -4379,11 +4558,18 @@ export class TUI extends Container {
 		} else {
 			this.#imageBudget.takePurgeIds();
 		}
-		const resizeTransmits = this.#imageBudget.takeTransmits();
-		if (resizeTransmits.length > 0) {
+		// Only payloads with rows inside the emitted viewport are painted:
+		// transmits for cropped-away rows would admit residents nothing
+		// displays.
+		const paintedIds = imageIdsInRows(
+			Array.from({ length: height }, (_value, row) => framed[viewportTop + row] ?? ""),
+		);
+		const resizeBatch = this.#imageBudget.takeTransmitBatch(id => paintedIds.has(id));
+		if (resizeBatch.sequences.length > 0) {
 			let resizeTransmitBuffer = "";
-			for (const seq of resizeTransmits) resizeTransmitBuffer += seq;
+			for (const seq of resizeBatch.sequences) resizeTransmitBuffer += seq;
 			this.terminal.write(resizeTransmitBuffer);
+			this.#imageBudget.markTransmitWritten(resizeBatch.ids);
 		}
 		this.#emitResizeViewport(framed, viewportTop, height, contentRows, width);
 		this.#resizeViewportPaintCount += 1;
@@ -4487,10 +4673,26 @@ export class TUI extends Container {
 		this.#invalidatePreparedRowCache();
 		// Alt frames can compose Image components; observe them under a stable
 		// budget pass (as #renderResizeViewport does) instead of with stale
-		// full-frame pass state. Stable passes intentionally skip endPass.
-		this.#imageBudget.beginPass(true);
-		const base: string[] = new Array(Math.max(0, height)).fill("");
-		let lines = this.#compositeOverlaysIntoWindow(base, width, height);
+		// full-frame pass state. Stable passes intentionally skip endPass —
+		// but a pending policy change upgrades this to a full pass so cap
+		// adjustments take effect while a fullscreen overlay is up.
+		const altPassKind = this.#imageBudget.needsFullPass ? "full" : "stable";
+		this.#imageBudget.beginPass(altPassKind);
+		const composeAlt = (): string[] => {
+			const base: string[] = new Array(Math.max(0, height)).fill("");
+			this.#imageBudget.beginOverlayPass(altPassKind === "full");
+			try {
+				return this.#compositeOverlaysIntoWindow(base, width, height);
+			} finally {
+				this.#imageBudget.endOverlayPass();
+			}
+		};
+		let lines = composeAlt();
+		if (altPassKind === "full" && this.#imageBudget.endPass()) {
+			this.#imageBudget.beginPass("full");
+			lines = composeAlt();
+			this.#imageBudget.endPass();
+		}
 		const cursorMarkers = this.#extractCursorMarkers(lines);
 		lines = this.#prepareLinesArray(lines, width);
 		this.#emitAltFrame(lines, width, height, cursorMarkers[0]);
@@ -4513,11 +4715,12 @@ export class TUI extends Container {
 			this.terminal.write(altPurgeBuffer);
 		}
 
-		const imageTransmits = this.#imageBudget.takeTransmits();
-		if (imageTransmits.length > 0) {
+		const altBatch = this.#imageBudget.takeTransmitBatch();
+		if (altBatch.sequences.length > 0) {
 			let transmitBuffer = "";
-			for (const seq of imageTransmits) transmitBuffer += seq;
+			for (const seq of altBatch.sequences) transmitBuffer += seq;
 			this.terminal.write(transmitBuffer);
+			this.#imageBudget.markTransmitWritten(altBatch.ids);
 		}
 
 		const force = this.#forceViewportRepaintOnNextRender;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { detectBashKernelCell, isBashKernelCellMixed } from "./bash-kernel-cell";
+import { detectBashKernelCell, findBashKernelCells, isBashKernelCellMixed } from "./bash-kernel-cell";
 
 test("quoted heredoc python", () => {
 	const c = detectBashKernelCell("python <<'EOF'\nedit('a.py','x','y')\nprint('ok')\nEOF");
@@ -160,4 +160,29 @@ test("shell word extraction matches the argv the interpreter receives", () => {
 	expect(detectBashKernelCell("python -c print(1)")).toBeUndefined();
 	// Backtick command substitution is not statically knowable.
 	expect(detectBashKernelCell("python -c `echo x`")).toBeUndefined();
+});
+
+test("findBashKernelCells reports every cell with its raw code span in source order", () => {
+	const command =
+		"python -c 'print(1)' && node -e 'console.log(2)' && python <<'PY'\nprint(3)\nPY\npython <<'PY'\nprint(4)\nPY";
+	const cells = findBashKernelCells(command);
+	expect(cells.map(cell => [cell.language, cell.code])).toEqual([
+		["python", "print(1)"],
+		["js", "console.log(2)"],
+		["python", "print(3)"],
+		["python", "print(4)"],
+	]);
+	// Spans address the raw source (quotes included for -c words) so a renderer can splice around them.
+	expect(cells.map(cell => command.slice(cell.start, cell.end))).toEqual([
+		"'print(1)'",
+		"'console.log(2)'",
+		"print(3)",
+		"print(4)",
+	]);
+	expect(cells.every((cell, index) => index === 0 || cell.start >= cells[index - 1]!.end)).toBe(true);
+});
+
+test("interpreter-looking text inside a heredoc body is not a second cell", () => {
+	const command = "python <<'PY'\nprint('python -c \"inner\"')\nx = 1\nPY\necho done";
+	expect(findBashKernelCells(command).map(cell => cell.code)).toEqual(["print('python -c \"inner\"')\nx = 1"]);
 });

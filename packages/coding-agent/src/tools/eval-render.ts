@@ -9,7 +9,7 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { renderDiff as renderDiffColored } from "../modes/components/diff";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
-import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
+import { getMarkdownTheme, highlightCode, type Theme } from "../modes/theme/theme";
 import type { ExecutionMetadata } from "../session/execution-metadata";
 import { renderCodeCell } from "../tui/code-cell";
 import { markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
@@ -37,6 +37,7 @@ import {
 	PREVIEW_LIMITS,
 	previewWindowRows,
 	replaceTabs,
+	sanitizeSingleLine,
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
@@ -797,6 +798,57 @@ function astPreviewLines(code: string, language: string, theme: Theme, width: nu
 	return undefined;
 }
 
+/** A kernel cell embedded in an enclosing shell source, by code offsets. */
+export interface EvalDisplayCell {
+	start: number;
+	end: number;
+	code: string;
+	language: EvalLanguage;
+}
+
+// Shell chunks keep the newline that separated them from the cell body; drop
+// it so heredoc delimiter lines sit flush against the outline, and trim the
+// partial line around a `-c` word so `python -c` / `&& echo` read as lines.
+function shellChunkLines(chunk: string, shellLanguage: string, theme: Theme): string[] {
+	const text = chunk
+		.replace(/^\r?\n/, "")
+		.replace(/\r?\n$/, "")
+		.trim();
+	if (text.length === 0) return [];
+	return highlightCode(replaceTabs(text), shellLanguage, theme);
+}
+
+// Settled view of a mixed bash call: the shell source with each kernel cell's
+// code region replaced by its AST outline (or the cell language's highlighted
+// source when it does not parse), so the block reads as shell around an
+// outlined kernel block instead of one flat bash listing.
+function renderShellWithCellOutlines(
+	source: string,
+	cells: readonly EvalDisplayCell[],
+	shellLanguage: string,
+	theme: Theme,
+	width: number,
+): { lines: string[]; outlined: boolean } | undefined {
+	if (cells.length === 0) return undefined;
+	const lines: string[] = [];
+	let outlined = false;
+	let cursor = 0;
+	for (const cell of cells) {
+		if (cell.start < cursor || cell.end < cell.start || cell.end > source.length) return undefined;
+		lines.push(...shellChunkLines(source.slice(cursor, cell.start), shellLanguage, theme));
+		const ast = astPreviewLines(cell.code, cell.language, theme, width);
+		if (ast) {
+			lines.push(...ast);
+			outlined = true;
+		} else {
+			lines.push(...highlightCode(replaceTabs(cell.code), languageForHighlighter(cell.language), theme));
+		}
+		cursor = cell.end;
+	}
+	lines.push(...shellChunkLines(source.slice(cursor), shellLanguage, theme));
+	return { lines, outlined };
+}
+
 interface LiveCellLayout {
 	codeMaxLines: number;
 	outputLines: string[];
@@ -902,6 +954,8 @@ export function renderKernelCellLines(
 		/** Use an enclosing tool source instead of the kernel code for display. */
 		displayCode?: string;
 		displayLanguage?: string;
+		/** Kernel cells embedded in `displayCode`; each renders as an outline inside the shell source when settled. */
+		displayCells?: readonly EvalDisplayCell[];
 	},
 ): string[] {
 	const { expanded, isPartial, spinnerFrame, previewLines, width } = opts;
@@ -967,8 +1021,18 @@ export function renderKernelCellLines(
 		statusLines = renderStatusEvents(otherEvents, theme, cellExpanded, outputBlockContentWidth(width));
 		codeMaxLines = liveWindow;
 	}
-	const astLines =
-		hasDisplayCode || cellLive || cellExpanded ? undefined : astPreviewLines(code, language, theme, width);
+	let preRenderedCodeLines: string[] | undefined;
+	let codeVariant: string | undefined;
+	if (!cellLive && !cellExpanded) {
+		if (hasDisplayCode) {
+			const composite = renderShellWithCellOutlines(code, opts.displayCells ?? [], displayLanguage, theme, width);
+			preRenderedCodeLines = composite?.lines;
+			codeVariant = composite?.outlined ? "ast" : undefined;
+		} else {
+			preRenderedCodeLines = astPreviewLines(code, language, theme, width);
+			codeVariant = preRenderedCodeLines ? "ast" : undefined;
+		}
+	}
 
 	const cellLines = renderCodeCell(
 		{
@@ -977,11 +1041,12 @@ export function renderKernelCellLines(
 			showLanguage: true,
 			index: opts.index ?? 0,
 			total: opts.total ?? 1,
-			title: cell.title,
+			title: typeof cell.title === "string" ? sanitizeSingleLine(cell.title) : undefined,
 			status: cell.status,
 			spinnerFrame,
 			duration: cell.durationMs,
 			output: outputLines.length > 0 ? outputLines.join("\n") : undefined,
+			outputTrusted: true,
 			outputMaxLines: outputLines.length,
 			extraSections:
 				statusLines.length > 0 ? [{ label: theme.fg("toolTitle", "Status"), lines: statusLines }] : undefined,
@@ -989,8 +1054,8 @@ export function renderKernelCellLines(
 			codeMaxLines,
 			expanded: cellExpanded,
 			width,
-			preRenderedCodeLines: astLines,
-			codeVariant: astLines ? "ast" : undefined,
+			preRenderedCodeLines,
+			codeVariant,
 		},
 		theme,
 	);
@@ -1042,7 +1107,7 @@ export const evalToolRenderer = {
 							showLanguage: true,
 							index: i,
 							total: cells.length,
-							title: cell.title,
+							title: typeof cell.title === "string" ? sanitizeSingleLine(cell.title) : undefined,
 							status: options.spinnerFrame !== undefined ? "running" : "pending",
 							spinnerFrame: options.spinnerFrame,
 							width,

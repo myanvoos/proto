@@ -3,6 +3,7 @@ import { Loader } from "./loader";
 
 export class CancellableLoader extends Loader {
 	#abortController = new AbortController();
+	#settled = false;
 
 	onAbort?: () => void;
 
@@ -16,17 +17,19 @@ export class CancellableLoader extends Loader {
 
 	handleInput(data: string): void {
 		const kb = getKeybindings();
-		if (kb.matches(data, "tui.select.cancel")) {
-			this.#abortController.abort();
-			this.onAbort?.();
-		}
+		if (this.#settled || !kb.matches(data, "tui.select.cancel")) return;
+		this.#settled = true;
+		this.#abortController.abort();
+		this.onAbort?.();
 	}
 
 	override dispose(): void {
 		this.stop();
 		// Disposal means the owned operation is dead: abort its signal so
 		// in-flight work observes cancellation. The user-facing onAbort
-		// callback stays reserved for explicit Esc handling.
+		// callback stays reserved for explicit Esc handling, and repeated
+		// Esc after settle must not invoke it again.
+		this.#settled = true;
 		if (!this.#abortController.signal.aborted) {
 			this.#abortController.abort();
 		}

@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import { arkToWireSchema, isArkSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { type Component, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { theme } from "../../../modes/theme/theme";
 import { shortenPath } from "../../../tools/render-utils";
 import type { Extension, ExtensionState } from "./types";
@@ -22,13 +23,13 @@ export class InspectorPanel implements Component {
 		const ext = this.#extension;
 		const lines: string[] = [];
 
-		lines.push(theme.bold(theme.fg("accent", ext.displayName)));
+		lines.push(theme.bold(theme.fg("accent", sanitizeText(ext.displayName))));
 		lines.push("");
 
 		lines.push(theme.fg("muted", "Type: ") + this.#getKindBadge(ext.kind));
 		lines.push("");
 
-		const desc = ext.description;
+		const desc = typeof ext.description === "string" ? sanitizeText(ext.description) : ext.description;
 		const isValidDescription = typeof desc === "string" && desc.length > 0;
 		if (isValidDescription && width > 2) {
 			const wrapped = wrapTextWithAnsi(desc, width - 2);
@@ -43,7 +44,7 @@ export class InspectorPanel implements Component {
 
 		lines.push(theme.fg("muted", "Origin:"));
 		const levelLabel = ext.source.level === "user" ? "User" : ext.source.level === "project" ? "Project" : "Native";
-		lines.push(`  ${theme.italic(`via ${ext.source.providerName} (${levelLabel})`)}`);
+		lines.push(`  ${theme.italic(`via ${sanitizeText(ext.source.providerName)} (${levelLabel})`)}`);
 		const shortened = shortenPath(ext.path, os.homedir());
 
 		const displayPath =
@@ -95,7 +96,7 @@ export class InspectorPanel implements Component {
 	#renderFilePreview(raw: unknown, width: number): string[] {
 		const lines: string[] = [];
 		lines.push(theme.fg("muted", "Preview:"));
-		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
+		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.max(0, Math.min(width - 2, 40)))));
 
 		const content = this.#getContextFileContent(raw);
 		if (!content) {
@@ -105,7 +106,8 @@ export class InspectorPanel implements Component {
 		}
 
 		const fileLines = content.split("\n");
-		for (const line of fileLines.slice(0, 20)) {
+		for (const rawLine of fileLines.slice(0, 20)) {
+			const line = sanitizeText(rawLine);
 			const highlighted = this.#highlightMarkdown(line);
 			lines.push(truncateToWidth(highlighted, width - 2));
 		}
@@ -145,7 +147,7 @@ export class InspectorPanel implements Component {
 	#renderToolArgs(raw: unknown, width: number): string[] {
 		const lines: string[] = [];
 		lines.push(theme.fg("muted", "Arguments:"));
-		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
+		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.max(0, Math.min(width - 2, 40)))));
 
 		try {
 			const tool = raw as { parameters?: unknown; inputSchema?: unknown };
@@ -192,7 +194,7 @@ export class InspectorPanel implements Component {
 	#renderSkillContent(raw: unknown, width: number): string[] {
 		const lines: string[] = [];
 		lines.push(theme.fg("muted", "Instruction:"));
-		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
+		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.max(0, Math.min(width - 2, 40)))));
 
 		try {
 			const skill = raw as any;
@@ -221,7 +223,7 @@ export class InspectorPanel implements Component {
 	#renderMcpDetails(raw: unknown, width: number): string[] {
 		const lines: string[] = [];
 		lines.push(theme.fg("muted", "Connection:"));
-		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
+		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.max(0, Math.min(width - 2, 40)))));
 
 		try {
 			const mcp = raw as any;
@@ -258,7 +260,7 @@ export class InspectorPanel implements Component {
 
 		if (ext.trigger) {
 			lines.push(theme.fg("muted", "Trigger:"));
-			lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
+			lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.max(0, Math.min(width - 2, 40)))));
 			lines.push(`  ${theme.fg("accent", ext.trigger)}`);
 			lines.push("");
 		}

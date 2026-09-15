@@ -1,5 +1,6 @@
 import { Markdown } from "@oh-my-pi/pi-tui/components/markdown";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
@@ -14,7 +15,7 @@ import {
 	renderJsonTreeLines,
 } from "../tools/json-tree";
 import { formatStyledTruncationWarning, stripOutputNotice } from "../tools/output-meta";
-import { formatExpandHint, truncateToWidth } from "../tools/render-utils";
+import { formatExpandHint, sanitizeSingleLine, truncateToWidth } from "../tools/render-utils";
 import { renderStatusLine } from "../tui/status-line";
 import { WidthAwareText } from "../tui/width-aware-text";
 import type { MCPToolDetails } from "./tool-bridge";
@@ -23,7 +24,7 @@ export function renderMCPCall(args: Record<string, unknown>, theme: Theme, label
 	return new WidthAwareText(
 		contentWidth => {
 			const lines: string[] = [];
-			lines.push(renderStatusLine({ icon: "pending", title: label }, theme));
+			lines.push(renderStatusLine({ icon: "pending", title: sanitizeSingleLine(label) }, theme));
 
 			if (args && typeof args === "object" && Object.keys(args).length > 0) {
 				const inlineBudget = Math.max(20, contentWidth - Bun.stringWidth(theme.tree.last) - 2);
@@ -55,7 +56,11 @@ function renderMarkdownMCPResult(
 		render(contentWidth: number): readonly string[] {
 			const lines: string[] = [];
 			const isError = result.isError ?? result.details?.isError ?? false;
-			const title = result.details ? `${result.details.serverName}/${result.details.mcpToolName}` : "MCP";
+			const title = result.details
+				? sanitizeSingleLine(
+						`${sanitizeText(result.details.serverName)}/${sanitizeText(result.details.mcpToolName)}`,
+					)
+				: "MCP";
 			lines.push(
 				renderStatusLine(
 					isError ? { icon: "error", title } : { iconOverride: theme.styledSymbol("tool.mcp", "accent"), title },
@@ -101,8 +106,15 @@ export function renderMCPResult(
 	args?: Record<string, unknown>,
 ): Component {
 	const { expanded } = options;
-	const textContent = result.content?.find(c => c.type === "text")?.text ?? "";
-	const trimmedOutput = stripOutputNotice(textContent, result.details?.meta).trimEnd();
+	// Join every text block (an image between two text blocks must not drop
+	// the second) and sanitize once: MCP text is network-controlled and must
+	// not carry terminal controls into any render branch.
+	const textContent =
+		result.content
+			?.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map(c => c.text)
+			.join("\n\n") ?? "";
+	const trimmedOutput = sanitizeText(stripOutputNotice(textContent, result.details?.meta)).trimEnd();
 	const truncationWarning = result.details?.meta?.truncation
 		? formatStyledTruncationWarning(result.details.meta, theme)
 		: null;
@@ -110,7 +122,9 @@ export function renderMCPResult(
 	let isJsonOutput = false;
 	if (trimmedOutput.startsWith("{") || trimmedOutput.startsWith("[")) {
 		try {
-			parsedOutput = JSON.parse(trimmedOutput);
+			// Round-trip through sanitizeText: scalar strings inside the JSON
+			// must not carry terminal controls into the tree renderer.
+			parsedOutput = JSON.parse(sanitizeText(JSON.stringify(JSON.parse(trimmedOutput))));
 			isJsonOutput = true;
 		} catch {}
 	}
@@ -121,7 +135,11 @@ export function renderMCPResult(
 		contentWidth => {
 			const lines: string[] = [];
 			const isError = result.isError ?? result.details?.isError ?? false;
-			const title = result.details ? `${result.details.serverName}/${result.details.mcpToolName}` : "MCP";
+			const title = result.details
+				? sanitizeSingleLine(
+						`${sanitizeText(result.details.serverName)}/${sanitizeText(result.details.mcpToolName)}`,
+					)
+				: "MCP";
 			const success = !isError;
 			lines.push(
 				renderStatusLine(

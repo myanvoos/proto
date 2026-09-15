@@ -328,7 +328,13 @@ export class Composer {
 				: this.#welcome !== undefined
 					? Math.floor((slack * 2) / 5)
 					: 0;
-		const bottom = Math.max(0, slack - top);
+		// Conversation content pins to the bottom edge through the top fill
+		// alone; slack a frozen top cannot absorb stays unallocated. This sync
+		// only runs on resize and on the first transcript child, so a bottom fill
+		// measured against a transient short frame (rebuild in progress,
+		// post-compaction summary) would outlive the growth that follows and sit
+		// as a blank band between the HUD rows and the composer.
+		const bottom = conversationChildCount > 0 ? 0 : slack - top;
 		if (top !== currentTop) this.#topFill.setLines(top);
 		if (bottom !== currentBottom) this.#bottomFill.setLines(bottom);
 	}

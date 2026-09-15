@@ -10,7 +10,7 @@ import {
 	TruncatedText,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
-import { stripControlChars } from "@oh-my-pi/pi-utils";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { TreeFilterMode } from "../../config/settings-schema";
 import { theme } from "../../modes/theme/theme";
 import {
@@ -26,6 +26,27 @@ import { canonicalizeMessage } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { OverlayPanel, PanelDivider } from "./overlay-box";
 import { centeredWindow, contentRowWidth, renderScrollableList } from "./selector-helpers";
+
+function sanitizeTreeText(value: string): string {
+	return sanitizeText(value.replace(/[\r\n\t]/g, " "));
+}
+
+function normalizeTreeText(value: string): string {
+	return sanitizeTreeText(value).trim();
+}
+
+function sanitizeTreeValue(value: unknown): unknown {
+	if (typeof value === "string") return normalizeTreeText(value);
+	if (Array.isArray(value)) return value.map(sanitizeTreeValue);
+	if (value !== null && typeof value === "object") {
+		const sanitized = Object.create(null) as Record<string, unknown>;
+		for (const [key, child] of Object.entries(value)) {
+			sanitized[normalizeTreeText(key)] = sanitizeTreeValue(child);
+		}
+		return sanitized;
+	}
+	return value;
+}
 
 interface GutterInfo {
 	position: number;
@@ -503,7 +524,7 @@ class TreeList implements Component {
 			const isOnActivePath = this.#activePathIds.has(entry.id);
 			const pathMarker = isOnActivePath ? theme.fg("accent", `${theme.md.bullet} `) : "";
 
-			const label = flatNode.node.label ? theme.fg("warning", `[${flatNode.node.label}] `) : "";
+			const label = flatNode.node.label ? theme.fg("warning", `[${normalizeTreeText(flatNode.node.label)}] `) : "";
 			const content = this.#getEntryDisplayText(flatNode.node, isSelected);
 
 			let line = cursor + theme.fg("dim", prefix) + pathMarker + label + content;
@@ -533,11 +554,7 @@ class TreeList implements Component {
 		const entry = node.entry;
 		let result: string;
 
-		const normalize = (s: string) =>
-			s
-				.replace(/[\n\t]/g, " ")
-				.replace(/[\x00-\x1f\x7f\x80-\x9f]/g, "")
-				.trim();
+		const normalize = normalizeTreeText;
 
 		switch (entry.type) {
 			case "message": {
@@ -545,20 +562,20 @@ class TreeList implements Component {
 				const role = msg.role;
 				if (role === "user") {
 					const msgWithContent = msg as { content?: unknown };
-					const content = normalize(this.#extractContent(msgWithContent.content));
+					const content = this.#extractContent(msgWithContent.content);
 					result = theme.fg("accent", "user: ") + content;
 				} else if (role === "developer") {
 					const msgWithContent = msg as { content?: unknown };
-					const content = normalize(this.#extractContent(msgWithContent.content));
+					const content = this.#extractContent(msgWithContent.content);
 					result = theme.fg("dim", "developer: ") + theme.fg("muted", content);
 				} else if (role === "assistant") {
 					const presentation = resolveAssistantErrorPresentation(msg);
 					if (presentation.kind === "compact-recovered") {
-						result = theme.fg("success", "assistant: ") + theme.fg("dim", presentation.text);
+						result = theme.fg("success", "assistant: ") + theme.fg("dim", normalize(presentation.text));
 						break;
 					}
 					const msgWithContent = msg as { content?: unknown; stopReason?: string; errorMessage?: string };
-					const textContent = normalize(this.#extractContent(msgWithContent.content));
+					const textContent = this.#extractContent(msgWithContent.content);
 					if (textContent) {
 						result = theme.fg("success", "assistant: ") + textContent;
 					} else if (presentation.kind === "full") {
@@ -576,13 +593,13 @@ class TreeList implements Component {
 					if (toolCall) {
 						result = theme.fg("muted", this.#formatToolCall(toolCall.name, toolCall.arguments));
 					} else {
-						result = theme.fg("muted", `[${toolMsg.toolName ?? "tool"}]`);
+						result = theme.fg("muted", `[${normalize(toolMsg.toolName ?? "tool")}]`);
 					}
 				} else if (role === "bashExecution") {
 					const bashMsg = msg as { command?: string };
 					result = theme.fg("dim", `[bash]: ${normalize(bashMsg.command ?? "")}`);
 				} else {
-					result = theme.fg("dim", `[${role}]`);
+					result = theme.fg("dim", `[${normalize(role)}]`);
 				}
 				break;
 			}
@@ -594,7 +611,7 @@ class TreeList implements Component {
 								.filter((c): c is { type: "text"; text: string } => c.type === "text")
 								.map(c => c.text)
 								.join("");
-				result = theme.fg("customMessageLabel", `[${entry.customType}]: `) + normalize(content);
+				result = theme.fg("customMessageLabel", `[${normalize(entry.customType)}]: `) + normalize(content);
 				break;
 			}
 			case "compaction": {
@@ -606,21 +623,21 @@ class TreeList implements Component {
 				result = theme.fg("warning", `[branch summary]: `) + normalize(entry.summary);
 				break;
 			case "model_change":
-				result = theme.fg("dim", `[model: ${entry.model}]`);
+				result = theme.fg("dim", `[model: ${normalize(entry.model)}]`);
 				break;
 			case "thinking_level_change":
-				result = theme.fg("dim", `[thinking: ${entry.thinkingLevel ?? ThinkingLevel.Off}]`);
+				result = theme.fg("dim", `[thinking: ${normalize(entry.thinkingLevel ?? ThinkingLevel.Off)}]`);
 				break;
 			case "custom":
-				result = theme.fg("dim", `[custom: ${entry.customType}]`);
+				result = theme.fg("dim", `[custom: ${normalize(entry.customType)}]`);
 				break;
 			case "label":
-				result = theme.fg("dim", `[label: ${entry.label ?? "(cleared)"}]`);
+				result = theme.fg("dim", `[label: ${entry.label === undefined ? "(cleared)" : normalize(entry.label)}]`);
 				break;
 			case "service_tier_change": {
 				const tiers = entry.serviceTier
 					? Object.entries(entry.serviceTier)
-							.map(([family, tier]) => `${family}:${tier}`)
+							.map(([family, tier]) => `${normalize(family)}:${normalize(String(tier))}`)
 							.join(" ")
 					: "(default)";
 				result = theme.fg("dim", `[service tier: ${tiers}]`);
@@ -630,13 +647,13 @@ class TreeList implements Component {
 				result = theme.fg("dim", `[title: ${normalize(entry.title)}]`);
 				break;
 			case "mode_change":
-				result = theme.fg("dim", `[mode: ${entry.mode}]`);
+				result = theme.fg("dim", `[mode: ${normalize(entry.mode)}]`);
 				break;
 			case "credential_pin":
-				result = theme.fg("dim", `[credential pin: ${entry.provider}]`);
+				result = theme.fg("dim", `[credential pin: ${normalize(entry.provider)}]`);
 				break;
 			default:
-				result = theme.fg("dim", `[${entry.type.replaceAll("_", " ")}]`);
+				result = theme.fg("dim", `[${normalize(entry.type.replaceAll("_", " "))}]`);
 		}
 
 		return isSelected ? theme.bold(result) : result;
@@ -644,16 +661,18 @@ class TreeList implements Component {
 
 	#extractContent(content: unknown): string {
 		const maxLen = 200;
-		if (typeof content === "string") return truncateCodePoints(content, maxLen);
+		if (typeof content === "string") return truncateCodePoints(sanitizeTreeText(content), maxLen).trim();
 		if (Array.isArray(content)) {
 			let result = "";
 			for (const c of content) {
 				if (typeof c === "object" && c !== null && "type" in c && c.type === "text") {
-					result += (c as { text: string }).text;
+					// Sanitize before the cap so control-only prefixes cannot hide the
+					// first visible code points from the rendered row.
+					result += sanitizeTreeText((c as { text: string }).text);
 					if (codePointLength(result) >= maxLen) return truncateCodePoints(result, maxLen);
 				}
 			}
-			return result;
+			return result.trim();
 		}
 		return "";
 	}
@@ -674,31 +693,32 @@ class TreeList implements Component {
 	#formatToolCall(name: string, args: Record<string, unknown>): string {
 		switch (name) {
 			case "read": {
-				const path = shortenPath(stripControlChars(String(args.path || args.file_path || "")));
+				const path = shortenPath(normalizeTreeText(String(args.path || args.file_path || "")));
 				const offset = args.offset as number | undefined;
 				const limit = args.limit as number | undefined;
 				let display = path;
 				if (offset !== undefined || limit !== undefined) {
 					const start = offset ?? 1;
 					const end = limit !== undefined ? start + limit - 1 : "";
-					display += `:${start}${end ? `-${end}` : ""}`;
+					display += normalizeTreeText(`:${start}${end ? `-${end}` : ""}`);
 				}
 				return `[read: ${display}]`;
 			}
 			case "bash": {
 				const rawCmd = String(args.command || "");
-				const flatCmd = stripControlChars(rawCmd.replace(/[\n\t]/g, " ")).trim();
+				const flatCmd = normalizeTreeText(rawCmd);
 				const cmd = truncateCodePoints(flatCmd, 50);
 				return `[bash: ${cmd}${codePointLength(flatCmd) > 50 ? "..." : ""}]`;
 			}
 			case "ls": {
-				const path = shortenPath(stripControlChars(String(args.path || ".")));
+				const path = shortenPath(normalizeTreeText(String(args.path || ".")));
 				return `[ls: ${path}]`;
 			}
 			default: {
-				const argsJson = JSON.stringify(args);
-				const argsStr = truncateCodePoints(argsJson, 40);
-				return `[${name}: ${argsStr}${codePointLength(argsJson) > 40 ? "..." : ""}]`;
+				const argsJson = JSON.stringify(sanitizeTreeValue(args));
+				const normalizedArgs = argsJson;
+				const argsStr = truncateCodePoints(normalizedArgs, 40);
+				return `[${normalizeTreeText(name)}: ${argsStr}${codePointLength(normalizedArgs) > 40 ? "..." : ""}]`;
 			}
 		}
 	}
@@ -830,7 +850,7 @@ class LabelInput implements Component {
 	) {
 		this.#input = new Input();
 		if (currentLabel) {
-			this.#input.setValue(currentLabel);
+			this.#input.setValue(normalizeTreeText(currentLabel));
 		}
 	}
 

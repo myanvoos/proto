@@ -105,7 +105,51 @@ test("mixed kernel results keep status hunks and JSON alongside Bash source", ()
 	expect(rendered).toContain("Status");
 	expect(rendered).toContain("mixed.txt");
 	expect(rendered).toContain("result");
+});
+
+// A settled mixed call keeps its shell lines and shows the kernel block as an
+// outline in place of the heredoc body, so an agent scanning the transcript
+// sees the same AST view a pure cell gets.
+test("settled mixed calls outline the kernel block between its shell lines", () => {
+	const command = "printf 'before\\n'\npython <<'PY'\ndef greet(name):\n    return name\nPY\nprintf 'after\\n'";
+	const lines = renderBashResult({ content: [{ type: "text", text: "" }] }, command).split("\n");
+	expect(lines[0]).toContain("· ast");
+	const before = lines.findIndex(line => line.includes("printf 'before"));
+	const open = lines.findIndex(line => line.includes("python <<'PY'"));
+	const outline = lines.findIndex(line => line.includes("└─ def greet(name)"));
+	const close = lines.findIndex(line => /\sPY\s*$/.test(line));
+	const after = lines.findIndex(line => line.includes("printf 'after"));
+	expect([before, open, outline, close, after].every(index => index >= 0)).toBe(true);
+	expect(before < open && open < outline && outline < close && close < after).toBe(true);
+	expect(lines.some(line => line.includes("return name") && !line.includes("└─"))).toBe(false);
+
+	const expanded = strip(
+		bashRenderer
+			.renderResult({ content: [{ type: "text", text: "" }] }, { expanded: true }, theme, { command })
+			.render(90)
+			.join("\n"),
+	);
+	expect(expanded).not.toContain("· ast");
+	expect(expanded).toContain("    return name");
+});
+
+test("every cell in a multi-interpreter chain is outlined in its own language", () => {
+	const command =
+		"python -c 'x = 1' && node -e 'function f() { return 2 }' && python <<'PY'\ndef g():\n    return 3\nPY";
+	const rendered = renderBashResult({ content: [{ type: "text", text: "" }] }, command);
+	expect(rendered).toContain("x ← 1");
+	expect(rendered).toContain("function f()");
+	expect(rendered).toContain("def g()");
+	expect(rendered).toContain("&& node -e");
+	expect(rendered).toContain("&& python <<'PY'");
+});
+
+test("a kernel block that does not parse keeps its source and no ast marker", () => {
+	const command = "cd sub && python <<'PY'\n# only a comment\nPY\necho done";
+	const rendered = renderBashResult({ content: [{ type: "text", text: "" }] }, command);
 	expect(rendered).not.toContain("· ast");
+	expect(rendered).toContain("# only a comment");
+	expect(rendered).toContain("echo done");
 });
 
 // The settled phase (renderResult) is compared byte-for-byte against the eval

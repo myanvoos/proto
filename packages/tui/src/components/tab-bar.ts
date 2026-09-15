@@ -62,6 +62,10 @@ export class TabBar implements Component {
 		}
 	}
 
+	setTheme(theme: TabBarTheme): void {
+		this.#theme = theme;
+	}
+
 	setTabs(tabs: Tab[], activeId?: string): void {
 		const targetId = activeId ?? this.#tabs[this.#activeIndex]?.id;
 		this.#tabs = tabs;

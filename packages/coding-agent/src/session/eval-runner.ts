@@ -4,6 +4,7 @@ import type { Settings } from "../config/settings";
 import { releaseFsObservationLedger, retainFsObservationLedger } from "../eval/fs-observations";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { namespaceSessionId as namespacePythonSessionId } from "../eval/py";
+import { type KernelDisplayOutput, normalizePythonDisplayOutputs } from "../eval/py/display";
 import {
 	disposeKernelSessionsByOwner,
 	executePython as executePythonCommand,
@@ -43,7 +44,10 @@ export class EvalRunner {
 	async executePython(
 		code: string,
 		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean },
+		options?: {
+			excludeFromContext?: boolean;
+			onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
+		},
 	): Promise<PythonResult> {
 		const excludeFromContext = options?.excludeFromContext === true;
 		const cwd = this.#host.sessionManager.getCwd();
@@ -60,6 +64,9 @@ export class EvalRunner {
 				});
 				this.assertExecutionAllowed();
 				if (hookResult?.result) {
+					for (const output of hookResult.result.displayOutputs ?? []) {
+						await options?.onDisplay?.(output);
+					}
 					this.recordPythonResult(code, hookResult.result, options);
 					return hookResult.result;
 				}
@@ -77,6 +84,7 @@ export class EvalRunner {
 				kernelMode: this.#host.settings.get("python.kernelMode"),
 				interpreter: this.#host.settings.get("python.interpreter")?.trim() || undefined,
 				onChunk,
+				onDisplay: options?.onDisplay,
 				signal: abortController.signal,
 			});
 			this.recordPythonResult(code, result, options);
@@ -105,7 +113,14 @@ export class EvalRunner {
 		return execution;
 	}
 
-	recordPythonResult(code: string, result: PythonResult, options?: { excludeFromContext?: boolean }): void {
+	recordPythonResult(
+		code: string,
+		result: PythonResult,
+		options?: {
+			excludeFromContext?: boolean;
+			onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
+		},
+	): void {
 		const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
 		const message: PythonExecutionMessage = {
 			role: "pythonExecution",
@@ -116,6 +131,7 @@ export class EvalRunner {
 			truncated: result.truncated,
 			meta,
 			execution: result.execution,
+			displayOutputs: normalizePythonDisplayOutputs(result.displayOutputs),
 			timestamp: Date.now(),
 			excludeFromContext: options?.excludeFromContext,
 		};

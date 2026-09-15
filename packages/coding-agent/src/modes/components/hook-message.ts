@@ -38,10 +38,10 @@ export class HookMessageComponent extends Container {
 
 	#rebuild(): void {
 		if (this.#customComponent) {
-			this.removeChild(this.#customComponent);
+			this.disposeAndRemoveChild(this.#customComponent);
 			this.#customComponent = undefined;
 		}
-		this.removeChild(this.#box);
+		this.disposeAndRemoveChild(this.#box);
 
 		const custom = renderFramedMessage({
 			message: this.message,

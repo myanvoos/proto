@@ -1,7 +1,7 @@
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import { normalizeSchemaForMCP } from "@oh-my-pi/pi-ai/utils/schema";
-import { INTENT_FIELD, logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD, logger, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../capability/types";
 import type {
 	CustomTool,
@@ -425,7 +425,10 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		private readonly reconnect?: MCPReconnect,
 	) {
 		this.name = createMCPToolName(connection.name, tool.name);
-		this.label = `${connection.name}/${tool.name}`;
+		// Server/tool names come from a remote tools/list response: sanitize
+		// before they reach renderCall/renderStatusLine, which style but do
+		// not strip terminal controls.
+		this.label = sanitizeText(`${connection.name}/${tool.name}`);
 		this.description = tool.description ?? `MCP tool from ${connection.name}`;
 		this.parameters = normalizeSchemaForMCP(tool.inputSchema) as TSchema;
 		this.mcpToolName = tool.name;
@@ -537,7 +540,8 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		private readonly reconnect?: MCPReconnect,
 	) {
 		this.name = createMCPToolName(serverName, tool.name);
-		this.label = `${serverName}/${tool.name}`;
+		// Same remote tools/list origin as MCPTool: sanitize the display label.
+		this.label = sanitizeText(`${serverName}/${tool.name}`);
 		this.description = tool.description ?? `MCP tool from ${serverName}`;
 		this.parameters = normalizeSchemaForMCP(tool.inputSchema) as TSchema;
 		this.mcpToolName = tool.name;

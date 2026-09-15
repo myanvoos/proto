@@ -475,7 +475,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#clearContent(): void {
-		while (this.children.length > 0) this.removeChild(this.children[this.children.length - 1]!);
+		this.disposeChildren();
 	}
 
 	#renderStreamingChildren(width: number): readonly string[] {

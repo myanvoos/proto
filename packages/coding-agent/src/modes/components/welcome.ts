@@ -1,5 +1,6 @@
 import { type Component, padding, TERMINAL, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { BINARY_NAME } from "@oh-my-pi/pi-utils";
+import { sanitizeStatusText } from "../shared";
 import { theme } from "../theme/theme";
 
 export interface RecentSession {
@@ -57,7 +58,12 @@ export function heroWordmark(): string {
 }
 
 export function heroMeta(version: string, modelName?: string, providerName?: string): string {
-	const model = modelName && providerName ? `${modelName} · ${providerName}` : modelName || providerName;
+	// Model/provider metadata can originate from network catalogs: keep
+	// control bytes out of the single-line hero row.
+	const model =
+		modelName && providerName
+			? `${sanitizeStatusText(modelName)} · ${sanitizeStatusText(providerName)}`
+			: sanitizeStatusText(modelName ?? providerName ?? "");
 	return model
 		? theme.fg("dim", `v${version} · ${model}`)
 		: theme.fg("dim", `v${version} · no model yet · `) + theme.fg("accent", "/model");
@@ -118,10 +124,15 @@ export class WelcomeComponent implements Component {
 		const recent = this.recentSessions[0];
 		if (recent) {
 			const nameBudget = Math.max(8, Math.min(40, termWidth - 30));
-			const name = visibleWidth(recent.name) > nameBudget ? truncateToWidth(recent.name, nameBudget) : recent.name;
+			// Session names are user/persisted text: strip controls before the
+			// single-line row is measured or truncated.
+			const safeName = sanitizeStatusText(recent.name);
+			const name = visibleWidth(safeName) > nameBudget ? truncateToWidth(safeName, nameBudget) : safeName;
 			lines.push(
 				centerLine(
-					theme.fg("muted", name) + theme.fg("dim", ` · ${recent.timeAgo} — `) + theme.fg("accent", "/resume"),
+					theme.fg("muted", name) +
+						theme.fg("dim", ` · ${sanitizeStatusText(recent.timeAgo)} — `) +
+						theme.fg("accent", "/resume"),
 					termWidth,
 				),
 			);

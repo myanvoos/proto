@@ -281,6 +281,9 @@ export type StdinBufferOptions = {
 	pasteTimeout?: number;
 
 	pasteByteLimit?: number;
+
+	/** Inactivity window after which a discarded string gives up (tests). */
+	stringDiscardInactivity?: number;
 };
 
 export type StdinBufferEventMap = {
@@ -297,6 +300,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	readonly #partialHoldMaxMs: number;
 	readonly #pasteTimeoutMs: number;
 	readonly #pasteByteLimit: number;
+	readonly #stringDiscardInactivityMs: number;
 	#pasteMode: boolean = false;
 	#pasteOverLimit = false;
 	#pastePendingMarker: string = "";
@@ -326,6 +330,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#partialHoldMaxMs = options.partialHoldTimeout ?? PARTIAL_HOLD_MAX_MS;
 		this.#pasteTimeoutMs = options.pasteTimeout ?? PASTE_INACTIVITY_TIMEOUT_MS;
 		this.#pasteByteLimit = options.pasteByteLimit ?? PASTE_MAX_BYTES;
+		this.#stringDiscardInactivityMs = options.stringDiscardInactivity ?? STRING_DISCARD_INACTIVITY_MS;
 	}
 
 	process(data: string | Buffer): void {
@@ -352,7 +357,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 
 		if (this.#flushDeferral && this.#isFreshEscapeAfterDeferredFlush(str)) {
-			this.#flushExpired();
+			// A fresh escape must not be joined to the deferred partial. Force
+			// the held bytes out first, including under Kitty partial holding.
+			this.#flushExpired(false, true);
 		} else {
 			this.#clearFlushTimer();
 		}
@@ -585,13 +592,17 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	}
 
 	/**
-	 * An explicit flush ends the wait for continuation bytes: materialize any
-	 * held incomplete UTF-8 tail (always one sequence by construction) as a
-	 * replacement character so it can neither silently vanish nor complete
-	 * after the flush boundary.
+	 * An explicit flush ends the wait for continuation bytes in ordinary input.
+	 * Paste payloads keep their held lead until the continuation arrives, while
+	 * string-discard payloads drop it with the rest of the discarded bytes.
 	 */
 	#materializeHeldUtf8(): void {
 		if (this.#utf8Held.length === 0) return;
+		if (this.#pasteMode) return;
+		if (this.#stringDiscardActive) {
+			this.#utf8Held = Buffer.alloc(0);
+			return;
+		}
 		this.#utf8Held = Buffer.alloc(0);
 		this.#buffer += "\ufffd";
 	}
@@ -765,7 +776,12 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 	#abortPaste(): void {
 		this.#clearPasteWatchdog();
-		const content = this.#pasteChunks.join("");
+		// The watchdog fires on inactivity: the withheld terminator candidate
+		// was never proven to be a terminator, so it is ordinary (in-cap)
+		// payload of this abandoned paste. A held UTF-8 lead also began inside
+		// the paste payload — drop it so its continuation cannot leak into
+		// ordinary input after the paste ends.
+		const content = `${this.#pasteChunks.join("")}${this.#pastePendingMarker}`;
 		this.#pasteMode = false;
 		this.#pasteOverLimit = false;
 		this.#pastePendingMarker = "";
@@ -773,6 +789,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#pasteChunks = [];
 		this.#pasteOverlap = "";
 		this.#pasteBytes = 0;
+		this.#utf8Held = Buffer.alloc(0);
 		this.emit("paste", content);
 	}
 
@@ -894,14 +911,13 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 	#isFreshEscapeAfterDeferredFlush(str: string): boolean {
 		if (!str.startsWith(ESC) || this.#buffer.length === 0) return false;
-		if (
-			str.startsWith(`${ESC}\\`) &&
-			(this.#buffer.startsWith(`${ESC}]`) ||
-				this.#buffer.startsWith(`${ESC}P`) ||
-				this.#buffer.startsWith(`${ESC}X`) ||
-				this.#buffer.startsWith(`${ESC}^`) ||
-				this.#buffer.startsWith(`${ESC}_`))
-		) {
+		const heldString = STRING_SEQ_PARTIAL.test(this.#buffer);
+		if (str.length === 1) {
+			// A lone ESC can begin a split ST only when the held bytes are an
+			// ST-terminated string; otherwise it is a fresh escape.
+			return !heldString;
+		}
+		if (str.startsWith(`${ESC}\\`) && heldString) {
 			return false;
 		}
 		return true;
@@ -911,12 +927,12 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		return SGR_MOUSE_PARTIAL.test(this.#buffer) || isKittyProtocolActive();
 	}
 
-	#flushExpired(fromTimer = false): void {
+	#flushExpired(fromTimer = false, force = false): void {
 		if (this.#buffer.length === 0) {
 			this.#partialHoldStartMs = 0;
 			return;
 		}
-		if (this.#shouldHoldPartial()) {
+		if (!force && this.#shouldHoldPartial()) {
 			if (this.#partialHoldStartMs === 0) this.#partialHoldStartMs = Date.now();
 			if (Date.now() - this.#partialHoldStartMs < this.#partialHoldMaxMs) {
 				this.#armFlushTimer();
@@ -924,7 +940,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			}
 		}
 		this.#partialHoldStartMs = 0;
-		for (const sequence of this.#drainBuffered(fromTimer)) {
+		for (const sequence of this.#drainBuffered(fromTimer, force)) {
 			this.#emitDataSequence(sequence);
 		}
 	}
@@ -934,7 +950,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		return this.#drainBuffered(false);
 	}
 
-	#drainBuffered(discardTornString: boolean): string[] {
+	#drainBuffered(discardTornString: boolean, emitTornString = false): string[] {
 		this.#clearFlushTimer();
 
 		const rawCandidate = this.#takeRawPasteCandidate();
@@ -954,6 +970,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			sequences.push(ESC, ESC);
 		} else if (isKittyProtocolActive() && STRING_SEQ_PARTIAL.test(buffered)) {
 			if (discardTornString) this.#enterStringDiscard(stringDiscardKindFor(buffered));
+			else if (emitTornString) sequences.push(buffered);
 		} else if (buffered.includes(ESC) && !buffered.startsWith(ESC)) {
 			// Mixed buffer: a complete prefix precedes a torn control string.
 			// Re-parse so the prefix emits exactly once and the torn tail is
@@ -996,6 +1013,10 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#stringDiscardKind = "osc";
 		this.#stringDiscardBytes = 0;
 		this.#stringDiscardEscHeld = false;
+		// A held UTF-8 lead at this point was decoded from inside the
+		// discarded payload: drop it so its continuation cannot surface as
+		// ordinary input after the string ends.
+		this.#utf8Held = Buffer.alloc(0);
 		if (this.#stringDiscardWatchdog) {
 			clearTimeout(this.#stringDiscardWatchdog);
 			this.#stringDiscardWatchdog = undefined;
@@ -1046,7 +1067,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#stringDiscardWatchdog = setTimeout(() => {
 			this.#stringDiscardWatchdog = undefined;
 			this.#exitStringDiscard();
-		}, STRING_DISCARD_INACTIVITY_MS);
+		}, this.#stringDiscardInactivityMs);
 	}
 
 	clear(): void {

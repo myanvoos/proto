@@ -1,4 +1,5 @@
 import { Editor, type Focusable, matchesKey, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getEditorTheme, theme } from "../../modes/theme/theme";
 import {
 	matchesAppExternalEditor,
@@ -31,7 +32,8 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		onCancel: () => void,
 		options?: HookEditorOptions,
 	) {
-		const [titleLine = "", ...detailLines] = title.split("\n");
+		const sanitizedTitle = sanitizeText(title);
+		const [titleLine = "", ...detailLines] = sanitizedTitle.split("\n");
 		super(titleLine);
 
 		this.#tui = tui;

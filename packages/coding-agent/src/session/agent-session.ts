@@ -92,6 +92,7 @@ import {
 	onModelRolesChanged,
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
+import type { KernelDisplayOutput } from "../eval/py/display";
 import type { PythonResult } from "../eval/py/executor";
 import type { BashResult } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
@@ -4399,9 +4400,13 @@ export class AgentSession {
 	async #tryExecuteExtensionCommand(text: string): Promise<boolean> {
 		if (!this.#extensionRunner) return false;
 
-		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
+		// Split on the first whitespace run (matching parseSlashCommand), not
+		// a literal space: "/cmd\targ" must not miss the lookup and fall
+		// through to the model as a prompt.
+		const split = /^\/(\S+)(?:[\s\n]+([\s\S]*))?$/.exec(text);
+		if (!split) return false;
+		const commandName = split[1] ?? "";
+		const args = split[2] ?? "";
 
 		const command = this.#extensionRunner.getCommand(commandName);
 		if (!command) return false;
@@ -4496,9 +4501,12 @@ export class AgentSession {
 	async #tryExecuteCustomCommand(text: string): Promise<string | null> {
 		if (this.#customCommands.length === 0 && this.#mcpPromptCommands.length === 0) return null;
 
-		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		const argsString = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
+		// Whitespace-canonical split, matching parseSlashCommand (see
+		// #tryExecuteExtensionCommand).
+		const split = /^\/(\S+)(?:[\s\n]+([\s\S]*))?$/.exec(text);
+		if (!split) return null;
+		const commandName = split[1] ?? "";
+		const argsString = split[2] ?? "";
 
 		const loaded =
 			this.#customCommands.find(c => c.command.name === commandName) ??
@@ -5795,7 +5803,10 @@ export class AgentSession {
 	executePython(
 		code: string,
 		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean },
+		options?: {
+			excludeFromContext?: boolean;
+			onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
+		},
 	): Promise<PythonResult> {
 		return this.#eval.executePython(code, onChunk, options);
 	}

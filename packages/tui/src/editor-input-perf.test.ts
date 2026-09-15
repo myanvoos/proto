@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { Editor, type EditorTheme } from "./components/editor";
+import {
+	Editor,
+	type EditorInlineReplacement,
+	type EditorTheme,
+	type EditorWordReplacements,
+} from "./components/editor";
 import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "./keybindings";
 import { getHangulCompatibilityJamoWidth, setHangulCompatibilityJamoWidth, visibleWidth } from "./utils";
 
@@ -187,4 +192,154 @@ test("dispose aborts autocomplete and suppresses late updates", async () => {
 
 	expect(calls).toBe(1);
 	expect(updates).toBe(0);
+});
+
+test("consecutive typed word characters undo as one step", () => {
+	const editor = editorWith();
+
+	editor.handleInput("a");
+	editor.handleInput("b");
+	editor.handleInput("c");
+	expect(editor.getText()).toBe("abc");
+
+	editor.handleInput("\x1f");
+	expect(editor.getText()).toBe("");
+});
+
+test("inline replacement breaks the following typing undo group", () => {
+	const editor = editorWith();
+	editor.setAutocompleteProvider({
+		async getSuggestions() {
+			return null;
+		},
+		applyCompletion(lines, cursorLine, cursorCol) {
+			return { lines, cursorLine, cursorCol };
+		},
+		trySyncInlineReplace(textBeforeCursor) {
+			return textBeforeCursor === "teh" ? { replaceLen: 3, insert: "the" } : null;
+		},
+	});
+
+	editor.handleInput("t");
+	editor.handleInput("e");
+	editor.handleInput("h");
+	expect(editor.getText()).toBe("the");
+
+	editor.handleInput("x");
+	editor.handleInput("\x1f");
+	expect(editor.getText()).toBe("the");
+});
+
+test("swapping autocomplete providers clears the old completion list", async () => {
+	const editor = editorWith();
+	let oldApplied = 0;
+	const autocompleteShown = Promise.withResolvers<void>();
+	editor.onAutocompleteUpdate = () => autocompleteShown.resolve();
+	editor.setAutocompleteProvider({
+		async getSuggestions() {
+			return { items: [{ value: "OLD", label: "OLD" }], prefix: "@" };
+		},
+		applyCompletion(lines, cursorLine, cursorCol) {
+			oldApplied++;
+			return { lines, cursorLine, cursorCol };
+		},
+	});
+
+	editor.handleInput("@");
+	await autocompleteShown.promise;
+	expect(editor.isAutocompleteActive()).toBe(true);
+
+	let newApplied = 0;
+	editor.setAutocompleteProvider({
+		async getSuggestions() {
+			return null;
+		},
+		applyCompletion(lines, cursorLine, cursorCol) {
+			newApplied++;
+			return { lines, cursorLine, cursorCol };
+		},
+	});
+	expect(editor.isAutocompleteActive()).toBe(false);
+
+	editor.handleInput("\t");
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(editor.getText()).toBe("@");
+	expect(oldApplied).toBe(0);
+	expect(newApplied).toBe(0);
+});
+
+test("swapping text assist providers clears and invalidates old spelling suggestions", async () => {
+	const editor = editorWith("teh");
+	const first = Promise.withResolvers<EditorWordReplacements | null>();
+	const second = Promise.withResolvers<EditorWordReplacements | null>();
+	let calls = 0;
+	editor.setTextAssistProvider({
+		getWordReplacements() {
+			calls++;
+			return (calls === 1 ? first : second).promise;
+		},
+	});
+
+	editor.handleInput("\x1b[27;5;46~");
+	first.resolve({ line: 0, startCol: 0, endCol: 3, items: ["old"] });
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(editor.isAutocompleteActive()).toBe(true);
+
+	editor.handleInput("\x1b[27;5;46~");
+	editor.setTextAssistProvider({});
+	expect(editor.isAutocompleteActive()).toBe(false);
+	second.resolve({ line: 0, startCol: 0, endCol: 3, items: ["stale"] });
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(editor.isAutocompleteActive()).toBe(false);
+	expect(editor.getText()).toBe("teh");
+});
+
+test("swapping text assist providers suppresses old async autocorrection", async () => {
+	const editor = editorWith();
+	const pending = Promise.withResolvers<EditorInlineReplacement | null>();
+	editor.setTextAssistProvider({
+		tryAutocorrect() {
+			return pending.promise;
+		},
+	});
+
+	editor.handleInput("x");
+	editor.setTextAssistProvider({});
+	pending.resolve({ replaceLen: 1, insert: "OLD" });
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(editor.getText()).toBe("x");
+});
+
+test("submit resets volatile text bookkeeping before the next draft", () => {
+	const editor = editorWith();
+	let submitted = "";
+	editor.onSubmit = text => {
+		submitted = text;
+	};
+
+	editor.setVolatileText("abc");
+	editor.submit();
+	editor.handleInput("new");
+	editor.clearVolatileText();
+
+	expect(submitted).toBe("abc");
+	expect(editor.getText()).toBe("new");
+});
+
+test("undo resets volatile text bookkeeping before the next draft", () => {
+	const editor = editorWith();
+	editor.insertText("base");
+	editor.setVolatileText("abc");
+	expect(editor.getText()).toBe("baseabc");
+
+	editor.handleInput("\x1f");
+	expect(editor.getText()).toBe("");
+	editor.handleInput("new");
+	editor.clearVolatileText();
+
+	expect(editor.getText()).toBe("new");
 });

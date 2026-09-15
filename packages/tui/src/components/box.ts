@@ -11,7 +11,7 @@ import {
 type Cache = {
 	width: number;
 	widthEpoch: number;
-	bgSample: string | undefined;
+	bgFn: ((text: string) => string) | undefined;
 	borderSample: string | undefined;
 	childLines: (readonly string[])[];
 	childWidths: (readonly number[] | undefined)[];
@@ -90,6 +90,7 @@ export class Box implements Component {
 
 	setBgFn(bgFn?: (text: string) => string): void {
 		this.#bgFn = bgFn;
+		this.#invalidateCache();
 	}
 
 	setBorder(border?: BoxBorder): void {
@@ -125,7 +126,7 @@ export class Box implements Component {
 		const marginX = Math.min(paddingX, Math.floor(Math.max(0, innerWidth - 1) / 2));
 		const contentWidth = Math.max(1, innerWidth - marginX * 2);
 
-		const bgSample = this.#bgFn ? this.#bgFn("test") : undefined;
+		const bgFn = this.#bgFn;
 		const borderSample = border
 			? `${border.color ? border.color("|") : "|"}${border.chars.topLeft}${border.chars.vertical}`
 			: undefined;
@@ -144,7 +145,9 @@ export class Box implements Component {
 			cached.width === width &&
 			cached.widthEpoch === widthEpoch &&
 			cached.widthEpoch === getWidthConfigEpoch() &&
-			cached.bgSample === bgSample &&
+			// Function identity, not a sample probe: two theme-bound closures
+			// can style "test" identically while differing on real content.
+			cached.bgFn === bgFn &&
 			cached.borderSample === borderSample &&
 			cached.childLines.length === count &&
 			childLines.every((lines, i) => {
@@ -220,7 +223,7 @@ export class Box implements Component {
 		this.#cached = {
 			width,
 			widthEpoch: finalWidthEpoch,
-			bgSample,
+			bgFn,
 			borderSample,
 			childLines,
 			childWidths,

@@ -181,7 +181,7 @@ export class InputController {
 				removeTimer = undefined;
 			}
 			if (added) {
-				this.ctx.chatContainer.removeChild(component);
+				this.ctx.chatContainer.disposeAndRemoveChild(component);
 				this.ctx.ui.requestRender();
 			}
 		};

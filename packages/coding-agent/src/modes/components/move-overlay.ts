@@ -78,7 +78,9 @@ function printableInput(data: string): string {
 	return Array.from(withoutPasteEnvelope)
 		.filter(ch => {
 			const code = ch.codePointAt(0);
-			return code !== undefined && code >= 32 && code !== 0x7f;
+			// Reject C1 (0x80-0x9f) alongside C0/DEL: raw C1 bytes would be
+			// interpreted as terminal control introducers.
+			return code !== undefined && code >= 32 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f);
 		})
 		.join("");
 }

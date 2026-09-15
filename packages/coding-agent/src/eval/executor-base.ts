@@ -26,6 +26,7 @@ interface KernelExecutorBaseOptions {
 	deadlineMs?: number;
 	idleTimeoutMs?: number;
 	onChunk?: (chunk: string) => Promise<void> | void;
+	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	signal?: AbortSignal;
 	onStatus?: (event: JsStatusEvent) => void;
 	emitStatus?: (event: JsStatusEvent) => void;
@@ -494,7 +495,10 @@ export async function executeWithKernelBase<
 			signal: abortShield.signal,
 			timeoutMs: executionTimeoutMs,
 			onChunk: text => sink.push(text),
-			onDisplay: output => collectDisplay(output),
+			onDisplay: output => {
+				collectDisplay(output);
+				return options?.onDisplay?.(output);
+			},
 		});
 
 		if (result.cancelled || abortShield.abortRequested) {

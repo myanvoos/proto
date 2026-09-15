@@ -5,7 +5,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
-import { getProjectDir, isEnoent, isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
+import { getProjectDir, isEnoent, isRecord, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import {
 	DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
 	formatBackgroundNotice,
@@ -55,7 +55,12 @@ import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
-import { type BashKernelCell, detectBashKernelCell, isBashKernelCellMixed } from "./bash-kernel-cell";
+import {
+	type BashKernelCell,
+	detectBashKernelCell,
+	findBashKernelCells,
+	isBashKernelCellMixed,
+} from "./bash-kernel-cell";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
@@ -216,12 +221,12 @@ interface StreamedBashState {
 	toolCallId: string;
 	generation: number;
 	latestRaw: string;
-	version: number;
 	specContextKey?: string;
 	specCandidateKey?: string;
 	speculationLaunches: number;
 	speculationStarted: Set<string>;
-	assertionController?: AbortController;
+	/** Aborted only when the call is cancelled; newer deltas never interrupt an in-flight preflight. */
+	abort: AbortController;
 	assertionPromise?: Promise<StreamedKernelFailure | undefined>;
 	observationScheduler: LatestValueScheduler<PendingStreamedObservation>;
 	pendingObservation?: PendingStreamedObservation;
@@ -231,7 +236,6 @@ interface StreamedBashState {
 
 interface PendingStreamedObservation {
 	raw: string;
-	version: number;
 	promise: Promise<StreamedKernelFailure | undefined>;
 	resolve: (failure: StreamedKernelFailure | undefined) => void;
 }
@@ -490,8 +494,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	/**
 	 * Observe an incremental tool-call argument JSON prefix. Only the explicit
 	 * speculation/assertion settings enable work; malformed or unsupported
-	 * prefixes are inert. A failure is returned only if it still belongs to the
-	 * newest prefix for this outer call and generation.
+	 * prefixes are inert.
+	 *
+	 * A newer prefix supersedes a queued observation but never an in-flight one:
+	 * the preflight only evaluates complete statements, so a failure proven on a
+	 * prefix holds for every extension of it. Letting the active run finish is
+	 * what lets the guard fire while deltas keep arriving faster than a file
+	 * read completes; the failure is delivered on that older observation's
+	 * promise as long as the newest prefix still extends the one it inspected.
 	 */
 	async observeStreamedInput(toolCallId: string, rawPartialJson: string): Promise<StreamedKernelFailure | undefined> {
 		if (this.#disposed || !toolCallId || typeof rawPartialJson !== "string") return undefined;
@@ -511,26 +521,20 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		}
 
 		state.latestRaw = rawPartialJson;
-		state.version++;
-		state.assertionController?.abort();
-		state.assertionController = undefined;
-		state.assertionPromise = undefined;
 		state.pendingObservation?.resolve(undefined);
 		state.pendingObservation = undefined;
-		state.activeObservation?.resolve(undefined);
 
-		let observationEnabled = false;
+		let observationEnabled: boolean;
 		try {
 			observationEnabled =
 				this.session.settings.get("kernel.speculation.enabled") === true ||
 				this.session.settings.get("kernel.assertPreflight.enabled") === true;
 		} catch {
-			state.observationScheduler.cancel();
-			cancelEvalCompletionSpeculation(toolCallId, state.generation, this.session);
-			return Promise.resolve(undefined);
+			observationEnabled = false;
 		}
 		if (!observationEnabled) {
 			state.observationScheduler.cancel();
+			state.assertionPromise = undefined;
 			cancelEvalCompletionSpeculation(toolCallId, state.generation, this.session);
 			return Promise.resolve(undefined);
 		}
@@ -538,7 +542,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const deferred = Promise.withResolvers<StreamedKernelFailure | undefined>();
 		const pending: PendingStreamedObservation = {
 			raw: rawPartialJson,
-			version: state.version,
 			promise: deferred.promise,
 			resolve: deferred.resolve,
 		};
@@ -576,9 +579,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			toolCallId,
 			generation: ++this.#nextStreamGeneration,
 			latestRaw: "",
-			version: 0,
 			speculationLaunches: 0,
 			speculationStarted: new Set(),
+			abort: new AbortController(),
 			observationScheduler,
 		};
 		return state;
@@ -591,7 +594,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		let assertion: Promise<StreamedKernelFailure | undefined> | undefined;
 		try {
-			assertion = this.#processStreamedInput(state, pending.raw, pending.version);
+			assertion = this.#processStreamedInput(state, pending.raw);
 		} catch {
 			// Stream observation is advisory; parser failures must not block the
 			// real tool execution or leave an observer promise unresolved.
@@ -606,15 +609,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		state.assertionPromise = assertion;
 		const delivery = assertion
 			.then(failure => {
+				// A failure proven on this prefix holds for every extension of it.
 				const current = this.#streamedInputs.get(state.toolCallId);
-				pending.resolve(
-					current === state &&
-						state.version === pending.version &&
-						state.latestRaw === pending.raw &&
-						!state.assertionController?.signal.aborted
-						? failure
-						: undefined,
-				);
+				pending.resolve(current === state && state.latestRaw.startsWith(pending.raw) ? failure : undefined);
 			})
 			.catch(() => {
 				pending.resolve(undefined);
@@ -635,7 +632,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	#processStreamedInput(
 		state: StreamedBashState,
 		rawPartialJson: string,
-		version: number,
 	): Promise<StreamedKernelFailure | undefined> | undefined {
 		const { toolCallId } = state;
 		const speculationEnabled = this.session.settings.get("kernel.speculation.enabled") === true;
@@ -687,29 +683,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			}
 		}
 
-		if (
-			this.session.settings.get("kernel.assertPreflight.enabled") !== true ||
-			state.version !== version ||
-			state.latestRaw !== rawPartialJson
-		)
-			return undefined;
-		const controller = new AbortController();
-		state.assertionController = controller;
+		if (this.session.settings.get("kernel.assertPreflight.enabled") !== true) return undefined;
 		return preflightStreamedInput(toolCallId, rawPartialJson, {
 			session: this.session,
-			signal: controller.signal,
+			signal: state.abort.signal,
 		})
-			.then(failure => {
-				const current = this.#streamedInputs.get(toolCallId);
-				if (
-					controller.signal.aborted ||
-					current !== state ||
-					current.version !== version ||
-					current.latestRaw !== rawPartialJson
-				)
-					return undefined;
-				return failure;
-			})
+			.then(failure => (state.abort.signal.aborted ? undefined : failure))
 			.catch(() => undefined);
 	}
 
@@ -722,7 +701,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			state.pendingObservation?.resolve(undefined);
 			state.pendingObservation = undefined;
 			state.activeObservation?.resolve(undefined);
-			state.assertionController?.abort();
+			state.abort.abort();
 			cancelEvalCompletionSpeculation(id, state.generation, this.session);
 			this.#streamedInputs.delete(id);
 		}
@@ -1903,6 +1882,7 @@ function kernelCellLines(
 		spinnerFrame?: number;
 		previewLines: number;
 		width: number;
+		/** Full (sanitized) shell source for a mixed call; its kernel cells render as outlines inside it. */
 		displayCode?: string;
 	},
 ): string[] {
@@ -1925,6 +1905,7 @@ function kernelCellLines(
 		width: opts.width,
 		displayCode: opts.displayCode,
 		displayLanguage: opts.displayCode === undefined ? undefined : "bash",
+		displayCells: opts.displayCode === undefined ? undefined : findBashKernelCells(opts.displayCode),
 	});
 }
 
@@ -1949,8 +1930,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		animatedPartialResult: isKernelCellArgs,
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
-			const kernelCell = renderArgs.command ? detectBashKernelCell(renderArgs.command) : undefined;
-			const mixedKernelCell = renderArgs.command ? isBashKernelCellMixed(renderArgs.command) : false;
+			const command = renderArgs.command === undefined ? undefined : sanitizeText(renderArgs.command);
+			const kernelCell = command ? detectBashKernelCell(command) : undefined;
+			const mixedKernelCell = command ? isBashKernelCellMixed(command) : false;
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
@@ -1964,7 +1946,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							spinnerFrame: options.spinnerFrame,
 							previewLines: EVAL_DEFAULT_PREVIEW_LINES,
 							width,
-							displayCode: mixedKernelCell ? renderArgs.command : undefined,
+							displayCode: mixedKernelCell ? command : undefined,
 						});
 					}
 					const cmdLines = formatBashCommandLines(renderArgs, uiTheme);
@@ -2006,8 +1988,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			args?: TArgs,
 		): Component {
 			const renderArgs = toBashRenderArgs(args, config);
-			const kernelCell = renderArgs.command ? detectBashKernelCell(renderArgs.command) : undefined;
-			const mixedKernelCell = renderArgs.command ? isBashKernelCellMixed(renderArgs.command) : false;
+			const command = renderArgs.command === undefined ? undefined : sanitizeText(renderArgs.command);
+			const kernelCell = command ? detectBashKernelCell(command) : undefined;
+			const mixedKernelCell = command ? isBashKernelCellMixed(command) : false;
 			const details = result.details;
 			const execution = details?.execution;
 			const isPartial = options.isPartial === true;
@@ -2102,7 +2085,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							spinnerFrame: options.spinnerFrame,
 							previewLines: EVAL_DEFAULT_PREVIEW_LINES,
 							width,
-							displayCode: mixedKernelCell ? renderArgs.command : undefined,
+							displayCode: mixedKernelCell ? command : undefined,
 						});
 						cachedWidth = width;
 						cachedPreviewLines = previewLines;

@@ -2,6 +2,7 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { settings } from "../config/settings";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
+import { reloadTuiPluginState } from "./builtin-marketplace";
 import { formatTokenCount } from "./builtin-modes";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
@@ -11,7 +12,7 @@ import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } f
 import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
 import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
-import type { SlashCommandRuntime, SlashCommandSpec } from "./types";
+import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, SlashCommandSpec } from "./types";
 
 async function handleUsageResetCommand(
 	arg: string,
@@ -181,42 +182,47 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			},
 		],
 		allowArgs: true,
-		handle: async (command, runtime) => {
-			const { verb, rest } = parseSubcommand(command.args);
-			if (!verb || (verb === "info" && !rest)) {
-				await runtime.output(
-					[
-						`Session: ${runtime.session.sessionId}`,
-						`Title: ${runtime.session.sessionName}`,
-						`CWD: ${runtime.cwd}`,
-					].join("\n"),
-				);
+		handle: runSessionCommand,
+		handleTui: async (command, runtime) => {
+			if (!command.args.trim()) {
+				runtime.ctx.showAgentsView("global");
+				runtime.ctx.editor.setText("");
 				return commandConsumed();
 			}
-			if (verb === "delete" && !rest) {
-				if (runtime.session.isStreaming) return usage("Cannot delete the session while streaming.", runtime);
-				const sessionFile = runtime.sessionManager.getSessionFile();
-				if (!sessionFile) return usage("No session file to delete (in-memory session).", runtime);
-
-				try {
-					await runtime.sessionManager.dropSession(sessionFile);
-				} catch (err) {
-					return usage(`Failed to delete session: ${errorMessage(err)}`, runtime);
+			// Delete must go through the selector controller: it confirms,
+			// detaches the live session, and removes artifacts. The shared ACP
+			// handler drops the file without detaching, which would leave the
+			// composer appending to a deleted session path. Mirror the shared
+			// guards: no extra arguments, and never while streaming.
+			const trimmedArgs = command.args.trim();
+			const verb = trimmedArgs.split(/\s+/)[0]?.toLowerCase();
+			const deleteRest = trimmedArgs.slice(verb?.length ?? 0).trim();
+			if (verb === "delete") {
+				runtime.ctx.editor.setText("");
+				if (deleteRest) {
+					runtime.ctx.showStatus("Usage: /session delete");
+					return commandConsumed();
 				}
-				await runtime.output(
-					`Session deleted: ${sessionFile}. Use ACP \`session/load\` to switch to another session.`,
-				);
+				if (runtime.ctx.session.isStreaming) {
+					runtime.ctx.showStatus("Cannot delete the session while streaming.");
+					return commandConsumed();
+				}
+				await runtime.ctx.handleSessionDeleteCommand();
 				return commandConsumed();
 			}
-			if (verb === "pin") {
-				await handleSessionPinCommand(rest, runtime.session, runtime.output);
-				return commandConsumed();
-			}
-			return usage("Usage: /session [info|delete|pin [account]]", runtime);
-		},
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showAgentsView("global");
+			// Remaining subcommands (info/pin) run through the shared handler
+			// so the TUI honors the args its own autocomplete advertises.
+			await runSessionCommand(command, {
+				session: runtime.ctx.session,
+				sessionManager: runtime.ctx.sessionManager,
+				settings: runtime.ctx.settings,
+				cwd: runtime.ctx.sessionManager.getCwd(),
+				output: text => runtime.ctx.showStatus(text),
+				refreshCommands: () => runtime.ctx.refreshSlashCommandState(),
+				reloadPlugins: () => reloadTuiPluginState(runtime.ctx),
+			});
 			runtime.ctx.editor.setText("");
+			return commandConsumed();
 		},
 	},
 	{
@@ -539,3 +545,36 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 ];
+
+async function runSessionCommand(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
+	const { verb, rest } = parseSubcommand(command.args);
+	if (!verb || (verb === "info" && !rest)) {
+		await runtime.output(
+			[`Session: ${runtime.session.sessionId}`, `Title: ${runtime.session.sessionName}`, `CWD: ${runtime.cwd}`].join(
+				"\n",
+			),
+		);
+		return commandConsumed();
+	}
+	if (verb === "delete" && !rest) {
+		if (runtime.session.isStreaming) return usage("Cannot delete the session while streaming.", runtime);
+		const sessionFile = runtime.sessionManager.getSessionFile();
+		if (!sessionFile) return usage("No session file to delete (in-memory session).", runtime);
+
+		try {
+			await runtime.sessionManager.dropSession(sessionFile);
+		} catch (err) {
+			return usage(`Failed to delete session: ${errorMessage(err)}`, runtime);
+		}
+		await runtime.output(`Session deleted: ${sessionFile}. Use ACP \`session/load\` to switch to another session.`);
+		return commandConsumed();
+	}
+	if (verb === "pin") {
+		await handleSessionPinCommand(rest, runtime.session, runtime.output);
+		return commandConsumed();
+	}
+	return usage("Usage: /session [info|delete|pin [account]]", runtime);
+}

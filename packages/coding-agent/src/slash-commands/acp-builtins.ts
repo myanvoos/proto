@@ -34,6 +34,13 @@ export async function executeAcpBuiltinSlashCommand(
 	if (!parsed) return false;
 	const command = lookupBuiltinSlashCommand(parsed.name);
 	if (!command?.handle) return false;
+	if (parsed.args.length > 0 && !command.allowArgs) {
+		// Same contract as the TUI builtin dispatcher: a known builtin with
+		// unsupported arguments is a usage error, consumed instead of leaking
+		// the literal text to the model.
+		runtime.output(`/${parsed.name} does not take arguments`);
+		return { consumed: true };
+	}
 	const result = await command.handle(parsed, runtime);
 	if (result === undefined) return { consumed: true };
 	return result;

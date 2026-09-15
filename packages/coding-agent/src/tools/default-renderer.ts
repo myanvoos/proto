@@ -1,5 +1,5 @@
 import type { Component } from "@oh-my-pi/pi-tui";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import { renderStatusLine, WidthAwareText } from "../tui";
@@ -13,7 +13,7 @@ import {
 	JSON_TREE_SCALAR_LEN_EXPANDED,
 	renderJsonTreeLines,
 } from "./json-tree";
-import { formatExpandHint, replaceTabs, truncateToWidth } from "./render-utils";
+import { formatExpandHint, replaceTabs, sanitizeSingleLine, truncateToWidth } from "./render-utils";
 
 interface DefaultToolRenderInput {
 	label: string;
@@ -51,7 +51,9 @@ export function formatDefaultToolExecution(
 			{
 				icon,
 				spinnerFrame: options.spinnerFrame,
-				title: input.label,
+				// Labels are supplied by tools/extensions and are rendered directly
+				// by renderStatusLine, so sanitize before styling.
+				title: sanitizeSingleLine(input.label),
 				...(result?.skipped ? { titleColor: "muted" as const } : {}),
 			},
 			uiTheme,
@@ -119,7 +121,9 @@ export function formatDefaultToolExecution(
 	const displayLines = outputLines.slice(0, maxOutputLines);
 
 	for (const line of displayLines) {
-		lines.push(uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(line), contentWidth)));
+		// Tool result text is externally controlled (devices, extensions):
+		// sanitize before styling/truncation.
+		lines.push(uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(sanitizeText(line)), contentWidth)));
 	}
 
 	if (outputLines.length > maxOutputLines) {

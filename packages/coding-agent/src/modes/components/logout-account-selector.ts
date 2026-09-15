@@ -2,6 +2,7 @@ import { Container, matchesKey, ScrollView, Spacer, TruncatedText } from "@oh-my
 import { theme } from "../../modes/theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { LogoutAccount } from "../../slash-commands/helpers/logout";
+import { sanitizeSingleLine } from "../../tools/render-utils";
 import { OverlayPanel } from "./overlay-box";
 
 const LOGOUT_SELECTOR_MAX_VISIBLE = 10;
@@ -20,7 +21,7 @@ export class LogoutAccountSelectorComponent extends OverlayPanel {
 		onSelect: (account: LogoutAccount) => void,
 		onCancel: () => void,
 	) {
-		super(`Select ${providerName} account to log out`);
+		super(`Select ${sanitizeSingleLine(providerName)} account to log out`);
 		this.#accounts = accounts;
 		this.#onSelectCallback = onSelect;
 		this.#onCancelCallback = onCancel;
@@ -48,11 +49,12 @@ export class LogoutAccountSelectorComponent extends OverlayPanel {
 			const account = this.#accounts[i];
 			if (!account) continue;
 			const activeTag = account.active ? theme.fg("muted", " (active)") : "";
-			const detail = account.detail ? theme.fg("dim", `  ${account.detail}`) : "";
+			const label = sanitizeSingleLine(account.label);
+			const detail = account.detail ? theme.fg("dim", `  ${sanitizeSingleLine(account.detail)}`) : "";
 			if (i === this.#selectedIndex) {
-				rows.push(`${theme.fg("accent", `${theme.nav.cursor} ${account.label}`)}${activeTag}${detail}`);
+				rows.push(`${theme.fg("accent", `${theme.nav.cursor} ${label}`)}${activeTag}${detail}`);
 			} else {
-				rows.push(`  ${account.label}${activeTag}${detail}`);
+				rows.push(`  ${label}${activeTag}${detail}`);
 			}
 		}
 

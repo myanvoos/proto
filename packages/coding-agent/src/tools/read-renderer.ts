@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { getLanguageFromPath, type Theme } from "../modes/theme/theme";
 import { fileHyperlink, renderCodeCell, renderMarkdownCell, renderStatusLine, tryResolveInternalUrlSync } from "../tui";
@@ -10,7 +11,7 @@ import { formatFullOutputReference, formatStyledTruncationWarning, stripOutputNo
 import { isReadableUrlPath, splitInternalUrlSel, splitPathAndSel } from "./path-utils";
 import type { ReadToolDetails } from "./read";
 import { isRawSelector, parseSel } from "./read-selector";
-import { formatBytes, replaceTabs, shortenPath, wrapBrackets } from "./render-utils";
+import { formatBytes, replaceTabs, sanitizeSingleLine, shortenPath, wrapBrackets } from "./render-utils";
 
 interface ReadRenderArgs {
 	path?: unknown;
@@ -67,10 +68,13 @@ function formatReadPathLink(
 ): string {
 	const split = splitReadRenderPath(rawPath);
 	const basePath = split.path || rawPath;
-	const selectorSuffix = split.sel !== undefined && !MARKER_SELECTOR_RE.test(split.sel) ? `:${split.sel}` : "";
-	const plainDisplayPath = options.suffixResolution
-		? shortenPath(options.suffixResolution.to)
-		: shortenPath(basePath || options.resolvedPath || options.fallbackLabel || rawPath);
+	const selectorSuffix =
+		split.sel !== undefined && !MARKER_SELECTOR_RE.test(split.sel) ? sanitizeSingleLine(`:${split.sel}`) : "";
+	const plainDisplayPath = sanitizeSingleLine(
+		options.suffixResolution
+			? shortenPath(options.suffixResolution.to)
+			: shortenPath(basePath || options.resolvedPath || options.fallbackLabel || rawPath),
+	);
 	const absoluteInputPath = path.isAbsolute(basePath) ? basePath : undefined;
 	const target =
 		options.resolvedPath ?? options.sourcePath ?? tryResolveInternalUrlSync(basePath) ?? absoluteInputPath;
@@ -95,7 +99,7 @@ export const readToolRenderer = {
 		if (offset !== undefined || limit !== undefined) {
 			const startLine = offset ?? 1;
 			const endLine = limit !== undefined ? startLine + limit - 1 : "";
-			pathDisplay += `:${startLine}${endLine ? `-${endLine}` : ""}`;
+			pathDisplay += sanitizeSingleLine(`:${startLine}${endLine ? `-${endLine}` : ""}`);
 		}
 
 		const text = renderStatusLine({ icon: "pending", title: "Read", description: pathDisplay }, uiTheme);
@@ -130,12 +134,12 @@ export const readToolRenderer = {
 				typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
 			const filePath =
 				formatReadPathLink(rawPath, { offset: args?.offset, sourcePath: readSourceFsPath(result.details) }) ||
-				shortenPath(rawPath);
+				sanitizeSingleLine(shortenPath(rawPath));
 			let title = filePath ? `Read ${filePath}` : "Read";
 			if (args?.offset !== undefined || args?.limit !== undefined) {
 				const startLine = args.offset ?? 1;
 				const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
-				title += `:${startLine}${endLine ? `-${endLine}` : ""}`;
+				title += sanitizeSingleLine(`:${startLine}${endLine ? `-${endLine}` : ""}`);
 			}
 			const header = renderStatusLine({ icon: "error", title }, uiTheme);
 			const errorLines = errorText.split("\n").map(line => uiTheme.fg("error", replaceTabs(line)));
@@ -160,7 +164,11 @@ export const readToolRenderer = {
 		const truncation = details?.meta?.truncation;
 		const fallback = details?.truncation;
 		if (details?.resolvedPath) {
-			warningLines.push(uiTheme.fg("dim", wrapBrackets(`Resolved path: ${details.resolvedPath}`, uiTheme)));
+			// Resolved filesystem paths can carry ESC/C0/C1; sanitize before the
+			// themed row is marked outputTrusted (which preserves ESC rows).
+			warningLines.push(
+				uiTheme.fg("dim", wrapBrackets(`Resolved path: ${sanitizeText(details.resolvedPath)}`, uiTheme)),
+			);
 		}
 		if (truncation) {
 			if (fallback?.firstLineExceedsLimit) {
@@ -183,7 +191,9 @@ export const readToolRenderer = {
 				suffixResolution: suffix,
 				fallbackLabel: "image",
 			});
-			const correction = suffix ? ` ${uiTheme.fg("dim", `(corrected from ${shortenPath(suffix.from)})`)}` : "";
+			const correction = suffix
+				? ` ${uiTheme.fg("dim", `(corrected from ${sanitizeSingleLine(shortenPath(suffix.from))})`)}`
+				: "";
 			const header = renderStatusLine(
 				{ icon: suffix ? "warning" : "success", title: "Read", description: `${displayPath}${correction}` },
 				uiTheme,
@@ -219,12 +229,14 @@ export const readToolRenderer = {
 			suffixResolution: suffix,
 			offset: args?.offset,
 		});
-		const correction = suffix ? ` ${uiTheme.fg("dim", `(corrected from ${shortenPath(suffix.from)})`)}` : "";
+		const correction = suffix
+			? ` ${uiTheme.fg("dim", `(corrected from ${sanitizeSingleLine(shortenPath(suffix.from))})`)}`
+			: "";
 		let title = displayPath ? `Read ${displayPath}${correction}` : "Read";
 		if (args?.offset !== undefined || args?.limit !== undefined) {
 			const startLine = args.offset ?? 1;
 			const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
-			title += `:${startLine}${endLine ? `-${endLine}` : ""}`;
+			title += sanitizeSingleLine(`:${startLine}${endLine ? `-${endLine}` : ""}`);
 		}
 		if (details?.summary) {
 			title += ` (summary: ${details.summary.elidedSpans} elided span${details.summary.elidedSpans === 1 ? "" : "s"})`;
@@ -249,6 +261,7 @@ export const readToolRenderer = {
 								title,
 								status: "complete",
 								output: warningLines.length > 0 ? warningLines.join("\n") : undefined,
+								outputTrusted: true,
 								expanded,
 								width,
 							},
@@ -261,6 +274,7 @@ export const readToolRenderer = {
 								title,
 								status: "complete",
 								output: warningLines.length > 0 ? warningLines.join("\n") : undefined,
+								outputTrusted: true,
 								expanded,
 								codeStartLine: details?.displayContent?.startLine,
 								codeLineNumbers: details?.displayContent?.lineNumbers,

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- `readLines` no longer yields buffers aliasing producer-owned memory, so consumed lines survive source buffer reuse
 - `sanitizeText` gains `stripControlChars` for protocol payloads and single-line render fields
 
 ### Added

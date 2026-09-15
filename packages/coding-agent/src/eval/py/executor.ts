@@ -52,6 +52,8 @@ export interface PythonExecutorOptions {
 
 	onChunk?: (chunk: string) => Promise<void> | void;
 
+	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
+
 	signal?: AbortSignal;
 
 	sessionId?: string;

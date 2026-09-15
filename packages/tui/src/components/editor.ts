@@ -18,6 +18,7 @@ import {
 	getSegmenter,
 	getWidthConfigEpoch,
 	getWordNavKind,
+	graphemeStartAt,
 	moveWordLeft,
 	moveWordRight,
 	padding,
@@ -469,7 +470,19 @@ export class Editor implements Component, Focusable {
 	#widthEpochText = "";
 	#widthEpochRevision = 0;
 
-	focused: boolean = false;
+	#focused = false;
+
+	get focused(): boolean {
+		return this.#focused;
+	}
+
+	set focused(value: boolean) {
+		if (this.#focused === value) return;
+		this.#focused = value;
+		// Losing focus must not leave an in-flight provider request running or
+		// a stale suggestion menu open over the newly focused component.
+		if (!value) this.#cancelAutocomplete();
+	}
 
 	#theme: EditorTheme;
 	#useTerminalCursor = false;
@@ -506,6 +519,7 @@ export class Editor implements Component, Focusable {
 
 	#autocompleteProvider?: AutocompleteProvider;
 	#textAssistProvider?: EditorTextAssistProvider;
+	#textAssistProviderRevision = 0;
 	#autocompleteList?: SelectList;
 	#autocompleteState: "regular" | "force" | "assist" | null = null;
 	#textAssistReplacement:
@@ -561,6 +575,7 @@ export class Editor implements Component, Focusable {
 		this.#cancelAutocomplete();
 		this.#autocompleteAbortController = undefined;
 		this.#autocompleteProvider = undefined;
+		this.#textAssistProviderRevision++;
 		this.#textAssistProvider = undefined;
 		this.#autocompleteList = undefined;
 		this.#historyStorage = undefined;
@@ -595,11 +610,21 @@ export class Editor implements Component, Focusable {
 	}
 
 	setAutocompleteProvider(provider: AutocompleteProvider): void {
+		if (this.#autocompleteProvider === provider) return;
 		this.#autocompleteProvider = provider;
+		// A published list belongs to the old provider just as much as an
+		// in-flight request does. Clear both synchronously before the next Tab.
+		this.#cancelAutocomplete();
 	}
 
 	setTextAssistProvider(provider: EditorTextAssistProvider | undefined): void {
+		this.#textAssistProviderRevision++;
 		this.#textAssistProvider = provider;
+		// Assist suggestions are produced by this provider; never leave them
+		// selectable after swapping to a different one.
+		if (this.#autocompleteState === "assist") {
+			this.#cancelAutocomplete();
+		}
 		this.#widthEpochRevision++;
 	}
 
@@ -735,6 +760,7 @@ export class Editor implements Component, Focusable {
 
 	#setTextInternal(text: string, cursorAnchor: HistoryCursorAnchor = "end"): void {
 		this.#undoStack.length = 0;
+		this.#volatileTextLen = 0;
 		const lines = sanitizeLoadedText(text).split("\n");
 		this.#setLines(lines.length === 0 ? [""] : lines);
 		if (cursorAnchor === "start") {
@@ -1285,6 +1311,9 @@ export class Editor implements Component, Focusable {
 						);
 
 						this.#recordUndoState();
+						// The completion is its own undo unit: reset typing
+						// coalescing so the next char snapshots separately.
+						this.#lastAction = null;
 						this.#setLines(result.lines);
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
@@ -1329,6 +1358,9 @@ export class Editor implements Component, Focusable {
 							);
 
 							this.#recordUndoState();
+							// The completion is its own undo unit: reset typing
+							// coalescing so the next char snapshots separately.
+							this.#lastAction = null;
 							this.#setLines(result.lines);
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
@@ -1355,6 +1387,9 @@ export class Editor implements Component, Focusable {
 							);
 
 							this.#recordUndoState();
+							// The completion is its own undo unit: reset typing
+							// coalescing so the next char snapshots separately.
+							this.#lastAction = null;
 							this.#setLines(result.lines);
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
@@ -1447,6 +1482,9 @@ export class Editor implements Component, Focusable {
 							syncResult.prefix,
 						);
 						this.#recordUndoState();
+						// The completion is its own undo unit: reset typing
+						// coalescing so the next char snapshots separately.
+						this.#lastAction = null;
 						this.#setLines(result.lines);
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
@@ -1923,6 +1961,7 @@ export class Editor implements Component, Focusable {
 		const after = line.slice(this.#state.cursorCol);
 		this.#setLine(this.#state.cursorLine, before + replacement.insert + after);
 		this.#setCursorCol(before.length + replacement.insert.length);
+		this.#lastAction = null;
 		this.onChange?.(this.getText());
 		if (this.#autocompleteState) {
 			this.#cancelAutocomplete();
@@ -1941,7 +1980,6 @@ export class Editor implements Component, Focusable {
 		if (!isWordChunk || this.#lastAction !== "type-word") {
 			this.#recordUndoState();
 		}
-		this.#lastAction = isWordChunk ? "type-word" : null;
 
 		const line = this.#state.lines[this.#state.cursorLine] || "";
 		const cursorCol = this.#state.cursorCol;
@@ -1954,6 +1992,7 @@ export class Editor implements Component, Focusable {
 					: line.slice(0, cursorCol) + char + line.slice(cursorCol),
 		);
 		this.#setCursorCol(cursorCol + char.length);
+		this.#lastAction = isWordChunk ? "type-word" : null;
 
 		if (this.onChange) {
 			this.onChange(this.getText());
@@ -1967,15 +2006,15 @@ export class Editor implements Component, Focusable {
 			const cursorLine = this.#state.cursorLine;
 			const cursorCol = this.#state.cursorCol;
 			const currentLine = this.#state.lines[cursorLine] ?? "";
-			const autocorrection = this.#textAssistProvider?.tryAutocorrect?.(
-				this.#state.lines.slice(),
-				cursorLine,
-				cursorCol,
-			);
+			const textAssistProvider = this.#textAssistProvider;
+			const textAssistProviderRevision = this.#textAssistProviderRevision;
+			const autocorrection = textAssistProvider?.tryAutocorrect?.(this.#state.lines.slice(), cursorLine, cursorCol);
 			if (autocorrection instanceof Promise) {
 				autocorrection
 					.then(replacement => {
 						if (
+							textAssistProvider === this.#textAssistProvider &&
+							textAssistProviderRevision === this.#textAssistProviderRevision &&
 							replacement &&
 							this.#state.cursorLine === cursorLine &&
 							this.#state.cursorCol === cursorCol &&
@@ -2154,6 +2193,7 @@ export class Editor implements Component, Focusable {
 		this.#historyIndex = -1;
 		this.#scrollOffset = 0;
 		this.#undoStack.length = 0;
+		this.#volatileTextLen = 0;
 
 		if (this.onChange) this.onChange("");
 		if (this.onSubmit) this.onSubmit(result);
@@ -2405,6 +2445,7 @@ export class Editor implements Component, Focusable {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		this.#preferredVisualCol = null;
+		this.#volatileTextLen = 0;
 		this.#setLines(snapshot.lines);
 		this.#state.cursorLine = snapshot.cursorLine;
 		this.#state.cursorCol = snapshot.cursorCol;
@@ -2905,7 +2946,10 @@ export class Editor implements Component, Focusable {
 
 			if (idx !== -1) {
 				this.#state.cursorLine = lineIdx;
-				this.#setCursorCol(idx);
+				// The match may sit inside a grapheme cluster (e.g. a combining
+				// mark): jump to the START of the cluster containing it so the
+				// cursor never lands mid-grapheme.
+				this.#setCursorCol(graphemeStartAt(line, idx));
 				return;
 			}
 		}
@@ -3082,9 +3126,13 @@ export class Editor implements Component, Focusable {
 		const cursorLine = this.#state.cursorLine;
 		const cursorCol = this.#state.cursorCol;
 		const lines = [...this.#state.lines];
-		const result = this.#textAssistProvider?.getWordReplacements?.(lines, cursorLine, cursorCol);
+		const textAssistProvider = this.#textAssistProvider;
+		const textAssistProviderRevision = this.#textAssistProviderRevision;
+		const result = textAssistProvider?.getWordReplacements?.(lines, cursorLine, cursorCol);
 		const replacements = result instanceof Promise ? await result.catch(() => null) : result;
 		if (
+			textAssistProvider !== this.#textAssistProvider ||
+			textAssistProviderRevision !== this.#textAssistProviderRevision ||
 			!replacements ||
 			this.#state.cursorLine !== cursorLine ||
 			this.#state.cursorCol !== cursorCol ||
@@ -3106,6 +3154,9 @@ export class Editor implements Component, Focusable {
 			replacements.items.map(value => ({ value, label: value })),
 		);
 		this.#autocompleteState = "assist";
+		// An in-flight regular request would republish the suggestion list
+		// over the assist list once it resolves: invalidate it.
+		this.#invalidateAutocompleteRequests();
 		this.#textAssistReplacement = {
 			line: replacements.line,
 			startCol: replacements.startCol,
@@ -3272,6 +3323,11 @@ export class Editor implements Component, Focusable {
 		if (this.#autocompleteTimeout) {
 			clearTimeout(this.#autocompleteTimeout);
 		}
+		// A mutation makes any in-flight provider I/O stale right now, not in
+		// 100 ms: abort it so the debounced refresh is not serialized behind
+		// uncancelled filesystem work for text the user already replaced.
+		this.#autocompleteAbortController?.abort();
+		this.#autocompleteAbortController = undefined;
 		this.#autocompleteTimeout = setTimeout(() => {
 			void this.#updateAutocomplete();
 			this.#autocompleteTimeout = undefined;

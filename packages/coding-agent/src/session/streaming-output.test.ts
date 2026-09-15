@@ -4,6 +4,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { OutputSink } from "./streaming-output";
 
+async function withSixelPassthrough<T>(fn: () => T | Promise<T>): Promise<T> {
+	const previousProtocol = Bun.env.PI_FORCE_IMAGE_PROTOCOL;
+	const previousAllow = Bun.env.PI_ALLOW_SIXEL_PASSTHROUGH;
+	Bun.env.PI_FORCE_IMAGE_PROTOCOL = "sixel";
+	Bun.env.PI_ALLOW_SIXEL_PASSTHROUGH = "1";
+	try {
+		return await fn();
+	} finally {
+		if (previousProtocol === undefined) delete Bun.env.PI_FORCE_IMAGE_PROTOCOL;
+		else Bun.env.PI_FORCE_IMAGE_PROTOCOL = previousProtocol;
+		if (previousAllow === undefined) delete Bun.env.PI_ALLOW_SIXEL_PASSTHROUGH;
+		else Bun.env.PI_ALLOW_SIXEL_PASSTHROUGH = previousAllow;
+	}
+}
+
 test("diagnostic summary preserves file, line, category, and message across chunk boundaries", async () => {
 	const sink = new OutputSink({ spillThreshold: 64, headBytes: 0 });
 	sink.push("noise before\nsrc/check.ts:17: error: actionable failure\n".slice(0, 23));
@@ -121,4 +136,116 @@ test("collector failure with no retained bytes is explicitly unavailable", async
 	const summary = await sink.dump();
 	expect(summary.collector?.state).toBe("failed");
 	expect(summary.outputDisposition).toBe("unavailable");
+});
+
+test("flushes an unterminated sixel tail into accounted output", async () => {
+	await withSixelPassthrough(async () => {
+		const sink = new OutputSink({ spillThreshold: 1024 });
+		sink.push("before\x1bPqPAY");
+		const summary = await sink.dump();
+
+		expect(summary.output).toBe("before\x1bPqPAY");
+		expect(summary.totalBytes).toBe(Buffer.byteLength("before\x1bPqPAY", "utf-8"));
+		expect(summary.outputDisposition).toBe("complete");
+	});
+});
+
+test("holds a split sixel introducer until its terminator arrives", async () => {
+	await withSixelPassthrough(async () => {
+		const sink = new OutputSink({ spillThreshold: 1024 });
+		sink.push("before\x1b");
+		sink.push("PqPAY\x9cafter");
+		const summary = await sink.dump();
+
+		expect(summary.output).toBe("before\x1bPqPAY\x9cafter");
+	});
+});
+
+test("bounds an unterminated sixel tail and reports truncation", async () => {
+	await withSixelPassthrough(async () => {
+		const sink = new OutputSink({ spillThreshold: 1024 });
+		sink.push("\x1bPq");
+		for (let index = 0; index < 6_000; index++) sink.push("x".repeat(1_000));
+		const summary = await sink.dump();
+
+		expect(summary.totalBytes).toBeGreaterThan(6_000_000);
+		expect(summary.truncated).toBe(true);
+		expect(summary.output.length).toBeLessThanOrEqual(1_024);
+	});
+});
+
+test("column caps preserve a complete sixel envelope", async () => {
+	await withSixelPassthrough(async () => {
+		const sixel = "\x1bPq123456789012345\x1b\\";
+		const sink = new OutputSink({ spillThreshold: 1024, maxColumns: 10 });
+		sink.push(`A${sixel}Z\nSAFE\n`);
+		const summary = await sink.dump();
+
+		expect(summary.output).toBe(`A${sixel}Z\nSAFE\n`);
+		expect(summary.output).not.toContain("…");
+	});
+});
+
+test("replace clears a pending sixel tail", async () => {
+	await withSixelPassthrough(async () => {
+		const sink = new OutputSink({ spillThreshold: 1024 });
+		sink.push("old\x1bPqPAY");
+		sink.replace("new");
+		sink.push("\x9c");
+		const summary = await sink.dump();
+
+		expect(summary.output).toBe("new");
+		expect(summary.output).not.toContain("old");
+	});
+});
+
+test("passthrough accounting uses sanitized ordinary bytes", async () => {
+	await withSixelPassthrough(async () => {
+		const ansi = new OutputSink({ spillThreshold: 1024, headBytes: 256 });
+		ansi.push("\x1b[31mred\x1b[0m");
+		const ansiSummary = await ansi.dump();
+		expect(ansiSummary.output).toBe("red");
+		expect(ansiSummary.totalBytes).toBe(3);
+		expect(ansiSummary.truncated).toBe(false);
+		expect(ansiSummary.output).not.toContain("elided");
+
+		const crlf = new OutputSink({ spillThreshold: 1024, headBytes: 256 });
+		crlf.push("a\r\nb");
+		const crlfSummary = await crlf.dump();
+		expect(crlfSummary.output).toBe("a\nb");
+		expect(crlfSummary.totalBytes).toBe(3);
+		expect(crlfSummary.truncated).toBe(false);
+	});
+});
+
+test("normalizes carriage returns around an unterminated sixel tail", async () => {
+	await withSixelPassthrough(async () => {
+		const beforeTail = new OutputSink({ spillThreshold: 1024 });
+		beforeTail.push("a\r\x1bPqPAY");
+		const beforeSummary = await beforeTail.dump();
+		expect(beforeSummary.output).toBe("a\n\x1bPqPAY");
+
+		const afterTail = new OutputSink({ spillThreshold: 1024 });
+		afterTail.push("a\x1bPqPAY\r");
+		const afterSummary = await afterTail.dump();
+		expect(afterSummary.output).toBe("a\x1bPqPAY\n");
+	});
+});
+
+test("bounded held sixel tails still trigger artifact spill", async () => {
+	await withSixelPassthrough(async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "streaming-output-sixel-"));
+		const artifactPath = path.join(directory, "raw-output.log");
+		try {
+			const sink = new OutputSink({ artifactPath, artifactId: "sixel-output", spillThreshold: 4 });
+			sink.push(`\x1bPq${"x".repeat(100)}`);
+			const summary = await sink.dump();
+
+			expect(summary.truncated).toBe(true);
+			expect(summary.artifactId).toBe("sixel-output");
+			expect(await fs.readFile(artifactPath, "utf8")).toBe("xxxx");
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
 });

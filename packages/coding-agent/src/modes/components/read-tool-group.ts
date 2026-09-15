@@ -5,7 +5,7 @@ import { Container, Text } from "@oh-my-pi/pi-tui";
 import { InternalUrlRouter, XD_URL_PREFIX } from "../../internal-urls";
 import { getLanguageFromPath, theme } from "../../modes/theme/theme";
 import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tools/path-utils";
-import { PREVIEW_LIMITS, shortenPath } from "../../tools/render-utils";
+import { PREVIEW_LIMITS, sanitizeSingleLine, shortenPath } from "../../tools/render-utils";
 import { fileHyperlink, renderCodeCell, tryResolveInternalUrlSync } from "../../tui";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import type { ToolExecutionHandle } from "./tool-execution";
@@ -763,9 +763,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		options: { correctedFrom?: string; conflictCount?: number; line?: number; linkPath?: string } = {},
 	): string {
 		const split = splitGroupDisplayPath(value);
-		const selectorSuffix = displaySelectorSuffix(split.sel);
+		const selectorSuffix = sanitizeSingleLine(displaySelectorSuffix(split.sel));
 		const baseValue = split.sel ? split.path : value;
-		const filePath = shortenPath(baseValue);
+		const filePath = sanitizeSingleLine(shortenPath(baseValue));
 		let pathDisplay = filePath ? theme.fg("accent", filePath) : theme.fg("toolOutput", "…");
 		if (filePath && options.linkPath) {
 			const linkOptions = options.line !== undefined ? { line: options.line } : undefined;
@@ -775,7 +775,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			pathDisplay += theme.fg("accent", selectorSuffix);
 		}
 		if (options.correctedFrom) {
-			pathDisplay += theme.fg("dim", ` (corrected from ${shortenPath(options.correctedFrom)})`);
+			pathDisplay += theme.fg("dim", ` (corrected from ${sanitizeSingleLine(shortenPath(options.correctedFrom))})`);
 		}
 		pathDisplay += this.#formatConflictBadge(options.conflictCount);
 		return pathDisplay;
@@ -811,6 +811,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 						code: entry.contentText ?? "",
 						language: lang,
 						title,
+						outputTrusted: true,
 						status: entry.status === "success" ? "complete" : entry.status,
 						expanded,
 						codeMaxLines: expanded ? undefined : COLLAPSED_PREVIEW_LINES,

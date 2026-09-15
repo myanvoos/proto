@@ -46,7 +46,9 @@ export class TruncatedText implements Component {
 		const rightPadding = padding(this.#paddingX);
 		const lineWithPadding = leftPadding + displayText + rightPadding;
 
-		result.push(lineWithPadding);
+		// paddingX is not subtracted when width is below the padding minimum:
+		// clamp the composed row so it never exceeds the requested width.
+		result.push(truncateToWidth(lineWithPadding, width));
 
 		for (let i = 0; i < this.#paddingY; i++) {
 			result.push(emptyLine);

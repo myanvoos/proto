@@ -128,6 +128,10 @@ export class SettingsList implements Component {
 		this.#selectedIndex = this.#firstSelectableIndex();
 		this.#lastNotifiedSelectionId = this.getSelectedItem()?.id;
 	}
+	/** Re-resolve the theme after a runtime theme switch. */
+	setTheme(theme: SettingsListTheme): void {
+		this.#theme = theme;
+	}
 
 	getSelectedItem(): SettingItem | undefined {
 		const item = this.#filteredItems[this.#selectedIndex];
@@ -395,6 +399,10 @@ export class SettingsList implements Component {
 	}
 
 	invalidate(): void {
+		// Submenus capture a concrete theme at construction: components that
+		// expose setTheme re-resolve it before generic invalidation.
+		const submenu = this.#submenuComponent as { setTheme?: () => void } | null;
+		submenu?.setTheme?.();
 		this.#submenuComponent?.invalidate?.();
 	}
 

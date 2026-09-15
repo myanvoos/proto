@@ -21,6 +21,7 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
+import type { PythonDisplayOutput } from "../eval/py/display";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 
@@ -249,6 +250,10 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 						}
 					: undefined,
 				execution: normalizeProviderReplayValue(message.execution),
+				// Rich-display outputs are model-visible (convertOne includes
+				// them); a session reload must invalidate provider caches when
+				// they appear or change.
+				displayOutputs: normalizeProviderReplayValue(message.displayOutputs),
 				excludeFromContext: message.excludeFromContext,
 			};
 		case "custom":
@@ -753,6 +758,7 @@ export interface PythonExecutionMessage {
 	truncated: boolean;
 	meta?: OutputMeta;
 	execution?: ExecutionMetadata;
+	displayOutputs?: PythonDisplayOutput[];
 	timestamp: number;
 
 	excludeFromContext?: boolean;
@@ -836,6 +842,44 @@ function bashExecutionToText(msg: BashExecutionMessage): string {
 	return text;
 }
 
+const PYTHON_DISPLAY_TEXT_CAP = 256 * 1024;
+const PYTHON_DISPLAY_BLOCK_TEXT_CAP = 64 * 1024;
+
+function pythonDisplayToModelText(blocks: PythonDisplayOutput[] | undefined): string {
+	if (!blocks || blocks.length === 0) return "";
+	let total = 0;
+	const parts: string[] = [];
+	let images = 0;
+	for (const block of blocks) {
+		if (block.type === "image") {
+			images++;
+			continue;
+		}
+		if (block.type === "notice") {
+			parts.push(`[display notice] ${block.text}`);
+			continue;
+		}
+		const body =
+			block.text.length > PYTHON_DISPLAY_BLOCK_TEXT_CAP
+				? `${block.text.slice(0, PYTHON_DISPLAY_BLOCK_TEXT_CAP)}\n… [${block.text.length - PYTHON_DISPLAY_BLOCK_TEXT_CAP} chars omitted]`
+				: block.text;
+		if (total + body.length > PYTHON_DISPLAY_TEXT_CAP) {
+			parts.push(`[display output truncated: ${PYTHON_DISPLAY_TEXT_CAP}-char model cap]`);
+			break;
+		}
+		total += body.length;
+		if (block.type === "markdown") {
+			parts.push(body);
+		} else {
+			parts.push(body);
+		}
+	}
+	if (images > 0) {
+		parts.push(`[display images attached: ${images}]`);
+	}
+	return parts.length > 0 ? `\n\nRich display output:\n${parts.join("\n")}` : "";
+}
+
 function pythonExecutionToText(msg: PythonExecutionMessage): string {
 	let text = `${formatExecutionMetadataHeader(msg.execution)}Ran Python:\n\`\`\`python\n${msg.code}\n\`\`\`\n`;
 	if (msg.output) {
@@ -849,6 +893,7 @@ function pythonExecutionToText(msg: PythonExecutionMessage): string {
 		text += `\n\nExecution failed with code ${msg.exitCode}`;
 	}
 	text += formatOutputNotice(msg.meta);
+	text += pythonDisplayToModelText(msg.displayOutputs);
 	return text;
 }
 
@@ -946,18 +991,27 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 					timestamp: m.timestamp,
 				},
 			];
-		case "pythonExecution":
+		case "pythonExecution": {
 			if (m.excludeFromContext) {
 				return [];
+			}
+			const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
+				{ type: "text", text: pythonExecutionToText(m) },
+			];
+			for (const block of m.displayOutputs ?? []) {
+				if (block.type === "image") {
+					content.push({ type: "image", data: block.data, mimeType: block.mimeType });
+				}
 			}
 			return [
 				{
 					role: "user",
-					content: [{ type: "text", text: pythonExecutionToText(m) }],
+					content,
 					attribution: "user",
 					timestamp: m.timestamp,
 				},
 			];
+		}
 		case "fileMention": {
 			const wrap = (file: FileMentionMessage["files"][number]): string => {
 				const inner = file.content ? `\n${file.content}\n` : "\n";

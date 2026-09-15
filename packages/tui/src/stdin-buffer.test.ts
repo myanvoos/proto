@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
+import { setKittyProtocolActive } from "./keys";
 import { StdinBuffer } from "./stdin-buffer";
 
 function collect(): { received: string[]; buffer: StdinBuffer } {
@@ -71,5 +72,127 @@ describe("StdinBuffer", () => {
 		const { received, buffer } = collect();
 		buffer.process(Buffer.from("\x1b[A"));
 		expect(received).toContain("\x1b[A");
+	});
+});
+describe("StdinBuffer string/paste lifecycle recovery", () => {
+	it("holds a lone ESC so a split ST completes the buffered string intact", () => {
+		const received: string[] = [];
+		const buffer = new StdinBuffer({ timeout: 5, partialHoldTimeout: 0 });
+		buffer.on("data", sequence => received.push(sequence));
+		buffer.process(Buffer.from("\x1b]11;rgb:ffff/0000/0000", "utf8"));
+		// A lone ESC must not flush the buffered torn string as data: it may
+		// begin a split ST (ESC\) that completes the string.
+		buffer.process(Buffer.from("\x1b", "utf8"));
+		buffer.process(Buffer.from("\\", "utf8"));
+		const oscEvents = received.filter(seq => seq.includes("rgb:ffff"));
+		// Any emission must be the COMPLETE, ST-terminated string — not a
+		// torn prefix plus an orphaned backslash.
+		for (const event of oscEvents) {
+			expect(event.endsWith("\x1b\\")).toBe(true);
+		}
+		expect(received.filter(seq => seq === "\\")).toHaveLength(0);
+	});
+
+	it("delivers frozen paste payload when the paste watchdog aborts", async () => {
+		const received: string[] = [];
+		const pastes: string[] = [];
+		const buffer = new StdinBuffer({ timeout: 5, pasteTimeout: 30, pasteByteLimit: 8 });
+		buffer.on("data", sequence => received.push(sequence));
+		buffer.on("paste", content => pastes.push(content));
+		buffer.process(Buffer.from("\x1b[200~abcdefghij", "utf8"));
+		await Bun.sleep(60);
+		expect(pastes).toEqual(["abcdefgh"]);
+		expect(received).toEqual([]);
+	});
+
+	it("drops held UTF-8 leads that began inside a discarded string", async () => {
+		// Torn-string discard only engages under the Kitty protocol.
+		setKittyProtocolActive(true);
+		try {
+			const received: string[] = [];
+			const buffer = new StdinBuffer({ timeout: 5, stringDiscardInactivity: 30 });
+			buffer.on("data", sequence => received.push(sequence));
+			buffer.process(Buffer.from("\x1b]52;c;", "utf8"));
+			// The lead is consumed while the string is being discarded; its
+			// continuation arrives after the discard watchdog exits.
+			buffer.process(Buffer.from([0xc3]));
+			await Bun.sleep(60);
+			buffer.process(Buffer.from([0xa9]));
+			expect(received.join("")).not.toContain("é");
+		} finally {
+			setKittyProtocolActive(false);
+		}
+	});
+});
+
+describe("StdinBuffer deferred flush and UTF-8 mode boundaries", () => {
+	it("flushes a held CSI before a fresh split ESC at the deferred boundary", () => {
+		vi.useFakeTimers();
+		try {
+			const received: string[] = [];
+			const buffer = new StdinBuffer({ timeout: 5 });
+			buffer.on("data", sequence => received.push(sequence));
+			buffer.process("\x1b[12");
+			// Run the initial timeout but leave its zero-delay deferred flush
+			// pending, matching the boundary where a fresh ESC can arrive.
+			vi.advanceTimersByTime(5);
+			buffer.process("\x1b");
+			buffer.process("A");
+			expect(received).toEqual(["\x1b[12", "\x1bA"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("preserves a fresh CSI after a torn OSC under Kitty partial holding", () => {
+		vi.useFakeTimers();
+		setKittyProtocolActive(true);
+		try {
+			const received: string[] = [];
+			const buffer = new StdinBuffer({ timeout: 5 });
+			buffer.on("data", sequence => received.push(sequence));
+			buffer.process("\x1b]52;c;");
+			vi.advanceTimersByTime(5);
+			buffer.process("\x1b[A");
+			expect(received).toEqual(["\x1b]52;c;", "\x1b[A"]);
+		} finally {
+			setKittyProtocolActive(false);
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps a held UTF-8 lead inside bracketed paste across flush", () => {
+		const received: string[] = [];
+		const pastes: string[] = [];
+		const buffer = new StdinBuffer();
+		buffer.on("data", sequence => received.push(sequence));
+		buffer.on("paste", content => pastes.push(content));
+		buffer.process("\x1b[200~");
+		buffer.process(Buffer.from([0xe2]));
+		expect(buffer.flush()).toEqual([]);
+		buffer.process(Buffer.from([0x82, 0xac]));
+		buffer.process("\x1b[201~");
+		expect(received).toEqual([]);
+		expect(pastes).toEqual(["€"]);
+	});
+
+	it("drops a held UTF-8 lead while string discard is active", () => {
+		vi.useFakeTimers();
+		setKittyProtocolActive(true);
+		try {
+			const received: string[] = [];
+			const buffer = new StdinBuffer({ timeout: 5, partialHoldTimeout: 0 });
+			buffer.on("data", sequence => received.push(sequence));
+			buffer.process("\x1b]52;c;");
+			vi.advanceTimersByTime(5);
+			vi.advanceTimersByTime(1);
+			buffer.process(Buffer.from([0xe2]));
+			expect(buffer.flush()).toEqual([]);
+			buffer.process(Buffer.from([0x82, 0xac, 0x1b, 0x5c]));
+			expect(received).toEqual([]);
+		} finally {
+			setKittyProtocolActive(false);
+			vi.useRealTimers();
+		}
 	});
 });

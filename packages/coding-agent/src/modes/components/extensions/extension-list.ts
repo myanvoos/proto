@@ -1,4 +1,5 @@
 import { type Component, matchesKey, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { isProviderEnabled } from "../../../discovery";
 import { theme } from "../../../modes/theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../../utils/keybinding-matchers";
@@ -156,7 +157,7 @@ export class ExtensionList implements Component {
 			? theme.fg("success", theme.checkbox.checked)
 			: theme.fg("dim", theme.checkbox.unchecked);
 		const icon = theme.icon.package;
-		const label = `Enable ${item.providerName}`;
+		const label = `Enable ${sanitizeText(item.providerName)}`;
 		const badge = theme.fg("warning", "(Master Switch)");
 
 		let line = `${checkbox} ${icon} ${label}  ${badge}`;
@@ -190,7 +191,9 @@ export class ExtensionList implements Component {
 
 		const stateIcon = this.#getStateIcon(ext.state, masterDisabled);
 
-		let name = ext.displayName;
+		// Extension metadata is config/plugin-controlled: strip controls
+		// before the row is measured and truncated.
+		let name = sanitizeText(ext.displayName);
 		const nameWidth = Math.min(24, width - 16);
 
 		let line = `   ${stateIcon} `;
@@ -210,7 +213,7 @@ export class ExtensionList implements Component {
 			const triggerStyle = effectivelyDisabled ? "dim" : "muted";
 			const remainingWidth = width - visibleWidth(line) - 2;
 			if (remainingWidth > 5) {
-				line += `  ${truncateToWidth(theme.fg(triggerStyle as "dim" | "muted", ext.trigger), remainingWidth)}`;
+				line += `  ${truncateToWidth(theme.fg(triggerStyle as "dim" | "muted", sanitizeText(ext.trigger)), remainingWidth)}`;
 			}
 		}
 

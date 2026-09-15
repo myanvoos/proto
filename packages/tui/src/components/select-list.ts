@@ -100,13 +100,36 @@ export class SelectList implements Component, MouseRoutable {
 	onSelectionChange?: (item: SelectItem) => void;
 
 	constructor(
-		private readonly items: ReadonlyArray<SelectItem>,
+		private items: ReadonlyArray<SelectItem>,
 		maxVisible: number,
-		private readonly theme: SelectListTheme,
+		private theme: SelectListTheme,
 		private readonly layout: SelectListLayoutOptions = {},
 	) {
 		this.#maxVisible = Math.max(1, Math.trunc(maxVisible));
 		this.#filteredItems = items;
+	}
+
+	/** Re-resolve the theme after a runtime theme switch. */
+	setTheme(theme: SelectListTheme): void {
+		this.theme = theme;
+	}
+
+	/** Replace the item list (e.g. rows rebuilt with fresh theme styling). */
+	setItems(items: ReadonlyArray<SelectItem>): void {
+		// Preserve the highlighted item by value across the replacement.
+		const previousValue = this.#filteredItems[this.#selectedIndex]?.value;
+		this.items = items;
+		// Reapply the active filter so the visible rows stay consistent with
+		// the retained query (a theme rebuild must not discard the filter).
+		if (this.#filterQuery.trim()) {
+			this.#setFilter(this.#filterQuery, false);
+		} else {
+			this.#filteredItems = items;
+		}
+		this.#hoveredIndex = null;
+		const index =
+			previousValue === undefined ? -1 : this.#filteredItems.findIndex(item => item.value === previousValue);
+		this.setSelectedIndex(index >= 0 ? index : this.#selectedIndex);
 	}
 
 	setMaxVisible(rows: number): void {
@@ -162,7 +185,7 @@ export class SelectList implements Component, MouseRoutable {
 			if (showSearchStatus) {
 				lines.push(this.#renderStatusLine(width));
 			}
-			lines.push(this.theme.noMatch("  No matching items"));
+			lines.push(truncateToWidth(this.theme.noMatch("  No matching items"), width));
 			return lines;
 		}
 
@@ -264,6 +287,20 @@ export class SelectList implements Component, MouseRoutable {
 	}
 
 	#renderItem(
+		item: SelectItem,
+		isSelected: boolean,
+		width: number,
+		primaryColumnWidth: number,
+		iconColumnWidth: number,
+	): string[] {
+		// The cursor gutter is composed before width clamps: at narrow widths
+		// rows could exceed the requested width, so clamp every row.
+		return this.#composeItemRows(item, isSelected, width, primaryColumnWidth, iconColumnWidth).map(row =>
+			truncateToWidth(row, width),
+		);
+	}
+
+	#composeItemRows(
 		item: SelectItem,
 		isSelected: boolean,
 		width: number,

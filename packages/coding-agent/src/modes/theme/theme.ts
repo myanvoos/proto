@@ -197,6 +197,10 @@ export async function previewTheme(
 			return { success: false, error: "Theme preview superseded by a newer request" };
 		}
 		theme = loadedTheme;
+		// The runtime theme IS the previewed one: record it so a later auto
+		// mapping commit that resolves to a different half actually re-applies
+		// instead of early-returning on a stale name match.
+		currentThemeName = name;
 		notifyThemeChange(event);
 		return { success: true };
 	} catch (error) {

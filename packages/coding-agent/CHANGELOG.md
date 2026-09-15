@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- OAuth login dialog, tree selector branches, hook slider labels, default tool cards, and JSON tree keys/multiline values sanitize display text against terminal control injection; session/logout rows flatten embedded line breaks
+- Read card titles keep trusted hyperlink and dim/correction styling while raw path display text is still sanitized exactly once
+- Sixel passthrough: split introducers and incomplete tails are held with bounded accounting and materialized at end of stream, placeholder tokens cannot collide with ordinary output, column caps no longer fracture sixel envelopes, interactive bash capture keeps raw bytes until envelope-aware sanitization, and replace() clears stale held tails
+- TUI no longer shows a persistent band of blank rows between the HUD (todo/subagent rows) and the composer after a transcript rebuild or compaction
+- Streamed kernel assertion preflight now interrupts generation while tool-call deltas keep arriving; an in-flight check is no longer cancelled by the next delta, so a failing `assert text.count(old) == 1` stops the model before it streams the rest of the cell
 - Web Search, Inspect Media, Ask, status line, Fleet, and Advisor renderers sanitize remote/model/peer-controlled fields against terminal control injection
 - Web Search citation stripping recognizes tilde-fenced code blocks (CommonMark close rules) so answers after them are no longer dropped
 - Interactive `$` Python no longer duplicates PNG+JPEG MIME alternatives; async extension shortcut rejections hit the extension error boundary instead of crashing the process
@@ -65,6 +70,7 @@
 - Empty-body heredocs no longer render the delimiter as phantom kernel code.
 - Kernel AST previews no longer emit literal tabs from docstrings or string details (they render as spaces), and the node count reads `1 node` for single-node outlines.
 - Kernel JSON display trees use branch/last connectors correctly between top-level keys instead of a chain of last-connectors.
+- Settled bash calls that mix shell commands with Python/JavaScript kernel cells now render each kernel block as an AST outline in place of its heredoc body or `-c` word, between the surrounding shell lines, instead of falling back to a flat shell listing.
 
 ## [18.1.7] - 2026-09-13
 

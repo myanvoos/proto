@@ -468,7 +468,6 @@ function loadKeybindingsConfig(
 	return { config: migratedConfig, persistedPath: filePath };
 }
 
-const FOLLOW_UP_KEYBINDING: AppKeybinding = "app.message.followUp";
 const DEQUEUE_KEYBINDING: AppKeybinding = "app.message.dequeue";
 const MACOS_DEQUEUE_FALLBACK_KEY: KeyId = "shift+up";
 function getFallbackKey(keybinding: Keybinding): KeyId | undefined {
@@ -552,8 +551,14 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 	}
 
 	override getResolvedBindings(): KeybindingsConfig {
+		// The effective config must match what dispatch actually uses: every
+		// action goes through this.getKeys so fallback-claim removal (e.g. a
+		// user binding claiming a fallback key like shift+up) is reflected,
+		// not just the follow-up special case.
 		const resolved = super.getResolvedBindings();
-		resolved[FOLLOW_UP_KEYBINDING] = keyConfigValue(this.getKeys(FOLLOW_UP_KEYBINDING));
+		for (const keybinding of Object.keys(resolved) as Keybinding[]) {
+			resolved[keybinding] = keyConfigValue(this.getKeys(keybinding));
+		}
 		return resolved;
 	}
 

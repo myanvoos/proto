@@ -1,5 +1,6 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { Theme } from "../../modes/theme/theme";
 import { Hasher, isFramedBlockComponent, markFramedBlockComponent, renderCodeCell, renderStatusLine } from "../../tui";
@@ -152,27 +153,31 @@ function renderOpenOrCloseLine(
 	const icon =
 		status === "complete" ? "done" : status === "error" ? "error" : status === "running" ? "running" : "pending";
 
+	// Tab labels derive from args/details: sanitize before they reach the
+	// status line (which styles but does not strip controls).
 	let title: string;
 	if (action === "close") {
 		const all = args.all === true || (args.name === undefined && details?.name === undefined);
-		title = all ? "Release all tabs" : `Release ${tabLabel(args, details)}`;
+		title = all ? "Release all tabs" : `Release ${sanitizeText(tabLabel(args, details))}`;
 		if (args.kill) title += " (kill)";
 	} else {
-		title = `Open ${tabLabel(args, details)}`;
+		title = `Open ${sanitizeText(tabLabel(args, details))}`;
 	}
 
 	const meta: string[] = [];
 	const browserDesc = describeBrowser(args, details);
-	if (browserDesc) meta.push(browserDesc);
+	if (browserDesc) meta.push(sanitizeText(browserDesc));
 	const url = typeof details?.url === "string" ? details.url : typeof args.url === "string" ? args.url : "";
-	if (url) meta.push(shortenPath(url));
+	if (url) meta.push(shortenPath(sanitizeText(url)));
 
 	const header =
 		status === "complete"
 			? renderStatusLine({ iconOverride: theme.styledSymbol("tool.browser", "accent"), title, meta }, theme)
 			: renderStatusLine({ icon, title, meta }, theme);
 	if (!output) return new Text(header, 0, 0);
-	const outputLines = output.split("\n").map(line => theme.fg("toolOutput", replaceTabs(line)));
+	// Page-controlled output: sanitize before styling (replaceTabs alone does
+	// not strip terminal controls).
+	const outputLines = output.split("\n").map(line => theme.fg("toolOutput", replaceTabs(sanitizeText(line))));
 	return new Text([header, ...outputLines].join("\n"), 0, 0);
 }
 

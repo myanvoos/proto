@@ -30,6 +30,8 @@ interface ImageContentWithPng extends ImageContent {
 }
 
 export class AttachmentChipsBand implements Component {
+	#imageIds = new Map<string, { key: string; id: number }>();
+
 	constructor(
 		private readonly editor: CustomEditor,
 		private readonly budget: ImageBudget,
@@ -38,20 +40,25 @@ export class AttachmentChipsBand implements Component {
 
 	render(width: number): readonly string[] {
 		const chips = this.editor.composerChips();
-		if (chips.length === 0) return [];
+		const activeImageChips = new Set<string>();
+		if (chips.length === 0) {
+			this.#releaseInactiveImages(activeImageChips);
+			return [];
+		}
 		const rows = ["", "", "", "", "", ""];
 		const gap = " ".repeat(CARD_GAP);
 		let x = 0;
 		for (const chip of chips) {
 			if (x + CARD_COLS > width) break;
-			const card = this.#card(chip);
+			const card = this.#card(chip, activeImageChips);
 			for (let r = 0; r < rows.length; r++) rows[r] += (x > 0 ? gap : "") + card[r];
 			x += (x > 0 ? CARD_GAP : 0) + CARD_COLS;
 		}
+		this.#releaseInactiveImages(activeImageChips);
 		return rows;
 	}
 
-	#card(chip: ComposerChipDescriptor): string[] {
+	#card(chip: ComposerChipDescriptor, activeImageChips: Set<string>): string[] {
 		const sgr = attachmentSgr(chip.kind, chip.n);
 		const icon = theme.symbol(chip.kind === "image" ? "chip.image" : "chip.paste");
 		let bottomCaption: string;
@@ -59,7 +66,7 @@ export class AttachmentChipsBand implements Component {
 		if (chip.kind === "image") {
 			const dims = this.#imageDims(chip.image);
 			bottomCaption = dims ? `${dims.width}x${dims.height}` : "";
-			interior = this.#imageInterior(chip.image, dims);
+			interior = this.#imageInterior(chip.image, dims, `image:${chip.n}`, activeImageChips);
 		} else {
 			bottomCaption = chip.text.lineCount > 1 ? `+${chip.text.lineCount} lines` : `${chip.text.charCount} chars`;
 			interior = this.#textInterior(chip.text);
@@ -94,14 +101,29 @@ export class AttachmentChipsBand implements Component {
 		return dims;
 	}
 
-	#imageInterior(image: ImageContent, dims: { width: number; height: number } | null): string[] {
+	#imageInterior(
+		image: ImageContent,
+		dims: { width: number; height: number } | null,
+		chipKey: string,
+		activeImageChips: Set<string>,
+	): string[] {
 		if (dims && TERMINAL.imageProtocol === ImageProtocol.Kitty && getKittyGraphics().unicodePlaceholders) {
 			const display = this.#kittyDisplayImage(image);
 			if (display) {
 				const budget = this.budget;
-				const imageId = budget.acquireId(
-					`chip:${display.mimeType}:${display.data.length}:${display.data.slice(0, 32)}`,
-				);
+				const imageKey = `chip:${display.mimeType}:${display.data.length}:${display.data.slice(0, 32)}`;
+				let owner = this.#imageIds.get(chipKey);
+				if (owner !== undefined && owner.key !== imageKey) {
+					budget.releaseImageKey(owner.key, owner.id);
+					this.#imageIds.delete(chipKey);
+					owner = undefined;
+				}
+				if (owner === undefined) {
+					owner = { key: imageKey, id: budget.acquireId(imageKey) };
+					this.#imageIds.set(chipKey, owner);
+				}
+				activeImageChips.add(chipKey);
+				const imageId = owner.id;
 
 				if (!budget.observe(imageId)) {
 					const result = renderImage(
@@ -123,6 +145,18 @@ export class AttachmentChipsBand implements Component {
 		const pad = INNER_COLS - visibleWidth(icon);
 		const iconRow = " ".repeat(Math.floor(pad / 2)) + theme.fg("muted", icon) + " ".repeat(Math.ceil(pad / 2));
 		return [" ".repeat(INNER_COLS), iconRow, " ".repeat(INNER_COLS), " ".repeat(INNER_COLS)];
+	}
+
+	#releaseInactiveImages(activeImageChips: Set<string>): void {
+		for (const [chipKey, owner] of this.#imageIds) {
+			if (activeImageChips.has(chipKey)) continue;
+			this.budget.releaseImageKey(owner.key, owner.id);
+			this.#imageIds.delete(chipKey);
+		}
+	}
+
+	dispose(): void {
+		this.#releaseInactiveImages(new Set());
 	}
 
 	#kittyDisplayImage(image: ImageContent): ImageContent | undefined {

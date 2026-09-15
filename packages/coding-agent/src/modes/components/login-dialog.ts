@@ -1,8 +1,9 @@
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { Container, getKeybindings, Input, Spacer, Text, type TUI, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { theme } from "../../modes/theme/theme";
-import { urlHyperlinkAlways, WidthAwareText } from "../../tui";
-import { openPath } from "../../utils/open";
+import { sanitizeDisplayText, sanitizeSingleLine } from "../../tools/render-utils";
+import { safeHyperlinkUri, urlHyperlinkAlways, WidthAwareText } from "../../tui";
+import * as open from "../../utils/open";
 import { OverlayPanel } from "./overlay-box";
 
 export class LoginDialogComponent extends OverlayPanel {
@@ -20,7 +21,7 @@ export class LoginDialogComponent extends OverlayPanel {
 	) {
 		const providerInfo = getOAuthProviders().find(p => p.id === providerId);
 		const providerName = providerInfo?.name || providerId;
-		super(`Login to ${providerName}`);
+		super(`Login to ${sanitizeSingleLine(providerName)}`);
 		this.#tui = tui;
 
 		this.#contentContainer = new Container();
@@ -56,10 +57,11 @@ export class LoginDialogComponent extends OverlayPanel {
 	showAuth(url: string, instructions?: string, launchUrl?: string): void {
 		this.#contentContainer.clear();
 		this.#contentContainer.addChild(new Spacer(1));
+		const displayUrl = sanitizeSingleLine(url);
 		this.#contentContainer.addChild(
 			new WidthAwareText(
 				contentWidth =>
-					wrapTextWithAnsi(url, contentWidth)
+					wrapTextWithAnsi(displayUrl, contentWidth)
 						.map(row => theme.fg("accent", urlHyperlinkAlways(url, row)))
 						.join("\n"),
 				0,
@@ -68,21 +70,24 @@ export class LoginDialogComponent extends OverlayPanel {
 		);
 
 		const clickHint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
-		const hyperlink = `\x1b]8;;${url}\x07${clickHint}\x1b]8;;\x07`;
+		const safeUrl = safeHyperlinkUri(url);
+		const hyperlink = safeUrl
+			? `\x1b]8;;${safeUrl}\x07${sanitizeSingleLine(clickHint)}\x1b]8;;\x07`
+			: sanitizeSingleLine(clickHint);
 		this.#contentContainer.addChild(new Text(theme.fg("dim", hyperlink), 0, 0));
 
 		if (launchUrl && launchUrl !== url) {
 			this.#contentContainer.addChild(
-				new Text(theme.fg("dim", `Local shortcut (this machine only): ${launchUrl}`), 0, 0),
+				new Text(theme.fg("dim", `Local shortcut (this machine only): ${sanitizeSingleLine(launchUrl)}`), 0, 0),
 			);
 		}
 
 		if (instructions) {
 			this.#contentContainer.addChild(new Spacer(1));
-			this.#contentContainer.addChild(new Text(theme.fg("warning", instructions), 0, 0));
+			this.#contentContainer.addChild(new Text(theme.fg("warning", sanitizeDisplayText(instructions)), 0, 0));
 		}
 
-		openPath(url);
+		open.openPath(url);
 
 		this.#tui.requestRender();
 	}
@@ -90,7 +95,7 @@ export class LoginDialogComponent extends OverlayPanel {
 	showManualInput(prompt: string): Promise<string> {
 		if (!this.#contentContainer.children.includes(this.#input)) {
 			this.#contentContainer.addChild(new Spacer(1));
-			this.#contentContainer.addChild(new Text(theme.fg("dim", prompt), 0, 0));
+			this.#contentContainer.addChild(new Text(theme.fg("dim", sanitizeDisplayText(prompt)), 0, 0));
 			this.#contentContainer.addChild(this.#input);
 			this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel)"), 0, 0));
 		}
@@ -105,9 +110,9 @@ export class LoginDialogComponent extends OverlayPanel {
 
 	showPrompt(message: string, placeholder?: string): Promise<string> {
 		this.#contentContainer.addChild(new Spacer(1));
-		this.#contentContainer.addChild(new Text(theme.fg("text", message), 0, 0));
+		this.#contentContainer.addChild(new Text(theme.fg("text", sanitizeDisplayText(message)), 0, 0));
 		if (placeholder) {
-			this.#contentContainer.addChild(new Text(theme.fg("dim", `e.g., ${placeholder}`), 0, 0));
+			this.#contentContainer.addChild(new Text(theme.fg("dim", `e.g., ${sanitizeSingleLine(placeholder)}`), 0, 0));
 		}
 		if (!this.#contentContainer.children.includes(this.#input)) {
 			this.#contentContainer.addChild(this.#input);
@@ -125,13 +130,13 @@ export class LoginDialogComponent extends OverlayPanel {
 
 	showWaiting(message: string): void {
 		this.#contentContainer.addChild(new Spacer(1));
-		this.#contentContainer.addChild(new Text(theme.fg("dim", message), 0, 0));
+		this.#contentContainer.addChild(new Text(theme.fg("dim", sanitizeDisplayText(message)), 0, 0));
 		this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel)"), 0, 0));
 		this.#tui.requestRender();
 	}
 
 	showProgress(message: string): void {
-		this.#contentContainer.addChild(new Text(theme.fg("dim", message), 0, 0));
+		this.#contentContainer.addChild(new Text(theme.fg("dim", sanitizeDisplayText(message)), 0, 0));
 		this.#tui.requestRender();
 	}
 

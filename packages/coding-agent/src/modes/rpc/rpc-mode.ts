@@ -573,13 +573,12 @@ export function requestRpcDialog<T>(
 	const id = Snowflake.next() as string;
 	const { promise, resolve, reject } = Promise.withResolvers<T>();
 	let timeoutId: NodeJS.Timeout | undefined;
-
-	const cleanup = () => {
-		clearTimeout(timeoutId);
-		opts?.signal?.removeEventListener("abort", onAbort);
-		pendingRequests.delete(id);
-	};
-	const onAbort = () => {
+	// A dialog settles exactly once: onTimeout may abort the same signal
+	// (re-entering onAbort synchronously), so guard terminal emission.
+	let settled = false;
+	const settleCanceled = () => {
+		if (settled) return;
+		settled = true;
 		output({
 			type: "extension_ui_request",
 			id: Snowflake.next() as string,
@@ -589,22 +588,44 @@ export function requestRpcDialog<T>(
 		cleanup();
 		resolve(defaultValue);
 	};
+
+	const cleanup = () => {
+		clearTimeout(timeoutId);
+		opts?.signal?.removeEventListener("abort", onAbort);
+		pendingRequests.delete(id);
+	};
+	const onAbort = () => {
+		settleCanceled();
+	};
 	opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
 	if (opts?.timeout !== undefined) {
 		timeoutId = setTimeout(() => {
-			opts.onTimeout?.();
-			cleanup();
-			resolve(defaultValue);
+			try {
+				opts.onTimeout?.();
+			} finally {
+				// The RPC client still shows the dialog: emit the same cancel
+				// notification the abort path sends, or the dialog stays
+				// visible and its eventual response is silently ignored.
+				settleCanceled();
+			}
 		}, opts.timeout);
 	}
 
+	const settleFailed = (err: unknown) => {
+		if (settled) return;
+		settled = true;
+		cleanup();
+		reject(err);
+	};
 	pendingRequests.set(id, {
 		resolve: response => {
+			if (settled) return;
+			settled = true;
 			cleanup();
 			resolve(parseResponse(response));
 		},
-		reject,
+		reject: settleFailed,
 	});
 	output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest);
 	return promise;

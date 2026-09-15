@@ -1,4 +1,5 @@
 import { Input, matchesKey, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../modes/utils/keybinding-matchers";
 import { CountdownTimer } from "./countdown-timer";
@@ -24,11 +25,12 @@ export class HookInputComponent extends OverlayPanel {
 		onCancel: () => void,
 		opts?: HookInputOptions,
 	) {
-		super(title);
+		const sanitizedTitle = sanitizeText(title);
+		super(sanitizedTitle);
 
 		this.#onSubmitCallback = onSubmit;
 		this.#onCancelCallback = onCancel;
-		this.#baseTitle = title;
+		this.#baseTitle = sanitizedTitle;
 
 		this.addChild(new Spacer(1));
 

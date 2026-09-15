@@ -130,6 +130,7 @@ function findEntryByValue(entries: ReadonlyArray<PluginListEntry>, value: string
 
 export class PluginListComponent extends OverlayPanel {
 	readonly #selectList: SelectList;
+	#emptyTexts: Array<{ text: Text; style: (value: string) => string }> = [];
 
 	constructor(
 		private readonly entries: ReadonlyArray<PluginListEntry>,
@@ -139,13 +140,23 @@ export class PluginListComponent extends OverlayPanel {
 		this.addChild(new Spacer(1));
 
 		if (entries.length === 0) {
-			this.addChild(new Text(theme.fg("muted", "No plugins installed"), 0, 0));
-			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("dim", "Install npm plugins:        proto plugin install <package>"), 0, 0));
-			this.addChild(
-				new Text(theme.fg("dim", "Install marketplace plugins: proto plugin install <name>@<marketplace>"), 0, 0),
+			const empty = new Text(theme.fg("muted", "No plugins installed"), 0, 0);
+			const npmHint = new Text(theme.fg("dim", "Install npm plugins:        proto plugin install <package>"), 0, 0);
+			const marketplaceHint = new Text(
+				theme.fg("dim", "Install marketplace plugins: proto plugin install <name>@<marketplace>"),
+				0,
+				0,
 			);
+			this.addChild(empty);
 			this.addChild(new Spacer(1));
+			this.addChild(npmHint);
+			this.addChild(marketplaceHint);
+			this.addChild(new Spacer(1));
+			this.#emptyTexts = [
+				{ text: empty, style: value => theme.fg("muted", value) },
+				{ text: npmHint, style: value => theme.fg("dim", value) },
+				{ text: marketplaceHint, style: value => theme.fg("dim", value) },
+			];
 
 			this.#selectList = new SelectList([], 1, getSelectListTheme());
 			this.#selectList.onCancel = callbacks.onCancel;
@@ -218,6 +229,20 @@ export class PluginListComponent extends OverlayPanel {
 	handleInput(data: string): void {
 		this.#selectList.handleInput(data);
 	}
+
+	/** Re-resolve theme-derived state after a runtime theme switch. */
+	setTheme(): void {
+		this.#selectList.setTheme(getSelectListTheme());
+		// Row labels embed theme-styled status badges: rebuild them. setItems
+		// preserves the highlighted item by value and reapplies any filter.
+		if (this.entries.length > 0) {
+			this.#selectList.setItems(this.entries.map(entry => this.#renderItem(entry)));
+		}
+		// The empty-state rows are ANSI-baked at construction.
+		for (const entry of this.#emptyTexts) {
+			entry.text.setText(entry.style(entry.text.getText()));
+		}
+	}
 }
 
 interface PluginDetailCallbacks {
@@ -237,6 +262,11 @@ class PluginDetailComponent extends OverlayPanel {
 	) {
 		super(plugin.name);
 
+		void this.#rebuild();
+	}
+
+	/** Re-resolve theme-derived state after a runtime theme switch. */
+	setTheme(): void {
 		void this.#rebuild();
 	}
 
@@ -323,6 +353,12 @@ class PluginDetailComponent extends OverlayPanel {
 		if (!this.#settingsList) return;
 		this.#settingsList.handleInput(data);
 	}
+
+	override invalidate(): void {
+		// Re-resolve captured themes so a runtime theme switch is visible.
+		this.#settingsList?.setTheme(getSettingsListTheme());
+		super.invalidate();
+	}
 }
 
 interface MarketplacePluginDetailCallbacks {
@@ -368,7 +404,17 @@ export class MarketplacePluginDetailComponent extends OverlayPanel {
 		}
 	}
 
+	#lastRenderArgs: [InstalledPlugin | undefined, SettingItem[]] | null = null;
+
+	/** Re-resolve theme-derived state after a runtime theme switch. */
+	setTheme(): void {
+		if (this.#lastRenderArgs) {
+			this.#render(...this.#lastRenderArgs);
+		}
+	}
+
 	#render(runtimePlugin: InstalledPlugin | undefined, configItems: SettingItem[]): void {
+		this.#lastRenderArgs = [runtimePlugin, configItems];
 		this.clear();
 
 		const plugin = this.plugin;
@@ -542,6 +588,12 @@ export class PluginSettingsComponent extends Container {
 	#cwd: string;
 	#manager: PluginManager;
 	#viewComponent: (Component & InputHandler) | null = null;
+
+	/** Re-resolve theme-derived state after a runtime theme switch. */
+	setTheme(): void {
+		const view = this.#viewComponent as { setTheme?: () => void } | null;
+		view?.setTheme?.();
+	}
 
 	constructor(
 		cwd: string,

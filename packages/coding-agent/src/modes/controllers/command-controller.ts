@@ -488,13 +488,17 @@ export class CommandController {
 			return;
 		}
 
-		this.ctx.bashComponent = new BashExecutionComponent(command, this.ctx.ui, excludeFromContext);
+		// Capture the component LOCALLY: deferred runs can overlap, and
+		// routing chunks/completion through the shared ctx field would splice
+		// one run's output into another run's card.
+		const bashComponent = new BashExecutionComponent(command, this.ctx.ui, excludeFromContext);
+		this.ctx.bashComponent = bashComponent;
 
 		if (isDeferred) {
-			this.ctx.pendingMessagesContainer.addChild(this.ctx.bashComponent);
-			this.ctx.pendingBashComponents.push(this.ctx.bashComponent);
+			this.ctx.pendingMessagesContainer.addChild(bashComponent);
+			this.ctx.pendingBashComponents.push(bashComponent);
 		} else {
-			this.ctx.present(this.ctx.bashComponent);
+			this.ctx.present(bashComponent);
 		}
 		this.ctx.ui.requestRender();
 
@@ -502,15 +506,13 @@ export class CommandController {
 			const result = await this.ctx.session.executeBash(
 				command,
 				chunk => {
-					if (this.ctx.bashComponent) {
-						this.ctx.bashComponent.appendOutput(chunk);
-					}
+					bashComponent.appendOutput(chunk);
 				},
 				{ excludeFromContext, useUserShell: true },
 			);
-			if (this.ctx.bashComponent) {
+			{
 				const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
-				this.ctx.bashComponent.setComplete(result.exitCode, result.cancelled, {
+				bashComponent.setComplete(result.exitCode, result.cancelled, {
 					output: result.output,
 					truncation: meta?.truncation,
 					execution: result.execution,
@@ -526,13 +528,13 @@ export class CommandController {
 				);
 			}
 		} catch (error) {
-			if (this.ctx.bashComponent) {
-				this.ctx.bashComponent.setComplete(undefined, false);
-			}
+			bashComponent.setComplete(undefined, false);
 			this.ctx.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 
-		this.ctx.bashComponent = undefined;
+		if (this.ctx.bashComponent === bashComponent) {
+			this.ctx.bashComponent = undefined;
+		}
 		this.ctx.ui.requestRender();
 	}
 
@@ -563,13 +565,16 @@ export class CommandController {
 
 	async handlePythonCommand(code: string, excludeFromContext = false): Promise<void> {
 		const isDeferred = this.ctx.session.isStreaming;
-		this.ctx.pythonComponent = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
+		const component = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
+		// Capture locally: a later execution must never receive this run's
+		// streamed chunks or display blocks.
+		this.ctx.pythonComponent = component;
 
 		if (isDeferred) {
-			this.ctx.pendingMessagesContainer.addChild(this.ctx.pythonComponent);
-			this.ctx.pendingPythonComponents.push(this.ctx.pythonComponent);
+			this.ctx.pendingMessagesContainer.addChild(component);
+			this.ctx.pendingPythonComponents.push(component);
 		} else {
-			this.ctx.present(this.ctx.pythonComponent);
+			this.ctx.present(component);
 		}
 		this.ctx.ui.requestRender();
 
@@ -577,25 +582,24 @@ export class CommandController {
 			const result = await this.ctx.session.executePython(
 				code,
 				chunk => {
-					if (this.ctx.pythonComponent) {
-						this.ctx.pythonComponent.appendOutput(chunk);
-					}
+					component.appendOutput(chunk);
 				},
-				{ excludeFromContext },
+				{
+					excludeFromContext,
+					onDisplay: output => {
+						component.appendDisplayOutput(output);
+					},
+				},
 			);
 
-			if (this.ctx.pythonComponent) {
-				const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
-				this.ctx.pythonComponent.setComplete(result.exitCode, result.cancelled, {
-					output: result.output,
-					truncation: meta?.truncation,
-					execution: result.execution,
-				});
-			}
+			const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
+			component.setComplete(result.exitCode, result.cancelled, {
+				output: result.output,
+				truncation: meta?.truncation,
+				execution: result.execution,
+			});
 		} catch (error) {
-			if (this.ctx.pythonComponent) {
-				this.ctx.pythonComponent.setComplete(undefined, false);
-			}
+			component.setComplete(undefined, false);
 			this.ctx.showError(`Python execution failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 

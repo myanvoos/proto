@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { initThemeSync, theme } from "../modes/theme/theme";
-import { renderJsonTreeLines } from "./json-tree";
+import { formatArgsInline, renderJsonTreeLines } from "./json-tree";
 
 initThemeSync();
 const ANSI = /\u001b\[[0-9;]*m/g;
@@ -26,4 +26,20 @@ test("single-key objects and arrays keep their tree shape", () => {
 	const array = plainLines([1, 2, 3]);
 	expect(array[0]).toContain("├─");
 	expect(array[2]).toContain("└─");
+});
+
+test("sanitizes multiline values and keys before tree and inline rendering", () => {
+	const hostileKey = "key\x1b]0;PWN\x07tail";
+	const value = `first\nsecond\x1b]0;VALUE\x07visible\u009b\tend`;
+	const tree = renderJsonTreeLines({ [hostileKey]: value }, theme, 4, 50, 200).lines;
+	const inline = formatArgsInline({ [hostileKey]: value }, 200);
+
+	for (const rendered of [...tree, inline]) {
+		expect(rendered).not.toContain("\x1b]");
+		expect(rendered).not.toContain("\x07");
+	}
+	expect(tree.join("\n")).toContain("keytail");
+	expect(tree.join("\n")).toContain("visible");
+	expect(inline).toContain("keytail=");
+	expect(inline).toContain("visible");
 });

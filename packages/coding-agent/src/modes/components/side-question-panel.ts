@@ -1,4 +1,5 @@
 import { type Component, Markdown, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { replaceTabs } from "../../tools/render-utils";
 import { getMarkdownTheme, theme } from "../theme/theme";
 import { OverlayPanel } from "./overlay-box";
@@ -40,7 +41,7 @@ export class SideQuestionPanelComponent extends OverlayPanel {
 	#closed = false;
 
 	constructor(options: SideQuestionPanelOptions) {
-		super(`/side ${replaceTabs(options.question)}`);
+		super(`/side ${replaceTabs(sanitizeText(options.question))}`);
 		this.#tui = options.tui;
 		this.#canBranch = options.canBranch;
 		this.#rebuild();
@@ -137,7 +138,7 @@ export class SideQuestionPanelComponent extends OverlayPanel {
 
 	#contentComponent(): Component {
 		if (this.#state === "error") {
-			return new Text(theme.fg("error", replaceTabs(this.#errorMessage ?? "Unknown error")), 0, 0);
+			return new Text(theme.fg("error", replaceTabs(sanitizeText(this.#errorMessage ?? "Unknown error"))), 0, 0);
 		}
 		const text = this.#visibleAnswer;
 		if (!text) {

@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- Keystrokes pressed while a torn control string is pending are no longer swallowed (deferred flush and Kitty holding), and explicit flushes keep multibyte UTF-8 intact across paste and discard boundaries
+- Capability-reply matching no longer misroutes after an early background-color response (mode 2026 stays enabled, appearance refreshes no longer wedge), and stale in-band-resize prefixes no longer swallow ordinary typing
+- Kitty image transmits: unicode-placeholder and cropped-viewport rows are no longer cancelled, direct writes always drain pending image work, visible overlays stop delete/retransmit churn, hiding a fullscreen image purges its payload, and distinct geometries of one image no longer collide on the same placement identity
+- Image budget ownership is balanced: adopted images keep shared refcounts, attachment chips release what they acquire, and container rebuilds dispose image children instead of leaking resident payloads
+- Editor: typed words coalesce into a single undo step again, provider swaps drop stale completions and in-flight text-assist suggestions, and submit/undo no longer corrupt the next prompt with stale volatile text
 - Terminal title, notification, and image-fallback payloads are stripped of control bytes, closing OSC/CSI injection from extension, tool, and MCP content
 - Stdin decoding keeps split UTF-8 characters intact across reads, normalizes 8-bit C1 replies, recognizes SOS/PM strings, and discards oversized control strings instead of leaking their payload as input or paste
 - Bracketed-paste memory is capped byte-accurately (UTF-8 aware, over-limit state consumes the terminator) instead of bypassing the limit or freezing input

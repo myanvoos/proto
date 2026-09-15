@@ -16,6 +16,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type {
 	ExtensionAskDialogOption,
 	ExtensionAskDialogQuestion,
@@ -131,7 +132,7 @@ function stripRecommendedSuffix(label: string): string {
 
 function questionTabLabel(question: ExtensionAskDialogQuestion, index: number): string {
 	const base = question.header?.trim() || question.id || `Q${index + 1}`;
-	return truncateToWidth(replaceTabs(base), MAX_HEADER_CHIP_WIDTH, Ellipsis.Unicode);
+	return truncateToWidth(replaceTabs(sanitizeText(base)), MAX_HEADER_CHIP_WIDTH, Ellipsis.Unicode);
 }
 
 function renderQuestionTitle(question: ExtensionAskDialogQuestion, width: number): string[] {
@@ -247,7 +248,10 @@ function normalizedInlineInput(input: string): string {
 }
 
 function renderAnswerSummary(question: ExtensionAskDialogQuestion, state: QuestionState): string {
-	const selected = question.options.map(option => option.label).filter(label => state.selectedOptions.has(label));
+	const selected = question.options
+		.map(option => option.label)
+		.filter(label => state.selectedOptions.has(label))
+		.map(sanitizeText);
 	if (question.multi) {
 		const answers = [...selected];
 		if (state.customInput !== undefined) answers.push(`Other: “${normalizedInlineInput(state.customInput)}”`);
@@ -324,7 +328,7 @@ function renderRowLabel(
 		}
 		if (option?.preview?.trim()) {
 			const previewWidth = Math.max(1, width - 8);
-			lines.push(...renderCachedPreview(previewCache, option.preview, previewWidth));
+			lines.push(...renderCachedPreview(previewCache, sanitizeText(option.preview), previewWidth));
 		}
 	}
 	if (isOther && state.customInput !== undefined) {

@@ -33,11 +33,11 @@ export class SkillMessageComponent extends Container {
 
 	#rebuild(): void {
 		if (this.#contentComponent) {
-			this.removeChild(this.#contentComponent);
+			this.disposeAndRemoveChild(this.#contentComponent);
 			this.#contentComponent = undefined;
 		}
 
-		this.removeChild(this.#box);
+		this.disposeAndRemoveChild(this.#box);
 		this.addChild(this.#box);
 		this.#box.clear();
 

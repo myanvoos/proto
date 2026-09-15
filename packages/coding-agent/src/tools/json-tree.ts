@@ -1,4 +1,4 @@
-import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../modes/theme/theme";
 import { truncateToWidth } from "./render-utils";
 
@@ -18,6 +18,14 @@ const ARGS_INLINE_MORE_WIDTH = Bun.stringWidth(ARGS_INLINE_MORE);
 
 const ARGS_INLINE_TAIL_VALUE_RESERVE = 4;
 
+function sanitizeTreeKey(key: string): string {
+	return sanitizeText(key.replace(/[\r\n\t]+/g, " "));
+}
+
+function sanitizeMultilineValue(value: string): string {
+	return sanitizeText(value).replace(/\t/g, "\\t");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -28,7 +36,9 @@ function formatScalar(value: unknown, maxLen: number): string {
 	if (typeof value === "boolean") return String(value);
 	if (typeof value === "number") return String(value);
 	if (typeof value === "string") {
-		const escaped = value.replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+		// Values come from tool arguments (model/network controlled): strip
+		// terminal controls, then escape structural whitespace.
+		const escaped = sanitizeText(value).replace(/\n/g, "\\n").replace(/\t/g, "\\t");
 		const truncated = truncateToWidth(escaped, maxLen);
 		return `"${truncated}"`;
 	}
@@ -41,16 +51,17 @@ function formatScalar(value: unknown, maxLen: number): string {
 }
 
 export function formatArgsInline(args: Record<string, unknown>, maxWidth: number): string {
-	const keys: string[] = [];
-	for (const key in args) {
-		if (key in HIDDEN_ARG_KEYS) continue;
-		keys.push(key);
+	const keys: Array<{ raw: string; display: string }> = [];
+	for (const raw of Object.keys(args)) {
+		if (raw in HIDDEN_ARG_KEYS) continue;
+		keys.push({ raw, display: sanitizeTreeKey(raw) });
 	}
 	let result = "";
 	let width = 0;
 	for (let i = 0; i < keys.length; i++) {
-		const key = keys[i];
-		const value = args[key];
+		const keyInfo = keys[i]!;
+		const key = keyInfo.display;
+		const value = args[keyInfo.raw];
 		const sep = width > 0 ? ARGS_INLINE_PAIR_SEP : "";
 		const sepW = width > 0 ? ARGS_INLINE_PAIR_SEP_WIDTH : 0;
 		const current = width + sepW;
@@ -61,7 +72,8 @@ export function formatArgsInline(args: Record<string, unknown>, maxWidth: number
 
 		let tailReserve = 0;
 		for (let j = i + 1; j < keys.length; j++) {
-			tailReserve += ARGS_INLINE_PAIR_SEP_WIDTH + Bun.stringWidth(keys[j]) + 1 + ARGS_INLINE_TAIL_VALUE_RESERVE;
+			tailReserve +=
+				ARGS_INLINE_PAIR_SEP_WIDTH + Bun.stringWidth(keys[j]!.display) + 1 + ARGS_INLINE_TAIL_VALUE_RESERVE;
 		}
 
 		const pieceBudget = Math.min(cap, maxWidth - current - tailReserve);
@@ -117,10 +129,12 @@ export function renderJsonTreeLines(
 		ancestors.push(!isLast);
 		try {
 			if (val === null || val === undefined || typeof val !== "object") {
-				const label = key ? theme.fg("muted", key) : theme.fg("muted", "value");
+				const label = key ? theme.fg("muted", sanitizeTreeKey(key)) : theme.fg("muted", "value");
 
 				if (typeof val === "string" && val.includes("\n")) {
-					const strLines = val.split("\n");
+					// Sanitize each physical line before width truncation; otherwise a
+					// prefix of control bytes can consume the entire visible budget.
+					const strLines = val.split("\n").map(sanitizeMultilineValue);
 					const maxStrLines = Math.min(strLines.length, Math.max(1, maxLines - lines.length - 1));
 					const continuePrefix = buildTreePrefix(theme, ancestors);
 
@@ -154,7 +168,7 @@ export function renderJsonTreeLines(
 			}
 
 			if (Array.isArray(val)) {
-				const header = key ? theme.fg("muted", key) : theme.fg("muted", "array");
+				const header = key ? theme.fg("muted", sanitizeTreeKey(key)) : theme.fg("muted", "array");
 				pushLine(`${prefix}${iconArray} ${header}`);
 				if (val.length === 0) {
 					pushLine(
@@ -180,7 +194,7 @@ export function renderJsonTreeLines(
 
 			if (!isRecord(val)) return;
 
-			const header = key ? theme.fg("muted", key) : theme.fg("muted", "object");
+			const header = key ? theme.fg("muted", sanitizeTreeKey(key)) : theme.fg("muted", "object");
 			pushLine(`${prefix}${iconObject} ${header}`);
 			if (depth >= maxDepth) {
 				pushLine(`${buildTreePrefix(theme, ancestors)}${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", "…")}`);
