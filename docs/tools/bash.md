@@ -10,7 +10,6 @@
   - `packages/coding-agent/src/tools/bash-interceptor.ts` — blocks tool-better shell patterns.
   - `packages/coding-agent/src/tools/bash-skill-urls.ts` — expands internal URLs to paths.
   - `packages/coding-agent/src/tools/bash-pty-selection.ts` — `canUseInteractiveBashPty()` decides whether a call may use the local PTY overlay.
-  - `packages/coding-agent/src/tools/gh-cache-invalidation.ts` — drops `github-cache` rows for mutating `gh issue`/`gh pr` subcommands.
   - `packages/coding-agent/src/exec/bash-executor.ts` — non-PTY shell execution.
   - `packages/coding-agent/src/session/streaming-output.ts` — tail buffer, truncation, artifact spill.
   - `packages/coding-agent/src/tools/tool-timeouts.ts` — timeout clamp bounds.
@@ -150,7 +149,6 @@ An anchored rule such as `^\s*git\s+commit\b` can therefore match the `git commi
   - Registers jobs with `session.asyncJobManager` for explicit/auto background runs.
   - Uses `session.getSessionId()` to isolate shell reuse and async session keys.
   - Uses `session.allocateOutputArtifact()` for spill files.
-  - Invalidates `github-cache` rows before execution when the command contains a mutating `gh issue`/`gh pr` subcommand, so later `issue://`/`pr://` reads see post-mutation state (`invalidateGithubCacheForBashCommand`).
 - User-visible prompts / interactive UI
   - PTY mode opens a TUI overlay titled `Console` and forwards input to the PTY.
   - Background start messages note that the result is delivered automatically when complete and that the `fleet` tool can wait on it until then.

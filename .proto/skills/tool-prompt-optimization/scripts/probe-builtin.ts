@@ -3,7 +3,7 @@
 import { parseArgs } from "node:util";
 import { toolWireSchema } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { BUILTIN_TOOLS, GithubTool, HIDDEN_TOOLS, type Tool, type ToolFactory, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BUILTIN_TOOLS, HIDDEN_TOOLS, type Tool, type ToolFactory, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { probe } from "./probe.ts";
 
 const OPEN_TAG = /^<[a-z_][\w-]*>$/i;
@@ -62,13 +62,7 @@ async function resolveTool(name: string): Promise<Tool> {
 	} as ToolSession;
 
 
-
-	const direct: Record<string, (s: ToolSession) => Tool> = {
-		github: s => new GithubTool(s),
-	};
 	const key = name.toLowerCase();
-	const directCtor = direct[key];
-	if (directCtor) return directCtor(session);
 	const factories: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const factory = factories[key];
 	if (!factory) {

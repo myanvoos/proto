@@ -427,12 +427,6 @@ export function getGpuCachePath(): string {
 	return dirs.rootSubdir("gpu_cache.json", "cache");
 }
 
-export function getGithubCacheDbPath(): string {
-	const override = process.env.PROTO_GITHUB_CACHE_DB;
-	if (override) return override;
-	return dirs.rootSubdir(path.join("cache", "github-cache.db"), "cache");
-}
-
 export function getAuthBrokerSnapshotCachePath(): string {
 	const override = process.env.PROTO_AUTH_BROKER_SNAPSHOT_CACHE;
 	if (override) return override;

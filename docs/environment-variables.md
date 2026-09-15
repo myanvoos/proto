@@ -463,7 +463,6 @@ These affect where coding-agent stores data and which process-local settings ove
 | `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | On macOS/Linux, redirect corresponding PROTO paths only when the target `proto` root (or named-profile root) already exists    |
 | `PWD`                                               | Used when matching canonical current working directory in path helpers                                                     |
 | `PROTO_WORKTREE_DIR`                                  | Agent-managed worktrees directory override (default `~/.proto/wt`); must be absolute or `~`-relative, relative paths are ignored; wins over the `worktree.base` setting                      |
-| `PROTO_GITHUB_CACHE_DB`                               | Overrides the GitHub view cache database path (default `~/.proto/cache/github-cache.db`)                                                                                                     |
 
 ---
 

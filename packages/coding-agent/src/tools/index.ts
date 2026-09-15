@@ -42,7 +42,6 @@ import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from ".
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { ComputerTool } from "./computer";
 import { FleetTool, isIrcEnabled } from "./fleet";
-import { GithubTool } from "./gh";
 import { InspectMediaTool } from "./inspect-media";
 import { ManageSkillTool } from "./manage-skill";
 import { MonitorTool } from "./monitor";
@@ -72,7 +71,6 @@ export * from "./computer/supervisor";
 export * from "./essential-tools";
 export * from "./eval-backends";
 export * from "./fleet";
-export * from "./gh";
 export * from "./image-gen";
 export * from "./inspect-media";
 export * from "./manage-skill";
@@ -292,7 +290,6 @@ export const DISABLED_TOOL_NAMES: Record<string, true> = {
 export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read">, ToolFactory> = {
 	bash: s => new BashTool(s),
 	ask: AskTool.createIf,
-	github: GithubTool.createIf,
 	inspect_media: s => new InspectMediaTool(s),
 	browser: s => new BrowserTool(s),
 	computer: s => new ComputerTool(s),
@@ -363,7 +360,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		}
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");
-		if (name === "github") return session.settings.get("github.enabled");
 		if (name === "inspect_media") return isInspectMediaToolActive(session);
 		if (name === "web_search") return session.settings.get("web_search.enabled");
 		if (name === "think") return externalThinkingActive;

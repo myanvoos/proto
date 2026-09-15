@@ -8,7 +8,6 @@ import { bashToolRenderer } from "./bash";
 import { browserToolRenderer } from "./browser/render";
 import { computerToolRenderer } from "./computer-renderer";
 import { fleetToolRenderer } from "./fleet";
-import { githubToolRenderer } from "./gh-renderer";
 import { inspectMediaToolRenderer } from "./inspect-media-renderer";
 import { monitorToolRenderer } from "./monitor";
 import { createOrchestrateToolRenderer, type OrchestrateOp } from "./orchestrate";
@@ -123,7 +122,6 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	reject: resolveRenderer as ToolRenderer,
 	think: thinkToolRenderer as ToolRenderer,
 	todo: todoToolRenderer as ToolRenderer,
-	github: githubToolRenderer as ToolRenderer,
 	goal: goalToolRenderer as ToolRenderer,
 	web_search: webSearchToolRenderer as ToolRenderer,
 	...(Object.fromEntries(

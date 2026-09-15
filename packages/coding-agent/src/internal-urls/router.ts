@@ -1,7 +1,6 @@
 import { AgentProtocolHandler } from "./agent-protocol";
 import { ArtifactProtocolHandler } from "./artifact-protocol";
 import { HistoryProtocolHandler } from "./history-protocol";
-import { IssueProtocolHandler, PrProtocolHandler } from "./issue-pr-protocol";
 import { LocalProtocolHandler } from "./local-protocol";
 import { McpProtocolHandler } from "./mcp-protocol";
 import { extractUriScheme, parseInternalUrl } from "./parse";
@@ -34,8 +33,6 @@ export class InternalUrlRouter {
 		this.register(new SkillProtocolHandler());
 		this.register(new RuleProtocolHandler());
 		this.register(new McpProtocolHandler());
-		this.register(new IssueProtocolHandler());
-		this.register(new PrProtocolHandler());
 		this.register(new HistoryProtocolHandler());
 		this.register(new SshProtocolHandler());
 		this.register(new XdProtocolHandler());

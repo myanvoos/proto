@@ -2840,54 +2840,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"github.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "GitHub CLI",
-			description:
-				"Enable the github tool (op-based dispatch for repository, issue, pull request, diff, search, checkout, push, and Actions watch workflows)",
-		},
-	},
-
-	"github.cache.enabled": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "tools",
-			group: "GitHub",
-			label: "GitHub View Cache",
-			description:
-				"Cache rendered issue/PR view output in ~/.proto/cache/github-cache.db so repeated reads are free",
-		},
-	},
-
-	"github.cache.softTtlSec": {
-		type: "number",
-		default: 300,
-		ui: {
-			tab: "tools",
-			group: "GitHub",
-			label: "GitHub Cache Soft TTL",
-			description:
-				"Within this window, cached issue/PR view rows are returned directly (seconds; default 5 minutes)",
-		},
-	},
-
-	"github.cache.hardTtlSec": {
-		type: "number",
-		default: 604800,
-		ui: {
-			tab: "tools",
-			group: "GitHub",
-			label: "GitHub Cache Hard TTL",
-			description:
-				"Past the soft TTL the cached row is returned and refreshed in the background; past the hard TTL it is dropped (seconds; default 7 days)",
-		},
-	},
-
 	"web_search.enabled": {
 		type: "boolean",
 		default: true,

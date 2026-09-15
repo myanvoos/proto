@@ -19,7 +19,6 @@ export default class Read extends Command {
 		"proto read src/foo.ts:raw",
 		"proto read https://example.com",
 		"proto read proto://",
-		"proto read issue://123",
 		"proto read path/to/archive.zip:dir/file.ts",
 		"proto read path/to/db.sqlite:users:42",
 	];

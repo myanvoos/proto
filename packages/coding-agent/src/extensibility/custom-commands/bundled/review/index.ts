@@ -4,7 +4,6 @@ import type { HookCommandContext } from "../../../../extensibility/hooks/types";
 import reviewCustomRequestTemplate from "../../../../prompts/review-custom-request.md" with { type: "text" };
 import reviewHeadlessRequestTemplate from "../../../../prompts/review-headless-request.md" with { type: "text" };
 import reviewRequestTemplate from "../../../../prompts/review-request.md" with { type: "text" };
-import * as gh from "../../../../tools/gh";
 import * as git from "../../../../utils/git";
 import * as jj from "../../../../utils/jj";
 
@@ -33,7 +32,6 @@ interface ReviewPrRef {
 	repo: string;
 	number: number;
 	raw: string;
-	kind: "github-url" | "pr-url";
 }
 
 interface ParsedReviewArgs {
@@ -216,8 +214,7 @@ function buildHeadlessReviewPrompt(focus?: string): string {
 
 const REVIEW_CONTEXT_PR_LIMIT = 3;
 const REPO_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/;
-const PR_SCHEME_PATTERN = /^pr:\/\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/([1-9]\d*)(?:\/diff(?:\/(?:all|[1-9]\d*))?)?$/;
-const PR_REF_TEXT_PATTERN = /https:\/\/github\.com\/[^\s<>"']+|pr:\/\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[^\s<>"']+/g;
+const PR_REF_TEXT_PATTERN = /https:\/\/github\.com\/[^\s<>"']+/g;
 
 function stripTrailingPrRefPunctuation(text: string): string {
 	return text.replace(/[.,)\]>]+$/g, "");
@@ -252,33 +249,24 @@ function parseGithubPrUrl(text: string): ReviewPrRef | undefined {
 	const number = parsePositivePrNumber(numberPart);
 	if (number === undefined) return undefined;
 
-	return { repo: `${owner}/${repo}`, number, raw: text, kind: "github-url" };
-}
-
-function parsePrSchemeRef(text: string): ReviewPrRef | undefined {
-	const match = PR_SCHEME_PATTERN.exec(text);
-	if (!match) return undefined;
-
-	const [, owner, repo, numberPart] = match;
-	const number = parsePositivePrNumber(numberPart);
-	if (number === undefined) return undefined;
-
-	return { repo: `${owner}/${repo}`, number, raw: text, kind: "pr-url" };
+	return { repo: `${owner}/${repo}`, number, raw: text };
 }
 
 function parseReviewPrRef(text: string): ReviewPrRef | undefined {
 	const candidate = stripTrailingPrRefPunctuation(text);
-	return parseGithubPrUrl(candidate) ?? parsePrSchemeRef(candidate);
+	return parseGithubPrUrl(candidate);
+}
+
+function buildPrDiffCommand(ref: ReviewPrRef): string {
+	return `gh pr diff ${ref.number} --repo ${ref.repo}`;
 }
 
 function buildPrLargeDiffInstruction(ref: ReviewPrRef): string {
-	const prDiffUrl = `pr://${ref.repo}/${ref.number}/diff`;
-	return `MUST read assigned PR file diffs from \`${prDiffUrl}/all\` or per-file \`${prDiffUrl}/<index>\`; NEVER use local \`git diff\`/\`git show\` for PR diff content`;
+	return `MUST read assigned PR file diffs from \`${buildPrDiffCommand(ref)}\`; NEVER use local \`git diff\`/\`git show\` for PR diff content`;
 }
 
 function buildPrContextInstruction(ref: ReviewPrRef): string {
-	const prDiffUrl = `pr://${ref.repo}/${ref.number}/diff`;
-	return `MUST NOT read local workspace files for PR file context; use the fetched PR diff and \`${prDiffUrl}/all\` or per-file \`${prDiffUrl}/<index>\` only`;
+	return `MUST NOT read local workspace files for PR file context; use the fetched PR diff and \`${buildPrDiffCommand(ref)}\` only`;
 }
 
 function extractReviewPrRefFromArgs(args: string[]): ParsedReviewArgs {
@@ -340,8 +328,7 @@ async function buildPrReviewPrompt(
 ): Promise<string | undefined> {
 	let diffText: string;
 	try {
-		const lookup = await gh.getOrFetchPrDiff({ cwd: api.cwd, repo: ref.repo, number: ref.number });
-		diffText = lookup.payload.unified;
+		diffText = await git.github.text(api.cwd, ["pr", "diff", String(ref.number), "--repo", ref.repo]);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		const failure = `Failed to fetch PR diff for ${ref.repo}#${ref.number}: ${message}`;

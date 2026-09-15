@@ -65,7 +65,6 @@ import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
 import { EVAL_DEFAULT_PREVIEW_LINES, renderKernelCellLines } from "./eval-render";
-import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import {
 	formatStyledTruncationWarning,
 	type OutputMeta,
@@ -1358,8 +1357,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (cwd?.includes("://") || cwd?.includes("local:/")) {
 			cwd = await expandInternalUrls(cwd, { ...internalUrlOptions, noEscape: true });
 		}
-
-		invalidateGithubCacheForBashCommand(command);
 
 		const commandCwd = cwd ? path.resolve(this.session.cwd, expandPath(cwd)) : this.session.cwd;
 		let cwdStat: fs.Stats;

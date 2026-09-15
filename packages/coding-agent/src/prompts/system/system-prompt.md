@@ -47,8 +47,6 @@ Most file tools auto-resolve these to FS paths.
 - `vault://<vault>/<path>`: Obsidian read/edit; `vault://`: vault list; `vault://_/…`: active vault. File `?op=outline|backlinks|links|tags|properties|tasks|base|…`; vault `?op=search&q=…|daily|tasks|orphans|unresolved|bases|…`.
 {{/if}}
 - `mcp://<uri>`: MCP resource
-- `issue://<N>` / `issue://<owner>/<repo>/<N>`: GitHub issue; bare: recent; `?state=&limit=&author=&label=`.
-- `pr://<N>` / `pr://<owner>/<repo>/<N>`: same cache; `?comments=0` `?state=open|closed|merged`.
 - `proto://`: harness docs; AVOID unless user asks about harness.
 
 {{#if toolInfo.length}}

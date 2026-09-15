@@ -6,6 +6,8 @@
 
 - Agent definitions that pin `tools: eval` or `tools: kernel` must switch to `tools: bash`; persistent code execution now runs through Bash kernel cells.
 - Sessions started with `bash.enabled: false` now have no code-execution surface at all, where they previously fell back to the `kernel` tool.
+- The `github` tool and the `issue://` / `pr://` internal URL schemes are gone; use the `gh` and `git` CLIs through `bash` instead.
+- Removed the `github.enabled`, `github.cache.enabled`, `github.cache.softTtlSec`, and `github.cache.hardTtlSec` settings; configs setting them will no longer take effect.
 
 ### Changed
 
@@ -13,12 +15,16 @@
 - Agent definitions listing `tools: exec` now expand to `bash` alone instead of `eval` plus `bash`.
 - Tool-scoped rules that watched code written inside cells (`ts-no-any`, `rs-lazylock`, `go-ioutil`, …) are scoped to `tool:bash`, and the Bash tool exposes each embedded cell as an AST matcher entry (`cell.<n>.py` / `cell.<n>.js`) so AST-conditioned rules keep firing on cell source.
 - Sessions no longer probe for a usable Python interpreter while building their tool list, so startup does one less subprocess check.
+- `/review <github-pr-url>` now fetches the diff with `gh pr diff` instead of the removed GitHub view cache; local and commit review paths are unchanged.
 
 ### Removed
 
 - Removed the model-facing `eval` and `kernel` tools; Bash kernel cells are now the single code-execution surface.
 - Removed Codex Code Mode settings `providers.openai-codex.codeMode` and `providers.openai-codex.codeModeDirectTools`, plus `eval.autoBackground.enabled` and `eval.autoBackground.thresholdMs`.
 - SDK: removed the `EvalTool` export and the `skipPythonPreflight` option on `createAgentSession`.
+- Removed the `github` tool (`repo_view`, `file_read`, `pr_create`, `pr_checkout`, `pr_push`, `search_*`, `run_watch`) and its TUI renderer.
+- Removed the `issue://` / `pr://` internal URL schemes, their SQLite view cache at `~/.proto/cache/github-cache.db`, and the `bash` hook that invalidated it after mutating `gh` commands.
+- Removed the `#<number>` prompt autocomplete that expanded to `pr://` / `issue://` URLs.
 
 ## [18.1.9] - 2026-09-15
 
