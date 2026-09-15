@@ -2080,42 +2080,6 @@ def _read_stdin(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, stdin) ->
     loop.call_soon_threadsafe(queue.put_nowait, {"type": "exit"})
 
 
-def _detach_control_stdin(stdin: Any) -> Any:
-    """Move the host's NDJSON control channel off fd 0 and point fd 0 at devnull.
-
-    Children inherit fd 0. While that fd is the control pipe, a child that
-    reads stdin either steals protocol frames or blocks forever on a pipe the
-    host only ever writes requests to -- `rg PATTERN` with no path argument
-    reads stdin instead of the working tree, so a routine search hangs until
-    the cell deadline instead of returning in milliseconds. The runner's own
-    spawn sites already pass stdin=DEVNULL (see _run_shell_body), but cell
-    code calls subprocess directly and cannot be expected to.
-
-    Returns the stream the protocol reader should consume.
-    """
-    try:
-        if stdin.fileno() != 0:
-            return stdin
-    except (AttributeError, OSError, ValueError):
-        return stdin
-    try:
-        control_fd = os.dup(0)
-    except OSError:
-        return stdin
-    try:
-        null_fd = os.open(os.devnull, os.O_RDONLY)
-    except OSError:
-        os.close(control_fd)
-        return stdin
-    try:
-        os.dup2(null_fd, 0)
-    except OSError:
-        os.close(control_fd)
-        return stdin
-    finally:
-        os.close(null_fd)
-    return io.open(control_fd, "r", encoding="utf-8", errors="replace", closefd=True)
-
 async def _main_async() -> None:
     sys.stdout = _StreamProxy("stdout")
     sys.stderr = _StreamProxy("stderr")
@@ -2126,7 +2090,6 @@ async def _main_async() -> None:
     stdin = sys.__stdin__
     if stdin is None:
         return
-    stdin = _detach_control_stdin(stdin)
 
     loop = asyncio.get_running_loop()
     _STATE.loop = loop

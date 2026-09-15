@@ -11,8 +11,6 @@ __all__ = [
     "StaleWriteError",
     "block_range",
     "symbols",
-    "ast_grep",
-    "ast_edit",
     "output",
     "tool",
     "completion",
@@ -154,12 +152,6 @@ if "__proto_prelude_loaded__" not in globals():
     # leave a mismatched record behind for the raw-write guard to trip on.
     _FS_STATE.setdefault("read_seen", {})
     _FS_READ_SEEN_MAX = 8192
-    # Paths a host-side write moved under the kernel since the kernel last read
-    # them. The read record is still re-armed (the cell is never blocked), but
-    # the path's next mutation note discloses that the cell overwrote a change
-    # it never read. Cleared by any kernel read of the path.
-    _FS_STATE.setdefault("clobbered", {})
-    _FS_CLOBBERED_MAX = 4096
 
     def _fs_sha_file(ap: str) -> str:
         """Short sha256 of a file streamed in 1 MiB chunks (never loads it whole)."""
@@ -243,12 +235,6 @@ if "__proto_prelude_loaded__" not in globals():
             seen.pop(ap, None)
             seen[ap] = key
 
-    def _fs_mark_clobbered(ap: str) -> None:
-        """Flag a path whose disk content moved under the kernel. Caller holds the lock."""
-        marks = _FS_STATE["clobbered"]
-        if len(marks) >= _FS_CLOBBERED_MAX and ap not in marks:
-            marks.pop(next(iter(marks)), None)
-        marks[ap] = True
     def _fs_note_read(path) -> None:
         """Record the file state the kernel last read (arms the stale-write guard)."""
         ap = _fs_norm_path(path)
@@ -261,8 +247,6 @@ if "__proto_prelude_loaded__" not in globals():
         if not stat.S_ISREG(st.st_mode):
             return
         _fs_remember_seen(ap, (st.st_mtime_ns, st.st_size))
-        with _FS_STATE["lock"]:
-            _FS_STATE["clobbered"].pop(ap, None)
 
     def _fs_note_observed(observations) -> None:
         """Arm or disarm the stale-write guard from host-side observations
@@ -279,20 +263,11 @@ if "__proto_prelude_loaded__" not in globals():
             if mtime_ns is None or size is None:
                 with _FS_STATE["lock"]:
                     _FS_STATE["read_seen"].pop(ap, None)
-                    _FS_STATE["clobbered"].pop(ap, None)
                 continue
             try:
-                stamp = (int(mtime_ns), int(size))
+                _fs_remember_seen(ap, (int(mtime_ns), int(size)))
             except (TypeError, ValueError):
                 continue
-            if entry.get("kind") == "write":
-                # Re-arm as before so the cell's next write is not blocked, but
-                # remember that any snapshot taken before this write is stale.
-                with _FS_STATE["lock"]:
-                    prior = _FS_STATE["read_seen"].get(ap)
-                    if prior is not None and prior != stamp:
-                        _fs_mark_clobbered(ap)
-            _fs_remember_seen(ap, stamp)
 
     def _fs_forget_read(path) -> None:
         """Disarm the stale-write guard for a path this process is mutating itself."""
@@ -586,14 +561,7 @@ if "__proto_prelude_loaded__" not in globals():
             verb, suffix = "reverted", ""
         else:
             return
-        with _FS_STATE["lock"]:
-            clobbered = _FS_STATE["clobbered"].pop(ap, None) is not None
-        warn = (
-            "  \u26a0 overwrote a change made outside the kernel since your last read"
-            if clobbered and op == "write"
-            else ""
-        )
-        emit_note(f"{verb} {_fs_note_path(ap)}{suffix}{warn}")
+        emit_note(f"{verb} {_fs_note_path(ap)}{suffix}")
 
     def _flush_fs_status() -> None:
         """Report filesystem mutations made without a helper API as status
@@ -851,152 +819,6 @@ if "__proto_prelude_loaded__" not in globals():
             lines.append(f"{seg.get('startLine')}-{seg.get('endLine')}: {seg_label}")
         return "\n".join(lines)
 
-    _AST_DEFAULT_LIMIT = 1000
-
-    def _ast_note(text: str) -> None:
-        emit_note = globals().get("__proto_kernel_note")
-        if callable(emit_note):
-            emit_note(text)
-
-    def _ast_parse_failures(result, label: str) -> set[str]:
-        """Paths whose syntax tree had error nodes. Those files are skipped
-        whole, so a rename can quietly miss real call sites; the host flags the
-        skipped files that still contain the pattern text, which is the short
-        list actually worth opening."""
-        errors = (result.get("parseErrors") if isinstance(result, dict) else None) or []
-        failed = {str(entry).split(": ", 1)[0] for entry in errors if entry}
-        if not failed:
-            return failed
-        suspects = sorted(str(s) for s in ((result.get("parseSuspects") if isinstance(result, dict) else None) or []))
-        message = f"{label}: skipped {len(failed)} file(s) that did not parse"
-        if suspects:
-            shown = ", ".join(suspects[:5])
-            more = f" (+{len(suspects) - 5} more)" if len(suspects) > 5 else ""
-            message += f"; {len(suspects)} contain the pattern text and need a hand check: {shown}{more}"
-        else:
-            message += " — none contain the pattern text; narrow with glob= or lang= to silence this"
-        _ast_note(message)
-        return failed
-    def _ast_search_root(path) -> Path:
-        return proto_path(path if path is not None else ".")
-
-    def ast_grep(
-        pattern: str | list[str],
-        *,
-        lang: str | None = None,
-        path: str | Path | None = None,
-        glob: str | None = None,
-        limit: int | None = None,
-    ) -> list[dict]:
-        """Structural search: match code by syntax instead of by text.
-
-        Patterns are ast-grep syntax — `$X` captures one node, `$$$ARGS` many:
-
-            ast_grep("isEnoent($$$A)", lang="ts")
-
-        finds the real calls and never the identifier inside a comment, a
-        string literal or a markdown file, which is what `\\bname\\b` cannot do.
-        Returns [{path, line, text, meta}, ...]; `meta` holds the captures.
-        """
-        patterns = [pattern] if isinstance(pattern, str) else [str(entry) for entry in pattern]
-        if not patterns:
-            raise ValueError("ast_grep() needs at least one pattern")
-        args: dict = {"op": "grep", "patterns": patterns, "path": str(_ast_search_root(path))}
-        if lang:
-            args["lang"] = lang
-        if glob:
-            args["glob"] = glob
-        args["limit"] = _AST_DEFAULT_LIMIT if limit is None else limit
-        result = _bridge_call("__ast__", args)
-        failed = _ast_parse_failures(result, "ast_grep")
-        if isinstance(result, dict) and result.get("limitReached"):
-            # The native search reports a complete count but returns a capped
-            # slice; returning the slice as if it were everything is how a
-            # sweep silently misses call sites.
-            _ast_note(
-                f"ast_grep: returned {len(result.get('matches') or [])} of "
-                f"{result.get('totalMatches')} matches — raise limit= for the rest"
-            )
-        matches = result.get("matches") if isinstance(result, dict) else None
-        return [
-            {
-                "path": m.get("path"),
-                "line": m.get("startLine"),
-                "text": m.get("text"),
-                "meta": m.get("metaVariables") or {},
-            }
-            for m in (matches or [])
-            if str(m.get("path")) not in failed
-        ]
-
-    def ast_edit(
-        rewrites: dict[str, str],
-        *,
-        lang: str | None = None,
-        path: str | Path | None = None,
-        glob: str | None = None,
-        dry_run: bool = False,
-        max_files: int | None = None,
-    ) -> dict:
-        """Structural search-and-replace: rewrite code by syntax, not by text.
-
-            ast_edit({"isEnoent": "isFileNotFound"}, lang="ts")
-
-        Edits are computed by tree-sitter, then applied through the kernel's
-        own writes, so every touched file still reports a mutation note and
-        stays under the stale-write guard. Each match is re-verified against
-        the bytes on disk and nothing is written unless all of them still
-        match. `dry_run=True` returns the same summary without writing.
-        """
-        if not isinstance(rewrites, dict) or not rewrites:
-            raise ValueError("ast_edit() needs a non-empty {pattern: replacement} mapping")
-        root = _ast_search_root(path)
-        args: dict = {
-            "op": "edit",
-            "rewrites": {str(k): str(v) for k, v in rewrites.items()},
-            "path": str(root),
-        }
-        if lang:
-            args["lang"] = lang
-        if glob:
-            args["glob"] = glob
-        if max_files is not None:
-            args["maxFiles"] = max_files
-        result = _bridge_call("__ast__", args)
-        _ast_parse_failures(result, "ast_edit")
-        changes = (result.get("changes") if isinstance(result, dict) else None) or []
-        by_file: dict[str, list] = {}
-        for change in changes:
-            by_file.setdefault(str(change.get("path")), []).append(change)
-        summary = {
-            "replacements": int(result.get("totalReplacements", 0) or 0),
-            "files": sorted(by_file),
-            "applied": False,
-        }
-        if dry_run or not changes:
-            summary["changes"] = changes
-            return summary
-        base = root if root.is_dir() else root.parent
-        # Splice every file first: a stale match must abort the whole edit
-        # rather than leave half the rename applied.
-        pending: list[tuple[Path, bytes]] = []
-        for rel, items in by_file.items():
-            target = Path(rel) if Path(rel).is_absolute() else base / rel
-            data = target.read_bytes()
-            for change in sorted(items, key=lambda c: int(c["byteStart"]), reverse=True):
-                start = int(change["byteStart"])
-                end = int(change["byteEnd"])
-                before = str(change.get("before", "")).encode("utf-8")
-                if data[start:end] != before:
-                    raise RuntimeError(
-                        f"ast_edit: {target} changed under the match at byte {start}; nothing was written"
-                    )
-                data = data[:start] + str(change.get("after", "")).encode("utf-8") + data[end:]
-            pending.append((target, data))
-        for target, data in pending:
-            target.write_bytes(data)
-        summary["applied"] = True
-        return summary
     def output(
         *ids: object,
         format: str = "raw",
