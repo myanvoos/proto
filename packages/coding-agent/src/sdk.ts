@@ -185,7 +185,6 @@ import {
 	createTools,
 	DISABLED_TOOL_NAMES,
 	defaultLoadModeForToolName,
-	EvalTool,
 	getSearchTools,
 	HIDDEN_TOOLS,
 	isMountableUnderXdev,
@@ -386,8 +385,6 @@ export interface CreateAgentSessionOptions {
 
 	enableIrc?: boolean;
 
-	skipPythonPreflight?: boolean;
-
 	toolNames?: string[];
 
 	restrictToolNames?: boolean;
@@ -478,7 +475,7 @@ export { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-re
 export type { Tool } from "./tools";
 export { buildDirectoryTree, buildWorkspaceTree, type DirectoryTree, type WorkspaceTree } from "./workspace-tree";
 
-export { BashTool, BUILTIN_TOOLS, createTools, EvalTool, HIDDEN_TOOLS, ReadTool, type ToolSession, WebSearchTool };
+export { BashTool, BUILTIN_TOOLS, createTools, HIDDEN_TOOLS, ReadTool, type ToolSession, WebSearchTool };
 
 export async function discoverAuthStorage(agentDir: string = getAgentDir()): Promise<AuthStorage> {
 	return discoverAuthStorageFromConfig(agentDir);
@@ -1302,7 +1299,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			enableIrc: restrictToolNames ? false : options.enableIrc,
 			restrictToolNames,
-			skipPythonPreflight: options.skipPythonPreflight,
 			contextFiles,
 			workspaceTree: resolvedWorkspaceTree,
 			get skills() {
@@ -1331,7 +1327,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getToolByName: name => session?.getToolByName(name),
 			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
 			getEvalBridgeToolNames: () => session?.getEvalBridgeToolNames() ?? [],
-			getCodeModeDirectToolNames: () => session?.getCodeModeDirectToolNames(),
 			agentRegistry,
 
 			agentLifecycle: options.agentRegistry ? undefined : () => AgentLifecycleManager.global(),
@@ -2181,7 +2176,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const rebuildSystemPrompt = async (
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
-			rebuildOptions?: { directToolNames?: readonly string[] },
 		): Promise<BuildSystemPromptResult> => {
 			const promptCwd = sessionManager.getCwd();
 			const activeRepoContext = hasSession
@@ -2254,7 +2248,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				contextFiles,
 				tools: promptTools,
 				toolNames,
-				directToolNames: rebuildOptions?.directToolNames,
 				rules: rulebookRules,
 				alwaysApplyRules,
 				resolvedAppendSystemPrompt: appendPrompt,
@@ -2497,7 +2490,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			wrapStreamFnWithProviderConcurrency(settings, createSettingsAwareStreamFn(settings)),
 			blobBroker,
 		);
-		const codeModeState: { namespacesInfo?: unknown } = {};
 		const transformToolCallArguments = (args: Record<string, unknown>): Record<string, unknown> => {
 			let result = args;
 			const maxTimeout = settings.get("tools.maxTimeout");
@@ -2565,9 +2557,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					...streamOptions,
 					anthropicCacheRefresh: true,
 					forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
-					...(codeModeState.namespacesInfo === undefined
-						? {}
-						: { toolNamespacesInfo: codeModeState.namespacesInfo }),
 				});
 			},
 			cursorExecHandlers,
@@ -2649,7 +2638,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const sessionFile = sessionManager.getSessionFile();
 		const initialAdvisorCosts = await loadAdvisorTranscriptCosts(sessionFile);
 		session = new AgentSession({
-			codeModeState,
 			advisorWatchdogPrompt,
 			advisorContextPrompt,
 			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
@@ -3091,12 +3079,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 
 		startDeferredMCPDiscovery?.(session);
-
-		try {
-			await session.initializeCodeMode();
-		} catch (error) {
-			logger.warn("Code Mode initialization at session startup failed", { error: String(error) });
-		}
 
 		return {
 			session,

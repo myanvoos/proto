@@ -85,12 +85,7 @@ import type { ResolvedModelRoleValue } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
-import {
-	onAppendOnlyModeChanged,
-	onCodeModeChanged,
-	onExtendedContextChanged,
-	onModelRolesChanged,
-} from "../config/settings";
+import { onAppendOnlyModeChanged, onExtendedContextChanged, onModelRolesChanged } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import type { KernelDisplayOutput } from "../eval/py/display";
 import type { PythonResult } from "../eval/py/executor";
@@ -419,7 +414,6 @@ export class AgentSession {
 	#unsubscribeAppendOnly?: () => void;
 	#unsubscribeModelRoles?: () => void;
 	#unsubscribeExtendedContext?: () => void;
-	#unsubscribeCodeMode?: () => void;
 
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
 	#eventListeners: AgentSessionEventListener[] = [];
@@ -752,11 +746,8 @@ export class AgentSession {
 		return this.#prewalk.arm(target, thinkingLevel);
 	}
 
-	#codeModeState: { namespacesInfo?: unknown };
-
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
-		this.#codeModeState = config.codeModeState ?? {};
 		this.sessionManager = config.sessionManager;
 		this.#liveHeartbeat = createSessionLiveHeartbeat(this.sessionManager.getSessionFile());
 		this.settings = config.settings;
@@ -1049,9 +1040,6 @@ export class AgentSession {
 			isStreaming: () => this.isStreaming,
 			queuedMessageCount: () => this.queuedMessageCount,
 			model: () => this.model,
-			setCodeModeNamespacesInfo: info => {
-				this.#codeModeState.namespacesInfo = info;
-			},
 			clearInheritedProviderPromptCacheKey: () => this.#clearInheritedProviderPromptCacheKey(),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			notifyCommandMetadataChanged: () => this.#notifyCommandMetadataChanged(),
@@ -1323,12 +1311,6 @@ export class AgentSession {
 		});
 
 		this.#unsubscribeExtendedContext = onExtendedContextChanged(() => void this.#reapplyExtendedContextPolicy());
-		this.#unsubscribeCodeMode = onCodeModeChanged(() => {
-			void this.#tools.reconcileCodeMode().catch(error => {
-				logger.warn("Code Mode reconcile after setting change failed", { error: String(error) });
-			});
-		});
-
 		void this.#retryInactiveAdvisorAfterModelDiscovery();
 	}
 
@@ -3242,10 +3224,6 @@ export class AgentSession {
 			this.#unsubscribeExtendedContext();
 			this.#unsubscribeExtendedContext = undefined;
 		}
-		if (this.#unsubscribeCodeMode) {
-			this.#unsubscribeCodeMode();
-			this.#unsubscribeCodeMode = undefined;
-		}
 		this.#eventListeners = [];
 		this.#runStateListeners.clear();
 		this.#sessionChangeCallbacks.clear();
@@ -3536,10 +3514,6 @@ export class AgentSession {
 		return this.#tools.getEvalBridgeToolNames();
 	}
 
-	getCodeModeDirectToolNames(): readonly string[] | undefined {
-		return this.#tools.getCodeModeDirectToolNames();
-	}
-
 	hasBuiltInTool(name: string): boolean {
 		return this.#tools.hasBuiltInTool(name);
 	}
@@ -3590,16 +3564,6 @@ export class AgentSession {
 
 	refreshSkills(): Promise<void> {
 		return this.#tools.refreshSkills();
-	}
-
-	initializeCodeMode(): Promise<void> {
-		const model = this.model;
-		if (!model || !this.#tools.codeModeChangesBetween(undefined, model)) return Promise.resolve();
-		return this.#tools.reconcileCodeMode();
-	}
-
-	get codeModeNamespacesInfo(): unknown {
-		return this.#codeModeState.namespacesInfo;
 	}
 
 	setActiveToolsByName(toolNames: string[]): Promise<void> {
@@ -4012,7 +3976,7 @@ export class AgentSession {
 		}
 		if (this.#magicKeywordEnabled("workflow") && containsWorkflow(text)) {
 			const enabledToolNames = this.getEnabledToolNames();
-			if (enabledToolNames.includes("orchestrate_spawn") && enabledToolNames.includes("eval")) {
+			if (enabledToolNames.includes("orchestrate_spawn") && enabledToolNames.includes("bash")) {
 				keywordNotices.push({
 					role: "custom",
 					customType: "workflow-notice",
@@ -5624,7 +5588,6 @@ export class AgentSession {
 	async #setModelWithProviderSessionReset(model: Model): Promise<void> {
 		const currentModel = this.model;
 		const isChanging = !currentModel || !modelsAreEqual(currentModel, model);
-		const codeModeChanged = this.#tools.codeModeChangesBetween(currentModel, model);
 		if (currentModel) {
 			this.#closeProviderSessionsForModelSwitch(currentModel, model);
 			if (isChanging) {
@@ -5638,14 +5601,6 @@ export class AgentSession {
 		}
 
 		this.#syncAppendOnlyContext(model);
-
-		if (codeModeChanged || this.#tools.codeModeDirectWireMetadataChanged()) {
-			try {
-				await this.#tools.reconcileCodeMode();
-			} catch (error) {
-				logger.warn("Code Mode reconcile after model change failed", { error: String(error) });
-			}
-		}
 
 		try {
 			await this.#tools.reconcileInspectMediaAfterModelChange();

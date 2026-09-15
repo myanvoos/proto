@@ -1,7 +1,7 @@
 ---
 description: "Detect explicit `any` in common TypeScript type positions and assertions — use `unknown`, generics, a schema parse at trust boundaries, or the actual type"
 condition: '(?m)(?:(?::|\bas\b|=|<|,|\||&|\?|\bextends)\s*)any\b'
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

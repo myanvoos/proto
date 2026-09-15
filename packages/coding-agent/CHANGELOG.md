@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Agent definitions that pin `tools: eval` or `tools: kernel` must switch to `tools: bash`; persistent code execution now runs through Bash kernel cells.
+- Sessions started with `bash.enabled: false` now have no code-execution surface at all, where they previously fell back to the `kernel` tool.
+
+### Changed
+
+- Subagents now receive the `bash` tool at every task depth, sharing the same shell and persistent Python/JavaScript kernel-cell surface as the main agent instead of using `kernel` for delegated code execution.
+- Agent definitions listing `tools: exec` now expand to `bash` alone instead of `eval` plus `bash`.
+- Tool-scoped rules that watched code written inside cells (`ts-no-any`, `rs-lazylock`, `go-ioutil`, …) are scoped to `tool:bash`, and the Bash tool exposes each embedded cell as an AST matcher entry (`cell.<n>.py` / `cell.<n>.js`) so AST-conditioned rules keep firing on cell source.
+- Sessions no longer probe for a usable Python interpreter while building their tool list, so startup does one less subprocess check.
+
+### Removed
+
+- Removed the model-facing `eval` and `kernel` tools; Bash kernel cells are now the single code-execution surface.
+- Removed Codex Code Mode settings `providers.openai-codex.codeMode` and `providers.openai-codex.codeModeDirectTools`, plus `eval.autoBackground.enabled` and `eval.autoBackground.thresholdMs`.
+- SDK: removed the `EvalTool` export and the `skipPythonPreflight` option on `createAgentSession`.
+
 ## [18.1.9] - 2026-09-15
 
 ### Changed

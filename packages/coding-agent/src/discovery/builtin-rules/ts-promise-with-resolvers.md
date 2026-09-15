@@ -1,7 +1,7 @@
 ---
 description: Use Promise.withResolvers() instead of new Promise() constructor
 condition: "new Promise\\("
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

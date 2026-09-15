@@ -214,7 +214,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 					return;
 				}
 				await copyToClipboard(lastCommand.code);
-				runtime.ctx.showStatus(`Copied ${lastCommand.kind === "bash" ? "bash command" : "eval code"} to clipboard`);
+				runtime.ctx.showStatus("Copied bash command to clipboard");
 				runtime.ctx.editor.setText("");
 				return;
 			}

@@ -69,16 +69,6 @@ interface CommandContainer {
 	command?: unknown;
 }
 
-interface EvalCellContainer {
-	cells?: unknown;
-}
-
-interface EvalCellLike {
-	language?: unknown;
-	title?: unknown;
-	code?: unknown;
-}
-
 interface PatternContainer {
 	pattern?: unknown;
 }
@@ -191,7 +181,6 @@ function mapToolKind(toolName: string): ToolKind {
 		case "bash":
 		case "shell":
 		case "exec":
-		case "eval":
 			return "execute";
 		case "web_search":
 			return "fetch";
@@ -527,39 +516,7 @@ function buildToolStartText(toolName: string, args: unknown): string | undefined
 		const command = extractStringProperty<CommandContainer>(args, "command");
 		return command ? limitText(`$ ${command}`) : undefined;
 	}
-	if (toolName === "eval") {
-		return buildEvalStartText(args);
-	}
 	return undefined;
-}
-
-function buildEvalStartText(args: unknown): string | undefined {
-	if (typeof args !== "object" || args === null || Array.isArray(args)) {
-		return undefined;
-	}
-	const container = args as EvalCellContainer & EvalCellLike;
-	const cells = Array.isArray(container.cells)
-		? container.cells
-		: typeof container.code === "string"
-			? [container]
-			: [];
-	if (cells.length === 0) {
-		return undefined;
-	}
-	const lines: string[] = [];
-	for (const cell of cells) {
-		if (typeof cell !== "object" || cell === null || Array.isArray(cell)) {
-			continue;
-		}
-		const language = extractStringProperty<EvalCellLike>(cell, "language") ?? "?";
-		const title = extractStringProperty<EvalCellLike>(cell, "title");
-		const code = extractStringProperty<EvalCellLike>(cell, "code");
-		if (!code) {
-			continue;
-		}
-		lines.push(title ? `[${language}] ${title}` : `[${language}]`, code);
-	}
-	return lines.length > 0 ? limitText(lines.join("\n")) : undefined;
 }
 
 function mergeToolUpdateContent(startContent: ToolCallContent[], resultContent: ToolCallContent[]): ToolCallContent[] {
@@ -588,10 +545,6 @@ function buildToolTitle(toolName: string, args: unknown, intent: string | undefi
 	if (isCommandToolName(toolName)) {
 		const commandText = buildToolStartText(toolName, args);
 		if (commandText) return commandText;
-	}
-	if (toolName === "eval") {
-		const evalText = buildEvalStartText(args);
-		if (evalText) return evalText;
 	}
 	const trimmedIntent = intent?.trim();
 	if (trimmedIntent) {

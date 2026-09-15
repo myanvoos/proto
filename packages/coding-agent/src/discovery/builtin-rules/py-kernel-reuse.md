@@ -1,6 +1,6 @@
 ---
 description: "In the Python kernel, reuse prelude primitives and already-defined functions instead of hand-rolling file and search helpers"
-scope: "tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

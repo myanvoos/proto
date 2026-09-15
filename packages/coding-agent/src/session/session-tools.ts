@@ -22,7 +22,6 @@ import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { supportsExternalThinking } from "../tools/think";
 import { isMountableUnderXdev, listXdevTools, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
 import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspect-media-mode";
-import { buildToolNamespacesInfo, resolveCodeMode, type ToolNamespacesInfo } from "./code-mode";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
@@ -44,8 +43,6 @@ export interface SessionToolsHost {
 
 	getInspectMediaModeOverride(): InspectMediaMode | undefined;
 	setInspectMediaModeOverride(mode: InspectMediaMode | undefined): void;
-
-	setCodeModeNamespacesInfo?(info: unknown): void;
 }
 
 interface SessionToolsOptions {
@@ -64,7 +61,6 @@ interface SessionToolsOptions {
 	rebuildSystemPrompt?: (
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
-		options?: { directToolNames?: readonly string[] },
 	) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
 	getMcpServerInstructions?: () => Map<string, string> | undefined;
 	xdev?: XdevState;
@@ -178,10 +174,6 @@ export class SessionTools {
 	#enabledToolNames = new Set<string>();
 
 	#toolPredicateNames: readonly string[] | undefined;
-
-	#codeModeDirectWireSignature: string | undefined;
-
-	#codeModeDirectToolNames: readonly string[] | undefined;
 
 	#basePromptXdevNames: ReadonlySet<string> = new Set();
 	#toolRegistryMutationScope = new AsyncLocalStorage<boolean>();
@@ -303,19 +295,6 @@ export class SessionTools {
 
 	getEvalBridgeToolNames(): string[] {
 		return this.getEnabledToolNames();
-	}
-
-	getCodeModeDirectToolNames(): readonly string[] | undefined {
-		return this.#codeModeDirectToolNames;
-	}
-
-	#hasCodeModeEvalTransport(): boolean {
-		const evalTool = this.#toolRegistry.get("eval") as
-			| (AgentTool & { supportsCodeModeTransport?: () => boolean })
-			| undefined;
-		if (!evalTool) return false;
-
-		return evalTool.supportsCodeModeTransport?.() ?? false;
 	}
 
 	hasBuiltInTool(name: string): boolean {
@@ -449,48 +428,6 @@ export class SessionTools {
 		await this.reconcileInspectMediaAfterModelChange();
 	}
 
-	codeModeChangesBetween(previousModel: Model | undefined, nextModel: Model): boolean {
-		const enabledToolNames = this.getEnabledToolNames();
-		const setting = this.#host.settings.get("providers.openai-codex.codeMode");
-		const extraDirectTools = this.#host.settings.get("providers.openai-codex.codeModeDirectTools");
-		const resolve = (model: Model | undefined) =>
-			resolveCodeMode({
-				provider: model?.provider ?? "",
-				toolMode: model?.toolMode,
-				setting,
-				extraDirectTools,
-				enabledToolNames,
-				evalTransportAvailable: this.#hasCodeModeEvalTransport(),
-			});
-		const previous = resolve(previousModel);
-		const next = resolve(nextModel);
-		if (previous.active !== next.active) return true;
-		if (!next.active) return false;
-		if (previous.directToolNames.size !== next.directToolNames.size) return true;
-		for (const name of previous.directToolNames) {
-			if (!next.directToolNames.has(name)) return true;
-		}
-		return false;
-	}
-
-	codeModeDirectWireMetadataChanged(): boolean {
-		if (this.#codeModeDirectWireSignature === undefined) return false;
-		return this.#codeModeDirectWireSignature !== this.#computeCodeModeDirectWireSignature(this.getActiveToolNames());
-	}
-
-	#computeCodeModeDirectWireSignature(toolNames: readonly string[]): string {
-		let signature = "";
-		for (const name of toolNames) {
-			const tool = this.#toolRegistry.get(name);
-			signature += `${name}\u0000${tool?.customWireName ?? name}\u0001`;
-		}
-		return signature;
-	}
-
-	reconcileCodeMode(): Promise<void> {
-		return this.applyActiveToolsByName(this.getEnabledToolNames());
-	}
-
 	getSelectedMCPToolNames(): string[] {
 		return this.getEnabledToolNames().filter(name => isMCPToolName(name) && this.#toolRegistry.has(name));
 	}
@@ -516,14 +453,6 @@ export class SessionTools {
 		) {
 			toolNames.push("read");
 		}
-		const codeMode = resolveCodeMode({
-			provider: this.#host.model()?.provider ?? "",
-			toolMode: this.#host.model()?.toolMode,
-			setting: this.#host.settings.get("providers.openai-codex.codeMode"),
-			extraDirectTools: this.#host.settings.get("providers.openai-codex.codeModeDirectTools"),
-			enabledToolNames: toolNames,
-			evalTransportAvailable: this.#hasCodeModeEvalTransport(),
-		});
 		const selectedTools = toolNames.flatMap(name => {
 			const tool = this.#toolRegistry.get(name);
 			return tool ? [{ name, tool }] : [];
@@ -542,7 +471,6 @@ export class SessionTools {
 		);
 		const mountNames = new Set(mountCandidates.map(({ name }) => name));
 
-		if (codeMode.active) mountNames.clear();
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
 		for (const { name, tool } of selectedTools) {
@@ -551,68 +479,25 @@ export class SessionTools {
 			validToolNames.push(name);
 		}
 
-		const activeDeferrableTool = tools.some(tool => tool.deferrable === true);
-		const transportNeeded = mountNames.size > 0 || activeDeferrableTool;
-
-		let appliedTools = tools;
-		let appliedNames = validToolNames;
-		let nextCodeModeNamespacesInfo: ToolNamespacesInfo | undefined;
-		if (codeMode.active) {
-			for (const name of this.#requiredToolNames) codeMode.directToolNames.add(name);
-
-			if (transportNeeded) codeMode.directToolNames.add("bash");
-			appliedTools = tools.filter(tool => codeMode.directToolNames.has(tool.name));
-			appliedNames = validToolNames.filter(name => codeMode.directToolNames.has(name));
-			nextCodeModeNamespacesInfo = buildToolNamespacesInfo({
-				tools: validToolNames.flatMap(name => {
-					const tool = this.#toolRegistry.get(name);
-					if (!tool) return [];
-					return [
-						{
-							name,
-							customWireName: tool.customWireName,
-							loadMode: "loadMode" in tool && typeof tool.loadMode === "string" ? tool.loadMode : undefined,
-							mcpServerName:
-								"mcpServerName" in tool && typeof tool.mcpServerName === "string"
-									? tool.mcpServerName
-									: undefined,
-						},
-					];
-				}),
-				directToolNames: codeMode.directToolNames,
-			});
-		}
+		const appliedTools = tools;
+		const appliedNames = validToolNames;
 		const previousMounted = new Set(this.#xdev?.mountedNames ?? []);
 		const previousActiveToolNames = this.getActiveToolNames();
 		const previousEnabledToolNames = this.#enabledToolNames;
-		const previousCodeModeDirectToolNames = this.#codeModeDirectToolNames;
 		const previousToolPredicateNames = this.#toolPredicateNames;
 		this.#enabledToolNames = new Set([...validToolNames, ...mountNames]);
 		this.#setMountedNames(mountNames);
-		this.#toolPredicateNames = codeMode.active ? [...this.#enabledToolNames] : appliedNames;
+		this.#toolPredicateNames = appliedNames;
 		this.#setActiveToolNames?.(this.#toolPredicateNames);
-
-		this.#codeModeDirectToolNames = codeMode.active ? appliedNames : undefined;
 
 		let rebuiltSystemPrompt: string[] | undefined;
 		let rebuiltSignature: string | undefined;
 		let rebuiltXdevCatalogNames: readonly string[] | undefined;
 		try {
 			if (this.#rebuildSystemPrompt) {
-				const promptToolNames = codeMode.active ? [...this.#enabledToolNames] : appliedNames;
-				const promptTools = codeMode.active
-					? promptToolNames.flatMap(name => {
-							const tool = this.#toolRegistry.get(name);
-							return tool ? [tool] : [];
-						})
-					: appliedTools;
-				const directToolNames = codeMode.active ? appliedNames : undefined;
-				const signature = this.#computeAppliedToolSignature(promptToolNames, promptTools, directToolNames);
+				const signature = this.#computeAppliedToolSignature(appliedNames, appliedTools);
 				if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
-					const built = await untilAborted(
-						signal,
-						this.#rebuildSystemPrompt(promptToolNames, this.#toolRegistry, { directToolNames }),
-					);
+					const built = await untilAborted(signal, this.#rebuildSystemPrompt(appliedNames, this.#toolRegistry));
 					rebuiltSystemPrompt = built.systemPrompt;
 					rebuiltSignature = signature;
 					rebuiltXdevCatalogNames = built.xdevCatalogNames;
@@ -624,7 +509,6 @@ export class SessionTools {
 			this.#toolPredicateNames = previousToolPredicateNames;
 			this.#setActiveToolNames?.(previousToolPredicateNames ?? previousActiveToolNames);
 			this.#enabledToolNames = previousEnabledToolNames;
-			this.#codeModeDirectToolNames = previousCodeModeDirectToolNames;
 			throw error;
 		}
 
@@ -633,16 +517,11 @@ export class SessionTools {
 			this.#toolPredicateNames = previousToolPredicateNames;
 			this.#setActiveToolNames?.(previousToolPredicateNames ?? previousActiveToolNames);
 			this.#enabledToolNames = previousEnabledToolNames;
-			this.#codeModeDirectToolNames = previousCodeModeDirectToolNames;
 			return;
 		}
 
 		this.#notifyXdevMountDelta(previousMounted);
 		this.#host.agent.setTools(appliedTools);
-		this.#host.setCodeModeNamespacesInfo?.(nextCodeModeNamespacesInfo);
-		this.#codeModeDirectWireSignature = codeMode.active
-			? this.#computeCodeModeDirectWireSignature(appliedNames)
-			: undefined;
 		if (rebuiltSystemPrompt && rebuiltSignature) {
 			if (this.#lastAppliedToolSignature !== undefined) this.#host.clearInheritedProviderPromptCacheKey();
 			this.#baseSystemPrompt = rebuiltSystemPrompt;
@@ -986,13 +865,9 @@ export class SessionTools {
 	async #refreshBaseSystemPrompt(): Promise<void> {
 		if (this.#host.isDisposed() || !this.#rebuildSystemPrompt) return;
 		const activeToolNames = this.getActiveToolNames();
-		const promptToolNames =
-			this.#codeModeDirectWireSignature === undefined ? activeToolNames : this.getEnabledToolNames();
-
-		const directToolNames = this.#codeModeDirectWireSignature === undefined ? undefined : activeToolNames;
 		this.#setActiveToolNames?.(this.#toolPredicateNames ?? activeToolNames);
 		const previousBaseSystemPrompt = this.#baseSystemPrompt;
-		const built = await this.#rebuildSystemPrompt(promptToolNames, this.#toolRegistry, { directToolNames });
+		const built = await this.#rebuildSystemPrompt(activeToolNames, this.#toolRegistry);
 		if (this.#host.isDisposed()) return;
 		this.#baseSystemPrompt = built.systemPrompt;
 		this.#basePromptXdevNames = new Set(built.xdevCatalogNames);
@@ -1005,13 +880,13 @@ export class SessionTools {
 		this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
 		this.#promptModelKey = this.#currentPromptModelKey();
 
-		const promptTools = promptToolNames
+		const promptTools = activeToolNames
 			.map(name => this.#toolRegistry.get(name))
 			.filter((tool): tool is AgentTool => tool != null);
-		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(promptToolNames, promptTools, directToolNames);
+		this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(activeToolNames, promptTools);
 	}
 
-	#computeAppliedToolSignature(toolNames: string[], tools: AgentTool[], directToolNames?: readonly string[]): string {
+	#computeAppliedToolSignature(toolNames: string[], tools: AgentTool[]): string {
 		const nameSegment = toolNames.join("\u0001");
 		const describeTool = (tool: AgentTool): string =>
 			`${tool.name}=${tool.label ?? ""}|${tool.description ?? ""}|${tool.customWireName ?? ""}`;
@@ -1035,8 +910,7 @@ export class SessionTools {
 			instructionsSegment = entries.join("\u0006");
 		}
 
-		const directSegment = directToolNames === undefined ? "" : `\u0004${directToolNames.join("\u0001")}`;
-		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}${directSegment}`;
+		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}`;
 	}
 
 	refreshMCPTools(mcpTools: CustomTool[]): Promise<void> {

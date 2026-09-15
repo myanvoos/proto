@@ -452,9 +452,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			asyncEnabled: this.#asyncEnabled,
 			autoBackgroundEnabled: this.#autoBackgroundEnabled,
 			autoBackgroundThresholdSeconds: Math.max(0, Math.floor(this.#autoBackgroundThresholdMs / 1000)),
-			hasRead: isToolActive("read", true),
 			hasLaunch: isToolActive("fleet", this.session.settings.get("launch.enabled")),
-			hasEval: isToolActive("eval", evalBackends.python || evalBackends.js),
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
 			hasKernelBridge: bridge,
 			py: bridge && evalBackends.python,
@@ -489,6 +487,21 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			this.#disposed = true;
 			this.cancelStreamedInput();
 		});
+	}
+
+	/**
+	 * Source-bearing payload for AST-scoped rules: each embedded kernel cell is
+	 * exposed under a synthetic path so the cell's language drives grammar
+	 * selection. Plain shell commands carry no parseable source and match nothing.
+	 */
+	matcherEntries(args: unknown): readonly { path: string; digest: string }[] | undefined {
+		if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+		const command = (args as Record<string, unknown>).command;
+		if (typeof command !== "string" || command.length === 0) return undefined;
+		return findBashKernelCells(command).map((cell, index) => ({
+			path: cell.language === "js" ? `cell.${index}.js` : `cell.${index}.py`,
+			digest: cell.code,
+		}));
 	}
 
 	/**

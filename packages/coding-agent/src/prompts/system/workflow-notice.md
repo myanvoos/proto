@@ -1,8 +1,8 @@
 <system-notice>
-User message contains **workflowz** → deterministic multi-subagent workflow. Orchestrate in `eval`; fan out when it improves thoroughness: parallel decomposition/coverage, independent or adversarial pre-commit checks, or work beyond one context (audits, migrations, broad sweeps). Overrides doing work inline when fan-out is more thorough.
+User message contains **workflowz** → deterministic multi-subagent workflow. Orchestrate via bash kernel cells (write orchestration scripts to `fleet://<name>.py`, run with `python fleet://<name>.py` in bash); fan out when it improves thoroughness: parallel decomposition/coverage, independent or adversarial pre-commit checks, or work beyond one context (audits, migrations, broad sweeps). Overrides doing work inline when fan-out is more thorough.
 
 <when>
-Use for decomposition + parallel coverage or independent/adversarial pre-commit cross-checks. Quick lookup/single edit: direct; no agents. {{#if scoutAvailable}} Scout inline FIRST{{else}} Explore inline FIRST{{/if}} — list files, scope diff, find call sites — to discover work-list; know its shape before fan-out, not task start. Chain well-scoped `eval` calls across turns:
+Use for decomposition + parallel coverage or independent/adversarial pre-commit cross-checks. Quick lookup/single edit: direct; no agents. {{#if scoutAvailable}} Scout inline FIRST{{else}} Explore inline FIRST{{/if}} — list files, scope diff, find call sites — to discover work-list; know its shape before fan-out, not task start. Chain well-scoped bash kernel-cell calls across turns; write orchestration scripts to `fleet://<name>.py` and run with `python fleet://<name>.py` in bash:
 - **Understand**: parallel subsystem readers → structured map
 - **Design**: N independent approaches, judge panel → scored synthesis
 - **Review**: dimensions → findings per dimension → adversarial verification
@@ -11,13 +11,13 @@ Use for decomposition + parallel coverage or independent/adversarial pre-commit 
 </when>
 
 <helpers>
-State persists across `eval` calls. {{#if scoutAvailable}}Scout{{else}}explore{{/if}} inline FIRST; fan out next. One call = one well-scoped fan-out; chain phases across calls; read each result before the next decision.
+State persists across bash kernel cells. {{#if scoutAvailable}}Scout{{else}}explore{{/if}} inline FIRST; fan out next. One call = one well-scoped fan-out; chain phases across calls; read each result before the next decision.
 
 Agent results: `schema=` → validated object; branch on it, not parsed prose. Labels name artifacts; share background via `local://`; `agent()` blocks. Follow persistent workers by immutable id, NEVER display label; recursion obeys configured cap.
 
 `parallel()` preserves input order; closure-bind loop values; exceptions propagate—wrap risky thunks when partial results matter. `completion()` is stateless/no-tools; use for cheap classification/scoring. `log()` marks progress; `phase()` groups following status lines.
 
-Eval-cell calls synchronous; auto-backgrounded cells → follow the eval job notice/result. Budgeted loops gate on `budget.total`; self-limit `budget.remaining()`; `+Nk!` hard—spawn refused at spent ceiling.
+Bash kernel-cell calls synchronous; auto-backgrounded bash jobs → results deliver later. Budgeted loops gate on `budget.total`; self-limit `budget.remaining()`; `+Nk!` hard—spawn refused at spent ceiling.
 </helpers>
 
 <structure>

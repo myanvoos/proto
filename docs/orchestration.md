@@ -8,7 +8,7 @@ Every top-level coding agent is an **Orchestrator**. It keeps its ordinary codin
 - `orchestrate_kill` terminates a worker while retaining its transcript tombstone.
 - `orchestrate_list` returns the owned worker roster and live activity.
 
-Normal shared-workspace workers run in the background and stay addressable after each turn. Each spawn returns an immutable opaque worker id; the optional `name` is a display label only and may repeat under different parents. `isolated: true` is a one-turn terminal worker that uses the existing isolation apply/capture policy and an independent eval namespace. Recursive workers receive orchestration controls only while `orchestrator.maxRecursionDepth` permits another level.
+Every worker receives the `bash` tool at every task depth. Delegated agents therefore use the same shell and persistent Python/JavaScript kernel-cell surface as the main agent; each worker still owns a separate session and kernel namespace. `isolated: true` is a one-turn terminal worker that uses the existing isolation apply/capture policy and an independent kernel namespace. Recursive workers receive orchestration controls only while `orchestrator.maxRecursionDepth` permits another level.
 
 The bundled generic agent is `worker` (`@worker` model role); the fast mechanical agent is `lightbot`. Agent discovery and precedence are documented in [worker-agent-discovery.md](./worker-agent-discovery.md).
 

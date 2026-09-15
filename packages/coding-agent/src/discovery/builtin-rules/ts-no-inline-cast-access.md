@@ -1,6 +1,6 @@
 ---
 description: "Don't assert an inline object type and immediately read a property — `(x as { y: T }).y` trusts an unchecked shape; validate with a schema parse at trust boundaries, narrow with `in`/`typeof`, or use a validated named type"
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 astCondition:
   - "($X as { $$$BODY }).$PROP"

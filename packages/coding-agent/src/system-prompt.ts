@@ -515,8 +515,6 @@ export interface BuildSystemPromptOptions {
 
 	toolNames?: string[];
 
-	directToolNames?: readonly string[];
-
 	appendSystemPrompt?: string;
 
 	resolvedAppendSystemPrompt?: string;
@@ -591,7 +589,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		nativeTools = true,
 		skillsSettings,
 		toolNames: providedToolNames,
-		directToolNames,
 		cwd,
 		additionalWorkspaceRoots = [],
 		contextFiles: providedContextFiles,
@@ -811,12 +808,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const toolRefs = Object.fromEntries(toolPromptNames.entries());
 	const xdevToolNames = new Set(xdevTools.map(mounted => mounted.name));
 
-	const directSet = directToolNames === undefined ? undefined : new Set(directToolNames);
-	const directInventoryNames = directSet === undefined ? toolNames : toolNames.filter(name => directSet.has(name));
 	const inventoryToolNames =
-		xdevToolNames.size === 0
-			? directInventoryNames
-			: directInventoryNames.filter(name => tools?.has(name) || !xdevToolNames.has(name));
+		xdevToolNames.size === 0 ? toolNames : toolNames.filter(name => tools?.has(name) || !xdevToolNames.has(name));
 	const toolInfo = inventoryToolNames.map(name => ({
 		name: toolPromptNames.get(name) ?? name,
 		internalName: name,

@@ -1,7 +1,7 @@
 ---
 description: "Do not extract named one-return functions or expression-bodied variable arrows that only wrap an expression — inline them"
 condition: "(?m)\\bfunction\\s+[A-Za-z_$][\\w$]*\\s*(?:<[^>{}\\n]*>\\s*)?\\([^{}\\n]*\\)\\s*\\{\\s*return\\b[^{};\\n]+;?\\s*\\}|\\b(?:const|let|var)\\s+[A-Za-z_$][\\w$]*\\s*=\\s*(?:\\([^()\\n]*\\)|[A-Za-z_$][\\w$]*)\\s*=>\\s*(?!\\{)[^\\n;]+"
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

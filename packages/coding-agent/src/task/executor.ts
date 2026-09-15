@@ -49,8 +49,7 @@ import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
 
 import { prewalkWouldBeNoop, resolveWorkerEffortLevel, type WorkerEffort } from "../thinking";
-import type { ContextFileEntry, ToolSession } from "../tools";
-import { resolveEvalBackends } from "../tools/eval-backends";
+import type { ContextFileEntry } from "../tools";
 import { isIrcEnabled } from "../tools/fleet";
 import { normalizeSchema } from "../tools/jtd-to-json-schema";
 import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
@@ -2443,11 +2442,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		toolNames = [...toolNames, "fleet"];
 	}
 	if (toolNames?.includes("exec")) {
-		const backends = resolveEvalBackends({ settings } as ToolSession);
-		const expanded = toolNames.filter(name => name !== "exec");
-		if (backends.python || backends.js) expanded.push("eval");
-		expanded.push("bash");
-		toolNames = Array.from(new Set(expanded));
+		toolNames = Array.from(new Set([...toolNames.filter(name => name !== "exec"), "bash"]));
 	}
 
 	const modelPatterns = normalizeModelPatterns(modelOverride ?? agent.model);
@@ -2460,8 +2455,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			: agent.spawns === "*"
 				? "*"
 				: agent.spawns.join(",");
-
-	const skipPythonPreflight = Array.isArray(toolNames) && !toolNames.includes("eval");
 
 	const monitor = createSubagentRunMonitor({
 		index,
@@ -2761,7 +2754,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					agentId: id,
 					agentDisplayName: options.agentDisplayName ?? agent.name,
 					enableIrc: options.enableIrc,
-					skipPythonPreflight,
 					enableMCP,
 					mcpManager,
 					customTools:

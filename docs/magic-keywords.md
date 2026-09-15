@@ -7,7 +7,7 @@ Magic keywords are standalone prose words in a user prompt that can add hidden, 
 | Keyword | Effect |
 | --- | --- |
 | `ultrathink` | Adds a careful multi-step reasoning notice. With automatic thinking, it selects the highest effort the current model supports for that turn. |
-| `workflowz` | Adds a deterministic multi-worker workflow centered on the persistent `eval` kernel's `agent()`, `parallel()`, `pipeline()`, and `completion()` helpers. The notice requires both `eval` and `orchestrate_spawn`. |
+| `workflowz` | Adds a deterministic multi-worker workflow centered on persistent Bash kernel cells' `agent()`, `parallel()`, `pipeline()`, and `completion()` helpers. The notice requires `bash` and `orchestrate_spawn`. |
 
 Use a keyword anywhere in prompt prose:
 

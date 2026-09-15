@@ -19,7 +19,6 @@ import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
-import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
 import { isWaitingPollDetails } from "../../tools/fleet";
 import { replaceTabs, resolveImageOptions } from "../../tools/render-utils";
 import { type FirstResultViewportRepaint, type ToolRenderer, toolRenderers } from "../../tools/renderers";
@@ -886,11 +885,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				context.resolveXdevMounted = (name: string) =>
 					xdev.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
 			}
-		} else if (this.#toolName === "eval" && this.#result) {
-			const output = this.#getTextOutput().trimEnd();
-			context.output = output;
-			context.expanded = this.#expanded;
-			context.previewLines = EVAL_DEFAULT_PREVIEW_LINES;
 		}
 
 		return context;

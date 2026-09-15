@@ -462,22 +462,10 @@ export class Settings {
 		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
 	}
 
-	#codeModeSignalSnapshot(): unknown[] {
-		return CODE_MODE_SIGNAL_PATHS.map(path => this.get(path));
-	}
-
-	#fireCodeModeChangeIfNeeded(previous: unknown[]): void {
-		if (Bun.deepEquals(this.#codeModeSignalSnapshot(), previous)) return;
-		codeModeSignal.fire();
-	}
-
 	#fireEffectiveSettingChanged(path: SettingPath, value: unknown, prev: unknown): void {
 		if (Object.is(value, prev)) return;
 		if (path === "modelRoles") {
 			modelRolesSignal.fire();
-		}
-		if (CODE_MODE_SIGNAL_PATHS.includes(path)) {
-			codeModeSignal.fire();
 		}
 	}
 
@@ -556,7 +544,6 @@ export class Settings {
 			const previousSignaledValues = {
 				modelRoles: this.get("modelRoles"),
 			};
-			const previousCodeModeValues = this.#codeModeSignalSnapshot();
 			const previousHookValues = new Map<SettingPath, unknown>();
 			for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
 				previousHookValues.set(key, this.get(key));
@@ -585,7 +572,6 @@ export class Settings {
 			if (!Bun.deepEquals(nextModelRoles, previousSignaledValues.modelRoles)) {
 				this.#fireEffectiveSettingChanged("modelRoles", nextModelRoles, previousSignaledValues.modelRoles);
 			}
-			this.#fireCodeModeChangeIfNeeded(previousCodeModeValues);
 			for (const [key, previous] of previousHookValues) {
 				const next = this.get(key);
 				if (!Bun.deepEquals(next, previous)) {
@@ -602,14 +588,12 @@ export class Settings {
 		await this.flush();
 		this.#restoreRuntimeModelRoleOverrides();
 		const prevModelRoles = this.get("modelRoles");
-		const prevCodeModeValues = this.#codeModeSignalSnapshot();
 		this.#cwd = normalized;
 		if (this.#persist) {
 			this.#project = await this.#loadProjectSettings();
 		}
 		this.#rebuildMerged();
 		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prevModelRoles);
-		this.#fireCodeModeChangeIfNeeded(prevCodeModeValues);
 		this.#fireAllHooks();
 	}
 
@@ -1939,16 +1923,6 @@ export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOn
 const modelRolesSignal = new SettingSignal("modelRoles");
 
 export const onModelRolesChanged: (cb: () => void) => () => void = modelRolesSignal.on.bind(modelRolesSignal);
-
-const codeModeSignal = new SettingSignal("providers.openai-codex.codeMode");
-
-const CODE_MODE_SIGNAL_PATHS: readonly SettingPath[] = [
-	"providers.openai-codex.codeMode",
-	"providers.openai-codex.codeModeDirectTools",
-	"eval.js",
-];
-
-export const onCodeModeChanged = (cb: () => void) => codeModeSignal.on(cb);
 
 const extendedContextSignal = new SettingSignal("extendedContext");
 

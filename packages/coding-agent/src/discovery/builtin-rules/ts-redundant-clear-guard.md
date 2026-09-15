@@ -1,6 +1,6 @@
 ---
 description: Do not guard clearTimeout/clearInterval/clearImmediate with a truthiness or null/undefined check — they accept null and undefined
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 astCondition:
   - "if ($X) clearTimeout($X)"

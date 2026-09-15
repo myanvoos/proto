@@ -4,7 +4,7 @@ condition:
   - "\\.lock\\(\\)\\.unwrap\\(\\)"
   - "\\.read\\(\\)\\.unwrap\\(\\)"
   - "\\.write\\(\\)\\.unwrap\\(\\)"
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

@@ -8,7 +8,6 @@ import { executeBash } from "../exec/bash-executor";
 import { convertToLlm } from "../session/messages";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
-import { EvalTool } from "./eval";
 
 const KERNEL_OWNER = `bash-kernel-test:${process.pid}`;
 
@@ -46,20 +45,13 @@ test("heredoc python routes to the kernel and state persists across bash calls",
 	}
 }, 60000);
 
-test("bash python shares the eval tool's kernel session", async () => {
+test("heredoc and -c python cells share one kernel session", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-shared-"));
 	try {
-		const session = stubSession(dir);
-		const bash = new BashTool(session);
-		const evalTool = new EvalTool(session);
-		const evalResult = await evalTool.execute("eval", {
-			language: "py",
-			code: "shared_marker = 'from-eval'",
-			timeout: 60,
-		});
-		expect(evalResult.details?.cells?.[0]?.status).toBe("complete");
+		const bash = new BashTool(stubSession(dir));
+		await bash.execute("seed", { command: "python <<'EOF'\nshared_marker = 'from-heredoc'\nEOF" });
 		const bashResult = await bash.execute("bash", { command: "python -c 'print(\"marker:\", shared_marker)'" });
-		expect(textOf(bashResult)).toContain("marker: from-eval");
+		expect(textOf(bashResult)).toContain("marker: from-heredoc");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -206,20 +198,13 @@ test("bun heredoc routes to the JS kernel and state persists across calls", asyn
 	}
 }, 60000);
 
-test("bash node shares the eval tool's JS kernel session", async () => {
+test("heredoc and -e js cells share one kernel session", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-shared-"));
 	try {
-		const session = stubSession(dir);
-		const bash = new BashTool(session);
-		const evalTool = new EvalTool(session);
-		const evalResult = await evalTool.execute("eval", {
-			language: "js",
-			code: "globalThis.jsShared = 'from-eval-js'",
-			timeout: 60,
-		});
-		expect(evalResult.details?.cells?.[0]?.status).toBe("complete");
+		const bash = new BashTool(stubSession(dir));
+		await bash.execute("seed", { command: "node <<'EOF'\nglobalThis.jsShared = 'from-heredoc-js'\nEOF" });
 		const bashResult = await bash.execute("bash", { command: "node -e 'console.log(\"marker:\", jsShared)'" });
-		expect(textOf(bashResult)).toContain("marker: from-eval-js");
+		expect(textOf(bashResult)).toContain("marker: from-heredoc-js");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

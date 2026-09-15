@@ -1,7 +1,7 @@
 ---
 description: Use bare `catch {` when an underscore-prefixed error binding is present; this textual trigger cannot determine semantic usage
 condition: 'catch\s*\(\s*_[A-Za-z_$][\w$]*\s*\)'
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

@@ -14,7 +14,6 @@ interface QuoteBlock {
 export type MessageBlock = ({ kind: "code" } & CodeBlock) | ({ kind: "quote" } & QuoteBlock);
 
 interface LastCommand {
-	kind: "bash" | "eval";
 	code: string;
 
 	language: string;
@@ -112,41 +111,9 @@ export function extractQuoteBlocks(text: string): QuoteBlock[] {
 		.map(b => ({ text: b.text }));
 }
 
-function extractEvalCode(args: unknown): { code: string; language: string } | undefined {
-	if (!args || typeof args !== "object") return undefined;
-	const argsObj = args as { cells?: unknown; code?: unknown };
-	const cells = Array.isArray(argsObj.cells)
-		? argsObj.cells
-		: typeof argsObj.code === "string"
-			? [argsObj]
-			: undefined;
-	if (!cells) return undefined;
-
-	const codeBlocks: string[] = [];
-	let language = "python";
-	let languageResolved = false;
-	for (const cell of cells) {
-		if (!cell || typeof cell !== "object") continue;
-		const code = (cell as { code?: unknown }).code;
-		if (typeof code !== "string" || code.length === 0) continue;
-		codeBlocks.push(code);
-		if (!languageResolved) {
-			const lang = (cell as { language?: unknown }).language;
-			language = lang === "js" ? "javascript" : lang === "rb" ? "ruby" : lang === "jl" ? "julia" : "python";
-			languageResolved = true;
-		}
-	}
-
-	return codeBlocks.length > 0 ? { code: codeBlocks.join("\n\n"), language } : undefined;
-}
-
 function commandFromToolCall(tc: ToolCall): LastCommand | undefined {
 	if (tc.name === "bash" && typeof tc.arguments.command === "string") {
-		return { kind: "bash", code: tc.arguments.command, language: "bash" };
-	}
-	if (tc.name === "eval") {
-		const evalResult = extractEvalCode(tc.arguments);
-		if (evalResult) return { kind: "eval", code: evalResult.code, language: evalResult.language };
+		return { code: tc.arguments.command, language: "bash" };
 	}
 	return undefined;
 }
@@ -265,20 +232,15 @@ function messageTarget(text: string, rank: number): CopyTarget {
 	return { id, label, hint, preview: text, content: text, copyMessage: messageCopy, children };
 }
 
-function commandTitle(command: LastCommand): string {
-	return command.kind === "bash" ? "Bash command" : "Eval code";
-}
-
 function commandTarget(command: LastCommand, rank: number): CopyTarget {
-	const title = commandTitle(command);
 	return {
 		id: `cmd:${rank}`,
-		label: firstLine(command.code) || title,
-		hint: `${command.kind} · ${pluralLines(command.code)}`,
+		label: firstLine(command.code) || "Bash command",
+		hint: `bash · ${pluralLines(command.code)}`,
 		preview: command.code,
 		language: command.language,
 		content: command.code,
-		copyMessage: `Copied ${command.kind === "bash" ? "bash command" : "eval code"} to clipboard`,
+		copyMessage: "Copied bash command to clipboard",
 	};
 }
 

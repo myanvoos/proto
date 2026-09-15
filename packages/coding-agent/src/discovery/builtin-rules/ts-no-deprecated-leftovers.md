@@ -1,7 +1,7 @@
 ---
 description: "Do not leave `@deprecated` shims behind after refactors — update call sites and remove the old API"
 condition: "@deprecated"
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

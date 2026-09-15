@@ -3,7 +3,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type Component, Container, type NativeScrollbackWidthEpoch } from "@oh-my-pi/pi-tui";
 import { Settings } from "../config/settings";
 import type { SessionContext } from "../session/session-context";
-import { evalToolRenderer } from "../tools/eval-render";
+import { toolRenderers } from "../tools/renderers";
 import type { ToolExecutionHandle, ToolExecutionUi } from "./components/tool-execution";
 import { ToolExecutionComponent } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
@@ -15,23 +15,24 @@ await initTheme(false, false, "proto");
 
 afterEach(disposeSpinnerComponents);
 
+const bashRenderer: any = toolRenderers.bash;
 const fakeTool: any = {
-	name: "kernel",
-	label: "Kernel",
+	name: "bash",
+	label: "Bash",
 	mergeCallAndResult: true,
-	renderCall: evalToolRenderer.renderCall,
-	renderResult: evalToolRenderer.renderResult,
-	intent: (args: any) => args?.title,
+	renderCall: bashRenderer.renderCall,
+	renderResult: bashRenderer.renderResult,
+	intent: (args: any) => args?.i,
 };
 
 const CALL_ID = "chatcmpl-tool-inflight-1";
-const ARGS = { code: 'print("hi")', title: "inflight" };
+const ARGS = { command: "python <<'EOF'\nprint(\"hi\")\nEOF", i: "inflight" };
 
 const noop = () => {};
 const stubUi = { requestRender: noop, requestComponentRender: noop, resetDisplay: noop, imageBudget: undefined };
 const spinnerComponents: ToolExecutionComponent[] = [];
 function makeLiveComponent(): ToolExecutionComponent {
-	const component = new ToolExecutionComponent("kernel", ARGS, { useBuiltInRenderer: true }, fakeTool, stubUi as any);
+	const component = new ToolExecutionComponent("bash", ARGS, { useBuiltInRenderer: true }, fakeTool, stubUi as any);
 	spinnerComponents.push(component);
 	return component;
 }
@@ -43,7 +44,7 @@ function disposeSpinnerComponents(): void {
 function assistantMessageWithCall(): any {
 	return {
 		role: "assistant",
-		content: [{ type: "toolCall", id: CALL_ID, name: "kernel", arguments: ARGS }],
+		content: [{ type: "toolCall", id: CALL_ID, name: "bash", arguments: ARGS }],
 		stopReason: "toolUse",
 		api: "openai-completions",
 		provider: "vllm",
@@ -64,7 +65,7 @@ function settledToolResultMessage(): any {
 	return {
 		role: "toolResult",
 		toolCallId: CALL_ID,
-		toolName: "kernel",
+		toolName: "bash",
 		content: [{ type: "text", text: "done" }],
 		details: { language: "python", languages: ["python"] },
 		isError: false,
@@ -88,8 +89,8 @@ function makeCtx(chatContainer: TranscriptContainer, pendingTools: Map<string, T
 		settings: { get: (k: string) => k !== "terminal.showImages" },
 		sessionManager: { getCwd: () => "/tmp" },
 		viewSession: {
-			getToolByName: (n: string) => (n === "kernel" ? fakeTool : undefined),
-			hasBuiltInTool: (n: string) => n === "kernel",
+			getToolByName: (n: string) => (n === "bash" ? fakeTool : undefined),
+			hasBuiltInTool: (n: string) => n === "bash",
 			isTtsrAbortPending: false,
 			isRetrying: false,
 			extensionRunner: undefined,

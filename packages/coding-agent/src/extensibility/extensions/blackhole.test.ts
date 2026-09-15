@@ -47,7 +47,6 @@ const created = await createAgentSession({
   authStorage,
   disableExtensionDiscovery: true,
   enableMCP: false,
-  skipPythonPreflight: true,
   workspaceTree: { rootPath: process.cwd(), rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
   skills: [],
   rules: [],

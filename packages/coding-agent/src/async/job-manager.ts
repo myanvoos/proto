@@ -18,7 +18,7 @@ interface PollEscalationState {
 	lastPollEndAt: number;
 }
 
-export type AsyncJobType = "bash" | "worker" | "eval";
+export type AsyncJobType = "bash" | "worker";
 
 export interface AsyncJob {
 	id: string;

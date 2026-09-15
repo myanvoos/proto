@@ -3,7 +3,7 @@ description: Use match ergonomics instead of ref/ref mut patterns
 condition:
   - "\\(ref mut "
   - "\\(ref [a-z_]"
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

@@ -47,6 +47,6 @@ export interface EvalToolDetails {
 	async?: {
 		state: "running" | "completed" | "failed";
 		jobId: string;
-		type: "eval";
+		type: "bash";
 	};
 }

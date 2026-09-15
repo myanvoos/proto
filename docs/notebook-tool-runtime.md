@@ -9,7 +9,7 @@ The critical distinction: **notebook support is file conversion/editing, not not
 - [`src/edit/notebook.ts`](../packages/coding-agent/src/edit/notebook.ts)
 - [`src/edit/read-file.ts`](../packages/coding-agent/src/edit/read-file.ts)
 - [`src/tools/read.ts`](../packages/coding-agent/src/tools/read.ts)
-- [`src/tools/eval.ts`](../packages/coding-agent/src/tools/eval.ts)
+- [`src/eval/shell-bridge.ts`](../packages/coding-agent/src/eval/shell-bridge.ts) — Bash kernel-cell bridge.
 - [`src/eval/py/executor.ts`](../packages/coding-agent/src/eval/py/executor.ts)
 - [`src/eval/py/kernel.ts`](../packages/coding-agent/src/eval/py/kernel.ts)
 - [`src/session/streaming-output.ts`](../packages/coding-agent/src/session/streaming-output.ts)
@@ -27,7 +27,7 @@ The critical distinction: **notebook support is file conversion/editing, not not
 - The edit pipeline round-trips virtual text back to notebook JSON through `serializeEditedNotebookText(...)`.
 - Existing notebook metadata is preserved when a marker references an existing unused `cell:N`; new cells get fresh empty metadata.
 - A missing notebook passed to the serializer starts from an empty nbformat 4.5 notebook.
-- Shell-level writes (`bash`, kernel `write()`) are not notebook-aware: they replace the file with the supplied bytes. Use them only with valid notebook JSON, not the virtual marker representation.
+- Shell-level writes (`bash`, a Bash kernel cell's `write()`) are not notebook-aware: they replace the file with the supplied bytes. Use them only with valid notebook JSON, not the virtual marker representation.
 
 No kernel lifecycle exists in this path:
 
@@ -37,11 +37,11 @@ No kernel lifecycle exists in this path:
 - no rich display capture
 - no output artifact pipeline from execution
 
-## Kernel-backed execution path (`src/tools/eval.ts` + `src/eval/py/*`)
+## Bash kernel-cell execution path (`src/eval/shell-bridge.ts` + `src/eval/py/*`)
 
-When the agent needs to run cell-style Python code with persistent state and rich displays, that goes through one **`eval` tool** call per cell with `language: "py"`, not through notebook file handling.
+When the agent needs to run cell-style Python code with persistent state and rich displays, that goes through a supported **`bash`** invocation such as `python <<'PY' ... PY` or bare `python -c '...'`, not through notebook file handling. The Bash command is the model-facing execution surface; the Python subprocess and kernel remain internal runtime machinery.
 
-That path is where Python subprocess lifecycle, reset/cancel behavior, chunk streaming, rich displays, and output artifact truncation live.
+That path is where Python subprocess lifecycle, `%reset` behavior, cancellation, chunk streaming, rich displays, and output artifact truncation live. See [Bash tool runtime](bash-tool-runtime.md#kernel-cell-reference) for the cross-language cell API and enclosing command timeout semantics.
 
 ## 2) Notebook cell handling semantics
 
@@ -83,7 +83,7 @@ These surface through notebook-aware callers such as `read` and the edit pipelin
 
 ## 3) Kernel session semantics (where they actually exist)
 
-Kernel semantics are implemented in `executePython` / `PythonKernel` and apply to the Python backend of the `eval` tool.
+Kernel semantics are implemented in `executePython` / `PythonKernel` and apply to Python cells routed through the Bash kernel bridge.
 
 ## Modes
 
@@ -92,7 +92,7 @@ Kernel semantics are implemented in `executePython` / `PythonKernel` and apply t
 - `session` (default)
   - kernels are cached by `(session id, cwd, interpreter)`
   - multiple owners can share a retained kernel for the same key
-  - execution is serialized by the tool's exclusive concurrency and backend execution path
+  - concurrent Bash calls may overlap at `await` points; put dependent cells in one ordered Bash command
   - dead kernels are replaced before execution
 - `per-call`
   - creates a subprocess for the request
@@ -101,7 +101,7 @@ Kernel semantics are implemented in `executePython` / `PythonKernel` and apply t
 
 ## Reset behavior
 
-Each eval call has an optional `reset` flag. `reset: true` resets the selected Python session before that call executes; it does not reset other enabled language runtimes.
+A Python Bash kernel cell can use the `%reset` magic to clear its user namespace and re-inject the prelude. It resets only that Python runtime; it does not reset JavaScript state or notebook file state. Bash has no structured per-cell `reset` flag.
 
 ## Kernel death / restart / retry
 
@@ -160,7 +160,7 @@ Cancellation/timeout:
 - optionally spills full output to an artifact file
 - keeps a UTF-8-safe in-memory tail buffer when output exceeds the configured threshold
 
-`eval` converts this metadata into result truncation notices and TUI warnings.
+The Bash tool converts this metadata into result truncation notices and TUI warnings.
 
 Notebook file conversion does **not** use `OutputSink`; it has no stream/artifact truncation pipeline because it does not execute code.
 
@@ -187,8 +187,8 @@ This renderer behavior is unrelated to notebook JSON editing except that both re
 If a workflow needs both notebook mutation and execution:
 
 1. read the `.ipynb` file in its default editable view and mutate that view with the edit pipeline
-2. copy one desired cell source into an `eval` call with `language: "py"`
-3. repeat for later cells; session-mode Python state persists across calls
+2. copy one desired cell source into a Bash Python heredoc or `python -c` invocation
+3. repeat for later cells; session-mode Python state persists across Bash kernel-cell calls
 4. apply later source changes through the edit pipeline; a whole-file `write` must contain notebook JSON
 
 Current implementation does not provide a single tool that both mutates `.ipynb` and executes notebook cells through kernel context.

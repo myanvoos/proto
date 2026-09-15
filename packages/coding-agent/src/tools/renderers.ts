@@ -7,7 +7,6 @@ import { askToolRenderer } from "./ask";
 import { bashToolRenderer } from "./bash";
 import { browserToolRenderer } from "./browser/render";
 import { computerToolRenderer } from "./computer-renderer";
-import { evalToolRenderer } from "./eval-render";
 import { fleetToolRenderer } from "./fleet";
 import { githubToolRenderer } from "./gh-renderer";
 import { inspectMediaToolRenderer } from "./inspect-media-renderer";
@@ -112,8 +111,6 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	},
 	browser: browserToolRenderer as ToolRenderer,
 	computer: computerToolRenderer as ToolRenderer,
-	eval: evalToolRenderer as ToolRenderer,
-	kernel: evalToolRenderer as ToolRenderer,
 	inspect_media: inspectMediaToolRenderer as ToolRenderer,
 
 	get fleet(): ToolRenderer {

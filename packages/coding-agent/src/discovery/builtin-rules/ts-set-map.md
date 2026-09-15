@@ -1,7 +1,7 @@
 ---
 description: Prefer Record<K, V> for small static literals; use Set/Map for anything dynamic
 condition: "\\bnew\\s+(Set|Map)\\b"
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

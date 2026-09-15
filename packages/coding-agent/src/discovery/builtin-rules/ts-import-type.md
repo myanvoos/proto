@@ -1,7 +1,7 @@
 ---
 description: "Use `import type`, not inline `import('pkg').Type` or indexed type references"
 condition: "(?m)(?:^|[,:=<(\\[|&])\\s*import\\s*\\(\\s*[\"'][^\"'\\n]+[\"']\\s*\\)\\s*(?:\\.|\\[)"
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

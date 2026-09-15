@@ -11,7 +11,6 @@ import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
-import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { Skill } from "../extensibility/skills";
@@ -37,16 +36,14 @@ import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspec
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
-import { BashTool, kernelBridgeAvailable } from "./bash";
+import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { ComputerTool } from "./computer";
-import { resolveEvalBackends } from "./eval-backends";
 import { FleetTool, isIrcEnabled } from "./fleet";
 import { GithubTool } from "./gh";
 import { InspectMediaTool } from "./inspect-media";
-import { KernelTool } from "./kernel";
 import { ManageSkillTool } from "./manage-skill";
 import { MonitorTool } from "./monitor";
 import {
@@ -73,13 +70,11 @@ export * from "./checkpoint";
 export * from "./computer";
 export * from "./computer/supervisor";
 export * from "./essential-tools";
-export * from "./eval";
 export * from "./eval-backends";
 export * from "./fleet";
 export * from "./gh";
 export * from "./image-gen";
 export * from "./inspect-media";
-export * from "./kernel";
 export * from "./manage-skill";
 export * from "./monitor";
 export * from "./orchestrate";
@@ -125,8 +120,6 @@ export interface ToolSession {
 	customTools?: CustomTool[];
 
 	getApiKey?: AgentOptions["getApiKey"];
-
-	skipPythonPreflight?: boolean;
 
 	contextFiles?: ContextFileEntry[];
 
@@ -189,8 +182,6 @@ export interface ToolSession {
 	getToolContext?: () => AgentToolContext | undefined;
 
 	getEvalBridgeToolNames?: () => readonly string[];
-
-	getCodeModeDirectToolNames?: () => readonly string[] | undefined;
 
 	isToolActive?: (name: string) => boolean;
 
@@ -296,13 +287,11 @@ type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
 
 export const DISABLED_TOOL_NAMES: Record<string, true> = {
 	read: true,
-	eval: true,
 };
 
-export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read" | "eval">, ToolFactory> = {
+export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read">, ToolFactory> = {
 	bash: s => new BashTool(s),
 	ask: AskTool.createIf,
-	kernel: KernelTool.createIf,
 	github: GithubTool.createIf,
 	inspect_media: s => new InspectMediaTool(s),
 	browser: s => new BrowserTool(s),
@@ -344,29 +333,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	if (goalModeActive && requestedTools && !requestedTools.includes("goal")) {
 		requestedTools.push("goal");
 	}
-	const backends = resolveEvalBackends(session);
-	const allowPython = backends.python;
-	const skipEvalPreflight = session.skipPythonPreflight === true;
-
-	let pythonAvailable = true;
-	const bashAllowedForSession = (session.taskDepth ?? 0) === 0 && !!session.settings.get("bash.enabled");
-	const bridgeServesKernel = bashAllowedForSession && kernelBridgeAvailable(session);
-	const kernelRequested = !bridgeServesKernel && (requestedTools === undefined || requestedTools.includes("kernel"));
-	if (!skipEvalPreflight && allowPython && kernelRequested) {
-		const availability = await logger.time(
-			"createTools:pythonCheck",
-			checkPythonKernelAvailability,
-			session.cwd,
-			session.settings.get("python.interpreter")?.trim() || undefined,
-		);
-		pythonAvailable = availability.ok;
-		if (!availability.ok) {
-			logger.warn("Python kernel unavailable", { reason: availability.reason });
-		}
-	}
-
-	const effectivePythonAllowed = allowPython && pythonAvailable;
-
 	if (requestedTools && session.settings.get("checkpoint.enabled")) {
 		if (requestedTools.includes("checkpoint") && !requestedTools.includes("rewind")) {
 			requestedTools.push("rewind");
@@ -389,13 +355,12 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
 		if (name in DISABLED_TOOL_NAMES) return false;
-		if (name === "bash") return (session.taskDepth ?? 0) === 0 && session.settings.get("bash.enabled");
+		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "goal") {
 			if (!goalEnabled || restrictToolNames) return false;
 			const goalState = session.getGoalModeState?.();
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
-		if (name === "kernel") return effectivePythonAllowed && !bridgeServesKernel;
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");
 		if (name === "github") return session.settings.get("github.enabled");

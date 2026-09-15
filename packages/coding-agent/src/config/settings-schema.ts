@@ -442,31 +442,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"providers.openai-codex.codeMode": {
-		type: "enum",
-		values: ["off", "on", "auto"] as const,
-		default: "off",
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Codex Code Mode",
-			description:
-				"Route Codex code_mode_only models (GPT-5.6) through the eval tool as a programmatic execution surface: the direct tool surface collapses to eval/ask/todo and every other session tool is invoked from eval cells. Mirrors codex-rs Code Mode. 'auto' follows the model catalog flag.",
-		},
-	},
-
-	"providers.openai-codex.codeModeDirectTools": {
-		type: "array",
-		default: EMPTY_STRING_ARRAY,
-		ui: {
-			tab: "providers",
-			group: "Services",
-			label: "Codex Code Mode Direct Tools",
-			description:
-				"Extra tool names to keep directly callable alongside eval/ask/todo when Codex Code Mode is active.",
-		},
-	},
-
 	disabledExtensions: { type: "array", default: EMPTY_STRING_ARRAY },
 
 	modelRoleStorage: {
@@ -2639,22 +2614,6 @@ export const SETTINGS_SCHEMA = {
 			description:
 				"Allow safe local file reads before final tool approval to detect failed kernel assertions and interrupt generation early",
 		},
-	},
-
-	"eval.autoBackground.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Eval Auto-Background",
-			description: "Automatically background long-running eval cells and deliver the result later",
-		},
-	},
-
-	"eval.autoBackground.thresholdMs": {
-		type: "number",
-		default: 60_000,
 	},
 
 	"python.kernelMode": {

@@ -145,8 +145,6 @@ const RPC_BACKGROUND_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"async.maxJobs",
 	"bash.autoBackground.enabled",
 	"bash.autoBackground.thresholdMs",
-	"eval.autoBackground.enabled",
-	"eval.autoBackground.thresholdMs",
 ];
 
 function applyDefaultSettingOverrides(settingPaths: SettingPath[], targetSettings: Settings): void {

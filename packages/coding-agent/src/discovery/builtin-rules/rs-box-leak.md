@@ -1,7 +1,7 @@
 ---
 description: Never use Box::leak - it intentionally leaks memory
 condition: "Box::leak"
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

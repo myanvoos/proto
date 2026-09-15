@@ -4,7 +4,7 @@ condition:
   - "Bun\\.sleep\\("
   - "\\bsetInterval\\("
   - "\\bsetTimeout\\("
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

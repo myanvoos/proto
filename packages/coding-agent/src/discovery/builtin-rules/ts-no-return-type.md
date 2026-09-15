@@ -1,7 +1,7 @@
 ---
 description: "Do not use `ReturnType<typeof fn>` — name the type explicitly"
 condition: "ReturnType<"
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

@@ -1,37 +1,42 @@
-# Eval Tool Python Backend
+# Bash Tool Python Kernel
 
 This document describes the Python execution stack in `packages/coding-agent`.
-It covers tool behavior, runner lifecycle, environment handling, execution semantics, output rendering, supported magics, and operational failure modes.
+It covers Bash kernel-cell behavior, runner lifecycle, environment handling, execution semantics, output rendering, supported magics, and operational failure modes. The cross-language cell contract lives in [Bash tool runtime](bash-tool-runtime.md#kernel-cell-reference); this page focuses on Python internals.
+
+The model reaches this runtime through supported `python`/`python3` Bash invocations with code on stdin or through bare `python -c` code. The persistent Python runtime itself remains an internal `eval` backend; it is not a separate model-facing tool.
 
 ## Scope and Key Files
 
-- Tool surface: `src/tools/eval.ts`
+- Bash kernel-cell bridge: `src/eval/shell-bridge.ts`
+- Kernel-cell detection and source spans: `src/tools/bash-kernel-cell.ts`
 - Session/per-call kernel orchestration: `src/eval/py/executor.ts`
 - Subprocess kernel client: `src/eval/py/kernel.ts`
 - Python wrapper / NDJSON server: `src/eval/py/runner.py`
 - Prelude helpers loaded into every kernel: `src/eval/py/prelude.py`
 - Host-side subagent helper bridge: `src/eval/agent-bridge.ts`
 - MIME bundle renderer (text + structured outputs): `src/eval/py/display.ts`
+- Shared kernel-cell renderer: `src/tools/eval-render.ts`
 - Interactive-mode renderer for user-triggered Python runs: `src/modes/components/eval-execution.ts`
 - Runtime/env filtering and Python resolution: `src/eval/py/runtime.ts`
 
-## What eval's Python backend is
+## What Bash's Python kernel is
 
-The `eval` tool executes one Python cell per call inside a retained `python` subprocess that speaks NDJSON over stdin/stdout. No Jupyter gateway and no extra pip dependencies are required. The bundled runner uses Python 3.10 syntax (`str | None`), so the effective requirement is Python 3.10+. Rich `display()` output (PIL, pandas, plotly, matplotlib figures) works because the wrapper implements MIME-bundle dispatch.
+A supported Bash invocation executes one Python cell inside a retained `python` subprocess that speaks NDJSON over stdin/stdout. No Jupyter gateway and no extra pip dependencies are required. The bundled runner uses Python 3.10 syntax (`str | None`), so the effective requirement is Python 3.10+. Rich `display()` output (PIL, pandas, Plotly, and Matplotlib figures) works because the wrapper implements MIME-bundle dispatch.
 
-Current tool input:
+Supported forms include:
 
-```ts
-{
-  language: "py";
-  code: string;
-  title?: string;
-  timeout?: number; // seconds; default 30, 0 disables, otherwise clamped to 1..3600
-  reset?: boolean;  // wipe the Python kernel before this call
-}
+```bash
+python <<'PY'
+from pathlib import Path
+print(Path("package.json").read_text())
+PY
+
+python -c 'print("one persistent Python cell")'
 ```
 
-The session-scoped wire schema advertises only enabled runtimes; Python and JavaScript are both enabled by default. The tool is `concurrency = "exclusive"` for a session, so calls do not overlap. State persists across separate calls to the same language runtime.
+A pipeline can provide the source on stdin, and `python fleet://<name>.py` runs a supported internal fleet script in the kernel. Script paths, `-m`, unsupported interpreter flags, extra arguments, and calls made without the Bash kernel bridge use a normal external interpreter instead. Bash supplies the language and source through the command; there is no separate `language`, `code`, `title`, `timeout`, or `reset` cell object. The enclosing Bash `timeout` controls the cell's deadline.
+
+Each retained Python runtime can service overlapping cells at await points; state persists across later Bash kernel-cell invocations in session mode. Put dependent cells in one ordered Bash command rather than relying on parallel Bash-call ordering. The session's enabled backend settings determine whether Python can be routed into the kernel.
 
 ## Kernel lifecycle
 
@@ -57,7 +62,7 @@ Retained kernels are released after `DEFAULT_KERNEL_IDLE_REAP_MS` (15 minutes) w
 - Python: the host sends a `{"type": "status"}` control request over stdin; the runner answers with a `done` frame whose `busy` field counts in-flight request tasks. Backgrounded cells, awaited tool/subagent bridges, and monitors all hold a request task, so they block the reap. A missing or late answer counts as busy.
 - JavaScript: any pending run (including awaited tool/agent bridges) blocks the reap.
 
-Reaping shuts the subprocess/worker down; the next call for that session key starts a fresh kernel and the call's status events include a `kernel-idle-reap` event with the idle duration. Retained state from before the reap is gone, exactly as with `reset: true`. Subagents dispose their kernels earlier by design: an idle orchestration worker is parked after `orchestrator.agentIdleTtlMs` (default 60s), and park, kill, and eviction all run `AgentSession.dispose()`, which releases that agent's Python kernel and JS context by owner. The 15-minute reap remains the net for sessions that stay adopted with TTL disabled and for detached main-TUI sessions. Known gap: fire-and-forget tasks a cell created without awaiting (for example a raw `asyncio.create_task`) are not request tasks and do not block the reap. Session disposal by owner (`disposeKernelSessionsByOwner` / `disposeVmContextsByOwner`) and explicit `reset` remain unchanged. A cleanly exited kernel is now always reported as `confirmed` by kernel shutdown; only a shutdown deadline miss escalates to `SIGTERM`/`SIGKILL` and reports `confirmed: false`.
+Reaping shuts the subprocess/worker down; the next call for that session key starts a fresh kernel and the call's status events include a `kernel-idle-reap` event with the idle duration. Retained state from before the reap is discarded. Subagents dispose their kernels earlier by design: an idle orchestration worker is parked after `orchestrator.agentIdleTtlMs` (default 60s), and park, kill, and eviction all run `AgentSession.dispose()`, which releases that agent's Python kernel and JS context by owner. The 15-minute reap remains the net for sessions that stay adopted with TTL disabled and for detached main-TUI sessions. Known gap: fire-and-forget tasks a cell created without awaiting (for example a raw `asyncio.create_task`) are not request tasks and do not block the reap. Session disposal by owner (`disposeKernelSessionsByOwner` / `disposeVmContextsByOwner`) and explicit `reset` remain unchanged. A cleanly exited kernel is now always reported as `confirmed` by kernel shutdown; only a shutdown deadline miss escalates to `SIGTERM`/`SIGKILL` and reports `confirmed: false`.
 
 ## Wire protocol (NDJSON, host ↔ runner)
 
@@ -115,23 +120,23 @@ Unknown magic names raise `NameError: UsageError: ...` inside the cell.
 `python.kernelMode` controls retained kernel reuse:
 
 - `session` (default)
-  - Reuses kernel sessions keyed by namespaced eval session id plus normalized cwd and interpreter.
-  - Multiple calls in one canonical eval session share that retained kernel; independent orchestrator workers receive distinct session ids and do not share the parent or sibling kernel.
-  - Explicit callers may intentionally pass the same eval session id to preserve shared-state delegation.
-  - Calls through the tool are exclusive, so tool invocations do not overlap.
+  - Reuses kernel sessions keyed by a namespaced session id, normalized cwd, and interpreter.
+  - Bash kernel-cell invocations in one session reuse that retained Python kernel; independent orchestrator workers receive distinct session ids and do not share the parent or sibling kernel.
+  - Explicit callers may intentionally pass the same kernel session id to preserve shared-state delegation.
+  - Parallel Bash calls must not be used for dependent cells; their execution order is not guaranteed.
   - A dead retained subprocess is replaced before execution.
-  - If the subprocess dies during execution, it is replaced and the call is retried once.
-  - A quiescent kernel is released after 15 idle minutes (see "Idle reap" under Kernel lifecycle); the next call starts fresh and reports a `kernel-idle-reap` status event.
+  - If the subprocess dies during execution, it is replaced and the cell is retried once.
+  - A quiescent kernel is released after 15 idle minutes (see "Idle reap" under Kernel lifecycle); the next cell starts fresh and reports a `kernel-idle-reap` status event.
 - `per-call`
-  - Spawns a fresh subprocess for each call.
-  - Shuts the subprocess down after the call.
-  - No cross-call state persistence.
+  - Spawns a fresh subprocess for each cell.
+  - Shuts the subprocess down after the cell.
+  - No cross-cell state persistence.
 
-### State across eval calls
+### State across Bash kernel cells
 
-Each tool call contains one cell. Python calls run sequentially because the tool is exclusive, and later calls reuse the selected retained kernel in `session` mode.
+Each recognized interpreter invocation is one cell; a Bash command may contain multiple cells. Later cells reuse the selected retained kernel in `session` mode, while separate Python and JavaScript runtimes never share state. Put dependent cells in one ordered Bash command rather than relying on parallel Bash calls.
 
-If a cell fails, definitions and mutations completed before the error can remain in kernel memory. `reset: true` resets only the selected language runtime before that call; other language runtimes are untouched.
+If a cell fails, definitions and mutations completed before the error can remain in kernel memory. Python `%reset` clears the user namespace and re-injects the prelude. Bash has no structured per-cell `reset` field; runtime disposal, idle reap, or forced shutdown starts a fresh kernel.
 
 ## Environment filtering and runtime resolution
 
@@ -155,26 +160,24 @@ The runner additionally receives `PYTHONUNBUFFERED=1` and `PYTHONIOENCODING=utf-
 
 The backend settings `eval.py` / `eval.js` default to `true`. Optional boolean environment flags `PI_PY` and `PI_JS` override their corresponding setting independently.
 
-The tool's session-scoped schema lists only enabled runtimes. If Python preflight fails while another runtime is enabled, `eval` remains available for that runtime and a `py` call reports a Python-backend availability error with enabled alternatives.
+The Bash kernel bridge routes only enabled backends. If Python preflight fails, a routed Python cell reports a Python-backend availability error; Bash does not substitute another language. When the bridge is unavailable, the interpreter invocation follows Bash's normal external-process path.
 
 Python prelude helpers include `agent(prompt, *, agent="task", model=None, label=None, schema=None, schema_mode=None, isolated=None, apply=None, merge=None, handle=False)`; `model` overrides the worker's model and is bank-validated when the effective role has a `modelRoleBank`. It synchronously calls the host bridge and returns final text, or parsed data when `schema` is supplied. `schema_mode` selects permissive or strict structured-output handling; the isolation/apply/merge flags control task worktree behavior. With `handle=True`, it returns a DAG node dict (`{"text", "output", "handle", "id", "agent"}`) whose handle is the recoverable `agent://<id>` URI; parsed output is also stored under `"data"` when available.
 
 ## Execution flow and cancellation/timeout
 
-### Cell timeout
+### Bash cell timeout
 
-`timeout` is in seconds and defaults to 30. `0` disables the cell timeout; nonzero values are clamped to `1..3600` seconds and by a positive `tools.maxTimeout` ceiling before being passed to `IdleTimeout`. The timeout is suspended while a host-side `agent()` / `parallel()` / `completion()` bridge call is in flight: those calls emit reference-counted pause/resume events through `withBridgeTimeoutPause`, and a fresh timeout window begins when control returns.
-
-The pause/resume events are the sole mechanism that suspends the budget. Compute, `stdout`/`stderr`, `log()`/`phase()`, and ordinary tool calls count against it. The tool combines caller, session, and watchdog abort signals with `AbortSignal.any(...)`; the backend does not arm a competing deadline.
+The enclosing Bash `timeout` is the only model-facing deadline for a routed Python cell. It defaults to 300 seconds, `timeout: 0` disables the command deadline, and positive values follow Bash's `1..3600` clamp and positive `tools.maxTimeout` ceiling. There is no separate cell timeout field. Agent/completion bridges and ordinary computation remain inside that enclosing command deadline.
 
 ### Kernel execution cancellation
 
-On abort/timeout:
+On a Bash abort or deadline:
 
-- The host sends `kill("SIGINT")` to the runner subprocess.
-- The runner's exec-time signal handler raises `KeyboardInterrupt` inside the user code.
-- Result includes `cancelled=true`; a kernel timeout is annotated as `eval cell timed out after <n>s; kernel interrupted but remains running. Reset the kernel via { reset: true } if state appears corrupted.`
-- Between requests the runner installs `SIG_IGN` for SIGINT so a stray cancel does not tear down the kernel.
+- The bridge aborts the active runner request and the host sends `SIGINT` to the Python subprocess.
+- The runner's exec-time signal handler raises `KeyboardInterrupt` inside user code.
+- The cell result is marked cancelled; when the interrupt settles, the Python kernel remains reusable. Use Python `%reset` if the namespace or user state appears corrupted.
+- Between requests the runner installs `SIG_IGN` for `SIGINT` so a stray cancel does not tear down the kernel.
 
 If the runner does not emit `done` within 5s of the interrupt (`INTERRUPT_ESCALATION_MS` — e.g. stuck in C code holding the GIL), the host shuts the subprocess down (escalating `exit` → `SIGTERM` → `SIGKILL`), the cell is annotated as kernel-killed, and the kernel is recreated on the next call.
 
@@ -215,10 +218,10 @@ Output is streamed through `OutputSink` and may be persisted to artifact storage
 
 ### Renderer behavior
 
-- Tool renderer (`eval-render.ts`, re-exported from `eval.ts`):
-  - shows code-cell blocks with per-cell status
+- Bash kernel-cell renderer (`eval-render.ts`, shared with the Bash tool):
+  - shows code-cell blocks with per-cell status inside the Bash result
   - collapsed preview defaults to 10 lines
-  - supports expanded mode for all output retained in the tool result
+  - supports expanded mode for all output retained in the Bash result
 - Interactive renderer (`eval-execution.ts`):
   - used for user-triggered Python execution in TUI
   - collapsed preview defaults to 20 lines

@@ -29,7 +29,7 @@ import { SessionManager } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 import type { ToolSession } from "../tools";
-import { EvalTool } from "../tools/eval";
+import { BashTool } from "../tools/bash";
 import { OrchestratorRuntime } from "./runtime";
 
 const OWNER_PREFIX = `orchestrator-controlled-${process.pid}`;
@@ -113,6 +113,18 @@ function controlledProvider(): StreamFn {
 	};
 }
 
+function cellCommand(language: "py" | "js", code: string): string {
+	const interpreter = language === "js" ? "node" : "python";
+	return `${interpreter} <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`;
+}
+
+function cellText(result: { content: Array<{ type: string; text?: string }> }): string {
+	return result.content
+		.filter(block => block.type === "text")
+		.map(block => block.text ?? "")
+		.join("\n");
+}
+
 function controlledEvalTool(settings: Settings): CustomTool {
 	return {
 		name: "controlled_eval",
@@ -134,7 +146,8 @@ function controlledEvalTool(settings: Settings): CustomTool {
 				getEvalKernelOwnerId: () => context.sessionManager.getSessionId(),
 				getSessionSpawns: () => "*",
 			} as unknown as ToolSession;
-			return new EvalTool(session).execute(toolCallId, params as never, signal);
+			const { language, code } = params as { language: "py" | "js"; code: string };
+			return new BashTool(session).execute(toolCallId, { command: cellCommand(language, code) }, signal);
 		},
 	};
 }
@@ -366,19 +379,15 @@ test("parking cancels a worker-owned MCP handshake, collects the session, and pr
 
 test("orchestrator-created workers isolate Python and JS kernels while preserving explicit sharing", async () => {
 	const { runtime, session, manager } = await controlledFixture();
-	const parentEval = new EvalTool(session);
-	const parentPy = await parentEval.execute("parent-py", {
-		language: "py",
-		code: 'parent_marker = "parent"; print("parent-set")',
-		timeout: 30,
+	const parentBash = new BashTool(session);
+	const parentPy = await parentBash.execute("parent-py", {
+		command: cellCommand("py", 'parent_marker = "parent"; print("parent-set")'),
 	});
-	const parentJs = await parentEval.execute("parent-js", {
-		language: "js",
-		code: 'globalThis.parent_marker = "parent"; console.log("parent-set")',
-		timeout: 30,
+	const parentJs = await parentBash.execute("parent-js", {
+		command: cellCommand("js", 'globalThis.parent_marker = "parent"; console.log("parent-set")'),
 	});
-	expect(parentPy.details?.cells?.[0]?.status).toBe("complete");
-	expect(parentJs.details?.cells?.[0]?.status).toBe("complete");
+	expect(cellText(parentPy)).toContain("parent-set");
+	expect(cellText(parentJs)).toContain("parent-set");
 
 	const ids: string[] = [];
 	for (const prompt of ["worker-a-py", "worker-b-py", "worker-a-js", "worker-b-js"]) {
@@ -414,20 +423,16 @@ test("orchestrator-created workers isolate Python and JS kernels while preservin
 	expect(revivalWait.settled).toHaveLength(1);
 	expect(revivalWait.settled[0]?.resultText).toMatch(/CONTEXT (?:True|true)/);
 
-	const sharedA = new EvalTool({ ...session, getEvalSessionId: () => "explicit-shared" } as ToolSession);
-	const sharedB = new EvalTool({ ...session, getEvalSessionId: () => "explicit-shared" } as ToolSession);
+	const sharedA = new BashTool({ ...session, getEvalSessionId: () => "explicit-shared" } as ToolSession);
+	const sharedB = new BashTool({ ...session, getEvalSessionId: () => "explicit-shared" } as ToolSession);
 	const first = await sharedA.execute("shared-a", {
-		language: "py",
-		code: 'shared_marker = "yes"; print("shared-set")',
-		timeout: 30,
+		command: cellCommand("py", 'shared_marker = "yes"; print("shared-set")'),
 	});
 	const second = await sharedB.execute("shared-b", {
-		language: "py",
-		code: 'print("SHARED", shared_marker)',
-		timeout: 30,
+		command: cellCommand("py", 'print("SHARED", shared_marker)'),
 	});
-	expect(first.details?.cells?.[0]?.status).toBe("complete");
-	expect(String(second.details?.cells?.[0]?.output ?? "")).toContain("SHARED yes");
+	expect(cellText(first)).toContain("shared-set");
+	expect(cellText(second)).toContain("SHARED yes");
 }, 30_000);
 
 function yieldingProvider(gates = new Map<string, Promise<void>>()): StreamFn {

@@ -79,7 +79,6 @@ export interface InitialRetryFallbackState {
 export interface AgentSessionConfig {
 	agent: Agent;
 
-	codeModeState?: { namespacesInfo?: unknown };
 	sessionManager: SessionManager;
 	settings: Settings;
 

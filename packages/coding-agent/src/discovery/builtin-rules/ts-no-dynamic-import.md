@@ -1,7 +1,7 @@
 ---
 description: "Do not use `await import()` — use static imports unless dynamic loading is unavoidable"
 condition: "await import\\("
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 

@@ -70,6 +70,49 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
+	bash_kernel_display: {
+		label: "Bash kernel cell with display output and a file mutation",
+		renderer: "bash",
+		streamingArgs: {
+			command: "python <<'PY'\nimport json\nfrom pathlib import Path\n\ndata = json.loads(Path(\"package.js",
+		},
+		args: {
+			command: [
+				"python <<'PY'",
+				"import json",
+				"from pathlib import Path",
+				"",
+				'data = json.loads(Path("package.json").read_text())',
+				'deps = data.get("dependencies", {})',
+				'Path("deps.txt").write_text("\\n".join(sorted(deps)))',
+				'print(f"{data[\\"name\\"]} v{data[\\"version\\"]}")',
+				'print(f"{len(deps)} dependencies")',
+				"display(sorted(deps)[:3])",
+				"PY",
+			].join("\n"),
+		},
+		result: {
+			content: [
+				{
+					type: "text",
+					text: ["@oh-my-pi/coding-agent v0.42.0", "37 dependencies"].join("\n"),
+				},
+			],
+			details: {
+				exitCode: 0,
+				wallTimeMs: 128,
+				jsonOutputs: [["@ai-sdk/anthropic", "@oh-my-pi/pi-ai", "@oh-my-pi/pi-tui"]],
+				statusEvents: [
+					{
+						op: "write",
+						path: "deps.txt",
+						diff: "@@ -0,0 +1,3 @@\n+@ai-sdk/anthropic\n+@oh-my-pi/pi-ai\n+@oh-my-pi/pi-tui",
+					},
+				],
+			},
+		},
+	},
+
 	fleet_start: {
 		label: "Fleet start",
 		renderer: "fleet",
@@ -149,107 +192,6 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 			content: [{ type: "text", text: "No daemon named web" }],
 			isError: true,
 			details: { op: "logs" },
-		},
-	},
-
-	eval: {
-		label: "Eval",
-		streamingArgs: {
-			language: "py",
-			code: 'import json\nfrom pathlib import Path\n\ndata = json.loads(Path("package.js',
-			title: "load config",
-		},
-		args: {
-			language: "py",
-			title: "load config",
-			code: [
-				"import json",
-				"from pathlib import Path",
-				"",
-				'data = json.loads(Path("package.json").read_text())',
-				'deps = data.get("dependencies", {})',
-				'print(f"{data[\\"name\\"]} v{data[\\"version\\"]}")',
-				'print(f"{len(deps)} dependencies")',
-				"display(sorted(deps)[:3])",
-			].join("\n"),
-		},
-		result: {
-			content: [
-				{
-					type: "text",
-					text: ["@oh-my-pi/coding-agent v0.42.0", "37 dependencies"].join("\n"),
-				},
-			],
-			details: {
-				language: "python",
-				languages: ["python"],
-				jsonOutputs: [["@ai-sdk/anthropic", "@oh-my-pi/pi-ai", "@oh-my-pi/pi-tui"]],
-				cells: [
-					{
-						index: 0,
-						title: "load config",
-						language: "python",
-						code: [
-							"import json",
-							"from pathlib import Path",
-							"",
-							'data = json.loads(Path("package.json").read_text())',
-							'deps = data.get("dependencies", {})',
-							'print(f"{data[\\"name\\"]} v{data[\\"version\\"]}")',
-							'print(f"{len(deps)} dependencies")',
-							"display(sorted(deps)[:3])",
-						].join("\n"),
-						output: ["@oh-my-pi/coding-agent v0.42.0", "37 dependencies"].join("\n"),
-						status: "complete",
-						durationMs: 64,
-						exitCode: 0,
-					},
-				],
-			},
-		},
-		errorResult: {
-			content: [
-				{
-					type: "text",
-					text: [
-						"Traceback (most recent call last):",
-						'  File "<cell 0>", line 4, in <module>',
-						'    data = json.loads(Path("package.json").read_text())',
-						"          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
-						"json.decoder.JSONDecodeError: Expecting ',' delimiter: line 12 column 3 (char 318)",
-					].join("\n"),
-				},
-			],
-			isError: true,
-			details: {
-				language: "python",
-				languages: ["python"],
-				isError: true,
-				cells: [
-					{
-						index: 0,
-						title: "load config",
-						language: "python",
-						code: [
-							"import json",
-							"from pathlib import Path",
-							"",
-							'data = json.loads(Path("package.json").read_text())',
-							'deps = data.get("dependencies", {})',
-							'print(f"{data[\\"name\\"]} v{data[\\"version\\"]}")',
-						].join("\n"),
-						output: [
-							"Traceback (most recent call last):",
-							'  File "<cell 0>", line 4, in <module>',
-							'    data = json.loads(Path("package.json").read_text())',
-							"json.decoder.JSONDecodeError: Expecting ',' delimiter: line 12 column 3 (char 318)",
-						].join("\n"),
-						status: "error",
-						durationMs: 41,
-						exitCode: 1,
-					},
-				],
-			},
 		},
 	},
 };

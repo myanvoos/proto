@@ -9,7 +9,6 @@ import type { EvalStatusEvent } from "../eval/types";
 import { initTheme, theme } from "../modes/theme/theme";
 import type { ToolSession } from ".";
 import { BashTool, type BashToolDetails } from "./bash";
-import { EvalTool } from "./eval";
 import { toolRenderers } from "./renderers";
 
 await initTheme(false, false, "proto");
@@ -41,12 +40,9 @@ type Renderer = {
 	renderResult: (r: unknown, o: unknown, t: unknown, a: unknown) => { render: (w: number) => string[] };
 };
 const bashRenderer = toolRenderers.bash as never as Renderer;
-const kernelRenderer = toolRenderers.kernel as never as Renderer;
 
 const renderBashCall = (command: string) =>
 	strip(bashRenderer.renderCall({ command }, { expanded: false }, theme).render(100).join("\n"));
-const renderKernelResult = (res: unknown, code: string) =>
-	norm(kernelRenderer.renderResult(res, { expanded: false }, theme, { code, title: "t" }).render(90).join("\n"));
 const renderBashResult = (res: unknown, command: string) =>
 	norm(bashRenderer.renderResult(res, { expanded: false }, theme, { command }).render(90).join("\n"));
 
@@ -152,31 +148,17 @@ test("a kernel block that does not parse keeps its source and no ast marker", ()
 	expect(rendered).toContain("echo done");
 });
 
-// The settled phase (renderResult) is compared byte-for-byte against the eval
-// tool rendering the same code, so the two can never drift.
-async function assertJavaScriptParity(label: string, code: string): Promise<void> {
-	const dirE = await fs.mkdtemp(path.join(os.tmpdir(), "jsE-"));
-	const dirB = await fs.mkdtemp(path.join(os.tmpdir(), "jsB-"));
-	const command = `bun <<'JSEOF'\n${code}\nJSEOF`;
+// Settled kernel cells must render the full kernel presentation — AST outline of
+// the cell source, then Output/Status sections — instead of the plain `$ command`
+// shell listing a non-kernel bash call gets.
+async function renderSettledCell(label: string, interpreter: string, code: string): Promise<string> {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), `cell-${label}-`));
+	const command = `${interpreter} <<'CELLEOF'\n${code}\nCELLEOF`;
 	try {
-		const er = await new EvalTool(stub(dirE)).execute(`e-js-${label}`, { language: "js", code, timeout: 60 });
-		const br = await new BashTool(stub(dirB)).execute(`b-js-${label}`, { command });
-		expect(renderBashResult(br, command), label).toBe(renderKernelResult(er, code));
+		const result = await new BashTool(stub(dir)).execute(`cell-${label}`, { command });
+		return renderBashResult(result, command);
 	} finally {
-		await fs.rm(dirE, { recursive: true, force: true });
-		await fs.rm(dirB, { recursive: true, force: true });
-	}
-}
-async function assertParity(label: string, code: string): Promise<void> {
-	const dirE = await fs.mkdtemp(path.join(os.tmpdir(), "pE-"));
-	const dirB = await fs.mkdtemp(path.join(os.tmpdir(), "pB-"));
-	try {
-		const er = await new EvalTool(stub(dirE)).execute(`e-${label}`, { language: "py", code, timeout: 60 });
-		const br = await new BashTool(stub(dirB)).execute(`b-${label}`, { command: `python <<'PYEOF'\n${code}\nPYEOF` });
-		expect(renderBashResult(br, `python <<'PYEOF'\n${code}\nPYEOF`), label).toBe(renderKernelResult(er, code));
-	} finally {
-		await fs.rm(dirE, { recursive: true, force: true });
-		await fs.rm(dirB, { recursive: true, force: true });
+		await fs.rm(dir, { recursive: true, force: true });
 	}
 }
 
@@ -304,16 +286,58 @@ emit("agent", { id: beta, status: "completed", durationMs: 25 });
 }, 60000);
 
 test("bun-in-bash renderResult uses the shared JavaScript AST renderer", async () => {
-	await assertJavaScriptParity("code+console", 'function greet(name) { return name; }\nconsole.log(greet("x"))');
+	const rendered = await renderSettledCell(
+		"js",
+		"bun",
+		'function greet(name) { return name; }\nconsole.log(greet("x"))',
+	);
+	expect(rendered).toContain("· ast");
+	expect(rendered).toContain("function greet(name)");
+	expect(rendered).toContain("return name");
+	expect(rendered).toContain('console.log(greet("x"))');
+	expect(rendered).toContain("Output");
+	expect(rendered).toContain("x");
 }, 120000);
-test("python-in-bash renderResult is identical to the eval/kernel tool", async () => {
-	await assertParity("code+print", "def greet(n):\n    return n\n\nprint('hi', greet('x'))");
-	await assertParity("json-display", "display({'k': [1, 2, 3], 'nested': {'x': 1}})");
-	await assertParity(
-		"edit-hunks",
+
+test("a settled python cell renders the AST outline above its captured output", async () => {
+	const rendered = await renderSettledCell(
+		"print",
+		"python",
+		"def greet(n):\n    return n\n\nprint('hi', greet('x'))",
+	);
+	expect(rendered).toContain("· ast");
+	expect(rendered).toContain("def greet(n)");
+	expect(rendered).toContain("return n");
+	const outlineIndex = rendered.indexOf("def greet(n)");
+	const outputIndex = rendered.indexOf("Output");
+	expect(outlineIndex, "outline precedes the Output section").toBeLessThan(outputIndex);
+	expect(rendered.slice(outputIndex)).toContain("hi x");
+}, 120000);
+
+test("display() output renders as a JSON tree, not a bare repr", async () => {
+	const rendered = await renderSettledCell("display", "python", "display({'k': [1, 2, 3], 'nested': {'x': 1}})");
+	expect(rendered).toContain("Output");
+	expect(rendered).toContain('"nested"');
+	expect(rendered).toContain("└─ ▤ x: 1");
+}, 120000);
+
+test("in-cell file edits render as Status diff hunks with the mutated path", async () => {
+	const rendered = await renderSettledCell(
+		"hunks",
+		"python",
 		"open('f.txt', 'w').write('a\\nb\\n')\ntext = open('f.txt').read()\nopen('f.txt', 'w').write(text.replace('b', 'B'))",
 	);
-	await assertParity("traceback", "x = 1 / 0");
+	expect(rendered).toContain("Status");
+	expect(rendered).toMatch(/write \S*f\.txt ⟦\+2⟧/);
+	expect(rendered).toContain("+1│a");
+	expect(rendered).toContain("+2│B");
+}, 120000);
+
+test("a raising cell renders its traceback and a failed cell marker", async () => {
+	const rendered = await renderSettledCell("boom", "python", "x = 1 / 0");
+	expect(rendered).toContain("✗");
+	expect(rendered).toContain("ZeroDivisionError: division by zero");
+	expect(rendered).toContain('File "<cell>", line 1');
 }, 120000);
 
 test("bash kernel live and rebuilt partial results preserve heredoc payload source", () => {

@@ -32,11 +32,65 @@ Without positional JSON, `xd` parses its stdin as the argument object: `printf '
 
 ## Persistent interpreter cells
 
-Supported `python`/`python3`, `node`, and `bun` stdin and inline-code invocations use the same persistent kernels as the eval tool. Ordinary script paths, interpreter options, and inline code with extra argv fall through to an external interpreter; supported `fleet://` scripts remain kernel cells. External fallback preserves stdin bytes even when the source is not UTF-8, leaving decoding and syntax errors to the interpreter. Empty `PATH` components search the shell's working directory, just as they do for other shell commands.
+The kernel bridge handles supported `python`/`python3`, `node`, and `bun` stdin and inline-code invocations as Bash kernel cells; see [Kernel-cell reference](#kernel-cell-reference) for the exact forms, API, and fallback rules. External fallback preserves stdin bytes even when the source is not UTF-8, leaving decoding and syntax errors to the interpreter. Empty `PATH` components search the shell's working directory, just as they do for other shell commands.
 
 A bridge request belongs to its shell run from the start of backend availability checks. Cancellation or run disposal during those checks returns exit status `130` rather than launching a late cell or falling through to an external interpreter. Disposing one run does not stop the bridge for other live runs; disconnected clients cancel their own pending cell.
 
 Kernel stdout, display text, and the final exit frame share one ordered response stream. The bridge retains unwritten UTF-8 bytes across socket backpressure and closes only after the final frame is written, so slow readers do not receive truncated JSON or lose the command's exit status. The native reader scans incoming bytes incrementally rather than rescanning a growing frame, keeping large kernel output practical in shell pipelines.
+
+## Kernel-cell reference
+
+When the kernel bridge is available, Bash routes supported interpreter invocations to the retained language runtimes instead of spawning a fresh interpreter. Each recognized interpreter invocation is one cell; a single Bash command may contain several cells alongside ordinary shell syntax. The former structured cell fields (`language`, `code`, `title`, `timeout`, and `reset`) are not Bash parameters: the interpreter command supplies the language and source, and the enclosing Bash call supplies the timeout.
+
+### Cell forms and API
+
+Recognized cell forms are:
+
+- `python`/`python3` with source on stdin, normally a quoted heredoc or a pipeline.
+- `python -c '...'`, `node -e '...'`, or `bun -e '...'` with no extra interpreter arguments.
+- `python fleet://<name>.py` for a script staged under the internal `fleet://` URL.
+- Script paths, `-m`, unsupported interpreter flags, extra arguments, and calls made without a bridge use an external interpreter.
+
+For example:
+
+```bash
+python <<'PY'
+from pathlib import Path
+print(Path("package.json").read_text())
+PY
+
+node -e 'console.log("one persistent JavaScript cell")'
+```
+
+Every enabled runtime receives the cell prelude. Python helpers are synchronous and use keyword options; JavaScript bridge helpers are asynchronous where applicable and use one trailing options object. The shared API is:
+
+- `display(value)` and `print(...)` for ordinary and rich output.
+- `env(...)`, `output(...)`, and `tool.<name>(args)` for environment, agent/task-output, and normal session-tool access. `output()` reads agent/task outputs; use `read artifact://...` for Bash artifacts.
+- `proto_path(path)` (Python) and `protoPath(path)` (JavaScript) to resolve plain paths and supported internal URLs for filesystem APIs.
+- Python `symbols(path?, code?=None, lang?=None)`, `defs()`, and `block_range(path, line)` for bounded source inspection.
+- `completion(...)` for a stateless tool-free model call; `agent(...)` for a policy-checked subagent; and `parallel(...)`/`pipeline(...)` for bounded fan-out.
+- `log(message)`, `phase(title)`, and `budget` for progress and the live turn budget.
+
+`agent()` availability follows the current spawn policy, and `parallel()`/`pipeline()` width follows `orchestrator.maxConcurrency` (`0` means unbounded). Python supports top-level `await` on its persistent event loop (do not call `asyncio.run()` there); JavaScript supports top-level `await` and bare `return`. The prelude also includes the stale-write guard and filesystem mutation/status tracking used by kernel edits; read before localized replacement and let the guard reject stale writes.
+
+### Rich output
+
+`display()` accepts JSON-compatible values, Markdown/text, and image values. Python MIME bundles support `application/json`, `text/markdown`, `text/plain`, HTML-to-Markdown conversion, PNG/JPEG images, and structured status events; common PIL, pandas, Plotly, and Matplotlib displays therefore remain available. Matplotlib figures render off-screen through the `Agg` backend. JavaScript object results become structured JSON and image records become image content.
+
+Text output follows the Bash output stream. JSON values, images, and kernel status events also stay structured on the Bash result for rendering and replay, so status diffs and rich displays are not flattened into shell pipelines. JSON display text included in the model-visible stream is capped at 8,000 characters per value; the structured result retains the value. Output truncation and artifact spill follow the Bash `OutputSink` rules described below.
+
+### State and reset
+
+- Python `python.kernelMode: session` (the default) reuses a kernel by session, normalized working directory, and interpreter; `per-call` starts and shuts down a fresh Python kernel for every cell. JavaScript uses a retained session-scoped VM. Python and JavaScript state are isolated from each other.
+- Variables, imports, definitions, and running tasks survive later cells in the same retained runtime. Work completed before a cell error may remain. Separate workers have separate runtime ownership and namespaces even though they use the same Bash/kernel-cell surface.
+- Python `%reset` clears the user namespace and re-injects the prelude for that Python kernel. Bash has no structured per-cell `reset` field; owner/session disposal, idle reaping, or a forced runtime shutdown starts a fresh kernel/VM.
+- Retained runtimes are reaped after 15 minutes without activity when in session mode; active cells, resets/replacements, and in-flight bridges prevent reaping. The next cell starts fresh and reports a `kernel-idle-reap` status event. A dead retained runtime is replaced before execution, and a subprocess death during execution is retried once where the backend can do so.
+
+Interactive `input()` is not supported by routed Python cells; pass data through files, environment variables, or explicit code instead.
+
+### Timeouts and cancellation
+
+The enclosing Bash `timeout` (see [CWD validation and timeout resolution](#3-cwd-validation-and-timeout-resolution)) is the only model-facing deadline for a kernel cell; a cell has no separate structured timeout field. If the command deadline or caller abort interrupts a Python cell, the runner receives `SIGINT` and normally remains reusable; if it cannot settle, the kernel is shut down and recreated. Interrupting JavaScript force-kills its VM, so variables from earlier cells are lost. The Bash shell session is likewise quarantined after a cancelled or timed-out run.
 
 ## Streamed kernel preflight and speculation
 
@@ -381,6 +435,8 @@ This component is wired by `CommandController.handleBashCommand()` and fed from 
 - [`src/exec/non-interactive-env.ts`](../packages/coding-agent/src/exec/non-interactive-env.ts) — non-interactive child-process env defaults (`buildNonInteractiveEnv`) used by the non-PTY executor.
 - [`src/exec/direnv.ts`](../packages/coding-agent/src/exec/direnv.ts) — direnv/devenv environment loading used by executor preflight.
 - [`src/tools/bash-interactive.ts`](../packages/coding-agent/src/tools/bash-interactive.ts) — PTY runtime, overlay UI, input normalization, and interactive `TERM` setup.
+- [`src/tools/bash-kernel-cell.ts`](../packages/coding-agent/src/tools/bash-kernel-cell.ts) — recognizes embedded Python/JavaScript cell forms and source spans.
+- [`src/eval/shell-bridge.ts`](../packages/coding-agent/src/eval/shell-bridge.ts) — routes Bash cells to the retained Python/JavaScript runtimes and drains structured output.
 - [`src/session/streaming-output.ts`](../packages/coding-agent/src/session/streaming-output.ts) — `OutputSink`, `TailBuffer`, truncation/artifact spill, and summary metadata.
 - [`src/tools/output-meta.ts`](../packages/coding-agent/src/tools/output-meta.ts) — truncation metadata shape + notice injection wrapper.
 - [`src/session/agent-session.ts`](../packages/coding-agent/src/session/agent-session.ts) — session-level `executeBash`, message recording, abort lifecycle.

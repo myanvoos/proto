@@ -8,17 +8,16 @@ import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import { executeBash } from "../exec/bash-executor";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
-import { EvalTool } from "./eval";
 import { ReadTool } from "./read";
 
-const KERNEL_OWNER = `eval-fs-observations-test:${process.pid}`;
+const KERNEL_OWNER = `bash-fs-observations-test:${process.pid}`;
 
 function stubSession(cwd: string): ToolSession {
 	const settings = new Map<string, unknown>();
 	return {
 		cwd,
 		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
-		getEvalSessionId: () => `eval-fs-observations-test:${cwd}`,
+		getEvalSessionId: () => `bash-fs-observations-test:${cwd}`,
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
 	} as unknown as ToolSession;
 }
@@ -32,10 +31,12 @@ const GUARD_PROBE = [
 	"        return type(err).__name__",
 ].join("\n");
 
-async function runPy(tool: EvalTool, id: string, code: string): Promise<string> {
-	const result = await tool.execute(id, { language: "py", code, timeout: 60 });
-	expect(result.details?.cells?.[0]?.status).toBe("complete");
-	return String(result.details?.cells?.[0]?.output ?? "");
+async function runPy(bash: BashTool, id: string, code: string): Promise<string> {
+	const result = await bash.execute(id, { command: `python <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__` });
+	return result.content
+		.filter((block): block is { type: "text"; text: string } => block.type === "text")
+		.map(block => block.text)
+		.join("\n");
 }
 
 afterAll(async () => {
@@ -110,9 +111,7 @@ test("shell builtins and redirects report file observations with exact stamps", 
 test("a bash read arms the kernel stale-write guard", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-read-guard-"));
 	try {
-		const session = stubSession(dir);
-		const bash = new BashTool(session);
-		const evalTool = new EvalTool(session);
+		const bash = new BashTool(stubSession(dir));
 		const target = path.join(dir, "guarded.txt");
 		await Bun.write(target, "original\n");
 
@@ -120,8 +119,8 @@ test("a bash read arms the kernel stale-write guard", async () => {
 		await Bun.write(target, "externally changed\n");
 
 		const out = await runPy(
-			evalTool,
-			"eval-write",
+			bash,
+			"kernel-write",
 			`${GUARD_PROBE}\nprint("WRITE", check(lambda: open("guarded.txt", "w").write("kernel\\n")))`,
 		);
 		expect(out).toContain("WRITE StaleWriteError");
@@ -134,20 +133,18 @@ test("a bash read arms the kernel stale-write guard", async () => {
 test("a bash write re-arms the guard so the kernel's next edit passes", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-write-rearm-"));
 	try {
-		const session = stubSession(dir);
-		const bash = new BashTool(session);
-		const evalTool = new EvalTool(session);
+		const bash = new BashTool(stubSession(dir));
 		const target = path.join(dir, "guarded.txt");
 		await Bun.write(target, "original\n");
 
-		expect(await runPy(evalTool, "eval-read", 'print("READ", len(Path("guarded.txt").read_text()))')).toContain(
+		expect(await runPy(bash, "kernel-read", 'print("READ", len(Path("guarded.txt").read_text()))')).toContain(
 			"READ 9",
 		);
 		await bash.execute("bash-write", { command: "sed -i 's/original/shell-edited/' guarded.txt" });
 
 		const out = await runPy(
-			evalTool,
-			"eval-edit",
+			bash,
+			"kernel-edit",
 			`${GUARD_PROBE}\nprint("EDIT", check(lambda: open("guarded.txt", "w").write("kernel-edited\\n")))`,
 		);
 		expect(out).toContain("EDIT ok");
@@ -162,7 +159,7 @@ test("a read-tool read arms the kernel stale-write guard", async () => {
 	try {
 		const session = stubSession(dir);
 		const read = new ReadTool(session);
-		const evalTool = new EvalTool(session);
+		const bash = new BashTool(session);
 		const target = path.join(dir, "guarded.txt");
 		await Bun.write(target, "original\n");
 
@@ -170,8 +167,8 @@ test("a read-tool read arms the kernel stale-write guard", async () => {
 		await Bun.write(target, "externally changed\n");
 
 		const out = await runPy(
-			evalTool,
-			"eval-write",
+			bash,
+			"kernel-write",
 			`${GUARD_PROBE}\nprint("WRITE", check(lambda: open("guarded.txt", "w").write("kernel\\n")))`,
 		);
 		expect(out).toContain("WRITE StaleWriteError");

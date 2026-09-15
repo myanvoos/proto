@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import type { ToolSession } from ".";
-import { EvalTool } from "./eval";
+import { BashTool } from "./bash";
 
 const KERNEL_OWNER = `eval-helpers-test:${process.pid}`;
 
@@ -13,26 +13,33 @@ function stubSession(cwd: string, skills?: ToolSession["skills"]): ToolSession {
 	return {
 		cwd,
 		skills,
-		settings: {
-			get: (key: string) => settings.get(key),
-		},
+		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
+		getArtifactsDir: () => path.join(cwd, "artifacts"),
 		getEvalSessionId: () => "eval-helpers-test",
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
 	} as unknown as ToolSession;
 }
 
+function cellCommand(code: string): string {
+	return `python <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`;
+}
+
+function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
+	return result.content
+		.filter(block => block.type === "text")
+		.map(block => block.text ?? "")
+		.join("\n");
+}
+
 async function runCell(dir: string, code: string, session = stubSession(dir)) {
-	const tool = new EvalTool(session);
-	const result = await tool.execute("eval-helpers-test", {
-		language: "py",
-		code,
-		title: "kernel helpers",
+	const result = await new BashTool(session).execute("bash-kernel-helpers-test", {
+		command: cellCommand(code),
 		timeout: 60,
 	});
 	return {
-		status: result.details?.cells?.[0]?.status,
-		output: result.details?.cells?.[0]?.output ?? "",
-		statusEvents: result.details?.cells?.[0]?.statusEvents ?? [],
+		status: result.isError ? "error" : "complete",
+		output: textOf(result),
+		statusEvents: result.details?.statusEvents ?? [],
 	};
 }
 

@@ -1,7 +1,7 @@
 ---
 description: "Use io and os instead of the deprecated io/ioutil package"
 condition: '"io/ioutil"'
-scope: "tool:eval, tool:kernel"
+scope: "tool:bash"
 interruptMode: never
 ---
 
