@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.9] - 2026-09-15
+
 ### Changed
 
 - `summarizeCode` treats class/impl/trait/module bodies as transparent declaration containers (members stay visible, member bodies fold); `blockRangeAt` resolves the enclosing declaration or block for lines inside a body.

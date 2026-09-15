@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.9] - 2026-09-15
+
 ### Fixed
 
 - Keystrokes pressed while a torn control string is pending are no longer swallowed (deferred flush and Kitty holding), and explicit flushes keep multibyte UTF-8 intact across paste and discard boundaries
@@ -23,9 +25,6 @@
 - LaTeX `\ref` renders without parentheses and `\url{...}` preserves literal tildes
 - Desktop notifications honor `expiresMs` and skip the fallback toast for VS Code
 - Fuzzy ranking rescans past a non-boundary first occurrence; `@` directory completion no longer terminates the token
-
-### Fixed
-
 - In-place resizes (Herdr, tmux-style hosts) no longer duplicate or drop scrollback rows when the terminal height changes: the renderer now measures how many rows the host moved between the screen and history with a cursor-position report instead of assuming every host pulls history back on growth, so height flapping (mobile keyboards, pane splits, resizes mid-stream) keeps native history exact.
 - Full-window repaints after a resize home the cursor with an overshooting cursor-up, so a host that left the cursor on a different row cannot make the repaint start mid-screen.
 

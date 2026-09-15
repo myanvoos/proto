@@ -2,14 +2,16 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- `readLines` no longer yields buffers aliasing producer-owned memory, so consumed lines survive source buffer reuse
-- `sanitizeText` gains `stripControlChars` for protocol payloads and single-line render fields
+## [18.1.9] - 2026-09-15
 
 ### Added
 
 - `vterm` accepts `growPullsHistory: "cursorOnLastRow"` to model terminals (xterm.js, ghostty) that pad a height-only grow with blank rows unless the cursor is on the last row.
+
+### Fixed
+
+- `readLines` no longer yields buffers aliasing producer-owned memory, so consumed lines survive source buffer reuse
+- `sanitizeText` gains `stripControlChars` for protocol payloads and single-line render fields
 
 ## [18.1.6] - 2026-09-12
 
