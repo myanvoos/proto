@@ -615,7 +615,14 @@ async function evaluatePython(
 			values.set(builtinOpenImport[1] ?? "open", OPEN_FUNCTION);
 			continue;
 		}
-		if (/^(?:import|from)\b/u.test(trimmed)) return undefined;
+		if (/^(?:import|from)\b/u.test(trimmed)) {
+			// An unmodelled import still cannot touch anything but the names it
+			// introduces, so forget those and keep checking the rest of the cell.
+			const imported = pythonImportBindings(trimmed);
+			if (!imported) return undefined;
+			for (const name of imported) values.delete(name);
+			continue;
+		}
 		if (/^assert\b/u.test(trimmed)) {
 			const failure = await evaluatePythonAssert(
 				trimmed.slice(6).trim(),
@@ -629,9 +636,18 @@ async function evaluatePython(
 			continue;
 		}
 		const assignment = /^([A-Za-z_]\w*)\s*=\s*([\s\S]+)$/u.exec(trimmed);
-		if (!assignment) return undefined;
+		if (!assignment) {
+			// A statement that provably binds nothing (a bare `print(...)` call)
+			// leaves every tracked value intact, so step over it.
+			if (isInertPythonStatement(trimmed)) continue;
+			return undefined;
+		}
 		const value = await evaluatePythonValue(assignment[2]!, values, cwd, limits, signal);
-		if (value === undefined) return undefined;
+		if (value === undefined) {
+			// Unmodelled right-hand side: drop just this name, keep the rest.
+			values.delete(assignment[1]!);
+			continue;
+		}
 		if (isReadResult(value)) observations.set(value.observation.public.path, value.observation);
 		values.set(assignment[1]!, isReadResult(value) ? value.text : value);
 	}
@@ -643,15 +659,92 @@ function isReadResult(value: unknown): value is ReadResult {
 }
 
 function isKnownPythonAssert(expression: string, values: Map<string, SafeValue>): boolean {
-	const comparison = splitTopLevelOperator(expression, "==");
-	if (!comparison) return false;
-	const call = /^([A-Za-z_]\w*)\s*\.\s*count\s*\(([\s\S]*)\)$/u.exec(comparison.left.trim());
-	if (!call) return false;
-	const receiver = values.get(call[1]!);
-	if (typeof receiver !== "string") return false;
-	const needle = parsePythonLiteralOrName(call[2]!.trim(), values);
-	const expected = parsePythonLiteralOrName(comparison.right.trim(), values);
-	return typeof needle === "string" && typeof expected === "number" && Number.isSafeInteger(expected);
+	return parsePythonCountAssertion(expression, values) !== undefined;
+}
+
+/** A `count`/membership assertion reduced to a predicate over the real occurrence count. */
+interface PythonCountAssertion {
+	haystack: string;
+	needle: string;
+	expected?: number;
+	source: string;
+	holds: (actual: number) => boolean;
+}
+
+const PYTHON_COMPARISONS: readonly (readonly [string, (actual: number, expected: number) => boolean])[] = [
+	["==", (actual, expected) => actual === expected],
+	["!=", (actual, expected) => actual !== expected],
+	[">=", (actual, expected) => actual >= expected],
+	["<=", (actual, expected) => actual <= expected],
+	[">", (actual, expected) => actual > expected],
+	["<", (actual, expected) => actual < expected],
+];
+
+/**
+ * Reduce the supported assertion shapes to one predicate over an occurrence
+ * count. Longer operators are tried first so `>=` never splits as `>`, and
+ * `not in` never splits as `in`.
+ */
+function parsePythonCountAssertion(
+	expression: string,
+	values: Map<string, SafeValue>,
+): PythonCountAssertion | undefined {
+	const condition = splitTopLevelComma(expression)?.[0]?.trim() ?? expression.trim();
+	for (const [operator, negated] of [
+		[" not in ", true],
+		[" in ", false],
+	] as const) {
+		const split = splitTopLevelOperator(condition, operator);
+		if (!split) continue;
+		const haystack = values.get(split.right.trim());
+		const needle = parsePythonLiteralOrName(split.left.trim(), values);
+		if (typeof haystack !== "string" || typeof needle !== "string") return undefined;
+		return { haystack, needle, source: condition, holds: actual => (negated ? actual === 0 : actual > 0) };
+	}
+	for (const [operator, compare] of PYTHON_COMPARISONS) {
+		const split = splitTopLevelOperator(condition, operator);
+		if (!split) continue;
+		const call = /^([A-Za-z_]\w*)\s*\.\s*count\s*\(([\s\S]*)\)$/u.exec(split.left.trim());
+		if (!call) return undefined;
+		const haystack = values.get(call[1]!);
+		const needle = parsePythonLiteralOrName(call[2]!.trim(), values);
+		const expected = parsePythonLiteralOrName(split.right.trim(), values);
+		if (typeof haystack !== "string" || typeof needle !== "string") return undefined;
+		if (typeof expected !== "number" || !Number.isSafeInteger(expected)) return undefined;
+		return { haystack, needle, expected, source: condition, holds: actual => compare(actual, expected) };
+	}
+	return undefined;
+}
+
+/** Names an import binds, or undefined when it can bind anything (`import *`). */
+function pythonImportBindings(statement: string): string[] | undefined {
+	const fromMatch = /^from\s+[\w.]+\s+import\s+([\s\S]+)$/u.exec(statement);
+	const target = fromMatch ? fromMatch[1]! : /^import\s+([\s\S]+)$/u.exec(statement)?.[1];
+	if (target === undefined) return undefined;
+	const stripped = target.trim().replace(/^\(([\s\S]*)\)$/u, "$1");
+	const names: string[] = [];
+	for (const piece of stripped.split(",")) {
+		const item = piece.trim();
+		if (item.length === 0) continue;
+		const aliased = /^([\w.]+)\s+as\s+([A-Za-z_]\w*)$/u.exec(item);
+		if (aliased) {
+			names.push(aliased[2]!);
+			continue;
+		}
+		if (!/^[\w.]+$/u.test(item)) return undefined;
+		names.push(item.split(".")[0]!);
+	}
+	return names;
+}
+
+const PYTHON_BINDING_STATEMENT =
+	/^(?:del|global|nonlocal|import|from|def|class|async|for|while|with|try|except|finally|if|elif|else|return|yield|raise|match|case)\b/u;
+
+/** True only when a statement provably cannot rebind a tracked name. */
+function isInertPythonStatement(statement: string): boolean {
+	if (PYTHON_BINDING_STATEMENT.test(statement)) return false;
+	if (statement.includes(":=")) return false;
+	return splitTopLevelOperator(statement, "=") === undefined;
 }
 
 async function evaluatePythonAssert(
@@ -661,33 +754,20 @@ async function evaluatePythonAssert(
 	observations: Map<string, InternalObservation>,
 	signal: AbortSignal | undefined,
 ): Promise<AssertionPreflightFailure | undefined> {
-	const condition = splitTopLevelComma(expression)?.[0]?.trim() ?? expression.trim();
-	const comparison = splitTopLevelOperator(condition, "==");
-	if (!comparison) return undefined;
-	const call = /^([A-Za-z_]\w*)\s*\.\s*count\s*\(([\s\S]*)\)$/u.exec(comparison.left.trim());
-	if (!call) return undefined;
-	const haystack = values.get(call[1]!);
-	const needle = parsePythonLiteralOrName(call[2]!.trim(), values);
-	const expected = parsePythonLiteralOrName(comparison.right.trim(), values);
-	if (
-		typeof haystack !== "string" ||
-		typeof needle !== "string" ||
-		typeof expected !== "number" ||
-		!Number.isSafeInteger(expected)
-	) {
-		return undefined;
-	}
-	const actual = countOccurrences(haystack, needle, signal);
-	if (actual === undefined || actual === expected) return undefined;
+	const parsed = parsePythonCountAssertion(expression, values);
+	if (!parsed) return undefined;
+	const actual = countOccurrences(parsed.haystack, parsed.needle, signal);
+	if (actual === undefined || parsed.holds(actual)) return undefined;
 	const provenance = [...observations.values()].map(value => value.public);
 	if (!(await observationsCurrent(provenance, signal))) return undefined;
+	const expectation = parsed.expected === undefined ? "" : `, expected=${parsed.expected}`;
 	return {
-		message: `Kernel assertion preflight failed at line ${line}: text.count(old) == ${expected} is false (count=${actual}, expected=${expected}).`,
+		message: `Kernel assertion preflight failed at line ${line}: ${parsed.source} is false (count=${actual}${expectation}).`,
 		language: "python",
 		line,
 		column: 1,
 		count: actual,
-		expected,
+		expected: parsed.expected,
 		path: provenance[0]?.path,
 		provenance,
 	};
@@ -1142,28 +1222,93 @@ async function evaluateJavaScript(
 		const type = node.type;
 		if (type === "EmptyStatement") continue;
 		if (type === "ImportDeclaration") {
-			if (!applySafeJsImport(node, values)) return undefined;
+			if (applySafeJsImport(node, values)) continue;
+			// Unmodelled import: forget only the locals it binds, then keep going.
+			const locals = jsImportedLocals(node);
+			if (!locals) return undefined;
+			for (const name of locals) values.delete(name);
 			continue;
 		}
 		if (type === "VariableDeclaration") {
 			const declarations = Array.isArray(node.declarations) ? node.declarations : [];
-			if (declarations.length !== 1) return undefined;
-			const declaration = declarations[0] as Record<string, unknown>;
-			const value = await evaluateJsValue(declaration.init, values, cwd, limits, signal);
-			if (value === undefined) return undefined;
-			if (!applyJsBinding(declaration.id, value, values)) return undefined;
-			if (isReadResult(value)) observations.set(value.observation.public.path, value.observation);
+			const declared = jsDeclaredNames(declarations);
+			if (!declared) return undefined;
+			if (declarations.length === 1) {
+				const declaration = declarations[0] as Record<string, unknown>;
+				const value = await evaluateJsValue(declaration.init, values, cwd, limits, signal);
+				if (value !== undefined && applyJsBinding(declaration.id, value, values)) {
+					if (isReadResult(value)) observations.set(value.observation.public.path, value.observation);
+					continue;
+				}
+			}
+			// Unmodelled initialiser: drop just these names, keep the rest of the model.
+			for (const name of declared) values.delete(name);
 			continue;
 		}
 		if (type === "ExpressionStatement") {
 			const failure = await evaluateJsAssertion(node.expression, statement.startLine, values, observations, signal);
 			if (failure) return failure;
-			if (!isKnownJsAssertion(node.expression, values)) return undefined;
+			if (isKnownJsAssertion(node.expression, values)) continue;
+			const assigned = jsAssignedNames(node.expression);
+			if (!assigned) return undefined;
+			for (const name of assigned) values.delete(name);
 			continue;
 		}
 		return undefined;
 	}
 	return undefined;
+}
+
+/** Identifier names a declaration list binds, or undefined when a pattern makes that unknowable. */
+function jsDeclaredNames(declarations: readonly unknown[]): string[] | undefined {
+	const names: string[] = [];
+	for (const entry of declarations) {
+		if (!entry || typeof entry !== "object") return undefined;
+		const id = (entry as Record<string, unknown>).id;
+		if (!isIdentifier(id, undefined)) return undefined;
+		names.push(id.name as string);
+	}
+	return names;
+}
+
+/** Local names an import binds, or undefined when they cannot be enumerated. */
+function jsImportedLocals(node: Record<string, unknown>): string[] | undefined {
+	const specifiers = node.specifiers;
+	if (!Array.isArray(specifiers)) return undefined;
+	const names: string[] = [];
+	for (const entry of specifiers) {
+		if (!entry || typeof entry !== "object") return undefined;
+		const local = (entry as Record<string, unknown>).local;
+		if (!isIdentifier(local, undefined)) return undefined;
+		names.push(local.name as string);
+	}
+	return names;
+}
+
+/** Names an expression assigns to, or undefined when it could bind something unknowable. */
+function jsAssignedNames(node: unknown, out: Set<string> = new Set()): Set<string> | undefined {
+	if (!node || typeof node !== "object") return out;
+	if (Array.isArray(node)) {
+		for (const item of node) if (!jsAssignedNames(item, out)) return undefined;
+		return out;
+	}
+	const record = node as Record<string, unknown>;
+	const type = record.type;
+	if (type === "FunctionExpression" || type === "ArrowFunctionExpression" || type === "ClassExpression") {
+		return undefined;
+	}
+	if (type === "AssignmentExpression" || type === "UpdateExpression") {
+		const target = type === "AssignmentExpression" ? record.left : record.argument;
+		if (!isIdentifier(target, undefined)) return undefined;
+		out.add(target.name as string);
+	}
+	for (const [key, value] of Object.entries(record)) {
+		if (key === "type" || key === "loc" || key === "start" || key === "end" || key === "range" || key === "extra") {
+			continue;
+		}
+		if (value && typeof value === "object" && !jsAssignedNames(value, out)) return undefined;
+	}
+	return out;
 }
 
 function applySafeJsImport(node: Record<string, unknown>, values: Map<string, SafeValue>): boolean {

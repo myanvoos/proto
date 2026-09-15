@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Kernel edit guidance now asserts an anchor's occurrence count immediately after binding the anchor and before generating the replacement text, so a wrong anchor interrupts generation roughly halfway through the cell instead of at its last line — 563 of 1094 tokens saved on a representative edit, against 11 before.
+
+### Added
+
+- Python kernel cells can search and rewrite code structurally: `ast_grep("name($$$ARGS)", lang="ts")` and `ast_edit({"old": "new"}, lang="ts")` match syntax through tree-sitter, so a rename hits real call sites and never the same text inside a comment, a string literal, or a markdown file.
+- `ast_edit` applies through the kernel's own writes, so each rewritten file still reports a mutation note and stays under the stale-write guard; a capped match list or a file that failed to parse is reported instead of silently dropped, naming the skipped files that still contain the pattern text.
+
+### Changed
+
+- The kernel assertion preflight keeps checking a cell past logging calls, unrelated imports and unmodelled assignments instead of silently giving up at the first statement it cannot model, and now decides `!=`, `>=`, `<=`, `>`, `<`, `in` and `not in` assertions as well as `==`.
+- Kernel assertion preflight failures quote the assertion the cell actually wrote instead of always printing `text.count(old)`.
+
+### Fixed
+
+- Commands spawned from a Python kernel cell no longer inherit the kernel's control pipe on stdin, so stdin-reading tools (`rg`/`grep`/`cat` with no path argument) return immediately instead of hanging until the cell deadline.
+- Kernel mutation notes now disclose when a write overwrote a change made outside the kernel since the cell last read the file, instead of reporting the write silently.
+
 ## [18.1.9] - 2026-09-15
 
 ### Changed

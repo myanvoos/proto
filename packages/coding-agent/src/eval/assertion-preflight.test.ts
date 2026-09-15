@@ -288,6 +288,127 @@ test("supports the explicit node:fs/readFileSync JavaScript count shape", async 
 	expect(await preflightKernelSource(unsafe, { language: "js", cwd: directory })).toBeUndefined();
 });
 
+test("the anchor assertion is caught before the replacement literal streams", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	// The preflight's only value is the tokens it saves by interrupting early.
+	// Asserting the anchor immediately after binding it -- before the (usually
+	// much larger) replacement text -- is what makes the interrupt worth having:
+	// detecting at the end of the cell saves nothing, because the expensive part
+	// has already been generated.
+	const replacement = "R".repeat(4000);
+	const cell = [
+		"from pathlib import Path",
+		`source = Path(${JSON.stringify(file)}).read_text()`,
+		'old = "missing anchor"',
+		"assert source.count(old) == 1",
+		`new = ${JSON.stringify(replacement)}`,
+		"Path(target).write_text(source.replace(old, new))",
+	].join("\n");
+	const command = heredoc(cell);
+	const assertion = "assert source.count(old) == 1";
+	const assertEnd = command.indexOf(assertion) + assertion.length;
+	const prefix = command.slice(0, assertEnd);
+
+	const failure = await preflightStreamedInput("anchor-first", JSON.stringify({ command: prefix }), {
+		session: { cwd: directory },
+	});
+	expect(failure?.count).toBe(0);
+	expect(failure?.expected).toBe(1);
+	// The prefix that triggered the interrupt must not contain the replacement.
+	expect(prefix).not.toContain(replacement);
+	expect(assertEnd).toBeLessThan(command.length / 2);
+});
+test("opaque statements narrow the model instead of blinding the whole cell", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	// Each of these used to abandon the preflight outright, so a cell with one
+	// stray print() silently lost its guard while still looking protected.
+	const cell = [
+		"from pathlib import Path",
+		"import re",
+		`text = Path(${JSON.stringify(file)}).read_text()`,
+		'print("checking")',
+		"limit = compute_limit()",
+		'subprocess_like(["true"])',
+		'assert text.count("missing") == 1',
+	].join("\n");
+	const failure = await preflightKernelSource(cell, { cwd: directory });
+	expect(failure?.count).toBe(0);
+	expect(failure?.line).toBe(7);
+	expect(failure?.path).toBe(file);
+});
+
+test("a statement that could rebind the tracked text still fails open", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	const read = ["from pathlib import Path", `text = Path(${JSON.stringify(file)}).read_text()`];
+	const assertion = 'assert text.count("missing") == 1';
+	// Anything that can put a different string behind `text` must abandon the
+	// check rather than assert against the content read earlier.
+	for (const rebind of ["text += extra", "del text", "text, rest = split_it()", "helper(text := reload())"]) {
+		expect(await preflightKernelSource([...read, rebind, assertion].join("\n"), { cwd: directory })).toBeUndefined();
+	}
+});
+
+test("each supported comparison decides the assertion on the real count", async () => {
+	const { directory, file } = await makeFixture("alpha alpha beta\n");
+	const read = ["from pathlib import Path", `text = Path(${JSON.stringify(file)}).read_text()`];
+	const check = async (assertion: string) =>
+		await preflightKernelSource([...read, `assert ${assertion}`].join("\n"), { cwd: directory });
+
+	// count("alpha") is 2: the left column is false, the right column holds.
+	expect((await check('text.count("alpha") != 2'))?.count).toBe(2);
+	expect((await check('text.count("alpha") >= 3'))?.count).toBe(2);
+	expect((await check('text.count("alpha") < 2'))?.count).toBe(2);
+	expect((await check('"gamma" in text'))?.count).toBe(0);
+	expect((await check('"beta" not in text'))?.count).toBe(1);
+	expect(await check('text.count("alpha") == 2')).toBeUndefined();
+	expect(await check('text.count("alpha") <= 2')).toBeUndefined();
+	expect(await check('"beta" in text')).toBeUndefined();
+	expect(await check('"gamma" not in text')).toBeUndefined();
+});
+
+test("the failure message quotes the assertion the cell actually wrote", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	const cell = [
+		"from pathlib import Path",
+		`source = Path(${JSON.stringify(file)}).read_text()`,
+		'anchor = "missing"',
+		"assert source.count(anchor) == 1",
+	].join("\n");
+	const failure = await preflightKernelSource(cell, { cwd: directory });
+	// It used to print `text.count(old)` no matter what the cell named things.
+	expect(failure?.message).toContain("source.count(anchor) == 1");
+	expect(failure?.message).not.toContain("text.count(old)");
+});
+
+test("JavaScript keeps checking past logging and unmodelled bindings", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	const source = [
+		'import os from "node:os";',
+		'const fs = require("node:fs");',
+		`const text = fs.readFileSync(${JSON.stringify(file)}, "utf8");`,
+		'const old = "missing";',
+		"const limit = computeLimit();",
+		'console.log("checking", os.platform());',
+		"console.assert(text.split(old).length - 1 === 1);",
+	].join("\n");
+	const failure = await preflightKernelSource(source, { language: "js", cwd: directory });
+	expect(failure?.language).toBe("js");
+	expect(failure?.count).toBe(0);
+	expect(failure?.line).toBe(7);
+});
+
+test("a JavaScript reassignment of the tracked text fails open", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	const source = [
+		'const fs = require("node:fs");',
+		`let text = fs.readFileSync(${JSON.stringify(file)}, "utf8");`,
+		'const old = "missing";',
+		"text = reload();",
+		"console.assert(text.split(old).length - 1 === 1);",
+	].join("\n");
+	expect(await preflightKernelSource(source, { language: "js", cwd: directory })).toBeUndefined();
+});
+
 test("rejects non-regular files and bounded/binary reads", async () => {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "assertion-preflight-files-"));
 	temporaryDirectories.push(directory);

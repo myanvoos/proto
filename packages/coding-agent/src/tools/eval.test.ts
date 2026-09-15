@@ -42,6 +42,128 @@ afterAll(async () => {
 	await disposeKernelSessionsByOwner(KERNEL_OWNER);
 });
 
+const AST_FIXTURE = [
+	'import { isEnoent } from "@oh-my-pi/pi-utils";',
+	"// isEnoent returns true for a missing file",
+	'const msg = "call isEnoent first";',
+	"export const isEnoentLike = 1;",
+	"if (isEnoent(err)) return null;",
+].join("\n");
+
+async function astFixture(): Promise<string> {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-ast-"));
+	await Bun.write(path.join(dir, "a.ts"), `${AST_FIXTURE}\n`);
+	await Bun.write(path.join(dir, "README.md"), "Call isEnoent to check for missing files.\n");
+	return dir;
+}
+
+test("ast_grep matches identifiers, not the same text in comments, strings, or prose", async () => {
+	const dir = await astFixture();
+	try {
+		const tool = new EvalTool(stubSession(dir));
+		// A `\bisEnoent\b` regex hits the import, the comment, the string and the
+		// markdown. Only the import specifier and the call site are the identifier.
+		const code = ['hits = ast_grep("isEnoent", lang="ts")', 'print("LINES", sorted(h["line"] for h in hits))'].join(
+			"\n",
+		);
+		const result = await tool.execute("ast-grep-test", { language: "py", code, timeout: 60 });
+
+		const output = String(result.details?.cells?.[0]?.output ?? "");
+		expect(result.details?.cells?.[0]?.status).toBe("complete");
+		expect(output).toContain("LINES [1, 5]");
+		// README.md cannot parse as ts, so its "match" came from an error node.
+		// ast_edit skips such files; grep must not claim a hit edit won't make,
+		// and the skip has to name the file that still contains the text.
+		expect(output).toContain("skipped 1 file(s) that did not parse");
+		expect(output).toContain("need a hand check: README.md");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
+test("ast_grep discloses when the native cap truncated the match list", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-ast-limit-"));
+	try {
+		await Bun.write(path.join(dir, "many.ts"), "const a = [target, target, target, target, target];\n");
+		const tool = new EvalTool(stubSession(dir));
+		// The native search returns a capped slice beside a complete count.
+		// Handing back the slice alone is how a sweep silently misses call sites.
+		const code = ['hits = ast_grep("target", lang="ts", limit=2)', 'print("GOT", len(hits))'].join("\n");
+		const result = await tool.execute("ast-limit-test", { language: "py", code, timeout: 60 });
+		const output = String(result.details?.cells?.[0]?.output ?? "");
+
+		expect(output).toContain("GOT 2");
+		expect(output).toContain("ast_grep: returned 2 of 5 matches");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+test("ast_edit rewrites matched nodes and reports every file it wrote", async () => {
+	const dir = await astFixture();
+	try {
+		const tool = new EvalTool(stubSession(dir));
+		const code = [
+			'summary = ast_edit({"isEnoent": "isFileNotFound"}, lang="ts")',
+			'print("APPLIED", summary["applied"], "N", summary["replacements"])',
+		].join("\n");
+		const result = await tool.execute("ast-edit-test", { language: "py", code, timeout: 60 });
+		const output = String(result.details?.cells?.[0]?.output ?? "");
+
+		expect(output).toContain("APPLIED True N 2");
+		// Applying through the kernel's own writes is what keeps the edit visible;
+		// a native in-place rewrite would change files with no note at all.
+		expect(output).toContain("<kernel> note: wrote a.ts");
+
+		const rewritten = await Bun.file(path.join(dir, "a.ts")).text();
+		expect(rewritten).toContain('import { isFileNotFound } from "@oh-my-pi/pi-utils";');
+		expect(rewritten).toContain("if (isFileNotFound(err)) return null;");
+		expect(rewritten).toContain("// isEnoent returns true for a missing file");
+		expect(rewritten).toContain('const msg = "call isEnoent first";');
+		expect(rewritten).toContain("export const isEnoentLike = 1;");
+		expect(await Bun.file(path.join(dir, "README.md")).text()).toContain("Call isEnoent to check");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
+test("ast_edit dry runs report the changes without touching the file", async () => {
+	const dir = await astFixture();
+	try {
+		const tool = new EvalTool(stubSession(dir));
+		const code = [
+			'summary = ast_edit({"isEnoent": "isFileNotFound"}, lang="ts", dry_run=True)',
+			'print("APPLIED", summary["applied"], "N", summary["replacements"], "FILES", summary["files"])',
+		].join("\n");
+		const result = await tool.execute("ast-dryrun-test", { language: "py", code, timeout: 60 });
+
+		expect(String(result.details?.cells?.[0]?.output ?? "")).toContain("APPLIED False N 2 FILES ['a.ts']");
+		expect(await Bun.file(path.join(dir, "a.ts")).text()).toBe(`${AST_FIXTURE}\n`);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+test("cell subprocesses inherit an empty stdin, not the host control channel", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-stdin-detach-"));
+	try {
+		const tool = new EvalTool(stubSession(dir));
+		// `cat` with no argument reads stdin. While the runner's NDJSON control
+		// pipe sat on fd 0, any child that read stdin blocked until the cell
+		// deadline (`rg PATTERN` with no path argument does exactly this); on a
+		// detached stdin it sees EOF and exits immediately.
+		const code = [
+			"import subprocess",
+			'proc = subprocess.run(["cat"], capture_output=True, text=True, timeout=10)',
+			'print("RC", proc.returncode, "OUT", repr(proc.stdout))',
+		].join("\n");
+		const result = await tool.execute("eval-stdin-detach-test", { language: "py", code, timeout: 30 });
+
+		expect(result.details?.cells?.[0]?.status).toBe("complete");
+		expect(String(result.details?.cells?.[0]?.output ?? "")).toContain("RC 0 OUT ''");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 30000);
+
 test("kernel audit hook reports plain open() writes outside the walker root", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-hook-outside-"));
 	const outside = path.join(os.tmpdir(), `eval-hook-out-${process.pid}-${Date.now()}.txt`);

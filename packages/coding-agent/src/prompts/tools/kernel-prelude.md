@@ -6,6 +6,8 @@ defs() → dict    kernel-defined names → cell number
 {{/if}}{{#if py}}proto_path(path) → Path    resolve a plain, `~/…`, or scheme URL (fleet//local//skill) path to a real filesystem path for the raw file APIs{{/if}}
 {{#if js}}protoPath(path) → string    JS twin of proto_path{{/if}}
 {{#if py}}block_range(path, line) → (start, end) | None
+ast_grep(pattern | [patterns], lang?, path?=".", glob?, limit?) → [{path, line, text, meta}]    structural search; `$X` captures one node, `$$$X` many. Matches code, never the same text in a comment, string, or prose file — prefer it to regex for renames and call-site sweeps.
+ast_edit({pattern: replacement}, lang?, path?=".", glob?, dry_run?=False, max_files?) → {replacements, files, applied}    structural rewrite; `dry_run=True` previews. Applied through kernel writes, so mutation notes and the stale-write guard still fire. Every match is re-verified on disk and one stale match aborts the whole edit, writing nothing. Files that fail to parse are skipped and reported.
 {{/if}}env(key?=None, value?=None) → str | None | dict
 output(*ids, format?="raw"|"json"|"stripped", query?=<jq path>, offset?, limit?) → reads agent/task outputs by id (e.g. "scout_0"); `query` is exclusive with `offset`/`limit`; bash artifacts are read with `read artifact://N:A-B`, not `output()`.
 tool.<name>(args) → unknown    invoke any session tool; `args` = its parameter object
@@ -34,8 +36,8 @@ path.write_text(SCRIPT)
 
 source = path.read_text()
 old = r'PATTERN = r"/v1/\d+"'
-new = r'PATTERN = r"/v2/\d+"'
 assert source.count(old) == 1
+new = r'PATTERN = r"/v2/\d+"'
 path.write_text(source.replace(old, new))
 ```
 {{/if}}

@@ -157,6 +157,57 @@ test("a bash write re-arms the guard so the kernel's next edit passes", async ()
 	}
 }, 60000);
 
+test("a kernel write that discards an outside change is disclosed in the mutation note", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clobber-disclose-"));
+	try {
+		const session = stubSession(dir);
+		const bash = new BashTool(session);
+		const evalTool = new EvalTool(session);
+		const target = path.join(dir, "guarded.txt");
+		await Bun.write(target, "original\n");
+
+		await runPy(evalTool, "eval-snapshot", 'snap = Path("guarded.txt").read_text()\nprint("READ", len(snap))');
+		await bash.execute("bash-write", { command: "printf 'shell line\\n' >> guarded.txt" });
+		const out = await runPy(
+			evalTool,
+			"eval-writeback",
+			'Path("guarded.txt").write_text(snap + "kernel\\n")\nprint("DONE")',
+		);
+
+		// The write still lands -- the guard deliberately re-arms on host writes --
+		// but the shell's line is gone, and the note has to say so.
+		expect(out).toContain("DONE");
+		expect(out).toContain("overwrote a change made outside the kernel");
+		expect(await Bun.file(target).text()).toBe("original\nkernel\n");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
+test("re-reading after an outside write clears the disclosure", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clobber-cleared-"));
+	try {
+		const session = stubSession(dir);
+		const bash = new BashTool(session);
+		const evalTool = new EvalTool(session);
+		const target = path.join(dir, "guarded.txt");
+		await Bun.write(target, "original\n");
+
+		await runPy(evalTool, "eval-snapshot", 'print("READ", len(Path("guarded.txt").read_text()))');
+		await bash.execute("bash-write", { command: "printf 'shell line\\n' >> guarded.txt" });
+		const out = await runPy(
+			evalTool,
+			"eval-reread-write",
+			'fresh = Path("guarded.txt").read_text()\nPath("guarded.txt").write_text(fresh + "kernel\\n")\nprint("DONE")',
+		);
+
+		expect(out).toContain("DONE");
+		expect(out).not.toContain("overwrote a change made outside the kernel");
+		expect(await Bun.file(target).text()).toBe("original\nshell line\nkernel\n");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
 test("a read-tool read arms the kernel stale-write guard", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "read-tool-guard-"));
 	try {
