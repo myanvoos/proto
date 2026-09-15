@@ -680,6 +680,52 @@ test("keeps current rows when a committed live block is removed", () => {
 	}
 });
 
+test("a live block rewriting its scrolled-off head does not respray native scrollback", () => {
+	const terminal = new FakeTerminal(14, 6);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	// A streaming tool card: two settled rows, then a live run whose head rows
+	// (spinner, elapsed time) are rewritten on every frame. The run is pinned at
+	// its end, so rows scrolling above the viewport commit as frozen visual
+	// snapshots, and the container reports the card's start as committed-dirty
+	// because those committed rows did change.
+	const block = new ProtocolRows([]);
+	block.liveStart = 2;
+	block.pinned = true;
+	const paint = (frame: number): void => {
+		block.rows = ["settled-0", "settled-1", `run ${frame}`, `elapsed ${frame}`, "c-a", "c-b", "c-c", "o-a", "o-b"];
+		block.pinnedStart = block.rows.length;
+		block.dirtyRow = 2;
+		tui.requestRender(true);
+	};
+	tui.addChild(block);
+
+	try {
+		tui.start({ deferInput: true });
+		paint(1);
+		const committed = terminal.normalLines().length;
+		for (let frame = 2; frame <= 12; frame++) paint(frame);
+
+		// The frozen head keeps its first snapshot (duplication never loss) and the
+		// tape never grows: re-auditing frozen rows used to re-anchor the seam every
+		// frame and append the live head to history again.
+		expect(terminal.normalLines().length).toBe(committed);
+		expect(terminal.normalLines().map(line => line.trimEnd())).toEqual([
+			"settled-0",
+			"settled-1",
+			"run 1",
+			"elapsed 12",
+			"c-a",
+			"c-b",
+			"c-c",
+			"o-a",
+			"o-b",
+		]);
+	} finally {
+		tui.stop();
+	}
+});
+
 test("keeps the exact mux tape after a width and height resize", () => {
 	const restore = setEnvironment({ TMUX: "1", TERM: "xterm-256color", PI_NO_SYNC_OUTPUT: "1" });
 	const terminal = new FakeTerminal(8, 2);

@@ -3270,7 +3270,7 @@ export class TUI extends Container {
 			(this.#renderStablePrefixRows < this.#committedPrefixAuditRows ||
 				newlyFinalEnd > this.#committedPrefixAuditRows ||
 				(this.#nativeScrollbackCommittedDirtyFromRow !== undefined &&
-					this.#nativeScrollbackCommittedDirtyFromRow < this.#committedRows) ||
+					this.#nativeScrollbackCommittedDirtyFromRow < newlyFinalEnd) ||
 				shiftedCommittedPrefixFrom !== undefined);
 		if (auditRan) {
 			const committedRowsBeforeAudit = this.#committedRows;
@@ -3821,10 +3821,16 @@ export class TUI extends Container {
 					? childDirtyFromRow
 					: Math.min(childDirtyFromRow, shiftedCommittedPrefixFrom);
 		const strict = dirtyFromRow !== undefined;
-		const auditFrom = strict
-			? Math.min(this.#committedRows, Math.max(0, dirtyFromRow))
-			: this.#committedPrefixAuditRows;
-		const auditTo = strict ? this.#committedRows : newlyFinalEnd;
+		// `newlyFinalEnd` is the live-region exactness boundary: rows below it are
+		// committed as exact bytes, rows above it as frozen visual snapshots whose
+		// source is still streaming. A strict audit must stop there. A live block
+		// rewrites its own already-scrolled head on every frame (a sliding preview
+		// window, a hidden-line count), and auditing those rows re-anchors the seam
+		// each frame — re-emitting the whole live head into native scrollback again
+		// and again. The frozen rows reconcile exactly once, when the boundary
+		// passes them and they become final.
+		const auditTo = newlyFinalEnd;
+		const auditFrom = strict ? Math.min(auditTo, Math.max(0, dirtyFromRow)) : this.#committedPrefixAuditRows;
 		const resyncTo = findCommittedPrefixResync(rawFrame, prefix, {
 			auditFrom,
 			finalTo: auditTo,

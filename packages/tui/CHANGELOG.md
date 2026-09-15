@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Scrolling up mid-stream no longer shows the transcript written over and over: a live tool/kernel card whose scrolled-off head keeps changing (spinner, elapsed time, a sliding `… N earlier lines` preview window) re-anchored the commit seam on every frame and appended its head to native scrollback again each time, so a 43-row frame could leave 200+ rows of history in a couple of seconds.
+
 ## [18.1.9] - 2026-09-15
 
 ### Fixed
