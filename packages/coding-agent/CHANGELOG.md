@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.20] - 2026-09-15
+
 ### Breaking Changes
 
 - Agent definitions that pin `tools: eval` or `tools: kernel` must switch to `tools: bash`; persistent code execution now runs through Bash kernel cells.

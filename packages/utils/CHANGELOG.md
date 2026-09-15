@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.20] - 2026-09-15
+
 ### Removed
 
 - Removed `getGithubCacheDbPath()` and the `PROTO_GITHUB_CACHE_DB` override along with the GitHub view cache.
