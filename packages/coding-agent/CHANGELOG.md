@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.21] - 2026-09-16
+
 ### Added
 
 - Rules can now express conditions as an expression tree via `match:` frontmatter — `regex`/`ast`/`lang`/`path`/`did`/`llm` leaves combined with `all`/`any`/`not` and `if`/`then`/`else`, refined by `in:` (match only in code, comments, strings, or prose), `count:`, and `inside`/`notInside`/`has`/`notHas` containment against another condition.
