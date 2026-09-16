@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the transcript being duplicated and spliced into terminal scrollback when a completed-todo card scrolled out of view while a reply was still streaming.
+
 ## [18.1.20] - 2026-09-15
 
 ### Breaking Changes

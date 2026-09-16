@@ -1,9 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect, test, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { type Component, type RenderScheduler, type Terminal, TUI } from "@oh-my-pi/pi-tui";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
+import type { TodoToolDetails } from "../../tools/todo";
 import { initThemeSync } from "../theme/theme";
 import { AssistantMessageComponent } from "./assistant-message";
+import { ToolExecutionComponent, type ToolExecutionUi } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 
 initThemeSync();
@@ -199,3 +201,74 @@ for (const [cols, rows] of [
 		}
 	});
 }
+
+// A completed-todo card animates its strike-through reveal for ~900 ms after the
+// block is already finalized. When the reply streaming below it pushes the card
+// into native scrollback mid-reveal, every further tick used to rewrite rows the
+// terminal can no longer repaint: the renderer re-anchored its commit seam to the
+// card and re-appended everything below it once per tick, so scrolling up showed
+// the reply spliced and replayed over and over.
+test("a todo card that scrolls into history mid-strike leaves the transcript in scrollback once", () => {
+	vi.useFakeTimers();
+	const cols = 55;
+	const rows = 20;
+	const terminal = new BufferTerminal(cols, rows);
+	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
+	const transcript = new TranscriptContainer();
+	transcript.addChild(new StaticBlock(Array.from({ length: 8 }, (_value, index) => `earlier-history-row-${index}`)));
+	const ui: ToolExecutionUi = {
+		requestRender: () => tui.requestRender(true),
+		requestComponentRender: () => tui.requestRender(true),
+		resetDisplay: () => {},
+	};
+	const details: TodoToolDetails = {
+		op: "done",
+		storage: "session",
+		phases: [
+			{
+				name: "Playtest",
+				tasks: [
+					{ content: "Play the game end to end", status: "completed" },
+					{ content: "Fix what the playtest finds and re-verify", status: "completed" },
+					{ content: "Write up the findings", status: "pending" },
+				],
+			},
+		],
+		completedTasks: [
+			{ phase: "Playtest", content: "Play the game end to end" },
+			{ phase: "Playtest", content: "Fix what the playtest finds and re-verify" },
+		],
+	};
+	const card = new ToolExecutionComponent("todo", { op: "done" }, { useBuiltInRenderer: true }, undefined, ui);
+	transcript.addChild(card);
+	const reply = new AssistantMessageComponent(undefined, false);
+	transcript.addChild(reply);
+	tui.addChild(transcript);
+	tui.addChild(new StaticBlock(["", "> editor", "", "status line"]));
+	tui.start({ deferInput: true });
+
+	try {
+		card.updateResult({ content: [{ type: "text", text: "ok" }], details, isError: false }, false);
+		tui.requestRender(true);
+
+		for (let end = 40; end < ANSWER.length; end += 40) {
+			reply.updateContent(message(ANSWER.slice(0, end)), { transient: true });
+			tui.requestRender(true);
+			// One strike frame per streamed chunk, the interval's own 65 ms period.
+			vi.advanceTimersByTime(65);
+		}
+		reply.updateContent(message(ANSWER));
+		reply.markTranscriptBlockFinalized();
+		tui.requestRender(true);
+
+		const expected = tui.render(cols).map(line => stripAnsi(line).trimEnd());
+		while (expected.length > 0 && expected[expected.length - 1] === "") expected.pop();
+		// The card has to have left the window for the respray to be reachable at all.
+		expect(expected.length).toBeGreaterThan(rows);
+		expect(terminal.tape().map(stripAnsi)).toEqual(expected);
+	} finally {
+		card.dispose();
+		tui.stop();
+		vi.useRealTimers();
+	}
+});

@@ -286,6 +286,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#spinnerActive = false;
 
 	#todoStrikeInterval?: NodeJS.Timeout;
+	#nativeScrollbackCommittedRows = 0;
 
 	#argsComplete = false;
 	#executionStarted = false;
@@ -500,7 +501,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.#stopTodoStrikeAnimation();
 			return;
 		}
-		if (this.#todoStrikeInterval) return;
+		// A row that has entered native scrollback can never be repainted, so the
+		// reveal must not (re)start over one.
+		if (this.#todoStrikeInterval || this.#nativeScrollbackCommittedRows > 0) return;
 
 		this.#spinnerFrame = 0;
 		this.#renderState.spinnerFrame = 0;
@@ -526,6 +529,21 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		if (!this.#spinnerActive) {
 			this.#spinnerFrame = undefined;
 			this.#renderState.spinnerFrame = undefined;
+		}
+	}
+
+	override setNativeScrollbackCommittedRows(rows: number): void {
+		this.#nativeScrollbackCommittedRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+		super.setNativeScrollbackCommittedRows(rows);
+		// Native scrollback is append-only. Once any of this card's rows are in
+		// terminal history, every further strike frame rewrites bytes the terminal
+		// cannot repaint: the renderer's committed-prefix audit then re-anchors the
+		// commit seam to this card and re-appends the whole transcript below it,
+		// once per 65ms tick. Freeze the reveal on the frame history recorded --
+		// clearing #spinnerFrame here would itself be one such rewrite.
+		if (this.#nativeScrollbackCommittedRows > 0 && this.#todoStrikeInterval) {
+			clearInterval(this.#todoStrikeInterval);
+			this.#todoStrikeInterval = undefined;
 		}
 	}
 
