@@ -53,6 +53,7 @@ import { webpExclusionForModel } from "../utils/image-loading";
 import { resizeImage } from "../utils/image-resize";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
+import { findBashFileWrites } from "./bash-file-write";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
 import {
@@ -489,18 +490,37 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	}
 
 	/**
-	 * Source-bearing payload for AST-scoped rules: each embedded kernel cell is
-	 * exposed under a synthetic path so the cell's language drives grammar
-	 * selection. Plain shell commands carry no parseable source and match nothing.
+	 * Source-bearing payload for AST-scoped rules: embedded kernel cells use
+	 * synthetic paths, while heredoc file writes use their written paths so
+	 * file extensions drive grammar and per-file rule selection.
 	 */
 	matcherEntries(args: unknown): readonly { path: string; digest: string }[] | undefined {
 		if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
 		const command = (args as Record<string, unknown>).command;
 		if (typeof command !== "string" || command.length === 0) return undefined;
-		return findBashKernelCells(command).map((cell, index) => ({
-			path: cell.language === "js" ? `cell.${index}.js` : `cell.${index}.py`,
-			digest: cell.code,
-		}));
+		const cells = findBashKernelCells(command);
+		const writes = findBashFileWrites(command);
+		return [
+			...cells.map((cell, index) => ({
+				start: cell.start,
+				path: cell.language === "js" ? `cell.${index}.js` : `cell.${index}.py`,
+				digest: cell.code,
+			})),
+			...writes
+				.filter(write => write.code.trim().length > 0)
+				.map(write => ({
+					start: write.start,
+					path: write.path
+						.replace(
+							/^(?:'([^']*)'|"([^"]*)")$/u,
+							(_, single: string | undefined, double: string | undefined) => single ?? double ?? write.path,
+						)
+						.replaceAll("\\", "/"),
+					digest: write.code,
+				})),
+		]
+			.sort((a, b) => a.start - b.start)
+			.map(({ path, digest }) => ({ path, digest }));
 	}
 
 	/**

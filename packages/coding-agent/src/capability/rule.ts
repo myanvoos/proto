@@ -1,3 +1,4 @@
+import type { RuleMatchSpec } from "../export/ttsr-matcher";
 import { defineCapability } from ".";
 import type { SourceMeta } from "./types";
 
@@ -11,6 +12,9 @@ export interface RuleFrontmatter {
 	condition?: string | string[];
 
 	astCondition?: string | string[];
+
+	/** Structured condition expression; supersedes `condition`/`astCondition` when present. */
+	match?: RuleMatchSpec;
 
 	scope?: string | string[];
 
@@ -34,6 +38,8 @@ export interface Rule {
 	condition?: string[];
 
 	astCondition?: string[];
+
+	match?: RuleMatchSpec;
 
 	scope?: string[];
 
@@ -155,7 +161,7 @@ function normalizeScopeField(value: unknown): string[] | undefined {
 
 export function parseRuleConditionAndScope(
 	frontmatter: RuleFrontmatter,
-): Pick<Rule, "condition" | "astCondition" | "scope"> {
+): Pick<Rule, "condition" | "astCondition" | "match" | "scope"> {
 	const rawCondition = frontmatter.condition ?? frontmatter.ttsr_trigger ?? frontmatter.ttsrTrigger;
 	const parsedCondition = normalizeRuleField(rawCondition);
 	const astCondition = normalizeRuleField(frontmatter.astCondition);
@@ -167,9 +173,15 @@ export function parseRuleConditionAndScope(
 	}
 
 	const scope = [...(parsedScope ?? [])];
+	const rawMatch = frontmatter.match;
+	const match =
+		typeof rawMatch === "string" || Array.isArray(rawMatch) || (typeof rawMatch === "object" && rawMatch !== null)
+			? rawMatch
+			: undefined;
 	return {
 		condition: condition.length > 0 ? Array.from(new Set(condition)) : undefined,
 		astCondition,
+		match,
 		scope: scope.length > 0 ? Array.from(new Set(scope)) : undefined,
 	};
 }

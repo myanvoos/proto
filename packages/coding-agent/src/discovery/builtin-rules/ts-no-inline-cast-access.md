@@ -2,10 +2,13 @@
 description: "Don't assert an inline object type and immediately read a property — `(x as { y: T }).y` trusts an unchecked shape; validate with a schema parse at trust boundaries, narrow with `in`/`typeof`, or use a validated named type"
 scope: "tool:bash"
 interruptMode: never
-astCondition:
-  - "($X as { $$$BODY }).$PROP"
-  - "($X as { $$$BODY })?.$PROP"
-  - "($X as { $$$BODY })[$IDX]"
+match:
+  all:
+    - lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs]
+    - ast:
+      - "($X as { $$$BODY }).$PROP"
+      - "($X as { $$$BODY })?.$PROP"
+      - "($X as { $$$BODY })[$IDX]"
 ---
 
 ## Don't inline-cast an object type for member access

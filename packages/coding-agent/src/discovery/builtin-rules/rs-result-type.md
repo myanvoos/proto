@@ -1,8 +1,17 @@
 ---
 description: Result type aliases must include a defaulted error type parameter
-condition: "type\\s+Result<[A-Za-z_]\\w*>\\s*="
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [rs, rust] }
+  then:
+    regex: 'type\s+Result<[A-Za-z_]\w*>\s*='
+    in: code
+  else:
+    all:
+      - regex: 'type\s+Result<[A-Za-z_]\w*>\s*='
+        in: [code, string]
+      - llm: "Does this content actually declare a Rust `type Result<T> = ...` alias, rather than quoting or discussing such an alias?"
 ---
 
 `Result` aliases must expose the error type as a defaulted parameter.

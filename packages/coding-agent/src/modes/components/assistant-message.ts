@@ -157,6 +157,9 @@ export class AssistantMessageComponent extends Container {
 		| undefined;
 
 	#thinkingDots: Text | undefined;
+	// The constant "Thinking" heading. Byte-stable for the life of the block, so
+	// it counts toward the settled prefix instead of ending it.
+	#thinkingLabel: Text | undefined;
 	#thinkingDotsTimer: NodeJS.Timeout | undefined;
 	#thinkingDotsFrame = 0;
 
@@ -405,7 +408,7 @@ export class AssistantMessageComponent extends Container {
 				settled += child.render(width).length;
 				continue;
 			}
-			if (child instanceof Spacer) {
+			if (child instanceof Spacer || child === this.#thinkingLabel) {
 				settled += child.render(width).length;
 				continue;
 			}
@@ -797,6 +800,7 @@ export class AssistantMessageComponent extends Container {
 
 		this.#clearContent();
 		this.#thinkingDots = undefined;
+		this.#thinkingLabel = undefined;
 		this.#hasTruncatableError = false;
 
 		const shouldCapture = this.#canFastPath(message);
@@ -841,8 +845,8 @@ export class AssistantMessageComponent extends Container {
 					);
 
 				if (thinkingIndex === 0) {
-					const label = new Text(theme.fg("muted", "Thinking"), 2, 0);
-					this.addChild(label);
+					this.#thinkingLabel = new Text(theme.fg("muted", "Thinking"), 2, 0);
+					this.addChild(this.#thinkingLabel);
 				}
 				const md = new Markdown(thinkingText, 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2);
 				md.transientRenderCache = this.#lastUpdateTransient;

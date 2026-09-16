@@ -1,8 +1,17 @@
 ---
 description: Use Future not std::future::Future - it's in the prelude
-condition: "std::future::Future"
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [rs, rust] }
+  then:
+    regex: 'std::future::Future'
+    in: code
+  else:
+    all:
+      - regex: 'std::future::Future'
+        in: [code, string]
+      - llm: "Does this content actually write the path std::future::Future in Rust code, rather than quoting or discussing it?"
 ---
 
 Type positions: use `Future`, not `std::future::Future`.

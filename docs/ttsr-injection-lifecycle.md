@@ -6,10 +6,17 @@ This document covers the current Time Traveling Stream Rules (TTSR) runtime path
 
 - [`../src/sdk.ts`](../packages/coding-agent/src/sdk.ts)
 - [`../src/export/ttsr.ts`](../packages/coding-agent/src/export/ttsr.ts)
+- [`../src/export/ttsr-matcher.ts`](../packages/coding-agent/src/export/ttsr-matcher.ts)
+- [`../src/export/ttsr-paths.ts`](../packages/coding-agent/src/export/ttsr-paths.ts)
+- [`../src/export/ttsr-regions.ts`](../packages/coding-agent/src/export/ttsr-regions.ts)
 - [`../src/session/agent-session.ts`](../packages/coding-agent/src/session/agent-session.ts)
 - [`../src/session/ttsr-coordinator.ts`](../packages/coding-agent/src/session/ttsr-coordinator.ts)
 - [`../src/session/session-manager.ts`](../packages/coding-agent/src/session/session-manager.ts)
 - [`../src/prompts/system/ttsr-interrupt.md`](../packages/coding-agent/src/prompts/system/ttsr-interrupt.md)
+- [`../src/prompts/system/ttsr-tool-reminder.md`](../packages/coding-agent/src/prompts/system/ttsr-tool-reminder.md)
+- [`../src/tools/bash.ts`](../packages/coding-agent/src/tools/bash.ts)
+- [`../src/tools/bash-file-write.ts`](../packages/coding-agent/src/tools/bash-file-write.ts)
+- [`../src/tools/bash-kernel-cell.ts`](../packages/coding-agent/src/tools/bash-kernel-cell.ts)
 - [`../src/capability/index.ts`](../packages/coding-agent/src/capability/index.ts)
 - [`../src/extensibility/extensions/types.ts`](../packages/coding-agent/src/extensibility/extensions/types.ts)
 - [`../src/extensibility/hooks/types.ts`](../packages/coding-agent/src/extensibility/hooks/types.ts)
@@ -45,23 +52,47 @@ const { rulebookRules, alwaysApplyRules } = bucketRules(
 Registration is skipped when:
 
 - TTSR is disabled (`ttsr.enabled === false`)
-- both `rule.condition` (regex) and `rule.astCondition` (ast-grep patterns) are absent, or every regex condition fails to compile and there are no non-empty AST conditions
+- `rule.match`, `rule.condition`, and `rule.astCondition` are all absent
+- the selected program fails to compile
 - a rule with the same `rule.name` was already registered in this manager
 - the parsed rule scope excludes all monitored streams
 
-Invalid regex conditions and unreachable scopes are logged as warnings and ignored; session startup continues. AST parse/match failures are logged when matching is attempted and count as no match. If a TTSR rule defines `globs`, those globs are compiled as a global file-path gate for matching.
+`addRule()` selects `compileMatchProgram(rule.match, rule.name)` when `match` is present; otherwise it selects `compileLegacyProgram(rule.condition, rule.astCondition)`. Both paths log one warning per compile error with the rule name. Structured `match` compilation is strict: any compile error rejects the whole program, so the rule is not registered as TTSR and falls through to the other rule buckets. Legacy compilation is tolerant of invalid regex entries: they are logged and skipped, and the rule still registers when at least one valid branch remains and the resulting legacy program compiles; if no branch remains or compilation otherwise fails, it falls through. AST parse/match failures and judge failures are logged when matching is attempted and count as no match. An unconfigured or unavailable judge settles an `llm:` leaf as no match. If a TTSR rule defines `globs`, those globs are compiled as a global file-path gate for matching.
 
-With no explicit `scope`, a rule monitors assistant text and all tool arguments, but not thinking. Explicit scope tokens can enable `text`, `thinking`, any tool (`tool`/`toolcall`), a named tool, and optional per-tool path globs.
+With no explicit `scope`, a rule monitors assistant text and all tool arguments, but not thinking. Explicit scope tokens can enable `text`, `thinking`, any tool (`tool`/`toolcall`), a named tool, and optional per-tool path globs. A successfully registered rule retains its compiled `MatchProgram`; `getEntries()` exposes `{ rule, program }`, including the program's compact `description`, `needsAst`, `needsJudge`, and literal prefilter metadata.
 
-### AST conditions (`astCondition`)
+### Async leaves and source snapshots
 
-AST conditions only evaluate on tool-argument streams for tools that expose a reconstructed `matcherDigest` or per-file `matcherEntries`, and only when a candidate path supplies a usable file extension for language inference. Built-in `write` and `bash` tools provide these surfaces, but the coordinator resolves them generically from the active tool.
+AST leaves only resolve on tool-argument streams for tools that expose a reconstructed `matcherDigest` or per-file `matcherEntries`, and only when a candidate path supplies a usable file extension for language inference. The coordinator resolves these surfaces generically from the active tool.
 
-The snapshot is source-bearing payload, not the whole prospective file: pre-existing target content is invisible unless the call repeats it. `write` exposes its entire `content` as the snapshot digest, and `bash` exposes each embedded kernel cell as an indexed `cell.<n>.py` or `cell.<n>.js` matcher entry whose digest is the cell code; the extension selects the AST grammar from that synthetic path. Both surfaces are resolved generically from the active tool. Matching is in-memory through native `astMatch` with Smart strictness.
+A snapshot is the source-bearing payload supplied by that matcher surface, not the whole command or pre-existing target file. For `bash`, `matcherEntries` exposes each embedded interpreter cell as an indexed `cell.<n>.py` or `cell.<n>.js` entry whose digest is the cell code, and also exposes recognized `cat`/`tee` heredoc file writes under the written path. Supported file-write entries include the clobber/append redirect forms (`>`, `>>`, `>|`) and `tee` append forms; their digest is the heredoc body. Each entry's extension selects the AST grammar and its real path drives per-file matching. Pre-existing target content is invisible unless the call repeats it. Matching is in-memory through native `astMatch`; structured `ast` leaves default to Smart strictness unless their `strictness` says otherwise.
+
+`checkAsyncSnapshot()` is the async resolution API for both `ast:` and `llm:` leaves. Resolution repeats while a stage settles something new, since a resolved leaf can expose the next one — the `then:`/`else:` branch of an `if` is only reached once its guard has a verdict. An `llm:` leaf asks its yes/no question through the configured judge, trying its model-role chain in order; when no judge or available model can answer, it settles as no match. Judge leaves resolve only on settled buffers: complete tool-call arguments immediately before the tool executes, or finished assistant prose when the message ends. They never run per streaming delta.
+
+A judge belongs to the turn that asked for it. The coordinator opens an abort scope per turn and passes its signal down through the match context into `JudgeFn`, so ending the turn — including a user abort — cancels any in-flight model call. Without that, `beforeToolCall` would hold the agent loop open until the judge's own 20 s timeout expired, and the verdict would arrive for a turn nobody is waiting on.
+
+### Session history for `did:` conditions
+
+`did:` leaves read the session's earlier tool calls, supplied by the coordinator on every match context. History is derived from the live transcript (`agent.state.messages`) rather than accumulated in a side ledger. Each entry keeps the tool name, the paths the call named — resolved through the same `matcherPaths`/argument extraction the current call uses — and the arguments in JSON form, capped so one huge call cannot dominate.
+
+The derived list is cached, but only against a fingerprint of the transcript it came from: the same array object, grown at the end, still ending in the same message, and excluding the same in-flight call. Appending a message extends the list; **any** other edit fails the fingerprint and rebuilds it. That keeps the streaming path flat — a `did:` check costs the same at 10,000 prior calls as at ten — without letting a rewritten transcript answer from stale history. Path extraction and argument serialization are memoized on the `toolCall` block itself, and every reference into the transcript is weak, so a compacted window is freed even if no `did:` leaf runs again to notice.
+
+Deriving from the transcript rather than accumulating is what keeps `did:` honest when the context is rewritten, which happens constantly:
+
+| rewrite | what `did:` sees |
+|---|---|
+| **Compaction** replaces the window with a summary plus a tail | calls that were summarized away stop counting; calls kept in the tail still count |
+| **Pruning / superseded reads** rewrite a `toolResult`'s content, leaving the `toolCall` block | still counts — the agent still sees that it made the call, only the bytes are gone |
+| **TTSR's own `discard` rewind** truncates back past the offending assistant message | the discarded turn's calls un-happen, which is the point of the rewind |
+| **Resuming a saved session** rebuilds the transcript from disk | the same answer a live session would give for that transcript |
+
+The direction matters. When compaction drops the turn where the agent read a skill, the agent no longer has what it read, so `not: { did: read skill://viz }` starts matching again and the guidance is re-injected — precisely when it is needed. A ledger that only grew would report the read still counted and stay silent exactly then, and would answer differently from a resumed session with an identical transcript.
+
+The call being matched is excluded from its own history, since it has not run yet. Hosts that run the compiled conditions without a session — `proto ttsr test`, `proto ttsr scan` — supply no history at all, so every `did:` leaf there reports that the session did nothing.
 
 ### Setting gating
 
-`TtsrSettings.enabled` gates the manager: when `ttsr.enabled === false`, `addRule()` refuses registration and `checkDelta()`/`checkSnapshot()`/`checkAstSnapshot()`/`hasRules()`/`hasAstRules()` all return empty/false, so no matching runs.
+`TtsrSettings.enabled` gates the manager: when `ttsr.enabled === false`, `addRule()` refuses registration and `checkDelta()`/`checkSnapshot()`/`checkAsyncSnapshot()`/`hasRules()`/`hasAsyncRules()` all return empty/false, so no matching runs.
 
 Manager defaults when a setting is omitted:
 
@@ -91,10 +122,12 @@ When assistant updates arrive and rules exist:
 
 - monitor `text_delta`, `thinking_delta`, and `toolcall_delta`
 - isolate buffers by source or tool-call stream key
-- if the active tool exposes per-file `matcherEntries`, replace each file-scoped buffer with its digest and call `checkSnapshot`; otherwise, use a single `matcherDigest` snapshot when available, falling back to appending the raw delta via `checkDelta`
-- when AST rules exist, run `checkAstSnapshot` on the same reconstructed per-file or single snapshot; identical consecutive snapshots for a stream key are skipped
+- for a tool with per-file `matcherEntries`, treat each `{ path, digest }` as its own source snapshot, call synchronous `checkSnapshot` for that digest, and retain the entry path for language, lexical, and path matching; otherwise, use one `matcherDigest` snapshot when available, falling back to appending the raw delta via `checkDelta`
+- when async rules exist on a tool stream, run asynchronous `checkAsyncSnapshot` against the same reconstructed per-file or single snapshot; during streaming this pass resolves AST leaves only, and identical consecutive AST snapshots for a stream key are skipped
 
-`checkDelta()`/`checkSnapshot()` iterate registered rules and return all matching rules that pass scope, global path-glob, regex condition, and repeat policy checks. `checkAstSnapshot()` applies the same scope/path/repeat gates, infers language from the candidate file path, then tests each candidate rule's AST patterns. Regex and AST match arrays feed the same trigger-decision handler.
+`checkDelta()` and `checkSnapshot()` are synchronous and evaluate every registered program, including programs with AST or judge leaves. An unresolved async leaf evaluates to `unknown` and cannot decide a match; synchronous streaming checks therefore cannot read either leaf as satisfied or absent. `checkAsyncSnapshot()` is asynchronous and applies the same scope/path/repeat gates. For a streaming tool update it requires a tool source and inferred language, prepares AST leaves, and evaluates only candidates whose program has `needsAst`; judge leaves remain deferred. On settled buffers it also resolves `llm:` leaves: complete tool-call arguments immediately before execution and finished assistant prose when the message ends. Judges are never run per streaming delta. `deriveLang()` chooses the first candidate file path with an extension; that language drives AST grammar selection and `in:` lexical classification. Both paths return all matching rules with `MatchEvidence`; the results enter the same trigger-decision handler.
+
+For `bash`, `matcherEntries` is the source-aware boundary: embedded Python/JS interpreter cells remain synthetic `cell.<n>.py`/`cell.<n>.js` snapshots, while recognized heredoc bodies written by `cat` or `tee` become snapshots under their actual normalized file paths. The supported `cat` redirects include `>`, `>>`, and `>|`; `tee` supports its append options. Entries are processed in command source order. A bash command with no recognized source entry uses the ordinary digest/delta fallback, so the raw shell command is not substituted for a file-write snapshot when an entry is available.
 
 ## 3. Trigger decision and immediate abort path
 
@@ -134,10 +167,16 @@ Template payload is:
 <system-interrupt reason="rule_violation" rule="{{name}}" path="{{path}}">
 ...
 {{content}}
+{{#if evidence}}
+
+<matched>
+{{evidence}}
+</matched>
+{{/if}}
 </system-interrupt>
 ```
 
-Pending injections are cleared after content generation.
+When the match produced evidence, the optional `<matched>` block contains up to three distinct matched lines, rendered as `L<line>: <trimmed line text>` (each line is capped at 200 characters). It is omitted when there are no snippets. Pending injections are cleared after content generation.
 
 ### `contextMode` behavior on partial output
 
@@ -154,6 +193,12 @@ Non-interrupting matches split by `matchContext.source`:
   <system-reminder reason="rule_violation" rule="{{name}}" path="{{path}}">
   ...
   {{content}}
+  {{#if evidence}}
+
+  <matched>
+  {{evidence}}
+  </matched>
+  {{/if}}
   </system-reminder>
   ```
 
@@ -249,7 +294,7 @@ During the timer window, state can change. The retry is guarded by retry token, 
 
 ## 9. Edge cases summary
 
-- Invalid `condition` regex: skipped with warning; other conditions/rules continue.
+- Invalid `match` expression: logged with the rule name; strict compilation rejects the rule, so it is not registered as TTSR and can fall through to another bucket. Invalid legacy `condition` regex entries are logged and skipped; other valid legacy entries can still register the rule when the resulting legacy program compiles.
 - Duplicate rule names at capability layer: lower-priority duplicates are shadowed before registration.
 - Duplicate names at manager layer: second registration is ignored.
 - `ttsr.disabledRules`: listed names are dropped before TTSR registration and are not surfaced through always-apply/rulebook buckets.

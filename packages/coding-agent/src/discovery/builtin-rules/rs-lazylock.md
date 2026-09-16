@@ -1,10 +1,17 @@
 ---
 description: Prefer std::sync::LazyLock over OnceLock and once_cell
-condition:
-  - "once_cell::"
-  - "OnceLock::new"
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [rs, rust] }
+  then:
+    regex: ["once_cell::", "OnceLock::new"]
+    in: code
+  else:
+    all:
+      - regex: ["once_cell::", "OnceLock::new"]
+        in: [code, string]
+      - llm: "Does this content actually use once_cell or OnceLock::new in Rust code, rather than quoting or discussing them?"
 ---
 
 Prefer `std::sync::LazyLock` over `OnceLock` and the `once_cell` crate when the initializer is known at declaration time.

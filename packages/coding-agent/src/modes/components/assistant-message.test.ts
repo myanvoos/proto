@@ -67,3 +67,39 @@ test("sanitizes assistant error content before collapsed and expanded rendering"
 		expect(output).toContain("ERRBELLCTRLRED");
 	}
 });
+
+// TranscriptContainer turns this count into the live-region boundary: rows below
+// it commit to native scrollback with their final bytes, rows above it are still
+// moving. A reasoning reply renders a constant "Thinking" heading ahead of its
+// markdown, and treating that heading as unsettled reported 0 for the whole
+// stream -- so the entire reply was committed as provisional snapshots that the
+// renderer then had to re-append once it settled.
+test("a streaming reply settles its prefix while a thinking block precedes the text", () => {
+	const body = Array.from(
+		{ length: 8 },
+		(_value, index) => `Paragraph ${index} runs long enough to wrap over several rows in a narrow pane.`,
+	).join("\n\n");
+	const streamed = (thinking: string | undefined): number[] => {
+		const reply = new AssistantMessageComponent(undefined, false);
+		const settled: number[] = [];
+		for (let end = 80; end <= body.length; end += 80) {
+			const content: AssistantMessage["content"] = [];
+			if (thinking !== undefined) content.push({ type: "thinking", thinking });
+			content.push({ type: "text", text: body.slice(0, end) });
+			reply.updateContent({ ...message, content }, { transient: true });
+			reply.render(55);
+			settled.push(reply.getTranscriptBlockSettledRows());
+		}
+		return settled;
+	};
+
+	const withThinking = streamed("reasoning about the answer");
+	const withoutThinking = streamed(undefined);
+	expect(withThinking[withThinking.length - 1]).toBeGreaterThan(0);
+	// Non-decreasing: a settled row that un-settles is already in scrollback.
+	for (let i = 1; i < withThinking.length; i++) {
+		expect(withThinking[i]!).toBeGreaterThanOrEqual(withThinking[i - 1]!);
+	}
+	// The heading adds rows to the settled prefix; it never truncates it.
+	expect(withThinking[withThinking.length - 1]).toBeGreaterThan(withoutThinking[withoutThinking.length - 1]!);
+});

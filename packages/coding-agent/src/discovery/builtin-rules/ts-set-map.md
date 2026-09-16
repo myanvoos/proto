@@ -1,8 +1,15 @@
 ---
 description: Prefer Record<K, V> for small static literals; use Set/Map for anything dynamic
-condition: "\\bnew\\s+(Set|Map)\\b"
 scope: "tool:bash"
 interruptMode: never
+match:
+  all:
+    # Source of the language itself is classified, so comments and strings cannot
+    # trip it; embedded in another language, only its comments are excluded.
+    - if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
+      then: { regex: '\bnew\s+(Set|Map)\b', in: code }
+      else: { regex: '\bnew\s+(Set|Map)\b', in: [code, string] }
+    - llm: "Does this content actually build a Set or Map from a fixed literal list of string keys - a table a Record would express better - rather than creating one for dynamic membership, or merely quoting or discussing Set/Map?"
 ---
 
 Small, static string-keyed lookup tables: `Record<K, V>` / `Record<K, true>`.

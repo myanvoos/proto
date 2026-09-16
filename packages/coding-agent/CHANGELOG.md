@@ -2,9 +2,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- Rules can now express conditions as an expression tree via `match:` frontmatter — `regex`/`ast`/`lang`/`path`/`did`/`llm` leaves combined with `all`/`any`/`not` and `if`/`then`/`else`, refined by `in:` (match only in code, comments, strings, or prose), `count:`, and `inside`/`notInside`/`has`/`notHas` containment against another condition.
+- Rules can filter on where a tool call writes: `path: { under: … }`, `path: { outside: cwd }`, `path: { glob: … }`, and `path: { regex: … }` test the target path in whatever spelling the model used, so a rule can require writes to stay in the workspace or confine a file to one location.
+- Rules can ask a small model a yes/no question with an `llm:` condition, answered by the `tiny` then `smol` model role (or any role named in `model:`), so a rule can require judgement that no regex or syntax pattern can express.
+- Rule conditions can branch: `if:` chooses between a `then:` and an optional `else:` expression, so one rule can apply a different check per language, path, or model verdict — and the branch not taken is never evaluated, keeping an `ast:` or `llm:` branch off the buffers its guard already ruled out.
+- Aborting a turn now cancels any in-flight TTSR `llm:` judge instead of leaving the tool call waiting on the model.
+- Fixed `ttsr_triggered` not reaching extensions and hooks when a rule matched assistant text without interrupting.
+- Rules can condition on what the session already did: `did: { tool: read, path: "skill://viz" }` tests the session's earlier tool calls, so a rule can fire only for an agent that skipped the skill, never ran the tests, or has not touched a file — with `within: N` to look only at the last N calls. History tracks the visible transcript, so when compaction or a rewind drops the turn that read a skill, the rule fires again instead of assuming the agent still has it.
+- `proto ttsr test --llm` resolves `llm:` conditions against a real model instead of leaving them unanswered.
+- Rule violations now quote the offending lines: interrupt and tool-result reminders carry a `<matched>` block with the matched line numbers and text.
+- Bash file-write heredocs are available to source rules with inferred file languages.
+
+### Changed
+
+- Bundled rules no longer fire on their own subject matter: conditions are evaluated against the written file's real language and syntax, so `as any` in a comment, a string, or a sentence about the rule is ignored while the actual cast still interrupts.
+- Bundled rules that match another language's buffer by plain text now confirm the hit with the model judge first, so quoting a rule, pasting an example, or writing about `Box::leak` no longer trips the rule that forbids it.
+- TTSR list, test, and scan now share structured rule matching and show compiled conditions with evidence snippets.
+- Rule matching only parses a buffer when a rule that survives its language and path tests actually needs the syntax tree, cutting a full `proto ttsr scan` of a 1,455-file tree from minutes to seconds.
+
 ### Fixed
 
 - Fixed the transcript being duplicated and spliced into terminal scrollback when a completed-todo card scrolled out of view while a reply was still streaming.
+- Fixed streaming replies from reasoning models committing their whole body to terminal scrollback as provisional snapshots, which left history vulnerable to being re-appended when the reply settled.
+- Fixed a running tool card that outgrew the viewport leaving its `running` header and a few repeated output lines behind in terminal scrollback, with the finished card appended below them.
 
 ## [18.1.20] - 2026-09-15
 

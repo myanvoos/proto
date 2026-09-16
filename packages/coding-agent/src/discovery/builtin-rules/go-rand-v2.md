@@ -1,8 +1,10 @@
 ---
 description: Prefer math/rand/v2 over the legacy math/rand package
-condition: '"math/rand"'
 scope: "tool:bash"
 interruptMode: never
+match:
+  regex: '"math/rand"'
+  in: [code, string]
 ---
 
 Use `math/rand/v2` instead of the legacy `math/rand` package (stable since Go 1.22).

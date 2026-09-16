@@ -1,8 +1,17 @@
 ---
 description: "Use `import type`, not inline `import('pkg').Type` or indexed type references"
-condition: "(?m)(?:^|[,:=<(\\[|&])\\s*import\\s*\\(\\s*[\"'][^\"'\\n]+[\"']\\s*\\)\\s*(?:\\.|\\[)"
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
+  then:
+    regex: "import(?=\\s*\\(\\s*[\"'][^\"'\\n]+[\"']\\s*\\)\\s*(?:\\.|\\[))"
+    in: code
+  else:
+    all:
+      - regex: "(?m)(?:^|[,:=<(\\[|&])\\s*import\\s*\\(\\s*[\"'][^\"'\\n]+[\"']\\s*\\)\\s*(?:\\.|\\[)"
+        in: [code, string]
+      - llm: "Does this content actually use an inline `import(\"pkg\").Type` reference in a type position, rather than quoting or discussing it?"
 ---
 
 Use top-level `import type` declarations for type-only dependencies. NEVER write `import("pkg").Type` inside source annotations.

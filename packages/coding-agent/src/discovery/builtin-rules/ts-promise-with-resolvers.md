@@ -1,8 +1,17 @@
 ---
 description: Use Promise.withResolvers() instead of new Promise() constructor
-condition: "new Promise\\("
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
+  then:
+    regex: 'new Promise\('
+    in: code
+  else:
+    all:
+      - regex: 'new Promise\('
+        in: [code, string]
+      - llm: "Does this content actually construct a promise with `new Promise(...)`, rather than quoting or discussing that constructor?"
 ---
 
 Prefer `Promise.withResolvers()` over `new Promise((resolve, reject) => ...)`: linear control flow; typed resolvers without callback nesting.

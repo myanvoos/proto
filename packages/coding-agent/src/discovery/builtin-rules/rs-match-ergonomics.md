@@ -1,10 +1,17 @@
 ---
 description: Use match ergonomics instead of ref/ref mut patterns
-condition:
-  - "\\(ref mut "
-  - "\\(ref [a-z_]"
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [rs, rust] }
+  then:
+    regex: ["\\(ref mut ", "\\(ref [a-z_]"]
+    in: code
+  else:
+    all:
+      - regex: ["\\(ref mut ", "\\(ref [a-z_]"]
+        in: [code, string]
+      - llm: "Does this content actually bind a Rust pattern with `ref` or `ref mut`, rather than quoting or discussing those patterns?"
 ---
 
 Use match ergonomics instead of explicit `ref` / `ref mut` patterns. Borrow the scrutinee and let bindings receive references.

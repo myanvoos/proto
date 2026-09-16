@@ -1,15 +1,25 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { AstMatchStrictness, astMatch, FileType, type GlobMatch, glob } from "@oh-my-pi/pi-natives";
+import { FileType, type GlobMatch, glob } from "@oh-my-pi/pi-natives";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
-import { BUILTIN_DEFAULTS_PROVIDER_ID, compileRuleCondition, type Rule, ruleCapability } from "../capability/rule";
+import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule, ruleCapability } from "../capability/rule";
 import { bucketRules } from "../capability/rule-buckets";
+import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import type { TtsrSettings } from "../config/settings-schema";
 import { initializeWithSettings, loadCapability } from "../discovery";
 import { buildRuleFromMarkdown, createSourceMeta } from "../discovery/helpers";
-import type { TtsrManager } from "../export/ttsr";
+import { TtsrManager, type TtsrMatch } from "../export/ttsr";
+import {
+	compileLegacyProgram,
+	compileMatchProgram,
+	type JudgeFn,
+	type MatchProgram,
+	mayMatch,
+} from "../export/ttsr-matcher";
+import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
+import { createTtsrJudge } from "../session/ttsr-judge";
 
 type TtsrAction = "test" | "list" | "scan";
 
@@ -23,33 +33,27 @@ interface TtsrMatchContext {
 	toolName?: string;
 	filePaths?: string[];
 	streamKey?: string;
+	cwd?: string;
+	judge?: JudgeFn;
+	settled?: boolean;
 }
 
 export interface TtsrTestArgs {
 	snippet?: string;
-
 	file?: string;
-
 	rule?: string;
-
 	source?: TtsrMatchSource;
-
 	tool?: string;
-
 	filePath?: string;
-
 	verbose?: boolean;
+	llm?: boolean;
 }
 
 export interface TtsrScanArgs {
 	directory?: string;
-
 	rule?: string;
-
 	gitignore?: boolean;
-
 	maxBytes?: number;
-
 	verbose?: boolean;
 }
 
@@ -64,11 +68,14 @@ interface RuleMatchDetail {
 	name: string;
 	path: string;
 	sourceProvider?: string;
+	description: string;
+	snippets: { line: number; text: string }[];
+}
 
-	matched: { regex: string[]; ast: string[] };
-
-	defined: { regex: string[]; ast: string[] };
-	skippedAst?: string;
+interface RuleCompileError {
+	name: string;
+	path: string;
+	error: string;
 }
 
 interface TestReport {
@@ -80,7 +87,7 @@ interface TestReport {
 	evaluated: number;
 	triggered: RuleMatchDetail[];
 	notTriggered: RuleMatchDetail[];
-
+	compileErrors: RuleCompileError[];
 	inferenceNote?: string;
 }
 
@@ -99,27 +106,6 @@ interface ScanSkipSummary {
 	large: number;
 	unreadable: number;
 	noRelevantRules: number;
-}
-
-interface ScanRegexCondition {
-	pattern: string;
-	regex: RegExp;
-}
-
-interface ScanScopePlan {
-	toolName?: string;
-	pathGlob?: Bun.Glob;
-}
-
-interface ScanRulePlan {
-	rule: Rule;
-	globalPathGlobs?: Bun.Glob[];
-	defaultToolScope: boolean;
-	scopes: ScanScopePlan[];
-	regexConditions: ScanRegexCondition[];
-	astConditions: string[];
-	astPrefilters: RegExp[];
-	astRequiresFullScan: boolean;
 }
 
 interface ScanFileCandidate {
@@ -149,83 +135,20 @@ function previewSnippet(text: string): string {
 	return single.length > 80 ? `${single.slice(0, 77)}…` : single;
 }
 
-function deriveLang(filePaths: string[] | undefined): string | undefined {
-	for (const filePath of filePaths ?? []) {
-		const ext = path.extname(filePath.replaceAll("\\", "/"));
-		if (ext.length > 1) return ext.slice(1).toLowerCase();
-	}
-	return undefined;
-}
-
-async function regexMatches(rule: Rule, snippet: string): Promise<string[]> {
-	const out: string[] = [];
-	for (const pattern of rule.condition ?? []) {
-		try {
-			if (compileRuleCondition(pattern).test(snippet)) out.push(pattern);
-		} catch {}
-	}
-	return out;
-}
-
-async function astMatches(rule: Rule, snippet: string, lang: string): Promise<string[]> {
-	const out: string[] = [];
-	for (const pattern of rule.astCondition ?? []) {
-		try {
-			const result = await astMatch({
-				patterns: [pattern],
-				source: snippet,
-				lang,
-				strictness: AstMatchStrictness.Smart,
-				limit: 1,
-			});
-			if (result.totalMatches > 0) out.push(pattern);
-		} catch {}
-	}
-	return out;
-}
-
-async function evaluate(
-	manager: TtsrManager,
-	rules: readonly Rule[],
-	snippet: string,
-	context: TtsrMatchContext,
-): Promise<{ triggered: RuleMatchDetail[]; notTriggered: RuleMatchDetail[] }> {
-	const regexHit = manager.checkSnapshot(snippet, context);
-	const astHit =
-		context.source === "tool" && context.filePaths && context.filePaths.length > 0
-			? await manager.checkAstSnapshot(snippet, context)
-			: [];
-	const hitNames = new Set<string>([...regexHit, ...astHit].map(r => r.name));
-
-	const lang = deriveLang(context.filePaths);
-	const astEligible = context.source === "tool" && !!lang;
-
-	const triggered: RuleMatchDetail[] = [];
-	const notTriggered: RuleMatchDetail[] = [];
-	for (const rule of rules) {
-		const regex = await regexMatches(rule, snippet);
-		const ast = astEligible ? await astMatches(rule, snippet, lang!) : [];
-		const detail: RuleMatchDetail = {
-			name: rule.name,
-			path: rule.path,
-			sourceProvider: rule._source?.provider,
-			matched: { regex, ast },
-			defined: { regex: rule.condition ?? [], ast: rule.astCondition ?? [] },
-		};
-		if (!astEligible && (rule.astCondition ?? []).length > 0) {
-			detail.skippedAst = "astCondition requires --source tool and a --path with a file extension";
-		}
-		(hitNames.has(rule.name) ? triggered : notTriggered).push(detail);
-	}
-	return { triggered, notTriggered };
-}
-
-async function createTtsrManager(settings?: TtsrSettings): Promise<TtsrManager> {
-	const { TtsrManager } = await import("../export/ttsr");
+function createTtsrManager(settings?: TtsrSettings): TtsrManager {
 	return new TtsrManager(settings);
 }
 
-function filterTtsrRulesForScan(
+/** `--llm` opts into real model calls; without it `llm:` conditions stay unresolved and report nothing. */
+async function loadJudge(cwd: string): Promise<JudgeFn> {
+	const settings = await Settings.init({ cwd });
+	const authStorage = await discoverAuthStorage();
+	const registry = new ModelRegistry(authStorage);
+	await loadCliExtensionProviders(registry, settings, cwd);
+	return createTtsrJudge({ settings, registry, sessionId: () => "ttsr-cli" });
+}
+
+function filterTtsrRules(
 	rules: readonly Rule[],
 	options: { builtinRules?: boolean; disabledRules?: readonly string[] } = {},
 ): Rule[] {
@@ -238,7 +161,11 @@ function filterTtsrRulesForScan(
 	return rules.filter(rule => {
 		if (disabled.has(rule.name)) return false;
 		if (!includeBuiltin && rule._source?.provider === BUILTIN_DEFAULTS_PROVIDER_ID) return false;
-		return (rule.condition && rule.condition.length > 0) || (rule.astCondition && rule.astCondition.length > 0);
+		return (
+			rule.match !== undefined ||
+			(rule.condition && rule.condition.length > 0) ||
+			(rule.astCondition && rule.astCondition.length > 0)
+		);
 	});
 }
 
@@ -246,27 +173,63 @@ async function loadProjectTtsrRules(cwd: string): Promise<{ rules: Rule[]; manag
 	const settingsInstance = await Settings.init({ cwd });
 	initializeWithSettings(settingsInstance);
 	const ttsrSettings = settingsInstance.getGroup("ttsr");
-	const manager = await createTtsrManager(ttsrSettings);
+	const manager = createTtsrManager(ttsrSettings);
 	const result = await loadCapability<Rule>(ruleCapability.id, { cwd });
-	bucketRules(result.items, manager, {
+	const rules = filterTtsrRules(result.items, {
 		builtinRules: ttsrSettings.builtinRules,
 		disabledRules: ttsrSettings.disabledRules,
 	});
-	return { rules: manager.getRules(), manager };
+	// Keep normal rule bucketing semantics, then register structured-only rules
+	// that the legacy bucket predicate cannot see.
+	bucketRules(rules, manager, {
+		builtinRules: ttsrSettings.builtinRules,
+		disabledRules: ttsrSettings.disabledRules,
+	});
+	for (const rule of rules) manager.addRule(rule);
+	return { rules, manager };
 }
 
-async function loadProjectScanRules(cwd: string): Promise<Rule[]> {
+async function loadProjectScanRules(cwd: string): Promise<{ rules: Rule[]; manager: TtsrManager }> {
 	const settingsInstance = await Settings.init({ cwd });
 	initializeWithSettings(settingsInstance);
 	const ttsrSettings = settingsInstance.getGroup("ttsr");
-	if (!ttsrSettings.enabled) {
-		return [];
-	}
+	const manager = createTtsrManager(ttsrSettings);
+	if (!ttsrSettings.enabled) return { rules: [], manager };
 	const result = await loadCapability<Rule>(ruleCapability.id, { cwd });
-	return filterTtsrRulesForScan(result.items, {
+	const rules = filterTtsrRules(result.items, {
 		builtinRules: ttsrSettings.builtinRules,
 		disabledRules: ttsrSettings.disabledRules,
 	});
+	bucketRules(rules, manager, {
+		builtinRules: ttsrSettings.builtinRules,
+		disabledRules: ttsrSettings.disabledRules,
+	});
+	for (const rule of rules) manager.addRule(rule);
+	return { rules, manager };
+}
+
+function compileRule(rule: Rule): { program?: MatchProgram; errors: string[] } {
+	return rule.match !== undefined
+		? compileMatchProgram(rule.match, rule.name)
+		: compileLegacyProgram(rule.condition, rule.astCondition);
+}
+
+function compileErrorsFor(rules: readonly Rule[]): RuleCompileError[] {
+	const errors: RuleCompileError[] = [];
+	for (const rule of rules) {
+		for (const error of compileRule(rule).errors) errors.push({ name: rule.name, path: rule.path, error });
+	}
+	return errors;
+}
+
+function detailFor(match: TtsrMatch, program: MatchProgram): RuleMatchDetail {
+	return {
+		name: match.rule.name,
+		path: match.rule.path,
+		sourceProvider: match.rule._source?.provider,
+		description: program.description,
+		snippets: match.evidence.snippets,
+	};
 }
 
 async function readIsolatedRule(rulePath: string): Promise<Rule> {
@@ -284,7 +247,7 @@ async function readIsolatedRule(rulePath: string): Promise<Rule> {
 
 async function loadIsolatedRule(rulePath: string): Promise<{ rules: Rule[]; manager: TtsrManager }> {
 	const rule = await readIsolatedRule(rulePath);
-	const manager = await createTtsrManager({
+	const manager = createTtsrManager({
 		enabled: true,
 		contextMode: "discard",
 		interruptMode: "always",
@@ -293,17 +256,23 @@ async function loadIsolatedRule(rulePath: string): Promise<{ rules: Rule[]; mana
 		builtinRules: true,
 		disabledRules: [],
 	});
-	if (!manager.addRule(rule)) {
-		throw new Error(
-			`Rule "${rule.name}" has no usable TTSR condition. Add a \`condition\` (regex) or \`astCondition\` (ast-grep pattern) to its frontmatter.`,
-		);
-	}
-	return { rules: manager.getRules(), manager };
+	manager.addRule(rule);
+	return { rules: [rule], manager };
 }
 
-async function loadIsolatedScanRule(rulePath: string): Promise<Rule[]> {
+async function loadIsolatedScanRule(rulePath: string): Promise<{ rules: Rule[]; manager: TtsrManager }> {
 	const rule = await readIsolatedRule(rulePath);
-	return filterTtsrRulesForScan([rule]);
+	const manager = createTtsrManager({
+		enabled: true,
+		contextMode: "discard",
+		interruptMode: "always",
+		repeatMode: "once",
+		repeatGap: 10,
+		builtinRules: true,
+		disabledRules: [],
+	});
+	manager.addRule(rule);
+	return { rules: filterTtsrRules([rule]), manager };
 }
 
 async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<void> {
@@ -312,38 +281,61 @@ async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<
 	}
 
 	const snippet = await readSnippet(args);
-
 	const filePath = args.filePath ?? (args.file && args.file !== STDIN_MARKER ? path.resolve(args.file) : undefined);
 	const source: TtsrMatchSource =
 		args.source ?? (filePath && SOURCE_FILE_EXT.test(path.extname(filePath)) ? "tool" : "text");
 	const tool = args.tool ?? (source === "tool" ? "bash" : undefined);
-
 	const inferenceNote =
 		!args.source && filePath && source === "text"
 			? `inferred --source text from '${path.extname(filePath) || filePath}' (not in the source-file extension set); pass --source tool --tool bash to evaluate tool-scoped rules`
 			: undefined;
-
 	const context: TtsrMatchContext = {
 		source,
 		toolName: tool,
 		filePaths: filePath ? [filePath] : undefined,
+		cwd,
+		judge: args.llm ? await loadJudge(cwd) : undefined,
+		settled: true,
 	};
-
-	const { rules, manager } = args.rule ? await loadIsolatedRule(args.rule) : await loadProjectTtsrRules(cwd);
-
-	if (rules.length === 0) {
+	const loaded = args.rule ? await loadIsolatedRule(args.rule) : await loadProjectTtsrRules(cwd);
+	const entries = loaded.manager.getEntries();
+	const compileErrors = compileErrorsFor(loaded.rules);
+	if (entries.length === 0 && compileErrors.length === 0) {
 		const msg = args.rule
 			? "Rule registered but produced no TTSR entry."
-			: "No TTSR rules registered for this project. Add a `condition` or `astCondition` to a rule file, then re-run.";
-		if (json) {
-			process.stdout.write(`${JSON.stringify({ error: msg })}\n`);
-		} else {
-			process.stderr.write(`${chalk.yellow(msg)}\n`);
-		}
-		process.exit(1);
+			: "No TTSR rules registered for this project. Add a `condition`, `astCondition`, or `match` to a rule file, then re-run.";
+		if (json) process.stdout.write(`${JSON.stringify({ error: msg })}\n`);
+		else process.stderr.write(`${chalk.yellow(msg)}\n`);
+		process.exitCode = 1;
+		return;
 	}
 
-	const { triggered, notTriggered } = await evaluate(manager, rules, snippet, context);
+	const syncMatches = loaded.manager.checkSnapshot(snippet, context);
+	const asyncMatches = entries.some(entry => entry.program.needsAst || entry.program.needsJudge)
+		? await loaded.manager.checkAsyncSnapshot(snippet, context)
+		: [];
+	const matchesByName = new Map<string, TtsrMatch>();
+	for (const match of [...syncMatches, ...asyncMatches]) matchesByName.set(match.rule.name, match);
+	const entriesByName = new Map(entries.map(entry => [entry.rule.name, entry]));
+	const triggered: RuleMatchDetail[] = [];
+	const notTriggered: RuleMatchDetail[] = [];
+	for (const entry of entries) {
+		const match = matchesByName.get(entry.rule.name);
+		if (match) triggered.push(detailFor(match, entry.program));
+		else {
+			notTriggered.push({
+				name: entry.rule.name,
+				path: entry.rule.path,
+				sourceProvider: entry.rule._source?.provider,
+				description: entry.program.description,
+				snippets: [],
+			});
+		}
+	}
+	// Keep this lookup explicit so a future manager result cannot introduce an
+	// unregistered rule without making the CLI's report malformed.
+	for (const match of matchesByName.values())
+		if (!entriesByName.has(match.rule.name)) matchesByName.delete(match.rule.name);
 
 	const report: TestReport = {
 		source,
@@ -351,17 +343,16 @@ async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<
 		filePath,
 		snippetPreview: previewSnippet(snippet),
 		snippetBytes: snippet.length,
-		evaluated: rules.length,
+		evaluated: entries.length,
 		triggered,
 		notTriggered,
+		compileErrors,
 		inferenceNote,
 	};
-
 	if (json) {
 		process.stdout.write(`${JSON.stringify(report)}\n`);
 		return;
 	}
-
 	renderTestReport(report, args.verbose ?? false, args.rule !== undefined);
 }
 
@@ -372,328 +363,77 @@ function renderTestReport(report: TestReport, verbose: boolean, isolated: boolea
 		`${chalk.bold("TTSR test")} — source=${chalk.cyan(ctxLabel)}${pathLabel} snippet=${chalk.dim(`${report.snippetBytes}b`)}\n`,
 	);
 	process.stdout.write(`${chalk.dim(`  "${report.snippetPreview}"`)}\n\n`);
-	if (report.inferenceNote) {
-		process.stdout.write(`${chalk.yellow(`note: ${report.inferenceNote}`)}\n\n`);
+	if (report.inferenceNote) process.stdout.write(`${chalk.yellow(`note: ${report.inferenceNote}`)}\n\n`);
+	if (report.compileErrors.length > 0) {
+		process.stdout.write(`${chalk.yellow(`Condition errors (${report.compileErrors.length})`)}\n`);
+		for (const error of report.compileErrors) process.stdout.write(`  ${chalk.red(error.name)}: ${error.error}\n`);
+		process.stdout.write("\n");
 	}
-
-	if (report.triggered.length === 0) {
+	if (report.triggered.length === 0)
 		process.stdout.write(`${chalk.red("No rules triggered.")} (evaluated ${report.evaluated})\n`);
-	} else {
+	else {
 		process.stdout.write(`${chalk.green.bold(`Triggered (${report.triggered.length})`)}\n`);
 		for (const detail of report.triggered) renderRuleDetail(detail, true);
 	}
-
 	if (verbose && report.notTriggered.length > 0) {
 		process.stdout.write(`\n${chalk.dim(`Not triggered (${report.notTriggered.length})`)}\n`);
 		for (const detail of report.notTriggered) renderRuleDetail(detail, false);
 	}
-
-	if (isolated && report.triggered.length === 0) {
-		process.exitCode = 1;
-	}
+	if (isolated && report.triggered.length === 0) process.exitCode = 1;
 }
+
 function renderRuleDetail(detail: RuleMatchDetail, hit: boolean): void {
 	const mark = hit ? chalk.green("✓") : chalk.red("✗");
-	const condParts: string[] = [];
-
-	const regex = hit ? detail.matched.regex : detail.defined.regex;
-	const ast = hit ? detail.matched.ast : detail.defined.ast;
-	if (regex.length > 0) {
-		condParts.push(`condition: ${regex.map(c => chalk.yellow(`/${c}/`)).join(", ")}`);
-	}
-	if (ast.length > 0) {
-		condParts.push(`astCondition: ${ast.map(c => chalk.magenta(c)).join(", ")}`);
-	}
-	if (detail.skippedAst) {
-		condParts.push(chalk.dim(`astCondition: ${detail.skippedAst}`));
-	}
-	const condLabel = condParts.length > 0 ? condParts.join("  ") : chalk.dim("no active conditions");
 	const provider = detail.sourceProvider ? chalk.dim(` [${detail.sourceProvider}]`) : "";
-	process.stdout.write(`  ${mark} ${chalk.bold(detail.name)}  ${condLabel}${provider}\n`);
+	process.stdout.write(
+		`  ${mark} ${chalk.bold(detail.name)}  condition: ${chalk.yellow(detail.description)}${provider}\n`,
+	);
+	for (const snippet of detail.snippets)
+		process.stdout.write(`    ${chalk.cyan(`L${snippet.line}:`)} ${snippet.text}\n`);
 }
 
 async function runList(json: boolean, cwd: string): Promise<void> {
-	const { rules } = await loadProjectTtsrRules(cwd);
-
+	const loaded = await loadProjectTtsrRules(cwd);
+	const entriesByName = new Map(loaded.manager.getEntries().map(entry => [entry.rule.name, entry]));
+	const compileErrors = compileErrorsFor(loaded.rules);
+	const rows = loaded.rules.map(rule => ({
+		name: rule.name,
+		path: rule.path,
+		provider: rule._source?.provider,
+		condition: entriesByName.get(rule.name)?.program.description,
+		conditionErrors: compileErrors.filter(error => error.name === rule.name).map(error => error.error),
+		scope: rule.scope ?? [],
+		globs: rule.globs ?? [],
+		description: rule.description,
+	}));
 	if (json) {
-		process.stdout.write(
-			`${JSON.stringify(
-				rules.map(r => ({
-					name: r.name,
-					path: r.path,
-					provider: r._source?.provider,
-					condition: r.condition ?? [],
-					astCondition: r.astCondition ?? [],
-					scope: r.scope ?? [],
-					globs: r.globs ?? [],
-					description: r.description,
-				})),
-			)}\n`,
-		);
+		process.stdout.write(`${JSON.stringify(rows)}\n`);
 		return;
 	}
-
-	if (rules.length === 0) {
+	if (rows.length === 0) {
 		process.stdout.write(`${chalk.yellow("No TTSR rules registered for this project.")}\n`);
 		return;
 	}
-
-	process.stdout.write(`${chalk.bold(`TTSR rules (${rules.length})`)}\n`);
-	for (const rule of rules) {
-		const condParts: string[] = [];
-		if ((rule.condition ?? []).length > 0) condParts.push(`condition: ${rule.condition!.join(", ")}`);
-		if ((rule.astCondition ?? []).length > 0) condParts.push(`astCondition: ${rule.astCondition!.join(", ")}`);
-		if ((rule.scope ?? []).length > 0) condParts.push(`scope: ${rule.scope!.join(", ")}`);
-		if ((rule.globs ?? []).length > 0) condParts.push(`globs: ${rule.globs!.join(", ")}`);
-		const provider = rule._source?.provider ? chalk.dim(` [${rule._source.provider}]`) : "";
-		process.stdout.write(
-			`  ${chalk.bold(rule.name)}${provider} ${chalk.dim(condParts.join("  ") || "no conditions")}\n`,
-		);
-		if (rule.description) process.stdout.write(`${chalk.dim(`    ${rule.description}`)}\n`);
+	process.stdout.write(`${chalk.bold(`TTSR rules (${rows.length})`)}\n`);
+	for (const row of rows) {
+		const provider = row.provider ? chalk.dim(` [${row.provider}]`) : "";
+		const condition = row.condition ? chalk.yellow(row.condition) : chalk.red("invalid condition");
+		const scope = row.scope.length > 0 ? `  scope: ${row.scope.join(", ")}` : "";
+		const globs = row.globs.length > 0 ? `  globs: ${row.globs.join(", ")}` : "";
+		process.stdout.write(`  ${chalk.bold(row.name)}${provider}  condition: ${condition}${scope}${globs}\n`);
+		for (const error of row.conditionErrors) process.stdout.write(`    ${chalk.red(`error: ${error}`)}\n`);
+		if (row.description) process.stdout.write(`${chalk.dim(`    ${row.description}`)}\n`);
 	}
-}
-
-function normalizeScanPath(pathValue: string): string {
-	return pathValue.replaceAll("\\", "/");
 }
 
 function isWithinDirectory(child: string, parent: string): boolean {
-	const rel = path.relative(parent, child);
-	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
-function matchesScanGlob(glob: Bun.Glob, filePaths: string[] | undefined): boolean {
-	if (!filePaths || filePaths.length === 0) {
-		return false;
-	}
-	for (const filePath of filePaths) {
-		const normalized = normalizeScanPath(filePath);
-		if (glob.match(normalized)) {
-			return true;
-		}
-		const slashIndex = normalized.lastIndexOf("/");
-		const basename = slashIndex === -1 ? normalized : normalized.slice(slashIndex + 1);
-		if (basename !== normalized && glob.match(basename)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-function compileScanPathGlobs(globs: Rule["globs"]): Bun.Glob[] | undefined {
-	if (!globs || globs.length === 0) {
-		return undefined;
-	}
-	const compiled = globs
-		.map(globPattern => globPattern.trim())
-		.filter(globPattern => globPattern.length > 0)
-		.map(globPattern => new Bun.Glob(globPattern));
-	return compiled.length > 0 ? compiled : undefined;
-}
-
-function parseScanToolScopeToken(token: string): ScanScopePlan | undefined {
-	const match = /^(?:(?<prefix>tool)(?::(?<tool>[a-z0-9_-]+))?|(?<bare>[a-z0-9_-]+))(?:\((?<path>[^)]+)\))?$/i.exec(
-		token,
-	);
-	if (!match) {
-		return undefined;
-	}
-	const groups = match.groups;
-	const hasToolPrefix = groups?.prefix !== undefined;
-	const toolName = (groups?.tool ?? (hasToolPrefix ? undefined : groups?.bare))?.trim().toLowerCase();
-	const pathPattern = groups?.path?.trim();
-	return {
-		toolName,
-		pathGlob: pathPattern ? new Bun.Glob(pathPattern) : undefined,
-	};
-}
-
-function escapeRegexLiteral(value: string): string {
-	return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
-}
-
-function compileAstPrefilter(pattern: string): RegExp | undefined {
-	if (/\bas\s*\{/.test(pattern)) {
-		return /\bas\b(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*\{/;
-	}
-	const ignored = new Set(["if", "as", "const", "let", "var", "return", "true", "false", "null", "undefined"]);
-	const tokens = pattern
-		.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)
-		?.filter(token => !ignored.has(token) && !/^[A-Z_]+$/.test(token))
-		.sort((a, b) => b.length - a.length);
-	const token = tokens?.[0];
-	return token ? new RegExp(`\\b${escapeRegexLiteral(token)}\\b`) : undefined;
-}
-
-function compileScanRulePlans(rules: Rule[]): ScanRulePlan[] {
-	return rules.map(rule => {
-		const scopes: ScanScopePlan[] = [];
-		let defaultToolScope = !rule.scope || rule.scope.length === 0;
-		for (const rawScope of rule.scope ?? []) {
-			const token = rawScope.trim();
-			const normalizedToken = token.toLowerCase();
-			if (token.length === 0 || normalizedToken === "text" || normalizedToken === "thinking") {
-				continue;
-			}
-			if (normalizedToken === "tool" || normalizedToken === "toolcall") {
-				scopes.push({});
-				continue;
-			}
-			const scope = parseScanToolScopeToken(token);
-			if (!scope) {
-				continue;
-			}
-			if (!scope.toolName && !scope.pathGlob) {
-				defaultToolScope = true;
-				continue;
-			}
-			scopes.push(scope);
-		}
-		const regexConditions: ScanRegexCondition[] = [];
-		for (const pattern of rule.condition ?? []) {
-			try {
-				regexConditions.push({ pattern, regex: compileRuleCondition(pattern) });
-			} catch {}
-		}
-		const astConditions = (rule.astCondition ?? [])
-			.map(pattern => pattern.trim())
-			.filter(pattern => pattern.length > 0);
-		const astPrefilters: RegExp[] = [];
-		let astRequiresFullScan = false;
-		for (const pattern of astConditions) {
-			const prefilter = compileAstPrefilter(pattern);
-			if (prefilter) {
-				astPrefilters.push(prefilter);
-			} else {
-				astRequiresFullScan = true;
-			}
-		}
-		return {
-			rule,
-			globalPathGlobs: compileScanPathGlobs(rule.globs),
-			defaultToolScope,
-			scopes,
-			regexConditions,
-			astConditions,
-			astPrefilters,
-			astRequiresFullScan,
-		};
-	});
-}
-
-function scanRulePlanMatchesPath(plan: ScanRulePlan, filePaths: string[]): boolean {
-	return !plan.globalPathGlobs || plan.globalPathGlobs.some(pathGlob => matchesScanGlob(pathGlob, filePaths));
-}
-
-function scanRulePlanMatchesToolScope(plan: ScanRulePlan, filePaths: string[]): boolean {
-	if (!scanRulePlanMatchesPath(plan, filePaths)) {
-		return false;
-	}
-	if (plan.defaultToolScope) {
-		return true;
-	}
-	for (const scope of plan.scopes) {
-		if (scope.pathGlob && !matchesScanGlob(scope.pathGlob, filePaths)) {
-			continue;
-		}
-		if (!scope.toolName || scope.toolName === "bash") {
-			return true;
-		}
-	}
-	return false;
-}
-
-function scanRulePlanMayMatchAst(plan: ScanRulePlan, fileContent: string): boolean {
-	return (
-		plan.astConditions.length > 0 &&
-		(plan.astRequiresFullScan || plan.astPrefilters.some(prefilter => prefilter.test(fileContent)))
-	);
-}
-
-async function scanRulePlanMatchesContent(
-	plan: ScanRulePlan,
-	fileContent: string,
-	lang: string | undefined,
-	includeDetails: boolean,
-): Promise<RuleMatchDetail | undefined> {
-	let regexHit = false;
-	const matchedRegex: string[] = [];
-	for (const condition of plan.regexConditions) {
-		condition.regex.lastIndex = 0;
-		if (condition.regex.test(fileContent)) {
-			regexHit = true;
-			if (includeDetails) {
-				matchedRegex.push(condition.pattern);
-			}
-		}
-	}
-
-	const matchedAst: string[] = [];
-	let astHit = false;
-	if ((includeDetails || !regexHit) && lang && plan.astConditions.length > 0) {
-		if (includeDetails) {
-			matchedAst.push(...(await astMatches(plan.rule, fileContent, lang)));
-			astHit = matchedAst.length > 0;
-		} else {
-			try {
-				const result = await astMatch({
-					patterns: plan.astConditions,
-					source: fileContent,
-					lang,
-					strictness: AstMatchStrictness.Smart,
-					limit: 1,
-				});
-				astHit = result.matches.length > 0;
-			} catch {
-				astHit = false;
-			}
-		}
-	}
-
-	if (!regexHit && !astHit) {
-		return undefined;
-	}
-	return {
-		name: plan.rule.name,
-		path: plan.rule.path,
-		sourceProvider: plan.rule._source?.provider,
-		matched: { regex: matchedRegex, ast: matchedAst },
-		defined: { regex: plan.rule.condition ?? [], ast: plan.rule.astCondition ?? [] },
-	};
-}
-
-async function scanAnyAstConditionMatches(
-	plans: ScanRulePlan[],
-	fileContent: string,
-	lang: string | undefined,
-): Promise<boolean | undefined> {
-	if (!lang) {
-		return false;
-	}
-	const patterns = plans.flatMap(plan => plan.astConditions);
-	if (patterns.length === 0) {
-		return false;
-	}
-	try {
-		const result = await astMatch({
-			patterns,
-			source: fileContent,
-			lang,
-			strictness: AstMatchStrictness.Smart,
-			limit: 1,
-		});
-		if (result.matches.length > 0) {
-			return true;
-		}
-		return result.parseErrors && result.parseErrors.length > 0 ? undefined : false;
-	} catch {
-		return undefined;
-	}
+	const relative = path.relative(parent, child);
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 async function discoverScanFiles(scanDir: string, cwd: string, gitignore: boolean): Promise<ScanFileCandidate[]> {
 	const globRoot = isWithinDirectory(scanDir, cwd) ? cwd : scanDir;
-	const relativeScanDir = normalizeScanPath(path.relative(globRoot, scanDir));
+	const relativeScanDir = path.relative(globRoot, scanDir).replaceAll("\\", "/");
 	const pattern = relativeScanDir === "" ? "**/*" : `${relativeScanDir}/**/*`;
 	try {
 		const result = await glob({
@@ -706,7 +446,7 @@ async function discoverScanFiles(scanDir: string, cwd: string, gitignore: boolea
 		const candidates: ScanFileCandidate[] = [];
 		for (const match of result.matches as GlobMatch[]) {
 			const absPath = path.resolve(globRoot, match.path);
-			const filePath = normalizeScanPath(path.relative(scanDir, absPath));
+			const filePath = path.relative(scanDir, absPath).replaceAll("\\", "/");
 			if (
 				filePath.length === 0 ||
 				filePath.startsWith("..") ||
@@ -756,41 +496,24 @@ function countSkipped(skipped: ScanSkipSummary): number {
 async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<void> {
 	const scanDir = args.directory ? path.resolve(cwd, args.directory) : cwd;
 	if (!(await fs.promises.stat(scanDir).catch(() => undefined))) {
-		if (json) {
-			process.stdout.write(`${JSON.stringify({ error: `Directory not found: ${scanDir}` })}\n`);
-		} else {
-			process.stderr.write(`${chalk.red(`error: scan directory not found: ${scanDir}`)}\n`);
-		}
-		process.exit(1);
+		const error = `Directory not found: ${scanDir}`;
+		if (json) process.stdout.write(`${JSON.stringify({ error })}\n`);
+		else process.stderr.write(`${chalk.red(`error: ${error}`)}\n`);
+		process.exitCode = 1;
+		return;
 	}
 
-	const rules = args.rule ? await loadIsolatedScanRule(args.rule) : await loadProjectScanRules(cwd);
-
-	if (rules.length === 0) {
+	const loaded = args.rule ? await loadIsolatedScanRule(args.rule) : await loadProjectScanRules(cwd);
+	const entries = loaded.manager.getEntries();
+	const compileErrors = compileErrorsFor(loaded.rules);
+	if (entries.length === 0 && compileErrors.length === 0) {
 		const msg = args.rule
 			? "Rule registered but produced no TTSR entry."
 			: "No TTSR rules registered for this project.";
-		if (json) {
-			process.stdout.write(`${JSON.stringify({ error: msg })}\n`);
-		} else {
-			process.stderr.write(`${chalk.yellow(msg)}\n`);
-		}
-		process.exit(1);
-	}
-
-	const scanRulePlans = compileScanRulePlans(rules).filter(
-		plan => plan.regexConditions.length > 0 || plan.astConditions.length > 0,
-	);
-	if (scanRulePlans.length === 0) {
-		const msg = args.rule
-			? "Rule registered but produced no usable TTSR condition."
-			: "No usable TTSR rules registered for this project.";
-		if (json) {
-			process.stdout.write(`${JSON.stringify({ error: msg })}\n`);
-		} else {
-			process.stderr.write(`${chalk.yellow(msg)}\n`);
-		}
-		process.exit(1);
+		if (json) process.stdout.write(`${JSON.stringify({ error: msg })}\n`);
+		else process.stderr.write(`${chalk.yellow(msg)}\n`);
+		process.exitCode = 1;
+		return;
 	}
 
 	const gitignore = args.gitignore ?? true;
@@ -799,26 +522,14 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 	const files = await discoverScanFiles(scanDir, cwd, gitignore);
 	const emptySkipped: ScanSkipSummary = { binary: 0, large: 0, unreadable: 0, noRelevantRules: 0 };
 	if (files.length === 0) {
-		const msg = `No files found to scan in ${scanDir}`;
 		if (json) {
 			process.stdout.write(
-				`${JSON.stringify({
-					files: [],
-					summary: {
-						totalFiles: 0,
-						scannedFiles: 0,
-						matchedFiles: 0,
-						totalMatches: 0,
-						evaluatedRules: scanRulePlans.length,
-						skippedFiles: 0,
-						skipped: emptySkipped,
-						gitignore,
-						maxBytes,
-					},
-				})}\n`,
+				`${JSON.stringify({ files: [], errors: compileErrors, summary: { totalFiles: 0, scannedFiles: 0, matchedFiles: 0, totalMatches: 0, evaluatedRules: entries.length, skippedFiles: 0, skipped: emptySkipped, gitignore, maxBytes } })}\n`,
 			);
 		} else {
-			process.stdout.write(`${chalk.yellow(msg)}\n`);
+			for (const error of compileErrors)
+				process.stdout.write(`${chalk.red(`condition error: ${error.name}: ${error.error}`)}\n`);
+			process.stdout.write(`${chalk.yellow(`No files found to scan in ${scanDir}`)}\n`);
 		}
 		return;
 	}
@@ -833,61 +544,43 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 		const file = candidate.path;
 		const absPath = path.resolve(scanDir, file);
 		const relToProj = path.relative(cwd, absPath).replaceAll("\\", "/");
-		const basename = path.basename(absPath);
-		const filePaths = [absPath.replaceAll("\\", "/"), relToProj, basename];
-		const relevantPlans = scanRulePlans.filter(plan => scanRulePlanMatchesToolScope(plan, filePaths));
-		if (relevantPlans.length === 0) {
-			skipped.noRelevantRules++;
-			continue;
-		}
-
+		const filePaths = [absPath.replaceAll("\\", "/")];
 		const readResult = await readScanFileText(absPath, maxBytes, candidate.size);
 		if ("skip" in readResult) {
 			skipped[readResult.skip]++;
 			continue;
 		}
-		const fileContent = readResult.content;
-		const lang = deriveLang(filePaths);
+		const content = readResult.content;
+		const potential = entries.filter(entry => mayMatch(entry.program, content));
+		if (potential.length === 0) {
+			skipped.noRelevantRules++;
+			continue;
+		}
 		scannedFiles++;
-
-		const fileTriggeredDetails: RuleMatchDetail[] = [];
-		let fileMatchCount = 0;
-		const pendingAstPlans: ScanRulePlan[] = [];
-		for (const plan of relevantPlans) {
-			const detail = includeDetails
-				? await scanRulePlanMatchesContent(plan, fileContent, lang, true)
-				: await scanRulePlanMatchesContent(plan, fileContent, undefined, false);
-			if (detail) {
-				fileMatchCount++;
-				if (includeDetails) {
-					fileTriggeredDetails.push(detail);
-				}
-				continue;
-			}
-			if (!includeDetails && scanRulePlanMayMatchAst(plan, fileContent)) {
-				pendingAstPlans.push(plan);
-			}
-		}
-		if (!includeDetails && (await scanAnyAstConditionMatches(pendingAstPlans, fileContent, lang)) !== false) {
-			for (const plan of pendingAstPlans) {
-				const detail = await scanRulePlanMatchesContent(plan, fileContent, lang, false);
-				if (!detail) {
-					continue;
-				}
-				fileMatchCount++;
-			}
-		}
-
-		if (fileMatchCount > 0) {
-			matchedFiles++;
-			totalMatches += fileMatchCount;
-			if (includeDetails) {
-				fileResults.push({
-					file: relToProj,
-					matches: fileTriggeredDetails,
-				});
-			}
-		}
+		const context: TtsrMatchContext = {
+			source: "tool",
+			toolName: "bash",
+			filePaths,
+			streamKey: `ttsr-scan:${absPath}`,
+			cwd,
+			settled: true,
+		};
+		const syncMatches = loaded.manager.checkSnapshot(content, context);
+		// Scans never judge: `llm:` leaves stay unresolved without a judge, so a
+		// judge-gated rule simply reports nothing rather than costing a model call
+		// per file.
+		const asyncMatches = potential.some(entry => entry.program.needsAst)
+			? await loaded.manager.checkAsyncSnapshot(content, context)
+			: [];
+		const matchesByName = new Map<string, TtsrMatch>();
+		for (const match of [...syncMatches, ...asyncMatches]) matchesByName.set(match.rule.name, match);
+		const matches = entries
+			.filter(entry => matchesByName.has(entry.rule.name))
+			.map(entry => detailFor(matchesByName.get(entry.rule.name)!, entry.program));
+		if (matches.length === 0) continue;
+		matchedFiles++;
+		totalMatches += matches.length;
+		if (includeDetails) fileResults.push({ file: relToProj, matches });
 	}
 
 	if (json) {
@@ -895,18 +588,20 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 			`${JSON.stringify({
 				files: fileResults.map(fr => ({
 					filePath: fr.file,
-					matches: fr.matches.map(m => ({
-						name: m.name,
-						path: m.path,
-						matched: m.matched,
+					matches: fr.matches.map(match => ({
+						name: match.name,
+						path: match.path,
+						condition: match.description,
+						snippets: match.snippets,
 					})),
 				})),
+				errors: compileErrors,
 				summary: {
 					totalFiles: files.length,
 					scannedFiles,
 					matchedFiles,
 					totalMatches,
-					evaluatedRules: scanRulePlans.length,
+					evaluatedRules: entries.length,
 					skippedFiles: countSkipped(skipped),
 					skipped,
 					gitignore,
@@ -914,42 +609,46 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 				},
 			})}\n`,
 		);
-	} else {
+		return;
+	}
+	process.stdout.write(
+		`${chalk.bold("TTSR scan")} — directory=${chalk.cyan(scanDir)} files=${chalk.dim(files.length)} scanned=${chalk.dim(scannedFiles)} rules=${chalk.dim(entries.length)} gitignore=${chalk.dim(gitignore ? "on" : "off")} max-bytes=${chalk.dim(maxBytes === 0 ? "off" : String(maxBytes))}\n`,
+	);
+	for (const error of compileErrors)
+		process.stdout.write(`${chalk.red(`condition error: ${error.name}: ${error.error}`)}\n`);
+	if (countSkipped(skipped) > 0)
 		process.stdout.write(
-			`${chalk.bold("TTSR scan")} — directory=${chalk.cyan(scanDir)} files=${chalk.dim(files.length)} scanned=${chalk.dim(scannedFiles)} rules=${chalk.dim(scanRulePlans.length)} gitignore=${chalk.dim(gitignore ? "on" : "off")} max-bytes=${chalk.dim(maxBytes === 0 ? "off" : String(maxBytes))}\n`,
+			`${chalk.dim(`  skipped: binary=${skipped.binary} large=${skipped.large} unreadable=${skipped.unreadable} no-relevant-rules=${skipped.noRelevantRules}`)}\n`,
 		);
-		if (countSkipped(skipped) > 0) {
-			process.stdout.write(
-				`${chalk.dim(`  skipped: binary=${skipped.binary} large=${skipped.large} unreadable=${skipped.unreadable} no-relevant-rules=${skipped.noRelevantRules}`)}\n`,
-			);
-		}
-
-		if (matchedFiles === 0) {
-			process.stdout.write(
-				`${chalk.green.bold("No rule matches found.")} (evaluated ${rules.length} rules on ${scannedFiles}/${files.length} files)\n`,
-			);
-		} else {
-			process.stdout.write(
-				`${chalk.red.bold("Found violations/matches:")} (${totalMatches} matches across ${matchedFiles} files)\n`,
-			);
-			if (!includeDetails) {
-				process.stdout.write(`${chalk.dim("  rerun with --verbose to list matched files and conditions")}\n`);
-				return;
-			}
-
-			process.stdout.write("\n");
-			for (const fr of fileResults) {
-				process.stdout.write(`${chalk.bold.underline(fr.file)}\n`);
-				for (const detail of fr.matches) {
-					renderRuleDetail(detail, true);
-				}
-				process.stdout.write("\n");
-			}
-		}
+	if (matchedFiles === 0) {
+		process.stdout.write(
+			`${chalk.green.bold("No rule matches found.")} (evaluated ${loaded.rules.length} rules on ${scannedFiles}/${files.length} files)\n`,
+		);
+		return;
+	}
+	process.stdout.write(
+		`${chalk.red.bold("Found violations/matches:")} (${totalMatches} matches across ${matchedFiles} files)\n`,
+	);
+	if (!includeDetails) {
+		process.stdout.write(
+			`${chalk.dim("  rerun with --verbose to list matched files, conditions, and evidence snippets")}\n`,
+		);
+		return;
+	}
+	process.stdout.write("\n");
+	for (const result of fileResults) {
+		process.stdout.write(`${chalk.bold.underline(result.file)}\n`);
+		for (const detail of result.matches) renderRuleDetail(detail, true);
+		process.stdout.write("\n");
 	}
 }
 
 export async function runTtsrCommand(cmd: TtsrCommandArgs): Promise<void> {
+	if (process.stdout.listenerCount("error") === 0) {
+		process.stdout.on("error", error => {
+			if (error instanceof Error && "code" in error && error.code === "EPIPE") process.exit(0);
+		});
+	}
 	const cwd = getProjectDir();
 	if (cmd.action === "test") {
 		if (!cmd.test) {

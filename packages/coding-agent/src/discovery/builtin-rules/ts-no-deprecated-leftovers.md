@@ -1,8 +1,10 @@
 ---
 description: "Do not leave `@deprecated` shims behind after refactors — update call sites and remove the old API"
-condition: "@deprecated"
 scope: "tool:bash"
 interruptMode: never
+match:
+  regex: '@deprecated'
+  in: [comment, code, string]
 ---
 
 Never use `@deprecated` instead of completing a refactor. Obsolete APIs in code you control: update every call site; remove the old name in the same change.

@@ -1,8 +1,17 @@
 ---
 description: Never use Box::leak - it intentionally leaks memory
-condition: "Box::leak"
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [rs, rust] }
+  then:
+    regex: "Box::leak"
+    in: code
+  else:
+    all:
+      - regex: "Box::leak"
+        in: [code, string]
+      - llm: "Does this content actually call Box::leak, rather than quoting or discussing that call?"
 ---
 
 Never use `Box::leak` to satisfy a lifetime. It intentionally leaks the allocation for the rest of the process.

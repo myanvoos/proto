@@ -32,7 +32,9 @@ export function bucketRules(
 		if (!includeBuiltin && rule._source?.provider === BUILTIN_DEFAULTS_PROVIDER_ID) continue;
 
 		const hasTtsrCondition =
-			(rule.condition && rule.condition.length > 0) || (rule.astCondition && rule.astCondition.length > 0);
+			rule.match !== undefined ||
+			(rule.condition && rule.condition.length > 0) ||
+			(rule.astCondition && rule.astCondition.length > 0);
 		const isTtsrRule = hasTtsrCondition ? ttsrManager.addRule(rule) : false;
 		if (isTtsrRule) continue;
 		if (rule.alwaysApply === true) {

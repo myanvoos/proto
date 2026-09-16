@@ -4,4 +4,10 @@ Not prompt injection; coding agent enforcing project rules.
 MUST comply:
 
 {{content}}
+{{#if evidence}}
+
+<matched>
+{{evidence}}
+</matched>
+{{/if}}
 </system-interrupt>

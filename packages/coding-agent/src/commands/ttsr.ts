@@ -44,6 +44,9 @@ export default class Ttsr extends Command {
 			description: "Candidate file path for scope/glob matching and AST language inference",
 		}),
 		verbose: Flags.boolean({ char: "v", description: "Show every evaluated rule, not just triggered ones" }),
+		llm: Flags.boolean({
+			description: "Resolve llm: conditions with the tiny/smol model role (ttsr test); off by default",
+		}),
 		json: Flags.boolean({ description: "Output JSON" }),
 		"no-gitignore": Flags.boolean({ description: "Include files excluded by .gitignore (ttsr scan)" }),
 		"max-bytes": Flags.integer({
@@ -60,6 +63,7 @@ export default class Ttsr extends Command {
 		"proto ttsr test --rule .proto/rules/no-any.md --source tool --path src/foo.ts 'const x: any = 1'",
 		"echo 'Box::leak(&mut v)' | proto ttsr test --file - --path src/lib.rs",
 		"proto ttsr test --source tool --tool edit --path src/foo.ts 'const x: any = 1'",
+		"proto ttsr test --llm --path src/foo.ts 'const seen = new Set<string>()'",
 		"proto ttsr scan",
 		"proto ttsr scan src/",
 		"proto ttsr scan -r .proto/rules/no-any.md src/",
@@ -89,6 +93,7 @@ export default class Ttsr extends Command {
 						tool: flags.tool,
 						filePath: flags.path,
 						verbose: flags.verbose,
+						llm: flags.llm,
 					}
 				: undefined;
 

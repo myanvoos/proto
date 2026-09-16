@@ -1,8 +1,21 @@
 ---
 description: "Detect explicit `any` in common TypeScript type positions and assertions — use `unknown`, generics, a schema parse at trust boundaries, or the actual type"
-condition: '(?m)(?:(?::|\bas\b|=|<|,|\||&|\?|\bextends)\s*)any\b'
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [ts, tsx, mts, cts] }
+  # Real TypeScript source: every `any` type node, wherever it appears. Comments
+  # and string literals cannot trip it.
+  then:
+    ast: "let x: any"
+    selector: predefined_type
+  # TypeScript embedded in another language (kernel cell, generated source):
+  # literal match outside the host language's comments.
+  else:
+    all:
+      - regex: '(?m)(?:(?::|\bas\b|=|<|,|\||&|\?|\bextends)\s*)any\b'
+        in: [code, string]
+      - llm: "Does this content actually declare or cast to the TypeScript `any` type, rather than quoting or discussing the `any` type?"
 ---
 
 Never use `: any` or `as any`. They disable type checking exactly where the boundary needs precision.

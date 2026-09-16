@@ -1,8 +1,10 @@
 ---
 description: "Use io and os instead of the deprecated io/ioutil package"
-condition: '"io/ioutil"'
 scope: "tool:bash"
 interruptMode: never
+match:
+  regex: '"io/ioutil"'
+  in: [code, string]
 ---
 
 `io/ioutil`: deprecated since Go 1.16. All functions moved to `io` or `os`; same behavior except `ReadDir`. New code: NEVER import `io/ioutil`.

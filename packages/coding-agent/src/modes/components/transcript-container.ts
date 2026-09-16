@@ -77,6 +77,10 @@ function isBlockFinalized(child: Component): boolean {
 	return fn ? fn.call(child) : true;
 }
 
+function isBlockDisplaceable(child: Component): boolean {
+	return (child as Component & FinalizableBlock).isDisplaceableBlock?.() === true;
+}
+
 function isBlockPinned(child: Component): boolean {
 	return (child as Component & Partial<NativeScrollbackLiveRegion>).isNativeScrollbackLiveRegionPinned?.() === true;
 }
@@ -551,6 +555,10 @@ export class TranscriptContainer
 		return this.#nativeScrollbackLiveRegionPinned ? this.#nativeScrollbackLiveRegionPinnedStart : undefined;
 	}
 
+	clipsNativeScrollbackLiveRegion(): boolean {
+		return true;
+	}
+
 	#notePinnedLiveBlock(pinAt: number): void {
 		if (this.#nativeScrollbackLiveRegionPinned) return;
 		this.#nativeScrollbackLiveRegionPinned = true;
@@ -663,6 +671,7 @@ export class TranscriptContainer
 		let row = 0;
 		let stableRows = 0;
 		let liveStartIndex = -1;
+		let liveRewriteStart: number | undefined;
 		let canSealCommitted = startIndex === 0;
 		let stablePrefixLength = startIndex > 0 ? startIndex : 0;
 		let pinCandidates: { index: number; pinAt: number }[] | undefined;
@@ -774,6 +783,7 @@ export class TranscriptContainer
 
 			if (contribution.length === 0) {
 				if (liveStartIndex === i) this.#nativeScrollbackLiveRegionStart = row;
+				if (liveRewriteStart === undefined && !finalized && !isBlockDisplaceable(child)) liveRewriteStart = row;
 				if (!finalized && isBlockPinned(child)) {
 					if (pinCandidates === undefined) pinCandidates = [];
 					pinCandidates.push({ index: i, pinAt: row });
@@ -814,6 +824,9 @@ export class TranscriptContainer
 				}
 			}
 			if (liveStartIndex === i) this.#nativeScrollbackLiveRegionStart = row + sep + settled;
+			if (liveRewriteStart === undefined && !finalized && !isBlockDisplaceable(child)) {
+				liveRewriteStart = row + sep + settled;
+			}
 			if (!finalized && isBlockPinned(child)) {
 				if (pinCandidates === undefined) pinCandidates = [];
 				pinCandidates.push({ index: i, pinAt: row + sep + settled });
@@ -878,21 +891,24 @@ export class TranscriptContainer
 			}
 		}
 
-		// Pin a live run ending in a non-displaceable block at that block's end,
-		// including when an earlier displaceable block supplied a stricter pin.
-		// Once later transcript content exists the earlier block can no longer be
-		// removed without rewriting history, so retaining its start boundary would
-		// turn the growing reply into a viewport-only window until finalization.
+		// Pin a live run ending in a non-displaceable block at the first row that
+		// run may still rewrite, overriding a stricter pin an earlier displaceable
+		// block supplied. Once later transcript content exists the earlier block
+		// can no longer be removed without rewriting history, so retaining its
+		// start boundary would hold rows that are never coming back. The boundary
+		// stops at the first rewritable row rather than the run's end because
+		// history cannot repaint what it has taken: a card that still redraws its
+		// own header would leave that header in scrollback with the finished card
+		// appended below it.
 		if (liveStartIndex >= 0) {
 			let lastLiveIndex = liveStartIndex;
 			for (let i = liveStartIndex + 1; i < count; i++) {
 				if (!segments[i]!.finalized) lastLiveIndex = i;
 			}
-			const lastLiveBlock = this.children[lastLiveIndex]! as Component & FinalizableBlock;
-			if (lastLiveBlock.isDisplaceableBlock?.() !== true) {
+			const lastLive = segments[lastLiveIndex]!;
+			if (!isBlockDisplaceable(this.children[lastLiveIndex]!)) {
 				this.#nativeScrollbackLiveRegionPinned = true;
-				const lastLive = segments[lastLiveIndex]!;
-				this.#nativeScrollbackLiveRegionPinnedStart = lastLive.startRow + lastLive.rowCount;
+				this.#nativeScrollbackLiveRegionPinnedStart = liveRewriteStart ?? lastLive.startRow + lastLive.rowCount;
 			}
 		}
 		this.#stableRowsFloor = Math.min(stableFloorBefore, stableRows, row);

@@ -237,6 +237,21 @@ Run `proto <command> --help` for each command's own flags and examples.
 > The table lists each as it is registered in
 > `packages/coding-agent/src/cli-commands.ts`.
 
+### TTSR rule inspection
+
+`proto ttsr list` prints each rule's compiled condition, scope, source provider,
+and path globs. `proto ttsr test` accepts an inline snippet or `--file <path>`
+(`--file -` reads stdin), with `--source text|thinking|tool`, `--tool`, and
+`--path` for context. Triggered rules include up to three evidence snippets as
+`L<line>: <text>`; `--verbose` also lists rules that did not trigger. `--llm`
+resolves `llm:` conditions against the `tiny`/`smol` model role; without it they
+stay unresolved and the rules holding them report nothing.
+
+`proto ttsr scan [directory]` applies the same compiled conditions while
+respecting rule scopes, globs, `.gitignore`, and `--max-bytes`. Use `--rule` to
+scan one rule, `--no-gitignore` to include ignored files, and `--json` for
+machine-readable results (including evidence snippets and condition errors).
+
 ### Supervised process logs and shutdown
 
 `fleet` log requests with a returned `cursor` read only newer output; omitting the cursor reads retained history. A follow timeout does not replay previous output. The broker retains bounded log windows across rotation and uses the current process generation for historical pattern waits.

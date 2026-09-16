@@ -1,8 +1,17 @@
 ---
 description: "Do not use `ReturnType<typeof fn>` — name the type explicitly"
-condition: "ReturnType<"
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
+  then:
+    regex: 'ReturnType<'
+    in: code
+  else:
+    all:
+      - regex: 'ReturnType<'
+        in: [code, string]
+      - llm: "Does this content actually use `ReturnType<typeof ...>` in a type position, rather than quoting or discussing that utility type?"
 ---
 
 Do not publish contracts through `ReturnType<typeof fn>`. Name the type at the module that owns the value and import that name at consumers.

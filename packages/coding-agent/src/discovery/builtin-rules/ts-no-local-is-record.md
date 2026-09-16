@@ -1,10 +1,17 @@
 ---
 description: "Never use isRecord"
-condition:
-  - "\\bfunction\\s+isRecord(?:\\s*<[^>]*>)?\\s*\\("
-  - "\\b(?:const|let|var)\\s+isRecord\\b\\s*(?::[\\s\\S]{0,300}?)?=\\s*(?:async\\s+)?(?:function\\b|(?:<[^>\\n]*>\\s*)?(?:\\([^)]*\\)|[A-Za-z_$][\\w$]*)\\s*(?::[\\s\\S]{0,300}?)?=>)"
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
+  then:
+    regex: ["\\bfunction\\s+isRecord(?:\\s*<[^>]*>)?\\s*\\(", "\\b(?:const|let|var)\\s+isRecord\\b\\s*(?::[\\s\\S]{0,300}?)?=\\s*(?:async\\s+)?(?:function\\b|(?:<[^>\\n]*>\\s*)?(?:\\([^)]*\\)|[A-Za-z_$][\\w$]*)\\s*(?::[\\s\\S]{0,300}?)?=>)"]
+    in: code
+  else:
+    all:
+      - regex: ["\\bfunction\\s+isRecord(?:\\s*<[^>]*>)?\\s*\\(", "\\b(?:const|let|var)\\s+isRecord\\b\\s*(?::[\\s\\S]{0,300}?)?=\\s*(?:async\\s+)?(?:function\\b|(?:<[^>\\n]*>\\s*)?(?:\\([^)]*\\)|[A-Za-z_$][\\w$]*)\\s*(?::[\\s\\S]{0,300}?)?=>)"]
+        in: [code, string]
+      - llm: "Does this content actually define or call a local isRecord helper, rather than quoting or discussing one?"
 ---
 
 ## Why it's wrong

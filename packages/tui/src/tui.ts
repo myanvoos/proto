@@ -160,6 +160,17 @@ export interface NativeScrollbackLiveRegion {
 	isNativeScrollbackLiveRegionPinned?(): boolean;
 
 	getNativeScrollbackLiveRegionPinnedStart?(): number | undefined;
+
+	/**
+	 * Report whether rows of the live region that fit neither history nor the
+	 * viewport may be dropped from the emitted frame. A live block that rewrites
+	 * rows it already rendered (a tool card whose running header becomes a
+	 * finished one) must clip: committing those rows leaves a stale copy in
+	 * native scrollback that the terminal can never repaint. A live block whose
+	 * rendered rows are byte-stable once emitted reports its stable prefix
+	 * through `getTranscriptBlockSettledRows` instead and need not clip.
+	 */
+	clipsNativeScrollbackLiveRegion?(): boolean;
 }
 
 export interface NativeScrollbackCommittedRows {
@@ -228,6 +239,10 @@ function isUnfinalizedTranscriptBlock(component: Component): boolean {
 		(component as Component & Partial<{ isTranscriptBlockFinalized(): boolean }>).isTranscriptBlockFinalized?.() ===
 		false
 	);
+}
+
+function clipsNativeScrollbackLiveRegion(component: Component): boolean {
+	return (component as Component & Partial<NativeScrollbackLiveRegion>).clipsNativeScrollbackLiveRegion?.() === true;
 }
 
 function getNativeScrollbackLiveRegionPinnedStart(component: Component): number | undefined {
@@ -1116,6 +1131,7 @@ export class TUI extends Container {
 	#nativeScrollbackCommittedDirtyFromRow: number | undefined;
 
 	#nativeScrollbackPinnedBoundary: number | undefined;
+	#previousClippedRows = 0;
 	#fullRedrawCount = 0;
 
 	#imageBudget = new ImageBudget(DEFAULT_MAX_INLINE_IMAGES, () => this.requestRender());
@@ -3124,8 +3140,7 @@ export class TUI extends Container {
 		const liveRegionStart = this.#nativeScrollbackLiveRegionStart;
 		const liveRegionPinned = this.#nativeScrollbackLiveRegionPinned;
 
-		const frameLength = rawFrame.length;
-		const finalBoundary = Math.max(0, Math.min(frameLength, liveRegionStart ?? frameLength));
+		let frameLength = rawFrame.length;
 		// A mutable barrier protects finalized rows *below* it from entering the
 		// logical committed seam. For a root-level live segment that boundary is
 		// the segment's end: sibling rows after it stay viewport-local while the
@@ -3153,6 +3168,36 @@ export class TUI extends Container {
 			liveCommitBoundary = liveRegionSegment.start + liveRegionSegment.rowCount;
 		}
 		const commitCeiling = Math.max(0, Math.min(frameLength, liveCommitBoundary ?? frameLength));
+		// A live region that outgrows the viewport strands the rows between the
+		// commit ceiling and the window: history may not take them (the block
+		// still rewrites them) and the screen has no room for them. Emitting them
+		// anyway is what leaves a running card's header in scrollback with the
+		// finished card appended below it. A block that opts into clipping drops
+		// those rows from the frame instead, so the seam and the window stay
+		// adjacent and the block reaches history exactly once, in its final form.
+		let clippedRows = 0;
+		if (liveRegionSegment !== undefined && clipsNativeScrollbackLiveRegion(liveRegionSegment.component)) {
+			// Never drop a row the terminal already holds: the ceiling may retract
+			// below the seam, and scrollback cannot give those rows back.
+			const clipFrom = Math.max(commitCeiling, this.#committedRows);
+			const strandedRows = frameLength - height - clipFrom;
+			if (strandedRows > 0) {
+				clippedRows = strandedRows;
+				rawFrame = [...rawFrame.slice(0, clipFrom), ...rawFrame.slice(clipFrom + strandedRows)];
+				frameLength = rawFrame.length;
+			}
+		}
+		// Clipping renumbers every row below the cut, and restoring those rows
+		// renumbers them back. Prepared-row reuse is indexed by frame row, so any
+		// change in the clip count invalidates the compose's reported change range
+		// from the seam down; without this the viewport paints pre-clip rows.
+		const clipLifted = clippedRows === 0 && this.#previousClippedRows > 0;
+		this.#previousClippedRows = clippedRows;
+		if (clippedRows > 0 || clipLifted) {
+			this.#composedFrameChangedFrom = Math.min(this.#composedFrameChangedFrom, this.#committedRows);
+			this.#composedFrameChangedTo = frameLength;
+		}
+		const finalBoundary = Math.max(0, Math.min(frameLength, liveRegionStart ?? frameLength));
 
 		let prevWindowTop = this.#windowTopRow;
 		const prevHardwareCursorRow = this.#hardwareCursorRow;

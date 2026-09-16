@@ -299,6 +299,7 @@ const TODO_ERROR_REMINDER_TYPE = "todo-error-reminder";
 import { LoopGuards, type StreamGuardsHost } from "./stream-guards";
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
+import { createTtsrJudge } from "./ttsr-judge";
 
 const POST_PROMPT_DRAIN_TIMEOUT_MS = 5_000;
 
@@ -1074,6 +1075,12 @@ export class AgentSession {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			settings: this.settings,
+			createJudge: () =>
+				createTtsrJudge({
+					settings: this.settings,
+					registry: this.#modelRegistry,
+					sessionId: () => this.sessionId,
+				}),
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			schedulePostPromptTask: (task, options) => this.#schedulePostPromptTask(task, options),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
@@ -2097,7 +2104,7 @@ export class AgentSession {
 						"priority",
 					);
 				}
-				this.#ttsr.onAssistantMessageEnd(assistantMsg);
+				await this.#ttsr.onAssistantMessageEnd(assistantMsg);
 				await this.#recovery.onAssistantSettledSuccessfully(assistantMsg);
 
 				this.#modelRegistry.authStorage.recordObservedUsage({
@@ -2644,6 +2651,7 @@ export class AgentSession {
 	}
 
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
+		await this.#ttsr.beforeToolCall(ctx);
 		const runner = this.#extensionRunner;
 		if (!runner?.hasHandlers("tool_call")) return undefined;
 		const metadata = ctx.toolCall.providerMetadata;

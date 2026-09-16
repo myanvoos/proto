@@ -1,10 +1,10 @@
 ---
 description: "Use the standard library slices and maps packages instead of golang.org/x/exp/{slices,maps}"
-condition:
-  - '"golang.org/x/exp/slices"'
-  - '"golang.org/x/exp/maps"'
 scope: "tool:bash"
 interruptMode: never
+match:
+  regex: ['"golang.org/x/exp/slices"', '"golang.org/x/exp/maps"']
+  in: [code, string]
 ---
 
 Go 1.21: `golang.org/x/exp/slices` and `golang.org/x/exp/maps` → stdlib `slices` and `maps`. New code: stdlib imports, not experimental.

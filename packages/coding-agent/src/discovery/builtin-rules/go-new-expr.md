@@ -2,9 +2,12 @@
 description: "Use new(expr) for pointer-to-value helpers instead of `func ptr[T any](v T) *T { return &v }` (Go 1.26)"
 interruptMode: never
 scope: "tool:bash"
-astCondition:
-  - "func $F($V $T) *$T { return &$V }"
-  - "func $F[$$$TP]($V $T) *$T { return &$V }"
+match:
+  all:
+    - lang: [go]
+    - ast:
+      - "func $F($V $T) *$T { return &$V }"
+      - "func $F[$$$TP]($V $T) *$T { return &$V }"
 ---
 
 Go 1.26: `new(expr)` allocates, stores `expr`, returns `*T`; replaces pointer-value helpers and `x := v; p := &x`.

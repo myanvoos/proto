@@ -1,8 +1,17 @@
 ---
 description: "Do not use `await import()` — use static imports unless dynamic loading is unavoidable"
-condition: "await import\\("
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
+  then:
+    regex: 'await import\('
+    in: code
+  else:
+    all:
+      - regex: 'await import\('
+        in: [code, string]
+      - llm: "Does this content actually call `await import(...)` to load a module, rather than quoting or discussing dynamic imports?"
 ---
 
 Use static imports for modules known at author time. Reach for `await import()` only when the module specifier is genuinely runtime-selected.

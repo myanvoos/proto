@@ -1,11 +1,17 @@
 ---
 description: Do not use real timers (Bun.sleep, setTimeout, setInterval) in tests — drive time with fake timers instead
-condition:
-  - "Bun\\.sleep\\("
-  - "\\bsetInterval\\("
-  - "\\bsetTimeout\\("
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [ts, tsx, mts, cts, js, jsx, mjs, cjs] }
+  then:
+    regex: ["Bun\\.sleep\\(", "\\bsetInterval\\(", "\\bsetTimeout\\("]
+    in: code
+  else:
+    all:
+      - regex: ["Bun\\.sleep\\(", "\\bsetInterval\\(", "\\bsetTimeout\\("]
+        in: [code, string]
+      - llm: "Does this content actually call a real timer (Bun.sleep, setTimeout, setInterval) inside test code, rather than quoting or discussing timers?"
 ---
 
 **Avoid real wall-clock timers in test files.** `Bun.sleep(...)`, `setTimeout(...)`, and `setInterval(...)` bind duration to real time → fixed latency each invocation; CI pays every run. “Long enough” sleeps guess at and mask races; under load, races resurface and flake. Fixed waits hide the awaited condition, so failures point to a timeout, not the cause.

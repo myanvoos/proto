@@ -43,6 +43,18 @@ class TrackedBlock implements Component {
 	}
 }
 
+/**
+ * A live block that streams append-only rows, like an assistant reply: every
+ * row but the one still being written is byte-final and may enter history. A
+ * plain `TrackedBlock` models the other kind of live block — a tool card, which
+ * redraws rows it already emitted and therefore settles nothing until it ends.
+ */
+class SettlingBlock extends TrackedBlock {
+	getTranscriptBlockSettledRows(): number {
+		return Math.max(0, this.lines.length - 1);
+	}
+}
+
 class CaptureTerminal implements Terminal {
 	columns = 20;
 	rows = 4;
@@ -262,12 +274,15 @@ test("a live run pins before a finalized trailing tail", () => {
 
 	expect(transcript.render(40)).toEqual(["history", "", "live-0", "", "tail-0", "tail-1"]);
 	expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
-	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(3);
+	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(2);
 
 	live.setLines(["live-0", "live-1"], false);
 	expect(transcript.render(40)).toEqual(["history", "", "live-0", "live-1", "", "tail-0", "tail-1"]);
 	expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
-	expect(transcript.getNativeScrollbackLiveRegionPinnedStart()).toBe(4);
+	expect(
+		transcript.getNativeScrollbackLiveRegionPinnedStart(),
+		"a live block that settles nothing keeps the boundary at its first row as it grows",
+	).toBe(2);
 });
 
 test("a reply crosses the seam while an earlier displaceable block remains live", () => {
@@ -275,7 +290,7 @@ test("a reply crosses the seam while an earlier displaceable block remains live"
 	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
 	const transcript = new TranscriptContainer();
 	const poll = new PinnedDisplaceableBlock(["polling"], false);
-	const reply = new TrackedBlock([], false);
+	const reply = new SettlingBlock([], false);
 	transcript.addChild(poll);
 	transcript.addChild(reply);
 	tui.addChild(transcript);
@@ -313,13 +328,13 @@ test("a completed tall tool block remains in scrollback while the next reply str
 	}
 	expect(
 		tool.committedRows,
-		"the tool head crosses the seam instead of entering a hidden live window",
-	).toBeGreaterThan(0);
+		"a card that still redraws itself puts nothing in scrollback the terminal could not repaint",
+	).toBe(0);
 
 	const result = Array.from({ length: 9 }, (_value, index) => `tool-result-${index}`);
 	tool.setLines(result, true);
 	tui.requestRender(true);
-	const reply = new TrackedBlock([], false);
+	const reply = new SettlingBlock([], false);
 	transcript.addChild(reply);
 	const response = Array.from({ length: 12 }, (_value, index) => `reply-${index}`);
 	for (let count = 1; count <= response.length; count++) {
@@ -331,7 +346,15 @@ test("a completed tall tool block remains in scrollback while the next reply str
 	const resultStart = lines.indexOf(result[0]!);
 	expect(resultStart, "the settled tool block remains in native scrollback").toBeGreaterThanOrEqual(0);
 	expect(lines.slice(resultStart, resultStart + result.length)).toEqual(result);
-	for (const row of response) expect(lines).toContain(row);
+	expect(
+		lines.filter(line => line.startsWith("tool-preview-")),
+		"the running form of the card never reaches scrollback, so it cannot survive next to the finished one",
+	).toEqual([]);
+	expect(
+		lines.filter(line => line === result[0]),
+		"the finished card is appended once rather than resprayed",
+	).toEqual([result[0]!]);
+	for (const row of response.slice(0, -1)) expect(lines).toContain(row);
 	expect(lines.slice(-2)).toEqual(["todo", "editor"]);
 	tui.stop();
 });

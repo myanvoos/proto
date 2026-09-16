@@ -2,8 +2,10 @@
 description: "Use for i := range n instead of the C-style for i := 0; i < n; i++ loop (Go 1.22)"
 interruptMode: never
 scope: "tool:bash"
-astCondition:
-  - "for $I := 0; $I < $N; $I++ { $$$BODY }"
+match:
+  all:
+    - lang: [go]
+    - ast: "for $I := 0; $I < $N; $I++ { $$$BODY }"
 ---
 
 Go 1.22: `for` ranges integers. For `i := 0; i < n; i++`, prefer `for i := range n`; if index unused, `for range n`.

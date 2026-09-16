@@ -1,11 +1,17 @@
 ---
 description: Use parking_lot instead of std::sync for Mutex/RwLock
-condition:
-  - "\\.lock\\(\\)\\.unwrap\\(\\)"
-  - "\\.read\\(\\)\\.unwrap\\(\\)"
-  - "\\.write\\(\\)\\.unwrap\\(\\)"
 scope: "tool:bash"
 interruptMode: never
+match:
+  if: { lang: [rs, rust] }
+  then:
+    regex: ["\\.lock\\(\\)\\.unwrap\\(\\)", "\\.read\\(\\)\\.unwrap\\(\\)", "\\.write\\(\\)\\.unwrap\\(\\)"]
+    in: code
+  else:
+    all:
+      - regex: ["\\.lock\\(\\)\\.unwrap\\(\\)", "\\.read\\(\\)\\.unwrap\\(\\)", "\\.write\\(\\)\\.unwrap\\(\\)"]
+        in: [code, string]
+      - llm: "Does this content actually call .lock().unwrap(), .read().unwrap(), or .write().unwrap() on a std::sync lock, rather than quoting or discussing that pattern?"
 ---
 
 Use `parking_lot::{Mutex, RwLock}` instead of `std::sync::{Mutex, RwLock}` when code immediately unwraps lock results.

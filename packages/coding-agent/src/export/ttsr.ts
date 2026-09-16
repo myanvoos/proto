@@ -1,8 +1,19 @@
 import * as path from "node:path";
-import { AstMatchStrictness, astMatch } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
-import { compileRuleCondition, type Rule } from "../capability/rule";
+import type { Rule } from "../capability/rule";
 import type { TtsrSettings } from "../config/settings";
+import {
+	compileLegacyProgram,
+	compileMatchProgram,
+	evaluateProgram,
+	type JudgeFn,
+	MatchContext,
+	type MatchEvidence,
+	type MatchProgram,
+	matchProgram,
+	type ToolCallRecord,
+} from "./ttsr-matcher";
+import { matchesPathGlob, resolveTargetPaths, type TargetPath } from "./ttsr-paths";
 
 export type TtsrMatchSource = "text" | "thinking" | "tool";
 
@@ -14,6 +25,31 @@ export interface TtsrMatchContext {
 	filePaths?: string[];
 
 	streamKey?: string;
+
+	/** Session directory; target paths and `under:`/`outside:` roots resolve against it. */
+	cwd?: string;
+
+	/** Answers `llm:` leaves. Without one they settle as "no match". */
+	judge?: JudgeFn;
+
+	/** The buffer is final. `llm:` leaves only resolve against settled buffers. */
+	settled?: boolean;
+
+	/** The session's earlier tool calls, for `did:` leaves; read only when one is evaluated. */
+	history?: () => readonly ToolCallRecord[];
+	/** Cancels in-flight `llm:` judges when the turn they belong to ends. */
+	signal?: AbortSignal;
+}
+
+/** A rule that fired, with the buffer spans that tripped it. */
+export interface TtsrMatch {
+	rule: Rule;
+	evidence: MatchEvidence;
+}
+
+export interface TtsrRuleEntry {
+	rule: Rule;
+	program: MatchProgram;
 }
 
 interface ToolScope {
@@ -31,9 +67,7 @@ interface TtsrScope {
 
 interface TtsrEntry {
 	rule: Rule;
-	conditions: RegExp[];
-
-	astConditions: string[];
+	program: MatchProgram;
 	scope: TtsrScope;
 	globalPathGlobs?: Bun.Glob[];
 }
@@ -65,7 +99,7 @@ export class TtsrManager {
 	readonly #injectionRecords = new Map<string, InjectionRecord>();
 	readonly #buffers = new Map<string, string>();
 
-	readonly #lastAstSnapshots = new Map<string, string>();
+	readonly #lastAsyncSnapshots = new Map<string, string>();
 	#messageCount = 0;
 	#canMatchText = false;
 	#canMatchThinking = false;
@@ -86,23 +120,6 @@ export class TtsrManager {
 
 		const gap = this.#messageCount - record.lastInjectedAt;
 		return gap >= this.#settings.repeatGap;
-	}
-
-	#compileConditions(rule: Rule): RegExp[] {
-		const compiled: RegExp[] = [];
-		for (const pattern of rule.condition ?? []) {
-			try {
-				compiled.push(compileRuleCondition(pattern));
-			} catch (error) {
-				logger.warn("TTSR condition has invalid regex pattern, skipping condition", {
-					ruleName: rule.name,
-					pattern,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		}
-
-		return compiled;
 	}
 
 	#compileGlobalPathGlobs(globs: Rule["globs"]): Bun.Glob[] | undefined {
@@ -215,36 +232,13 @@ export class TtsrManager {
 		return toolName ? `tool:${toolName}` : "tool";
 	}
 
-	#normalizePath(pathValue: string): string {
-		return pathValue.replaceAll("\\", "/");
-	}
-
-	#matchesGlob(glob: Bun.Glob, filePaths: string[] | undefined): boolean {
-		if (!filePaths || filePaths.length === 0) {
-			return false;
-		}
-		for (const filePath of filePaths) {
-			const normalized = this.#normalizePath(filePath);
-			if (glob.match(normalized)) {
-				return true;
-			}
-			const slashIndex = normalized.lastIndexOf("/");
-			const basename = slashIndex === -1 ? normalized : normalized.slice(slashIndex + 1);
-			if (basename !== normalized && glob.match(basename)) {
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	#matchesGlobalPaths(entry: TtsrEntry, context: TtsrMatchContext): boolean {
+	#matchesGlobalPaths(entry: TtsrEntry, targets: readonly TargetPath[]): boolean {
 		if (!entry.globalPathGlobs || entry.globalPathGlobs.length === 0) {
 			return true;
 		}
 
 		for (const glob of entry.globalPathGlobs) {
-			if (this.#matchesGlob(glob, context.filePaths)) {
+			if (matchesPathGlob(glob, targets)) {
 				return true;
 			}
 		}
@@ -252,7 +246,7 @@ export class TtsrManager {
 		return false;
 	}
 
-	#matchesScope(entry: TtsrEntry, context: TtsrMatchContext): boolean {
+	#matchesScope(entry: TtsrEntry, context: TtsrMatchContext, targets: readonly TargetPath[]): boolean {
 		if (context.source === "text") {
 			return entry.scope.allowText;
 		}
@@ -270,7 +264,7 @@ export class TtsrManager {
 			if (toolScope.toolName && toolScope.toolName !== toolName) {
 				continue;
 			}
-			if (toolScope.pathGlob && !this.#matchesGlob(toolScope.pathGlob, context.filePaths)) {
+			if (toolScope.pathGlob && !matchesPathGlob(toolScope.pathGlob, targets)) {
 				continue;
 			}
 			return true;
@@ -279,14 +273,38 @@ export class TtsrManager {
 		return false;
 	}
 
-	#matchesCondition(entry: TtsrEntry, streamBuffer: string): boolean {
-		for (const condition of entry.conditions) {
-			condition.lastIndex = 0;
-			if (condition.test(streamBuffer)) {
-				return true;
+	/** Candidate entries for this buffer: eligible to re-trigger, in scope, and path-gated. */
+	#candidates(context: TtsrMatchContext, targets: readonly TargetPath[], asyncOnly: boolean): TtsrEntry[] {
+		const lang = asyncOnly ? deriveLang(context.filePaths) : undefined;
+		const judgeable = asyncOnly && context.settled === true;
+		const candidates: TtsrEntry[] = [];
+		for (const [name, entry] of this.#rules) {
+			// An AST leaf needs a language to parse; a judge leaf needs a settled buffer.
+			if (asyncOnly && !(entry.program.needsJudge && judgeable) && !(entry.program.needsAst && lang)) continue;
+			if (
+				!this.#canTrigger(name) ||
+				!this.#matchesScope(entry, context, targets) ||
+				!this.#matchesGlobalPaths(entry, targets)
+			) {
+				continue;
 			}
+			candidates.push(entry);
 		}
-		return false;
+		return candidates;
+	}
+
+	#context(buffer: string, context: TtsrMatchContext): MatchContext {
+		return new MatchContext({
+			text: buffer,
+			source: context.source,
+			lang: deriveLang(context.filePaths),
+			filePaths: context.filePaths,
+			toolName: context.toolName,
+			cwd: context.cwd,
+			judge: context.judge,
+			signal: context.signal,
+			history: context.history,
+		});
 	}
 
 	addRule(rule: Rule): boolean {
@@ -297,9 +315,14 @@ export class TtsrManager {
 			return false;
 		}
 
-		const conditions = this.#compileConditions(rule);
-		const astConditions = (rule.astCondition ?? []).map(pattern => pattern.trim()).filter(p => p.length > 0);
-		if (conditions.length === 0 && astConditions.length === 0) {
+		const compiled =
+			rule.match !== undefined
+				? compileMatchProgram(rule.match, rule.name)
+				: compileLegacyProgram(rule.condition, rule.astCondition);
+		for (const error of compiled.errors) {
+			logger.warn("TTSR condition failed to compile, skipping it", { ruleName: rule.name, error });
+		}
+		if (!compiled.program) {
 			return false;
 		}
 
@@ -314,8 +337,7 @@ export class TtsrManager {
 		const globalPathGlobs = this.#compileGlobalPathGlobs(rule.globs);
 		this.#rules.set(rule.name, {
 			rule,
-			conditions,
-			astConditions,
+			program: compiled.program,
 			scope,
 			globalPathGlobs,
 		});
@@ -324,8 +346,7 @@ export class TtsrManager {
 
 		logger.debug("TTSR rule registered", {
 			ruleName: rule.name,
-			conditions: rule.condition,
-			astConditions: rule.astCondition,
+			condition: compiled.program.description,
 			scope: rule.scope,
 			globs: rule.globs,
 		});
@@ -333,7 +354,7 @@ export class TtsrManager {
 		return true;
 	}
 
-	checkDelta(delta: string, context: TtsrMatchContext): Rule[] {
+	checkDelta(delta: string, context: TtsrMatchContext): TtsrMatch[] {
 		if (context.source === "text" && !this.#canMatchText) {
 			return [];
 		}
@@ -346,126 +367,98 @@ export class TtsrManager {
 		return this.#matchBuffer(nextBuffer, context);
 	}
 
-	checkSnapshot(snapshot: string, context: TtsrMatchContext): Rule[] {
+	checkSnapshot(snapshot: string, context: TtsrMatchContext): TtsrMatch[] {
 		const bufferKey = this.#bufferKey(context);
 		this.#buffers.set(bufferKey, snapshot);
 		return this.#matchBuffer(snapshot, context);
 	}
 
-	#deriveLang(filePaths: string[] | undefined): string | undefined {
-		for (const filePath of filePaths ?? []) {
-			const ext = path.extname(this.#normalizePath(filePath));
-			if (ext.length > 1) {
-				return ext.slice(1).toLowerCase();
-			}
-		}
-		return undefined;
-	}
-
-	async checkAstSnapshot(snapshot: string, context: TtsrMatchContext): Promise<Rule[]> {
-		if (!this.#settings.enabled || context.source !== "tool") {
+	/**
+	 * Resolve the conditions that cannot settle synchronously — `ast:` leaves
+	 * against a reconstructed source snapshot, `llm:` leaves against the judge.
+	 * Conditions that need neither already settled in `checkSnapshot`.
+	 */
+	async checkAsyncSnapshot(snapshot: string, context: TtsrMatchContext): Promise<TtsrMatch[]> {
+		if (!this.#settings.enabled) {
 			return [];
 		}
 
-		const lang = this.#deriveLang(context.filePaths);
-		if (!lang) {
-			return [];
-		}
-
-		const candidates: TtsrEntry[] = [];
-		for (const [name, entry] of this.#rules) {
-			if (entry.astConditions.length === 0) {
-				continue;
-			}
-			if (
-				!this.#canTrigger(name) ||
-				!this.#matchesScope(entry, context) ||
-				!this.#matchesGlobalPaths(entry, context)
-			) {
-				continue;
-			}
-			candidates.push(entry);
-		}
+		const targets = resolveTargetPaths(context.filePaths, context.cwd);
+		const candidates = this.#candidates(context, targets, true);
 		if (candidates.length === 0) {
 			return [];
 		}
 
-		const bufferKey = this.#bufferKey(context);
-		if (this.#lastAstSnapshots.get(bufferKey) === snapshot) {
+		// The streaming and settled passes resolve different leaves, so the settled
+		// pass must not be skipped just because the stream already saw this buffer.
+		const resolveJudge = context.settled === true;
+		const bufferKey = `${this.#bufferKey(context)}\u0000${resolveJudge ? "settled" : "stream"}`;
+		if (this.#lastAsyncSnapshots.get(bufferKey) === snapshot) {
 			return [];
 		}
-		this.#lastAstSnapshots.set(bufferKey, snapshot);
+		this.#lastAsyncSnapshots.set(bufferKey, snapshot);
 
-		const matches: Rule[] = [];
+		const ctx = this.#context(snapshot, context);
+		const matches: TtsrMatch[] = [];
 		for (const entry of candidates) {
-			if (await this.#astConditionsMatch(entry.astConditions, snapshot, lang)) {
-				matches.push(entry.rule);
-				logger.debug("TTSR ast condition matched", {
-					ruleName: entry.rule.name,
-					astConditions: entry.rule.astCondition,
-					toolName: context.toolName,
-					filePaths: context.filePaths,
-				});
-			}
+			const evidence = await matchProgram(entry.program, ctx, { resolveJudge });
+			if (!evidence) continue;
+			matches.push({ rule: entry.rule, evidence });
+			logger.debug("TTSR async condition matched", {
+				ruleName: entry.rule.name,
+				condition: entry.program.description,
+				toolName: context.toolName,
+				filePaths: context.filePaths,
+			});
 		}
 		return matches;
 	}
 
-	async #astConditionsMatch(patterns: string[], source: string, lang: string): Promise<boolean> {
-		try {
-			const result = await astMatch({
-				patterns,
-				source,
-				lang,
-				strictness: AstMatchStrictness.Smart,
-				limit: 1,
-			});
-			return result.totalMatches > 0;
-		} catch (error) {
-			logger.warn("TTSR ast match failed, treating as no match", {
-				patterns,
-				lang,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return false;
-		}
-	}
-
-	hasAstRules(): boolean {
+	/** Whether any registered rule has a condition that only an async pass can settle. */
+	hasAsyncRules(): boolean {
 		if (!this.#settings.enabled) {
 			return false;
 		}
 		for (const entry of this.#rules.values()) {
-			if (entry.astConditions.length > 0) {
+			if (entry.program.needsAst || entry.program.needsJudge) {
 				return true;
 			}
 		}
 		return false;
 	}
 
-	#matchBuffer(buffer: string, context: TtsrMatchContext): Rule[] {
+	/** Whether any registered rule asks a model judge, which only settled buffers resolve. */
+	hasJudgeRules(): boolean {
+		if (!this.#settings.enabled) {
+			return false;
+		}
+		for (const entry of this.#rules.values()) {
+			if (entry.program.needsJudge) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	#matchBuffer(buffer: string, context: TtsrMatchContext): TtsrMatch[] {
 		if (!this.#settings.enabled) {
 			return [];
 		}
-		const matches: Rule[] = [];
-		for (const [name, entry] of this.#rules) {
-			if (!this.#canTrigger(name)) {
-				continue;
-			}
-			if (!this.#matchesScope(entry, context)) {
-				continue;
-			}
-			if (!this.#matchesGlobalPaths(entry, context)) {
-				continue;
-			}
-			if (!this.#matchesCondition(entry, buffer)) {
-				continue;
-			}
+		const targets = resolveTargetPaths(context.filePaths, context.cwd);
+		const candidates = this.#candidates(context, targets, false);
+		if (candidates.length === 0) {
+			return [];
+		}
+		const ctx = this.#context(buffer, context);
+		const matches: TtsrMatch[] = [];
+		for (const entry of candidates) {
+			const evidence = evaluateProgram(entry.program, ctx);
+			if (!evidence) continue;
 
-			matches.push(entry.rule);
+			matches.push({ rule: entry.rule, evidence });
 			logger.debug("TTSR condition matched", {
-				ruleName: name,
-				conditions: entry.rule.condition,
+				ruleName: entry.rule.name,
+				condition: entry.program.description,
 				source: context.source,
 				toolName: context.toolName,
 				filePaths: context.filePaths,
@@ -475,7 +468,7 @@ export class TtsrManager {
 		return matches;
 	}
 
-	markInjected(rulesToMark: Rule[]): void {
+	markInjected(rulesToMark: readonly Rule[]): void {
 		this.markInjectedByNames(rulesToMark.map(rule => rule.name));
 	}
 
@@ -514,7 +507,7 @@ export class TtsrManager {
 
 	resetBuffer(): void {
 		this.#buffers.clear();
-		this.#lastAstSnapshots.clear();
+		this.#lastAsyncSnapshots.clear();
 	}
 
 	hasRules(): boolean {
@@ -528,6 +521,11 @@ export class TtsrManager {
 		return Array.from(this.#rules.values(), entry => entry.rule);
 	}
 
+	/** Registered rules with their compiled conditions, for `proto ttsr list`/`scan`. */
+	getEntries(): TtsrRuleEntry[] {
+		return Array.from(this.#rules.values(), entry => ({ rule: entry.rule, program: entry.program }));
+	}
+
 	incrementMessageCount(): void {
 		this.#messageCount++;
 	}
@@ -539,4 +537,15 @@ export class TtsrManager {
 	getSettings(): Required<TtsrSettings> {
 		return this.#settings;
 	}
+}
+
+/** Language for grammar selection and lexical classification, from the first extension-bearing path. */
+export function deriveLang(filePaths: readonly string[] | undefined): string | undefined {
+	for (const filePath of filePaths ?? []) {
+		const ext = path.extname(filePath.replaceAll("\\", "/"));
+		if (ext.length > 1) {
+			return ext.slice(1).toLowerCase();
+		}
+	}
+	return undefined;
 }
