@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Workers now show their label, not just the raw `worker-…` id, across the UI: the `/jobs` background list, orchestrate spawn/kill cards, worker screens, and the `history://` agent index and completions. The id remains the routing address everywhere.
+
 ## [18.1.21] - 2026-09-16
 
 ### Added

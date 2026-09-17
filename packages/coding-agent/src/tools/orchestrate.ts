@@ -498,12 +498,14 @@ function tvScreen(
 		spinnerFrame,
 	);
 	const badge = formatBadge(screen.agent, stateToColor(screen.state), uiTheme);
-	const idText =
+	const nameText =
 		live && options.spinnerFrame !== undefined && shimmerEnabled()
-			? shimmerText(screen.id, uiTheme)
-			: uiTheme.fg(live ? "accent" : "toolOutput", screen.id);
-	const labelText = uiTheme.fg("muted", screen.label ?? screen.id);
-	const headParts = [icon, badge, idText, labelText, uiTheme.fg("dim", settledStatus ?? screen.state)];
+			? shimmerText(screen.label ?? screen.id, uiTheme)
+			: uiTheme.fg(live ? "accent" : "toolOutput", screen.label ?? screen.id);
+	const idText = screen.label && screen.label !== screen.id ? uiTheme.fg("dim", screen.id) : undefined;
+	const headParts = [icon, badge, nameText];
+	if (idText) headParts.push(idText);
+	headParts.push(uiTheme.fg("dim", settledStatus ?? screen.state));
 	const turnsLabel = `${screen.turns}t${screen.queued > 0 ? `+${screen.queued}q` : ""}`;
 	headParts.push(uiTheme.fg("muted", turnsLabel));
 	if (screen.turnStartedAt !== undefined) {
@@ -630,9 +632,14 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 
 			if (composerOp) {
 				const message = op === "spawn" ? (args?.prompt ?? "") : (args?.message ?? "");
+				const spawnName = details.spawned?.label ?? args?.name ?? details.spawned?.id ?? "";
+				const spawnId =
+					details.spawned?.id && spawnName !== details.spawned.id
+						? ` ${uiTheme.fg("dim", frameText(details.spawned.id, 24))}`
+						: "";
 				const target =
 					op === "spawn"
-						? `${uiTheme.fg("muted", "orchestrate spawn")} ${formatBadge(details.spawned?.agent ?? args?.agent ?? "worker", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(details.spawned?.id ?? args?.name ?? "", 40))}`
+						? `${uiTheme.fg("muted", "orchestrate spawn")} ${formatBadge(details.spawned?.agent ?? args?.agent ?? "worker", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(spawnName, 40))}${spawnId}`
 						: `${uiTheme.fg("muted", "orchestrate send →")} ${uiTheme.fg("accent", frameText(args?.worker ?? "?", 40))}`;
 				const ack =
 					op === "spawn"
@@ -659,7 +666,7 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 				const header = renderStatusLine(
 					{
 						icon: "done",
-						title: `orchestrate kill ${frameText(details.killed?.id ?? args?.worker ?? "?", 40)}${killedNote}`,
+						title: `orchestrate kill ${frameText(details.killed?.label ?? details.killed?.id ?? args?.worker ?? "?", 40)}${killedNote}`,
 					},
 					uiTheme,
 				);

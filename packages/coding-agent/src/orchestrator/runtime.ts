@@ -1729,7 +1729,7 @@ export class OrchestratorRuntime {
 		});
 		const jobId = manager.register(
 			"worker",
-			`worker ${record.agentName} ${record.id}: ${firstLine(message, 60)}`,
+			`${record.label} (${record.id}): ${firstLine(message, 60)}`,
 			async ({ jobId: ownJobId, signal, markRunning }) => {
 				let acquired = false;
 				try {
@@ -1758,7 +1758,7 @@ export class OrchestratorRuntime {
 									id: record.id,
 									agent: this.#workerAgent(record),
 									message,
-									description: `worker ${record.agentName}`,
+									description: `worker ${record.label}`,
 									modelRole: record.modelRole,
 									outputSchema: record.outputSchema,
 									outputSchemaMode: record.outputSchemaMode,

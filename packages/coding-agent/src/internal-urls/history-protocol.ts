@@ -18,6 +18,7 @@ function formatAgo(timestamp: number): string {
 
 interface IndexEntry {
 	id: string;
+	label: string;
 	status: string;
 	kind: string;
 	parent: string;
@@ -113,6 +114,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	async #renderIndex(refs: AgentRef[]): Promise<string> {
 		const entries: IndexEntry[] = refs.map(ref => ({
 			id: ref.id,
+			label: ref.displayName ?? "—",
 			status: ref.status,
 			kind: ref.kind,
 			parent: ref.parentId ?? "—",
@@ -123,7 +125,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		const disk = await sessionFilesFromDisk();
 		for (const id of disk.keys()) {
 			if (registered.has(id)) continue;
-			entries.push({ id, status: "on disk", kind: "—", parent: "—", lastActivity: "—" });
+			entries.push({ id, label: "—", status: "on disk", kind: "—", parent: "—", lastActivity: "—" });
 		}
 
 		const lines: string[] = ["# Agents", ""];
@@ -131,9 +133,11 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			lines.push("No agents registered.");
 			return `${lines.join("\n")}\n`;
 		}
-		lines.push("| id | status | kind | parent | last activity |", "|---|---|---|---|---|");
+		lines.push("| id | label | status | kind | parent | last activity |", "|---|---|---|---|---|---|");
 		for (const entry of entries) {
-			lines.push(`| ${entry.id} | ${entry.status} | ${entry.kind} | ${entry.parent} | ${entry.lastActivity} |`);
+			lines.push(
+				`| ${entry.id} | ${entry.label} | ${entry.status} | ${entry.kind} | ${entry.parent} | ${entry.lastActivity} |`,
+			);
 		}
 		lines.push("", "Read a transcript with `read history://<id>`.");
 		return `${lines.join("\n")}\n`;
@@ -147,7 +151,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			seen.add(ref.id);
 			completions.push({
 				value: ref.id,
-				description: `${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
+				description: `${ref.displayName ? `${ref.displayName} · ` : ""}${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
 			});
 		}
 		const disk = await sessionFilesFromDisk();
