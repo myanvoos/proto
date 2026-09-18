@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.22] - 2026-09-18
+
 ### Fixed
 
 - Corrected reasoning efforts and tokenizer metadata for dashed Gemini versions, unhyphenated GLM IDs, Claude Haiku IDs, and Venice's squished GPT version IDs.

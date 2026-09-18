@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.22] - 2026-09-18
+
 ### Fixed
 
 - Aborted empty-response retries now surface cancellation, result-only completions no longer retain streamed events, and GitHub Copilot retry backoff is jittered.

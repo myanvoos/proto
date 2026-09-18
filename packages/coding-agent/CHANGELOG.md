@@ -2,10 +2,7 @@
 
 ## [Unreleased]
 
-### Removed
-
-- Removed unused internal eval filesystem snapshot and environment setup helpers, JSON-RPC message framing, partial tool-abort handling, and grouped file output.
-- Removed unused test-only hooks from agent internals.
+## [18.1.22] - 2026-09-18
 
 ### Changed
 
@@ -41,6 +38,11 @@
 - Workers now show their label, not just the raw `worker-…` id, across the UI: the `/jobs` background list, orchestrate spawn/kill cards, worker screens, and the `history://` agent index and completions. The id remains the routing address everywhere.
 - Fixed the worker lifecycle GC test harness falsely reporting parked sessions as retained by carrying `WeakRef` targets across collection polls.
 - Fixed tool reads mishandling newline-terminated streams, malformed restored todos, stuck predicate waits, invalid PDF page members, literal tilde paths, and large SQLite/directory listings.
+
+### Removed
+
+- Removed unused internal eval filesystem snapshot and environment setup helpers, JSON-RPC message framing, partial tool-abort handling, and grouped file output.
+- Removed unused test-only hooks from agent internals.
 
 ## [18.1.21] - 2026-09-16
 

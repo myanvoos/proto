@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.22] - 2026-09-18
+
 ### Fixed
 
 - Scroll views now preserve the visible content row across terminal reflow and clamp safely when content shrinks.

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.22] - 2026-09-18
+
 ### Fixed
 
 - Fixed branch compaction emitting tool results without their owning assistant tool calls when the token budget split a pair.

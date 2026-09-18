@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.22] - 2026-09-18
+
 ### Fixed
 
 - Retry responses, temporary-directory cleanup, and rotating logs now stay bounded and recover cleanly at their configured limits.

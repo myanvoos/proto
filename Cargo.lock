@@ -1810,9 +1810,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.12"
+version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
+checksum = "ef25905e51abafe4dcea6c15fec58c57b601cdbd0ee53d22ea1d3016c587d39b"
 
 [[package]]
 name = "fixed_decimal"
@@ -2391,9 +2391,9 @@ checksum = "c9356095b4b41197bba32173600e1582792cda618f65d12f68e2e77d273413c5"
 
 [[package]]
 name = "html-to-markdown-rs"
-version = "3.14.0"
+version = "3.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "250c27ba332993f6972a03b1b7243fe087a94c3401318015fe0dde5e8ea1ccef"
+checksum = "74378da4ebf46106435d30d320eb5e81bfc69f6d3790100c25a61f0d7e606b83"
 dependencies = [
  "ahash",
  "astral-tl",
@@ -4402,7 +4402,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ast"
-version = "18.1.21"
+version = "18.1.22"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -4469,7 +4469,7 @@ dependencies = [
 
 [[package]]
 name = "pi-builtins"
-version = "18.1.21"
+version = "18.1.22"
 dependencies = [
  "ansi-width",
  "argmax",
@@ -4549,7 +4549,7 @@ dependencies = [
 
 [[package]]
 name = "pi-iso"
-version = "18.1.21"
+version = "18.1.22"
 dependencies = [
  "async-trait",
  "libc",
@@ -4560,7 +4560,7 @@ dependencies = [
 
 [[package]]
 name = "pi-natives"
-version = "18.1.21"
+version = "18.1.22"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4618,7 +4618,7 @@ dependencies = [
 
 [[package]]
 name = "pi-shell"
-version = "18.1.21"
+version = "18.1.22"
 dependencies = [
  "anyhow",
  "brush-core",
@@ -4640,7 +4640,7 @@ dependencies = [
 
 [[package]]
 name = "pi-walker"
-version = "18.1.21"
+version = "18.1.22"
 dependencies = [
  "dashmap",
  "globset",
@@ -6526,9 +6526,9 @@ checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.25"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab72a15cf68d77cb0987d3684aa8a45c5ef827e8cb49ee2f30bfd7ba2feb519f"
+checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 
 [[package]]
 name = "unicode-normalization"
