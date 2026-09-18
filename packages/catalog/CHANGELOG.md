@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected reasoning efforts and tokenizer metadata for dashed Gemini versions, unhyphenated GLM IDs, Claude Haiku IDs, and Venice's squished GPT version IDs.
+- Discovered zero-cost models and cache lanes now override stale nonzero catalog pricing.
+- Bounded model-family classification caches so long-lived processes do not retain every externally supplied model ID.
+
 ## [18.1.6] - 2026-09-12
 
 ### Changed

@@ -1,12 +1,22 @@
 import { buildModel } from "./build";
 import { readModelCache, writeModelCache } from "./model-cache";
 import { type GeneratedProvider, getBundledModels } from "./models";
+import { toModelSpec } from "./provider-models/bundled-references";
 import type { Api, Model, ModelCost, ModelSpec, Provider, TokenCost } from "./types";
 import { isRecord } from "./utils";
 import { collapseBuiltModelVariants } from "./variant-collapse";
 
 const DEFAULT_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const NON_AUTHORITATIVE_RETRY_MS = 5 * 60 * 1000;
+
+const VENICE_GPT_WIRE_VERSION_ALIASES: Readonly<Record<string, string>> = {
+	"52": "5.2",
+	"53": "5.3",
+	"54": "5.4",
+	"55": "5.5",
+	"56": "5.6",
+};
+const VENICE_GPT_WIRE_ID_PATTERN = /^openai-gpt-(\d{2})(?=$|-)/;
 
 export type ModelRefreshStrategy = "online" | "offline" | "online-if-uncached";
 
@@ -59,6 +69,31 @@ export function createModelManager<TApi extends Api = Api, TModelsDevPayload = u
 	};
 }
 
+function normalizeProviderModelSpec<TApi extends Api>(spec: ModelSpec<TApi>): ModelSpec<TApi> {
+	if (spec.provider !== "venice") return spec;
+	const match = VENICE_GPT_WIRE_ID_PATTERN.exec(spec.id);
+	const canonicalVersion = match ? VENICE_GPT_WIRE_VERSION_ALIASES[match[1]] : undefined;
+	if (!match || !canonicalVersion) return spec;
+
+	const { thinking: _staleThinking, ...unclassified } = spec;
+	return {
+		...unclassified,
+		id: `openai-gpt-${canonicalVersion}${spec.id.slice(match[0].length)}`,
+		requestModelId: spec.requestModelId ?? spec.id,
+	};
+}
+
+function buildProviderModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi> {
+	return buildModel(normalizeProviderModelSpec(spec));
+}
+
+function normalizeBundledModels<TApi extends Api>(models: readonly Model<TApi>[]): Model<TApi>[] {
+	return models.map(model => {
+		const normalized = normalizeProviderModelSpec(toModelSpec(model));
+		return normalized.id === model.id ? model : buildModel(normalized);
+	});
+}
+
 function passModelList<TApi extends Api>(value: unknown): Model<TApi>[] {
 	if (!Array.isArray(value)) {
 		return [];
@@ -68,7 +103,7 @@ function passModelList<TApi extends Api>(value: unknown): Model<TApi>[] {
 		if (item === null || typeof item !== "object" || typeof (item as { id: unknown }).id !== "string") {
 			continue;
 		}
-		out.push(buildModel(item as ModelSpec<TApi>));
+		out.push(buildProviderModel(item as ModelSpec<TApi>));
 	}
 	return out;
 }
@@ -125,7 +160,7 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 	const restorableHeaderFallback = options.restorableHeaderFallback;
 	const staticModels = options.staticModels
 		? passModelList<TApi>(options.staticModels)
-		: (getBundledModels(options.providerId as GeneratedProvider) as Model<TApi>[]);
+		: normalizeBundledModels(getBundledModels(options.providerId as GeneratedProvider) as Model<TApi>[]);
 	const cache = readModelCache<TApi>(cacheProviderId, ttlMs, now, dbPath);
 	const restoredCache = restoreCachedModelHeaders(
 		cache?.models ?? [],
@@ -412,7 +447,7 @@ function mergeDynamicModel<TApi extends Api>(existingModel: Model<TApi>, dynamic
 		: existingModel.reasoning || dynamicModel.reasoning;
 	const longContextCost = dynamicModel.cost.longContext ?? existingModel.cost.longContext;
 
-	return buildModel({
+	return buildProviderModel({
 		...existingModel,
 		...dynamicModel,
 		name: preferDiscoveryName(dynamicModel.name, existingModel.name, dynamicModel.id),
@@ -433,11 +468,9 @@ function mergeDynamicModel<TApi extends Api>(existingModel: Model<TApi>, dynamic
 	} as ModelSpec<TApi>);
 }
 
-function preferDiscoveryCost(discoveryCost: number, fallbackCost: number): number {
-	if (Number.isFinite(discoveryCost) && discoveryCost > 0) {
-		return discoveryCost;
-	}
-	return fallbackCost;
+function preferDiscoveryCost(discoveryCost: number | null | undefined, fallbackCost: number): number {
+	if (discoveryCost === null || discoveryCost === undefined) return fallbackCost;
+	return Number.isFinite(discoveryCost) && discoveryCost >= 0 ? discoveryCost : fallbackCost;
 }
 
 function preferDiscoveryName(discoveryName: string, fallbackName: string, modelId: string): string {
@@ -470,7 +503,7 @@ function normalizeModelList<TApi extends Api>(value: unknown): Model<TApi>[] {
 	const models: Model<TApi>[] = [];
 	for (const item of value) {
 		if (isModelLike(item)) {
-			models.push(buildModel(item as ModelSpec<TApi>));
+			models.push(buildProviderModel(item as ModelSpec<TApi>));
 		}
 	}
 	return models;

@@ -7,7 +7,7 @@ export type SemVer = {
 };
 
 export type GeminiKind = "pro" | "flash";
-export type AnthropicKind = "opus" | "sonnet" | "fable" | "mythos";
+export type AnthropicKind = "opus" | "sonnet" | "haiku" | "fable" | "mythos";
 export type OpenAIVariant = "base" | "codex" | "codex-max" | "codex-mini" | "codex-spark" | "mini" | "max" | "nano";
 export type GlmVariant = "base" | "air" | "turbo" | "flash" | "flashx" | "preview";
 
@@ -85,7 +85,7 @@ export const parseGeminiModel = parser((modelId): GeminiModel | null => {
 	if (modelId.endsWith(GEMINI_SUFFIX)) {
 		modelId = modelId.slice(0, -GEMINI_SUFFIX.length);
 	}
-	const match = /gemini-(\d+(?:\.\d+){0,2})-(pro|flash)\b/.exec(modelId);
+	const match = /gemini-(\d{1,2}(?:[.-]\d{1,2}){0,2})-(pro|flash)\b/.exec(modelId);
 	if (!match) {
 		return null;
 	}
@@ -97,10 +97,10 @@ export const parseGeminiModel = parser((modelId): GeminiModel | null => {
 });
 
 export const parseAnthropicModel = parser((modelId): AnthropicModel | null => {
-	const kindFirst = /claude-(opus|sonnet|fable|mythos)-(\d{1,2}(?:[.-]\d{1,2}){0,2})\b/.exec(modelId);
+	const kindFirst = /claude-(opus|sonnet|haiku|fable|mythos)-(\d{1,2}(?:[.-]\d{1,2}){0,2})\b/.exec(modelId);
 	const versionFirst = kindFirst
 		? null
-		: /claude-(\d{1,2}(?:[.-]\d{1,2}){0,2})-(opus|sonnet|fable|mythos)\b/.exec(modelId);
+		: /claude-(\d{1,2}(?:[.-]\d{1,2}){0,2})-(opus|sonnet|haiku|fable|mythos)\b/.exec(modelId);
 	const kind = kindFirst?.[1] ?? versionFirst?.[2];
 	const versionInput = kindFirst?.[2] ?? versionFirst?.[1];
 	if (!kind || !versionInput) {
@@ -137,7 +137,7 @@ export const parseOpenAIModel = parser((modelId): OpenAIModel | null => {
 });
 
 export const parseGlmModel = parser((modelId): GlmModel | null => {
-	const match = /glm-(\d{1,2}(?:\.\d+)?)(v)?(?:-(air|turbo|flashx|flash|preview))?\b/i.exec(modelId);
+	const match = /(?:^|[^a-z0-9])glm-?(\d{1,2}(?:\.\d+)?)(v)?(?:-(air|turbo|flashx|flash|preview))?\b/i.exec(modelId);
 	if (!match) {
 		return null;
 	}
@@ -158,11 +158,15 @@ export function isFableOrMythos(kind: AnthropicKind): boolean {
 }
 
 export function isAnthropicAdaptiveGenAtLeast(parsed: AnthropicModel, opusMin: "4.6" | "4.7" | "4.8"): boolean {
-	if (parsed.kind === "opus") {
-		return semverGte(parsed.version, opusMin);
+	switch (parsed.kind) {
+		case "opus":
+			return semverGte(parsed.version, opusMin);
+		case "sonnet":
+		case "haiku":
+		case "fable":
+		case "mythos":
+			return semverGte(parsed.version, "5");
 	}
-
-	return semverGte(parsed.version, "5");
 }
 
 function createSemVer(major: number, minor: number, patch = 0): SemVer {

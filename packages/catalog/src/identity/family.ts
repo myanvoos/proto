@@ -1,3 +1,4 @@
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import {
 	bareModelId,
 	isAnthropicAdaptiveGenAtLeast,
@@ -9,14 +10,15 @@ import {
 	semverGte,
 } from "./classify";
 
+const MAX_FAMILY_CLASSIFIER_CACHE_ENTRIES = 1_024;
+
 function memo<T>(fn: (modelId: string) => T): (modelId: string) => T {
-	const cache = new Map<string, T>();
+	const cache = new LRUCache<string, { value: T }>({ max: MAX_FAMILY_CLASSIFIER_CACHE_ENTRIES });
 	return (modelId: string) => {
-		if (cache.has(modelId)) {
-			return cache.get(modelId) as T;
-		}
+		const cached = cache.get(modelId);
+		if (cached) return cached.value;
 		const result = fn(modelId);
-		cache.set(modelId, result);
+		cache.set(modelId, { value: result });
 		return result;
 	};
 }
@@ -213,7 +215,8 @@ export const modelFamilyToken = memo((modelId: string): string => {
 
 export const anthropicModelSupportsThinking = memo((modelId: string): boolean => {
 	const parsed = parseAnthropicModel(bareModelId(modelId));
-	return parsed !== null && semverGte(parsed.version, "3.7");
+	if (parsed === null) return false;
+	return semverGte(parsed.version, parsed.kind === "haiku" ? "4.5" : "3.7");
 });
 
 export const supportsAdaptiveThinkingDisplay = memo((modelId: string): boolean => {
