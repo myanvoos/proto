@@ -69,7 +69,6 @@ test("rebuild reinserts a cached post-tool assistant segment before its next upd
 		showError: NOOP,
 		showWarning: NOOP,
 		showStatus: NOOP,
-		getUserMessageText: () => "",
 		editor: { setText: NOOP },
 		updatePendingMessagesDisplay: NOOP,
 		clearOptimisticUserMessage: NOOP,
@@ -167,6 +166,116 @@ test("rebuild reinserts a cached post-tool assistant segment before its next upd
 			message: assistant("after two"),
 		} as unknown as AgentSessionEvent);
 		expect(kinds(chatContainer)).toEqual(["assistant", "tool", "assistant"]);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+test("finishes a focused session when the unrelated main session is still streaming", async () => {
+	const chatContainer = new TranscriptContainer();
+	let loaderStopped = false;
+	const context = {
+		isInitialized: true,
+		init: async () => {},
+		ui: UI,
+		chatContainer,
+		pendingTools: new Map<string, ToolExecutionHandle>(),
+		settings: { get: () => false },
+		session: { isStreaming: true, isAborting: false },
+		viewSession: {
+			isStreaming: false,
+			isCompacting: false,
+			getContextUsage: () => ({ tokens: 0 }),
+		},
+		statusLine: { markActivityEnd: NOOP },
+		loadingAnimation: { stop: () => (loaderStopped = true) },
+		statusContainer: { disposeChildren: NOOP },
+		streamingComponent: undefined,
+		streamingMessage: undefined,
+		flushPendingCommandOutput: NOOP,
+		flushPendingBashComponents: NOOP,
+		editor: { getText: () => "" },
+		sessionManager: { getSessionName: () => undefined },
+	} as unknown as InteractiveModeContext;
+	const controller = new EventController(context);
+	try {
+		await controller.handleEvent({
+			type: "agent_end",
+			messages: [
+				{
+					role: "assistant",
+					content: [],
+					stopReason: "aborted",
+					api: "openai-completions",
+					provider: "test",
+					model: "test",
+					timestamp: 1,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			],
+			isTerminal: true,
+		});
+
+		expect(loaderStopped).toBe(true);
+		expect(context.loadingAnimation).toBeUndefined();
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+test("synthetic developer context the model acted on is invisible in the transcript during live streaming", async () => {
+	const chatContainer = new TranscriptContainer();
+	const context = {
+		isInitialized: true,
+		init: async () => {},
+		ui: UI,
+		chatContainer,
+		pendingTools: new Map<string, ToolExecutionHandle>(),
+		settings: { get: () => false },
+		viewSession: {
+			isStreaming: false,
+			extensionRunner: undefined,
+			retryAttempt: undefined,
+			getToolByName: () => undefined,
+			hasBuiltInTool: () => false,
+			sessionManager: { putBlobSync: NOOP },
+		},
+		toolOutputExpanded: false,
+		hideToolActivity: false,
+		effectiveHideThinkingBlock: false,
+		proseOnlyThinking: false,
+		transcriptMessageComponents: new WeakMap<object, Component>(),
+		statusLine: { invalidate: NOOP },
+		updateEditorBorderColor: NOOP,
+		lastAssistantUsage: undefined,
+		addMessageToChat: NOOP,
+	} as unknown as InteractiveModeContext;
+	const helpers = new UiHelpers(context);
+	context.addMessageToChat = helpers.addMessageToChat.bind(helpers);
+	const controller = new EventController(context);
+
+	try {
+		await controller.handleEvent({
+			type: "message_start",
+			message: {
+				role: "developer",
+				content: "Synthetic developer context\tthe model acted on is visible live.",
+				timestamp: 1,
+			},
+		} as unknown as AgentSessionEvent);
+		const rendered = Bun.stripANSI(chatContainer.render(160).join("\n"));
+		expect(rendered).toContain("Synthetic developer context");
+		expect(rendered).toContain("the model acted on is visible live.");
+		expect(rendered).not.toContain("\t");
 	} finally {
 		controller.dispose();
 		chatContainer.dispose();

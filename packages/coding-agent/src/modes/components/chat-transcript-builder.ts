@@ -22,6 +22,7 @@ import {
 	buildIrcMessageCard,
 	buildLaunchCompletionBlock,
 	buildMonitorEventBlock,
+	extractDisplayInputText,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
@@ -50,14 +51,6 @@ interface ChatTranscriptBuilderDeps {
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
 	requestRender: () => void;
-}
-
-function userMessageText(message: Extract<AgentMessage, { role: "user" }>): string {
-	if (typeof message.content === "string") return message.content;
-	return message.content
-		.filter((block): block is { type: "text"; text: string } => block.type === "text")
-		.map(block => block.text)
-		.join("");
 }
 
 export class ChatTranscriptBuilder {
@@ -221,7 +214,7 @@ export class ChatTranscriptBuilder {
 			case "developer": {
 				if (message.role === "user") this.#resolveWaitingPoll();
 				if (message.role === "user") this.#resolveTodoSnapshot();
-				const textContent = message.role === "user" ? userMessageText(message) : "";
+				const textContent = extractDisplayInputText(message);
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
 

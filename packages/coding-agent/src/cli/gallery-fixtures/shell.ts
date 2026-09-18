@@ -9,7 +9,7 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		args: {
 			command: "git status --short && git log --oneline -5",
 			cwd: "packages/coding-agent",
-			timeout: 30,
+			timeoutMs: 30_000,
 		},
 		result: {
 			content: [
@@ -122,7 +122,7 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 			name: "web",
 			application: "bun",
 			args: ["run", "dev"],
-			ready: { log: "Local:.*http", port: 5173, timeout: 30 },
+			ready: { log: "Local:.*http", port: 5173, timeoutMs: 30_000 },
 		},
 		result: {
 			content: [
@@ -160,7 +160,7 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 	fleet_logs: {
 		label: "Fleet logs",
 		renderer: "fleet",
-		args: { op: "logs", name: "comp-debug", lines: 100, follow: true, cursor: 233_512, timeout: 30 },
+		args: { op: "logs", name: "comp-debug", lines: 100, follow: true, cursor: 233_512, timeoutMs: 30_000 },
 		result: {
 			content: [
 				{

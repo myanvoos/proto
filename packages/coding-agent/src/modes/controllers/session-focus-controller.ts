@@ -68,13 +68,38 @@ export class SessionFocusController {
 		const gone = event.type === "removed";
 		const dead = event.type === "status_changed" && (event.ref.status === "parked" || event.ref.status === "aborted");
 		if (!gone && !dead) return;
-		void this.unfocus().then(() => {
-			this.ctx.showStatus(`Agent ${event.ref.id} is ${gone ? "gone" : event.ref.status}; returned to main session`);
-		});
+		void this.unfocus()
+			.then(() => {
+				this.ctx.showStatus(
+					`Agent ${event.ref.id} is ${gone ? "gone" : event.ref.status}; returned to main session`,
+				);
+			})
+			.catch(error => this.#recoverRegistryUnfocus(error))
+			.catch(error => {
+				this.ctx.showError(`Failed to restore the main session view: ${this.#errorMessage(error)}`);
+			});
+	}
+
+	async #recoverRegistryUnfocus(error: unknown): Promise<void> {
+		this.#focusedAgentId = undefined;
+		this.#attachedSession = undefined;
+		try {
+			await this.#attach(this.ctx.session);
+			this.ctx.showError(`Failed to return to the main session: ${this.#errorMessage(error)}`);
+		} catch (recoveryError) {
+			this.ctx.showError(
+				`Failed to return to the main session: ${this.#errorMessage(error)}; recovery failed: ${this.#errorMessage(recoveryError)}`,
+			);
+		}
+	}
+
+	#errorMessage(error: unknown): string {
+		return error instanceof Error ? error.message : String(error);
 	}
 
 	async #attach(target: AgentSession): Promise<void> {
 		this.ctx.unsubscribe?.();
+		this.ctx.unsubscribe = undefined;
 		this.ctx.clearTransientSessionUi();
 		const transcriptAnchor = this.ctx.eventController.resetTranscriptAnchors();
 

@@ -703,31 +703,31 @@ export function parseClaudePluginsRegistry(content: string): ClaudePluginsRegist
 
 export async function resolveActiveProjectRegistryPath(cwd: string): Promise<string | null> {
 	const homeDir = os.homedir();
+	const configDirName = getConfigDirName();
+	let gitCandidate: string | null = null;
 	let dir = path.resolve(cwd);
 	while (dir !== homeDir) {
-		try {
-			const stat = await fs.promises.stat(path.join(dir, getConfigDirName()));
-			if (stat.isDirectory()) {
-				return path.join(dir, getConfigDirName(), "plugins", "installed_plugins.json");
-			}
-		} catch {}
+		const entries = await readDirEntries(dir);
+		if (entries.some(entry => entry.name === configDirName)) {
+			try {
+				const stat = await fs.promises.stat(path.join(dir, configDirName));
+				if (stat.isDirectory()) {
+					return path.join(dir, configDirName, "plugins", "installed_plugins.json");
+				}
+			} catch {}
+		}
+		if (!gitCandidate && entries.some(entry => entry.name === ".git")) {
+			try {
+				await fs.promises.stat(path.join(dir, ".git"));
+				gitCandidate = path.join(dir, configDirName, "plugins", "installed_plugins.json");
+			} catch {}
+		}
 		const parent = path.dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
 	}
 
-	dir = path.resolve(cwd);
-	while (dir !== homeDir) {
-		try {
-			await fs.promises.stat(path.join(dir, ".git"));
-			return path.join(dir, getConfigDirName(), "plugins", "installed_plugins.json");
-		} catch {}
-		const parent = path.dirname(dir);
-		if (parent === dir) break;
-		dir = parent;
-	}
-
-	return null;
+	return gitCandidate;
 }
 
 export async function resolveOrDefaultProjectRegistryPath(cwd: string): Promise<string | undefined> {
@@ -746,35 +746,36 @@ async function canonicalClaudeProjectPath(projectPath: string): Promise<string |
 	}
 }
 
-async function readClaudeEnabledPlugins(
-	claudeConfigDir: string,
-	projectDirs: string[],
-): Promise<{ enabled: Map<string, boolean>; sources: string[] }> {
+async function readClaudeEnabledPlugins(claudeConfigDir: string, projectDirs: string[]): Promise<Map<string, boolean>> {
 	const enabled = new Map<string, boolean>();
-	const sources: string[] = [];
 	const candidates = [path.join(claudeConfigDir, "settings.json")];
 	for (const dir of projectDirs) {
 		candidates.push(path.join(dir, ".claude", "settings.json"), path.join(dir, ".claude", "settings.local.json"));
 	}
-	for (const file of candidates) {
-		const content = await readFile(file);
+	const contents = await Promise.all(candidates.map(file => readFile(file)));
+	for (const content of contents) {
 		if (!content) continue;
 		const data = tryParseJson<{ enabledPlugins?: unknown }>(content);
 		if (!data || typeof data !== "object") continue;
 		const map = data.enabledPlugins;
 		if (!map || typeof map !== "object" || Array.isArray(map)) continue;
-		sources.push(file);
 		for (const [pluginId, value] of Object.entries(map as Record<string, unknown>)) {
 			if (typeof value === "boolean") enabled.set(pluginId, value);
 		}
 	}
-	return { enabled, sources };
+	return enabled;
+}
+
+interface ClaudePluginRootsResult {
+	roots: ClaudePluginRoot[];
+	warnings: string[];
 }
 
 const PLUGIN_ROOTS_CACHE_MAX_ENTRIES = 256;
-const pluginRootsCache = new LRUCache<string, { roots: ClaudePluginRoot[]; warnings: string[] }>({
+const pluginRootsCache = new LRUCache<string, ClaudePluginRootsResult>({
 	max: PLUGIN_ROOTS_CACHE_MAX_ENTRIES,
 });
+const pluginRootsInFlight = new Map<string, Promise<ClaudePluginRootsResult>>();
 
 const pluginCacheInvalidators = new Set<() => void>();
 
@@ -782,10 +783,7 @@ export function registerPluginCacheInvalidator(invalidator: () => void): void {
 	pluginCacheInvalidators.add(invalidator);
 }
 
-export async function listClaudePluginRoots(
-	home: string,
-	cwd?: string,
-): Promise<{ roots: ClaudePluginRoot[]; warnings: string[] }> {
+async function loadClaudePluginRoots(home: string, cwd?: string): Promise<ClaudePluginRootsResult> {
 	const claudeConfigDir = resolveClaudePaths(home).configDir;
 	const ompRegistryPath = path.join(getPluginsDir(home), "installed_plugins.json");
 	const resolvedProjectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
@@ -794,9 +792,6 @@ export async function listClaudePluginRoots(
 	const canonicalCwd = cwd ? await canonicalClaudeProjectPath(cwd) : null;
 	const settingsDirs = [...new Set([activeClaudeProjectPath, canonicalCwd].filter((d): d is string => !!d))];
 	const enabledOverrides = await readClaudeEnabledPlugins(claudeConfigDir, settingsDirs);
-	const cacheKey = `${claudeConfigDir}:${ompRegistryPath}:${resolvedProjectPath ?? ""}:${activeClaudeProjectPath ?? ""}:${canonicalCwd ?? ""}:${enabledOverrides.sources.join("|")}`;
-	const cached = pluginRootsCache.get(cacheKey);
-	if (cached) return cached;
 
 	const roots: ClaudePluginRoot[] = [];
 	const warnings: string[] = [];
@@ -830,7 +825,7 @@ export async function listClaudePluginRoots(
 					}
 					if (entry.enabled === false) continue;
 
-					const override = enabledOverrides.enabled.get(pluginId);
+					const override = enabledOverrides.get(pluginId);
 					if (override === false) continue;
 					if ((entry.scope === "local" || entry.scope === "project") && override !== true) {
 						if (!entry.projectPath || !activeClaudeProjectPath) continue;
@@ -948,13 +943,33 @@ export async function listClaudePluginRoots(
 		roots.push(...injectedPluginDirRoots, ...filtered);
 	}
 
-	const result = { roots, warnings };
-	pluginRootsCache.set(cacheKey, result);
-	return result;
+	return { roots, warnings };
+}
+
+export async function listClaudePluginRoots(home: string, cwd?: string): Promise<ClaudePluginRootsResult> {
+	const normalizedHome = path.resolve(home);
+	const normalizedCwd = cwd === undefined ? undefined : path.resolve(cwd);
+	const cacheKey = JSON.stringify([normalizedHome, normalizedCwd ?? null]);
+	const cached = pluginRootsCache.get(cacheKey);
+	if (cached) return cached;
+
+	const existing = pluginRootsInFlight.get(cacheKey);
+	if (existing) return await existing;
+
+	const pending = loadClaudePluginRoots(normalizedHome, normalizedCwd);
+	pluginRootsInFlight.set(cacheKey, pending);
+	try {
+		const result = await pending;
+		if (pluginRootsInFlight.get(cacheKey) === pending) pluginRootsCache.set(cacheKey, result);
+		return result;
+	} finally {
+		if (pluginRootsInFlight.get(cacheKey) === pending) pluginRootsInFlight.delete(cacheKey);
+	}
 }
 
 export function clearClaudePluginRootsCache(): void {
 	pluginRootsCache.clear();
+	pluginRootsInFlight.clear();
 	for (const invalidate of pluginCacheInvalidators) invalidate();
 	preloadedPluginRoots = [...injectedPluginDirRoots];
 

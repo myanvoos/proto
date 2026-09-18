@@ -7,7 +7,7 @@ import {
 	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, ImageContent, Message, Usage, UsageReport } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Usage, UsageReport } from "@oh-my-pi/pi-ai";
 import type {
 	AutocompleteProvider,
 	Component,
@@ -2831,10 +2831,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	truncateTranscriptFromMessage(message: AgentMessage): boolean {
 		return this.#uiHelpers.truncateTranscriptFromMessage(message);
-	}
-
-	getUserMessageText(message: Message): string {
-		return this.#uiHelpers.getUserMessageText(message);
 	}
 
 	findLastAssistantMessage(): AssistantMessage | undefined {

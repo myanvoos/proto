@@ -128,7 +128,7 @@ export class SessionObserverRegistry {
 			this.#sessions.set(ref.id, {
 				id: ref.id,
 				kind: "subagent",
-				label: ref.displayName,
+				label: ref.label,
 				description: ref.activity,
 				status,
 				sessionFile: ref.sessionFile ?? undefined,

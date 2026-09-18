@@ -210,10 +210,12 @@ export class TranscriptContainer
 	#stableRowsFloor = 0;
 	#childrenRevision = 0;
 	#childrenExternallyAssigned = false;
+	#childrenListenersDirty = false;
+	#childrenDirtyFromIndex = Number.POSITIVE_INFINITY;
 	#settingChildrenInternally = false;
+	#mutatingChildrenInternally = false;
 	#renderedChildrenRevision = -1;
 	#renderedGeneration = -1;
-	#renderedCommittedRows = -1;
 	#stablePrefixLength = 0;
 
 	#noteBlockChange(component: Component): void {
@@ -253,22 +255,30 @@ export class TranscriptContainer
 	constructor() {
 		super();
 		let children = this.children;
-		const markChildrenChanged = (): void => {
+		const markChildrenChanged = (property: string | symbol, previous: unknown, value?: unknown): void => {
 			this.#childrenRevision++;
-			this.#committedRowsDirty = true;
+			let index = 0;
+			if (typeof property === "string") {
+				if (/^(?:0|[1-9]\d*)$/.test(property)) index = Number(property);
+				else if (property === "length" && typeof value === "number" && typeof previous === "number") {
+					index = Math.min(value, previous);
+				}
+			}
+			this.#childrenDirtyFromIndex = Math.min(this.#childrenDirtyFromIndex, index);
+			if (!this.#mutatingChildrenInternally) this.#childrenListenersDirty = true;
 		};
 		const wrapChildren = (target: Component[]): Component[] =>
 			new Proxy(target, {
 				set: (array, property, value, receiver) => {
 					const previous = Reflect.get(array, property, receiver);
 					const changed = Reflect.set(array, property, value, receiver);
-					if (changed && previous !== value) markChildrenChanged();
+					if (changed && previous !== value) markChildrenChanged(property, previous, value);
 					return changed;
 				},
 				deleteProperty: (array, property) => {
 					const existed = Reflect.has(array, property);
 					const deleted = Reflect.deleteProperty(array, property);
-					if (deleted && existed) markChildrenChanged();
+					if (deleted && existed) markChildrenChanged(property, property, undefined);
 					return deleted;
 				},
 			});
@@ -281,7 +291,7 @@ export class TranscriptContainer
 				if (next === children) return;
 				children = wrapChildren(next);
 				if (!this.#settingChildrenInternally) this.#childrenExternallyAssigned = true;
-				markChildrenChanged();
+				markChildrenChanged("length", 0, children.length);
 			},
 		});
 	}
@@ -289,16 +299,24 @@ export class TranscriptContainer
 	override addChild(component: Component): void {
 		const wasEmpty = this.children.length === 0;
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
-		super.addChild(component);
+		this.#mutatingChildrenInternally = true;
+		try {
+			super.addChild(component);
+		} finally {
+			this.#mutatingChildrenInternally = false;
+		}
 		this.#attachBlockListener(component);
-		this.#committedRowsDirty = true;
 		if (wasEmpty && this.onFirstContent) this.onFirstContent();
 	}
 
 	override removeChild(component: Component): void {
 		const hadChild = this.children.includes(component);
-		super.removeChild(component);
-		if (hadChild) this.#committedRowsDirty = true;
+		this.#mutatingChildrenInternally = true;
+		try {
+			super.removeChild(component);
+		} finally {
+			this.#mutatingChildrenInternally = false;
+		}
 		if (hadChild && !this.children.includes(component)) this.#detachBlockListener(component);
 	}
 
@@ -336,6 +354,8 @@ export class TranscriptContainer
 			this.#settingChildrenInternally = false;
 		}
 		this.#childrenExternallyAssigned = false;
+		this.#childrenListenersDirty = false;
+		this.#childrenDirtyFromIndex = Number.POSITIVE_INFINITY;
 		this.#lines = [];
 		this.#segments = EMPTY_SEGMENTS;
 		this.#renderWidth = -1;
@@ -350,7 +370,6 @@ export class TranscriptContainer
 		this.#committedDirtySegments.clear();
 		this.#renderedChildrenRevision = -1;
 		this.#renderedGeneration = -1;
-		this.#renderedCommittedRows = -1;
 		this.#stablePrefixLength = 0;
 	}
 
@@ -392,17 +411,32 @@ export class TranscriptContainer
 
 	override setNativeScrollbackCommittedRows(rows: number): void {
 		const committed = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
-		if (committed !== this.#committedRows) {
-			this.#committedRows = committed;
-			this.#committedRowsDirty = true;
-		}
-		if (!this.#committedRowsDirty && this.#committedDirtySegments.size === 0) return;
+		const previousCommitted = this.#committedRows;
+		this.#committedRows = committed;
+		if (!this.#committedRowsDirty && committed === previousCommitted && this.#committedDirtySegments.size === 0)
+			return;
 
+		const affected = new Set(this.#committedDirtySegments);
 		if (this.#committedRowsDirty) {
-			for (const segment of this.#segments) this.#publishCommittedRows(segment);
-		} else {
-			for (const segment of this.#committedDirtySegments) this.#publishCommittedRows(segment);
+			for (const segment of this.#segments) affected.add(segment);
+		} else if (committed !== previousCommitted) {
+			const low = Math.min(committed, previousCommitted);
+			const high = Math.max(committed, previousCommitted);
+			let left = 0;
+			let right = this.#segments.length;
+			while (left < right) {
+				const middle = (left + right) >>> 1;
+				const segment = this.#segments[middle]!;
+				if (segment.startRow + segment.rowCount <= low) left = middle + 1;
+				else right = middle;
+			}
+			for (let index = left; index < this.#segments.length; index++) {
+				const segment = this.#segments[index]!;
+				if (segment.startRow >= high) break;
+				affected.add(segment);
+			}
 		}
+		for (const segment of affected) this.#publishCommittedRows(segment);
 		this.#committedRowsDirty = false;
 		this.#committedDirtySegments.clear();
 	}
@@ -644,20 +678,22 @@ export class TranscriptContainer
 			this.#childrenExternallyAssigned ||
 			this.#renderedChildrenRevision !== this.#childrenRevision ||
 			previousSegments.length !== count;
-		if (structureChanged) this.#reconcileBlockListeners();
+		if (this.#childrenExternallyAssigned || this.#childrenListenersDirty) this.#reconcileBlockListeners();
+		const structureStart = structureChanged
+			? this.#childrenExternallyAssigned
+				? 0
+				: Math.min(this.#childrenDirtyFromIndex, count, previousSegments.length)
+			: Number.POSITIVE_INFINITY;
 		const widthEpoch = getWidthConfigEpoch();
 		const canReusePrefix =
 			!widthChanged &&
 			!this.#childrenExternallyAssigned &&
-			!structureChanged &&
 			this.#renderedGeneration === this.#generation &&
-			this.#renderedCommittedRows === this.#committedRows &&
 			this.#renderedWidthEpoch === widthEpoch;
 		const prefixLength = canReusePrefix ? Math.min(this.#stablePrefixLength, count) : 0;
-		const startIndex = canReusePrefix ? Math.min(prefixLength, dirtyFromIndex) : 0;
-		const segments =
-			previousSegments.length === count ? previousSegments : new Array<BlockSegment | undefined>(count);
-		if (structureChanged) this.#committedRowsDirty = true;
+		const startIndex = canReusePrefix ? Math.min(prefixLength, dirtyFromIndex, structureStart) : 0;
+		const segments: Array<BlockSegment | undefined> = previousSegments.slice(0, count);
+		segments.length = count;
 		this.#segments = EMPTY_SEGMENTS;
 		const stableFloorBefore = this.#stableRowsFloor;
 		this.#stableRowsFloor = 0;
@@ -868,8 +904,10 @@ export class TranscriptContainer
 		this.#segments = segments as BlockSegment[];
 		this.#stablePrefixLength = stablePrefixLength;
 		this.#renderedChildrenRevision = this.#childrenRevision;
+		this.#childrenExternallyAssigned = false;
+		this.#childrenListenersDirty = false;
+		this.#childrenDirtyFromIndex = Number.POSITIVE_INFINITY;
 		this.#renderedGeneration = this.#generation;
-		this.#renderedCommittedRows = this.#committedRows;
 		if (widthChanged || previousSegments.length !== count || !chainStable || lines.length !== previousLineCount) {
 			this.#renderRevision++;
 		}

@@ -211,7 +211,9 @@ export class InputController {
 	}
 
 	#abortStreamingTurn(): void {
-		void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+		void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }).catch(error => {
+			this.ctx.showError(`Failed to abort session: ${error instanceof Error ? error.message : String(error)}`);
+		});
 	}
 
 	setupKeyHandlers(): void {

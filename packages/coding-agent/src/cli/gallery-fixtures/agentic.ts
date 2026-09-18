@@ -10,13 +10,13 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		customRendered: true,
 		streamingArgs: {
 			agent: "worker",
-			name: "AuthLoader",
-			prompt: "Inspect packages/server/src/auth/session.ts",
+			label: "AuthLoader",
+			message: "Inspect packages/server/src/auth/session.ts",
 		},
 		args: {
 			agent: "worker",
-			name: "AuthLoader",
-			prompt: "Inspect the session-cookie validation flow and report gaps.",
+			label: "AuthLoader",
+			message: "Inspect the session-cookie validation flow and report gaps.",
 		},
 		result: {
 			content: [{ type: "text", text: "Spawned worker `AuthLoader`." }],
@@ -27,7 +27,8 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					{
 						id: "AuthLoader",
 						agent: "worker",
-						state: "running",
+						lifecycle: "live",
+						turnState: "running",
 						turns: 1,
 						queued: 0,
 						turnStartedAt: FIXTURE_NOW - 3_000,
@@ -45,10 +46,10 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		label: "Fleet send",
 		renderer: "fleet",
 
-		streamingArgs: { op: "send", to: "AuthLoader", message: "Are you still touching" },
+		streamingArgs: { op: "send", id: "AuthLoader", message: "Are you still touching" },
 		args: {
 			op: "send",
-			to: "AuthLoader",
+			id: "AuthLoader",
 			message: "Are you still touching src/server/auth.ts? I need to add a 401 path.",
 			await: true,
 		},
@@ -57,8 +58,8 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 				{
 					type: "text",
 					text: [
-						"Delivered to 1 peer(s):",
-						"- AuthLoader: revived",
+						"Accepted by 1 peer(s): 1 delivered, 0 queued.",
+						"- AuthLoader: delivered; wake requested; turn start is not confirmed; session revived",
 						"",
 						"Reply from AuthLoader:",
 						"Done with auth.ts — go ahead, just rebase past my session-store rename.",
@@ -67,9 +68,9 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 			],
 			details: {
 				op: "send",
-				from: "Main",
-				to: "AuthLoader",
-				receipts: [{ to: "AuthLoader", outcome: "revived" }],
+				senderId: "Main",
+				id: "AuthLoader",
+				receipts: [{ to: "AuthLoader", outcome: "delivered", effect: "wake_requested", revived: true }],
 				waited: {
 					id: "7181122334455667789",
 					from: "AuthLoader",
@@ -85,14 +86,14 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 			content: [
 				{
 					type: "text",
-					text: 'No recipients received the message.\n- RateLimiter: failed — unknown agent "RateLimiter"',
+					text: 'No recipients accepted the message.\n- RateLimiter: rejected — unknown agent "RateLimiter"',
 				},
 			],
 			details: {
 				op: "send",
-				from: "Main",
-				to: "RateLimiter",
-				receipts: [{ to: "RateLimiter", outcome: "failed", error: 'unknown agent "RateLimiter"' }],
+				senderId: "Main",
+				id: "RateLimiter",
+				receipts: [{ to: "RateLimiter", outcome: "rejected", error: 'unknown agent "RateLimiter"' }],
 			} satisfies FleetDetails,
 		},
 	},
@@ -101,8 +102,8 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		label: "Fleet wait",
 		customRendered: true,
 		renderer: "fleet",
-		streamingArgs: { op: "wait", from: "AuthLoader" },
-		args: { op: "wait", from: "AuthLoader", timeoutMs: 60_000 },
+		streamingArgs: { op: "wait", id: "AuthLoader" },
+		args: { op: "wait", id: "AuthLoader", timeoutMs: 60_000 },
 		result: {
 			content: [
 				{
@@ -112,7 +113,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 			],
 			details: {
 				op: "wait",
-				from: "Main",
+				senderId: "Main",
 				waited: {
 					id: "7181122334455667790",
 					from: "AuthLoader",
@@ -143,7 +144,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 			],
 			details: {
 				op: "inbox",
-				from: "Main",
+				senderId: "Main",
 				inbox: [
 					{
 						id: "7181122334455667791",
@@ -182,8 +183,8 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 					type: "text",
 					text: [
 						"2 peer(s):",
-						"- AuthLoader [worker · sub · idle] — parent Main, active 2m ago",
-						"- RateLimiter [worker · sub · parked] — unread 2, parent Main, active 12m ago",
+						"- AuthLoader [worker · sub · lifecycle=live · turn=idle] — parent Main, active 2m ago",
+						"- RateLimiter [worker · sub · lifecycle=parked · turn=idle] — unread 2, parent Main, active 12m ago",
 						"",
 						"Parked agents are revived automatically when you message them.",
 					].join("\n"),
@@ -191,22 +192,24 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 			],
 			details: {
 				op: "list",
-				from: "Main",
+				senderId: "Main",
 				peers: [
 					{
 						id: "AuthLoader",
-						displayName: "worker",
+						label: "worker",
 						kind: "sub",
-						status: "idle",
+						lifecycle: "live",
+						turnState: "idle",
 						parentId: "Main",
 						unread: 0,
 						lastActivity: FIXTURE_NOW - 2 * 60_000,
 					},
 					{
 						id: "RateLimiter",
-						displayName: "worker",
+						label: "worker",
 						kind: "sub",
-						status: "parked",
+						lifecycle: "parked",
+						turnState: "idle",
 						parentId: "Main",
 						unread: 2,
 						lastActivity: FIXTURE_NOW - 12 * 60_000,

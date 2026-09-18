@@ -196,7 +196,7 @@ export class AssistantMessageComponent extends Container {
 		this.#transcriptBlockFinalized = message !== undefined;
 
 		if (message) {
-			this.updateContent(message);
+			this.#applyContent(message);
 		}
 	}
 
@@ -213,7 +213,7 @@ export class AssistantMessageComponent extends Container {
 		this.#fastPathKey = undefined;
 		this.#fastPathItems = undefined;
 		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 		this.#onTranscriptBlockChange?.();
 	}
@@ -290,12 +290,27 @@ export class AssistantMessageComponent extends Container {
 	setHideThinkingBlock(hide: boolean): void {
 		if (this.hideThinkingBlock === hide) return;
 		this.hideThinkingBlock = hide;
-		this.#onTranscriptBlockChange?.();
+		this.#rebuildForDisplayChange();
 	}
 
 	setProseOnlyThinking(proseOnly: boolean): void {
 		if (this.proseOnlyThinking === proseOnly) return;
 		this.proseOnlyThinking = proseOnly;
+		this.#rebuildForDisplayChange();
+	}
+
+	/**
+	 * Children are materialized from the message at updateContent time, so a display toggle that
+	 * changes what those children should contain has to rebuild them. Without this a finalized
+	 * transcript block keeps rendering the thinking content the user just asked to hide.
+	 */
+	#rebuildForDisplayChange(): void {
+		this.#fastPathKey = undefined;
+		this.#fastPathItems = undefined;
+		if (this.#lastMessage) {
+			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		}
+		this.#blockVersion++;
 		this.#onTranscriptBlockChange?.();
 	}
 
@@ -374,7 +389,7 @@ export class AssistantMessageComponent extends Container {
 		if (this.#errorPinned === pinned) return;
 		this.#errorPinned = pinned;
 		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 	}
 
@@ -382,7 +397,7 @@ export class AssistantMessageComponent extends Container {
 		if (this.#errorExpanded === expanded) return;
 		this.#errorExpanded = expanded;
 		if (this.#hasTruncatableError && this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 	}
 
@@ -423,13 +438,14 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	markTranscriptBlockFinalized(): void {
+		if (this.#transcriptBlockFinalized) return;
 		this.#transcriptBlockFinalized = true;
 		this.#stopThinkingAnimation();
 
 		if (this.#thinkingDots) {
 			this.#fastPathKey = undefined;
 			this.#fastPathItems = undefined;
-			if (this.#lastMessage) this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+			if (this.#lastMessage) this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 		this.#onTranscriptBlockChange?.();
 	}
@@ -437,7 +453,7 @@ export class AssistantMessageComponent extends Container {
 	applyRetryRecovery(retryRecovery: AssistantMessage["retryRecovery"]): void {
 		if (!this.#lastMessage || !retryRecovery) return;
 		this.setErrorPinned(false);
-		this.updateContent({ ...this.#lastMessage, retryRecovery });
+		this.#applyContent({ ...this.#lastMessage, retryRecovery });
 	}
 
 	messagePersistenceKey(): string | undefined {
@@ -533,7 +549,7 @@ export class AssistantMessageComponent extends Container {
 		if (this.#showImages === visible) return;
 		this.#showImages = visible;
 		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		} else if (this.#staticTextBlocks !== undefined) {
 			this.#rebuildStaticTextContent();
 		}
@@ -543,7 +559,7 @@ export class AssistantMessageComponent extends Container {
 		if (this.#showToolResultImages === visible) return;
 		this.#showToolResultImages = visible;
 		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		} else if (this.#staticTextBlocks !== undefined) {
 			this.#rebuildStaticTextContent();
 		}
@@ -574,7 +590,7 @@ export class AssistantMessageComponent extends Container {
 		if (this.#toolImagesByCallId?.size === 0) this.#toolImagesByCallId = undefined;
 		if (this.#kittyConversionsInFlight?.size === 0) this.#kittyConversionsInFlight = undefined;
 		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		} else if (this.#staticTextBlocks !== undefined) {
 			this.#rebuildStaticTextContent();
 		}
@@ -596,7 +612,7 @@ export class AssistantMessageComponent extends Container {
 					this.#convertedKittyImages = convertedKittyImages;
 					convertedKittyImages.set(key, converted);
 					if (this.#lastMessage) {
-						this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+						this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 					} else if (this.#staticTextBlocks !== undefined) {
 						this.#rebuildStaticTextContent();
 					}
@@ -758,6 +774,12 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	updateContent(message: AssistantMessage, opts?: { transient?: boolean }): void {
+		// Finalized rows may already be immutable native scrollback; rebuilding them appends duplicates.
+		if (this.#transcriptBlockFinalized) return;
+		this.#applyContent(message, opts);
+	}
+
+	#applyContent(message: AssistantMessage, opts?: { transient?: boolean }): void {
 		this.#onTranscriptBlockChange?.();
 		this.#blockVersion++;
 		this.#lastMessage = message;

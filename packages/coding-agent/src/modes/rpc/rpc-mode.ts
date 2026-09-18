@@ -320,9 +320,10 @@ export class RpcInputDispatcher {
 			);
 			this.#tail = task.catch(() => {});
 			this.#tasks.add(task);
-			void task.finally(() => {
+			const cleanup = () => {
 				this.#tasks.delete(task);
-			});
+			};
+			void task.then(cleanup, cleanup);
 		} catch (err: unknown) {
 			const message = err instanceof Error ? err.message : String(err);
 			this.#deps.output(this.#deps.errorResponse(undefined, "parse", `Failed to parse command: ${message}`));
@@ -361,11 +362,12 @@ export class RpcShutdownCoordinator {
 
 	track(task: Promise<void>): void {
 		this.#tasks.add(task);
-		void task.finally(() => {
+		const cleanup = () => {
 			this.#tasks.delete(task);
 
 			void this.checkShutdownRequested();
-		});
+		};
+		void task.then(cleanup, cleanup);
 	}
 
 	async drain(): Promise<void> {

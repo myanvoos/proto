@@ -109,7 +109,7 @@ test("reattaching a detached turn restores its main ownership and live fleet", a
 	const fleetB = `${b.file.slice(0, -".jsonl".length)}/fleet`;
 	registry.register({
 		id: MAIN_AGENT_ID,
-		displayName: "main",
+		label: "main",
 		kind: "main",
 		fleetRoot: fleetA,
 		sessionFile: a.file,
@@ -117,7 +117,7 @@ test("reattaching a detached turn restores its main ownership and live fleet", a
 	});
 	registry.register({
 		id: "worker-a",
-		displayName: "worker-a",
+		label: "worker-a",
 		kind: "sub",
 		parentId: MAIN_AGENT_ID,
 		fleetRoot: fleetA,
@@ -126,7 +126,7 @@ test("reattaching a detached turn restores its main ownership and live fleet", a
 	});
 	registry.register({
 		id: MAIN_AGENT_ID,
-		displayName: "main",
+		label: "main",
 		kind: "main",
 		fleetRoot: fleetB,
 		sessionFile: b.file,
@@ -134,7 +134,7 @@ test("reattaching a detached turn restores its main ownership and live fleet", a
 	});
 	registry.register({
 		id: "worker-b",
-		displayName: "worker-b",
+		label: "worker-b",
 		kind: "sub",
 		parentId: MAIN_AGENT_ID,
 		fleetRoot: fleetB,
@@ -199,7 +199,7 @@ test("switching away keeps an idle main detached while its worker is running", a
 	const fleetB = `${b.file.slice(0, -".jsonl".length)}/fleet`;
 	registry.register({
 		id: MAIN_AGENT_ID,
-		displayName: "main",
+		label: "main",
 		kind: "main",
 		fleetRoot: fleetA,
 		sessionFile: a.file,
@@ -207,7 +207,7 @@ test("switching away keeps an idle main detached while its worker is running", a
 	});
 	registry.register({
 		id: MAIN_AGENT_ID,
-		displayName: "main",
+		label: "main",
 		kind: "main",
 		fleetRoot: fleetB,
 		sessionFile: b.file,
@@ -215,7 +215,7 @@ test("switching away keeps an idle main detached while its worker is running", a
 	});
 	registry.register({
 		id: "worker-b",
-		displayName: "worker-b",
+		label: "worker-b",
 		kind: "sub",
 		parentId: MAIN_AGENT_ID,
 		fleetRoot: fleetB,

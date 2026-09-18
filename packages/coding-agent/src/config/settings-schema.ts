@@ -3288,7 +3288,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tasks",
 			group: "Workers",
 			label: "Max Concurrent Worker Turns",
-			description: "Maximum number of workers running concurrently",
+			description: "Maximum number of worker turns running concurrently across all sessions in this process",
 			options: [
 				{ value: "0", label: "Unlimited" },
 				{ value: "1", label: "1 worker" },

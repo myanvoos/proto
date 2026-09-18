@@ -26,6 +26,22 @@ import { theme } from "../theme/theme";
 
 type CustomOrHookMessage = Extract<AgentMessage, { role: "custom" | "hookMessage" }>;
 type AssistantAgentMessage = Extract<AgentMessage, { role: "assistant" }>;
+type DisplayInputMessage = Extract<AgentMessage, { role: "developer" | "user" }>;
+
+/** Extract terminal-safe text from a user-like message shown in the transcript. */
+export function extractDisplayInputText(message: DisplayInputMessage): string {
+	const text =
+		typeof message.content === "string"
+			? message.content
+			: message.content
+					.filter(
+						(block): block is Extract<(typeof message.content)[number], { type: "text" }> =>
+							block.type === "text",
+					)
+					.map(block => block.text)
+					.join("");
+	return replaceTabs(text);
+}
 
 export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivityContainer {
 	const details = (

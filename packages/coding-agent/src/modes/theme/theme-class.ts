@@ -118,6 +118,9 @@ const LANG_BRAND_COLORS: Partial<Record<SymbolKey, string>> = {
 
 const BACKGROUND_RESET_PATTERN = /\x1b\[(?:0|49)m/g;
 
+/** Symbol groups whose glyphs are positioned with one-column-per-glyph arithmetic. */
+const SINGLE_CELL_SYMBOL_PREFIXES = ["boxRound.", "boxSharp.", "tree.", "progress."] as const;
+
 export class Theme {
 	#fgColors: Record<ThemeColor, string>;
 	#bgColors: Record<ThemeBg, string>;
@@ -160,11 +163,22 @@ export class Theme {
 		const baseSymbols = SYMBOL_PRESETS[symbolPreset];
 		this.#symbols = { ...baseSymbols };
 		for (const [key, value] of Object.entries(symbolOverrides)) {
-			if (key in this.#symbols) {
-				this.#symbols[key as SymbolKey] = value;
-			} else {
+			if (!(key in this.#symbols)) {
 				logger.debug("Invalid symbol key in override", { key, availableKeys: Object.keys(this.#symbols) });
+				continue;
 			}
+			// Border, tree, and progress glyphs are laid out with one-column arithmetic
+			// (`repeat(innerWidth)`, `width - 2`). A wide or multi-char override silently
+			// overflows every frame that uses it, so keep the preset glyph instead.
+			if (SINGLE_CELL_SYMBOL_PREFIXES.some(prefix => key.startsWith(prefix)) && Bun.stringWidth(value) !== 1) {
+				logger.warn("Ignoring symbol override that is not exactly one column wide", {
+					key,
+					value,
+					width: Bun.stringWidth(value),
+				});
+				continue;
+			}
+			this.#symbols[key as SymbolKey] = value;
 		}
 		this.#spinnerFramesOverrides = spinnerFramesOverrides;
 	}

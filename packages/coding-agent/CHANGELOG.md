@@ -2,9 +2,45 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Removed unused internal eval filesystem snapshot and environment setup helpers, JSON-RPC message framing, partial tool-abort handling, and grouped file output.
+- Removed unused test-only hooks from agent internals.
+
+### Changed
+
+- CLI startup now defers optional tool and memory implementations and proxy setup until they are needed.
+- Session startup now reuses concurrent filesystem discovery work, reducing redundant reads in deep projects.
+- Long streamed assistant responses now keep rule matching responsive instead of rescanning the full accumulated response for every delta.
+- Session lists now scan transcripts incrementally and reuse a persistent index, so browsing or resuming with large session histories no longer re-reads every transcript from disk.
+- Large sessions now resume faster and no longer rescan the full transcript before every prompt.
+
 ### Fixed
 
+- Assistant prose that wraps before a tool call no longer leaves staircase-like partial duplicate lines in terminal scrollback.
+- Orchestrated workers stay addressable beyond 32, bound queued and mailbox messages with explicit reporting instead of silent drops, and apply the concurrency limit across the whole process.
+- Standardized worker and fleet tools on `id`, `label`, `message`, and millisecond timeouts, with truthful lifecycle, turn-state, and message-effect reporting.
+- Background JavaScript file changes stay attributed to their originating eval cell, including Bun writer changes.
+- Stale-write protection now detects same-size external edits even when timestamps are preserved.
+- Python eval safely rejects oversized result frames, preserves split emoji, and bounds late partial-output buffers.
+- Live agent transcripts now show streaming replies and tool arguments immediately while staying responsive in long sessions.
+- Persistent eval kernels now preserve stale-write safety and correctly surface child process, binary, and background output.
+- Synthetic developer context is now visible in live and rebuilt transcripts.
+- Fixed compacted and resumed sessions sending unpaired tool results that providers reject.
+- Agent transcript viewers no longer jump to new output while you are reading earlier messages.
+- Context pruning, shake elision, and image dropping now reduce only model-facing context without gutting persisted, rewound, or sibling-branch history.
+- Eval bridges now bound shell traffic, secure runner staging, preserve filesystem mutation observations, and time out faulty extension and hook handlers.
+- Plugin and extension loading now rejects unsafe registry paths, package links, and manifest entries, guards custom-command startup, and fails closed on malformed project overrides.
+- Code-eval sessions now serialize concurrent cells, fail closed without JS isolation, terminate Python process trees, and bound interpreter probes.
+- MCP authentication now blocks credential-forwarding redirects, private-network discovery, cyclic metadata, stalled token endpoints, invalid refresh responses, and permissive Smithery key files.
+- MCP connections now enforce response and frame limits, request identity and deadlines, bounded SSE reconnects and pagination, reliable stdio writes, and visible Smithery detail failures.
+- Web search now bounds provider response bodies and preserves slower public-engine results after empty responses.
+- Interactive sessions now recover from failed switches and aborts, preserve streamed event order, and cancel extension-backed shell and Python runs.
+- Fixed shell resource cleanup, concurrent managed-tool installs, environment-scoped shell snapshots, and unsupported or oversized image handling.
+- Session persistence now preserves malformed transcripts, excludes concurrent append writers, and reports complete message counts and search text.
 - Workers now show their label, not just the raw `worker-…` id, across the UI: the `/jobs` background list, orchestrate spawn/kill cards, worker screens, and the `history://` agent index and completions. The id remains the routing address everywhere.
+- Fixed the worker lifecycle GC test harness falsely reporting parked sessions as retained by carrying `WeakRef` targets across collection polls.
+- Fixed tool reads mishandling newline-terminated streams, malformed restored todos, stuck predicate waits, invalid PDF page members, literal tilde paths, and large SQLite/directory listings.
 
 ## [18.1.21] - 2026-09-16
 

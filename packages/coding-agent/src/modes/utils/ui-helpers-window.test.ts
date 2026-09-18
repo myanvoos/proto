@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { type Component, Container } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
+import type { SessionContext } from "../../session/session-context";
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme } from "../theme/theme";
+import type { InteractiveModeContext } from "../types";
 import { selectTranscriptWindow, transcriptWindowContext, UiHelpers } from "./ui-helpers";
 
 await Settings.init();
@@ -161,4 +163,53 @@ test("navigation disposes pages, preserves queued UI, exits history before strea
 	await helper.navigateTranscriptHistory("older");
 	await helper.renderInitialMessages();
 	expect(renders.at(-1)?.[0]).toBe(messages[344]);
+});
+
+test("synthetic developer context the model acted on is invisible in the transcript during rebuild", () => {
+	const chatContainer = new TranscriptContainer();
+	const context = {
+		ui: { requestRender: noop },
+		chatContainer,
+		pendingTools: new Map(),
+		lastAssistantUsage: undefined,
+		settings: { get: () => false },
+		statusLine: { invalidate: noop },
+		updateEditorBorderColor: noop,
+		toolOutputExpanded: false,
+		hideToolActivity: false,
+		transcriptMessageComponents: new WeakMap<object, Component>(),
+		viewSession: {
+			isStreaming: false,
+			extensionRunner: undefined,
+			retryAttempt: undefined,
+			getToolByName: () => undefined,
+			hasBuiltInTool: () => false,
+			sessionManager: { putBlobSync: noop },
+		},
+		addMessageToChat: noop,
+	} as unknown as InteractiveModeContext;
+	const helper = new UiHelpers(context);
+	context.addMessageToChat = helper.addMessageToChat.bind(helper);
+	const sessionContext = {
+		messages: [
+			{
+				role: "developer",
+				content: "Synthetic developer context\tthe model acted on is visible after rebuild.",
+				timestamp: 1,
+			},
+		],
+		models: {},
+		injectedTtsrRules: [],
+		mode: "normal",
+	} as unknown as SessionContext;
+
+	try {
+		helper.renderSessionContext(sessionContext);
+		const rendered = Bun.stripANSI(chatContainer.render(160).join("\n"));
+		expect(rendered).toContain("Synthetic developer context");
+		expect(rendered).toContain("the model acted on is visible after rebuild.");
+		expect(rendered).not.toContain("\t");
+	} finally {
+		chatContainer.dispose();
+	}
 });

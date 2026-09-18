@@ -430,14 +430,6 @@ function resolveUpdateMethod(
 	return "binary";
 }
 
-export function resolveUpdateMethodForTest(
-	ompPath: string,
-	bunBinDir: string | undefined,
-	options: UpdateMethodResolutionOptions = {},
-): UpdateMethod {
-	return resolveUpdateMethod(ompPath, bunBinDir, options);
-}
-
 export function resolveUpdateTargetFromPath(
 	ompPath: string,
 	bunBinDir: string | undefined,
@@ -549,10 +541,6 @@ function isMuslLinux(options: MuslDetectionOptions = {}): boolean {
 	if ((options.platform ?? process.platform) !== "linux") return false;
 	if (options.alpineRelease ?? fs.existsSync("/etc/alpine-release")) return true;
 	return /\bmusl\b/i.test(options.lddOutput ?? detectLddOutput() ?? "");
-}
-
-export function isMuslLinuxForTest(options: Required<MuslDetectionOptions>): boolean {
-	return isMuslLinux(options);
 }
 
 function getBinaryName(): string {

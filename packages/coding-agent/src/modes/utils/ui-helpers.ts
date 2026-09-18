@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Usage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -53,13 +53,13 @@ import {
 	buildIrcMessageCard,
 	buildLaunchCompletionBlock,
 	buildMonitorEventBlock,
+	extractDisplayInputText,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
 } from "./transcript-render-helpers";
 import { TRANSCRIPT_WINDOW_SOFT_BYTES, TRANSCRIPT_WINDOW_SOFT_MESSAGES } from "./transcript-window";
 
-type TextBlock = { type: "text"; text: string };
 interface RenderInitialMessagesOptions {
 	preserveExistingChat?: boolean;
 	clearTerminalHistory?: boolean;
@@ -281,15 +281,6 @@ export class UiHelpers {
 		container.addChild(new Text(label, 1, 0).setStyleFn(text => theme.fg("dim", text)));
 	}
 
-	getUserMessageText(message: Message): string {
-		if (message.role !== "user") return "";
-		const textBlocks =
-			typeof message.content === "string"
-				? [{ type: "text", text: message.content }]
-				: message.content.filter((content): content is TextBlock => content.type === "text");
-		return textBlocks.map(block => block.text).join("");
-	}
-
 	showStatus(message: string, options?: { dim?: boolean }): void {
 		const children = this.ctx.chatContainer.children;
 		const last = children.length > 0 ? children[children.length - 1] : undefined;
@@ -405,7 +396,7 @@ export class UiHelpers {
 			}
 			case "user":
 			case "developer": {
-				const textContent = this.ctx.getUserMessageText(message);
+				const textContent = extractDisplayInputText(message);
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
 					const cached = options?.reuseSettledComponent
@@ -629,7 +620,18 @@ export class UiHelpers {
 					}
 					resolveWaitingPoll(content.name);
 
-					if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+					const partialJson = getStreamingPartialJson(content);
+					const rawInput = content.customWireName !== undefined;
+					const renderArgs =
+						partialJson !== undefined
+							? decodeStreamedToolArgs(partialJson, {
+									rawInput,
+									fullArgs: content.arguments,
+									streamingStringKeys: streamingStringKeysForTool(content.name, rawInput),
+								})
+							: content.arguments;
+
+					if (content.name === "read" && readArgsCollapseIntoGroup(renderArgs)) {
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
@@ -638,7 +640,7 @@ export class UiHelpers {
 								readGroup.setExpanded(this.ctx.toolOutputExpanded);
 								this.ctx.chatContainer.addChild(readGroup);
 							}
-							readGroup.updateArgs(content.arguments, content.id);
+							readGroup.updateArgs(renderArgs, content.id);
 							readGroup.updateResult(
 								{ content: [{ type: "text", text: errorMessage }], isError: true },
 								false,
@@ -652,13 +654,13 @@ export class UiHelpers {
 								readGroup.setExpanded(this.ctx.toolOutputExpanded);
 								this.ctx.chatContainer.addChild(readGroup);
 							}
-							readGroup.updateArgs(content.arguments, content.id);
+							readGroup.updateArgs(renderArgs, content.id);
 							this.ctx.pendingTools.set(content.id, readGroup);
 							if (assistantComponent) {
 								readToolCallAssistantComponents.set(content.id, assistantComponent);
 							}
 						} else {
-							const normalizedArgs = normalizeToolArgs(content.arguments);
+							const normalizedArgs = normalizeToolArgs(renderArgs);
 							readToolCallArgs.set(content.id, normalizedArgs);
 							if (assistantComponent) {
 								readToolCallAssistantComponents.set(content.id, assistantComponent);
@@ -671,16 +673,6 @@ export class UiHelpers {
 					readGroup?.seal();
 					readGroup = null;
 					const tool = this.ctx.viewSession.getToolByName(content.name);
-					const partialJson = getStreamingPartialJson(content);
-
-					const rawInput = content.customWireName !== undefined;
-					const renderArgs = partialJson
-						? decodeStreamedToolArgs(partialJson, {
-								rawInput,
-								fullArgs: content.arguments,
-								streamingStringKeys: streamingStringKeysForTool(content.name, rawInput),
-							})
-						: content.arguments;
 					const component = new ToolExecutionComponent(
 						content.name,
 						renderArgs,

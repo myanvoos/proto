@@ -11,7 +11,8 @@ export const CATCHUP_FRAMES = 8;
 type AssistantContentBlock = AssistantMessage["content"][number];
 type DisplayThinkingContentBlock = Extract<AssistantContentBlock, { type: "thinking" }> & { rawThinking?: string };
 
-type StreamingRevealComponent = Pick<AssistantMessageComponent, "updateContent"> & Component;
+type StreamingRevealComponent = Pick<AssistantMessageComponent, "isTranscriptBlockFinalized" | "updateContent"> &
+	Component;
 type GraphemeSlicer = (index: number, text: string, units: number) => string;
 
 type StreamingRevealControllerOptions = {
@@ -254,22 +255,27 @@ export class StreamingRevealController {
 		this.#syncTimer(total);
 	}
 
-	setTarget(message: AssistantMessage): void {
+	setTarget(message: AssistantMessage, revealAll = false): void {
 		this.#target = message;
 		this.#hideThinkingBlock = this.#getHideThinkingBlock();
 		this.#proseOnlyThinking = this.#getProseOnlyThinking();
 		this.#smoothStreaming = this.#getSmoothStreaming();
-		if (!this.#component) return;
+		const component = this.#component;
+		if (!component) return;
+		if (component.isTranscriptBlockFinalized()) {
+			this.#stopTimer();
+			return;
+		}
 		if (!this.#smoothStreaming) {
 			const total = this.#visibleUnits(message);
-			this.#component.updateContent(this.#build(message, total), { transient: true });
+			component.updateContent(this.#build(message, total), { transient: true });
 			return;
 		}
 		const total = this.#visibleUnits(message);
-		if (message.content.some(block => block.type === "toolCall")) {
+		if (revealAll || message.content.some(block => block.type === "toolCall")) {
 			this.#revealed = total;
 			this.#stopTimer();
-			this.#component.updateContent(this.#build(message, this.#revealed), {
+			component.updateContent(this.#build(message, this.#revealed), {
 				transient: true,
 			});
 			return;
@@ -291,6 +297,10 @@ export class StreamingRevealController {
 
 	resyncVisibility(): void {
 		if (!this.#target || !this.#component) return;
+		if (this.#component.isTranscriptBlockFinalized()) {
+			this.#stopTimer();
+			return;
+		}
 		this.#hideThinkingBlock = this.#getHideThinkingBlock();
 		this.#proseOnlyThinking = this.#getProseOnlyThinking();
 
@@ -318,6 +328,10 @@ export class StreamingRevealController {
 
 	#renderCurrent(): void {
 		if (!this.#target || !this.#component) return;
+		if (this.#component.isTranscriptBlockFinalized()) {
+			this.#stopTimer();
+			return;
+		}
 
 		this.#component.updateContent(this.#build(this.#target, this.#revealed), { transient: true });
 	}
@@ -349,6 +363,10 @@ export class StreamingRevealController {
 		const component = this.#component;
 		if (!target || !component) {
 			this.stop();
+			return;
+		}
+		if (component.isTranscriptBlockFinalized()) {
+			this.#stopTimer();
 			return;
 		}
 		const total = this.#visibleUnits(target);

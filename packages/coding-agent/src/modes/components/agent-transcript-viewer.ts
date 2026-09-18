@@ -1,14 +1,17 @@
 import * as fs from "node:fs";
-import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
+import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Editor, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import type { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import type { AgentRegistry, AgentStatus } from "../../registry/agent-registry";
+import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
 import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
+import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../controllers/tool-args-reveal";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { getEditorTheme, theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
@@ -64,6 +67,13 @@ interface LocalTranscriptSentinel {
 	bytes: Buffer;
 }
 
+interface TranscriptWindowGroup {
+	start: number;
+	startsBoundary: boolean;
+	entries: FileEntry[];
+	components: Component[];
+}
+
 interface LocalTranscriptState {
 	path: string;
 	dev: number;
@@ -109,6 +119,7 @@ export class AgentTranscriptViewer implements Component {
 	#emptyContentText: string | undefined;
 	#emptyContentLines: readonly string[] = [];
 	#followBottom = true;
+	#scrollToTopOnNextContent = false;
 	#editor: Editor | undefined;
 	#notice: string | undefined;
 	#expanded = false;
@@ -117,6 +128,14 @@ export class AgentTranscriptViewer implements Component {
 	#localUnavailable = "";
 
 	#model: string | undefined;
+	#windowGroups: TranscriptWindowGroup[] = [];
+	#transientBuilder: ChatTranscriptBuilder | undefined;
+	#awaitingTransientPersistence = false;
+	#reconcileTimer: NodeJS.Timeout | undefined;
+	#reconcileAttempts = 0;
+	#liveSession: AgentSession | undefined;
+	#unsubscribeSession: (() => void) | undefined;
+	#unsubscribeRegistry: (() => void) | undefined;
 	#pollTimer: NodeJS.Timeout | undefined;
 	#disposed = false;
 
@@ -141,8 +160,10 @@ export class AgentTranscriptViewer implements Component {
 			this.#editor.onSubmit = text => this.#submit(text);
 		}
 		this.#refresh();
-		this.#pollTimer = setInterval(() => this.#refresh(), POLL_MS);
-		this.#pollTimer.unref?.();
+		this.#syncSessionSource();
+		this.#unsubscribeRegistry = deps.registry.onChange(event => {
+			if (event.ref.id === deps.agentId) this.#syncSessionSource();
+		});
 	}
 
 	get #sendable(): boolean {
@@ -154,16 +175,125 @@ export class AgentTranscriptViewer implements Component {
 	dispose(): void {
 		this.#disposed = true;
 		this.#stopPolling();
+		this.#unsubscribeRegistry?.();
+		this.#unsubscribeRegistry = undefined;
+		this.#unsubscribeSession?.();
+		this.#unsubscribeSession = undefined;
+		this.#liveSession = undefined;
+		if (this.#reconcileTimer) clearTimeout(this.#reconcileTimer);
+		this.#reconcileTimer = undefined;
+		this.#clearTransient();
 		this.#scrollView.setLines([]);
 		this.#scrollContentLines = undefined;
 		this.#scrollContentRevision = -1;
 		this.#emptyContentText = undefined;
 		this.#emptyContentLines = [];
+		this.#scrollToTopOnNextContent = false;
 		this.#localState = undefined;
 		this.#localUnavailable = "";
+		this.#windowGroups = [];
 		this.#model = undefined;
 		this.#notice = undefined;
 		this.#builder.dispose();
+	}
+
+	#syncSessionSource(): void {
+		const session = this.deps.registry.get(this.deps.agentId)?.session ?? undefined;
+		if (session === this.#liveSession && (session !== undefined || this.#pollTimer !== undefined)) return;
+		this.#unsubscribeSession?.();
+		this.#unsubscribeSession = undefined;
+		this.#liveSession = session;
+		if (session) {
+			this.#stopPolling();
+			this.#unsubscribeSession = session.subscribe(event => this.#handleSessionEvent(event));
+			this.#refresh();
+			return;
+		}
+		this.#clearTransient();
+		if (!this.#pollTimer && !this.#disposed) {
+			this.#pollTimer = setInterval(() => this.#refresh(), POLL_MS);
+			this.#pollTimer.unref?.();
+		}
+	}
+
+	#handleSessionEvent(event: AgentSessionEvent): void {
+		if (this.#disposed) return;
+		if (event.type === "message_update" && event.message.role === "assistant") {
+			this.#showTransient(event.message);
+			return;
+		}
+		if (event.type !== "message_end") return;
+		if (event.message.role === "assistant") this.#showTransient(event.message);
+		if (event.message.role === "assistant") {
+			this.#awaitingTransientPersistence = true;
+			this.#reconcileAttempts = 0;
+		}
+		this.#schedulePersistenceReconcile();
+	}
+
+	#showTransient(message: Extract<AgentMessage, { role: "assistant" }>): void {
+		if (this.#transientBuilder) this.#builder.container.removeChild(this.#transientBuilder.container);
+		else {
+			this.#transientBuilder = new ChatTranscriptBuilder({
+				ui: this.deps.ui,
+				getTool: this.deps.getTool,
+				isBuiltInTool: this.deps.isBuiltInTool,
+				getMessageRenderer: this.deps.getMessageRenderer,
+				hideThinkingBlock: this.deps.hideThinkingBlock,
+				proseOnlyThinking: this.deps.proseOnlyThinking,
+				requestRender: this.deps.requestRender,
+			});
+		}
+		const content = message.content.map(block => {
+			if (block.type !== "toolCall") return block;
+			const partialJson = getStreamingPartialJson(block);
+			if (partialJson === undefined) return block;
+			const rawInput = block.customWireName !== undefined;
+			return {
+				...block,
+				arguments: decodeStreamedToolArgs(partialJson, {
+					rawInput,
+					fullArgs: block.arguments,
+					streamingStringKeys: streamingStringKeysForTool(block.name, rawInput),
+				}),
+			};
+		});
+		this.#transientBuilder.rebuild([
+			{
+				type: "message",
+				id: "viewer-live-message",
+				parentId: null,
+				timestamp: new Date(message.timestamp).toISOString(),
+				message: { ...message, content },
+			},
+		]);
+		this.#transientBuilder.setExpanded(this.#expanded);
+		this.#builder.container.addChild(this.#transientBuilder.container);
+		this.deps.requestRender();
+	}
+
+	#clearTransient(): void {
+		const transient = this.#transientBuilder;
+		if (!transient) return;
+		this.#builder.container.removeChild(transient.container);
+		transient.dispose();
+		this.#transientBuilder = undefined;
+		this.#awaitingTransientPersistence = false;
+		this.#reconcileAttempts = 0;
+	}
+
+	#schedulePersistenceReconcile(): void {
+		if (this.#reconcileTimer || this.#disposed) return;
+		const delay = Math.min(250, 10 * 2 ** this.#reconcileAttempts);
+		this.#reconcileTimer = setTimeout(() => {
+			this.#reconcileTimer = undefined;
+			this.#reconcileAttempts++;
+			this.#refresh();
+			if (this.#awaitingTransientPersistence && this.#reconcileAttempts < 8) {
+				this.#schedulePersistenceReconcile();
+			}
+		}, delay);
+		this.#reconcileTimer.unref?.();
 	}
 
 	#stopPolling(): void {
@@ -187,12 +317,18 @@ export class AgentTranscriptViewer implements Component {
 			return;
 		}
 		const state = this.#localState;
+		const wasFollowingTail = state === undefined || this.#followBottom;
 		if (!state || !this.#sameFileContents(sessionFile, stat, state)) {
-			this.#loadTail(sessionFile, stat);
+			this.#loadTail(sessionFile, stat, wasFollowingTail);
 			return;
 		}
-		if (stat.size === state.size && stat.mtimeMs === state.mtimeMs && stat.ctimeMs === state.ctimeMs) return;
-		if (stat.size > state.size && !state.atTail) {
+		if (stat.size === state.size) {
+			if (stat.mtimeMs !== state.mtimeMs || stat.ctimeMs !== state.ctimeMs) {
+				this.#localState = { ...state, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
+			}
+			return;
+		}
+		if (!state.atTail) {
 			this.#localState = {
 				...state,
 				size: stat.size,
@@ -203,7 +339,7 @@ export class AgentTranscriptViewer implements Component {
 			this.deps.requestRender();
 			return;
 		}
-		this.#loadTail(sessionFile, stat);
+		this.#appendFileGrowth(sessionFile, stat, state);
 	}
 
 	#clearLocal(reason: string): void {
@@ -211,6 +347,8 @@ export class AgentTranscriptViewer implements Component {
 		this.#localState = undefined;
 		this.#localUnavailable = reason;
 		this.#model = undefined;
+		this.#windowGroups = [];
+		this.#clearTransient();
 		this.#rebuild([]);
 	}
 
@@ -230,7 +368,7 @@ export class AgentTranscriptViewer implements Component {
 		return true;
 	}
 
-	#loadTail(sessionFile: string, stat: fs.Stats): void {
+	#loadTail(sessionFile: string, stat: fs.Stats, followBottom = true): void {
 		try {
 			this.#loadWindow(
 				sessionFile,
@@ -238,6 +376,7 @@ export class AgentTranscriptViewer implements Component {
 				readTranscriptTail(sessionFile, stat.size, TRANSCRIPT_WINDOW_SOFT_BYTES, TRANSCRIPT_WINDOW_SOFT_MESSAGES),
 				"bottom",
 				true,
+				followBottom,
 			);
 		} catch (err) {
 			logger.debug("transcript viewer: tail window read failed", { err: String(err) });
@@ -250,6 +389,7 @@ export class AgentTranscriptViewer implements Component {
 		window: TranscriptFileWindow,
 		position: "top" | "bottom",
 		atTail: boolean,
+		followBottom = position === "bottom",
 	): void {
 		this.#localUnavailable = "";
 		this.#localState = {
@@ -265,9 +405,108 @@ export class AgentTranscriptViewer implements Component {
 			sentinels: sentinelsFromFile(sessionFile, stat.size),
 		};
 		this.#model = undefined;
-		this.#rebuild(this.#extractMessages(parseSessionEntries(window.text)));
-		this.#followBottom = position === "bottom";
-		if (position === "top") this.#scrollView.scrollToTop();
+		this.#followBottom = followBottom;
+		this.#scrollToTopOnNextContent = position === "top";
+		this.#clearTransient();
+		this.#builder.rebuild([]);
+		this.#windowGroups = [];
+		this.#appendWindowGroups(this.#parseWindowGroups(window));
+		this.deps.requestRender();
+	}
+
+	#parseWindowGroups(window: TranscriptFileWindow): TranscriptWindowGroup[] {
+		const bytes = Buffer.from(window.text);
+		const groups: TranscriptWindowGroup[] = [];
+		let current: TranscriptWindowGroup | undefined;
+		let prelude: FileEntry[] = [];
+		let lineStart = 0;
+		while (lineStart < bytes.byteLength) {
+			const newline = bytes.indexOf(0x0a, lineStart);
+			if (newline < 0) break;
+			const entries = parseSessionEntries(bytes.subarray(lineStart, newline + 1).toString("utf-8"));
+			for (const entry of entries) {
+				const boundary =
+					entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant");
+				if (boundary) {
+					if (current) groups.push(current);
+					current = {
+						start: prelude.length > 0 ? window.start : window.start + lineStart,
+						startsBoundary: true,
+						entries: [...prelude, entry],
+						components: [],
+					};
+					prelude = [];
+				} else if (current) current.entries.push(entry);
+				else prelude.push(entry);
+			}
+			lineStart = newline + 1;
+		}
+		if (current) groups.push(current);
+		else if (prelude.length > 0) {
+			groups.push({ start: window.start, startsBoundary: false, entries: prelude, components: [] });
+		}
+		return groups;
+	}
+
+	#appendWindowGroups(groups: TranscriptWindowGroup[]): void {
+		for (const group of groups) {
+			let target = group;
+			if (!group.startsBoundary && this.#windowGroups.length > 0) target = this.#windowGroups.at(-1)!;
+			else this.#windowGroups.push(group);
+			const before = new Set(this.#builder.container.children);
+			this.#append(this.#extractMessages(group.entries));
+			for (const component of this.#builder.container.children) {
+				if (!before.has(component)) target.components.push(component);
+			}
+		}
+	}
+
+	#appendFileGrowth(sessionFile: string, stat: fs.Stats, state: LocalTranscriptState): void {
+		let cursor = state.windowEnd;
+		try {
+			for (;;) {
+				const window = readTranscriptAfter(
+					sessionFile,
+					cursor,
+					stat.size,
+					TRANSCRIPT_WINDOW_SOFT_BYTES,
+					TRANSCRIPT_WINDOW_SOFT_MESSAGES,
+				);
+				if (window.end <= cursor) break;
+				if (this.#awaitingTransientPersistence) this.#clearTransient();
+				this.#appendWindowGroups(this.#parseWindowGroups(window));
+				cursor = window.end;
+			}
+			this.#evictOldGroups(cursor);
+			this.#localState = {
+				...state,
+				size: stat.size,
+				mtimeMs: stat.mtimeMs,
+				ctimeMs: stat.ctimeMs,
+				windowStart: this.#windowGroups[0]?.start ?? cursor,
+				windowEnd: cursor,
+				atTail: true,
+				sentinels: sentinelsFromFile(sessionFile, stat.size),
+			};
+			this.deps.requestRender();
+		} catch (err) {
+			logger.debug("transcript viewer: incremental tail read failed", { err: String(err) });
+		}
+	}
+
+	#evictOldGroups(end: number): void {
+		while (
+			this.#windowGroups.length > 1 &&
+			(this.#windowGroups.length > TRANSCRIPT_WINDOW_SOFT_MESSAGES ||
+				end - this.#windowGroups[0]!.start > TRANSCRIPT_WINDOW_SOFT_BYTES)
+		) {
+			const evicted = this.#windowGroups.shift()!;
+			for (const component of evicted.components) {
+				if (this.#builder.container.children.includes(component)) {
+					this.#builder.container.disposeAndRemoveChild(component);
+				}
+			}
+		}
 	}
 
 	#pageOlder(): boolean {
@@ -355,7 +594,6 @@ export class AgentTranscriptViewer implements Component {
 
 	#append(entries: SessionMessageEntry[]): void {
 		this.#builder.append(entries);
-		this.deps.requestRender();
 	}
 
 	handleInput(data: string): void {
@@ -501,9 +739,15 @@ export class AgentTranscriptViewer implements Component {
 			contentRevision = this.#builder.container.getRenderRevision();
 		}
 		if (contentLines !== this.#scrollContentLines || contentRevision !== this.#scrollContentRevision) {
-			this.#scrollView.setLines(contentLines);
+			this.#scrollView.setLines(contentLines, {
+				preserveAnchor: !this.#followBottom && !this.#scrollToTopOnNextContent,
+			});
 			this.#scrollContentLines = contentLines;
 			this.#scrollContentRevision = contentRevision;
+		}
+		if (this.#scrollToTopOnNextContent) {
+			this.#scrollView.scrollToTop();
+			this.#scrollToTopOnNextContent = false;
 		}
 		this.#scrollView.setHeight(viewportHeight);
 		if (this.#followBottom) this.#scrollView.scrollToBottom();

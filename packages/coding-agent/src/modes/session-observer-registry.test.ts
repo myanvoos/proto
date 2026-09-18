@@ -51,7 +51,7 @@ describe("SessionObserverRegistry detached reattachment", () => {
 		const agents = new AgentRegistry();
 		agents.register({
 			id: "running-worker",
-			displayName: "running-worker",
+			label: "running-worker",
 			kind: "sub",
 			fleetRoot: "/session-a/fleet",
 			sessionFile: "/session-a/fleet/running-worker.jsonl",
@@ -61,7 +61,7 @@ describe("SessionObserverRegistry detached reattachment", () => {
 		});
 		agents.register({
 			id: "other-worker",
-			displayName: "other-worker",
+			label: "other-worker",
 			kind: "sub",
 			fleetRoot: "/session-b/fleet",
 			status: "running",

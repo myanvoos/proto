@@ -72,7 +72,6 @@ import {
 	resolveModelRoleValue,
 } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
-import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { buildServiceTierByFamily } from "./config/service-tier";
 import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "./cursor";
@@ -180,42 +179,49 @@ import {
 	toReasoningEffort,
 } from "./thinking";
 import {
-	BashTool,
+	applyProviderGlobalsFromSettings,
 	BUILTIN_TOOLS,
 	createTools,
 	DISABLED_TOOL_NAMES,
 	defaultLoadModeForToolName,
+	getImageGenTools,
 	getSearchTools,
 	HIDDEN_TOOLS,
+	isIrcEnabled,
 	isMountableUnderXdev,
-	listXdevTools,
 	ORCHESTRATE_TOOL_NAMES,
-	ReadTool,
 	releaseComputerSessionsForOwner,
-	resolveMountedXdevExecutable,
 	supportsExternalThinking,
 	type Tool,
 	type ToolSession,
-	WebSearchTool,
-	xdevDocsAll,
-	xdevEntries,
+	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "./tools";
+import { BashTool } from "./tools/bash";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
 import { ToolContextStore } from "./tools/context";
-import { isIrcEnabled } from "./tools/fleet";
-import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
+import { ReadTool } from "./tools/read";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
+import { listXdevTools, resolveMountedXdevExecutable, xdevDocsAll, xdevEntries } from "./tools/xdev";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
 import { normalizeProviderContextImagesForModel } from "./utils/image-loading";
 import { formatLocalCalendarDate } from "./utils/local-date";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { buildNamedToolChoice } from "./utils/tool-choice";
-import builtinMemory from "./vendor/pi-blackhole/index.js";
+import { WebSearchTool } from "./web/search";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
+
+let builtinMemoryPromise: Promise<ExtensionFactory> | undefined;
+
+function loadBuiltinMemory(): Promise<ExtensionFactory> {
+	if (!builtinMemoryPromise) {
+		// Dynamic-import exception: this vendored 605 KB optional subsystem costs ~200 ms and is needed only by constructed sessions.
+		builtinMemoryPromise = import("./vendor/pi-blackhole/index.js").then(module => module.default);
+	}
+	return builtinMemoryPromise;
+}
 
 type McpNotificationEntry = {
 	serverName: string;
@@ -1534,7 +1540,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 
 			if (options.toolNames?.includes("web_search")) {
-				customTools.push(...getSearchTools());
+				customTools.push(...(await getSearchTools()));
 			}
 
 			customToolPaths =
@@ -1592,7 +1598,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		if (!restrictToolNames && !extensionsResult.extensions.some(extension => extension.commands.has("memory"))) {
 			const memoryExtension = await loadExtensionFromFactory(
-				builtinMemory,
+				await loadBuiltinMemory(),
 				cwd,
 				eventBus,
 				extensionsResult.runtime,
@@ -2356,7 +2362,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const registrationInput = {
 			id: resolvedAgentId,
-			displayName: resolvedAgentDisplayName,
+			label: resolvedAgentDisplayName,
 			kind: agentKind,
 			parentId: options.parentAgentId,
 			session: null,

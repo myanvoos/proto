@@ -202,6 +202,69 @@ for (const [cols, rows] of [
 	});
 }
 
+const WRAPPED_PRE_TOOL_TEXT = "Step 2 is the real fix. Let me check the helpers I need to preserve semantics exactly.";
+
+test("a finalized wrapped assistant rejects post-final updates instead of creating a scrollback staircase", () => {
+	const scheduledRenders: Array<() => void> = [];
+	const scheduler: RenderScheduler = {
+		now: () => performance.now(),
+		scheduleImmediate(callback): void {
+			scheduledRenders.push(callback);
+		},
+		scheduleRender(callback): { cancel(): void } {
+			let cancelled = false;
+			scheduledRenders.push(() => {
+				if (!cancelled) callback();
+			});
+			return {
+				cancel(): void {
+					cancelled = true;
+				},
+			};
+		},
+	};
+	const flush = (): void => {
+		while (scheduledRenders.length > 0) scheduledRenders.shift()!();
+	};
+	const terminal = new BufferTerminal(56, 8);
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const transcript = new TranscriptContainer();
+	transcript.addChild(new StaticBlock(Array.from({ length: 8 }, (_value, index) => `history-${index}`)));
+	const reply = new AssistantMessageComponent(undefined, false);
+	transcript.addChild(reply);
+	tui.addChild(transcript);
+	tui.addChild(
+		new StaticBlock(["", "chrome-1", "chrome-2", "chrome-3", "chrome-4", "chrome-5", "> editor", "status"]),
+	);
+	tui.start({ deferInput: true });
+	flush();
+	try {
+		for (let end = 3; end <= 54; end += 3) {
+			reply.updateContent(message(WRAPPED_PRE_TOOL_TEXT.slice(0, end), ""), { transient: true });
+			tui.requestComponentRender(reply);
+			flush();
+		}
+
+		// EventController drains the reveal before finalizing; updates after this point must be inert.
+		reply.updateContent(message(WRAPPED_PRE_TOOL_TEXT, ""), { transient: true });
+		tui.requestComponentRender(reply);
+		flush();
+		reply.markTranscriptBlockFinalized();
+		for (let end = 55; end <= WRAPPED_PRE_TOOL_TEXT.length; end++) {
+			reply.updateContent(message(WRAPPED_PRE_TOOL_TEXT.slice(0, end), ""), { transient: true });
+			tui.requestComponentRender(reply);
+			flush();
+		}
+
+		const tape = terminal.tape().map(line => stripAnsi(line).trim());
+		const continuationRows = tape.filter(line => line.includes("need to"));
+		expect(continuationRows).toEqual(["need to preserve semantics exactly."]);
+		expect(tape.indexOf(continuationRows[0]!)).toBeLessThan(tape.length - terminal.rows);
+	} finally {
+		tui.stop();
+	}
+});
+
 // A completed-todo card animates its strike-through reveal for ~900 ms after the
 // block is already finalized. When the reply streaming below it pushes the card
 // into native scrollback mid-reveal, every further tick used to rewrite rows the

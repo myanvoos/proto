@@ -103,3 +103,35 @@ test("a streaming reply settles its prefix while a thinking block precedes the t
 	// The heading adds rows to the settled prefix; it never truncates it.
 	expect(withThinking[withThinking.length - 1]).toBeGreaterThan(withoutThinking[withoutThinking.length - 1]!);
 });
+
+const thinkingMessage: AssistantMessage = {
+	...message,
+	content: [
+		{ type: "thinking", thinking: "deliberating\n```ts\nconst hidden = 1;\n```\ndone" },
+		{ type: "text", text: "answer" },
+	],
+};
+
+// Children are materialized once from the message, so a setter that only flipped a field and
+// notified the transcript left the old content on screen: the user toggled "hide thinking" (or
+// switched to prose-only) and the transcript kept showing the reasoning until something else
+// happened to invalidate the component.
+test("hiding thinking on a finalized transcript block takes effect on the next render", () => {
+	const assistant = new AssistantMessageComponent(thinkingMessage);
+	expect(Bun.stripANSI(assistant.render(80).join("\n"))).toContain("deliberating");
+
+	assistant.setHideThinkingBlock(true);
+
+	expect(Bun.stripANSI(assistant.render(80).join("\n"))).not.toContain("deliberating");
+	assistant.dispose();
+});
+
+test("switching a finalized transcript block to prose-only thinking drops fenced code on the next render", () => {
+	const assistant = new AssistantMessageComponent(thinkingMessage, false, undefined, undefined, undefined, false);
+	expect(Bun.stripANSI(assistant.render(80).join("\n"))).toContain("const hidden");
+
+	assistant.setProseOnlyThinking(true);
+
+	expect(Bun.stripANSI(assistant.render(80).join("\n"))).not.toContain("const hidden");
+	assistant.dispose();
+});

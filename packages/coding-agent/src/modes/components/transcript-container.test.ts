@@ -9,6 +9,8 @@ class TrackedBlock implements Component {
 	#version = 0;
 	#finalized: boolean;
 	committedRows = -1;
+	commitCalls = 0;
+	renderCalls = 0;
 
 	constructor(lines: readonly string[], finalized = true) {
 		this.lines = lines;
@@ -16,6 +18,7 @@ class TrackedBlock implements Component {
 	}
 
 	render(_width: number): readonly string[] {
+		this.renderCalls++;
 		return this.lines;
 	}
 
@@ -33,6 +36,7 @@ class TrackedBlock implements Component {
 
 	setNativeScrollbackCommittedRows(rows: number): void {
 		this.committedRows = rows;
+		this.commitCalls++;
 	}
 
 	setLines(lines: readonly string[], finalized = this.#finalized): void {
@@ -357,4 +361,50 @@ test("a completed tall tool block remains in scrollback while the next reply str
 	for (const row of response.slice(0, -1)) expect(lines).toContain(row);
 	expect(lines.slice(-2)).toEqual(["todo", "editor"]);
 	tui.stop();
+});
+
+test("streamed rows do not republish the unchanged committed transcript prefix", () => {
+	const history = Array.from({ length: 1_000 }, (_value, index) => new TrackedBlock([`history-${index}`]));
+	const live = new SettlingBlock(["stream-0"], false);
+	const transcript = new TranscriptContainer();
+	for (const block of history) transcript.addChild(block);
+	transcript.addChild(live);
+	transcript.render(80);
+	transcript.setNativeScrollbackCommittedRows(1_999);
+	for (const block of [...history, live]) block.commitCalls = 0;
+
+	live.setLines(["stream-0", "stream-1"], false);
+	const incremental = transcript.render(80);
+	transcript.setNativeScrollbackCommittedRows(2_000);
+
+	const rebuilt = new TranscriptContainer();
+	for (const block of history) rebuilt.addChild(new TrackedBlock(block.lines));
+	rebuilt.addChild(new SettlingBlock(live.lines, false));
+	expect(incremental, "incremental watermark publication preserves the rebuilt frame exactly").toEqual(
+		rebuilt.render(80),
+	);
+	expect(
+		history.reduce((calls, block) => calls + block.commitCalls, 0),
+		"settled history receives no callbacks when only the live tail crosses the watermark",
+	).toBe(0);
+	expect(live.commitCalls, "the crossed live interval receives the new watermark").toBe(1);
+});
+
+test("appending a transcript block preserves the frame without rerendering settled history", () => {
+	const history = Array.from({ length: 1_000 }, (_value, index) => new TrackedBlock([`history-${index}`]));
+	const transcript = new TranscriptContainer();
+	for (const block of history) transcript.addChild(block);
+	transcript.render(80);
+	for (const block of history) block.renderCalls = 0;
+	transcript.addChild(new TrackedBlock(["new-tail"]));
+	const incremental = transcript.render(80);
+
+	const rebuilt = new TranscriptContainer();
+	for (const block of history) rebuilt.addChild(new TrackedBlock(block.lines));
+	rebuilt.addChild(new TrackedBlock(["new-tail"]));
+	expect(incremental, "append-only prefix reuse preserves the rebuilt frame exactly").toEqual(rebuilt.render(80));
+	expect(
+		history.reduce((calls, block) => calls + block.renderCalls, 0),
+		"settled blocks are not rerendered when a new tail block is appended",
+	).toBe(0);
 });

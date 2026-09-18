@@ -211,9 +211,6 @@ export async function runCli(argv: string[]): Promise<void> {
 
 	if (isProcessEntry) declareWorkerHostEntry();
 
-	const { installGlobalProxyFetch } = await import("@oh-my-pi/pi-ai/utils/proxy");
-	installGlobalProxyFetch();
-
 	if (resolvedArgv[0] === "--license") {
 		// Keep these large assets out of normal startup; they are only needed for --license.
 		const [{ default: rootLicense }, { default: thirdPartyNotices }] = await Promise.all([
@@ -225,6 +222,13 @@ export async function runCli(argv: string[]): Promise<void> {
 		);
 		return;
 	}
+	const firstArg = resolvedArgv[0];
+	const isHelp = firstArg === "help" || resolvedArgv.some(arg => arg === "--help" || arg === "-h");
+	const isVersion = firstArg === "--version" || firstArg === "-v";
+	// Conditional startup imports keep metadata-only commands proxy-free; static imports cannot preserve that fast path.
+	const cliRuntimePromise = Promise.all([import("@oh-my-pi/pi-utils/cli"), import("./cli-commands")]);
+	const proxyModulePromise = isHelp || isVersion ? undefined : import("@oh-my-pi/pi-ai/utils/proxy");
+
 	let stopStartupComposer: (() => void) | undefined;
 	if (
 		!process.env.PI_TIMING &&
@@ -238,11 +242,11 @@ export async function runCli(argv: string[]): Promise<void> {
 	}
 
 	try {
-		const [{ run }, { commands, resolveCliArgv }] = await Promise.all([
-			import("@oh-my-pi/pi-utils/cli"),
-			import("./cli-commands"),
-		]);
-
+		const [{ run }, { commands, resolveCliArgv }] = await cliRuntimePromise;
+		if (proxyModulePromise) {
+			const { installGlobalProxyFetch } = await proxyModulePromise;
+			installGlobalProxyFetch();
+		}
 		const resolved = resolveCliArgv(resolvedArgv);
 		if ("error" in resolved) {
 			process.stderr.write(`error: ${resolved.error}\n`);

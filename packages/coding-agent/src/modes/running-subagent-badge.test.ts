@@ -6,14 +6,14 @@ test("the running-agent badge excludes agents from previous session fleets", () 
 	const registry = new AgentRegistry();
 	registry.register({
 		id: MAIN_AGENT_ID,
-		displayName: "main",
+		label: "main",
 		kind: "main",
 		session: null,
 		fleetRoot: "/current/fleet",
 	});
 	registry.register({
 		id: "current-worker",
-		displayName: "current",
+		label: "current",
 		kind: "sub",
 		parentId: MAIN_AGENT_ID,
 		session: null,
@@ -21,7 +21,7 @@ test("the running-agent badge excludes agents from previous session fleets", () 
 	});
 	registry.register({
 		id: "previous-worker",
-		displayName: "previous",
+		label: "previous",
 		kind: "sub",
 		session: null,
 		fleetRoot: "/previous/fleet",

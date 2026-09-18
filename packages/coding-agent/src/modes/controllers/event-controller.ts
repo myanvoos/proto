@@ -30,11 +30,12 @@ import { createAssistantMessageComponent } from "../utils/interactive-context-he
 import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
+	extractDisplayInputText,
 	splitAssistantMessageToolTimeline,
 } from "../utils/transcript-render-helpers";
 import { isWarpCliAgentProtocolActive } from "../warp-events";
 import { StreamingRevealController } from "./streaming-reveal";
-import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
+import { decodeStreamedToolArgs, streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
 
@@ -239,6 +240,35 @@ export class EventController {
 		this.ctx.pendingTools.delete(toolCallId);
 		this.#toolTimelineComponents.delete(toolCallId);
 		this.#clearReadToolCall(toolCallId);
+	}
+
+	#detachToolCardForRendererMigration(toolCallId: string, component: ToolExecutionHandle): number | undefined {
+		const componentIndex = this.ctx.chatContainer.children.indexOf(component);
+		let replacementIndex = componentIndex >= 0 ? componentIndex : undefined;
+		if (component instanceof ReadToolGroupComponent) {
+			const removeGroup = component.removeEntry(toolCallId);
+			if (component === this.#lastReadGroup) this.#resetReadGroup();
+			if (removeGroup) {
+				this.ctx.chatContainer.disposeAndRemoveChild(component);
+			} else if (replacementIndex !== undefined) {
+				replacementIndex++;
+			}
+		} else {
+			this.ctx.chatContainer.disposeAndRemoveChild(component);
+		}
+		this.ctx.pendingTools.delete(toolCallId);
+		this.#toolTimelineComponents.delete(toolCallId);
+		this.#clearReadToolCall(toolCallId);
+		return replacementIndex;
+	}
+
+	#moveTranscriptComponent(component: Component, index: number | undefined): void {
+		if (index === undefined) return;
+		const children = this.ctx.chatContainer.children;
+		const currentIndex = children.indexOf(component);
+		if (currentIndex < 0 || currentIndex === index) return;
+		children.splice(currentIndex, 1);
+		children.splice(Math.min(index, children.length), 0, component);
 	}
 
 	#migrateStreamedToolCallId(oldId: string, newId: string): void {
@@ -598,8 +628,14 @@ export class EventController {
 				this.ctx.updatePendingMessagesDisplay();
 			}
 			this.ctx.ui.requestRender();
+		} else if (event.message.role === "developer") {
+			this.#resetReadGroup();
+			this.#resolveDisplaceablePoll();
+			this.#resolveDisplaceableTodo();
+			this.ctx.addMessageToChat(event.message);
+			this.ctx.ui.requestRender();
 		} else if (event.message.role === "user") {
-			const textContent = this.ctx.getUserMessageText(event.message);
+			const textContent = extractDisplayInputText(event.message);
 			const imageBlocks =
 				typeof event.message.content === "string"
 					? []
@@ -794,7 +830,10 @@ export class EventController {
 			this.ctx.streamingMessage = event.message;
 			this.#updateWorkingSpinnerFrames(event.message);
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
-			this.#streamingReveal.setTarget(timeline.beforeTools);
+			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
+			if (timeline.hasToolCalls && !this.ctx.streamingComponent.isTranscriptBlockFinalized()) {
+				this.ctx.streamingComponent.markTranscriptBlockFinalized();
+			}
 
 			const visibleBlockCount = this.ctx.streamingMessage.content.filter(
 				content =>
@@ -806,9 +845,6 @@ export class EventController {
 				this.#lastVisibleBlockCount = visibleBlockCount;
 			}
 
-			if (this.ctx.streamingMessage.content.some(content => content.type === "toolCall")) {
-				this.ctx.streamingComponent.markTranscriptBlockFinalized();
-			}
 			for (let contentIndex = 0; contentIndex < this.ctx.streamingMessage.content.length; contentIndex++) {
 				const content = this.ctx.streamingMessage.content[contentIndex]!;
 				if (content.type !== "toolCall") continue;
@@ -818,39 +854,58 @@ export class EventController {
 					this.#migrateStreamedToolCallId(priorId, content.id);
 				}
 				this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
-				if (content.name === "read") {
-					if (!readArgsHaveTarget(content.arguments)) {
-						continue;
-					}
-					if (readArgsCollapseIntoGroup(content.arguments)) {
-						if (!this.ctx.pendingTools.has(content.id)) this.#resolveDisplaceablePoll(content.name);
-						this.#trackReadToolCall(content.id, content.arguments);
-						const component = this.ctx.pendingTools.get(content.id);
-						if (component) {
-							component.updateArgs(content.arguments, content.id);
-						} else {
-							const group = this.#getReadGroup();
-							group.updateArgs(content.arguments, content.id);
-							this.ctx.pendingTools.set(content.id, group);
-							this.#toolTimelineComponents.set(content.id, group);
-						}
-						continue;
-					}
-				}
 
 				let renderArgs: Record<string, unknown>;
+				let classificationArgs = content.arguments;
 				const partialJson = getStreamingPartialJson(content);
 				const rawInput = content.customWireName !== undefined;
 				const tool = this.ctx.viewSession.getToolByName(content.name);
-				if (partialJson) {
+				const streamingStringKeys = streamingStringKeysForTool(content.name, rawInput);
+				if (partialJson !== undefined) {
+					classificationArgs = decodeStreamedToolArgs(partialJson, {
+						rawInput,
+						fullArgs: content.arguments,
+						streamingStringKeys,
+					});
 					renderArgs = this.#toolArgsReveal.setTarget(content.id, partialJson, {
 						rawInput,
 						exposeRawPartialJson: exposesRawPartialJson(content.name, rawInput, tool),
-						streamingStringKeys: streamingStringKeysForTool(content.name, rawInput),
+						streamingStringKeys,
 					});
 				} else {
 					this.#toolArgsReveal.finish(content.id);
 					renderArgs = content.arguments;
+				}
+
+				let replacementIndex: number | undefined;
+				if (content.name === "read") {
+					if (!readArgsHaveTarget(classificationArgs)) continue;
+					if (readArgsCollapseIntoGroup(classificationArgs)) {
+						let component = this.ctx.pendingTools.get(content.id);
+						if (component && !(component instanceof ReadToolGroupComponent)) {
+							replacementIndex = this.#detachToolCardForRendererMigration(content.id, component);
+							component = undefined;
+						}
+						if (!component) this.#resolveDisplaceablePoll(content.name);
+						this.#trackReadToolCall(content.id, classificationArgs);
+						if (component) {
+							component.updateArgs(renderArgs, content.id);
+							this.#toolArgsReveal.bind(content.id, component);
+						} else {
+							const group = this.#getReadGroup();
+							group.updateArgs(renderArgs, content.id);
+							this.ctx.pendingTools.set(content.id, group);
+							this.#toolTimelineComponents.set(content.id, group);
+							this.#toolArgsReveal.bind(content.id, group);
+							this.#moveTranscriptComponent(group, replacementIndex);
+						}
+						continue;
+					}
+
+					const component = this.ctx.pendingTools.get(content.id);
+					if (component instanceof ReadToolGroupComponent) {
+						replacementIndex = this.#detachToolCardForRendererMigration(content.id, component);
+					}
 				}
 
 				if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
@@ -868,6 +923,7 @@ export class EventController {
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.chatContainer.addChild(component);
+					this.#moveTranscriptComponent(component, replacementIndex);
 					this.ctx.pendingTools.set(content.id, component);
 					this.#toolTimelineComponents.set(content.id, component);
 					this.#toolArgsReveal.bind(content.id, component);
@@ -1037,18 +1093,25 @@ export class EventController {
 			setTerminalTitleState("attention");
 		}
 		this.#resolveDisplaceablePoll(event.toolName);
+		this.#toolArgsReveal.finish(event.toolCallId);
+
+		let replacementIndex: number | undefined;
+		const pending = this.ctx.pendingTools.get(event.toolCallId);
+		if (event.toolName === "read" && readArgsHaveTarget(event.args) && pending) {
+			const shouldGroup = readArgsCollapseIntoGroup(event.args);
+			if (shouldGroup !== pending instanceof ReadToolGroupComponent) {
+				replacementIndex = this.#detachToolCardForRendererMigration(event.toolCallId, pending);
+			}
+		}
+
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
 			if (event.toolName === "read" && readArgsCollapseIntoGroup(event.args)) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
-				const component = this.ctx.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateArgs(event.args, event.toolCallId);
-				} else {
-					const group = this.#getReadGroup();
-					group.updateArgs(event.args, event.toolCallId);
-					this.ctx.pendingTools.set(event.toolCallId, group);
-					this.#toolTimelineComponents.set(event.toolCallId, group);
-				}
+				const group = this.#getReadGroup();
+				group.updateArgs(event.args, event.toolCallId);
+				this.ctx.pendingTools.set(event.toolCallId, group);
+				this.#toolTimelineComponents.set(event.toolCallId, group);
+				this.#moveTranscriptComponent(group, replacementIndex);
 				this.ctx.ui.requestRender();
 				return;
 			}
@@ -1071,11 +1134,11 @@ export class EventController {
 			this.#executionStartedCallIds.add(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
 			this.ctx.chatContainer.addChild(component);
+			this.#moveTranscriptComponent(component, replacementIndex);
 			this.ctx.pendingTools.set(event.toolCallId, component);
 			this.#toolTimelineComponents.set(event.toolCallId, component);
 			this.ctx.ui.requestRender();
 		} else {
-			this.#toolArgsReveal.finish(event.toolCallId);
 			const component = this.ctx.pendingTools.get(event.toolCallId);
 			if (component && typeof component.updateArgs === "function") {
 				component.updateArgs(event.args, event.toolCallId);
@@ -1219,7 +1282,7 @@ export class EventController {
 		}
 	}
 	async #handleAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
-		if (this.ctx.session.isStreaming) return;
+		if (this.ctx.viewSession.isStreaming) return;
 
 		if (event.isTerminal === false) {
 			this.ctx.flushPendingCommandOutput();

@@ -1,4 +1,4 @@
-import { expect, test, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,7 +7,7 @@ import { clearCache as clearFsCache } from "../capability/fs";
 import { type MCPServer, mcpCapability } from "../capability/mcp";
 import { MCPManager } from "../mcp/manager";
 import "./claude-plugins";
-import { clearClaudePluginRootsCache, expandEnvVarsDeep } from "./helpers";
+import { clearClaudePluginRootsCache, expandEnvVarsDeep, resolveActiveProjectRegistryPath } from "./helpers";
 
 function envPlaceholder(name: string, defaultValue?: string): string {
 	return ["$", "{", name, defaultValue === undefined ? "" : `:-${defaultValue}`, "}"].join("");
@@ -139,4 +139,74 @@ test("plugin env expands before root substitution and survives subprocess config
 		clearFsCache();
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
+});
+
+describe("resolveActiveProjectRegistryPath", () => {
+	let homeDir = "";
+
+	function registryPath(root: string): string {
+		return path.join(root, ".proto", "plugins", "installed_plugins.json");
+	}
+
+	beforeEach(async () => {
+		homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-project-registry-test-"));
+		vi.spyOn(os, "homedir").mockReturnValue(homeDir);
+		clearFsCache();
+	});
+
+	afterEach(async () => {
+		vi.restoreAllMocks();
+		clearFsCache();
+		await fs.rm(homeDir, { recursive: true, force: true });
+	});
+
+	test("uses the nearest Git root when no .proto directory exists", async () => {
+		const repoRoot = path.join(homeDir, "work", "repo");
+		const cwd = path.join(repoRoot, "one", "two");
+		await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+		await fs.mkdir(cwd, { recursive: true });
+
+		expect(await resolveActiveProjectRegistryPath(cwd)).toBe(registryPath(repoRoot));
+	});
+
+	test("uses the nearest .proto directory when no Git root exists", async () => {
+		const projectRoot = path.join(homeDir, "work", "project");
+		const cwd = path.join(projectRoot, "one", "two");
+		await fs.mkdir(path.join(projectRoot, ".proto"), { recursive: true });
+		await fs.mkdir(cwd, { recursive: true });
+
+		expect(await resolveActiveProjectRegistryPath(cwd)).toBe(registryPath(projectRoot));
+	});
+
+	test("preserves .proto precedence when .proto and .git are at the same level", async () => {
+		const projectRoot = path.join(homeDir, "work", "project");
+		const cwd = path.join(projectRoot, "nested");
+		await Promise.all([
+			fs.mkdir(path.join(projectRoot, ".proto"), { recursive: true }),
+			fs.mkdir(path.join(projectRoot, ".git"), { recursive: true }),
+			fs.mkdir(cwd, { recursive: true }),
+		]);
+
+		expect(await resolveActiveProjectRegistryPath(cwd)).toBe(registryPath(projectRoot));
+	});
+
+	test("preserves a higher .proto directory over a nearer Git root", async () => {
+		const projectRoot = path.join(homeDir, "work");
+		const repoRoot = path.join(projectRoot, "repo");
+		const cwd = path.join(repoRoot, "nested");
+		await Promise.all([
+			fs.mkdir(path.join(projectRoot, ".proto"), { recursive: true }),
+			fs.mkdir(path.join(repoRoot, ".git"), { recursive: true }),
+			fs.mkdir(cwd, { recursive: true }),
+		]);
+
+		expect(await resolveActiveProjectRegistryPath(cwd)).toBe(registryPath(projectRoot));
+	});
+
+	test("returns null when no .proto directory or Git root exists", async () => {
+		const cwd = path.join(homeDir, "work", "project", "nested");
+		await fs.mkdir(cwd, { recursive: true });
+
+		expect(await resolveActiveProjectRegistryPath(cwd)).toBeNull();
+	});
 });

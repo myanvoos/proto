@@ -337,11 +337,6 @@ export class Settings {
 		if (options.configFiles) configFiles.push(...options.configFiles);
 		this.#configFiles = configFiles.map(file => path.resolve(this.#cwd, expandTilde(file)));
 		this.#persist = !options.inMemory && options.readOnly !== true;
-		for (const ref of liveSettingsInstances) {
-			if (ref.deref() === undefined) liveSettingsInstances.delete(ref);
-		}
-		liveSettingsInstances.add(new WeakRef(this));
-
 		if (options.overrides) {
 			for (const [key, value] of Object.entries(options.overrides)) {
 				setByPath(this.#overrides, key.split("."), value);
@@ -1928,8 +1923,6 @@ const extendedContextSignal = new SettingSignal("extendedContext");
 
 export const onExtendedContextChanged = (cb: () => void) => extendedContextSignal.on(cb);
 
-const liveSettingsInstances = new Set<WeakRef<Settings>>();
-
 let globalInstance: Settings | null = null;
 let globalInstancePromise: Promise<Settings> | null = null;
 let boundSettingsInstance: Settings | null = null;
@@ -1942,20 +1935,6 @@ function clearBoundSettingsMethods(): void {
 
 export function isSettingsInitialized(): boolean {
 	return globalInstance !== null;
-}
-
-export function resetSettingsForTest(): void {
-	for (const ref of liveSettingsInstances) {
-		const instance = ref.deref();
-		if (instance) instance.cancelPendingSaves();
-		else liveSettingsInstances.delete(ref);
-	}
-	liveSettingsInstances.clear();
-	globalInstance = null;
-	globalInstancePromise = null;
-	clearBoundSettingsMethods();
-	configureProviderMaxInFlightRequests(undefined);
-	configureCredentialRedaction(false);
 }
 
 export const settings = new Proxy({} as Settings, {
