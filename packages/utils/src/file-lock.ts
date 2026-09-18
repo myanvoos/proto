@@ -7,6 +7,10 @@ export interface FileLockOptions {
 	retryDelayMs?: number;
 }
 
+export interface FileLockHandle {
+	release(): void;
+}
+
 const DEFAULT_OPTIONS: Required<FileLockOptions> = {
 	retries: 50,
 	retryDelayMs: 100,
@@ -16,17 +20,17 @@ function getLockPath(filePath: string): string {
 	return `${path.resolve(filePath)}.lock`;
 }
 
-function tryAcquireLock(lockPath: string): NativeFileLock | null {
-	const lock = NativeFileLock.tryAcquire(lockPath);
+/** Attempts once to acquire the file lock. The caller must release a returned handle. */
+export function tryAcquireFileLockSync(filePath: string): FileLockHandle | null {
+	const lock = NativeFileLock.tryAcquire(getLockPath(filePath));
 	return lock.acquired ? lock : null;
 }
 
-async function acquireLock(filePath: string, options: FileLockOptions = {}): Promise<NativeFileLock> {
+async function acquireLock(filePath: string, options: FileLockOptions = {}): Promise<FileLockHandle> {
 	const opts = { ...DEFAULT_OPTIONS, ...options };
-	const lockPath = getLockPath(filePath);
 
 	for (let attempt = 0; attempt < opts.retries; attempt++) {
-		const lock = tryAcquireLock(lockPath);
+		const lock = tryAcquireFileLockSync(filePath);
 		if (lock) return lock;
 		if (attempt + 1 < opts.retries) await Bun.sleep(opts.retryDelayMs);
 	}
@@ -46,8 +50,3 @@ export async function withFileLock<T>(
 		lock.release();
 	}
 }
-
-export const __internalsForTesting = {
-	tryAcquireLock,
-	getLockPath,
-};

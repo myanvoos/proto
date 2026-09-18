@@ -152,6 +152,7 @@ export interface FetchWithRetryOptions extends RequestInit {
 
 const DEFAULT_MAX_DELAY_MS = 60_000;
 const DEFAULT_MAX_ATTEMPTS = 5;
+const RETRY_BODY_PREFIX_MAX_BYTES = 64 * 1024;
 
 export async function fetchWithRetry(
 	url: string | URL | ((attempt: number) => string | URL),
@@ -193,14 +194,60 @@ export async function fetchWithRetry(
 		if (!isRetryableStatus(response.status)) return response;
 		if (attempt + 1 >= maxAttempts) return response;
 
-		const retryBody = await response.clone().text();
+		const { text: retryBody, cloneCancellation } = await readResponseBodyPrefix(
+			response.clone(),
+			RETRY_BODY_PREFIX_MAX_BYTES,
+		);
 		if (shouldRetryResponse && !(await shouldRetryResponse(response, retryBody, attempt))) return response;
 
 		const hint = extractRetryHint(response, retryBody);
 		if (hint !== undefined && hint > maxDelayMs) return response;
 
+		// Both tee branches are discarded on retry. Awaiting the original branch also
+		// lets the bounded clone cancellation settle before the retry delay begins.
+		await response.body?.cancel();
+		await cloneCancellation;
+
 		const delayMs = Math.min(hint ?? resolveDefaultDelay(defaultDelayMs, attempt, maxDelayMs), maxDelayMs);
 		await waitForRetry(delayMs, signal);
+	}
+}
+
+interface ResponseBodyPrefix {
+	text: string;
+	cloneCancellation: Promise<void>;
+}
+
+async function readResponseBodyPrefix(
+	response: { body: ReadableStream<Uint8Array> | null },
+	maxBytes: number,
+): Promise<ResponseBodyPrefix> {
+	if (!response.body) return { text: "", cloneCancellation: Promise.resolve() };
+
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	const text: string[] = [];
+	let remaining = maxBytes;
+	try {
+		while (remaining > 0) {
+			const { done, value } = await reader.read();
+			if (done) {
+				text.push(decoder.decode());
+				return { text: text.join(""), cloneCancellation: Promise.resolve() };
+			}
+
+			const accepted = value.subarray(0, remaining);
+			text.push(decoder.decode(accepted, { stream: true }));
+			remaining -= accepted.byteLength;
+		}
+
+		text.push(decoder.decode());
+		// Do not await this here: Response.clone() tees the body, and cancellation
+		// settles only after the original branch is consumed or cancelled.
+		const cloneCancellation = reader.cancel().catch(() => {});
+		return { text: text.join(""), cloneCancellation };
+	} finally {
+		reader.releaseLock();
 	}
 }
 

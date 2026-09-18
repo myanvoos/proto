@@ -9,7 +9,6 @@ Exported from `@oh-my-pi/pi-utils` (`packages/utils/src/dirs.ts`):
 | Symbol                                  | Purpose                                                                                                                           |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `getInstallId(): string`                | Returns the install ID, generating and persisting one on first call. Result is cached in-process for the lifetime of the runtime. |
-| `__resetInstallIdCacheForTests(): void` | Clears the in-process cache. Test-only — MUST NOT be called from production code.                                                 |
 
 Generated IDs are lowercase RFC 4122 UUIDs. Existing persisted values are accepted case-insensitively when they match `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` with the regex `i` flag, and are returned exactly as stored.
 
@@ -27,7 +26,7 @@ Generated IDs are lowercase RFC 4122 UUIDs. Existing persisted values are accept
 3. The new value is written via `open(O_WRONLY | O_CREAT | O_EXCL, 0o600)`. The exclusive-create guard means two processes hitting first-call simultaneously cannot both succeed — the loser sees `EEXIST`, re-reads the winner's file, and adopts that ID.
 4. If the existing file contained non-empty garbage (failed UUID regex), it is `unlink`ed before the exclusive create so `O_EXCL` does not trip on stale data.
 5. Any other write failure (read-only FS, permission error) is swallowed: the freshly generated UUID is still cached in-memory so the rest of the process sees a stable value, and subsequent process launches will retry persistence.
-6. Subsequent in-process calls return the cached value without touching disk. Mutating the file on disk after the first call has no effect until the process restarts (or tests call `__resetInstallIdCacheForTests`).
+6. Subsequent in-process calls return the cached value without touching disk. Mutating the file on disk after the first call has no effect until the process restarts.
 
 ## Consumers
 

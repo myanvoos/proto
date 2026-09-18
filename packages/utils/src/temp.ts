@@ -31,7 +31,12 @@ export class TempDir {
 		if (this.#removePromise) {
 			return this.#removePromise;
 		}
-		const removePromise = removeWithRetries(this.#path);
+		const removePromise = removeWithRetries(this.#path).catch(error => {
+			if (this.#removePromise === removePromise) {
+				this.#removePromise = null;
+			}
+			throw error;
+		});
 		this.#removePromise = removePromise;
 		return removePromise;
 	}
@@ -73,7 +78,7 @@ function normalizePrefix(prefix?: string): string {
 	return prefix;
 }
 
-const kRemoveOptions = { recursive: true, force: true } as const;
+const kRemoveOptions = { recursive: true, force: true, maxRetries: 3, retryDelay: 100 } as const;
 
 export async function removeWithRetries(target: string): Promise<void> {
 	await fsPromises.rm(target, kRemoveOptions);

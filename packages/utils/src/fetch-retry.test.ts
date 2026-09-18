@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { extractRetryHint, isUnexpectedSocketCloseMessage } from "./fetch-retry";
+import { extractRetryHint, fetchWithRetry, isUnexpectedSocketCloseMessage } from "./fetch-retry";
 
 describe("extractRetryHint account reset bodies", () => {
 	it.each([
@@ -48,5 +48,42 @@ describe("isUnexpectedSocketCloseMessage", () => {
 		expect(isUnexpectedSocketCloseMessage("validation failed because socket is closed to remote control")).toBe(
 			false,
 		);
+	});
+});
+
+describe("fetchWithRetry response body handling", () => {
+	it("bounds the inspected retry body and discards the retried response", async () => {
+		const oversizedBody = "x".repeat(1024 * 1024);
+		const retriedResponse = new Response(oversizedBody, { status: 503 });
+		let inspectedBody = "";
+		let fetchCalls = 0;
+
+		const response = await fetchWithRetry("https://example.test", {
+			maxAttempts: 2,
+			defaultDelayMs: 0,
+			shouldRetryResponse: (_response, body) => {
+				inspectedBody = body;
+				return true;
+			},
+			fetch: async () => {
+				fetchCalls++;
+				return fetchCalls === 1 ? retriedResponse : new Response("ok");
+			},
+		});
+
+		expect(await response.text()).toBe("ok");
+		expect(inspectedBody.length).toBeLessThan(oversizedBody.length);
+		expect(retriedResponse.bodyUsed).toBe(true);
+	});
+
+	it("preserves the full body when the retry predicate declines", async () => {
+		const body = "x".repeat(128 * 1024);
+		const response = await fetchWithRetry("https://example.test", {
+			maxAttempts: 2,
+			shouldRetryResponse: () => false,
+			fetch: async () => new Response(body, { status: 503 }),
+		});
+
+		expect(await response.text()).toBe(body);
 	});
 });

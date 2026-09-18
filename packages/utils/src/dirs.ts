@@ -98,7 +98,11 @@ export function pathIsWithin(root: string, candidate: string): boolean {
 	const normalizedRoot = normalizePathForComparison(root);
 	const normalizedCandidate = normalizePathForComparison(candidate);
 	const relative = path.relative(normalizedRoot, normalizedCandidate);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+	if (relative === "") return true;
+	if (path.isAbsolute(relative)) return false;
+	// Only a leading `..` PATH SEGMENT escapes the root. A plain `startsWith("..")`
+	// also rejects legitimate children whose name merely begins with dots (`..foo`).
+	return relative !== ".." && !relative.startsWith(`..${path.sep}`);
 }
 
 export function relativePathWithinRoot(root: string, candidate: string): string | null {
@@ -270,20 +274,6 @@ export function setAgentDir(dir: string): void {
 	}
 }
 
-export function __resetProfileSnapshotForTests(): void {
-	preProfileAgentDirEnv = resolvePreProfileAgentDir(
-		activeProfile,
-		process.env.PI_CODING_AGENT_DIR,
-		activeProfile ?? readPiProfileFromEnvSafe(),
-	);
-}
-
-export function __resetDirsFromEnvForTests(): void {
-	activeProfile = readProfileFromEnvSafe();
-	__resetProfileSnapshotForTests();
-	refreshDirsFromEnv();
-}
-
 export function setProfile(profile: string | undefined): void {
 	const next = normalizeProfileName(profile);
 	if (next && !activeProfile) {
@@ -368,7 +358,11 @@ function resolveWorktreeBase(value: string | undefined): string | undefined {
 	if (!trimmed) return undefined;
 	let p = trimmed;
 	if (p === "~") p = os.homedir();
-	else if (p.startsWith("~/") || p.startsWith("~\\")) p = os.homedir() + p.slice(1);
+	else if (p.startsWith("~/") || p.startsWith("~\\")) {
+		// Join through `path` so the accepted backslash form does not survive as a
+		// literal filename character on POSIX (`~\\wt` -> `/home/u\\wt`).
+		p = path.join(os.homedir(), p.slice(2).replace(/\\/g, "/"));
+	}
 	return path.isAbsolute(p) ? path.normalize(p) : undefined;
 }
 
@@ -617,8 +611,4 @@ export function getInstallId(): string {
 
 	cachedInstallId = next;
 	return next;
-}
-
-export function __resetInstallIdCacheForTests(): void {
-	cachedInstallId = null;
 }

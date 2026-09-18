@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Retry responses, temporary-directory cleanup, and rotating logs now stay bounded and recover cleanly at their configured limits.
+
+### Removed
+
+- Removed the unused `adversarial-strings`, `dates`, `glob`, and `ring` utility modules.
+- Removed unused test-only cache and directory reset hooks.
+
 ## [18.1.20] - 2026-09-15
 
 ### Removed

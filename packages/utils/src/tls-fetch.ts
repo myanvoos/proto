@@ -63,11 +63,6 @@ function resolveExtraCa(): string | undefined {
 	return cacheValue;
 }
 
-export function __resetExtraCaCache(): void {
-	cacheKey = undefined;
-	cacheValue = undefined;
-}
-
 function withExtraCaInit(init: RequestInit | undefined, extraCa: string): RequestInit {
 	const existingTls = (init as BunTlsRequestInit | undefined)?.tls;
 	const existingCa = existingTls?.ca;

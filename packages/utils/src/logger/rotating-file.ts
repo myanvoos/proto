@@ -65,13 +65,14 @@ export class RotatingFileSink {
 	write(line: string): void {
 		if (this.#closed) return;
 		const now = new Date();
-		this.#selectFile(this.#localDay(now));
+		const record = `${line}${os.EOL}`;
+		const recordBytes = Buffer.byteLength(record);
+		this.#selectFile(this.#localDay(now), recordBytes);
 		const activePath = this.#activePath;
 		if (!activePath) return;
 		this.#registerFile(activePath, now.getTime());
-		const record = `${line}${os.EOL}`;
 		fs.appendFileSync(activePath, record, "utf8");
-		this.#activeBytes += Buffer.byteLength(record);
+		this.#activeBytes += recordBytes;
 	}
 
 	close(): void {
@@ -82,13 +83,15 @@ export class RotatingFileSink {
 		return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 	}
 
-	#selectFile(day: string): void {
+	#selectFile(day: string, recordBytes = 0): void {
 		if (day !== this.#activeDay) {
 			this.#activeDay = day;
 			this.#activeIndex = 0;
 			this.#setActivePath(day, 0);
 		}
-		while (this.#activeBytes > this.#maxBytes) {
+		// Records are never split or dropped. A record larger than the limit is
+		// written intact to an empty file, then the following record rotates.
+		while (this.#activeBytes > 0 && this.#activeBytes + recordBytes > this.#maxBytes) {
 			this.#activeIndex++;
 			this.#setActivePath(day, this.#activeIndex);
 		}
