@@ -4,18 +4,19 @@ import type {
 	AgentTool,
 	AgentToolContext,
 	StreamFn,
+	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
+import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState, GoalRuntime } from "../goals";
-import { GoalTool } from "../goals/tools/goal-tool";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import type { MCPManager } from "../mcp";
@@ -33,55 +34,39 @@ import { resolveSpawnPolicy } from "../task/spawn-policy";
 import { canSpawnAtDepth, type StructuredSubagentSchemaMode } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
 import { type InspectMediaMode, isInspectMediaToolActive } from "../utils/inspect-media-mode";
-import { WebSearchTool } from "../web/search";
+import { setExcludedSearchProviders, setSearchProviderOrder } from "../web/search/provider";
+import { isSearchProviderId } from "../web/search/types";
 import type { WorkspaceTree } from "../workspace-tree";
-import { AskTool } from "./ask";
-import { BashTool } from "./bash";
-import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
-import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
-import { ComputerTool } from "./computer";
-import { FleetTool, isIrcEnabled } from "./fleet";
-import { InspectMediaTool } from "./inspect-media";
-import { ManageSkillTool } from "./manage-skill";
-import { MonitorTool } from "./monitor";
-import {
-	OrchestrateKillTool,
-	OrchestrateListTool,
-	OrchestrateSendTool,
-	OrchestrateSpawnTool,
-	OrchestrateWaitTool,
-} from "./orchestrate";
-import { wrapToolWithMetaNotice } from "./output-meta";
-import { ReadTool } from "./read";
-import { supportsExternalThinking, ThinkTool } from "./think";
-import { type TodoPhase, TodoTool } from "./todo";
-import { isMountableUnderXdev, type XdevState } from "./xdev";
+import type { CheckpointState, CompletedRewindState } from "./checkpoint";
+import type { TodoPhase } from "./todo";
+import type { XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
-export * from "../goals";
-export * from "../session/streaming-output";
-export * from "../web/search";
-export * from "./ask";
-export * from "./bash";
-export * from "./browser";
-export * from "./checkpoint";
-export * from "./computer";
-export * from "./computer/supervisor";
+export type * from "../goals";
+export type * from "../session/streaming-output";
+export type * from "../web/search";
+export type * from "./ask";
+export type * from "./bash";
+export type * from "./browser";
+export * from "./builtin-names";
+export type * from "./checkpoint";
+export type * from "./computer";
+export type * from "./computer/supervisor";
 export * from "./essential-tools";
-export * from "./eval-backends";
-export * from "./fleet";
-export * from "./image-gen";
-export * from "./inspect-media";
-export * from "./manage-skill";
-export * from "./monitor";
-export * from "./orchestrate";
-export * from "./read";
-export * from "./report-tool-issue";
-export * from "./resolve";
-export * from "./think";
-export * from "./todo";
-export * from "./xdev";
+export type * from "./eval-backends";
+export type * from "./fleet";
+export type * from "./image-gen";
+export type * from "./inspect-media";
+export type * from "./manage-skill";
+export type * from "./monitor";
+export type * from "./orchestrate";
+export type * from "./read";
+export type * from "./report-tool-issue";
+export type * from "./resolve";
+export type * from "./think";
+export type * from "./todo";
+export type * from "./xdev";
 export * from "./yield";
 
 export type Tool = AgentTool<any, any, any>;
@@ -287,31 +272,145 @@ export const DISABLED_TOOL_NAMES: Record<string, true> = {
 	read: true,
 };
 
+export const ORCHESTRATE_TOOL_NAMES = [
+	"orchestrate_spawn",
+	"orchestrate_send",
+	"orchestrate_wait",
+	"orchestrate_kill",
+	"orchestrate_list",
+] as const;
+
+const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
+	ask: true,
+	todo: true,
+	web_search: true,
+	inspect_media: true,
+};
+const XDEV_TRANSPORT_TOOLS: Record<string, true> = { bash: true };
+
+export function isMountableUnderXdev(tool: { name: string; loadMode?: ToolLoadMode }): boolean {
+	if (tool.name in XDEV_TRANSPORT_TOOLS || tool.name in XDEV_KEEP_TOP_LEVEL) return false;
+	return tool.loadMode === "discoverable";
+}
+
+export function supportsExternalThinking(model: Model | null | undefined): boolean {
+	if (!model) return false;
+	const compat = model.compat;
+	const requiresThinking =
+		model.api === "anthropic-messages" &&
+		compat !== undefined &&
+		"requiresThinkingEnabled" in compat &&
+		compat.requiresThinkingEnabled === true;
+	if (model.reasoning && (requiresThinking || (model.thinking?.requiresEffort && !model.thinking.suppressWhenOff))) {
+		return false;
+	}
+	if (
+		model.reasoning &&
+		compat !== undefined &&
+		(("omitReasoningEffort" in compat && compat.omitReasoningEffort === true) ||
+			("supportsReasoningEffort" in compat && compat.supportsReasoningEffort === false))
+	) {
+		return false;
+	}
+	if (model.api === "google-generative-ai" || model.api === "google-gemini-cli" || model.api === "google-vertex") {
+		return !model.reasoning || model.thinking?.mode === "budget" || model.thinking?.suppressWhenOff === true;
+	}
+	return (
+		model.api === "openai-responses" ||
+		model.api === "azure-openai-responses" ||
+		model.api === "openai-codex-responses" ||
+		model.api === "anthropic-messages"
+	);
+}
+
+export function isIrcEnabled(_settings: Settings, _taskDepth: number): boolean {
+	return true;
+}
+
+export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
+
+interface ProviderGlobalSettings {
+	get(path: "providers.webSearchOrder" | "providers.webSearchExclude" | "providers.imageOrder"): unknown;
+}
+
+let configuredImageProviderOrder: readonly string[] = [];
+let applyLoadedImageProviderOrder: ((providers: readonly string[]) => void) | undefined;
+
+export function setImageProviderOrder(providers: readonly string[]): void {
+	configuredImageProviderOrder = [...providers];
+	applyLoadedImageProviderOrder?.(configuredImageProviderOrder);
+}
+
+export function applyProviderGlobalsFromSettings(settings: ProviderGlobalSettings): void {
+	const excludedWebSearchProviders = settings.get("providers.webSearchExclude");
+	if (Array.isArray(excludedWebSearchProviders)) {
+		setExcludedSearchProviders(excludedWebSearchProviders.filter(isSearchProviderId));
+	}
+
+	const orderedWebSearchProviders = settings.get("providers.webSearchOrder");
+	if (Array.isArray(orderedWebSearchProviders)) {
+		setSearchProviderOrder(orderedWebSearchProviders.filter(isSearchProviderId));
+	}
+
+	const orderedImageProviders = settings.get("providers.imageOrder");
+	if (Array.isArray(orderedImageProviders)) {
+		setImageProviderOrder(orderedImageProviders.filter((entry): entry is string => typeof entry === "string"));
+	}
+}
+
+export { isSearchProviderId, setExcludedSearchProviders, setSearchProviderOrder };
+
+// Runtime-registry exception: static imports here would put every optional tool implementation on the boot path.
 export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read">, ToolFactory> = {
-	bash: s => new BashTool(s),
-	ask: AskTool.createIf,
-	inspect_media: s => new InspectMediaTool(s),
-	browser: s => new BrowserTool(s),
-	computer: s => new ComputerTool(s),
-	checkpoint: CheckpointTool.createIf,
-	rewind: RewindTool.createIf,
-	orchestrate_spawn: OrchestrateSpawnTool.create,
-	orchestrate_send: s => new OrchestrateSendTool(s),
-	orchestrate_wait: s => new OrchestrateWaitTool(s),
-	orchestrate_kill: s => new OrchestrateKillTool(s),
-	orchestrate_list: s => new OrchestrateListTool(s),
-	fleet: s => new FleetTool(s),
-	monitor: s => new MonitorTool(s),
-	todo: s => new TodoTool(s),
-	web_search: s => new WebSearchTool(s),
-	manage_skill: ManageSkillTool.createIf,
+	bash: async s => new (await import("./bash")).BashTool(s),
+	ask: async s => (await import("./ask")).AskTool.createIf(s),
+	inspect_media: async s => new (await import("./inspect-media")).InspectMediaTool(s),
+	browser: async s => new (await import("./browser")).BrowserTool(s),
+	computer: async s => new (await import("./computer")).ComputerTool(s),
+	checkpoint: async s => (await import("./checkpoint")).CheckpointTool.createIf(s),
+	rewind: async s => (await import("./checkpoint")).RewindTool.createIf(s),
+	orchestrate_spawn: async s => (await import("./orchestrate")).OrchestrateSpawnTool.create(s),
+	orchestrate_send: async s => new (await import("./orchestrate")).OrchestrateSendTool(s),
+	orchestrate_wait: async s => new (await import("./orchestrate")).OrchestrateWaitTool(s),
+	orchestrate_kill: async s => new (await import("./orchestrate")).OrchestrateKillTool(s),
+	orchestrate_list: async s => new (await import("./orchestrate")).OrchestrateListTool(s),
+	fleet: async s => new (await import("./fleet")).FleetTool(s),
+	monitor: async s => new (await import("./monitor")).MonitorTool(s),
+	todo: async s => new (await import("./todo")).TodoTool(s),
+	web_search: async s => new (await import("../web/search")).WebSearchTool(s),
+	manage_skill: async s => (await import("./manage-skill")).ManageSkillTool.createIf(s),
 };
 
 export const HIDDEN_TOOLS: Record<HiddenToolName, ToolFactory> = {
-	think: () => new ThinkTool(),
+	think: async () => new (await import("./think")).ThinkTool(),
 	yield: s => new YieldTool(s),
-	goal: s => new GoalTool(s),
+	goal: async s => new (await import("../goals/tools/goal-tool")).GoalTool(s),
 };
+
+export async function getImageGenTools(modelRegistry?: ModelRegistry, activeModel?: Model): Promise<CustomTool[]> {
+	const module = await import("./image-gen");
+	applyLoadedImageProviderOrder = module.setImageProviderOrder;
+	applyLoadedImageProviderOrder(configuredImageProviderOrder);
+	return module.getImageGenTools(modelRegistry, activeModel);
+}
+
+export async function getImageGenToolsWithRegistry(
+	modelRegistry: ModelRegistry,
+	activeModel?: Model,
+): Promise<CustomTool[]> {
+	const module = await import("./image-gen");
+	applyLoadedImageProviderOrder = module.setImageProviderOrder;
+	applyLoadedImageProviderOrder(configuredImageProviderOrder);
+	return module.getImageGenToolsWithRegistry(modelRegistry, activeModel);
+}
+
+export async function getSearchTools(): Promise<CustomTool[]> {
+	return (await import("../web/search")).getSearchTools();
+}
+
+export async function releaseComputerSessionsForOwner(ownerId: string | undefined): Promise<void> {
+	await (await import("./computer/supervisor")).releaseComputerSessionsForOwner(ownerId);
+}
 
 export type ToolName = BuiltinToolName;
 
@@ -372,11 +471,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
 		if (name === "monitor") return (session.taskDepth ?? 0) === 0 && session.settings.get("monitor.enabled");
-		if (name === "fleet") {
-			return (
-				!restrictToolNames && session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)
-			);
-		}
+		if (name === "fleet") return !restrictToolNames && session.enableIrc !== false;
 		if (name === "manage_skill")
 			return (
 				session.settings.get("autolearn.enabled") &&
@@ -416,18 +511,24 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		session.isToolActive = name => activeToolNames.has(name);
 	}
 
-	const baseResults = await Promise.all(
-		baseEntries.map(async ([name, factory]) => {
-			const tool = await logger.time(`createTools:${name}`, factory as ToolFactory, session);
-			return tool ? wrapToolWithMetaNotice(tool) : null;
-		}),
-	);
-	let tools = baseResults.filter((r): r is Tool => r !== null);
+	const [baseResults, readTool, { wrapToolWithMetaNotice }] = await Promise.all([
+		Promise.all(
+			baseEntries.map(([name, factory]) => logger.time(`createTools:${name}`, factory as ToolFactory, session)),
+		),
+		logger.time(
+			"createTools:read-bridge",
+			async (s: ToolSession) => new (await import("./read")).ReadTool(s),
+			session,
+		),
+		import("./output-meta"),
+	]);
+	let tools = baseResults
+		.filter((result): result is Tool => result !== null)
+		.map(tool => wrapToolWithMetaNotice(tool));
 	const toolRegistry = session.toolRegistry ?? new Map<string, Tool>();
 	session.toolRegistry = toolRegistry;
 	const builtInNames = new Set(tools.map(tool => tool.name));
 	for (const tool of tools) toolRegistry.set(tool.name, tool);
-	const readTool = await logger.time("createTools:read-bridge", (s: ToolSession) => new ReadTool(s), session);
 	if (readTool) {
 		const wrappedRead = wrapToolWithMetaNotice(readTool);
 		toolRegistry.set(wrappedRead.name, wrappedRead);

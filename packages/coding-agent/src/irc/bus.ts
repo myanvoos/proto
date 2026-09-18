@@ -17,7 +17,9 @@ export interface IrcMessage {
 
 export interface IrcDeliveryReceipt {
 	to: string;
-	outcome: "injected" | "woken" | "revived" | "failed";
+	outcome: "delivered" | "queued" | "rejected" | "dropped";
+	effect?: "injected" | "wake_requested";
+	revived?: boolean;
 	error?: string;
 }
 
@@ -73,14 +75,14 @@ export class IrcBus {
 		if (!source || !ref || !fleetRoot) {
 			return {
 				to: message.to,
-				outcome: "failed",
+				outcome: "rejected",
 				error: `Unknown agent "${message.to}" — check \`irc list\` for live peers.`,
 			};
 		}
 		if (ref.status === "aborted") {
 			return {
 				to: message.to,
-				outcome: "failed",
+				outcome: "rejected",
 				error: `Agent "${message.to}" was hard-aborted and cannot be messaged or revived. Its transcript remains readable at history://${message.to}.`,
 			};
 		}
@@ -88,7 +90,7 @@ export class IrcBus {
 		if (ref.kind === "advisor") {
 			return {
 				to: message.to,
-				outcome: "failed",
+				outcome: "rejected",
 				error: `Agent "${message.to}" is a read-only advisor transcript and cannot be messaged.`,
 			};
 		}
@@ -109,7 +111,7 @@ export class IrcBus {
 			} catch (error) {
 				return {
 					to: message.to,
-					outcome: "failed",
+					outcome: "rejected",
 					error: error instanceof Error ? error.message : String(error),
 				};
 			}
@@ -121,7 +123,7 @@ export class IrcBus {
 		) {
 			return {
 				to: message.to,
-				outcome: "failed",
+				outcome: "rejected",
 				error: `Agent "${message.to}" changed sessions before delivery.`,
 			};
 		}
@@ -130,24 +132,36 @@ export class IrcBus {
 		if (waiter) {
 			waiter.resolve(message);
 			if (!opts?.suppressRelay) this.#relayToMainUi(message, fleetRoot);
-			return { to: message.to, outcome: revived ? "revived" : "injected" };
+			return { to: message.to, outcome: "delivered", effect: "injected", ...(revived ? { revived: true } : {}) };
 		}
 
 		const session = ref.session;
 		if (!session) {
-			return { to: message.to, outcome: "failed", error: `Agent "${message.to}" has no live session.` };
+			return { to: message.to, outcome: "rejected", error: `Agent "${message.to}" has no live session.` };
 		}
 
 		try {
 			const delivery = await session.deliverIrcMessage(message, opts);
 			if (!opts?.suppressRelay) this.#relayToMainUi(message, fleetRoot);
-			return { to: message.to, outcome: revived ? "revived" : delivery };
-		} catch (error) {
-			this.#enqueue(message, fleetRoot);
 			return {
 				to: message.to,
-				outcome: "failed",
-				error: error instanceof Error ? error.message : String(error),
+				outcome: "delivered",
+				effect: delivery === "woken" ? "wake_requested" : "injected",
+				...(revived ? { revived: true } : {}),
+			};
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			if (this.#enqueue(message, fleetRoot)) {
+				return {
+					to: message.to,
+					outcome: "queued",
+					error: `Live delivery failed; retained for ${message.to} to read later: ${reason}`,
+				};
+			}
+			return {
+				to: message.to,
+				outcome: "dropped",
+				error: `Mailbox for "${message.to}" is full (${MAILBOX_CAP} messages); this message was not retained. Ask the recipient to drain its inbox, then retry. Original delivery error: ${reason}`,
 			};
 		}
 	}
@@ -301,21 +315,15 @@ export class IrcBus {
 		return visible.length > 0 ? visible : undefined;
 	}
 
-	#enqueue(message: IrcMessage, fleetRoot: string): void {
+	#enqueue(message: IrcMessage, fleetRoot: string): boolean {
 		let mailbox = this.#mailboxes.get(message.to);
 		if (!mailbox) {
 			mailbox = [];
 			this.#mailboxes.set(message.to, mailbox);
 		}
+		if (mailbox.length >= MAILBOX_CAP) return false;
 		mailbox.push({ message, fleetRoot });
-		if (mailbox.length > MAILBOX_CAP) {
-			const dropped = mailbox.shift();
-			logger.debug("IrcBus: mailbox full, dropped oldest message", {
-				agentId: message.to,
-				droppedId: dropped?.message.id,
-				droppedFrom: dropped?.message.from,
-			});
-		}
+		return true;
 	}
 
 	#takeMatchingWaiter(agentId: string, from: string, fleetRoot: string): IrcWaiter | undefined {

@@ -1443,68 +1443,90 @@ export async function detachGitDir(worktreeRoot: string, sourceCommonDir: string
 		}
 	}
 
-	await fs.promises.rm(gitEntry, { recursive: true, force: true });
-	if (ownWorktreeAdmin) await fs.promises.rm(ownWorktreeAdmin, { recursive: true, force: true });
+	// Move the live metadata aside instead of deleting it: everything below rebuilds
+	// a fresh git dir in its place, and any failure there would otherwise leave the
+	// checkout permanently detached from a repository that no longer exists.
+	const backupSuffix = `.proto-detach-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	const gitEntryBackup = `${gitEntry}${backupSuffix}`;
+	const adminBackup = ownWorktreeAdmin ? `${ownWorktreeAdmin}${backupSuffix}` : undefined;
+	await fs.promises.rename(gitEntry, gitEntryBackup);
 
-	const initArgs = ["init", "--object-format", objectFormat, "-q"];
-	const initialBranch = headRef.startsWith(LOCAL_BRANCH_PREFIX) ? headRef.slice(LOCAL_BRANCH_PREFIX.length) : "";
-	if (initialBranch) initArgs.push("-b", initialBranch);
-	await runEffect(worktreeRoot, initArgs);
-	const objectsInfo = path.join(gitEntry, "objects", "info");
-	await fs.promises.mkdir(objectsInfo, { recursive: true });
-	const alternates = [path.join(parentCommon, "objects")];
-	const chained = await readOptionalText(path.join(parentCommon, "objects", "info", "alternates"));
-	if (chained) {
-		for (const line of chained.split("\n")) {
-			const entry = line.trim();
-			if (!entry) continue;
-			alternates.push(path.isAbsolute(entry) ? entry : path.resolve(parentCommon, "objects", entry));
+	try {
+		if (ownWorktreeAdmin && adminBackup) await fs.promises.rename(ownWorktreeAdmin, adminBackup);
+		await rebuildDetachedGitDir();
+	} catch (error) {
+		// Restore the original metadata before surfacing the failure.
+		await fs.promises.rm(gitEntry, { recursive: true, force: true }).catch(() => {});
+		await fs.promises.rename(gitEntryBackup, gitEntry).catch(() => {});
+		if (ownWorktreeAdmin && adminBackup) {
+			await fs.promises.rename(adminBackup, ownWorktreeAdmin).catch(() => {});
 		}
+		throw error;
 	}
-	await Bun.write(path.join(objectsInfo, "alternates"), `${alternates.join("\n")}\n`);
-
-	if (headSha) {
-		await Bun.write(path.join(gitEntry, "HEAD"), `${headSha}\n`);
-		if (refDump) {
-			const commands = refDump
-				.split("\n")
-				.filter(Boolean)
-				.map(line => {
-					const sep = line.indexOf(" ");
-					return `create ${line.slice(sep + 1)} ${line.slice(0, sep)}`;
-				})
-				.join("\n");
-			await runEffect(worktreeRoot, ["update-ref", "--stdin"], { stdin: `${commands}\n` });
-		}
-		if (headRef) await Bun.write(path.join(gitEntry, "HEAD"), `ref: ${headRef}\n`);
-	} else if (headRef && !initialBranch) {
-		await Bun.write(path.join(gitEntry, "HEAD"), `ref: ${headRef}\n`);
-	}
-
-	if (userName) await config.set(worktreeRoot, "user.name", userName);
-	if (userEmail) await config.set(worktreeRoot, "user.email", userEmail);
-	if (fileMode !== undefined) await config.set(worktreeRoot, "core.fileMode", fileMode);
-	if (splitIndex !== undefined) await config.set(worktreeRoot, "core.splitIndex", splitIndex);
-
-	if (shallowBoundary !== null) await Bun.write(path.join(gitEntry, "shallow"), shallowBoundary);
-
-	if (sparseCheckout) await config.set(worktreeRoot, "core.sparseCheckout", sparseCheckout);
-	if (sparseCone) await config.set(worktreeRoot, "core.sparseCheckoutCone", sparseCone);
-	if (sparsePatterns !== null) {
-		const infoDir = path.join(gitEntry, "info");
-		await fs.promises.mkdir(infoDir, { recursive: true });
-		await Bun.write(path.join(infoDir, "sparse-checkout"), sparsePatterns);
-	}
-
-	if (indexBytes) {
-		for (const shared of sharedIndexFiles) {
-			await Bun.write(path.join(gitEntry, shared.name), shared.bytes);
-		}
-		await Bun.write(path.join(gitEntry, "index"), indexBytes);
-	} else if (headSha) {
-		await readTree(worktreeRoot, headSha);
-	}
+	await fs.promises.rm(gitEntryBackup, { recursive: true, force: true }).catch(() => {});
+	if (adminBackup) await fs.promises.rm(adminBackup, { recursive: true, force: true }).catch(() => {});
 	return "detached";
+
+	async function rebuildDetachedGitDir(): Promise<void> {
+		const initArgs = ["init", "--object-format", objectFormat, "-q"];
+		const initialBranch = headRef.startsWith(LOCAL_BRANCH_PREFIX) ? headRef.slice(LOCAL_BRANCH_PREFIX.length) : "";
+		if (initialBranch) initArgs.push("-b", initialBranch);
+		await runEffect(worktreeRoot, initArgs);
+		const objectsInfo = path.join(gitEntry, "objects", "info");
+		await fs.promises.mkdir(objectsInfo, { recursive: true });
+		const alternates = [path.join(parentCommon, "objects")];
+		const chained = await readOptionalText(path.join(parentCommon, "objects", "info", "alternates"));
+		if (chained) {
+			for (const line of chained.split("\n")) {
+				const entry = line.trim();
+				if (!entry) continue;
+				alternates.push(path.isAbsolute(entry) ? entry : path.resolve(parentCommon, "objects", entry));
+			}
+		}
+		await Bun.write(path.join(objectsInfo, "alternates"), `${alternates.join("\n")}\n`);
+
+		if (headSha) {
+			await Bun.write(path.join(gitEntry, "HEAD"), `${headSha}\n`);
+			if (refDump) {
+				const commands = refDump
+					.split("\n")
+					.filter(Boolean)
+					.map(line => {
+						const sep = line.indexOf(" ");
+						return `create ${line.slice(sep + 1)} ${line.slice(0, sep)}`;
+					})
+					.join("\n");
+				await runEffect(worktreeRoot, ["update-ref", "--stdin"], { stdin: `${commands}\n` });
+			}
+			if (headRef) await Bun.write(path.join(gitEntry, "HEAD"), `ref: ${headRef}\n`);
+		} else if (headRef && !initialBranch) {
+			await Bun.write(path.join(gitEntry, "HEAD"), `ref: ${headRef}\n`);
+		}
+
+		if (userName) await config.set(worktreeRoot, "user.name", userName);
+		if (userEmail) await config.set(worktreeRoot, "user.email", userEmail);
+		if (fileMode !== undefined) await config.set(worktreeRoot, "core.fileMode", fileMode);
+		if (splitIndex !== undefined) await config.set(worktreeRoot, "core.splitIndex", splitIndex);
+
+		if (shallowBoundary !== null) await Bun.write(path.join(gitEntry, "shallow"), shallowBoundary);
+
+		if (sparseCheckout) await config.set(worktreeRoot, "core.sparseCheckout", sparseCheckout);
+		if (sparseCone) await config.set(worktreeRoot, "core.sparseCheckoutCone", sparseCone);
+		if (sparsePatterns !== null) {
+			const infoDir = path.join(gitEntry, "info");
+			await fs.promises.mkdir(infoDir, { recursive: true });
+			await Bun.write(path.join(infoDir, "sparse-checkout"), sparsePatterns);
+		}
+
+		if (indexBytes) {
+			for (const shared of sharedIndexFiles) {
+				await Bun.write(path.join(gitEntry, shared.name), shared.bytes);
+			}
+			await Bun.write(path.join(gitEntry, "index"), indexBytes);
+		} else if (headSha) {
+			await readTree(worktreeRoot, headSha);
+		}
+	}
 }
 
 export const show = Object.assign(
@@ -1827,12 +1849,28 @@ export const stash = {
 		return output?.split("\0").filter(Boolean) ?? [];
 	},
 
+	/**
+	 * Snapshots the working tree into a dangling commit without touching the tree
+	 * or `refs/stash`. Returns `null` when there is nothing to snapshot.
+	 */
+	async create(cwd: string): Promise<string | null> {
+		const output = (await tryText(cwd, ["stash", "create"]))?.trim();
+		return output ? output : null;
+	},
+
 	async tryPop(cwd: string, options?: { index?: boolean }): Promise<boolean> {
+		// No stash entry means there is nothing to pop. Returning early is what keeps
+		// the rollback below from hard-resetting a working tree it never modified.
+		if (!(await ref.exists(cwd, "refs/stash"))) return false;
+
 		const workingPatch = await stash.showPatch(cwd);
 		if (workingPatch.trim() && !(await patch.canApplyText(cwd, workingPatch, { threeWay: true }))) {
 			return false;
 		}
 		const restoredUntracked = await stash.untrackedFiles(cwd);
+		// Capture pre-existing local edits so the rollback can put them back; a bare
+		// `reset --hard` would otherwise discard work the pop never owned.
+		const prePopSnapshot = await stash.create(cwd);
 		try {
 			await stash.pop(cwd, options);
 			return true;
@@ -1844,6 +1882,15 @@ export const stash = {
 				try {
 					await clean(cwd, { includeIgnored: true, literalPathspecs: true, paths: restoredUntracked });
 				} catch {}
+			}
+			if (prePopSnapshot) {
+				try {
+					await runEffect(cwd, ["stash", "apply", "--index", prePopSnapshot]);
+				} catch {
+					try {
+						await runEffect(cwd, ["stash", "apply", prePopSnapshot]);
+					} catch {}
+				}
 			}
 			return false;
 		}
@@ -1870,9 +1917,10 @@ export async function clone(url: string, targetDir: string, options: CloneOption
 		if (options.sha) {
 			try {
 				await checkout(absoluteTarget, options.sha, options.signal);
-			} catch {
-				await fs.promises.rm(absoluteTarget, { force: true, recursive: true });
-				throw new Error(`Failed to checkout SHA ${options.sha} in cloned repository ${url}`);
+			} catch (error) {
+				// Cleanup must not mask the real failure (auth, missing object, disk, abort).
+				await fs.promises.rm(absoluteTarget, { force: true, recursive: true }).catch(() => {});
+				throw new Error(`Failed to checkout SHA ${options.sha} in cloned repository ${url}`, { cause: error });
 			}
 		}
 	} catch (err) {
@@ -1943,11 +1991,14 @@ export const ls = {
 	},
 
 	async submodules(cwd: string, signal?: AbortSignal): Promise<string[]> {
-		const output = await git(cwd, ["submodule", "--quiet", "foreach", "--recursive", "echo $sm_path"], {
-			readOnly: true,
-			signal,
-		});
-		return splitLines(output.stdout);
+		// runText throws on a nonzero exit; a bare `git()` here would turn a missing
+		// binary, broken repo, or abort into an apparently empty submodule list.
+		return splitLines(
+			await runText(cwd, ["submodule", "--quiet", "foreach", "--recursive", "echo $sm_path"], {
+				readOnly: true,
+				signal,
+			}),
+		);
 	},
 };
 

@@ -244,7 +244,7 @@ function renderIrcPeerRoster(selfId: string): string {
 	if (peers.length === 0) return "- (no other agents)";
 	const lines = peers.map(
 		peer =>
-			`- \`${peer.id}\` — ${peer.displayName} (${peer.kind}, ${peer.status})${peer.activity ? `: ${peer.activity}` : ""}`,
+			`- \`${peer.id}\` — ${peer.label} (${peer.kind}, ${peer.status})${peer.activity ? `: ${peer.activity}` : ""}`,
 	);
 	if (peers.some(peer => peer.status === "idle" || peer.status === "parked")) {
 		lines.push("Idle/parked peers are not gone: messaging them wakes (or revives) them.");

@@ -162,8 +162,9 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 		const entry = entries[i];
 		if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
 			const data = entry.data as { phases?: unknown } | undefined;
-			if (data && Array.isArray(data.phases)) {
-				return clonePhases(data.phases as TodoPhase[]);
+			const phases = data?.phases;
+			if (Array.isArray(phases) && phases.every(isTodoPhase)) {
+				return clonePhases(phases);
 			}
 			continue;
 		}
@@ -172,9 +173,10 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 		if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) continue;
 
 		const details = message.details as { phases?: unknown } | undefined;
-		if (!details || !Array.isArray(details.phases)) continue;
+		const phases = details?.phases;
+		if (!Array.isArray(phases) || !phases.every(isTodoPhase)) continue;
 
-		return clonePhases(details.phases as TodoPhase[]);
+		return clonePhases(phases);
 	}
 
 	return [];

@@ -386,7 +386,3 @@ async function openSharedHeadlessHandle(
 		throw new ToolError(`Shared browser attach failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
 }
-
-export function getBrowsersMapForTest(): ReadonlyMap<string, BrowserHandle> {
-	return browsers;
-}

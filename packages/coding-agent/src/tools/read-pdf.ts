@@ -1,4 +1,4 @@
-import { pathToFileURL } from "node:url";
+import * as url from "node:url";
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../sdk";
 import type { BrowserHandle } from "./browser/registry";
@@ -62,8 +62,9 @@ export function splitPdfImageReadPath(readPath: string): PdfImageReadTarget | nu
 	const member = match?.[2];
 	if (!pdfPath || member === undefined) return null;
 	const pageText = PDF_PAGE_MEMBER_RE.exec(member)?.[1];
-	const parsedPage = pageText === undefined ? 1 : Number(pageText);
-	const page = Number.isSafeInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+	if (pageText === undefined) return null;
+	const page = Number(pageText);
+	if (!Number.isSafeInteger(page) || page < 1) return null;
 	return { pdfPath, member, page };
 }
 
@@ -80,8 +81,8 @@ export async function renderPdfPageScreenshot(
 	const timeoutSignal = AbortSignal.timeout(PDF_RENDER_TIMEOUT_MS);
 	const renderSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 	const tabName = `read-pdf-${Bun.randomUUIDv7()}`;
-	const url = pathToFileURL(absolutePdfPath);
-	url.hash = `page=${page}&toolbar=0&navpanes=0&view=Fit`;
+	const pdfUrl = url.pathToFileURL(absolutePdfPath);
+	pdfUrl.hash = `page=${page}&toolbar=0&navpanes=0&view=Fit`;
 
 	let browserLease = false;
 	let tabOpened = false;
@@ -95,7 +96,7 @@ export async function renderPdfPageScreenshot(
 		browserLease = true;
 		await untilAborted(renderSignal, () =>
 			acquireTab(tabName, acquiredBrowser, {
-				url: url.href,
+				url: pdfUrl.href,
 				waitUntil: "load",
 				timeoutMs: PDF_RENDER_TIMEOUT_MS,
 				signal: renderSignal,

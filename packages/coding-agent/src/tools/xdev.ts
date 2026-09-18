@@ -98,21 +98,6 @@ function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string 
 	return [parts.prose, parts.schema, parts.footer].join("\n\n");
 }
 
-type XdKeyHint = { from: string; to: string; suffix?: string };
-
-const XD_KEY_HINTS: Record<string, readonly XdKeyHint[]> = {
-	orchestrate_wait: [
-		{ from: "ids", to: "workers" },
-		{ from: "timeoutMs", to: "timeout", suffix: " (seconds)" },
-	],
-	orchestrate_send: [
-		{ from: "prompt", to: "message" },
-		{ from: "to", to: "worker" },
-	],
-	orchestrate_spawn: [{ from: "message", to: "prompt" }],
-	orchestrate_kill: [{ from: "to", to: "worker" }],
-};
-
 function schemaProperties(schema: Record<string, unknown>): string[] | undefined {
 	if (schema.additionalProperties === true) return undefined;
 	const properties = schema.properties;
@@ -127,16 +112,6 @@ function unknownXdKeys(args: Record<string, unknown>, schema: Record<string, unk
 	return Object.keys(args).filter(key => !declared.has(key));
 }
 
-function xdKeyHint(device: AiTool, unknown: readonly string[]): string | undefined {
-	const hints = XD_KEY_HINTS[device.name];
-	if (!hints) return undefined;
-	const suggestions = unknown.flatMap(key => {
-		const hint = hints.find(candidate => candidate.from === key);
-		return hint ? [`use \`${hint.to}\`${hint.suffix ?? ""} instead of \`${hint.from}\``] : [];
-	});
-	return suggestions.length > 0 ? `Hint: ${suggestions.join("; ")}.` : undefined;
-}
-
 function validateXdArgs(
 	device: AiTool,
 	args: Record<string, unknown>,
@@ -148,9 +123,8 @@ function validateXdArgs(
 	if (unknown.length > 0) {
 		const accepted = schemaProperties(schema) ?? [];
 		const acceptedText = accepted.length > 0 ? accepted.join(", ") : "(none)";
-		const hint = xdKeyHint(device, unknown);
 		throw new ToolError(
-			`Invalid args for ${XD_URL_PREFIX}${device.name}: unknown top-level key${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Accepted keys: ${acceptedText}.${hint ? ` ${hint}` : ""}`,
+			`Invalid args for ${XD_URL_PREFIX}${device.name}: unknown top-level key${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Accepted keys: ${acceptedText}.`,
 		);
 	}
 	try {

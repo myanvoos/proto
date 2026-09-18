@@ -654,16 +654,19 @@ export function queryRows(
 	const validatedWhere = validateWhereClause(opts.where);
 	const whereClause = validatedWhere ? ` WHERE ${validatedWhere}` : "";
 	const orderClause = resolveOrderClause(opts.order, columns);
-	const countSql = `SELECT COUNT(*) AS count FROM ${quoteSqliteIdentifier(table)}${whereClause}`;
 	const selectSql = `SELECT * FROM ${quoteSqliteIdentifier(table)}${whereClause}${orderClause} LIMIT ? OFFSET ?`;
-	const totalCount = db.prepare<SqliteCountRow, []>(countSql).get()?.count ?? 0;
 	const statement = db.prepare<SqliteRow, SQLQueryBindings[]>(selectSql);
 	if (statement.paramsCount !== 2) {
 		throw new ToolError(
 			"SQLite where clause changed the expected pagination parameters; use q=SELECT ... for raw SQL",
 		);
 	}
-	const rows = statement.all(opts.limit, opts.offset);
+
+	const probedRows = statement.all(opts.limit + 1, opts.offset);
+	const hasMore = probedRows.length > opts.limit;
+	const rows = hasMore ? probedRows.slice(0, opts.limit) : probedRows;
+	// Exact at EOF; otherwise one row beyond the page, enough to signal continuation without scanning the remainder.
+	const totalCount = opts.offset + rows.length + (hasMore ? 1 : 0);
 	return { columns, rows, totalCount };
 }
 
@@ -841,10 +844,11 @@ export function renderTable(
 	if (shown < meta.totalCount) {
 		const remaining = meta.totalCount - shown;
 		const nextOffset = meta.offset + rows.length;
+		const rowCount = remaining === 1 && rows.length === meta.limit ? "More rows" : `${remaining} more rows`;
 		parts.push(
 			truncateToWidth(
 				replaceTabs(
-					`[${remaining} more rows; append :${meta.table}?limit=${meta.limit}&offset=${nextOffset} to the database path to continue]`,
+					`[${rowCount}; append :${meta.table}?limit=${meta.limit}&offset=${nextOffset} to the database path to continue]`,
 				),
 				MAX_RENDER_WIDTH,
 			),

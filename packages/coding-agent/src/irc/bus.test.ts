@@ -8,14 +8,14 @@ function makeRegistryWithPeer(status: "running" | "idle" | "parked"): AgentRegis
 	const registry = new AgentRegistry();
 	registry.register({
 		id: "waiter",
-		displayName: "waiter",
+		label: "waiter",
 		kind: "main",
 		session: null,
 		fleetRoot: "/current/fleet",
 	});
 	registry.register({
 		id: "peer",
-		displayName: "peer",
+		label: "peer",
 		kind: "sub",
 		session: null,
 		fleetRoot: "/current/fleet",
@@ -70,7 +70,7 @@ describe("IrcBus fleet isolation", () => {
 		const deliveries: string[] = [];
 		const mainA = registry.register({
 			id: "Main",
-			displayName: "main",
+			label: "main",
 			kind: "main",
 			fleetRoot: "/session-a/fleet",
 			sessionFile: "/session-a.jsonl",
@@ -83,7 +83,7 @@ describe("IrcBus fleet isolation", () => {
 		});
 		registry.register({
 			id: "worker-a",
-			displayName: "worker-a",
+			label: "worker-a",
 			kind: "sub",
 			parentId: "Main",
 			fleetRoot: "/session-a/fleet",
@@ -91,7 +91,7 @@ describe("IrcBus fleet isolation", () => {
 		});
 		const mainB = registry.register({
 			id: "Main",
-			displayName: "main",
+			label: "main",
 			kind: "main",
 			fleetRoot: "/session-b/fleet",
 			sessionFile: "/session-b.jsonl",
@@ -104,7 +104,7 @@ describe("IrcBus fleet isolation", () => {
 		});
 		registry.register({
 			id: "worker-b",
-			displayName: "worker-b",
+			label: "worker-b",
 			kind: "sub",
 			parentId: "Main",
 			fleetRoot: "/session-b/fleet",
@@ -118,7 +118,7 @@ describe("IrcBus fleet isolation", () => {
 
 		const receipt = await bus.send({ from: "worker-a", to: "Main", body: "still working" });
 
-		expect(receipt.outcome).toBe("injected");
+		expect(receipt).toMatchObject({ outcome: "delivered", effect: "injected" });
 		expect(deliveries).toEqual(["a"]);
 		expect(registry.listVisibleTo("Main", "/session-a/fleet").map(ref => ref.id)).toContain("worker-a");
 		expect(registry.listVisibleTo("Main", "/session-a/fleet").map(ref => ref.id)).not.toContain("worker-b");
@@ -137,7 +137,7 @@ describe("IrcBus fleet isolation", () => {
 		const registry = new AgentRegistry();
 		registry.register({
 			id: "sender",
-			displayName: "sender",
+			label: "sender",
 			kind: "main",
 			session: null,
 			fleetRoot: "/current/fleet",
@@ -145,7 +145,7 @@ describe("IrcBus fleet isolation", () => {
 		let deliveries = 0;
 		registry.register({
 			id: "old-peer",
-			displayName: "old-peer",
+			label: "old-peer",
 			kind: "sub",
 			fleetRoot: "/previous/fleet",
 			session: {
@@ -158,7 +158,7 @@ describe("IrcBus fleet isolation", () => {
 
 		const receipt = await new IrcBus(registry).send({ from: "sender", to: "old-peer", body: "stale" });
 
-		expect(receipt).toMatchObject({ outcome: "failed", to: "old-peer" });
+		expect(receipt).toMatchObject({ outcome: "rejected", to: "old-peer" });
 		expect(deliveries).toBe(0);
 	});
 
@@ -166,7 +166,7 @@ describe("IrcBus fleet isolation", () => {
 		const registry = new AgentRegistry();
 		const sender = registry.register({
 			id: "sender",
-			displayName: "sender",
+			label: "sender",
 			kind: "main",
 			session: null,
 			fleetRoot: "/previous/fleet",
@@ -180,7 +180,7 @@ describe("IrcBus fleet isolation", () => {
 		} as unknown as AgentSession;
 		const target = registry.register({
 			id: "target",
-			displayName: "target",
+			label: "target",
 			kind: "sub",
 			session: null,
 			fleetRoot: "/previous/fleet",
@@ -204,7 +204,7 @@ describe("IrcBus fleet isolation", () => {
 
 		const receipt = await new IrcBus(registry, lifecycle).send({ from: "sender", to: "target", body: "stale" });
 
-		expect(receipt.outcome).toBe("failed");
+		expect(receipt.outcome).toBe("rejected");
 		expect(deliveries).toBe(0);
 	});
 
@@ -223,7 +223,7 @@ describe("IrcBus fleet isolation", () => {
 		let relays = 0;
 		registry.register({
 			id: "Main",
-			displayName: "main",
+			label: "main",
 			kind: "main",
 			fleetRoot: "/current/fleet",
 			session: {
@@ -234,14 +234,14 @@ describe("IrcBus fleet isolation", () => {
 		});
 		registry.register({
 			id: "old-sender",
-			displayName: "old-sender",
+			label: "old-sender",
 			kind: "sub",
 			session: null,
 			fleetRoot: "/previous/fleet",
 		});
 		registry.register({
 			id: "old-recipient",
-			displayName: "old-recipient",
+			label: "old-recipient",
 			kind: "sub",
 			fleetRoot: "/previous/fleet",
 			session: { deliverIrcMessage: async () => "injected" as const } as unknown as AgentSession,
@@ -253,7 +253,7 @@ describe("IrcBus fleet isolation", () => {
 			body: "old-session traffic",
 		});
 
-		expect(receipt.outcome).toBe("injected");
+		expect(receipt).toMatchObject({ outcome: "delivered", effect: "injected" });
 		expect(relays).toBe(0);
 	});
 
@@ -261,14 +261,14 @@ describe("IrcBus fleet isolation", () => {
 		const registry = new AgentRegistry();
 		registry.register({
 			id: "sender",
-			displayName: "sender",
+			label: "sender",
 			kind: "sub",
 			session: null,
 			fleetRoot: "/previous/fleet",
 		});
 		const recipient = registry.register({
 			id: "recipient",
-			displayName: "recipient",
+			label: "recipient",
 			kind: "main",
 			fleetRoot: "/previous/fleet",
 			session: {
@@ -288,4 +288,67 @@ describe("IrcBus fleet isolation", () => {
 
 		expect(bus.inbox("recipient")).toEqual([]);
 	});
+});
+
+describe("IrcBus mailbox overflow", () => {
+	test("the 101st failed live delivery reports that it was dropped without discarding an accepted message", async () => {
+		const registry = new AgentRegistry();
+		const fleetRoot = "/mailbox/fleet";
+		registry.register({
+			id: "sender",
+			label: "sender",
+			kind: "main",
+			session: null,
+			fleetRoot,
+		});
+		registry.register({
+			id: "recipient",
+			label: "recipient",
+			kind: "sub",
+			fleetRoot,
+			session: {
+				deliverIrcMessage: async () => {
+					throw new Error("temporarily unavailable");
+				},
+			} as unknown as AgentSession,
+		});
+		const bus = new IrcBus(registry);
+		const receipts = [];
+		for (let index = 0; index <= 100; index++) {
+			receipts.push(await bus.send({ from: "sender", to: "recipient", body: `message-${index}` }));
+		}
+
+		expect(receipts[0]).toMatchObject({ outcome: "queued" });
+		expect(receipts[100]).toMatchObject({ outcome: "dropped" });
+		expect(receipts[100]?.error).toContain("drain its inbox, then retry");
+		const inbox = bus.inbox("recipient", { peek: true, fleetRoot });
+		expect(inbox).toHaveLength(100);
+		expect(inbox[0]?.body).toBe("message-0");
+		expect(inbox.at(-1)?.body).toBe("message-99");
+	});
+});
+
+test("a peer wake receipt reports an unconfirmed wake request rather than claiming a turn started", async () => {
+	const registry = new AgentRegistry();
+	const fleetRoot = "/wake-effect/fleet";
+	registry.register({
+		id: "sender",
+		label: "sender",
+		kind: "main",
+		session: null,
+		fleetRoot,
+	});
+	registry.register({
+		id: "recipient",
+		label: "recipient",
+		kind: "sub",
+		fleetRoot,
+		session: {
+			deliverIrcMessage: async () => "woken" as const,
+		} as unknown as AgentSession,
+	});
+
+	const receipt = await new IrcBus(registry).send({ from: "sender", to: "recipient", body: "start this" });
+
+	expect(receipt).toEqual({ to: "recipient", outcome: "delivered", effect: "wake_requested" });
 });

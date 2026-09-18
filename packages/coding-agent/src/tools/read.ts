@@ -461,7 +461,8 @@ async function streamLinesFromFile(
 		firstLinePreview = { text, bytes };
 	}
 
-	const totalFileLines = reachedEof && endedWithNewline && lineIndex > 1 ? lineIndex - 1 : lineIndex;
+	const totalFileLines =
+		reachedEof && endedWithNewline && includeTerminalNewline && lineIndex > 1 ? lineIndex - 1 : lineIndex;
 
 	return {
 		lines: collectedLines,

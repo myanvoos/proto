@@ -203,6 +203,16 @@ export class ImageInputTooLargeError extends Error {
 	}
 }
 
+export class UnsupportedImageConversionError extends Error {
+	readonly mimeType: string;
+
+	constructor(mimeType: string) {
+		super(`Image conversion failed for unsupported model input type: ${mimeType}`);
+		this.name = "UnsupportedImageConversionError";
+		this.mimeType = mimeType;
+	}
+}
+
 export async function convertImageToPng(image: ImageContent): Promise<ImageContent> {
 	const bytes = Buffer.from(image.data, "base64");
 	const data = await new Bun.Image(bytes).png().toBase64();
@@ -237,13 +247,13 @@ export async function normalizeModelContextImages(
 	const normalized: ImageContent[] = [];
 	const { resizeImage } = await loadImageResize();
 	for (const image of images) {
+		if (excludesWebP && isWebPImage(image)) {
+			const converted = await memoizedStbImageNormalization(image, options?.resize);
+			if (!converted) throw new UnsupportedImageConversionError(image.mimeType);
+			normalized.push(converted);
+			continue;
+		}
 		try {
-			if (excludesWebP && isWebPImage(image)) {
-				const converted = await memoizedStbImageNormalization(image, options?.resize);
-
-				normalized.push(converted ?? image);
-				continue;
-			}
 			const resized = await resizeImage(image, resize);
 			normalized.push({ ...image, data: resized.data, mimeType: resized.mimeType });
 		} catch {

@@ -35,6 +35,28 @@ test("a match expression registers, matches, and reports the line that tripped i
 	expect(matches[0]!.evidence.snippets).toEqual([{ line: 2, text: "const v = x as any;" }]);
 });
 
+test("streamed matching is equivalent when a literal spans delta boundaries", () => {
+	const candidate = rule("no-forbidden-token", {
+		match: { regex: "forbidden_token" },
+		scope: ["text"],
+	});
+	const content = "safe preface\nnever use forbidden_token";
+	const context: TtsrMatchContext = { source: "text", streamKey: "equivalence" };
+
+	const singleDelta = new TtsrManager(settings());
+	singleDelta.addRule(candidate);
+	const expected = singleDelta.checkDelta(content, context);
+
+	const manyDeltas = new TtsrManager(settings());
+	manyDeltas.addRule(candidate);
+	const actual = Array.from(content).flatMap(delta => manyDeltas.checkDelta(delta, context));
+
+	expect(actual).toEqual(expected);
+	expect(actual.map(match => ({ name: match.rule.name, evidence: match.evidence }))).toEqual([
+		{ name: "no-forbidden-token", evidence: { snippets: [{ line: 2, text: "never use forbidden_token" }] } },
+	]);
+});
+
 test("an uncompilable match expression keeps the rule out of the TTSR bucket", () => {
 	const manager = new TtsrManager(settings());
 	expect(manager.addRule(rule("broken", { match: { regex: "(unclosed" } }))).toBe(false);

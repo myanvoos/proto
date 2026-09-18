@@ -19,6 +19,8 @@ export interface AdvisorAgent {
 	reset(): void;
 
 	rollbackTo?(count: number): void;
+	/** Resolves once any in-flight run has settled, so a refused `reset()` can be retried. */
+	waitForIdle?(): Promise<void>;
 	readonly state: { messages: AgentMessage[]; error?: string };
 }
 
@@ -332,11 +334,22 @@ export class ReviewerRuntime {
 		this.#consecutiveFailures = 0;
 		this.#clearSeenContext();
 		try {
-			this.agent.reset();
-		} catch {}
-		try {
 			this.agent.abort("advisor reset");
 		} catch {}
+		try {
+			this.agent.reset();
+		} catch {
+			// `reset()` refuses while a run is still settling. Retry once it is idle so
+			// the advisor context is actually dropped instead of silently retained.
+			void this.agent.waitForIdle?.().then(
+				() => {
+					try {
+						this.agent.reset();
+					} catch {}
+				},
+				() => {},
+			);
+		}
 	}
 
 	#resetAdvisorContext(clearBacklog: boolean, wakeWaiters: boolean, reason?: string): void {

@@ -163,9 +163,9 @@ const MAX_EVENT_DIFF_CHARS = 32000;
 
 /**
  * Generate the numbered hunk diff for an eval status event and cap it to a
- * character budget. Shared by the host cell walker (eval/cell-file-diff.ts)
- * and the JS kernel's fs tracker (eval/js/shared/fs-tracker.ts); the Python
- * prelude keeps its own copy across the process boundary.
+ * character budget. Used by the JS kernel's filesystem tracker
+ * (eval/js/shared/fs-tracker.ts); the Python prelude keeps its own copy
+ * across the process boundary.
  */
 export function capEventDiff(before: string, after: string): { diff: string; diffTruncated?: true } | undefined {
 	const rows = generateDiffString(before, after, 2)

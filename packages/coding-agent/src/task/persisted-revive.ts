@@ -93,7 +93,7 @@ export function createPersistedSubagentReviverFactory(
 				settings: subagentSettings,
 				sessionManager: reopened,
 				agentId: ref.id,
-				agentDisplayName: ref.displayName,
+				agentDisplayName: ref.label,
 				parentTaskPrefix: ref.id,
 				parentAgentId: ref.parentId,
 				expectedAgentRef: expectedRef,
@@ -131,7 +131,7 @@ export function createPersistedSubagentReviverFactory(
 			registry.syncSessionStatus(ref.id, session);
 
 			const wakeAgent: AgentDefinition = {
-				name: ref.displayName,
+				name: ref.label,
 				description: "",
 				systemPrompt: init.systemPrompt,
 				source: "user",

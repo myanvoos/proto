@@ -3,7 +3,7 @@ import { type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { extractPrintableText, matchesKey, parseKey, parseKittySequence } from "@oh-my-pi/pi-tui/keys";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui/utils";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type * as XtermModule from "@oh-my-pi/pi-utils/vterm";
 import type { Terminal as XtermTerminalType } from "@oh-my-pi/pi-utils/vterm";
 import { Settings } from "../config/settings";
@@ -337,16 +337,52 @@ export async function runInteractiveBashPty(
 					finished = true;
 					component.setComplete({ exitCode: run.exitCode, cancelled: run.cancelled, timedOut: run.timedOut });
 					tui.requestRender();
-					void (async () => {
-						await component.flushOutput();
-						const summary = await sink.dump();
-						done({
-							exitCode: run.exitCode,
+					const complete = async (): Promise<void> => {
+						const fallbackOutput = "PTY finalization failed";
+						let completion: BashInteractiveResult = {
+							exitCode: undefined,
 							cancelled: run.cancelled,
 							timedOut: run.timedOut,
-							...summary,
-						});
-					})();
+							output: fallbackOutput,
+							truncated: false,
+							totalLines: 1,
+							totalBytes: fallbackOutput.length,
+							outputLines: 1,
+							outputBytes: fallbackOutput.length,
+							collector: { state: "failed", error: fallbackOutput },
+						};
+						try {
+							await component.flushOutput();
+							const summary = await sink.dump();
+							completion = {
+								exitCode: run.exitCode,
+								cancelled: run.cancelled,
+								timedOut: run.timedOut,
+								...summary,
+							};
+						} catch (error) {
+							const errorText = error instanceof Error ? error.message : String(error);
+							const output = `PTY finalization failed: ${errorText}`;
+							const outputBytes = Buffer.byteLength(output, "utf8");
+							completion = {
+								exitCode: undefined,
+								cancelled: run.cancelled,
+								timedOut: run.timedOut,
+								output,
+								truncated: false,
+								totalLines: 1,
+								totalBytes: outputBytes,
+								outputLines: 1,
+								outputBytes,
+								collector: { state: "failed", error: errorText },
+							};
+						} finally {
+							done(completion);
+						}
+					};
+					void complete().catch(error => {
+						logger.error("PTY completion callback failed", { error });
+					});
 				};
 				const cols = Math.max(20, tui.terminal.columns - 2);
 				const rows = Math.max(5, tui.terminal.rows - 4);

@@ -2,9 +2,18 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { logger, postmortem } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import fnEnvHelper from "./shell-snapshot-fn-env.sh" with { type: "text" };
 
-const cachedSnapshotPaths = new Map<string, string>();
+const SNAPSHOT_CACHE_MAX_ENTRIES = 16;
+const cachedSnapshotPaths = new LRUCache<string, string>({
+	max: SNAPSHOT_CACHE_MAX_ENTRIES,
+	dispose: snapshotPath => {
+		try {
+			fs.unlinkSync(snapshotPath);
+		} catch {}
+	},
+});
 const SNAPSHOT_TIMEOUT_MS = 2_000;
 
 const BRUSH_INCOMPATIBLE_ALIAS_BODY = /[()|&;<>`]/;
@@ -50,9 +59,21 @@ function sanitizeSnapshotEnv(env: Record<string, string | undefined>): Record<st
 
 function getShellConfigFile(shell: string, env: Record<string, string | undefined>): string {
 	const home = env.HOME || os.homedir();
-	if (shell.includes("zsh")) return path.join(home, ".zshrc");
-	if (shell.includes("bash")) return path.join(home, ".bashrc");
-	return path.join(home, ".profile");
+	if (shell.includes("zsh")) return path.resolve(home, ".zshrc");
+	if (shell.includes("bash")) return path.resolve(home, ".bashrc");
+	return path.resolve(home, ".profile");
+}
+
+function snapshotCacheKey(shell: string, rcFile: string, env: Record<string, string | undefined>): string {
+	let rcIdentity = "missing";
+	try {
+		const stat = fs.statSync(rcFile, { bigint: true });
+		rcIdentity = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+	} catch {}
+	const capturedEnv = Object.entries(env)
+		.filter((entry): entry is [string, string] => entry[1] !== undefined)
+		.sort(([left], [right]) => left.localeCompare(right));
+	return JSON.stringify([shell, rcFile, rcIdentity, capturedEnv]);
 }
 
 function generateSnapshotScript(shell: string, snapshotPath: string, rcFile: string): string {
@@ -154,17 +175,15 @@ export async function getOrCreateSnapshot(
 	env: Record<string, string | undefined>,
 	timeoutMs = SNAPSHOT_TIMEOUT_MS,
 ): Promise<string | null> {
-	const cacheKey = shell;
+	const snapshotEnv = sanitizeSnapshotEnv(env);
+	const rcFile = getShellConfigFile(shell, snapshotEnv);
+	const cacheKey = snapshotCacheKey(shell, rcFile, snapshotEnv);
 
 	const cached = cachedSnapshotPaths.get(cacheKey);
-	if (cached && fs.existsSync(cached)) {
-		return cached;
-	}
+	if (cached && fs.existsSync(cached)) return cached;
 	if (cached) {
 		cachedSnapshotPaths.delete(cacheKey);
 	}
-
-	const rcFile = getShellConfigFile(shell, env);
 
 	const uid = process.getuid?.();
 	const snapshotDir = path.join(
@@ -192,7 +211,6 @@ export async function getOrCreateSnapshot(
 
 	let succeeded = false;
 	try {
-		const snapshotEnv = sanitizeSnapshotEnv(env);
 		const spawnEnv: Record<string, string> = {};
 		for (const [key, value] of Object.entries(snapshotEnv)) {
 			if (value !== undefined) {
@@ -231,8 +249,5 @@ export async function getOrCreateSnapshot(
 }
 
 postmortem.register("shell-snapshot", () => {
-	for (const snapshotPath of cachedSnapshotPaths.values()) {
-		fs.unlinkSync(snapshotPath);
-	}
 	cachedSnapshotPaths.clear();
 });

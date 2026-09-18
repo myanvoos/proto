@@ -1,8 +1,12 @@
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { readLines } from "@oh-my-pi/pi-utils";
 import type { AgentRef } from "../registry/agent-registry";
 import { AgentRegistry } from "../registry/agent-registry";
+import { buildSessionContext } from "../session/session-context";
+import type { FileEntry, SessionEntry, SessionHeader } from "../session/session-entries";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
-import { loadSessionMessagesReadOnly } from "../session/session-loader";
-import { sessionFilesFromDisk } from "./registry-helpers";
+import { migrateToCurrentVersion } from "../session/session-migrations";
+import { findSessionFileFromDisk, sessionFilesFromDisk } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 function formatAgo(timestamp: number): string {
@@ -23,6 +27,66 @@ interface IndexEntry {
 	kind: string;
 	parent: string;
 	lastActivity: string;
+}
+
+const HISTORY_ENTRY_LIMIT = 2_000;
+const HISTORY_BYTE_LIMIT = 8 * 1024 * 1024;
+
+interface LoadedHistory {
+	messages: AgentMessage[];
+	truncated: boolean;
+	retainedEntries: number;
+	totalEntries: number;
+}
+
+async function loadBoundedSessionHistory(file: string): Promise<LoadedHistory> {
+	let header: SessionHeader | undefined;
+	let totalEntries = 0;
+	let retainedBytes = 0;
+	const retained: Array<{ line: Uint8Array; bytes: number }> = [];
+	const decoder = new TextDecoder();
+	for await (const line of readLines(Bun.file(file).stream())) {
+		if (line.byteLength === 0) continue;
+		if (!header) {
+			try {
+				const candidate = JSON.parse(decoder.decode(line)) as FileEntry;
+				if (candidate.type === "session") {
+					header = candidate;
+					continue;
+				}
+			} catch {
+				// A title slot may precede the JSONL header.
+			}
+		}
+		totalEntries++;
+		const bytes = line.byteLength;
+		if (bytes > HISTORY_BYTE_LIMIT) continue;
+		retained.push({ line: line.slice(), bytes });
+		retainedBytes += bytes;
+		while (retained.length > HISTORY_ENTRY_LIMIT || retainedBytes > HISTORY_BYTE_LIMIT) {
+			retainedBytes -= retained.shift()!.bytes;
+		}
+	}
+	const entries: FileEntry[] = header ? [header] : [];
+	for (const { line } of retained) {
+		try {
+			entries.push(JSON.parse(decoder.decode(line)) as FileEntry);
+		} catch {
+			// Read-only history tolerates malformed journal records just like the session loader.
+		}
+	}
+	migrateToCurrentVersion(entries);
+	const sessionEntries = entries.filter((entry): entry is SessionEntry => entry.type !== "session");
+	const messages = buildSessionContext(sessionEntries, undefined, undefined, {
+		transcript: true,
+		collapseCompactedHistory: true,
+	}).messages;
+	return {
+		messages,
+		truncated: retained.length < totalEntries,
+		retainedEntries: retained.length,
+		totalEntries,
+	};
 }
 
 export class HistoryProtocolHandler implements ProtocolHandler {
@@ -62,13 +126,19 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		}
 
 		const notes: string[] = [];
-		let messages: unknown[];
+		let messages: AgentMessage[];
 		if (ref.session) {
 			messages = ref.session.messages;
 			notes.push("Source: live session");
 		} else if (ref.sessionFile) {
-			messages = await loadSessionMessagesReadOnly(ref.sessionFile);
+			const loaded = await loadBoundedSessionHistory(ref.sessionFile);
+			messages = loaded.messages;
 			notes.push(`Source: session file (read-only, ${ref.status})`);
+			if (loaded.truncated) {
+				notes.push(
+					`Transcript bounded to the latest ${loaded.retainedEntries} of ${loaded.totalEntries} entries; use the session file for the complete journal.`,
+				);
+			}
 		} else {
 			const disk = await this.#resolveFromDisk(ref.id);
 			if (disk) return { ...disk, url: url.href };
@@ -87,34 +157,32 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	}
 
 	async #resolveFromDisk(agentId: string): Promise<InternalResource | undefined> {
-		const files = await sessionFilesFromDisk();
-		const lower = agentId.toLowerCase();
-		let matchedId: string | undefined;
-		let sessionFile: string | undefined;
-		for (const [id, file] of files) {
-			if (id === agentId || id.toLowerCase() === lower) {
-				matchedId = id;
-				sessionFile = file;
-				if (id === agentId) break;
-			}
-		}
-		if (!matchedId || !sessionFile) return undefined;
-		const messages = await loadSessionMessagesReadOnly(sessionFile);
-		const content = formatSessionHistoryMarkdown(messages, { title: `${matchedId} (on disk)` });
+		const sessionFile = await findSessionFileFromDisk(agentId);
+		if (!sessionFile) return undefined;
+		const matchedId = sessionFile.slice(sessionFile.lastIndexOf("/") + 1, -".jsonl".length);
+		const loaded = await loadBoundedSessionHistory(sessionFile);
+		const content = formatSessionHistoryMarkdown(loaded.messages, { title: `${matchedId} (on disk)` });
 		return {
 			url: "",
 			content,
 			contentType: "text/markdown",
 			size: Buffer.byteLength(content, "utf-8"),
 			sourcePath: sessionFile,
-			notes: ["Source: session file (read-only, unregistered)"],
+			notes: [
+				"Source: session file (read-only, unregistered)",
+				...(loaded.truncated
+					? [
+							`Transcript bounded to the latest ${loaded.retainedEntries} of ${loaded.totalEntries} entries; use the session file for the complete journal.`,
+						]
+					: []),
+			],
 		};
 	}
 
 	async #renderIndex(refs: AgentRef[]): Promise<string> {
 		const entries: IndexEntry[] = refs.map(ref => ({
 			id: ref.id,
-			label: ref.displayName ?? "—",
+			label: ref.label ?? "—",
 			status: ref.status,
 			kind: ref.kind,
 			parent: ref.parentId ?? "—",
@@ -151,7 +219,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			seen.add(ref.id);
 			completions.push({
 				value: ref.id,
-				description: `${ref.displayName ? `${ref.displayName} · ` : ""}${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
+				description: `${ref.label ? `${ref.label} · ` : ""}${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
 			});
 		}
 		const disk = await sessionFilesFromDisk();

@@ -510,6 +510,32 @@ const REMOTE_READER_MAX_MS = 10_000;
 const JINA_MARKDOWN_MARKER = "Markdown Content:";
 const JINA_READER_MAX_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Reads at most `maxBytes` of a response body, cancelling the stream as soon as the
+ * cap is passed. `response.text()` would buffer the whole body regardless of the
+ * declared `content-length`, which a missing, wrong, or chunked header makes unbounded.
+ */
+export async function readBoundedText(response: Response, maxBytes: number): Promise<string | null> {
+	const body = response.body;
+	if (!body) return "";
+	const reader = (body as ReadableStream<Uint8Array>).getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			total += value.byteLength;
+			if (total > maxBytes) return null;
+			chunks.push(value);
+		}
+	} finally {
+		await reader.cancel().catch(() => {});
+	}
+	return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
+}
+
 function parseJinaReaderContent(responseBody: string): string | null {
 	const markerStart = responseBody.indexOf(JINA_MARKDOWN_MARKER);
 	if (markerStart < 0) return null;
@@ -595,7 +621,8 @@ export async function renderHtmlToText(
 			if (!response.ok) return null;
 			const contentLength = Number(response.headers.get("content-length"));
 			if (Number.isFinite(contentLength) && contentLength > JINA_READER_MAX_BYTES) return null;
-			return parseJinaReaderContent(await response.text());
+			const body = await readBoundedText(response, JINA_READER_MAX_BYTES);
+			return body === null ? null : parseJinaReaderContent(body);
 		},
 	};
 

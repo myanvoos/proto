@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 
 import type { Settings } from "../config/settings";
 import {
@@ -28,6 +29,11 @@ const providerCapabilities = new Map<string, Set<string>>();
 const providerMeta = new Map<string, { displayName: string; description: string }>();
 
 const disabledProviders = new Set<string>();
+
+const REPO_ROOT_CACHE_MAX_ENTRIES = 256;
+const repoRootCache = new LRUCache<string, Promise<string | null>>({
+	max: REPO_ROOT_CACHE_MAX_ENTRIES,
+});
 
 let settings: Settings | null = null;
 
@@ -209,6 +215,21 @@ function filterProviders<T>(capability: Capability<T>, options: LoadOptions<T>):
 	return providers;
 }
 
+async function resolveRepoRoot(cwd: string): Promise<string | null> {
+	const normalizedCwd = path.resolve(cwd);
+	const cached = repoRootCache.get(normalizedCwd);
+	if (cached) return await cached;
+
+	const pending = findRepoRoot(normalizedCwd);
+	repoRootCache.set(normalizedCwd, pending);
+	try {
+		return await pending;
+	} catch (error) {
+		if (repoRootCache.get(normalizedCwd) === pending) repoRootCache.delete(normalizedCwd);
+		throw error;
+	}
+}
+
 export async function loadCapability<T>(
 	capabilityId: string,
 	options: LoadOptions<T> = {},
@@ -220,7 +241,7 @@ export async function loadCapability<T>(
 
 	const cwd = options.cwd ?? getProjectDir();
 	const home = os.homedir();
-	const repoRoot = await findRepoRoot(cwd);
+	const repoRoot = await resolveRepoRoot(cwd);
 	const ctx: LoadContext = { cwd, home, repoRoot };
 	const providers = filterProviders(capability, options);
 
@@ -341,6 +362,7 @@ export function getAllProvidersInfo(): ProviderInfo[] {
 
 export function reset(): void {
 	clearFsCache();
+	repoRootCache.clear();
 }
 
 export function invalidate(filePath: string, cwd?: string): void {

@@ -209,10 +209,6 @@ export function setActiveRules(value: readonly Rule[]): void {
 	activeRules = value;
 }
 
-export function resetActiveRulesForTests(): void {
-	activeRules = [];
-}
-
 export const ruleCapability = defineCapability<Rule>({
 	id: "rules",
 	displayName: "Rules",

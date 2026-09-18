@@ -118,9 +118,6 @@ export function expandTilde(filePath: string, home?: string): string {
 	if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
 		return h + filePath.slice(1);
 	}
-	if (filePath.startsWith("~")) {
-		return path.join(h, filePath.slice(1));
-	}
 	return filePath;
 }
 

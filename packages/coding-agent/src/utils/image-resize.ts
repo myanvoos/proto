@@ -22,6 +22,18 @@ export interface ResizedImage {
 	get data(): string;
 }
 
+export class ImageResizeMaxBytesError extends Error {
+	readonly maxBytes: number;
+	readonly smallestBytes: number;
+
+	constructor(maxBytes: number, smallestBytes: number) {
+		super(`Unable to resize image within ${maxBytes} bytes; smallest encoded candidate was ${smallestBytes} bytes`);
+		this.name = "ImageResizeMaxBytesError";
+		this.maxBytes = maxBytes;
+		this.smallestBytes = smallestBytes;
+	}
+}
+
 const DEFAULT_MAX_BYTES = 500 * 1024;
 
 const DEFAULT_MIN_DIMENSION = 200;
@@ -242,13 +254,14 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 		}
 
 		const qualitySteps = [70, 60, 50, 40];
-		const scaleSteps = [1.0, 0.75, 0.5, 0.35, 0.25];
+		const scaleSteps = [0.75, 0.5, 0.35, 0.25];
 
 		let best: { buffer: Uint8Array; mimeType: string };
 		let finalWidth = targetWidth;
 		let finalHeight = targetHeight;
 
 		best = await encodeSmallest(targetWidth, targetHeight, opts.jpegQuality);
+		let smallestOversizedBytes = best.buffer.length;
 
 		if (best.buffer.length <= opts.maxBytes) {
 			return {
@@ -267,6 +280,7 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 
 		for (const quality of qualitySteps) {
 			best = await encodeLossy(targetWidth, targetHeight, quality);
+			smallestOversizedBytes = Math.min(smallestOversizedBytes, best.buffer.length);
 
 			if (best.buffer.length <= opts.maxBytes) {
 				return {
@@ -294,6 +308,7 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 
 			for (const quality of qualitySteps) {
 				best = await encodeLossy(finalWidth, finalHeight, quality);
+				smallestOversizedBytes = Math.min(smallestOversizedBytes, best.buffer.length);
 
 				if (best.buffer.length <= opts.maxBytes) {
 					return {
@@ -312,24 +327,17 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
 			}
 		}
 
-		return {
-			buffer: best.buffer,
-			mimeType: best.mimeType,
-			originalWidth,
-			originalHeight,
-			width: finalWidth,
-			height: finalHeight,
-			wasResized: true,
-			get data() {
-				return Buffer.from(best.buffer).toBase64();
-			},
-		};
-	} catch {
+		throw new ImageResizeMaxBytesError(opts.maxBytes, smallestOversizedBytes);
+	} catch (error) {
+		if (error instanceof ImageResizeMaxBytesError) throw error;
 		const headerDimensions = readImageHeaderDimensions(inputBuffer);
 		const fallbackMimeType = img.mimeType ?? headerDimensions?.mimeType ?? "application/octet-stream";
 
 		if (excludeWebP && (fallbackMimeType === "image/webp" || (!img.mimeType && !headerDimensions))) {
 			throw new Error("resizeImage: failed to decode image and cannot honor excludeWebP for a WebP source");
+		}
+		if (inputBuffer.length > opts.maxBytes) {
+			throw new ImageResizeMaxBytesError(opts.maxBytes, inputBuffer.length);
 		}
 		return {
 			buffer: inputBuffer,

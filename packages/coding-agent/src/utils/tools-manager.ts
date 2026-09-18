@@ -1,7 +1,16 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $which, getToolsDir, logger, ptree, TempDir, USER_AGENT } from "@oh-my-pi/pi-utils";
+import {
+	$which,
+	atomicWriteFileWith,
+	getToolsDir,
+	isEnoent,
+	logger,
+	ptree,
+	TempDir,
+	USER_AGENT,
+} from "@oh-my-pi/pi-utils";
 import { extractArchive } from "@oh-my-pi/pi-utils/ar";
 
 const TOOLS_DIR = getToolsDir();
@@ -199,6 +208,13 @@ export async function downloadFile(url: string, dest: string, signal?: AbortSign
 	}
 }
 
+async function validateDownloadedFile(filePath: string, label: string): Promise<void> {
+	const stat = await fs.promises.stat(filePath);
+	if (!stat.isFile() || stat.size === 0) {
+		throw new Error(`Downloaded ${label} is not a non-empty regular file`);
+	}
+}
+
 async function downloadTool(tool: ToolName, signal?: AbortSignal): Promise<string> {
 	const config = TOOLS[tool];
 	if (!config) throw new Error(`Unknown tool: ${tool}`);
@@ -213,51 +229,59 @@ async function downloadTool(tool: ToolName, signal?: AbortSignal): Promise<strin
 		throw new Error(`Unsupported platform: ${plat}/${architecture}`);
 	}
 
-	await fs.promises.mkdir(TOOLS_DIR, { recursive: true });
-
 	const downloadUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
 	const binaryPath = path.join(TOOLS_DIR, config.binaryName);
 
 	if (config.isDirectBinary) {
-		await downloadFile(downloadUrl, binaryPath, signal);
-		await fs.promises.chmod(binaryPath, 0o755);
+		await atomicWriteFileWith(
+			binaryPath,
+			async tempPath => {
+				await downloadFile(downloadUrl, tempPath, signal);
+				await validateDownloadedFile(tempPath, assetName);
+			},
+			{ mode: 0o755 },
+		);
 		return binaryPath;
 	}
 
-	const archivePath = path.join(TOOLS_DIR, assetName);
-	await downloadFile(downloadUrl, archivePath, signal);
-
 	const tmp = await TempDir.create("@proto-tools-extract-");
+	const archivePath = path.join(tmp.path(), assetName);
+	const extractDir = path.join(tmp.path(), "extract");
 
 	try {
 		if (!assetName.endsWith(".tar.gz") && !assetName.endsWith(".zip")) {
 			throw new Error(`Unsupported archive format: ${assetName}`);
 		}
 
+		await downloadFile(downloadUrl, archivePath, signal);
+		await validateDownloadedFile(archivePath, assetName);
 		try {
-			await extractArchive(archivePath, tmp.path());
+			await extractArchive(archivePath, extractDir);
 		} catch (err) {
 			throw new Error(`Failed to extract ${assetName}: ${err instanceof Error ? err.message : String(err)}`);
 		}
 
-		let extractedBinary: string;
-		if (tool === "sg") {
-			extractedBinary = path.join(tmp.path(), config.binaryName);
-		} else {
-			const extractedDir = path.join(tmp.path(), assetName.replace(/\.(tar\.gz|zip)$/, ""));
-			extractedBinary = path.join(extractedDir, config.binaryName);
+		const extractedBinary =
+			tool === "sg"
+				? path.join(extractDir, config.binaryName)
+				: path.join(extractDir, assetName.replace(/\.(tar\.gz|zip)$/, ""), config.binaryName);
+		try {
+			await validateDownloadedFile(extractedBinary, config.binaryName);
+		} catch (error) {
+			if (isEnoent(error)) throw new Error(`Binary not found in archive: ${extractedBinary}`);
+			throw error;
 		}
 
-		if (fs.existsSync(extractedBinary)) {
-			await fs.promises.rename(extractedBinary, binaryPath);
-		} else {
-			throw new Error(`Binary not found in archive: ${extractedBinary}`);
-		}
-
-		await fs.promises.chmod(binaryPath, 0o755);
+		await atomicWriteFileWith(
+			binaryPath,
+			async tempPath => {
+				await fs.promises.copyFile(extractedBinary, tempPath);
+				await validateDownloadedFile(tempPath, config.binaryName);
+			},
+			{ mode: 0o755 },
+		);
 	} finally {
 		await tmp.remove();
-		await fs.promises.rm(archivePath, { force: true });
 	}
 
 	return binaryPath;
@@ -307,7 +331,27 @@ type EnsureToolOptions = {
 	notify?: (message: string) => void;
 };
 
-export async function ensureTool(tool: ToolName, silentOrOptions?: EnsureToolOptions): Promise<string | undefined> {
+const toolInstallations = new Map<ToolName, Promise<string | undefined>>();
+
+export async function ensureTool(tool: ToolName, options?: EnsureToolOptions): Promise<string | undefined> {
+	const existingPath = getToolPath(tool);
+	if (existingPath) return existingPath;
+
+	const pending = toolInstallations.get(tool);
+	if (pending) return await pending;
+
+	const installation = ensureToolOnce(tool, options);
+	toolInstallations.set(tool, installation);
+	try {
+		return await installation;
+	} finally {
+		if (toolInstallations.get(tool) === installation) {
+			toolInstallations.delete(tool);
+		}
+	}
+}
+
+async function ensureToolOnce(tool: ToolName, silentOrOptions?: EnsureToolOptions): Promise<string | undefined> {
 	const { signal, silent = false, notify } = silentOrOptions ?? {};
 	const existingPath = getToolPath(tool);
 	if (existingPath) {

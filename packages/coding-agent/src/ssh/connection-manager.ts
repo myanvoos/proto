@@ -222,8 +222,6 @@ async function runSshCaptureSync(
 	};
 }
 
-export const _sshHelpersForTests = { runSshSync, runSshCaptureSync };
-
 function ensureSshBinary(): void {
 	if (!$which("ssh")) {
 		throw new Error("ssh binary not found on PATH");

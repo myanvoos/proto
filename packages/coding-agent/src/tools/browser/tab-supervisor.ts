@@ -970,14 +970,6 @@ async function initializeTabWorker(
 	}
 }
 
-export function initializeTabWorkerForTest(
-	worker: WorkerHandle,
-	payload: WorkerInitPayload,
-	timeoutMs: number,
-): Promise<ReadyInfo> {
-	return initializeTabWorker(worker, payload, timeoutMs);
-}
-
 function errorFromWorkerEvent(event: ErrorEvent): Error {
 	if (event.error instanceof Error) return event.error;
 	if (event.message) return new Error(event.message);

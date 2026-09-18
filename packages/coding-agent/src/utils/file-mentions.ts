@@ -1,5 +1,5 @@
 import * as fs from "node:fs/promises";
-import path from "node:path";
+import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { formatAge, formatBytes, isProbablyBinary, readImageMetadata, truncateHeadBytes } from "@oh-my-pi/pi-utils";
@@ -77,25 +77,78 @@ function buildTextOutput(textContent: string): { output: string; lineCount: numb
 	return { output: outputText, lineCount: totalFileLines };
 }
 
+interface RankedDirectoryEntry {
+	entry: string;
+	sortKey: string;
+	scanIndex: number;
+}
+
+function compareDirectoryEntries(a: RankedDirectoryEntry, b: RankedDirectoryEntry): number {
+	const keyComparison = a.sortKey.localeCompare(b.sortKey);
+	return keyComparison === 0 ? a.scanIndex - b.scanIndex : keyComparison;
+}
+
+function siftUpMaxHeap(heap: RankedDirectoryEntry[], startIndex: number): void {
+	let index = startIndex;
+	while (index > 0) {
+		const parentIndex = Math.floor((index - 1) / 2);
+		const parent = heap[parentIndex];
+		const current = heap[index];
+		if (!parent || !current || compareDirectoryEntries(parent, current) >= 0) return;
+		heap[parentIndex] = current;
+		heap[index] = parent;
+		index = parentIndex;
+	}
+}
+
+function siftDownMaxHeap(heap: RankedDirectoryEntry[]): void {
+	let index = 0;
+	while (true) {
+		const leftIndex = index * 2 + 1;
+		if (leftIndex >= heap.length) return;
+
+		const rightIndex = leftIndex + 1;
+		let largerChildIndex = leftIndex;
+		if (rightIndex < heap.length && compareDirectoryEntries(heap[rightIndex]!, heap[leftIndex]!) > 0) {
+			largerChildIndex = rightIndex;
+		}
+
+		const current = heap[index];
+		const largerChild = heap[largerChildIndex];
+		if (!current || !largerChild || compareDirectoryEntries(current, largerChild) >= 0) return;
+		heap[index] = largerChild;
+		heap[largerChildIndex] = current;
+		index = largerChildIndex;
+	}
+}
+
 async function buildDirectoryListing(absolutePath: string): Promise<{ output: string; lineCount: number }> {
-	let entries: string[];
+	const topEntries: RankedDirectoryEntry[] = [];
+	let scannedEntryCount = 0;
 	try {
-		entries = await Array.fromAsync(new Bun.Glob("*").scan({ cwd: absolutePath, dot: true, onlyFiles: false }));
+		for await (const entry of new Bun.Glob("*").scan({ cwd: absolutePath, dot: true, onlyFiles: false })) {
+			const candidate: RankedDirectoryEntry = {
+				entry,
+				sortKey: entry.toLowerCase(),
+				scanIndex: scannedEntryCount++,
+			};
+			if (topEntries.length < DEFAULT_DIR_LIMIT) {
+				topEntries.push(candidate);
+				siftUpMaxHeap(topEntries, topEntries.length - 1);
+			} else if (compareDirectoryEntries(candidate, topEntries[0]!) < 0) {
+				topEntries[0] = candidate;
+				siftDownMaxHeap(topEntries);
+			}
+		}
 	} catch {
 		return { output: "(empty directory)", lineCount: 1 };
 	}
 
-	entries.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-
+	const entries = topEntries.sort(compareDirectoryEntries).map(({ entry }) => entry);
 	const results: string[] = [];
-	let entryLimitReached = false;
+	const entryLimitReached = scannedEntryCount > DEFAULT_DIR_LIMIT;
 
 	for (const entry of entries) {
-		if (results.length >= DEFAULT_DIR_LIMIT) {
-			entryLimitReached = true;
-			break;
-		}
-
 		const fullPath = path.join(absolutePath, entry);
 		let suffix = "";
 		let age = "";

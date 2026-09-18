@@ -1,5 +1,6 @@
-import { AsyncLocalStorage } from "node:async_hooks";
-import { untilAborted } from "@oh-my-pi/pi-utils/abortable";
+import * as asyncHooks from "node:async_hooks";
+import { AbortError, untilAborted } from "@oh-my-pi/pi-utils/abortable";
+import { withTimeout } from "@oh-my-pi/pi-utils/async";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import { ToolError, throwIfAborted } from "./tool-errors";
 
@@ -51,7 +52,7 @@ const nativePromiseCombinators: Record<PromiseCombinatorName, PromiseCombinator>
 	allSettled: Promise.allSettled,
 	any: Promise.any,
 };
-const promiseCombinatorTracking = new AsyncLocalStorage<PromiseCombinatorTrackingContext>();
+const promiseCombinatorTracking = new asyncHooks.AsyncLocalStorage<PromiseCombinatorTrackingContext>();
 let previousPromiseDescriptor: PropertyDescriptor | undefined;
 let promiseCombinatorTrackingScopes = 0;
 
@@ -307,13 +308,28 @@ export function waitForRun(
 				: DEFAULT_PREDICATE_TIMEOUT_MS;
 		const interval = Math.max(opts?.interval ?? 100, 10);
 		const deadline = Date.now() + timeout;
+		const timeoutMessage = `wait(predicate) timed out after ${timeout}ms — predicate never returned truthy`;
 		for (;;) {
-			const value = await untilAborted(signal, async () => await msOrPredicate());
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) throw new ToolError(timeoutMessage);
+			const outcome = await withTimeout(
+				Promise.resolve()
+					.then(msOrPredicate)
+					.then(
+						value => ({ status: "fulfilled" as const, value }),
+						error => ({ status: "rejected" as const, error }),
+					),
+				remaining,
+				timeoutMessage,
+				signal,
+			).catch(() => {
+				if (signal.aborted) throw new AbortError(signal);
+				throw new ToolError(timeoutMessage);
+			});
+			if (outcome.status === "rejected") throw outcome.error;
 			throwIfAborted(signal);
-			if (value) return value;
-			if (Date.now() + interval > deadline) {
-				throw new ToolError(`wait(predicate) timed out after ${timeout}ms — predicate never returned truthy`);
-			}
+			if (outcome.value) return outcome.value;
+			if (Date.now() + interval > deadline) throw new ToolError(timeoutMessage);
 			await untilAborted(signal, async () => await Bun.sleep(interval));
 		}
 	})();

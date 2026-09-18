@@ -632,29 +632,6 @@ test("xd rejects unknown top-level keys without appending schema docs", async ()
 	});
 });
 
-test("xd unknown-key errors suggest sibling orchestration parameter names", async () => {
-	await withBash(async (bash, _state, session) => {
-		const waitDevice = {
-			name: "orchestrate_wait",
-			label: "Wait",
-			description: "Wait for workers.",
-			parameters: type({ "workers?": type("string[]"), "timeout?": type("number > 0") }),
-			async execute() {
-				throw new Error("must not execute");
-			},
-		} as unknown as Tool;
-		session.xdev?.tools.set(waitDevice.name, waitDevice);
-		session.xdev?.mountedNames.add(waitDevice.name);
-		const result = await bash.execute("xd-key-hint", {
-			command: `xd orchestrate_wait '{"ids":["worker-1"],"timeoutMs":1}'`,
-		});
-		const output = textOf(result);
-		expect(output).toContain("use `workers` instead of `ids`");
-		expect(output).toContain("use `timeout` (seconds) instead of `timeoutMs`");
-		expect(output).not.toContain("## Schema");
-	});
-});
-
 test("xd validation failures append only the schema block", async () => {
 	await withBash(async bash => {
 		const result = await bash.execute("xd-schema-error", {

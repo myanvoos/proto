@@ -84,13 +84,6 @@ export function setAutoQaConsentHandler(
 	persistentConsentSettings = persistentSettings;
 }
 
-export function __resetAutoQaConsentForTests(): void {
-	consentHandler = null;
-	persistentConsentSettings = null;
-	cachedConsent = null;
-	consentInFlight = null;
-}
-
 function readPersistedConsent(settings: Settings | undefined): boolean | null {
 	if (!settings) return null;
 	const stored = settings.get("dev.autoqaConsent");
@@ -218,11 +211,6 @@ const FLUSH_BATCH_SIZE = 50;
 
 let inFlightFlush: Promise<FlushResult> | null = null;
 let lastFailureAt = 0;
-
-export function __resetAutoQaFlushStateForTests(): void {
-	inFlightFlush = null;
-	lastFailureAt = 0;
-}
 
 function envOverrideString(name: string): string | undefined {
 	const value = $env[name];
@@ -354,16 +342,10 @@ export async function flushGrievances(
 	}
 }
 
-let lastRecordPipeline: Promise<void> = Promise.resolve();
-
-export function __awaitAutoQaRecordPipelineForTests(): Promise<void> {
-	return lastRecordPipeline;
-}
-
 function recordToolIssue(session: ToolSession, tool: string, report: string): void {
 	const canonicalTool = tool.startsWith("proxy_") ? tool.slice("proxy_".length) : tool;
 	const model = session.getActiveModelString?.() ?? "unknown";
-	lastRecordPipeline = (async () => {
+	void (async () => {
 		try {
 			if (!$flag("PI_AUTO_QA_PUSH") && !(await resolveAutoQaConsent(session.settings))) return;
 			const db = openAutoQaDb();

@@ -938,9 +938,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		return images;
 	}
 
-	#recordFsObservations(result: BashResult | BashInteractiveResult): void {
+	async #recordFsObservations(result: BashResult | BashInteractiveResult): Promise<void> {
 		if (!("fsObservations" in result) || !result.fsObservations?.length) return;
-		fsObservationLedgerFor(this.session).recordAll(
+		await fsObservationLedgerFor(this.session).recordAllWithContent(
 			result.fsObservations.map(observation => ({
 				path: observation.path,
 				kind: observation.kind,
@@ -1230,7 +1230,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					});
-					this.#recordFsObservations(result);
+					await this.#recordFsObservations(result);
 					const wallTimeMs = performance.now() - wallTimeStart;
 					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
 						requestedTimeoutSec: options.requestedTimeoutSec,
@@ -1778,9 +1778,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						pushLiveUpdate();
 					},
 				);
-		let result: BashResult | BashInteractiveResult;
 		try {
-			result = interactiveUi
+			const result: BashResult | BashInteractiveResult = interactiveUi
 				? await runInteractiveBashPty(interactiveUi, {
 						command: backendPreflight?.command ?? command,
 						cwd: commandCwd,
@@ -1805,29 +1804,24 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 					});
-		} catch (error) {
-			pyBridge?.dispose();
-			throw error;
-		}
-		this.#recordFsObservations(result);
-		const wallTimeMs = performance.now() - wallTimeStart;
-		if (result.cancelled) {
-			const isTimeout = result.timedOut === true;
-			if (!isTimeout) {
-				const out = normalizeResultOutput(result);
+			await this.#recordFsObservations(result);
+			const wallTimeMs = performance.now() - wallTimeStart;
+			if (result.cancelled) {
+				const isTimeout = result.timedOut === true;
+				if (!isTimeout) {
+					const out = normalizeResultOutput(result);
 
-				const message = out.startsWith("[Command cancelled]")
-					? out
-					: out
-						? `${out}\n\n[Command aborted]`
-						: "Command aborted";
-				if (signal?.aborted) {
-					throw new ToolAbortError(message);
+					const message = out.startsWith("[Command cancelled]")
+						? out
+						: out
+							? `${out}\n\n[Command aborted]`
+							: "Command aborted";
+					if (signal?.aborted) {
+						throw new ToolAbortError(message);
+					}
+					throw new ToolError(message);
 				}
-				throw new ToolError(message);
 			}
-		}
-		try {
 			return await this.#buildCompletedResult(result, timeoutSec, {
 				requestedTimeoutSec,
 				notices: pendingNotices,

@@ -32,6 +32,9 @@ const dirCache = new LRUCache<string, fs.Dirent[]>({
 	sizeCalculation: entries => dirEntriesBytes(entries),
 });
 
+const contentInFlight = new Map<string, Promise<string | null>>();
+const dirInFlight = new Map<string, Promise<fs.Dirent[]>>();
+
 function resolvePath(filePath: string): string {
 	return path.resolve(filePath);
 }
@@ -41,18 +44,26 @@ export async function readFile(filePath: string): Promise<string | null> {
 	const cached = contentCache.get(abs);
 	if (cached !== undefined) return cached;
 
-	try {
-		const stats = await fs.promises.stat(abs);
-		if (!stats.isFile()) {
-			contentCache.set(abs, null);
+	const existing = contentInFlight.get(abs);
+	if (existing) return await existing;
+
+	const pending = (async (): Promise<string | null> => {
+		try {
+			const stats = await fs.promises.stat(abs);
+			if (!stats.isFile()) return null;
+			return await Bun.file(abs).text();
+		} catch {
 			return null;
 		}
-		const content = await Bun.file(abs).text();
-		contentCache.set(abs, content);
+	})();
+	contentInFlight.set(abs, pending);
+
+	try {
+		const content = await pending;
+		if (contentInFlight.get(abs) === pending) contentCache.set(abs, content);
 		return content;
-	} catch {
-		contentCache.set(abs, null);
-		return null;
+	} finally {
+		if (contentInFlight.get(abs) === pending) contentInFlight.delete(abs);
 	}
 }
 
@@ -61,13 +72,18 @@ export async function readDirEntries(dirPath: string): Promise<fs.Dirent[]> {
 	const cached = dirCache.get(abs);
 	if (cached !== undefined) return cached;
 
+	const existing = dirInFlight.get(abs);
+	if (existing) return await existing;
+
+	const pending = fs.promises.readdir(abs, { withFileTypes: true }).catch((): fs.Dirent[] => []);
+	dirInFlight.set(abs, pending);
+
 	try {
-		const entries = await fs.promises.readdir(abs, { withFileTypes: true });
-		dirCache.set(abs, entries);
+		const entries = await pending;
+		if (dirInFlight.get(abs) === pending) dirCache.set(abs, entries);
 		return entries;
-	} catch {
-		dirCache.set(abs, []);
-		return [];
+	} finally {
+		if (dirInFlight.get(abs) === pending) dirInFlight.delete(abs);
 	}
 }
 
@@ -103,14 +119,19 @@ export function cacheStats(): CacheStats {
 export function clearCache(): void {
 	contentCache.clear();
 	dirCache.clear();
+	contentInFlight.clear();
+	dirInFlight.clear();
 }
 
 export function invalidate(filePath: string): void {
 	const abs = resolvePath(filePath);
 	contentCache.delete(abs);
 	dirCache.delete(abs);
+	contentInFlight.delete(abs);
+	dirInFlight.delete(abs);
 	const parent = path.dirname(abs);
 	if (parent !== abs) {
 		dirCache.delete(parent);
+		dirInFlight.delete(parent);
 	}
 }
