@@ -555,46 +555,6 @@ async function acquireProviderInFlightSlot(
 	}
 }
 
-export const __providerInFlightForTesting = {
-	setRoot(root: string | undefined): void {
-		providerInFlightRootOverride = root;
-	},
-	setHeartbeatTimings(timings: { heartbeatMs?: number; heartbeatFlushTimeoutMs?: number } | undefined): void {
-		providerInFlightHeartbeatMsOverride = timings?.heartbeatMs;
-		providerInFlightHeartbeatFlushTimeoutMsOverride = timings?.heartbeatFlushTimeoutMs;
-	},
-	setHeartbeatWriter(writer: ((writeProviderInFlightInfo: () => Promise<void>) => Promise<void>) | undefined): void {
-		providerInFlightHeartbeatWriterOverride = writer;
-	},
-	setLeaseRemover(remover: ((leasePath: string) => Promise<void>) | undefined): void {
-		providerInFlightLeaseRemoverOverride = remover;
-	},
-	setWaitObserver(observer: ((provider: string) => void) | undefined): void {
-		providerInFlightWaitObserverOverride = observer;
-	},
-	providerDir(provider: string): string {
-		return providerInFlightDir(provider);
-	},
-	lockDir(provider: string): string {
-		return providerInFlightLockDir(provider);
-	},
-	async captureStaleLockRelease(provider: string): Promise<(() => Promise<void>) | null> {
-		const lockDir = providerInFlightLockDir(provider);
-		const stale = await readProviderInFlightStaleLock(lockDir);
-		if (!stale) return null;
-		return () => releaseProviderInFlightStaleLock(lockDir, stale);
-	},
-	async captureLockDirRelease(provider: string): Promise<(() => Promise<void>) | null> {
-		const lockDir = providerInFlightLockDir(provider);
-		try {
-			const identity = await readProviderInFlightLockIdentity(lockDir);
-			return () => releaseProviderInFlightLockDirIfSame(lockDir, identity);
-		} catch {
-			return null;
-		}
-	},
-};
-
 function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal" | "maxInFlightRequests">>(
 	model: Model<Api>,
 	options: TOptions | undefined,
@@ -961,13 +921,13 @@ async function resolveWithThinkingLoopRetries(
 	signal: AbortSignal | undefined,
 	dispatch: () => AssistantMessageEventStream,
 ): Promise<AssistantMessage> {
-	let message = await dispatch().result();
+	let message = await dispatch().resultOnly();
 	let thinkingLoopRetry = isRetryableThinkingLoop(message);
 	for (let attempt = 1; thinkingLoopRetry && attempt < THINKING_LOOP_MAX_ATTEMPTS; attempt += 1) {
 		signal?.throwIfAborted();
 		const delay = Math.min(THINKING_LOOP_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), THINKING_LOOP_RETRY_MAX_DELAY_MS);
 		await scheduler.wait(delay, { signal });
-		message = await dispatch().result();
+		message = await dispatch().resultOnly();
 		thinkingLoopRetry = isRetryableThinkingLoop(message);
 	}
 	if (thinkingLoopRetry) signal?.throwIfAborted();

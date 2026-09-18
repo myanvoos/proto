@@ -88,7 +88,7 @@ interface ParsedClaudeExtraUsage {
 	limit?: number;
 }
 type ClaudeUnifiedWindow = "5h" | "7d" | "7d_oi";
-type ClaudeModelKind = "opus" | "sonnet" | "fable" | "mythos";
+type ClaudeModelKind = "opus" | "sonnet" | "haiku" | "fable" | "mythos";
 
 interface ClaudeUsageResponse {
 	five_hour?: ClaudeUsageBucket | null;

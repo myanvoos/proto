@@ -5,10 +5,19 @@ export interface LocalWorkSource {
 	readonly hasPendingLocalWork: boolean;
 }
 
+type EventWaiter<T> = {
+	resolve: (value: IteratorResult<T>) => void;
+	reject: (err: unknown) => void;
+};
+
 export class EventStream<T, R = T> implements AsyncIterable<T> {
 	queue: T[] = [];
-	waiting: Array<{ resolve: (value: IteratorResult<T>) => void; reject: (err: unknown) => void }> = [];
+	waiting: EventWaiter<T>[] = [];
 	done = false;
+
+	#queueHead = 0;
+	#waitingHead = 0;
+	#bufferEvents = true;
 
 	resultSettled = false;
 	#failed = false;
@@ -43,19 +52,14 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 			this.resolveFinalResult(this.extractResult(event));
 		}
 
-		const waiter = this.waiting.shift();
-		if (waiter) {
-			waiter.resolve({ value: event, done: false });
-		} else {
-			this.queue.push(event);
-		}
+		this.deliver(event);
 	}
 
 	deliver(event: T): void {
-		const waiter = this.waiting.shift();
+		const waiter = this.#takeWaiter();
 		if (waiter) {
 			waiter.resolve({ value: event, done: false });
-		} else {
+		} else if (this.#bufferEvents) {
 			this.queue.push(event);
 		}
 	}
@@ -72,17 +76,15 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 			);
 		}
 
-		while (this.waiting.length > 0) {
-			const waiter = this.waiting.shift()!;
-			waiter.resolve({ value: undefined, done: true });
-		}
+		this.endWaiting();
 	}
 
 	endWaiting(): void {
-		while (this.waiting.length > 0) {
-			const waiter = this.waiting.shift()!;
-			waiter.resolve({ value: undefined, done: true });
+		for (let index = this.#waitingHead; index < this.waiting.length; index++) {
+			this.waiting[index]!.resolve({ value: undefined, done: true });
 		}
+		this.waiting.length = 0;
+		this.#waitingHead = 0;
 	}
 
 	fail(err: unknown): void {
@@ -92,16 +94,17 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 		this.#error = err;
 		this.resultSettled = true;
 		this.rejectFinalResult(err);
-		while (this.waiting.length > 0) {
-			const waiter = this.waiting.shift()!;
-			waiter.reject(err);
+		for (let index = this.#waitingHead; index < this.waiting.length; index++) {
+			this.waiting[index]!.reject(err);
 		}
+		this.waiting.length = 0;
+		this.#waitingHead = 0;
 	}
 
 	async *[Symbol.asyncIterator](): AsyncIterator<T> {
 		while (true) {
-			if (this.queue.length > 0) {
-				yield this.queue.shift()!;
+			if (this.#hasQueuedEvents()) {
+				yield this.#takeQueuedEvent();
 			} else if (this.#failed) {
 				throw this.#error;
 			} else if (this.done) {
@@ -118,6 +121,55 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 
 	result(): Promise<R> {
 		return this.finalResultPromise;
+	}
+
+	/** Drops queued and future events; use only when the caller will not iterate the stream. */
+	resultOnly(): Promise<R> {
+		this.#bufferEvents = false;
+		this.queue.length = 0;
+		this.#queueHead = 0;
+		return this.finalResultPromise;
+	}
+
+	#hasQueuedEvents(): boolean {
+		if (this.#queueHead < this.queue.length) return true;
+		if (this.#queueHead > 0) {
+			this.queue.length = 0;
+			this.#queueHead = 0;
+		}
+		return false;
+	}
+
+	#takeQueuedEvent(): T {
+		const event = this.queue[this.#queueHead++]!;
+		if (this.#queueHead === this.queue.length) {
+			this.queue.length = 0;
+			this.#queueHead = 0;
+		} else if (this.#queueHead >= 1_024 && this.#queueHead * 2 >= this.queue.length) {
+			this.queue.splice(0, this.#queueHead);
+			this.#queueHead = 0;
+		}
+		return event;
+	}
+
+	#takeWaiter(): EventWaiter<T> | undefined {
+		if (this.#waitingHead >= this.waiting.length) {
+			if (this.#waitingHead > 0) {
+				this.waiting.length = 0;
+				this.#waitingHead = 0;
+			}
+			return undefined;
+		}
+
+		const waiter = this.waiting[this.#waitingHead++];
+		if (this.#waitingHead === this.waiting.length) {
+			this.waiting.length = 0;
+			this.#waitingHead = 0;
+		} else if (this.#waitingHead >= 1_024 && this.#waitingHead * 2 >= this.waiting.length) {
+			this.waiting.splice(0, this.#waitingHead);
+			this.#waitingHead = 0;
+		}
+		return waiter;
 	}
 
 	get hasPendingLocalWork(): boolean {

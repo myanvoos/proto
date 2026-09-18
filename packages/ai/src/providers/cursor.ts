@@ -153,7 +153,6 @@ import {
 	fromBinary,
 	type JsonValue,
 	toBinary,
-	toJson,
 } from "@oh-my-pi/pi-catalog/discovery/protobuf";
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { isKimiK3ModelId, parseOpenAIModel } from "@oh-my-pi/pi-catalog/identity";
@@ -575,6 +574,7 @@ function streamCursorWithWireMode(
 		const inFlightDispatches = new Set<Promise<void>>();
 
 		let abortSettled: Promise<void> | undefined;
+		let onDrainAbort: (() => void) | undefined;
 		const drainInFlightDispatches = async (): Promise<void> => {
 			const signal = options?.signal;
 			while (inFlightDispatches.size > 0) {
@@ -584,9 +584,12 @@ function streamCursorWithWireMode(
 					await settled;
 					continue;
 				}
-				abortSettled ??= new Promise<void>(resolve =>
-					signal.addEventListener("abort", () => resolve(), { once: true }),
-				);
+				if (!abortSettled) {
+					const { promise, resolve } = Promise.withResolvers<void>();
+					abortSettled = promise;
+					onDrainAbort = resolve;
+					signal.addEventListener("abort", onDrainAbort, { once: true });
+				}
 				await Promise.race([settled, abortSettled]);
 			}
 		};
@@ -595,10 +598,12 @@ function streamCursorWithWireMode(
 		let h2Request: http2.ClientHttp2Stream | null = null;
 		let heartbeatTimer: NodeJS.Timeout | null = null;
 		let debugResponseLogPromise: Promise<RequestDebugResponseLog | undefined> | undefined;
+		let onRequestAbort: (() => void) | undefined;
 		const h2Completion = Promise.withResolvers<void>();
 		let h2Settled = false;
 		let sawTurnEnded = false;
 		let endStreamError: Error | null = null;
+		let frameProcessingError: AIError.ProviderResponseError | undefined;
 
 		let sawProgressOrSideEffect = false;
 
@@ -608,6 +613,10 @@ function streamCursorWithWireMode(
 			h2Settled = true;
 			if (error !== undefined) {
 				h2Completion.reject(error);
+				return;
+			}
+			if (frameProcessingError) {
+				h2Completion.reject(frameProcessingError);
 				return;
 			}
 			if (endStreamError) {
@@ -623,6 +632,16 @@ function streamCursorWithWireMode(
 				return;
 			}
 			h2Completion.resolve();
+		};
+		const failFrameProcessing = (operation: "decode" | "process", error: unknown): void => {
+			if (frameProcessingError) return;
+			const detail = error instanceof Error ? error.message : String(error);
+			frameProcessingError = new AIError.ProviderResponseError(
+				`Cursor failed to ${operation} a server message: ${detail}`,
+				{ provider: model.provider, kind: "incomplete-stream", cause: error },
+			);
+			h2Request?.close();
+			settleH2(frameProcessingError);
 		};
 
 		let baseConversationId: string | undefined;
@@ -758,6 +777,7 @@ function streamCursorWithWireMode(
 			});
 
 			h2Request.on("data", (chunk: Buffer) => {
+				if (frameProcessingError) return;
 				if (debugResponseLogPromise) {
 					void debugResponseLogPromise.then(log => {
 						log?.write(chunk);
@@ -806,7 +826,7 @@ function streamCursorWithWireMode(
 							requestContextRules,
 							onConversationCheckpoint,
 						).catch(error => {
-							log("error", "handleServerMessage", { error: String(error) });
+							failFrameProcessing("process", error);
 						});
 						inFlightDispatches.add(dispatch);
 						void dispatch.finally(() => inFlightDispatches.delete(dispatch));
@@ -814,8 +834,9 @@ function streamCursorWithWireMode(
 						if (isTurnEnded) {
 							sawTurnEnded = true;
 						}
-					} catch (e) {
-						log("error", "parseServerMessage", { error: String(e) });
+					} catch (error) {
+						failFrameProcessing("decode", error);
+						return;
 					}
 				}
 			});
@@ -859,12 +880,13 @@ function streamCursorWithWireMode(
 			});
 
 			if (options?.signal) {
-				options.signal.addEventListener("abort", () => {
+				onRequestAbort = () => {
 					h2Request?.close();
 					void closeDebugLog().finally(() => {
 						settleH2(new AIError.AbortError());
 					});
-				});
+				};
+				options.signal.addEventListener("abort", onRequestAbort);
 			}
 
 			h2Request.write(frameConnectMessage(requestBytes));
@@ -872,6 +894,7 @@ function streamCursorWithWireMode(
 			await h2Completion.promise;
 
 			await drainInFlightDispatches();
+			if (frameProcessingError) throw frameProcessingError;
 
 			endCurrentTextBlock(output, stream, state);
 			endCurrentThinkingBlock(output, stream, state);
@@ -964,6 +987,8 @@ function streamCursorWithWireMode(
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {
+			if (onRequestAbort) options?.signal?.removeEventListener("abort", onRequestAbort);
+			if (onDrainAbort) options?.signal?.removeEventListener("abort", onDrainAbort);
 			const log = await debugResponseLogPromise;
 			await log?.close();
 			if (heartbeatTimer) {
@@ -3831,14 +3856,6 @@ function storeCursorBlob(blobStore: Map<string, Uint8Array>, data: Uint8Array): 
 	return blobId;
 }
 
-function readCursorBlob(blobStore: Map<string, Uint8Array>, blobId: Uint8Array): Uint8Array {
-	const data = blobStore.get(Buffer.from(blobId).toString("hex"));
-	if (!data) {
-		throw new AIError.ValidationError("Cursor blob not found");
-	}
-	return data;
-}
-
 export function buildCursorRequestContextRules(systemPrompt: readonly string[] | undefined): CursorRule[] {
 	return normalizeSystemPrompts(systemPrompt).map((content, index) =>
 		create(CursorRuleSchema, {
@@ -4311,41 +4328,6 @@ function buildConversationTurns(
 	return turns;
 }
 
-export function buildCursorHistoryForTest(
-	messages: Message[],
-	activeUserMessageIndex = findLastUserMessageIndex(messages),
-	targetModelId?: string,
-): {
-	rootPromptMessagesJson: unknown[];
-	turnUserMessagesJson: JsonValue[];
-	turnStepMessagesJson: JsonValue[][];
-} {
-	const blobStore = new Map<string, Uint8Array>();
-	const rootPromptMessagesJson = buildRootPromptMessagesJson(
-		messages,
-		[],
-		blobStore,
-		activeUserMessageIndex,
-		targetModelId,
-	).map(blobId => JSON.parse(new TextDecoder().decode(readCursorBlob(blobStore, blobId))));
-	const turnUserMessagesJson: JsonValue[] = [];
-	const turnStepMessagesJson: JsonValue[][] = [];
-	for (const turnBlobId of buildConversationTurns(messages, blobStore, activeUserMessageIndex, targetModelId)) {
-		const turn = fromBinary(ConversationTurnStructureSchema, readCursorBlob(blobStore, turnBlobId));
-		if (turn.turn.case !== "agentConversationTurn") {
-			continue;
-		}
-		const userMessage = fromBinary(UserMessageSchema, readCursorBlob(blobStore, turn.turn.value.userMessage));
-		turnUserMessagesJson.push(toJson(UserMessageSchema, userMessage));
-		turnStepMessagesJson.push(
-			turn.turn.value.steps.map(stepBlobId => {
-				const step = fromBinary(ConversationStepSchema, readCursorBlob(blobStore, stepBlobId));
-				return toJson(ConversationStepSchema, step);
-			}),
-		);
-	}
-	return { rootPromptMessagesJson, turnUserMessagesJson, turnStepMessagesJson };
-}
 function createCursorUserMessage(
 	content: string | (AudioContent | ImageContent | TextContent | VideoContent)[],
 	text: string,

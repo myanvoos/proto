@@ -176,6 +176,7 @@ const directAccessCache = new Map<string, DirectAccessToken>();
 
 async function getDirectAccessToken(
 	gitlabAccessToken: string,
+	signal: AbortSignal | undefined,
 	fetchImpl: FetchImpl = fetch,
 ): Promise<DirectAccessToken> {
 	const cached = directAccessCache.get(gitlabAccessToken);
@@ -192,6 +193,7 @@ async function getDirectAccessToken(
 		body: JSON.stringify({
 			feature_flags: { DuoAgentPlatformNext: true },
 		}),
+		signal,
 	});
 
 	if (!response.ok) {
@@ -261,7 +263,7 @@ export function streamGitLabDuo(
 				throw new AIError.ConfigurationError(`Unsupported GitLab Duo model: ${model.id}`);
 			}
 
-			const directAccess = await getDirectAccessToken(apiKey, options.fetch);
+			const directAccess = await getDirectAccessToken(apiKey, options.signal, options.fetch);
 			const headers = {
 				...directAccess.headers,
 				...options.headers,

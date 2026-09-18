@@ -1,4 +1,5 @@
 import { scheduler } from "node:timers/promises";
+import * as AIError from "../error";
 import type { AssistantMessage, AssistantMessageEvent, Context } from "../types";
 import { AssistantMessageEventStream } from "./event-stream";
 
@@ -100,7 +101,9 @@ export function withEmptyCompletionRetry<M, O extends EmptyCompletionRetryOption
 				} catch (waitError) {
 					flush();
 					if (signal?.aborted) {
-						if (terminal) outer.push(terminal);
+						outer.fail(
+							new AIError.AbortError("Request was aborted during empty-completion retry", { cause: waitError }),
+						);
 					} else {
 						outer.fail(waitError);
 					}

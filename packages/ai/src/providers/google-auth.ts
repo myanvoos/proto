@@ -291,8 +291,3 @@ export async function getVertexAccessToken(options?: { signal?: AbortSignal; fet
 	inflight.set(cacheKey, promise);
 	return raceWithSignal(promise, options?.signal);
 }
-
-export function __resetVertexTokenCache(): void {
-	tokenCache.clear();
-	inflight.clear();
-}

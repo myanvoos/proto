@@ -99,10 +99,6 @@ export function shouldBypassProxy(urlObj: URL): boolean {
 
 const proxyCache = new Map<string, string | undefined>();
 
-export function __resetProxyCache(): void {
-	proxyCache.clear();
-}
-
 export function getProxyForProvider(provider: string): string | undefined {
 	if (proxyCache.has(provider)) {
 		return proxyCache.get(provider);
@@ -172,10 +168,6 @@ export function wrapFetchForProxy(fetchImpl: FetchImpl, provider: string): Fetch
 }
 
 let globalProxyFetchInstalled = false;
-
-export function __resetGlobalProxyFetch(): void {
-	globalProxyFetchInstalled = false;
-}
 
 export function installGlobalProxyFetch(): void {
 	if (globalProxyFetchInstalled) return;

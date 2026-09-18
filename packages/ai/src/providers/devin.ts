@@ -71,6 +71,49 @@ const LARGE_HISTORY_RECOVERY_BYTES = 512 * 1024;
 
 const EMPTY_BUFFER = Buffer.alloc(0);
 
+type DevinDoneReason = "stop" | "length" | "toolUse";
+
+function mapDevinStopReason(reason: StopReason, hasToolCalls: boolean, provider: string): DevinDoneReason {
+	switch (reason) {
+		case StopReason.INCOMPLETE:
+		case StopReason.MAX_TOKENS:
+		case StopReason.PARTIAL:
+			return "length";
+		case StopReason.FUNCTION_CALL:
+			return "toolUse";
+		case StopReason.STOP_PATTERN:
+		case StopReason.MIN_LOG_PROB:
+		case StopReason.MAX_NEWLINES:
+		case StopReason.EXIT_SCOPE:
+		case StopReason.FIRST_NON_WHITESPACE_LINE:
+		case StopReason.NON_INSERTION:
+			return hasToolCalls ? "toolUse" : "stop";
+		case StopReason.UNSPECIFIED:
+			if (hasToolCalls) return "toolUse";
+			throw new AIError.ProviderResponseError("Devin stream ended without a stop reason", {
+				provider,
+				kind: "incomplete-stream",
+			});
+		case StopReason.CONTENT_FILTER:
+			throw new AIError.ProviderResponseError("Devin generation was blocked by the content filter", {
+				provider,
+				kind: "content-blocked",
+			});
+		case StopReason.ERROR:
+		case StopReason.NONFINITE_LOGIT_OR_PROB:
+			throw new AIError.ProviderResponseError(`Devin generation failed with stop reason ${StopReason[reason]}`, {
+				provider,
+				kind: "runtime",
+			});
+		default:
+			reason satisfies never;
+			throw new AIError.ProviderResponseError(`Devin generation returned unknown stop reason ${reason}`, {
+				provider,
+				kind: "runtime",
+			});
+	}
+}
+
 class GrowingBuffer {
 	#space: Buffer | undefined;
 	#start = 0;
@@ -242,6 +285,7 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 
 			const reader = body.getReader();
 			const pending = new GrowingBuffer();
+			let sawEndStream = false;
 
 			for (;;) {
 				const { done, value } = await reader.read();
@@ -261,9 +305,19 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 					const payload = bytes.subarray(5, 5 + len);
 					pending.consume(5 + len);
 
+					if (sawEndStream) {
+						throw new AIError.ProviderResponseError(
+							"Devin Connect stream contained data after its end-stream envelope",
+							{
+								provider: model.provider,
+								kind: "envelope",
+							},
+						);
+					}
 					if (flag & CONNECT_END_STREAM_FLAG) {
 						const trailerBytes = flag & CONNECT_COMPRESSED_FLAG ? gunzipSync(payload) : payload;
 						const trailerError = readConnectTrailerError(trailerBytes.toString("utf8").trim());
+						sawEndStream = true;
 						if (trailerError) {
 							logger.warn("devin: stream rejected via Connect trailer", {
 								model: model.id,
@@ -424,6 +478,22 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 				if (done) break;
 			}
 
+			if (pending.length > 0) {
+				throw new AIError.ProviderResponseError(
+					`Devin Connect stream ended with ${pending.length} buffered bytes from an incomplete frame`,
+					{ provider: model.provider, kind: "incomplete-stream" },
+				);
+			}
+			if (!sawEndStream) {
+				throw new AIError.ProviderResponseError("Devin Connect stream ended before an end-stream envelope", {
+					provider: model.provider,
+					kind: "incomplete-stream",
+				});
+			}
+
+			const doneReason = mapDevinStopReason(latestStopReason, toolBlocks.size > 0, model.provider);
+			output.stopReason = doneReason;
+
 			endTextBlock();
 			endThinkingBlock();
 			for (const [id, block] of toolBlocks) {
@@ -435,10 +505,6 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 					partial: output,
 				});
 			}
-
-			const doneReason: "stop" | "length" | "toolUse" =
-				toolBlocks.size > 0 ? "toolUse" : latestStopReason === StopReason.MAX_TOKENS ? "length" : "stop";
-			output.stopReason = doneReason;
 
 			calculateCost(model, output.usage);
 			output.duration = performance.now() - startTime;
@@ -681,19 +747,44 @@ interface ConnectTrailerError {
 }
 
 function readConnectTrailerError(text: string): ConnectTrailerError | null {
-	if (text.length === 0) return null;
+	if (text.length === 0) {
+		throw new AIError.ProviderResponseError("Devin Connect end-stream envelope was empty", {
+			provider: "devin",
+			kind: "envelope",
+		});
+	}
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(text);
-	} catch {
-		return null;
+	} catch (cause) {
+		throw new AIError.ProviderResponseError("Failed to parse Devin Connect end-stream envelope", {
+			provider: "devin",
+			kind: "envelope",
+			cause,
+		});
 	}
-	if (!parsed || typeof parsed !== "object" || !("error" in parsed)) return null;
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new AIError.ProviderResponseError("Malformed Devin Connect end-stream envelope", {
+			provider: "devin",
+			kind: "envelope",
+		});
+	}
+	if (!("error" in parsed)) return null;
 	const err = parsed.error;
-	if (!err || typeof err !== "object") return null;
+	if (!err || typeof err !== "object" || Array.isArray(err)) {
+		throw new AIError.ProviderResponseError("Malformed Devin Connect end-stream error", {
+			provider: "devin",
+			kind: "envelope",
+		});
+	}
 	const code = "code" in err && typeof err.code === "string" ? err.code : "";
 	const message = "message" in err && typeof err.message === "string" ? err.message : "";
-	if (!code && !message) return null;
+	if (!code && !message) {
+		throw new AIError.ProviderResponseError("Malformed Devin Connect end-stream error", {
+			provider: "devin",
+			kind: "envelope",
+		});
+	}
 	const trailer: ConnectTrailerError = {
 		code,
 		message,

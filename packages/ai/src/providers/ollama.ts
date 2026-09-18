@@ -25,6 +25,7 @@ import {
 	armPreResponseTimeout,
 	getOpenAIStreamFirstEventTimeoutMs,
 	getOpenAIStreamIdleTimeoutMs,
+	iterateWithIdleTimeout,
 } from "../utils/idle-iterator";
 import { sanitizeSchemaForOllama, toolWireSchema } from "../utils/schema";
 import {
@@ -434,6 +435,9 @@ function hasVisibleAssistantContent(output: AssistantMessage): boolean {
 
 const OLLAMA_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
 
+const OLLAMA_FIRST_EVENT_TIMEOUT_MESSAGE = "Ollama stream timed out while waiting for the first JSONL record";
+const OLLAMA_IDLE_TIMEOUT_MESSAGE = "Ollama stream stalled while waiting for the next JSONL record";
+
 const streamOllamaOnce = (
 	model: Model<"ollama-chat">,
 	context: Context,
@@ -449,6 +453,7 @@ const streamOllamaOnce = (
 		let activeThinkingIndex: number | undefined;
 		let activeTextIndex: number | undefined;
 		const activeToolIndices = new Set<number>();
+		const toolCallsByIndex = new Map<number, InternalToolCallBlock>();
 		const streamMarkupHealingPattern = getStreamMarkupHealingPattern(model.provider, model.id);
 		const streamMarkupHealing = streamMarkupHealingPattern
 			? new StreamMarkupHealing({ pattern: streamMarkupHealingPattern })
@@ -566,7 +571,11 @@ const streamOllamaOnce = (
 			const firstEventTimeoutMs =
 				options.streamFirstEventTimeoutMs ?? getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs);
 
-			const watchdog = armPreResponseTimeout(options.signal, firstEventTimeoutMs);
+			const responseAbortController = new AbortController();
+			const responseSignal = options.signal
+				? AbortSignal.any([options.signal, responseAbortController.signal])
+				: responseAbortController.signal;
+			const watchdog = armPreResponseTimeout(responseSignal, firstEventTimeoutMs);
 			let response: Response;
 			try {
 				response = await fetchWithRetry(`${baseUrl}/api/chat`, {
@@ -599,7 +608,18 @@ const streamOllamaOnce = (
 				});
 			}
 			stream.push({ type: "start", partial: output });
-			for await (const chunk of readJsonl<OllamaChatChunk>(response.body)) {
+			let sawDone = false;
+			const chunks = iterateWithIdleTimeout(readJsonl<OllamaChatChunk>(response.body, responseSignal), {
+				idleTimeoutMs,
+				firstItemTimeoutMs: firstEventTimeoutMs,
+				errorMessage: OLLAMA_IDLE_TIMEOUT_MESSAGE,
+				firstItemErrorMessage: OLLAMA_FIRST_EVENT_TIMEOUT_MESSAGE,
+				onIdle: () => responseAbortController.abort(new AIError.StreamTimeoutError(OLLAMA_IDLE_TIMEOUT_MESSAGE)),
+				onFirstItemTimeout: () =>
+					responseAbortController.abort(new AIError.StreamTimeoutError(OLLAMA_FIRST_EVENT_TIMEOUT_MESSAGE)),
+				abortSignal: options.signal,
+			});
+			for await (const chunk of chunks) {
 				if (chunk.message?.thinking) {
 					suppressHealedThinking = true;
 					endActiveTextBlock();
@@ -641,33 +661,54 @@ const streamOllamaOnce = (
 				if (structuredCalls) {
 					endActiveThinkingBlock();
 					endActiveTextBlock();
-					for (const call of structuredCalls) {
-						const name = call.function?.name ?? "unknown_tool";
-						const rawArgs = call.function?.arguments;
-						const partialJson = typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs ?? {});
-						const toolCall: InternalToolCallBlock = {
-							type: "toolCall",
-							id: `ollama:${output.content.length}:${name}`,
-							name,
-							arguments: parseStreamingJson<Record<string, unknown>>(partialJson),
-							[kStreamingPartialJson]: partialJson,
-						};
-						output.content.push(toolCall);
-						const index = output.content.length - 1;
-						activeToolIndices.add(index);
-						stream.push({ type: "toolcall_start", contentIndex: index, partial: output });
-						stream.push({
-							type: "toolcall_delta",
-							contentIndex: index,
-							delta: partialJson,
-							partial: output,
-						});
-						if (!firstTokenTime) {
-							firstTokenTime = performance.now();
+					for (const [position, call] of structuredCalls.entries()) {
+						const callIndex = call.function?.index ?? position;
+						const streamedName = call.function?.name;
+						let toolCall = toolCallsByIndex.get(callIndex);
+						let contentIndex: number;
+						if (!toolCall) {
+							const name = streamedName ?? "unknown_tool";
+							toolCall = {
+								type: "toolCall",
+								id: `ollama:${callIndex}:${name}`,
+								name,
+								arguments: {},
+							};
+							output.content.push(toolCall);
+							contentIndex = output.content.length - 1;
+							toolCallsByIndex.set(callIndex, toolCall);
+							activeToolIndices.add(contentIndex);
+							stream.push({ type: "toolcall_start", contentIndex, partial: output });
+						} else {
+							contentIndex = output.content.indexOf(toolCall);
 						}
+						if (streamedName) toolCall.name = streamedName;
+
+						const rawArgs = call.function?.arguments;
+						let delta: string | undefined;
+						if (typeof rawArgs === "string") {
+							const partialJson = (toolCall[kStreamingPartialJson] ?? "") + rawArgs;
+							toolCall[kStreamingPartialJson] = partialJson;
+							toolCall.arguments = parseStreamingJson<Record<string, unknown>>(partialJson);
+							delta = rawArgs;
+						} else if (rawArgs) {
+							toolCall.arguments = { ...toolCall.arguments, ...rawArgs };
+							toolCall[kStreamingPartialJson] = JSON.stringify(toolCall.arguments);
+							delta = JSON.stringify(rawArgs);
+						}
+						if (delta !== undefined) {
+							stream.push({
+								type: "toolcall_delta",
+								contentIndex,
+								delta,
+								partial: output,
+							});
+						}
+						if (!firstTokenTime) firstTokenTime = performance.now();
 					}
 				}
 				if (chunk.done) {
+					sawDone = true;
 					if (streamMarkupHealing) {
 						for (const event of streamMarkupHealing.flushEvents()) {
 							emitHealingEvent(event);
@@ -688,6 +729,12 @@ const streamOllamaOnce = (
 					output.usage.output = chunk.eval_count ?? 0;
 					output.usage.totalTokens = output.usage.input + output.usage.output;
 				}
+			}
+			if (!sawDone) {
+				throw new AIError.ProviderResponseError("Ollama stream closed before a done: true record was received", {
+					provider: model.provider,
+					kind: "incomplete-stream",
+				});
 			}
 			if (streamMarkupHealing) {
 				for (const event of streamMarkupHealing.flushEvents()) {

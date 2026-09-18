@@ -1233,23 +1233,32 @@ async function* iterateAnthropicEvents(
 			continue;
 		}
 
+		let parsed: unknown;
 		try {
-			const event = JSON.parse(sse.data) as RawMessageStreamEvent;
-			if (event.type !== sse.event) {
-				reportAnthropicEnvelopeAnomaly(`event type ${event.type} does not match SSE event ${sse.event}`);
-			}
-			if (event.type === "message_start") {
-				sawMessageStart = true;
-			} else if (event.type === "message_stop") {
-				sawMessageEnd = true;
-			}
-			yield event;
+			parsed = JSON.parse(sse.data);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			reportAnthropicEnvelopeAnomaly(
-				`could not parse SSE event ${sse.event}: ${message}; skipping frame; data=${sse.data}`,
+			throw new AIError.AnthropicStreamEnvelopeError(
+				`could not parse recognized SSE event ${sse.event}: ${message}`,
 			);
 		}
+		if (!isRecord(parsed) || typeof parsed.type !== "string") {
+			throw new AIError.AnthropicStreamEnvelopeError(
+				`recognized SSE event ${sse.event} did not contain a string event type`,
+			);
+		}
+		if (parsed.type !== sse.event) {
+			throw new AIError.AnthropicStreamEnvelopeError(
+				`event type ${parsed.type} does not match SSE event ${sse.event}`,
+			);
+		}
+		const event = parsed as RawMessageStreamEvent;
+		if (event.type === "message_start") {
+			sawMessageStart = true;
+		} else if (event.type === "message_stop") {
+			sawMessageEnd = true;
+		}
+		yield event;
 	}
 
 	if (sawMessageStart && !sawMessageEnd && !signal?.aborted) {

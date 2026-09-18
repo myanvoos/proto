@@ -31,7 +31,12 @@ import {
 } from "../utils/block-symbols";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
-import { armPreResponseTimeout, getStreamFirstEventTimeoutMs } from "../utils/idle-iterator";
+import {
+	armPreResponseTimeout,
+	getStreamFirstEventTimeoutMs,
+	getStreamIdleTimeoutMs,
+	iterateWithIdleTimeout,
+} from "../utils/idle-iterator";
 import { toolWireSchema } from "../utils/schema/wire";
 import { invalidateAwsCredentialCache, resolveAwsCredentials } from "./aws-credentials";
 import { decodeEventStream } from "./aws-eventstream";
@@ -229,6 +234,9 @@ interface MetadataEvent {
 	};
 }
 
+const BEDROCK_FIRST_EVENT_TIMEOUT_ERROR = "Bedrock stream timed out while waiting for the first event";
+const BEDROCK_IDLE_TIMEOUT_ERROR = "Bedrock stream stalled while waiting for the next event";
+
 export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 	model: Model<"bedrock-converse-stream">,
 	context: Context,
@@ -260,6 +268,8 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 
 		const blocks = output.content as Block[];
 		let rawRequestDump: RawHttpRequestDump | undefined;
+		let sawMessageStart = false;
+		let sawMessageStop = false;
 		const region = resolveBedrockRegion(model.id, options);
 
 		try {
@@ -346,12 +356,15 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 				requestHeaders = { ...baseHeaders, ...signed };
 			}
 
-			const firstEventTimeoutMs = options.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs();
-
-			const watchdog = armPreResponseTimeout(options.signal, firstEventTimeoutMs);
-			let response: Response;
+			const idleTimeoutMs = options.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs();
+			const firstEventTimeoutMs = options.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
+			const responseAbortController = new AbortController();
+			const responseSignal = options.signal
+				? AbortSignal.any([options.signal, responseAbortController.signal])
+				: responseAbortController.signal;
+			const watchdog = armPreResponseTimeout(responseSignal, firstEventTimeoutMs);
 			try {
-				response = await fetchWithRetry(url, {
+				const response = await fetchWithRetry(url, {
 					method: "POST",
 					headers: requestHeaders,
 					body,
@@ -359,92 +372,130 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 					fetch: options.fetch,
 					timeout: false,
 				});
+
+				if (!response.ok) {
+					if (!bearerToken && (response.status === 401 || response.status === 403)) {
+						invalidateAwsCredentialCache({ profile: options.profile, region });
+					}
+					const errBody = await response.text().catch(() => "");
+					throw new AIError.BedrockApiError(
+						`Bedrock HTTP ${response.status}: ${errBody.slice(0, 1000)}`,
+						response.status,
+						{
+							headers: response.headers,
+						},
+					);
+				}
+				if (!response.body) throw new AIError.BedrockApiError("Bedrock response has no body", response.status);
+
+				const messages = iterateWithIdleTimeout(decodeEventStream(response.body), {
+					idleTimeoutMs,
+					firstItemTimeoutMs: firstEventTimeoutMs,
+					errorMessage: BEDROCK_IDLE_TIMEOUT_ERROR,
+					firstItemErrorMessage: BEDROCK_FIRST_EVENT_TIMEOUT_ERROR,
+					onIdle: () => responseAbortController.abort(new AIError.StreamTimeoutError(BEDROCK_IDLE_TIMEOUT_ERROR)),
+					onFirstItemTimeout: () =>
+						responseAbortController.abort(new AIError.StreamTimeoutError(BEDROCK_FIRST_EVENT_TIMEOUT_ERROR)),
+					abortSignal: options.signal,
+				});
+				let firstEventSeen = false;
+				for await (const message of messages) {
+					if (!firstEventSeen) {
+						firstEventSeen = true;
+						watchdog.clear();
+					}
+					const messageType = message.headers[":message-type"];
+					const eventType = message.headers[":event-type"];
+
+					if (messageType === "exception") {
+						const exceptionType = message.headers[":exception-type"] || "Exception";
+						const payload = safeParsePayload(message.payload) as { message?: string } | undefined;
+						const errorMessage = payload?.message || new TextDecoder().decode(message.payload);
+						const text = `${exceptionType}: ${errorMessage}`;
+						throw new AIError.BedrockApiError(text, 400, { code: exceptionType });
+					}
+					if (messageType === "error") {
+						const code = message.headers[":error-code"] || "UnknownError";
+						const errorMessage = message.headers[":error-message"] || new TextDecoder().decode(message.payload);
+						throw new AIError.BedrockApiError(`${code}: ${errorMessage}`, 400, { code });
+					}
+					if (messageType !== "event") continue;
+
+					const payload = safeParsePayload(message.payload);
+					if (payload === undefined && message.payload.length > 0) {
+						throw new AIError.ProviderResponseError(
+							`Bedrock event ${eventType ?? "unknown"} contained a malformed JSON payload`,
+							{ provider: model.provider, kind: "incomplete-stream" },
+						);
+					}
+					if (!payload) continue;
+
+					switch (eventType) {
+						case "messageStart": {
+							const ev = payload as MessageStartEvent;
+							if (ev.role !== "assistant") {
+								throw new AIError.BedrockApiError(
+									"Unexpected assistant message start but got user message start instead",
+									0,
+								);
+							}
+							sawMessageStart = true;
+							stream.push({ type: "start", partial: output });
+							break;
+						}
+						case "contentBlockStart": {
+							if (!firstTokenTime) firstTokenTime = performance.now();
+							handleContentBlockStart(
+								payload as ContentBlockStartEvent,
+								blocks,
+								output,
+								stream,
+								sentinelInjected,
+							);
+							break;
+						}
+						case "contentBlockDelta": {
+							if (!firstTokenTime) firstTokenTime = performance.now();
+							handleContentBlockDelta(payload as ContentBlockDeltaEvent, blocks, output, stream);
+							break;
+						}
+						case "contentBlockStop": {
+							handleContentBlockStop(payload as ContentBlockStopEvent, blocks, output, stream);
+							break;
+						}
+						case "messageStop": {
+							const ev = payload as MessageStopEvent;
+							sawMessageStop = true;
+							output.stopReason =
+								sentinelInjected && ev.stopReason === "tool_use" ? "stop" : mapStopReason(ev.stopReason);
+							if (output.stopReason === "error") {
+								output.errorMessage = `Generation failed with stop reason: ${ev.stopReason ?? "unknown"}`;
+							}
+							break;
+						}
+						case "metadata": {
+							handleMetadata(payload as MetadataEvent, model, output);
+							break;
+						}
+						default:
+							break;
+					}
+				}
 			} finally {
 				watchdog.clear();
 			}
 
-			if (!response.ok) {
-				if (!bearerToken && (response.status === 401 || response.status === 403)) {
-					invalidateAwsCredentialCache({ profile: options.profile, region });
-				}
-				const errBody = await response.text().catch(() => "");
-				throw new AIError.BedrockApiError(
-					`Bedrock HTTP ${response.status}: ${errBody.slice(0, 1000)}`,
-					response.status,
-					{
-						headers: response.headers,
-					},
+			if (options.signal?.aborted) throw new AIError.AbortError();
+
+			const missingTerminalEvents: string[] = [];
+			if (!sawMessageStart) missingTerminalEvents.push("messageStart");
+			if (!sawMessageStop) missingTerminalEvents.push("messageStop");
+			if (missingTerminalEvents.length > 0) {
+				throw new AIError.ProviderResponseError(
+					`Bedrock stream ended before required ${missingTerminalEvents.join(" and ")} event`,
+					{ provider: model.provider, kind: "incomplete-stream" },
 				);
 			}
-			if (!response.body) throw new AIError.BedrockApiError("Bedrock response has no body", response.status);
-
-			for await (const message of decodeEventStream(response.body)) {
-				const messageType = message.headers[":message-type"];
-				const eventType = message.headers[":event-type"];
-
-				if (messageType === "exception") {
-					const exceptionType = message.headers[":exception-type"] || "Exception";
-					const payload = safeParsePayload(message.payload) as { message?: string } | undefined;
-					const errorMessage = payload?.message || new TextDecoder().decode(message.payload);
-					const text = `${exceptionType}: ${errorMessage}`;
-					throw new AIError.BedrockApiError(text, 400, { code: exceptionType });
-				}
-				if (messageType === "error") {
-					const code = message.headers[":error-code"] || "UnknownError";
-					const errorMessage = message.headers[":error-message"] || new TextDecoder().decode(message.payload);
-					throw new AIError.BedrockApiError(`${code}: ${errorMessage}`, 400, { code });
-				}
-				if (messageType !== "event") continue;
-
-				const payload = safeParsePayload(message.payload);
-				if (!payload) continue;
-
-				switch (eventType) {
-					case "messageStart": {
-						const ev = payload as MessageStartEvent;
-						if (ev.role !== "assistant") {
-							throw new AIError.BedrockApiError(
-								"Unexpected assistant message start but got user message start instead",
-								0,
-							);
-						}
-						stream.push({ type: "start", partial: output });
-						break;
-					}
-					case "contentBlockStart": {
-						if (!firstTokenTime) firstTokenTime = performance.now();
-						handleContentBlockStart(payload as ContentBlockStartEvent, blocks, output, stream, sentinelInjected);
-						break;
-					}
-					case "contentBlockDelta": {
-						if (!firstTokenTime) firstTokenTime = performance.now();
-						handleContentBlockDelta(payload as ContentBlockDeltaEvent, blocks, output, stream);
-						break;
-					}
-					case "contentBlockStop": {
-						handleContentBlockStop(payload as ContentBlockStopEvent, blocks, output, stream);
-						break;
-					}
-					case "messageStop": {
-						const ev = payload as MessageStopEvent;
-
-						output.stopReason =
-							sentinelInjected && ev.stopReason === "tool_use" ? "stop" : mapStopReason(ev.stopReason);
-						if (output.stopReason === "error") {
-							output.errorMessage = `Generation failed with stop reason: ${ev.stopReason ?? "unknown"}`;
-						}
-						break;
-					}
-					case "metadata": {
-						handleMetadata(payload as MetadataEvent, model, output);
-						break;
-					}
-					default:
-						break;
-				}
-			}
-
-			if (options.signal?.aborted) throw new AIError.AbortError();
 
 			if (output.stopReason === "error" || output.stopReason === "aborted") {
 				throw new AIError.BedrockApiError(output.errorMessage ?? "An unknown error occurred", 0);
@@ -606,7 +657,9 @@ function handleMetadata(event: MetadataEvent, model: Model<"bedrock-converse-str
 		output.usage.output = event.usage.outputTokens || 0;
 		output.usage.cacheRead = event.usage.cacheReadInputTokens || 0;
 		output.usage.cacheWrite = event.usage.cacheWriteInputTokens || 0;
-		output.usage.totalTokens = event.usage.totalTokens || output.usage.input + output.usage.output;
+		output.usage.totalTokens =
+			event.usage.totalTokens ??
+			output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 		calculateCost(model, output.usage);
 	}
 }

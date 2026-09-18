@@ -61,16 +61,7 @@ export class OpenAIHttpError extends ProviderHttpError {
 const DEFAULT_ANTHROPIC_ERROR_BODY_READ_TIMEOUT_MS = 5_000;
 const MAX_ANTHROPIC_ERROR_BODY_BYTES = 64 * 1024;
 const ANTHROPIC_ERROR_BODY_TRUNCATION_MARKER = "\n[Response body truncated after 64 KiB]";
-let anthropicErrorBodyReadTimeoutMs = DEFAULT_ANTHROPIC_ERROR_BODY_READ_TIMEOUT_MS;
-
-export const __anthropicApiErrorForTesting = {
-	setBodyReadTimeoutMs(timeoutMs: number | undefined): void {
-		if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 0)) {
-			throw new RangeError("Anthropic error-body timeout must be a non-negative finite number.");
-		}
-		anthropicErrorBodyReadTimeoutMs = timeoutMs ?? DEFAULT_ANTHROPIC_ERROR_BODY_READ_TIMEOUT_MS;
-	},
-};
+const anthropicErrorBodyReadTimeoutMs = DEFAULT_ANTHROPIC_ERROR_BODY_READ_TIMEOUT_MS;
 
 export class AnthropicApiError extends ProviderHttpError {
 	declare readonly headers: Headers;

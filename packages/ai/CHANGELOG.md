@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Aborted empty-response retries now surface cancellation, result-only completions no longer retain streamed events, and GitHub Copilot retry backoff is jittered.
+- Devin, Ollama, and Anthropic streams now reject incomplete or malformed responses instead of completing with partial content.
+- Bedrock, Cursor, and Google streams now reject corrupt, truncated, or stalled responses; Cursor cleans up abort listeners, GitLab Duo token exchange honors cancellation, and Bedrock cache tokens remain in usage totals.
+
+### Removed
+
+- Removed unused test-only hooks from provider and streaming internals.
+
 ## [18.1.6] - 2026-09-12
 
 ### Changed

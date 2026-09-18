@@ -25,6 +25,12 @@ import { shouldSendServiceTier } from "../types";
 import { normalizeSystemPrompts } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
+import {
+	armPreResponseTimeout,
+	getStreamFirstEventTimeoutMs,
+	getStreamIdleTimeoutMs,
+	iterateWithIdleTimeout,
+} from "../utils/idle-iterator";
 import { normalizeSchemaForCCA, normalizeSchemaForGoogle, toolWireSchema } from "../utils/schema";
 import type {
 	Content,
@@ -372,6 +378,8 @@ export function mapStopReasonString(reason: string): StopReason {
 
 export const MAX_EMPTY_STREAM_RETRIES = 2;
 export const EMPTY_STREAM_BASE_DELAY_MS = 500;
+const GOOGLE_FIRST_EVENT_TIMEOUT_ERROR = "Google API stream timed out while waiting for the first SSE event";
+const GOOGLE_IDLE_TIMEOUT_ERROR = "Google API stream stalled while waiting for the next SSE event";
 
 export function hasMeaningfulGoogleContent(output: AssistantMessage): boolean {
 	for (const block of output.content) {
@@ -477,14 +485,16 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	options: { signal?: AbortSignal } | undefined;
 
 	retainTextSignature?: boolean;
+	onFirstEvent?: () => void;
 	onFirstToken?: () => void;
 }): Promise<void> {
-	const { googleStream, output, stream, model, options, retainTextSignature, onFirstToken } = args;
+	const { googleStream, output, stream, model, options, retainTextSignature, onFirstEvent, onFirstToken } = args;
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
 	let currentBlock: TextContent | ThinkingContent | null = null;
 
 	let thinkingStripper: ThinkingFenceStripper | null = null;
+	let firstEventSeen = false;
 	let firstTokenSeen = false;
 	let sawFinishReason = false;
 
@@ -502,6 +512,10 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	};
 
 	for await (const chunk of googleStream) {
+		if (!firstEventSeen) {
+			firstEventSeen = true;
+			onFirstEvent?.();
+		}
 		if (chunk.error) {
 			const detail = chunk.error.message || chunk.error.status || "unknown error";
 			const message = `Google API stream error: ${detail}`;
@@ -822,31 +836,49 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 
 			const bodyJson = JSON.stringify(paramsToWireBody(params));
 			const fetchImpl = plan.fetch ?? options?.fetch ?? (globalThis.fetch.bind(globalThis) as FetchImpl);
-			const openStreamAt = async (requestUrl: string): Promise<ReadableStream<Uint8Array>> => {
-				const response = await fetchImpl(requestUrl, {
-					method: "POST",
-					headers: { ...plan.headers, "Content-Type": "application/json", Accept: "text/event-stream" },
-					body: bodyJson,
-					signal: options?.signal,
-				});
-				if (!response.ok) {
-					const errorText = await response.text().catch(() => "");
-					throw new AIError.GoogleApiError(
-						`Google API error (${response.status}): ${extractGoogleErrorMessage(errorText)}`,
-						response.status,
-						{ headers: response.headers },
-					);
-				}
-				if (!response.body) {
-					throw new AIError.ProviderResponseError("Google API returned an empty response body", {
-						provider: model.provider,
-						kind: "empty-body",
+			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs();
+			const firstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
+			const openStreamAt = async (requestUrl: string) => {
+				const responseAbortController = new AbortController();
+				const responseSignal = options?.signal
+					? AbortSignal.any([options.signal, responseAbortController.signal])
+					: responseAbortController.signal;
+				const watchdog = armPreResponseTimeout(responseSignal, firstEventTimeoutMs);
+				try {
+					const response = await fetchImpl(requestUrl, {
+						method: "POST",
+						headers: { ...plan.headers, "Content-Type": "application/json", Accept: "text/event-stream" },
+						body: bodyJson,
+						signal: watchdog.signal,
 					});
+					if (!response.ok) {
+						const errorText = await response.text().catch(() => "");
+						throw new AIError.GoogleApiError(
+							`Google API error (${response.status}): ${extractGoogleErrorMessage(errorText)}`,
+							response.status,
+							{ headers: response.headers },
+						);
+					}
+					if (!response.body) {
+						throw new AIError.ProviderResponseError("Google API returned an empty response body", {
+							provider: model.provider,
+							kind: "empty-body",
+						});
+					}
+					return {
+						body: response.body as ReadableStream<Uint8Array>,
+						responseAbortController,
+						responseSignal: watchdog.signal,
+						clearFirstEventTimeout: watchdog.clear,
+					};
+				} catch (error) {
+					watchdog.clear();
+					responseAbortController.abort();
+					throw error;
 				}
-				return response.body as ReadableStream<Uint8Array>;
 			};
 
-			const openStream = async (): Promise<ReadableStream<Uint8Array>> => {
+			const openStream = async () => {
 				if (!plan.fallbackUrl) return openStreamAt(plan.url);
 				try {
 					return await openStreamAt(plan.url);
@@ -858,24 +890,46 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 				}
 			};
 
-			let body = await openStream();
+			let activeStream = await openStream();
 			stream.push({ type: "start", partial: output });
 
 			for (let emptyAttempt = 0; ; emptyAttempt++) {
-				const googleStream = readSseJson<GenerateContentResponse>(body, options?.signal, event =>
-					options?.onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, model),
-				);
-				await consumeGoogleStream({
-					googleStream,
-					output,
-					stream,
-					model,
-					options,
-					retainTextSignature,
-					onFirstToken: () => {
-						firstTokenTime = performance.now();
+				const googleStream = iterateWithIdleTimeout(
+					readSseJson<GenerateContentResponse>(activeStream.body, activeStream.responseSignal, event =>
+						options?.onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, model),
+					),
+					{
+						idleTimeoutMs,
+						firstItemTimeoutMs: firstEventTimeoutMs,
+						errorMessage: GOOGLE_IDLE_TIMEOUT_ERROR,
+						firstItemErrorMessage: GOOGLE_FIRST_EVENT_TIMEOUT_ERROR,
+						onIdle: () =>
+							activeStream.responseAbortController.abort(
+								new AIError.StreamTimeoutError(GOOGLE_IDLE_TIMEOUT_ERROR),
+							),
+						onFirstItemTimeout: () =>
+							activeStream.responseAbortController.abort(
+								new AIError.StreamTimeoutError(GOOGLE_FIRST_EVENT_TIMEOUT_ERROR),
+							),
+						abortSignal: activeStream.responseSignal,
 					},
-				});
+				);
+				try {
+					await consumeGoogleStream({
+						googleStream,
+						output,
+						stream,
+						model,
+						options,
+						retainTextSignature,
+						onFirstEvent: activeStream.clearFirstEventTimeout,
+						onFirstToken: () => {
+							firstTokenTime = performance.now();
+						},
+					});
+				} finally {
+					activeStream.clearFirstEventTimeout();
+				}
 
 				if (
 					output.stopReason !== "stop" ||
@@ -896,7 +950,7 @@ export function streamGoogleGenAI<T extends "google-generative-ai" | "google-ver
 					throw new AIError.AbortError();
 				}
 				resetGoogleStreamOutputForRetry(output);
-				body = await openStream();
+				activeStream = await openStream();
 			}
 
 			output.duration = performance.now() - startTime;

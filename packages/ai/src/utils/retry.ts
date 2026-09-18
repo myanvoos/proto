@@ -14,7 +14,7 @@ const COPILOT_RETRY_AFTER_MAX_WAIT_MS = 30_000;
 
 export async function callWithCopilotModelRetry<T>(
 	fn: () => Promise<T>,
-	options: { provider: string; signal?: AbortSignal; retryBaseDelayMs?: number },
+	options: { provider: string; signal?: AbortSignal; retryBaseDelayMs?: number; rng?: () => number },
 ): Promise<T> {
 	if (options.provider !== "github-copilot") return fn();
 
@@ -35,15 +35,17 @@ export async function callWithCopilotModelRetry<T>(
 				: COPILOT_GENERIC_RETRY_MAX_ATTEMPTS;
 			if (attempt >= maxAttempts - 1) break;
 
-			let delayMs = transientModelError ? retryBaseDelayMs : retryBaseDelayMs * (attempt + 1);
+			const backoffDelayMs = transientModelError ? retryBaseDelayMs : retryBaseDelayMs * (attempt + 1);
+			let retryAfterMinimumMs = 0;
 			if (!transientModelError) {
 				const errorStatus = status(error);
 				if (errorStatus !== undefined) {
 					const retryAfterMs = getRetryAfterMsFromHeaders(getHeadersFromError(error));
 					if (retryAfterMs === undefined || retryAfterMs > COPILOT_RETRY_AFTER_MAX_WAIT_MS) throw error;
-					delayMs = Math.max(delayMs, retryAfterMs);
+					retryAfterMinimumMs = retryAfterMs;
 				}
 			}
+			const delayMs = Math.max(Math.floor(backoffDelayMs * (options.rng ?? Math.random)()), retryAfterMinimumMs);
 			await scheduler.wait(delayMs, { signal: options.signal });
 		}
 	}
