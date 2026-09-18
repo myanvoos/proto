@@ -204,3 +204,27 @@ test("replays ordinary input after an invalid in-band resize prefix", () => {
 		vi.useRealTimers();
 	}
 });
+
+test("headless stop clears callbacks before the terminal is reused", () => {
+	setTerminalHeadless(true);
+	const stalePrivateModeReports: number[] = [];
+	const terminal = new ProcessTerminal();
+	terminal.onPrivateModeReport(mode => stalePrivateModeReports.push(mode));
+	terminal.start(
+		() => {},
+		() => {},
+	);
+	terminal.stop();
+
+	setTerminalHeadless(false);
+	terminal.start(
+		() => {},
+		() => {},
+	);
+	try {
+		feed("\x1b[?2026;1$y");
+		expect(stalePrivateModeReports).toEqual([]);
+	} finally {
+		terminal.stop();
+	}
+});

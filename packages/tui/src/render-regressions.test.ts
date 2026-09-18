@@ -790,3 +790,43 @@ test("recommits current rows after a mux width epoch before a live progress tail
 		restore();
 	}
 });
+
+test.each([
+	["combining mark", "e\u0301", 1],
+	["variation selector", "\u2665\ufe0e", 1],
+	["ZWJ emoji continuation", "\u{1f469}\u200d\u{1f4bb}", 2],
+])("keeps a %s in one grapheme while fitting an oversized row", (_label, grapheme, width) => {
+	const terminal = new FakeTerminal(width, 1);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	tui.addChild({ render: () => [`${grapheme}${"x".repeat(5_000)}`] });
+
+	try {
+		tui.start({ deferInput: true });
+		expect(terminal.writes.join("")).toContain(grapheme);
+	} finally {
+		tui.stop();
+	}
+});
+
+test.each([
+	["DCS", "\x1bP"],
+	["APC", "\x1b_"],
+	["SOS", "\x1bX"],
+	["PM", "\x1b^"],
+])("skips an oversized row's complete %s string control atomically", (_label, introducer) => {
+	const terminal = new FakeTerminal(1, 1);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const control = `${introducer}q-control-payload\x1b\\`;
+	tui.addChild({ render: () => [`${control}V${"x".repeat(5_000)}`] });
+
+	try {
+		tui.start({ deferInput: true });
+		const stream = terminal.writes.join("");
+		expect(stream).toContain("V");
+		expect(stream).not.toContain("q-control-payload");
+	} finally {
+		tui.stop();
+	}
+});

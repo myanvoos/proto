@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Scroll views now preserve the visible content row across terminal reflow and clamp safely when content shrinks.
+- Width resizes now preserve terminal-reflowed native scrollback instead of duplicating assistant text or replaying the welcome header mid-transcript.
+- Oversized rows preserve graphemes and terminal string controls, large select lists keep cursor navigation fast, and headless shutdown releases terminal state.
+
+### Removed
+
+- Removed an unused test-only terminal-width reset hook.
+
 ## [18.1.20] - 2026-09-15
 
 ### Fixed

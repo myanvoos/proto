@@ -86,6 +86,39 @@ type SelectItemLayout =
 			spacing: "";
 	  };
 
+interface PreparedSelectItem {
+	item: SelectItem;
+	displayValue: string;
+	displayWidth: number;
+	descriptionSingleLine: string | undefined;
+	filterText: string;
+	iconWidth: number;
+}
+
+interface SelectListWidthLayoutCache {
+	width: number;
+	cursor: string;
+	rowCounts: readonly number[];
+	rowOffsets: readonly number[];
+	visualTotal: number;
+}
+
+interface SelectListLayoutCache {
+	sourceItems: ReadonlyArray<SelectItem>;
+	filteredItems: ReadonlyArray<SelectItem>;
+	filterQuery: string;
+	minPrimaryColumnWidth: number | undefined;
+	maxPrimaryColumnWidth: number | undefined;
+	truncatePrimary: SelectListLayoutOptions["truncatePrimary"];
+	overflowSearch: boolean | undefined;
+	wrapDescription: boolean | undefined;
+	maxDescriptionRows: number | undefined;
+	preparedItems: readonly PreparedSelectItem[];
+	primaryColumnWidth: number;
+	iconColumnWidth: number;
+	widthLayout: SelectListWidthLayoutCache | undefined;
+}
+
 export class SelectList implements Component, MouseRoutable {
 	#maxVisible: number;
 	#filteredItems: ReadonlyArray<SelectItem>;
@@ -94,6 +127,8 @@ export class SelectList implements Component, MouseRoutable {
 	#hoveredIndex: number | null = null;
 
 	#hitRows: (number | undefined)[] = [];
+	#preparedItemCache = new WeakMap<SelectItem, PreparedSelectItem>();
+	#layoutCache: SelectListLayoutCache | undefined;
 
 	onSelect?: (item: SelectItem) => void;
 	onCancel?: () => void;
@@ -119,6 +154,8 @@ export class SelectList implements Component, MouseRoutable {
 		// Preserve the highlighted item by value across the replacement.
 		const previousValue = this.#filteredItems[this.#selectedIndex]?.value;
 		this.items = items;
+		this.#preparedItemCache = new WeakMap();
+		this.#layoutCache = undefined;
 		// Reapply the active filter so the visible rows stay consistent with
 		// the retained query (a theme rebuild must not discard the filter).
 		if (this.#filterQuery.trim()) {
@@ -174,11 +211,14 @@ export class SelectList implements Component, MouseRoutable {
 		routeSelectListMouse(this, event, line);
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.#preparedItemCache = new WeakMap();
+		this.#layoutCache = undefined;
+	}
 
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
-		this.#hitRows = [];
+		this.#hitRows.length = 0;
 		const showSearchStatus = this.#shouldRenderSearchStatus();
 
 		if (this.#filteredItems.length === 0) {
@@ -189,35 +229,18 @@ export class SelectList implements Component, MouseRoutable {
 			return lines;
 		}
 
-		const primaryColumnWidth = this.#getPrimaryColumnWidth();
-		const iconColumnWidth = this.#getIconColumnWidth();
-		const wrapEnabled = this.layout.wrapDescription === true;
-
+		const layoutCache = this.#getLayoutCache();
+		const { primaryColumnWidth, iconColumnWidth, preparedItems } = layoutCache;
+		const { rowCounts, rowOffsets, visualTotal } = this.#getWidthLayoutCache(layoutCache, width);
 		const visualBudget = this.#maxVisible;
-
-		const conservativeRowWidth = Math.max(0, width - 1);
-		const rowCounts = new Array<number>(this.#filteredItems.length);
-		let visualTotal = 0;
-		for (let i = 0; i < this.#filteredItems.length; i++) {
-			const item = this.#filteredItems[i];
-			if (!item) {
-				rowCounts[i] = 0;
-				continue;
-			}
-			rowCounts[i] = wrapEnabled
-				? this.#computeItemRowCount(item, conservativeRowWidth, primaryColumnWidth, iconColumnWidth)
-				: 1;
-			visualTotal += rowCounts[i];
-		}
-
 		const overflow = visualTotal > visualBudget;
 		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
 
-		const { startIndex, endIndex, visualOffset } = this.#pickWindow(rowCounts, visualBudget);
+		const { startIndex, endIndex, visualOffset } = this.#pickWindow(rowCounts, rowOffsets, visualBudget);
 
 		const rows: string[] = [];
 		for (let i = startIndex; i < endIndex && rows.length < visualBudget; i++) {
-			const item = this.#filteredItems[i];
+			const item = preparedItems[i];
 			if (!item) continue;
 			const hovered = this.theme.hovered !== undefined && i === this.#hoveredIndex && i !== this.#selectedIndex;
 			const itemRows = this.#renderItem(
@@ -287,7 +310,7 @@ export class SelectList implements Component, MouseRoutable {
 	}
 
 	#renderItem(
-		item: SelectItem,
+		item: PreparedSelectItem,
 		isSelected: boolean,
 		width: number,
 		primaryColumnWidth: number,
@@ -301,7 +324,7 @@ export class SelectList implements Component, MouseRoutable {
 	}
 
 	#composeItemRows(
-		item: SelectItem,
+		item: PreparedSelectItem,
 		isSelected: boolean,
 		width: number,
 		primaryColumnWidth: number,
@@ -346,7 +369,12 @@ export class SelectList implements Component, MouseRoutable {
 		return [prefix + iconCell + truncatedValue];
 	}
 
-	#computeItemRowCount(item: SelectItem, width: number, primaryColumnWidth: number, iconColumnWidth: number): number {
+	#computeItemRowCount(
+		item: PreparedSelectItem,
+		width: number,
+		primaryColumnWidth: number,
+		iconColumnWidth: number,
+	): number {
 		const layout = this.#computeItemLayout(item, false, width, primaryColumnWidth, iconColumnWidth);
 		if (layout.kind !== "description") return 1;
 		const wrapped = this.#wrapDescription(layout.descriptionSingleLine, layout.remainingWidth);
@@ -364,6 +392,7 @@ export class SelectList implements Component, MouseRoutable {
 
 	#pickWindow(
 		rowCounts: ReadonlyArray<number>,
+		rowOffsets: ReadonlyArray<number>,
 		budget: number,
 	): { startIndex: number; endIndex: number; visualOffset: number } {
 		const n = rowCounts.length;
@@ -391,13 +420,11 @@ export class SelectList implements Component, MouseRoutable {
 			used += rowCounts[lo] ?? 0;
 		}
 
-		let visualOffset = 0;
-		for (let i = 0; i < lo; i++) visualOffset += rowCounts[i] ?? 0;
-		return { startIndex: lo, endIndex: hi, visualOffset };
+		return { startIndex: lo, endIndex: hi, visualOffset: rowOffsets[lo] ?? 0 };
 	}
 
 	#computeItemLayout(
-		item: SelectItem,
+		item: PreparedSelectItem,
 		isSelected: boolean,
 		width: number,
 		primaryColumnWidth: number,
@@ -406,10 +433,10 @@ export class SelectList implements Component, MouseRoutable {
 		const cursor = this.theme.symbols?.cursor ?? DEFAULT_CURSOR_SYMBOL;
 		const prefix = isSelected ? `${cursor} ` : padding(visibleWidth(cursor) + 1);
 
-		const iconWidth = item.icon ? visibleWidth(item.icon) : 0;
-		const iconCell = iconColumnWidth > 0 ? (item.icon ?? "") + padding(iconColumnWidth - iconWidth + 1) : "";
+		const { descriptionSingleLine } = item;
+		const iconCell =
+			iconColumnWidth > 0 ? (item.item.icon ?? "") + padding(iconColumnWidth - item.iconWidth + 1) : "";
 		const prefixWidth = visibleWidth(prefix) + (iconColumnWidth > 0 ? iconColumnWidth + 1 : 0);
-		const descriptionSingleLine = item.description ? sanitizeSingleLine(item.description) : undefined;
 
 		if (descriptionSingleLine && width > 40) {
 			const effectivePrimaryColumnWidth = Math.max(1, Math.min(primaryColumnWidth, width - prefixWidth - 4));
@@ -445,21 +472,100 @@ export class SelectList implements Component, MouseRoutable {
 		};
 	}
 
-	#getIconColumnWidth(): number {
-		let widest = 0;
-		for (const item of this.#filteredItems) {
-			if (item.icon) widest = Math.max(widest, visibleWidth(item.icon));
+	#getLayoutCache(): SelectListLayoutCache {
+		const cached = this.#layoutCache;
+		if (
+			cached &&
+			cached.sourceItems === this.items &&
+			cached.filteredItems === this.#filteredItems &&
+			cached.filterQuery === this.#filterQuery &&
+			cached.minPrimaryColumnWidth === this.layout.minPrimaryColumnWidth &&
+			cached.maxPrimaryColumnWidth === this.layout.maxPrimaryColumnWidth &&
+			cached.truncatePrimary === this.layout.truncatePrimary &&
+			cached.overflowSearch === this.layout.overflowSearch &&
+			cached.wrapDescription === this.layout.wrapDescription &&
+			cached.maxDescriptionRows === this.layout.maxDescriptionRows
+		) {
+			return cached;
 		}
-		return widest;
+
+		const preparedItems = this.#filteredItems.map(item => this.#prepareItem(item));
+		let widestPrimary = 0;
+		let iconColumnWidth = 0;
+		for (const item of preparedItems) {
+			widestPrimary = Math.max(widestPrimary, item.displayWidth + PRIMARY_COLUMN_GAP);
+			iconColumnWidth = Math.max(iconColumnWidth, item.iconWidth);
+		}
+		const { min, max } = this.#getPrimaryColumnBounds();
+		const next: SelectListLayoutCache = {
+			sourceItems: this.items,
+			filteredItems: this.#filteredItems,
+			filterQuery: this.#filterQuery,
+			minPrimaryColumnWidth: this.layout.minPrimaryColumnWidth,
+			maxPrimaryColumnWidth: this.layout.maxPrimaryColumnWidth,
+			truncatePrimary: this.layout.truncatePrimary,
+			overflowSearch: this.layout.overflowSearch,
+			wrapDescription: this.layout.wrapDescription,
+			maxDescriptionRows: this.layout.maxDescriptionRows,
+			preparedItems,
+			primaryColumnWidth: clamp(widestPrimary, min, max),
+			iconColumnWidth,
+			widthLayout: undefined,
+		};
+		this.#layoutCache = next;
+		return next;
 	}
 
-	#getPrimaryColumnWidth(): number {
-		const { min, max } = this.#getPrimaryColumnBounds();
-		const widestPrimary = this.#filteredItems.reduce((widest, item) => {
-			return Math.max(widest, visibleWidth(this.#getDisplayValue(item)) + PRIMARY_COLUMN_GAP);
-		}, 0);
+	#getWidthLayoutCache(cache: SelectListLayoutCache, width: number): SelectListWidthLayoutCache {
+		const cursor = this.theme.symbols?.cursor ?? DEFAULT_CURSOR_SYMBOL;
+		const cached = cache.widthLayout;
+		if (cached && cached.width === width && cached.cursor === cursor) return cached;
 
-		return clamp(widestPrimary, min, max);
+		const conservativeRowWidth = Math.max(0, width - 1);
+		const rowCounts = new Array<number>(cache.preparedItems.length);
+		const rowOffsets = new Array<number>(cache.preparedItems.length + 1);
+		const wrapEnabled = this.layout.wrapDescription === true;
+		let visualTotal = 0;
+		for (let i = 0; i < cache.preparedItems.length; i++) {
+			rowOffsets[i] = visualTotal;
+			const item = cache.preparedItems[i]!;
+			const rowCount = wrapEnabled
+				? this.#computeItemRowCount(item, conservativeRowWidth, cache.primaryColumnWidth, cache.iconColumnWidth)
+				: 1;
+			rowCounts[i] = rowCount;
+			visualTotal += rowCount;
+		}
+		rowOffsets[cache.preparedItems.length] = visualTotal;
+
+		const next: SelectListWidthLayoutCache = {
+			width,
+			cursor,
+			rowCounts,
+			rowOffsets,
+			visualTotal,
+		};
+		cache.widthLayout = next;
+		return next;
+	}
+
+	#prepareItem(item: SelectItem): PreparedSelectItem {
+		const cached = this.#preparedItemCache.get(item);
+		if (cached) return cached;
+
+		let filterText = `${item.label} ${item.value}`;
+		if (item.description) filterText += ` ${item.description}`;
+		if (item.hint) filterText += ` ${item.hint}`;
+		const displayValue = sanitizeSingleLine(item.label || item.value);
+		const prepared: PreparedSelectItem = {
+			item,
+			displayValue,
+			displayWidth: visibleWidth(displayValue),
+			descriptionSingleLine: item.description ? sanitizeSingleLine(item.description) : undefined,
+			filterText: sanitizeSingleLine(filterText),
+			iconWidth: item.icon ? visibleWidth(item.icon) : 0,
+		};
+		this.#preparedItemCache.set(item, prepared);
+		return prepared;
 	}
 
 	#getPrimaryColumnBounds(): { min: number; max: number } {
@@ -474,23 +580,18 @@ export class SelectList implements Component, MouseRoutable {
 		};
 	}
 
-	#truncatePrimary(item: SelectItem, isSelected: boolean, maxWidth: number, columnWidth: number): string {
-		const displayValue = this.#getDisplayValue(item);
+	#truncatePrimary(item: PreparedSelectItem, isSelected: boolean, maxWidth: number, columnWidth: number): string {
 		const truncatedValue = this.layout.truncatePrimary
 			? this.layout.truncatePrimary({
-					text: displayValue,
+					text: item.displayValue,
 					maxWidth,
 					columnWidth,
-					item,
+					item: item.item,
 					isSelected,
 				})
-			: truncateToWidth(displayValue, maxWidth, Ellipsis.Omit);
+			: truncateToWidth(item.displayValue, maxWidth, Ellipsis.Omit);
 
 		return truncateToWidth(truncatedValue, maxWidth, Ellipsis.Omit);
-	}
-
-	#getDisplayValue(item: SelectItem): string {
-		return sanitizeSingleLine(item.label || item.value);
 	}
 
 	#renderStatusLine(width: number): string {
@@ -541,6 +642,7 @@ export class SelectList implements Component, MouseRoutable {
 		} else {
 			this.#filteredItems = this.items;
 		}
+		this.#layoutCache = undefined;
 		this.#selectedIndex = 0;
 		if (notify) {
 			this.#notifySelectionChange();
@@ -548,14 +650,7 @@ export class SelectList implements Component, MouseRoutable {
 	}
 
 	#getFilterText(item: SelectItem): string {
-		let text = `${item.label} ${item.value}`;
-		if (item.description) {
-			text += ` ${item.description}`;
-		}
-		if (item.hint) {
-			text += ` ${item.hint}`;
-		}
-		return sanitizeSingleLine(text);
+		return this.#prepareItem(item).filterText;
 	}
 
 	#notifySelectionChange(): void {

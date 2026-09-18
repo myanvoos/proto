@@ -27,6 +27,11 @@ export interface ScrollViewOptions {
 	fastScrollLines?: number;
 }
 
+export interface ScrollViewSetLinesOptions {
+	/** Keep the same visible content row at the same viewport position when possible. */
+	preserveAnchor?: boolean;
+}
+
 function normalizeScrollbarMode(scrollbar: ScrollViewOptions["scrollbar"]): ScrollbarMode {
 	if (scrollbar === true) return "auto";
 	if (scrollbar === false) return "never";
@@ -66,8 +71,14 @@ export class ScrollView implements Component {
 		this.#clampScrollOffset();
 	}
 
-	setLines(lines: readonly string[]): void {
+	setLines(lines: readonly string[], options: ScrollViewSetLinesOptions = {}): void {
+		const previousLines = this.#lines;
+		const previousOffset = this.#scrollOffset;
 		this.#lines = [...lines];
+		if (options.preserveAnchor !== false && this.#totalRows === undefined) {
+			const anchoredOffset = this.#findAnchoredOffset(previousLines, previousOffset);
+			if (anchoredOffset !== undefined) this.#scrollOffset = anchoredOffset;
+		}
 		this.#clampScrollOffset();
 	}
 
@@ -181,6 +192,46 @@ export class ScrollView implements Component {
 
 	#clampScrollOffset(): void {
 		this.#scrollOffset = Math.max(0, Math.min(this.#scrollOffset, this.getMaxScrollOffset()));
+	}
+
+	#findAnchoredOffset(previousLines: readonly string[], previousOffset: number): number | undefined {
+		const visibleRows = Math.min(this.#height, Math.max(0, previousLines.length - previousOffset));
+		if (visibleRows === 0 || this.#lines.length === 0) return undefined;
+
+		const anchorRows = new Map<string, number[]>();
+		for (let row = 0; row < visibleRows; row++) {
+			const line = previousLines[previousOffset + row];
+			if (line === undefined || !/\S/.test(line)) continue;
+			const rows = anchorRows.get(line);
+			if (rows) rows.push(row);
+			else anchorRows.set(line, [row]);
+		}
+		if (anchorRows.size === 0) return undefined;
+
+		const maxOffset = Math.max(0, this.#lines.length - this.#height);
+		const candidates = new Set<number>();
+		for (let index = 0; index < this.#lines.length; index++) {
+			const rows = anchorRows.get(this.#lines[index] ?? "");
+			if (!rows) continue;
+			for (const row of rows) candidates.add(Math.max(0, Math.min(index - row, maxOffset)));
+		}
+
+		let bestOffset: number | undefined;
+		let bestScore = 0;
+		let bestDistance = Number.POSITIVE_INFINITY;
+		for (const candidate of candidates) {
+			let score = 0;
+			for (let row = 0; row < visibleRows; row++) {
+				if (previousLines[previousOffset + row] === this.#lines[candidate + row]) score++;
+			}
+			const distance = Math.abs(candidate - previousOffset);
+			if (score > bestScore || (score === bestScore && distance < bestDistance)) {
+				bestOffset = candidate;
+				bestScore = score;
+				bestDistance = distance;
+			}
+		}
+		return bestOffset;
 	}
 
 	#shouldRenderScrollbar(): boolean {

@@ -73,12 +73,6 @@ export function setHangulCompatibilityJamoWidth(width: HangulCompatibilityJamoWi
 	return changed;
 }
 
-export function resetHangulCompatibilityJamoWidthForTests(): void {
-	if (hangulCompatibilityJamoWidth !== "platform") widthConfigEpoch++;
-	hangulCompatibilityJamoWidth = "platform";
-	nativeSetHangulCompatJamoWidthOverride(0);
-}
-
 export type TextSizingScale = 1 | 2 | 3;
 export type TextSizingVerticalAlign = "top" | "bottom" | "center";
 export type TextSizingHorizontalAlign = "left" | "right" | "center";

@@ -1109,8 +1109,19 @@ export class ProcessTerminal implements Terminal {
 	stop(): void {
 		this.#active = false;
 		this.#inputDeferred = false;
-		if (this.#headless) return;
+		const restoreOsTerminal = !this.#headless;
+		const clearProgress = this.#clearProgressTimer();
 
+		try {
+			if (restoreOsTerminal) this.#restoreOsTerminal(clearProgress);
+		} finally {
+			this.#teardownObjectState();
+		}
+
+		if (restoreOsTerminal && !this.#dead) terminalCleanlyStopped = true;
+	}
+
+	#restoreOsTerminal(clearProgress: boolean): void {
 		if (activeTerminal === this) {
 			activeTerminal = null;
 			setOutboundWriter(null);
@@ -1118,30 +1129,32 @@ export class ProcessTerminal implements Terminal {
 
 		restoreTerminalStderr();
 
-		if (this.#clearProgressTimer()) {
-			this.#safeWrite(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
-		}
-
+		if (clearProgress) this.#safeWrite(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		this.#safeWrite("\x1b[?2026l\x1b[?7h");
-
 		this.#safeWrite("\x1b[?1l\x1b>");
-
 		this.#safeWrite("\x1b[?2004l");
 		this.#safeWrite("\x1b[?5522l");
-
 		this.#safeWrite("\x1b[?1006l\x1b[?1003l\x1b[?1000l");
-
 		this.#safeWrite("\x1b[?2031l");
 
 		for (const mode of this.#xtermScrollToBottomRestoreModes) {
 			this.#safeWrite(`\x1b[?${mode}h`);
 		}
-		this.#xtermScrollToBottomRestoreModes.clear();
+		if (this.#inBandResizeActive) this.#safeWrite("\x1b[?2048l");
+		if (this.#kittyProtocolActive) this.#safeWrite("\x1b[<u");
+		if (this.#modifyOtherKeysActive) this.#safeWrite("\x1b[>4;0m");
 
-		if (this.#inBandResizeActive) {
-			this.#safeWrite("\x1b[?2048l");
-			this.#inBandResizeActive = false;
+		process.stdin.pause();
+		try {
+			process.stdin.setRawMode?.(this.#wasRaw);
+		} catch (err) {
+			if (!this.#dead) throw err;
 		}
+	}
+
+	#teardownObjectState(): void {
+		this.#xtermScrollToBottomRestoreModes.clear();
+		this.#inBandResizeActive = false;
 		if (this.#mode2031DebounceTimer) {
 			clearTimeout(this.#mode2031DebounceTimer);
 			this.#mode2031DebounceTimer = undefined;
@@ -1170,23 +1183,17 @@ export class ProcessTerminal implements Terminal {
 		this.#da1SentinelOwners.length = 0;
 		this.#privateModeCallbacks = [];
 		this.#privateModeSupport.clear();
-		this.#xtermScrollToBottomRestoreModes.clear();
 		this.#reportedColumns = undefined;
 		this.#reportedRows = undefined;
 
-		if (this.#kittyProtocolActive) {
-			this.#safeWrite("\x1b[<u");
-			this.#kittyProtocolActive = false;
-			setKittyProtocolActive(false);
-		}
+		this.#kittyProtocolActive = false;
+		this.#kittyEnableSeq = null;
+		setKittyProtocolActive(false);
 		if (this.#modifyOtherKeysTimeout) {
 			clearTimeout(this.#modifyOtherKeysTimeout);
 			this.#modifyOtherKeysTimeout = undefined;
 		}
-		if (this.#modifyOtherKeysActive) {
-			this.#safeWrite("\x1b[>4;0m");
-			this.#modifyOtherKeysActive = false;
-		}
+		this.#modifyOtherKeysActive = false;
 
 		if (this.#stdinBuffer) {
 			this.#stdinBuffer.destroy();
@@ -1219,18 +1226,9 @@ export class ProcessTerminal implements Terminal {
 			this.#outputPump = undefined;
 		}
 
-		process.stdin.pause();
-
-		try {
-			process.stdin.setRawMode?.(this.#wasRaw);
-		} catch (err) {
-			if (!this.#dead) throw err;
-		}
 		this.#stdoutErrorCleanup?.();
 		this.#stdoutErrorCleanup = undefined;
-
 		this.#cursorVisible = undefined;
-		if (!this.#dead) terminalCleanlyStopped = true;
 	}
 
 	#ensureStdoutErrorHandler(): void {

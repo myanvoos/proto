@@ -27,6 +27,7 @@ import { unwrapTmuxPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import {
 	Ellipsis,
 	extractSegments,
+	getSegmenter,
 	getWidthConfigEpoch,
 	isOsc66Line,
 	normalizeTerminalOutput,
@@ -1150,15 +1151,21 @@ export class TUI extends Container {
 
 	#muxPushedRows = 0;
 	#muxPushSeam = 0;
-	// In-place resizes cannot be modelled without knowing whether the host
-	// pushed rows into history (shrink) or pulled them back / padded with
-	// blanks (grow); terminal families disagree and the ledger cannot observe
-	// scrollback. A cursor-position report taken after the host resized
-	// measures that displacement directly: the cursor rides the same physical
-	// row as the content, so `before - after` is the number of rows the host
-	// moved between the screen and history.
+	// In-place height resizes cannot be modelled without knowing whether the
+	// host pushed rows into history or pulled them back / padded with blanks. A
+	// post-resize cursor report measures that displacement. Width reflow also
+	// moves the cursor's content to a different logical row, so its delta alone
+	// is not an index mapping; the absolute screen row can only validate a seam
+	// after anchoring it to the recomposed logical cursor row.
 	#resizeCursorProbe: ResizeCursorProbe | undefined;
 	#resizeCursorProbeToken = 0;
+	#resizeCursorScreenRow: number | undefined;
+	// A normal-screen width change makes native scrollback coordinates opaque:
+	// the host has already reflowed bytes that no longer line up with logical
+	// frame-row indices. Preserve that native tape and adopt the new logical
+	// viewport without repainting any of the closed prefix.
+	#preserveNativeResize = false;
+	#nativeWidthEpochClosed = false;
 	static readonly #RESIZE_CURSOR_PROBE_TIMEOUT_MS = 150;
 	static readonly #RESIZE_CURSOR_PROBE_POLL_MS = 10;
 	static readonly #RESIZE_CURSOR_PROBE_MAX_POLLS = 20;
@@ -1888,19 +1895,36 @@ export class TUI extends Container {
 					return;
 				}
 				this.#resizeEventPending = true;
-				if (!this.#resizeRepaintsInPlace()) {
-					this.#beginResizeViewport();
-					this.#requestResizeViewportPaint();
-					return;
-				}
-				if (this.#previousWidth > 0 && this.terminal.columns !== this.#previousWidth) {
-					this.#resizeCursorProbe = undefined;
+				const widthChanged = this.#previousWidth > 0 && this.terminal.columns !== this.#previousWidth;
+				if (widthChanged) {
+					// Width reflow happens before this callback. Probe the post-resize
+					// cursor on every host, then let the normal-frame path adopt the
+					// reflowed tape without replaying rows already present in it.
+					this.#beginResizeCursorProbe();
+					this.#preserveNativeResize = true;
+					this.#resizeViewportActive = false;
+					this.#resizeViewportSettleTimer?.cancel();
+					this.#resizeViewportSettleTimer = undefined;
 					this.#multiplexerWidthEpochPending = true;
 					if (this.#multiplexerWidthEpochBoundary === undefined) {
 						this.#multiplexerWidthEpochBoundary = this.captureNativeScrollbackWidthEpoch();
 					}
+					// Graphics payloads and placements do not participate in text
+					// reflow. Recompose them immediately; the width-transition branch
+					// still leaves every text row untouched.
+					if (TERMINAL.imageProtocol) {
+						this.#requestResizeViewportPaint();
+						return;
+					}
+				} else if (!this.#resizeRepaintsInPlace() && !this.#nativeWidthEpochClosed) {
+					this.#beginResizeViewport();
+					this.#requestResizeViewportPaint();
+					return;
 				} else {
 					this.#beginResizeCursorProbe();
+					// Once width reflow has made row indices opaque, later height
+					// changes must adopt the host's viewport just as conservatively.
+					if (this.#nativeWidthEpochClosed) this.#preserveNativeResize = true;
 				}
 				this.#armMultiplexerResizeTimer({
 					clearScrollback: false,
@@ -2500,11 +2524,12 @@ export class TUI extends Container {
 	 * moved into history (positive) or back out of it (negative) across the
 	 * resize burst, or `undefined` when no measurement is available.
 	 */
-	#takeResizeCursorShift(resizeEventOccurred: boolean, widthChanged: boolean): number | undefined {
+	#takeResizeCursorShift(resizeEventOccurred: boolean): number | undefined {
 		const probe = this.#resizeCursorProbe;
 		this.#resizeCursorProbe = undefined;
 		this.#resizeCursorProbeToken++;
-		if (!resizeEventOccurred || widthChanged || probe === undefined || probe.after === undefined) return undefined;
+		this.#resizeCursorScreenRow = resizeEventOccurred ? probe?.after : undefined;
+		if (!resizeEventOccurred || probe === undefined || probe.after === undefined) return undefined;
 		return probe.before - probe.after;
 	}
 
@@ -3100,7 +3125,8 @@ export class TUI extends Container {
 			(this.#previousHeight > 0 && this.#previousHeight !== height);
 		const replayFullHistory =
 			this.#hasEverRendered &&
-			(this.#clearScrollbackOnNextRender || (!this.#resizeRepaintsInPlace() && resizeGeometryPending));
+			(this.#clearScrollbackOnNextRender ||
+				(!this.#nativeWidthEpochClosed && !this.#resizeRepaintsInPlace() && resizeGeometryPending));
 		if (replayFullHistory) {
 			for (const child of this.children) prepareNativeScrollbackReplay(child);
 		}
@@ -3207,7 +3233,7 @@ export class TUI extends Container {
 		this.#multiplexerResizeHasPendingRender = false;
 		if (resizeEventOccurred) this.#forgetHardwareCursorState();
 		const widthChanged = this.#previousWidth > 0 && this.#previousWidth !== width;
-		const hostRowShift = this.#takeResizeCursorShift(resizeEventOccurred, widthChanged);
+		const hostRowShift = this.#takeResizeCursorShift(resizeEventOccurred);
 		const widthEpochOccurred = widthChanged || (resizeEventOccurred && this.#multiplexerWidthEpochPending);
 		const capturedWidthEpochBoundary = this.#multiplexerWidthEpochBoundary;
 		const widthEpochBoundary = this.#widthEpochOverlayBoundary ?? capturedWidthEpochBoundary;
@@ -3309,6 +3335,7 @@ export class TUI extends Container {
 		}
 		const auditRan =
 			this.#hasEverRendered &&
+			!this.#nativeWidthEpochClosed &&
 			!geometryChanged &&
 			this.#widthEpochBaselineRows === undefined &&
 			!this.#clearScrollbackOnNextRender &&
@@ -3325,6 +3352,7 @@ export class TUI extends Container {
 
 		if (
 			this.#widthEpochBaselineRows === undefined &&
+			!this.#nativeWidthEpochClosed &&
 			!geometryChanged &&
 			!this.#clearScrollbackOnNextRender &&
 			frameLength < this.#committedRows
@@ -3376,7 +3404,7 @@ export class TUI extends Container {
 
 		const firstPaint = !this.#hasEverRendered;
 		const replaceRequested = this.#clearScrollbackOnNextRender;
-		const geometryRebuild = geometryChanged && !this.#resizeRepaintsInPlace();
+		const geometryRebuild = geometryChanged && !this.#nativeWidthEpochClosed && !this.#resizeRepaintsInPlace();
 
 		const deferredLiveRegionRows =
 			this.#previousLiveRegionHasTrailingRows &&
@@ -3608,6 +3636,81 @@ export class TUI extends Container {
 		}
 		const cursorTrackingLineCount = hasVisibleOverlay ? Math.max(frame.length, windowTop + height) : frame.length;
 
+		if (resizeEventOccurred && this.#preserveNativeResize && !this.#clearScrollbackOnNextRender) {
+			// The terminal has already reflowed both its viewport and native
+			// scrollback. Repainting the app's newly wrapped rows cannot be made
+			// index-safe: hard terminal wraps and component wrapping need not have
+			// the same boundaries. Close everything above the new viewport and
+			// adopt the new logical window silently. Later appends can then use the
+			// ordinary window-slide path and emit only genuinely new tail rows.
+			// A DSR delta is not a logical-row mapping during width reflow: the
+			// cursor's own content can wrap onto a different row. Anchor its
+			// absolute screen row to the recomposed cursor instead. Only accept
+			// that measurement when it validates the tail-derived boundary; a
+			// disagreement leaves coordinates opaque rather than guessing.
+			const logicalCursorRow = cursorPos?.row ?? Math.max(0, frameLength - 1);
+			const measuredWindowTop =
+				this.#resizeCursorScreenRow === undefined
+					? undefined
+					: Math.max(0, Math.min(frameLength, logicalCursorRow - this.#resizeCursorScreenRow));
+			this.#committedRows = measuredWindowTop === windowTop ? measuredWindowTop : windowTop;
+			this.#committedPrefix = rawFrame.slice(0, this.#committedRows);
+			this.#committedPrefixAuditRows = Math.min(this.#committedRows, finalBoundary);
+			this.#windowTopRow = windowTop;
+			this.#widthEpochBaselineRows = undefined;
+			this.#widthEpochReplayUnresolved = false;
+			this.#widthEpochOverlayReplayPending = false;
+			this.#widthEpochOverlayBoundary = undefined;
+			this.#widthEpochCommittedPrefix = undefined;
+			this.#preserveNativeResize = false;
+			this.#nativeWidthEpochClosed = true;
+			this.#clearScrollbackOnNextRender = false;
+			this.#hasEverRendered = true;
+
+			const target = this.#targetHardwareCursorState(cursorPos, cursorTrackingLineCount);
+			// Text is already present, but terminal graphics need new-width
+			// payload/placement coordinates. Emit graphics-only control data so
+			// image maintenance cannot replay surrounding transcript rows.
+			let graphicsOutput = "";
+			if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
+				for (const id of this.#imageBudget.takePurgeIds()) graphicsOutput += encodeKittyDeleteImage(id);
+				const paintedIds = imageIdsInRows(window);
+				const resizeBatch = this.#imageBudget.takeTransmitBatch(id => paintedIds.has(id));
+				for (const sequence of resizeBatch.sequences) graphicsOutput += sequence;
+				for (let screenRow = 0; screenRow < height; screenRow++) {
+					const line = window[screenRow] ?? "";
+					if (!TERMINAL.isImageLine(line)) continue;
+					graphicsOutput += `\x1b[${screenRow + 1};1H${this.#terminalLineForFrame(
+						line,
+						width,
+						screenRow,
+						windowTop + screenRow,
+						this.#committedRows,
+					)}`;
+				}
+				if (graphicsOutput.length > 0) {
+					const targetScreenRow = target
+						? Math.max(0, Math.min(height - 1, target.row - windowTop))
+						: Math.max(0, Math.min(height - 1, frameLength - windowTop - 1));
+					graphicsOutput += `\x1b[${targetScreenRow + 1};${(target?.col ?? 0) + 1}H`;
+					graphicsOutput += target?.visible ? "\x1b[?25h" : "\x1b[?25l";
+					this.terminal.write(graphicsOutput);
+				}
+				this.#imageBudget.markTransmitWritten(resizeBatch.ids);
+			} else {
+				this.#imageBudget.takePurgeIds();
+			}
+
+			this.#commit(frame, window, width, height, {
+				toRow: target?.row ?? Math.max(windowTop, frameLength - 1),
+				state: graphicsOutput.length > 0 ? target : null,
+				visible: target?.visible ?? false,
+			});
+			this.#publishCommittedRows();
+			return;
+		}
+		if (resizeEventOccurred) this.#preserveNativeResize = false;
+
 		const intent: RenderIntent = fullPaint
 			? {
 					kind: "fullPaint",
@@ -3664,6 +3767,7 @@ export class TUI extends Container {
 			this.#widthEpochOverlayReplayPending = false;
 			this.#widthEpochOverlayBoundary = undefined;
 			this.#widthEpochCommittedPrefix = undefined;
+			this.#nativeWidthEpochClosed = false;
 			this.#publishCommittedRows();
 			return;
 		}
@@ -3833,8 +3937,8 @@ export class TUI extends Container {
 			// Force the update path to rewrite the viewport so direct Kitty
 			// placements are emitted again (including scoped/fallback renders).
 			forceWindowRewrite:
-				this.#forceViewportRepaintOnNextRender ||
-				(geometryChanged && this.#resizeRepaintsInPlace()) ||
+				(!this.#nativeWidthEpochClosed &&
+					(this.#forceViewportRepaintOnNextRender || (geometryChanged && this.#resizeRepaintsInPlace()))) ||
 				transmitBatch.ids.length > 0,
 			repaintVirtualScrollInPlace: hasVisibleOverlay,
 			cursorTrackingLineCount,
@@ -4015,10 +4119,10 @@ export class TUI extends Container {
 		let cells = 0;
 		let hyperlinkOpen = false;
 		let retainedOsc66 = false;
+		const graphemes = getSegmenter().segment(raw);
 		for (let i = 0; i < raw.length && cells < safeWidth; ) {
-			if (raw.charCodeAt(i) === 0x1b) {
-				const end = this.#ansiSequenceEnd(raw, i);
-				if (end < 0) break;
+			if (raw.charCodeAt(i) === CC_ESC) {
+				const end = frameOutputEscapeEnd(raw, i);
 				if (this.#ansiSequenceIsZeroWidthStyling(raw, i, end)) {
 					const sequence = raw.slice(i, end);
 					// Reserve source budget for the remaining visible cells so a
@@ -4051,70 +4155,39 @@ export class TUI extends Container {
 				continue;
 			}
 
-			const code = raw.charCodeAt(i);
-			if (code >= 0x20 && code <= 0x7e) {
-				if (output.length >= maxSourceLength) break;
-				const cap = i + Math.min(safeWidth - cells, maxSourceLength - output.length);
-				let j = i + 1;
-				while (j < raw.length && j < cap) {
-					const c = raw.charCodeAt(j);
-					if (c < 0x20 || c > 0x7e) break;
-					j++;
-				}
-				output += raw.slice(i, j);
-				cells += j - i;
-				i = j;
-				continue;
-			}
-
-			const next = code >= 0xd800 && code <= 0xdbff && i + 1 < raw.length ? i + 2 : i + 1;
-			const char = raw.slice(i, next);
-			const charWidth = visibleWidth(char);
-			if (charWidth > 0 && cells + charWidth > safeWidth) break;
-			if (output.length + char.length > maxSourceLength) {
-				if (charWidth > 0) break;
+			const segment = graphemes.containing(i);
+			if (!segment) break;
+			const next = segment.index + segment.segment.length;
+			if (segment.index !== i) {
+				// Never emit a suffix when a preceding control sequence intersects a
+				// cluster boundary. Skipping the cluster is safer than severing it.
 				i = next;
 				continue;
 			}
-			if (charWidth === 0) {
+
+			const grapheme = segment.segment;
+			const graphemeWidth = visibleWidth(grapheme);
+			if (graphemeWidth > 0 && cells + graphemeWidth > safeWidth) break;
+			if (output.length + grapheme.length > maxSourceLength) {
+				if (graphemeWidth > 0) break;
+				i = next;
+				continue;
+			}
+			if (graphemeWidth === 0) {
 				const remainingVisibleCells = safeWidth - cells;
 				const reservedCodeUnits = remainingVisibleCells * 2;
-				if (output.length + char.length > maxSourceLength - reservedCodeUnits) {
+				if (output.length + grapheme.length > maxSourceLength - reservedCodeUnits) {
 					i = next;
 					continue;
 				}
 			}
-			output += char;
-			cells += charWidth;
+			output += grapheme;
+			cells += graphemeWidth;
 			i = next;
 		}
 
 		if (hyperlinkOpen) output += "\x1b]8;;\x07";
 		return output + SEGMENT_RESET;
-	}
-
-	#ansiSequenceEnd(line: string, start: number): number {
-		const next = line.charCodeAt(start + 1);
-		if (next === 0x5b) {
-			let i = start + 2;
-			while (i < line.length) {
-				const final = line.charCodeAt(i);
-				if (final >= 0x40 && final <= 0x7e) return i + 1;
-				i++;
-			}
-			return -1;
-		}
-		if (next === 0x5d) {
-			let i = start + 2;
-			while (i < line.length) {
-				const osc = line.charCodeAt(i);
-				if (osc === 0x07) return i + 1;
-				if (osc === 0x1b && line.charCodeAt(i + 1) === 0x5c) return i + 2;
-				i++;
-			}
-			return -1;
-		}
-		return start + 2 <= line.length ? start + 2 : -1;
 	}
 
 	#ansiSequenceIsZeroWidthStyling(line: string, start: number, end: number): boolean {
