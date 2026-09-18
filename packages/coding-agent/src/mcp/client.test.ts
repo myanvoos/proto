@@ -1,12 +1,115 @@
-import { afterEach, expect, test } from "bun:test";
-import { connectToServer } from "./client";
+import { afterEach, expect, test, vi } from "bun:test";
+import { connectToServer, listPrompts, listResources, listResourceTemplates, listTools } from "./client";
 import { HttpTransport } from "./transports/http";
-import type { JsonRpcMessage } from "./types";
+import type { JsonRpcMessage, MCPRequestOptions, MCPServerConnection, MCPTransport } from "./types";
 
 const encoder = new TextEncoder();
 const servers: Bun.Server<undefined>[] = [];
 
+interface NamedListItem {
+	name: string;
+}
+
+type FakeRequestHandler = (
+	method: string,
+	params: Record<string, unknown> | undefined,
+	options: MCPRequestOptions | undefined,
+) => unknown | Promise<unknown>;
+
+class FakeTransport implements MCPTransport {
+	readonly connected = true;
+	#handler: FakeRequestHandler;
+
+	constructor(handler: FakeRequestHandler) {
+		this.#handler = handler;
+	}
+
+	async connect(): Promise<void> {}
+
+	async request<T = unknown>(
+		method: string,
+		params?: Record<string, unknown>,
+		options?: MCPRequestOptions,
+	): Promise<T> {
+		return (await this.#handler(method, params, options)) as T;
+	}
+
+	async notify(): Promise<void> {}
+
+	async close(): Promise<void> {}
+}
+
+interface PaginationCase {
+	label: string;
+	method: string;
+	resultKey: "tools" | "resources" | "resourceTemplates" | "prompts";
+	item: (name: string) => NamedListItem;
+	list: (connection: MCPServerConnection) => Promise<NamedListItem[]>;
+	cached: (connection: MCPServerConnection) => NamedListItem[] | undefined;
+}
+
+const paginationCases: PaginationCase[] = [
+	{
+		label: "tools/list",
+		method: "tools/list",
+		resultKey: "tools",
+		item: name => ({ name, inputSchema: { type: "object" } }),
+		list: connection => listTools(connection),
+		cached: connection => connection.tools,
+	},
+	{
+		label: "resources/list",
+		method: "resources/list",
+		resultKey: "resources",
+		item: name => ({ name, uri: `file:///${name}` }),
+		list: connection => listResources(connection),
+		cached: connection => connection.resources,
+	},
+	{
+		label: "resources/templates/list",
+		method: "resources/templates/list",
+		resultKey: "resourceTemplates",
+		item: name => ({ name, uriTemplate: `file:///{${name}}` }),
+		list: connection => listResourceTemplates(connection),
+		cached: connection => connection.resourceTemplates,
+	},
+	{
+		label: "prompts/list",
+		method: "prompts/list",
+		resultKey: "prompts",
+		item: name => ({ name }),
+		list: connection => listPrompts(connection),
+		cached: connection => connection.prompts,
+	},
+];
+
+function fakeConnection(transport: MCPTransport, timeout = 0): MCPServerConnection {
+	return {
+		name: "fixture",
+		config: { command: "fixture", timeout },
+		transport,
+		serverInfo: { name: "fixture", version: "1" },
+		capabilities: { tools: {}, resources: {}, prompts: {} },
+	};
+}
+
+function listResult(testCase: PaginationCase, items: NamedListItem[], nextCursor?: string): Record<string, unknown> {
+	return { [testCase.resultKey]: items, nextCursor };
+}
+
+async function expectPaginationError(operation: () => Promise<unknown>, expectedMessage: string): Promise<void> {
+	try {
+		await operation();
+	} catch (error) {
+		if (!(error instanceof Error)) throw error;
+		expect(error.message).toBe(expectedMessage);
+		return;
+	}
+	throw new Error(`Expected pagination to fail with: ${expectedMessage}`);
+}
+
 afterEach(() => {
+	vi.useRealTimers();
 	while (servers.length > 0) servers.pop()?.stop(true);
 });
 
@@ -180,3 +283,114 @@ test("closing HTTP transport aborts an SSE response drain after its result arriv
 	await transport.close();
 	await responseCancelled.promise;
 });
+
+for (const testCase of paginationCases) {
+	test(`${testCase.label} returns all pages in order`, async () => {
+		const pages = [
+			{ items: [testCase.item("first"), testCase.item("second")], nextCursor: "page-2" },
+			{ items: [testCase.item("third")], nextCursor: "page-3" },
+			{ items: [testCase.item("fourth")], nextCursor: undefined },
+		];
+		let calls = 0;
+		const transport = new FakeTransport((method, params) => {
+			expect(method).toBe(testCase.method);
+			expect(params).toEqual(calls === 0 ? {} : { cursor: pages[calls - 1]?.nextCursor });
+			const page = pages[calls];
+			if (!page) throw new Error("Pagination requested an unexpected page");
+			calls++;
+			return listResult(testCase, page.items, page.nextCursor);
+		});
+		const connection = fakeConnection(transport);
+
+		const result = await testCase.list(connection);
+
+		expect(result.map(item => item.name)).toEqual(["first", "second", "third", "fourth"]);
+		expect(calls).toBe(3);
+	});
+
+	test(`${testCase.label} rejects a repeated cursor without caching duplicate items`, async () => {
+		let calls = 0;
+		const transport = new FakeTransport(method => {
+			expect(method).toBe(testCase.method);
+			calls++;
+			if (calls > 2) throw new Error("Transport guard: repeated cursor was requested again");
+			return listResult(testCase, [testCase.item("duplicate")], "same-cursor");
+		});
+		const connection = fakeConnection(transport);
+
+		await expectPaginationError(
+			() => testCase.list(connection),
+			`MCP ${testCase.method} pagination repeated cursor: same-cursor`,
+		);
+		expect(calls).toBe(2);
+		expect(testCase.cached(connection)).toBeUndefined();
+	});
+
+	test(`${testCase.label} rejects pagination beyond 100 pages`, async () => {
+		let calls = 0;
+		const transport = new FakeTransport(method => {
+			expect(method).toBe(testCase.method);
+			calls++;
+			if (calls > 100) throw new Error("Transport guard: page limit was not enforced");
+			return listResult(testCase, [], `page-${calls + 1}`);
+		});
+		const connection = fakeConnection(transport);
+
+		await expectPaginationError(
+			() => testCase.list(connection),
+			`MCP ${testCase.method} pagination exceeded 100 pages`,
+		);
+		expect(calls).toBe(100);
+		expect(testCase.cached(connection)).toBeUndefined();
+	});
+
+	test(`${testCase.label} rejects more than 10000 accumulated items`, async () => {
+		let calls = 0;
+		const item = testCase.item("item");
+		const transport = new FakeTransport(method => {
+			expect(method).toBe(testCase.method);
+			calls++;
+			if (calls === 1) return listResult(testCase, Array<NamedListItem>(6_000).fill(item), "page-2");
+			if (calls === 2) return listResult(testCase, Array<NamedListItem>(4_001).fill(item));
+			throw new Error("Transport guard: item limit was not enforced");
+		});
+		const connection = fakeConnection(transport);
+
+		await expectPaginationError(
+			() => testCase.list(connection),
+			`MCP ${testCase.method} returned more than 10000 items`,
+		);
+		expect(calls).toBe(2);
+		expect(testCase.cached(connection)).toBeUndefined();
+	});
+
+	test(`${testCase.label} applies one deadline to the whole pagination operation`, async () => {
+		vi.useFakeTimers();
+		let calls = 0;
+		let operationSignal: AbortSignal | undefined;
+		const transport = new FakeTransport((method, _params, options) => {
+			expect(method).toBe(testCase.method);
+			calls++;
+			if (!options?.signal) throw new Error("Pagination request did not receive a deadline signal");
+			if (calls === 1) {
+				operationSignal = options.signal;
+				vi.advanceTimersByTime(6);
+				expect(operationSignal.aborted).toBe(false);
+				return listResult(testCase, [testCase.item("first")], "page-2");
+			}
+			if (!operationSignal) throw new Error("Pagination operation signal changed before the second page");
+			expect(options.signal).toBe(operationSignal);
+			vi.advanceTimersByTime(5);
+			return listResult(testCase, [testCase.item("second")]);
+		});
+		const connection = fakeConnection(transport, 10);
+
+		await expectPaginationError(
+			() => testCase.list(connection),
+			`MCP ${testCase.method} pagination timed out after 10ms`,
+		);
+		expect(calls).toBe(2);
+		expect(operationSignal?.aborted).toBe(true);
+		expect(testCase.cached(connection)).toBeUndefined();
+	});
+}

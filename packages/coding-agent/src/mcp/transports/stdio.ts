@@ -1,4 +1,4 @@
-import { getProjectDir, readJsonl } from "@oh-my-pi/pi-utils";
+import { getProjectDir, readJsonl, toError } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type {
 	JsonRpcError,
@@ -36,24 +36,37 @@ interface FrameSink {
 	flush(): unknown;
 }
 
-function isThenable(value: unknown): value is PromiseLike<unknown> {
-	return (
-		value != null &&
-		(typeof value === "object" || typeof value === "function") &&
-		typeof (value as { then?: unknown }).then === "function"
+const MAX_STDIO_FRAME_BYTES = 8 * 1024 * 1024;
+const LF = 0x0a;
+
+function limitJsonlFrameBytes(stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+	let frameBytes = 0;
+	return stream.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				let start = 0;
+				for (let newline = chunk.indexOf(LF, start); newline !== -1; newline = chunk.indexOf(LF, start)) {
+					frameBytes += newline - start;
+					if (frameBytes > MAX_STDIO_FRAME_BYTES) {
+						throw new Error(`MCP stdio frame exceeded ${MAX_STDIO_FRAME_BYTES} bytes`);
+					}
+					frameBytes = 0;
+					start = newline + 1;
+				}
+
+				frameBytes += chunk.byteLength - start;
+				if (frameBytes > MAX_STDIO_FRAME_BYTES) {
+					throw new Error(`MCP stdio frame exceeded ${MAX_STDIO_FRAME_BYTES} bytes`);
+				}
+				controller.enqueue(chunk);
+			},
+		}),
 	);
 }
 
-export function writeFrame(stdin: FrameSink, frame: string): boolean {
-	try {
-		const wrote = stdin.write(frame);
-		const flushed = stdin.flush();
-		if (isThenable(wrote)) wrote.then(undefined, () => {});
-		if (isThenable(flushed)) flushed.then(undefined, () => {});
-		return true;
-	} catch {
-		return false;
-	}
+export async function writeFrame(stdin: FrameSink, frame: string): Promise<void> {
+	await stdin.write(frame);
+	await stdin.flush();
 }
 
 const TERM_GRACE_MS = 1000;
@@ -186,18 +199,17 @@ export class StdioTransport implements MCPTransport {
 	}
 
 	async #startReadLoop(): Promise<void> {
-		if (!this.#process?.stdout) return;
+		const proc = this.#process;
+		if (!proc?.stdout) return;
 		try {
-			for await (const line of readJsonl(this.#process.stdout)) {
+			for await (const line of readJsonl(limitJsonlFrameBytes(proc.stdout))) {
 				if (!this.#connected) break;
 				try {
 					this.#handleMessage(line as JsonRpcMessage);
 				} catch {}
 			}
 		} catch (error) {
-			if (this.#connected) {
-				this.onError?.(error instanceof Error ? error : new Error(String(error)));
-			}
+			if (this.#connected) await this.#handleTransportFailure(error, proc);
 		} finally {
 			this.#handleClose();
 		}
@@ -258,23 +270,27 @@ export class StdioTransport implements MCPTransport {
 	async #handleServerRequest(request: JsonRpcRequest): Promise<void> {
 		try {
 			if (!this.onRequest) {
-				this.#sendResponse(request.id, undefined, { code: -32601, message: "Method not found" });
+				await this.#sendResponse(request.id, undefined, { code: -32601, message: "Method not found" });
 				return;
 			}
 			const result = await this.onRequest(request.method, request.params);
-			this.#sendResponse(request.id, result);
+			await this.#sendResponse(request.id, result);
 		} catch (error) {
-			this.#sendResponse(request.id, undefined, toJsonRpcError(error));
+			await this.#sendResponse(request.id, undefined, toJsonRpcError(error));
 		}
 	}
 
-	#sendResponse(id: string | number, result?: unknown, error?: JsonRpcError): void {
+	async #sendResponse(id: string | number, result?: unknown, error?: JsonRpcError): Promise<void> {
 		if (!this.#connected || !this.#process?.stdin) return;
 		const response = error
 			? { jsonrpc: "2.0" as const, id, error }
 			: { jsonrpc: "2.0" as const, id, result: result ?? {} };
 
-		writeFrame(this.#process.stdin, `${JSON.stringify(response)}\n`);
+		try {
+			await writeFrame(this.#process.stdin, `${JSON.stringify(response)}\n`);
+		} catch (writeError) {
+			await this.#handleTransportFailure(writeError);
+		}
 	}
 
 	#handleClose(): void {
@@ -366,16 +382,13 @@ export class StdioTransport implements MCPTransport {
 		const failFromSend = (error: unknown) => {
 			if (settled) return;
 			cleanup();
-			reject(error instanceof Error ? error : new Error(String(error)));
+			reject(toError(error));
 		};
-		try {
-			const wrote = stdin.write(message);
-			if (isThenable(wrote)) wrote.then(undefined, failFromSend);
-			const flushed = stdin.flush();
-			if (isThenable(flushed)) flushed.then(undefined, failFromSend);
-		} catch (error) {
+		const send = writeFrame(stdin, message).catch(async error => {
 			failFromSend(error);
-		}
+			await this.#handleTransportFailure(error);
+		});
+		send.catch(() => {});
 
 		return promise;
 	}
@@ -392,10 +405,43 @@ export class StdioTransport implements MCPTransport {
 			params: params ?? {},
 		};
 
-		if (!writeFrame(this.#process.stdin, `${JSON.stringify(notification)}\n`)) {
-			this.#handleClose();
-			throw new Error(`Transport closed while sending notification "${method}"`);
+		try {
+			await writeFrame(this.#process.stdin, `${JSON.stringify(notification)}\n`);
+		} catch (error) {
+			const failure = toError(error);
+			await this.#handleTransportFailure(failure);
+			throw failure;
 		}
+	}
+
+	async #handleTransportFailure(
+		error: unknown,
+		proc: Subprocess<"pipe", "pipe", "pipe"> | null = this.#process,
+	): Promise<Error> {
+		const failure = toError(error);
+		if (this.#connected) {
+			try {
+				this.onError?.(failure);
+			} catch {}
+		}
+		try {
+			this.#handleClose();
+		} catch {}
+		try {
+			await this.#terminateProcess(proc);
+		} catch {}
+		return failure;
+	}
+
+	async #terminateProcess(proc: Subprocess<"pipe", "pipe", "pipe"> | null = this.#process): Promise<void> {
+		if (!proc) return;
+		if (this.#process === proc) this.#process = null;
+
+		try {
+			proc.stdin.end();
+		} catch {}
+
+		await terminateStdioProcess(proc, this.#detached);
 	}
 
 	async close(_options?: MCPRequestOptions): Promise<void> {
@@ -403,16 +449,7 @@ export class StdioTransport implements MCPTransport {
 			this.#handleClose();
 		}
 
-		if (this.#process) {
-			const proc = this.#process;
-			this.#process = null;
-
-			try {
-				proc.stdin.end();
-			} catch {}
-
-			await terminateStdioProcess(proc, this.#detached);
-		}
+		await this.#terminateProcess();
 
 		if (this.#readLoop) {
 			this.#readLoop.catch(() => {});

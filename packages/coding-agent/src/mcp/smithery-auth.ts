@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { atomicWriteFile, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { withTimeoutSignal } from "../utils/fetch-timeout";
 
@@ -88,12 +88,7 @@ export async function saveSmitheryApiKey(apiKey: string): Promise<void> {
 
 	const authPath = getSmitheryAuthPath();
 	const payload: SmitheryAuthPayload = { apiKey: normalized };
-	await Bun.write(authPath, `${JSON.stringify(payload, null, 2)}\n`);
-	try {
-		await fs.chmod(authPath, 0o600);
-	} catch (error) {
-		logger.warn("Could not set restrictive permissions on Smithery auth file", { path: authPath, error });
-	}
+	await atomicWriteFile(authPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, fsync: true });
 }
 
 export async function clearSmitheryApiKey(): Promise<boolean> {

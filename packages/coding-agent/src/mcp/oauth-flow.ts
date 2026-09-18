@@ -2,12 +2,51 @@ import type { OAuthCallbackFlowOptions } from "@oh-my-pi/pi-ai/oauth/callback-se
 import { OAuthCallbackFlow } from "@oh-my-pi/pi-ai/oauth/callback-server";
 import type { OAuthController, OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
+import { untilAborted } from "@oh-my-pi/pi-utils";
 import { getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
 import type { OAuthCredential } from "../session/auth-storage";
 
 const MCP_OAUTH_URL_CREDENTIAL_PREFIX = "mcp_oauth:";
 
 const MCP_OAUTH_PROFILE_CREDENTIAL_PREFIX = `${MCP_OAUTH_URL_CREDENTIAL_PREFIX}profile:`;
+const DEFAULT_OAUTH_NETWORK_TIMEOUT_MS = 10_000;
+
+export class MCPOAuthNetworkTimeoutError extends Error {
+	readonly operation: string;
+	readonly timeoutMs: number;
+
+	constructor(operation: string, timeoutMs: number) {
+		super(`MCP OAuth ${operation} timed out after ${timeoutMs}ms`);
+		this.name = "MCPOAuthNetworkTimeoutError";
+		this.operation = operation;
+		this.timeoutMs = timeoutMs;
+	}
+}
+
+function resolveOAuthNetworkTimeoutMs(timeoutMs: number | undefined): number {
+	return typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+		? timeoutMs
+		: DEFAULT_OAUTH_NETWORK_TIMEOUT_MS;
+}
+
+export async function withMCPOAuthNetworkTimeout<T>(
+	operation: string,
+	timeoutMs: number | undefined,
+	callerSignal: AbortSignal | undefined,
+	run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	const resolvedTimeoutMs = resolveOAuthNetworkTimeoutMs(timeoutMs);
+	const timeoutSignal = AbortSignal.timeout(resolvedTimeoutMs);
+	const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
+	try {
+		return await untilAborted(signal, () => run(signal));
+	} catch (error) {
+		if (timeoutSignal.aborted && !callerSignal?.aborted) {
+			throw new MCPOAuthNetworkTimeoutError(operation, resolvedTimeoutMs);
+		}
+		throw error;
+	}
+}
 
 export function mcpOAuthCredentialId(serverUrl: string, profile: string | undefined = getActiveProfile()): string {
 	return `${MCP_OAUTH_PROFILE_CREDENTIAL_PREFIX}${profile ?? "default"}:${serverUrl}`;
@@ -53,18 +92,19 @@ function hasOAuthScope(scopes: string | null | undefined, scope: string): boolea
 	return !!scopes && scopes.split(/\s+/).includes(scope);
 }
 
-function truncateDetail(raw: string | undefined): string | undefined {
-	if (!raw) return undefined;
-	const firstLine = raw.split(/\r?\n/, 1)[0]?.trim();
-	if (!firstLine) return undefined;
-	return firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
-}
-
 async function readRegistrationFailureDetail(response: Response): Promise<string | undefined> {
 	try {
-		return truncateDetail(await response.text());
+		return /\bunapproved_client\b/i.test(await response.text()) ? "unapproved_client" : undefined;
 	} catch {
 		return undefined;
+	}
+}
+
+function endpointOriginForError(endpoint: string): string {
+	try {
+		return new URL(endpoint).origin;
+	} catch {
+		return "invalid endpoint";
 	}
 }
 
@@ -202,6 +242,44 @@ function filterResourceIndicator(
 	return resource;
 }
 
+interface ValidatedOAuthTokenResponse {
+	accessToken: string;
+	refreshToken?: string;
+	expiresIn: number;
+}
+
+function validateOAuthTokenResponse(payload: unknown, operation: string): ValidatedOAuthTokenResponse {
+	if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+		throw new Error(`${operation} returned an invalid token response`);
+	}
+	const data = payload as Record<string, unknown>;
+	if (typeof data.access_token !== "string" || data.access_token.trim() === "") {
+		throw new Error(`${operation} returned an invalid token response`);
+	}
+	if (
+		data.expires_in !== undefined &&
+		(typeof data.expires_in !== "number" || !Number.isFinite(data.expires_in) || data.expires_in < 0)
+	) {
+		throw new Error(`${operation} returned an invalid token response`);
+	}
+	if (data.refresh_token !== undefined && typeof data.refresh_token !== "string") {
+		throw new Error(`${operation} returned an invalid token response`);
+	}
+	return {
+		accessToken: data.access_token,
+		refreshToken: data.refresh_token,
+		expiresIn: data.expires_in ?? 3600,
+	};
+}
+
+async function readOAuthTokenResponse(response: Response, operation: string): Promise<unknown> {
+	try {
+		return await response.json();
+	} catch {
+		throw new Error(`${operation} returned an invalid token response`);
+	}
+}
+
 interface MCPOAuthConfig {
 	authorizationUrl: string;
 
@@ -226,6 +304,8 @@ interface MCPOAuthConfig {
 	resource?: string;
 
 	stripSameOriginResource?: boolean;
+
+	timeoutMs?: number;
 
 	fetch?: FetchImpl;
 }
@@ -350,41 +430,31 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 			params.set("client_secret", clientSecret);
 		}
 
-		const response = await this.#fetch(this.config.tokenUrl, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/x-www-form-urlencoded",
+		const payload = await withMCPOAuthNetworkTimeout(
+			"token exchange",
+			this.config.timeoutMs,
+			this.ctrl.signal,
+			async signal => {
+				const response = await this.#fetch(this.config.tokenUrl, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/x-www-form-urlencoded",
+					},
+					body: params.toString(),
+					signal,
+				});
+				if (!response.ok) {
+					throw new Error(`Token exchange failed with HTTP ${response.status}`);
+				}
+				return await readOAuthTokenResponse(response, "Token exchange");
 			},
-			body: params.toString(),
-			signal: this.ctrl.signal,
-		});
-
-		if (!response.ok) {
-			const errorText = await response.text();
-			throw new Error(`Token exchange failed: ${response.status} ${errorText}`);
-		}
-
-		const data = (await response.json()) as {
-			access_token?: string;
-			refresh_token?: string;
-			expires_in?: number;
-			token_type?: string;
-			error?: string;
-			error_description?: string;
-		};
-
-		if (typeof data.access_token !== "string" || data.access_token.length === 0) {
-			const providerError = data.error_description ?? data.error;
-			throw new Error(`Token exchange returned no access token${providerError ? `: ${providerError}` : ""}`);
-		}
-
-		const expiresIn = data.expires_in ?? 3600;
-		const expires = Date.now() + expiresIn * 1000;
+		);
+		const data = validateOAuthTokenResponse(payload, "Token exchange");
 
 		return {
-			access: data.access_token,
-			refresh: data.refresh_token ?? "",
-			expires,
+			access: data.accessToken,
+			refresh: data.refreshToken ?? "",
+			expires: Date.now() + data.expiresIn * 1000,
 		};
 	}
 
@@ -440,41 +510,52 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 			if (scope) {
 				registrationBody.scope = scope;
 			}
-			const response = await this.#fetch(registrationEndpoint, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Accept: "application/json",
+			const result = await withMCPOAuthNetworkTimeout(
+				"client registration",
+				this.config.timeoutMs,
+				this.ctrl.signal,
+				async signal => {
+					const response = await this.#fetch(registrationEndpoint, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Accept: "application/json",
+						},
+						signal,
+						body: JSON.stringify(registrationBody),
+					});
+					if (!response.ok) {
+						return {
+							ok: false as const,
+							status: response.status,
+							detail: await readRegistrationFailureDetail(response),
+						};
+					}
+					return { ok: true as const, data: await response.json() };
 				},
-				signal: this.ctrl.signal,
-				body: JSON.stringify(registrationBody),
-			});
+			);
 
-			if (!response.ok) {
+			if (!result.ok) {
 				this.#registrationFailure = {
 					endpoint: registrationEndpoint,
-					status: response.status,
-					detail: await readRegistrationFailureDetail(response),
+					status: result.status,
+					detail: result.detail,
 				};
 				return;
 			}
-
-			const data = (await response.json()) as {
-				client_id?: string;
-				client_secret?: string;
-			};
-
-			if (data.client_id && data.client_id.trim() !== "") {
+			if (typeof result.data !== "object" || result.data === null || Array.isArray(result.data)) return;
+			const data = result.data as Record<string, unknown>;
+			if (typeof data.client_id === "string" && data.client_id.trim() !== "") {
 				this.#resolvedClientId = data.client_id;
 			}
-			if (data.client_secret && data.client_secret.trim() !== "") {
+			if (typeof data.client_secret === "string" && data.client_secret.trim() !== "") {
 				this.#registeredClientSecret = data.client_secret;
 			}
 		} catch (error) {
+			if (error instanceof MCPOAuthNetworkTimeoutError) throw error;
 			this.#registrationFailure = {
 				endpoint: registrationEndpoint,
 				status: 0,
-				detail: error instanceof Error ? truncateDetail(error.message) : undefined,
 			};
 		}
 	}
@@ -508,35 +589,53 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 
 	async #tryWellKnownForRegistration(wellKnownUrl: string): Promise<string | null> {
 		try {
-			const response = await this.#fetch(wellKnownUrl, {
-				method: "GET",
-				headers: { Accept: "application/json" },
-				signal: this.ctrl.signal,
-			});
-			if (!response.ok) return null;
-			const metadata = (await response.json()) as { registration_endpoint?: string };
-			if (metadata.registration_endpoint && metadata.registration_endpoint.trim() !== "") {
-				return metadata.registration_endpoint;
-			}
-		} catch {}
+			const metadata = await withMCPOAuthNetworkTimeout(
+				"discovery",
+				this.config.timeoutMs,
+				this.ctrl.signal,
+				async signal => {
+					const response = await this.#fetch(wellKnownUrl, {
+						method: "GET",
+						headers: { Accept: "application/json" },
+						signal,
+					});
+					return response.ok ? await response.json() : null;
+				},
+			);
+			if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) return null;
+			const endpoint = (metadata as Record<string, unknown>).registration_endpoint;
+			if (typeof endpoint === "string" && endpoint.trim() !== "") return endpoint;
+		} catch (error) {
+			if (error instanceof MCPOAuthNetworkTimeoutError) throw error;
+		}
 		return null;
 	}
 
 	async #assertClientIdNotRequired(authorizationUrl: string): Promise<void> {
 		try {
-			const response = await this.#fetch(authorizationUrl, {
-				method: "GET",
-				redirect: "manual",
-				headers: { Accept: "text/plain,text/html,application/json" },
-				signal: this.ctrl.signal,
-			});
-			if (response.status < 400) return;
-			const body = await response.text();
-			if (/client[_-]?id/i.test(body) && /(required|missing|invalid)/i.test(body)) {
-				throw this.#missingClientIdError();
-			}
+			await withMCPOAuthNetworkTimeout(
+				"authorization discovery",
+				this.config.timeoutMs,
+				this.ctrl.signal,
+				async signal => {
+					const response = await this.#fetch(authorizationUrl, {
+						method: "GET",
+						redirect: "manual",
+						headers: { Accept: "text/plain,text/html,application/json" },
+						signal,
+					});
+					if (response.status < 400) return;
+					const body = await response.text();
+					if (/client[_-]?id/i.test(body) && /(required|missing|invalid)/i.test(body)) {
+						throw this.#missingClientIdError();
+					}
+				},
+			);
 		} catch (error) {
-			if (error instanceof Error && /client[_-]?id/i.test(error.message)) {
+			if (
+				error instanceof MCPOAuthNetworkTimeoutError ||
+				(error instanceof Error && /client[_-]?id/i.test(error.message))
+			) {
 				throw error;
 			}
 		}
@@ -564,7 +663,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 					: "network error";
 		return new Error(
 			`OAuth provider requires client_id, and dynamic client registration was rejected ` +
-				`(POST ${failure.endpoint} → ${outcome}). The server likely restricts registration to pre-approved clients. ${manualHint}`,
+				`(POST ${endpointOriginForError(failure.endpoint)} → ${outcome}). The server likely restricts registration to pre-approved clients. ${manualHint}`,
 		);
 	}
 }
@@ -572,6 +671,7 @@ export class MCPOAuthFlow extends OAuthCallbackFlow {
 interface RefreshMCPOAuthTokenOptions {
 	fetch?: FetchImpl;
 	signal?: AbortSignal;
+	timeoutMs?: number;
 
 	authorizationUrl?: string;
 
@@ -603,27 +703,27 @@ export async function refreshMCPOAuthToken(
 	if (resolvedResource) params.set("resource", resolvedResource);
 	if (clientSecret) params.set("client_secret", clientSecret);
 
-	const response = await fetchImpl(tokenUrl, {
-		method: "POST",
-		headers: { "Content-Type": "application/x-www-form-urlencoded" },
-		body: params.toString(),
-		signal: optsFromTrailing?.signal,
-	});
-
-	if (!response.ok) {
-		const text = await response.text();
-		throw new Error(`MCP OAuth refresh failed: ${response.status} ${text}`);
-	}
-
-	const data = (await response.json()) as {
-		access_token: string;
-		refresh_token?: string;
-		expires_in?: number;
-	};
-	const expiresIn = data.expires_in ?? 3600;
+	const payload = await withMCPOAuthNetworkTimeout(
+		"token refresh",
+		optsFromTrailing?.timeoutMs,
+		optsFromTrailing?.signal,
+		async signal => {
+			const response = await fetchImpl(tokenUrl, {
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: params.toString(),
+				signal,
+			});
+			if (!response.ok) {
+				throw new Error(`MCP OAuth refresh failed with HTTP ${response.status}`);
+			}
+			return await readOAuthTokenResponse(response, "MCP OAuth refresh");
+		},
+	);
+	const data = validateOAuthTokenResponse(payload, "MCP OAuth refresh");
 	return {
-		access: data.access_token,
-		refresh: data.refresh_token ?? refreshToken,
-		expires: Date.now() + expiresIn * 1000,
+		access: data.accessToken,
+		refresh: data.refreshToken ?? refreshToken,
+		expires: Date.now() + data.expiresIn * 1000,
 	};
 }

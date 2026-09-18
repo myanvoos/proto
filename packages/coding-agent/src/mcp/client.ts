@@ -78,6 +78,64 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 	if (signal?.aborted) throw abortReason(signal);
 }
 
+const MAX_LIST_PAGES = 100;
+const MAX_LIST_ITEMS = 10_000;
+
+interface PaginatedListResult {
+	nextCursor?: string;
+}
+
+async function listAllPages<TResult extends PaginatedListResult, TItem>(
+	connection: MCPServerConnection,
+	method: string,
+	getItems: (result: TResult) => TItem[],
+	options?: MCPRequestOptions,
+): Promise<TItem[]> {
+	const timeoutMs = resolveMCPTimeoutMs(connection.config.timeout);
+	const timeout = createMCPTimeout(timeoutMs, options?.signal);
+	const signal = timeout.signal;
+	const allItems: TItem[] = [];
+	const seenCursors = new Set<string>();
+	let cursor: string | undefined;
+	let pageCount = 0;
+
+	try {
+		while (true) {
+			throwIfAborted(signal);
+			const params: Record<string, unknown> = {};
+			if (cursor) params.cursor = cursor;
+
+			const result = await connection.transport.request<TResult>(method, params, { signal });
+			throwIfAborted(signal);
+			pageCount++;
+
+			const pageItems = getItems(result);
+			if (pageItems.length > MAX_LIST_ITEMS - allItems.length) {
+				throw new Error(`MCP ${method} returned more than ${MAX_LIST_ITEMS} items`);
+			}
+			allItems.push(...pageItems);
+
+			const nextCursor = result.nextCursor;
+			if (!nextCursor) return allItems;
+			if (seenCursors.has(nextCursor)) {
+				throw new Error(`MCP ${method} pagination repeated cursor: ${nextCursor}`);
+			}
+			if (pageCount >= MAX_LIST_PAGES) {
+				throw new Error(`MCP ${method} pagination exceeded ${MAX_LIST_PAGES} pages`);
+			}
+			seenCursors.add(nextCursor);
+			cursor = nextCursor;
+		}
+	} catch (error) {
+		if (timeout.timedOut()) {
+			throw new Error(`MCP ${method} pagination timed out after ${describeMCPTimeout(timeoutMs)}`);
+		}
+		throw error;
+	} finally {
+		timeout.clear();
+	}
+}
+
 async function initializeConnection(
 	transport: MCPTransport,
 	options?: {
@@ -180,23 +238,14 @@ export async function listTools(
 		return connection.tools;
 	}
 
-	const allTools: MCPToolDefinition[] = [];
-	let cursor: string | undefined;
-
-	do {
-		const params: Record<string, unknown> = {};
-		if (cursor) {
-			params.cursor = cursor;
-		}
-
-		const result = await connection.transport.request<MCPToolsListResult>("tools/list", params, options);
-		allTools.push(...result.tools);
-		cursor = result.nextCursor;
-	} while (cursor);
-
-	connection.tools = allTools;
-
-	return allTools;
+	const tools = await listAllPages<MCPToolsListResult, MCPToolDefinition>(
+		connection,
+		"tools/list",
+		result => result.tools,
+		options,
+	);
+	connection.tools = tools;
+	return tools;
 }
 
 export async function callTool(
@@ -233,22 +282,14 @@ export async function listResources(
 		return connection.resources;
 	}
 
-	const allResources: MCPResource[] = [];
-	let cursor: string | undefined;
-
-	do {
-		const params: Record<string, unknown> = {};
-		if (cursor) {
-			params.cursor = cursor;
-		}
-
-		const result = await connection.transport.request<MCPResourcesListResult>("resources/list", params, options);
-		allResources.push(...result.resources);
-		cursor = result.nextCursor;
-	} while (cursor);
-
-	connection.resources = allResources;
-	return allResources;
+	const resources = await listAllPages<MCPResourcesListResult, MCPResource>(
+		connection,
+		"resources/list",
+		result => result.resources,
+		options,
+	);
+	connection.resources = resources;
+	return resources;
 }
 
 function isMethodNotFoundError(error: unknown): boolean {
@@ -268,24 +309,14 @@ export async function listResourceTemplates(
 		return connection.resourceTemplates;
 	}
 
-	const allTemplates: MCPResourceTemplate[] = [];
-	let cursor: string | undefined;
-
+	let templates: MCPResourceTemplate[];
 	try {
-		do {
-			const params: Record<string, unknown> = {};
-			if (cursor) {
-				params.cursor = cursor;
-			}
-
-			const result = await connection.transport.request<MCPResourceTemplatesListResult>(
-				"resources/templates/list",
-				params,
-				options,
-			);
-			allTemplates.push(...result.resourceTemplates);
-			cursor = result.nextCursor;
-		} while (cursor);
+		templates = await listAllPages<MCPResourceTemplatesListResult, MCPResourceTemplate>(
+			connection,
+			"resources/templates/list",
+			result => result.resourceTemplates,
+			options,
+		);
 	} catch (error) {
 		if (isMethodNotFoundError(error)) {
 			connection.resourceTemplates = [];
@@ -294,8 +325,8 @@ export async function listResourceTemplates(
 		throw error;
 	}
 
-	connection.resourceTemplates = allTemplates;
-	return allTemplates;
+	connection.resourceTemplates = templates;
+	return templates;
 }
 
 export async function readResource(
@@ -377,22 +408,14 @@ export async function listPrompts(
 		return connection.prompts;
 	}
 
-	const allPrompts: MCPPrompt[] = [];
-	let cursor: string | undefined;
-
-	do {
-		const params: Record<string, unknown> = {};
-		if (cursor) {
-			params.cursor = cursor;
-		}
-
-		const result = await connection.transport.request<MCPPromptsListResult>("prompts/list", params, options);
-		allPrompts.push(...result.prompts);
-		cursor = result.nextCursor;
-	} while (cursor);
-
-	connection.prompts = allPrompts;
-	return allPrompts;
+	const prompts = await listAllPages<MCPPromptsListResult, MCPPrompt>(
+		connection,
+		"prompts/list",
+		result => result.prompts,
+		options,
+	);
+	connection.prompts = prompts;
+	return prompts;
 }
 
 export async function getPrompt(

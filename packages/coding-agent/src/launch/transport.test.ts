@@ -30,7 +30,7 @@ async function cleanupDaemon(
 	started: boolean,
 ): Promise<void> {
 	if (started) {
-		await executeLaunch(session, { op: "stop", name, timeout: 5 }).catch(() => undefined);
+		await executeLaunch(session, { op: "stop", name, timeoutMs: 5_000 }).catch(() => undefined);
 		const client = await daemonClientForProject(cwd).catch(() => undefined);
 		await client?.request({ op: "shutdown" }).catch(() => undefined);
 	}
@@ -65,7 +65,7 @@ test("non-PTY launch send appends a line feed for line-oriented stdin and preser
 			name,
 			follow: true,
 			cursor,
-			timeout: 2,
+			timeoutMs: 2_000,
 		});
 		expect(textOf(logs)).toContain("echo:marker");
 
@@ -76,7 +76,7 @@ test("non-PTY launch send appends a line feed for line-oriented stdin and preser
 			name,
 			follow: true,
 			cursor: rawCursor,
-			timeout: 0.2,
+			timeoutMs: 200,
 		});
 		expect(textOf(rawLogs)).toContain("follow timed out");
 		expect(textOf(rawLogs)).not.toContain("echo:raw");
@@ -89,7 +89,7 @@ test("non-PTY launch send appends a line feed for line-oriented stdin and preser
 			name,
 			follow: true,
 			cursor: completedCursor,
-			timeout: 2,
+			timeoutMs: 2_000,
 		});
 		expect(textOf(completed)).toContain("echo:raw");
 		expect(textOf(completed)).not.toContain("echo:marker");
@@ -120,7 +120,7 @@ test("PTY launch send keeps terminal Enter as carriage return", async () => {
 			name,
 			follow: true,
 			cursor: start.details?.daemon?.outputBytes ?? 0,
-			timeout: 2,
+			timeoutMs: 2_000,
 		});
 		expect(textOf(logs)).toContain("echo:marker");
 	} finally {
@@ -148,7 +148,7 @@ test("ps lists this session's exited records unless all is requested", async () 
 				args: ["-e", "process.exit(0)"],
 				pty: false,
 			});
-			await executeLaunch(session, { op: "wait", name, timeout: 5 });
+			await executeLaunch(session, { op: "wait", name, timeoutMs: 5_000 });
 		}
 		const firstList = await executeLaunch(first, { op: "list" });
 		const secondList = await executeLaunch(second, { op: "list" });
@@ -164,7 +164,7 @@ test("ps lists this session's exited records unless all is requested", async () 
 				args: ["-e", "process.exit(0)"],
 				pty: false,
 			});
-			await executeLaunch(first, { op: "wait", name, timeout: 5 });
+			await executeLaunch(first, { op: "wait", name, timeoutMs: 5_000 });
 		}
 		const allList = await executeLaunch(first, { op: "list", all: true });
 		const allNames = allList.details?.daemons?.map(daemon => daemon.name) ?? [];
@@ -200,7 +200,7 @@ test("a shutting-down broker rejects new launches before reporting a doomed proc
 				release,
 			],
 			pty: false,
-			ready: { log: "ready", timeout: 5 },
+			ready: { log: "ready", timeoutMs: 5_000 },
 		});
 		started = true;
 		const client = await daemonClientForProject(cwd);

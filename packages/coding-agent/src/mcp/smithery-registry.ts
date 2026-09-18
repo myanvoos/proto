@@ -111,13 +111,20 @@ interface SmitherySearchOptions {
 	signal?: AbortSignal;
 }
 
+export type SmitheryRegistryDetailFailure = {
+	readonly identity: string;
+	readonly error: unknown;
+};
+
 export class SmitheryRegistryError extends Error {
 	status: number;
+	readonly failures: readonly SmitheryRegistryDetailFailure[];
 
-	constructor(message: string, status: number) {
+	constructor(message: string, status: number, failures: readonly SmitheryRegistryDetailFailure[] = []) {
 		super(message);
 		this.name = "SmitheryRegistryError";
 		this.status = status;
+		this.failures = [...failures];
 	}
 }
 
@@ -322,7 +329,13 @@ async function fetchServerDetails(
 		headers,
 		signal: withTimeoutSignal(SMITHERY_REGISTRY_TIMEOUT_MS, options?.signal),
 	});
-	if (!response.ok) return null;
+	if (response.status === 404) return null;
+	if (!response.ok) {
+		throw new SmitheryRegistryError(
+			`Smithery detail fetch for ${path} failed with status ${response.status}`,
+			response.status,
+		);
+	}
 	return (await response.json()) as SmitheryServerDetails;
 }
 
@@ -332,13 +345,8 @@ async function fetchServerDetailsFromEntry(
 ): Promise<SmitheryServerDetails | null> {
 	const candidates = resolveDetailPathCandidates(entry);
 	for (const candidate of candidates) {
-		try {
-			const details = await fetchServerDetails(candidate, options);
-			if (details) return details;
-		} catch (error) {
-			if (options?.signal?.aborted) throw error;
-			logger.debug("Smithery detail fetch candidate failed", { candidate, error: String(error) });
-		}
+		const details = await fetchServerDetails(candidate, options);
+		if (details) return details;
 	}
 	return null;
 }
@@ -460,36 +468,78 @@ export async function searchSmitheryRegistry(
 		);
 	});
 
-	const detailFailures: Array<{ identity: string; error: string }> = [];
-	const results = await Promise.all(
+	type DetailOutcome = {
+		loaded: boolean;
+		result: SmitherySearchResult | null;
+		failure?: SmitheryRegistryDetailFailure;
+	};
+	const outcomes: DetailOutcome[] = await Promise.all(
 		uniqueEntries.map(async entry => {
 			try {
 				const details = await fetchServerDetailsFromEntry(entry, {
 					apiKey: options?.apiKey,
 					signal: options?.signal,
 				});
-				if (!details) return null;
-				return toSearchResult(entry, details);
+				if (!details) return { loaded: false, result: null };
+				return { loaded: true, result: toSearchResult(entry, details) };
 			} catch (error) {
 				if (options?.signal?.aborted) throw error;
-				detailFailures.push({
-					identity: getEntryIdentityKey(entry) ?? entry.id ?? "unknown",
-					error: String(error),
-				});
-				return null;
+				return {
+					loaded: false,
+					result: null,
+					failure: {
+						identity: getEntryIdentityKey(entry) ?? entry.id ?? "unknown",
+						error,
+					},
+				};
 			}
 		}),
 	);
 
+	const detailFailures = outcomes.flatMap(outcome => (outcome.failure ? [outcome.failure] : []));
 	if (detailFailures.length > 0) {
 		logger.warn("Smithery detail fetch failed for some entries", {
 			query,
 			failedEntries: detailFailures.length,
 			totalEntries: uniqueEntries.length,
-			sample: detailFailures.slice(0, 3),
+			sample: detailFailures.slice(0, 3).map(failure => ({
+				identity: failure.identity,
+				error: String(failure.error),
+			})),
 		});
 	}
-	return results.filter((result): result is SmitherySearchResult => result !== null).slice(0, limit);
+
+	const loadedDetails = outcomes.filter(outcome => outcome.loaded).length;
+	if (entries.length > 0 && loadedDetails === 0) {
+		const missingDetails = entries.length - detailFailures.length;
+		const failureStatuses = detailFailures
+			.map(failure => (failure.error instanceof SmitheryRegistryError ? failure.error.status : 0))
+			.filter(status => status !== 0);
+		const firstStatus = failureStatuses[0];
+		const status =
+			detailFailures.length === 0
+				? 404
+				: firstStatus !== undefined &&
+						failureStatuses.length === detailFailures.length &&
+						failureStatuses.every(candidate => candidate === firstStatus)
+					? firstStatus
+					: 0;
+		const summaries = detailFailures.map(failure => {
+			const message = failure.error instanceof Error ? failure.error.message : String(failure.error);
+			return `${failure.identity}: ${message}`;
+		});
+		if (missingDetails > 0) summaries.push(`${missingDetails} missing (404 or no detail identity)`);
+		throw new SmitheryRegistryError(
+			`Smithery registry returned matching entries but no details loaded: ${summaries.join("; ")}`,
+			status,
+			detailFailures,
+		);
+	}
+
+	return outcomes
+		.map(outcome => outcome.result)
+		.filter((result): result is SmitherySearchResult => result !== null)
+		.slice(0, limit);
 }
 
 export function toConfigName(candidate: string): string {

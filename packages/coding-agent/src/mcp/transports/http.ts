@@ -1,5 +1,5 @@
 import * as AIError from "@oh-my-pi/pi-ai/error";
-import { logger, readSseEvents, readSseJson } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, readSseEvents, readSseJson } from "@oh-my-pi/pi-utils";
 import type {
 	JsonRpcError,
 	JsonRpcMessage,
@@ -11,6 +11,7 @@ import type {
 	MCPTransport,
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
+import { readBoundedText } from "../../tools/fetch";
 import { sanitizeMCPDiagnostic } from "../errors";
 import { RequestIdAllocator } from "../request-id";
 import { createMCPTimeout, getNeverAbortSignal, isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
@@ -18,6 +19,13 @@ import { type MCPFetchInit, mcpFetch, withoutHeader } from "./header-policy";
 
 const HTTP_SSE_CONNECT_TIMEOUT_MS = 1_000;
 const DEFAULT_SSE_RETRY_MS = 3_000;
+const MIN_SSE_RETRY_MS = 250;
+const MAX_SSE_RETRY_MS = 30_000;
+const MAX_SSE_RESUME_ATTEMPTS = 3;
+const SSE_RETRY_JITTER_RATIO = 0.2;
+const MAX_JSON_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_HTTP_DIAGNOSTIC_BYTES = 16 * 1024;
+const MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024;
 
 interface SSEResumeState {
 	lastEventId: string | null;
@@ -25,6 +33,78 @@ interface SSEResumeState {
 }
 
 class SSEResumeError extends Error {}
+
+function clampSSERetryMs(retryMs: number): number {
+	return Math.min(MAX_SSE_RETRY_MS, Math.max(MIN_SSE_RETRY_MS, retryMs));
+}
+
+function getSSERetryDelay(retryMs: number, attempt: number): number {
+	const exponential = Math.min(MAX_SSE_RETRY_MS, clampSSERetryMs(retryMs) * 2 ** attempt);
+	const jitter = 1 - SSE_RETRY_JITTER_RATIO + Math.random() * SSE_RETRY_JITTER_RATIO * 2;
+	return Math.max(MIN_SSE_RETRY_MS, Math.min(MAX_SSE_RETRY_MS, Math.round(exponential * jitter)));
+}
+
+function parseJsonRpcResponse(value: unknown, expectedId: string | number): JsonRpcResponse {
+	if (!isRecord(value) || value.jsonrpc !== "2.0" || !("id" in value) || "method" in value) {
+		throw new Error("Invalid JSON-RPC response envelope");
+	}
+	if (value.id !== expectedId) {
+		throw new Error(`JSON-RPC response ID ${String(value.id)} did not match request ID ${String(expectedId)}`);
+	}
+	const hasResult = Object.hasOwn(value, "result");
+	const hasError = Object.hasOwn(value, "error");
+	if (hasResult === hasError) {
+		throw new Error("Invalid JSON-RPC response: expected exactly one of result or error");
+	}
+	if (hasError) {
+		const error = value.error;
+		if (!isRecord(error) || !Number.isInteger(error.code) || typeof error.message !== "string") {
+			throw new Error("Invalid JSON-RPC response error");
+		}
+	}
+	return value as unknown as JsonRpcResponse;
+}
+
+async function readResponseText(response: Response, maxBytes: number, label: string): Promise<string> {
+	const text = await readBoundedText(response, maxBytes);
+	if (text === null) throw new Error(`${label} exceeded ${maxBytes} bytes`);
+	return text;
+}
+
+async function readDiagnosticText(response: Response): Promise<string> {
+	return (
+		(await readBoundedText(response, MAX_HTTP_DIAGNOSTIC_BYTES)) ??
+		`MCP HTTP diagnostic exceeded ${MAX_HTTP_DIAGNOSTIC_BYTES} bytes`
+	);
+}
+
+function limitSSEEventBytes(stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+	let eventBytes = 0;
+	let lineBytes = 0;
+	let previousByte = -1;
+	return stream.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				for (let index = 0; index < chunk.length; index++) {
+					const byte = chunk[index] as number;
+					eventBytes++;
+					if (eventBytes > MAX_SSE_EVENT_BYTES) {
+						throw new Error(`MCP SSE event exceeded ${MAX_SSE_EVENT_BYTES} bytes`);
+					}
+					if (byte !== 0x0a) {
+						lineBytes++;
+						previousByte = byte;
+						continue;
+					}
+					if (lineBytes === 0 || (lineBytes === 1 && previousByte === 0x0d)) eventBytes = 0;
+					lineBytes = 0;
+					previousByte = byte;
+				}
+				controller.enqueue(chunk);
+			},
+		}),
+	);
+}
 
 async function waitForSSERetry(ms: number, signal: AbortSignal): Promise<void> {
 	if (signal.aborted) throw signal.reason;
@@ -94,6 +174,39 @@ export class HttpTransport implements MCPTransport {
 		this.onNotification = undefined;
 		this.onRequest = undefined;
 		this.onAuthError = undefined;
+	}
+
+	#transitionClosed(): string | null {
+		const wasConnected = this.#connected;
+		this.#connected = false;
+		if (!this.#lifetime.signal.aborted) this.#lifetime.abort(new Error("MCP HTTP transport closed"));
+		if (this.#sseConnection) {
+			this.#sseConnection.abort();
+			this.#sseConnection = null;
+		}
+		const sessionId = this.#sessionId;
+		this.#sessionId = null;
+		const onClose = this.onClose;
+		this.#clearCallbacks();
+		if (wasConnected) onClose?.();
+		return sessionId;
+	}
+
+	async #deleteSession(sessionId: string | null, signal?: AbortSignal): Promise<void> {
+		if (!sessionId) return;
+		const timeout = resolveMCPTimeoutMs(this.config.timeout);
+		const operation = createMCPTimeout(timeout, signal);
+		try {
+			const response = await this.#fetch(
+				{ method: "DELETE", signal: operation.signal },
+				{ "Mcp-Session-Id": sessionId },
+			);
+			await response.body?.cancel();
+		} catch {
+			// Session cleanup is best effort; the transport is already closed.
+		} finally {
+			operation.clear();
+		}
 	}
 
 	#fetch(init: MCPFetchInit, generated: Record<string, string>): Promise<Response> {
@@ -192,21 +305,13 @@ export class HttpTransport implements MCPTransport {
 
 		const signal = this.#signal(options?.signal);
 		void this.#runSSEListener(response.body, signal)
-			.finally(() => {
-				const wasConnected = this.#connected;
-				if (this.#sseConnection === connection) this.#sseConnection = null;
-				if (wasConnected) {
-					const onClose = this.onClose;
-					this.#clearCallbacks();
-					onClose?.();
-				}
-			})
+			.finally(() => this.#deleteSession(this.#transitionClosed()))
 			.catch(() => {});
 	}
 
 	async #readSSEStream(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<void> {
 		try {
-			for await (const message of readSseJson<JsonRpcMessage>(body, signal)) {
+			for await (const message of readSseJson<JsonRpcMessage>(limitSSEEventBytes(body), signal)) {
 				if (!this.#connected) break;
 				this.#dispatchSSEMessage(message);
 			}
@@ -222,12 +327,13 @@ export class HttpTransport implements MCPTransport {
 		const resume: SSEResumeState = { lastEventId: null, retryMs: DEFAULT_SSE_RETRY_MS };
 		let body = initialBody;
 		let progressed = true;
+		let resumeAttempts = 0;
 		for (;;) {
 			try {
-				for await (const event of readSseEvents(body, signal)) {
+				for await (const event of readSseEvents(limitSSEEventBytes(body), signal)) {
 					progressed = true;
 					if (event.id !== undefined) resume.lastEventId = event.id || null;
-					if (event.retry !== undefined) resume.retryMs = event.retry;
+					if (event.retry !== undefined) resume.retryMs = clampSSERetryMs(event.retry);
 					if (event.data === "") continue;
 					if (!this.#connected) return;
 					this.#dispatchSSEMessage(JSON.parse(event.data) as JsonRpcMessage | JsonRpcMessage[]);
@@ -245,8 +351,12 @@ export class HttpTransport implements MCPTransport {
 			}
 			if (!this.#connected || signal.aborted || resume.lastEventId === null || !progressed) return;
 			progressed = false;
+			if (resumeAttempts >= MAX_SSE_RESUME_ATTEMPTS) {
+				this.onError?.(new SSEResumeError("MCP SSE resume retry budget exhausted"));
+				return;
+			}
 			try {
-				const response = await this.#fetchSSEResume(resume, signal);
+				const response = await this.#fetchSSEResume(resume, signal, resumeAttempts++);
 				body = response.body as ReadableStream<Uint8Array>;
 			} catch (error) {
 				if (!(error instanceof Error && error.name === "AbortError")) {
@@ -260,37 +370,49 @@ export class HttpTransport implements MCPTransport {
 		}
 	}
 
-	async #fetchSSEResume(resume: SSEResumeState, signal: AbortSignal): Promise<Response> {
+	async #fetchSSEResume(resume: SSEResumeState, signal: AbortSignal, attempt: number): Promise<Response> {
 		if (resume.lastEventId === null) {
 			throw new SSEResumeError("SSE stream ended without a resumable event ID");
 		}
-		await waitForSSERetry(resume.retryMs, signal);
+		await waitForSSERetry(getSSERetryDelay(resume.retryMs, attempt), signal);
 		const generated: Record<string, string> = {
 			Accept: "text/event-stream",
 			"Last-Event-ID": resume.lastEventId,
 		};
 		if (this.#sessionId) generated["Mcp-Session-Id"] = this.#sessionId;
-		let response = await this.#fetch({ method: "GET", signal }, generated);
-		if (this.onAuthError && (response.status === 401 || response.status === 403)) {
-			await response.body?.cancel();
-			const newHeaders = await this.onAuthError();
-			if (!newHeaders) {
-				throw new SSEResumeError(`HTTP ${response.status} resuming MCP SSE stream: auth refresh failed`);
-			}
+		const connectTimeoutMs = resolveSSEConnectTimeoutMs(this.config.timeout);
+		const operation = createMCPTimeout(connectTimeoutMs, signal);
+		const resumeSignal = operation.signal ?? signal;
+		try {
+			let response = await this.#fetch({ method: "GET", signal: resumeSignal }, generated);
+			if (this.onAuthError && (response.status === 401 || response.status === 403)) {
+				await response.body?.cancel();
+				const newHeaders = await this.onAuthError();
+				if (!newHeaders) {
+					throw new SSEResumeError(`HTTP ${response.status} resuming MCP SSE stream: auth refresh failed`);
+				}
 
-			this.config = { ...this.config, headers: newHeaders };
-			response = await this.#fetch({ method: "GET", signal }, generated);
+				this.config = { ...this.config, headers: newHeaders };
+				response = await this.#fetch({ method: "GET", signal: resumeSignal }, generated);
+			}
+			if (!response.ok) {
+				const text = await readDiagnosticText(response);
+				throw new SSEResumeError(sanitizeMCPDiagnostic(`HTTP ${response.status} resuming MCP SSE stream: ${text}`));
+			}
+			const contentType = response.headers.get("Content-Type") ?? "";
+			if (!contentType.includes("text/event-stream") || !response.body) {
+				await response.body?.cancel();
+				throw new SSEResumeError(`MCP SSE resume returned unsupported Content-Type: ${contentType || "(missing)"}`);
+			}
+			return response;
+		} catch (error) {
+			if (operation.timedOut()) {
+				throw new SSEResumeError(`MCP SSE resume timed out after ${connectTimeoutMs}ms`);
+			}
+			throw error;
+		} finally {
+			operation.clear();
 		}
-		if (!response.ok) {
-			const text = await response.text().catch(() => "");
-			throw new SSEResumeError(sanitizeMCPDiagnostic(`HTTP ${response.status} resuming MCP SSE stream: ${text}`));
-		}
-		const contentType = response.headers.get("Content-Type") ?? "";
-		if (!contentType.includes("text/event-stream") || !response.body) {
-			await response.body?.cancel();
-			throw new SSEResumeError(`MCP SSE resume returned unsupported Content-Type: ${contentType || "(missing)"}`);
-		}
-		return response;
 	}
 
 	#dispatchSSEMessage(message: JsonRpcMessage | JsonRpcMessage[]): void {
@@ -370,7 +492,7 @@ export class HttpTransport implements MCPTransport {
 			}
 
 			if (!response.ok) {
-				const text = await response.text();
+				const text = await readDiagnosticText(response);
 				const wwwAuthenticate = response.headers.get("WWW-Authenticate");
 				const mcpAuthServer = response.headers.get("Mcp-Auth-Server");
 				const authHints = [
@@ -389,7 +511,14 @@ export class HttpTransport implements MCPTransport {
 				return this.#parseSSEResponse<T>(response, id, this.#signal(options?.signal));
 			}
 
-			const result = (await response.json()) as JsonRpcResponse;
+			const text = await readResponseText(response, MAX_JSON_RESPONSE_BYTES, "MCP JSON response");
+			let decoded: unknown;
+			try {
+				decoded = JSON.parse(text) as unknown;
+			} catch {
+				throw new Error("Invalid JSON-RPC response: response body was not valid JSON");
+			}
+			const result = parseJsonRpcResponse(decoded, id);
 
 			if (result.error) {
 				throw new Error(sanitizeMCPDiagnostic(`MCP error ${result.error.code}: ${result.error.message}`));
@@ -418,6 +547,7 @@ export class HttpTransport implements MCPTransport {
 		const { promise, resolve, reject } = Promise.withResolvers<T>();
 		const resume: SSEResumeState = { lastEventId: null, retryMs: DEFAULT_SSE_RETRY_MS };
 		let captured = false;
+		let resumeAttempts = 0;
 
 		const drain = async (): Promise<void> => {
 			let current = response;
@@ -425,34 +555,35 @@ export class HttpTransport implements MCPTransport {
 				for (;;) {
 					if (!current.body) throw new Error("SSE response did not include a body");
 					try {
-						for await (const event of readSseEvents(current.body, responseSignal)) {
+						for await (const event of readSseEvents(limitSSEEventBytes(current.body), responseSignal)) {
 							if (event.id !== undefined) resume.lastEventId = event.id || null;
-							if (event.retry !== undefined) resume.retryMs = event.retry;
+							if (event.retry !== undefined) resume.retryMs = clampSSERetryMs(event.retry);
 							if (event.data === "") continue;
-							const raw = JSON.parse(event.data) as JsonRpcMessage | JsonRpcMessage[];
-							const messages = Array.isArray(raw) ? raw : [raw];
+							const raw = JSON.parse(event.data) as unknown;
+							const messages: unknown[] = Array.isArray(raw) ? raw : [raw];
 							for (const message of messages) {
-								if (
-									!captured &&
-									"id" in message &&
-									message.id === expectedId &&
-									("result" in message || "error" in message)
-								) {
+								if (!isRecord(message)) {
+									throw new Error("Invalid JSON-RPC response envelope");
+								}
+								if (!captured && message.id === expectedId && !("method" in message)) {
+									const validated = parseJsonRpcResponse(message, expectedId);
 									captured = true;
 									operation.clear();
-									if (message.error) {
+									if (validated.error) {
 										reject(
 											new Error(
-												sanitizeMCPDiagnostic(`MCP error ${message.error.code}: ${message.error.message}`),
+												sanitizeMCPDiagnostic(
+													`MCP error ${validated.error.code}: ${validated.error.message}`,
+												),
 											),
 										);
 									} else {
-										resolve(message.result as T);
+										resolve(validated.result as T);
 									}
 									continue;
 								}
 								if (!this.#connected) continue;
-								this.#dispatchSSEMessage(message);
+								this.#dispatchSSEMessage(message as unknown as JsonRpcMessage);
 							}
 						}
 					} catch (error) {
@@ -467,7 +598,10 @@ export class HttpTransport implements MCPTransport {
 					if (resume.lastEventId === null) {
 						throw new Error(`No response received for request ID ${expectedId}`);
 					}
-					current = await this.#fetchSSEResume(resume, responseSignal);
+					if (resumeAttempts >= MAX_SSE_RESUME_ATTEMPTS) {
+						throw new SSEResumeError("MCP SSE response resume retry budget exhausted");
+					}
+					current = await this.#fetchSSEResume(resume, responseSignal, resumeAttempts++);
 				}
 			} catch (error) {
 				if (captured) return;
@@ -573,7 +707,7 @@ export class HttpTransport implements MCPTransport {
 			);
 
 			if (!response.ok && response.status !== 202) {
-				const text = await response.text();
+				const text = await readDiagnosticText(response);
 				throw new Error(sanitizeMCPDiagnostic(`HTTP ${response.status}: ${text}`));
 			}
 
@@ -602,35 +736,6 @@ export class HttpTransport implements MCPTransport {
 	}
 
 	async close(options?: MCPRequestOptions): Promise<void> {
-		if (!this.#connected && !this.#sseConnection && !this.#sessionId) {
-			this.#clearCallbacks();
-			return;
-		}
-		const wasConnected = this.#connected;
-		this.#connected = false;
-		this.#lifetime.abort();
-
-		if (this.#sseConnection) {
-			this.#sseConnection.abort();
-			this.#sseConnection = null;
-		}
-
-		const sessionId = this.#sessionId;
-		this.#sessionId = null;
-		if (sessionId) {
-			const timeout = resolveMCPTimeoutMs(this.config.timeout);
-			const operation = createMCPTimeout(timeout, options?.signal);
-			try {
-				await this.#fetch({ method: "DELETE", signal: operation.signal }, { "Mcp-Session-Id": sessionId });
-			} catch {
-				// Session cleanup is best effort; the transport is already closed.
-			} finally {
-				operation.clear();
-			}
-		}
-
-		const onClose = this.onClose;
-		this.#clearCallbacks();
-		if (wasConnected) onClose?.();
+		await this.#deleteSession(this.#transitionClosed(), options?.signal);
 	}
 }

@@ -1,8 +1,212 @@
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
-import { withTimeoutSignal } from "../utils/fetch-timeout";
+import { MCPOAuthNetworkTimeoutError, withMCPOAuthNetworkTimeout } from "./oauth-flow";
 
 const DISCOVERY_FETCH_TIMEOUT_MS = 10_000;
+const MAX_DISCOVERY_DEPTH = 8;
+const MAX_DISCOVERY_FETCHES = 64;
+const MAX_DISCOVERY_REDIRECTS = 5;
+const DISCOVERY_REDIRECT_STATUSES: Record<number, true> = {
+	301: true,
+	302: true,
+	303: true,
+	307: true,
+	308: true,
+};
+
+interface OAuthDiscoveryOptions {
+	fetch?: FetchImpl;
+	protectedResource?: string;
+	protectedScopes?: string;
+	signal?: AbortSignal;
+	timeoutMs?: number;
+}
+
+interface OAuthDiscoveryContext {
+	fetch: FetchImpl;
+	signal?: AbortSignal;
+	timeoutMs: number;
+	trustedOrigin?: string;
+	visitedAuthServers: Set<string>;
+	visitedFetchUrls: Set<string>;
+	fetchCount: number;
+}
+
+function parseIpv4(hostname: string): [number, number, number, number] | undefined {
+	const parts = hostname.split(".");
+	if (parts.length !== 4) return undefined;
+	const octets = parts.map(part => Number(part));
+	if (octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) return undefined;
+	return octets as [number, number, number, number];
+}
+
+function isPrivateIpv4(octets: [number, number, number, number]): boolean {
+	const [a, b, c] = octets;
+	return (
+		a === 0 ||
+		a === 10 ||
+		a === 127 ||
+		(a === 100 && b >= 64 && b <= 127) ||
+		(a === 169 && b === 254) ||
+		(a === 172 && b >= 16 && b <= 31) ||
+		(a === 192 && b === 0 && c === 0) ||
+		(a === 192 && b === 0 && c === 2) ||
+		(a === 192 && b === 88 && c === 99) ||
+		(a === 192 && b === 168) ||
+		(a === 198 && (b === 18 || b === 19)) ||
+		(a === 198 && b === 51 && c === 100) ||
+		(a === 203 && b === 0 && c === 113) ||
+		a >= 224
+	);
+}
+
+function parseIpv6(hostname: string): bigint | undefined {
+	let value = hostname.toLowerCase();
+	if (value.startsWith("[") && value.endsWith("]")) value = value.slice(1, -1);
+	const ipv4Match = /(?:^|:)(\d+\.\d+\.\d+\.\d+)$/.exec(value);
+	if (ipv4Match) {
+		const ipv4 = parseIpv4(ipv4Match[1]);
+		if (!ipv4) return undefined;
+		const [a, b, c, d] = ipv4;
+		value = `${value.slice(0, -ipv4Match[1].length)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+	}
+	const halves = value.split("::");
+	if (halves.length > 2) return undefined;
+	const left = halves[0] ? halves[0].split(":") : [];
+	const right = halves[1] ? halves[1].split(":") : [];
+	const missing = 8 - left.length - right.length;
+	if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return undefined;
+	const groups = halves.length === 2 ? [...left, ...Array.from({ length: missing }, () => "0"), ...right] : left;
+	if (groups.length !== 8 || groups.some(group => !/^[0-9a-f]{1,4}$/.test(group))) return undefined;
+	let parsed = 0n;
+	for (const group of groups) parsed = (parsed << 16n) | BigInt(`0x${group}`);
+	return parsed;
+}
+
+function isPrivateIpv6(value: bigint): boolean {
+	if (value <= 1n) return true;
+	if (value >> 32n === 0xffffn) {
+		const ipv4 = Number(value & 0xffff_ffffn);
+		return isPrivateIpv4([(ipv4 >>> 24) & 0xff, (ipv4 >>> 16) & 0xff, (ipv4 >>> 8) & 0xff, ipv4 & 0xff]);
+	}
+	const firstByte = Number(value >> 120n);
+	const firstTenBits = Number(value >> 118n);
+	return (firstByte & 0xfe) === 0xfc || firstTenBits === 0x3fa || firstByte === 0xff || value >> 96n === 0x20010db8n;
+}
+
+function isPrivateNetworkHostname(rawHostname: string): boolean {
+	const hostname = rawHostname
+		.replace(/^\[|\]$/g, "")
+		.replace(/\.$/, "")
+		.toLowerCase();
+	if (
+		hostname === "localhost" ||
+		hostname.endsWith(".localhost") ||
+		hostname.endsWith(".local") ||
+		hostname.endsWith(".internal") ||
+		hostname.endsWith(".home.arpa")
+	) {
+		return true;
+	}
+	const ipv4 = parseIpv4(hostname);
+	if (ipv4) return isPrivateIpv4(ipv4);
+	const ipv6 = parseIpv6(hostname);
+	return ipv6 !== undefined && isPrivateIpv6(ipv6);
+}
+
+function parseDiscoveryUrl(value: string | URL, trustedOrigin?: string, allowTrustedOrigin = false): URL | undefined {
+	let url: URL;
+	try {
+		url = value instanceof URL ? new URL(value) : new URL(value);
+	} catch {
+		return undefined;
+	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+	if (url.username || url.password || url.hash) return undefined;
+	if ((!allowTrustedOrigin || url.origin !== trustedOrigin) && isPrivateNetworkHostname(url.hostname))
+		return undefined;
+	return url;
+}
+
+function canonicalizeDiscoveryBase(
+	value: string,
+	trustedOrigin?: string,
+	allowTrustedOrigin = false,
+): string | undefined {
+	const url = parseDiscoveryUrl(value, trustedOrigin, allowTrustedOrigin);
+	if (!url) return undefined;
+	const pathname = url.pathname.replace(/\/+$/, "");
+	return `${url.origin}${pathname}${url.search}`;
+}
+
+function discoveryContext(serverUrl: string, opts: OAuthDiscoveryOptions): OAuthDiscoveryContext {
+	let trustedOrigin: string | undefined;
+	try {
+		trustedOrigin = new URL(serverUrl).origin;
+	} catch {}
+	return {
+		fetch: opts.fetch ?? fetch,
+		signal: opts.signal,
+		timeoutMs: opts.timeoutMs ?? DISCOVERY_FETCH_TIMEOUT_MS,
+		trustedOrigin,
+		visitedAuthServers: new Set<string>(),
+		visitedFetchUrls: new Set<string>(),
+		fetchCount: 0,
+	};
+}
+
+async function fetchDiscoveryMetadata(
+	value: string | URL,
+	context: OAuthDiscoveryContext,
+	allowTrustedOrigin = false,
+): Promise<Record<string, unknown> | null> {
+	let current = parseDiscoveryUrl(value, context.trustedOrigin, allowTrustedOrigin);
+	if (!current) return null;
+	try {
+		for (let hop = 0; hop <= MAX_DISCOVERY_REDIRECTS; hop++) {
+			const key = current.href;
+			if (context.visitedFetchUrls.has(key) || context.fetchCount >= MAX_DISCOVERY_FETCHES) return null;
+			context.visitedFetchUrls.add(key);
+			context.fetchCount++;
+			const requestUrl = current;
+			const result = await withMCPOAuthNetworkTimeout(
+				"discovery",
+				context.timeoutMs,
+				context.signal,
+				async signal => {
+					const response = await context.fetch(requestUrl, {
+						method: "GET",
+						headers: { Accept: "application/json" },
+						redirect: "manual",
+						signal,
+					});
+					if (DISCOVERY_REDIRECT_STATUSES[response.status]) {
+						const location = response.headers.get("Location");
+						await response.body?.cancel();
+						return { kind: "redirect" as const, location };
+					}
+					if (!response.ok) {
+						await response.body?.cancel();
+						return { kind: "metadata" as const, metadata: null };
+					}
+					const payload = await response.json();
+					const metadata =
+						typeof payload === "object" && payload !== null && !Array.isArray(payload)
+							? (payload as Record<string, unknown>)
+							: null;
+					return { kind: "metadata" as const, metadata };
+				},
+			);
+			if (result.kind === "metadata") return result.metadata;
+			if (!result.location) return null;
+			current = parseDiscoveryUrl(new URL(result.location, current), context.trustedOrigin, allowTrustedOrigin);
+			if (!current) return null;
+		}
+	} catch (error) {
+		if (error instanceof MCPOAuthNetworkTimeoutError) throw error;
+	}
+	return null;
+}
 
 export interface OAuthEndpoints {
 	authorizationUrl: string;
@@ -273,31 +477,38 @@ function readMetadataScopes(metadata: Record<string, unknown>): string | undefin
 
 export async function fetchResourceMetadataScopes(
 	resourceMetadataUrl: string,
-	opts?: { fetch?: FetchImpl; signal?: AbortSignal },
+	opts?: { fetch?: FetchImpl; signal?: AbortSignal; timeoutMs?: number },
 ): Promise<string | undefined> {
-	const fetchImpl: FetchImpl = opts?.fetch ?? fetch;
-	try {
-		const resp = await fetchImpl(resourceMetadataUrl, {
-			method: "GET",
-			headers: { Accept: "application/json" },
-			redirect: "follow",
-			signal: withTimeoutSignal(DISCOVERY_FETCH_TIMEOUT_MS, opts?.signal),
-		});
-		if (!resp.ok) return undefined;
-		const meta = (await resp.json()) as Record<string, unknown>;
-		return readMetadataScopes(meta);
-	} catch {
-		return undefined;
-	}
+	const context = discoveryContext("", opts ?? {});
+	const metadata = await fetchDiscoveryMetadata(resourceMetadataUrl, context);
+	return metadata ? readMetadataScopes(metadata) : undefined;
 }
 
 export async function discoverOAuthEndpoints(
 	serverUrl: string,
 	authServerUrl?: string,
 	resourceMetadataUrl?: string,
-	opts?: { fetch?: FetchImpl; protectedResource?: string; protectedScopes?: string; signal?: AbortSignal },
+	opts: OAuthDiscoveryOptions = {},
 ): Promise<OAuthEndpoints | null> {
-	const fetchImpl: FetchImpl = opts?.fetch ?? fetch;
+	return await discoverOAuthEndpointsWithContext(
+		serverUrl,
+		authServerUrl,
+		resourceMetadataUrl,
+		{ protectedResource: opts.protectedResource, protectedScopes: opts.protectedScopes },
+		discoveryContext(serverUrl, opts),
+		0,
+	);
+}
+
+async function discoverOAuthEndpointsWithContext(
+	serverUrl: string,
+	authServerUrl: string | undefined,
+	resourceMetadataUrl: string | undefined,
+	protectedMetadata: { protectedResource?: string; protectedScopes?: string },
+	context: OAuthDiscoveryContext,
+	depth: number,
+): Promise<OAuthEndpoints | null> {
+	if (depth > MAX_DISCOVERY_DEPTH) return null;
 	const wellKnownPaths = [
 		"/.well-known/oauth-authorization-server",
 		"/.well-known/openid-configuration",
@@ -306,49 +517,37 @@ export async function discoverOAuthEndpoints(
 		"/.mcp/auth",
 		"/authorize",
 	];
-	const urlsToQuery: Array<{ url: string; issuerCandidate: boolean }> = [];
-	const visitedAuthServers = new Set<string>();
-
-	let protectedResource = opts?.protectedResource;
-	let protectedScopes = opts?.protectedScopes;
-	const addDiscoveryBase = (url: string | undefined, issuerCandidate: boolean): void => {
-		if (!url || visitedAuthServers.has(url)) return;
-		urlsToQuery.push({ url, issuerCandidate });
-		visitedAuthServers.add(url);
+	const urlsToQuery: Array<{ url: string; issuerCandidate: boolean; allowTrustedOrigin: boolean }> = [];
+	let protectedResource = protectedMetadata.protectedResource;
+	let protectedScopes = protectedMetadata.protectedScopes;
+	const addDiscoveryBase = (value: string | undefined, issuerCandidate: boolean, allowTrustedOrigin = false): void => {
+		if (!value) return;
+		const canonical = canonicalizeDiscoveryBase(value, context.trustedOrigin, allowTrustedOrigin);
+		if (!canonical || context.visitedAuthServers.has(canonical)) return;
+		context.visitedAuthServers.add(canonical);
+		urlsToQuery.push({ url: canonical, issuerCandidate, allowTrustedOrigin });
 	};
 
-	if (resourceMetadataUrl && !visitedAuthServers.has(resourceMetadataUrl)) {
-		visitedAuthServers.add(resourceMetadataUrl);
-		try {
-			const metaResp = await fetchImpl(resourceMetadataUrl, {
-				method: "GET",
-				headers: { Accept: "application/json" },
-				redirect: "follow",
-				signal: withTimeoutSignal(DISCOVERY_FETCH_TIMEOUT_MS, opts?.signal),
-			});
-			if (metaResp.ok) {
-				const meta = (await metaResp.json()) as Record<string, unknown>;
-				protectedScopes = readMetadataScopes(meta) ?? protectedScopes;
-				if (typeof meta.resource === "string" && meta.resource.trim() !== "") {
-					protectedResource = meta.resource;
-				}
-				const authServers = Array.isArray(meta.authorization_servers)
-					? meta.authorization_servers.filter((entry): entry is string => typeof entry === "string")
-					: [];
-				for (const s of authServers) {
-					addDiscoveryBase(s, true);
-				}
+	if (resourceMetadataUrl) {
+		const metadata = await fetchDiscoveryMetadata(resourceMetadataUrl, context);
+		if (metadata) {
+			protectedScopes = readMetadataScopes(metadata) ?? protectedScopes;
+			if (typeof metadata.resource === "string" && metadata.resource.trim() !== "") {
+				protectedResource = metadata.resource;
 			}
-		} catch {}
+			const authServers = Array.isArray(metadata.authorization_servers)
+				? metadata.authorization_servers.filter((entry): entry is string => typeof entry === "string")
+				: [];
+			for (const authServer of authServers) addDiscoveryBase(authServer, true);
+		}
 	}
 
 	addDiscoveryBase(authServerUrl, true);
-	addDiscoveryBase(serverUrl, false);
+	addDiscoveryBase(serverUrl, false, true);
 
 	const findEndpoints = (metadata: Record<string, unknown>): OAuthEndpoints | null => {
 		if (metadata.authorization_endpoint && metadata.token_endpoint) {
 			const resource = typeof metadata.resource === "string" ? metadata.resource : protectedResource;
-
 			return {
 				authorizationUrl: String(metadata.authorization_endpoint),
 				tokenUrl: String(metadata.token_endpoint),
@@ -372,10 +571,9 @@ export async function discoverOAuthEndpoints(
 			const oauthData = (metadata.oauth || metadata.authorization || metadata.auth) as Record<string, unknown>;
 			if (typeof oauthData.authorization_url === "string" && typeof oauthData.token_url === "string") {
 				const resource = typeof oauthData.resource === "string" ? oauthData.resource : protectedResource;
-
 				return {
-					authorizationUrl: oauthData.authorization_url || String(oauthData.authorizationUrl),
-					tokenUrl: oauthData.token_url || String(oauthData.tokenUrl),
+					authorizationUrl: oauthData.authorization_url,
+					tokenUrl: oauthData.token_url,
 					registrationUrl: readRegistrationUrl(oauthData),
 					clientId:
 						typeof oauthData.client_id === "string"
@@ -392,62 +590,50 @@ export async function discoverOAuthEndpoints(
 				};
 			}
 		}
-
 		return null;
 	};
 
 	for (const base of urlsToQuery) {
 		for (const path of wellKnownPaths) {
-			const urlsToTry = buildWellKnownUrls(path, base.url);
-			for (const url of urlsToTry) {
-				try {
-					const response = await fetchImpl(url.toString(), {
-						method: "GET",
-						headers: { Accept: "application/json" },
-						redirect: "follow",
-						signal: withTimeoutSignal(DISCOVERY_FETCH_TIMEOUT_MS, opts?.signal),
-					});
+			for (const url of buildWellKnownUrls(path, base.url)) {
+				const metadata = await fetchDiscoveryMetadata(url, context, base.allowTrustedOrigin);
+				if (!metadata) continue;
 
-					if (response.ok) {
-						const metadata = (await response.json()) as Record<string, unknown>;
+				const requireIssuerMatch =
+					base.issuerCandidate &&
+					(path === "/.well-known/oauth-authorization-server" || path === "/.well-known/openid-configuration");
+				const issuerOk = requireIssuerMatch ? issuerMatchesBase(metadata.issuer, base.url) : true;
+				const endpoints = issuerOk ? findEndpoints(metadata) : null;
+				if (endpoints) return endpoints;
 
-						const requireIssuerMatch =
-							base.issuerCandidate &&
-							(path === "/.well-known/oauth-authorization-server" ||
-								path === "/.well-known/openid-configuration");
-						const issuerOk = requireIssuerMatch ? issuerMatchesBase(metadata.issuer, base.url) : true;
-						const endpoints = issuerOk ? findEndpoints(metadata) : null;
-						if (endpoints) return endpoints;
+				if (path !== "/.well-known/oauth-protected-resource") continue;
+				const authServers = Array.isArray(metadata.authorization_servers)
+					? metadata.authorization_servers.filter((entry): entry is string => typeof entry === "string")
+					: [];
+				const discoveredProtectedResource =
+					typeof metadata.resource === "string" && metadata.resource.trim() !== ""
+						? metadata.resource
+						: protectedResource;
 
-						if (path === "/.well-known/oauth-protected-resource") {
-							const authServers = Array.isArray(metadata.authorization_servers)
-								? metadata.authorization_servers.filter((entry): entry is string => typeof entry === "string")
-								: [];
-
-							const discoveredProtectedResource =
-								typeof metadata.resource === "string" && metadata.resource.trim() !== ""
-									? metadata.resource
-									: protectedResource;
-
-							for (const discoveredAuthServer of authServers) {
-								if (visitedAuthServers.has(discoveredAuthServer)) {
-									continue;
-								}
-								const discovered = await discoverOAuthEndpoints(serverUrl, discoveredAuthServer, undefined, {
-									fetch: fetchImpl,
-									protectedResource: discoveredProtectedResource,
-									protectedScopes: readMetadataScopes(metadata) ?? protectedScopes,
-									signal: opts?.signal,
-								});
-								if (discovered) return discovered;
-							}
-						}
-					}
-				} catch {}
+				for (const discoveredAuthServer of authServers) {
+					const canonical = canonicalizeDiscoveryBase(discoveredAuthServer, context.trustedOrigin);
+					if (!canonical || context.visitedAuthServers.has(canonical)) continue;
+					const discovered = await discoverOAuthEndpointsWithContext(
+						serverUrl,
+						canonical,
+						undefined,
+						{
+							protectedResource: discoveredProtectedResource,
+							protectedScopes: readMetadataScopes(metadata) ?? protectedScopes,
+						},
+						context,
+						depth + 1,
+					);
+					if (discovered) return discovered;
+				}
 			}
 		}
 	}
-
 	return null;
 }
 
