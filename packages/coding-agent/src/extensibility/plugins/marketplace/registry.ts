@@ -1,7 +1,7 @@
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { getPluginsDir, isEnoent, logger, tryParseJson } from "@oh-my-pi/pi-utils";
+import { OmpErrors, type } from "@oh-my-pi/omptype";
+import { atomicWriteJson, getPluginsDir, isEnoent, logger, tryParseJson } from "@oh-my-pi/pi-utils";
 
 export { getMarketplacesRegistryPath } from "@oh-my-pi/pi-utils";
 
@@ -22,29 +22,6 @@ export function getMarketplacesCacheDir(): string {
 
 export function getPluginsCacheDir(): string {
 	return path.join(getPluginsDir(), "cache", "plugins");
-}
-
-async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
-	const content = `${JSON.stringify(data, null, 2)}\n`;
-	const tmpPath = `${filePath}.tmp`;
-
-	await Bun.write(tmpPath, content);
-
-	try {
-		await fs.rename(tmpPath, filePath);
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "EPERM") {
-			try {
-				await fs.unlink(filePath);
-			} catch {}
-			await fs.rename(tmpPath, filePath);
-		} else {
-			try {
-				await fs.unlink(tmpPath);
-			} catch {}
-			throw err;
-		}
-	}
 }
 
 function emptyMarketplacesRegistry(): MarketplacesRegistry {
@@ -70,6 +47,16 @@ export async function writeMarketplacesRegistry(filePath: string, reg: Marketpla
 	await atomicWriteJson(filePath, reg);
 }
 
+const installedPluginEntrySchema = type({
+	scope: "'user' | 'project'",
+	installPath: "string > 0",
+	version: "string",
+	installedAt: "string",
+	lastUpdated: "string",
+	"gitCommitSha?": "string",
+	"enabled?": "boolean",
+});
+
 function emptyInstalledPluginsRegistry(): InstalledPluginsRegistry {
 	return { version: 2, plugins: {} };
 }
@@ -77,20 +64,53 @@ function emptyInstalledPluginsRegistry(): InstalledPluginsRegistry {
 export async function readInstalledPluginsRegistry(filePath: string): Promise<InstalledPluginsRegistry> {
 	try {
 		const content = await Bun.file(filePath).text();
-		const data = tryParseJson<InstalledPluginsRegistry>(content);
+		const data: unknown = tryParseJson<unknown>(content);
+		if (!data || typeof data !== "object" || Array.isArray(data)) {
+			logger.warn("Invalid installed plugins registry, returning empty", { path: filePath });
+			return emptyInstalledPluginsRegistry();
+		}
+		const candidate = data as { version?: unknown; plugins?: unknown };
 		if (
-			!data ||
-			typeof data !== "object" ||
-			typeof data.version !== "number" ||
-			!data.plugins ||
-			typeof data.plugins !== "object" ||
-			Array.isArray(data.plugins)
+			typeof candidate.version !== "number" ||
+			!candidate.plugins ||
+			typeof candidate.plugins !== "object" ||
+			Array.isArray(candidate.plugins)
 		) {
 			logger.warn("Invalid installed plugins registry, returning empty", { path: filePath });
 			return emptyInstalledPluginsRegistry();
 		}
 
-		return { ...data, version: 2 };
+		const plugins: Record<string, InstalledPluginEntry[]> = {};
+		for (const [pluginId, entries] of Object.entries(candidate.plugins as Record<string, unknown>)) {
+			if (!Array.isArray(entries)) {
+				logger.warn("Invalid installed plugin registry entries, skipping", {
+					path: filePath,
+					pluginId,
+					error: "expected an array",
+				});
+				continue;
+			}
+
+			const validEntries: InstalledPluginEntry[] = [];
+			for (const [index, entry] of entries.entries()) {
+				const checked = installedPluginEntrySchema(entry);
+				if (checked instanceof OmpErrors) {
+					logger.warn("Invalid installed plugin registry entry, skipping", {
+						path: filePath,
+						pluginId,
+						index,
+						error: checked.summary,
+					});
+					continue;
+				}
+				validEntries.push(checked);
+			}
+			if (validEntries.length > 0 || entries.length === 0) {
+				plugins[pluginId] = validEntries;
+			}
+		}
+
+		return { version: 2, plugins };
 	} catch (err) {
 		if (isEnoent(err)) return emptyInstalledPluginsRegistry();
 		throw err;

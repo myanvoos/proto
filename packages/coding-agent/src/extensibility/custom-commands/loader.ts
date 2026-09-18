@@ -7,6 +7,7 @@ import { getConfigDirs } from "../../config";
 
 import { execCommand } from "../../exec/exec";
 
+import { withHostGuard } from "../utils";
 import { ReviewCommand } from "./bundled/review";
 import type {
 	CustomCommand,
@@ -25,14 +26,14 @@ async function loadCommandModule(
 	sharedApi: CustomCommandAPI,
 ): Promise<{ commands: CustomCommand[] | null; error: string | null }> {
 	try {
-		const module = await import(commandPath);
+		const module = await withHostGuard(() => import(commandPath));
 		const factory = (module.default ?? module) as CustomCommandFactory;
 
 		if (typeof factory !== "function") {
 			return { commands: null, error: "Command must export a default function" };
 		}
 
-		const result = await factory(sharedApi);
+		const result = await withHostGuard(async () => factory(sharedApi));
 		const commands = Array.isArray(result) ? result : [result];
 
 		for (const cmd of commands) {

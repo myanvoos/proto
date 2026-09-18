@@ -68,6 +68,19 @@ export class MarketplaceManager {
 		this.#opts.clearPluginRootsCache?.(extra);
 	}
 
+	async #removeCachedInstallPath(installPath: string): Promise<void> {
+		const cacheDir = this.#opts.pluginsCacheDir;
+		const strictlyWithinCache = pathIsWithin(cacheDir, installPath) && !pathIsWithin(installPath, cacheDir);
+		if (!strictlyWithinCache) {
+			logger.warn("Refusing to remove installed plugin path outside the plugin cache", {
+				installPath,
+				pluginsCacheDir: cacheDir,
+			});
+			return;
+		}
+		await fs.rm(installPath, { recursive: true, force: true });
+	}
+
 	async addMarketplace(source: string): Promise<MarketplaceRegistryEntry> {
 		const reg = await readMarketplacesRegistry(this.#opts.marketplacesRegistryPath);
 		const existingNames = new Set(reg.marketplaces.map(m => m.name));
@@ -280,7 +293,7 @@ export class MarketplaceManager {
 
 			for (const entry of existing) {
 				if (entry.installPath !== cachePath && !referenced.has(entry.installPath)) {
-					await fs.rm(entry.installPath, { recursive: true, force: true });
+					await this.#removeCachedInstallPath(entry.installPath);
 				}
 			}
 		}
@@ -299,6 +312,8 @@ export class MarketplaceManager {
 
 		const freshInstReg = await readInstalledPluginsRegistry(registryPath);
 		const newInstReg = addInstalledPlugin(freshInstReg, pluginId, installedEntry);
+		// TODO(install-atomicity): Persisting the registry before the runtime link/config means a later failure can
+		// leave an installed entry that the runtime cannot load. Commit these updates as one rollback-safe transaction.
 		await writeInstalledPluginsRegistry(registryPath, newInstReg);
 
 		for (const previousPackageName of previousPackageNames) {
@@ -414,7 +429,7 @@ export class MarketplaceManager {
 
 		for (const entry of targetEntries) {
 			if (!referenced.has(entry.installPath)) {
-				await fs.rm(entry.installPath, { recursive: true, force: true });
+				await this.#removeCachedInstallPath(entry.installPath);
 			}
 		}
 

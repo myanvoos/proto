@@ -549,17 +549,6 @@ async function synthesizeBundledModuleSource(moduleKey: string): Promise<string>
 	return synthesizeBundledModuleSourceFromModules(moduleKey, loadedHostModules);
 }
 
-export function __synthesizeHostBundledSourceWithModules(
-	moduleKey: string,
-	modules: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
-): string {
-	return synthesizeBundledModuleSourceFromModules(moduleKey, modules);
-}
-
-export function __getHostBundledModulesGlobal(): string {
-	return HOST_MODULES_GLOBAL;
-}
-
 const resolvedSpecifierFallbacks = new Map<string, string>();
 const realpathCache = new Map<string, Promise<string>>();
 
@@ -671,14 +660,6 @@ async function rewriteHostExtensionSource(
 		}
 	}
 	return applySpecifierReplacements(source, replacements);
-}
-
-export async function __rewriteHostExtensionSourceForTests(
-	source: string,
-	importerPath: string,
-	mtimeTag: string | null = null,
-): Promise<string> {
-	return rewriteHostExtensionSource(source, importerPath, mtimeTag);
 }
 
 function hasSourceModuleExtension(p: string): boolean {

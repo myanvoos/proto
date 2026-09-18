@@ -15,7 +15,7 @@ import { resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { loadExtensions } from "../extensions/loader";
 import { refreshBunGitCache } from "./bun-git-cache";
 import { type GitSource, parseGitUrl } from "./git-url";
-import { resolvePluginManifestEntries } from "./loader";
+import { readProjectPluginOverrides, resolvePluginManifestEntries } from "./loader";
 import { getInstalledPluginsRegistryPath, readInstalledPluginsRegistry } from "./marketplace/registry";
 import { parsePluginId } from "./marketplace/types";
 import { extractPackageName, parsePluginSpec } from "./parser";
@@ -32,6 +32,8 @@ import type {
 } from "./types";
 
 const VALID_PACKAGE_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[a-z0-9-._^~>=<]+)?$/i;
+const NPM_PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
+const MAX_NPM_PACKAGE_NAME_LENGTH = 214;
 
 const SHELL_METACHARS = /[;&|`$(){}<>\\\n\r\t]/;
 
@@ -43,6 +45,18 @@ function validatePackageName(name: string): void {
 
 	if (/[;&|`$(){}[\]<>\\]/.test(name)) {
 		throw new Error(`Invalid characters in package name: ${name}`);
+	}
+}
+
+function assertNpmPackageName(name: unknown): asserts name is string {
+	if (
+		typeof name !== "string" ||
+		name.length === 0 ||
+		name.length > MAX_NPM_PACKAGE_NAME_LENGTH ||
+		name.includes("..") ||
+		!NPM_PACKAGE_NAME_RE.test(name)
+	) {
+		throw new Error(`Invalid npm package name: ${JSON.stringify(name)}`);
 	}
 }
 
@@ -124,14 +138,7 @@ export class PluginManager {
 	}
 
 	async #loadProjectOverrides(): Promise<ProjectPluginOverrides> {
-		const overridesPath = getProjectPluginOverridesPath(this.#cwd);
-		try {
-			return await Bun.file(overridesPath).json();
-		} catch (err) {
-			if (isEnoent(err)) return {};
-			logger.warn("Failed to load project plugin overrides", { path: overridesPath, error: String(err) });
-			return {};
-		}
+		return (await readProjectPluginOverrides(getProjectPluginOverridesPath(this.#cwd))) ?? {};
 	}
 
 	async #ensurePluginsDir(): Promise<void> {
@@ -634,39 +641,68 @@ export class PluginManager {
 		return plugins;
 	}
 
+	#resolvePluginLinkPath(packageName: string): { linkPath: string; nodeModulesRoot: string } {
+		const nodeModulesRoot = path.resolve(getPluginsNodeModules());
+		const linkPath = path.resolve(nodeModulesRoot, packageName);
+		const relative = path.relative(nodeModulesRoot, linkPath);
+		if (relative === "" || path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+			throw new Error(`Plugin link destination escapes node_modules: ${JSON.stringify(packageName)}`);
+		}
+		return { linkPath, nodeModulesRoot };
+	}
+
+	async #ensureLinkParentsAreDirectories(nodeModulesRoot: string, linkPath: string): Promise<void> {
+		const relativeParent = path.relative(nodeModulesRoot, path.dirname(linkPath));
+		const components = relativeParent === "" ? [] : relativeParent.split(path.sep);
+		let current = nodeModulesRoot;
+		for (const component of ["", ...components]) {
+			if (component) current = path.join(current, component);
+			let stats: fs.Stats;
+			try {
+				stats = await fs.promises.lstat(current);
+			} catch (err) {
+				if (!isEnoent(err)) throw err;
+				await fs.promises.mkdir(current);
+				stats = await fs.promises.lstat(current);
+			}
+			if (stats.isSymbolicLink()) {
+				throw new Error(`Plugin link destination has a symlinked parent: ${current}`);
+			}
+			if (!stats.isDirectory()) {
+				throw new Error(`Plugin link destination parent is not a directory: ${current}`);
+			}
+		}
+	}
+
 	async link(localPath: string): Promise<InstalledPlugin> {
 		const absolutePath = path.resolve(this.#cwd, localPath);
 
 		const pkgFilePath = path.join(absolutePath, "package.json");
-		let pkg: { name?: string; version: string; proto?: PluginManifest; pi?: PluginManifest };
+		let pkg: { name?: unknown; version: string; proto?: PluginManifest; pi?: PluginManifest };
 		try {
 			pkg = await Bun.file(pkgFilePath).json();
 		} catch (err) {
 			if (isEnoent(err)) throw new Error(`package.json not found at ${absolutePath}`);
 			throw err;
 		}
-		if (!pkg.name) {
-			throw new Error("package.json must have a name field");
-		}
+		assertNpmPackageName(pkg.name);
 
 		await this.#ensurePluginsDir();
 
-		const linkPath = path.join(getPluginsNodeModules(), pkg.name);
-
-		if (pkg.name.startsWith("@")) {
-			const scopeDir = path.join(getPluginsNodeModules(), pkg.name.split("/")[0]);
-			await fs.promises.mkdir(scopeDir, { recursive: true });
-		}
+		const { linkPath, nodeModulesRoot } = this.#resolvePluginLinkPath(pkg.name);
+		await this.#ensureLinkParentsAreDirectories(nodeModulesRoot, linkPath);
 
 		try {
 			const stats = await fs.promises.lstat(linkPath);
 			if (stats.isSymbolicLink() || stats.isDirectory()) {
+				await this.#ensureLinkParentsAreDirectories(nodeModulesRoot, linkPath);
 				await fs.promises.unlink(linkPath);
 			}
 		} catch (err) {
 			if (!isEnoent(err)) throw err;
 		}
 
+		await this.#ensureLinkParentsAreDirectories(nodeModulesRoot, linkPath);
 		await fs.promises.symlink(absolutePath, linkPath);
 
 		const manifest: PluginManifest = pkg.proto || pkg.pi || { version: pkg.version };

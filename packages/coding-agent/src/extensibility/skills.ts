@@ -49,10 +49,6 @@ export function setActiveSkills(value: readonly Skill[]): void {
 	activeSkills = value;
 }
 
-export function resetActiveSkillsForTests(): void {
-	activeSkills = [];
-}
-
 export function isNameClaimedByAuthoredSkill(name: string): boolean {
 	return getActiveSkills().some(
 		skill => skill.name === name && skill._source?.provider !== MANAGED_SKILLS_PROVIDER_ID,

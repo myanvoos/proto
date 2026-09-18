@@ -30,12 +30,15 @@ export class HookToolWrapper<TParameters extends TSchema = TSchema, TDetails = u
 		let effectiveParams = params;
 		if (this.hookRunner.hasHandlers("tool_call")) {
 			try {
-				const callResult = (await this.hookRunner.emitToolCall({
-					type: "tool_call",
-					toolName: this.tool.name,
-					toolCallId,
-					input: params as Record<string, unknown>,
-				})) as ToolCallEventResult | undefined;
+				const callResult = (await this.hookRunner.emitToolCall(
+					{
+						type: "tool_call",
+						toolName: this.tool.name,
+						toolCallId,
+						input: params as Record<string, unknown>,
+					},
+					signal,
+				)) as ToolCallEventResult | undefined;
 
 				if (callResult?.block) {
 					const reason = callResult.reason || "Tool execution was blocked by a hook";

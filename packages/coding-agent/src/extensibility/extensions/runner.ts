@@ -77,14 +77,10 @@ interface BeforeAgentStartCombinedResult {
 type ExtensionErrorListener = (error: ExtensionError) => void;
 
 export const EXTENSION_HANDLER_TIMEOUT_MS = 30_000;
-let extensionHandlerTimeoutMs = EXTENSION_HANDLER_TIMEOUT_MS;
+const extensionHandlerTimeoutMs = EXTENSION_HANDLER_TIMEOUT_MS;
 
 function throwUnsupportedServiceTierAction(): never {
 	throw new Error("This extension host does not support service-tier actions");
-}
-
-export function testSetExtensionHandlerTimeoutMs(timeoutMs: number): void {
-	extensionHandlerTimeoutMs = timeoutMs;
 }
 
 function normalizeHandlerTimeout(timeoutMs: number): number {
@@ -92,11 +88,7 @@ function normalizeHandlerTimeout(timeoutMs: number): number {
 }
 
 export const SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS = 2_000;
-let sessionShutdownHandlerTimeoutMs = SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS;
-
-export function testSetSessionShutdownHandlerTimeoutMs(timeoutMs: number): void {
-	sessionShutdownHandlerTimeoutMs = timeoutMs;
-}
+const sessionShutdownHandlerTimeoutMs = SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS;
 
 function handlerTimeoutForEvent(eventType: string): number {
 	return eventType === "session_shutdown" ? sessionShutdownHandlerTimeoutMs : extensionHandlerTimeoutMs;
@@ -262,22 +254,37 @@ async function raceHandlerWithTimeout<T>(
 	armTimer();
 	try {
 		if (signal?.aborted) return EXTENSION_HANDLER_ABORTED;
-		const workPromise = Promise.resolve(work(handlerSignal, timeoutBudget));
+		// Queue invocation so the race and timer exist before extension code runs.
+		// This bounds handlers once they yield, but JavaScript running on the host
+		// thread cannot preempt a synchronous infinite loop without an isolate.
+		const workPromise = Promise.resolve().then(() => work(handlerSignal, timeoutBudget));
 		const result = await Promise.race([workPromise, interruptPromise]);
-		if (result === EXTENSION_HANDLER_TIMEOUT) {
-			await Promise.race([
-				workPromise.then(
-					() => undefined,
-					() => undefined,
-				),
-				Bun.sleep(0),
-			]);
+		if (result === EXTENSION_HANDLER_TIMEOUT || result === EXTENSION_HANDLER_ABORTED) {
+			// The handler may ignore its signal and settle later. Observe rejection,
+			// but never await or apply its late result.
+			void workPromise.catch(() => {});
 		}
 		return result;
 	} finally {
 		settle();
 		signal?.removeEventListener("abort", onAbort);
 	}
+}
+
+export type HandlerDispatchOutcome<T> =
+	| { status: "completed"; value: T }
+	| { status: "timed-out" }
+	| { status: "aborted" };
+
+export async function dispatchHandlerWithTimeout<T>(
+	work: (handlerSignal: AbortSignal) => Promise<T> | T,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<HandlerDispatchOutcome<T>> {
+	const result = await raceHandlerWithTimeout(handlerSignal => work(handlerSignal), timeoutMs, signal);
+	if (result === EXTENSION_HANDLER_TIMEOUT) return { status: "timed-out" };
+	if (result === EXTENSION_HANDLER_ABORTED) return { status: "aborted" };
+	return { status: "completed", value: result as T };
 }
 
 const MAX_PENDING_CREDENTIAL_DISABLED = 32;
@@ -398,6 +405,7 @@ export class ExtensionRunner {
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
 	#toolRegistrationScope = new AsyncLocalStorage<ToolRegistrationScope>();
 	#toolRegistrationBarrier: Promise<void> | undefined;
+	#quarantinedExtensions = new Set<Extension>();
 	#initialized = false;
 
 	#pendingCredentialDisabled: CredentialDisabledEvent[] = [];
@@ -771,6 +779,7 @@ export class ExtensionRunner {
 
 	hasHandlers(eventType: string): boolean {
 		for (const ext of this.extensions) {
+			if (this.#quarantinedExtensions.has(ext)) continue;
 			const handlers = ext.handlers.get(eventType);
 			if (handlers && handlers.length > 0) {
 				return true;
@@ -918,6 +927,7 @@ export class ExtensionRunner {
 		onFailure?: (kind: "timeout" | "error", message: string) => TResult,
 		outerSignal?: AbortSignal,
 	): Promise<TResult | undefined> {
+		if (this.#quarantinedExtensions.has(ext)) return undefined;
 		const sessionStopSignal =
 			event.type === "session_stop" && "signal" in event && event.signal instanceof AbortSignal
 				? event.signal
@@ -962,6 +972,7 @@ export class ExtensionRunner {
 		}
 		if (handlerResult === EXTENSION_HANDLER_ABORTED) return undefined;
 		if (handlerResult === EXTENSION_HANDLER_TIMEOUT) {
+			this.#quarantinedExtensions.add(ext);
 			const error = `handler timed out after ${timeoutMs}ms`;
 			logger.warn("Extension handler timed out", {
 				extensionPath: ext.path,
@@ -1135,17 +1146,18 @@ export class ExtensionRunner {
 		return result;
 	}
 
-	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
-		return this.emitUserEvent<UserBashEventResult>(event, "user_bash");
+	async emitUserBash(event: UserBashEvent, signal?: AbortSignal): Promise<UserBashEventResult | undefined> {
+		return this.emitUserEvent<UserBashEventResult>(event, "user_bash", signal);
 	}
 
-	async emitUserPython(event: UserPythonEvent): Promise<UserPythonEventResult | undefined> {
-		return this.emitUserEvent<UserPythonEventResult>(event, "user_python");
+	async emitUserPython(event: UserPythonEvent, signal?: AbortSignal): Promise<UserPythonEventResult | undefined> {
+		return this.emitUserEvent<UserPythonEventResult>(event, "user_python", signal);
 	}
 
 	private async emitUserEvent<R>(
 		event: UserBashEvent | UserPythonEvent,
 		eventName: "user_bash" | "user_python",
+		signal?: AbortSignal,
 	): Promise<R | undefined> {
 		const ctx = this.createContext();
 
@@ -1160,6 +1172,8 @@ export class ExtensionRunner {
 					ctx,
 					ext,
 					extensionHandlerTimeoutMs,
+					undefined,
+					signal,
 				);
 				if (handlerResult) {
 					return handlerResult as R;

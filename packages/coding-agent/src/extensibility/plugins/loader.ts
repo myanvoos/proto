@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getPluginsDir, getPluginsLockfile, isEnoent } from "@oh-my-pi/pi-utils";
+import { OmpErrors, type } from "@oh-my-pi/omptype";
+import { getPluginsDir, getPluginsLockfile, hasFsCode, isEnoent, pathIsWithin } from "@oh-my-pi/pi-utils";
 import { getConfigDirPaths } from "../../config";
 import { registerPluginCacheInvalidator, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { normalizePluginRuntimeConfig } from "./runtime-config";
@@ -22,6 +23,28 @@ function clearEnabledPluginsCache(): void {
 
 registerPluginCacheInvalidator(clearEnabledPluginsCache);
 
+const projectPluginOverridesSchema = type({
+	"disabled?": "string[]",
+	"features?": { "[string]": "string[]" },
+	"settings?": { "[string]": { "[string]": "unknown" } },
+});
+
+export async function readProjectPluginOverrides(overridesPath: string): Promise<ProjectPluginOverrides | null> {
+	let raw: unknown;
+	try {
+		raw = await Bun.file(overridesPath).json();
+	} catch (err) {
+		if (isEnoent(err)) return null;
+		throw new Error(`Failed to load project plugin overrides at ${overridesPath}`, { cause: err });
+	}
+
+	const checked = projectPluginOverridesSchema(raw);
+	if (checked instanceof OmpErrors) {
+		throw new Error(`Invalid project plugin overrides at ${overridesPath}: ${checked.summary}`);
+	}
+	return checked;
+}
+
 async function loadRuntimeConfig(home?: string): Promise<PluginRuntimeConfig> {
 	const lockPath = getPluginsLockfile(home);
 	try {
@@ -34,11 +57,8 @@ async function loadRuntimeConfig(home?: string): Promise<PluginRuntimeConfig> {
 
 async function loadProjectOverrides(cwd: string): Promise<ProjectPluginOverrides> {
 	for (const overridesPath of getConfigDirPaths("plugin-overrides.json", { user: false, cwd })) {
-		try {
-			return await Bun.file(overridesPath).json();
-		} catch (err) {
-			if (isEnoent(err)) continue;
-		}
+		const overrides = await readProjectPluginOverrides(overridesPath);
+		if (overrides) return overrides;
 	}
 	return {};
 }
@@ -167,10 +187,38 @@ function isModuleFile(name: string): boolean {
 	return MANIFEST_ENTRY_MODULE_EXTENSIONS.includes(path.extname(name)) && !DECLARATION_FILE_RE.test(name);
 }
 
-function findDirectoryIndex(dir: string): string | null {
+function realpathFromExistingParentSync(candidate: string): string | null {
+	let current = path.resolve(candidate);
+	const unresolved: string[] = [];
+	while (true) {
+		try {
+			return path.resolve(fs.realpathSync(current), ...unresolved.reverse());
+		} catch (err) {
+			if (!isEnoent(err) && !hasFsCode(err, "ENOTDIR")) return null;
+			const parent = path.dirname(current);
+			if (parent === current) return null;
+			unresolved.push(path.basename(current));
+			current = parent;
+		}
+	}
+}
+
+function resolveContainedManifestPathSync(packageRootRealpath: string, candidate: string): string | null {
+	const candidateRealpath = realpathFromExistingParentSync(candidate);
+	if (
+		candidateRealpath === null ||
+		candidateRealpath === packageRootRealpath ||
+		!pathIsWithin(packageRootRealpath, candidateRealpath)
+	) {
+		return null;
+	}
+	return candidateRealpath;
+}
+
+function findDirectoryIndex(packageRootRealpath: string, dir: string): string | null {
 	for (const name of MANIFEST_ENTRY_INDEX_NAMES) {
-		const candidate = path.join(dir, name);
-		if (fs.existsSync(candidate)) return candidate;
+		const candidate = resolveContainedManifestPathSync(packageRootRealpath, path.join(dir, name));
+		if (candidate && fs.existsSync(candidate)) return candidate;
 	}
 	return null;
 }
@@ -181,10 +229,13 @@ interface DeclaredManifestEntries {
 	files: string[];
 }
 
-function readDeclaredManifestEntries(dir: string): DeclaredManifestEntries {
+function readDeclaredManifestEntries(packageRootRealpath: string, dir: string): DeclaredManifestEntries {
+	const packageJsonPath = resolveContainedManifestPathSync(packageRootRealpath, path.join(dir, "package.json"));
+	if (!packageJsonPath) return { declared: false, files: [] };
+
 	let raw: string;
 	try {
-		raw = fs.readFileSync(path.join(dir, "package.json"), "utf8");
+		raw = fs.readFileSync(packageJsonPath, "utf8");
 	} catch {
 		return { declared: false, files: [] };
 	}
@@ -201,7 +252,8 @@ function readDeclaredManifestEntries(dir: string): DeclaredManifestEntries {
 	const files: string[] = [];
 	for (const entry of declared) {
 		if (typeof entry !== "string") continue;
-		const candidate = path.resolve(dir, entry);
+		const candidate = resolveContainedManifestPathSync(packageRootRealpath, path.resolve(dir, entry));
+		if (!candidate) continue;
 		let candidateStats: fs.Stats;
 		try {
 			candidateStats = fs.statSync(candidate);
@@ -209,7 +261,7 @@ function readDeclaredManifestEntries(dir: string): DeclaredManifestEntries {
 			continue;
 		}
 		if (candidateStats.isDirectory()) {
-			const index = findDirectoryIndex(candidate);
+			const index = findDirectoryIndex(packageRootRealpath, candidate);
 			if (index) files.push(index);
 		} else {
 			files.push(candidate);
@@ -218,11 +270,11 @@ function readDeclaredManifestEntries(dir: string): DeclaredManifestEntries {
 	return { declared: true, files };
 }
 
-function resolveDirectoryEntries(dir: string): string[] {
-	const manifest = readDeclaredManifestEntries(dir);
+function resolveDirectoryEntries(packageRootRealpath: string, dir: string): string[] {
+	const manifest = readDeclaredManifestEntries(packageRootRealpath, dir);
 	if (manifest.declared) return manifest.files;
 
-	const directIndex = findDirectoryIndex(dir);
+	const directIndex = findDirectoryIndex(packageRootRealpath, dir);
 	if (directIndex) return [directIndex];
 
 	let children: string[];
@@ -233,7 +285,8 @@ function resolveDirectoryEntries(dir: string): string[] {
 	}
 	const resolved: string[] = [];
 	for (const child of children.sort()) {
-		const childPath = path.join(dir, child);
+		const childPath = resolveContainedManifestPathSync(packageRootRealpath, path.join(dir, child));
+		if (!childPath) continue;
 		let childStats: fs.Stats;
 		try {
 			childStats = fs.statSync(childPath);
@@ -241,11 +294,11 @@ function resolveDirectoryEntries(dir: string): string[] {
 			continue;
 		}
 		if (childStats.isDirectory()) {
-			const childManifest = readDeclaredManifestEntries(childPath);
+			const childManifest = readDeclaredManifestEntries(packageRootRealpath, childPath);
 			if (childManifest.declared) {
 				resolved.push(...childManifest.files);
 			} else {
-				const index = findDirectoryIndex(childPath);
+				const index = findDirectoryIndex(packageRootRealpath, childPath);
 				if (index) resolved.push(index);
 			}
 		} else if (isModuleFile(child)) {
@@ -255,20 +308,29 @@ function resolveDirectoryEntries(dir: string): string[] {
 	return resolved;
 }
 
-function resolveManifestEntryFiles(joined: string, expandDirectory: boolean): string[] {
+function resolveManifestEntryFiles(packageRoot: string, joined: string, expandDirectory: boolean): string[] {
+	let packageRootRealpath: string;
+	try {
+		packageRootRealpath = fs.realpathSync(packageRoot);
+	} catch {
+		return [];
+	}
+	const containedPath = resolveContainedManifestPathSync(packageRootRealpath, joined);
+	if (!containedPath) return [];
+
 	let stats: fs.Stats;
 	try {
-		stats = fs.statSync(joined);
+		stats = fs.statSync(containedPath);
 	} catch {
 		return [];
 	}
 	if (!stats.isDirectory()) {
-		return [joined];
+		return [containedPath];
 	}
 	if (expandDirectory) {
-		return resolveDirectoryEntries(joined);
+		return resolveDirectoryEntries(packageRootRealpath, containedPath);
 	}
-	const index = findDirectoryIndex(joined);
+	const index = findDirectoryIndex(packageRootRealpath, containedPath);
 	return index ? [index] : [];
 }
 
@@ -291,7 +353,7 @@ export function resolvePluginManifestEntries(
 
 	const expandDirectory = key === "extensions";
 	const resolveEntry = (entry: string): Array<{ entry: string; resolvedPath: string | null }> => {
-		const files = resolveManifestEntryFiles(path.join(plugin.path, entry), expandDirectory);
+		const files = resolveManifestEntryFiles(plugin.path, path.join(plugin.path, entry), expandDirectory);
 		return files.length > 0 ? files.map(resolvedPath => ({ entry, resolvedPath })) : [{ entry, resolvedPath: null }];
 	};
 

@@ -14,7 +14,7 @@ import type {
 	TSchema,
 } from "@oh-my-pi/pi-ai";
 import type { KeyId } from "@oh-my-pi/pi-tui";
-import { hasFsCode, isEacces, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { hasFsCode, isEacces, isEnoent, logger, pathIsWithin } from "@oh-my-pi/pi-utils";
 import { type ExtensionModule, extensionModuleCapability } from "../../capability/extension-module";
 import { type Hook, hookCapability } from "../../capability/hook";
 import { isServiceTierFamily, isServiceTierForFamily } from "../../config/service-tier";
@@ -463,13 +463,50 @@ function isExtensionFile(name: string): boolean {
 	return name.endsWith(".ts") || name.endsWith(".js");
 }
 
+async function realpathFromExistingParent(candidate: string): Promise<string | null> {
+	let current = path.resolve(candidate);
+	const unresolved: string[] = [];
+	while (true) {
+		try {
+			return path.resolve(await fs.realpath(current), ...unresolved.reverse());
+		} catch (err) {
+			if (!isEnoent(err) && !hasFsCode(err, "ENOTDIR")) return null;
+			const parent = path.dirname(current);
+			if (parent === current) return null;
+			unresolved.push(path.basename(current));
+			current = parent;
+		}
+	}
+}
+
+async function resolveContainedManifestPath(packageRootRealpath: string, candidate: string): Promise<string | null> {
+	const candidateRealpath = await realpathFromExistingParent(candidate);
+	if (
+		candidateRealpath === null ||
+		candidateRealpath === packageRootRealpath ||
+		!pathIsWithin(packageRootRealpath, candidateRealpath)
+	) {
+		return null;
+	}
+	return candidateRealpath;
+}
+
 async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
 	const packageJsonPath = path.join(dir, "package.json");
 	const manifest = await readExtensionManifest(packageJsonPath);
 	if (manifest?.extensions?.length) {
+		const packageRootRealpath = await realpathFromExistingParent(dir);
 		const entries: string[] = [];
 		for (const extPath of manifest.extensions) {
-			const resolvedExtPath = path.resolve(dir, extPath);
+			if (typeof extPath !== "string" || packageRootRealpath === null) {
+				logger.warn("Ignoring invalid extension manifest entry", { packageRoot: dir, entry: extPath });
+				continue;
+			}
+			const resolvedExtPath = await resolveContainedManifestPath(packageRootRealpath, path.resolve(dir, extPath));
+			if (!resolvedExtPath) {
+				logger.warn("Ignoring extension manifest entry outside package root", { packageRoot: dir, entry: extPath });
+				continue;
+			}
 			try {
 				await fs.stat(resolvedExtPath);
 				entries.push(resolvedExtPath);
