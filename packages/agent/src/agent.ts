@@ -816,8 +816,12 @@ export class Agent {
 	}
 
 	reset() {
+		if (this.#state.isStreaming) {
+			throw new AgentBusyError(
+				"Cannot reset while the agent is processing. Abort the run and wait for completion first.",
+			);
+		}
 		this.#state.messages.length = 0;
-		this.#state.isStreaming = false;
 		this.#state.streamMessage = null;
 		this.#state.pendingToolCalls.clear();
 		this.#state.error = undefined;
@@ -1201,11 +1205,6 @@ export class Agent {
 						if (event.message.role === "assistant" && (event.message as any).errorMessage) {
 							this.#state.error = (event.message as any).errorMessage;
 						}
-						break;
-
-					case "agent_end":
-						this.#state.isStreaming = false;
-						this.#state.streamMessage = null;
 						break;
 				}
 

@@ -49,6 +49,9 @@ const PLACEHOLDER_TOKEN_ESTIMATE = 16;
 export interface ToolResultShakeRegion {
 	kind: "toolResult";
 	entry: SessionMessageEntry;
+
+	/** Index of the text block this region exclusively owns. */
+	blockIndex: number;
 	tokens: number;
 	originalText: string;
 
@@ -79,13 +82,6 @@ function getToolResultMessage(entry: SessionEntry): ToolResultMessage | undefine
 	const message = entry.message as AgentMessage;
 	if (message.role !== "toolResult") return undefined;
 	return message as ToolResultMessage;
-}
-
-function toolResultText(message: ToolResultMessage): string {
-	return message.content
-		.filter((block): block is TextContent => block.type === "text")
-		.map(block => block.text)
-		.join("\n");
 }
 
 function entryTokens(entry: SessionEntry, tokenizer: Tokenizer): number {
@@ -272,15 +268,21 @@ export function collectShakeRegions(entries: SessionEntry[], tokenizer: Tokenize
 			if (toolResult.prunedAt !== undefined) continue;
 			if (isProtectedToolResult(toolResult, toolCallsById.get(toolResult.toolCallId), config.protectedTools))
 				continue;
-			const text = toolResultText(toolResult);
-			if (text.length === 0) continue;
-			regions.push({
-				kind: "toolResult",
-				entry: entry as SessionMessageEntry,
-				tokens: tokenizer.countMessage(toolResult as AgentMessage),
-				originalText: text,
-				label: toolResult.toolName,
-			});
+
+			// ToolResultMessage.content is TextContent | ImageContent. Regions deliberately own one text
+			// block each, so the text artifact is sufficient for recovery while image blocks stay untouched.
+			for (let blockIndex = 0; blockIndex < toolResult.content.length; blockIndex++) {
+				const block = toolResult.content[blockIndex];
+				if (block.type !== "text" || block.text.length === 0) continue;
+				regions.push({
+					kind: "toolResult",
+					entry: entry as SessionMessageEntry,
+					blockIndex,
+					tokens: tokenizer.countTokens(block.text),
+					originalText: block.text,
+					label: toolResult.toolName,
+				});
+			}
 			continue;
 		}
 
@@ -347,7 +349,9 @@ function getBlockTextSlot(entry: SessionMessageEntry | CustomMessageEntry, block
 export function applyShakeRegion(region: ShakeRegion, replacement: string): void {
 	if (region.kind === "toolResult") {
 		const message = region.entry.message as ToolResultMessage;
-		message.content = [{ type: "text", text: replacement }];
+		const block = message.content[region.blockIndex];
+		if (block?.type !== "text") return;
+		block.text = replacement;
 		message.prunedAt = Date.now();
 		invalidateMessageCache(message as AgentMessage);
 		return;

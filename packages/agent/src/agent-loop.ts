@@ -1494,6 +1494,29 @@ async function streamAssistantResponse(
 			const completedToolCallIds = new Set<string>();
 
 			const responseIterator = response[Symbol.asyncIterator]();
+			const finishResponse = async (message: AssistantMessage): Promise<AssistantMessage> => {
+				const finalMessage = snapshotAssistantMessage(message);
+
+				if (config.transformAssistantMessage) {
+					await config.transformAssistantMessage(finalMessage, requestSignal);
+				}
+
+				if (finalMessage.content.some(c => c.type === "toolCall")) {
+					preparedDispatchByMessage.set(
+						finalMessage,
+						await prepareToolCallDispatch(finalMessage, context, config, requestSignal),
+					);
+				}
+				if (addedPartial) {
+					context.messages[context.messages.length - 1] = finalMessage;
+				} else {
+					context.messages.push(finalMessage);
+					stream.push({ type: "message_start", message: snapshotAssistantMessage(finalMessage) });
+				}
+				stream.push({ type: "message_end", message: snapshotAssistantMessage(finalMessage) });
+				await finishChat(finalMessage);
+				return finalMessage;
+			};
 			const finishAbortedStream = async (): Promise<AssistantMessage> => {
 				try {
 					const cleanup = responseIterator.return?.();
@@ -1541,7 +1564,7 @@ async function streamAssistantResponse(
 
 					const event = next.value;
 					if (event.type === "done" || event.type === "error") {
-						let finalMessage = recoverTransientErrorToolTurn(
+						const finalMessage = recoverTransientErrorToolTurn(
 							retainCompletedToolCalls(await response.result(), completedToolCallIds),
 							context.tools ?? [],
 						);
@@ -1562,29 +1585,7 @@ async function streamAssistantResponse(
 								throw new HarmonyLeakInterruption(detection, removed, recovered);
 							}
 						}
-						finalMessage = snapshotAssistantMessage(finalMessage);
-
-						if (config.transformAssistantMessage) {
-							await config.transformAssistantMessage(finalMessage, requestSignal);
-						}
-
-						if (finalMessage.content.some(c => c.type === "toolCall")) {
-							preparedDispatchByMessage.set(
-								finalMessage,
-								await prepareToolCallDispatch(finalMessage, context, config, requestSignal),
-							);
-						}
-						if (addedPartial) {
-							context.messages[context.messages.length - 1] = finalMessage;
-						} else {
-							context.messages.push(finalMessage);
-						}
-						if (!addedPartial) {
-							stream.push({ type: "message_start", message: snapshotAssistantMessage(finalMessage) });
-						}
-						stream.push({ type: "message_end", message: snapshotAssistantMessage(finalMessage) });
-						await finishChat(finalMessage);
-						return finalMessage;
+						return await finishResponse(finalMessage);
 					}
 					if (requestSignal?.aborted) {
 						return await finishAbortedStream();
@@ -1650,7 +1651,10 @@ async function streamAssistantResponse(
 				detachAbortListener?.();
 			}
 
-			let trailing = await response.result();
+			const trailing = recoverTransientErrorToolTurn(
+				retainCompletedToolCalls(await response.result(), completedToolCallIds),
+				context.tools ?? [],
+			);
 			if (harmonyMitigationEnabled) {
 				const detection = detectHarmonyLeakInAssistantMessage(trailing);
 				if (detection) {
@@ -1668,13 +1672,7 @@ async function streamAssistantResponse(
 					throw new HarmonyLeakInterruption(detection, removed, recovered);
 				}
 			}
-			trailing = snapshotAssistantMessage(trailing);
-			if (addedPartial) {
-				context.messages[context.messages.length - 1] = trailing;
-				stream.push({ type: "message_end", message: snapshotAssistantMessage(trailing) });
-			}
-			await finishChat(trailing);
-			return trailing;
+			return await finishResponse(trailing);
 		});
 	} catch (err) {
 		failChatSpan(telemetry, chatSpan, {

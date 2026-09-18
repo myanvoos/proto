@@ -1,8 +1,19 @@
-import type { Message, ToolCall } from "@oh-my-pi/pi-ai";
+import type {
+	AnthropicServerToolContent,
+	AssistantMessage,
+	AudioContent,
+	ImageContent,
+	Message,
+	TextContent,
+	ToolCall,
+	UserContent,
+	VideoContent,
+} from "@oh-my-pi/pi-ai";
 import { type Dialect, getDialectDefinition } from "@oh-my-pi/pi-ai/dialect";
 import { escapeHarmonyControlTokens } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { formatGroupedPaths, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "../types";
+import type { CoreCompactionMessage } from "./messages";
 import fileOperationsTemplate from "./prompts/file-operations.md" with { type: "text" };
 import summarizationSystemPrompt from "./prompts/summarization-system.md" with { type: "text" };
 
@@ -150,99 +161,197 @@ export function escapeSummaryBoundaryTags(text: string): string {
 	return text.replace(SUMMARY_BOUNDARY_TAG_RE, tag => `&lt;${tag.slice(1)}`);
 }
 
-export function serializeConversationForSummary(messages: Message[], dialect?: Dialect): string {
+export type SummaryMessage = Message | CoreCompactionMessage;
+
+type AssistantContent = AssistantMessage["content"][number];
+
+function assertNever(value: never): never {
+	throw new Error(`Unhandled compaction summary value: ${stringifyJson(value) ?? String(value)}`);
+}
+
+function mediaPlaceholder(content: ImageContent | AudioContent | VideoContent): string {
+	switch (content.type) {
+		case "image":
+			return `[Image: ${content.mimeType}]`;
+		case "audio":
+			return `[Audio: ${content.mimeType}]`;
+		case "video":
+			return `[Video: ${content.mimeType}]`;
+		default:
+			return assertNever(content);
+	}
+}
+
+function userContentText(content: UserContent): string {
+	switch (content.type) {
+		case "text":
+			return content.text;
+		case "image":
+		case "audio":
+		case "video":
+			return mediaPlaceholder(content);
+		default:
+			return assertNever(content);
+	}
+}
+
+function anthropicServerToolText(content: AnthropicServerToolContent): string {
+	const block = content.block;
+	switch (block.type) {
+		case "server_tool_use":
+			return `[Anthropic server tool call: ${block.name}(${stringifyJson(block.input ?? {}) ?? "null"})]`;
+		case "web_search_tool_result":
+		case "tool_search_tool_result":
+			return `[Anthropic server tool result for ${block.tool_use_id}: ${stringifyJson(block.content) ?? "null"}]`;
+		default:
+			return assertNever(block);
+	}
+}
+
+function assistantContent(content: AssistantContent): TextContent | AssistantContent {
+	switch (content.type) {
+		case "text":
+		case "thinking":
+		case "toolCall":
+			return content;
+		case "image":
+			return { type: "text", text: mediaPlaceholder(content) };
+		case "redactedThinking":
+			return { type: "text", text: "[Redacted thinking]" };
+		case "fallback":
+			return { type: "text", text: `[Model fallback: ${content.from.model} -> ${content.to.model}]` };
+		case "anthropicServerTool":
+			return { type: "text", text: anthropicServerToolText(content) };
+		default:
+			return assertNever(content);
+	}
+}
+
+function contentText(content: string | UserContent[]): string {
+	if (typeof content === "string") return content;
+	return content.map(userContentText).join("");
+}
+
+function normalizeSummaryMessage(message: SummaryMessage, uselessCallIds: ReadonlySet<string>): Message | undefined {
+	switch (message.role) {
+		case "user":
+		case "developer":
+			return {
+				...message,
+				content: [{ type: "text", text: contentText(message.content) }],
+			};
+		case "assistant": {
+			const content = message.content
+				.filter(block => block.type !== "toolCall" || !uselessCallIds.has(block.id))
+				.map(assistantContent);
+			return content.length > 0 ? { ...message, content } : undefined;
+		}
+		case "toolResult": {
+			if (uselessCallIds.has(message.toolCallId)) return undefined;
+			return {
+				...message,
+				content: [{ type: "text", text: truncateToolResultForSummary(contentText(message.content)) }],
+			};
+		}
+		case "custom":
+		case "hookMessage":
+			return {
+				role: "developer",
+				content: [{ type: "text", text: `[${message.customType}]\n${contentText(message.content)}` }],
+				attribution: message.attribution,
+				timestamp: message.timestamp,
+			};
+		case "branchSummary":
+			return {
+				role: "user",
+				content: [{ type: "text", text: `[Branch Summary]\n${message.summary}` }],
+				attribution: "agent",
+				timestamp: message.timestamp,
+			};
+		case "compactionSummary":
+			return {
+				role: "user",
+				content: [{ type: "text", text: `[Compaction Summary]\n${message.summary}` }],
+				attribution: "agent",
+				providerPayload: message.providerPayload,
+				timestamp: message.timestamp,
+			};
+		default:
+			return assertNever(message);
+	}
+}
+
+export function serializeConversationForSummary(messages: readonly SummaryMessage[], dialect?: Dialect): string {
 	const conversation = serializeConversation(messages, dialect);
 	const escaped = dialect === "harmony" ? escapeHarmonyControlTokens(conversation) : conversation;
 	return escapeSummaryBoundaryTags(escaped);
 }
 
-export function serializeConversation(messages: Message[], dialect?: Dialect): string {
+export function serializeConversation(messages: readonly SummaryMessage[], dialect?: Dialect): string {
 	const uselessCallIds = new Set<string>();
-	for (const msg of messages) {
-		if (msg.role === "toolResult" && msg.useless === true && msg.isError !== true) {
-			uselessCallIds.add(msg.toolCallId);
+	for (const message of messages) {
+		if (message.role === "toolResult" && message.useless === true && message.isError !== true) {
+			uselessCallIds.add(message.toolCallId);
 		}
 	}
-	if (dialect) {
-		const dropThinking = dialect === "anthropic";
-		const processed: Message[] = [];
-		for (const msg of messages) {
-			if (msg.role === "assistant") {
-				const content = msg.content.filter(
-					block =>
-						(block.type !== "toolCall" || !uselessCallIds.has(block.id)) &&
-						(!dropThinking || block.type !== "thinking"),
-				);
-				if (content.length > 0) processed.push(content.length === msg.content.length ? msg : { ...msg, content });
-				continue;
-			}
-			if (msg.role === "toolResult") {
-				if (uselessCallIds.has(msg.toolCallId)) continue;
-				const text = msg.content
-					.filter((c): c is { type: "text"; text: string } => c.type === "text")
-					.map(c => c.text)
-					.join("");
-				if (!text) continue;
-				processed.push({
-					...msg,
-					content: [{ type: "text", text: truncateToolResultForSummary(text) }],
-				});
-				continue;
-			}
-			processed.push(msg);
-		}
-		return getDialectDefinition(dialect).renderTranscript(processed);
-	}
+	const processed = messages
+		.map(message => normalizeSummaryMessage(message, uselessCallIds))
+		.filter((message): message is Message => message !== undefined);
+
+	if (dialect) return getDialectDefinition(dialect).renderTranscript(processed);
 
 	const parts: string[] = [];
-	for (const msg of messages) {
-		if (msg.role === "user") {
-			const content =
-				typeof msg.content === "string"
-					? msg.content
-					: msg.content
-							.filter((c): c is { type: "text"; text: string } => c.type === "text")
-							.map(c => c.text)
-							.join("");
-			if (content) parts.push(`[User]: ${content}`);
-		} else if (msg.role === "assistant") {
-			const textParts: string[] = [];
-			const thinkingParts: string[] = [];
-			const toolCalls: ToolCall[] = [];
-
-			for (const block of msg.content) {
-				if (block.type === "text") {
-					textParts.push(block.text);
-				} else if (block.type === "thinking") {
-					thinkingParts.push(block.thinking);
-				} else if (block.type === "toolCall") {
-					if (uselessCallIds.has(block.id)) continue;
-					toolCalls.push(block);
+	for (const message of processed) {
+		switch (message.role) {
+			case "user":
+				parts.push(`[User]: ${contentText(message.content)}`);
+				break;
+			case "developer":
+				parts.push(`[Developer]: ${contentText(message.content)}`);
+				break;
+			case "assistant": {
+				const textParts: string[] = [];
+				const thinkingParts: string[] = [];
+				const toolCalls: ToolCall[] = [];
+				for (const block of message.content) {
+					switch (block.type) {
+						case "text":
+							textParts.push(block.text);
+							break;
+						case "thinking":
+							thinkingParts.push(block.thinking);
+							break;
+						case "toolCall":
+							toolCalls.push(block);
+							break;
+						case "image":
+							textParts.push(mediaPlaceholder(block));
+							break;
+						case "redactedThinking":
+							textParts.push("[Redacted thinking]");
+							break;
+						case "fallback":
+							textParts.push(`[Model fallback: ${block.from.model} -> ${block.to.model}]`);
+							break;
+						case "anthropicServerTool":
+							textParts.push(anthropicServerToolText(block));
+							break;
+						default:
+							return assertNever(block);
+					}
 				}
+				if (thinkingParts.length > 0) parts.push(`[Think]: ${thinkingParts.join("\n")}`);
+				if (textParts.length > 0) parts.push(`[Assistant]: ${textParts.join("\n")}`);
+				if (toolCalls.length > 0) parts.push(`[Tool Call]: ${renderToolCalls(toolCalls)}`);
+				break;
 			}
-
-			if (thinkingParts.length > 0) {
-				parts.push(`[Think]: ${thinkingParts.join("\n")}`);
-			}
-			if (textParts.length > 0) {
-				parts.push(`[Assistant]: ${textParts.join("\n")}`);
-			}
-			if (toolCalls.length > 0) {
-				parts.push(`[Tool Call]: ${renderToolCalls(toolCalls)}`);
-			}
-		} else if (msg.role === "toolResult") {
-			if (uselessCallIds.has(msg.toolCallId)) continue;
-			const content = msg.content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map(c => c.text)
-				.join("");
-			if (content) {
-				const text = truncateToolResultForSummary(content);
-				parts.push(`[Tool Result]: ${text}`);
-			}
+			case "toolResult":
+				parts.push(`[Tool Result]: ${contentText(message.content)}`);
+				break;
+			default:
+				return assertNever(message);
 		}
 	}
-
 	return parts.join("\n\n");
 }
 

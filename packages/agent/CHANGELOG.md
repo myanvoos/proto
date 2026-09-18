@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed branch compaction emitting tool results without their owning assistant tool calls when the token budget split a pair.
+- Fixed compaction summaries silently dropping developer instructions and non-text content, including image placeholders.
+- Fixed context usage undercounting developer/custom messages, images, and native compaction history, so automatic compaction runs before providers reject oversized requests.
+- Fixed shake compaction deleting images from mixed-content tool results instead of eliding only their text.
+- Fixed active runs being unlocked when callers reset an agent before completion.
+- Fixed eventless custom response streams omitting the final assistant reply from subsequent-turn context.
+
 ## [18.1.7] - 2026-09-13
 
 ### Changed

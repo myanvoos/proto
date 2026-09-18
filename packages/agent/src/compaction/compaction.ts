@@ -532,7 +532,10 @@ function clampConversationToBudget(text: string, budgetTokens: number, tokens: n
 	if (tokens <= budgetTokens) return text;
 	const keep = Math.max(1024, Math.floor((text.length * budgetTokens * 0.95) / tokens));
 	if (keep >= text.length) return text;
-	return `${text.slice(0, keep)}\n\n[... ${text.length - keep} more characters truncated]`;
+	const headLength = Math.ceil(keep / 2);
+	const tailLength = Math.floor(keep / 2);
+	const truncatedCharacters = text.length - keep;
+	return `${text.slice(0, headLength)}\n\n[... ${truncatedCharacters} characters truncated from middle ...]\n\n${text.slice(-tailLength)}`;
 }
 
 interface SummaryWindow {

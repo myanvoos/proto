@@ -1,4 +1,4 @@
-import type { Model } from "@oh-my-pi/pi-ai";
+import type { Model, ProviderPayload, UserContent } from "@oh-my-pi/pi-ai";
 import type { ModelTokenizer } from "@oh-my-pi/pi-catalog/types";
 import { countTokens as countTokensNat, Encoding } from "@oh-my-pi/pi-natives";
 import { stringifyJson } from "@oh-my-pi/pi-utils";
@@ -50,6 +50,25 @@ export interface TokenBudgetCheck {
 }
 
 const IMAGE_TOKEN_ESTIMATE = 1200;
+
+const PROVIDER_PAYLOAD_METADATA_KEYS: Record<string, true> = {
+	call_id: true,
+	created_by: true,
+	file_id: true,
+	id: true,
+	item_id: true,
+	mimeType: true,
+	mime_type: true,
+	provider: true,
+	role: true,
+	status: true,
+	type: true,
+};
+
+interface CollectedContent {
+	fragments: string[];
+	images: number;
+}
 
 interface MessageEstimate {
 	version: number;
@@ -107,76 +126,161 @@ export class Tokenizer {
 		return total;
 	}
 
-	#measureMessage(message: AgentMessage, excludeEncryptedReasoning: boolean): number {
-		const fragments: string[] = [];
-		let extra = 0;
+	#countCollected(content: CollectedContent): number {
+		const textTokens = content.fragments.length === 0 ? 0 : this.countTokens(content.fragments);
+		return textTokens + content.images * IMAGE_TOKEN_ESTIMATE;
+	}
 
+	#collectContent(content: string | readonly UserContent[]): CollectedContent {
+		if (typeof content === "string") return { fragments: [content], images: 0 };
+
+		const collected: CollectedContent = { fragments: [], images: 0 };
+		for (const block of content) {
+			switch (block.type) {
+				case "text":
+					collected.fragments.push(block.text);
+					break;
+				case "image":
+					collected.images++;
+					break;
+				case "audio":
+				case "video":
+					// No duration is available, so encoded size is the only conservative signal.
+					collected.fragments.push(block.data);
+					break;
+				default:
+					this.#collectUnknownBlock(block, collected, false);
+			}
+		}
+		return collected;
+	}
+
+	#collectUnknownBlock(block: unknown, collected: CollectedContent, excludeEncryptedReasoning: boolean): void {
+		const fragmentsBefore = collected.fragments.length;
+		const imagesBefore = collected.images;
+		this.#collectUnknownValue(block, collected, excludeEncryptedReasoning, new Set());
+		if (collected.fragments.length === fragmentsBefore && collected.images === imagesBefore) {
+			collected.fragments.push("unknown");
+		}
+	}
+
+	#collectProviderPayload(payload: ProviderPayload, excludeEncryptedReasoning: boolean): CollectedContent {
+		const collected: CollectedContent = { fragments: [], images: 0 };
+		// Native histories are wire objects: JSON.stringify would charge for IDs/status metadata and
+		// can turn one base64 image into hundreds of thousands of fake text tokens. Walk their string
+		// leaves instead, omitting structural metadata and charging images by the normal image estimate.
+		this.#collectUnknownValue(payload.items, collected, excludeEncryptedReasoning, new Set());
+		return collected;
+	}
+
+	#collectUnknownValue(
+		value: unknown,
+		collected: CollectedContent,
+		excludeEncryptedReasoning: boolean,
+		seen: Set<object>,
+		key?: string,
+	): void {
+		if (typeof value === "string") {
+			if (PROVIDER_PAYLOAD_METADATA_KEYS[key ?? ""] === true) return;
+			if (key === "encrypted_content" && excludeEncryptedReasoning) return;
+			collected.fragments.push(value);
+			return;
+		}
+		if (value === null || typeof value !== "object" || seen.has(value)) return;
+		seen.add(value);
+		if (Array.isArray(value)) {
+			for (const item of value) {
+				this.#collectUnknownValue(item, collected, excludeEncryptedReasoning, seen, key);
+			}
+			return;
+		}
+
+		const record = value as Record<string, unknown>;
+		const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+		const isImage = type.includes("image") || "image_url" in record;
+		if (isImage) collected.images++;
+		for (const [childKey, child] of Object.entries(record)) {
+			if (isImage && (childKey === "data" || childKey === "file_data" || childKey === "image_url")) continue;
+			this.#collectUnknownValue(child, collected, excludeEncryptedReasoning, seen, childKey);
+		}
+	}
+
+	#countUnknownMessage(message: AgentMessage, excludeEncryptedReasoning: boolean): number {
+		const collected: CollectedContent = { fragments: [], images: 0 };
+		this.#collectUnknownValue(message, collected, excludeEncryptedReasoning, new Set());
+		// AgentMessage is module-augmentable, so external roles cannot be exhaustively switched here.
+		// A conservative structural estimate protects the context window; a warning alone would not.
+		return Math.max(1, this.#countCollected(collected));
+	}
+
+	#measureMessage(message: AgentMessage, excludeEncryptedReasoning: boolean): number {
 		const role: string = message.role;
-		if (role === "bashExecution") {
-			if ("command" in message && typeof message.command === "string") fragments.push(message.command);
-			if ("output" in message && typeof message.output === "string") fragments.push(message.output);
-			return fragments.length === 0 ? 0 : this.countTokens(fragments);
+		if (role === "bashExecution" || role === "pythonExecution" || role === "fileMention") {
+			return this.#countUnknownMessage(message, excludeEncryptedReasoning);
 		}
 
 		switch (message.role) {
-			case "user": {
-				const content: string | Array<{ type: string; text?: string }> = message.content;
-				if (typeof content === "string") {
-					fragments.push(content);
-				} else if (Array.isArray(content)) {
-					for (const block of content) {
-						if (block.type === "text" && block.text) {
-							fragments.push(block.text);
-						}
-					}
-				}
-				break;
+			case "user":
+			case "developer": {
+				const contentTokens = this.#countCollected(this.#collectContent(message.content));
+				const payloadTokens = message.providerPayload
+					? this.#countCollected(this.#collectProviderPayload(message.providerPayload, excludeEncryptedReasoning))
+					: 0;
+				return Math.max(contentTokens, payloadTokens);
 			}
 			case "assistant": {
+				const collected: CollectedContent = { fragments: [], images: 0 };
 				for (const block of message.content) {
-					if (block.type === "text") {
-						fragments.push(block.text);
-					} else if (block.type === "thinking") {
-						fragments.push(block.thinking);
-
-						if (block.thinkingSignature && !excludeEncryptedReasoning) {
-							fragments.push(block.thinkingSignature);
-						}
-					} else if (block.type === "toolCall") {
-						fragments.push(block.name);
-						fragments.push(stringifyJson(block.arguments) ?? "null");
-					} else if (block.type === "redactedThinking") {
-						if (!excludeEncryptedReasoning) fragments.push(block.data);
-					} else if (block.type === "anthropicServerTool") {
-						if (!excludeEncryptedReasoning) fragments.push(stringifyJson(block.block) ?? "null");
+					switch (block.type) {
+						case "text":
+							collected.fragments.push(block.text);
+							break;
+						case "thinking":
+							collected.fragments.push(block.thinking);
+							if (block.thinkingSignature && !excludeEncryptedReasoning) {
+								collected.fragments.push(block.thinkingSignature);
+							}
+							break;
+						case "toolCall":
+							collected.fragments.push(block.name, stringifyJson(block.arguments) ?? "null");
+							break;
+						case "redactedThinking":
+							if (!excludeEncryptedReasoning) collected.fragments.push(block.data);
+							break;
+						case "anthropicServerTool":
+							if (!excludeEncryptedReasoning) collected.fragments.push(stringifyJson(block.block) ?? "null");
+							break;
+						case "fallback":
+							collected.fragments.push(block.from.model, block.to.model);
+							break;
+						case "image":
+							collected.images++;
+							break;
+						default:
+							this.#collectUnknownBlock(block, collected, excludeEncryptedReasoning);
 					}
 				}
-				break;
+				const contentTokens = this.#countCollected(collected);
+				const payloadTokens = message.providerPayload
+					? this.#countCollected(this.#collectProviderPayload(message.providerPayload, excludeEncryptedReasoning))
+					: 0;
+				return Math.max(contentTokens, payloadTokens);
 			}
+			case "custom":
 			case "hookMessage":
-			case "toolResult": {
-				if (typeof message.content === "string") {
-					fragments.push(message.content);
-				} else {
-					for (const block of message.content) {
-						if (block.type === "text" && block.text) {
-							fragments.push(block.text);
-						} else if (block.type === "image") {
-							extra += IMAGE_TOKEN_ESTIMATE;
-						}
-					}
-				}
-				break;
-			}
+			case "toolResult":
+				return this.#countCollected(this.#collectContent(message.content));
 			case "branchSummary":
-			case "compactionSummary":
-				fragments.push(message.summary);
-				break;
+				return this.countTokens(message.summary);
+			case "compactionSummary": {
+				const summaryTokens = this.countTokens(message.summary);
+				const payloadTokens = message.providerPayload
+					? this.#countCollected(this.#collectProviderPayload(message.providerPayload, excludeEncryptedReasoning))
+					: 0;
+				return Math.max(summaryTokens, payloadTokens);
+			}
 			default:
-				return 0;
+				return this.#countUnknownMessage(message, excludeEncryptedReasoning);
 		}
-
-		if (fragments.length === 0) return extra;
-		return extra + this.countTokens(fragments);
 	}
 }

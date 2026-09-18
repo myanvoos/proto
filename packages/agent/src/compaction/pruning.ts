@@ -77,6 +77,17 @@ function getToolResultMessage(entry: SessionEntry): ToolResultMessage | undefine
 	return message as ToolResultMessage;
 }
 
+/**
+ * True when a read result only carried a structural outline rather than the file's real content.
+ * Such a result cannot stand in for an explicit ranged read of the same file.
+ */
+function elidesContent(message: ToolResultMessage): boolean {
+	const summary = (message.details as { summary?: { elidedLines?: number; elidedSpans?: number } } | undefined)
+		?.summary;
+	if (summary === undefined) return false;
+	return (summary.elidedLines ?? 0) > 0 || (summary.elidedSpans ?? 0) > 0;
+}
+
 function estimatePrunedSavings(tokens: number, notice: string): number {
 	const noticeTokens = Math.ceil(notice.length / 4);
 	return Math.max(0, tokens - noticeTokens);
@@ -118,6 +129,10 @@ function collectSupersededResults(
 ): SupersedeCandidate[] {
 	const candidates: SupersedeCandidate[] = [];
 	const seenKeys = new Set<string>();
+	// Selector-less reads of code files come back structurally summarized (bodies elided), so they
+	// carry strictly less detail for a given line range than an explicit ranged read. Only a read
+	// that actually returned whole-file content may supersede ranged reads of the same file.
+	const seenWholeFileKeys = new Set<string>();
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		const message = getToolResultMessage(entry);
@@ -128,8 +143,9 @@ function collectSupersededResults(
 		const key = supersedeKey(toolCall.name, toolCall.arguments as Record<string, unknown>);
 		if (key === undefined) continue;
 		const separator = key.indexOf("\u0000");
-		const superseded = seenKeys.has(key) || (separator >= 0 && seenKeys.has(key.slice(0, separator)));
+		const superseded = seenKeys.has(key) || (separator >= 0 && seenWholeFileKeys.has(key.slice(0, separator)));
 		seenKeys.add(key);
+		if (separator < 0 && !elidesContent(message)) seenWholeFileKeys.add(key);
 		if (!superseded) continue;
 		candidates.push({
 			entry: entry as SessionMessageEntry,

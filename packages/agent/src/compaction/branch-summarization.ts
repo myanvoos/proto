@@ -165,12 +165,43 @@ function estimateBranchSummaryTokens(message: AgentMessage, tokenizer: Tokenizer
 	});
 }
 
+function closeToolCallPairs(messages: AgentMessage[]): AgentMessage[] {
+	const seenToolCallIds = new Set<string>();
+	const pairedToolCallIds = new Set<string>();
+	const closed: AgentMessage[] = [];
+
+	for (const message of messages) {
+		if (message.role === "assistant") {
+			for (const block of message.content) {
+				if (block.type === "toolCall") seenToolCallIds.add(block.id);
+			}
+			closed.push(message);
+			continue;
+		}
+		if (message.role === "toolResult") {
+			if (!seenToolCallIds.has(message.toolCallId)) continue;
+			pairedToolCallIds.add(message.toolCallId);
+		}
+		closed.push(message);
+	}
+
+	for (let i = closed.length - 1; i >= 0; i--) {
+		const message = closed[i];
+		if (message.role !== "assistant") continue;
+		const content = message.content.filter(block => block.type !== "toolCall" || pairedToolCallIds.has(block.id));
+		if (content.length === 0) closed.splice(i, 1);
+		else if (content.length !== message.content.length) closed[i] = { ...message, content };
+	}
+
+	return closed;
+}
+
 export function prepareBranchEntries(
 	entries: SessionEntry[],
 	tokenizer: Tokenizer,
 	tokenBudget: number = 0,
 ): BranchPreparation {
-	const messages: AgentMessage[] = [];
+	let messages: AgentMessage[] = [];
 	const fileOps = createFileOps();
 	let totalTokens = 0;
 
@@ -188,6 +219,17 @@ export function prepareBranchEntries(
 		}
 	}
 
+	const toolCallOwnerIndexes = new Map<string, number>();
+	for (let i = 0; i < entries.length; i++) {
+		const message = getMessageFromEntry(entries[i]);
+		if (message?.role !== "assistant") continue;
+		for (const block of message.content) {
+			if (block.type === "toolCall") toolCallOwnerIndexes.set(block.id, i);
+		}
+	}
+
+	const pendingOwnerIndexes = new Set<number>();
+	let overranBudgetForOwner = false;
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		const message = getMessageFromEntry(entry);
@@ -196,23 +238,36 @@ export function prepareBranchEntries(
 		extractFileOpsFromMessage(message, fileOps);
 
 		const tokens = estimateBranchSummaryTokens(message, tokenizer);
+		const exceedsBudget = tokenBudget > 0 && totalTokens + tokens > tokenBudget;
 
-		if (tokenBudget > 0 && totalTokens + tokens > tokenBudget) {
+		if (exceedsBudget && pendingOwnerIndexes.size === 0) {
 			if (entry.type === "compaction" || entry.type === "branch_summary") {
 				if (totalTokens < tokenBudget * 0.9) {
 					messages.push(message);
 					totalTokens += tokens;
 				}
 			}
-
 			break;
 		}
 
 		messages.push(message);
 		totalTokens += tokens;
+		if (message.role === "toolResult") {
+			const ownerIndex = toolCallOwnerIndexes.get(message.toolCallId);
+			if (ownerIndex !== undefined && ownerIndex < i) pendingOwnerIndexes.add(ownerIndex);
+		} else if (message.role === "assistant") {
+			pendingOwnerIndexes.delete(i);
+		}
+
+		if (exceedsBudget) overranBudgetForOwner = true;
+		if (overranBudgetForOwner && pendingOwnerIndexes.size === 0) break;
 	}
 
 	messages.reverse();
+	// A provider rejects a result without its earlier call. Preserve useful result context by pulling
+	// the owner across the budget boundary first; filtering is only the fallback for malformed history.
+	messages = closeToolCallPairs(messages);
+	totalTokens = messages.reduce((sum, message) => sum + estimateBranchSummaryTokens(message, tokenizer), 0);
 
 	return { messages, fileOps, totalTokens };
 }
