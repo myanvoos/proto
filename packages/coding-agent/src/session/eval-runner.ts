@@ -56,17 +56,24 @@ export class EvalRunner {
 		const execution = (async (): Promise<PythonResult> => {
 			const extensionRunner = this.#host.extensionRunner();
 			if (extensionRunner?.hasHandlers("user_python")) {
-				const hookResult = await extensionRunner.emitUserPython({
-					type: "user_python",
-					code,
-					excludeFromContext,
-					cwd,
-				});
+				const hookResult = await extensionRunner.emitUserPython(
+					{
+						type: "user_python",
+						code,
+						excludeFromContext,
+						cwd,
+					},
+					abortController.signal,
+				);
+				abortController.signal.throwIfAborted();
 				this.assertExecutionAllowed();
 				if (hookResult?.result) {
 					for (const output of hookResult.result.displayOutputs ?? []) {
+						abortController.signal.throwIfAborted();
 						await options?.onDisplay?.(output);
+						abortController.signal.throwIfAborted();
 					}
+					abortController.signal.throwIfAborted();
 					this.recordPythonResult(code, hookResult.result, options);
 					return hookResult.result;
 				}

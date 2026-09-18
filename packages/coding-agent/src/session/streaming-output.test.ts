@@ -2,7 +2,146 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { formatBytes, truncateHeadBytes, truncateTailBytes } from "@oh-my-pi/pi-utils";
 import { OutputSink } from "./streaming-output";
+
+interface ReferenceCappedBuffers {
+	output: string;
+	artifact: string;
+	totalBytes: number;
+}
+
+function countReferenceNewlines(text: string): number {
+	let count = 0;
+	for (const char of text) {
+		if (char === "\n") count++;
+	}
+	return count;
+}
+
+function referenceCurrentCappedBuffers(
+	chunks: string[],
+	options: { spillThreshold: number; headBytes: number; artifactMaxBytes: number; artifactHeadBytes: number },
+): ReferenceCappedBuffers {
+	const headLimit = Math.max(0, Math.min(options.headBytes, Math.floor(options.spillThreshold / 2)));
+	const tailLimit = Math.max(0, options.spillThreshold - headLimit);
+	let head = "";
+	let headBytes = 0;
+	let headNewlines = 0;
+	let tail = "";
+	let tailBytes = 0;
+	let totalBytes = 0;
+	let totalNewlines = 0;
+
+	const artifactHeadLimit = Math.max(0, Math.min(options.artifactHeadBytes, options.artifactMaxBytes));
+	const artifactTailLimit = Math.max(0, options.artifactMaxBytes - artifactHeadLimit);
+	let artifactHead = "";
+	let artifactHeadBytes = 0;
+	let artifactTail = "";
+	let artifactTailBytes = 0;
+	let artifactTailIncomingBytes = 0;
+
+	for (const chunk of chunks) {
+		const chunkBytes = Buffer.byteLength(chunk, "utf-8");
+		totalBytes += chunkBytes;
+		totalNewlines += countReferenceNewlines(chunk);
+
+		let tailChunk = chunk;
+		let tailChunkBytes = chunkBytes;
+		if (headBytes < headLimit) {
+			const room = headLimit - headBytes;
+			if (chunkBytes <= room) {
+				head += chunk;
+				headBytes += chunkBytes;
+				headNewlines += countReferenceNewlines(chunk);
+				tailChunk = "";
+				tailChunkBytes = 0;
+			} else {
+				const headSlice = truncateHeadBytes(chunk, room);
+				head += headSlice.text;
+				headBytes += headSlice.bytes;
+				headNewlines += countReferenceNewlines(headSlice.text);
+				tailChunk = chunk.substring(headSlice.text.length);
+				tailChunkBytes = chunkBytes - headSlice.bytes;
+			}
+		}
+
+		if (tailChunkBytes > 0) {
+			if (tailBytes + tailChunkBytes <= tailLimit) {
+				tail += tailChunk;
+				tailBytes += tailChunkBytes;
+			} else if (tailChunkBytes >= tailLimit) {
+				const sliced = truncateTailBytes(tailChunk, tailLimit);
+				tail = sliced.text;
+				tailBytes = sliced.bytes;
+			} else {
+				const sliced = truncateTailBytes(tail + tailChunk, tailLimit);
+				tail = sliced.text;
+				tailBytes = sliced.bytes;
+			}
+		}
+
+		let artifactOverflow = chunk;
+		const artifactRoom = artifactHeadLimit - artifactHeadBytes;
+		if (artifactRoom >= chunkBytes) {
+			artifactHead += chunk;
+			artifactHeadBytes += chunkBytes;
+			artifactOverflow = "";
+		} else if (artifactRoom > 0) {
+			const headSlice = truncateHeadBytes(chunk, artifactRoom);
+			artifactHead += headSlice.text;
+			artifactHeadBytes += headSlice.bytes;
+			artifactOverflow = chunk.substring(headSlice.text.length);
+		}
+
+		if (artifactOverflow.length > 0) {
+			const overflowBytes = Buffer.byteLength(artifactOverflow, "utf-8");
+			artifactTailIncomingBytes += overflowBytes;
+			if (artifactTailLimit > 0) {
+				if (overflowBytes >= artifactTailLimit) {
+					const sliced = truncateTailBytes(artifactOverflow, artifactTailLimit);
+					artifactTail = sliced.text;
+					artifactTailBytes = sliced.bytes;
+				} else if (artifactTailBytes + overflowBytes > artifactTailLimit) {
+					const sliced = truncateTailBytes(artifactTail + artifactOverflow, artifactTailLimit);
+					artifactTail = sliced.text;
+					artifactTailBytes = sliced.bytes;
+				} else {
+					artifactTail += artifactOverflow;
+					artifactTailBytes += overflowBytes;
+				}
+			}
+		}
+	}
+
+	const totalLines = chunks.length > 0 ? totalNewlines + 1 : 0;
+	const headLines = headNewlines + (headBytes > 0 && !head.endsWith("\n") ? 1 : 0);
+	const tailLines = tail.length > 0 ? countReferenceNewlines(tail) + 1 : 0;
+	let output = head + tail;
+	if (headBytes > 0 && totalBytes > headBytes + tailBytes) {
+		const elidedLines = Math.max(0, totalLines - headLines - tailLines);
+		const elidedBytes = Math.max(0, totalBytes - headBytes - tailBytes);
+		const marker = elidedLines <= 1 ? `[…${elidedBytes}B elided…]` : `[…${elidedLines}ln elided…]`;
+		const headSeparator = head.endsWith("\n") ? "" : "\n";
+		const tailSeparator = tail.startsWith("\n") ? "" : "\n";
+		output = `${head}${headSeparator}${marker}${tailSeparator}${tail}`;
+	}
+
+	const droppedArtifactBytes = Math.max(0, artifactTailIncomingBytes - artifactTailBytes);
+	let artifact = artifactHead;
+	if (droppedArtifactBytes > 0) {
+		const totalCappedBytes = artifactHeadBytes + artifactTailIncomingBytes;
+		const headSeparator = artifactHeadBytes > 0 ? "\n" : "";
+		const tailSeparator = artifactTailBytes > 0 && !artifactTail.startsWith("\n") ? "\n" : "";
+		artifact +=
+			`${headSeparator}[ARTIFACT TRUNCATED: kept first ${formatBytes(artifactHeadBytes)} + ` +
+			`last ${formatBytes(artifactTailBytes)} of ${formatBytes(totalCappedBytes)}; ` +
+			`${formatBytes(droppedArtifactBytes)} elided from the middle]${tailSeparator}`;
+	}
+	artifact += artifactTail;
+
+	return { output, artifact, totalBytes };
+}
 
 async function withSixelPassthrough<T>(fn: () => T | Promise<T>): Promise<T> {
 	const previousProtocol = Bun.env.PI_FORCE_IMAGE_PROTOCOL;
@@ -113,6 +252,53 @@ test("diagnostic collection leaves raw artifact bytes unchanged", async () => {
 
 		expect(summary.actionableDiagnostics).toEqual([valid]);
 		expect(await fs.readFile(artifactPath, "utf8")).toBe(raw);
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("capped chunk buffers preserve current bytes across many small Unicode chunks", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "streaming-output-chunks-"));
+	const artifactPath = path.join(directory, "capped-output.log");
+	const options = {
+		spillThreshold: 257,
+		headBytes: 83,
+		artifactMaxBytes: 193,
+		artifactHeadBytes: 71,
+	};
+	const pattern = ["a", "β", "🙂", "\n", "漢", "xy", "é", "z\n"];
+	const chunks = Array.from({ length: 12_000 }, (_, index) => pattern[index % pattern.length]);
+	const reference = referenceCurrentCappedBuffers(chunks, options);
+
+	try {
+		const sink = new OutputSink({ ...options, artifactPath, artifactId: "capped-output" });
+		for (const chunk of chunks) sink.push(chunk);
+		const summary = await sink.dump();
+
+		expect(summary.output).toBe(reference.output);
+		expect(summary.outputBytes).toBe(Buffer.byteLength(reference.output, "utf-8"));
+		expect(summary.totalBytes).toBe(reference.totalBytes);
+		expect(await fs.readFile(artifactPath, "utf8")).toBe(reference.artifact);
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("artifact tail ignores an empty UTF-8 boundary chunk when choosing its separator", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "streaming-output-boundary-"));
+	const artifactPath = path.join(directory, "boundary-output.log");
+	const options = { spillThreshold: 1, headBytes: 0, artifactMaxBytes: 5, artifactHeadBytes: 0 };
+	const chunks = ["🙂", "\nabc"];
+	const reference = referenceCurrentCappedBuffers(chunks, options);
+
+	try {
+		const sink = new OutputSink({ ...options, artifactPath, artifactId: "boundary-output" });
+		for (const chunk of chunks) sink.push(chunk);
+		await sink.dump();
+
+		const artifact = await fs.readFile(artifactPath, "utf8");
+		expect(artifact).toBe(reference.artifact);
+		expect(artifact).not.toContain("]\n\nabc");
 	} finally {
 		await fs.rm(directory, { recursive: true, force: true });
 	}

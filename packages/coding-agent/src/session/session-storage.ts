@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { hasFsCode, isEnoent, logger, peekFileEnds, Snowflake, toError } from "@oh-my-pi/pi-utils";
-import { overlayTitleSlotContent, type SessionTitleUpdate, serializeTitleSlot } from "./session-title-slot";
+import { type FileLockHandle, tryAcquireFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
+import { overlayTitleSlotContent, type SessionTitleUpdate } from "./session-title-slot";
 
 const utf8Decoder = new TextDecoder("utf-8");
 
@@ -28,6 +29,14 @@ export interface SessionStorageWriter {
 
 export interface WriteTextAtomicOptions {
 	commitGuard?: () => boolean;
+	durable?: boolean;
+}
+
+export class SessionStorageLockError extends Error {
+	constructor(path: string) {
+		super(`Session file already has an active writer: ${path}`);
+		this.name = "SessionStorageLockError";
+	}
 }
 
 export interface SessionStorage {
@@ -43,6 +52,7 @@ export interface SessionStorage {
 	readText(path: string): Promise<string>;
 
 	readTextSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]>;
+	readTextRange(path: string, start: number, end: number): Promise<string>;
 	writeText(path: string, content: string): Promise<void>;
 	writeTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void>;
 	rename(path: string, nextPath: string): Promise<void>;
@@ -53,14 +63,23 @@ export interface SessionStorage {
 	drain(): Promise<void>;
 }
 
-const writerRegistry = new FinalizationRegistry<number>(fd => {
+interface FileWriterResources {
+	fd: number;
+	lock: FileLockHandle;
+}
+
+const writerRegistry = new FinalizationRegistry<FileWriterResources>(({ fd, lock }) => {
 	try {
 		fs.closeSync(fd);
+	} catch {}
+	try {
+		lock.release();
 	} catch {}
 });
 
 class FileSessionStorageWriter implements SessionStorageWriter {
 	#fd: number;
+	#lock: FileLockHandle;
 	#closed = false;
 	#error: Error | undefined;
 	#onError: ((err: Error) => void) | undefined;
@@ -74,9 +93,20 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 			fs.mkdirSync(dir, { recursive: true });
 		}
 
-		this.#fd = fs.openSync(fpath, flags === "w" ? "w" : "a");
+		const lock = tryAcquireFileLockSync(fpath);
+		if (!lock) throw new SessionStorageLockError(fpath);
 
-		writerRegistry.register(this, this.#fd, this);
+		let fd: number;
+		try {
+			fd = fs.openSync(fpath, flags === "w" ? "w" : "a");
+		} catch (error) {
+			lock.release();
+			throw error;
+		}
+		this.#fd = fd;
+		this.#lock = lock;
+
+		writerRegistry.register(this, { fd, lock }, this);
 	}
 
 	#recordError(err: unknown): Error {
@@ -146,6 +176,7 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 		try {
 			fs.closeSync(this.#fd);
 		} catch {}
+		this.#lock.release();
 		if (this.#error) throw this.#error;
 	}
 
@@ -166,6 +197,16 @@ export class FileSessionStorage implements SessionStorage {
 	}
 
 	writeTextSync(fpath: string, content: string): void {
+		const lock = tryAcquireFileLockSync(fpath);
+		if (!lock) throw new SessionStorageLockError(fpath);
+		try {
+			this.#writeTextSyncLocked(fpath, content);
+		} finally {
+			lock.release();
+		}
+	}
+
+	#writeTextSyncLocked(fpath: string, content: string): void {
 		const dir = path.dirname(fpath);
 		this.ensureDirSync(dir);
 		const tempPath = path.join(dir, `.${path.basename(fpath)}.${Snowflake.next()}.tmp`);
@@ -192,21 +233,13 @@ export class FileSessionStorage implements SessionStorage {
 	}
 
 	async updateSessionTitle(fpath: string, update: SessionTitleUpdate): Promise<void> {
-		const fd = fs.openSync(fpath, "r+");
+		const lock = tryAcquireFileLockSync(fpath);
+		if (!lock) throw new SessionStorageLockError(fpath);
 		try {
-			const buf = Buffer.from(serializeTitleSlot(update), "utf-8");
-			let offset = 0;
-			while (offset < buf.length) {
-				const written = fs.writeSync(fd, buf, offset, buf.length - offset, offset);
-				if (written === 0) {
-					throw new Error("Short write");
-				}
-				offset += written;
-			}
-		} catch (err) {
-			throw toError(err);
+			const content = await this.readText(fpath);
+			await this.#writeTextAtomicLocked(fpath, overlayTitleSlotContent(content, update), { durable: true });
 		} finally {
-			fs.closeSync(fd);
+			lock.release();
 		}
 	}
 
@@ -244,16 +277,40 @@ export class FileSessionStorage implements SessionStorage {
 		]);
 	}
 
+	readTextRange(path: string, start: number, end: number): Promise<string> {
+		return Bun.file(path).slice(start, end).text();
+	}
+
 	async writeText(path: string, content: string): Promise<void> {
 		await Bun.write(path, content, { createPath: true });
 	}
 
 	async writeTextAtomic(fpath: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
+		const lock = tryAcquireFileLockSync(fpath);
+		if (!lock) throw new SessionStorageLockError(fpath);
+		try {
+			await this.#writeTextAtomicLocked(fpath, content, options);
+		} finally {
+			lock.release();
+		}
+	}
+
+	async #writeTextAtomicLocked(fpath: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
 		const dir = path.resolve(fpath, "..");
 		const tempPath = path.join(dir, `.${path.basename(fpath)}.${Snowflake.next()}.tmp`);
 		await fs.promises.mkdir(dir, { recursive: true });
 		try {
-			await fs.promises.writeFile(tempPath, content);
+			if (options?.durable) {
+				const handle = await fs.promises.open(tempPath, "w");
+				try {
+					await handle.writeFile(content);
+					await handle.sync();
+				} finally {
+					await handle.close();
+				}
+			} else {
+				await fs.promises.writeFile(tempPath, content);
+			}
 		} catch (err) {
 			this.#discardTemp(tempPath, fpath);
 			throw toError(err);
@@ -265,7 +322,6 @@ export class FileSessionStorage implements SessionStorage {
 		}
 		try {
 			this.renameSync(tempPath, fpath);
-			return;
 		} catch (err) {
 			if (!hasFsCode(err, "EPERM")) {
 				this.#discardTemp(tempPath, fpath);
@@ -277,6 +333,17 @@ export class FileSessionStorage implements SessionStorage {
 				this.#discardTemp(tempPath, fpath);
 				throw fallbackErr;
 			}
+		}
+		if (options?.durable) this.#syncDirectory(dir);
+	}
+
+	#syncDirectory(dir: string): void {
+		if (process.platform === "win32") return;
+		const fd = fs.openSync(dir, "r");
+		try {
+			fs.fsyncSync(fd);
+		} finally {
+			fs.closeSync(fd);
 		}
 	}
 
@@ -666,6 +733,13 @@ export class MemorySessionStorage implements SessionStorage {
 		const entry = this.#files.get(path);
 		if (!entry) return Promise.reject(new Error(`File not found: ${path}`));
 		return Promise.resolve([sliceChunksHead(entry, prefixBytes), sliceChunksTail(entry, suffixBytes)]);
+	}
+
+	readTextRange(path: string, start: number, end: number): Promise<string> {
+		const entry = this.#files.get(path);
+		if (!entry) return Promise.reject(new Error(`File not found: ${path}`));
+		const bytes = Buffer.from(materializeMemoryEntry(entry), "utf8");
+		return Promise.resolve(bytes.subarray(start, end).toString("utf8"));
 	}
 
 	writeText(path: string, content: string): Promise<void> {

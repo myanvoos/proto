@@ -24,7 +24,8 @@ import { describeAttachedImagesForTextModel } from "../utils/image-vision-fallba
 import { blobExtensionForImageMimeType } from "./blob-store";
 import { type CustomMessage, convertToLlm } from "./messages";
 import { IMAGE_ATTACHMENT_DESCRIPTION_TYPE } from "./queued-messages";
-import type { BuildSessionContextOptions, SessionContext } from "./session-context";
+import { type BuildSessionContextOptions, buildSessionContext, type SessionContext } from "./session-context";
+import type { SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
 type NormalizableContentBlock =
@@ -85,8 +86,9 @@ export class SessionProviderBoundary {
 		return [];
 	}
 
-	buildDisplaySessionContext(): SessionContext {
-		return deobfuscateSessionContext(this.#host.sessionManager.buildSessionContext(), this.#host.obfuscator);
+	buildDisplaySessionContext(entries?: SessionEntry[]): SessionContext {
+		const sessionContext = entries ? buildSessionContext(entries) : this.#host.sessionManager.buildSessionContext();
+		return deobfuscateSessionContext(sessionContext, this.#host.obfuscator);
 	}
 
 	buildTranscriptSessionContext(

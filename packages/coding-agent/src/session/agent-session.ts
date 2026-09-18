@@ -19,10 +19,12 @@ import {
 	type BeforeToolCallContext,
 	type BeforeToolCallResult,
 	EventLoopKeepalive,
+	type MessageCountOptions,
 	resolveTelemetry,
 	type StreamFn,
 	TERMINAL_TOOL_RESULT_ABORT_REASON,
 	type ThinkingLevel,
+	type Tokenizer,
 	type ToolChoiceDirective,
 } from "@oh-my-pi/pi-agent-core";
 import {
@@ -31,6 +33,8 @@ import {
 	calculatePromptTokens,
 	collectEntriesForBranchSummary,
 	generateBranchSummary,
+	isEstimateCacheable,
+	registerMessageCacheInvalidator,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	AssistantMessage,
@@ -270,7 +274,7 @@ import type { ServingModel } from "./retry-fallback-chains";
 import { type AdvisorStats, SessionAdvisors, type SessionAdvisorsHost } from "./session-advisors";
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
 import { getRestorableSessionModels } from "./session-context";
-import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
+import type { BranchSummaryEntry, NewSessionOptions, SessionEntry } from "./session-entries";
 import { createSessionLiveHeartbeat, type SessionLiveHeartbeat } from "./session-liveness";
 import {
 	COMPACTION_CHECK_NONE,
@@ -346,6 +350,12 @@ type AgentContinueSkipReason =
 	| "should-continue-false"
 	| "post-restore-unavailable";
 
+interface AgentSessionAbortOptions {
+	goalReason?: "interrupted" | "internal";
+	reason?: string;
+	preserveCompaction?: boolean;
+}
+
 type ScheduledAgentContinueOptions = {
 	delayMs?: number;
 	generation?: number;
@@ -387,6 +397,85 @@ function cloneMessageEndNotification(message: AgentMessage): AgentMessage {
 }
 
 const INTERRUPTED_THINKING_MIN_CHARS = 60;
+
+interface VolatileMessageTokenCount {
+	message: AgentMessage;
+	defaultTokens: number;
+	flooredTokens: number;
+}
+
+interface MessageTokenSequenceCache {
+	tokenizer: Tokenizer;
+	revision: number;
+	length: number;
+	lastMessage: AgentMessage | undefined;
+	defaultTotal: number;
+	flooredTotal: number;
+	volatileMessages: VolatileMessageTokenCount[];
+}
+
+/** Keeps transcript totals proportional to appended messages while sharing Tokenizer's mutation contract. */
+class IncrementalMessageTokenCounter {
+	#revision = 0;
+	#sequences = new WeakMap<readonly AgentMessage[], MessageTokenSequenceCache>();
+	#unregister = registerMessageCacheInvalidator(() => {
+		this.#revision++;
+	});
+
+	count(tokenizer: Tokenizer, messages: readonly AgentMessage[], options?: MessageCountOptions): number {
+		const prior = this.#sequences.get(messages);
+		const canExtend =
+			prior !== undefined &&
+			prior.tokenizer === tokenizer &&
+			prior.revision === this.#revision &&
+			messages.length >= prior.length &&
+			(prior.length === 0 || messages[prior.length - 1] === prior.lastMessage);
+		const cached: MessageTokenSequenceCache = canExtend
+			? prior
+			: {
+					tokenizer,
+					revision: this.#revision,
+					length: 0,
+					lastMessage: undefined,
+					defaultTotal: 0,
+					flooredTotal: 0,
+					volatileMessages: [],
+				};
+
+		if (canExtend) {
+			for (const volatile of cached.volatileMessages) {
+				const defaultTokens = tokenizer.countMessage(volatile.message);
+				const flooredTokens = tokenizer.countMessage(volatile.message, { excludeEncryptedReasoning: true });
+				cached.defaultTotal += defaultTokens - volatile.defaultTokens;
+				cached.flooredTotal += flooredTokens - volatile.flooredTokens;
+				volatile.defaultTokens = defaultTokens;
+				volatile.flooredTokens = flooredTokens;
+			}
+		}
+		for (let index = cached.length; index < messages.length; index++) {
+			const message = messages[index];
+			const defaultTokens = tokenizer.countMessage(message);
+			const flooredTokens = tokenizer.countMessage(message, { excludeEncryptedReasoning: true });
+			cached.defaultTotal += defaultTokens;
+			cached.flooredTotal += flooredTokens;
+			if (!isEstimateCacheable(message)) {
+				cached.volatileMessages.push({ message, defaultTokens, flooredTokens });
+			}
+		}
+		cached.length = messages.length;
+		cached.lastMessage = messages[messages.length - 1];
+		this.#sequences.set(messages, cached);
+		return options?.excludeEncryptedReasoning === true ? cached.flooredTotal : cached.defaultTotal;
+	}
+
+	prime(tokenizer: Tokenizer, messages: readonly AgentMessage[]): void {
+		this.count(tokenizer, messages);
+	}
+
+	dispose(): void {
+		this.#unregister();
+	}
+}
 
 export class AgentSession {
 	readonly agent: Agent;
@@ -524,6 +613,7 @@ export class AgentSession {
 
 	readonly #ttsr: TtsrCoordinator;
 	readonly #stats: SessionStatsTracker;
+	readonly #messageTokens = new IncrementalMessageTokenCounter();
 
 	#pendingAbortErrorId?: number;
 
@@ -1269,6 +1359,7 @@ export class AgentSession {
 			promptGeneration: () => this.#promptGeneration,
 			sessionId: () => this.sessionId,
 			messages: () => this.messages,
+			countMessages: (messages, options) => this.#messageTokens.count(this.agent.tokenizer, messages, options),
 			baseSystemPrompt: () => this.#tools.baseSystemPrompt,
 			goalModeState: () => this.#goalModeState,
 			nonMessageTokenSource: () => this,
@@ -1282,7 +1373,7 @@ export class AgentSession {
 			disconnectFromAgent: () => this.#disconnectFromAgent(),
 			reconnectToAgent: () => this.#reconnectToAgent(),
 			drainStrandedQueuedMessages: () => this.#drainStrandedQueuedMessages(),
-			buildDisplaySessionContext: () => this.buildDisplaySessionContext(),
+			buildDisplaySessionContext: entries => this.buildDisplaySessionContext(entries),
 			convertToLlmForSideRequest: messages => this.#convertToLlmForSideRequest(messages),
 			obfuscateTextForProvider: text => this.#obfuscateTextForProvider(text),
 			obfuscatePreparationForProvider: preparation => this.#obfuscatePreparationForProvider(preparation),
@@ -1318,6 +1409,8 @@ export class AgentSession {
 		});
 
 		this.#unsubscribeExtendedContext = onExtendedContextChanged(() => void this.#reapplyExtendedContextPolicy());
+		// Resume pays the one-time exact count before the first user prompt; subsequent turns extend it.
+		this.#messageTokens.prime(this.agent.tokenizer, this.agent.state.messages);
 		void this.#retryInactiveAdvisorAfterModelDiscovery();
 	}
 
@@ -1624,51 +1717,87 @@ export class AgentSession {
 		}
 	}
 
-	#queuedExtensionEvents: Promise<void> = Promise.resolve();
+	#sessionEventEmitTail: Promise<void> = Promise.resolve();
+	#settledSessionEventEmit: Promise<void> = Promise.resolve();
+	#pendingSessionEventEmits = 0;
+	#pendingSessionMessageUpdate: Extract<AgentSessionEvent, { type: "message_update" }> | undefined;
+	#messageUpdateEmitTask: Promise<void> | undefined;
 
-	#queueExtensionEvent(event: AgentSessionEvent): Promise<void> {
-		const emit = async () => {
-			await this.#emitExtensionEvent(event);
+	#deliverSessionEvent(event: AgentSessionEvent): Promise<void> {
+		this.#pendingSessionEventEmits++;
+		const deliver = async () => {
+			try {
+				await this.#emitExtensionEvent(event);
+				if (event.type === "agent_end" && this.#promptInFlightCount > 0) {
+					this.#pendingAgentEndEmit = event;
+					return;
+				}
+				this.#emit(event);
+			} finally {
+				this.#pendingSessionEventEmits--;
+			}
 		};
-		const queued = this.#queuedExtensionEvents.then(emit, emit);
-		this.#queuedExtensionEvents = queued.catch(() => {});
+		const queued = this.#sessionEventEmitTail.then(deliver, deliver);
+		this.#sessionEventEmitTail = queued.catch(() => {});
 		return queued;
 	}
 
-	#subscriberEmitGate: Promise<void> = Promise.resolve();
-
-	async #emitSessionEvent(event: AgentSessionEvent, options: { detachExtensions?: boolean } = {}): Promise<void> {
-		if (event.type === "message_update") {
+	#deliverMessageUpdate(
+		event: Extract<AgentSessionEvent, { type: "message_update" }>,
+		hasExtensionHandlers: boolean,
+	): Promise<void> {
+		if (this.#pendingSessionEventEmits === 0 && !hasExtensionHandlers) {
 			this.#emit(event);
-			void this.#queueExtensionEvent(event);
-			return;
+			return this.#settledSessionEventEmit;
 		}
 
-		const previousGate = this.#subscriberEmitGate;
-		const { promise: gate, resolve: releaseGate } = Promise.withResolvers<void>();
-		this.#subscriberEmitGate = gate;
-		try {
-			const extensionEmit = this.#emitExtensionEvent(event);
-			if (options.detachExtensions) {
-				void extensionEmit.catch(error => {
-					logger.warn("Detached session event extension emit failed", {
-						type: event.type,
-						error: error instanceof Error ? error.message : String(error),
-					});
-				});
-			} else {
-				await extensionEmit;
-			}
-			await previousGate;
+		this.#pendingSessionMessageUpdate = event;
+		if (this.#messageUpdateEmitTask) return this.#messageUpdateEmitTask;
 
-			if (event.type === "agent_end" && this.#promptInFlightCount > 0) {
-				this.#pendingAgentEndEmit = event;
-				return;
+		this.#pendingSessionEventEmits++;
+		const deliverPending = async () => {
+			try {
+				while (this.#pendingSessionMessageUpdate) {
+					const pending = this.#pendingSessionMessageUpdate;
+					this.#pendingSessionMessageUpdate = undefined;
+					if (this.#extensionRunner?.hasHandlers("message_update")) {
+						try {
+							await this.#emitExtensionEvent(pending);
+						} catch (error) {
+							logger.warn("Message update extension emit failed", {
+								error: error instanceof Error ? error.message : String(error),
+							});
+						}
+					}
+					this.#emit(pending);
+				}
+			} finally {
+				this.#messageUpdateEmitTask = undefined;
+				this.#pendingSessionEventEmits--;
 			}
-			this.#emit(event);
-		} finally {
-			releaseGate();
-		}
+		};
+		const queued = this.#sessionEventEmitTail.then(deliverPending, deliverPending);
+		this.#messageUpdateEmitTask = queued;
+		this.#sessionEventEmitTail = queued.catch(() => {});
+		return queued;
+	}
+
+	#emitSessionEvent(event: AgentSessionEvent, options: { detachExtensions?: boolean } = {}): Promise<void> {
+		const hasMessageUpdateHandlers =
+			event.type === "message_update" && this.#extensionRunner?.hasHandlers("message_update") === true;
+		const queued =
+			event.type === "message_update"
+				? this.#deliverMessageUpdate(event, hasMessageUpdateHandlers)
+				: this.#deliverSessionEvent(event);
+		if (event.type === "message_update") return this.#settledSessionEventEmit;
+		if (!options.detachExtensions) return queued;
+		void queued.catch(error => {
+			logger.warn("Detached session event extension emit failed", {
+				type: event.type,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		return Promise.resolve();
 	}
 
 	#lastAssistantMessage: AssistantMessage | undefined = undefined;
@@ -3168,6 +3297,7 @@ export class AgentSession {
 
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
+		this.#messageTokens.dispose();
 		this.#recordSessionExit(options.reason ?? "dispose");
 		this.#cancelExitRecorder?.();
 		this.#cancelExitRecorder = undefined;
@@ -3672,8 +3802,8 @@ export class AgentSession {
 		return this.#providerBoundary.getImageAttachments();
 	}
 
-	buildDisplaySessionContext(): SessionContext {
-		return this.#providerBoundary.buildDisplaySessionContext();
+	buildDisplaySessionContext(entries?: SessionEntry[]): SessionContext {
+		return this.#providerBoundary.buildDisplaySessionContext(entries);
 	}
 
 	buildTranscriptSessionContext(
@@ -4346,8 +4476,8 @@ export class AgentSession {
 			const promptTokens =
 				breakdown?.usedTokens ??
 				nonMessageTokens +
-					this.agent.tokenizer.countMessages(this.messages) +
-					this.agent.tokenizer.countMessages(messages);
+					this.#messageTokens.count(this.agent.tokenizer, this.messages) +
+					this.#messageTokens.count(this.agent.tokenizer, messages);
 			this.#stats.setPendingSnapshot({
 				promptTokens,
 				nonMessageTokens,
@@ -5124,12 +5254,24 @@ export class AgentSession {
 		this.#promptDropped = handler;
 	}
 
-	async abort(options?: {
-		goalReason?: "interrupted" | "internal";
-		reason?: string;
+	#abortCall: Promise<void> | undefined;
 
-		preserveCompaction?: boolean;
-	}): Promise<void> {
+	abort(options?: AgentSessionAbortOptions): Promise<void> {
+		if (this.#abortCall) return this.#abortCall;
+		const call = this.#doAbort(options);
+		this.#abortCall = call;
+		void call.then(
+			() => {
+				if (this.#abortCall === call) this.#abortCall = undefined;
+			},
+			() => {
+				if (this.#abortCall === call) this.#abortCall = undefined;
+			},
+		);
+		return call;
+	}
+
+	async #doAbort(options?: AgentSessionAbortOptions): Promise<void> {
 		const userInterrupt = options?.reason === USER_INTERRUPT_LABEL;
 		this.#pendingAbortErrorId = userInterrupt ? AIError.create(AIError.Flag.UserInterrupt) : undefined;
 		if (userInterrupt) this.#advisors.autoResumeSuppressed = true;
@@ -5199,18 +5341,18 @@ export class AgentSession {
 		await this.#beforeSessionSwitch();
 		this.#disconnectFromAgent();
 		let advisorRecordersDetached = false;
-		await this.abort();
-
-		if (previousSessionFile) detachedSessionHolder.delete(previousSessionFile);
-		this.#cancelOwnAsyncJobs();
-		this.#closeAllProviderSessions("new session");
-		await this.#bash.flushPending();
-		const bashTransition = this.#bash.beginSessionTransition({ persistDetached: true });
 		let sessionTransitioned = false;
 		let sessionReconciled = false;
 		try {
+			await this.abort();
+
+			if (previousSessionFile) detachedSessionHolder.delete(previousSessionFile);
+			this.#cancelOwnAsyncJobs();
+			this.#closeAllProviderSessions("new session");
+			await this.#bash.flushPending();
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
+			const bashTransition = this.#bash.beginSessionTransition({ persistDetached: true });
 			try {
 				this.agent.reset();
 				await this.sessionManager.flush();
@@ -5259,13 +5401,20 @@ export class AgentSession {
 
 			return true;
 		} finally {
-			if (!sessionReconciled) await this.#afterSessionSwitch();
-			if (advisorRecordersDetached) {
-				if (sessionTransitioned) {
-					this.#advisors.resetSessionState();
-				} else {
-					this.#advisors.reattachRecorderFeeds();
+			try {
+				try {
+					if (!sessionReconciled) await this.#afterSessionSwitch();
+				} finally {
+					if (advisorRecordersDetached) {
+						if (sessionTransitioned) {
+							this.#advisors.resetSessionState();
+						} else {
+							this.#advisors.reattachRecorderFeeds();
+						}
+					}
 				}
+			} finally {
+				if (!this.#isDisposed) this.#reconnectToAgent();
 			}
 		}
 	}
@@ -5979,225 +6128,249 @@ export class AgentSession {
 		}
 
 		this.#disconnectFromAgent();
-		await this.abort({ goalReason: "internal" });
-		await this.#beforeSessionSwitch();
-
-		await this.#bash.flushPending();
-
-		await this.sessionManager.flush();
-		const previousSessionState = this.sessionManager.captureState();
-		const bashTransition = this.#bash.beginSessionTransition();
-
-		const previousSessionContext = switchingToDifferentSession ? undefined : this.buildDisplaySessionContext();
-
-		const previousAgentMessages = [...this.agent.state.messages];
-		const previousSteeringMessages = [...this.agent.peekSteeringQueue()];
-		const previousFollowUpMessages = [...this.agent.peekFollowUpQueue()];
-		const previousPendingNextTurnMessages = [...this.#pendingNextTurnMessages];
-		const previousScheduledHiddenNextTurnGeneration = this.#scheduledHiddenNextTurnGeneration;
-		const previousQueuedMessageDrainBlocked = this.#queuedMessageDrainBlocked;
-		const previousUsagePreflightReadyForNextModelCall = this.#usagePreflightReadyForNextModelCall;
-		const previousUsagePreflightReadyModel = this.#usagePreflightReadyModel;
-		const previousModel = this.model;
-		const previousThinkingLevel = this.thinkingLevel;
-		const previousServiceTierByFamily = this.serviceTierByFamily;
-		const previousTools = [...this.agent.state.tools];
-		const previousBaseSystemPrompt = this.#tools.baseSystemPrompt;
-		const previousSystemPrompt = this.agent.state.systemPrompt;
-		const previousFreshProviderSessionId = this.#freshProviderSessionId;
-		const previousInheritedProviderPromptCacheKey = this.#inheritedProviderPromptCacheKey;
-
-		const previousCheckpointState = this.#checkpointState;
-		const previousPendingRewindReport = this.#pendingRewindReport;
-		const previousLastCompletedRewind = this.#lastCompletedRewind;
-		const previousRewoundToolResultIds = new Set(this.#rewoundToolResultIds);
-
-		this.agent.clearAllQueues();
-		this.#pendingNextTurnMessages = [];
-		this.#scheduledHiddenNextTurnGeneration = undefined;
-		this.#queuedMessageDrainBlocked = false;
-		this.#usagePreflightReadyForNextModelCall = false;
-		this.#usagePreflightReadyModel = undefined;
-
+		let switchPreparationStarted = false;
+		let switchReconciliationAttempted = false;
 		try {
-			if (switchingToDifferentSession) {
-				await this.#advisors.drainAndDetachRecorders();
-			}
-			await this.sessionManager.setSessionFile(sessionPath);
-			this.#syncLiveHeartbeat();
-			this.#bash.markSessionTransition(bashTransition);
-			if (switchingToDifferentSession) {
-				this.#freshProviderSessionId = undefined;
-				this.#clearInheritedProviderPromptCacheKey();
-				this.#adoptInheritedProviderPromptCacheKey();
-			}
-			this.#syncAgentSessionId(undefined, false);
+			await this.abort({ goalReason: "internal" });
+			switchPreparationStarted = true;
+			await this.#beforeSessionSwitch();
 
-			let sessionContext = this.buildDisplaySessionContext();
-			const didReloadConversationChange =
-				previousSessionContext !== undefined &&
-				didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
-			this.#rehydrateCheckpointRewindState();
+			await this.#bash.flushPending();
 
-			if (this.#extensionRunner) {
-				await this.#extensionRunner.emit({
-					type: "session_switch",
-					reason: "resume",
-					previousSessionFile,
-				});
-			}
+			await this.sessionManager.flush();
+			const previousSessionState = this.sessionManager.captureState();
 
-			this.agent.replaceMessages(sessionContext.messages);
-			this.#advisors.resetSessionState({ preserveCost: true });
-			this.#todo.syncFromBranch();
-			if (switchingToDifferentSession) {
-				this.#closeAllProviderSessions("session switch");
-			} else if (didReloadConversationChange) {
-				this.#closeAllProviderSessions("session reload");
-			}
+			const previousSessionContext = switchingToDifferentSession ? undefined : this.buildDisplaySessionContext();
 
-			const targetModelStrings = getRestorableSessionModels(
-				sessionContext.models,
-				this.sessionManager.getLastModelChangeRole(),
-			);
-			if (targetModelStrings.length > 0) {
-				const availableModels = this.#modelRegistry.getAvailable();
-				let match: Model | undefined;
-				for (const targetModelStr of targetModelStrings) {
-					const slashIdx = targetModelStr.indexOf("/");
-					if (slashIdx <= 0) continue;
-					const provider = targetModelStr.slice(0, slashIdx);
-					const modelId = targetModelStr.slice(slashIdx + 1);
-					match = availableModels.find(m => m.provider === provider && m.id === modelId);
-					if (match) break;
+			const previousAgentMessages = [...this.agent.state.messages];
+			const previousSteeringMessages = [...this.agent.peekSteeringQueue()];
+			const previousFollowUpMessages = [...this.agent.peekFollowUpQueue()];
+			const previousPendingNextTurnMessages = [...this.#pendingNextTurnMessages];
+			const previousScheduledHiddenNextTurnGeneration = this.#scheduledHiddenNextTurnGeneration;
+			const previousQueuedMessageDrainBlocked = this.#queuedMessageDrainBlocked;
+			const previousUsagePreflightReadyForNextModelCall = this.#usagePreflightReadyForNextModelCall;
+			const previousUsagePreflightReadyModel = this.#usagePreflightReadyModel;
+			const previousModel = this.model;
+			const previousThinkingLevel = this.thinkingLevel;
+			const previousServiceTierByFamily = this.serviceTierByFamily;
+			const previousTools = [...this.agent.state.tools];
+			const previousBaseSystemPrompt = this.#tools.baseSystemPrompt;
+			const previousSystemPrompt = this.agent.state.systemPrompt;
+			const previousFreshProviderSessionId = this.#freshProviderSessionId;
+			const previousInheritedProviderPromptCacheKey = this.#inheritedProviderPromptCacheKey;
+
+			const previousCheckpointState = this.#checkpointState;
+			const previousPendingRewindReport = this.#pendingRewindReport;
+			const previousLastCompletedRewind = this.#lastCompletedRewind;
+			const previousRewoundToolResultIds = new Set(this.#rewoundToolResultIds);
+
+			const bashTransition = this.#bash.beginSessionTransition();
+			try {
+				this.agent.clearAllQueues();
+				this.#pendingNextTurnMessages = [];
+				this.#scheduledHiddenNextTurnGeneration = undefined;
+				this.#queuedMessageDrainBlocked = false;
+				this.#usagePreflightReadyForNextModelCall = false;
+				this.#usagePreflightReadyModel = undefined;
+
+				if (switchingToDifferentSession) {
+					await this.#advisors.drainAndDetachRecorders();
 				}
-				if (match) {
-					const currentModel = this.model;
-					const shouldResetProviderState =
-						switchingToDifferentSession ||
-						(currentModel !== undefined &&
-							(currentModel.provider !== match.provider ||
-								currentModel.id !== match.id ||
-								currentModel.api !== match.api));
-					if (shouldResetProviderState) {
-						await this.#setModelWithProviderSessionReset(match);
-					} else {
-						this.agent.setModel(match);
+				await this.sessionManager.setSessionFile(sessionPath);
+				this.#syncLiveHeartbeat();
+				this.#bash.markSessionTransition(bashTransition);
+				if (switchingToDifferentSession) {
+					this.#freshProviderSessionId = undefined;
+					this.#clearInheritedProviderPromptCacheKey();
+					this.#adoptInheritedProviderPromptCacheKey();
+				}
+				this.#syncAgentSessionId(undefined, false);
+
+				let sessionContext = this.buildDisplaySessionContext();
+				const didReloadConversationChange =
+					previousSessionContext !== undefined &&
+					didSessionMessagesChange(previousSessionContext.messages, sessionContext.messages);
+				this.#rehydrateCheckpointRewindState();
+
+				if (this.#extensionRunner) {
+					await this.#extensionRunner.emit({
+						type: "session_switch",
+						reason: "resume",
+						previousSessionFile,
+					});
+				}
+
+				this.agent.replaceMessages(sessionContext.messages);
+				this.#advisors.resetSessionState({ preserveCost: true });
+				this.#todo.syncFromBranch();
+				if (switchingToDifferentSession) {
+					this.#closeAllProviderSessions("session switch");
+				} else if (didReloadConversationChange) {
+					this.#closeAllProviderSessions("session reload");
+				}
+
+				const targetModelStrings = getRestorableSessionModels(
+					sessionContext.models,
+					this.sessionManager.getLastModelChangeRole(),
+				);
+				if (targetModelStrings.length > 0) {
+					const availableModels = this.#modelRegistry.getAvailable();
+					let match: Model | undefined;
+					for (const targetModelStr of targetModelStrings) {
+						const slashIdx = targetModelStr.indexOf("/");
+						if (slashIdx <= 0) continue;
+						const provider = targetModelStr.slice(0, slashIdx);
+						const modelId = targetModelStr.slice(slashIdx + 1);
+						match = availableModels.find(m => m.provider === provider && m.id === modelId);
+						if (match) break;
+					}
+					if (match) {
+						const currentModel = this.model;
+						const shouldResetProviderState =
+							switchingToDifferentSession ||
+							(currentModel !== undefined &&
+								(currentModel.provider !== match.provider ||
+									currentModel.id !== match.id ||
+									currentModel.api !== match.api));
+						if (shouldResetProviderState) {
+							await this.#setModelWithProviderSessionReset(match);
+						} else {
+							this.agent.setModel(match);
+						}
 					}
 				}
-			}
 
-			const model = this.model;
-			if (model) {
-				const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
-					api: model.api,
-					provider: model.provider,
-					model: model.id,
-				});
-				if (interruptedTurnAbort) {
-					this.sessionManager.appendMessage(interruptedTurnAbort);
-					sessionContext = this.buildDisplaySessionContext();
-					this.agent.replaceMessages(sessionContext.messages);
+				const model = this.model;
+				if (model) {
+					const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+					});
+					if (interruptedTurnAbort) {
+						this.sessionManager.appendMessage(interruptedTurnAbort);
+						sessionContext = this.buildDisplaySessionContext();
+						this.agent.replaceMessages(sessionContext.messages);
+					}
 				}
-			}
 
-			const hasThinkingEntry = this.sessionManager.getBranch().some(entry => entry.type === "thinking_level_change");
-			const hasServiceTierEntry = this.sessionManager
-				.getBranch()
-				.some(entry => entry.type === "service_tier_change");
-			const defaultThinkingLevel = parseThinkingLevel(this.settings.get("defaultThinkingLevel"));
-			const configuredServiceTierByFamily = buildServiceTierByFamily(
-				this.settings.get("tier.openai"),
-				this.settings.get("tier.anthropic"),
-				this.settings.get("tier.google"),
-			);
+				const hasThinkingEntry = this.sessionManager
+					.getBranch()
+					.some(entry => entry.type === "thinking_level_change");
+				const hasServiceTierEntry = this.sessionManager
+					.getBranch()
+					.some(entry => entry.type === "service_tier_change");
+				const defaultThinkingLevel = parseThinkingLevel(this.settings.get("defaultThinkingLevel"));
+				const configuredServiceTierByFamily = buildServiceTierByFamily(
+					this.settings.get("tier.openai"),
+					this.settings.get("tier.anthropic"),
+					this.settings.get("tier.google"),
+				);
 
-			const restoredThinkingLevel = hasThinkingEntry
-				? (sessionContext.thinkingLevel as ThinkingLevel | undefined)
-				: defaultThinkingLevel;
-			this.#models.restoreThinkingLevel(restoredThinkingLevel);
-			this.#models.restoreServiceTiers(
-				hasServiceTierEntry ? (sessionContext.serviceTier ?? {}) : configuredServiceTierByFamily,
-			);
+				const restoredThinkingLevel = hasThinkingEntry
+					? (sessionContext.thinkingLevel as ThinkingLevel | undefined)
+					: defaultThinkingLevel;
+				this.#models.restoreThinkingLevel(restoredThinkingLevel);
+				this.#models.restoreServiceTiers(
+					hasServiceTierEntry ? (sessionContext.serviceTier ?? {}) : configuredServiceTierByFamily,
+				);
 
-			if (switchingToDifferentSession) {
-			}
-			if (switchingToDifferentSession || didReloadConversationChange) {
-				this.#clearSessionScopedToolState();
-			}
-			this.#reconnectToAgent();
-			try {
-				await this.#afterSessionSwitch();
+				if (switchingToDifferentSession) {
+				}
+				if (switchingToDifferentSession || didReloadConversationChange) {
+					this.#clearSessionScopedToolState();
+				}
+				this.#reconnectToAgent();
+				switchReconciliationAttempted = true;
+				try {
+					await this.#afterSessionSwitch();
+				} catch (error) {
+					logger.warn("Failed to reconcile session mode after switch", {
+						targetSessionFile: sessionPath,
+						error: String(error),
+					});
+				}
+
+				try {
+					await this.refreshBaseSystemPrompt();
+				} catch (refreshErr) {
+					logger.warn("Failed to refresh system prompt after session switch", {
+						targetSessionFile: sessionPath,
+						error: String(refreshErr),
+					});
+				}
+
+				if (switchingToDifferentSession) {
+					this.#advisors.restoreCost(await loadAdvisorTranscriptCosts(this.sessionFile));
+				}
+				this.#bash.finishSessionTransition(bashTransition, true);
+				if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
+					this.#notifySessionChangeCallbacks();
+				}
+				return true;
 			} catch (error) {
-				logger.warn("Failed to reconcile session mode after switch", {
-					targetSessionFile: sessionPath,
-					error: String(error),
-				});
-			}
+				this.sessionManager.restoreState(previousSessionState);
+				this.#syncLiveHeartbeat();
+				this.#freshProviderSessionId = previousFreshProviderSessionId;
+				this.#syncAgentSessionId(previousSessionState.sessionId, false);
+				this.agent.setTools(previousTools);
+				this.#tools.setBaseSystemPrompt(previousBaseSystemPrompt);
+				this.agent.setSystemPrompt(previousSystemPrompt);
+				this.agent.replaceMessages(previousAgentMessages);
+				this.agent.replaceQueues(previousSteeringMessages, previousFollowUpMessages);
+				this.#pendingNextTurnMessages = previousPendingNextTurnMessages;
+				this.#scheduledHiddenNextTurnGeneration = previousScheduledHiddenNextTurnGeneration;
+				this.#queuedMessageDrainBlocked = previousQueuedMessageDrainBlocked;
+				this.#usagePreflightReadyForNextModelCall = previousUsagePreflightReadyForNextModelCall;
+				this.#usagePreflightReadyModel = previousUsagePreflightReadyModel;
+				this.#inheritedProviderPromptCacheKey = previousInheritedProviderPromptCacheKey;
+				this.#checkpointState = previousCheckpointState;
+				this.#pendingRewindReport = previousPendingRewindReport;
+				this.#lastCompletedRewind = previousLastCompletedRewind;
+				this.#rewoundToolResultIds = previousRewoundToolResultIds;
 
+				let modelRolledBack = false;
+				if (previousModel) {
+					const rolledBackModel = this.model;
+					this.agent.setModel(previousModel);
+					modelRolledBack = !modelsAreEqual(rolledBackModel, previousModel);
+				}
+				this.#models.restoreThinkingLevel(previousThinkingLevel);
+				this.#models.restoreServiceTiers(previousServiceTierByFamily);
+				if (modelRolledBack) {
+					this.#emit({ type: "model_changed" });
+				}
+				this.#todo.syncFromBranch();
+				this.#advisors.resetAllRuntimes();
+				this.#advisors.reattachRecorderFeeds();
+				this.#reconnectToAgent();
+				switchReconciliationAttempted = true;
+				try {
+					await this.#afterSessionSwitch();
+				} catch (reconcileError) {
+					logger.warn("Failed to reconcile session mode after switch rollback", {
+						targetSessionFile: sessionPath,
+						error: String(reconcileError),
+					});
+				}
+				this.#bash.finishSessionTransition(bashTransition, false);
+				throw error;
+			}
+		} finally {
 			try {
-				await this.refreshBaseSystemPrompt();
-			} catch (refreshErr) {
-				logger.warn("Failed to refresh system prompt after session switch", {
-					targetSessionFile: sessionPath,
-					error: String(refreshErr),
-				});
+				if (switchPreparationStarted && !switchReconciliationAttempted) {
+					try {
+						await this.#afterSessionSwitch();
+					} catch (reconcileError) {
+						logger.warn("Failed to reconcile session mode after aborted switch preparation", {
+							targetSessionFile: sessionPath,
+							error: String(reconcileError),
+						});
+					}
+				}
+			} finally {
+				if (!this.#isDisposed) this.#reconnectToAgent();
 			}
-
-			if (switchingToDifferentSession) {
-				this.#advisors.restoreCost(await loadAdvisorTranscriptCosts(this.sessionFile));
-			}
-			this.#bash.finishSessionTransition(bashTransition, true);
-			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
-				this.#notifySessionChangeCallbacks();
-			}
-			return true;
-		} catch (error) {
-			this.sessionManager.restoreState(previousSessionState);
-			this.#syncLiveHeartbeat();
-			this.#freshProviderSessionId = previousFreshProviderSessionId;
-			this.#syncAgentSessionId(previousSessionState.sessionId, false);
-			this.agent.setTools(previousTools);
-			this.#tools.setBaseSystemPrompt(previousBaseSystemPrompt);
-			this.agent.setSystemPrompt(previousSystemPrompt);
-			this.agent.replaceMessages(previousAgentMessages);
-			this.agent.replaceQueues(previousSteeringMessages, previousFollowUpMessages);
-			this.#pendingNextTurnMessages = previousPendingNextTurnMessages;
-			this.#scheduledHiddenNextTurnGeneration = previousScheduledHiddenNextTurnGeneration;
-			this.#queuedMessageDrainBlocked = previousQueuedMessageDrainBlocked;
-			this.#usagePreflightReadyForNextModelCall = previousUsagePreflightReadyForNextModelCall;
-			this.#usagePreflightReadyModel = previousUsagePreflightReadyModel;
-			this.#inheritedProviderPromptCacheKey = previousInheritedProviderPromptCacheKey;
-			this.#checkpointState = previousCheckpointState;
-			this.#pendingRewindReport = previousPendingRewindReport;
-			this.#lastCompletedRewind = previousLastCompletedRewind;
-			this.#rewoundToolResultIds = previousRewoundToolResultIds;
-
-			let modelRolledBack = false;
-			if (previousModel) {
-				const rolledBackModel = this.model;
-				this.agent.setModel(previousModel);
-				modelRolledBack = !modelsAreEqual(rolledBackModel, previousModel);
-			}
-			this.#models.restoreThinkingLevel(previousThinkingLevel);
-			this.#models.restoreServiceTiers(previousServiceTierByFamily);
-			if (modelRolledBack) {
-				this.#emit({ type: "model_changed" });
-			}
-			this.#todo.syncFromBranch();
-			this.#advisors.resetAllRuntimes();
-			this.#advisors.reattachRecorderFeeds();
-			this.#reconnectToAgent();
-			try {
-				await this.#afterSessionSwitch();
-			} catch (reconcileError) {
-				logger.warn("Failed to reconcile session mode after switch rollback", {
-					targetSessionFile: sessionPath,
-					error: String(reconcileError),
-				});
-			}
-			this.#bash.finishSessionTransition(bashTransition, false);
-			throw error;
 		}
 	}
 

@@ -3,10 +3,10 @@ import * as path from "node:path";
 import type { Message } from "@oh-my-pi/pi-ai";
 import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { lookupSessionScan, lookupSessionTitle, recordSessionScan, recordSessionTitle } from "./session-index";
 import { readSessionLiveState } from "./session-liveness";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
-import { lookupSessionTitle, recordSessionTitle } from "./title-index";
 
 export type SessionStatus = "complete" | "interrupted" | "aborted" | "error" | "pending" | "unknown";
 
@@ -52,10 +52,29 @@ const SESSION_LIST_MAX_WORKERS = 16;
 
 const SESSION_SCAN_CACHE_MAX = 4096;
 
+const SESSION_SCAN_BOUNDARY_BYTES = 512;
+
+interface SessionScanAccumulator {
+	messageCount: number;
+	firstMessage: string;
+	searchText: string;
+	hasMessageText: boolean;
+	shortSummary: string | undefined;
+}
+
+interface SessionScanResumeState {
+	scannedBytes: number;
+	prefixHash: string;
+	boundaryHash: string;
+	header: SessionListHeader;
+	acc: SessionScanAccumulator;
+}
+
 interface SessionScanCacheEntry {
 	mtimeMs: number;
 	size: number;
 	info: SessionInfo | undefined;
+	resume?: SessionScanResumeState;
 }
 
 type SessionScanCache = LRUCache<string, SessionScanCacheEntry>;
@@ -251,22 +270,7 @@ function extractStringProperty(source: string, name: string, startIndex = 0): st
 	return decodeJsonStringFragment(source.slice(valueStart));
 }
 
-function countMessageMarkers(content: string): number {
-	let count = 0;
-	let index = 0;
-	while (index < content.length) {
-		const typeIndex = content.indexOf('"type"', index);
-		if (typeIndex === -1) break;
-		const colonIndex = content.indexOf(":", typeIndex + 6);
-		if (colonIndex === -1) break;
-		const type = extractStringProperty(content, "type", typeIndex);
-		if (type === "message") count++;
-		index = colonIndex + 1;
-	}
-	return count;
-}
-
-function extractFirstDisplayMessageFromPrefix(content: string): string | undefined {
+function extractFirstDisplayMessage(content: string): string | undefined {
 	let fallback: string | undefined;
 	let index = content.indexOf('"role"');
 
@@ -372,6 +376,57 @@ function attachSessionLiveState(info: SessionInfo, storage: SessionStorage): Ses
 	return info;
 }
 
+function foldSessionEntry(acc: SessionScanAccumulator, raw: Record<string, unknown>): void {
+	const entry = raw as { type?: string; message?: Message; shortSummary?: string };
+	if (entry.type === "compaction" && typeof entry.shortSummary === "string") {
+		acc.shortSummary = entry.shortSummary;
+	}
+	if (entry.type !== "message" || !entry.message) return;
+	acc.messageCount++;
+	if (entry.message.role !== "user" && entry.message.role !== "assistant") return;
+	const textContent = extractTextFromContent(entry.message.content);
+	if (!textContent) return;
+	acc.searchText = acc.hasMessageText ? `${acc.searchText} ${textContent}` : textContent;
+	acc.hasMessageText = true;
+	if (!acc.firstMessage && entry.message.role === "user") acc.firstMessage = textContent;
+}
+
+function foldSessionJsonl(acc: SessionScanAccumulator, chunk: string): number {
+	const lastBreak = chunk.lastIndexOf("\n");
+	if (lastBreak === -1) return 0;
+	const complete = chunk.slice(0, lastBreak + 1);
+	for (const entry of parseJsonlLenient<Record<string, unknown>>(complete)) foldSessionEntry(acc, entry);
+	return Buffer.byteLength(complete, "utf8");
+}
+
+async function boundaryFingerprint(file: string, storage: SessionStorage, scannedBytes: number): Promise<string> {
+	if (scannedBytes <= 0) return "";
+	const start = Math.max(0, scannedBytes - SESSION_SCAN_BOUNDARY_BYTES);
+	return Bun.hash(await storage.readTextRange(file, start, scannedBytes)).toString();
+}
+
+function loadPersistedResume(file: string): SessionScanResumeState | undefined {
+	const row = lookupSessionScan(file);
+	if (!row) return undefined;
+	try {
+		return JSON.parse(row.payload) as SessionScanResumeState;
+	} catch {
+		return undefined;
+	}
+}
+
+async function resumableScanState(
+	cached: SessionScanResumeState | undefined,
+	file: string,
+	storage: SessionStorage,
+	size: number,
+	prefixHash: string,
+): Promise<SessionScanResumeState | undefined> {
+	if (!cached || cached.prefixHash !== prefixHash || size < cached.scannedBytes) return undefined;
+	const boundaryHash = await boundaryFingerprint(file, storage, cached.scannedBytes);
+	return boundaryHash === cached.boundaryHash ? cached : undefined;
+}
+
 async function scanSessionFile(
 	file: string,
 	storage: SessionStorage,
@@ -391,66 +446,77 @@ async function scanSessionFile(
 		return cached.info ? attachSessionLiveState({ ...cached.info }, storage) : undefined;
 	}
 	try {
-		const [content, suffix] = await storage.readTextSlices(
+		const [prefix, suffix] = await storage.readTextSlices(
 			file,
 			SESSION_LIST_PREFIX_BYTES,
 			withStatus ? SESSION_LIST_SUFFIX_BYTES : 0,
 		);
 		const { size, mtime } = stat;
-		const entries = parseJsonlLenient<Record<string, unknown>>(content);
-		const header = parseSessionListHeader(content, entries);
-		if (!header) {
-			cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: undefined });
-			return undefined;
+		const prefixHash = Bun.hash(prefix).toString();
+		const resumeCandidate = cached?.resume ?? loadPersistedResume(file);
+		const resume = await resumableScanState(resumeCandidate, file, storage, size, prefixHash);
+		let scannedDelta = false;
+
+		let header: SessionListHeader;
+		let acc: SessionScanAccumulator;
+		let scannedBytes: number;
+
+		if (resume) {
+			header = resume.header;
+			acc = { ...resume.acc };
+			scannedBytes = resume.scannedBytes;
+			if (size > scannedBytes) {
+				scannedBytes += foldSessionJsonl(acc, await storage.readTextRange(file, scannedBytes, size));
+				scannedDelta = true;
+			}
+		} else {
+			const content = size <= SESSION_LIST_PREFIX_BYTES ? prefix : await storage.readText(file);
+			const entries = parseJsonlLenient<Record<string, unknown>>(content);
+			const parsedHeader = parseSessionListHeader(content, entries);
+			if (!parsedHeader) {
+				cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: undefined });
+				return undefined;
+			}
+			header = parsedHeader;
+			acc = {
+				messageCount: 0,
+				firstMessage: "",
+				searchText: "",
+				hasMessageText: false,
+				shortSummary: undefined,
+			};
+			for (let i = 1; i < entries.length; i++) foldSessionEntry(acc, entries[i]);
+			const lastBreak = content.lastIndexOf("\n");
+			scannedBytes = lastBreak === -1 ? 0 : Buffer.byteLength(content.slice(0, lastBreak + 1), "utf8");
+			acc.firstMessage ||= extractFirstDisplayMessage(content) ?? "";
 		}
 
-		let parsedMessageCount = 0;
-		let firstMessage = "";
-		const allMessages: string[] = [];
-		let shortSummary: string | undefined;
-
-		for (let i = 1; i < entries.length; i++) {
-			const entry = entries[i] as { type?: string; message?: Message; shortSummary?: string };
-
-			if (entry.type === "compaction" && typeof entry.shortSummary === "string") {
-				shortSummary = entry.shortSummary;
-			}
-
-			if (entry.type === "message" && entry.message) {
-				parsedMessageCount++;
-
-				if (entry.message.role === "user" || entry.message.role === "assistant") {
-					const textContent = extractTextFromContent(entry.message.content);
-
-					if (textContent) {
-						allMessages.push(textContent);
-
-						if (!firstMessage && entry.message.role === "user") {
-							firstMessage = textContent;
-						}
-					}
-				}
-			}
-		}
-
-		firstMessage ||= extractFirstDisplayMessageFromPrefix(content) ?? "";
-		const messageCount = Math.max(parsedMessageCount, countMessageMarkers(content));
 		const info: SessionInfo = {
 			path: file,
 			id: header.id,
 			cwd: header.cwd ?? "",
-			title: header.title ?? shortSummary,
+			title: header.title ?? acc.shortSummary,
 			parentSessionPath: header.parentSession,
 			created: new Date(header.timestamp ?? ""),
 			modified: mtime,
-			messageCount,
+			messageCount: acc.messageCount,
 			size,
-			firstMessage: firstMessage || "(no messages)",
-			allMessagesText: allMessages.length > 0 ? allMessages.join(" ") : firstMessage,
+			firstMessage: acc.firstMessage || "(no messages)",
+			allMessagesText: acc.hasMessageText ? acc.searchText : acc.firstMessage,
 			status: withStatus ? deriveSessionStatus(suffix) : undefined,
 		};
 
-		cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: { ...info } });
+		const nextResume: SessionScanResumeState = {
+			scannedBytes,
+			prefixHash,
+			boundaryHash: await boundaryFingerprint(file, storage, scannedBytes),
+			header,
+			acc: { ...acc },
+		};
+		cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: { ...info }, resume: nextResume });
+		if (!resume || scannedDelta) {
+			recordSessionScan(file, stat.size, stat.mtimeMs, JSON.stringify(nextResume));
+		}
 		return attachSessionLiveState(info, storage);
 	} catch {
 		return undefined;

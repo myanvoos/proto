@@ -11,11 +11,38 @@ CREATE TABLE IF NOT EXISTS session_titles (
 );
 `;
 
+const SCAN_TABLE_DDL = `
+CREATE TABLE IF NOT EXISTS session_scan (
+	path TEXT PRIMARY KEY,
+	size INTEGER NOT NULL,
+	mtime_ms REAL NOT NULL,
+	version INTEGER NOT NULL,
+	payload TEXT NOT NULL,
+	updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+);
+`;
+
+const SCAN_PAYLOAD_VERSION = 1;
+
+const SCAN_ROW_LIMIT = 4096;
+
+const SCAN_PRUNE_INTERVAL = 256;
+
+let scanWritesSincePrune = 0;
+
+export interface PersistedSessionScan {
+	size: number;
+	mtimeMs: number;
+	payload: string;
+}
+
 interface TitleIndexHandle {
 	dbPath: string;
 	db: Database;
 	upsert: Statement;
 	select: Statement;
+	scanUpsert: Statement;
+	scanSelect: Statement;
 }
 
 let handle: TitleIndexHandle | undefined;
@@ -27,6 +54,8 @@ function closeHandle(): void {
 	try {
 		handle.upsert.finalize();
 		handle.select.finalize();
+		handle.scanUpsert.finalize();
+		handle.scanSelect.finalize();
 		handle.db.close();
 	} catch {}
 	handle = undefined;
@@ -42,7 +71,7 @@ function openTitleIndex(): TitleIndexHandle | undefined {
 		const db = new Database(dbPath);
 
 		db.run(`PRAGMA busy_timeout = ${getDbBusyTimeoutMs()}`);
-		db.run(`PRAGMA journal_mode=WAL;\nPRAGMA synchronous=NORMAL;\n${TITLE_TABLE_DDL}`);
+		db.run(`PRAGMA journal_mode=WAL;\nPRAGMA synchronous=NORMAL;\n${TITLE_TABLE_DDL}\n${SCAN_TABLE_DDL}`);
 		handle = {
 			dbPath,
 			db,
@@ -54,6 +83,19 @@ ON CONFLICT(session_id) DO UPDATE SET
 	updated_at = excluded.updated_at
 			`),
 			select: db.prepare("SELECT title FROM session_titles WHERE session_id = ?"),
+			scanUpsert: db.prepare(`
+INSERT INTO session_scan (path, size, mtime_ms, version, payload, updated_at)
+VALUES (?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))
+ON CONFLICT(path) DO UPDATE SET
+	size = excluded.size,
+	mtime_ms = excluded.mtime_ms,
+	version = excluded.version,
+	payload = excluded.payload,
+	updated_at = excluded.updated_at
+			`),
+			scanSelect: db.prepare(
+				`SELECT size, mtime_ms AS mtimeMs, payload FROM session_scan WHERE path = ? AND version = ${SCAN_PAYLOAD_VERSION}`,
+			),
 		};
 		failedPath = undefined;
 		return handle;
@@ -86,7 +128,30 @@ export function lookupSessionTitle(sessionId: string): string | undefined {
 	}
 }
 
-export function resetSessionTitleIndexForTests(): void {
-	closeHandle();
-	failedPath = undefined;
+export function lookupSessionScan(file: string): PersistedSessionScan | undefined {
+	const index = openTitleIndex();
+	if (!index) return undefined;
+	try {
+		const row = index.scanSelect.get(file) as PersistedSessionScan | null;
+		return row ?? undefined;
+	} catch (error) {
+		logger.debug("Session scan index read failed", { file, error: String(error) });
+		return undefined;
+	}
+}
+
+export function recordSessionScan(file: string, size: number, mtimeMs: number, payload: string): void {
+	const index = openTitleIndex();
+	if (!index) return;
+	try {
+		index.scanUpsert.run(file, size, mtimeMs, SCAN_PAYLOAD_VERSION, payload);
+		if (++scanWritesSincePrune >= SCAN_PRUNE_INTERVAL) {
+			scanWritesSincePrune = 0;
+			index.db.run(
+				`DELETE FROM session_scan WHERE path NOT IN (SELECT path FROM session_scan ORDER BY updated_at DESC, rowid DESC LIMIT ${SCAN_ROW_LIMIT})`,
+			);
+		}
+	} catch (error) {
+		logger.debug("Session scan index write failed", { file, error: String(error) });
+	}
 }

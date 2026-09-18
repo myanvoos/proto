@@ -94,3 +94,101 @@ setInterval(() => {}, 1000);
 		}
 	});
 });
+
+test("listSessions counts and searches messages beyond the prefix window", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-full-transcript-"));
+	try {
+		const sessionFile = path.join(dir, "long_session.jsonl");
+		const records = [
+			{
+				type: "session",
+				id: "long-session",
+				cwd: dir,
+				timestamp: "2026-09-19T00:00:00.000Z",
+			},
+			{
+				type: "message",
+				id: "large-first-message",
+				parentId: null,
+				timestamp: "2026-09-19T00:00:01.000Z",
+				message: { role: "user", content: "x".repeat(5_000), timestamp: 0 },
+			},
+			{
+				type: "message",
+				id: "message-after-prefix",
+				parentId: "large-first-message",
+				timestamp: "2026-09-19T00:00:02.000Z",
+				message: { role: "assistant", content: "unique-search-text-after-prefix", timestamp: 1 },
+			},
+		];
+		await Bun.write(sessionFile, `${records.map(record => JSON.stringify(record)).join("\n")}\n`);
+
+		const [session] = await listSessions(dir, new FileSessionStorage());
+		expect(session?.messageCount).toBe(2);
+		expect(session?.allMessagesText).toContain("unique-search-text-after-prefix");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+describe("session listing incremental rescan", () => {
+	function messageLine(text: string): string {
+		const message = { role: "user", content: text, timestamp: new Date().toISOString() };
+		return `${JSON.stringify({ type: "message", message })}\n`;
+	}
+
+	test("appending messages updates the count and search text without losing earlier messages", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-append-"));
+		const file = writeSessionFile(dir, "abc_append.jsonl", "append1");
+		const storage = new FileSessionStorage();
+		fs.appendFileSync(file, messageLine("first question"));
+
+		const initial = await listSessions(dir, storage);
+		expect(initial[0]?.messageCount).toBe(1);
+
+		fs.appendFileSync(file, messageLine("second question"));
+		fs.appendFileSync(file, messageLine("third question"));
+		const grown = await listSessions(dir, storage);
+
+		expect(grown[0]?.messageCount).toBe(3);
+		expect(grown[0]?.allMessagesText).toContain("first question");
+		expect(grown[0]?.allMessagesText).toContain("third question");
+		expect(grown[0]?.firstMessage).toBe("first question");
+	});
+
+	test("a rewritten file is rescanned instead of folded as an append", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-rewrite-"));
+		const file = writeSessionFile(dir, "abc_rewrite.jsonl", "rewrite1");
+		const storage = new FileSessionStorage();
+		const header = fs.readFileSync(file, "utf8");
+		for (let i = 0; i < 5; i++) fs.appendFileSync(file, messageLine(`original ${i}`));
+
+		const before = await listSessions(dir, storage);
+		expect(before[0]?.messageCount).toBe(5);
+		const originalSize = fs.statSync(file).size;
+
+		const replacement = "compacted ".repeat(400);
+		fs.writeFileSync(file, header + messageLine(replacement) + messageLine(`${replacement}tail`), "utf8");
+		expect(fs.statSync(file).size).toBeGreaterThan(originalSize);
+
+		const after = await listSessions(dir, storage);
+		expect(after[0]?.messageCount).toBe(2);
+		expect(after[0]?.allMessagesText).not.toContain("original 0");
+		expect(after[0]?.allMessagesText).toContain("compacted");
+	});
+
+	test("a truncated file is rescanned rather than reported with stale counts", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-truncate-"));
+		const file = writeSessionFile(dir, "abc_truncate.jsonl", "truncate1");
+		const storage = new FileSessionStorage();
+		const header = fs.readFileSync(file, "utf8");
+		for (let i = 0; i < 6; i++) fs.appendFileSync(file, messageLine(`entry ${i}`));
+		expect((await listSessions(dir, storage))[0]?.messageCount).toBe(6);
+
+		fs.writeFileSync(file, header + messageLine("entry 0"), "utf8");
+		const after = await listSessions(dir, storage);
+
+		expect(after[0]?.messageCount).toBe(1);
+		expect(after[0]?.allMessagesText).not.toContain("entry 5");
+	});
+});

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { buildSessionContext } from "./session-context";
 import type { SessionEntry } from "./session-entries";
 
@@ -99,5 +100,100 @@ describe("compaction boundaries", () => {
 		expect(textsOf("", false)).toEqual(["<summary>"]);
 		expect(textsOf("rewritten-away", false)).toEqual(["<summary>"]);
 		expect(textsOf("u2", false)).toEqual(["<summary>", "second request", "second answer"]);
+	});
+});
+
+function toolAssistant(id: string, parentId: string | null, toolCallIds: string[]): SessionEntry {
+	return {
+		id,
+		parentId,
+		type: "message",
+		timestamp: "2026-01-01T00:00:00.000Z",
+		message: {
+			role: "assistant",
+			content: toolCallIds.map(toolCallId => ({
+				type: "toolCall",
+				id: toolCallId,
+				name: "read",
+				arguments: { path: `/tmp/${toolCallId}` },
+			})),
+			provider: "test",
+			model: "test-model",
+			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+			stopReason: "toolUse",
+		},
+	} as unknown as SessionEntry;
+}
+
+function toolResult(id: string, parentId: string | null, toolCallId: string): SessionEntry {
+	return {
+		id,
+		parentId,
+		type: "message",
+		timestamp: "2026-01-01T00:00:00.000Z",
+		message: {
+			role: "toolResult",
+			toolCallId,
+			toolName: "read",
+			content: [{ type: "text", text: `result for ${toolCallId}` }],
+			isError: false,
+		},
+	} as unknown as SessionEntry;
+}
+
+function expectClosedToolPairs(messages: AgentMessage[]): void {
+	const calls = new Set<string>();
+	const results = new Set<string>();
+	for (const message of messages) {
+		if (message.role === "assistant") {
+			for (const block of message.content) {
+				if (block.type === "toolCall") calls.add(block.id);
+			}
+		} else if (message.role === "toolResult") {
+			expect(calls.has(message.toolCallId)).toBe(true);
+			results.add(message.toolCallId);
+		}
+	}
+	for (const call of calls) expect(results.has(call)).toBe(true);
+}
+
+describe("compaction tool-pair boundaries", () => {
+	// Regression: provider 400 on unpaired tool message when firstKeptEntryId lands exactly on a tool result.
+	test("snaps a tool-result boundary back to its assistant owner", () => {
+		const entries = [toolAssistant("a", null, ["call"]), toolResult("r", "a", "call"), compaction("c", "r", "r")];
+		const context = buildSessionContext(entries, "c");
+
+		expect(context.messages.map(message => message.role)).toEqual(["compactionSummary", "assistant", "toolResult"]);
+		expectClosedToolPairs(context.messages);
+	});
+
+	// Regression: provider 400 on unpaired tool message when the boundary splits interleaved, multi-result calls.
+	test("keeps the whole owner and all earlier results at a mid-pair boundary", () => {
+		const entries = [
+			toolAssistant("a", null, ["call-a", "call-b"]),
+			toolResult("ra1", "a", "call-a"),
+			toolResult("rb", "ra1", "call-b"),
+			toolResult("ra2", "rb", "call-a"),
+			compaction("c", "ra2", "rb"),
+		];
+		const context = buildSessionContext(entries, "c");
+
+		expect(context.messages.map(message => message.role)).toEqual([
+			"compactionSummary",
+			"assistant",
+			"toolResult",
+			"toolResult",
+			"toolResult",
+		]);
+		expectClosedToolPairs(context.messages);
+	});
+
+	// Regression: provider 400 on unpaired tool message when restored history has no reachable assistant owner.
+	test("drops an orphaned result that cannot be repaired", () => {
+		const entries = [toolResult("r", null, "call"), compaction("c", "r", "r")];
+		const context = buildSessionContext(entries, "c");
+
+		expect(context.messages.map(message => message.role)).toEqual(["compactionSummary"]);
+		expectClosedToolPairs(context.messages);
 	});
 });

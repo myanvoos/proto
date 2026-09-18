@@ -54,3 +54,70 @@ test("eval runner discards the previous ledger when its session changes", () => 
 	evalRunner.beginDispose();
 	evalRunner.disposeObservations();
 });
+
+test("aborting a user-python hook discards its late displays and persistence", async () => {
+	const hookStarted = Promise.withResolvers<void>();
+	const hookResult = Promise.withResolvers<{
+		result: {
+			output: string;
+			exitCode: number;
+			cancelled: boolean;
+			truncated: boolean;
+			totalLines: number;
+			totalBytes: number;
+			outputLines: number;
+			outputBytes: number;
+			displayOutputs: Array<{ type: "markdown"; text: string }>;
+			stdinRequested: boolean;
+		};
+	}>();
+	let hookSignal: AbortSignal | undefined;
+	const persisted: unknown[] = [];
+	const displayed: unknown[] = [];
+	const host = {
+		sessionManager: {
+			getCwd: () => "/tmp",
+			getSessionFile: () => "/tmp/eval-hook-abort.jsonl",
+		},
+		extensionRunner: () =>
+			({
+				hasHandlers: (event: string) => event === "user_python",
+				emitUserPython: (_event: unknown, signal?: AbortSignal) => {
+					hookSignal = signal;
+					hookStarted.resolve();
+					return hookResult.promise;
+				},
+			}) as unknown,
+		isStreaming: () => false,
+		appendSessionMessage: (message: unknown) => persisted.push(message),
+	} as unknown as EvalRunnerHost;
+	const evalRunner = new EvalRunner(host, { kernelOwnerId: "hook-abort-owner", parentSessionId: "hook-abort" });
+	const execution = evalRunner.executePython("print('late')", undefined, {
+		onDisplay: output => {
+			displayed.push(output);
+		},
+	});
+	await hookStarted.promise;
+	evalRunner.abort();
+	hookResult.resolve({
+		result: {
+			output: "late output",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			totalLines: 1,
+			totalBytes: 11,
+			outputLines: 1,
+			outputBytes: 11,
+			displayOutputs: [{ type: "markdown", text: "late display" }],
+			stdinRequested: false,
+		},
+	});
+
+	await expect(execution).rejects.toThrow();
+	expect(hookSignal?.aborted).toBe(true);
+	expect(displayed).toEqual([]);
+	expect(persisted).toEqual([]);
+	evalRunner.beginDispose();
+	evalRunner.disposeObservations();
+});

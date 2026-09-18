@@ -349,8 +349,23 @@ export class ReviewerTransport implements ReviewerInstance {
 				if (quarantined) throw new AdvisorOutputQuarantinedError(quarantined);
 			},
 			abort: reason => advisorAgent.abort(reason),
+			waitForIdle: () => advisorAgent.waitForIdle(),
 			reset: () => {
-				advisorAgent.reset();
+				try {
+					advisorAgent.reset();
+				} catch {
+					// A run is still settling; abort it and reset once it is idle so the
+					// advisor transcript is dropped rather than silently kept.
+					advisorAgent.abort("advisor reset");
+					void advisorAgent.waitForIdle().then(
+						() => {
+							try {
+								advisorAgent.reset();
+							} catch {}
+						},
+						() => {},
+					);
+				}
 				appendOnlyContext.log.clear();
 			},
 			rollbackTo: count => {

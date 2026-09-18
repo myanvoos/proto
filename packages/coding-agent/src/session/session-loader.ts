@@ -13,63 +13,14 @@ import {
 	titleUpdateFromSlot,
 } from "./session-title-slot";
 
-// Native full-text JSONL parsing is faster below this size; retain streaming for very large resumes.
+// Native full-text JSONL parsing minimizes overhead for ordinary sessions. Larger files use
+// bounded 512 KiB text batches: Bun.JSONL's string path is substantially faster than repeatedly
+// parsing Uint8Array chunks, without retaining a second full-file copy.
 const STREAM_LOAD_THRESHOLD_BYTES = 32 * 1024 * 1024;
+const STREAM_PARSE_BATCH_BYTES = 512 * 1024;
+const STREAM_GC_INTERVAL_BYTES = 8 * 1024 * 1024;
 const STREAM_YIELD_BYTES = 1 * 1024 * 1024;
 const STREAM_YIELD_ENTRIES = 8_192;
-const EMPTY_BUFFER = new Uint8Array(0);
-const NEWLINE = new Uint8Array([0x0a]);
-
-class GrowingBuffer {
-	#space: Uint8Array | undefined;
-	#length = 0;
-
-	get length(): number {
-		return this.#length;
-	}
-
-	get bytes(): Uint8Array {
-		return this.#space?.subarray(0, this.#length) ?? EMPTY_BUFFER;
-	}
-
-	append(chunk: Uint8Array, exact = false): void {
-		const n = chunk.length;
-		if (n === 0) return;
-		if (this.#length === 0) {
-			this.#space = chunk;
-			this.#length = n;
-			return;
-		}
-
-		const offset = this.#length;
-		const required = offset + n;
-		const space = this.#space;
-		if (!space || space.length < required) {
-			const nextSize = exact || !space ? required : Math.max(required, space.length * 2);
-			const next = Buffer.allocUnsafe(nextSize);
-			if (space) next.set(space.subarray(0, offset));
-			this.#space = next;
-		}
-		this.#space!.set(chunk, offset);
-		this.#length = required;
-	}
-
-	consume(offset: number): void {
-		if (offset <= 0) return;
-		if (offset >= this.#length) {
-			this.clear();
-			return;
-		}
-		const space = this.#space!;
-		space.copyWithin(0, offset, this.#length);
-		this.#length -= offset;
-	}
-
-	clear(): void {
-		this.#space = undefined;
-		this.#length = 0;
-	}
-}
 
 interface VisitEntriesFromFileStreamOptions {
 	shouldContinue?: () => boolean;
@@ -80,13 +31,15 @@ interface VisitEntriesFromFileStreamOptions {
 
 	yieldEveryEntries?: number;
 
-	onMalformedRecord?: () => void;
+	onMalformedRecord?: (kind: "complete" | "unterminated-final") => void;
 }
 
 export interface SessionLoadResult {
 	entries: FileEntry[];
 	titleSlot: SessionTitleUpdate | undefined;
 	malformedRecords: number;
+	/** Malformed newline-terminated records, which are not safe to discard during resume. */
+	malformedCompleteRecords: number;
 	/** Whether non-empty session data was found without a valid leading session header. */
 	invalidHeader: boolean;
 }
@@ -118,17 +71,30 @@ function applyTitleSlot(entry: FileEntry | undefined, slot: SessionTitleUpdate |
 
 export function parseSessionContent(content: string): SessionLoadResult {
 	const { body, slot } = splitTitleSlot(content);
-	let malformedRecords = 0;
-	const entries = parseJsonlLenient<RawFileEntry>(body, {
+	const lastNewline = body.lastIndexOf("\n");
+	const completeRecords = lastNewline === -1 ? "" : body.slice(0, lastNewline + 1);
+	const unterminatedFinalRecord = body.slice(lastNewline + 1);
+	let malformedCompleteRecords = 0;
+	const entries = parseJsonlLenient<RawFileEntry>(completeRecords, {
 		onMalformedRecord: () => {
-			malformedRecords++;
+			malformedCompleteRecords++;
 		},
 	}) as FileEntry[];
+	let malformedFinalRecords = 0;
+	entries.push(
+		...(parseJsonlLenient<RawFileEntry>(unterminatedFinalRecord, {
+			onMalformedRecord: () => {
+				malformedFinalRecords++;
+			},
+		}) as FileEntry[]),
+	);
+	const malformedRecords = malformedCompleteRecords + malformedFinalRecords;
 	applyTitleSlot(entries[0], slot);
 	return {
 		entries,
 		titleSlot: slot,
 		malformedRecords,
+		malformedCompleteRecords,
 		invalidHeader: entries.length > 0 ? !isValidSessionHeader(entries[0]) : malformedRecords > 0,
 	};
 }
@@ -141,44 +107,65 @@ export async function visitEntriesFromFileStream(
 	let titleSlot: SessionTitleUpdate | undefined;
 	let sawFirstLine = false;
 	let sawFirstEntry = false;
+	let pending = "";
+	let bufferedBytes = 0;
+	let bytesSinceCollection = 0;
 	let bytesSinceYield = 0;
 	let entriesSinceYield = 0;
 	let recordsSeen = 0;
 	const maxRecords = Math.max(0, options.maxRecords ?? Number.POSITIVE_INFINITY);
-	let stopped = false;
+	let stopped = maxRecords === 0;
 	let visitorThrew = false;
 	const yieldEveryBytes = Math.max(0, options.yieldEveryBytes ?? STREAM_YIELD_BYTES);
 	const yieldEveryEntries = Math.max(0, options.yieldEveryEntries ?? STREAM_YIELD_ENTRIES);
-
-	const buffer = new GrowingBuffer();
 	const decoder = new TextDecoder();
 
+	const shouldYieldToMacrotask = (): boolean =>
+		(yieldEveryBytes > 0 && bytesSinceYield >= yieldEveryBytes) ||
+		(yieldEveryEntries > 0 && entriesSinceYield >= yieldEveryEntries);
+
 	const yieldToMacrotask = async (): Promise<void> => {
-		if (yieldEveryBytes === 0 && yieldEveryEntries === 0) return;
-		const bytesReady = yieldEveryBytes === 0 || bytesSinceYield < yieldEveryBytes;
-		const entriesReady = yieldEveryEntries === 0 || entriesSinceYield < yieldEveryEntries;
-		if (bytesReady && entriesReady) {
-			return;
-		}
 		bytesSinceYield = 0;
 		entriesSinceYield = 0;
 		await Bun.sleep(0);
 	};
 
-	const drain = async (): Promise<void> => {
-		while (buffer.length > 0 && !stopped) {
+	const inspectFirstLine = (atEnd: boolean): void => {
+		if (sawFirstLine) return;
+		const newline = pending.indexOf("\n");
+		if (newline === -1 && !atEnd) return;
+		sawFirstLine = true;
+		const end = newline === -1 ? pending.length : newline;
+		const slot = parseTitleSlotLine(pending.slice(0, end).trim());
+		if (!slot) return;
+		titleSlot = titleUpdateFromSlot(slot);
+		pending = newline === -1 ? "" : pending.slice(newline + 1);
+	};
+
+	const drain = async (atEnd = false): Promise<void> => {
+		if (stopped || pending.length === 0) return;
+		const newline = pending.lastIndexOf("\n");
+		const hasUnterminatedFinal = atEnd && newline !== pending.length - 1;
+		if (newline === -1 && !hasUnterminatedFinal) return;
+
+		let input: string;
+		if (hasUnterminatedFinal) {
+			input = `${pending}\n`;
+			pending = "";
+		} else {
+			input = pending.slice(0, newline + 1);
+			pending = pending.slice(newline + 1);
+		}
+		bufferedBytes = 0;
+
+		while (input.length > 0 && !stopped) {
 			if (recordsSeen >= maxRecords) {
 				stopped = true;
 				break;
 			}
-			const bytes = buffer.bytes;
-			const { values, error, read, done } = Bun.JSONL.parseChunk(bytes);
+			const { values, error, read, done } = Bun.JSONL.parseChunk(input);
 			for (const value of values) {
-				if (recordsSeen >= maxRecords) {
-					stopped = true;
-					break;
-				}
-				if (options.shouldContinue && !options.shouldContinue()) {
+				if (recordsSeen >= maxRecords || (options.shouldContinue && !options.shouldContinue())) {
 					stopped = true;
 					break;
 				}
@@ -192,45 +179,33 @@ export async function visitEntriesFromFileStream(
 						stopped = true;
 						break;
 					}
-					recordsSeen++;
-					entriesSinceYield++;
-					if (recordsSeen >= maxRecords) {
-						stopped = true;
-						break;
-					}
-				} catch (err) {
+				} catch (error) {
 					visitorThrew = true;
-					throw err;
+					throw error;
 				}
-				await yieldToMacrotask();
-			}
-			if (stopped) break;
-			if (error) {
-				const nextNewline = bytes.indexOf(0x0a, read);
-				if (nextNewline === -1) break;
-				let nonWhitespace = false;
-				for (let index = read; index < nextNewline; index++) {
-					const byte = bytes[index];
-					if (byte !== 0x09 && byte !== 0x0d && byte !== 0x20) {
-						nonWhitespace = true;
-						break;
-					}
-				}
-				if (nonWhitespace) options.onMalformedRecord?.();
 				recordsSeen++;
-				buffer.consume(nextNewline + 1);
+				entriesSinceYield++;
 				if (recordsSeen >= maxRecords) {
 					stopped = true;
 					break;
 				}
+				if (shouldYieldToMacrotask()) await yieldToMacrotask();
+			}
+			if (stopped) break;
+			if (error) {
+				const nextNewline = input.indexOf("\n", read);
+				if (nextNewline === -1) break;
+				if (input.slice(read, nextNewline).trim().length > 0) {
+					const kind =
+						hasUnterminatedFinal && nextNewline === input.length - 1 ? "unterminated-final" : "complete";
+					options.onMalformedRecord?.(kind);
+				}
+				recordsSeen++;
+				input = input.slice(nextNewline + 1);
 				continue;
 			}
-			if (read === 0) break;
-			buffer.consume(read);
-			if (done) {
-				buffer.clear();
-				break;
-			}
+			if (read === 0 || done) break;
+			input = input.slice(read);
 		}
 	};
 
@@ -238,34 +213,27 @@ export async function visitEntriesFromFileStream(
 		for await (const chunk of Bun.file(filePath).stream()) {
 			if (stopped) break;
 			bytesSinceYield += chunk.byteLength;
-			buffer.append(chunk);
-
-			if (!sawFirstLine) {
-				const newline = buffer.bytes.indexOf(0x0a);
-				if (newline !== -1) {
-					sawFirstLine = true;
-					const firstLine = decoder.decode(buffer.bytes.subarray(0, newline)).trim();
-					if (firstLine) {
-						const slot = parseTitleSlotLine(firstLine);
-						if (slot) {
-							titleSlot = titleUpdateFromSlot(slot);
-							buffer.consume(newline + 1);
-						}
-					}
-				}
+			bytesSinceCollection += chunk.byteLength;
+			bufferedBytes += chunk.byteLength;
+			pending += decoder.decode(chunk, { stream: true });
+			inspectFirstLine(false);
+			if (sawFirstLine && bufferedBytes >= STREAM_PARSE_BATCH_BYTES) await drain();
+			if (bytesSinceCollection >= STREAM_GC_INTERVAL_BYTES) {
+				Bun.gc(false);
+				bytesSinceCollection = 0;
 			}
-			await drain();
-			await yieldToMacrotask();
+			if (shouldYieldToMacrotask()) await yieldToMacrotask();
 		}
 
-		if (!stopped && buffer.length > 0 && buffer.bytes[buffer.length - 1] !== 0x0a) {
-			buffer.append(NEWLINE, true);
-			await drain();
+		if (!stopped) {
+			pending += decoder.decode();
+			inspectFirstLine(true);
+			await drain(true);
 		}
-	} catch (err) {
-		if (visitorThrew) throw err;
-		if (isEnoent(err)) return undefined;
-		throw err;
+	} catch (error) {
+		if (visitorThrew) throw error;
+		if (isEnoent(error)) return undefined;
+		throw error;
 	}
 
 	return titleSlot;
@@ -274,14 +242,16 @@ export async function visitEntriesFromFileStream(
 export async function loadEntriesFromFileStream(filePath: string): Promise<SessionLoadResult> {
 	const entries: FileEntry[] = [];
 	let malformedRecords = 0;
+	let malformedCompleteRecords = 0;
 	const titleSlot = await visitEntriesFromFileStream(
 		filePath,
 		entry => {
 			entries.push(entry);
 		},
 		{
-			onMalformedRecord: () => {
+			onMalformedRecord: kind => {
 				malformedRecords++;
+				if (kind === "complete") malformedCompleteRecords++;
 			},
 		},
 	);
@@ -289,6 +259,7 @@ export async function loadEntriesFromFileStream(filePath: string): Promise<Sessi
 		entries,
 		titleSlot,
 		malformedRecords,
+		malformedCompleteRecords,
 		invalidHeader: entries.length > 0 ? !isValidSessionHeader(entries[0]) : malformedRecords > 0,
 	};
 }
@@ -326,7 +297,15 @@ export async function loadSessionFile(
 			options?.preserveInvalidHeader === true,
 		);
 	} catch (err) {
-		if (isEnoent(err)) return { entries: [], titleSlot: undefined, malformedRecords: 0, invalidHeader: false };
+		if (isEnoent(err)) {
+			return {
+				entries: [],
+				titleSlot: undefined,
+				malformedRecords: 0,
+				malformedCompleteRecords: 0,
+				invalidHeader: false,
+			};
+		}
 		throw err;
 	}
 }

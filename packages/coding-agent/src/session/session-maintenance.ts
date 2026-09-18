@@ -72,7 +72,7 @@ import {
 } from "./role-models";
 import type { SessionContext } from "./session-context";
 import { getLatestCompactionEntry, getOpenAiRemoteCompactionPayload } from "./session-context";
-import type { CompactionEntry } from "./session-entries";
+import type { CompactionEntry, SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import { resolveSpeculationLeadTokens, SPECULATION_LEAD_MIN_TOKENS } from "./speculation-lead";
 
@@ -173,6 +173,7 @@ export interface SessionMaintenanceHost {
 	promptGeneration(): number;
 	sessionId(): string;
 	messages(): AgentMessage[];
+	countMessages(messages: readonly AgentMessage[], options?: { excludeEncryptedReasoning?: boolean }): number;
 	baseSystemPrompt(): string[];
 	goalModeState(): GoalModeState | undefined;
 	nonMessageTokenSource(): NonMessageTokenSource;
@@ -207,7 +208,7 @@ export interface SessionMaintenanceHost {
 	disconnectFromAgent(): void;
 	reconnectToAgent(): void;
 	drainStrandedQueuedMessages(): void;
-	buildDisplaySessionContext(): SessionContext;
+	buildDisplaySessionContext(entries?: SessionEntry[]): SessionContext;
 	convertToLlmForSideRequest(messages: AgentMessage[]): Message[];
 	obfuscateTextForProvider(text: string | undefined): string | undefined;
 	obfuscatePreparationForProvider(preparation: CompactionPreparation): CompactionPreparation;
@@ -252,6 +253,8 @@ export class SessionMaintenance {
 	#speculation: SpeculationRun | undefined;
 	#skipPostTurnMaintenanceAssistantTimestamp: number | undefined;
 	readonly #host: SessionMaintenanceHost;
+	readonly #modelContextEntries = new Map<string, SessionEntry>();
+	#modelContextPathIds: string[] | undefined;
 
 	get #model(): Model | undefined {
 		return this.#host.model();
@@ -307,8 +310,42 @@ export class SessionMaintenance {
 		}
 	}
 
+	#maintenanceBranch(): SessionEntry[] {
+		const historyBranch = this.#host.sessionManager.getBranch();
+		const previousPathIds = this.#modelContextPathIds;
+		const sharesExistingPath =
+			previousPathIds !== undefined &&
+			previousPathIds.length <= historyBranch.length &&
+			previousPathIds.every((id, index) => id === historyBranch[index]?.id);
+		if (!sharesExistingPath) this.#modelContextEntries.clear();
+		this.#modelContextPathIds = historyBranch.map(entry => entry.id);
+
+		return historyBranch.map(historyEntry => {
+			const entry = this.#modelContextEntries.get(historyEntry.id) ?? historyEntry;
+			if (entry.type === "message") {
+				return { ...entry, message: structuredClone(entry.message) };
+			}
+			if (entry.type === "custom_message") {
+				return {
+					...entry,
+					content: typeof entry.content === "string" ? entry.content : structuredClone(entry.content),
+				};
+			}
+			return entry;
+		});
+	}
+
+	#rememberModelContextEntries(entries: Iterable<SessionEntry>): void {
+		for (const entry of entries) this.#modelContextEntries.set(entry.id, entry);
+	}
+
+	#replaceModelContext(entries: SessionEntry[]): void {
+		const sessionContext = this.#host.buildDisplaySessionContext(entries);
+		this.#host.agent.replaceMessages(sessionContext.messages);
+	}
+
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
-		const branchEntries = this.#host.sessionManager.getBranch();
+		const branchEntries = this.#maintenanceBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const result = pruneToolOutputs(branchEntries, this.#tokenizer, {
 			...DEFAULT_PRUNE_CONFIG,
@@ -321,9 +358,10 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#host.sessionManager.rewriteEntries();
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
+		this.#rememberModelContextEntries(
+			branchEntries.filter(entry => entry.type === "message" && "prunedAt" in entry.message),
+		);
+		this.#replaceModelContext(branchEntries);
 		this.#host.resetAdvisorRuntimes("prune-tool-outputs");
 		this.#host.syncTodoPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
@@ -333,7 +371,7 @@ export class SessionMaintenance {
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const { supersedeReads, dropUseless } = this.#host.settings.getGroup("compaction");
 		if (!supersedeReads && !dropUseless) return undefined;
-		const branchEntries = this.#host.sessionManager.getBranch();
+		const branchEntries = this.#maintenanceBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const result = pruneSupersededToolResults(branchEntries, this.#tokenizer, {
 			supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
@@ -347,9 +385,10 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#host.sessionManager.rewriteEntries();
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
+		this.#rememberModelContextEntries(
+			branchEntries.filter(entry => entry.type === "message" && "prunedAt" in entry.message),
+		);
+		this.#replaceModelContext(branchEntries);
 		this.#host.resetAdvisorRuntimes("prune-stale-tool-results");
 		this.#host.syncTodoPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
@@ -357,11 +396,14 @@ export class SessionMaintenance {
 	}
 
 	async dropImages(): Promise<{ removed: number }> {
-		const branchEntries = this.#host.sessionManager.getBranch();
+		const branchEntries = this.#maintenanceBranch();
+		const changedEntries = new Set<SessionEntry>();
 		let removed = 0;
 		for (const entry of branchEntries) {
 			if (entry.type === "message") {
-				removed += stripImagesFromMessage(entry.message);
+				const removedFromMessage = stripImagesFromMessage(entry.message);
+				if (removedFromMessage > 0) changedEntries.add(entry);
+				removed += removedFromMessage;
 				continue;
 			}
 			if (entry.type === "custom_message" && typeof entry.content !== "string") {
@@ -379,6 +421,7 @@ export class SessionMaintenance {
 						kept.push({ type: "text", text: "[image removed]" });
 					}
 					entry.content = kept;
+					changedEntries.add(entry);
 					removed += dropped;
 				}
 			}
@@ -386,16 +429,15 @@ export class SessionMaintenance {
 		if (removed === 0) {
 			return { removed: 0 };
 		}
-		await this.#host.sessionManager.rewriteEntries();
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
+		this.#rememberModelContextEntries(changedEntries);
+		this.#replaceModelContext(branchEntries);
 		this.#host.resetAdvisorRuntimes("drop-images");
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return { removed };
 	}
 
 	async #shakeElide(config: ShakeConfig, _signal: AbortSignal): Promise<ShakeElideResult> {
-		const branchEntries = this.#host.sessionManager.getBranch();
+		const branchEntries = this.#maintenanceBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const effectiveConfig = {
 			...config,
@@ -445,11 +487,10 @@ export class SessionMaintenance {
 		});
 
 		applyShakeRegions(items);
+		this.#rememberModelContextEntries(new Set(regions.map(region => region.entry)));
 		this.#host.recordAnchoredHistoryRewrite(anchoredTokensRemoved);
 
-		await this.#host.sessionManager.rewriteEntries();
-		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
+		this.#replaceModelContext(branchEntries);
 		this.#host.resetAdvisorRuntimes("shake");
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 
@@ -978,8 +1019,8 @@ export class SessionMaintenance {
 		const opts = { excludeEncryptedReasoning: true } as const;
 		return (
 			computeNonMessageTokens(this.#host.nonMessageTokenSource(), this.#tokenizer) +
-			this.#tokenizer.countMessages(this.#host.messages(), opts) +
-			this.#tokenizer.countMessages(pendingMessages, opts)
+			this.#host.countMessages(this.#host.messages(), opts) +
+			this.#host.countMessages(pendingMessages, opts)
 		);
 	}
 

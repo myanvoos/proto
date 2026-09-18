@@ -10,6 +10,9 @@ import type { AgentSessionEvent } from "./agent-session-events";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
+export const IRC_STREAM_BACKLOG_MAX_MESSAGES = 256;
+export const IRC_STREAM_BACKLOG_MAX_BYTES = 1024 * 1024;
+
 export interface IrcBridgeHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -25,14 +28,41 @@ export class IrcBridge {
 	readonly #host: IrcBridgeHost;
 	#interrupts: CustomMessage[] = [];
 	#asides: CustomMessage[] = [];
+	#interruptBytes = 0;
+	#asideBytes = 0;
 
 	constructor(host: IrcBridgeHost) {
 		this.#host = host;
 	}
 
+	#recordBytes(record: CustomMessage): number {
+		const content = typeof record.content === "string" ? record.content : JSON.stringify(record.content);
+		const details = record.details === undefined ? "" : JSON.stringify(record.details);
+		return Buffer.byteLength(content) + Buffer.byteLength(details);
+	}
+
+	#enqueuePending(target: CustomMessage[], records: CustomMessage[]): void {
+		const currentCount = this.#interrupts.length + this.#asides.length;
+		const currentBytes = this.#interruptBytes + this.#asideBytes;
+		const addedBytes = records.reduce((total, record) => total + this.#recordBytes(record), 0);
+		if (
+			currentCount + records.length > IRC_STREAM_BACKLOG_MAX_MESSAGES ||
+			currentBytes + addedBytes > IRC_STREAM_BACKLOG_MAX_BYTES
+		) {
+			throw new Error(
+				`IRC streaming backlog is full (${currentCount}/${IRC_STREAM_BACKLOG_MAX_MESSAGES} messages, ${currentBytes}/${IRC_STREAM_BACKLOG_MAX_BYTES} bytes); this message was not accepted. Drain the inbox, then retry.`,
+			);
+		}
+		target.push(...records);
+		if (target === this.#interrupts) this.#interruptBytes += addedBytes;
+		else this.#asideBytes += addedBytes;
+	}
+
 	reset(): void {
 		this.#interrupts = [];
 		this.#asides = [];
+		this.#interruptBytes = 0;
+		this.#asideBytes = 0;
 	}
 
 	hasInterrupts(): boolean {
@@ -47,11 +77,13 @@ export class IrcBridge {
 		const records = [...this.#interrupts, ...this.#asides];
 		this.#interrupts = [];
 		this.#asides = [];
+		this.#interruptBytes = 0;
+		this.#asideBytes = 0;
 		return records;
 	}
 
 	deferWake(records: CustomMessage[]): void {
-		this.#asides.push(...records);
+		this.#enqueuePending(this.#asides, records);
 	}
 
 	drainInboxMessages(agentId: string, opts?: { from?: string; limit?: number; peek?: boolean }): IrcMessage[] {
@@ -105,6 +137,8 @@ export class IrcBridge {
 		}
 		this.#interrupts = remainingInterrupts;
 		this.#asides = remainingAsides;
+		this.#interruptBytes = remainingInterrupts.reduce((total, record) => total + this.#recordBytes(record), 0);
+		this.#asideBytes = remainingAsides.reduce((total, record) => total + this.#recordBytes(record), 0);
 		return messages;
 	}
 
@@ -127,7 +161,6 @@ export class IrcBridge {
 			attribution: "agent",
 			timestamp: msg.ts,
 		};
-		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 		if (streaming) {
 			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
 			if (recipientParentId === msg.from) {
@@ -139,11 +172,13 @@ export class IrcBridge {
 					steering: true,
 				});
 			} else {
-				this.#interrupts.push(record);
+				this.#enqueuePending(this.#interrupts, [record]);
 			}
+			void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 			if (autoReply) void this.#runAutoReply(msg);
 			return "injected";
 		}
+		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 		this.#host.wakeForIrc([record]);
 		return "woken";
 	}
@@ -181,13 +216,13 @@ export class IrcBridge {
 				timestamp: Date.now(),
 			};
 			void this.#host.emitSessionEvent({ type: "irc_message", message: record });
-			this.#asides.push(record);
+			this.#enqueuePending(this.#asides, [record]);
 			const fleetRoot = AgentRegistry.global().get(msg.from)?.fleetRoot;
 			const receipt = await IrcBus.global().send(
 				{ from: msg.to, to: msg.from, body, replyTo: msg.id },
 				{ fleetRoot },
 			);
-			if (receipt.outcome === "failed") {
+			if (receipt.outcome === "rejected" || receipt.outcome === "dropped") {
 				logger.warn("IRC auto-reply delivery failed", { to: msg.from, error: receipt.error });
 			}
 		} catch (error) {

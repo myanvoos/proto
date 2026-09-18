@@ -1,5 +1,8 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { deserialize, serialize } from "node:v8";
+import { gunzipSync, gzipSync } from "node:zlib";
 import type {
 	ImageContent,
 	Message,
@@ -59,6 +62,7 @@ import {
 	type TtsrInjectionEntry,
 	type UsageStatistics,
 } from "./session-entries";
+import { recordSessionTitle } from "./session-index";
 import { findMostRecentSession, listAllSessions, listSessions, type SessionInfo } from "./session-listing";
 import {
 	loadSessionFile,
@@ -78,6 +82,7 @@ import {
 	FileSessionStorage,
 	MemorySessionStorage,
 	type SessionStorage,
+	SessionStorageLockError,
 	type SessionStorageWriter,
 } from "./session-storage";
 import { type SessionTitleUpdate, serializeTitleSlot } from "./session-title-slot";
@@ -86,11 +91,22 @@ import {
 	normalizeSessionWorkspace,
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
-import { recordSessionTitle } from "./title-index";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
 const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
+const RAW_ENTRY_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+const RAW_ENTRY_CACHE_MAX_COUNT = 64;
+
+interface CachedRawEntry {
+	entry: SessionEntry;
+	bytes: number;
+}
+
+interface RawEntryFile {
+	name: string;
+	bytes: number;
+}
 
 function mintSessionId(): string {
 	return Bun.randomUUIDv7();
@@ -203,6 +219,7 @@ class SessionEntryIndex {
 	#children = new Map<string | null, SessionEntry[]>();
 	#labels = new Map<string, string>();
 	#leaf: string | null = null;
+	#leafPath: SessionEntry[] | undefined;
 	#usage = emptyUsageStatistics();
 
 	clear(): void {
@@ -210,6 +227,7 @@ class SessionEntryIndex {
 		this.#children.clear();
 		this.#labels.clear();
 		this.#leaf = null;
+		this.#leafPath = undefined;
 		this.#usage = emptyUsageStatistics();
 	}
 
@@ -220,6 +238,8 @@ class SessionEntryIndex {
 
 	insert(entry: SessionEntry): void {
 		this.#entriesById.set(entry.id, entry);
+		if (this.#leafPath && entry.parentId === this.#leaf) this.#leafPath.push(entry);
+		else this.#leafPath = undefined;
 		this.#leaf = entry.id;
 
 		const bucket = this.#children.get(entry.parentId);
@@ -255,7 +275,9 @@ class SessionEntryIndex {
 	}
 
 	setLeaf(id: string | null): void {
+		if (this.#leaf === id) return;
 		this.#leaf = id;
+		this.#leafPath = undefined;
 	}
 
 	childrenOf(parentId: string): SessionEntry[] {
@@ -275,6 +297,8 @@ class SessionEntryIndex {
 	}
 
 	pathTo(id: string | null | undefined = this.#leaf): SessionEntry[] {
+		if (id === this.#leaf && this.#leafPath) return [...this.#leafPath];
+
 		const branch: SessionEntry[] = [];
 		const seen = new Set<string>();
 		let cursor = id ? this.#entriesById.get(id) : undefined;
@@ -285,6 +309,7 @@ class SessionEntryIndex {
 			cursor = cursor.parentId ? this.#entriesById.get(cursor.parentId) : undefined;
 		}
 		branch.reverse();
+		if (id === this.#leaf) this.#leafPath = [...branch];
 		return branch;
 	}
 
@@ -359,6 +384,8 @@ interface SessionManagerStateSnapshot {
 	draftOnlySessionCleanupArmed: boolean;
 	header: SessionHeader;
 	entries: SessionEntry[];
+	rawEntryFiles: Array<readonly [string, RawEntryFile]>;
+	rawEntryDirectory: string | undefined;
 }
 
 interface DiskQueueOptions {
@@ -409,6 +436,10 @@ export class SessionManager {
 	#hasTitleSlot = true;
 	#entries: SessionEntry[] = [];
 	#index = new SessionEntryIndex();
+	#rawEntryFiles = new Map<string, RawEntryFile>();
+	#rawEntryDirectory: string | undefined;
+	#rawEntryCache = new Map<string, CachedRawEntry>();
+	#rawEntryCacheBytes = 0;
 
 	#fileIsCurrent = false;
 
@@ -486,6 +517,7 @@ export class SessionManager {
 
 	#noteDiskFailure(errorLike: unknown): Error {
 		const error = toError(errorLike);
+		if (error instanceof SessionStorageLockError) return error;
 		if (!this.#diskFailure) this.#diskFailure = error;
 
 		if (!this.#diskFailureLogged) {
@@ -694,6 +726,169 @@ export class SessionManager {
 		return this.#writer;
 	}
 
+	#rawEntryDirectoryPath(): string {
+		this.#rawEntryDirectory ??= path.join(os.tmpdir(), `proto-session-history-${Bun.randomUUIDv7()}`);
+		return this.#rawEntryDirectory;
+	}
+
+	#ensureRawEntryDirectory(): string {
+		const directory = this.#rawEntryDirectoryPath();
+		fs.mkdirSync(directory, { recursive: true });
+		return directory;
+	}
+
+	#retentionBlobStore(): BlobStore {
+		if (this.#persist) return this.#blobs;
+		return new BlobStore(path.join(this.#rawEntryDirectoryPath(), "blobs"));
+	}
+
+	#clearRawEntryRetention(): void {
+		this.#rawEntryFiles.clear();
+		this.#rawEntryCache.clear();
+		this.#rawEntryCacheBytes = 0;
+	}
+
+	#disposeRawEntryDirectory(): void {
+		const directory = this.#rawEntryDirectory;
+		this.#rawEntryDirectory = undefined;
+		if (!directory) return;
+		try {
+			fs.rmSync(directory, { recursive: true, force: true });
+		} catch (error) {
+			logger.warn("Failed to remove lazy session history directory", {
+				directory,
+				error: toError(error).message,
+			});
+		}
+	}
+
+	#cacheRawEntry(entry: SessionEntry, bytes: number): void {
+		const existing = this.#rawEntryCache.get(entry.id);
+		if (existing) {
+			this.#rawEntryCache.delete(entry.id);
+			this.#rawEntryCacheBytes -= existing.bytes;
+		}
+		if (bytes > RAW_ENTRY_CACHE_MAX_BYTES) return;
+
+		this.#rawEntryCache.set(entry.id, { entry, bytes });
+		this.#rawEntryCacheBytes += bytes;
+		while (
+			this.#rawEntryCache.size > RAW_ENTRY_CACHE_MAX_COUNT ||
+			this.#rawEntryCacheBytes > RAW_ENTRY_CACHE_MAX_BYTES
+		) {
+			const oldestId = this.#rawEntryCache.keys().next().value;
+			if (oldestId === undefined) break;
+			const oldest = this.#rawEntryCache.get(oldestId);
+			this.#rawEntryCache.delete(oldestId);
+			if (oldest) this.#rawEntryCacheBytes -= oldest.bytes;
+		}
+	}
+
+	#retainEntry(entry: SessionEntry): SessionEntry {
+		const retained = prepareEntryForPersistence(entry, this.#retentionBlobStore()) as SessionEntry;
+		if (retained === entry) return retained;
+
+		const serialized = serialize(entry);
+		const compressed = gzipSync(serialized, { level: 1 });
+		const name = `${new Bun.SHA256().update(compressed).digest("hex")}.entry.gz`;
+		const file = path.join(this.#ensureRawEntryDirectory(), name);
+		if (!fs.existsSync(file)) fs.writeFileSync(file, compressed);
+		this.#rawEntryFiles.set(entry.id, { name, bytes: serialized.byteLength });
+		this.#cacheRawEntry(deserialize(serialized) as SessionEntry, serialized.byteLength);
+		return retained;
+	}
+
+	#materializeEntry(entry: SessionEntry, cache = true): SessionEntry {
+		const rawFile = this.#rawEntryFiles.get(entry.id);
+		if (!rawFile) return entry;
+
+		const cached = this.#rawEntryCache.get(entry.id);
+		if (cached) {
+			if (cache) {
+				this.#rawEntryCache.delete(entry.id);
+				this.#rawEntryCache.set(entry.id, cached);
+			}
+			return cached.entry;
+		}
+
+		const directory = this.#rawEntryDirectory;
+		if (!directory) throw new Error(`Raw session entry directory is missing for ${entry.id}`);
+		const file = path.join(directory, rawFile.name);
+		let compressed: Buffer;
+		try {
+			compressed = fs.readFileSync(file);
+		} catch (error) {
+			throw new Error(`Raw session entry file is missing for ${entry.id}`, { cause: error });
+		}
+		const serialized = gunzipSync(compressed);
+		const parsed: unknown = deserialize(serialized);
+		if (typeof parsed !== "object" || parsed === null || !("id" in parsed) || parsed.id !== entry.id) {
+			throw new Error(`Raw session entry file is invalid for ${entry.id}`);
+		}
+		const materialized = parsed as SessionEntry;
+		if (cache) this.#cacheRawEntry(materialized, rawFile.bytes);
+		return materialized;
+	}
+
+	#materializeEntries(entries: readonly SessionEntry[]): SessionEntry[] {
+		if (this.#rawEntryFiles.size === 0) return [...entries];
+		const materialized = entries.map(entry => this.#materializeEntry(entry, false));
+		this.#rawEntryCache.clear();
+		this.#rawEntryCacheBytes = 0;
+
+		const candidates: SessionEntry[] = [];
+		let candidateBytes = 0;
+		for (let index = materialized.length - 1; index >= 0; index--) {
+			const entry = materialized[index];
+			const rawFile = this.#rawEntryFiles.get(entry.id);
+			if (!rawFile || rawFile.bytes > RAW_ENTRY_CACHE_MAX_BYTES) continue;
+			if (
+				candidates.length >= RAW_ENTRY_CACHE_MAX_COUNT ||
+				candidateBytes + rawFile.bytes > RAW_ENTRY_CACHE_MAX_BYTES
+			) {
+				break;
+			}
+			candidates.push(entry);
+			candidateBytes += rawFile.bytes;
+		}
+		for (let index = candidates.length - 1; index >= 0; index--) {
+			const entry = candidates[index];
+			this.#cacheRawEntry(entry, this.#rawEntryFiles.get(entry.id)!.bytes);
+		}
+		return materialized;
+	}
+
+	#replaceEntries(entries: readonly SessionEntry[]): void {
+		this.#clearRawEntryRetention();
+		this.#entries = entries.map(entry => this.#retainEntry(entry));
+		this.#index.rebuild(this.#entries);
+	}
+
+	#restoreRetainedEntries(
+		entries: readonly SessionEntry[],
+		rawEntryFiles: Iterable<readonly [string, RawEntryFile]>,
+		sourceDirectory: string | undefined,
+	): void {
+		this.#clearRawEntryRetention();
+		this.#entries = [...entries];
+		const files = [...rawEntryFiles];
+		if (files.length > 0) {
+			if (!sourceDirectory) throw new Error("Raw session entry source directory is missing");
+			if (sourceDirectory === this.#rawEntryDirectory) {
+				this.#rawEntryFiles = new Map(files.map(([id, file]) => [id, { ...file }]));
+			} else {
+				const targetDirectory = this.#ensureRawEntryDirectory();
+				for (const [id, rawFile] of files) {
+					const source = path.join(sourceDirectory, rawFile.name);
+					const target = path.join(targetDirectory, rawFile.name);
+					if (!fs.existsSync(target)) fs.copyFileSync(source, target);
+					this.#rawEntryFiles.set(id, { ...rawFile });
+				}
+			}
+		}
+		this.#index.rebuild(this.#entries);
+	}
+
 	#lineFor(entry: FileEntry): string {
 		return `${stringifyJson(prepareEntryForPersistence(entry, this.#blobs)) ?? "null"}\n`;
 	}
@@ -755,6 +950,8 @@ export class SessionManager {
 				this.#hasTitleSlot = true;
 			}
 		} catch (err) {
+			this.#fileIsCurrent = false;
+			this.#rewriteRequired = true;
 			this.#noteDiskFailure(err);
 		}
 	}
@@ -889,9 +1086,15 @@ export class SessionManager {
 				if (!sessionFile) return;
 				try {
 					await this.#appendWriter().append(line);
+					await this.#closeWriterHandle();
 					await this.#storage.updateSessionTitle(sessionFile, update);
 					if (this.#diskEpoch === epoch) this.#fileIsCurrent = true;
-				} catch {
+				} catch (error) {
+					if (error instanceof SessionStorageLockError) {
+						this.#fileIsCurrent = false;
+						this.#rewriteRequired = true;
+						throw error;
+					}
 					if (!(await this.#runFencedAtomicRewrite(epoch))) return;
 					this.#clearDiskError();
 					this.#fileIsCurrent = true;
@@ -945,6 +1148,7 @@ export class SessionManager {
 
 		this.#entries = [];
 		this.#index.clear();
+		this.#clearRawEntryRetention();
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
 		this.#forceFileCreation = false;
@@ -973,12 +1177,11 @@ export class SessionManager {
 
 	#applyEntries(header: SessionHeader, entries: SessionEntry[]): void {
 		this.#header = header;
-		this.#entries = entries;
 		this.#sessionId = header.id;
 		this.#sessionName = header.title;
 		this.#titleSource = header.titleSource;
 		this.#titleUpdatedAt = header.timestamp;
-		this.#index.rebuild(entries);
+		this.#replaceEntries(entries);
 	}
 
 	#freshEntryFields(): { id: string; parentId: string | null; timestamp: string } {
@@ -1003,15 +1206,16 @@ export class SessionManager {
 			logger.warn("Dropped session entry appended after terminal release", { type: entry.type });
 			return;
 		}
-		this.#entries.push(entry);
-		this.#index.insert(entry);
+		const retained = this.#retainEntry(entry);
+		this.#entries.push(retained);
+		this.#index.insert(retained);
 		const batch = this.#atomicEntryBatch;
 		if (batch?.collecting) batch.entryIds.add(entry.id);
 		if (batch && !batch.collecting) {
 			batch.externalLeafChanged = true;
 			batch.externalLeafId = entry.id;
 		}
-		this.#appendToSessionFile(entry);
+		this.#appendToSessionFile(retained);
 		if (batch) batch.deferredNotifications.push(entry);
 		else this.#notifyEntryAppended(entry);
 	}
@@ -1025,11 +1229,10 @@ export class SessionManager {
 			}
 			return id;
 		};
-		const retained = this.#entries.filter(entry => !batch.entryIds.has(entry.id));
+		const retained = this.#materializeEntries(this.#entries.filter(entry => !batch.entryIds.has(entry.id)));
 		for (const entry of retained) entry.parentId = retainedAncestor(entry.parentId);
 		const restoredLeaf = retainedAncestor(batch.externalLeafChanged ? batch.externalLeafId : batch.preBatchLeafId);
-		this.#entries = retained;
-		this.#index.rebuild(retained);
+		this.#replaceEntries(retained);
 		this.#index.setLeaf(restoredLeaf && this.#index.has(restoredLeaf) ? restoredLeaf : null);
 	}
 
@@ -1122,6 +1325,8 @@ export class SessionManager {
 
 			header: this.#header,
 			entries: [...this.#entries],
+			rawEntryFiles: [...this.#rawEntryFiles].map(([id, file]) => [id, { ...file }]),
+			rawEntryDirectory: this.#rawEntryDirectory,
 		};
 	}
 
@@ -1130,6 +1335,7 @@ export class SessionManager {
 		const clone = new SessionManager(this.#cwd, this.#sessionDir, persist, this.#storage);
 		clone.#suppressBreadcrumb = true;
 		clone.restoreState(this.captureState());
+		if (persist !== this.#persist) clone.#replaceEntries(this.getEntries());
 		if (!persist) {
 			clone.#sessionFile = undefined;
 			clone.#fileIsCurrent = false;
@@ -1151,7 +1357,9 @@ export class SessionManager {
 		this.#rewriteRequired = snapshot.needsRewrite;
 		this.#forceFileCreation = snapshot.onDisk;
 		this.#draftOnlySessionCleanupArmed = snapshot.draftOnlySessionCleanupArmed;
-		this.#applyEntries(snapshot.header, [...snapshot.entries]);
+		this.#header = snapshot.header;
+		this.#sessionId = snapshot.header.id;
+		this.#restoreRetainedEntries(snapshot.entries, snapshot.rawEntryFiles, snapshot.rawEntryDirectory);
 		this.#additionalDirectories = snapshot.header.additionalDirectories ?? [];
 		this.#sessionName = snapshot.sessionName;
 		this.#titleSource = snapshot.titleSource;
@@ -1178,6 +1386,11 @@ export class SessionManager {
 		if (loaded.invalidHeader) {
 			throw new Error(
 				`Cannot resume session "${resolvedSessionFile}": the session header is missing or malformed. The file was not modified.`,
+			);
+		}
+		if (loaded.malformedCompleteRecords > 0) {
+			throw new Error(
+				`Cannot resume session "${resolvedSessionFile}": found ${loaded.malformedCompleteRecords} malformed complete record(s). The file was not modified.`,
 			);
 		}
 
@@ -1415,8 +1628,7 @@ export class SessionManager {
 		manager.#additionalDirectories = [...this.#additionalDirectories];
 		manager.#header.additionalDirectories =
 			manager.#additionalDirectories.length > 0 ? [...manager.#additionalDirectories] : undefined;
-		manager.#entries = structuredClone(this.#entries);
-		manager.#index.rebuild(manager.#entries);
+		manager.#replaceEntries(this.getEntries());
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();
 		return manager;
@@ -1574,6 +1786,8 @@ export class SessionManager {
 		this.seal();
 		this.#entries = [];
 		this.#index.clear();
+		this.#clearRawEntryRetention();
+		this.#disposeRawEntryDirectory();
 		this.#closeWriterEventually();
 	}
 
@@ -1798,10 +2012,11 @@ export class SessionManager {
 		};
 		if (previousTitle) entry.previousTitle = previousTitle;
 		if (trigger) entry.trigger = trigger;
-		this.#entries.push(entry);
-		this.#index.insert(entry);
+		const retained = this.#retainEntry(entry);
+		this.#entries.push(retained);
+		this.#index.insert(retained);
 		this.#notifyEntryAppended(entry);
-		await this.#persistTitleChangeEntry(entry, { title, source, updatedAt: timestamp });
+		await this.#persistTitleChangeEntry(retained as TitleChangeEntry, { title, source, updatedAt: timestamp });
 
 		if (this.#persist && this.#storage instanceof FileSessionStorage) {
 			recordSessionTitle(this.#sessionId, title);
@@ -2028,7 +2243,8 @@ export class SessionManager {
 	}
 
 	getLeafEntry(): SessionEntry | undefined {
-		return this.#index.leafEntry();
+		const entry = this.#index.leafEntry();
+		return entry ? this.#materializeEntry(entry) : undefined;
 	}
 
 	getLastModelChangeRole(): string | undefined {
@@ -2041,11 +2257,12 @@ export class SessionManager {
 	}
 
 	getEntry(id: string): SessionEntry | undefined {
-		return this.#index.get(id);
+		const entry = this.#index.get(id);
+		return entry ? this.#materializeEntry(entry) : undefined;
 	}
 
 	getChildren(parentId: string): SessionEntry[] {
-		return this.#index.childrenOf(parentId);
+		return this.#materializeEntries(this.#index.childrenOf(parentId));
 	}
 
 	getLabel(id: string): string | undefined {
@@ -2061,16 +2278,19 @@ export class SessionManager {
 	}
 
 	getBranch(fromId?: string): SessionEntry[] {
-		return this.#index.pathTo(fromId ?? this.#index.leafId());
+		return this.#materializeEntries(this.#index.pathTo(fromId ?? this.#index.leafId()));
 	}
 
 	buildSessionContext(options?: BuildSessionContextOptions): SessionContext {
-		return buildSessionContext(this.#entries, this.#index.leafId(), this.#index.entriesById(), options);
+		const branch = this.getBranch();
+		const entriesById = new Map(branch.map(entry => [entry.id, entry]));
+		return buildSessionContext(branch, this.#index.leafId(), entriesById, options);
 	}
 
 	sanitizeLoadedOpenAIResponsesReplayMetadata(): boolean {
 		let changed = false;
-		for (const entry of this.#entries) {
+		const entries = this.#materializeEntries(this.#entries);
+		for (const entry of entries) {
 			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 
 			const sanitized = sanitizeRehydratedOpenAIResponsesAssistantMessage(entry.message);
@@ -2079,6 +2299,7 @@ export class SessionManager {
 			entry.message = sanitized;
 			changed = true;
 		}
+		if (changed) this.#replaceEntries(entries);
 
 		return changed;
 	}
@@ -2088,11 +2309,16 @@ export class SessionManager {
 	}
 
 	getEntries(): SessionEntry[] {
-		return [...this.#entries];
+		return this.#materializeEntries(this.#entries);
 	}
 
 	getTree(): SessionTreeNode[] {
-		return this.#index.tree(this.#entries);
+		const materializeNode = (node: SessionTreeNode): SessionTreeNode => ({
+			...node,
+			entry: this.#materializeEntry(node.entry),
+			children: node.children.map(materializeNode),
+		});
+		return this.#index.tree(this.#entries).map(materializeNode);
 	}
 
 	branch(branchFromId: string): void {
@@ -2111,12 +2337,14 @@ export class SessionManager {
 		const canReparentChildren = children.every(child => child.type === "service_tier_change");
 		let leafId = entry.parentId;
 		if (canReparentChildren) {
-			for (const child of children) {
+			const childIds = new Set(children.map(child => child.id));
+			const entries = this.#materializeEntries(this.#entries);
+			for (const child of entries) {
+				if (!childIds.has(child.id)) continue;
 				child.parentId = leafId;
 				leafId = child.id;
 			}
-			this.#entries = this.#entries.filter(candidate => candidate.id !== entryId);
-			this.#index.rebuild(this.#entries);
+			this.#replaceEntries(entries.filter(candidate => candidate.id !== entryId));
 		}
 		this.branchWithSummary(leafId, "", {
 			kind: DISCARDED_ENTRY_BRANCH_MARKER,
@@ -2186,13 +2414,12 @@ export class SessionManager {
 		}
 
 		this.#header = header;
-		this.#entries = [...entriesToKeep, ...labels];
+		this.#replaceEntries([...entriesToKeep, ...labels]);
 		this.#sessionId = newSessionId;
 		this.#sessionName = header.title;
 		this.#titleSource = header.titleSource;
 		this.#titleUpdatedAt = timestamp;
 		this.#hasTitleSlot = true;
-		this.#index.rebuild(this.#entries);
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#forceFileCreation = this.#persist;
@@ -2281,8 +2508,7 @@ export class SessionManager {
 		manager.#titleSource = manager.#header.titleSource;
 		manager.#titleUpdatedAt = nowIso();
 		manager.#hasTitleSlot = true;
-		manager.#entries = history;
-		manager.#index.rebuild(history);
+		manager.#replaceEntries(history);
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();

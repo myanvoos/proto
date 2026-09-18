@@ -83,15 +83,21 @@ export class BashRunner {
 		let targetTransferred = false;
 		const excludeFromContext = options?.excludeFromContext === true;
 		const cwd = this.#host.sessionManager.getCwd();
+		const abortController = new AbortController();
+		this.#abortControllers.add(abortController);
 		try {
 			const extensionRunner = this.#host.extensionRunner();
 			if (extensionRunner?.hasHandlers("user_bash")) {
-				const hookResult = await extensionRunner.emitUserBash({
-					type: "user_bash",
-					command,
-					excludeFromContext,
-					cwd,
-				});
+				const hookResult = await extensionRunner.emitUserBash(
+					{
+						type: "user_bash",
+						command,
+						excludeFromContext,
+						cwd,
+					},
+					abortController.signal,
+				);
+				abortController.signal.throwIfAborted();
 				if (hookResult?.result) {
 					targetTransferred = true;
 					await this.#recordResultForTarget(target, command, hookResult.result, options);
@@ -99,27 +105,21 @@ export class BashRunner {
 				}
 			}
 
-			const abortController = new AbortController();
-			this.#abortControllers.add(abortController);
-			let result: BashResult;
-			try {
-				result = await executeBashCommand(command, {
-					onChunk,
-					signal: abortController.signal,
-					sessionKey: target.sessionId,
-					sessionOwner: target.owner,
-					cwd,
-					timeout: clampTimeout("bash", undefined, this.#host.settings.get("tools.maxTimeout")) * 1000,
-					onMinimizedSave: originalText => this.#saveOriginalArtifact(target, originalText),
-					useUserShell: options?.useUserShell,
-				});
-			} finally {
-				this.#abortControllers.delete(abortController);
-			}
+			const result = await executeBashCommand(command, {
+				onChunk,
+				signal: abortController.signal,
+				sessionKey: target.sessionId,
+				sessionOwner: target.owner,
+				cwd,
+				timeout: clampTimeout("bash", undefined, this.#host.settings.get("tools.maxTimeout")) * 1000,
+				onMinimizedSave: originalText => this.#saveOriginalArtifact(target, originalText),
+				useUserShell: options?.useUserShell,
+			});
 			targetTransferred = true;
 			await this.#recordResultForTarget(target, command, result, options);
 			return result;
 		} finally {
+			this.#abortControllers.delete(abortController);
 			if (!targetTransferred) await this.#releaseSessionTarget(target);
 		}
 	}

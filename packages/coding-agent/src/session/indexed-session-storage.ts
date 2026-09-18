@@ -209,6 +209,11 @@ export class IndexedSessionStorage implements SessionStorage {
 		return title ? overlayTitleSlotContent(content, title) : content;
 	}
 
+	async readTextRange(path: string, start: number, end: number): Promise<string> {
+		const content = await this.readText(path);
+		return Buffer.from(content, "utf8").subarray(start, end).toString("utf8");
+	}
+
 	async readTextSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]> {
 		const entry = this.#index.get(path);
 		if (!entry) throw enoent(path);

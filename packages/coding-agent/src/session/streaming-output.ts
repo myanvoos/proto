@@ -512,11 +512,123 @@ export class TailBuffer {
 	}
 }
 
+interface BufferedChunk {
+	text: string;
+	bytes: number;
+}
+
+class ByteChunkDeque {
+	#chunks: Array<BufferedChunk | undefined> = [];
+	#start = 0;
+	#size = 0;
+	#bytes = 0;
+
+	get bytes(): number {
+		return this.#bytes;
+	}
+
+	get isEmpty(): boolean {
+		return this.#size === 0;
+	}
+
+	append(text: string, bytes: number): void {
+		if (text.length === 0) return;
+		if (this.#size === this.#chunks.length) this.#grow();
+		const index = (this.#start + this.#size) % this.#chunks.length;
+		this.#chunks[index] = { text, bytes };
+		this.#size++;
+		this.#bytes += bytes;
+	}
+
+	replace(text: string, bytes: number): void {
+		this.clear();
+		this.append(text, bytes);
+	}
+
+	clear(): void {
+		for (let offset = 0; offset < this.#size; offset++) {
+			this.#chunks[(this.#start + offset) % this.#chunks.length] = undefined;
+		}
+		this.#start = 0;
+		this.#size = 0;
+		this.#bytes = 0;
+	}
+
+	trimStart(maxBytes: number): void {
+		if (maxBytes <= 0) {
+			this.clear();
+			return;
+		}
+		if (this.#bytes <= maxBytes) return;
+
+		let bytesToDrop = this.#bytes - maxBytes;
+		while (this.#size > 0) {
+			const first = this.#first();
+			if (first.bytes <= bytesToDrop) {
+				bytesToDrop -= first.bytes;
+				this.#removeFirst();
+				if (bytesToDrop === 0) return;
+				continue;
+			}
+
+			const retained = truncateTailBytes(first.text, first.bytes - bytesToDrop);
+			if (retained.bytes === 0) {
+				this.#removeFirst();
+				return;
+			}
+			this.#chunks[this.#start] = retained;
+			this.#bytes += retained.bytes - first.bytes;
+			return;
+		}
+	}
+
+	materialize(): string {
+		if (this.#size === 0) return "";
+		if (this.#size === 1) return this.#first().text;
+		const parts = new Array<string>(this.#size);
+		for (let offset = 0; offset < this.#size; offset++) {
+			parts[offset] = this.#chunks[(this.#start + offset) % this.#chunks.length]!.text;
+		}
+		return parts.join("");
+	}
+
+	startsWith(prefix: string): boolean {
+		return this.#size > 0 && this.#first().text.startsWith(prefix);
+	}
+
+	endsWith(suffix: string): boolean {
+		return this.#size > 0 && this.#last().text.endsWith(suffix);
+	}
+
+	#first(): BufferedChunk {
+		return this.#chunks[this.#start]!;
+	}
+
+	#last(): BufferedChunk {
+		return this.#chunks[(this.#start + this.#size - 1) % this.#chunks.length]!;
+	}
+
+	#removeFirst(): void {
+		const first = this.#first();
+		this.#chunks[this.#start] = undefined;
+		this.#bytes -= first.bytes;
+		this.#size--;
+		this.#start = this.#size === 0 ? 0 : (this.#start + 1) % this.#chunks.length;
+	}
+
+	#grow(): void {
+		const chunks = new Array<BufferedChunk | undefined>(Math.max(16, this.#chunks.length * 2));
+		for (let offset = 0; offset < this.#size; offset++) {
+			chunks[offset] = this.#chunks[(this.#start + offset) % this.#chunks.length];
+		}
+		this.#chunks = chunks;
+		this.#start = 0;
+	}
+}
+
 export class OutputSink {
-	#buffer = "";
-	#bufferBytes = 0;
-	#head = "";
-	#headBytes = 0;
+	readonly #buffer = new ByteChunkDeque();
+	readonly #head = new ByteChunkDeque();
 	#headLines = 0;
 	#headRetentionDisabled = false;
 	#totalLines = 0;
@@ -570,8 +682,7 @@ export class OutputSink {
 	readonly #artifactTailBudget: number;
 	#artifactHeadBytesWritten = 0;
 	#artifactHeadClosed = false;
-	#artifactTailRing = "";
-	#artifactTailRingBytes = 0;
+	readonly #artifactTailRing = new ByteChunkDeque();
 	#artifactTailIncomingBytes = 0;
 
 	constructor(options?: OutputSinkOptions) {
@@ -737,7 +848,7 @@ export class OutputSink {
 			const heldBytes = Buffer.byteLength(heldText, "utf-8");
 			const holdLimit = this.#maxHeldSixelBytes();
 			if (heldBytes > holdLimit) this.#truncated = true;
-			if (heldBytes > Math.max(0, this.#spillThreshold - this.#headBytes - this.#bufferBytes)) {
+			if (heldBytes > Math.max(0, this.#spillThreshold - this.#head.bytes - this.#buffer.bytes)) {
 				this.#truncated = true;
 			}
 			if (heldBytes > holdLimit) {
@@ -817,19 +928,17 @@ export class OutputSink {
 
 		let tailChunk = capped;
 		let tailBytes = cappedBytes;
-		if (this.#headLimit > 0 && !this.#headRetentionDisabled && this.#headBytes < this.#headLimit) {
-			const room = this.#headLimit - this.#headBytes;
+		if (this.#headLimit > 0 && !this.#headRetentionDisabled && this.#head.bytes < this.#headLimit) {
+			const room = this.#headLimit - this.#head.bytes;
 			if (cappedBytes <= room) {
-				this.#head += capped;
-				this.#headBytes += cappedBytes;
+				this.#head.append(capped, cappedBytes);
 				this.#headLines += countNewlines(capped);
 				return;
 			}
 
 			const headSlice = truncateHeadBytes(capped, room);
 			if (headSlice.bytes > 0) {
-				this.#head += headSlice.text;
-				this.#headBytes += headSlice.bytes;
+				this.#head.append(headSlice.text, headSlice.bytes);
 				this.#headLines += countNewlines(headSlice.text);
 				tailChunk = capped.substring(headSlice.text.length);
 				tailBytes = cappedBytes - headSlice.bytes;
@@ -900,18 +1009,17 @@ export class OutputSink {
 		return parts.join("");
 	}
 	#willOverflow(dataBytes: number): boolean {
-		return this.#bufferBytes + dataBytes > this.#spillThreshold - this.#headBytes;
+		return this.#buffer.bytes + dataBytes > this.#spillThreshold - this.#head.bytes;
 	}
 
 	#pushTail(chunk: string, dataBytes: number): void {
 		if (dataBytes === 0) return;
 
-		const threshold = Math.max(0, this.#spillThreshold - this.#headBytes);
-		const willOverflow = this.#bufferBytes + dataBytes > threshold;
+		const threshold = Math.max(0, this.#spillThreshold - this.#head.bytes);
+		const willOverflow = this.#buffer.bytes + dataBytes > threshold;
 
 		if (!willOverflow) {
-			this.#buffer += chunk;
-			this.#bufferBytes += dataBytes;
+			this.#buffer.append(chunk, dataBytes);
 			return;
 		}
 
@@ -919,15 +1027,10 @@ export class OutputSink {
 
 		if (dataBytes >= threshold) {
 			const { text, bytes } = truncateTailBytes(chunk, threshold);
-			this.#buffer = text;
-			this.#bufferBytes = bytes;
+			this.#buffer.replace(text, bytes);
 		} else {
-			this.#buffer += chunk;
-			this.#bufferBytes += dataBytes;
-
-			const { text, bytes } = truncateTailBytes(this.#buffer, threshold);
-			this.#buffer = text;
-			this.#bufferBytes = bytes;
+			this.#buffer.append(chunk, dataBytes);
+			this.#buffer.trimStart(threshold);
 		}
 	}
 
@@ -995,17 +1098,11 @@ export class OutputSink {
 		const budget = this.#artifactTailBudget;
 		if (chunkBytes >= budget) {
 			const { text, bytes } = truncateTailBytes(chunk, budget);
-			this.#artifactTailRing = text;
-			this.#artifactTailRingBytes = bytes;
+			this.#artifactTailRing.replace(text, bytes);
 			return;
 		}
-		this.#artifactTailRing += chunk;
-		this.#artifactTailRingBytes += chunkBytes;
-		if (this.#artifactTailRingBytes > budget) {
-			const { text, bytes } = truncateTailBytes(this.#artifactTailRing, budget);
-			this.#artifactTailRing = text;
-			this.#artifactTailRingBytes = bytes;
-		}
+		this.#artifactTailRing.append(chunk, chunkBytes);
+		this.#artifactTailRing.trimStart(budget);
 	}
 
 	async #createFileSink(): Promise<void> {
@@ -1015,12 +1112,12 @@ export class OutputSink {
 			this.#file = { path: this.#artifactPath, artifactId: this.#artifactId, sink };
 			this.#fileReady = true;
 
-			if (this.#head.length > 0) {
-				this.#emitToSink(this.#head);
+			if (!this.#head.isEmpty) {
+				this.#emitToSink(this.#head.materialize());
 			}
 
-			if (this.#buffer.length > 0) {
-				this.#emitToSink(this.#buffer);
+			if (!this.#buffer.isEmpty) {
+				this.#emitToSink(this.#buffer.materialize());
 			}
 
 			if (this.#pendingFileWrites) {
@@ -1058,13 +1155,12 @@ export class OutputSink {
 
 	replace(text: string, options?: { summarized?: boolean }): void {
 		this.#clearPendingChunkTimer();
-		this.#buffer = text;
-		this.#bufferBytes = Buffer.byteLength(text, "utf-8");
-		this.#head = "";
-		this.#headBytes = 0;
+		const bytes = Buffer.byteLength(text, "utf-8");
+		this.#buffer.replace(text, bytes);
+		this.#head.clear();
 		this.#headLines = 0;
 		this.#headRetentionDisabled = true;
-		this.#totalBytes = this.#bufferBytes;
+		this.#totalBytes = bytes;
 		this.#totalLines = countNewlines(text);
 		this.#sawData = text.length > 0;
 		this.#truncated = false;
@@ -1124,7 +1220,7 @@ export class OutputSink {
 	#flushArtifactTailIfCapped(): void {
 		if (!this.#file) return;
 		if (this.#artifactMaxBytes === 0) return;
-		const tailBytes = this.#artifactTailRingBytes;
+		const tailBytes = this.#artifactTailRing.bytes;
 		const droppedBytes = Math.max(0, this.#artifactTailIncomingBytes - tailBytes);
 		if (tailBytes === 0 && droppedBytes === 0) return;
 
@@ -1139,7 +1235,7 @@ export class OutputSink {
 			this.#writeArtifactChunk(notice);
 		}
 		if (tailBytes > 0) {
-			this.#writeArtifactChunk(this.#artifactTailRing);
+			this.#writeArtifactChunk(this.#artifactTailRing.materialize());
 		}
 	}
 
@@ -1156,9 +1252,10 @@ export class OutputSink {
 
 		await this.#finalizeFile();
 
-		const headBytes = this.#headBytes;
-		const tailBuf = this.#buffer;
-		const tailBytes = this.#bufferBytes;
+		const headBuf = this.#head.materialize();
+		const tailBuf = this.#buffer.materialize();
+		const headBytes = this.#head.bytes;
+		const tailBytes = this.#buffer.bytes;
 		const headLines = this.#headLines + (headBytes > 0 && !this.#head.endsWith("\n") ? 1 : 0);
 		const tailLines = tailBuf.length > 0 ? countNewlines(tailBuf) + 1 : 0;
 
@@ -1178,7 +1275,7 @@ export class OutputSink {
 			const markerBytes = Buffer.byteLength(marker, "utf-8");
 			const headSep = this.#head.endsWith("\n") ? "" : "\n";
 			const tailSep = tailBuf.startsWith("\n") ? "" : "\n";
-			body = `${this.#head}${headSep}${marker}${tailSep}${tailBuf}`;
+			body = `${headBuf}${headSep}${marker}${tailSep}${tailBuf}`;
 			outputBytes =
 				headBytes +
 				markerBytes +
@@ -1188,7 +1285,7 @@ export class OutputSink {
 			outputLines = headLines + 1 + tailLines;
 			this.#truncated = true;
 		} else if (headBytes > 0) {
-			body = `${this.#head}${tailBuf}`;
+			body = `${headBuf}${tailBuf}`;
 			outputBytes = headBytes + tailBytes;
 			outputLines = body.length > 0 ? countNewlines(body) + 1 : 0;
 		} else {

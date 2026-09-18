@@ -72,6 +72,26 @@ export interface StrippedToolCallsMarker {
 	strippedToolCalls?: number;
 }
 
+function snapBoundaryToToolCallOwner(path: SessionEntry[], firstKeptIdx: number, compactionIdx: number): number {
+	if (firstKeptIdx < 0 || firstKeptIdx >= compactionIdx) return firstKeptIdx;
+
+	const latestOwnerByToolCallId = new Map<string, number>();
+	let snappedIdx = firstKeptIdx;
+	for (let i = 0; i < compactionIdx; i++) {
+		const entry = path[i];
+		if (entry.type !== "message") continue;
+		if (entry.message.role === "assistant") {
+			for (const block of entry.message.content) {
+				if (block.type === "toolCall") latestOwnerByToolCallId.set(block.id, i);
+			}
+		} else if (i >= firstKeptIdx && entry.message.role === "toolResult") {
+			const ownerIdx = latestOwnerByToolCallId.get(entry.message.toolCallId);
+			if (ownerIdx !== undefined && ownerIdx < snappedIdx) snappedIdx = ownerIdx;
+		}
+	}
+	return snappedIdx;
+}
+
 export function getOpenAiRemoteCompactionPayload(
 	compaction: CompactionEntry | null | undefined,
 ): ProviderPayload | undefined {
@@ -206,6 +226,9 @@ export function buildSessionContext(
 			}
 			if (compactionIdx >= 0 && firstKeptIdx >= 0 && (!replayThroughEntryId || replayThroughIdx >= 0)) break;
 		}
+		// Prefer retaining the owning assistant entry over discarding useful tool output: providers
+		// reject results whose calls fell on the compacted side of the boundary.
+		firstKeptIdx = snapBoundaryToToolCallOwner(path, firstKeptIdx, compactionIdx);
 	}
 
 	const messages: AgentMessage[] = [];
@@ -340,11 +363,26 @@ export function buildSessionContext(
 	}
 
 	const keepDangling = options?.transcript === true && options.keepDanglingToolCalls === true;
-	if (!keepDangling) {
-		const pairedToolResultIds = new Set<string>();
-		for (const message of messages) {
-			if (message.role === "toolResult") pairedToolResultIds.add(message.toolCallId);
+	const seenToolCallIds = new Set<string>();
+	const pairedToolResultIds = new Set<string>();
+	for (let i = 0; i < messages.length; i++) {
+		const message = messages[i];
+		if (message.role === "assistant") {
+			for (const block of message.content) {
+				if (block.type === "toolCall") seenToolCallIds.add(block.id);
+			}
+		} else if (message.role === "toolResult") {
+			if (!seenToolCallIds.has(message.toolCallId)) {
+				messages.splice(i, 1);
+				if (options?.transcript) cacheMissExplainedAt.splice(i, 1);
+				i--;
+				continue;
+			}
+			pairedToolResultIds.add(message.toolCallId);
 		}
+	}
+
+	if (!keepDangling) {
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const message = messages[i];
 			if (message.role !== "assistant") continue;

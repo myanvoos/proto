@@ -7,6 +7,7 @@ import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	type DeveloperMessage,
+	type ToolResultMessage,
 	type UserMessage,
 } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -127,6 +128,161 @@ async function emitMessage(harness: Harness, message: AgentMessage): Promise<voi
 		sessionManager.onEntryAppended = previousOnEntryAppended;
 	}
 }
+
+async function observesAgentEvent(session: AgentSession): Promise<boolean> {
+	let observed = false;
+	const unsubscribe = session.subscribe(event => {
+		if (event.type === "message_start" && event.message.role === "developer") observed = true;
+	});
+	try {
+		session.agent.emitExternalEvent({
+			type: "message_start",
+			message: { role: "developer", content: "connection probe", timestamp: TEST_TIMESTAMP },
+		});
+		const nextTurn = Promise.withResolvers<void>();
+		setImmediate(nextTurn.resolve);
+		await nextTurn.promise;
+		return observed;
+	} finally {
+		unsubscribe();
+	}
+}
+
+test("delivers message start before cumulative updates to subscribers and extensions", async () => {
+	const startHookEntered = Promise.withResolvers<void>();
+	const releaseStartHook = Promise.withResolvers<void>();
+	const hookEvents: string[] = [];
+	const extension: ExtensionFactory = api => {
+		api.on("message_start", async () => {
+			hookEvents.push("start");
+			startHookEntered.resolve();
+			await releaseStartHook.promise;
+			hookEvents.push("start complete");
+		});
+		api.on("message_update", () => {
+			hookEvents.push("update");
+		});
+	};
+	const harness = await createHarness(false, [extension]);
+	const subscriberEvents: string[] = [];
+	const unsubscribe = harness.session.subscribe(event => {
+		if (event.type === "message_start") subscriberEvents.push(event.type);
+		if (event.type === "message_update" && event.message.role === "assistant") {
+			const text = event.message.content.find(part => part.type === "text")?.text;
+			subscriberEvents.push(`${event.type}:${text}`);
+		}
+	});
+	const message: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: "partial" }],
+		api: "openai-completions",
+		provider: "test",
+		model: "test",
+		stopReason: "stop",
+		timestamp: TEST_TIMESTAMP,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	};
+	try {
+		harness.session.agent.emitExternalEvent({ type: "message_start", message });
+		harness.session.agent.emitExternalEvent({
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "partial", partial: message },
+		});
+		const latestMessage: AssistantMessage = {
+			...message,
+			content: [{ type: "text", text: "latest" }],
+		};
+		harness.session.agent.emitExternalEvent({
+			type: "message_update",
+			message: latestMessage,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "latest", partial: latestMessage },
+		});
+		await startHookEntered.promise;
+		const blockedTurn = Promise.withResolvers<void>();
+		setImmediate(blockedTurn.resolve);
+		await blockedTurn.promise;
+
+		expect(hookEvents).toEqual(["start"]);
+		expect(subscriberEvents).toEqual([]);
+
+		releaseStartHook.resolve();
+		const deliveredTurn = Promise.withResolvers<void>();
+		setImmediate(deliveredTurn.resolve);
+		await deliveredTurn.promise;
+		expect(hookEvents).toEqual(["start", "start complete", "update"]);
+		expect(subscriberEvents).toEqual(["message_start", "message_update:latest"]);
+	} finally {
+		releaseStartHook.resolve();
+		unsubscribe();
+		await closeHarness(harness);
+	}
+});
+
+test("coalesces concurrent abort requests into one transaction", async () => {
+	const harness = await createHarness();
+	const agentAbortSpy = spyOn(harness.session.agent, "abort");
+	try {
+		const first = harness.session.abort({ reason: "first interrupt" });
+		const second = harness.session.abort({ reason: "second interrupt" });
+
+		expect(second).toBe(first);
+		await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+		expect(agentAbortSpy).toHaveBeenCalledTimes(1);
+
+		await expect(harness.session.abort({ reason: "later interrupt" })).resolves.toBeUndefined();
+		expect(agentAbortSpy).toHaveBeenCalledTimes(2);
+	} finally {
+		agentAbortSpy.mockRestore();
+		await closeHarness(harness);
+	}
+});
+
+test.each(["new", "switch"] as const)("reconnects agent events when a %s-session abort fails", async operation => {
+	const harness = await createHarness();
+	const abortSpy = spyOn(harness.session, "abort").mockRejectedValueOnce(new Error("abort preparation failed"));
+	try {
+		const transition =
+			operation === "new"
+				? harness.session.newSession()
+				: harness.session.switchSession(path.join(harness.agentDir, "unreached.jsonl"));
+		await expect(transition).rejects.toThrow("abort preparation failed");
+		abortSpy.mockRestore();
+
+		expect(await observesAgentEvent(harness.session)).toBe(true);
+	} finally {
+		abortSpy.mockRestore();
+		await closeHarness(harness);
+	}
+});
+
+test("reconciles and reconnects when switch preparation fails", async () => {
+	const harness = await createHarness();
+	let rollbackReconciliations = 0;
+	harness.session.setSessionBeforeSwitchReconciler(async () => {
+		throw new Error("switch preparation failed");
+	});
+	harness.session.setSessionSwitchReconciler(async () => {
+		rollbackReconciliations++;
+	});
+	try {
+		await expect(harness.session.switchSession(path.join(harness.agentDir, "unreached.jsonl"))).rejects.toThrow(
+			"switch preparation failed",
+		);
+
+		expect(rollbackReconciliations).toBe(1);
+		expect(await observesAgentEvent(harness.session)).toBe(true);
+	} finally {
+		await closeHarness(harness);
+	}
+});
 
 test("does not duplicate an identical persisted message", async () => {
 	const harness = await createHarness();
@@ -366,7 +522,7 @@ test("a new session cannot list parked agents from the previous session fleet", 
 		const previousFleetRoot = path.resolve(previousFile.slice(0, -".jsonl".length), "fleet");
 		registry.register({
 			id: "old-peer",
-			displayName: "old-peer",
+			label: "old-peer",
 			kind: "sub",
 			parentId: MAIN_AGENT_ID,
 			session: null,
@@ -507,6 +663,159 @@ test("keeps the session live until disposal has closed its persistence writer", 
 		releaseClose.resolve();
 		await disposing;
 		closeSpy.mockRestore();
+		await closeHarness(harness);
+	}
+});
+
+test("rewinding across a prune shows gutted history", async () => {
+	const harness = await createHarness(true);
+	const originalToolOutput = `original tool output ${"content ".repeat(200)}`;
+	const usage = {
+		input: 1,
+		output: 1,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 2,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	try {
+		harness.sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "toolCall", id: "read-old", name: "read", arguments: { path: "shared.ts" } }],
+			api: "openai-completions",
+			provider: "test",
+			model: "test",
+			stopReason: "toolUse",
+			timestamp: TEST_TIMESTAMP,
+			usage,
+		});
+		const oldResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "read-old",
+			toolName: "read",
+			content: [{ type: "text", text: originalToolOutput }],
+			isError: false,
+			timestamp: TEST_TIMESTAMP + 1,
+		};
+		const oldResultId = harness.sessionManager.appendMessage(oldResult);
+		harness.sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "toolCall", id: "read-new", name: "read", arguments: { path: "shared.ts" } }],
+			api: "openai-completions",
+			provider: "test",
+			model: "test",
+			stopReason: "toolUse",
+			timestamp: TEST_TIMESTAMP + 2,
+			usage,
+		});
+		const activeLeafId = harness.sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "read-new",
+			toolName: "read",
+			content: [{ type: "text", text: "newer tool output" }],
+			isError: false,
+			timestamp: TEST_TIMESTAMP + 3,
+		});
+		const siblingLeafId = harness.sessionManager.appendMessageToBranch(
+			userMessage("sibling branch", TEST_TIMESTAMP + 4),
+			oldResultId,
+		);
+		harness.sessionManager.branch(activeLeafId);
+
+		harness.sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "openai-completions",
+			provider: "test",
+			model: "test",
+			stopReason: "stop",
+			timestamp: TEST_TIMESTAMP + 5,
+			usage,
+		});
+		harness.session.agent.replaceMessages(harness.session.buildDisplaySessionContext().messages);
+		const maintenanceFinished = Promise.withResolvers<void>();
+		const unsubscribe = harness.session.subscribe(event => {
+			if (event.type === "agent_end") maintenanceFinished.resolve();
+		});
+		try {
+			harness.session.agent.emitExternalEvent({ type: "agent_end", messages: harness.session.messages });
+			await maintenanceFinished.promise;
+		} finally {
+			unsubscribe();
+		}
+
+		const modelResult = harness.session.messages.find(
+			(message): message is ToolResultMessage => message.role === "toolResult" && message.toolCallId === "read-old",
+		);
+		expect(modelResult?.content).not.toEqual(oldResult.content);
+		expect(modelResult?.content[0]).toEqual({ type: "text", text: "[Superseded by a newer read of this file]" });
+
+		const outputOnBranch = (leafId: string): string | undefined => {
+			const entry = harness.sessionManager.getBranch(leafId).find(candidate => candidate.id === oldResultId);
+			if (entry?.type !== "message" || entry.message.role !== "toolResult") return undefined;
+			return entry.message.content[0]?.type === "text" ? entry.message.content[0].text : undefined;
+		};
+		expect(outputOnBranch(activeLeafId)).toBe(originalToolOutput);
+		expect(outputOnBranch(oldResultId)).toBe(originalToolOutput);
+		expect(outputOnBranch(siblingLeafId)).toBe(originalToolOutput);
+
+		await harness.sessionManager.flush();
+		const sessionFile = harness.sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted session file");
+		expect(await Bun.file(sessionFile).text()).toContain(originalToolOutput);
+	} finally {
+		await closeHarness(harness);
+	}
+});
+
+test("dropping images preserves rewound and sibling history", async () => {
+	const harness = await createHarness(true);
+	const originalImage = Buffer.from("original image bytes").toString("base64");
+	try {
+		const rootId = harness.sessionManager.appendMessage({
+			role: "user",
+			content: [
+				{ type: "text", text: "root message" },
+				{ type: "image", data: originalImage, mimeType: "image/png" },
+			],
+			timestamp: TEST_TIMESTAMP,
+		});
+		const activeLeafId = harness.sessionManager.appendMessage(userMessage("active branch", TEST_TIMESTAMP + 1));
+		const siblingLeafId = harness.sessionManager.appendMessageToBranch(
+			userMessage("sibling branch", TEST_TIMESTAMP + 2),
+			rootId,
+		);
+		harness.sessionManager.branch(activeLeafId);
+		await harness.sessionManager.ensureOnDisk();
+		await harness.sessionManager.flush();
+		const sessionFile = harness.sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted session file");
+		const persistedBefore = await Bun.file(sessionFile).text();
+		const result = await harness.session.dropImages();
+		expect(result).toEqual({ removed: 1 });
+		expect(
+			harness.session.messages.some(
+				message =>
+					"content" in message &&
+					Array.isArray(message.content) &&
+					message.content.some(part => part.type === "image"),
+			),
+		).toBe(false);
+
+		const imageOnBranch = (leafId: string): string | undefined => {
+			const root = harness.sessionManager.getBranch(leafId).find(entry => entry.id === rootId);
+			if (root?.type !== "message" || !("content" in root.message) || !Array.isArray(root.message.content)) {
+				return undefined;
+			}
+			return root.message.content.find(part => part.type === "image")?.data;
+		};
+		expect(imageOnBranch(activeLeafId)).toBe(originalImage);
+		expect(imageOnBranch(rootId)).toBe(originalImage);
+		expect(imageOnBranch(siblingLeafId)).toBe(originalImage);
+
+		await harness.sessionManager.flush();
+		expect(await Bun.file(sessionFile).text()).toBe(persistedBefore);
+	} finally {
 		await closeHarness(harness);
 	}
 });
