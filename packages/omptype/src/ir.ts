@@ -532,44 +532,6 @@ class StrParser {
 const STRING_DEF_CACHE_MAX = 1_024;
 const stringDefCache = new Map<string, ParsedTop>();
 
-function isWhitespaceAt(src: string, index: number): boolean {
-	const code = src.charCodeAt(index);
-	return code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(src[index]));
-}
-
-function parseLiteralUnion(src: string): IR | undefined {
-	const members: Extract<IR, { k: "lit" }>[] = [];
-	let index = 0;
-	while (index < src.length && isWhitespaceAt(src, index)) index++;
-	for (;;) {
-		const quote = src[index];
-		if (quote !== "'" && quote !== '"') return undefined;
-		const end = src.indexOf(quote, index + 1);
-		if (end < 0) return undefined;
-		members.push({ k: "lit", v: src.slice(index + 1, end) });
-		index = end + 1;
-		while (index < src.length && isWhitespaceAt(src, index)) index++;
-		if (index === src.length) {
-			const ir: IR = members.length === 1 ? members[0] : { k: "union", members };
-			let simple = true;
-			for (let member = 1; simple && member < members.length; member++) {
-				for (let previous = 0; previous < member; previous++) {
-					if (members[previous].k === "lit" && members[previous].v === members[member].v) {
-						simple = false;
-						break;
-					}
-				}
-			}
-			ir[kSimple] = simple;
-			ir[kSimpleOwner] = ir;
-			return ir;
-		}
-		if (src[index] !== "|") return undefined;
-		index++;
-		while (index < src.length && isWhitespaceAt(src, index)) index++;
-	}
-}
-
 function genericArguments(src: string): { name: string; args: string[] } | undefined {
 	const open = src.indexOf("<");
 	if (open < 1 || !src.endsWith(">")) return undefined;
@@ -751,7 +713,7 @@ function parseStringDef(src: string, resolve?: AliasResolver): ParsedTop {
 		if (cacheable && stringDefCache.size < STRING_DEF_CACHE_MAX) stringDefCache.set(src, parsed);
 		return parsed;
 	}
-	let ir = parseLiteralUnion(src) ?? parseRegexExec(src) ?? parseGeneric(src, resolve);
+	let ir = parseRegexExec(src) ?? parseGeneric(src, resolve);
 	if (ir === undefined && src.startsWith("`") && src.endsWith("`")) {
 		ir = templateIR(src.slice(1, -1));
 	}

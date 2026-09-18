@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- JSON Schema object and array `const`/`enum` values now use structural equality.
+- JSON Schema `required` entries are enforced even when absent from `properties`.
+- JSON Schema `prefixItems` now preserves optional positions, trailing-item defaults, and item-count bounds.
+- JSON Schema `oneOf` now requires exactly one match and composes with sibling constraints.
+- Quoted literal definitions now decode escapes and reject malformed trailing escapes.
+
 ## [18.1.9] - 2026-09-15
 
 ### Changed

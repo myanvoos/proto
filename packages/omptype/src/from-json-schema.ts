@@ -1,4 +1,5 @@
-import { OmpTypeError } from "./errors";
+import { OmpErrors, OmpTypeError } from "./errors";
+import { walk } from "./interp";
 import { type EmbeddableSchema, type IR, IR_BRAND, type PropIR, type TupleItemIR } from "./ir";
 import { keywordIR, patternIR } from "./keywords";
 import { type BaseType, type } from "./type";
@@ -14,6 +15,76 @@ const FORMAT_KEYWORDS: Record<string, string> = {
 	ipv6: "string.ip.v6",
 	regex: "string.regex",
 };
+
+const own = Object.prototype.hasOwnProperty;
+
+function intersection(members: IR[]): IR {
+	if (members.some(member => member.k === "never")) return { k: "never" };
+	const constrained = members.filter(member => member.k !== "unknown");
+	if (constrained.length === 0) return { k: "unknown" };
+	return constrained.length === 1 ? constrained[0] : { k: "intersection", members: constrained };
+}
+
+function union(members: IR[]): IR {
+	if (members.some(member => member.k === "unknown")) return { k: "unknown" };
+	if (members.length === 0) return { k: "never" };
+	return members.length === 1 ? members[0] : { k: "union", members };
+}
+
+function jsonEquals(expected: unknown, actual: unknown): boolean {
+	if (expected === actual) return true;
+	if (expected instanceof Date) return actual instanceof Date && actual.valueOf() === expected.valueOf();
+	if (Array.isArray(expected)) {
+		if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+		for (let index = 0; index < expected.length; index++) {
+			if (!jsonEquals(expected[index], actual[index])) return false;
+		}
+		return true;
+	}
+	if (
+		typeof expected !== "object" ||
+		expected === null ||
+		typeof actual !== "object" ||
+		actual === null ||
+		Array.isArray(actual) ||
+		actual instanceof Date
+	) {
+		return false;
+	}
+	const expectedKeys = Object.keys(expected);
+	const actualKeys = Object.keys(actual);
+	if (actualKeys.length !== expectedKeys.length) return false;
+	const expectedRecord = expected as Record<string, unknown>;
+	const actualRecord = actual as Record<string, unknown>;
+	for (const key of expectedKeys) {
+		if (!own.call(actualRecord, key) || !jsonEquals(expectedRecord[key], actualRecord[key])) return false;
+	}
+	return true;
+}
+
+function literal(value: unknown): IR {
+	if (value === null || typeof value !== "object" || value instanceof Date) return { k: "lit", v: value };
+	const base: IR = Array.isArray(value)
+		? { k: "array", el: { k: "unknown" } }
+		: { k: "object", props: [], extras: "keep" };
+	return {
+		k: "refine",
+		base,
+		pred: candidate => jsonEquals(value, candidate),
+		expected: "the configured JSON value",
+		json: { const: value },
+	};
+}
+
+function matchesExactlyOne(members: IR[], value: unknown): boolean {
+	let matched = false;
+	for (const member of members) {
+		if (walk(member, value) instanceof OmpErrors) continue;
+		if (matched) return false;
+		matched = true;
+	}
+	return matched;
+}
 
 class Importer {
 	readonly #root: JsonSchema;
@@ -64,35 +135,43 @@ class Importer {
 	}
 
 	#lowerNode(node: JsonSchema): IR {
-		if (typeof node.$ref === "string") return this.resolveRef(node.$ref);
+		const constraints: IR[] = [];
+		if (typeof node.$ref === "string") constraints.push(this.resolveRef(node.$ref));
 
-		if (Array.isArray(node.enum)) {
-			const members = node.enum.map((v): IR => ({ k: "lit", v }));
-			return members.length === 1 ? members[0] : { k: "union", members };
+		if (Array.isArray(node.enum)) constraints.push(union(node.enum.map(value => literal(value))));
+		if ("const" in node) constraints.push(literal(node.const));
+
+		if (Array.isArray(node.anyOf)) {
+			constraints.push(union(node.anyOf.map(branch => this.lower(branch))));
 		}
-		if ("const" in node) return { k: "lit", v: node.const };
-
-		const branches = node.anyOf ?? node.oneOf;
-		if (Array.isArray(branches)) {
-			return { k: "union", members: branches.map(branch => this.lower(branch)) };
+		if (Array.isArray(node.oneOf)) {
+			const members = node.oneOf.map(branch => this.lower(branch));
+			constraints.push({
+				k: "refine",
+				base: { k: "unknown" },
+				pred: value => matchesExactlyOne(members, value),
+				expected: "exactly one matching oneOf branch",
+				json: { oneOf: node.oneOf },
+			});
 		}
 		if (Array.isArray(node.allOf)) {
-			const members = node.allOf.map(branch => this.lower(branch));
-			return members.length === 1 ? members[0] : { k: "intersection", members };
+			constraints.push(...node.allOf.map(branch => this.lower(branch)));
 		}
 		if (typeof node.not === "object" && node.not !== null && Object.keys(node.not).length === 0) {
-			return { k: "never" };
+			constraints.push({ k: "never" });
 		}
 
 		if (Array.isArray(node.type)) {
-			const members = node.type.map(t => this.#lowerTyped(node, String(t)));
-			return members.length === 1 ? members[0] : { k: "union", members };
+			constraints.push(union(node.type.map(kind => this.#lowerTyped(node, String(kind)))));
+		} else if (typeof node.type === "string") {
+			constraints.push(this.#lowerTyped(node, node.type));
+		} else if (node.properties !== undefined || node.required !== undefined) {
+			constraints.push(this.#lowerObject(node));
+		} else if (node.items !== undefined || node.prefixItems !== undefined) {
+			constraints.push(this.#lowerArray(node));
 		}
-		if (typeof node.type === "string") return this.#lowerTyped(node, node.type);
 
-		if (node.properties !== undefined || node.required !== undefined) return this.#lowerObject(node);
-		if (node.items !== undefined || node.prefixItems !== undefined) return this.#lowerArray(node);
-		return { k: "unknown" };
+		return intersection(constraints);
 	}
 
 	#lowerTyped(node: JsonSchema, kind: string): IR {
@@ -152,9 +231,11 @@ class Importer {
 
 	#lowerObject(node: JsonSchema): IR {
 		const required = new Set(Array.isArray(node.required) ? node.required.map(String) : []);
+		const declared = new Set<string>();
 		const props: PropIR[] = [];
 		if (typeof node.properties === "object" && node.properties !== null) {
 			for (const [key, value] of Object.entries(node.properties)) {
+				declared.add(key);
 				const prop: PropIR = { key, opt: !required.has(key), val: this.lower(value) };
 				if (typeof value === "object" && value !== null && "default" in value) {
 					prop.hasDefault = true;
@@ -165,27 +246,45 @@ class Importer {
 			}
 		}
 		const extra = node.additionalProperties;
-		return {
+		const object: IR = {
 			k: "object",
 			props,
 			extras: extra === false ? "reject" : "keep",
 			...(typeof extra === "object" && extra !== null ? { index: this.lower(extra) } : {}),
 		};
+		const undeclaredRequired = [...required].filter(key => !declared.has(key));
+		if (undeclaredRequired.length === 0) return object;
+		return {
+			k: "refine",
+			base: object,
+			pred: value =>
+				typeof value === "object" && value !== null && undeclaredRequired.every(key => own.call(value, key)),
+			expected: `an object with required own ${undeclaredRequired.length === 1 ? "property" : "properties"} ${undeclaredRequired.join(
+				", ",
+			)}`,
+			json: { required: [...required] },
+		};
 	}
 
 	#lowerArray(node: JsonSchema): IR {
 		if (Array.isArray(node.prefixItems)) {
-			const minItems = typeof node.minItems === "number" ? node.minItems : node.prefixItems.length;
-			const prefix: TupleItemIR[] = node.prefixItems.map((item, index) => ({
+			const prefix: TupleItemIR[] = node.prefixItems.map(item => ({
 				val: this.lower(item),
-				opt: index >= minItems,
+				opt: true,
 			}));
-			return {
+			const tuple: IR = {
 				k: "tuple",
 				prefix,
 				postfix: [],
-				...(node.items !== undefined && node.items !== false ? { variadic: this.lower(node.items) } : {}),
+				...(node.items === false
+					? {}
+					: { variadic: node.items === undefined ? { k: "unknown" as const } : this.lower(node.items) }),
 			};
+			if (typeof node.minItems !== "number" && typeof node.maxItems !== "number") return tuple;
+			const bounds: IR = { k: "array", el: { k: "unknown" } };
+			if (typeof node.minItems === "number") bounds.min = node.minItems;
+			if (typeof node.maxItems === "number") bounds.max = node.maxItems;
+			return intersection([tuple, bounds]);
 		}
 		const ir: IR = { k: "array", el: node.items === undefined ? { k: "unknown" } : this.lower(node.items) };
 		if (typeof node.minItems === "number") ir.min = node.minItems;
