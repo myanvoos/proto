@@ -19,11 +19,11 @@ import { type AgentRef, AgentRegistry, getAgentTombstonePath } from "../../../re
 import { readAgentSpawnTask, registerPersistedSubagents } from "../../../registry/persisted-agents";
 import { detachedSessionHolder } from "../../../session/detached-session-holder";
 import { USER_INTERRUPT_LABEL } from "../../../session/messages";
+import { recordSessionTitle } from "../../../session/session-index";
 import { listSessions, readLastAssistantText, type SessionInfo } from "../../../session/session-listing";
 import { getSessionLivePath, readSessionLiveState } from "../../../session/session-liveness";
 import { SessionManager } from "../../../session/session-manager";
 import { FileSessionStorage } from "../../../session/session-storage";
-import { recordSessionTitle } from "../../../session/title-index";
 import {
 	BUILTIN_SLASH_COMMAND_RESERVED_NAMES,
 	lookupBuiltinSlashCommand,

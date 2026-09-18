@@ -45,11 +45,11 @@ function sessionInfo(path: string, id: string, firstMessage: string, title?: str
 	};
 }
 
-function agentRef(path: string, id: string, displayName: string, agent = "worker"): AgentRef {
+function agentRef(path: string, id: string, label: string, agent = "worker"): AgentRef {
 	const now = Date.now();
 	return {
 		id,
-		displayName,
+		label,
 		kind: "sub",
 		parentId: "Main",
 		status: "parked",

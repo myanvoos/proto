@@ -45,7 +45,7 @@ describe("orchestrator lifecycle identity", () => {
 		const runtime = OrchestratorRuntime.global();
 		runtime.registerRecordForTests({ id: "opaque-worker-1", ownerId: "Main", state: "idle" });
 		const [screen] = runtime.screens(scopedSession("test-parent-session"));
-		expect(screen.state).toBe("dead");
+		expect(screen.lifecycle).toBe("terminal");
 		expect(screen.addressable).toBe(false);
 		expect(screen.terminal?.reason).toBe("ownership-lost");
 		expect(screen.terminal?.history).toBe("history://opaque-worker-1");
@@ -70,7 +70,7 @@ describe("orchestrator lifecycle identity", () => {
 		});
 		AgentRegistry.global().register({
 			id: "worker-a",
-			displayName: "review",
+			label: "review",
 			kind: "sub",
 			parentId: "Main",
 			session: null,
@@ -78,7 +78,7 @@ describe("orchestrator lifecycle identity", () => {
 		});
 		AgentRegistry.global().register({
 			id: "worker-b",
-			displayName: "review",
+			label: "review",
 			kind: "sub",
 			parentId: "Main",
 			session: null,
@@ -102,7 +102,7 @@ describe("orchestrator lifecycle identity", () => {
 		});
 		AgentRegistry.global().register({
 			id: "worker-race",
-			displayName: "race",
+			label: "race",
 			kind: "sub",
 			parentId: "Main",
 			session: null,
@@ -141,7 +141,7 @@ describe("orchestrator lifecycle identity", () => {
 		});
 		AgentRegistry.global().register({
 			id: "worker-terminal-payload",
-			displayName: "terminal payload",
+			label: "terminal payload",
 			kind: "sub",
 			parentId: "Main",
 			session: null,
@@ -156,7 +156,8 @@ describe("orchestrator lifecycle identity", () => {
 				{
 					id: "worker-terminal-payload",
 					label: "terminal payload",
-					state: "dead",
+					lifecycle: "terminal",
+					turnState: undefined,
 					addressable: false,
 					terminal: { reason: "explicit-kill", history: "history://worker-terminal-payload" },
 				},
@@ -164,5 +165,69 @@ describe("orchestrator lifecycle identity", () => {
 		} finally {
 			await manager.dispose({ timeoutMs: 1_000 });
 		}
+	});
+	test("a worker reported addressable can actually receive a message at 33 workers", async () => {
+		AgentRegistry.resetGlobalForTests();
+		const registry = AgentRegistry.global();
+		const runtime = new OrchestratorRuntime();
+		const manager = new AsyncJobManager({ retentionMs: 0 });
+		const session = {
+			...scopedSession("parent-33"),
+			asyncJobManager: manager,
+			settings: { get: (key: string) => (key === "orchestrator.maxConcurrency" ? 32 : undefined) },
+		} as ToolSession;
+		for (let index = 0; index < 33; index++) {
+			const id = `worker-${index}`;
+			registry.register({
+				id,
+				label: id,
+				kind: "sub",
+				parentId: "Main",
+				session: {} as never,
+				status: "idle",
+			});
+			runtime.registerRecordForTests({ id, ownerId: "Main", parentSessionId: "parent-33", state: "idle" });
+		}
+		try {
+			expect(runtime.screens(session)[0]).toMatchObject({ id: "worker-0", addressable: true });
+			const sent = await runtime.send(session, { session: "worker-0", message: "continue oldest worker" });
+			expect(sent).toMatchObject({ id: "worker-0", mode: "turn", receipt: { status: "accepted", turn: 1 } });
+		} finally {
+			await manager.dispose({ timeoutMs: 1_000 });
+		}
+	});
+
+	test("busy-worker follow-ups get distinct turns and overflow is rejected with retry guidance", async () => {
+		AgentRegistry.resetGlobalForTests();
+		const registry = AgentRegistry.global();
+		const runtime = new OrchestratorRuntime();
+		registry.register({
+			id: "busy-worker",
+			label: "busy",
+			kind: "sub",
+			parentId: "Main",
+			session: { isStreaming: false } as never,
+			status: "running",
+		});
+		runtime.registerRecordForTests({
+			id: "busy-worker",
+			ownerId: "Main",
+			parentSessionId: "queue-parent",
+			state: "running",
+			jobId: "busy-worker-t1",
+		});
+		const session = scopedSession("queue-parent");
+		const receipts = [];
+		for (let index = 0; index < 32; index++) {
+			receipts.push(await runtime.send(session, { session: "busy-worker", message: `follow-up-${index}` }));
+		}
+		expect(receipts[0]?.receipt).toMatchObject({ status: "queued", turn: 2 });
+		expect(receipts.at(-1)?.receipt).toMatchObject({ status: "queued", turn: 33 });
+		await expect(
+			runtime.send(session, { session: "busy-worker", message: "overflow must be retried" }),
+		).rejects.toThrow("Wait for a turn to settle, then retry this message");
+		expect(runtime.screens(session)[0]).toMatchObject({
+			queued: 32,
+		});
 	});
 });

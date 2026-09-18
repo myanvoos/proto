@@ -1,9 +1,7 @@
-Address worker by immutable id; NEVER display label.
+Starts or steers work addressed by canonical worker `id`; `label` is NEVER an address.
 
-Parameter names: use `message`; spawn uses `prompt`.
+`message`: complete follow-up instruction. Running worker → steer accepted into current turn. Idle/parked worker → tracked turn starts. Busy but non-streaming worker → distinct queued turn; receipt reports its turn number. Queue full → explicit rejection with retry guidance.
 
-Receipt semantics: `accepted` = steer/new turn accepted; `queued` = next turn recorded; `delivered` = completion result delivered by wait/completion; `rejected` = message could not start; `terminal` = worker is no longer addressable.
+Receipt semantics: `accepted` = steer/new turn accepted; `queued` = distinct next turn recorded; `delivered` = completion returned by wait/completion; `rejected` = turn could not start; `terminal` = worker no longer addressable.
 
-Normal completion preserves the worker handle, including idle and parked/cold workers. Terminal errors include the reason, last turn, and `history://` / `agent://` recovery paths.
-
-A worker busy with peer messages remains addressable; your accepted follow-up runs after that turn.
+Normal completion preserves the worker, including parked/cold workers. Terminal errors include reason, last turn, `history://` + `agent://` recovery paths.

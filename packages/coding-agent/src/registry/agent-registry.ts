@@ -56,7 +56,7 @@ export interface AgentHistorySummary {
 
 export interface AgentRef {
 	id: string;
-	displayName: string;
+	label: string;
 	kind: AgentKind;
 	parentId?: string;
 	status: AgentStatus;
@@ -84,7 +84,7 @@ type RegistryListener = (event: RegistryEvent) => void;
 
 interface RegisterInput {
 	id: string;
-	displayName: string;
+	label: string;
 	kind: AgentKind;
 	parentId?: string;
 	session: AgentSession | null;
@@ -117,10 +117,29 @@ export class AgentRegistry {
 
 	readonly #refs = new Map<string, AgentRef>();
 	readonly #mainRefs = new Set<AgentRef>();
+	readonly #refsByFleet = new Map<string, Set<AgentRef>>();
 	readonly #listeners = new Set<RegistryListener>();
 
 	#matchesExpected(ref: AgentRef, expected?: AgentRefExpectation): boolean {
 		return expected === undefined || ref === expected || ref.session === expected;
+	}
+
+	#indexRef(ref: AgentRef): void {
+		if (!ref.fleetRoot) return;
+		let refs = this.#refsByFleet.get(ref.fleetRoot);
+		if (!refs) {
+			refs = new Set();
+			this.#refsByFleet.set(ref.fleetRoot, refs);
+		}
+		refs.add(ref);
+	}
+
+	#unindexRef(ref: AgentRef): void {
+		if (!ref.fleetRoot) return;
+		const refs = this.#refsByFleet.get(ref.fleetRoot);
+		if (!refs) return;
+		refs.delete(ref);
+		if (refs.size === 0) this.#refsByFleet.delete(ref.fleetRoot);
 	}
 
 	#resolveRef(id: string, expected?: AgentRefExpectation): AgentRef | undefined {
@@ -153,7 +172,7 @@ export class AgentRegistry {
 		const parentFleetRoot = input.parentId ? this.#refs.get(input.parentId)?.fleetRoot : undefined;
 		const ref: AgentRef = {
 			id: input.id,
-			displayName: input.displayName,
+			label: input.label,
 			kind: input.kind,
 			parentId: input.parentId,
 			status: input.status ?? "running",
@@ -165,8 +184,11 @@ export class AgentRegistry {
 			activity: input.activity,
 			history: input.history,
 		};
+		const replaced = this.#refs.get(ref.id);
+		if (replaced && ref.id !== MAIN_AGENT_ID) this.#unindexRef(replaced);
 		if (ref.id === MAIN_AGENT_ID) this.#mainRefs.add(ref);
 		this.#refs.set(ref.id, ref);
+		this.#indexRef(ref);
 		this.#emit({ type: "registered", ref });
 		return ref;
 	}
@@ -191,14 +213,14 @@ export class AgentRegistry {
 		return true;
 	}
 
-	setDisplayName(id: string, displayName: string, expectedSessionFile?: string): boolean {
+	setLabel(id: string, label: string, expectedSessionFile?: string): boolean {
 		const ref =
 			expectedSessionFile === undefined
 				? this.#refs.get(id)
 				: this.#resolveRefBySessionFile(id, expectedSessionFile);
-		const normalized = displayName.trim();
-		if (!ref || !normalized || ref.displayName === normalized) return false;
-		ref.displayName = normalized;
+		const normalized = label.trim();
+		if (!ref || !normalized || ref.label === normalized) return false;
+		ref.label = normalized;
 		this.#emit({ type: "metadata_changed", ref });
 		return true;
 	}
@@ -211,8 +233,10 @@ export class AgentRegistry {
 		const ref = this.#resolveRef(id, expected);
 		if (!ref) return false;
 		if (ref.fleetRoot === scope.fleetRoot && ref.sessionFile === scope.sessionFile) return true;
+		this.#unindexRef(ref);
 		ref.fleetRoot = scope.fleetRoot;
 		ref.sessionFile = scope.sessionFile;
+		this.#indexRef(ref);
 		ref.lastActivity = Date.now();
 		this.#emit({ type: "metadata_changed", ref });
 		return true;
@@ -276,6 +300,7 @@ export class AgentRegistry {
 	unregister(id: string, expected?: AgentRefExpectation): boolean {
 		const ref = this.#resolveRef(id, expected);
 		if (!ref) return false;
+		this.#unindexRef(ref);
 		if (id === MAIN_AGENT_ID) this.#mainRefs.delete(ref);
 		if (this.#refs.get(id) === ref) this.#refs.delete(id);
 		this.#emit({ type: "removed", ref });
@@ -321,7 +346,7 @@ export class AgentRegistry {
 	listInFleet(id: string, scopedFleetRoot?: string): AgentRef[] {
 		const fleetRoot = scopedFleetRoot ?? this.#refs.get(id)?.fleetRoot;
 		if (!fleetRoot) return [];
-		const refs = this.list().filter(ref => ref.id !== MAIN_AGENT_ID && ref.fleetRoot === fleetRoot);
+		const refs = [...(this.#refsByFleet.get(fleetRoot) ?? [])].filter(ref => ref.id !== MAIN_AGENT_ID);
 		const main = this.getInFleet(MAIN_AGENT_ID, fleetRoot);
 		if (main) refs.unshift(main);
 		return refs;

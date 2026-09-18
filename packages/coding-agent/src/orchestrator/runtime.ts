@@ -12,7 +12,7 @@ import {
 	resolveModelOverride,
 } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
-import { registerArtifactsDir } from "../internal-urls/registry-helpers";
+import { registerArtifactsDir, registerSessionFile } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
 import workerTurnResultTemplate from "../prompts/tools/worker-turn-result.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
@@ -32,7 +32,9 @@ import { buildOutputValidator } from "../tools/output-schema-validator";
 import { formatDuration } from "../tools/render-utils";
 import { ToolError } from "../tools/tool-errors";
 
-export type WorkerState = "starting" | "running" | "idle" | "dead";
+export type WorkerTurnState = "starting" | "running" | "idle";
+export type WorkerLifecycle = "live" | "parked" | "terminal";
+type WorkerState = WorkerTurnState | "dead";
 
 interface TraceEntry {
 	tool: string;
@@ -50,7 +52,8 @@ const RESPONSE_PREVIEW_MAX = 6000;
 
 const TEARDOWN_GRACE_MS = 5_000;
 
-export const ORCHESTRATOR_IDLE_PAYLOAD_WINDOW = 32;
+const MAX_QUEUED_TURNS = 32;
+const MAX_QUEUED_TURN_BYTES = 256 * 1024;
 
 const ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE = "orchestrator-worker-lifecycle";
 const WORKER_LIFECYCLE_VERSION = 1;
@@ -173,7 +176,6 @@ interface WorkerRecord {
 	outputSchema?: unknown;
 	outputSchemaMode: StructuredSubagentSchemaMode;
 	outputSchemaSource: StructuredSubagentSchemaSource;
-	payloadStubbed: boolean;
 	state: WorkerState;
 	createdAt: number;
 	lastActivityAt: number;
@@ -193,7 +195,7 @@ interface WorkerRecord {
 
 	lastJobId?: string;
 
-	queue: string[];
+	queue: Array<{ message: string; turn: number }>;
 	turnCount: number;
 	killed: boolean;
 
@@ -213,7 +215,8 @@ export interface WorkerScreen {
 	terminal?: WorkerTerminalInfo;
 
 	agent: string;
-	state: WorkerState;
+	lifecycle: WorkerLifecycle;
+	turnState?: WorkerTurnState;
 	model?: string;
 	turns: number;
 	queued: number;
@@ -460,7 +463,7 @@ export class OrchestratorRuntime {
 			parentSessionFile: null,
 			jobOwnerId: record.parentSessionId ?? "test-parent-session",
 		};
-		this.#records.set(scopeKey(scope, record.id), {
+		this.#setRecord(scope, {
 			id: record.id,
 			agentName: record.agentName ?? "lightbot",
 			label: record.label ?? record.agentName ?? "lightbot",
@@ -472,7 +475,6 @@ export class OrchestratorRuntime {
 			...(record.outputSchema !== undefined ? { outputSchema: record.outputSchema } : {}),
 			outputSchemaMode: "permissive",
 			outputSchemaSource: "none",
-			payloadStubbed: false,
 			state: record.state ?? "running",
 			createdAt: now,
 			lastActivityAt: now,
@@ -480,16 +482,16 @@ export class OrchestratorRuntime {
 				? { jobId: record.jobId, message: "test turn", startedAt: now, trace: [], toolCount: 0 }
 				: undefined,
 			queue: [],
-			turnCount: 0,
+			turnCount: record.jobId ? 1 : 0,
 			killed: false,
 			suspended: false,
 			terminalPersisted: false,
 		});
 	}
 
-	readonly #records = new Map<string, WorkerRecord>();
+	readonly #recordsByScope = new Map<string, Map<string, WorkerRecord>>();
 	readonly #terminationTails = new Map<string, Promise<void>>();
-	readonly #turnSemaphores = new Map<string, { limit: number; semaphore: Semaphore }>();
+	#turnSemaphoreState: { limit: number; semaphore: Semaphore } | undefined;
 	readonly #waitedJobIds = new Set<string>();
 	#testResolvedWorker: ResolvedWorker | undefined;
 	#teardownGraceMs = TEARDOWN_GRACE_MS;
@@ -516,10 +518,9 @@ export class OrchestratorRuntime {
 		};
 	}
 
-	#turnSemaphore(session: ToolSession, scope: OwnerScope): Semaphore {
-		const key = scopeKey(scope, "");
+	#turnSemaphore(session: ToolSession): Semaphore {
 		const limit = Math.max(0, Math.trunc(session.settings.get("orchestrator.maxConcurrency") ?? 0));
-		const existing = this.#turnSemaphores.get(key);
+		const existing = this.#turnSemaphoreState;
 		if (existing) {
 			if (existing.limit !== limit) {
 				existing.limit = limit;
@@ -528,8 +529,30 @@ export class OrchestratorRuntime {
 			return existing.semaphore;
 		}
 		const semaphore = new Semaphore(limit);
-		this.#turnSemaphores.set(key, { limit, semaphore });
+		this.#turnSemaphoreState = { limit, semaphore };
 		return semaphore;
+	}
+
+	#scopeRecords(scope: OwnerScope): Map<string, WorkerRecord> {
+		return this.#recordsByScope.get(scopeKey(scope, "")) ?? new Map();
+	}
+
+	#setRecord(scope: OwnerScope, record: WorkerRecord): void {
+		const key = scopeKey(scope, "");
+		let records = this.#recordsByScope.get(key);
+		if (!records) {
+			records = new Map();
+			this.#recordsByScope.set(key, records);
+		}
+		records.set(record.id, record);
+	}
+
+	#deleteRecord(scope: OwnerScope, id: string): void {
+		const key = scopeKey(scope, "");
+		const records = this.#recordsByScope.get(key);
+		if (!records) return;
+		records.delete(id);
+		if (records.size === 0) this.#recordsByScope.delete(key);
 	}
 
 	async #withTerminationLock<T>(scope: OwnerScope, operation: () => Promise<T>): Promise<T> {
@@ -670,7 +693,7 @@ export class OrchestratorRuntime {
 	}
 
 	#record(scope: OwnerScope, id: string): WorkerRecord {
-		const record = this.#records.get(scopeKey(scope, id.trim()));
+		const record = this.#scopeRecords(scope).get(id.trim());
 		if (!record || !matchesScope(record, scope)) {
 			const roster = this.#listIds(scope);
 			throw new ToolError(
@@ -715,24 +738,6 @@ export class OrchestratorRuntime {
 				};
 			}
 		}
-	}
-
-	#compactIdleRecord(record: WorkerRecord): void {
-		record.agent = undefined;
-		record.model = undefined;
-		record.modelOverride = undefined;
-		record.modelRole = undefined;
-		record.outputSchema = undefined;
-		record.live = undefined;
-		record.queue.length = 0;
-		record.payloadStubbed = true;
-	}
-
-	#compactIdleRecords(): void {
-		const idle = [...this.#records.values()]
-			.filter(record => record.state === "idle" && record.turn === undefined && !record.payloadStubbed)
-			.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-		for (const record of idle.slice(ORCHESTRATOR_IDLE_PAYLOAD_WINDOW)) this.#compactIdleRecord(record);
 	}
 
 	#markRecordTerminal(record: WorkerRecord, reason: WorkerTombstoneReason, activity?: string): void {
@@ -789,11 +794,7 @@ export class OrchestratorRuntime {
 	}
 
 	#listIds(scope: OwnerScope): string[] {
-		const ids: string[] = [];
-		for (const record of this.#records.values()) {
-			if (matchesScope(record, scope)) ids.push(record.id);
-		}
-		return ids;
+		return [...this.#scopeRecords(scope).keys()];
 	}
 
 	#displayModel(session: ToolSession, record: WorkerRecord): string | undefined {
@@ -832,7 +833,6 @@ export class OrchestratorRuntime {
 	}
 
 	listIds(session: ToolSession): string[] {
-		this.#compactIdleRecords();
 		return this.#listIds(this.ownerScope(session));
 	}
 
@@ -840,8 +840,7 @@ export class OrchestratorRuntime {
 		const scope = this.ownerScope(session);
 		const wanted = ids?.length ? new Set(ids.map(id => id.trim())) : undefined;
 		const records: WorkerRecord[] = [];
-		for (const record of this.#records.values()) {
-			if (!matchesScope(record, scope)) continue;
+		for (const record of this.#scopeRecords(scope).values()) {
 			if (wanted && !wanted.has(record.id)) continue;
 			records.push(record);
 		}
@@ -852,33 +851,50 @@ export class OrchestratorRuntime {
 				this.#markRecordTerminal(record, "ownership-lost", "terminal: worker ownership is no longer addressable");
 			}
 		}
-		this.#compactIdleRecords();
-		return records.map(record => ({
-			id: record.id,
-			label: record.label,
-			ownerId: record.ownerId,
-			parentSessionId: record.parentSessionId,
-			addressable: record.state !== "dead" && this.#registeredAgent(record) !== undefined,
-			...(record.terminal ? { terminal: record.terminal } : {}),
-			agent: record.agentName,
-			state: record.state,
-			model: this.#displayModel(session, record),
-			turns: record.turnCount,
-			queued: record.queue.length,
-			turnStartedAt: record.turn?.startedAt,
-			turnMessage: record.turn ? firstLine(record.turn.message, 80) : undefined,
-			currentTool: record.live?.currentTool,
-			currentToolArgs: record.live?.currentToolArgs ? firstLine(record.live.currentToolArgs, 60) : undefined,
-			lastIntent: record.live?.lastIntent ? firstLine(record.live.lastIntent, 80) : undefined,
-			trace: record.turn
-				? record.turn.trace
-						.slice(-6)
-						.map(entry => firstLine(`${entry.tool}${entry.args ? `(${entry.args})` : ""}`, TRACE_LINE_MAX))
-				: [],
-			outputTail: (record.live?.outputTail ?? []).map(line => firstLine(line, 100)),
-			lastActivity: record.lastActivity,
-			lastActivityAt: record.lastActivityAt,
-		}));
+		return records.map(record => {
+			const registered = this.#registeredAgent(record);
+			const lifecycle: WorkerLifecycle =
+				record.state === "dead" || record.terminal
+					? "terminal"
+					: registered?.status === "parked"
+						? "parked"
+						: "live";
+			const turnState: WorkerTurnState | undefined =
+				record.state === "dead"
+					? undefined
+					: registered?.status === "parked"
+						? "idle"
+						: record.state === "idle" && registered?.status === "running"
+							? "running"
+							: record.state;
+			return {
+				id: record.id,
+				label: record.label,
+				ownerId: record.ownerId,
+				parentSessionId: record.parentSessionId,
+				addressable: record.state !== "dead" && this.#registeredAgent(record) !== undefined,
+				...(record.terminal ? { terminal: record.terminal } : {}),
+				agent: record.agentName,
+				lifecycle,
+				turnState,
+				model: this.#displayModel(session, record),
+				turns: record.turnCount,
+				queued: record.queue.length,
+				turnStartedAt: record.turn?.startedAt,
+				turnMessage: record.turn ? firstLine(record.turn.message, 80) : undefined,
+				currentTool: record.live?.currentTool,
+				currentToolArgs: record.live?.currentToolArgs ? firstLine(record.live.currentToolArgs, 60) : undefined,
+				lastIntent: record.live?.lastIntent ? firstLine(record.live.lastIntent, 80) : undefined,
+				trace: record.turn
+					? record.turn.trace
+							.slice(-6)
+							.map(entry => firstLine(`${entry.tool}${entry.args ? `(${entry.args})` : ""}`, TRACE_LINE_MAX))
+					: [],
+				outputTail: (record.live?.outputTail ?? []).map(line => firstLine(line, 100)),
+				lastActivity: record.lastActivity,
+				lastActivityAt: record.lastActivityAt,
+			};
+		});
 	}
 
 	#persistedIds(session: OrchestratorParent, scope: OwnerScope): Set<string> {
@@ -888,9 +904,7 @@ export class OrchestratorRuntime {
 			const event = parseLifecycleEvent(entry.data);
 			if (event?.ownerId === scope.ownerId && event.parentSessionId === scope.parentSessionId) ids.add(event.id);
 		}
-		for (const record of this.#records.values()) {
-			if (matchesScope(record, scope)) ids.add(record.id);
-		}
+		for (const record of this.#scopeRecords(scope).values()) ids.add(record.id);
 		return ids;
 	}
 
@@ -954,7 +968,7 @@ export class OrchestratorRuntime {
 		childSessionFile: string,
 		expected?: AgentRef | null,
 		teardownDeadline?: number,
-		displayName = id,
+		label = id,
 	): Promise<void> {
 		const registry = AgentRegistry.global();
 		const existing = registry.get(id);
@@ -979,7 +993,7 @@ export class OrchestratorRuntime {
 		if (current) registry.unregister(id, current);
 		registry.register({
 			id,
-			displayName,
+			label,
 			kind: "sub",
 			parentId: ownerId,
 			session: null,
@@ -1038,7 +1052,7 @@ export class OrchestratorRuntime {
 			const childSessionFile = await this.#resolvePersistedChild(sessionFile, spawn);
 			if (!childSessionFile) continue;
 			await this.#markTerminalRef(id, scope.ownerId, childSessionFile, undefined, undefined, spawn.label);
-			this.#records.delete(scopeKey(scope, id));
+			this.#deleteRecord(scope, id);
 		}
 
 		let restored = 0;
@@ -1047,8 +1061,7 @@ export class OrchestratorRuntime {
 			if (candidate.tombstoneReason || terminalIntents.has(spawn.id) || candidate.turnCount < 1) continue;
 			const childSessionFile = await this.#resolvePersistedChild(sessionFile, spawn);
 			if (!childSessionFile) continue;
-			const key = scopeKey(scope, spawn.id);
-			if (this.#records.has(key)) continue;
+			if (this.#scopeRecords(scope).has(spawn.id)) continue;
 			const existing = AgentRegistry.global().get(spawn.id);
 			let tombstoned: boolean;
 			try {
@@ -1097,7 +1110,7 @@ export class OrchestratorRuntime {
 			if (!existing) {
 				AgentRegistry.global().register({
 					id: spawn.id,
-					displayName: spawn.label,
+					label: spawn.label,
 					kind: "sub",
 					parentId: scope.ownerId,
 					session: null,
@@ -1105,7 +1118,7 @@ export class OrchestratorRuntime {
 					status: "parked",
 				});
 			}
-			this.#records.set(key, {
+			this.#setRecord(scope, {
 				id: spawn.id,
 				agentName: spawn.agent,
 				label: spawn.label,
@@ -1119,7 +1132,6 @@ export class OrchestratorRuntime {
 				modelRole,
 				...(spawn.effort !== undefined ? { effort: spawn.effort } : {}),
 				...schema,
-				payloadStubbed: false,
 				state: "idle",
 				createdAt: spawn.createdAt,
 				lastActivityAt: candidate.lastActivityAt,
@@ -1132,7 +1144,6 @@ export class OrchestratorRuntime {
 			});
 			restored++;
 		}
-		this.#compactIdleRecords();
 		return restored;
 	}
 
@@ -1140,8 +1151,8 @@ export class OrchestratorRuntime {
 		session: ToolSession,
 		args: {
 			agent?: string;
-			name?: string;
-			prompt: string;
+			label?: string;
+			message: string;
 			model?: string;
 			effort?: WorkerEffort;
 			outputSchema?: unknown;
@@ -1157,8 +1168,8 @@ export class OrchestratorRuntime {
 		scope: OwnerScope,
 		args: {
 			agent?: string;
-			name?: string;
-			prompt: string;
+			label?: string;
+			message: string;
 			model?: string;
 			effort?: WorkerEffort;
 			outputSchema?: unknown;
@@ -1189,8 +1200,13 @@ export class OrchestratorRuntime {
 		const schema = this.#resolveOutputSchema(session, agent, args);
 		const reservedIds = this.#persistedIds(session, scope);
 		for (const ref of AgentRegistry.global().list()) reservedIds.add(ref.id);
-		const requestedLabel = args.name?.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48);
-		const label = requestedLabel || generateWorkerName();
+		const requestedLabel = args.label;
+		if (requestedLabel !== undefined && !/^[A-Za-z0-9_-]{1,48}$/.test(requestedLabel)) {
+			throw new ToolError(
+				"Worker label must be 1–48 characters using only ASCII letters, digits, underscore, or hyphen.",
+			);
+		}
+		const label = requestedLabel ?? generateWorkerName();
 		let id = `worker-${Snowflake.next()}`;
 		while (reservedIds.has(id) || AgentRegistry.global().get(id)) id = `worker-${Snowflake.next()}`;
 		const parentSessionFile = scope.parentSessionFile;
@@ -1214,7 +1230,6 @@ export class OrchestratorRuntime {
 			modelRole,
 			...(args.effort !== undefined ? { effort: args.effort } : {}),
 			...schema,
-			payloadStubbed: false,
 			state: "starting",
 			createdAt,
 			lastActivityAt: createdAt,
@@ -1224,8 +1239,7 @@ export class OrchestratorRuntime {
 			suspended: false,
 			terminalPersisted: false,
 		};
-		const key = scopeKey(scope, id);
-		this.#records.set(key, record);
+		this.#setRecord(scope, record);
 		try {
 			if (childSessionFile) {
 				const persisted = await this.#appendLifecycleEvent(
@@ -1246,7 +1260,8 @@ export class OrchestratorRuntime {
 				);
 				if (!persisted) throw new ToolError("Orchestrator parent session changed before the worker could start.");
 			}
-			const jobId = this.#registerTurnJob(session, manager, record, args.prompt, { first: true });
+			const jobId = this.#registerTurnJob(session, manager, record, args.message, { first: true });
+			if (childSessionFile) await registerSessionFile(id, childSessionFile);
 			return { id, label, jobId };
 		} catch (error) {
 			record.killed = true;
@@ -1259,7 +1274,7 @@ export class OrchestratorRuntime {
 					throw new ToolError("Orchestrator parent session changed before spawn failure could be persisted.");
 				}
 			}
-			this.#records.delete(key);
+			this.#deleteRecord(scope, id);
 			throw error;
 		}
 	}
@@ -1269,11 +1284,6 @@ export class OrchestratorRuntime {
 		const record = this.#record(scope, args.session);
 		if (record.state === "dead" || record.terminal) {
 			throw this.#terminalError(record);
-		}
-		if (record.payloadStubbed) {
-			throw new ToolError(
-				`Worker "${record.id}" is retained as compact history and cannot accept a follow-up turn; read history://${record.id} or spawn a new worker.`,
-			);
 		}
 		const message = args.message.trim();
 		if (!message) throw new ToolError("Message must not be empty.");
@@ -1296,13 +1306,22 @@ export class OrchestratorRuntime {
 					receipt: this.#receipt(record, "accepted", record.turnCount, record.turn.jobId),
 				};
 			}
-			record.queue.push(message);
+			const queuedBytes = record.queue.reduce((total, item) => total + Buffer.byteLength(item.message), 0);
+			const messageBytes = Buffer.byteLength(message);
+			const queuedTurn = record.turnCount + record.queue.length + 1;
+			if (record.queue.length >= MAX_QUEUED_TURNS || queuedBytes + messageBytes > MAX_QUEUED_TURN_BYTES) {
+				const reason = `Worker "${record.id}" follow-up queue is full (${record.queue.length}/${MAX_QUEUED_TURNS} turns, ${queuedBytes}/${MAX_QUEUED_TURN_BYTES} bytes). Wait for a turn to settle, then retry this message.`;
+				throw new ToolError(reason, {
+					receipt: this.#receipt(record, "rejected", queuedTurn, record.turn.jobId, reason),
+				});
+			}
+			record.queue.push({ message, turn: queuedTurn });
 			record.lastActivityAt = Date.now();
 			return {
 				id: record.id,
 				label: record.label,
 				mode: "queued",
-				receipt: this.#receipt(record, "queued", record.turnCount + 1),
+				receipt: this.#receipt(record, "queued", queuedTurn),
 			};
 		}
 
@@ -1335,7 +1354,7 @@ export class OrchestratorRuntime {
 
 		const watched = args.sessions?.length
 			? args.sessions.map(id => this.#record(scope, id))
-			: [...this.#records.values()].filter(record => matchesScope(record, scope) && record.turn !== undefined);
+			: [...this.#scopeRecords(scope).values()].filter(record => record.turn !== undefined);
 
 		const snapshots: Array<{ record: WorkerRecord; jobId: string; turn: number }> = [];
 		for (const record of watched) {
@@ -1410,7 +1429,7 @@ export class OrchestratorRuntime {
 	}
 
 	async suspendScope(scope: OwnerScope, manager?: AsyncJobManager): Promise<number> {
-		const records = [...this.#records.values()].filter(record => matchesScope(record, scope));
+		const records = [...this.#scopeRecords(scope).values()];
 		const teardown = records.map(record => ({
 			record,
 			ref: this.#registeredAgent(record),
@@ -1422,7 +1441,7 @@ export class OrchestratorRuntime {
 			record.state = "dead";
 			record.lastActivityAt = Date.now();
 			record.lastActivity = "suspended for parent-session switch";
-			this.#records.delete(scopeKey(scope, record.id));
+			this.#deleteRecord(scope, record.id);
 			if (record.turn && manager) manager.cancel(record.turn.jobId, { ownerId: record.jobOwnerId });
 		}
 		const deadline = Date.now() + this.#teardownGraceMs;
@@ -1447,7 +1466,7 @@ export class OrchestratorRuntime {
 				);
 				this.#continueSuspendedCleanup(scope, record, jobTask);
 			}
-			if (this.#records.has(scopeKey(scope, record.id))) continue;
+			if (this.#scopeRecords(scope).has(record.id)) continue;
 			const lateRef = this.#registeredAgent(record);
 			if (lateRef && lateRef !== ref) {
 				await this.#releaseRefWithinDeadline(record.id, lateRef, deadline, "detach");
@@ -1459,7 +1478,7 @@ export class OrchestratorRuntime {
 	#continueSuspendedCleanup(scope: OwnerScope, record: WorkerRecord, jobTask: TrackedTeardown): void {
 		void jobTask.promise
 			.then(async () => {
-				if (this.#records.has(scopeKey(scope, record.id))) return;
+				if (this.#scopeRecords(scope).has(record.id)) return;
 				const lateRef = this.#registeredAgent(record);
 				if (!lateRef) return;
 				await this.#releaseRefWithinDeadline(record.id, lateRef, Date.now() + this.#teardownGraceMs, "detach");
@@ -1721,12 +1740,7 @@ export class OrchestratorRuntime {
 			record.lastActivityAt = Date.now();
 		};
 
-		const semaphore = this.#turnSemaphore(session, {
-			ownerId: record.ownerId,
-			parentSessionId: record.parentSessionId,
-			parentSessionFile: record.parentSessionFile,
-			jobOwnerId: record.jobOwnerId,
-		});
+		const semaphore = this.#turnSemaphore(session);
 		const jobId = manager.register(
 			"worker",
 			`${record.label} (${record.id}): ${firstLine(message, 60)}`,
@@ -1867,15 +1881,12 @@ export class OrchestratorRuntime {
 			return;
 		}
 		record.turn = undefined;
-		if (record.queue.length === 0) {
-			this.#compactIdleRecords();
-			return;
-		}
-		const nextMessage = record.queue.splice(0, record.queue.length).join("\n\n");
+		if (record.queue.length === 0) return;
+		const next = record.queue.shift()!;
 		try {
-			this.#registerTurnJob(session, manager, record, nextMessage, { first: false });
+			this.#registerTurnJob(session, manager, record, next.message, { first: false });
 		} catch (error) {
-			record.queue.unshift(nextMessage);
+			record.queue.unshift(next);
 			logger.warn("orchestrator: failed to start queued follow-up turn", {
 				id: record.id,
 				error: error instanceof Error ? error.message : String(error),

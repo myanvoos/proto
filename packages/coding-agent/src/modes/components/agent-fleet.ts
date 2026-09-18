@@ -699,8 +699,8 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			add(theme.bold(theme.fg("accent", label)));
 		};
 
-		add(`${statusGlyph(ref.status)} ${theme.bold(sanitizeDisplayText(ref.displayName || ref.id))}`);
-		if (ref.displayName && ref.displayName !== ref.id) add(theme.fg("dim", sanitizeDisplayText(ref.id)));
+		add(`${statusGlyph(ref.status)} ${theme.bold(sanitizeDisplayText(ref.label || ref.id))}`);
+		if (ref.label && ref.label !== ref.id) add(theme.fg("dim", sanitizeDisplayText(ref.id)));
 		const lifecycleDetails = [
 			metrics ? formatMetricDuration(metrics) : undefined,
 			`active ${formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)))}`,
@@ -787,8 +787,8 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		const id = sanitizeDisplayText(ref.id);
 		const styledId = selected ? theme.bold(theme.fg("accent", id)) : theme.bold(id);
 		const fields: string[] = [`${cursor} ${statusGlyph(ref.status)} ${branch}${styledId}`];
-		if (ref.displayName && ref.displayName !== ref.id) {
-			fields.push(theme.fg("dim", sanitizeDisplayText(ref.displayName)));
+		if (ref.label && ref.label !== ref.id) {
+			fields.push(theme.fg("dim", sanitizeDisplayText(ref.label)));
 		}
 		if (this.#viewMode === "roster" && ref.parentId && ref.parentId !== MAIN_AGENT_ID) {
 			fields.push(theme.fg("dim", `↳ ${sanitizeDisplayText(ref.parentId)}`));

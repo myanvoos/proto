@@ -121,8 +121,11 @@ async function collectWeakRefs(refs: WeakRef<object>[]): Promise<number> {
 		await Bun.sleep(10);
 		const collected = countCollected(refs);
 		if (collected === refs.length) return collected;
-		// WeakRef targets dereferenced above stay alive through this JavaScript job.
-		await Bun.sleep(0);
+		// JSC keeps a successfully dereferenced WeakRef target alive through the current job.
+		// A microtask/Bun.sleep(0) yield can stay in that job, so every retry's GC still sees the target rooted.
+		const nextJob = Promise.withResolvers<void>();
+		setImmediate(nextJob.resolve);
+		await nextJob.promise;
 	}
 	return countCollected(refs);
 }
@@ -215,21 +218,21 @@ async function runLifecycle(
 		const ids: string[] = [];
 		for (let index = 0; index < count; index++) {
 			const spawned = await runtime.spawn(session, {
-				name: `lifecycle-${index}`,
-				prompt: `fixture worker ${index}`,
+				label: `lifecycle-${index}`,
+				message: `fixture worker ${index}`,
 			});
 			ids.push(spawned.id);
 		}
 		await provider.allStarted;
 		const liveScreens = runtime.screens(session, ids);
-		if (liveScreens.some(screen => screen.state !== "running"))
+		if (liveScreens.some(screen => screen.turnState !== "running"))
 			throw new Error("workers did not reach running state");
 
 		started.resolve();
 		await manager.waitForAll();
 		await runtime.wait(session, { sessions: ids });
 		const completedScreens = runtime.screens(session, ids);
-		if (completedScreens.some(screen => screen.state !== "idle")) throw new Error("workers did not become idle");
+		if (completedScreens.some(screen => screen.turnState !== "idle")) throw new Error("workers did not become idle");
 		const sessionRefs = ids.map(weakSession);
 
 		const lifecycle = AgentLifecycleManager.global();
@@ -246,7 +249,8 @@ async function runLifecycle(
 		await manager.waitForAll();
 		await runtime.wait(session, { sessions: ids });
 		const revivedScreens = runtime.screens(session, ids);
-		if (revivedScreens.some(screen => screen.state !== "idle")) throw new Error("workers did not revive and settle");
+		if (revivedScreens.some(screen => screen.turnState !== "idle"))
+			throw new Error("workers did not revive and settle");
 		if (provider.continuityChecks() !== count)
 			throw new Error(
 				`not every revived worker retained transcript content: ${provider.continuityChecks()}/${count}`,
@@ -258,7 +262,7 @@ async function runLifecycle(
 
 		for (const id of ids) await runtime.kill(session, id);
 		const releasedScreens = runtime.screens(session, ids);
-		if (releasedScreens.some(screen => screen.state !== "dead" || screen.addressable)) {
+		if (releasedScreens.some(screen => screen.lifecycle !== "terminal" || screen.addressable)) {
 			throw new Error("released workers remained addressable");
 		}
 		for (const id of ids) {

@@ -111,7 +111,7 @@ export interface LaunchParams {
 	env?: Record<string, string>;
 	cwd?: string;
 	pty?: boolean;
-	ready?: { log?: string; port?: number; host?: string; timeout?: number };
+	ready?: { log?: string; port?: number; host?: string; timeoutMs?: number };
 	restart?: "no" | "on-failure" | "always";
 	persist?: boolean;
 	detached?: boolean;
@@ -126,7 +126,7 @@ export interface LaunchParams {
 	enter?: boolean;
 	keys?: string[];
 	signal?: "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKILL";
-	timeout?: number;
+	timeoutMs?: number;
 	all?: boolean;
 }
 
@@ -165,9 +165,8 @@ function requiredName(params: LaunchParams): string {
 	return params.name;
 }
 
-function timeoutMs(value: number | undefined, fallbackSeconds: number): number {
-	const seconds = Math.max(0.05, Math.min(3_600, value ?? fallbackSeconds));
-	return Math.round(seconds * 1_000);
+function boundedTimeoutMs(value: number | undefined, fallbackMs: number): number {
+	return Math.round(Math.max(50, Math.min(3_600_000, value ?? fallbackMs)));
 }
 
 function commandSpec(params: LaunchParams, session: ToolSession): DaemonSpec {
@@ -191,7 +190,7 @@ function commandSpec(params: LaunchParams, session: ToolSession): DaemonSpec {
 					log: ready.log,
 					port: ready.port,
 					host: ready.host,
-					timeoutMs: timeoutMs(ready.timeout, 30),
+					timeoutMs: boundedTimeoutMs(ready.timeoutMs, 30_000),
 				}
 			: undefined,
 		restart: params.restart ?? "no",
@@ -238,7 +237,7 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 				follow: params.follow ?? false,
 				cursor: params.cursor,
 				renderTerminalRows: true,
-				timeoutMs: timeoutMs(params.timeout, 30),
+				timeoutMs: boundedTimeoutMs(params.timeoutMs, 30_000),
 			};
 		case "wait":
 			return {
@@ -246,7 +245,7 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 				name: requiredName(params),
 				for: params.for ?? "exit",
 				pattern: params.pattern,
-				timeoutMs: timeoutMs(params.timeout, 30),
+				timeoutMs: boundedTimeoutMs(params.timeoutMs, 30_000),
 			};
 		case "send":
 			return {
@@ -256,7 +255,7 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 				signal: params.signal,
 			};
 		case "stop":
-			return { op: "stop", name: requiredName(params), timeoutMs: timeoutMs(params.timeout, 5) };
+			return { op: "stop", name: requiredName(params), timeoutMs: boundedTimeoutMs(params.timeoutMs, 5_000) };
 		case "restart":
 			return { op: "restart", name: requiredName(params) };
 		case "describe":
@@ -302,7 +301,7 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 				const pending = readyPendingSummary(daemon, params.ready);
 				const cause = pending.length > 0 ? `: ${pending.join("; ")}` : "";
 				lines.push(
-					`NOT ready — readiness timed out after ${params.ready?.timeout ?? 30}s${cause}. The process is still running (state: ${daemon.state}); follow its logs or stop it.`,
+					`NOT ready — readiness timed out after ${formatDuration(params.ready?.timeoutMs ?? 30_000)}${cause}. The process is still running (state: ${daemon.state}); follow its logs or stop it.`,
 				);
 			} else if (params.ready && daemon.readyAt === undefined && TERMINAL_STATES[daemon.state]) {
 				lines.push("Process exited before readiness was observed.");

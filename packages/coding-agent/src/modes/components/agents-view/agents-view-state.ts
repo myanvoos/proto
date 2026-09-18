@@ -152,7 +152,7 @@ function createSearchableText(ref: AgentRef | undefined, session: SessionInfo | 
 		session?.parentSessionPath,
 		session?.allMessagesText.slice(0, 8192),
 		ref?.id,
-		ref?.displayName,
+		ref?.label,
 		ref?.activity,
 		ref?.history?.resolvedModel,
 		ref?.history?.agent,
@@ -464,7 +464,7 @@ export function hasExplicitTitle(record: AgentsViewRecord): boolean {
 }
 
 export function getRecordTitle(record: AgentsViewRecord): string {
-	const refLabel = normalizeRecordText(record.ref?.displayName);
+	const refLabel = normalizeRecordText(record.ref?.label);
 	const agentName = normalizeRecordText(record.ref?.history?.agent);
 	const candidates = [
 		normalizeRecordText(record.session?.title),

@@ -460,8 +460,8 @@ async function registerPersistedSubagentsFromDir(
 			// Advisors register under the read-only `advisor` kind on purpose: every agent-facing surface already
 			// excludes that kind (fleet roster, broadcast targets, subagent peer prompt, `history://`, IRC send,
 			// revive/kill), so they are fail-closed here instead of by extending a dozen predicates.
-			const displayName = slug ? `advisor:${slug}` : "advisor";
-			const advisorId = `${owner}/${displayName}`;
+			const label = slug ? `advisor:${slug}` : "advisor";
+			const advisorId = `${owner}/${label}`;
 			let existing = registry.get(advisorId);
 			if (existing && existing.fleetRoot === undefined && !existing.session) {
 				registry.updateSessionScope(advisorId, { fleetRoot, sessionFile: existing.sessionFile }, existing);
@@ -479,7 +479,7 @@ async function registerPersistedSubagentsFromDir(
 				if (existing) registry.unregister(advisorId);
 				registry.register({
 					id: advisorId,
-					displayName,
+					label,
 					kind: "advisor",
 					parentId: owner,
 					session: null,
@@ -513,8 +513,8 @@ async function registerPersistedSubagentsFromDir(
 			registry.unregister(id, existing);
 			existing = undefined;
 		}
-		if (orchestratorLabel && existing?.displayName === id) {
-			registry.setDisplayName(id, orchestratorLabel, sessionFile);
+		if (orchestratorLabel && existing?.label === id) {
+			registry.setLabel(id, orchestratorLabel, sessionFile);
 		}
 		if (orchestratorOwned && parentId === undefined && existing?.sessionFile !== sessionFile) {
 			await registerPersistedSubagentsFromDir(
@@ -550,7 +550,7 @@ async function registerPersistedSubagentsFromDir(
 				if (unclaimed) {
 					registry.register({
 						id,
-						displayName: orchestratorLabel ?? id,
+						label: orchestratorLabel ?? id,
 						kind: "sub",
 						parentId: parentId ?? MAIN_AGENT_ID,
 						session: null,

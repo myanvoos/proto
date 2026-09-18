@@ -1,6 +1,6 @@
-Spawns one persistent coding-agent worker; returns an immutable worker id and a display label.
+Spawns one persistent coding-agent worker; returns canonical `id` + `label` fields.
 
-Parameter names: use `prompt`; send uses `message`.
+`message`: worker's ONLY initial context; include files, constraints, acceptance criteria. `label`: optional display text matching `[A-Za-z0-9_-]{1,48}`; invalid labels are rejected, NEVER rewritten. Omitted label → generated label.
 
 Omitted `agent`: first parent-permitted type; unrestricted → `worker`. Choose `worker` for design/debugging/multi-file judgment, `lightbot` for mechanical well-specified work, specialists (scout, reviewer, …) when matching. Parent spawn restrictions and recursion limits apply.
 {{#if agents.length}}
@@ -9,8 +9,8 @@ Available agent types:
 - `{{name}}`: {{description}}
 {{/each}}
 {{/if}}
-`model` picks the worker's model: a role alias (`@worker`) or a concrete model id. When the effective role has a model bank configured, `model` must be one of its entries (the role's default is always allowed; a role alias in `model` switches the effective role); otherwise any model pattern is accepted. The selection persists across park/revive.
+`model`: role alias (`@worker`) or concrete model id. Effective role with configured model bank → selection MUST be in-bank; role default always allowed; role alias switches effective role. Selection persists across park/revive.
 
-`prompt` is the worker's ONLY context; include files, constraints, acceptance criteria. Results self-deliver on completion; direct other workers meanwhile. The worker persists after normal turn completion — continue with orchestrate_send using the returned immutable id, NEVER the display label. Labels may repeat across parent sessions.
+Results self-deliver on completion; direct other workers meanwhile. Normal completion preserves the worker: continue with `orchestrate_send` using returned `id`, NEVER `label`. Labels may repeat.
 
-Isolated workers are terminal after completion and use an independent eval kernel; spawn a persistent worker when you need follow-up turns.
+Isolated workers are terminal after completion and use an independent eval kernel; spawn a persistent worker for follow-up turns.

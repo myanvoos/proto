@@ -21,7 +21,7 @@ function writeLiveMarker(sessionFile: string, streaming: boolean, pid: number): 
 function registerParked(registry: AgentRegistry, sessionFile: string): AgentRef {
 	return registry.register({
 		id: "worker",
-		displayName: "worker",
+		label: "worker",
 		kind: "sub",
 		session: null,
 		sessionFile,
@@ -84,7 +84,7 @@ describe("reclaimDeadCorpse", () => {
 		const lifecycle = new AgentLifecycleManager(registry);
 		const ref = registry.register({
 			id: "worker",
-			displayName: "worker",
+			label: "worker",
 			kind: "sub",
 			session: null,
 			status: "parked",
@@ -122,7 +122,7 @@ describe("parking", () => {
 		const revivedSession = { dispose: async () => {} } as unknown as AgentSession;
 		const ref = registry.register({
 			id: "worker",
-			displayName: "worker",
+			label: "worker",
 			kind: "sub",
 			session: originalSession,
 			sessionFile,
@@ -168,7 +168,7 @@ describe("fleet-scoped disposal", () => {
 		const register = (id: string, fleetRoot: string): AgentRef =>
 			registry.register({
 				id,
-				displayName: id,
+				label: id,
 				kind: "sub",
 				fleetRoot,
 				status: "idle",

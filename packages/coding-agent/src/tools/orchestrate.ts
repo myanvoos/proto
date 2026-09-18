@@ -13,7 +13,7 @@ import type {
 	WaitOutcome,
 	WorkerReceipt,
 	WorkerScreen,
-	WorkerState,
+	WorkerTurnState,
 } from "../orchestrator/runtime";
 import orchestrateKillDescription from "../prompts/tools/orchestrate-kill.md" with { type: "text" };
 import orchestrateListDescription from "../prompts/tools/orchestrate-list.md" with { type: "text" };
@@ -39,6 +39,7 @@ import {
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "./render-utils";
+import { ToolError } from "./tool-errors";
 
 export const ORCHESTRATE_TOOL_NAMES = [
 	"orchestrate_spawn",
@@ -54,8 +55,10 @@ const orchestrateSpawnSchema = type({
 	"agent?": type("string").describe(
 		"worker agent type (any discovered type); omit for the generic strong-model `worker` (`lightbot` = fast mechanical work)",
 	),
-	"name?": type("string <= 48").describe("optional worker name; generated when omitted"),
-	prompt: type("string > 0").describe("first instruction; the worker starts with no other context"),
+	"label?": type("string <= 48").describe(
+		"optional display label using only letters, digits, underscore, or hyphen; generated when omitted",
+	),
+	message: type("string > 0").describe("first instruction; the worker starts with no other context"),
 	"model?": type("string > 0").describe(
 		"model for this worker: a role alias like `@worker` or a concrete model id; validated against the effective role's model bank when one is configured (a role alias switches the effective role)",
 	),
@@ -68,17 +71,17 @@ const orchestrateSpawnSchema = type({
 });
 
 const orchestrateSendSchema = type({
-	worker: type("string > 0").describe("worker id from orchestrate_spawn / orchestrate_list"),
+	id: type("string > 0").describe("worker id from orchestrate_spawn / orchestrate_list"),
 	message: type("string > 0").describe("message for the worker; steers mid-turn, else runs as its next turn"),
 });
 
 const orchestrateWaitSchema = type({
-	"workers?": type("string[]").describe("worker ids to watch; omit to watch every worker with a turn in flight"),
-	"timeout?": type("number > 0").describe("max seconds to wait (default 900 = 15 min)"),
+	"ids?": type("string[]").describe("worker ids to watch; omit to watch every worker with a turn in flight"),
+	"timeoutMs?": type("number > 0").describe("max milliseconds to wait (default 900000 = 15 min)"),
 });
 
 const orchestrateKillSchema = type({
-	worker: type("string > 0").describe("worker id to terminate"),
+	id: type("string > 0").describe("worker id to terminate"),
 });
 
 const orchestrateListSchema = type({});
@@ -128,6 +131,25 @@ function textResult(text: string, details: OrchestrateToolDetails): AgentToolRes
 	return { content: [{ type: "text", text }], details };
 }
 
+function assertKnownParams(tool: string, params: object, accepted: readonly string[]): void {
+	const unknown = Object.keys(params).filter(key => !accepted.includes(key));
+	if (unknown.length > 0) {
+		throw new ToolError(
+			`Unknown ${tool} parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Accepted: ${accepted.join(", ")}.`,
+		);
+	}
+}
+
+function validateWorkerLabel(label: string | undefined): string | undefined {
+	if (label === undefined) return undefined;
+	if (!/^[A-Za-z0-9_-]{1,48}$/.test(label)) {
+		throw new ToolError(
+			"Worker label must be 1–48 characters using only ASCII letters, digits, underscore, or hyphen.",
+		);
+	}
+	return label;
+}
+
 export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSchema, OrchestrateToolDetails> {
 	readonly name = "orchestrate_spawn";
 	readonly label = "Orchestration Spawn";
@@ -156,6 +178,16 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 		params: typeof orchestrateSpawnSchema.infer,
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
+		assertKnownParams("orchestrate_spawn", params, [
+			"agent",
+			"label",
+			"message",
+			"model",
+			"effort",
+			"outputSchema",
+			"schemaMode",
+			"isolated",
+		]);
 		if (params.effort !== undefined && !WORKER_EFFORTS.includes(params.effort as WorkerEffort)) {
 			return textResult(`Invalid effort ${JSON.stringify(params.effort)}. Use "lo", "med", or "hi".`, {
 				op: "spawn",
@@ -163,12 +195,13 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 			});
 		}
 		const registry = (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global();
+		const label = validateWorkerLabel(params.label);
 		if (params.isolated === true) {
 			try {
 				const execution = await (await getSpawnSubagentModule()).runStructuredSubagent({
 					session: this.session,
 					invocationKind: "worker",
-					assignment: params.prompt.trim(),
+					assignment: params.message.trim(),
 					agent: params.agent,
 					...(params.model !== undefined ? { model: params.model } : {}),
 					...(params.effort !== undefined ? { effort: params.effort as WorkerEffort } : {}),
@@ -176,7 +209,7 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 					...(params.schemaMode !== undefined ? { schemaMode: params.schemaMode } : {}),
 					isolation: { requested: true },
 					shareEvalSession: false,
-					identity: { label: params.name },
+					identity: { label },
 					detached: false,
 					signal,
 				});
@@ -203,10 +236,14 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 				};
 			}
 		}
-		const { id, label, jobId } = await registry.spawn(this.session, {
+		const {
+			id,
+			label: workerLabel,
+			jobId,
+		} = await registry.spawn(this.session, {
 			agent: params.agent,
-			name: params.name,
-			prompt: params.prompt,
+			label,
+			message: params.message,
 			...(params.model !== undefined ? { model: params.model } : {}),
 			...(params.effort !== undefined ? { effort: params.effort as WorkerEffort } : {}),
 			...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
@@ -215,8 +252,12 @@ export class OrchestrateSpawnTool implements AgentTool<typeof orchestrateSpawnSc
 		const agentName = params.agent?.trim() || "worker";
 		const modelNote = params.model !== undefined ? `model \`${params.model}\`, ` : "";
 		return textResult(
-			`Spawned \`${agentName}\` worker \`${id}\` (label \`${label}\`, ${modelNote}turn job \`${jobId}\`). The immutable worker id is the only routing address; its result will be delivered when the turn finishes. Continue this worker with orchestrate_send \`${id}\`.`,
-			{ op: "spawn", screens: await screensOf(this.session), spawned: { id, label, agent: agentName, jobId } },
+			`Spawned \`${agentName}\` worker \`${id}\` (label \`${workerLabel}\`, ${modelNote}turn job \`${jobId}\`). The immutable worker id is the only routing address; its result will be delivered when the turn finishes. Continue this worker with orchestrate_send \`${id}\`.`,
+			{
+				op: "spawn",
+				screens: await screensOf(this.session),
+				spawned: { id, label: workerLabel, agent: agentName, jobId },
+			},
 		);
 	}
 }
@@ -237,8 +278,9 @@ export class OrchestrateSendTool implements AgentTool<typeof orchestrateSendSche
 		_toolCallId: string,
 		params: typeof orchestrateSendSchema.infer,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
+		assertKnownParams("orchestrate_send", params, ["id", "message"]);
 		const outcome = await (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global().send(this.session, {
-			session: params.worker,
+			session: params.id,
 			message: params.message,
 		});
 		const ack =
@@ -272,12 +314,13 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<OrchestrateToolDetails>,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
+		assertKnownParams("orchestrate_wait", params, ["ids", "timeoutMs"]);
 		const registry = (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global();
 
 		const emitProgress = (): void => {
 			// Re-snapshot per tick: worker state/tool/turn fields are live, and
 			// a pre-wait snapshot would freeze the TV panel for the whole wait.
-			void screensOf(this.session, params.workers)
+			void screensOf(this.session, params.ids)
 				.then(progressScreens => {
 					onUpdate?.({
 						content: [{ type: "text", text: "" }],
@@ -295,8 +338,8 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 		let outcome: WaitOutcome;
 		try {
 			outcome = await registry.wait(this.session, {
-				sessions: params.workers,
-				timeoutMs: params.timeout !== undefined ? params.timeout * 1000 : undefined,
+				sessions: params.ids,
+				timeoutMs: params.timeoutMs,
 				signal,
 			});
 		} finally {
@@ -304,7 +347,7 @@ export class OrchestrateWaitTool implements AgentTool<typeof orchestrateWaitSche
 		}
 		const details: OrchestrateToolDetails = {
 			op: "wait",
-			screens: await screensOf(this.session, params.workers),
+			screens: await screensOf(this.session, params.ids),
 			wait: {
 				settled: outcome.settled.map(({ id, label, jobId, status, receipt }) => ({
 					id,
@@ -356,9 +399,10 @@ export class OrchestrateKillTool implements AgentTool<typeof orchestrateKillSche
 		_toolCallId: string,
 		params: typeof orchestrateKillSchema.infer,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
+		assertKnownParams("orchestrate_kill", params, ["id"]);
 		const outcome = await (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global().kill(
 			this.session,
-			params.worker,
+			params.id,
 		);
 		const cancelNote = outcome.cancelledTurn ? " Its in-flight turn was cancelled." : "";
 		return textResult(
@@ -392,7 +436,7 @@ export class OrchestrateListTool implements AgentTool<typeof orchestrateListSche
 		}
 		const lines = screens.map(screen => {
 			const parts = [
-				`- \`${screen.id}\` (label \`${screen.label ?? screen.id}\`) [${screen.agent}] ${screen.state}`,
+				`- \`${screen.id}\` (label \`${screen.label ?? screen.id}\`) [${screen.agent}] lifecycle=${screen.lifecycle} · turn=${screen.turnState ?? "none"}`,
 				`${screen.turns} turn${screen.turns === 1 ? "" : "s"}`,
 				`addressable=${screen.addressable ?? false}`,
 				`owner=${screen.ownerId ?? "?"}`,
@@ -416,7 +460,7 @@ const TV_OUTPUT_COLLAPSED = PREVIEW_LIMITS.OUTPUT_COLLAPSED;
 const TV_OUTPUT_EXPANDED = PREVIEW_LIMITS.OUTPUT_EXPANDED;
 const CURSOR_GLYPH = "▌";
 
-function stateToIcon(state: WorkerState): ToolUIStatus {
+function turnStateToIcon(state: WorkerTurnState): ToolUIStatus {
 	switch (state) {
 		case "running":
 			return "running";
@@ -424,12 +468,10 @@ function stateToIcon(state: WorkerState): ToolUIStatus {
 			return "pending";
 		case "idle":
 			return "done";
-		case "dead":
-			return "aborted";
 	}
 }
 
-function stateToColor(state: WorkerState): ToolUIColor {
+function turnStateToColor(state: WorkerTurnState): ToolUIColor {
 	switch (state) {
 		case "running":
 			return "accent";
@@ -437,18 +479,16 @@ function stateToColor(state: WorkerState): ToolUIColor {
 			return "accent";
 		case "idle":
 			return "success";
-		case "dead":
-			return "muted";
 	}
 }
 
 interface OrchestrateRenderArgs {
 	agent?: string;
-	prompt?: string;
-	name?: string;
-	worker?: string;
+	label?: string;
+	id?: string;
 	message?: string;
-	workers?: string[];
+	ids?: string[];
+	timeoutMs?: number;
 }
 
 function frameText(text: string, max: number): string {
@@ -490,14 +530,18 @@ function tvScreen(
 	options: RenderResultOptions,
 	settledStatus?: "completed" | "failed" | "cancelled",
 ): string[] {
-	const live = screen.state === "running" || screen.state === "starting";
+	const live = screen.turnState === "running" || screen.turnState === "starting";
 	const spinnerFrame = live ? options.spinnerFrame : undefined;
 	const icon = formatStatusIcon(
-		settledStatus === "failed" ? "error" : settledStatus === "cancelled" ? "aborted" : stateToIcon(screen.state),
+		settledStatus === "failed"
+			? "error"
+			: settledStatus === "cancelled" || screen.lifecycle === "terminal"
+				? "aborted"
+				: turnStateToIcon(screen.turnState ?? "idle"),
 		uiTheme,
 		spinnerFrame,
 	);
-	const badge = formatBadge(screen.agent, stateToColor(screen.state), uiTheme);
+	const badge = formatBadge(screen.agent, turnStateToColor(screen.turnState ?? "idle"), uiTheme);
 	const nameText =
 		live && options.spinnerFrame !== undefined && shimmerEnabled()
 			? shimmerText(screen.label ?? screen.id, uiTheme)
@@ -505,7 +549,7 @@ function tvScreen(
 	const idText = screen.label && screen.label !== screen.id ? uiTheme.fg("dim", screen.id) : undefined;
 	const headParts = [icon, badge, nameText];
 	if (idText) headParts.push(idText);
-	headParts.push(uiTheme.fg("dim", settledStatus ?? screen.state));
+	headParts.push(uiTheme.fg("dim", settledStatus ?? `${screen.lifecycle}/${screen.turnState ?? "none"}`));
 	const turnsLabel = `${screen.turns}t${screen.queued > 0 ? `+${screen.queued}q` : ""}`;
 	headParts.push(uiTheme.fg("muted", turnsLabel));
 	if (screen.turnStartedAt !== undefined) {
@@ -566,13 +610,13 @@ function linesComponent(lines: string[] | (() => string[])): Component {
 function describeCall(op: OrchestrateOp, args: OrchestrateRenderArgs | undefined): string {
 	switch (op) {
 		case "spawn":
-			return `spawn ${args?.agent ?? "worker"}${args?.name ? ` · ${frameText(args.name, 40)}` : ""}`;
+			return `spawn ${args?.agent ?? "worker"}${args?.label ? ` · ${frameText(args.label, 40)}` : ""}`;
 		case "send":
-			return `send → ${args?.worker ? frameText(args.worker, 40) : "?"}`;
+			return `send → ${args?.id ? frameText(args.id, 40) : "?"}`;
 		case "wait":
-			return args?.workers?.length ? `wait on ${frameText(args.workers.join(", "), 60)}` : "wait on running workers";
+			return args?.ids?.length ? `wait on ${frameText(args.ids.join(", "), 60)}` : "wait on running workers";
 		case "kill":
-			return `kill ${args?.worker ? frameText(args.worker, 40) : "?"}`;
+			return `kill ${args?.id ? frameText(args.id, 40) : "?"}`;
 		case "list":
 			return "workers";
 	}
@@ -589,7 +633,7 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 		renderCall(args: OrchestrateRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const title = uiTheme.fg("muted", `orchestrate ${describeCall(op, args)}`);
 			if (composerOp) {
-				const message = op === "spawn" ? (args?.prompt ?? "") : (args?.message ?? "");
+				const message = args?.message ?? "";
 				return linesComponent(() => {
 					const cursorOn = ((options.spinnerFrame ?? 0) & 1) === 0;
 					return miniFrame(
@@ -631,8 +675,8 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 			}
 
 			if (composerOp) {
-				const message = op === "spawn" ? (args?.prompt ?? "") : (args?.message ?? "");
-				const spawnName = details.spawned?.label ?? args?.name ?? details.spawned?.id ?? "";
+				const message = args?.message ?? "";
+				const spawnName = details.spawned?.label ?? args?.label ?? details.spawned?.id ?? "";
 				const spawnId =
 					details.spawned?.id && spawnName !== details.spawned.id
 						? ` ${uiTheme.fg("dim", frameText(details.spawned.id, 24))}`
@@ -640,7 +684,7 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 				const target =
 					op === "spawn"
 						? `${uiTheme.fg("muted", "orchestrate spawn")} ${formatBadge(details.spawned?.agent ?? args?.agent ?? "worker", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(spawnName, 40))}${spawnId}`
-						: `${uiTheme.fg("muted", "orchestrate send →")} ${uiTheme.fg("accent", frameText(args?.worker ?? "?", 40))}`;
+						: `${uiTheme.fg("muted", "orchestrate send →")} ${uiTheme.fg("accent", frameText(args?.id ?? "?", 40))}`;
 				const ack =
 					op === "spawn"
 						? uiTheme.fg("success", `turn started${details.spawned ? ` (job ${details.spawned.jobId})` : ""}`)
@@ -666,7 +710,7 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 				const header = renderStatusLine(
 					{
 						icon: "done",
-						title: `orchestrate kill ${frameText(details.killed?.label ?? details.killed?.id ?? args?.worker ?? "?", 40)}${killedNote}`,
+						title: `orchestrate kill ${frameText(details.killed?.label ?? details.killed?.id ?? args?.id ?? "?", 40)}${killedNote}`,
 					},
 					uiTheme,
 				);
@@ -688,7 +732,9 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 			const waiting = details.wait?.waiting === true;
 			const settledById = new Map(details.wait?.settled.map(entry => [entry.id, entry.status] as const) ?? []);
 			return linesComponent(() => {
-				const running = screens.filter(screen => screen.state === "running" || screen.state === "starting").length;
+				const running = screens.filter(
+					screen => screen.turnState === "running" || screen.turnState === "starting",
+				).length;
 				const meta: string[] = [];
 				if (running > 0) meta.push(uiTheme.fg("accent", `${running} on air`));
 				if (settledById.size > 0) meta.push(uiTheme.fg("success", `${settledById.size} settled`));

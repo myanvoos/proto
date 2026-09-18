@@ -162,7 +162,9 @@ function parentSession(args: {
 	streamFn: StreamFn;
 	customTools: CustomTool[];
 	sessionManager: SessionManager;
+	sessionId?: string;
 }): ToolSession {
+	const sessionId = args.sessionId ?? "parent-session";
 	return {
 		cwd: args.cwd,
 		hasUI: false,
@@ -177,8 +179,8 @@ function parentSession(args: {
 		// discover and dial the developer's real MCP servers.
 		mcpManager: new MCPManager(args.cwd, null),
 		getSessionFile: () => args.file,
-		getSessionId: () => "parent-session",
-		getAsyncJobOwnerId: () => "parent-session",
+		getSessionId: () => sessionId,
+		getAsyncJobOwnerId: () => sessionId,
 		getAgentId: () => "Main",
 		getSessionSpawns: () => "*",
 		getEvalSessionId: () => "parent-eval",
@@ -257,7 +259,20 @@ async function controlledFixture(options: { streamFn?: StreamFn; maxConcurrency?
 		authStorage.close();
 		await fs.rm(root, { recursive: true, force: true });
 	};
-	return { runtime, session, manager, sessionManager, agent, model: model! };
+	return {
+		runtime,
+		session,
+		manager,
+		sessionManager,
+		agent,
+		model: model!,
+		root,
+		settings,
+		authStorage,
+		modelRegistry,
+		streamFn,
+		customTools: [controlledEvalTool(settings)],
+	};
 }
 
 async function collectWeakRefs(refs: WeakRef<object>[]): Promise<number> {
@@ -273,8 +288,8 @@ async function collectWeakRefs(refs: WeakRef<object>[]): Promise<number> {
 test("parking releases a worker's session from memory while it stays resumable in place", async () => {
 	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
 	const ids = [
-		(await runtime.spawn(session, { prompt: "first worker" })).id,
-		(await runtime.spawn(session, { prompt: "second worker" })).id,
+		(await runtime.spawn(session, { message: "first worker" })).id,
+		(await runtime.spawn(session, { message: "second worker" })).id,
 	];
 	await manager.waitForAll();
 	await runtime.wait(session, { sessions: ids });
@@ -346,7 +361,7 @@ test("parking cancels a worker-owned MCP handshake, collects the session, and pr
 		const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
 		// No parent proxy: use the SDK's real owned-manager discovery and teardown.
 		session.mcpManager = undefined;
-		const { id } = await runtime.spawn(session, { prompt: "worker with pending MCP initialization" });
+		const { id } = await runtime.spawn(session, { message: "worker with pending MCP initialization" });
 		await manager.waitForAll();
 		await runtime.wait(session, { sessions: [id] });
 		await withTimeout(received.promise, 5_000, "Worker did not start its owned MCP handshake");
@@ -391,7 +406,7 @@ test("orchestrator-created workers isolate Python and JS kernels while preservin
 
 	const ids: string[] = [];
 	for (const prompt of ["worker-a-py", "worker-b-py", "worker-a-js", "worker-b-js"]) {
-		const spawned = await runtime.spawn(session, { agent: "worker", name: "same-label", prompt });
+		const spawned = await runtime.spawn(session, { agent: "worker", label: "same-label", message: prompt });
 		ids.push(spawned.id);
 	}
 	await manager.waitForAll();
@@ -435,6 +450,113 @@ test("orchestrator-created workers isolate Python and JS kernels while preservin
 	expect(cellText(second)).toContain("SHARED yes");
 }, 30_000);
 
+test("independent messages queued behind a busy worker run as separate turns instead of one concatenated prompt", async () => {
+	const releaseCapacity = Promise.withResolvers<void>();
+	const capacityHeld = Promise.withResolvers<void>();
+	const allFollowupsStarted = Promise.withResolvers<void>();
+	const followupPrompts: string[] = [];
+	const streamFn: StreamFn = (model, context) => {
+		const stream = createAssistantMessageEventStream();
+		const latestUser = context.messages.findLast(message => message.role === "user");
+		const text = JSON.stringify(latestUser);
+		void (async () => {
+			if (text.includes("hold-capacity")) {
+				capacityHeld.resolve();
+				await releaseCapacity.promise;
+			}
+			if (text.includes("queued-first") || text.includes("queued-second") || text.includes("queued-third")) {
+				followupPrompts.push(text);
+				if (followupPrompts.length === 3) allFollowupsStarted.resolve();
+			}
+			pushToolCall(stream, model, call("yield-result", "yield", { result: { data: "done" } }));
+		})();
+		return stream;
+	};
+	const { runtime, session, manager } = await controlledFixture({ streamFn, maxConcurrency: 1 });
+	const capacityWorker = await runtime.spawn(session, { message: "capacity worker initial" });
+	const queuedWorker = await runtime.spawn(session, { message: "queued worker initial" });
+	await manager.waitForAll();
+	await runtime.wait(session, { sessions: [capacityWorker.id, queuedWorker.id] });
+	try {
+		await runtime.send(session, { session: capacityWorker.id, message: "hold-capacity" });
+		await withTimeout(capacityHeld.promise, 5_000, "Capacity worker did not start");
+		await runtime.send(session, { session: queuedWorker.id, message: "queued-first" });
+		const second = await runtime.send(session, { session: queuedWorker.id, message: "queued-second" });
+		const third = await runtime.send(session, { session: queuedWorker.id, message: "queued-third" });
+		expect(second.receipt.turn).toBe(3);
+		expect(third.receipt.turn).toBe(4);
+	} finally {
+		releaseCapacity.resolve();
+	}
+	await withTimeout(allFollowupsStarted.promise, 5_000, "Queued messages did not start as separate turns");
+	await manager.waitForAll();
+	expect(followupPrompts).toHaveLength(3);
+	expect(followupPrompts[0]).toContain("queued-first");
+	expect(followupPrompts[0]).not.toContain("queued-second");
+	expect(followupPrompts[1]).toContain("queued-second");
+	expect(followupPrompts[1]).not.toContain("queued-third");
+	expect(followupPrompts[2]).toContain("queued-third");
+}, 30_000);
+
+test("the configured concurrency cap applies across parent scopes", async () => {
+	const release = Promise.withResolvers<void>();
+	const atCap = Promise.withResolvers<void>();
+	let active = 0;
+	let peak = 0;
+	const streamFn: StreamFn = (model, _context) => {
+		const stream = createAssistantMessageEventStream();
+		void (async () => {
+			active++;
+			peak = Math.max(peak, active);
+			if (active === 2) atCap.resolve();
+			await release.promise;
+			active--;
+			pushToolCall(stream, model, call("yield-result", "yield", { result: { data: "done" } }));
+		})();
+		return stream;
+	};
+	const fixture = await controlledFixture({ streamFn, maxConcurrency: 2 });
+	const secondFile = path.join(fixture.root, "second-parent.jsonl");
+	const secondSessionManager = await SessionManager.open(secondFile, undefined, undefined, {
+		initialCwd: fixture.root,
+		suppressBreadcrumb: true,
+	});
+	const secondManager = new AsyncJobManager({ retentionMs: 60_000 });
+	const secondSession = parentSession({
+		cwd: fixture.root,
+		file: secondFile,
+		manager: secondManager,
+		settings: fixture.settings,
+		modelRegistry: fixture.modelRegistry,
+		authStorage: fixture.authStorage,
+		streamFn,
+		customTools: fixture.customTools,
+		sessionManager: secondSessionManager,
+		sessionId: "second-parent-session",
+	});
+	const firstCleanup = cleanupFixture!;
+	cleanupFixture = async () => {
+		for (const id of fixture.runtime.listIds(secondSession)) await fixture.runtime.kill(secondSession, id);
+		await secondManager.dispose({ timeoutMs: 1_000 });
+		await firstCleanup();
+	};
+	try {
+		await Promise.all([
+			fixture.runtime.spawn(fixture.session, { message: "first-parent-a" }),
+			fixture.runtime.spawn(fixture.session, { message: "first-parent-b" }),
+			fixture.runtime.spawn(secondSession, { message: "second-parent-a" }),
+			fixture.runtime.spawn(secondSession, { message: "second-parent-b" }),
+		]);
+		await withTimeout(atCap.promise, 5_000, "Two workers did not acquire the global capacity");
+		expect(active).toBe(2);
+		expect(peak).toBe(2);
+	} finally {
+		release.resolve();
+	}
+	await Promise.all([fixture.manager.waitForAll(), secondManager.waitForAll()]);
+	expect(peak).toBe(2);
+}, 30_000);
+
 function yieldingProvider(gates = new Map<string, Promise<void>>()): StreamFn {
 	return (model, context) => {
 		const stream = createAssistantMessageEventStream();
@@ -451,7 +573,7 @@ function yieldingProvider(gates = new Map<string, Promise<void>>()): StreamFn {
 
 test("failed turn-settlement persistence cannot strand a worker as running or accept undeliverable followups", async () => {
 	const { runtime, session, manager, sessionManager } = await controlledFixture({ streamFn: yieldingProvider() });
-	const worker = await runtime.spawn(session, { prompt: "initial turn" });
+	const worker = await runtime.spawn(session, { message: "initial turn" });
 	await manager.waitForAll();
 	await runtime.wait(session, { sessions: [worker.id] });
 
@@ -481,7 +603,13 @@ test("failed turn-settlement persistence cannot strand a worker as running or ac
 		expect(result.settled[0]?.resultText).toContain("controlled settlement storage failure");
 		expect(queuedMode).toBe("queued");
 		expect(runtime.screens(session, [worker.id])).toMatchObject([
-			{ state: "dead", addressable: false, queued: 0, terminal: { reason: "unrecoverable", lastTurn: 2 } },
+			{
+				lifecycle: "terminal",
+				turnState: undefined,
+				addressable: false,
+				queued: 0,
+				terminal: { reason: "unrecoverable", lastTurn: 2 },
+			},
 		]);
 		expect(manager.getAllJobs()).toHaveLength(2);
 		expect(AgentRegistry.global().get(worker.id)).toMatchObject({ status: "aborted", session: null });
@@ -501,8 +629,8 @@ test("a cancelled concurrency-queued turn keeps its number and retries receive a
 		streamFn: yieldingProvider(gates),
 		maxConcurrency: 1,
 	});
-	const first = await runtime.spawn(session, { prompt: "first worker" });
-	const second = await runtime.spawn(session, { prompt: "second worker" });
+	const first = await runtime.spawn(session, { message: "first worker" });
+	const second = await runtime.spawn(session, { message: "second worker" });
 	await manager.waitForAll();
 	await runtime.wait(session, { sessions: [first.id, second.id] });
 	try {
@@ -533,7 +661,7 @@ test("wait receipts identify the watched turn even when a queued followup starts
 	const gates = new Map<string, Promise<void>>();
 	gates.set("hold-watched-turn", blocked.promise);
 	const { runtime, session, manager, sessionManager } = await controlledFixture({ streamFn: yieldingProvider(gates) });
-	const worker = await runtime.spawn(session, { prompt: "initial worker turn" });
+	const worker = await runtime.spawn(session, { message: "initial worker turn" });
 	await manager.waitForAll();
 	await runtime.wait(session, { sessions: [worker.id] });
 	const flush = sessionManager.flush.bind(sessionManager);
@@ -575,7 +703,7 @@ test("killing a later active turn retains that job in terminal recovery instead 
 	gates.set("hold-terminal-turn", blocked.promise);
 	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider(gates) });
 	runtime.setTeardownGraceForTesting(20);
-	const worker = await runtime.spawn(session, { prompt: "initial worker turn" });
+	const worker = await runtime.spawn(session, { message: "initial worker turn" });
 	await manager.waitForAll();
 	await runtime.wait(session, { sessions: [worker.id] });
 	try {
@@ -588,7 +716,7 @@ test("killing a later active turn retains that job in terminal recovery instead 
 			terminal: { lastTurn: 2, lastJobId: active.jobId },
 		});
 		expect(runtime.screens(session, [worker.id])).toMatchObject([
-			{ state: "dead", addressable: false, terminal: { lastJobId: active.jobId } },
+			{ lifecycle: "terminal", turnState: undefined, addressable: false, terminal: { lastJobId: active.jobId } },
 		]);
 	} finally {
 		blocked.resolve();
@@ -598,7 +726,7 @@ test("killing a later active turn retains that job in terminal recovery instead 
 
 test("rehydration honors a child tombstone even when the parent has no terminal lifecycle event", async () => {
 	const { runtime, session, manager, agent, model } = await controlledFixture({ streamFn: yieldingProvider() });
-	const worker = await runtime.spawn(session, { prompt: "worker whose child transcript will be terminated" });
+	const worker = await runtime.spawn(session, { message: "worker whose child transcript will be terminated" });
 	await manager.waitForAll();
 	const ref = AgentRegistry.global().get(worker.id)!;
 	await AgentLifecycleManager.global().release(worker.id, ref, { tombstone: true });
@@ -623,7 +751,7 @@ test("send during a peer-driven turn accepts the next turn instead of declaring 
 	const gates = new Map<string, Promise<void>>();
 	gates.set("hold-external-turn", blocked.promise);
 	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider(gates) });
-	const worker = await runtime.spawn(session, { prompt: "initial worker turn" });
+	const worker = await runtime.spawn(session, { message: "initial worker turn" });
 	await manager.waitForAll();
 	await runtime.wait(session, { sessions: [worker.id] });
 	const live = AgentRegistry.global().get(worker.id)?.session;
@@ -636,6 +764,9 @@ test("send during a peer-driven turn accepts the next turn instead of declaring 
 	try {
 		await running.promise;
 		unsubscribe();
+		expect(runtime.screens(session, [worker.id])).toMatchObject([
+			{ lifecycle: "live", turnState: "running", addressable: true },
+		]);
 		const sent = await runtime.send(session, { session: worker.id, message: "orchestrator follow-up" });
 		expect(sent).toMatchObject({ mode: "turn", receipt: { status: "accepted", turn: 2 } });
 		expect(runtime.screens(session, [worker.id])).toMatchObject([{ addressable: true, turns: 2 }]);
@@ -644,7 +775,9 @@ test("send during a peer-driven turn accepts the next turn instead of declaring 
 		await manager.waitForAll();
 		const settled = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 1_000 });
 		expect(settled.settled).toMatchObject([{ status: "completed", receipt: { status: "delivered", turn: 2 } }]);
-		expect(runtime.screens(session, [worker.id])).toMatchObject([{ state: "idle", addressable: true, turns: 2 }]);
+		expect(runtime.screens(session, [worker.id])).toMatchObject([
+			{ lifecycle: "live", turnState: "idle", addressable: true, turns: 2 },
+		]);
 	} finally {
 		unsubscribe();
 		blocked.resolve();
@@ -656,9 +789,9 @@ test("send during a peer-driven turn accepts the next turn instead of declaring 
 test("orchestration rejects disabled parent spawning and excessive recursion before creating workers", async () => {
 	const { runtime, session } = await controlledFixture();
 	await expect(
-		runtime.spawn({ ...session, getSessionSpawns: () => "" }, { prompt: "must not start" }),
+		runtime.spawn({ ...session, getSessionSpawns: () => "" }, { message: "must not start" }),
 	).rejects.toThrow("Allowed: none");
-	await expect(runtime.spawn({ ...session, taskDepth: 100 }, { prompt: "must not recurse" })).rejects.toThrow(
+	await expect(runtime.spawn({ ...session, taskDepth: 100 }, { message: "must not recurse" })).rejects.toThrow(
 		"maximum depth",
 	);
 	expect(runtime.listIds(session)).toEqual([]);
@@ -667,7 +800,7 @@ test("orchestration rejects disabled parent spawning and excessive recursion bef
 test("omitting an agent uses the parent's permitted default instead of rejecting the generic worker", async () => {
 	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
 	const restricted = { ...session, taskDepth: 1, getSessionSpawns: () => "scout" };
-	const worker = await runtime.spawn(restricted, { prompt: "permitted default worker" });
+	const worker = await runtime.spawn(restricted, { message: "permitted default worker" });
 	await manager.waitForAll();
 	const result = await runtime.wait(restricted, { sessions: [worker.id], timeoutMs: 1_000 });
 	expect(result.settled).toMatchObject([{ status: "completed", receipt: { status: "delivered" } }]);

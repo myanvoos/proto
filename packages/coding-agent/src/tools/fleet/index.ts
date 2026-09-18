@@ -51,13 +51,14 @@ const fleetSchema = type({
 	op: type(
 		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
 	).describe("fleet operation"),
-	"to?": type("string").describe('send: recipient agent id or "all"'),
+	"id?": type("string").describe('send: recipient agent id or "all"; wait: only accept a message from this agent id'),
 	"message?": type("string").describe("send: message body"),
 	"replyTo?": type("string").describe("send: message id being answered"),
-	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with to:"all")'),
-	"from?": type("string").describe("wait: only accept a message from this agent id"),
+	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with id:"all")'),
 	"ids?": type("string[]").describe("wait: job ids to watch (omit = all running jobs); cancel: job ids to kill"),
-	"timeoutMs?": type("number").describe("wait (messages/jobs): timeout in milliseconds (0 waits indefinitely)"),
+	"timeoutMs?": type("number").describe(
+		"wait/logs/stop/readiness timeout in milliseconds (0 waits indefinitely where supported)",
+	),
 	"peek?": type("boolean").describe("inbox: list messages without consuming them"),
 	"all?": type("boolean").describe(
 		"ps: list every process record in the project directory; default false (this session only)",
@@ -72,7 +73,7 @@ const fleetSchema = type({
 		"log?": type("string > 0").describe("regex matched against output"),
 		"port?": type("number").describe("TCP port that must accept connections"),
 		"host?": type("string > 0").describe("TCP readiness host; default 127.0.0.1"),
-		"timeout?": type("number > 0").describe("seconds to wait; default 30"),
+		"timeoutMs?": type("number > 0").describe("milliseconds to wait; default 30000"),
 	}).describe("start: readiness conditions; all supplied conditions must pass"),
 	"restart?": type("'no' | 'on-failure' | 'always'").describe("start: restart policy; default no"),
 	"persist?": type("boolean").describe("start: survive the last proto client exiting; default false"),
@@ -92,10 +93,42 @@ const fleetSchema = type({
 	"signal?": type("'SIGINT' | 'SIGTERM' | 'SIGHUP' | 'SIGQUIT' | 'SIGKILL'").describe(
 		"send with name: process-tree signal",
 	),
-	"timeout?": type("number > 0").describe("logs/stop/wait with name: max seconds; default 30 (stop: 5)"),
 });
 
 type FleetParams = typeof fleetSchema.infer;
+
+const FLEET_PARAM_KEYS: Record<string, true> = {
+	op: true,
+	id: true,
+	message: true,
+	replyTo: true,
+	await: true,
+	ids: true,
+	timeoutMs: true,
+	peek: true,
+	all: true,
+	name: true,
+	application: true,
+	args: true,
+	env: true,
+	cwd: true,
+	pty: true,
+	ready: true,
+	restart: true,
+	persist: true,
+	detached: true,
+	lines: true,
+	head: true,
+	grep: true,
+	follow: true,
+	cursor: true,
+	for: true,
+	pattern: true,
+	text: true,
+	enter: true,
+	keys: true,
+	signal: true,
+};
 
 interface MessagingDeps {
 	registry: AgentRegistry;
@@ -128,7 +161,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			caption: "Fire-and-forget DM — same send wakes idle/parked peers",
 			call: {
 				op: "send",
-				to: "AuthLoader",
+				id: "AuthLoader",
 				message: "Still touching src/server/auth.ts? I need to add a 401 path.",
 			},
 		},
@@ -136,7 +169,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			caption: "Round-trip when you cannot proceed without the answer",
 			call: {
 				op: "send",
-				to: "Main",
+				id: "Main",
 				message: "JWT or session cookies for the auth flow?",
 				await: true,
 			},
@@ -147,7 +180,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		},
 		{
 			caption: "Block until a specific peer answers",
-			call: { op: "wait", from: "AuthLoader", timeoutMs: 60000 },
+			call: { op: "wait", id: "AuthLoader", timeoutMs: 60_000 },
 		},
 		{
 			caption: "Kill a hung background job",
@@ -164,12 +197,12 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 				name: "web",
 				application: "bun",
 				args: ["run", "dev"],
-				ready: { log: "Local:.*http", port: 5173, timeout: 30 },
+				ready: { log: "Local:.*http", port: 5173, timeoutMs: 30_000 },
 			},
 		},
 		{
 			caption: "Follow process output after a cursor",
-			call: { op: "logs", name: "web", follow: true, cursor: 1842, timeout: 30 },
+			call: { op: "logs", name: "web", follow: true, cursor: 1842, timeoutMs: 30_000 },
 		},
 		{
 			caption: "Drive a REPL/debugger over stdin",
@@ -181,7 +214,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		},
 		{
 			caption: "Block until a process is ready",
-			call: { op: "wait", name: "web", for: "ready", timeout: 30 },
+			call: { op: "wait", name: "web", for: "ready", timeoutMs: 30_000 },
 		},
 	];
 
@@ -203,6 +236,15 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		onUpdate?: AgentToolUpdateCallback<FleetDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<FleetDetails>> {
+		const unknown = Object.keys(params).filter(key => FLEET_PARAM_KEYS[key] !== true);
+		if (unknown.length > 0) {
+			return fleetErrorResult(`Unknown fleet parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`, {
+				op: params.op,
+			});
+		}
+		if (params.ready && Object.keys(params.ready).some(key => !["log", "port", "host", "timeoutMs"].includes(key))) {
+			return fleetErrorResult("Unknown fleet readiness parameter.", { op: params.op });
+		}
 		switch (params.op) {
 			case "list": {
 				const messaging = this.#messaging();
@@ -210,10 +252,10 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 				return executeList(messaging.registry, messaging.senderId, messaging.fleetRoot);
 			}
 			case "send": {
-				const toPeer = params.to?.trim();
+				const toPeer = params.id?.trim();
 				const toProcess = params.name?.trim();
 				if (toPeer && toProcess) {
-					return fleetErrorResult('`to` (peer) and `name` (process) are mutually exclusive for op="send".', {
+					return fleetErrorResult('`id` (peer) and `name` (process) are mutually exclusive for op="send".', {
 						op: "send",
 					});
 				}
@@ -286,10 +328,10 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		const messaging = this.#messaging();
 		const manager = this.session.asyncJobManager;
 		const ownerId = this.#ownerId();
-		const from = params.from?.trim() || undefined;
+		const id = params.id?.trim() || undefined;
 
 		if (messaging) {
-			const pending = drainPendingInbox(messaging.registry, messaging.senderId, from, messaging.fleetRoot);
+			const pending = drainPendingInbox(messaging.registry, messaging.senderId, id, messaging.fleetRoot);
 			if (pending) return messageResult(messaging.senderId, pending);
 		}
 
@@ -310,13 +352,13 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		if (!manager || runningJobs.length === 0) {
 			if (!messaging) return nothingToWaitForResult(this.session);
 
-			const queued = IrcBus.global().take(messaging.senderId, from, messaging.fleetRoot);
+			const queued = IrcBus.global().take(messaging.senderId, id, messaging.fleetRoot);
 			if (queued) return messageResult(messaging.senderId, queued);
-			if (!from) {
+			if (!id) {
 				const hasActivePeer = messaging.registry.listVisibleTo(messaging.senderId, messaging.fleetRoot).length > 0;
 				if (!hasActivePeer) return nothingToWaitForResult(this.session);
 			}
-			return executeMessageWait(messaging, { from, timeoutMs: params.timeoutMs }, signal);
+			return executeMessageWait(messaging, { id, timeoutMs: params.timeoutMs }, signal);
 		}
 
 		const window = resolvePollWindow(this.session, manager, ownerId);
@@ -331,7 +373,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		const busLeg =
 			messaging && busAbort
 				? IrcBus.global()
-						.wait(messaging.senderId, { from }, 0, busAbort.signal, { fleetRoot: messaging.fleetRoot })
+						.wait(messaging.senderId, { from: id }, 0, busAbort.signal, { fleetRoot: messaging.fleetRoot })
 						.then(
 							message => ({ message, error: null as Error | null }),
 							error => ({
@@ -417,7 +459,7 @@ const LAUNCH_OPS: Record<string, true> = {
 function isLaunchStyleArgs(args: FleetRenderArgs | undefined): boolean {
 	if (!args?.op) return false;
 	if (LAUNCH_OPS[args.op]) return true;
-	return (args.op === "send" || args.op === "wait") && !!args.name && !args.to && !args.from;
+	return (args.op === "send" || args.op === "wait") && !!args.name && !args.id;
 }
 
 function isJobStyleArgs(args: FleetRenderArgs | undefined): boolean {
@@ -426,7 +468,7 @@ function isJobStyleArgs(args: FleetRenderArgs | undefined): boolean {
 		case "cancel":
 			return true;
 		case "wait":
-			return !!args.ids?.length || (!args.from && !args.name);
+			return !!args.ids?.length || (!args.id && !args.name);
 		default:
 			return false;
 	}

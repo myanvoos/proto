@@ -19,9 +19,10 @@ type FleetOp =
 
 interface FleetPeerInfo {
 	id: string;
-	displayName: string;
+	label: string;
 	kind: string;
-	status: string;
+	lifecycle: "live" | "parked" | "terminal";
+	turnState?: "running" | "idle";
 	parentId?: string;
 	unread: number;
 	lastActivity: number;
@@ -61,8 +62,8 @@ export interface AgentActivitySnapshot {
 
 export interface CoordinationDetails {
 	op: FleetOp;
-	from?: string;
-	to?: string;
+	senderId?: string;
+	id?: string;
 	receipts?: IrcDeliveryReceipt[];
 
 	waited?: IrcMessage | null;
@@ -78,11 +79,10 @@ export type FleetDetails = CoordinationDetails | LaunchToolDetails;
 
 export type FleetRenderArgs = {
 	op?: string;
-	to?: string;
+	id?: string;
 	message?: string;
 	replyTo?: string;
 	await?: boolean;
-	from?: string;
 	timeoutMs?: number;
 	peek?: boolean;
 	ids?: string[];

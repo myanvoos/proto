@@ -56,7 +56,7 @@ export function drainPendingInbox(
 export function messageResult(senderId: string, waited: IrcMessage): AgentToolResult<CoordinationDetails> {
 	return {
 		content: [{ type: "text", text: formatIncoming(waited) }],
-		details: { op: "wait", from: senderId, waited },
+		details: { op: "wait", senderId, waited },
 	};
 }
 
@@ -75,12 +75,19 @@ export async function executeList(
 
 	const bus = IrcBus.global();
 	const peers = refs
-		.filter(ref => ref.id !== senderId && ref.status !== "aborted" && ref.kind !== "advisor")
+		.filter(ref => ref.id !== senderId && ref.kind !== "advisor")
 		.map(ref => ({
 			id: ref.id,
-			displayName: ref.displayName,
+			label: ref.label,
 			kind: ref.kind,
-			status: ref.status,
+			lifecycle:
+				ref.status === "aborted"
+					? ("terminal" as const)
+					: ref.status === "parked"
+						? ("parked" as const)
+						: ("live" as const),
+			turnState:
+				ref.status === "aborted" ? undefined : ref.status === "running" ? ("running" as const) : ("idle" as const),
 			parentId: ref.parentId,
 			unread: bus.unreadCount(ref.id, fleetRoot),
 			lastActivity: ref.lastActivity,
@@ -98,21 +105,23 @@ export async function executeList(
 				peer.parentId ? `parent ${peer.parentId}` : undefined,
 				`active ${formatDuration(Date.now() - peer.lastActivity)} ago`,
 			].filter(Boolean);
-			lines.push(`- ${peer.id} [${peer.displayName} · ${peer.kind} · ${peer.status}] — ${extras.join(", ")}`);
+			lines.push(
+				`- ${peer.id} [${peer.label} · ${peer.kind} · lifecycle=${peer.lifecycle} · turn=${peer.turnState}] — ${extras.join(", ")}`,
+			);
 		}
-		if (peers.some(peer => peer.status === "parked")) {
+		if (peers.some(peer => peer.lifecycle === "parked")) {
 			lines.push("");
 			lines.push("Parked agents are revived automatically when you message them.");
 		}
 	}
 	return {
 		content: [{ type: "text", text: lines.join("\n") }],
-		details: { op: "list", from: senderId, peers },
+		details: { op: "list", senderId, peers },
 	};
 }
 
 interface FleetSendParams {
-	to?: string;
+	id?: string;
 	message?: string;
 	replyTo?: string;
 	await?: boolean;
@@ -125,23 +134,23 @@ export async function executeSend(
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {
 	const { registry, senderId, fleetRoot, settings } = deps;
-	const to = params.to?.trim();
+	const id = params.id?.trim();
 	const message = params.message?.trim();
-	if (!to) {
-		return fleetErrorResult('`to` is required for op="send".', { op: "send", from: senderId });
+	if (!id) {
+		return fleetErrorResult('`id` is required for op="send".', { op: "send", senderId });
 	}
 	if (!message) {
-		return fleetErrorResult('`message` is required for op="send".', { op: "send", from: senderId });
+		return fleetErrorResult('`message` is required for op="send".', { op: "send", senderId });
 	}
-	if (to === senderId) {
-		return fleetErrorResult("Cannot send a message to yourself.", { op: "send", from: senderId, to });
+	if (id === senderId) {
+		return fleetErrorResult("Cannot send a message to yourself.", { op: "send", senderId, id });
 	}
-	const isBroadcast = to === "all";
+	const isBroadcast = id === "all";
 	if (isBroadcast && params.await) {
-		return fleetErrorResult('`await` is invalid with to:"all" — broadcasts have no single replier.', {
+		return fleetErrorResult('`await` is invalid with id:"all" — broadcasts have no single replier.', {
 			op: "send",
-			from: senderId,
-			to,
+			senderId,
+			id,
 		});
 	}
 
@@ -153,7 +162,7 @@ export async function executeSend(
 	let removeAwaitAbortListener: (() => void) | undefined;
 	const waiting = params.await
 		? bus
-				.wait(senderId, { from: to }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
+				.wait(senderId, { from: id }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
 					drainPending: false,
 					fleetRoot,
 				})
@@ -178,7 +187,7 @@ export async function executeSend(
 	}
 
 	try {
-		const targets = isBroadcast ? registry.listVisibleTo(senderId, fleetRoot).map(ref => ref.id) : [to];
+		const targets = isBroadcast ? registry.listVisibleTo(senderId, fleetRoot).map(ref => ref.id) : [id];
 
 		const suppressRelay = isBroadcast && targets.includes(MAIN_AGENT_ID);
 		const receipts = await Promise.all(
@@ -192,30 +201,36 @@ export async function executeSend(
 		);
 
 		const lines: string[] = [];
-		const delivered = receipts.filter(receipt => receipt.outcome !== "failed");
+		const accepted = receipts.filter(receipt => receipt.outcome === "delivered" || receipt.outcome === "queued");
 		if (targets.length === 0) {
 			lines.push("No live peers to broadcast to.");
-		} else if (delivered.length === 0) {
-			lines.push("No recipients received the message.");
+		} else if (accepted.length === 0) {
+			lines.push("No recipients accepted the message.");
 		} else {
-			lines.push(`Delivered to ${delivered.length} peer(s):`);
+			const deliveredCount = accepted.filter(receipt => receipt.outcome === "delivered").length;
+			const queuedCount = accepted.length - deliveredCount;
+			lines.push(`Accepted by ${accepted.length} peer(s): ${deliveredCount} delivered, ${queuedCount} queued.`);
 		}
 		for (const receipt of receipts) {
-			lines.push(
-				receipt.outcome === "failed"
-					? `- ${receipt.to}: failed — ${receipt.error ?? "unknown error"}`
-					: `- ${receipt.to}: ${receipt.outcome}`,
-			);
+			const effect =
+				receipt.effect === "injected"
+					? "; injected into an existing consumer; no worker turn was started"
+					: receipt.effect === "wake_requested"
+						? "; wake requested; turn start is not confirmed"
+						: "";
+			const revival = receipt.revived ? "; session revived" : "";
+			const detail = receipt.error ? ` — ${receipt.error}` : "";
+			lines.push(`- ${receipt.to}: ${receipt.outcome}${effect}${revival}${detail}`);
 		}
 
 		if (params.await && waiting && timeoutMs !== undefined) {
 			lines.push("");
-			if (delivered.length > 0) {
+			if (accepted.length > 0) {
 				const reply = await waiting;
 				if (reply.error) {
 					if (signal?.aborted) {
 						lines.push(
-							`Send delivered but the reply wait was interrupted before ${to} answered. ` +
+							`Send delivered but the reply wait was interrupted before ${id} answered. ` +
 								"Check `inbox` or `wait` again after handling the interrupt.",
 						);
 					} else {
@@ -228,7 +243,7 @@ export async function executeSend(
 						lines.push(waited.body);
 					} else {
 						lines.push(
-							`No reply from ${to} within ${formatDuration(timeoutMs)}. ` +
+							`No reply from ${id} within ${formatDuration(timeoutMs)}. ` +
 								"They may answer later — check `inbox` or `wait` again.",
 						);
 					}
@@ -244,12 +259,12 @@ export async function executeSend(
 			content: [{ type: "text", text: lines.join("\n") }],
 			details: {
 				op: "send",
-				from: senderId,
-				to,
+				senderId,
+				id,
 				receipts,
 				...(waited !== undefined ? { waited } : {}),
 			},
-			isError: delivered.length === 0 && targets.length > 0,
+			isError: accepted.length === 0 && targets.length > 0,
 		};
 	} finally {
 		awaitAbort?.abort(awaitCancelled);
@@ -259,22 +274,22 @@ export async function executeSend(
 
 export async function executeMessageWait(
 	deps: { registry: AgentRegistry; senderId: string; fleetRoot?: string; settings: Settings },
-	params: { from?: string; timeoutMs?: number },
+	params: { id?: string; timeoutMs?: number },
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {
 	const { registry, senderId, fleetRoot, settings } = deps;
-	const from = params.from?.trim() || undefined;
+	const id = params.id?.trim() || undefined;
 	const timeoutMs = resolveMessageTimeoutMs(settings, params.timeoutMs);
 	try {
-		const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal, {
+		const waited = await IrcBus.global().wait(senderId, { from: id }, timeoutMs, signal, {
 			fleetRoot,
 			liveness: { registry, senderId },
 		});
 		if (!waited) {
-			const filterNote = from ? ` from ${from}` : "";
+			const filterNote = id ? ` from ${id}` : "";
 			return {
 				content: [{ type: "text", text: `No message${filterNote} within ${formatDuration(timeoutMs)}.` }],
-				details: { op: "wait", from: senderId, waited: null },
+				details: { op: "wait", senderId, waited: null },
 
 				useless: true,
 			};
@@ -284,7 +299,7 @@ export async function executeMessageWait(
 		if (signal?.aborted) {
 			throw error;
 		}
-		return fleetErrorResult(error instanceof Error ? error.message : String(error), { op: "wait", from: senderId });
+		return fleetErrorResult(error instanceof Error ? error.message : String(error), { op: "wait", senderId });
 	}
 }
 
@@ -304,7 +319,7 @@ export function executeInbox(
 	if (messages.length === 0) {
 		return {
 			content: [{ type: "text", text: "Inbox empty." }],
-			details: { op: "inbox", from: senderId, inbox: [] },
+			details: { op: "inbox", senderId, inbox: [] },
 
 			useless: true,
 		};
@@ -313,7 +328,7 @@ export function executeInbox(
 	const lines = [header, ...messages.map(msg => `- ${formatIncoming(msg)}`)];
 	return {
 		content: [{ type: "text", text: lines.join("\n") }],
-		details: { op: "inbox", from: senderId, inbox: messages },
+		details: { op: "inbox", senderId, inbox: messages },
 	};
 }
 
@@ -321,7 +336,7 @@ const BODY_LINES_COLLAPSED = 2;
 const BODY_LINES_EXPANDED = 12;
 const BODY_LINE_WIDTH = 100;
 
-const PEER_STATUS_ORDER: Record<string, number> = { running: 0, idle: 1, parked: 2 };
+const PEER_STATE_ORDER: Record<string, number> = { "live/running": 0, "live/idle": 1, "parked/idle": 2 };
 
 function ircGlyph(theme: Theme): string {
 	return theme.styledSymbol("tool.irc", "accent");
@@ -329,28 +344,26 @@ function ircGlyph(theme: Theme): string {
 
 function outcomeColor(outcome: IrcDeliveryReceipt["outcome"]): ToolUIColor {
 	switch (outcome) {
-		case "woken":
+		case "delivered":
 			return "success";
-		case "revived":
+		case "queued":
 			return "warning";
-		case "injected":
-			return "accent";
-		case "failed":
+		case "rejected":
+		case "dropped":
 			return "error";
 	}
 }
 
-function peerStatusBadge(status: string, theme: Theme): string {
-	switch (status) {
-		case "running":
-			return theme.fg("accent", `${theme.status.running} running`);
-		case "idle":
-			return theme.fg("success", `${theme.status.enabled} idle`);
-		case "parked":
-			return theme.fg("muted", `${theme.status.shadowed} parked`);
-		default:
-			return theme.fg("error", `${theme.status.aborted} ${status}`);
-	}
+function peerStatusBadge(
+	lifecycle: "live" | "parked" | "terminal",
+	turnState: "running" | "idle" | undefined,
+	theme: Theme,
+): string {
+	if (lifecycle === "terminal") return theme.fg("muted", `${theme.status.disabled} terminal`);
+	if (lifecycle === "parked") return theme.fg("muted", `${theme.status.shadowed} parked/idle`);
+	return turnState === "running"
+		? theme.fg("accent", `${theme.status.running} live/running`)
+		: theme.fg("success", `${theme.status.enabled} live/idle`);
 }
 
 function messageAge(ts: number | undefined): string {
@@ -386,9 +399,9 @@ function bodyLines(
 function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
 		case "send":
-			return `IRC ${theme.nav.selected} ${sanitizeText(args.to?.trim() || "…")}`;
+			return `IRC ${theme.nav.selected} ${sanitizeText(args.id?.trim() || "…")}`;
 		case "wait":
-			return `IRC ${theme.nav.back} ${sanitizeText(args.from?.trim() || "anyone")}`;
+			return `IRC ${theme.nav.back} ${sanitizeText(args.id?.trim() || "anyone")}`;
 		case "inbox":
 			return "IRC inbox";
 		case "list":
@@ -401,7 +414,7 @@ function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 function callMeta(args: FleetRenderArgs | undefined): string[] {
 	const meta: string[] = [];
 	if (args?.op === "send") {
-		if (args.to === "all") meta.push("broadcast");
+		if (args.id === "all") meta.push("broadcast");
 		if (args.await) meta.push("await reply");
 		if (args.replyTo) meta.push("reply");
 	}
@@ -468,7 +481,7 @@ function renderSendResult(
 	theme: Theme,
 ): string[] {
 	const receipts = details.receipts ?? [];
-	const to = sanitizeText(details.to ?? args?.to?.trim() ?? "?");
+	const to = sanitizeText(details.id ?? args?.id?.trim() ?? "?");
 	const title = `IRC ${theme.nav.selected} ${to}`;
 
 	if (receipts.length === 0) {
@@ -479,8 +492,8 @@ function renderSendResult(
 		];
 	}
 
-	const delivered = receipts.filter(receipt => receipt.outcome !== "failed");
-	const failedCount = receipts.length - delivered.length;
+	const accepted = receipts.filter(receipt => receipt.outcome === "delivered" || receipt.outcome === "queued");
+	const failedCount = receipts.length - accepted.length;
 	const waited = details.waited;
 	const timedOut = waited === null;
 
@@ -489,8 +502,11 @@ function renderSendResult(
 	if (receipts.length === 1) {
 		const receipt = receipts[0]!;
 		meta.push(theme.fg(outcomeColor(receipt.outcome), receipt.outcome));
+		if (receipt.effect === "injected") meta.push(theme.fg("warning", "injected/no turn"));
+		if (receipt.effect === "wake_requested") meta.push(theme.fg("warning", "wake requested/unconfirmed"));
+		if (receipt.revived) meta.push(theme.fg("muted", "session revived"));
 	} else {
-		if (delivered.length > 0) meta.push(theme.fg("success", `${delivered.length} delivered`));
+		if (accepted.length > 0) meta.push(theme.fg("success", `${accepted.length} accepted`));
 		if (failedCount > 0) meta.push(theme.fg("error", `${failedCount} failed`));
 	}
 	if (timedOut) meta.push(theme.fg("warning", "no reply"));
@@ -515,11 +531,18 @@ function renderSendResult(
 					itemType: "recipient",
 					renderItem: receipt => {
 						const badge = formatBadge(receipt.outcome, outcomeColor(receipt.outcome), theme);
+						const effect = receipt.effect
+							? ` ${theme.fg("warning", receipt.effect === "injected" ? "injected/no turn" : "wake requested/unconfirmed")}`
+							: "";
+						const revival = receipt.revived ? ` ${theme.fg("muted", "session revived")}` : "";
 						const error =
-							receipt.outcome === "failed" && receipt.error
+							(receipt.outcome === "rejected" ||
+								receipt.outcome === "dropped" ||
+								receipt.outcome === "queued") &&
+							receipt.error
 								? ` ${theme.fg("error", `${theme.format.dash} ${sanitizeText(receipt.error)}`)}`
 								: "";
-						return `${theme.fg("toolOutput", sanitizeText(receipt.to))} ${badge}${error}`;
+						return `${theme.fg("toolOutput", sanitizeText(receipt.to))} ${badge}${effect}${revival}${error}`;
 					},
 				},
 				theme,
@@ -551,7 +574,7 @@ function renderWaitResult(
 		const text = textContent(result) || "No message arrived.";
 		return [
 			renderStatusLine(
-				{ icon: "warning", title: `IRC ${theme.nav.back} ${args?.from?.trim() || "anyone"}`, meta: ["timed out"] },
+				{ icon: "warning", title: `IRC ${theme.nav.back} ${args?.id?.trim() || "anyone"}`, meta: ["timed out"] },
 				theme,
 			),
 			`  ${theme.fg("muted", replaceTabs(text))}`,
@@ -599,13 +622,14 @@ function renderInboxResult(
 function renderListResult(details: Partial<CoordinationDetails>, expanded: boolean, theme: Theme): string[] {
 	const peers = [...(details.peers ?? [])].sort(
 		(a, b) =>
-			(PEER_STATUS_ORDER[a.status] ?? 9) - (PEER_STATUS_ORDER[b.status] ?? 9) || b.lastActivity - a.lastActivity,
+			(PEER_STATE_ORDER[`${a.lifecycle}/${a.turnState ?? "idle"}`] ?? 9) -
+				(PEER_STATE_ORDER[`${b.lifecycle}/${b.turnState ?? "idle"}`] ?? 9) || b.lastActivity - a.lastActivity,
 	);
 	if (peers.length === 0) {
 		return [renderStatusLine({ icon: "info", title: "IRC peers", meta: ["no other agents"] }, theme)];
 	}
 	const counts = new Map<string, number>();
-	for (const peer of peers) counts.set(peer.status, (counts.get(peer.status) ?? 0) + 1);
+	for (const peer of peers) counts.set(peer.lifecycle, (counts.get(peer.lifecycle) ?? 0) + 1);
 	const meta = [...counts].map(([status, count]) => `${count} ${status}`);
 	const unreadTotal = peers.reduce((sum, peer) => sum + peer.unread, 0);
 	if (unreadTotal > 0) meta.push(theme.fg("warning", `${unreadTotal} unread`));
@@ -623,8 +647,8 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 				const unread = peer.unread > 0 ? ` ${formatBadge(`${peer.unread} unread`, "warning", theme)}` : "";
 				const age = messageAge(peer.lastActivity);
 				const activity = peer.activity ? ` ${theme.fg("dim", replaceTabs(sanitizeText(peer.activity)))}` : "";
-				const name = theme.fg("dim", replaceTabs(sanitizeText(peer.displayName)));
-				return `${peerStatusBadge(peer.status, theme)} ${theme.bold(replaceTabs(sanitizeText(peer.id)))} ${name} ${theme.fg("dim", kindText)}${activity}${unread}${age ? ` ${theme.fg("dim", age)}` : ""}`;
+				const name = theme.fg("dim", replaceTabs(sanitizeText(peer.label)));
+				return `${peerStatusBadge(peer.lifecycle, peer.turnState, theme)} ${theme.bold(replaceTabs(sanitizeText(peer.id)))} ${name} ${theme.fg("dim", kindText)}${activity}${unread}${age ? ` ${theme.fg("dim", age)}` : ""}`;
 			},
 		},
 		theme,

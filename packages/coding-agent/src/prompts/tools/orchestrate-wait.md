@@ -1,5 +1,5 @@
-Blocks until ONE watched worker finishes its current turn, times out, or is interrupted — re-issue to continue waiting.
+Blocks until ONE watched worker turn settles, `timeoutMs` elapses, or interruption; re-issue to continue waiting.
 
-Parameter names: use `workers` and `timeout` (seconds), not `ids`/`timeoutMs`.
+`ids`: canonical worker ids; omit to watch every in-flight turn. `timeoutMs`: milliseconds; default 900000 (15 min).
 
-Settled results carry immutable worker id, display label, turn, job, and receipt status. `delivered` means the result was returned by this wait; `rejected`/`terminal` identify cancellation or lost ownership. Use immutable worker id; NEVER label.
+Settled results return canonical `id` + `label`, turn, job, receipt status. `delivered` = result returned by this wait; `rejected`/`terminal` = cancellation or lost ownership. Route by `id`, NEVER `label`.

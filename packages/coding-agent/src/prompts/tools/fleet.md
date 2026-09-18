@@ -1,17 +1,20 @@
-Agent coordination: peer messaging, background-job control, supervised long-running processes. Main agent is `Main`; subagents inherit task ID. Discover peers: `op: "list"`.
+Agent coordination: peer messaging, background jobs, supervised processes. Main agent id: `Main`. Discover peers: `op:"list"`; rows return canonical `id` + `label`.
 
-Background jobs auto-deliver on finish — NEVER poll. `jobs`/`wait` observing a settled job first consumes the delivery and suppresses duplicate `async-result`. Job rows are process-local, expire ~5 min after settlement; afterward use the agent ID with `send`, `agent://<id>`, or `history://<id>`.
+All timeout fields use milliseconds: `timeoutMs`, `ready.timeoutMs`. NEVER supply seconds.
 
-- `send` (`to`): fire-and-forget; wakes `idle`/`parked` peers. Receipts immediate; `failed` → peer gone; NEVER retry. Answering: lead with the answer, NEVER quote, set `replyTo`. Format: plain prose ONLY — share content via `local://`/`artifact://` URLs, not pastes.
-- `wait`: ONLY when completely blocked with no other work. Returns on the first event (incoming message, watched job, window elapsing, steering interrupt) — NOT when all jobs finish; re-issue. Bare `wait` watches every running job AND incoming messages; NEVER pass an array of every running ID.
-- `inbox`: drain queued messages without blocking. `cancel`: kill hung/stalled/unneeded jobs by `ids`. `jobs`: snapshot without waiting; also names running subagents with no job entry — coordinate via `send`.
+Background jobs auto-deliver on finish — NEVER poll. `jobs`/`wait` first observation of a settled job consumes delivery and suppresses duplicate `async-result`. Job rows expire ~5 min after settlement; afterward use agent `id` with `send`, `agent://<id>`, or `history://<id>`.
 
-Processes: a service, watcher, debugger, REPL, or process needing later input MUST use `op: "start"`, not `bash`. Ops `ps`/`logs`/`wait`/`send`/`stop`/`restart`/`describe` address the stable `name`.
+- Peer `send`: `id` + `message`; `id:"all"` broadcasts. Receipt outcome reports transport only. `effect:"injected"` = no worker turn started. `effect:"wake_requested"` = turn start not confirmed. `revived:true` = session loaded, NOT work started. NEVER infer `turnState=running` from delivery; use `orchestrate_send` for a guaranteed tracked worker turn. Reply: lead with answer, NEVER quote, set `replyTo`. Plain prose ONLY; share content through `local://`/`artifact://` URLs.
+- `wait`: ONLY when completely blocked. Returns first incoming message, watched job, elapsed window, or steering interrupt — NOT all jobs. Bare wait watches every running job + incoming messages; NEVER pass every running job id.
+- `inbox`: drain queued messages. `cancel`: terminate jobs by `ids`. `jobs`: snapshot; running subagents without job entries still appear — coordinate through peer `send`.
+- Peer lifecycle: `live` | `parked` | `terminal`. Turn state: `running` | `idle`. A parked peer is `lifecycle=parked`, `turnState=idle`.
 
-`ps` shows this session's process records by default, including exited ones; pass `all: true` to list every record in the project directory.
+Processes: services/watchers/debuggers/REPLs needing later input MUST use `op:"start"`, not `bash`. Ops `ps`/`logs`/`wait`/`send`/`stop`/`restart`/`describe` address process `name`; agent identifiers remain `id`.
 
-- Readiness MUST be observed — process creation alone is not readiness. `ready.log`/`pattern`/`grep` are JS `RegExp` (`u` flag; PCRE inline modifiers like `(?i)` REJECTED — use `[Rr]eady`); multiple conditions ALL must pass.
-- Names unique per project dir: completed name MAY restart, live name MUST be stopped first.
-- `stop`: graceful process-tree termination before hard-kill; NEVER kill an unverified PID through bash. `restart` reuses the retained launch spec.
-- `logs`: supply the returned `cursor` for new output only; omit it for retained history. Follow timeouts do not replay older output.
-- Broker shutting down? New launches are rejected; retry after shutdown completes.
+`ps` defaults to this session's process records, including exited; `all:true` lists all records in the project directory.
+
+- Readiness MUST be observed. `ready.log`/`pattern`/`grep`: JS `RegExp`, `u` flag; PCRE inline modifiers such as `(?i)` rejected — use `[Rr]eady`. Multiple conditions ALL pass.
+- Process names unique per project directory: completed name MAY restart; live name MUST stop first.
+- `stop`: graceful process-tree termination before hard kill; NEVER kill unverified PID through bash. `restart` reuses retained launch spec.
+- `logs`: returned `cursor` reads new output only; omit for retained history. Follow timeout NEVER replays older output.
+- Broker shutting down? New launches rejected; retry after shutdown.

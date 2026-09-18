@@ -21,7 +21,7 @@ function fakeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 function fakeRef(overrides: Partial<AgentRef> = {}): AgentRef {
 	return {
 		id: "w",
-		displayName: "w",
+		label: "w",
 		kind: "sub",
 		status: "parked",
 		session: null,

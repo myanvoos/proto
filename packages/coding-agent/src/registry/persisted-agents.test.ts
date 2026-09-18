@@ -180,7 +180,7 @@ describe("registerPersistedSubagents", () => {
 		const registry = new AgentRegistry();
 		registry.register({
 			id: "worker-parent",
-			displayName: "worker-parent",
+			label: "worker-parent",
 			kind: "sub",
 			parentId: "Main",
 			session: null,
@@ -190,8 +190,8 @@ describe("registerPersistedSubagents", () => {
 
 		await registerPersistedSubagents(registry, parentFile);
 
-		expect(registry.get("worker-parent")?.displayName).toBe("Parent Label");
-		expect(registry.get("worker-child")?.displayName).toBe("Nested Label");
+		expect(registry.get("worker-parent")?.label).toBe("Parent Label");
+		expect(registry.get("worker-child")?.label).toBe("Nested Label");
 		expect(registry.get("worker-child")?.parentId).toBe("worker-parent");
 	});
 });
