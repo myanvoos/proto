@@ -6,7 +6,7 @@ import { formatQuery, parseSearchQuery, type QuerySyntax } from "../query";
 import { dateToAgeSeconds } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const ZAI_MCP_URL = "https://api.z.ai/api/mcp/web_search_prime/mcp";
 const ZAI_TOOL_NAME = "web_search_prime";
@@ -135,7 +135,7 @@ async function postZaiMcp(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "zai");
 		const classified = classifyProviderHttpError("zai", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError("zai", `Z.AI MCP error (${response.status}): ${errorText}`, response.status);
@@ -148,7 +148,7 @@ async function postZaiMcp(
 	}
 
 	return {
-		parsed: parseZaiMcpResponse(await response.text()),
+		parsed: parseZaiMcpResponse(await readProviderResponseText(response, "zai")),
 		sessionId: nextSessionId,
 	};
 }

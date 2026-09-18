@@ -3,8 +3,9 @@ import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { Page } from "puppeteer-core";
 import { applyStealthPatches, applyViewport } from "../../../tools/browser/launch";
 import { acquireBrowser, holdBrowser, releaseBrowser } from "../../../tools/browser/registry";
+import type { SearchProviderId } from "../types";
 import { buildBrowserNavigationHeaders } from "./browser-headers";
-import { SEARCH_HARD_TIMEOUT_MS } from "./utils";
+import { readProviderHtml, SEARCH_HARD_TIMEOUT_MS } from "./utils";
 
 export interface LoadedHtmlPage {
 	html: string;
@@ -22,6 +23,7 @@ interface BrowserFallbackOptions {
 }
 
 interface BrowserFetchOptions {
+	provider: SearchProviderId;
 	fetch?: FetchImpl;
 	signal: AbortSignal;
 	timeoutMs?: number;
@@ -44,7 +46,11 @@ async function fetchHtmlPage(url: string, options: BrowserFetchOptions, fetchImp
 		},
 		signal: options.signal,
 	});
-	return { html: await response.text(), status: response.status, url: response.url || url };
+	return {
+		html: await readProviderHtml(response, options.provider),
+		status: response.status,
+		url: response.url || url,
+	};
 }
 
 async function browseHtmlPage(

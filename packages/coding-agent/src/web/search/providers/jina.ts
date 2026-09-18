@@ -5,7 +5,7 @@ import { formatQuery, parseSearchQuery } from "../query";
 import { clampNumResults } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const JINA_SEARCH_URL = "https://s.jina.ai";
 const DEFAULT_NUM_RESULTS = 5;
@@ -63,13 +63,16 @@ async function callJinaSearch(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "jina");
 		const classified = classifyProviderHttpError("jina", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError("jina", `Jina API error (${response.status}): ${errorText}`, response.status);
 	}
 
-	const payload = (await response.json()) as JinaSearchEnvelope | JinaSearchResponse | null;
+	const payload = JSON.parse(await readProviderResponseText(response, "jina")) as
+		| JinaSearchEnvelope
+		| JinaSearchResponse
+		| null;
 	if (Array.isArray(payload)) return payload;
 	if (!payload || typeof payload !== "object") {
 		throw new SearchProviderError("jina", "Jina API returned invalid response: expected an object or array");

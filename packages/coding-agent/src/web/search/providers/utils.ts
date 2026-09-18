@@ -1,4 +1,5 @@
 import type { AgentStorage } from "../../../session/agent-storage";
+import { readBoundedText } from "../../../tools/fetch";
 import {
 	DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS,
 	SearchProviderError,
@@ -36,6 +37,33 @@ export function findCredential(
 }
 
 export const SEARCH_HARD_TIMEOUT_MS = DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS * 1_000;
+
+const PROVIDER_DIAGNOSTIC_MAX_BYTES = 8 * 1024;
+const PROVIDER_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
+
+async function readProviderBody(
+	response: Response,
+	provider: SearchProviderId,
+	maxBytes: number,
+	kind: "diagnostic" | "response" | "HTML",
+): Promise<string> {
+	const text = await readBoundedText(response, maxBytes);
+	if (text !== null) return text;
+	const status = response.ok ? 502 : response.status;
+	throw new SearchProviderError(provider, `${provider}: ${kind} body exceeded ${maxBytes} byte limit`, status);
+}
+
+export function readProviderErrorText(response: Response, provider: SearchProviderId): Promise<string> {
+	return readProviderBody(response, provider, PROVIDER_DIAGNOSTIC_MAX_BYTES, "diagnostic");
+}
+
+export function readProviderResponseText(response: Response, provider: SearchProviderId): Promise<string> {
+	return readProviderBody(response, provider, PROVIDER_RESPONSE_MAX_BYTES, "response");
+}
+
+export function readProviderHtml(response: Response, provider: SearchProviderId): Promise<string> {
+	return readProviderBody(response, provider, PROVIDER_RESPONSE_MAX_BYTES, "HTML");
+}
 
 export function withHardTimeout(signal: AbortSignal | undefined, ms: number = SEARCH_HARD_TIMEOUT_MS): AbortSignal {
 	const timeout = AbortSignal.timeout(ms);

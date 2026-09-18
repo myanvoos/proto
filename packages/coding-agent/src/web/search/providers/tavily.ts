@@ -5,7 +5,7 @@ import { formatQuery, parseSearchQuery } from "../query";
 import { clampNumResults, dateToAgeSeconds } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
 const DEFAULT_NUM_RESULTS = 5;
@@ -105,7 +105,7 @@ async function callTavilySearch(apiKey: string, params: TavilySearchParams): Pro
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "tavily");
 		const classified = classifyProviderHttpError("tavily", response.status, errorText);
 		if (classified) throw classified;
 		let message = errorText.trim();
@@ -119,7 +119,7 @@ async function callTavilySearch(apiKey: string, params: TavilySearchParams): Pro
 		throw new SearchProviderError("tavily", `Tavily API error (${response.status}): ${message}`, response.status);
 	}
 
-	const payload: unknown = await response.json();
+	const payload: unknown = JSON.parse(await readProviderResponseText(response, "tavily"));
 	return asRecord(payload) ?? {};
 }
 

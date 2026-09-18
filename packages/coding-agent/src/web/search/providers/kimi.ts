@@ -7,7 +7,7 @@ import { formatQuery, parseSearchQuery, type QuerySyntax, type StructuredQuery }
 import { clampNumResults, dateToAgeSeconds } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 type SearchParamsWithFetch = SearchParams & { fetch?: FetchImpl };
 
@@ -105,7 +105,7 @@ async function callKimiSearch(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "kimi");
 		const classified = classifyProviderHttpError("kimi", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError(
@@ -115,7 +115,7 @@ async function callKimiSearch(
 		);
 	}
 
-	const data = (await response.json()) as KimiSearchResponse;
+	const data = JSON.parse(await readProviderResponseText(response, "kimi")) as KimiSearchResponse;
 	const requestId = response.headers.get("x-request-id") ?? response.headers.get("x-msh-request-id") ?? undefined;
 	return { response: data, requestId };
 }

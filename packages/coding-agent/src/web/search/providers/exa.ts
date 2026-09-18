@@ -8,7 +8,7 @@ import { formatQuery, parseSearchQuery, type StructuredQuery } from "../query";
 import { dateToAgeSeconds } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const EXA_API_URL = "https://api.exa.ai/search";
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
@@ -89,11 +89,6 @@ async function waitForExaSearchSlot(signal: AbortSignal | undefined): Promise<vo
 	});
 	exaSearchThrottle = queued.catch(() => {});
 	await waitUntilDoneOrAborted(queued, signal);
-}
-
-export function resetExaSearchThrottleForTest(): void {
-	nextExaSearchRequestAt = 0;
-	exaSearchThrottle = Promise.resolve();
 }
 
 type ExaSearchType = "neural" | "fast" | "auto" | "deep";
@@ -303,13 +298,13 @@ async function callExaSearch(apiKey: string, params: ExaSearchParams): Promise<E
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "exa");
 		const classified = classifyProviderHttpError("exa", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError("exa", `Exa API error (${response.status}): ${errorText}`, response.status);
 	}
 
-	return response.json() as Promise<ExaSearchResponse>;
+	return JSON.parse(await readProviderResponseText(response, "exa")) as ExaSearchResponse;
 }
 function buildExaMcpArgs(params: ExaSearchParams): Record<string, unknown> {
 	const queryParts = [params.query];
@@ -355,7 +350,7 @@ async function callExaMcpSearch(params: ExaSearchParams): Promise<ExaSearchRespo
 		signal: withHardTimeout(params.signal, params.timeoutMs),
 	});
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "exa");
 		const classified = classifyProviderHttpError("exa", response.status, errorText);
 		if (classified) throw classified;
 		if (response.status === 429) {
@@ -371,7 +366,7 @@ async function callExaMcpSearch(params: ExaSearchParams): Promise<ExaSearchRespo
 			response.status,
 		);
 	}
-	const mcpResponse = parseSSE(await response.text()) as {
+	const mcpResponse = parseSSE(await readProviderResponseText(response, "exa")) as {
 		result?: {
 			content?: Array<{ type: string; text?: string }>;
 			isError?: boolean;

@@ -12,7 +12,7 @@ import { formatQuery, GOOGLE_QUERY_SYNTAX, parseSearchQuery, type StructuredQuer
 import { clampNumResults } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const FIRECRAWL_DEFAULT_BASE_URL = "https://api.firecrawl.dev/v2";
 const DEFAULT_NUM_RESULTS = 10;
@@ -120,7 +120,7 @@ async function callFirecrawlSearch(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "firecrawl");
 		const classified = classifyProviderHttpError("firecrawl", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError(
@@ -130,7 +130,7 @@ async function callFirecrawlSearch(
 		);
 	}
 
-	const data = (await response.json()) as FirecrawlSearchResponse;
+	const data = JSON.parse(await readProviderResponseText(response, "firecrawl")) as FirecrawlSearchResponse;
 	if (data.success === false) {
 		throw new SearchProviderError("firecrawl", data.error?.trim() || "Firecrawl request failed");
 	}

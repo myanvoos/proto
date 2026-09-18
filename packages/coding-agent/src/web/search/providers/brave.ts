@@ -1,5 +1,4 @@
 import { type ApiKey, type AuthStorage, type FetchImpl, getEnvApiKey, withAuth } from "@oh-my-pi/pi-ai";
-import { readBytesWithLimit } from "@oh-my-pi/pi-utils";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
 import type { QuerySyntax, StructuredQuery } from "../query";
@@ -7,14 +6,12 @@ import { formatQuery, GOOGLE_QUERY_SYNTAX, parseSearchQuery } from "../query";
 import { clampNumResults, dateToAgeSeconds } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 20;
 const MAX_QUERY_CHARACTERS = 500;
-const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const MAX_ERROR_BYTES = 8 * 1024;
 
 const RECENCY_MAP: Record<"day" | "week" | "month" | "year", "pd" | "pw" | "pm" | "py"> = {
 	day: "pd",
@@ -81,15 +78,6 @@ function webResults(response: BraveSearchResponse): readonly unknown[] {
 	return Array.isArray(response.web.results) ? response.web.results : [];
 }
 
-async function readLimitedText(response: Response, maxBytes: number, truncate = false): Promise<string> {
-	if (!response.body) return "";
-	const { bytes, truncated } = await readBytesWithLimit(response.body, maxBytes);
-	if (truncated && !truncate) {
-		throw new SearchProviderError("brave", "Brave API response exceeded 2 MiB", 500);
-	}
-	return new TextDecoder().decode(bytes);
-}
-
 function buildSnippet(result: object): string | undefined {
 	const snippets = new Set<string>();
 	const description = normalizeText("description" in result ? result.description : undefined, 8_000);
@@ -142,13 +130,13 @@ async function callBraveSearch(
 	});
 
 	if (!response.ok) {
-		const errorText = await readLimitedText(response, MAX_ERROR_BYTES, true);
+		const errorText = await readProviderErrorText(response, "brave");
 		const classified = classifyProviderHttpError("brave", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError("brave", `Brave API error (${response.status}): ${errorText}`, response.status);
 	}
 
-	const raw = await readLimitedText(response, MAX_RESPONSE_BYTES);
+	const raw = await readProviderResponseText(response, "brave");
 	let data: BraveSearchResponse;
 	try {
 		data = JSON.parse(raw) as BraveSearchResponse;

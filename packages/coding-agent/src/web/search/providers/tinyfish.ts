@@ -5,7 +5,7 @@ import { formatQuery, parseSearchQuery, type QuerySyntax } from "../query";
 import { clampNumResults } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const TINYFISH_SEARCH_URL = "https://api.search.tinyfish.ai";
 const DEFAULT_NUM_RESULTS = 10;
@@ -93,7 +93,7 @@ async function callTinyFishSearch(apiKey: string, params: TinyFishSearchParams):
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "tinyfish");
 		const classified = classifyProviderHttpError("tinyfish", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError(
@@ -103,7 +103,7 @@ async function callTinyFishSearch(apiKey: string, params: TinyFishSearchParams):
 		);
 	}
 
-	return (await response.json()) as TinyFishSearchResponse;
+	return JSON.parse(await readProviderResponseText(response, "tinyfish")) as TinyFishSearchResponse;
 }
 
 function appendTinyFishSources(

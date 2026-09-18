@@ -85,7 +85,7 @@ async function fetchFormInputs(
 ): Promise<Record<string, string> | undefined> {
 	let page: LoadedHtmlPage;
 	try {
-		page = await browserFetch(STARTPAGE_HOME_URL, { fetch: fetchImpl, signal, timeoutMs });
+		page = await browserFetch(STARTPAGE_HOME_URL, { provider: "startpage", fetch: fetchImpl, signal, timeoutMs });
 	} catch (error) {
 		if (signal.aborted) throw error;
 		return undefined;
@@ -108,6 +108,7 @@ async function callStartpageHtml(params: SearchParams): Promise<string> {
 		form.set("query", query);
 		if (withDate) form.set("with_date", withDate);
 		page = await browserFetch(STARTPAGE_SEARCH_URL, {
+			provider: "startpage",
 			fetch: fetchImpl,
 			signal,
 			timeoutMs: params.timeoutMs,
@@ -120,6 +121,7 @@ async function callStartpageHtml(params: SearchParams): Promise<string> {
 		url.searchParams.set("query", query);
 		if (withDate) url.searchParams.set("with_date", withDate);
 		page = await browserFetch(url.href, {
+			provider: "startpage",
 			fetch: fetchImpl,
 			signal,
 			timeoutMs: params.timeoutMs,

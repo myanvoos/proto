@@ -4,7 +4,7 @@ import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, parseSearchQuery } from "../query";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 type SearchParamsWithFetch = SearchParams & { fetch?: FetchImpl };
 
@@ -47,7 +47,7 @@ async function callSyntheticSearch(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "synthetic");
 		const classified = classifyProviderHttpError("synthetic", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError(
@@ -57,7 +57,7 @@ async function callSyntheticSearch(
 		);
 	}
 
-	return (await response.json()) as SyntheticSearchResponse;
+	return JSON.parse(await readProviderResponseText(response, "synthetic")) as SyntheticSearchResponse;
 }
 
 async function searchSynthetic(params: SearchParamsWithFetch): Promise<SearchResponse> {

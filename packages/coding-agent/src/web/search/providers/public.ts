@@ -94,8 +94,9 @@ export async function searchPublicWeb(
 		engineIds.map(async (id, index) => {
 			try {
 				const provider = await getSearchProvider(id);
-				responses[index] = await provider.search({ ...params, signal });
-				firstSuccess.resolve();
+				const response = await provider.search({ ...params, signal });
+				responses[index] = response;
+				if (response.sources.length > 0) firstSuccess.resolve();
 			} catch (error) {
 				failures.push({ provider: { id, label: id }, error });
 			}
@@ -103,7 +104,7 @@ export async function searchPublicWeb(
 	);
 
 	await Promise.race([all, Bun.sleep(softMs)]);
-	if (!responses.some(response => response !== undefined) && failures.length < engineIds.length) {
+	if (!responses.some(response => response && response.sources.length > 0) && failures.length < engineIds.length) {
 		await Promise.race([all, firstSuccess.promise, Bun.sleep(Math.max(0, hardMs - softMs))]);
 	}
 	straggler.abort();

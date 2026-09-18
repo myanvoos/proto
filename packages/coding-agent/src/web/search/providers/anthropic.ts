@@ -33,7 +33,7 @@ import {
 } from "../query";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
 const DEFAULT_MAX_TOKENS = 4096;
@@ -174,7 +174,7 @@ async function callSearch(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "anthropic");
 		const classified = classifyProviderHttpError("anthropic", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError(
@@ -184,7 +184,7 @@ async function callSearch(
 		);
 	}
 
-	return response.json() as Promise<AnthropicApiResponse>;
+	return JSON.parse(await readProviderResponseText(response, "anthropic")) as AnthropicApiResponse;
 }
 
 function parsePageAge(pageAge: string | null | undefined): number | undefined {

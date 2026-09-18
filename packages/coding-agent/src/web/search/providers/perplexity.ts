@@ -25,7 +25,7 @@ import { dateToAgeSeconds } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { type ApiConfig, getAvailableAuthMethods } from "./perplexity-auth";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, withHardTimeout } from "./utils";
 
 const PERPLEXITY_OAUTH_ASK_URL = "https://www.perplexity.ai/rest/sse/perplexity_ask";
 
@@ -674,7 +674,7 @@ async function callPerplexityAsk(
 	}
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "perplexity");
 		const classified = classifyProviderHttpError("perplexity", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError(
@@ -769,8 +769,14 @@ function buildApiSources(metadata: PerplexityApiStreamMetadata): {
 	const citationUrls = citationUrlsFromMetadata(metadata);
 
 	if (citationUrls.length > 0) {
+		const firstSearchResultByUrl = new Map<string, PerplexitySearchResult>();
+		for (const searchResult of searchResults) {
+			if (!firstSearchResultByUrl.has(searchResult.url)) {
+				firstSearchResultByUrl.set(searchResult.url, searchResult);
+			}
+		}
 		for (const url of citationUrls) {
-			const searchResult = searchResults.find(result => result.url === url);
+			const searchResult = firstSearchResultByUrl.get(url);
 			sources.push({
 				title: searchResult?.title ?? url,
 				url,

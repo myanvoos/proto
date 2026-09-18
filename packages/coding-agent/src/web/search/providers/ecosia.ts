@@ -74,6 +74,7 @@ async function callEcosiaHtml(params: SearchParams): Promise<string> {
 	let page: LoadedHtmlPage;
 	try {
 		page = await browserFetch(url.href, {
+			provider: "ecosia",
 			fetch: params.fetch,
 			signal,
 			timeoutMs: params.timeoutMs,

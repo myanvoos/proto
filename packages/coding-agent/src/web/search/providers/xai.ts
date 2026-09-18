@@ -7,7 +7,7 @@ import { formatQuery, parseSearchQuery, type QuerySyntax } from "../query";
 import { clampNumResults } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const XAI_DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const XAI_WEB_SEARCH_MODEL = "grok-4.5";
@@ -157,11 +157,11 @@ async function callXAIResponses(
 	const response = await postXAIResponses(apiKey, params, requestBody, transport);
 
 	if (!response.ok) {
-		throwXAIResponsesError(response.status, await response.text());
+		throwXAIResponsesError(response.status, await readProviderErrorText(response, "xai"));
 	}
 
 	try {
-		return (await response.json()) as XAIResponsesResponse;
+		return JSON.parse(await readProviderResponseText(response, "xai")) as XAIResponsesResponse;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new SearchProviderError("xai", `xAI Responses API returned invalid JSON: ${message}`, response.status);

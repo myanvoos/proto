@@ -14,7 +14,13 @@ import { formatQuery, parseSearchQuery, type StructuredQuery } from "../query";
 import { clampNumResults } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, toSearchSources, withHardTimeout } from "./utils";
+import {
+	classifyProviderHttpError,
+	readProviderErrorText,
+	readProviderResponseText,
+	toSearchSources,
+	withHardTimeout,
+} from "./utils";
 
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 40;
@@ -100,10 +106,11 @@ async function searchWithAuthStorage(
 			});
 
 			if (!response.ok) {
-				throw parseParallelErrorResponse(response.status, await response.text());
+				throw parseParallelErrorResponse(response.status, await readProviderErrorText(response, "parallel"));
 			}
 
-			const payload = await parseParallelJsonResponse(response, "search");
+			const responseText = await readProviderResponseText(response, "parallel");
+			const payload = await parseParallelJsonResponse(new Response(responseText), "search");
 			return parseParallelSearchPayload(payload, { parseMetadata: false });
 		},
 		{ signal: params.signal },

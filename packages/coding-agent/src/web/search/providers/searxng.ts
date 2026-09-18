@@ -9,7 +9,7 @@ import { formatScraperQuery, parseSearchQuery } from "../query";
 import { clampNumResults, dateToAgeSeconds } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, readProviderResponseText, withHardTimeout } from "./utils";
 
 const DEFAULT_NUM_RESULTS = 10;
 const MAX_NUM_RESULTS = 20;
@@ -150,7 +150,7 @@ async function fetchEngineNameMap(
 			signal: withHardTimeout(signal, timeoutMs),
 		});
 		if (!response.ok) return null;
-		const config = (await response.json()) as SearXNGConfig;
+		const config = JSON.parse(await readProviderResponseText(response, "searxng")) as SearXNGConfig;
 		const map = new Map<string, string>();
 		for (const engine of config.engines ?? []) {
 			if (!engine.name) continue;
@@ -333,13 +333,13 @@ async function callSearXNGSearch(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "searxng");
 		const classified = classifyProviderHttpError("searxng", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError("searxng", `SearXNG API error (${response.status}): ${errorText}`, response.status);
 	}
 
-	return (await response.json()) as SearXNGResponse;
+	return JSON.parse(await readProviderResponseText(response, "searxng")) as SearXNGResponse;
 }
 
 export async function searchSearXNG(params: {

@@ -7,7 +7,7 @@ import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, GOOGLE_QUERY_SYNTAX, parseSearchQuery, type StructuredQuery } from "../query";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, withHardTimeout } from "./utils";
 
 const DEFAULT_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 const DEVELOPER_API_PROVIDER = "google";
@@ -461,7 +461,7 @@ async function callGeminiSearch(
 	}
 
 	if (!response?.ok) {
-		const rawErrorText = response ? await response.text() : "Network error";
+		const rawErrorText = response ? await readProviderErrorText(response, "gemini") : "Network error";
 		const errorText = auth.accessToken ? rawErrorText.split(auth.accessToken).join("[redacted]") : rawErrorText;
 		const status = response?.status ?? 502;
 		const classified = classifyProviderHttpError("gemini", status, errorText);
@@ -534,7 +534,7 @@ async function callGeminiDeveloperSearch(
 	});
 
 	if (!response.ok) {
-		const rawErrorText = await response.text();
+		const rawErrorText = await readProviderErrorText(response, "gemini");
 		const errorText = apiKey ? rawErrorText.split(apiKey).join("[redacted]") : rawErrorText;
 		const classified = classifyProviderHttpError("gemini", response.status, errorText);
 		if (classified) throw classified;

@@ -23,7 +23,7 @@ import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, GOOGLE_QUERY_SYNTAX, parseSearchQuery } from "../query";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { classifyProviderHttpError, withHardTimeout } from "./utils";
+import { classifyProviderHttpError, readProviderErrorText, withHardTimeout } from "./utils";
 
 const FALLBACK_MODEL = "gpt-5.5";
 const DEFAULT_MODEL_PREFERENCES = [
@@ -457,7 +457,7 @@ async function callCodexSearch(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text();
+		const errorText = await readProviderErrorText(response, "codex");
 		const classified = classifyProviderHttpError("codex", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError("codex", `Codex API error (${response.status}): ${errorText}`, response.status);

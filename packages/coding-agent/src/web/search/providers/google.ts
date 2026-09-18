@@ -122,6 +122,7 @@ async function callGoogleHtml(params: SearchParams, numResults: number): Promise
 	let page: LoadedHtmlPage;
 	try {
 		page = await browserFetch(url, {
+			provider: "google",
 			fetch: params.fetch,
 			signal,
 			timeoutMs: params.timeoutMs,
