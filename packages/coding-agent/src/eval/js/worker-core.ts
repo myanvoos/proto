@@ -25,22 +25,18 @@ interface ActiveRun {
 	floatingRejections: unknown[];
 }
 
+type RunMessage = Extract<WorkerInbound, { type: "run" }>;
 type RunResult = Extract<WorkerOutbound, { type: "result" }>;
 
 export type RejectionInterceptor = (handler: (reason: unknown) => boolean) => () => void;
 
-type WorkerCoreOptions =
-	| {
-			mode: "isolated";
+interface WorkerCoreOptions {
+	mode: "isolated";
 
-			chdir?: (cwd: string) => void;
+	chdir?: (cwd: string) => void;
 
-			interceptUnhandledRejections?: RejectionInterceptor;
-	  }
-	| {
-			mode: "inline";
-			interceptUnhandledRejections: RejectionInterceptor;
-	  };
+	interceptUnhandledRejections?: RejectionInterceptor;
+}
 
 const RECENT_CELL_FILES_MAX = 256;
 
@@ -87,6 +83,9 @@ export class WorkerCore {
 	#transport: Transport;
 	#runtime: JsRuntime | null = null;
 	#runs = new Map<string, ActiveRun>();
+	#runQueue: RunMessage[] = [];
+	#drainPromise: Promise<void> | null = null;
+	#closing = false;
 	#recentCellFiles = new Set<string>();
 	#unsubscribe: () => void;
 	#uninstallRejectionGuard: () => void;
@@ -151,7 +150,7 @@ export class WorkerCore {
 				return true;
 			}
 		}
-		if (this.#options.mode === "isolated" && this.#runs.size > 0) {
+		if (this.#runs.size > 0) {
 			if (this.#runs.size === 1) {
 				const only = this.#runs.values().next().value;
 				only?.floatingRejections.push(reason);
@@ -179,14 +178,46 @@ export class WorkerCore {
 				}
 				return;
 			case "run":
-				void this.#runOne(msg.runId, msg.code, msg.filename, msg.snapshot, msg.completionContext);
+				this.#enqueueRun(msg);
 				return;
 			case "tool-reply":
 				this.#deliverToolReply(msg.id, msg.reply);
 				return;
 			case "close":
-				this.#close();
+				void this.#close();
 				return;
+		}
+	}
+
+	#enqueueRun(msg: RunMessage): void {
+		if (this.#closing) return;
+		this.#runQueue.push(msg);
+		if (this.#drainPromise) return;
+		const drain = this.#drainRuns();
+		this.#drainPromise = drain;
+		void drain.finally(() => {
+			if (this.#drainPromise !== drain) return;
+			this.#drainPromise = null;
+			if (!this.#closing && this.#runQueue.length > 0) this.#enqueueDrain();
+		});
+	}
+
+	#enqueueDrain(): void {
+		if (this.#drainPromise || this.#closing || this.#runQueue.length === 0) return;
+		const drain = this.#drainRuns();
+		this.#drainPromise = drain;
+		void drain.finally(() => {
+			if (this.#drainPromise !== drain) return;
+			this.#drainPromise = null;
+			this.#enqueueDrain();
+		});
+	}
+
+	async #drainRuns(): Promise<void> {
+		while (!this.#closing) {
+			const msg = this.#runQueue.shift();
+			if (!msg) return;
+			await this.#runOne(msg.runId, msg.code, msg.filename, msg.snapshot, msg.completionContext);
 		}
 	}
 
@@ -207,7 +238,7 @@ export class WorkerCore {
 	}
 
 	#syncProcessCwd(cwd: string, currentRunId?: string): void {
-		if (this.#options.mode !== "isolated" || !this.#options.chdir) return;
+		if (!this.#options.chdir) return;
 		try {
 			if (process.cwd() === cwd) return;
 		} catch {}
@@ -264,7 +295,7 @@ export class WorkerCore {
 		} finally {
 			this.#runs.delete(runId);
 			this.#rememberCellFile(filename);
-			this.#transport.send(result);
+			if (!this.#closing) this.#transport.send(result);
 		}
 	}
 
@@ -308,36 +339,39 @@ export class WorkerCore {
 		}
 	}
 
-	#close(): void {
+	async #close(): Promise<void> {
+		if (this.#closing) return;
+		this.#closing = true;
+		this.#runQueue.length = 0;
+		this.#rejectActiveTools();
+		await this.#drainPromise?.catch(() => undefined);
+		this.#finishClose(true);
+	}
+
+	#rejectActiveTools(): void {
 		for (const active of this.#runs.values()) {
 			for (const pending of active.pendingTools.values()) {
 				pending.reject(new ToolError("JS worker closed"));
 			}
 			active.pendingTools.clear();
 		}
+	}
+
+	#finishClose(sendAck: boolean): void {
 		this.#runs.clear();
 		this.#runtime?.dispose?.();
 		this.#runtime = null;
-		this.#transport.send({ type: "closed" });
+		if (sendAck) this.#transport.send({ type: "closed" });
 		this.#uninstallRejectionGuard();
 		this.#unsubscribe();
 		this.#transport.close();
 	}
 
 	dispose(): void {
-		for (const active of this.#runs.values()) {
-			for (const pending of active.pendingTools.values()) {
-				pending.reject(new ToolError("JS worker closed"));
-			}
-			active.pendingTools.clear();
-		}
-		this.#runs.clear();
-		this.#runtime?.dispose?.();
-		this.#runtime = null;
-		this.#uninstallRejectionGuard();
-		this.#unsubscribe();
-		try {
-			this.#transport.close();
-		} catch {}
+		if (this.#closing) return;
+		this.#closing = true;
+		this.#runQueue.length = 0;
+		this.#rejectActiveTools();
+		this.#finishClose(false);
 	}
 }

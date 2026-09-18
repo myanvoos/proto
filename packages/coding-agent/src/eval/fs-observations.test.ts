@@ -29,3 +29,34 @@ test("releasing one shared owner preserves observations for the surviving owner"
 
 	releaseFsObservationLedger(sessionId, "owner-b");
 });
+
+test("overflow never discards a pending host mutation", () => {
+	const ledger = fsObservationLedger(`fs-observations-overflow-${crypto.randomUUID()}`);
+	const critical = { ...observation("/critical-host-rewrite"), kind: "write" as const };
+	ledger.record(critical);
+	for (let index = 0; index < 8192; index++) {
+		ledger.record(observation(`/later-read-${index}`));
+	}
+
+	expect(ledger.drain()).toContainEqual(critical);
+});
+
+test("an all-mutation burst uses a soft cap rather than losing any path", () => {
+	const ledger = fsObservationLedger(`fs-observations-write-burst-${crypto.randomUUID()}`);
+	for (let index = 0; index < 8193; index++) {
+		ledger.record({ ...observation(`/host-rewrite-${index}`), kind: "write" });
+	}
+
+	expect(ledger.drain()).toHaveLength(8193);
+});
+
+test("a later read does not make a pending mutation evictable", () => {
+	const ledger = fsObservationLedger(`fs-observations-reobserved-write-${crypto.randomUUID()}`);
+	ledger.record({ ...observation("/rewritten-then-read"), kind: "write" });
+	ledger.record(observation("/rewritten-then-read"));
+	for (let index = 0; index < 8192; index++) {
+		ledger.record(observation(`/unrelated-read-${index}`));
+	}
+
+	expect(ledger.drain().map(entry => entry.path)).toContain("/rewritten-then-read");
+});

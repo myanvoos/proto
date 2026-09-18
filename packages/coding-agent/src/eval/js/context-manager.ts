@@ -1,4 +1,4 @@
-import { logger, postmortem, Snowflake, workerHostEntry } from "@oh-my-pi/pi-utils";
+import { logger, Snowflake, workerHostEntry } from "@oh-my-pi/pi-utils";
 import {
 	createWorkerHandle,
 	createWorkerSubprocess,
@@ -13,13 +13,10 @@ import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import { attachSessionOwner, resolveOwnerScopedSessionKey, type SessionOwners } from "../executor-base";
 import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "../idle-timeout";
 import { callSessionTool, type JsStatusEvent } from "./tool-bridge";
-import { WorkerCore } from "./worker-core";
-
 import type {
 	JsDisplayOutput,
 	RunErrorPayload,
 	SessionSnapshot,
-	Transport,
 	WorkerInbound,
 	WorkerOutbound,
 } from "./worker-protocol";
@@ -34,7 +31,7 @@ interface VmRunState {
 }
 
 interface WorkerHandle {
-	mode: "process" | "worker" | "inline";
+	mode: "process" | "worker";
 	send(msg: WorkerInbound): void;
 	onMessage(handler: (msg: WorkerOutbound) => void): () => void;
 	onError(handler: (error: Error) => void): () => void;
@@ -68,6 +65,7 @@ interface JsSession {
 	worker: WorkerHandle;
 	state: "alive" | "dead";
 	pending: Map<string, PendingRun>;
+	completedRuns: Map<string, VmRunState>;
 	ownerIds: Set<string>;
 	hasFallbackOwner: boolean;
 	reapTimer?: NodeJS.Timeout;
@@ -87,6 +85,7 @@ const JS_EVAL_PROCESS_ARG = "__proto_worker_js_eval_process";
 
 const workerCloseTimeoutMs: number = WORKER_CLOSE_TIMEOUT_MS;
 const MAX_REAP_NOTES = 32;
+const MAX_COMPLETED_RUN_SINKS = 256;
 const reapNotes = new Map<string, KernelReapNote>();
 
 function armSessionReap(session: JsSession): void {
@@ -308,6 +307,14 @@ async function runOnce(
 	} finally {
 		options.runState.signal?.removeEventListener("abort", onAbort);
 		session.pending.delete(runId);
+		if (!pending.aborted) {
+			session.completedRuns.delete(runId);
+			session.completedRuns.set(runId, options.runState);
+			if (session.completedRuns.size > MAX_COMPLETED_RUN_SINKS) {
+				const oldest = session.completedRuns.keys().next().value;
+				if (oldest !== undefined) session.completedRuns.delete(oldest);
+			}
+		}
 	}
 }
 
@@ -340,6 +347,7 @@ async function acquireSession(
 			worker,
 			state: "alive",
 			pending: new Map(),
+			completedRuns: new Map(),
 			ownerIds: new Set(),
 			hasFallbackOwner: false,
 		};
@@ -352,18 +360,15 @@ async function acquireSession(
 			} catch (error) {
 				const failed = session.worker;
 				await failed.terminate().catch(() => undefined);
-				if (failed.mode === "inline") throw error;
-				if (failed.mode === "process") {
-					logger.warn("JS eval subprocess init failed; retrying with a Bun Worker", {
+				if (failed.mode === "worker") {
+					throw new ToolError("Isolated JS eval worker failed to initialize; refusing host-process execution", {
 						error: error instanceof Error ? error.message : String(error),
 					});
-					session.worker = spawnBunWorker();
-				} else {
-					logger.warn("JS eval worker init failed; retrying with inline worker (no sync-loop guard)", {
-						error: error instanceof Error ? error.message : String(error),
-					});
-					session.worker = spawnInlineWorker();
 				}
+				logger.warn("JS eval subprocess init failed; retrying with a Bun Worker", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+				session.worker = spawnBunWorker();
 				session.state = "alive";
 			}
 		}
@@ -435,13 +440,13 @@ async function initWorker(session: JsSession, snapshot: SessionSnapshot, timeout
 function handleSessionMessage(session: JsSession, msg: WorkerOutbound): void {
 	switch (msg.type) {
 		case "text": {
-			const pending = session.pending.get(msg.runId);
-			pending?.runState.onText?.(msg.chunk);
+			const runState = session.pending.get(msg.runId)?.runState ?? session.completedRuns.get(msg.runId);
+			runState?.onText?.(msg.chunk);
 			return;
 		}
 		case "display": {
-			const pending = session.pending.get(msg.runId);
-			pending?.runState.onDisplay?.(msg.output);
+			const runState = session.pending.get(msg.runId)?.runState ?? session.completedRuns.get(msg.runId);
+			runState?.onDisplay?.(msg.output);
 			return;
 		}
 		case "tool-call":
@@ -560,6 +565,7 @@ async function killSession(session: JsSession, error: Error, options: { force: b
 		pending.reject(error);
 	}
 	session.pending.clear();
+	session.completedRuns.clear();
 	if (options.force) {
 		await session.worker.terminate().catch(() => undefined);
 		return;
@@ -648,10 +654,9 @@ function spawnBunWorker(): WorkerHandle {
 			: new Worker(new URL("./worker-entry.ts", import.meta.url).href, { type: "module" });
 		return wrapBunWorker(worker);
 	} catch (err) {
-		logger.warn("Bun Worker spawn failed; using inline JS eval worker (no sync-loop guard)", {
+		throw new ToolError("Unable to create an isolated JS eval worker; refusing host-process execution", {
 			error: err instanceof Error ? err.message : String(err),
 		});
-		return spawnInlineWorker();
 	}
 }
 
@@ -763,62 +768,4 @@ function errorFromWorkerEvent(event: ErrorEvent): Error {
 	if (event.error instanceof Error) return event.error;
 	if (event.message) return new Error(event.message);
 	return new Error("Unknown JS eval worker error");
-}
-
-function spawnInlineWorker(): WorkerHandle {
-	const hostListeners = new Set<(message: WorkerOutbound) => void>();
-	const workerListeners = new Set<(message: WorkerInbound) => void>();
-	const workerTransport: Transport = {
-		send: msg =>
-			queueMicrotask(() => {
-				for (const listener of hostListeners) listener(msg);
-			}),
-		onMessage: handler => {
-			workerListeners.add(handler);
-			return () => workerListeners.delete(handler);
-		},
-		close: () => {},
-	};
-	const core = new WorkerCore(workerTransport, {
-		mode: "inline",
-		interceptUnhandledRejections: postmortem.interceptUnhandledRejections,
-	});
-	return {
-		mode: "inline",
-		send: msg =>
-			queueMicrotask(() => {
-				for (const listener of workerListeners) listener(msg);
-			}),
-		onMessage: handler => {
-			hostListeners.add(handler);
-			return () => hostListeners.delete(handler);
-		},
-		onError: () => () => {},
-		async close() {
-			const { promise: closed, resolve } = Promise.withResolvers<boolean>();
-			let settled = false;
-			let timeout: NodeJS.Timeout | undefined;
-			let unsubscribe = (): void => {};
-			const finish = (value: boolean): void => {
-				if (settled) return;
-				settled = true;
-				if (timeout) clearTimeout(timeout);
-				unsubscribe();
-				hostListeners.clear();
-				workerListeners.clear();
-				resolve(value);
-			};
-			unsubscribe = this.onMessage(msg => {
-				if (msg.type === "closed") finish(true);
-			});
-			this.send({ type: "close" });
-			timeout = setTimeout(() => finish(false), workerCloseTimeoutMs);
-			return await closed;
-		},
-		async terminate() {
-			hostListeners.clear();
-			workerListeners.clear();
-			core.dispose();
-		},
-	};
 }

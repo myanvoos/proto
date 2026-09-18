@@ -6,6 +6,8 @@ wrapper writes typed frames back.
 Host -> wrapper:
   {"id": str, "code": str, "silent": bool?, "storeHistory": bool?}
   {"id": str, "code": str, "silent": bool?, "storeHistory": bool?, "cwd": str?, "env": dict?}
+  {"type": "cancel", "id": str}                  # cancel active/queued cell
+  {"type": "status", "id": str}                  # concurrent liveness probe
   {"type": "exit"}                                # graceful shutdown
 
 Wrapper -> host:
@@ -56,23 +58,25 @@ from typing import Any, Callable
 # Frame writer
 # ---------------------------------------------------------------------------
 
-# Frames travel on a private dup of the original stdout. fd 1 itself is then
-# repointed at a capture pipe: child processes spawned by user code without
-# stdout=PIPE inherit fd 1, and their output is forwarded to the host as
-# regular stdout frames by a drain thread instead of being written raw into
-# the NDJSON channel (where it would be dropped as invalid JSON — or worse,
-# spoof a frame). The wire protocol is unchanged: the host still reads NDJSON
-# frames from the subprocess stdout.
-_RAW_STDERR = sys.__stderr__
+# Frames travel on a private dup of the original stdout. Each request gets
+# dedicated fd 1/fd 2 capture pipes: child processes inherit the originating
+# request's writers, so delayed output cannot be reassigned to a later cell.
+# Drain threads forward those bytes as typed frames instead of allowing raw
+# child output to corrupt the NDJSON channel. The host wire protocol remains
+# unchanged.
 try:
     _FRAME_FD = os.dup(sys.__stdout__.fileno())
     _RAW_STDOUT = os.fdopen(_FRAME_FD, "w", encoding="utf-8", errors="backslashreplace")
-    _CAPTURE_READ_FD, _capture_write_fd = os.pipe()
-    os.dup2(_capture_write_fd, sys.__stdout__.fileno())
-    os.close(_capture_write_fd)
+    _RAW_STDERR = os.fdopen(
+        os.dup(sys.__stderr__.fileno()), "w", encoding="utf-8", errors="backslashreplace"
+    )
+    _DEVNULL_FD = os.open(os.devnull, os.O_WRONLY)
+    _CAPTURE_SUPPORTED = True
 except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
     _RAW_STDOUT = sys.__stdout__
-    _CAPTURE_READ_FD = None
+    _RAW_STDERR = sys.__stderr__
+    _DEVNULL_FD = None
+    _CAPTURE_SUPPORTED = False
 _OUT_LOCK = threading.Lock()
 
 
@@ -139,6 +143,7 @@ class _StreamProxy(io.TextIOBase):
     """
 
     _MAX_BUFFER = 8192
+    _MAX_RID_BUFFERS = 64
 
     def __init__(self, kind: str) -> None:
         super().__init__()
@@ -163,8 +168,10 @@ class _StreamProxy(io.TextIOBase):
             _RAW_STDERR.flush()
             return len(data)
         emit_text = None
+        evicted: tuple[str, str] | None = None
         with self._lock:
             buf = self._buffers.pop(rid, "") + data
+            rest = ""
             if len(buf) >= self._MAX_BUFFER:
                 emit_text = buf
             else:
@@ -172,10 +179,16 @@ class _StreamProxy(io.TextIOBase):
                 if nl >= 0:
                     emit_text = buf[: nl + 1]
                     rest = buf[nl + 1 :]
-                    if rest:
-                        self._buffers[rid] = rest
                 else:
-                    self._buffers[rid] = buf
+                    rest = buf
+            if rest:
+                if len(self._buffers) >= self._MAX_RID_BUFFERS:
+                    oldest_rid = next(iter(self._buffers))
+                    evicted = (oldest_rid, self._buffers.pop(oldest_rid))
+                self._buffers[rid] = rest
+        if evicted is not None:
+            evicted_rid, evicted_text = evicted
+            _emit({"type": self._kind, "id": evicted_rid, "data": evicted_text})
         if emit_text:
             _emit({"type": self._kind, "id": rid, "data": emit_text})
         return len(data)
@@ -218,11 +231,8 @@ class _RunnerState:
         }
         self.last_install_marker: int = 0
         self.loop: asyncio.AbstractEventLoop | None = None
+        self.shutting_down: bool = False
         self.active_executions: int = 0
-        # Best-effort attribution target for captured fd-1 bytes (child
-        # processes inheriting stdout). With overlapping requests the most
-        # recently started one wins — strictly better than dropping the bytes.
-        self.capture_rid: str | None = None
         self.defs: dict[str, int] = {}
         self.prelude_names: set[str] | None = None
         # Prelude helpers live in their own module namespace so user
@@ -231,9 +241,12 @@ class _RunnerState:
         self.prelude_ns: dict[str, Any] | None = None
         self.prelude_exports: dict[str, Any] = {}
         self.shadow_warned: set[str] = set()
-        # In-flight request tasks; SIGINT while parked in the event loop
-        # cancels these instead of unwinding the loop itself.
+        # The single in-flight execution task. SIGINT while the cell is parked
+        # at an await cancels this task instead of unwinding the event loop.
         self.request_tasks: set[asyncio.Task] = set()
+        self.pending_request_ids: set[str] = set()
+        self.cancelled_request_ids: set[str] = set()
+        self.active_request_id: str | None = None
 
 
 _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -250,42 +263,106 @@ _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS: contextvars.ContextVar[set[int] | None
 _STATE = _RunnerState()
 
 
-def _drain_captured_stdout() -> None:
-    """Forward bytes written to the captured fd 1 as stdout frames.
+class _FdCapture:
+    """Per-request fd capture inherited by child processes from that request."""
 
-    Runs on a daemon thread for the life of the process. Child processes that
-    inherit fd 1 (any ``subprocess`` call without ``stdout=PIPE``) land here.
-    """
-    if _CAPTURE_READ_FD is None:
-        return
-    import codecs
+    def __init__(self) -> None:
+        self.marker = b"\x00proto-sync:" + os.urandom(24) + b"\x00"
+        self.stdout_synced = threading.Event()
+        self.stderr_synced = threading.Event()
 
-    decoder = codecs.getincrementaldecoder("utf-8")("replace")
-    while True:
+
+def _emit_captured_bytes(
+    rid: str, kind: str, decoder: codecs.IncrementalDecoder, data: bytes, *, final: bool = False
+) -> None:
+    # backslashreplace preserves an explicit, model-visible representation of
+    # every invalid byte (e.g. ff -> "\\xff") instead of silently inserting
+    # U+FFFD, while the incremental decoder still preserves split UTF-8 text.
+    text = decoder.decode(data, final=final)
+    if text:
+        _emit({"type": kind, "id": rid, "data": text})
+
+
+def _drain_capture_fd(
+    read_fd: int, rid: str, kind: str, marker: bytes, synced: threading.Event
+) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")("backslashreplace")
+    pending = b""
+    try:
+        while True:
+            try:
+                chunk = os.read(read_fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            pending += chunk
+            while True:
+                marker_at = pending.find(marker)
+                if marker_at >= 0:
+                    _emit_captured_bytes(rid, kind, decoder, pending[:marker_at])
+                    pending = pending[marker_at + len(marker) :]
+                    synced.set()
+                    continue
+                # Retain only enough suffix bytes to recognize a marker split
+                # across reads; everything before it is definitely user output.
+                safe_length = len(pending) - len(marker) + 1
+                if safe_length > 0:
+                    _emit_captured_bytes(rid, kind, decoder, pending[:safe_length])
+                    pending = pending[safe_length:]
+                break
+        _emit_captured_bytes(rid, kind, decoder, pending, final=True)
+    finally:
+        synced.set()
         try:
-            chunk = os.read(_CAPTURE_READ_FD, 65536)
+            os.close(read_fd)
         except OSError:
-            return
-        if not chunk:
-            return
-        text = decoder.decode(chunk)
-        if not text:
-            continue
-        rid = _STATE.capture_rid
-        if rid is None:
-            _RAW_STDERR.write(text)
-            _RAW_STDERR.flush()
-        else:
-            _emit({"type": "stdout", "id": rid, "data": text})
+            pass
 
 
-def _start_capture_drain() -> None:
-    if _CAPTURE_READ_FD is None:
+def _begin_fd_capture(rid: str) -> _FdCapture | None:
+    if not _CAPTURE_SUPPORTED:
+        return None
+    capture = _FdCapture()
+    streams = ((1, "stdout", capture.stdout_synced), (2, "stderr", capture.stderr_synced))
+    for target_fd, kind, synced in streams:
+        read_fd, write_fd = os.pipe()
+        os.dup2(write_fd, target_fd)
+        os.close(write_fd)
+        threading.Thread(
+            target=_drain_capture_fd,
+            args=(read_fd, rid, kind, capture.marker, synced),
+            name=f"proto-{kind}-capture-{rid}",
+            daemon=True,
+        ).start()
+    return capture
+
+
+def _sync_fd_capture(capture: _FdCapture | None) -> None:
+    if capture is None:
         return
-    thread = threading.Thread(
-        target=_drain_captured_stdout, name="proto-fd1-capture", daemon=True
-    )
-    thread.start()
+    for target_fd, synced in ((1, capture.stdout_synced), (2, capture.stderr_synced)):
+        if synced.is_set():
+            continue
+        try:
+            os.write(target_fd, capture.marker)
+        except OSError:
+            synced.set()
+    capture.stdout_synced.wait(timeout=1.0)
+    capture.stderr_synced.wait(timeout=1.0)
+
+
+def _end_fd_capture() -> None:
+    if _DEVNULL_FD is None:
+        return
+    # Closing the runner's copies lets a request pipe reach EOF promptly, while
+    # background children retain their inherited copies and keep their fixed
+    # request attribution until they exit.
+    try:
+        os.dup2(_DEVNULL_FD, 1)
+        os.dup2(_DEVNULL_FD, 2)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1628,9 +1705,9 @@ def _run_compiled_sync(code, ns: dict, *, want_value: bool) -> Any:
 async def _run_compiled_async(code, ns: dict, *, want_value: bool) -> Any:
     """Execute a code object in the persistent event loop.
 
-    Coroutine code is awaited in this task so top-level ``await`` interleaves
-    with sibling requests. Plain statement/expression code runs on the main
-    runner thread so SIGINT can interrupt it reliably.
+    Coroutine code is awaited in the FIFO execution task. Plain
+    statement/expression code runs on the main runner thread so SIGINT can
+    interrupt it reliably.
     """
     if code.co_flags & inspect.CO_COROUTINE:
         result = await eval(code, ns)
@@ -1915,7 +1992,7 @@ async def _handle_request_async(req: dict) -> None:
     rid = str(req.get("id"))
     token = _CURRENT_RID.set(rid)
     displayed_matplotlib_token = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.set(set())
-    _STATE.capture_rid = rid
+    capture = _begin_fd_capture(rid)
     _STATE.user_ns["__proto_run_id__"] = rid
     _STATE.cancel_requested = False
     _STATE.execution_count += 1
@@ -1924,7 +2001,6 @@ async def _handle_request_async(req: dict) -> None:
     except Exception:
         pass
     execution_count = _STATE.execution_count
-    _emit({"type": "started", "id": rid})
 
     status: str = "ok"
     cancelled = False
@@ -1942,6 +2018,7 @@ async def _handle_request_async(req: dict) -> None:
                 _emit_cell_prep(rid, prepared)
         except SyntaxError as exc:
             _emit_error(rid, exc)
+            _sync_fd_capture(capture)
             _emit(
                 {
                     "type": "done",
@@ -1952,8 +2029,11 @@ async def _handle_request_async(req: dict) -> None:
                 }
             )
             return
+        except asyncio.CancelledError:
+            raise
         except BaseException as exc:  # noqa: BLE001 - runtime setup errors must settle the request
             _emit_error(rid, exc)
+            _sync_fd_capture(capture)
             _emit(
                 {
                     "type": "done",
@@ -1965,8 +2045,22 @@ async def _handle_request_async(req: dict) -> None:
             )
             return
 
+        if rid in _STATE.cancelled_request_ids:
+            _sync_fd_capture(capture)
+            _emit(
+                {
+                    "type": "done",
+                    "id": rid,
+                    "status": "error",
+                    "executionCount": execution_count,
+                    "cancelled": True,
+                }
+            )
+            return
+
         _begin_exec_sigint()
         try:
+            _emit({"type": "started", "id": rid})
             if is_prelude:
                 _load_prelude(transformed)
             else:
@@ -1976,6 +2070,8 @@ async def _handle_request_async(req: dict) -> None:
             status = "error"
             _emit_error(rid, KeyboardInterrupt("Execution interrupted"))
         except asyncio.CancelledError:
+            if _STATE.shutting_down:
+                raise
             # SIGINT arrived while the cell was parked at an await; the
             # handler cancelled this task instead of unwinding the loop.
             cancelled = True
@@ -2009,6 +2105,10 @@ async def _handle_request_async(req: dict) -> None:
         except BaseException as exc:  # noqa: BLE001 - the host needs a done frame to settle the request
             status = "error"
             _emit_error(rid, exc)
+        if rid in _STATE.cancelled_request_ids:
+            cancelled = True
+            status = "error"
+        _sync_fd_capture(capture)
         _emit(
             {
                 "type": "done",
@@ -2019,8 +2119,8 @@ async def _handle_request_async(req: dict) -> None:
             }
         )
     finally:
-        if _STATE.capture_rid == rid:
-            _STATE.capture_rid = None
+        _sync_fd_capture(capture)
+        _end_fd_capture()
         _flush_stream_proxies(rid)
         _CURRENT_RID.reset(token)
         _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)
@@ -2080,12 +2180,53 @@ def _read_stdin(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, stdin) ->
     loop.call_soon_threadsafe(queue.put_nowait, {"type": "exit"})
 
 
+def _emit_cancelled_request(req: dict) -> None:
+    rid = str(req.get("id"))
+    _STATE.execution_count += 1
+    _emit(
+        {
+            "type": "done",
+            "id": rid,
+            "status": "error",
+            "executionCount": _STATE.execution_count,
+            "cancelled": True,
+        }
+    )
+
+
+async def _execution_worker(queue: asyncio.Queue) -> None:
+    """Run user requests one at a time in stdin arrival order."""
+    tasks = _STATE.request_tasks
+    while True:
+        req = await queue.get()
+        rid = str(req.get("id"))
+        current = asyncio.current_task()
+        if current is None:
+            raise RuntimeError("Python execution worker has no asyncio task")
+        tasks.add(current)
+        _STATE.active_request_id = rid
+        try:
+            if rid in _STATE.cancelled_request_ids:
+                _emit_cancelled_request(req)
+            else:
+                await _handle_request_async(req)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - keep the protocol loop alive
+            _emit_error("", exc)
+        finally:
+            _STATE.active_request_id = None
+            _STATE.pending_request_ids.discard(rid)
+            _STATE.cancelled_request_ids.discard(rid)
+            tasks.discard(current)
+            queue.task_done()
+
+
 async def _main_async() -> None:
     sys.stdout = _StreamProxy("stdout")
     sys.stderr = _StreamProxy("stderr")
     _install_idle_sigint()
     _start_parent_watchdog()
-    _start_capture_drain()
 
     stdin = sys.__stdin__
     if stdin is None:
@@ -2094,6 +2235,7 @@ async def _main_async() -> None:
     loop = asyncio.get_running_loop()
     _STATE.loop = loop
     queue: asyncio.Queue = asyncio.Queue()
+    execution_queue: asyncio.Queue = asyncio.Queue()
     reader = threading.Thread(
         target=_read_stdin,
         args=(loop, queue, stdin),
@@ -2101,45 +2243,42 @@ async def _main_async() -> None:
         daemon=True,
     )
     reader.start()
-
-    tasks = _STATE.request_tasks
-
-    def _task_done(task: asyncio.Task) -> None:
-        tasks.discard(task)
-        try:
-            exc = task.exception()
-        except asyncio.CancelledError:
-            return
-        if exc is not None:
-            _emit_error("", exc)
+    execution_worker = asyncio.create_task(_execution_worker(execution_queue))
 
     try:
         while True:
             req = await queue.get()
             if req.get("type") == "exit":
                 break
+            if req.get("type") == "cancel":
+                rid = str(req.get("id", ""))
+                if rid not in _STATE.pending_request_ids:
+                    continue
+                _STATE.cancelled_request_ids.add(rid)
+                if _STATE.active_request_id == rid and _STATE.active_executions > 0:
+                    for task in list(_STATE.request_tasks):
+                        if not task.done():
+                            task.cancel()
+                continue
             if req.get("type") == "status":
-                # Control probe (kernel idle/busy check). Handled inline so it
-                # neither creates a request task nor counts toward busy itself.
+                # Control probes bypass the execution FIFO so a cell parked at
+                # an await cannot make liveness checks time out.
                 _emit(
                     {
                         "type": "done",
                         "id": str(req.get("id", "")),
                         "status": "ok",
                         "executionCount": _STATE.execution_count,
-                        "busy": len(tasks),
+                        "busy": len(_STATE.request_tasks) + execution_queue.qsize(),
                     }
                 )
                 continue
-            task = asyncio.create_task(_handle_request_async(req))
-            tasks.add(task)
-            task.add_done_callback(_task_done)
+            _STATE.pending_request_ids.add(str(req.get("id")))
+            execution_queue.put_nowait(req)
     finally:
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
+        _STATE.shutting_down = True
+        execution_worker.cancel()
+        await asyncio.gather(execution_worker, return_exceptions=True)
 
 def main() -> None:
     asyncio.run(_main_async())

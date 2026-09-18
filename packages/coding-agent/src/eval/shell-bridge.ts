@@ -39,11 +39,16 @@ interface RunContext {
 }
 
 interface SocketState {
-	buffer: Buffer;
+	input: Buffer[];
+	inputBytes: number;
+	scanChunkIndex: number;
+	scanByteOffset: number;
+	scannedBytes: number;
 	started: boolean;
 	abort?: AbortController;
 	output: Buffer[];
 	outputOffset: number;
+	outputBytes: number;
 	ending: boolean;
 	closed: boolean;
 }
@@ -54,6 +59,10 @@ interface CellRequest {
 	lang: "py" | "js";
 	cwd?: string;
 }
+
+const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+const MAX_PENDING_OUTPUT_BYTES = 32 * 1024 * 1024;
+const OUTPUT_CHUNK_CHARS = 1024 * 1024;
 
 const runs = new Map<string, RunContext>();
 let listener: TCPSocketListener<SocketState> | undefined;
@@ -112,16 +121,24 @@ function ensureListener(): TCPSocketListener<SocketState> {
 		socket: {
 			open(socket) {
 				socket.data = {
-					buffer: Buffer.alloc(0),
+					input: [],
+					inputBytes: 0,
+					scanChunkIndex: 0,
+					scanByteOffset: 0,
+					scannedBytes: 0,
 					started: false,
 					output: [],
 					outputOffset: 0,
+					outputBytes: 0,
 					ending: false,
 					closed: false,
 				};
 			},
 			data(socket, data) {
-				socket.data.buffer = Buffer.concat([socket.data.buffer, data]);
+				if (socket.data.closed || socket.data.ending) return;
+				const chunk = Buffer.from(data);
+				socket.data.input.push(chunk);
+				socket.data.inputBytes += chunk.length;
 				pump(socket);
 			},
 			drain: flushOutput,
@@ -132,12 +149,64 @@ function ensureListener(): TCPSocketListener<SocketState> {
 	return listener;
 }
 
+function clearInput(state: SocketState): void {
+	state.input.length = 0;
+	state.inputBytes = 0;
+	state.scanChunkIndex = 0;
+	state.scanByteOffset = 0;
+	state.scannedBytes = 0;
+}
+
+function takeLine(state: SocketState): Buffer | "too-large" | undefined {
+	while (state.scanChunkIndex < state.input.length) {
+		const chunk = state.input[state.scanChunkIndex]!;
+		const newline = chunk.indexOf(0x0a, state.scanByteOffset);
+		if (newline < 0) {
+			state.scannedBytes += chunk.length - state.scanByteOffset;
+			state.scanChunkIndex++;
+			state.scanByteOffset = 0;
+			if (state.scannedBytes > MAX_FRAME_BYTES) return "too-large";
+			continue;
+		}
+
+		const lineBytes = state.scannedBytes + newline - state.scanByteOffset;
+		if (lineBytes > MAX_FRAME_BYTES) return "too-large";
+		let line: Buffer;
+		if (state.scanChunkIndex === 0) {
+			line = chunk.subarray(0, newline);
+		} else {
+			line = Buffer.allocUnsafe(lineBytes);
+			let offset = 0;
+			for (let index = 0; index < state.scanChunkIndex; index++) {
+				const queued = state.input[index]!;
+				queued.copy(line, offset);
+				offset += queued.length;
+			}
+			chunk.copy(line, offset, 0, newline);
+		}
+
+		const remainder = chunk.subarray(newline + 1);
+		state.input = remainder.length
+			? [remainder, ...state.input.slice(state.scanChunkIndex + 1)]
+			: state.input.slice(state.scanChunkIndex + 1);
+		state.inputBytes -= lineBytes + 1;
+		state.scanChunkIndex = 0;
+		state.scanByteOffset = 0;
+		state.scannedBytes = 0;
+		return line;
+	}
+	return undefined;
+}
+
 function pump(socket: Socket<SocketState>): void {
-	while (true) {
-		const newline = socket.data.buffer.indexOf(0x0a);
-		if (newline < 0) return;
-		const line = socket.data.buffer.subarray(0, newline).toString("utf-8");
-		socket.data.buffer = socket.data.buffer.subarray(newline + 1);
+	while (!socket.data.closed && !socket.data.ending) {
+		const next = takeLine(socket.data);
+		if (next === undefined) return;
+		if (next === "too-large") {
+			failConnection(socket, `Kernel shell bridge request frame exceeded ${MAX_FRAME_BYTES} byte limit`);
+			return;
+		}
+		const line = next.toString("utf-8");
 		if (!socket.data.started) {
 			socket.data.started = true;
 			void handleRequest(socket, line);
@@ -156,14 +225,54 @@ function parseLine(line: string): Record<string, unknown> | undefined {
 	}
 }
 
-function send(socket: Socket<SocketState>, frame: Record<string, unknown>): void {
-	if (socket.data.closed || socket.data.ending) return;
-	socket.data.output.push(Buffer.from(`${JSON.stringify(frame)}\n`));
+function encodeFrame(frame: Record<string, unknown>): Buffer {
+	return Buffer.from(`${JSON.stringify(frame)}\n`);
+}
+
+function enqueueUnchecked(state: SocketState, chunk: Buffer): void {
+	state.output.push(chunk);
+	state.outputBytes += chunk.length;
+}
+
+function failConnection(socket: Socket<SocketState>, message: string): void {
+	const state = socket.data;
+	if (state.closed || state.ending) return;
+	state.abort?.abort(new Error(message));
+	clearInput(state);
+	const partialFrame = state.outputOffset > 0 ? state.output[0] : undefined;
+	state.output = partialFrame ? [partialFrame] : [];
+	state.outputBytes = partialFrame ? partialFrame.length - state.outputOffset : 0;
+	state.ending = true;
+	enqueueUnchecked(state, encodeFrame({ t: "e", d: `${message}\n` }));
+	enqueueUnchecked(state, encodeFrame({ t: "x", c: 1 }));
 	flushOutput(socket);
 }
 
+function send(socket: Socket<SocketState>, frame: Record<string, unknown>): boolean {
+	const state = socket.data;
+	if (state.closed || state.ending) return false;
+	const encoded = encodeFrame(frame);
+	if (encoded.length > MAX_FRAME_BYTES) {
+		failConnection(socket, `Kernel shell bridge response frame exceeded ${MAX_FRAME_BYTES} byte limit`);
+		return false;
+	}
+	if (state.outputBytes + encoded.length > MAX_PENDING_OUTPUT_BYTES) {
+		failConnection(socket, `Kernel shell bridge pending output exceeded ${MAX_PENDING_OUTPUT_BYTES} byte budget`);
+		return false;
+	}
+	enqueueUnchecked(state, encoded);
+	flushOutput(socket);
+	return true;
+}
+
+function sendOutput(socket: Socket<SocketState>, output: string): void {
+	for (let offset = 0; offset < output.length && !socket.data.ending; offset += OUTPUT_CHUNK_CHARS) {
+		send(socket, { t: "o", d: output.slice(offset, offset + OUTPUT_CHUNK_CHARS) });
+	}
+}
+
 function finish(socket: Socket<SocketState>, frame: Record<string, unknown>): void {
-	send(socket, frame);
+	if (!send(socket, frame)) return;
 	socket.data.ending = true;
 	flushOutput(socket);
 }
@@ -172,7 +281,8 @@ function closeConnection(socket: Socket<SocketState>): void {
 	if (socket.data.closed) return;
 	socket.data.closed = true;
 	socket.data.output.length = 0;
-	socket.data.buffer = Buffer.alloc(0);
+	socket.data.outputBytes = 0;
+	clearInput(socket.data);
 	socket.data.abort?.abort();
 	socket.terminate();
 }
@@ -189,6 +299,7 @@ function flushOutput(socket: Socket<SocketState>): void {
 				return;
 			}
 			state.outputOffset += written;
+			state.outputBytes -= written;
 			if (state.outputOffset < chunk.length) return;
 			state.output.shift();
 			state.outputOffset = 0;
@@ -263,7 +374,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 			signal: abort.signal,
 			session,
 			reset: false,
-			onChunk: chunk => send(socket, { t: "o", d: chunk }),
+			onChunk: chunk => sendOutput(socket, chunk),
 			onStatus: event => {
 				if (isEvalTimeoutControlEvent(event)) return;
 				upsertStatusEvent(cellStatusEvents, event);
@@ -279,7 +390,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 			}
 		}
 		const displayText = formatDisplayOutputsForText(result.displayOutputs);
-		if (displayText) send(socket, { t: "o", d: `${displayText}\n` });
+		if (displayText) sendOutput(socket, `${displayText}\n`);
 		await recordMutationEvents(fsObservationLedgerFor(session), request.cwd ?? session.cwd, cellStatusEvents);
 		finish(socket, { t: "x", c: result.cancelled ? 130 : (result.exitCode ?? 0) });
 	} catch (err) {

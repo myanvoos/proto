@@ -63,7 +63,11 @@ interface BaseKernelOptions<TExecuteOptions extends KernelExecuteOptions = Kerne
 
 	shutdownGraceMs: number;
 
+	detachedProcessTree: boolean;
+
 	buildPayload: (code: string, msgId: string, options?: TExecuteOptions) => string;
+
+	buildCancelPayload?: (msgId: string) => string;
 }
 
 export type FrameType = "started" | "stdout" | "stderr" | "display" | "result" | "error" | "done";
@@ -88,6 +92,15 @@ export interface KernelStatusReport {
 	executionCount?: number;
 }
 
+type TextFrameKind = "stdout" | "stderr";
+type UnicodeTails = Partial<Record<TextFrameKind, string>>;
+
+interface CompletedOutputSink {
+	onChunk?: (text: string) => Promise<void> | void;
+	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
+	unicodeTails: UnicodeTails;
+}
+
 interface PendingExecution {
 	resolve: (result: KernelExecuteResult) => void;
 	options?: KernelExecuteOptions;
@@ -99,8 +112,13 @@ interface PendingExecution {
 	stdinRequested: boolean;
 	kernelKilled: boolean;
 	settled: boolean;
+	started: boolean;
+	cancelRequested: boolean;
+	cancelControlSent: boolean;
 	escalationTimer?: NodeJS.Timeout;
 	finalize?: () => void;
+	requestCancel?: () => void;
+	unicodeTails: UnicodeTails;
 }
 
 export function getRemainingTimeMs(deadlineMs?: number): number | undefined {
@@ -127,6 +145,85 @@ export function isTimeoutReason(reason: unknown): boolean {
 	return false;
 }
 
+function isMissingProcessError(error: unknown): boolean {
+	return error instanceof Error && "code" in error && error.code === "ESRCH";
+}
+
+function processGroupExists(processGroupId: number): boolean {
+	try {
+		process.kill(-processGroupId, 0);
+		return true;
+	} catch (error) {
+		return !isMissingProcessError(error);
+	}
+}
+
+function signalProcessGroup(processGroupId: number, signal: NodeJS.Signals): void {
+	try {
+		process.kill(-processGroupId, signal);
+	} catch (error) {
+		if (!isMissingProcessError(error)) {
+			logger.warn("Failed to signal kernel process group", {
+				processGroupId,
+				signal,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+}
+
+async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (processGroupExists(processGroupId)) {
+		const remainingMs = deadline - Date.now();
+		if (remainingMs <= 0) return false;
+		await Bun.sleep(Math.min(25, remainingMs));
+	}
+	return true;
+}
+
+async function terminateWindowsProcessTree(processId: number, force: boolean, timeoutMs: number): Promise<boolean> {
+	try {
+		const command = ["taskkill", "/PID", String(processId), "/T"];
+		if (force) command.push("/F");
+		const taskkill = Bun.spawn(command, {
+			stdin: "ignore",
+			stdout: "ignore",
+			stderr: "ignore",
+			timeout: timeoutMs,
+			killSignal: "SIGKILL",
+		});
+		return (await taskkill.exited) === 0;
+	} catch (error) {
+		logger.warn("Failed to terminate Windows kernel process tree", {
+			processId,
+			force,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return false;
+	}
+}
+
+export async function terminateDetachedProcessTree(
+	proc: Pick<Subprocess, "pid" | "kill">,
+	timeoutMs: number,
+): Promise<boolean> {
+	if (process.platform === "win32") {
+		if (await terminateWindowsProcessTree(proc.pid, false, timeoutMs)) return true;
+		return await terminateWindowsProcessTree(proc.pid, true, timeoutMs);
+	}
+
+	signalProcessGroup(proc.pid, "SIGTERM");
+	if (await waitForProcessGroupExit(proc.pid, timeoutMs)) return true;
+	signalProcessGroup(proc.pid, "SIGKILL");
+	return await waitForProcessGroupExit(proc.pid, timeoutMs);
+}
+
+const MAX_COMPLETED_OUTPUT_SINKS = 256;
+// Text/JSON frames above this are rejected before JSON.parse. Keep enough
+// headroom for the documented 20 MiB decoded-image budget (base64 expands 4/3).
+const MAX_KERNEL_FRAME_CHARS = 32 * 1024 * 1024;
+
 export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = KernelExecuteOptions> {
 	readonly id: string;
 	#proc: Subprocess | null = null;
@@ -136,8 +233,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	#shutdownConfirmed = false;
 	#exitedPromise: Promise<number> | null = null;
 	#pending = new Map<string, PendingExecution>();
+	#completedOutputSinks = new Map<string, CompletedOutputSink>();
 	#controlPending = new Map<string, (report: KernelStatusReport | undefined) => void>();
-	#readBuffer = "";
+	#readChunks: string[] = [];
+	#readChars = 0;
+	#discardingOversizedFrame = false;
 	readonly #options: BaseKernelOptions<TExecuteOptions>;
 
 	constructor(id: string, options: BaseKernelOptions<TExecuteOptions>) {
@@ -180,6 +280,10 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			stdinRequested: false,
 			settled: false,
 			kernelKilled: false,
+			started: false,
+			cancelRequested: false,
+			cancelControlSent: false,
+			unicodeTails: {},
 		};
 		this.#pending.set(msgId, pending);
 
@@ -187,6 +291,18 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			if (pending.settled) return;
 			pending.settled = true;
 			this.#pending.delete(msgId);
+			if (!pending.cancelled && (options?.onChunk || options?.onDisplay)) {
+				this.#completedOutputSinks.delete(msgId);
+				this.#completedOutputSinks.set(msgId, {
+					onChunk: options.onChunk,
+					onDisplay: options.onDisplay,
+					unicodeTails: pending.unicodeTails,
+				});
+				if (this.#completedOutputSinks.size > MAX_COMPLETED_OUTPUT_SINKS) {
+					const oldest = this.#completedOutputSinks.keys().next().value;
+					if (oldest !== undefined) this.#completedOutputSinks.delete(oldest);
+				}
+			}
 			cleanup();
 			resolve({
 				status: pending.status,
@@ -202,8 +318,25 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		let requestWritten = false;
 		const requestCancel = () => {
 			if (pending.settled || pending.escalationTimer) return;
+			pending.cancelRequested = true;
 			if (!requestWritten) {
 				finalize();
+				return;
+			}
+			if (!pending.started && this.#options.buildCancelPayload) {
+				if (!pending.cancelControlSent) {
+					pending.cancelControlSent = true;
+					void this.#writeLine(this.#options.buildCancelPayload(msgId)).catch(error => {
+						if (pending.settled) return;
+						pending.status = "error";
+						pending.error = {
+							name: "TransportError",
+							value: error instanceof Error ? error.message : String(error),
+							traceback: [],
+						};
+						finalize();
+					});
+				}
 				return;
 			}
 			void this.interrupt();
@@ -218,6 +351,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			escalation.unref?.();
 			pending.escalationTimer = escalation;
 		};
+		pending.requestCancel = requestCancel;
 
 		const onAbort = () => {
 			pending.cancelled = true;
@@ -326,6 +460,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 		this.#alive = false;
 		this.#abortPendingExecutions(`${this.#options.languageName} kernel shutdown`, { kernelKilled: true });
+		this.#completedOutputSinks.clear();
 
 		const timeoutMs = options?.timeoutMs ?? this.#options.shutdownGraceMs;
 		const proc = this.#proc;
@@ -343,23 +478,38 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			this.#stdin?.end();
 		} catch {}
 
-		let result = await this.#waitForExitWithTimeout(timeoutMs);
-		if (result === null) {
-			try {
-				proc.kill("SIGTERM");
-			} catch {}
+		let result: number | null;
+		let treeExited = true;
+		if (this.#options.detachedProcessTree && process.platform === "win32") {
+			// taskkill must see the live root PID to discover descendants, so start
+			// tree shutdown immediately after requesting the runner's clean exit.
+			treeExited = await terminateDetachedProcessTree(proc, timeoutMs);
 			result = await this.#waitForExitWithTimeout(timeoutMs);
-		}
-		if (result === null) {
-			try {
-				proc.kill("SIGKILL");
-			} catch {}
+		} else {
 			result = await this.#waitForExitWithTimeout(timeoutMs);
+			if (this.#options.detachedProcessTree) {
+				treeExited = !processGroupExists(proc.pid);
+				if (result === null || !treeExited) {
+					treeExited = await terminateDetachedProcessTree(proc, timeoutMs);
+					if (result === null) result = await this.#waitForExitWithTimeout(timeoutMs);
+				}
+			} else if (result === null) {
+				try {
+					proc.kill("SIGTERM");
+				} catch {}
+				result = await this.#waitForExitWithTimeout(timeoutMs);
+				if (result === null) {
+					try {
+						proc.kill("SIGKILL");
+					} catch {}
+					result = await this.#waitForExitWithTimeout(timeoutMs);
+				}
+			}
 		}
 
-		// null = the process did not exit within the deadline; any exit code
-		// (including 0) means the process is gone and shutdown is confirmed.
-		const confirmed = result !== null;
+		// Confirmation requires both the runner and its detached descendants to
+		// be gone; returning early would leak cell-spawned background processes.
+		const confirmed = result !== null && treeExited;
 		this.#shutdownConfirmed = confirmed;
 		this.#disposed = true;
 		return { confirmed };
@@ -399,11 +549,9 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				while (true) {
 					const { done, value } = await reader.read();
 					if (done) break;
-					this.#readBuffer += decoder.decode(value, { stream: true });
-					await this.#flushFrames();
+					await this.#consumeFrameText(decoder.decode(value, { stream: true }));
 				}
-				this.#readBuffer += decoder.decode();
-				await this.#flushFrames();
+				await this.#consumeFrameText(decoder.decode());
 			} catch (err) {
 				logger.warn(`${this.#options.languageName} kernel reader failed`, {
 					error: err instanceof Error ? err.message : String(err),
@@ -440,27 +588,120 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		void loop();
 	}
 
-	async #flushFrames(): Promise<void> {
-		while (true) {
-			const nl = this.#readBuffer.indexOf("\n");
-			if (nl < 0) return;
-			const line = this.#readBuffer.slice(0, nl);
-			this.#readBuffer = this.#readBuffer.slice(nl + 1);
-			if (!line.trim()) continue;
-			let frame: Frame;
-			try {
-				frame = JSON.parse(line) as Frame;
-			} catch (err) {
-				logger.warn(`${this.#options.languageName} runner emitted invalid JSON`, {
-					line: line.slice(0, 200),
-					error: err instanceof Error ? err.message : String(err),
-				});
+	async #consumeFrameText(text: string): Promise<void> {
+		let remaining = text;
+		while (remaining.length > 0) {
+			if (this.#discardingOversizedFrame) {
+				const newline = remaining.indexOf("\n");
+				if (newline < 0) return;
+				this.#discardingOversizedFrame = false;
+				remaining = remaining.slice(newline + 1);
 				continue;
 			}
-			if (this.#options.traceIpc) {
-				logger.debug(`${this.#options.languageName}Kernel recv`, { type: frame.type, id: frame.id });
+
+			const newline = remaining.indexOf("\n");
+			const segment = newline < 0 ? remaining : remaining.slice(0, newline);
+			if (this.#readChars + segment.length > MAX_KERNEL_FRAME_CHARS) {
+				const prefixLength = Math.max(0, MAX_KERNEL_FRAME_CHARS - this.#readChars);
+				const prefix = [...this.#readChunks, segment.slice(0, prefixLength)].join("");
+				await this.#rejectOversizedFrame(prefix);
+				this.#readChunks = [];
+				this.#readChars = 0;
+				if (newline < 0) {
+					this.#discardingOversizedFrame = true;
+					return;
+				}
+				remaining = remaining.slice(newline + 1);
+				continue;
 			}
-			await this.#handleFrame(frame);
+
+			this.#readChunks.push(segment);
+			this.#readChars += segment.length;
+			if (newline < 0) return;
+			const line = this.#readChunks.join("");
+			this.#readChunks = [];
+			this.#readChars = 0;
+			await this.#parseFrameLine(line);
+			remaining = remaining.slice(newline + 1);
+		}
+	}
+
+	async #rejectOversizedFrame(prefix: string): Promise<void> {
+		const idMatch = /"id"\s*:\s*("(?:\\.|[^"\\])*")/.exec(prefix);
+		let rid: string | undefined;
+		if (idMatch?.[1]) {
+			try {
+				rid = JSON.parse(idMatch[1]) as string;
+			} catch {}
+		}
+		const message = `[kernel] ${this.#options.languageName} runner frame exceeded ${MAX_KERNEL_FRAME_CHARS} characters and was discarded before JSON parsing.\n`;
+		const pending = rid ? this.#pending.get(rid) : undefined;
+		if (pending) {
+			pending.status = "error";
+			pending.error = { name: "FrameTooLarge", value: message.trim(), traceback: [] };
+			await pending.options?.onChunk?.(message);
+			return;
+		}
+		logger.warn(`${this.#options.languageName} runner emitted an oversized unattributed frame`);
+	}
+
+	async #parseFrameLine(line: string): Promise<void> {
+		if (!line.trim()) return;
+		let frame: Frame;
+		try {
+			frame = JSON.parse(line) as Frame;
+		} catch (err) {
+			logger.warn(`${this.#options.languageName} runner emitted invalid JSON`, {
+				line: line.slice(0, 200),
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return;
+		}
+		if (this.#options.traceIpc) {
+			logger.debug(`${this.#options.languageName}Kernel recv`, { type: frame.type, id: frame.id });
+		}
+		await this.#handleFrame(frame);
+	}
+
+	async #forwardTextFrame(
+		sink: { onChunk?: (text: string) => Promise<void> | void; unicodeTails: UnicodeTails },
+		kind: TextFrameKind,
+		text: string,
+	): Promise<void> {
+		let combined = `${sink.unicodeTails[kind] ?? ""}${text}`;
+		sink.unicodeTails[kind] = undefined;
+		const last = combined.charCodeAt(combined.length - 1);
+		if (last >= 0xd800 && last <= 0xdbff) {
+			sink.unicodeTails[kind] = combined.slice(-1);
+			combined = combined.slice(0, -1);
+		}
+		let repaired = "";
+		let malformed = false;
+		for (let index = 0; index < combined.length; index++) {
+			const unit = combined.charCodeAt(index);
+			if (unit >= 0xd800 && unit <= 0xdbff) {
+				const low = combined.charCodeAt(index + 1);
+				if (low >= 0xdc00 && low <= 0xdfff) {
+					repaired += combined.slice(index, index + 2);
+					index++;
+					continue;
+				}
+				malformed = true;
+				repaired += "�";
+				continue;
+			}
+			if (unit >= 0xdc00 && unit <= 0xdfff) {
+				malformed = true;
+				repaired += "�";
+				continue;
+			}
+			repaired += combined[index];
+		}
+		if (repaired) await sink.onChunk?.(repaired);
+		if (malformed) {
+			await sink.onChunk?.(
+				"\n[kernel] output contained an unrecoverable unpaired UTF-16 surrogate; replaced with U+FFFD.\n",
+			);
 		}
 	}
 
@@ -478,17 +719,33 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			return;
 		}
 		const pending = this.#pending.get(rid);
-		if (!pending) return;
+		if (!pending) {
+			const completed = this.#completedOutputSinks.get(rid);
+			if (!completed) return;
+			if (frame.type === "stdout" || frame.type === "stderr") {
+				await this.#forwardTextFrame(completed, frame.type, frame.data ?? "");
+				return;
+			}
+			if (frame.type === "display" || frame.type === "result") {
+				const { text, outputs } = await renderKernelDisplay(frame.bundle ?? {});
+				if (text) await completed.onChunk?.(text);
+				for (const output of outputs) await completed.onDisplay?.(output);
+			}
+			return;
+		}
 
 		switch (frame.type) {
 			case "started":
+				pending.started = true;
+				if (pending.cancelRequested) pending.requestCancel?.();
 				return;
 			case "stdout":
 			case "stderr": {
-				const text = frame.data ?? "";
-				if (text && pending.options?.onChunk) {
-					await pending.options.onChunk(text);
-				}
+				await this.#forwardTextFrame(
+					{ onChunk: pending.options?.onChunk, unicodeTails: pending.unicodeTails },
+					frame.type,
+					frame.data ?? "",
+				);
 				return;
 			}
 			case "display":
@@ -521,6 +778,13 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				return;
 			}
 			case "done": {
+				for (const kind of ["stdout", "stderr"] as const) {
+					if (!pending.unicodeTails[kind]) continue;
+					pending.unicodeTails[kind] = undefined;
+					await pending.options?.onChunk?.(
+						"�\n[kernel] output ended with an unrecoverable unpaired UTF-16 surrogate; replaced with U+FFFD.\n",
+					);
+				}
 				if (typeof frame.executionCount === "number") {
 					pending.executionCount = frame.executionCount;
 				}

@@ -1,9 +1,8 @@
 /**
- * Shared filesystem-tracking policy for the eval FS surfaces. The host walker
- * (eval/cell-file-diff.ts) and the JS kernel tracker (eval/js/shared/fs-tracker.ts)
- * must prune identically, or one side reports files the other already covered
- * and every write shows up twice. The Python prelude (eval/py/prelude.py) keeps
- * a cross-language mirror of these lists; update it in the same change.
+ * Shared filesystem-tracking policy for the eval kernels. The JS tracker
+ * (eval/js/shared/fs-tracker.ts) uses these lists; the Python prelude
+ * (eval/py/prelude.py) keeps a cross-language mirror. Update both in the same
+ * change.
  */
 
 // Cache/build noise by directory-name component.

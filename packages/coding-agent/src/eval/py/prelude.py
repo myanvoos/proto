@@ -70,11 +70,12 @@ if "__proto_prelude_loaded__" not in globals():
     _MAX_DIFF_CHARS = 32000
 
     # --- filesystem mutation tracking ----------------------------------------
-    # The host diffs cell-time filesystem changes with a walker rooted at the
-    # session cwd (eval/cell-file-diff.ts). A CPython audit hook sees every
-    # in-process mutation (open() with write flags, os.remove/rename/truncate)
-    # and the prelude snapshots each touched path's pre-mutation content. The
-    # hunk diff for a write is reported as soon as the file handle closes
+    # The host forwards its filesystem-observation ledger before each cell to
+    # keep stale-write state current for reads and writes outside the kernel. A
+    # CPython audit hook sees every in-process mutation (open() with write flags,
+    # os.remove/rename/truncate), and the prelude snapshots each touched path's
+    # pre-mutation content. The hunk diff for a write is reported as soon as the
+    # file handle closes
     # (open() is wrapped so write-mode handles report on close — see
     # _fs_install_open), so a cell that edits a file and then runs for a
     # while shows the edit immediately; mutations with no handle to observe
@@ -89,8 +90,8 @@ if "__proto_prelude_loaded__" not in globals():
     # sys module so a prelude re-exec reuses the already-installed hooks'
     # records.
     _FS_DIFF_MAX_BYTES = 8 * 1024 * 1024
-    # Aggregate budget for pre-mutation snapshots kept per cell (mirrors
-    # MAX_CAPTURE_CONTENT_BYTES in eval/cell-file-diff.ts); past it
+    # Aggregate budget for pre-mutation snapshots kept per cell (kept aligned
+    # with CAPTURE_TEXT_BUDGET in eval/js/shared/fs-tracker.ts); past it
     # _fs_record stores only the content sha — dedupe still works and the
     # flush emits the write without a diff.
     _FS_CAPTURE_TEXT_BUDGET = 16 * 1024 * 1024
@@ -154,12 +155,18 @@ if "__proto_prelude_loaded__" not in globals():
     _FS_READ_SEEN_MAX = 8192
 
     def _fs_sha_file(ap: str) -> str:
-        """Short sha256 of a file streamed in 1 MiB chunks (never loads it whole)."""
-        h = hashlib.sha256()
-        with open(ap, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-        return h.hexdigest()[:16]
+        """Short sha256 streamed without recursively arming the audit-hook guard."""
+        tls = _FS_STATE["tls"]
+        previous = getattr(tls, "recording", False)
+        tls.recording = True
+        try:
+            h = hashlib.sha256()
+            with open(ap, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            return h.hexdigest()[:16]
+        finally:
+            tls.recording = previous
 
     def _fs_record(path) -> None:
         """Snapshot a path's pre-mutation state the first time the cell touches it."""
@@ -227,7 +234,7 @@ if "__proto_prelude_loaded__" not in globals():
             return None
         return ap
 
-    def _fs_remember_seen(ap: str, key: tuple[int, int]) -> None:
+    def _fs_remember_seen(ap: str, key: tuple) -> None:
         seen = _FS_STATE["read_seen"]
         with _FS_STATE["lock"]:
             if len(seen) >= _FS_READ_SEEN_MAX and ap not in seen:
@@ -246,7 +253,14 @@ if "__proto_prelude_loaded__" not in globals():
             return
         if not stat.S_ISREG(st.st_mode):
             return
-        _fs_remember_seen(ap, (st.st_mtime_ns, st.st_size))
+        try:
+            sha = _fs_sha_file(ap)
+            after = os.stat(ap)
+        except OSError:
+            return
+        if (st.st_mtime_ns, st.st_size) != (after.st_mtime_ns, after.st_size):
+            return
+        _fs_remember_seen(ap, (after.st_mtime_ns, after.st_size, sha))
 
     def _fs_note_observed(observations) -> None:
         """Arm or disarm the stale-write guard from host-side observations
@@ -264,8 +278,9 @@ if "__proto_prelude_loaded__" not in globals():
                 with _FS_STATE["lock"]:
                     _FS_STATE["read_seen"].pop(ap, None)
                 continue
+            sha = entry.get("sha")
             try:
-                _fs_remember_seen(ap, (int(mtime_ns), int(size)))
+                _fs_remember_seen(ap, (int(mtime_ns), int(size), str(sha) if sha is not None else None))
             except (TypeError, ValueError):
                 continue
 
@@ -291,7 +306,14 @@ if "__proto_prelude_loaded__" not in globals():
             st = os.stat(ap)
         except OSError:
             return  # deleted/moved externally; the open itself will surface it
-        if (st.st_mtime_ns, st.st_size) == rec:
+        metadata_matches = (st.st_mtime_ns, st.st_size) == rec[:2]
+        content_matches = metadata_matches
+        if metadata_matches and len(rec) > 2 and rec[2] is not None:
+            try:
+                content_matches = _fs_sha_file(ap) == rec[2]
+            except OSError:
+                content_matches = False
+        if content_matches:
             return
         raise StaleWriteError(
             f"write to {ap}: file changed on disk since the kernel last read it "

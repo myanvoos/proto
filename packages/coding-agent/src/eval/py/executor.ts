@@ -300,7 +300,7 @@ async function executeWithKernel(
 
 async function ensureKernelAvailable(cwd: string, options: PythonExecutorOptions): Promise<void> {
 	const availability = await waitForPromiseWithCancellation(
-		checkPythonKernelAvailability(cwd, options.interpreter),
+		checkPythonKernelAvailability(cwd, options.interpreter, { signal: options.signal }),
 		options,
 		PythonExecutionCancelledError,
 	);

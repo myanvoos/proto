@@ -1,9 +1,14 @@
 import * as path from "node:path";
 import { $flag, isBunTestRuntime, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
-import { $ } from "bun";
 import { Settings } from "../../config/settings";
-import { BaseKernel, getRemainingTimeMs, type KernelStartOptions } from "../kernel-base";
+import {
+	BaseKernel,
+	getRemainingTimeMs,
+	type KernelStartOptions,
+	terminateDetachedProcessTree,
+	throwIfAborted,
+} from "../kernel-base";
 import { stageRunnerScript } from "../runner-cache";
 import { PYTHON_PRELUDE } from "./prelude";
 import RUNNER_SCRIPT from "./runner.py" with { type: "text" };
@@ -32,6 +37,8 @@ const SHUTDOWN_GRACE_MS = 1_000;
 const STARTUP_TIMEOUT_MS = 10_000;
 
 const INTERRUPT_ESCALATION_MS = 5_000;
+const AVAILABILITY_PROBE_TIMEOUT_MS = 1_000;
+const AVAILABILITY_PROBE_KILL_GRACE_MS = 250;
 
 interface PythonKernelAvailability {
 	ok: boolean;
@@ -41,68 +48,153 @@ interface PythonKernelAvailability {
 	runtime?: PythonRuntime;
 }
 
+interface AvailabilityProbeResult {
+	availability: PythonKernelAvailability;
+	timedOut: boolean;
+}
+
+interface AvailabilityProbeEntry {
+	controller: AbortController;
+	promise: Promise<AvailabilityProbeResult>;
+}
+
 const MAX_AVAILABILITY_CACHE_ENTRIES = 32;
-const availabilityCache = new LRUCache<string, Promise<PythonKernelAvailability>>({
+const availabilityCache = new LRUCache<string, AvailabilityProbeEntry>({
 	max: MAX_AVAILABILITY_CACHE_ENTRIES,
 });
 
 export async function checkPythonKernelAvailability(
 	cwd: string,
 	interpreter?: string,
-	options?: { forceProbe?: boolean },
+	options?: { forceProbe?: boolean; signal?: AbortSignal },
 ): Promise<PythonKernelAvailability> {
+	throwIfAborted(options?.signal, "Python availability check aborted");
 	if (!options?.forceProbe && (isBunTestRuntime() || $flag("PI_PYTHON_SKIP_CHECK"))) {
 		return { ok: true };
 	}
 	const resolvedCwd = path.resolve(cwd);
 	const key = `${resolvedCwd}\0${interpreter ?? ""}`;
-	const cached = availabilityCache.get(key);
-	if (cached) return await cached;
-	const probe = probePythonKernelAvailability(resolvedCwd, interpreter);
-	availabilityCache.set(key, probe);
-	const result = await probe;
-	if (!result.ok && availabilityCache.get(key) === probe) {
-		availabilityCache.delete(key);
+	let entry = availabilityCache.get(key);
+	if (!entry) {
+		const controller = new AbortController();
+		const promise = probePythonKernelAvailability(resolvedCwd, interpreter, controller.signal);
+		entry = { controller, promise };
+		availabilityCache.set(key, entry);
+		void promise.then(
+			result => {
+				if ((result.timedOut || !result.availability.ok) && availabilityCache.get(key) === entry) {
+					availabilityCache.delete(key);
+				}
+			},
+			() => {
+				if (availabilityCache.get(key) === entry) availabilityCache.delete(key);
+			},
+		);
 	}
-	return result;
+
+	const onAbort = (): void => {
+		if (availabilityCache.get(key) === entry) availabilityCache.delete(key);
+		entry.controller.abort(options?.signal?.reason);
+	};
+	if (options?.signal) {
+		if (options.signal.aborted) onAbort();
+		else options.signal.addEventListener("abort", onAbort, { once: true });
+	}
+	try {
+		const result = await entry.promise;
+		throwIfAborted(options?.signal, "Python availability check aborted");
+		return result.availability;
+	} finally {
+		options?.signal?.removeEventListener("abort", onAbort);
+	}
 }
 
-async function probePythonKernelAvailability(cwd: string, interpreter?: string): Promise<PythonKernelAvailability> {
+async function probePythonKernelAvailability(
+	cwd: string,
+	interpreter: string | undefined,
+	signal: AbortSignal,
+): Promise<AvailabilityProbeResult> {
+	let timedOut = false;
 	try {
+		throwIfAborted(signal, "Python availability check aborted");
 		const settings = await Settings.init();
+		throwIfAborted(signal, "Python availability check aborted");
 		const { env } = settings.getShellConfig();
 		const baseEnv = filterEnv(env);
 		const runtimes = interpreter
 			? [resolveExplicitPythonRuntime(interpreter, cwd, baseEnv)]
 			: enumeratePythonRuntimes(cwd, baseEnv);
 		if (runtimes.length === 0) {
-			return { ok: false, reason: "Python executable not found on PATH" };
+			return { availability: { ok: false, reason: "Python executable not found on PATH" }, timedOut };
 		}
 
 		const failures: string[] = [];
 		for (const runtime of runtimes) {
+			throwIfAborted(signal, "Python availability check aborted");
 			try {
-				const probe = await $`${runtime.pythonPath} -c "import sys;sys.exit(0)"`
-					.quiet()
-					.nothrow()
-					.cwd(cwd)
-					.env(runtime.env);
-				if (probe.exitCode === 0) {
-					return { ok: true, pythonPath: runtime.pythonPath, runtime };
+				const outcome = await probePythonRuntime(runtime, cwd, signal);
+				if (outcome.timedOut) {
+					timedOut = true;
+					failures.push(`${runtime.pythonPath} (timed out after ${AVAILABILITY_PROBE_TIMEOUT_MS}ms)`);
+					continue;
 				}
-				failures.push(`${runtime.pythonPath} (exit code ${probe.exitCode})`);
-			} catch (err) {
-				failures.push(`${runtime.pythonPath} (${err instanceof Error ? err.message : String(err)})`);
+				if (outcome.exitCode === 0) {
+					return { availability: { ok: true, pythonPath: runtime.pythonPath, runtime }, timedOut };
+				}
+				failures.push(`${runtime.pythonPath} (exit code ${outcome.exitCode})`);
+			} catch (error) {
+				throwIfAborted(signal, "Python availability check aborted");
+				failures.push(`${runtime.pythonPath} (${error instanceof Error ? error.message : String(error)})`);
 			}
 		}
 		return {
-			ok: false,
-			pythonPath: runtimes[0].pythonPath,
-			reason: `No working Python interpreter found. Tried: ${failures.join("; ")}`,
+			availability: {
+				ok: false,
+				pythonPath: runtimes[0].pythonPath,
+				reason: `No working Python interpreter found. Tried: ${failures.join("; ")}`,
+			},
+			timedOut,
 		};
-	} catch (err) {
-		return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+	} catch (error) {
+		throwIfAborted(signal, "Python availability check aborted");
+		return {
+			availability: { ok: false, reason: error instanceof Error ? error.message : String(error) },
+			timedOut,
+		};
 	}
+}
+
+async function probePythonRuntime(
+	runtime: PythonRuntime,
+	cwd: string,
+	callerSignal: AbortSignal,
+): Promise<{ exitCode: number; timedOut: boolean }> {
+	throwIfAborted(callerSignal, "Python availability check aborted");
+	const timeoutSignal = AbortSignal.timeout(AVAILABILITY_PROBE_TIMEOUT_MS);
+	const stopSignal = AbortSignal.any([callerSignal, timeoutSignal]);
+	const proc = Bun.spawn([runtime.pythonPath, "-c", "import sys;sys.exit(0)"], {
+		cwd,
+		detached: true,
+		env: runtime.env,
+		stdin: "ignore",
+		stdout: "ignore",
+		stderr: "ignore",
+	});
+	let termination: Promise<boolean> | undefined;
+	const terminate = (): void => {
+		termination ??= terminateDetachedProcessTree(proc, AVAILABILITY_PROBE_KILL_GRACE_MS);
+	};
+	stopSignal.addEventListener("abort", terminate, { once: true });
+	if (stopSignal.aborted) terminate();
+	let exitCode: number;
+	try {
+		exitCode = await proc.exited;
+	} finally {
+		stopSignal.removeEventListener("abort", terminate);
+	}
+	await termination;
+	throwIfAborted(callerSignal, "Python availability check aborted");
+	return { exitCode, timedOut: timeoutSignal.aborted };
 }
 
 export class PythonKernel extends BaseKernel {
@@ -113,6 +205,7 @@ export class PythonKernel extends BaseKernel {
 			exitPayload: JSON.stringify({ type: "exit" }),
 			interruptEscalationMs: INTERRUPT_ESCALATION_MS,
 			shutdownGraceMs: SHUTDOWN_GRACE_MS,
+			detachedProcessTree: true,
 			buildPayload: (code, msgId, opts) =>
 				JSON.stringify({
 					id: msgId,
@@ -124,6 +217,7 @@ export class PythonKernel extends BaseKernel {
 					storeHistory: opts?.storeHistory ?? !(opts?.silent ?? false),
 					...(opts?.prelude ? { prelude: true } : {}),
 				}),
+			buildCancelPayload: msgId => JSON.stringify({ type: "cancel", id: msgId }),
 		});
 	}
 
@@ -133,6 +227,7 @@ export class PythonKernel extends BaseKernel {
 			checkPythonKernelAvailability,
 			options.cwd,
 			options.interpreter,
+			{ signal: options.signal },
 		);
 		if (!availability.ok) {
 			throw new Error(availability.reason ?? "Python kernel unavailable");
