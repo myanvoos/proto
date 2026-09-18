@@ -125,8 +125,6 @@ fn is_lint_script_token(token: &str) -> bool {
 
 #[must_use]
 pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
-	let _ = ctx.command;
-	let _ = ctx.config.per_command(ctx.program);
 	match ctx.program {
 		"git" | "yadm" => git::filter(ctx, input, exit_code),
 		"gt" => gt::filter(ctx, input, exit_code),
@@ -189,6 +187,7 @@ fn filter_js_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 			program:           tool,
 			subcommand:        Some(tool),
 			command:           ctx.command,
+			tokens:            ctx.tokens,
 			config:            ctx.config,
 			runtime_timed_out: ctx.runtime_timed_out,
 		};
@@ -198,6 +197,7 @@ fn filter_js_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 			program:           tool,
 			subcommand:        Some(tool),
 			command:           ctx.command,
+			tokens:            ctx.tokens,
 			config:            ctx.config,
 			runtime_timed_out: ctx.runtime_timed_out,
 		};
@@ -215,6 +215,7 @@ fn filter_uv_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 			program:           tool,
 			subcommand:        Some(tool),
 			command:           ctx.command,
+			tokens:            ctx.tokens,
 			config:            ctx.config,
 			runtime_timed_out: ctx.runtime_timed_out,
 		};
@@ -229,13 +230,14 @@ fn filter_uv_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 				program:           "pytest",
 				subcommand:        Some("pytest"),
 				command:           ctx.command,
+				tokens:            ctx.tokens,
 				config:            ctx.config,
 				runtime_timed_out: ctx.runtime_timed_out,
 			};
 			python::filter(&routed, input, exit_code)
 		},
 		Some("ruff") => {
-			let subcommand = if ctx.command.split_whitespace().any(|part| part == "format") {
+			let subcommand = if ctx.tokens.iter().any(|part| part == "format") {
 				Some("format")
 			} else {
 				Some("ruff")
@@ -244,6 +246,7 @@ fn filter_uv_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 				program: "ruff",
 				subcommand,
 				command: ctx.command,
+				tokens: ctx.tokens,
 				config: ctx.config,
 				runtime_timed_out: ctx.runtime_timed_out,
 			};
@@ -254,6 +257,7 @@ fn filter_uv_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 				program:           "mypy",
 				subcommand:        Some("mypy"),
 				command:           ctx.command,
+				tokens:            ctx.tokens,
 				config:            ctx.config,
 				runtime_timed_out: ctx.runtime_timed_out,
 			};
@@ -264,6 +268,7 @@ fn filter_uv_wrapper(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> Min
 				program:           tool,
 				subcommand:        Some(tool),
 				command:           ctx.command,
+				tokens:            ctx.tokens,
 				config:            ctx.config,
 				runtime_timed_out: ctx.runtime_timed_out,
 			};

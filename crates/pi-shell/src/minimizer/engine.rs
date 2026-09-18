@@ -245,6 +245,7 @@ fn apply_identity(
 			program: &identity.program,
 			subcommand,
 			command,
+			tokens: &identity.tokens,
 			config,
 			runtime_timed_out,
 		};

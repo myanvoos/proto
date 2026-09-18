@@ -84,7 +84,7 @@ fn filter_kubectl(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String
 	match ctx.subcommand {
 		Some("logs") => filter_logs(input),
 		Some("get") => {
-			if is_explicit_kubectl_json_yaml(ctx.command) {
+			if is_explicit_kubectl_json_yaml(ctx.tokens) {
 				return input.to_string();
 			}
 			if let Some(compacted) = try_compact_kubectl_json(input) {
@@ -95,7 +95,7 @@ fn filter_kubectl(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String
 				return primitives::head_tail_lines(input, 80, 40);
 			}
 
-			if is_kubectl_non_table_format(ctx.command) {
+			if is_kubectl_non_table_format(ctx.tokens) {
 				return primitives::head_tail_lines(input, 80, 40);
 			}
 			compact_table(input, 20)
@@ -116,8 +116,8 @@ fn is_structured_kubectl_output(input: &str) -> bool {
 	t.starts_with('{') || t.starts_with("apiVersion:") || t.starts_with("kind:")
 }
 
-fn is_explicit_kubectl_json_yaml(command: &str) -> bool {
-	let mut tokens = command.split_whitespace();
+fn is_explicit_kubectl_json_yaml(command_tokens: &[String]) -> bool {
+	let mut tokens = command_tokens.iter().map(String::as_str);
 	while let Some(tok) = tokens.next() {
 		if (tok == "-o" || tok == "--output")
 			&& let Some(fmt) = tokens.next()
@@ -150,8 +150,8 @@ fn is_explicit_kubectl_json_yaml(command: &str) -> bool {
 	false
 }
 
-fn is_kubectl_non_table_format(command: &str) -> bool {
-	let mut tokens = command.split_whitespace();
+fn is_kubectl_non_table_format(command_tokens: &[String]) -> bool {
+	let mut tokens = command_tokens.iter().map(String::as_str);
 	while let Some(tok) = tokens.next() {
 		if (tok == "-o" || tok == "--output")
 			&& let Some(fmt) = tokens.next()
@@ -477,7 +477,7 @@ fn is_log_command(ctx: &MinimizerCtx<'_>) -> bool {
 	}
 
 	if ctx.subcommand == Some("compose") {
-		let mut tokens = ctx.command.split_whitespace();
+		let mut tokens = ctx.tokens.iter().map(String::as_str);
 		while let Some(tok) = tokens.next() {
 			if tok == "compose" {
 				loop {
@@ -504,16 +504,17 @@ fn is_table_command(ctx: &MinimizerCtx<'_>) -> bool {
 	if !is_docker_listing_command(ctx) {
 		return false;
 	}
-	docker_listing_requests_table(ctx.command)
+	docker_listing_requests_table(ctx.tokens)
 }
 fn is_docker_listing_command(ctx: &MinimizerCtx<'_>) -> bool {
 	matches!(ctx.subcommand, Some("ps" | "images"))
-		|| ctx.subcommand == Some("compose") && is_compose_listing_action(ctx.command)
+		|| ctx.subcommand == Some("compose") && is_compose_listing_action(ctx.tokens)
 }
 
-fn is_compose_listing_action(command: &str) -> bool {
-	let mut tokens = command
-		.split_whitespace()
+fn is_compose_listing_action(command_tokens: &[String]) -> bool {
+	let mut tokens = command_tokens
+		.iter()
+		.map(String::as_str)
 		.skip_while(|token| *token != "compose");
 	if tokens.next() != Some("compose") {
 		return false;
@@ -534,12 +535,13 @@ fn is_compose_listing_action(command: &str) -> bool {
 
 fn is_docker_lifecycle_command(ctx: &MinimizerCtx<'_>) -> bool {
 	matches!(ctx.subcommand, Some("start" | "stop" | "restart" | "rm"))
-		|| ctx.subcommand == Some("compose") && is_compose_lifecycle_action(ctx.command)
+		|| ctx.subcommand == Some("compose") && is_compose_lifecycle_action(ctx.tokens)
 }
 
-fn is_compose_lifecycle_action(command: &str) -> bool {
-	let mut tokens = command
-		.split_whitespace()
+fn is_compose_lifecycle_action(command_tokens: &[String]) -> bool {
+	let mut tokens = command_tokens
+		.iter()
+		.map(String::as_str)
 		.skip_while(|token| *token != "compose");
 	if tokens.next() != Some("compose") {
 		return false;
@@ -559,19 +561,20 @@ fn is_compose_lifecycle_action(command: &str) -> bool {
 }
 
 fn is_compose_up_command(ctx: &MinimizerCtx<'_>) -> bool {
-	if ctx.subcommand == Some("up") && ctx.command.contains("compose") {
+	if ctx.subcommand == Some("up") && ctx.tokens.iter().any(|token| token == "compose") {
 		return true;
 	}
 
 	if ctx.subcommand == Some("compose") {
-		return is_compose_up_action(ctx.command);
+		return is_compose_up_action(ctx.tokens);
 	}
 	false
 }
 
-fn is_compose_up_action(command: &str) -> bool {
-	let mut tokens = command
-		.split_whitespace()
+fn is_compose_up_action(command_tokens: &[String]) -> bool {
+	let mut tokens = command_tokens
+		.iter()
+		.map(String::as_str)
 		.skip_while(|token| *token != "compose");
 	if tokens.next() != Some("compose") {
 		return false;
@@ -590,8 +593,8 @@ fn is_compose_up_action(command: &str) -> bool {
 	}
 }
 
-fn docker_listing_requests_table(command: &str) -> bool {
-	let mut tokens = command.split_whitespace();
+fn docker_listing_requests_table(command_tokens: &[String]) -> bool {
+	let mut tokens = command_tokens.iter().map(String::as_str);
 	while let Some(token) = tokens.next() {
 		if matches!(token, "-q" | "--quiet") {
 			return false;
@@ -732,4 +735,22 @@ fn drop_repeated_blank_lines(input: &str) -> String {
 
 fn head_tail_dedup(input: &str) -> String {
 	primitives::head_tail_lines(&primitives::dedup_consecutive_lines(input), 120, 80)
+}
+
+#[cfg(test)]
+mod tests {
+	use crate::minimizer::{MinimizerConfig, apply};
+
+	#[test]
+	fn quoted_kubectl_json_flag_preserves_machine_readable_output() {
+		let input = format!(
+			r#"{{"kind":"List","items":[{{"kind":"Pod","metadata":{{"name":"pod-a","namespace":"default","padding":"{}"}},"spec":{{"nodeName":"node-a"}},"status":{{"phase":"Running","podIP":"10.0.0.1","startTime":"now","containerStatuses":[]}}}}]}}"#,
+			"x".repeat(1_200)
+		);
+		let config = MinimizerConfig { enabled: true, ..MinimizerConfig::default() };
+
+		let output = apply(r#"kubectl get pods -o "json""#, &input, 0, &config);
+
+		assert_eq!(output.text, input);
+	}
 }

@@ -167,9 +167,26 @@ pub fn apply_edits(content: &str, edits: &[Edit<String>]) -> Result<String> {
 		if end > output.len() || start > end {
 			return Err(anyhow!("Computed edit range is out of bounds"));
 		}
+		if !output.is_char_boundary(start) || !output.is_char_boundary(end) {
+			return Err(anyhow!("Computed edit range is not on a UTF-8 character boundary"));
+		}
 		let replacement = std::str::from_utf8(&edit.inserted_text)
 			.map_err(|err| anyhow!("Replacement text is not valid UTF-8: {err}"))?;
 		output.replace_range(start..end, replacement);
 	}
 	Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn apply_edits_rejects_ranges_inside_utf8_code_points() {
+		let edits = [Edit { position: 1, deleted_length: 0, inserted_text: b"x".to_vec() }];
+
+		let error =
+			apply_edits("é", &edits).expect_err("an edit inside a code point must be rejected");
+		assert!(error.to_string().contains("character boundary"));
+	}
 }

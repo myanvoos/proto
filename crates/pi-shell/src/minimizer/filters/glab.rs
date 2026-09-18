@@ -24,21 +24,21 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 
 	let cleaned = primitives::strip_ansi(input);
 	let text = match ctx.subcommand {
-		Some("ci") if primitives::command_has_ordered_tokens(ctx.command, "ci", "trace") => {
+		Some("ci") if primitives::command_has_ordered_tokens(ctx.tokens, "ci", "trace") => {
 			filter_ci_trace(&cleaned)
 		},
-		Some("release") if primitives::command_has_ordered_tokens(ctx.command, "release", "list") => {
+		Some("release") if primitives::command_has_ordered_tokens(ctx.tokens, "release", "list") => {
 			match filter_release_list(&cleaned) {
 				Some(summary) => summary,
 				None => primitives::head_tail_dedup(&cleaned),
 			}
 		},
-		Some("release") if primitives::command_has_ordered_tokens(ctx.command, "release", "view") => {
+		Some("release") if primitives::command_has_ordered_tokens(ctx.tokens, "release", "view") => {
 			filter_release_view(&cleaned)
 		},
 		Some("mr" | "issue")
-			if primitives::command_has_ordered_tokens(ctx.command, "mr", "view")
-				|| primitives::command_has_ordered_tokens(ctx.command, "issue", "view") =>
+			if primitives::command_has_ordered_tokens(ctx.tokens, "mr", "view")
+				|| primitives::command_has_ordered_tokens(ctx.tokens, "issue", "view") =>
 		{
 			filter_mr_issue_view(&cleaned, exit_code)
 		},
@@ -53,11 +53,11 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 }
 
 fn preserves_raw_mode(ctx: &MinimizerCtx<'_>) -> bool {
-	if primitives::command_has_any_token(ctx.command, &["-F", "--output", "--json"]) {
+	if primitives::command_has_any_token(ctx.tokens, &["-F", "--output", "--json"]) {
 		return true;
 	}
 
-	if primitives::command_has_any_token(ctx.command, &["--web"]) {
+	if primitives::command_has_any_token(ctx.tokens, &["--web"]) {
 		return true;
 	}
 
@@ -65,14 +65,14 @@ fn preserves_raw_mode(ctx: &MinimizerCtx<'_>) -> bool {
 		return true;
 	}
 
-	if primitives::command_has_any_token(ctx.command, &["--comments"])
-		&& (primitives::command_has_ordered_tokens(ctx.command, "mr", "view")
-			|| primitives::command_has_ordered_tokens(ctx.command, "issue", "view"))
+	if primitives::command_has_any_token(ctx.tokens, &["--comments"])
+		&& (primitives::command_has_ordered_tokens(ctx.tokens, "mr", "view")
+			|| primitives::command_has_ordered_tokens(ctx.tokens, "issue", "view"))
 	{
 		return true;
 	}
 
-	if primitives::command_has_ordered_tokens(ctx.command, "mr", "diff") {
+	if primitives::command_has_ordered_tokens(ctx.tokens, "mr", "diff") {
 		return true;
 	}
 	false

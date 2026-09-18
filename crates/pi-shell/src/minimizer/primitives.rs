@@ -169,9 +169,9 @@ fn split_file_line(line: &str) -> Option<(&str, &str)> {
 }
 
 #[must_use]
-pub fn command_has_ordered_tokens(command: &str, first: &str, second: &str) -> bool {
+pub fn command_has_ordered_tokens(command_tokens: &[String], first: &str, second: &str) -> bool {
 	let mut saw_first = false;
-	for part in command.split_whitespace() {
+	for part in command_tokens {
 		if saw_first && part == second {
 			return true;
 		}
@@ -183,8 +183,8 @@ pub fn command_has_ordered_tokens(command: &str, first: &str, second: &str) -> b
 }
 
 #[must_use]
-pub fn command_has_any_token(command: &str, tokens: &[&str]) -> bool {
-	command.split_whitespace().any(|part| {
+pub fn command_has_any_token(command_tokens: &[String], tokens: &[&str]) -> bool {
+	command_tokens.iter().any(|part| {
 		tokens.iter().any(|token| {
 			part == *token
 				|| part

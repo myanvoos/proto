@@ -54,7 +54,6 @@ pub struct MinimizerConfig {
 	pub only:              HashSet<String>,
 	pub except:            HashSet<String>,
 	pub max_capture_bytes: u32,
-	pub per_command:       HashMap<String, toml::Value>,
 
 	pub user_pipelines: Option<Arc<PipelineRegistry>>,
 
@@ -70,7 +69,6 @@ impl Default for MinimizerConfig {
 			only:                  HashSet::new(),
 			except:                HashSet::new(),
 			max_capture_bytes:     DEFAULT_MAX_CAPTURE_BYTES,
-			per_command:           HashMap::new(),
 			user_pipelines:        None,
 			source_outline_level:  OutlineLevel::Default,
 			legacy_filters_active: false,
@@ -170,11 +168,6 @@ impl MinimizerConfig {
 	}
 
 	#[must_use]
-	pub fn per_command(&self, program: &str) -> Option<&toml::Value> {
-		self.per_command.get(&program.to_lowercase())
-	}
-
-	#[must_use]
 	pub const fn legacy_filters_active(&self) -> bool {
 		self.legacy_filters_active
 	}
@@ -225,9 +218,9 @@ impl SettingsFile {
 		if let Some(v) = self.legacy_filters {
 			cfg.legacy_filters_active = resolve_legacy_filters(Some(v), None);
 		}
-		for (k, v) in self.tables {
-			if v.is_table() && k != "filters" && k != "tests" {
-				cfg.per_command.insert(k.to_lowercase(), v);
+		for (key, value) in self.tables {
+			if value.is_table() && key != "filters" && key != "tests" {
+				eprintln!("[pi-natives minimizer] unknown settings table [{key}]");
 			}
 		}
 	}

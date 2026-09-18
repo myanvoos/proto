@@ -822,10 +822,6 @@ const fn exit_code(result: &ExecutionResult) -> i32 {
 	}
 }
 
-const fn normalize_env_key(key: &str) -> &str {
-	key
-}
-
 fn is_session_bridge_env_var(key: &str) -> bool {
 	matches!(key, "PI_KERNEL_BRIDGE_ADDR" | "PI_KERNEL_BRIDGE_TOKEN" | "PI_KERNEL_FLEET_ROOT")
 }
@@ -839,21 +835,20 @@ fn copy_env_into_shell(
 		let (Some(key), Some(value)) = (key.to_str(), value.to_str()) else {
 			continue;
 		};
-		let normalized_key = normalize_env_key(key);
-		if should_skip_env_var(normalized_key) {
+		if should_skip_env_var(key) {
 			continue;
 		}
-		if normalized_key == "PATH" {
+		if key == "PATH" {
 			merged_path = Some(value.to_string());
 			continue;
 		}
 		let mut var = ShellVariable::new(ShellValue::String(value.to_string()));
-		if !is_session_bridge_env_var(normalized_key) {
+		if !is_session_bridge_env_var(key) {
 			var.export();
 		}
 		shell
 			.env_mut()
-			.set_global(normalized_key, var)
+			.set_global(key, var)
 			.map_err(|err| Error::msg(format!("Failed to set env: {err}")))?;
 	}
 
@@ -926,17 +921,16 @@ async fn create_session_for_run(
 
 	if let Some(env) = config.session_env.as_ref() {
 		for (key, value) in env {
-			let normalized_key = normalize_env_key(key);
-			if should_skip_env_var(normalized_key) {
+			if should_skip_env_var(key) {
 				continue;
 			}
 			let mut var = ShellVariable::new(ShellValue::String(value.clone()));
-			if !is_session_bridge_env_var(normalized_key) {
+			if !is_session_bridge_env_var(key) {
 				var.export();
 			}
 			shell
 				.env_mut()
-				.set_global(normalized_key, var)
+				.set_global(key, var)
 				.map_err(|err| Error::msg(format!("Failed to set env: {err}")))?;
 		}
 	}
@@ -1658,18 +1652,14 @@ fn apply_command_env(
 	};
 	shell.env_mut().push_scope(EnvironmentScope::Command);
 	for (key, value) in env {
-		let normalized_key = normalize_env_key(key);
-		if should_skip_env_var(normalized_key) {
+		if should_skip_env_var(key) {
 			continue;
 		}
 		let mut var = ShellVariable::new(ShellValue::String(value.clone()));
-		if !is_session_bridge_env_var(normalized_key) {
+		if !is_session_bridge_env_var(key) {
 			var.export();
 		}
-		if let Err(err) = shell
-			.env_mut()
-			.add(normalized_key, var, EnvironmentScope::Command)
-		{
+		if let Err(err) = shell.env_mut().add(key, var, EnvironmentScope::Command) {
 			let _ = shell.env_mut().pop_scope(EnvironmentScope::Command);
 			return Err(Error::msg(format!("Failed to set env: {err}")));
 		}
@@ -1754,10 +1744,135 @@ fn should_skip_env_var(key: &str) -> bool {
 }
 
 fn ensure_trailing_newline_for_heredoc(command: &mut String) {
-	if command.ends_with('\n') || !command.as_bytes().windows(2).any(|window| window == b"<<") {
+	if command.ends_with('\n')
+		|| command
+			.as_bytes()
+			.iter()
+			.rev()
+			.take_while(|byte| **byte == b'\\')
+			.count()
+			% 2 == 1
+		|| !has_unquoted_heredoc_operator(command)
+	{
 		return;
 	}
 	command.push('\n');
+}
+
+#[derive(Clone, Copy)]
+enum ShellQuote {
+	Single,
+	Double,
+	Backtick,
+}
+
+fn has_unquoted_heredoc_operator(command: &str) -> bool {
+	let bytes = command.as_bytes();
+	let mut quote = None;
+	let mut arithmetic_depth = 0usize;
+	let mut word_start = true;
+	let mut index = 0usize;
+
+	while index < bytes.len() {
+		let byte = bytes[index];
+		if let Some(active_quote) = quote {
+			match active_quote {
+				ShellQuote::Single => {
+					if byte == b'\'' {
+						quote = None;
+					}
+				},
+				ShellQuote::Double => {
+					if byte == b'\\' {
+						index = (index + 2).min(bytes.len());
+						continue;
+					}
+					if byte == b'"' {
+						quote = None;
+					}
+				},
+				ShellQuote::Backtick => {
+					if byte == b'\\' {
+						index = (index + 2).min(bytes.len());
+						continue;
+					}
+					if byte == b'`' {
+						quote = None;
+					}
+				},
+			}
+			index += 1;
+			continue;
+		}
+
+		if arithmetic_depth > 0 {
+			match byte {
+				b'\\' => {
+					index = (index + 2).min(bytes.len());
+					continue;
+				},
+				b'(' => arithmetic_depth += 1,
+				b')' => arithmetic_depth -= 1,
+				_ => {},
+			}
+			index += 1;
+			continue;
+		}
+
+		match byte {
+			b'\\' => {
+				word_start = false;
+				index = (index + 2).min(bytes.len());
+				continue;
+			},
+			b'\'' => {
+				quote = Some(ShellQuote::Single);
+				word_start = false;
+			},
+			b'"' => {
+				quote = Some(ShellQuote::Double);
+				word_start = false;
+			},
+			b'`' => {
+				quote = Some(ShellQuote::Backtick);
+				word_start = false;
+			},
+			b'#' if word_start => {
+				while index < bytes.len() && bytes[index] != b'\n' {
+					index += 1;
+				}
+				word_start = true;
+				continue;
+			},
+			b'$' if bytes.get(index + 1..index + 3) == Some(b"((") => {
+				arithmetic_depth = 2;
+				word_start = false;
+				index += 3;
+				continue;
+			},
+			b'(' if bytes.get(index + 1) == Some(&b'(') => {
+				arithmetic_depth = 2;
+				word_start = false;
+				index += 2;
+				continue;
+			},
+			b'<' if bytes.get(index + 1) == Some(&b'<') => {
+				let part_of_longer_run =
+					index > 0 && bytes[index - 1] == b'<' || bytes.get(index + 2) == Some(&b'<');
+				if !part_of_longer_run {
+					return true;
+				}
+				word_start = true;
+			},
+			byte if byte.is_ascii_whitespace() || matches!(byte, b';' | b'|' | b'&') => {
+				word_start = true;
+			},
+			_ => word_start = false,
+		}
+		index += 1;
+	}
+
+	false
 }
 
 const fn session_keepalive(result: &ExecutionResult) -> bool {
@@ -1787,7 +1902,6 @@ async fn read_output(
 	cancel_token: CancellationToken,
 	activity: Sender<()>,
 ) {
-	const REPLACEMENT: &str = "\u{FFFD}";
 	const BUF: usize = 65536;
 	let mut buf = vec![0u8; BUF + 4];
 	let mut it = 0;
@@ -1837,49 +1951,78 @@ async fn read_output(
 		}
 		it += n;
 
-		while it > 0 {
-			let pending = &buf[..it];
-			match str::from_utf8(pending) {
-				Ok(text) => {
-					emit_chunk(text, on_chunk.as_ref()).await;
-					it = 0;
-					break;
-				},
-				Err(err) => {
-					let p = err.valid_up_to();
-					if p > 0 {
-						let text = unsafe { str::from_utf8_unchecked(&pending[..p]) };
-						emit_chunk(text, on_chunk.as_ref()).await;
-
-						buf.copy_within(p..it, 0);
-						it -= p;
-					}
-
-					match err.error_len() {
-						Some(p) => {
-							emit_chunk(REPLACEMENT, on_chunk.as_ref()).await;
-
-							buf.copy_within(p..it, 0);
-							it -= p;
-						},
-						None => {
-							break;
-						},
-					}
-				},
-			}
+		let (text, trailing) = decode_utf8_read(&buf[..it], false);
+		if !text.is_empty() {
+			emit_chunk(&text, on_chunk.as_ref()).await;
 		}
+		if trailing > 0 {
+			buf.copy_within(it - trailing..it, 0);
+		}
+		it = trailing;
 	}
 
-	for chunk in buf[..it].utf8_chunks() {
+	let (text, _) = decode_utf8_read(&buf[..it], true);
+	if !text.is_empty() {
+		emit_chunk(&text, on_chunk.as_ref()).await;
+	}
+}
+
+fn decode_utf8_read(bytes: &[u8], end_of_input: bool) -> (String, usize) {
+	let mut text = String::with_capacity(bytes.len());
+	let mut previous_was_invalid = false;
+	let mut trailing = 0usize;
+	let mut chunks = bytes.utf8_chunks().peekable();
+
+	while let Some(chunk) = chunks.next() {
 		let valid = chunk.valid();
 		if !valid.is_empty() {
-			emit_chunk(valid, on_chunk.as_ref()).await;
+			text.push_str(valid);
+			previous_was_invalid = false;
 		}
-		if !chunk.invalid().is_empty() {
-			emit_chunk(REPLACEMENT, on_chunk.as_ref()).await;
+
+		let invalid = chunk.invalid();
+		if invalid.is_empty() {
+			continue;
+		}
+		if !end_of_input && chunks.peek().is_none() && is_incomplete_utf8_sequence(invalid) {
+			trailing = invalid.len();
+			break;
+		}
+		if !previous_was_invalid {
+			text.push('\u{FFFD}');
+			previous_was_invalid = true;
 		}
 	}
+
+	(text, trailing)
+}
+
+fn is_incomplete_utf8_sequence(bytes: &[u8]) -> bool {
+	let Some((&first, rest)) = bytes.split_first() else {
+		return false;
+	};
+	let expected_len = match first {
+		0xc2..=0xdf => 2,
+		0xe0..=0xef => 3,
+		0xf0..=0xf4 => 4,
+		_ => return false,
+	};
+	if bytes.len() >= expected_len {
+		return false;
+	}
+	if let Some(&second) = rest.first() {
+		let valid_second = match first {
+			0xe0 => (0xa0..=0xbf).contains(&second),
+			0xed => (0x80..=0x9f).contains(&second),
+			0xf0 => (0x90..=0xbf).contains(&second),
+			0xf4 => (0x80..=0x8f).contains(&second),
+			_ => (0x80..=0xbf).contains(&second),
+		};
+		if !valid_second {
+			return false;
+		}
+	}
+	rest.iter().skip(1).all(|byte| (0x80..=0xbf).contains(byte))
 }
 
 async fn read_output_buffered(
@@ -1889,7 +2032,6 @@ async fn read_output_buffered(
 	activity: Sender<()>,
 	max_capture_bytes: usize,
 ) -> BufferedOutput {
-	const REPLACEMENT: &str = "\u{FFFD}";
 	const BUF: usize = 65536;
 	let mut buf = vec![0u8; BUF];
 	let mut input_bytes = 0usize;
@@ -1953,42 +2095,22 @@ async fn read_output_buffered(
 
 		if let Some(cb) = on_chunk.as_ref() {
 			pending.extend_from_slice(&buf[..n]);
-			while !pending.is_empty() {
-				match str::from_utf8(&pending) {
-					Ok(text) => {
-						emit_chunk(text, Some(cb)).await;
-						pending.clear();
-						break;
-					},
-					Err(err) => {
-						let p = err.valid_up_to();
-						if p > 0 {
-							let text = unsafe { str::from_utf8_unchecked(&pending[..p]) };
-							emit_chunk(text, Some(cb)).await;
-							pending.drain(..p);
-						}
-						match err.error_len() {
-							Some(skip) => {
-								emit_chunk(REPLACEMENT, Some(cb)).await;
-								pending.drain(..skip);
-							},
-							None => break,
-						}
-					},
-				}
+			let (text, trailing) = decode_utf8_read(&pending, false);
+			if !text.is_empty() {
+				emit_chunk(&text, Some(cb)).await;
 			}
+			if trailing > 0 {
+				let len = pending.len();
+				pending.copy_within(len - trailing..len, 0);
+			}
+			pending.truncate(trailing);
 		}
 	}
 
 	if let Some(cb) = on_chunk.as_ref() {
-		for chunk in pending.utf8_chunks() {
-			let valid = chunk.valid();
-			if !valid.is_empty() {
-				emit_chunk(valid, Some(cb)).await;
-			}
-			if !chunk.invalid().is_empty() {
-				emit_chunk(REPLACEMENT, Some(cb)).await;
-			}
+		let (text, _) = decode_utf8_read(&pending, true);
+		if !text.is_empty() {
+			emit_chunk(&text, Some(cb)).await;
 		}
 	}
 
@@ -2064,4 +2186,118 @@ fn uutils_env_disabled(config: &ShellConfig, key: &str) -> bool {
 		.and_then(|env| env.get(key).cloned())
 		.or_else(|| std::env::var(key).ok());
 	matches!(raw.as_deref(), Some(value) if !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false"))
+}
+
+#[cfg(test)]
+mod tests {
+	use std::io::Write as _;
+
+	use tokio_util::sync::CancellationToken;
+
+	use super::{
+		ShellExecuteOptions, decode_utf8_read, ensure_trailing_newline_for_heredoc, execute_shell,
+		pipe_to_files, read_output, read_output_buffered,
+	};
+	use crate::cancel::CancelToken;
+
+	#[test]
+	fn only_real_heredocs_receive_a_trailing_newline() {
+		for original in [
+			"echo '<<'",
+			"echo \"<<\"",
+			"echo $((1<<3))",
+			"cat <<< word",
+			"cat <<EOF\nbody\nEOF\nprintf X\\",
+		] {
+			let mut command = original.to_string();
+			ensure_trailing_newline_for_heredoc(&mut command);
+			assert_eq!(command, original);
+		}
+
+		let mut heredoc = "cat <<EOF\nbody\nEOF".to_string();
+		ensure_trailing_newline_for_heredoc(&mut heredoc);
+		assert_eq!(heredoc, "cat <<EOF\nbody\nEOF\n");
+	}
+
+	#[tokio::test]
+	async fn quoted_heredoc_text_does_not_change_command_ending() {
+		let (chunks_tx, chunks_rx) = flume::unbounded();
+		let result = execute_shell(
+			ShellExecuteOptions {
+				command: r"echo '<<'; printf 'X\'".to_string(),
+				..ShellExecuteOptions::default()
+			},
+			Some(chunks_tx),
+			CancelToken::default(),
+		)
+		.await
+		.expect("command should execute");
+		let output = chunks_rx.into_iter().collect::<String>();
+
+		assert_eq!(result.exit_code, Some(0));
+		assert_eq!(output, "<<\nX\\");
+	}
+
+	#[test]
+	fn utf8_decoder_retains_only_an_incomplete_suffix() {
+		let (first, trailing) = decode_utf8_read(b"prefix\xe2\x82", false);
+		assert_eq!(first, "prefix");
+		assert_eq!(trailing, 2);
+
+		let (completed, trailing) = decode_utf8_read(b"\xe2\x82\xac", false);
+		assert_eq!(completed, "€");
+		assert_eq!(trailing, 0);
+
+		let (invalid, trailing) = decode_utf8_read(b"a\xff\xfe b", false);
+		assert_eq!(invalid, "a\u{FFFD} b");
+		assert_eq!(trailing, 0);
+	}
+
+	#[tokio::test]
+	async fn buffered_reader_coalesces_invalid_utf8_per_read() {
+		let (reader, mut writer) =
+			pipe_to_files("buffered invalid UTF-8 test").expect("pipe should open");
+		let writer = std::thread::spawn(move || {
+			writer
+				.write_all(&vec![0xff; 64 * 1024])
+				.expect("test payload should write");
+		});
+		let (chunks_tx, chunks_rx) = flume::unbounded();
+		let (activity_tx, _activity_rx) = flume::bounded(1);
+
+		let output = read_output_buffered(
+			reader,
+			Some(chunks_tx),
+			CancellationToken::new(),
+			activity_tx,
+			128 * 1024,
+		)
+		.await;
+		writer.join().expect("writer should finish");
+		let chunks: Vec<String> = chunks_rx.into_iter().collect();
+
+		assert_eq!(output.input_bytes, 64 * 1024);
+		assert!(!output.exceeded);
+		assert!(chunks.len() < 1_024, "received {} chunks", chunks.len());
+		assert!(chunks.iter().all(|chunk| chunk == "\u{FFFD}"));
+	}
+
+	#[tokio::test]
+	async fn invalid_utf8_is_coalesced_instead_of_emitted_per_byte() {
+		let (reader, mut writer) = pipe_to_files("invalid UTF-8 test").expect("pipe should open");
+		let writer = std::thread::spawn(move || {
+			writer
+				.write_all(&vec![0xff; 64 * 1024])
+				.expect("test payload should write");
+		});
+		let (chunks_tx, chunks_rx) = flume::unbounded();
+		let (activity_tx, _activity_rx) = flume::bounded(1);
+
+		read_output(reader, Some(chunks_tx), CancellationToken::new(), activity_tx).await;
+		writer.join().expect("writer should finish");
+		let chunks: Vec<String> = chunks_rx.into_iter().collect();
+
+		assert!(chunks.len() < 1_024, "received {} chunks", chunks.len());
+		assert!(chunks.iter().all(|chunk| chunk == "\u{FFFD}"));
+	}
 }

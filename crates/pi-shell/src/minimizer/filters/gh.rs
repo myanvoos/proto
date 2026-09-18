@@ -27,7 +27,7 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 
 	let cleaned = primitives::strip_ansi(input);
 	let text = match ctx.subcommand {
-		Some("pr") if primitives::command_has_ordered_tokens(ctx.command, "pr", "checks") => {
+		Some("pr") if primitives::command_has_ordered_tokens(ctx.tokens, "pr", "checks") => {
 			match filter_pr_checks(&cleaned) {
 				Some(summary) => summary,
 				None => filter_pr_issue(&cleaned, exit_code),
@@ -49,11 +49,11 @@ fn preserves_raw_mode(ctx: &MinimizerCtx<'_>) -> bool {
 	match ctx.subcommand {
 		Some("api") => true,
 		Some("run") => {
-			primitives::command_has_ordered_tokens(ctx.command, "run", "view")
-				&& primitives::command_has_any_token(ctx.command, &["--log", "--log-failed", "--json"])
+			primitives::command_has_ordered_tokens(ctx.tokens, "run", "view")
+				&& primitives::command_has_any_token(ctx.tokens, &["--log", "--log-failed", "--json"])
 		},
-		Some("pr") if primitives::command_has_ordered_tokens(ctx.command, "pr", "checks") => {
-			primitives::command_has_any_token(ctx.command, &[
+		Some("pr") if primitives::command_has_ordered_tokens(ctx.tokens, "pr", "checks") => {
+			primitives::command_has_any_token(ctx.tokens, &[
 				"--json",
 				"--web",
 				"-w",
@@ -64,13 +64,13 @@ fn preserves_raw_mode(ctx: &MinimizerCtx<'_>) -> bool {
 				"-i",
 			])
 		},
-		Some("pr") if primitives::command_has_ordered_tokens(ctx.command, "pr", "diff") => true,
-		Some("pr") if primitives::command_has_ordered_tokens(ctx.command, "pr", "status") => {
-			primitives::command_has_any_token(ctx.command, &["--web", "--jq", "--template"])
+		Some("pr") if primitives::command_has_ordered_tokens(ctx.tokens, "pr", "diff") => true,
+		Some("pr") if primitives::command_has_ordered_tokens(ctx.tokens, "pr", "status") => {
+			primitives::command_has_any_token(ctx.tokens, &["--web", "--jq", "--template"])
 		},
 		Some(subcommand @ ("pr" | "issue")) => {
-			primitives::command_has_ordered_tokens(ctx.command, subcommand, "view")
-				&& primitives::command_has_any_token(ctx.command, &["--json", "--jq", "--comments"])
+			primitives::command_has_ordered_tokens(ctx.tokens, subcommand, "view")
+				&& primitives::command_has_any_token(ctx.tokens, &["--json", "--jq", "--comments"])
 		},
 		_ => false,
 	}

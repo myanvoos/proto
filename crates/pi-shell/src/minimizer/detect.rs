@@ -2,6 +2,7 @@
 pub struct CommandIdentity {
 	pub program:    String,
 	pub subcommand: Option<String>,
+	pub tokens:     Vec<String>,
 }
 
 #[must_use]
@@ -12,6 +13,7 @@ pub fn detect(command: &str) -> Option<CommandIdentity> {
 
 #[must_use]
 pub fn detect_tokens(tokens: &[String]) -> Option<CommandIdentity> {
+	let command_tokens = tokens;
 	let tokens = strip_launch_prefix(tokens)?;
 	let (program, rest) = tokens.split_first()?;
 	let normalized = normalize_program(program)?;
@@ -48,7 +50,7 @@ pub fn detect_tokens(tokens: &[String]) -> Option<CommandIdentity> {
 	} else {
 		detect_subcommand(&normalized, rest)
 	};
-	Some(CommandIdentity { program: normalized, subcommand })
+	Some(CommandIdentity { program: normalized, subcommand, tokens: command_tokens.to_vec() })
 }
 
 fn strip_launch_prefix(tokens: &[String]) -> Option<&[String]> {
@@ -502,14 +504,20 @@ fn first_non_global_arg(
 fn option_consumes_value(arg: &str, flags_with_values: &[&str]) -> bool {
 	flags_with_values.iter().any(|flag| {
 		arg == *flag
-			|| (flag.starts_with("--") && arg.starts_with(&format!("{flag}=")))
+			|| (flag.starts_with("--")
+				&& arg
+					.strip_prefix(flag)
+					.is_some_and(|remainder| remainder.starts_with('=')))
 			|| (!flag.starts_with("--") && arg.starts_with(flag) && arg.len() > flag.len())
 	})
 }
 
 fn option_has_inline_value(arg: &str, flags_with_values: &[&str]) -> bool {
 	flags_with_values.iter().any(|flag| {
-		(flag.starts_with("--") && arg.starts_with(&format!("{flag}=")))
+		(flag.starts_with("--")
+			&& arg
+				.strip_prefix(flag)
+				.is_some_and(|remainder| remainder.starts_with('=')))
 			|| (!flag.starts_with("--") && arg.starts_with(flag) && arg.len() > flag.len())
 	})
 }

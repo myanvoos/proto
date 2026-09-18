@@ -70,20 +70,25 @@ fn strip_lint_noise(program: &str, input: &str, exit_code: i32) -> String {
 fn preserves_machine_readable_output(ctx: &MinimizerCtx<'_>) -> bool {
 	if matches!(ctx.program, "pyright" | "basedpyright")
 		&& ctx
-			.command
-			.split_whitespace()
+			.tokens
+			.iter()
 			.any(|part| part == "--outputjson" || part.starts_with("--outputjson="))
 	{
 		return true;
 	}
 
 	if ctx.program == "eslint" {
-		let tokens: Vec<&str> = ctx.command.split_whitespace().collect();
-		for (i, t) in tokens.iter().enumerate() {
-			if (*t == "-f" || *t == "--format") && tokens.get(i + 1).is_some_and(|v| *v != "stylish") {
+		for (i, token) in ctx.tokens.iter().enumerate() {
+			let token = token.as_str();
+			if (token == "-f" || token == "--format")
+				&& ctx
+					.tokens
+					.get(i + 1)
+					.is_some_and(|value| value != "stylish")
+			{
 				return true;
 			}
-			if let Some(val) = t.strip_prefix("--format=")
+			if let Some(val) = token.strip_prefix("--format=")
 				&& val != "stylish"
 			{
 				return true;

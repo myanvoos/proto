@@ -39,7 +39,7 @@ fn is_go_tool_golangci_lint(ctx: &MinimizerCtx<'_>) -> bool {
 	}
 
 	let mut saw_tool = false;
-	for token in ctx.command.split_whitespace() {
+	for token in ctx.tokens {
 		if saw_tool {
 			return token == "golangci-lint";
 		}

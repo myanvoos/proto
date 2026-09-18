@@ -163,6 +163,7 @@ fn filter_prettier(input: &str, exit_code: i32) -> String {
 
 	let mut files = Vec::new();
 	let mut errors = Vec::new();
+	let mut unrecognized = Vec::new();
 	let mut saw_check = false;
 	let mut saw_write = false;
 	let mut all_matched = false;
@@ -204,7 +205,13 @@ fn filter_prettier(input: &str, exit_code: i32) -> String {
 		}
 		if looks_like_file(trimmed) {
 			files.push(trimmed.to_string());
+			continue;
 		}
+		unrecognized.push(trimmed);
+	}
+
+	if !unrecognized.is_empty() {
+		return primitives::head_tail_lines(input, 120, 80);
 	}
 
 	let mut out = String::new();
@@ -243,7 +250,7 @@ fn filter_prettier(input: &str, exit_code: i32) -> String {
 		return out;
 	}
 
-	"Prettier: completed\n".to_string()
+	primitives::head_tail_lines(input, 120, 80)
 }
 
 fn looks_like_prettier_write_line(line: &str) -> bool {
@@ -395,4 +402,26 @@ fn push_file_list(out: &mut String, files: &[String], limit: usize) {
 fn push_line(out: &mut String, line: &str) {
 	out.push_str(line.trim_end());
 	out.push('\n');
+}
+
+#[cfg(test)]
+mod tests {
+	use std::fmt::Write as _;
+
+	use crate::minimizer::{MinimizerConfig, apply};
+
+	#[test]
+	fn unrecognized_prettier_output_is_not_replaced_with_canned_success() {
+		let mut input = String::new();
+		for index in 0..60 {
+			let _ = writeln!(input, "plugin diagnostic {index}: content that must stay visible");
+		}
+
+		let config = MinimizerConfig { enabled: true, ..MinimizerConfig::default() };
+
+		let output = apply("prettier .", &input, 0, &config);
+
+		assert_eq!(output.text, input);
+		assert_ne!(output.text, "Prettier: completed\n");
+	}
 }

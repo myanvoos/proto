@@ -135,58 +135,192 @@ async fn git_spawn(cwd: &Path, args: &[&str]) -> IsoResult<std::process::Output>
 }
 
 fn parse_git_diff(blob: &[u8]) -> Vec<FileChange> {
-	let Ok(text) = std::str::from_utf8(blob) else {
-		return Vec::new();
-	};
 	let mut out = Vec::<FileChange>::new();
-	let iter = text.split_inclusive('\n');
-	let mut buf = String::new();
+	let mut buf = Vec::new();
 	let mut header_path: Option<PathBuf> = None;
+	let mut old_path: Option<PathBuf> = None;
 	let mut header_kind = ChangeKind::Modified;
 	let mut header_binary = false;
+	let mut in_change = false;
+	let mut in_hunk = false;
 
-	let flush = |buf: &mut String,
-	             path: &mut Option<PathBuf>,
-	             kind: &mut ChangeKind,
-	             binary: &mut bool,
-	             out: &mut Vec<FileChange>| {
-		if let Some(p) = path.take() {
-			let diff = if *binary {
-				None
-			} else {
-				Some(std::mem::take(buf))
-			};
-			out.push(FileChange { path: p, op: *kind, diff });
-		}
-		buf.clear();
-		*kind = ChangeKind::Modified;
-		*binary = false;
-	};
-
-	for line in iter {
-		if let Some(rest) = line.strip_prefix("diff --git ") {
-			flush(&mut buf, &mut header_path, &mut header_kind, &mut header_binary, &mut out);
-			let trimmed = rest.trim_end_matches('\n');
-			if let Some((_, b)) = trimmed.split_once(' ') {
-				let path = b.strip_prefix("b/").unwrap_or(b);
-				header_path = Some(PathBuf::from(path));
-			}
-			buf.push_str(line);
+	for line in blob.split_inclusive(|byte| *byte == b'\n') {
+		let bare = trim_git_line_end(line);
+		if let Some(rest) = bare.strip_prefix(b"diff --git ") {
+			flush_git_change(
+				&mut buf,
+				&mut header_path,
+				&mut header_kind,
+				&mut header_binary,
+				&mut out,
+			);
+			header_path = parse_git_header_path(rest);
+			old_path = None;
+			in_change = true;
+			in_hunk = false;
+			buf.extend_from_slice(line);
 			continue;
 		}
-		if header_path.is_some() {
-			if line.starts_with("new file mode ") {
+		if !in_change {
+			continue;
+		}
+
+		if !in_hunk {
+			if bare.starts_with(b"new file mode ") {
 				header_kind = ChangeKind::Added;
-			} else if line.starts_with("deleted file mode ") {
+			} else if bare.starts_with(b"deleted file mode ") {
 				header_kind = ChangeKind::Removed;
-			} else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+			} else if let Some(field) = bare
+				.strip_prefix(b"rename to ")
+				.or_else(|| bare.strip_prefix(b"copy to "))
+			{
+				header_path = parse_git_path_field(field, None);
+			} else if let Some(field) = bare.strip_prefix(b"--- ") {
+				old_path = parse_git_path_field(field, Some(b'a'));
+			} else if let Some(field) = bare.strip_prefix(b"+++ ") {
+				header_path = parse_git_path_field(field, Some(b'b')).or_else(|| old_path.clone());
+			} else if bare.starts_with(b"Binary files ") || bare.starts_with(b"GIT binary patch") {
 				header_binary = true;
 			}
-			buf.push_str(line);
+			if bare.starts_with(b"@@ ") {
+				in_hunk = true;
+			}
+		}
+		buf.extend_from_slice(line);
+	}
+	flush_git_change(&mut buf, &mut header_path, &mut header_kind, &mut header_binary, &mut out);
+	out
+}
+
+fn flush_git_change(
+	buf: &mut Vec<u8>,
+	path: &mut Option<PathBuf>,
+	kind: &mut ChangeKind,
+	binary: &mut bool,
+	out: &mut Vec<FileChange>,
+) {
+	if let Some(path) = path.take() {
+		let diff = if *binary {
+			None
+		} else {
+			Some(String::from_utf8_lossy(buf).into_owned())
+		};
+		out.push(FileChange { path, op: *kind, diff });
+	}
+	buf.clear();
+	*kind = ChangeKind::Modified;
+	*binary = false;
+}
+
+fn trim_git_line_end(mut line: &[u8]) -> &[u8] {
+	if let Some(without_newline) = line.strip_suffix(b"\n") {
+		line = without_newline;
+	}
+	line.strip_suffix(b"\r").unwrap_or(line)
+}
+
+fn parse_git_header_path(header: &[u8]) -> Option<PathBuf> {
+	if header.starts_with(b"\"") {
+		let (_, consumed) = parse_git_quoted_token(header)?;
+		let rest = header.get(consumed..)?.strip_prefix(b" ")?;
+		let (new, _) = parse_git_quoted_token(rest)?;
+		return strip_git_side_prefix(new, b'b').map(git_bytes_to_path);
+	}
+
+	let old = header.strip_prefix(b"a/")?;
+	for (index, candidate) in header.windows(3).enumerate() {
+		if candidate != b" b/" {
+			continue;
+		}
+		let new = header.get(index + 3..)?;
+		if old.get(..index.saturating_sub(2)) == Some(new) {
+			return Some(git_bytes_to_path(new.to_vec()));
 		}
 	}
-	flush(&mut buf, &mut header_path, &mut header_kind, &mut header_binary, &mut out);
-	out
+	None
+}
+
+fn parse_git_path_field(field: &[u8], side: Option<u8>) -> Option<PathBuf> {
+	let bytes = if field.starts_with(b"\"") {
+		parse_git_quoted_token(field)?.0
+	} else {
+		field.strip_suffix(b"\t").unwrap_or(field).to_vec()
+	};
+	if bytes == b"/dev/null" {
+		return None;
+	}
+	let bytes = match side {
+		Some(side) => strip_git_side_prefix(bytes, side)?,
+		None => bytes,
+	};
+	Some(git_bytes_to_path(bytes))
+}
+
+fn strip_git_side_prefix(bytes: Vec<u8>, side: u8) -> Option<Vec<u8>> {
+	(bytes.first() == Some(&side) && bytes.get(1) == Some(&b'/')).then(|| bytes[2..].to_vec())
+}
+
+fn parse_git_quoted_token(input: &[u8]) -> Option<(Vec<u8>, usize)> {
+	if input.first() != Some(&b'"') {
+		return None;
+	}
+	let mut out = Vec::new();
+	let mut index = 1;
+	while index < input.len() {
+		match input[index] {
+			b'"' => return Some((out, index + 1)),
+			b'\\' => {
+				index += 1;
+				let escaped = *input.get(index)?;
+				if (b'0'..=b'7').contains(&escaped) {
+					let mut value = 0_u16;
+					let mut digits = 0;
+					while digits < 3 {
+						let Some(&digit) = input.get(index) else {
+							break;
+						};
+						if !(b'0'..=b'7').contains(&digit) {
+							break;
+						}
+						value = value * 8 + u16::from(digit - b'0');
+						index += 1;
+						digits += 1;
+					}
+					out.push(u8::try_from(value).ok()?);
+					continue;
+				}
+				out.push(match escaped {
+					b'a' => 0x07,
+					b'b' => 0x08,
+					b't' => b'\t',
+					b'n' => b'\n',
+					b'v' => 0x0b,
+					b'f' => 0x0c,
+					b'r' => b'\r',
+					b'\\' => b'\\',
+					b'"' => b'"',
+					_ => return None,
+				});
+				index += 1;
+			},
+			byte => {
+				out.push(byte);
+				index += 1;
+			},
+		}
+	}
+	None
+}
+
+#[cfg(unix)]
+fn git_bytes_to_path(bytes: Vec<u8>) -> PathBuf {
+	use std::os::unix::ffi::OsStringExt as _;
+	std::ffi::OsString::from_vec(bytes).into()
+}
+
+#[cfg(not(unix))]
+fn git_bytes_to_path(bytes: Vec<u8>) -> PathBuf {
+	String::from_utf8_lossy(&bytes).into_owned().into()
 }
 
 async fn walk_diff(lower: &Path, merged: &Path) -> IsoResult<Diff> {
@@ -203,11 +337,11 @@ fn walk_diff_blocking(lower: &Path, merged: &Path) -> IsoResult<Diff> {
 
 	let mut files: Vec<FileChange> = Vec::new();
 
-	for (rel, m_meta) in &merged_index {
+	for (rel, merged_meta) in &merged_index {
 		match lower_index.get(rel) {
 			None => files.push(plain_change(merged, rel, ChangeKind::Added, None)?),
-			Some(l_meta) => {
-				if metas_equal(l_meta, m_meta) {
+			Some(lower_meta) => {
+				if entries_equal(lower, merged, rel, lower_meta, merged_meta)? {
 					continue;
 				}
 				files.push(plain_change(merged, rel, ChangeKind::Modified, Some(lower))?);
@@ -224,22 +358,67 @@ fn walk_diff_blocking(lower: &Path, merged: &Path) -> IsoResult<Diff> {
 	Ok(Diff { files })
 }
 
-fn metas_equal(a: &Metadata, b: &Metadata) -> bool {
-	if a.len() != b.len() {
-		return false;
+fn entries_equal(
+	lower: &Path,
+	merged: &Path,
+	rel: &Path,
+	lower_meta: &Metadata,
+	merged_meta: &Metadata,
+) -> IsoResult<bool> {
+	let lower_type = lower_meta.file_type();
+	let merged_type = merged_meta.file_type();
+	if lower_type != merged_type {
+		return Ok(false);
 	}
-	match (a.modified(), b.modified()) {
-		(Ok(ma), Ok(mb)) => systime_eq(ma, mb),
-		_ => false,
+	if lower_type.is_symlink() {
+		let lower_target = read_link(&lower.join(rel))?;
+		let merged_target = read_link(&merged.join(rel))?;
+		return Ok(lower_target == merged_target);
+	}
+	if !lower_type.is_file() {
+		return Ok(true);
+	}
+	if lower_meta.len() != merged_meta.len() {
+		return Ok(false);
+	}
+	if let (Ok(lower_mtime), Ok(merged_mtime)) = (lower_meta.modified(), merged_meta.modified())
+		&& !systime_eq(lower_mtime, merged_mtime)
+	{
+		return Ok(false);
+	}
+	files_equal(&lower.join(rel), &merged.join(rel))
+}
+
+fn files_equal(left_path: &Path, right_path: &Path) -> IsoResult<bool> {
+	use std::io::Read as _;
+
+	let mut left = std::fs::File::open(left_path)
+		.map_err(|err| IsoError::other(format!("open {}: {err}", left_path.display())))?;
+	let mut right = std::fs::File::open(right_path)
+		.map_err(|err| IsoError::other(format!("open {}: {err}", right_path.display())))?;
+	let mut left_buf = [0_u8; 8 * 1024];
+	let mut right_buf = [0_u8; 8 * 1024];
+	loop {
+		let left_len = left
+			.read(&mut left_buf)
+			.map_err(|err| IsoError::other(format!("read {}: {err}", left_path.display())))?;
+		let right_len = right
+			.read(&mut right_buf)
+			.map_err(|err| IsoError::other(format!("read {}: {err}", right_path.display())))?;
+		if left_len != right_len {
+			return Ok(false);
+		}
+		if left_buf[..left_len] != right_buf[..left_len] {
+			return Ok(false);
+		}
+		if left_len == 0 {
+			return Ok(true);
+		}
 	}
 }
 
 fn systime_eq(a: SystemTime, b: SystemTime) -> bool {
-	let to_secs = |t: SystemTime| {
-		t.duration_since(SystemTime::UNIX_EPOCH)
-			.map_or(0, |d| d.as_secs())
-	};
-	to_secs(a) == to_secs(b)
+	a == b
 }
 
 fn index_tree(root: &Path) -> IsoResult<BTreeMap<PathBuf, Metadata>> {
@@ -258,18 +437,15 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Metadata>) -> IsoRe
 		let entry =
 			entry.map_err(|err| IsoError::other(format!("dir entry in {}: {err}", dir.display())))?;
 		let path = entry.path();
-		let meta = entry
-			.metadata()
-			.map_err(|err| IsoError::other(format!("metadata {}: {err}", path.display())))?;
-		if meta.is_symlink() {
-			let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-			out.insert(rel, meta);
-			continue;
-		}
-		if meta.is_dir() {
+		let file_type = entry
+			.file_type()
+			.map_err(|err| IsoError::other(format!("file_type {}: {err}", path.display())))?;
+		if file_type.is_dir() {
 			walk(root, &path, out)?;
 			continue;
 		}
+		let meta = std::fs::symlink_metadata(&path)
+			.map_err(|err| IsoError::other(format!("metadata {}: {err}", path.display())))?;
 		let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
 		out.insert(rel, meta);
 	}
@@ -282,26 +458,23 @@ fn plain_change(
 	op: ChangeKind,
 	peer_root: Option<&Path>,
 ) -> IsoResult<FileChange> {
-	let full = side.join(rel);
-	let primary = std::fs::read(&full)
-		.map_err(|err| IsoError::other(format!("read {}: {err}", full.display())))?;
-	if looks_binary(&primary) {
+	let Some(primary) = read_plain_entry(&side.join(rel))? else {
 		return Ok(FileChange { path: rel.to_path_buf(), op, diff: None });
-	}
+	};
 	let (old_bytes, new_bytes) = match op {
 		ChangeKind::Added => (Vec::new(), primary),
 		ChangeKind::Removed => (primary, Vec::new()),
 		ChangeKind::Modified => {
 			let peer = peer_root.expect("modified change requires peer root");
-			let peer_full = peer.join(rel);
-			let peer_bytes = std::fs::read(&peer_full)
-				.map_err(|err| IsoError::other(format!("read {}: {err}", peer_full.display())))?;
-			if looks_binary(&peer_bytes) {
+			let Some(peer_bytes) = read_plain_entry(&peer.join(rel))? else {
 				return Ok(FileChange { path: rel.to_path_buf(), op, diff: None });
-			}
+			};
 			(peer_bytes, primary)
 		},
 	};
+	if looks_binary(&old_bytes) || looks_binary(&new_bytes) {
+		return Ok(FileChange { path: rel.to_path_buf(), op, diff: None });
+	}
 	let (Ok(old_text), Ok(new_text)) =
 		(std::str::from_utf8(&old_bytes), std::str::from_utf8(&new_bytes))
 	else {
@@ -312,6 +485,38 @@ fn plain_change(
 		op,
 		diff: Some(render_unified(rel, op, old_text, new_text)),
 	})
+}
+
+fn read_plain_entry(path: &Path) -> IsoResult<Option<Vec<u8>>> {
+	let meta = std::fs::symlink_metadata(path)
+		.map_err(|err| IsoError::other(format!("metadata {}: {err}", path.display())))?;
+	if meta.file_type().is_symlink() {
+		return read_link(path).map(|target| Some(plain_path_bytes(&target)));
+	}
+	if meta.is_file() {
+		return read_file(path).map(Some);
+	}
+	Ok(None)
+}
+
+fn read_file(path: &Path) -> IsoResult<Vec<u8>> {
+	std::fs::read(path).map_err(|err| IsoError::other(format!("read {}: {err}", path.display())))
+}
+
+fn read_link(path: &Path) -> IsoResult<PathBuf> {
+	std::fs::read_link(path)
+		.map_err(|err| IsoError::other(format!("read_link {}: {err}", path.display())))
+}
+
+#[cfg(unix)]
+fn plain_path_bytes(path: &Path) -> Vec<u8> {
+	use std::os::unix::ffi::OsStrExt as _;
+	path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn plain_path_bytes(path: &Path) -> Vec<u8> {
+	path.to_string_lossy().into_owned().into_bytes()
 }
 
 fn render_unified(rel: &Path, op: ChangeKind, old: &str, new: &str) -> String {
@@ -347,4 +552,206 @@ fn render_unified(rel: &Path, op: ChangeKind, old: &str, new: &str) -> String {
 
 fn looks_binary(bytes: &[u8]) -> bool {
 	bytes.iter().take(8192).any(|&b| b == 0)
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		fs::{self, File, FileTimes},
+		path::{Path, PathBuf},
+		sync::atomic::{AtomicU64, Ordering},
+		time::{Duration, SystemTime},
+	};
+
+	use super::{ChangeKind, index_tree, parse_git_diff, walk_diff_blocking};
+
+	static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
+
+	struct TempDir(PathBuf);
+
+	impl TempDir {
+		fn new(label: &str) -> Self {
+			let sequence = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+			let path = std::env::temp_dir()
+				.join(format!("pi-iso-diff-{label}-{}-{sequence}", std::process::id()));
+			fs::create_dir(&path).expect("create test directory");
+			Self(path)
+		}
+
+		fn path(&self) -> &Path {
+			&self.0
+		}
+	}
+
+	impl Drop for TempDir {
+		fn drop(&mut self) {
+			let _ = fs::remove_dir_all(&self.0);
+		}
+	}
+
+	#[test]
+	fn same_size_edit_with_identical_mtime_is_reported() {
+		let temp = TempDir::new("same-metadata");
+		let lower = temp.path().join("lower");
+		let merged = temp.path().join("merged");
+		fs::create_dir_all(&lower).unwrap();
+		fs::create_dir_all(&merged).unwrap();
+
+		let lower_file = lower.join("settings.txt");
+		let merged_file = merged.join("settings.txt");
+		fs::write(&lower_file, b"alpha\n").unwrap();
+		fs::copy(&lower_file, &merged_file).unwrap();
+		let snapshot_mtime = fs::metadata(&lower_file).unwrap().modified().unwrap();
+
+		fs::write(&merged_file, b"omega\n").unwrap();
+		File::options()
+			.write(true)
+			.open(&merged_file)
+			.unwrap()
+			.set_times(FileTimes::new().set_modified(snapshot_mtime))
+			.unwrap();
+		assert_eq!(
+			fs::metadata(&lower_file).unwrap().len(),
+			fs::metadata(&merged_file).unwrap().len()
+		);
+		assert_eq!(
+			fs::metadata(&lower_file).unwrap().modified().unwrap(),
+			fs::metadata(&merged_file).unwrap().modified().unwrap()
+		);
+
+		let diff = walk_diff_blocking(&lower, &merged).unwrap();
+		assert_eq!(diff.files.len(), 1, "same-metadata content edit was dropped");
+		assert_eq!(diff.files[0].path, PathBuf::from("settings.txt"));
+		assert_eq!(diff.files[0].op, ChangeKind::Modified);
+		assert!(diff.files[0].diff.as_deref().unwrap().contains("+omega"));
+	}
+
+	#[test]
+	fn same_size_edit_with_different_subsecond_mtime_is_reported() {
+		let temp = TempDir::new("subsecond-mtime");
+		let lower = temp.path().join("lower");
+		let merged = temp.path().join("merged");
+		fs::create_dir_all(&lower).unwrap();
+		fs::create_dir_all(&merged).unwrap();
+
+		let lower_file = lower.join("flag.txt");
+		let merged_file = merged.join("flag.txt");
+		fs::write(&lower_file, b"false").unwrap();
+		fs::write(&merged_file, b"true!").unwrap();
+		let second = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+		File::options()
+			.write(true)
+			.open(&lower_file)
+			.unwrap()
+			.set_times(FileTimes::new().set_modified(second + Duration::from_millis(100)))
+			.unwrap();
+		File::options()
+			.write(true)
+			.open(&merged_file)
+			.unwrap()
+			.set_times(FileTimes::new().set_modified(second + Duration::from_millis(200)))
+			.unwrap();
+		let lower_mtime = fs::metadata(&lower_file).unwrap().modified().unwrap();
+		let merged_mtime = fs::metadata(&merged_file).unwrap().modified().unwrap();
+		assert_ne!(lower_mtime, merged_mtime);
+		assert_eq!(
+			lower_mtime
+				.duration_since(SystemTime::UNIX_EPOCH)
+				.unwrap()
+				.as_secs(),
+			merged_mtime
+				.duration_since(SystemTime::UNIX_EPOCH)
+				.unwrap()
+				.as_secs()
+		);
+
+		let diff = walk_diff_blocking(&lower, &merged).unwrap();
+		assert_eq!(diff.files.len(), 1, "subsecond same-size edit was dropped");
+		assert_eq!(diff.files[0].path, PathBuf::from("flag.txt"));
+		assert_eq!(diff.files[0].op, ChangeKind::Modified);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn directory_symlink_target_is_diffed_without_walking_outside_tree() {
+		use std::os::unix::fs::symlink;
+
+		let temp = TempDir::new("outside-symlink");
+		let lower = temp.path().join("lower");
+		let merged = temp.path().join("merged");
+		let old_target = temp.path().join("outside-old");
+		let new_target = temp.path().join("outside-new");
+		for dir in [&lower, &merged, &old_target, &new_target] {
+			fs::create_dir_all(dir).unwrap();
+		}
+		fs::write(old_target.join("old-secret.txt"), "outside old").unwrap();
+		fs::write(new_target.join("new-secret.txt"), "outside new").unwrap();
+		symlink(&old_target, lower.join("linked")).unwrap();
+		symlink(&new_target, merged.join("linked")).unwrap();
+
+		for root in [&lower, &merged] {
+			let index = index_tree(root).unwrap();
+			assert_eq!(index.keys().cloned().collect::<Vec<_>>(), vec![PathBuf::from("linked")]);
+			assert!(index[Path::new("linked")].file_type().is_symlink());
+		}
+		let diff = walk_diff_blocking(&lower, &merged).unwrap();
+		assert_eq!(diff.files.len(), 1, "changed symlink target was dropped");
+		let change = &diff.files[0];
+		assert_eq!(change.path, PathBuf::from("linked"));
+		assert_eq!(change.op, ChangeKind::Modified);
+		assert!(
+			change
+				.diff
+				.as_deref()
+				.unwrap()
+				.contains(&new_target.to_string_lossy().into_owned()),
+			"symlink target change was not rendered"
+		);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn symlink_cycle_is_recorded_without_recursing() {
+		use std::os::unix::fs::symlink;
+
+		let temp = TempDir::new("symlink-cycle");
+		let lower = temp.path().join("lower");
+		let merged = temp.path().join("merged");
+		fs::create_dir_all(&lower).unwrap();
+		fs::create_dir_all(&merged).unwrap();
+		symlink(".", lower.join("cycle")).unwrap();
+		symlink(".", merged.join("cycle")).unwrap();
+
+		let diff = walk_diff_blocking(&lower, &merged).expect("symlink cycle must terminate");
+		assert!(diff.is_empty());
+	}
+
+	#[test]
+	fn invalid_utf8_in_one_patch_does_not_erase_other_changes() {
+		let mut patch = b"diff --git a/latin.txt b/latin.txt\n--- a/latin.txt\n+++ b/latin.txt\n@@ -1 +1 @@\n-old\n+".to_vec();
+		patch.extend_from_slice(&[0xff, b'\n']);
+		patch.extend_from_slice(
+			b"diff --git a/valid.txt b/valid.txt\n--- a/valid.txt\n+++ b/valid.txt\n@@ -1 +1 @@\n-old\n+new\n",
+		);
+
+		let changes = parse_git_diff(&patch);
+		assert_eq!(changes.len(), 2);
+		let valid = changes
+			.iter()
+			.find(|change| change.path == Path::new("valid.txt"))
+			.expect("valid patch after invalid UTF-8 must survive");
+		assert!(valid.diff.as_deref().unwrap().contains("+new"));
+	}
+
+	#[test]
+	fn git_diff_paths_with_spaces_and_c_escapes_are_decoded() {
+		let changes = parse_git_diff(
+			b"diff --git a/foo bar b/foo bar\nold mode 100644\nnew mode 100755\n\
+			  diff --git \"a/tab\\tname.txt\" \"b/tab\\tname.txt\"\nold mode 100644\nnew mode 100755\n",
+		);
+
+		assert_eq!(changes.len(), 2);
+		assert_eq!(changes[0].path, PathBuf::from("foo bar"));
+		assert_eq!(changes[1].path, PathBuf::from("tab\tname.txt"));
+	}
 }

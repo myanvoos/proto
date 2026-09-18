@@ -41,12 +41,12 @@ pub fn supports(subcommand: Option<&str>) -> bool {
 #[must_use]
 pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
 	if exit_code == 0
-		&& (command_contains_any(ctx.command, &["--json"])
-			|| primitives::command_has_any_token(ctx.command, &["--format=json"])
-			|| primitives::command_has_ordered_tokens(ctx.command, "--format", "json")
+		&& (command_contains_any(ctx.tokens, &["--json"])
+			|| primitives::command_has_any_token(ctx.tokens, &["--format=json"])
+			|| primitives::command_has_ordered_tokens(ctx.tokens, "--format", "json")
 			|| ctx.program == "uv"
 				&& matches!(ctx.subcommand, Some("pip"))
-				&& command_contains_any(ctx.command, &["freeze"]))
+				&& command_contains_any(ctx.tokens, &["freeze"]))
 	{
 		return MinimizerOutput::passthrough(input);
 	}
@@ -68,9 +68,9 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 			deduped
 		} else if exit_code == 0
 			&& (is_package_tree_command(ctx) || is_package_export_command(ctx))
-			&& !command_contains_any(ctx.command, &["--json"])
-			&& !primitives::command_has_any_token(ctx.command, &["--format=json"])
-			&& !primitives::command_has_ordered_tokens(ctx.command, "--format", "json")
+			&& !command_contains_any(ctx.tokens, &["--json"])
+			&& !primitives::command_has_any_token(ctx.tokens, &["--format=json"])
+			&& !primitives::command_has_ordered_tokens(ctx.tokens, "--format", "json")
 		{
 			compact_package_tree_output(&deduped)
 		} else {
@@ -162,19 +162,19 @@ fn is_package_tree_command(ctx: &MinimizerCtx<'_>) -> bool {
 		"bun" => {
 			matches!(ctx.subcommand, Some("list" | "ls" | "tree" | "why" | "explain"))
 				|| matches!(ctx.subcommand, Some("pm"))
-					&& command_contains_any(ctx.command, &["list", "ls", "tree", "why"])
+					&& command_contains_any(ctx.tokens, &["list", "ls", "tree", "why"])
 		},
 		"uv" => {
 			matches!(ctx.subcommand, Some("list" | "ls" | "tree"))
 				|| matches!(ctx.subcommand, Some("pip"))
-					&& command_contains_any(ctx.command, &["list", "ls", "tree"])
+					&& command_contains_any(ctx.tokens, &["list", "ls", "tree"])
 		},
 
 		"pip" | "pip3" => matches!(ctx.subcommand, Some("list")),
 		"poetry" => {
 			matches!(ctx.subcommand, Some("tree"))
 				|| matches!(ctx.subcommand, Some("show"))
-					&& command_contains_any(ctx.command, &["--tree"])
+					&& command_contains_any(ctx.tokens, &["--tree"])
 		},
 		_ => false,
 	}
@@ -191,8 +191,10 @@ fn is_package_lock_command(ctx: &MinimizerCtx<'_>) -> bool {
 	matches!((ctx.program, ctx.subcommand), ("uv" | "poetry", Some("lock")))
 }
 
-fn command_contains_any(command: &str, words: &[&str]) -> bool {
-	command.split_whitespace().any(|part| words.contains(&part))
+fn command_contains_any(command_tokens: &[String], words: &[&str]) -> bool {
+	command_tokens
+		.iter()
+		.any(|part| words.contains(&part.as_str()))
 }
 
 fn compact_package_tree_output(input: &str) -> String {

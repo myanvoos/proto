@@ -30,19 +30,19 @@ pub fn supports(subcommand: Option<&str>) -> bool {
 
 #[must_use]
 pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
-	if is_show_path_content(ctx.command) || is_stash_patch(ctx.command) {
+	if is_show_path_content(ctx.tokens) || is_stash_patch(ctx.tokens) {
 		return MinimizerOutput::passthrough(input);
 	}
 
 	let cleaned = primitives::strip_ansi(input);
 	let text = match ctx.subcommand {
-		Some("status") if is_status_machine_format(ctx.command) => cleaned,
+		Some("status") if is_status_machine_format(ctx.tokens) => cleaned,
 		Some("status") => condense_status(&cleaned),
-		Some("diff") if has_token(ctx.command, "--summary") => cleaned,
-		Some("diff") if is_stat_format(ctx.command) => condense_diff_stat(&cleaned),
+		Some("diff") if has_token(ctx.tokens, "--summary") => cleaned,
+		Some("diff") if is_stat_format(ctx.tokens) => condense_diff_stat(&cleaned),
 		Some("diff") => {
 			if exit_code == 0 {
-				if let Some(mode) = diff_listing_mode(ctx.command) {
+				if let Some(mode) = diff_listing_mode(ctx.tokens) {
 					compact_diff_listing(&cleaned, mode)
 				} else {
 					compact_diff_output(&cleaned)
@@ -51,30 +51,30 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 				compact_diff_output(&cleaned)
 			}
 		},
-		Some("show") if is_show_custom_format(ctx.command) => cleaned,
+		Some("show") if is_show_custom_format(ctx.tokens) => cleaned,
 		Some("show") => condense_show(&cleaned),
-		Some("log") if is_log_custom_format(ctx.command) => cleaned,
+		Some("log") if is_log_custom_format(ctx.tokens) => cleaned,
 		Some("log") => condense_log(&cleaned, 32, 16),
 
-		Some("branch") if is_branch_non_listing(ctx.command) => cleaned,
+		Some("branch") if is_branch_non_listing(ctx.tokens) => cleaned,
 		Some("branch") => condense_branch(&cleaned),
-		Some("tag") if is_tag_non_listing(ctx.command) => cleaned,
+		Some("tag") if is_tag_non_listing(ctx.tokens) => cleaned,
 		Some("tag") => primitives::compact_listing(&cleaned, 40),
-		Some("stash") => condense_stash(ctx.command, &cleaned, exit_code),
+		Some("stash") => condense_stash(ctx.tokens, &cleaned, exit_code),
 		Some("worktree") => {
-			if has_token(ctx.command, "--porcelain")
-				|| has_token(ctx.command, "-z")
-				|| has_token(ctx.command, "--null")
+			if has_token(ctx.tokens, "--porcelain")
+				|| has_token(ctx.tokens, "-z")
+				|| has_token(ctx.tokens, "--null")
 			{
 				cleaned
 			} else {
 				condense_worktree(&cleaned)
 			}
 		},
-		Some("push") if has_token(ctx.command, "--porcelain") => cleaned,
+		Some("push") if has_token(ctx.tokens, "--porcelain") => cleaned,
 		Some("push") => condense_push(&cleaned, exit_code),
 		Some("pull") => condense_pull(&cleaned, exit_code),
-		Some("fetch") if has_token(ctx.command, "--porcelain") => cleaned,
+		Some("fetch") if has_token(ctx.tokens, "--porcelain") => cleaned,
 		Some("fetch") => condense_fetch(&cleaned, exit_code),
 		Some("commit") => condense_commit(&cleaned, exit_code),
 		Some("merge" | "rebase" | "checkout" | "switch" | "restore" | "clean" | "reset" | "add") => {
@@ -89,9 +89,9 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	}
 }
 
-fn is_show_path_content(command: &str) -> bool {
+fn is_show_path_content(tokens: &[String]) -> bool {
 	let mut saw_show = false;
-	for part in command.split_whitespace() {
+	for part in tokens {
 		if saw_show && !part.starts_with('-') && part.contains(':') {
 			return true;
 		}
@@ -102,14 +102,14 @@ fn is_show_path_content(command: &str) -> bool {
 	false
 }
 
-fn is_stash_patch(command: &str) -> bool {
-	has_ordered_tokens(command, "stash", "show")
-		&& (has_token(command, "-p") || has_token(command, "--patch"))
+fn is_stash_patch(tokens: &[String]) -> bool {
+	has_ordered_tokens(tokens, "stash", "show")
+		&& (has_token(tokens, "-p") || has_token(tokens, "--patch"))
 }
 
-fn has_ordered_tokens(command: &str, first: &str, second: &str) -> bool {
+fn has_ordered_tokens(tokens: &[String], first: &str, second: &str) -> bool {
 	let mut saw_first = false;
-	for part in command.split_whitespace() {
+	for part in tokens {
 		if saw_first && part == second {
 			return true;
 		}
@@ -120,28 +120,30 @@ fn has_ordered_tokens(command: &str, first: &str, second: &str) -> bool {
 	false
 }
 
-fn has_token(command: &str, token: &str) -> bool {
-	command.split_whitespace().any(|part| part == token)
+fn has_token(tokens: &[String], token: &str) -> bool {
+	tokens.iter().any(|part| part == token)
 }
 
-fn has_flag(command: &str, flag: &str) -> bool {
-	let inline_prefix = format!("{flag}=");
-	command
-		.split_whitespace()
-		.any(|part| part == flag || part.starts_with(&inline_prefix))
+fn has_flag(tokens: &[String], flag: &str) -> bool {
+	tokens.iter().any(|part| {
+		part == flag
+			|| part
+				.strip_prefix(flag)
+				.is_some_and(|remainder| remainder.starts_with('='))
+	})
 }
 
-fn is_status_machine_format(command: &str) -> bool {
-	command.split_whitespace().any(|part| {
-		matches!(part, "--porcelain" | "--porcelain=v1" | "--porcelain=v2" | "--null")
+fn is_status_machine_format(tokens: &[String]) -> bool {
+	tokens.iter().any(|part| {
+		matches!(part.as_str(), "--porcelain" | "--porcelain=v1" | "--porcelain=v2" | "--null")
 			|| part == "-z"
 			|| part.starts_with('-') && !part.starts_with("--") && part.contains('z')
 	})
 }
 
-fn is_stat_format(command: &str) -> bool {
-	command
-		.split_whitespace()
+fn is_stat_format(tokens: &[String]) -> bool {
+	tokens
+		.iter()
 		.any(|part| part == "--stat" || part.starts_with("--stat="))
 }
 
@@ -164,12 +166,12 @@ impl DiffListingMode {
 	}
 }
 
-fn diff_listing_mode(command: &str) -> Option<DiffListingMode> {
-	if has_token(command, "--name-only") {
+fn diff_listing_mode(tokens: &[String]) -> Option<DiffListingMode> {
+	if has_token(tokens, "--name-only") {
 		Some(DiffListingMode::NameOnly)
-	} else if has_token(command, "--name-status") {
+	} else if has_token(tokens, "--name-status") {
 		Some(DiffListingMode::NameStatus)
-	} else if has_token(command, "--numstat") {
+	} else if has_token(tokens, "--numstat") {
 		Some(DiffListingMode::Numstat)
 	} else {
 		None
@@ -682,17 +684,17 @@ fn push_show_commit_summary(out: &mut String, prelude: &str) {
 	}
 }
 
-fn is_branch_non_listing(command: &str) -> bool {
-	let tokens: Vec<&str> = command.split_whitespace().collect();
-
-	let idx = tokens.iter().position(|&t| t == "branch");
-	let Some(idx) = idx else { return false };
-	tokens[idx + 1..].iter().any(|&tok| {
-		if !tok.starts_with('-') {
+fn is_branch_non_listing(tokens: &[String]) -> bool {
+	let Some(index) = tokens.iter().position(|token| token == "branch") else {
+		return false;
+	};
+	tokens[index + 1..].iter().any(|token| {
+		let token = token.as_str();
+		if !token.starts_with('-') {
 			return false;
 		}
 		!matches!(
-			tok,
+			token,
 			"--list"
 				| "-l" | "--merged"
 				| "--no-merged"
@@ -711,20 +713,17 @@ fn is_branch_non_listing(command: &str) -> bool {
 	})
 }
 
-fn is_tag_non_listing(command: &str) -> bool {
-	if !has_token(command, "tag") {
+fn is_tag_non_listing(tokens: &[String]) -> bool {
+	let Some(index) = tokens.iter().position(|token| token == "tag") else {
 		return false;
-	}
-
-	let tokens: Vec<&str> = command.split_whitespace().collect();
-	let idx = tokens.iter().position(|&t| t == "tag");
-	let Some(idx) = idx else { return false };
-	tokens[idx + 1..].iter().any(|&tok| {
-		if !tok.starts_with('-') {
+	};
+	tokens[index + 1..].iter().any(|token| {
+		let token = token.as_str();
+		if !token.starts_with('-') {
 			return false;
 		}
 		!matches!(
-			tok,
+			token,
 			"--list"
 				| "-l" | "--contains"
 				| "--no-contains"
@@ -739,22 +738,22 @@ fn is_tag_non_listing(command: &str) -> bool {
 	})
 }
 
-fn is_show_custom_format(command: &str) -> bool {
-	has_flag(command, "--format")
-		|| has_flag(command, "--pretty")
-		|| has_flag(command, "--diff-filter")
-		|| has_token(command, "--name-only")
-		|| has_token(command, "--name-status")
-		|| has_token(command, "--stat")
-		|| has_token(command, "--numstat")
-		|| has_token(command, "--shortstat")
-		|| has_token(command, "--summary")
-		|| has_token(command, "--check")
-		|| has_token(command, "--dirstat")
+fn is_show_custom_format(tokens: &[String]) -> bool {
+	has_flag(tokens, "--format")
+		|| has_flag(tokens, "--pretty")
+		|| has_flag(tokens, "--diff-filter")
+		|| has_token(tokens, "--name-only")
+		|| has_token(tokens, "--name-status")
+		|| has_token(tokens, "--stat")
+		|| has_token(tokens, "--numstat")
+		|| has_token(tokens, "--shortstat")
+		|| has_token(tokens, "--summary")
+		|| has_token(tokens, "--check")
+		|| has_token(tokens, "--dirstat")
 }
 
-fn is_log_custom_format(command: &str) -> bool {
-	has_flag(command, "--format") || has_flag(command, "--pretty") || has_token(command, "--oneline")
+fn is_log_custom_format(tokens: &[String]) -> bool {
+	has_flag(tokens, "--format") || has_flag(tokens, "--pretty") || has_token(tokens, "--oneline")
 }
 
 fn condense_branch(input: &str) -> String {
@@ -1131,6 +1130,7 @@ fn condense_push(input: &str, exit_code: i32) -> String {
 	let mut out = String::new();
 	if exit_code == 0 {
 		let mut pushed_ref = None;
+		let mut recognized = input.trim().is_empty() || input.lines().any(is_push_progress);
 
 		for line in stripped.lines() {
 			let trimmed = line.trim();
@@ -1138,16 +1138,16 @@ fn condense_push(input: &str, exit_code: i32) -> String {
 				continue;
 			}
 			if is_remote_progress(trimmed) {
+				recognized = true;
+				continue;
+			}
+			if trimmed == "Everything up-to-date" {
+				recognized = true;
 				continue;
 			}
 
-			if trimmed.starts_with("remote:") {
-				out.push_str(line);
-				out.push('\n');
-				continue;
-			}
-
-			if trimmed.starts_with("To ") {
+			if trimmed.starts_with("remote:") || trimmed.starts_with("To ") {
+				recognized = true;
 				out.push_str(line);
 				out.push('\n');
 				continue;
@@ -1158,16 +1158,24 @@ fn condense_push(input: &str, exit_code: i32) -> String {
 				|| trimmed.starts_with("Branch ")
 				|| trimmed.contains(" -> ")
 			{
+				recognized = true;
 				if pushed_ref.is_none() {
 					pushed_ref = extract_pushed_ref(trimmed);
 				}
 				out.push_str(line);
 				out.push('\n');
+				continue;
 			}
+
+			return condense_noisy_output(input);
 		}
 
 		if out.is_empty() {
-			out.push_str("ok (up-to-date)\n");
+			if recognized {
+				out.push_str("ok (up-to-date)\n");
+			} else {
+				return condense_noisy_output(input);
+			}
 		} else if let Some(dest) = pushed_ref {
 			out.push_str("ok ");
 			out.push_str(dest);
@@ -1190,6 +1198,7 @@ fn condense_push(input: &str, exit_code: i32) -> String {
 	}
 	out
 }
+
 fn condense_pull(input: &str, exit_code: i32) -> String {
 	if exit_code == 0 {
 		if input.contains("Already up to date.") || input.contains("Already up-to-date.") {
@@ -1201,7 +1210,11 @@ fn condense_pull(input: &str, exit_code: i32) -> String {
 				return format!("ok {files} files +{added} -{deleted}\n");
 			}
 		}
-		return "ok\n".to_string();
+		return if input.trim().is_empty() {
+			"ok\n".to_string()
+		} else {
+			condense_noisy_output(input)
+		};
 	}
 	condense_noisy_output(input)
 }
@@ -1270,6 +1283,7 @@ fn condense_fetch(input: &str, exit_code: i32) -> String {
 	if exit_code == 0 {
 		let mut updates: usize = 0;
 		let mut kept = Vec::new();
+		let recognized_noise = input.trim().is_empty() || input.lines().any(is_remote_progress);
 
 		for line in stripped.lines() {
 			let trimmed = line.trim();
@@ -1298,6 +1312,7 @@ fn condense_fetch(input: &str, exit_code: i32) -> String {
 					updates += 1;
 				}
 				kept.push(trimmed.to_string());
+				continue;
 			}
 
 			if trimmed.starts_with("error:")
@@ -1305,7 +1320,13 @@ fn condense_fetch(input: &str, exit_code: i32) -> String {
 				|| trimmed.starts_with("warning:")
 			{
 				kept.push(trimmed.to_string());
+				continue;
 			}
+
+			return condense_noisy_output(input);
+		}
+		if kept.is_empty() && !recognized_noise {
+			return condense_noisy_output(input);
 		}
 
 		let mut out = String::new();
@@ -1340,19 +1361,23 @@ fn condense_fetch(input: &str, exit_code: i32) -> String {
 	primitives::head_tail_lines(&out, 80, 40)
 }
 
-fn condense_stash(command: &str, input: &str, exit_code: i32) -> String {
-	if has_token(command, "list") {
+fn condense_stash(tokens: &[String], input: &str, exit_code: i32) -> String {
+	if has_token(tokens, "list") {
 		return condense_stash_list(input);
 	}
 	if input.contains("No local changes to save") {
 		return "No local changes to save\n".to_string();
 	}
 	if exit_code == 0 {
-		let sub = stash_subcommand(command);
+		let sub = stash_subcommand(tokens);
 
 		let sub = if sub.is_empty() { "push" } else { sub };
 		if sub == "push" || sub == "save" {
-			return "ok stashed\n".to_string();
+			return if input.trim().is_empty() {
+				"ok stashed\n".to_string()
+			} else {
+				condense_noisy_output(input)
+			};
 		}
 		if sub == "apply" || sub == "pop" || sub == "branch" {
 			let compacted = condense_status(input);
@@ -1366,7 +1391,11 @@ fn condense_stash(command: &str, input: &str, exit_code: i32) -> String {
 			return input.to_string();
 		}
 		if sub == "drop" || sub == "clear" {
-			return format!("ok stash {sub}\n");
+			return if input.trim().is_empty() {
+				format!("ok stash {sub}\n")
+			} else {
+				condense_noisy_output(input)
+			};
 		}
 
 		return primitives::compact_listing(input, 40);
@@ -1417,9 +1446,9 @@ fn condense_stash_list(input: &str) -> String {
 	out
 }
 
-fn stash_subcommand(command: &str) -> &str {
-	for part in command.split_whitespace() {
-		match part {
+fn stash_subcommand(tokens: &[String]) -> &str {
+	for part in tokens {
+		match part.as_str() {
 			"push" | "save" | "apply" | "pop" | "drop" | "branch" | "clear" | "create" | "show"
 			| "list" => return part,
 			_ => {},
@@ -1491,4 +1520,25 @@ fn abbreviate_worktree_home(line: &str, home: &str) -> String {
 		return format!("~{rest}");
 	}
 	line.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+	use std::fmt::Write as _;
+
+	use crate::minimizer::{MinimizerConfig, apply};
+
+	#[test]
+	fn quoted_git_porcelain_flag_preserves_machine_readable_output() {
+		let mut input = String::new();
+		for index in 0..80 {
+			let _ = writeln!(input, " M path/to/machine-readable-file-{index}.txt");
+		}
+
+		let config = MinimizerConfig { enabled: true, ..MinimizerConfig::default() };
+
+		let output = apply(r#"git status "--porcelain""#, &input, 0, &config);
+
+		assert_eq!(output.text, input);
+	}
 }

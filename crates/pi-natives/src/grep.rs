@@ -283,14 +283,17 @@ impl MatchCollector {
 }
 
 fn truncate_line(line: String, max_columns: Option<usize>) -> (String, bool) {
-	match max_columns {
-		Some(max) if line.len() > max => {
-			let cut = max.saturating_sub(3);
-			let boundary = line.floor_char_boundary(cut);
-			(format!("{}...", &line[..boundary]), true)
-		},
-		_ => (line, false),
+	let Some(max) = max_columns else {
+		return (line, false);
+	};
+	if xutf::width_str(&line) <= max {
+		return (line, false);
 	}
+
+	const ELLIPSIS: &str = "...";
+	let ellipsis = xutf::truncate_str(ELLIPSIS, max);
+	let prefix = xutf::truncate_str(&line, max.saturating_sub(xutf::width_str(ellipsis)));
+	(format!("{prefix}{ellipsis}"), true)
 }
 
 fn bytes_to_trimmed_string(bytes: &[u8]) -> String {
@@ -318,6 +321,15 @@ impl Sink for MatchCollector {
 			self.skipped += 1;
 			self.context_before.clear();
 			return Ok(true);
+		}
+
+		if self
+			.max_count
+			.is_some_and(|max| self.collected_count >= max)
+		{
+			self.limit_reached = true;
+			self.context_before.clear();
+			return Ok(false);
 		}
 
 		if self.collect_matches {
@@ -550,6 +562,14 @@ fn run_search_slice<M: Matcher + Sync>(
 	content: &[u8],
 	params: SearchParams,
 ) -> io::Result<SearchResultInternal> {
+	if params.max_count == Some(0) {
+		return Ok(SearchResultInternal {
+			matches:       Vec::new(),
+			match_count:   0,
+			collected:     0,
+			limit_reached: true,
+		});
+	}
 	let mut collector = MatchCollector::new(
 		params.max_count,
 		params.offset,
@@ -1067,7 +1087,7 @@ enum ReadPolicy {
 }
 
 enum FileOutcome {
-	Searched(SearchResultInternal),
+	Searched { result: SearchResultInternal, prefix_only: bool },
 
 	Defer,
 
@@ -1141,7 +1161,7 @@ fn search_one_file<M: Matcher + Sync>(
 			collected:     0,
 			limit_reached: false,
 		});
-	FileOutcome::Searched(search)
+	FileOutcome::Searched { result: search, prefix_only: policy == ReadPolicy::Prefix }
 }
 
 fn handle_file<M: Matcher + Sync>(
@@ -1168,8 +1188,12 @@ fn handle_file<M: Matcher + Sync>(
 			state.skipped_oversized.fetch_add(1, Ordering::Relaxed);
 		},
 		FileOutcome::Skipped => {},
-		FileOutcome::Searched(search) => {
-			state.files_searched.fetch_add(1, Ordering::Relaxed);
+		FileOutcome::Searched { result: search, prefix_only } => {
+			if prefix_only {
+				state.skipped_oversized.fetch_add(1, Ordering::Relaxed);
+			} else {
+				state.files_searched.fetch_add(1, Ordering::Relaxed);
+			}
 			if search.match_count > 0 {
 				let emitted_in_file = search.collected;
 				state.results.lock().push(FileSearchResult {
@@ -1793,6 +1817,17 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 		multiline,
 	};
 
+	if max_count == Some(0) {
+		return Ok(GrepResult {
+			matches:            Vec::new(),
+			total_matches:      0,
+			files_with_matches: 0,
+			files_searched:     0,
+			limit_reached:      Some(true),
+			skipped_oversized:  None,
+		});
+	}
+
 	if !metadata.is_file() && !metadata.is_dir() {
 		return Ok(GrepResult {
 			matches:            Vec::new(),
@@ -1819,10 +1854,10 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 		}
 
 		let mut buffer = Vec::new();
-		let bytes = match read_file_bytes(&search_path, &mut buffer) {
-			Ok(ReadFile::Read) => &buffer,
+		let (bytes, prefix_only) = match read_file_bytes(&search_path, &mut buffer) {
+			Ok(ReadFile::Read) => (&buffer, false),
 			Ok(ReadFile::Oversized) => match read_file_prefix(&search_path, &mut buffer) {
-				Ok(ReadFile::Read) => &buffer,
+				Ok(ReadFile::Read) => (&buffer, true),
 				_ => {
 					return Ok(GrepResult {
 						matches:            Vec::new(),
@@ -1845,6 +1880,8 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 				});
 			},
 		};
+		let files_searched = u32::from(!prefix_only);
+		let skipped_oversized = prefix_only.then_some(1);
 
 		if output_mode == OutputMode::FilesWithMatches && max_count.is_none() && offset == 0 {
 			let matched = matcher
@@ -1852,18 +1889,18 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 				.map_err(|err| Error::from_reason(format!("Search failed: {err}")))?;
 			if !matched {
 				return Ok(GrepResult {
-					matches:            Vec::new(),
-					total_matches:      0,
+					matches: Vec::new(),
+					total_matches: 0,
 					files_with_matches: 0,
-					files_searched:     1,
-					limit_reached:      None,
-					skipped_oversized:  None,
+					files_searched,
+					limit_reached: None,
+					skipped_oversized,
 				});
 			}
 
 			let path_string = search_path.to_string_lossy().into_owned();
 			return Ok(GrepResult {
-				matches:            vec![GrepMatch {
+				matches: vec![GrepMatch {
 					path:           path_string,
 					line_number:    0,
 					line:           String::new(),
@@ -1872,11 +1909,11 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 					truncated:      None,
 					match_count:    None,
 				}],
-				total_matches:      1,
+				total_matches: 1,
 				files_with_matches: 1,
-				files_searched:     1,
-				limit_reached:      None,
-				skipped_oversized:  None,
+				files_searched,
+				limit_reached: None,
+				skipped_oversized,
 			});
 		}
 
@@ -1885,12 +1922,12 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 
 		if search.match_count == 0 {
 			return Ok(GrepResult {
-				matches:            Vec::new(),
-				total_matches:      0,
+				matches: Vec::new(),
+				total_matches: 0,
 				files_with_matches: 0,
-				files_searched:     1,
-				limit_reached:      None,
-				skipped_oversized:  None,
+				files_searched,
+				limit_reached: None,
+				skipped_oversized,
 			});
 		}
 
@@ -1931,9 +1968,9 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 			matches,
 			total_matches: crate::utils::clamp_u32(search.match_count),
 			files_with_matches: 1,
-			files_searched: 1,
+			files_searched,
 			limit_reached: if limit_reached { Some(true) } else { None },
-			skipped_oversized: None,
+			skipped_oversized,
 		});
 	}
 
@@ -2070,4 +2107,155 @@ pub fn grep(
 	};
 	let ct = task::CancelToken::new(timeout_ms, signal);
 	task::blocking("grep", ct, move |ct| grep_sync(config, on_match.as_ref(), ct))
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		fs::{File, OpenOptions},
+		io::Write,
+		path::PathBuf,
+		sync::atomic::{AtomicU64, Ordering},
+	};
+
+	use super::*;
+
+	static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
+
+	struct TempFile(PathBuf);
+
+	impl TempFile {
+		fn create(contents: &[u8]) -> Self {
+			let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
+			let path =
+				std::env::temp_dir().join(format!("proto-grep-test-{}-{sequence}", std::process::id()));
+			let mut file = OpenOptions::new()
+				.write(true)
+				.create_new(true)
+				.open(&path)
+				.expect("temporary grep fixture should be created");
+			file
+				.write_all(contents)
+				.expect("temporary grep fixture should be written");
+			Self(path)
+		}
+
+		fn create_oversized_with_late_match() -> Self {
+			let fixture = Self::create(&[]);
+			let mut file = File::options()
+				.write(true)
+				.open(&fixture.0)
+				.expect("temporary grep fixture should reopen");
+			let chunk = vec![b'x'; 64 * 1024];
+			for _ in 0..(MAX_FILE_BYTES / chunk.len() as u64) {
+				file
+					.write_all(&chunk)
+					.expect("oversized prefix should be written");
+			}
+			file
+				.write_all(b"\nlate-match\n")
+				.expect("late match should be written");
+			fixture
+		}
+	}
+
+	impl Drop for TempFile {
+		fn drop(&mut self) {
+			let _ = std::fs::remove_file(&self.0);
+		}
+	}
+
+	fn search_options(max_count: Option<u32>, max_columns: Option<u32>) -> SearchOptions {
+		SearchOptions {
+			pattern: "match".to_owned(),
+			ignore_case: None,
+			multiline: None,
+			max_count,
+			offset: None,
+			context_before: None,
+			context_after: None,
+			context: None,
+			max_columns,
+			mode: None,
+		}
+	}
+
+	fn grep_config(path: &Path, pattern: &str, mode: GrepOutputMode) -> GrepConfig {
+		GrepConfig {
+			pattern:            pattern.to_owned(),
+			path:               path.to_string_lossy().into_owned(),
+			glob:               None,
+			type_filter:        None,
+			ignore_case:        None,
+			multiline:          None,
+			hidden:             None,
+			gitignore:          None,
+			max_count:          None,
+			offset:             None,
+			context_before:     None,
+			context_after:      None,
+			context:            None,
+			max_columns:        None,
+			mode:               Some(mode),
+			max_count_per_file: None,
+		}
+	}
+
+	#[test]
+	fn zero_max_count_materializes_no_search_matches() {
+		let result = search_sync(b"match\nmatch\n", search_options(Some(0), None));
+
+		assert!(result.matches.is_empty());
+		assert_eq!(result.match_count, 0);
+		assert!(result.limit_reached);
+	}
+
+	#[test]
+	fn zero_max_count_materializes_no_single_file_match() {
+		let fixture = TempFile::create(b"match\n");
+		let mut config = grep_config(&fixture.0, "match", GrepOutputMode::FilesWithMatches);
+		config.max_count = Some(0);
+
+		let result = grep_sync(config, None, task::CancelToken::default())
+			.expect("single-file grep should succeed");
+
+		assert!(result.matches.is_empty());
+		assert_eq!(result.total_matches, 0);
+		assert_eq!(result.files_searched, 0);
+		assert_eq!(result.limit_reached, Some(true));
+	}
+
+	#[test]
+	fn oversized_prefix_search_is_reported_as_skipped_not_fully_searched() {
+		let fixture = TempFile::create_oversized_with_late_match();
+		let config = grep_config(&fixture.0, "late-match", GrepOutputMode::Content);
+
+		let result = grep_sync(config, None, task::CancelToken::default())
+			.expect("oversized-file grep should succeed");
+
+		assert!(result.matches.is_empty(), "the match is beyond the bounded prefix");
+		assert_eq!(result.files_searched, 0);
+		assert_eq!(result.skipped_oversized, Some(1));
+	}
+
+	#[test]
+	fn max_columns_uses_display_width_and_preserves_graphemes() {
+		let (line, truncated) = truncate_line("界界界".to_owned(), Some(5));
+		assert!(truncated);
+		assert_eq!(line, "界...");
+		assert_eq!(xutf::width_str(&line), 5);
+
+		let family = "👨‍👩‍👧‍👦abcd";
+		let (line, truncated) = truncate_line(family.to_owned(), Some(5));
+		assert!(truncated);
+		assert_eq!(line, "👨‍👩‍👧‍👦...");
+		assert_eq!(xutf::width_str(&line), 5);
+
+		for (max, expected) in [(0, ""), (1, "."), (2, "..")] {
+			let (line, truncated) = truncate_line("long".to_owned(), Some(max));
+			assert!(truncated);
+			assert_eq!(line, expected);
+			assert!(xutf::width_str(&line) <= max);
+		}
+	}
 }

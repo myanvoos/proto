@@ -20,6 +20,9 @@ pub struct MinimizerCtx<'a> {
 
 	pub command: &'a str,
 
+	/// Shell-like tokens with surrounding quotes removed by command detection.
+	pub tokens: &'a [String],
+
 	pub config: &'a MinimizerConfig,
 
 	/// True only when the runtime transport observed a deadline timeout.

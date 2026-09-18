@@ -4,24 +4,24 @@ use regex::Regex;
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, config::OutlineLevel, primitives};
 
-fn context_has_nul_output(command: &str, program: &str) -> bool {
-	command.split_whitespace().any(|tok| match program {
-		"grep" => {
+fn context_has_nul_output(tokens: &[String], program: &str) -> bool {
+	tokens.iter().any(|tok| match (tok.as_str(), program) {
+		(tok, "grep") => {
 			tok == "--null-data"
 				|| tok == "--null"
 				|| (tok.starts_with('-')
 					&& !tok.starts_with("--")
 					&& tok.chars().skip(1).any(|ch| matches!(ch, 'z' | 'Z')))
 		},
-		"rg" => matches!(tok, "-0" | "--null" | "--null-data"),
-		_ => matches!(tok, "-print0" | "-fprint0"),
+		(tok, "rg") => matches!(tok, "-0" | "--null" | "--null-data"),
+		(tok, _) => matches!(tok, "-print0" | "-fprint0"),
 	})
 }
 
-fn find_outputs_paths_only(command: &str) -> bool {
-	!command.split_whitespace().any(|word| {
+fn find_outputs_paths_only(tokens: &[String]) -> bool {
+	!tokens.iter().any(|word| {
 		matches!(
-			word,
+			word.as_str(),
 			"-print0"
 				| "-printf"
 				| "-fprintf"
@@ -42,7 +42,7 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	} else {
 		match ctx.program {
 			"grep" | "rg" => {
-				if context_has_nul_output(ctx.command, ctx.program) {
+				if context_has_nul_output(ctx.tokens, ctx.program) {
 					cleaned
 				} else if legacy {
 					compact_grep_output_legacy(&cleaned)
@@ -53,8 +53,8 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 			"ls" => compact_ls_output(&cleaned).unwrap_or_else(|| compact_listing_output(&cleaned)),
 			"tree" => compact_listing_output(&cleaned),
 			"find" => {
-				if context_has_nul_output(ctx.command, ctx.program)
-					|| !find_outputs_paths_only(ctx.command)
+				if context_has_nul_output(ctx.tokens, ctx.program)
+					|| !find_outputs_paths_only(ctx.tokens)
 				{
 					cleaned
 				} else if legacy {
@@ -85,11 +85,15 @@ fn compact_listing_output(input: &str) -> String {
 }
 
 struct GrepMatch {
-	line_no: String,
+	line_no: Option<String>,
 	text:    String,
 }
 
-fn compact_grep_output_legacy(input: &str) -> String {
+const GREP_FILE_LIMIT: usize = 12;
+const GREP_MATCHES_PER_FILE: usize = 4;
+const GREP_UNGROUPED_LIMIT: usize = 12;
+
+fn collect_grep_lines(input: &str) -> (BTreeMap<String, Vec<GrepMatch>>, Vec<String>) {
 	let mut grouped: BTreeMap<String, Vec<GrepMatch>> = BTreeMap::new();
 	let mut ungrouped = Vec::new();
 
@@ -98,38 +102,35 @@ fn compact_grep_output_legacy(input: &str) -> String {
 			grouped
 				.entry(file.to_string())
 				.or_default()
-				.push(GrepMatch { line_no: line_no.to_string(), text: collapse_match_text(text) });
+				.push(GrepMatch {
+					line_no: line_no.map(str::to_string),
+					text:    collapse_match_text(text),
+				});
 		} else if !line.trim().is_empty() {
 			ungrouped.push(line.to_string());
 		}
 	}
 
+	(grouped, ungrouped)
+}
+
+fn compact_grep_output_legacy(input: &str) -> String {
+	let (grouped, ungrouped) = collect_grep_lines(input);
 	let match_count: usize = grouped.values().map(Vec::len).sum();
 	if grouped.is_empty() || match_count <= 12 && grouped.len() <= 3 {
-		return primitives::group_by_file(input, 12);
+		let grouped = primitives::group_by_file(input, 12);
+		return primitives::head_tail_cap(&grouped, primitives::CapClass::List);
 	}
 
 	compact_grep_grouped(&grouped, &ungrouped, match_count)
 }
 
 fn compact_grep_output(input: &str) -> String {
-	let mut grouped: BTreeMap<String, Vec<GrepMatch>> = BTreeMap::new();
-	let mut ungrouped = Vec::new();
-
-	for line in input.lines() {
-		if let Some((file, line_no, text)) = split_grep_line(line) {
-			grouped
-				.entry(file.to_string())
-				.or_default()
-				.push(GrepMatch { line_no: line_no.to_string(), text: collapse_match_text(text) });
-		} else if !line.trim().is_empty() {
-			ungrouped.push(line.to_string());
-		}
-	}
-
+	let (grouped, ungrouped) = collect_grep_lines(input);
 	let match_count: usize = grouped.values().map(Vec::len).sum();
 	if grouped.is_empty() {
-		return primitives::group_by_file(input, 12);
+		let grouped = primitives::group_by_file(input, 12);
+		return primitives::head_tail_cap(&grouped, primitives::CapClass::List);
 	}
 
 	compact_grep_grouped(&grouped, &ungrouped, match_count)
@@ -144,24 +145,26 @@ fn compact_grep_grouped(
 	let mut shown_matches = 0usize;
 	let mut shown_files = 0usize;
 	for (file, matches) in grouped {
-		if shown_files >= 12 {
+		if shown_files >= GREP_FILE_LIMIT {
 			break;
 		}
 		shown_files += 1;
 		out.push('\n');
 		out.push_str(file);
 		out.push_str(":\n");
-		for entry in matches.iter().take(4) {
+		for entry in matches.iter().take(GREP_MATCHES_PER_FILE) {
 			shown_matches += 1;
 			out.push_str("  ");
-			out.push_str(&entry.line_no);
-			out.push_str(": ");
+			if let Some(line_no) = &entry.line_no {
+				out.push_str(line_no);
+				out.push_str(": ");
+			}
 			out.push_str(&entry.text);
 			out.push('\n');
 		}
-		if matches.len() > 4 {
+		if matches.len() > GREP_MATCHES_PER_FILE {
 			out.push_str("  […");
-			out.push_str(&(matches.len() - 4).to_string());
+			out.push_str(&(matches.len() - GREP_MATCHES_PER_FILE).to_string());
 			out.push_str(" matches in file elided…]\n");
 		}
 	}
@@ -179,23 +182,30 @@ fn compact_grep_grouped(
 		}
 		out.push_str(" elided…]\n");
 	}
-	for line in ungrouped {
+	for line in ungrouped.iter().take(GREP_UNGROUPED_LIMIT) {
 		out.push_str(line);
 		out.push('\n');
 	}
-	out
+	if ungrouped.len() > GREP_UNGROUPED_LIMIT {
+		out.push_str("[…");
+		out.push_str(&(ungrouped.len() - GREP_UNGROUPED_LIMIT).to_string());
+		out.push_str(" ungrouped lines elided…]\n");
+	}
+	primitives::head_tail_cap(&out, primitives::CapClass::List)
 }
 
-fn split_grep_line(line: &str) -> Option<(&str, &str, &str)> {
+fn split_grep_line(line: &str) -> Option<(&str, Option<&str>, &str)> {
 	let (file, rest) = line.split_once(':')?;
 	if file.is_empty() || file.starts_with(' ') {
 		return None;
 	}
-	let (line_no, text) = rest.split_once(':')?;
-	if !line_no.chars().all(|ch| ch.is_ascii_digit()) {
-		return None;
+	if let Some((line_no, text)) = rest.split_once(':')
+		&& !line_no.is_empty()
+		&& line_no.chars().all(|ch| ch.is_ascii_digit())
+	{
+		return Some((file, Some(line_no), text.trim_start()));
 	}
-	Some((file, line_no, text.trim_start()))
+	Some((file, None, rest.trim_start()))
 }
 
 fn collapse_match_text(text: &str) -> String {
@@ -384,10 +394,9 @@ fn push_wrapped_names(out: &mut String, names: &[String], per_line: usize, max_n
 }
 
 struct LsEntry {
-	name:    String,
-	is_dir:  bool,
-	size:    Option<u64>,
-	is_file: bool,
+	name: String,
+	kind: char,
+	size: Option<u64>,
 }
 
 fn compact_ls_output(input: &str) -> Option<String> {
@@ -396,10 +405,11 @@ fn compact_ls_output(input: &str) -> Option<String> {
 		return None;
 	}
 
-	let dir_count = entries.iter().filter(|entry| entry.is_dir).count();
-	let file_count = entries.iter().filter(|entry| entry.is_file).count();
+	let dir_count = entries.iter().filter(|entry| entry.kind == 'd').count();
+	let file_count = entries.iter().filter(|entry| entry.kind == '-').count();
+	let other_count = entries.len() - dir_count - file_count;
 	let mut ext_counts: BTreeMap<String, usize> = BTreeMap::new();
-	for entry in entries.iter().filter(|entry| entry.is_file) {
+	for entry in entries.iter().filter(|entry| entry.kind == '-') {
 		if let Some(ext) = Path::new(&entry.name)
 			.extension()
 			.and_then(|value| value.to_str())
@@ -409,19 +419,32 @@ fn compact_ls_output(input: &str) -> Option<String> {
 	}
 
 	let mut out = String::new();
-	for entry in entries.iter().filter(|entry| entry.is_dir).take(12) {
+	let mut shown = 0usize;
+	for entry in entries.iter().filter(|entry| entry.kind == 'd').take(12) {
 		out.push_str(&entry.name);
 		out.push_str("/\n");
+		shown += 1;
 	}
-	for entry in entries.iter().filter(|entry| entry.is_file).take(36) {
+	for entry in entries.iter().filter(|entry| entry.kind == '-').take(36) {
 		out.push_str(&entry.name);
 		if let Some(size) = entry.size {
 			out.push_str("  ");
 			out.push_str(&format_human_size(size));
 		}
 		out.push('\n');
+		shown += 1;
 	}
-	let shown = dir_count.min(12) + file_count.min(36);
+	for entry in entries
+		.iter()
+		.filter(|entry| !matches!(entry.kind, '-' | 'd'))
+		.take(12)
+	{
+		out.push(entry.kind);
+		out.push(' ');
+		out.push_str(&entry.name);
+		out.push('\n');
+		shown += 1;
+	}
 	if entries.len() > shown {
 		out.push_str("[…");
 		out.push_str(&(entries.len() - shown).to_string());
@@ -432,6 +455,11 @@ fn compact_ls_output(input: &str) -> Option<String> {
 	out.push_str(" files, ");
 	out.push_str(&dir_count.to_string());
 	out.push_str(" dirs");
+	if other_count > 0 {
+		out.push_str(", ");
+		out.push_str(&other_count.to_string());
+		out.push_str(" other");
+	}
 	if !ext_counts.is_empty() {
 		let ext_summary = ext_counts
 			.iter()
@@ -481,7 +509,7 @@ fn parse_ls_long_line(line: &str) -> Option<LsEntry> {
 		}
 	}
 
-	Some(LsEntry { name, is_dir: kind == 'd', size, is_file: kind == '-' })
+	Some(LsEntry { name, kind, size })
 }
 
 fn format_human_size(size: u64) -> String {
@@ -501,7 +529,7 @@ fn format_human_size(size: u64) -> String {
 }
 
 fn compact_cat_output(ctx: &MinimizerCtx<'_>, input: &str) -> String {
-	let Some(path) = extract_single_path_arg(ctx.command, ctx.program) else {
+	let Some(path) = extract_single_path_arg(ctx.tokens, ctx.program) else {
 		return input.to_string();
 	};
 	if let Some(summary) = summarize_manifest(&path, input) {
@@ -513,11 +541,10 @@ fn compact_cat_output(ctx: &MinimizerCtx<'_>, input: &str) -> String {
 	compact_source_outline(input, &path, ctx.config.source_outline_level)
 }
 
-fn extract_single_path_arg(command: &str, program: &str) -> Option<String> {
+fn extract_single_path_arg(tokens: &[String], program: &str) -> Option<String> {
 	let mut saw_program = false;
 	let mut path: Option<String> = None;
-	for raw in command.split_whitespace() {
-		let token = raw.trim_matches(|ch| ch == '\'' || ch == '"');
+	for token in tokens {
 		let normalized = token.rsplit('/').next().unwrap_or(token);
 		if !saw_program {
 			if normalized == program {
@@ -534,7 +561,7 @@ fn extract_single_path_arg(command: &str, program: &str) -> Option<String> {
 		if path.is_some() {
 			return None;
 		}
-		path = Some(token.to_string());
+		path = Some(token.clone());
 	}
 	path
 }
@@ -870,7 +897,10 @@ fn aggressive_strip_bodies(input: &str, path: &str) -> Option<String> {
 		.unwrap_or("");
 	match ext {
 		"rs" if contains_rust_raw_string_literal(input) => None,
-		"rs" | "ts" | "tsx" | "js" | "jsx" | "go" => Some(strip_brace_bodies(input)),
+		"rs" | "ts" | "tsx" | "js" | "jsx" | "go" => {
+			let total_delta: i32 = input.lines().map(brace_delta).sum();
+			(total_delta == 0).then(|| strip_brace_bodies(input))
+		},
 		"py" => Some(strip_python_bodies(input)),
 		_ => None,
 	}
@@ -926,7 +956,9 @@ fn brace_delta(line: &str) -> i32 {
 			},
 			None => match ch {
 				'/' if chars.peek() == Some(&'/') => break,
-				'"' | '\'' | '`' => in_str = Some(ch),
+				'"' => in_str = Some(ch),
+				'\'' if !looks_like_rust_lifetime(&chars) => in_str = Some(ch),
+				'`' => {},
 				'{' => delta += 1,
 				'}' => delta -= 1,
 				_ => {},
@@ -935,6 +967,23 @@ fn brace_delta(line: &str) -> i32 {
 		prev = ch;
 	}
 	delta
+}
+
+fn looks_like_rust_lifetime(chars: &std::iter::Peekable<std::str::Chars<'_>>) -> bool {
+	let mut lookahead = chars.clone();
+	let Some(first) = lookahead.next() else {
+		return false;
+	};
+	if !(first == '_' || first.is_ascii_alphabetic()) {
+		return false;
+	}
+	while lookahead
+		.peek()
+		.is_some_and(|next| *next == '_' || next.is_ascii_alphanumeric())
+	{
+		lookahead.next();
+	}
+	lookahead.next() != Some('\'')
 }
 
 fn is_function_body_starter(trimmed: &str) -> bool {
@@ -1020,40 +1069,39 @@ fn starts_with_ts_method(s: &str) -> bool {
 
 fn strip_python_bodies(input: &str) -> String {
 	let lines: Vec<&str> = input.lines().collect();
-	let mut out = String::with_capacity(input.len() / 2);
-	let mut i = 0;
+	strip_python_lines(&lines, input.len())
+}
+
+fn strip_python_lines(lines: &[&str], input_len: usize) -> String {
+	let mut out = String::with_capacity(input_len / 2);
+	let mut class_indents = Vec::new();
+	let mut i = 0usize;
+
 	while i < lines.len() {
 		let line = lines[i];
 		let indent = line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
 		let trimmed = line.trim_start();
+		if !trimmed.is_empty() {
+			while class_indents
+				.last()
+				.is_some_and(|class_indent| indent <= *class_indent)
+			{
+				class_indents.pop();
+			}
+		}
+
 		let is_def = trimmed.starts_with("def ") || trimmed.starts_with("async def ");
 		let is_class = trimmed.starts_with("class ");
 		let ends_with_colon = trimmed.trim_end().ends_with(':');
+
 		if is_class && ends_with_colon {
+			class_indents.push(indent);
 			out.push_str(line);
 			out.push('\n');
 			i += 1;
-			let body_start = i;
-			while i < lines.len() {
-				let body_line = lines[i];
-				if body_line.trim().is_empty() {
-					i += 1;
-					continue;
-				}
-				let body_indent = body_line
-					.chars()
-					.take_while(|c| *c == ' ' || *c == '\t')
-					.count();
-				if body_indent <= indent {
-					break;
-				}
-				i += 1;
-			}
-			if body_start < i {
-				out.push_str(&strip_python_bodies(&lines[body_start..i].join("\n")));
-			}
 			continue;
 		}
+
 		if is_def && ends_with_colon {
 			out.push_str(line);
 			out.push('\n');
@@ -1080,16 +1128,17 @@ fn strip_python_bodies(input: &str) -> String {
 				i += 1;
 			}
 			if stripped_any {
-				let pad: String = " ".repeat(indent + 4);
-				out.push_str(&pad);
+				out.push_str(&" ".repeat(indent + 4));
 				out.push_str("...\n");
 			}
 			continue;
 		}
+
 		out.push_str(line);
 		out.push('\n');
 		i += 1;
 	}
+
 	out
 }
 
@@ -1146,4 +1195,134 @@ fn is_summary_line(line: &str) -> bool {
 
 fn has_content(text: &str) -> bool {
 	text.lines().any(|line| !line.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+	use std::fmt::Write as _;
+
+	use super::strip_python_bodies;
+	use crate::minimizer::{MinimizerConfig, apply};
+
+	#[test]
+	fn deeply_nested_python_classes_do_not_overflow_the_stack() {
+		let mut input = String::new();
+		for depth in 0..512 {
+			input.push_str(&"\t".repeat(depth));
+			let _ = writeln!(input, "class Level{depth}:");
+		}
+		input.push_str(&"\t".repeat(512));
+		input.push_str("def deepest():\n");
+		input.push_str(&"\t".repeat(513));
+		input.push_str("secret_body = 1\n");
+
+		let output = std::thread::Builder::new()
+			.stack_size(64 * 1024)
+			.spawn(move || strip_python_bodies(&input))
+			.expect("test thread should start")
+			.join()
+			.expect("Python outline should not panic");
+
+		assert!(output.contains("class Level511:"));
+		assert!(output.contains("def deepest():"));
+		assert!(!output.contains("secret_body"));
+	}
+
+	#[test]
+	fn multiline_template_literal_does_not_end_body_stripping_early() {
+		let mut input = String::from(
+			"function render(value) {\n  const label = `prefix ${\n    value\n  }\n  suffix`;\n",
+		);
+		for index in 0..50 {
+			let _ = writeln!(input, "  const secretBody{index} = value;");
+		}
+		input.push_str("  return label;\n}\n");
+		let config = MinimizerConfig {
+			enabled: true,
+			source_outline_level: crate::minimizer::config::OutlineLevel::Aggressive,
+			..MinimizerConfig::default()
+		};
+
+		let output = apply("cat component.js", &input, 0, &config);
+
+		assert_eq!(output.text, "function render(value) { ... }\n");
+	}
+
+	#[test]
+	fn rust_lifetime_does_not_expose_aggressively_stripped_body() {
+		let mut input = String::from(
+			"struct Holder<'a> { value: &'a str }\n\nimpl<'a> Holder<'a> {\n\tpub fn get(&self) -> \
+			 &'a str {\n",
+		);
+		for index in 0..50 {
+			let _ = writeln!(input, "\t\tlet secret_body_{index} = self.value;");
+		}
+		input.push_str("\t\tself.value\n\t}\n}\n");
+		let config = MinimizerConfig {
+			enabled: true,
+			source_outline_level: crate::minimizer::config::OutlineLevel::Aggressive,
+			..MinimizerConfig::default()
+		};
+
+		let output = apply("cat holder.rs", &input, 0, &config);
+
+		assert!(output.text.contains("pub fn get(&self) -> &'a str { ... }"));
+		assert!(!output.text.contains("secret_body"));
+	}
+
+	#[test]
+	fn long_ls_keeps_symlinks_and_other_entry_kinds() {
+		let mut input = String::new();
+		for index in 0..19 {
+			let _ = writeln!(
+				input,
+				"-rw-r--r-- 1 root root 123 Sep 19 12:00 regular-file-{index}-with-padding.txt"
+			);
+		}
+		input.push_str("lrwxrwxrwx 1 root root 6 Sep 19 12:00 link-a -> target\n");
+		input.push_str("prw-r--r-- 1 root root 0 Sep 19 12:00 events.fifo\n");
+		let config = MinimizerConfig { enabled: true, ..MinimizerConfig::default() };
+
+		let output = apply("ls -la /tmp", &input, 0, &config);
+
+		assert!(output.text.contains("l link-a -> target"));
+		assert!(output.text.contains("p events.fifo"));
+		assert!(output.text.contains("2 other"));
+	}
+
+	#[test]
+	fn recursive_grep_without_line_numbers_is_grouped_and_capped() {
+		let mut input = String::new();
+		for index in 0..100 {
+			let _ = writeln!(input, "src/file{}.rs:needle match {index} with payload", index % 5);
+		}
+
+		let config = MinimizerConfig { enabled: true, ..MinimizerConfig::default() };
+
+		let output = apply("grep -r needle .", &input, 0, &config);
+
+		assert!(output.text.starts_with(
+			"grep: 100 matches in 5 files
+"
+		));
+		assert!(output.text.lines().count() <= 80);
+	}
+
+	#[test]
+	fn grep_context_lines_cannot_create_an_uncapped_tail() {
+		let mut input = String::new();
+		for index in 0..20 {
+			let _ = writeln!(input, "src/file.rs:{index}:needle match {index}");
+		}
+		for index in 0..200 {
+			let _ = writeln!(input, "src/file.rs-{index}-context payload {index}");
+		}
+
+		let config = MinimizerConfig { enabled: true, ..MinimizerConfig::default() };
+
+		let output = apply("grep -rn -C2 needle .", &input, 0, &config);
+
+		assert!(output.text.lines().count() <= 80);
+		assert!(output.text.contains("ungrouped lines elided"));
+	}
 }

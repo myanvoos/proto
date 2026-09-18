@@ -29,9 +29,9 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	let text = match command {
 		"env" => {
 			if ctx
-				.command
-				.split_whitespace()
-				.any(|t| t == "-0" || t == "--null")
+				.tokens
+				.iter()
+				.any(|token| token == "-0" || token == "--null")
 			{
 				cleaned
 			} else {
@@ -236,16 +236,20 @@ pub(super) fn normalize_log_line(line: &str) -> String {
 }
 
 fn strip_leading_timestamp(line: &str) -> &str {
+	const DIGIT_POSITIONS: [usize; 14] = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
 	let bytes = line.as_bytes();
 	if bytes.len() >= 19
 		&& bytes.get(4) == Some(&b'-')
 		&& bytes.get(7) == Some(&b'-')
 		&& matches!(bytes.get(10).copied(), Some(b'T' | b' '))
+		&& bytes.get(13) == Some(&b':')
+		&& bytes.get(16) == Some(&b':')
+		&& DIGIT_POSITIONS
+			.iter()
+			.all(|index| bytes[*index].is_ascii_digit())
+		&& line.is_char_boundary(19)
 	{
-		if let Some(rest) = line.get(19..) {
-			return rest.trim_start();
-		}
-		return "";
+		return line[19..].trim_start();
 	}
 	line
 }
@@ -924,5 +928,20 @@ fn compact_sops_output(input: &str) -> String {
 		input.to_string()
 	} else {
 		out
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::normalize_log_line;
+
+	#[test]
+	fn malformed_timestamp_prefix_cannot_collapse_utf8_log_lines() {
+		let first = normalize_log_line("2026-09-19T12:34:5€ first event");
+		let second = normalize_log_line("2026-09-19T12:34:5€ second event");
+
+		assert_ne!(first, "");
+		assert_ne!(second, "");
+		assert_ne!(first, second);
 	}
 }

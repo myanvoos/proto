@@ -292,7 +292,7 @@ fn is_pytest_progress_line(trimmed: &str) -> bool {
 }
 
 fn is_ruff_format(ctx: &MinimizerCtx<'_>) -> bool {
-	ctx.subcommand == Some("format") || ctx.command.split_whitespace().any(|part| part == "format")
+	ctx.subcommand == Some("format") || ctx.tokens.iter().any(|part| part == "format")
 }
 
 fn filter_ruff_format(input: &str) -> String {

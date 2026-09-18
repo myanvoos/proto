@@ -33,6 +33,7 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 				program:           "git",
 				subcommand:        ctx.subcommand,
 				command:           ctx.command,
+				tokens:            ctx.tokens,
 				config:            ctx.config,
 				runtime_timed_out: ctx.runtime_timed_out,
 			};

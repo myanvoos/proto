@@ -38,7 +38,7 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 		"aws" => filter_aws(ctx, &cleaned, exit_code),
 		"curl" | "wget" => filter_http_transfer(ctx, &cleaned, exit_code),
 		"psql" => {
-			if is_psql_machine_readable(ctx.command) {
+			if is_psql_machine_readable(ctx.tokens) {
 				cleaned
 			} else {
 				filter_psql(&cleaned, exit_code)
@@ -54,9 +54,9 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	}
 }
 
-fn is_s3_ls(command: &str) -> bool {
+fn is_s3_ls(tokens: &[String]) -> bool {
 	let mut past_s3 = false;
-	for token in command.split_whitespace() {
+	for token in tokens {
 		if !past_s3 {
 			if token == "s3" {
 				past_s3 = true;
@@ -69,12 +69,12 @@ fn is_s3_ls(command: &str) -> bool {
 	false
 }
 
-fn is_aws_stdout_pipe(command: &str) -> bool {
-	command.split_whitespace().any(|token| token == "-")
+fn is_aws_stdout_pipe(tokens: &[String]) -> bool {
+	tokens.iter().any(|token| token == "-")
 }
 
 fn filter_aws(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String {
-	if is_aws_stdout_pipe(ctx.command) {
+	if is_aws_stdout_pipe(ctx.tokens) {
 		return input.to_string();
 	}
 
@@ -82,7 +82,7 @@ fn filter_aws(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String {
 
 	if exit_code == 0
 		&& ctx.subcommand == Some("s3")
-		&& is_s3_ls(ctx.command)
+		&& is_s3_ls(ctx.tokens)
 		&& let Some(compacted) = compact_aws_s3_ls_text(&without_progress)
 	{
 		return compacted;
@@ -821,26 +821,24 @@ fn filter_http_transfer(ctx: &MinimizerCtx<'_>, input: &str, _exit_code: i32) ->
 }
 
 fn http_transfer_suppresses_progress(ctx: &MinimizerCtx<'_>) -> bool {
-	ctx.command
-		.split_whitespace()
-		.any(|token| match ctx.program {
-			"curl" => {
-				token == "--silent"
-					|| token == "--no-progress-meter"
-					|| token.starts_with('-') && !token.starts_with("--") && token.contains('s')
-			},
-			"wget" => {
-				token == "--quiet"
-					|| token.starts_with('-') && !token.starts_with("--") && token.contains('q')
-			},
-			_ => false,
-		})
+	ctx.tokens.iter().any(|token| match ctx.program {
+		"curl" => {
+			token == "--silent"
+				|| token == "--no-progress-meter"
+				|| token.starts_with('-') && !token.starts_with("--") && token.contains('s')
+		},
+		"wget" => {
+			token == "--quiet"
+				|| token.starts_with('-') && !token.starts_with("--") && token.contains('q')
+		},
+		_ => false,
+	})
 }
 
-fn is_psql_machine_readable(command: &str) -> bool {
-	command
-		.split_whitespace()
-		.any(|t| matches!(t, "-A" | "--no-align" | "-t" | "--tuples-only" | "--csv"))
+fn is_psql_machine_readable(tokens: &[String]) -> bool {
+	tokens
+		.iter()
+		.any(|token| matches!(token.as_str(), "-A" | "--no-align" | "-t" | "--tuples-only" | "--csv"))
 }
 
 fn filter_psql(input: &str, exit_code: i32) -> String {

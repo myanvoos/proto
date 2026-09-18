@@ -257,21 +257,7 @@ fn git_apply_with_program(
 fn copy_path(src: &Path, dst: &Path) -> IsoResult<()> {
 	let meta = std::fs::symlink_metadata(src)
 		.map_err(|err| IsoError::other(format!("stat {}: {err}", src.display())))?;
-	if meta.file_type().is_symlink() {
-		copy_symlink(src, dst)
-	} else if meta.file_type().is_dir() {
-		std::fs::create_dir_all(dst)
-			.map_err(|err| IsoError::other(format!("create {}: {err}", dst.display())))?;
-		copy_dir_contents(src, dst)?;
-		copy_dir_mtime(src, dst);
-		Ok(())
-	} else {
-		std::fs::copy(src, dst).map_err(|err| {
-			IsoError::other(format!("copy {} -> {}: {err}", src.display(), dst.display()))
-		})?;
-		copy_file_mtime(src, dst);
-		Ok(())
-	}
+	copy_entry(src, dst, meta.file_type())
 }
 
 fn recursive_copy(lower: &Path, merged: &Path) -> IsoResult<()> {
@@ -291,21 +277,53 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> IsoResult<()> {
 			.map_err(|err| IsoError::other(format!("file_type {}: {err}", entry.path().display())))?;
 		let src_path = entry.path();
 		let dst_path = dst.join(entry.file_name());
-		if file_type.is_symlink() {
-			copy_symlink(&src_path, &dst_path)?;
-		} else if file_type.is_dir() {
-			std::fs::create_dir_all(&dst_path)
-				.map_err(|err| IsoError::other(format!("create {}: {err}", dst_path.display())))?;
-			copy_dir_contents(&src_path, &dst_path)?;
-			copy_dir_mtime(&src_path, &dst_path);
-		} else {
-			std::fs::copy(&src_path, &dst_path).map_err(|err| {
-				IsoError::other(format!("copy {} -> {}: {err}", src_path.display(), dst_path.display()))
-			})?;
-			copy_file_mtime(&src_path, &dst_path);
-		}
+		copy_entry(&src_path, &dst_path, file_type)?;
 	}
 	Ok(())
+}
+
+fn copy_entry(src: &Path, dst: &Path, file_type: std::fs::FileType) -> IsoResult<()> {
+	if file_type.is_symlink() {
+		return copy_symlink(src, dst);
+	}
+	if file_type.is_dir() {
+		std::fs::create_dir_all(dst)
+			.map_err(|err| IsoError::other(format!("create {}: {err}", dst.display())))?;
+		copy_dir_contents(src, dst)?;
+		copy_dir_mtime(src, dst);
+		return Ok(());
+	}
+	if file_type.is_file() {
+		std::fs::copy(src, dst).map_err(|err| {
+			IsoError::other(format!("copy {} -> {}: {err}", src.display(), dst.display()))
+		})?;
+		copy_file_mtime(src, dst);
+		return Ok(());
+	}
+	skip_special_file(src, file_type)
+}
+
+#[cfg(unix)]
+fn skip_special_file(path: &Path, file_type: std::fs::FileType) -> IsoResult<()> {
+	use std::os::unix::fs::FileTypeExt as _;
+	if file_type.is_fifo() {
+		return Ok(());
+	}
+	if file_type.is_socket() {
+		return Ok(());
+	}
+	if file_type.is_block_device() {
+		return Ok(());
+	}
+	if file_type.is_char_device() {
+		return Ok(());
+	}
+	Err(IsoError::other(format!("unsupported special file type: {}", path.display())))
+}
+
+#[cfg(not(unix))]
+fn skip_special_file(path: &Path, _file_type: std::fs::FileType) -> IsoResult<()> {
+	Err(IsoError::other(format!("unsupported special file type: {}", path.display())))
 }
 
 #[cfg(unix)]
@@ -360,4 +378,103 @@ fn filetime_set(path: &Path, mtime: std::time::SystemTime) -> std::io::Result<()
 #[cfg(not(unix))]
 fn filetime_set(_path: &Path, _mtime: std::time::SystemTime) -> std::io::Result<()> {
 	Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+	use std::{
+		ffi::CString,
+		fs,
+		os::unix::ffi::OsStrExt as _,
+		path::{Path, PathBuf},
+		process::{Command, Stdio},
+		sync::atomic::{AtomicU64, Ordering},
+		time::{Duration, Instant},
+	};
+
+	use super::{copy_path, recursive_copy};
+
+	const FIFO_CHILD_ENV: &str = "PI_ISO_FIFO_COPY_CHILD";
+	const FIFO_LOWER_ENV: &str = "PI_ISO_FIFO_COPY_LOWER";
+	const FIFO_MERGED_ENV: &str = "PI_ISO_FIFO_COPY_MERGED";
+	static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
+
+	struct TempDir(PathBuf);
+
+	impl TempDir {
+		fn new() -> Self {
+			let sequence = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+			let path = std::env::temp_dir()
+				.join(format!("pi-iso-rcopy-fifo-{}-{sequence}", std::process::id()));
+			fs::create_dir(&path).expect("create test directory");
+			Self(path)
+		}
+
+		fn path(&self) -> &Path {
+			&self.0
+		}
+	}
+
+	impl Drop for TempDir {
+		fn drop(&mut self) {
+			let _ = fs::remove_dir_all(&self.0);
+		}
+	}
+
+	fn make_fifo(path: &Path) {
+		let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+		let rc = unsafe { libc::mkfifo(path.as_ptr(), 0o600) };
+		assert_eq!(rc, 0, "mkfifo failed: {}", std::io::Error::last_os_error());
+	}
+
+	#[test]
+	fn fifo_is_skipped_without_blocking_copy() {
+		let temp = TempDir::new();
+		let lower = temp.path().join("lower");
+		let merged = temp.path().join("merged");
+		fs::create_dir(&lower).unwrap();
+		fs::write(lower.join("regular.txt"), "copied").unwrap();
+		make_fifo(&lower.join("named-pipe"));
+
+		let mut child = Command::new(std::env::current_exe().unwrap())
+			.args(["--ignored", "--exact", "rcopy::tests::fifo_copy_child", "--nocapture"])
+			.env(FIFO_CHILD_ENV, "1")
+			.env(FIFO_LOWER_ENV, &lower)
+			.env(FIFO_MERGED_ENV, &merged)
+			.stdin(Stdio::null())
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()
+			.unwrap();
+
+		let deadline = Instant::now() + Duration::from_secs(3);
+		loop {
+			if let Some(status) = child.try_wait().unwrap() {
+				assert!(status.success(), "bounded FIFO copy child failed with {status}");
+				break;
+			}
+			if Instant::now() >= deadline {
+				child.kill().unwrap();
+				let _ = child.wait();
+				panic!("copy blocked while opening a FIFO");
+			}
+			std::thread::sleep(Duration::from_millis(10));
+		}
+
+		assert_eq!(fs::read_to_string(merged.join("regular.txt")).unwrap(), "copied");
+		assert!(!merged.join("named-pipe").exists());
+		assert!(!merged.join("standalone-pipe").exists());
+	}
+
+	#[test]
+	#[ignore = "subprocess helper for bounded FIFO test"]
+	fn fifo_copy_child() {
+		if std::env::var_os(FIFO_CHILD_ENV).is_none() {
+			return;
+		}
+		let lower = PathBuf::from(std::env::var_os(FIFO_LOWER_ENV).unwrap());
+		let merged = PathBuf::from(std::env::var_os(FIFO_MERGED_ENV).unwrap());
+		recursive_copy(&lower, &merged).unwrap();
+		copy_path(&lower.join("named-pipe"), &merged.join("standalone-pipe")).unwrap();
+	}
 }

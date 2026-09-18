@@ -361,6 +361,7 @@ mod tests {
 			program:           "bun",
 			subcommand:        Some("check"),
 			command:           "bun check",
+			tokens:            &[],
 			config:            &config,
 			runtime_timed_out: false,
 		};
@@ -378,6 +379,7 @@ mod tests {
 			program:           "bun",
 			subcommand:        Some("check"),
 			command:           "bun check",
+			tokens:            &[],
 			config:            &config,
 			runtime_timed_out: false,
 		};
@@ -394,6 +396,7 @@ mod tests {
 			program:           "bun",
 			subcommand:        Some("check"),
 			command:           "bun check",
+			tokens:            &[],
 			config:            &config,
 			runtime_timed_out: true,
 		};

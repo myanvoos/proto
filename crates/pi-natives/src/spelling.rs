@@ -31,6 +31,18 @@ fn collect_spelling_ranges(
 	Ok(ranges)
 }
 
+#[cfg(any(target_os = "macos", test))]
+type SpellingJob = Box<dyn FnOnce() + Send + 'static>;
+
+#[cfg(any(target_os = "macos", test))]
+fn spawn_spelling_worker(
+	spawn: impl FnOnce(flume::Receiver<SpellingJob>) -> std::io::Result<()>,
+) -> std::io::Result<flume::Sender<SpellingJob>> {
+	let (sender, receiver) = flume::unbounded::<SpellingJob>();
+	spawn(receiver)?;
+	Ok(sender)
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
 	use std::sync::LazyLock;
@@ -40,22 +52,21 @@ mod platform {
 	use objc2_app_kit::NSSpellChecker;
 	use objc2_foundation::{NSArray, NSRange, NSString, NSTextCheckingType};
 
-	use super::{SpellingRange, collect_spelling_ranges};
+	use super::{SpellingJob, SpellingRange, collect_spelling_ranges, spawn_spelling_worker};
 
-	type Job = Box<dyn FnOnce() + Send + 'static>;
-
-	static SPELLING_THREAD: LazyLock<flume::Sender<Job>> = LazyLock::new(|| {
-		let (sender, receiver) = flume::unbounded::<Job>();
-		std::thread::Builder::new()
-			.name("pi-native-spelling".into())
-			.spawn(move || {
-				while let Ok(job) = receiver.recv() {
-					job();
-				}
+	static SPELLING_THREAD: LazyLock<std::io::Result<flume::Sender<SpellingJob>>> =
+		LazyLock::new(|| {
+			spawn_spelling_worker(|receiver| {
+				std::thread::Builder::new()
+					.name("pi-native-spelling".into())
+					.spawn(move || {
+						while let Ok(job) = receiver.recv() {
+							job();
+						}
+					})
+					.map(|_| ())
 			})
-			.expect("failed to spawn the native spelling thread");
-		sender
-	});
+		});
 	static APP_KIT_LOADED: LazyLock<bool> = LazyLock::new(|| unsafe { NSApplicationLoad() });
 
 	#[link(name = "AppKit", kind = "framework")]
@@ -77,7 +88,13 @@ mod platform {
 		T: Send + 'static,
 	{
 		let (reply, result) = flume::bounded(1);
-		SPELLING_THREAD
+		let sender = SPELLING_THREAD.as_ref().map_err(|err| {
+			Error::new(
+				Status::GenericFailure,
+				format!("failed to spawn the native spelling thread: {err}"),
+			)
+		})?;
+		sender
 			.send(Box::new(move || {
 				let _ = reply.send(work());
 			}))
@@ -264,6 +281,15 @@ pub async fn macos_spelling_guesses(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn spelling_thread_spawn_failure_is_returned() {
+		let result = spawn_spelling_worker(|_| {
+			Err(std::io::Error::other("simulated thread resource exhaustion"))
+		});
+
+		assert!(result.is_err());
+	}
 
 	#[test]
 	fn check_filters_non_spelling_full_range_that_duplicates_editor_text() {
