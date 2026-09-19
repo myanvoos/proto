@@ -1,4 +1,5 @@
 import { toError } from "@oh-my-pi/pi-utils";
+import { SESSION_TITLE_SLOT_BYTES } from "./session-entries";
 import type {
 	SessionStorage,
 	SessionStorageStat,
@@ -210,8 +211,21 @@ export class IndexedSessionStorage implements SessionStorage {
 	}
 
 	async readTextRange(path: string, start: number, end: number): Promise<string> {
-		const content = await this.readText(path);
-		return Buffer.from(content, "utf8").subarray(start, end).toString("utf8");
+		// Fetch only the bytes the range needs. This used to go through readText, so every 512-byte boundary
+		// fingerprint and every incremental tail scan pulled the whole session blob out of the backend.
+		if (end <= start) return "";
+		const entry = this.#index.get(path);
+		if (!entry) throw enoent(path);
+		// A range that reaches the end of the file is a suffix read; one that starts at the head must keep the
+		// title overlay, which readTextSlices only applies to the prefix.
+		if (end >= entry.size && start >= SESSION_TITLE_SLOT_BYTES) {
+			const [, suffix] = await this.readTextSlices(path, 0, entry.size - start);
+			return Buffer.from(suffix, "utf8")
+				.subarray(0, end - start)
+				.toString("utf8");
+		}
+		const [prefix] = await this.readTextSlices(path, end, 0);
+		return Buffer.from(prefix, "utf8").subarray(start, end).toString("utf8");
 	}
 
 	async readTextSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]> {
