@@ -302,6 +302,85 @@ describe("Markdown incremental wrapping", () => {
 		themed.setText(themedText);
 		expect(themed.render(64)).toEqual(freshRender(themedText, 64, false, changingTheme));
 	});
+
+	const highlightingTheme: MarkdownTheme = {
+		...theme,
+		highlightCode: (code, lang) => code.split("\n").map(line => `full:${lang ?? "plain"}:${line}`),
+		createHighlightStream: lang =>
+			lang === "ts"
+				? {
+						push: chunk => {
+							const lines = chunk.split("\n");
+							lines.pop();
+							return lines.map(line => `stream:${line}\n`).join("");
+						},
+					}
+				: null,
+	};
+
+	test("keeps streamed code rows identical to a fresh render for known and unknown languages", () => {
+		for (const transientRenderCache of [false, true]) {
+			for (const language of ["ts", "unknown"] as const) {
+				let text = `Intro\n\n\`\`\`${language}\n`;
+				const markdown = new Markdown(text, 1, 0, highlightingTheme);
+				markdown.transientRenderCache = transientRenderCache;
+				markdown.render(32);
+
+				for (const suffix of ["const first = 1;\n", "const second = 2;\n", "const third = 3;"]) {
+					text += suffix;
+					markdown.setText(text);
+					expect(markdown.render(32)).toEqual(freshRender(text, 32, transientRenderCache, highlightingTheme));
+				}
+
+				text += "\n```";
+				markdown.setText(text);
+				expect(markdown.render(32)).toEqual(freshRender(text, 32, transientRenderCache, highlightingTheme));
+			}
+		}
+	});
+
+	test("does not retain stale body rows when the closing fence arrives last", () => {
+		let text = "```ts\nline one\nline two";
+		const markdown = new Markdown(text, 1, 0, highlightingTheme);
+		markdown.transientRenderCache = true;
+		markdown.render(40);
+
+		text += "\nline three";
+		markdown.setText(text);
+		expect(markdown.render(40)).toEqual(freshRender(text, 40, true, highlightingTheme));
+
+		text += "\n```";
+		markdown.setText(text);
+		expect(markdown.render(40)).toEqual(freshRender(text, 40, true, highlightingTheme));
+	});
+
+	test("updates only the mutable wrapped code row", () => {
+		let text = "```ts\nconst first = a_really_long_identifier + another_long_identifier;";
+		const markdown = new Markdown(text, 1, 0, highlightingTheme);
+		markdown.transientRenderCache = true;
+		markdown.render(18);
+
+		for (const suffix of ["\nconst second = still_a_really_long_identifier;", "\nconst third = final_identifier;"]) {
+			text += suffix;
+			markdown.setText(text);
+			expect(markdown.render(18)).toEqual(freshRender(text, 18, true, highlightingTheme));
+		}
+	});
+
+	test("recomputes streamed code rows after a width change", () => {
+		let text = "```ts\nconst first = 1;\n";
+		const markdown = new Markdown(text, 1, 0, highlightingTheme);
+		markdown.transientRenderCache = true;
+		markdown.render(24);
+
+		text += "const second = 2;\n";
+		markdown.setText(text);
+		expect(markdown.render(48)).toEqual(freshRender(text, 48, true, highlightingTheme));
+
+		text += "const third = 3;";
+		markdown.setText(text);
+		expect(markdown.render(48)).toEqual(freshRender(text, 48, true, highlightingTheme));
+	});
 });
 
 test("sanitizes terminal controls before Markdown rendering", () => {

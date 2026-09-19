@@ -58,7 +58,7 @@ function assistantMessage(): string {
 		);
 	}
 	blocks.push("Done.");
-	return blocks.join("\n\n") + "\n";
+	return `${blocks.join("\n\n")}\n`;
 }
 
 const proseMessage = assistantMessage();
@@ -66,21 +66,21 @@ const proseMessage = assistantMessage();
 const artifact = await runSuite("tui-markdown", [
 	{
 		name: "stream-code-200-lines",
-		setup: () => codeBlockSource(200) + "\n",
+		setup: () => `${codeBlockSource(200)}\n`,
 		run: text => streamMarkdown(text, 1),
 		runs: 10,
 		warmup: 2,
 	},
 	{
 		name: "stream-code-1000-lines",
-		setup: () => codeBlockSource(1000) + "\n",
+		setup: () => `${codeBlockSource(1000)}\n`,
 		run: text => streamMarkdown(text, 1),
 		runs: 5,
 		warmup: 1,
 	},
 	{
 		name: "stream-code-4000-lines",
-		setup: () => codeBlockSource(4000) + "\n",
+		setup: () => `${codeBlockSource(4000)}\n`,
 		run: text => streamMarkdown(text, 4),
 		runs: 3,
 		warmup: 1,

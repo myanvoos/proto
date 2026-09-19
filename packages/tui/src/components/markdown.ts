@@ -800,11 +800,21 @@ interface IncrementalTokenFragment {
 	type: string;
 	nextTokenType: string | undefined;
 	raw: string;
-	wrappedLines: readonly RenderedLine[];
+	wrappedLines: RenderedLine[];
 	tables: readonly TableRenderSpec[];
-	contentLines?: readonly string[];
+	contentLines?: string[];
 	hasSpecialLine: boolean;
 	startsWithEmptyLine: boolean;
+	// Code blocks can extend their final logical line and append rows without rebuilding
+	// the settled body. The row counts map source lines to wrapped terminal rows.
+	codeText?: string;
+	codeLang?: string;
+	codeTrailingText?: string;
+	codeBodyLineCount?: number;
+	codeBodyRowStart?: number;
+	codeBodyRowCountTotal?: number;
+	codeBodyRowCounts?: number[];
+	codeCacheSize?: number;
 	// Plain paragraphs can be extended without rebuilding their settled wrapped rows.
 	plainText?: string;
 	plainContentLineCount?: number;
@@ -1211,7 +1221,7 @@ interface StreamPrefixLineCache extends RenderSignature {
 interface StreamingHighlightCache extends RenderSignature {
 	lang: string | undefined;
 	text: string;
-	lines: readonly string[];
+	lines: string[];
 	stream: HighlightStreamSession;
 }
 
@@ -2067,6 +2077,147 @@ export class Markdown
 		return cached;
 	}
 
+	#appendCodeFragment(
+		token: Token,
+		nextTokenType: string | undefined,
+		sourceOffset: number,
+		contentWidth: number,
+		signature: RenderSignature,
+	): IncrementalTokenFragment | undefined {
+		if (this.#renderingFrozenPrefix || !this.transientRenderCache || token.type !== "code") return undefined;
+		const revision = this.#activeRenderFragmentRevision;
+		if (revision === undefined) return undefined;
+		const fragment = this.#incrementalTokenFragments.get(sourceOffset);
+		if (
+			fragment === undefined ||
+			fragment.type !== "code" ||
+			fragment.revision !== revision ||
+			fragment.transient !== this.transientRenderCache ||
+			fragment.frozen !== this.#renderingFrozenPrefix ||
+			fragment.nextTokenType !== nextTokenType ||
+			fragment.codeText === undefined ||
+			fragment.codeTrailingText === undefined ||
+			fragment.codeBodyLineCount === undefined ||
+			fragment.codeBodyRowStart === undefined ||
+			fragment.codeBodyRowCounts === undefined ||
+			fragment.contentLines === undefined
+		) {
+			return undefined;
+		}
+		if (!this.#theme.highlightCode && this.#theme.createHighlightStream) return undefined;
+		if (typeof token.text !== "string" || typeof token.raw !== "string") return undefined;
+		const lang = typeof token.lang === "string" ? token.lang : undefined;
+		if (
+			!this.#appendOnlySinceRender ||
+			fragment.codeLang !== lang ||
+			token.raw.length < fragment.raw.length ||
+			token.text.length < fragment.codeText.length
+		) {
+			return undefined;
+		}
+		// An appended closing fence is removed from the code token by the lexer, so a
+		// token that still contains the cached text is necessarily still unclosed.
+		if (token.text.length === fragment.codeText.length) return undefined;
+		if (lang === "mermaid" && this.#theme.resolveMermaidAscii) return undefined;
+
+		const oldBodyLineCount = fragment.codeBodyLineCount;
+		const oldRowCounts = fragment.codeBodyRowCounts;
+		const oldLastRowCount = oldRowCounts.at(-1);
+		if (oldLastRowCount === undefined || oldRowCounts.length !== oldBodyLineCount) return undefined;
+		const wrappedLines = fragment.wrappedLines;
+		const contentLines = fragment.contentLines;
+		const bodyRowStart = fragment.codeBodyRowStart;
+		const bodyRowCountTotal = fragment.codeBodyRowCountTotal;
+		if (bodyRowCountTotal === undefined) return undefined;
+		const bodyRowEnd = bodyRowStart + bodyRowCountTotal;
+		const oldTailRowStart = bodyRowEnd - oldLastRowCount;
+		if (
+			bodyRowStart < 0 ||
+			oldTailRowStart < bodyRowStart ||
+			bodyRowEnd > wrappedLines.length ||
+			wrappedLines.length !== contentLines.length
+		) {
+			return undefined;
+		}
+
+		const appendedText = token.text.slice(fragment.codeText.length);
+		const tailLines = `${fragment.codeTrailingText}${appendedText}`.split("\n");
+		const newBodyLineCount = oldBodyLineCount - 1 + tailLines.length;
+		const completedLineCount = newBodyLineCount - 1;
+		let highlightedLines: readonly string[] | null = null;
+		if (this.#theme.highlightCode && completedLineCount > 0) {
+			const lineEnd = token.text.lastIndexOf("\n");
+			if (lineEnd < 0) return undefined;
+			highlightedLines = this.#highlightStreamingLines(token.text.slice(0, lineEnd), lang, true);
+			if (highlightedLines === null || highlightedLines.length !== completedLineCount) return undefined;
+		}
+
+		const literalCode = this.#codeBlockIndent === 0;
+		const codeIndent = padding(this.#codeBlockIndent);
+		const appendedWrappedLines: RenderedLine[] = [];
+		const appendedContentLines: string[] = [];
+		const rowCounts: number[] = [];
+		const leftMargin = padding(signature.paddingX);
+		const rightMargin = padding(signature.paddingX);
+		const bgFn = this.#defaultTextStyle?.bgColor;
+		for (let i = 0; i < tailLines.length; i++) {
+			const sourceLine = tailLines[i]!;
+			const globalLineIndex = oldBodyLineCount - 1 + i;
+			const renderedText =
+				i < tailLines.length - 1 && highlightedLines !== null
+					? highlightedLines[globalLineIndex]
+					: this.#theme.codeBlock(sourceLine);
+			if (renderedText === undefined) return undefined;
+			const bodyLine = renderedLine(literalCode ? renderedText : codeIndent + renderedText, literalCode);
+			if (TERMINAL.isImageLine(bodyLine.text) || isOsc66Line(bodyLine.text)) return undefined;
+			const wrappedRows = literalCode ? [bodyLine.text] : wrapTextWithAnsi(bodyLine.text, contentWidth);
+			if (wrappedRows.length === 0) return undefined;
+			rowCounts.push(wrappedRows.length);
+			for (const wrappedRow of wrappedRows) {
+				const row =
+					wrappedRows.length === 1 && wrappedRow === bodyLine.text
+						? bodyLine
+						: renderedLine(wrappedRow, literalCode);
+				appendedWrappedLines.push(row);
+				appendedContentLines.push(
+					literalCode
+						? row.text
+						: this.#formatPlainContentLine(row.text, signature, leftMargin, rightMargin, bgFn),
+				);
+			}
+		}
+
+		const previousFragmentSize = this.#incrementalTokenFragmentSize(sourceOffset, fragment);
+		const previousRawLength = fragment.raw.length;
+		let removedRowsSize = 0;
+		for (let rowIndex = oldTailRowStart; rowIndex < bodyRowEnd; rowIndex++) {
+			removedRowsSize += wrappedLines[rowIndex]!.text.length + 1;
+		}
+		let appendedRowsSize = 0;
+		for (const row of appendedWrappedLines) appendedRowsSize += row.text.length + 1;
+		let removedContentSize = 0;
+		for (let rowIndex = oldTailRowStart; rowIndex < bodyRowEnd; rowIndex++) {
+			removedContentSize += contentLines[rowIndex]!.length + 1;
+		}
+		let appendedContentSize = 0;
+		for (const line of appendedContentLines) appendedContentSize += line.length + 1;
+		wrappedLines.splice(oldTailRowStart, oldLastRowCount, ...appendedWrappedLines);
+		contentLines.splice(oldTailRowStart, oldLastRowCount, ...appendedContentLines);
+		oldRowCounts.splice(oldRowCounts.length - 1, 1, ...rowCounts);
+		fragment.raw = token.raw;
+		fragment.codeText = token.text;
+		fragment.codeTrailingText = tailLines.at(-1)!;
+		fragment.codeBodyLineCount = newBodyLineCount;
+		fragment.codeBodyRowCountTotal = bodyRowCountTotal - oldLastRowCount + appendedWrappedLines.length;
+		fragment.codeCacheSize =
+			previousFragmentSize +
+			(token.raw.length - previousRawLength) +
+			(appendedRowsSize - removedRowsSize) +
+			(appendedContentSize - removedContentSize);
+		this.#incrementalTokenFragmentsSize += fragment.codeCacheSize - previousFragmentSize;
+		return fragment;
+	}
+
 	#appendListFragment(
 		token: Token,
 		nextTokenType: string | undefined,
@@ -2255,6 +2406,7 @@ export class Markdown
 	}
 
 	#incrementalTokenFragmentSize(sourceOffset: number, fragment: IncrementalRenderFragment): number {
+		if (fragment.codeCacheSize !== undefined) return fragment.codeCacheSize;
 		let size = String(sourceOffset).length + fragment.type.length + (fragment.nextTokenType?.length ?? 0);
 		size += fragment.raw.length;
 		for (const line of fragment.wrappedLines) size += line.text.length + 1;
@@ -2282,6 +2434,7 @@ export class Markdown
 
 	#storeTokenFragment(sourceOffset: number, fragment: IncrementalRenderFragment): void {
 		const size = this.#incrementalTokenFragmentSize(sourceOffset, fragment);
+		if (fragment.type === "code") fragment.codeCacheSize = size;
 		this.#deleteIncrementalTokenFragment(sourceOffset);
 		if (size > RENDER_CACHE_MAX_ENTRY_SIZE) return;
 		while (
@@ -2449,6 +2602,7 @@ export class Markdown
 				});
 			} else {
 				const appendedFragment =
+					this.#appendCodeFragment(token, nextToken?.type, sourceOffset, contentWidth, signature) ??
 					this.#appendListFragment(token, nextToken?.type, sourceOffset, contentWidth, signature) ??
 					this.#appendPlainParagraphFragment(token, nextToken?.type, sourceOffset, contentWidth, signature);
 				if (appendedFragment !== undefined) {
@@ -2533,6 +2687,34 @@ export class Markdown
 								.some(line => TERMINAL.isImageLine(line.text) || isOsc66Line(line.text)),
 							startsWithEmptyLine: wrappedLines[tokenWrappedRowStart]?.text === "",
 						};
+						if (
+							token.type === "code" &&
+							!fragment.hasSpecialLine &&
+							typeof token.text === "string" &&
+							!(token.lang === "mermaid" && this.#theme.resolveMermaidAscii)
+						) {
+							const codeLineCount = token.text.split("\n").length;
+							const bodyLineStart = 1;
+							const bodyLineEnd = bodyLineStart + codeLineCount;
+							if (bodyLineEnd < tokenLineOffsets.length) {
+								const codeBodyRowCounts: number[] = [];
+								for (let lineIndex = bodyLineStart; lineIndex < bodyLineEnd; lineIndex++) {
+									codeBodyRowCounts.push(tokenLineOffsets[lineIndex + 1]! - tokenLineOffsets[lineIndex]!);
+								}
+								if (codeBodyRowCounts.every(rowCount => rowCount > 0)) {
+									fragment.codeText = token.text;
+									fragment.codeLang = typeof token.lang === "string" ? token.lang : undefined;
+									fragment.codeTrailingText = token.text.split("\n").at(-1)!;
+									fragment.codeBodyLineCount = codeLineCount;
+									fragment.codeBodyRowStart = tokenLineOffsets[bodyLineStart]!;
+									fragment.codeBodyRowCountTotal = codeBodyRowCounts.reduce(
+										(total, rowCount) => total + rowCount,
+										0,
+									);
+									fragment.codeBodyRowCounts = codeBodyRowCounts;
+								}
+							}
+						}
 						const plainParagraphText = this.#plainParagraphText(token);
 						if (plainParagraphText !== undefined && !fragment.hasSpecialLine) {
 							const spacerRows =
@@ -2732,13 +2914,23 @@ export class Markdown
 		return false;
 	}
 
-	#highlightStreamingLines(completedText: string, lang: string | undefined): readonly string[] | null {
+	#highlightStreamingLines(
+		completedText: string,
+		lang: string | undefined,
+		assumeAppendOnly = false,
+	): readonly string[] | null {
 		const signature = this.#activeRenderSignature;
 		const cache = this.#streamingHighlightCache;
+		const cachePrefixMatches =
+			cache !== undefined &&
+			(assumeAppendOnly
+				? completedText.length >= cache.text.length &&
+					(cache.text.length === completedText.length || completedText.charCodeAt(cache.text.length) === 0x0a)
+				: completedText.startsWith(cache.text));
 		if (
 			signature &&
 			cache &&
-			completedText.startsWith(cache.text) &&
+			cachePrefixMatches &&
 			(cache.text.length === completedText.length || completedText.charCodeAt(cache.text.length) === 0x0a) &&
 			cache.lang === lang &&
 			cache.width === signature.width &&
@@ -2759,9 +2951,15 @@ export class Markdown
 			if (completedText.length === cache.text.length) return cache.lines;
 
 			const addedText = completedText.slice(cache.text.length + 1);
-			const lines = cache.lines.concat(splitPushedHighlightLines(cache.stream.push(`${addedText}\n`)));
-			this.#streamingHighlightCache = { ...signature, lang, text: completedText, lines, stream: cache.stream };
-			return lines;
+			cache.lines.push(...splitPushedHighlightLines(cache.stream.push(`${addedText}\n`)));
+			this.#streamingHighlightCache = {
+				...signature,
+				lang,
+				text: completedText,
+				lines: cache.lines,
+				stream: cache.stream,
+			};
+			return cache.lines;
 		}
 
 		const stream = this.#createHighlightStream(lang);
