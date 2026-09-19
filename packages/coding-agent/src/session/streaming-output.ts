@@ -232,6 +232,49 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
 	};
 }
 
+/**
+ * Accumulates text while retaining only the most recent `maxBytes`, so a producer that never stops cannot
+ * grow the heap without bound. Callers that only ever need a truncated tail should push here instead of
+ * collecting every chunk and truncating at the end.
+ */
+export class TailAccumulator {
+	#chunks: string[] = [];
+	#bytes = 0;
+	#droppedBytes = 0;
+
+	constructor(readonly maxBytes: number) {}
+
+	push(text: string): void {
+		if (text.length === 0) return;
+		this.#chunks.push(text);
+		this.#bytes += Buffer.byteLength(text, "utf-8");
+		while (this.#bytes > this.maxBytes && this.#chunks.length > 1) {
+			const removed = this.#chunks.shift()!;
+			const removedBytes = Buffer.byteLength(removed, "utf-8");
+			this.#bytes -= removedBytes;
+			this.#droppedBytes += removedBytes;
+		}
+	}
+
+	/** Bytes discarded from the head because the retained window was full. */
+	get droppedBytes(): number {
+		return this.#droppedBytes;
+	}
+
+	get isEmpty(): boolean {
+		return this.#chunks.length === 0;
+	}
+
+	text(): string {
+		return this.#chunks.join("");
+	}
+
+	clear(): void {
+		this.#chunks = [];
+		this.#bytes = 0;
+	}
+}
+
 export function truncateTail(content: string, options: TruncationOptions = {}): TruncationResult {
 	const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;

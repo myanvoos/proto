@@ -46,7 +46,7 @@ import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
-import { truncateTail } from "../session/streaming-output";
+import { TailAccumulator, truncateTail } from "../session/streaming-output";
 
 import { prewalkWouldBeNoop, resolveWorkerEffortLevel, type WorkerEffort } from "../thinking";
 import type { ContextFileEntry } from "../tools";
@@ -826,6 +826,8 @@ interface SubagentRunMonitor {
 	lastAssistantSalvageText(): string | undefined;
 
 	rawOutput(): string;
+	/** Bytes of assistant text discarded because the retained output window was full. */
+	droppedOutputBytes(): number;
 	scheduleProgress(flush?: boolean): void;
 
 	finish(): void;
@@ -871,8 +873,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		modelRole: args.modelRole,
 	};
 
-	const outputChunks: string[] = [];
-	const finalOutputChunks: string[] = [];
+	// Retain a generous multiple of the reported cap so structured-output fallback parsing still sees a
+	// whole JSON document, while a runaway worker cannot grow the heap with text nobody will ever read.
+	const outputChunks = new TailAccumulator(MAX_OUTPUT_BYTES * 8);
+	const finalOutputChunks = new TailAccumulator(MAX_OUTPUT_BYTES * 8);
 	const RECENT_OUTPUT_TAIL_BYTES = 8 * 1024;
 	let recentOutputTail = "";
 	let recentOutputDirty = false;
@@ -1559,7 +1563,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		attach,
 		captureSalvage,
 		lastAssistantSalvageText: () => lastAssistantSalvageText,
-		rawOutput: () => (finalOutputChunks.length > 0 ? finalOutputChunks.join("") : outputChunks.join("")),
+		rawOutput: () => (finalOutputChunks.isEmpty ? outputChunks.text() : finalOutputChunks.text()),
+		droppedOutputBytes: () =>
+			finalOutputChunks.isEmpty ? outputChunks.droppedBytes : finalOutputChunks.droppedBytes,
 		scheduleProgress,
 		finish: () => {
 			resolved = true;
@@ -1844,11 +1850,16 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	let outputPath: string | undefined;
 	if (args.artifactsDir) {
 		outputPath = path.join(args.artifactsDir, `${id}.md`);
+		const droppedBytes = monitor.droppedOutputBytes();
+		const artifactContent =
+			droppedBytes > 0
+				? `[${droppedBytes} earlier bytes of output dropped; only the most recent output was retained]\n${rawOutput}`
+				: rawOutput;
 		try {
-			await Bun.write(outputPath, rawOutput);
+			await Bun.write(outputPath, artifactContent);
 			outputMeta = {
-				lineCount: rawOutput.split("\n").length,
-				charCount: rawOutput.length,
+				lineCount: artifactContent.split("\n").length,
+				charCount: artifactContent.length,
 			};
 		} catch {}
 	}
