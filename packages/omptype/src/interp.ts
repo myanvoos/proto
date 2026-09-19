@@ -132,7 +132,6 @@ function checkNode(ir: IR, v: unknown): boolean {
 			}
 			for (const key in rec) {
 				if (!own.call(rec, key)) continue;
-				if (ir.index !== undefined && !checks(ir.index, rec[key])) return false;
 				let patternMatched = false;
 				if (ir.patternIndexes !== undefined) {
 					for (const pattern of ir.patternIndexes) {
@@ -140,6 +139,15 @@ function checkNode(ir: IR, v: unknown): boolean {
 						patternMatched = true;
 						if (!checks(pattern.val, rec[key])) return false;
 					}
+				}
+				// index signatures cover only keys no prop or pattern index already validates
+				if (
+					ir.index !== undefined &&
+					!patternMatched &&
+					!ir.props.some(prop => prop.key === key) &&
+					!checks(ir.index, rec[key])
+				) {
+					return false;
 				}
 				if (
 					ir.extras === "reject" &&
@@ -422,21 +430,11 @@ function visitNode(ir: IR, v: unknown, path: PropertyKey[]): unknown {
 			for (const key in rec) {
 				if (!own.call(rec, key)) continue;
 				let indexed = false;
-				if (ir.index !== undefined) {
-					indexed = true;
-					path.push(key);
-					const result = visit(ir.index, rec[key], path);
-					path.pop();
-					if (result instanceof OmpErrors) {
-						if (errors) errors.append(result);
-						else errors = result;
-					} else if (out) {
-						out[key] = result;
-					}
-				}
+				let patternMatched = false;
 				if (ir.patternIndexes !== undefined) {
 					for (const pattern of ir.patternIndexes) {
 						if (!checks(pattern.key, key)) continue;
+						patternMatched = true;
 						indexed = true;
 						path.push(key);
 						const result = visit(pattern.val, rec[key], path);
@@ -447,6 +445,19 @@ function visitNode(ir: IR, v: unknown, path: PropertyKey[]): unknown {
 						} else if (out) {
 							out[key] = result;
 						}
+					}
+				}
+				// index signatures cover only keys no prop or pattern index already validates
+				if (ir.index !== undefined && !patternMatched && !ir.props.some(prop => prop.key === key)) {
+					indexed = true;
+					path.push(key);
+					const result = visit(ir.index, rec[key], path);
+					path.pop();
+					if (result instanceof OmpErrors) {
+						if (errors) errors.append(result);
+						else errors = result;
+					} else if (out) {
+						out[key] = result;
 					}
 				}
 				if (ir.extras === "reject" && !indexed && !ir.props.some(prop => prop.key === key)) {

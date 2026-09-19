@@ -93,3 +93,89 @@ test("JSON Schema oneOf is exact and combines with anyOf and sibling constraints
 	expectAccepted(siblingType, "value");
 	expectRejected(siblingType, 1);
 });
+
+test("JSON Schema additionalProperties does not constrain declared properties", () => {
+	const mixed = {
+		type: "object",
+		properties: { x: { type: "number" } },
+		additionalProperties: { type: "string" },
+	};
+	expectAccepted(mixed, { x: 1 });
+	expectAccepted(mixed, { x: 1, y: "ok" });
+	expectRejected(mixed, { x: "bad" });
+	expectRejected(mixed, { x: 1, y: 2 });
+});
+
+test("JSON Schema patternProperties constrains matching keys and closes via additionalProperties", () => {
+	const pattern = {
+		type: "object",
+		patternProperties: { "^x-": { type: "string" } },
+		additionalProperties: false,
+	};
+	expectAccepted(pattern, { "x-a": "ok" });
+	expectRejected(pattern, { "x-a": 1 });
+	expectRejected(pattern, { other: "ok" });
+	expectRejected(pattern, { "x-a": "ok", other: 1 });
+
+	const declaredAndPattern = {
+		type: "object",
+		properties: { x: { type: "number" } },
+		patternProperties: { "^x-": { type: "string" } },
+	};
+	expectAccepted(declaredAndPattern, { x: 1, "x-a": "ok" });
+	expectRejected(declaredAndPattern, { x: 1, "x-a": 2 });
+});
+
+test("JSON Schema nullable permits null alongside the declared type", () => {
+	const nullable = { type: "string", nullable: true };
+	expectAccepted(nullable, "ok");
+	expectAccepted(nullable, null);
+	expectRejected(nullable, 1);
+
+	const nullableObject = { type: "object", properties: { x: { type: "number" } }, nullable: true };
+	expectAccepted(nullableObject, { x: 1 });
+	expectAccepted(nullableObject, null);
+});
+
+test("JSON Schema $ref resolves escaped JSON Pointer tokens", () => {
+	const escaped = { $defs: { "a/b": { type: "string" } }, $ref: "#/$defs/a~1b" };
+	expectAccepted(escaped, "ok");
+	expectRejected(escaped, 1);
+
+	const tilde = { $defs: { "a~b": { type: "string" } }, $ref: "#/$defs/a~0b" };
+	expectAccepted(tilde, "ok");
+	expectRejected(tilde, 1);
+});
+
+test("JSON Schema uniqueItems, contains, minProperties and not are enforced", () => {
+	expectRejected({ type: "array", uniqueItems: true }, [1, 1]);
+	expectAccepted({ type: "array", uniqueItems: true }, [1, 2]);
+	expectRejected({ type: "array", uniqueItems: true }, [[1], [1]]);
+
+	expectRejected({ type: "array", contains: { const: 1 } }, [2]);
+	expectAccepted({ type: "array", contains: { const: 1 } }, [2, 1]);
+	expectRejected({ type: "array", contains: { const: 1 }, minContains: 2 }, [2, 1]);
+
+	expectRejected({ type: "object", minProperties: 1 }, {});
+	expectAccepted({ type: "object", minProperties: 1 }, { a: 1 });
+	expectRejected({ type: "object", maxProperties: 1 }, { a: 1, b: 2 });
+
+	expectRejected({ type: "number", not: { minimum: 0 } }, 1);
+	expectAccepted({ type: "number", not: { minimum: 0 } }, -1);
+	expectRejected({ type: "string", not: {} }, "anything");
+});
+
+test("JSON Schema default fills a missing required property but required still applies without one", () => {
+	const withDefault = {
+		type: "object",
+		properties: { x: { type: "string", default: "fallback" } },
+		required: ["x"],
+	};
+	const validator = fromJsonSchema(withDefault);
+	const filled = validator({});
+	expect(filled).toEqual({ x: "fallback" });
+	expectRejected(withDefault, { x: 1 });
+
+	const noDefault = { type: "object", properties: { y: { type: "string" } }, required: ["y"] };
+	expectRejected(noDefault, {});
+});

@@ -206,9 +206,12 @@ class Builder {
 					);
 				}
 				const stringKey = this.next("k");
+				const patternMatch =
+					node.patternIndexes?.map(pattern => `(${this.predicate(pattern.key, stringKey)})`).join("||") ?? "false";
 				if (node.index !== undefined) {
+					// index signatures cover only keys no prop or pattern index already validates
 					checks.push(
-						`(()=>{for(const ${stringKey} in ${v})if(own.call(${v},${stringKey})&&!(${this.predicate(node.index, `${v}[${stringKey}]`)}))return false;return true})()`,
+						`(()=>{for(const ${stringKey} in ${v})if(own.call(${v},${stringKey})&&!(${this.declaredCheck(node.props, stringKey)})&&!(${patternMatch})&&!(${this.predicate(node.index, `${v}[${stringKey}]`)}))return false;return true})()`,
 					);
 				}
 				if (node.patternIndexes !== undefined) {
@@ -225,9 +228,6 @@ class Builder {
 					);
 				}
 				if (node.extras === "reject") {
-					const patternMatch =
-						node.patternIndexes?.map(pattern => `(${this.predicate(pattern.key, stringKey)})`).join("||") ??
-						"false";
 					if (node.index === undefined) {
 						checks.push(
 							`(()=>{for(const ${stringKey} in ${v})if(own.call(${v},${stringKey})&&!(${this.declaredCheck(node.props, stringKey)})&&!(${patternMatch}))return false;return true})()`,
@@ -404,7 +404,10 @@ class Builder {
 				}
 				if (node.index !== undefined) {
 					const key = this.next("k");
-					this.push(`for(const ${key} in ${v})if(own.call(${v},${key})){`);
+					// index signatures cover only keys no declared prop already validates
+					this.push(
+						`for(const ${key} in ${v})if(own.call(${v},${key})&&!(${this.declaredCheck(node.props, key)})){`,
+					);
 					this.emitCollectCheck(node.index, `${v}[${key}]`, [...segs, { d: key }], errors);
 					this.push("}");
 				} else if (node.extras === "reject") {

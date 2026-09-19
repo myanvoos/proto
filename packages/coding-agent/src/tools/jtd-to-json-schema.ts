@@ -10,18 +10,19 @@ import {
 	isJTDValues,
 } from "./jtd-utils.js";
 
-const primitiveMap: Record<JTDPrimitive, string> = {
-	boolean: "boolean",
-	string: "string",
-	timestamp: "string",
-	float32: "number",
-	float64: "number",
-	int8: "integer",
-	uint8: "integer",
-	int16: "integer",
-	uint16: "integer",
-	int32: "integer",
-	uint32: "integer",
+// JTD numeric types carry fixed ranges; timestamp is an RFC 3339 date-time string.
+const primitiveMap: Record<JTDPrimitive, Record<string, unknown>> = {
+	boolean: { type: "boolean" },
+	string: { type: "string" },
+	timestamp: { type: "string", format: "date-time" },
+	float32: { type: "number" },
+	float64: { type: "number" },
+	int8: { type: "integer", minimum: -128, maximum: 127 },
+	uint8: { type: "integer", minimum: 0, maximum: 255 },
+	int16: { type: "integer", minimum: -32768, maximum: 32767 },
+	uint16: { type: "integer", minimum: 0, maximum: 65535 },
+	int32: { type: "integer", minimum: -2147483648, maximum: 2147483647 },
+	uint32: { type: "integer", minimum: 0, maximum: 4294967295 },
 };
 
 function convertSchema(schema: unknown): unknown {
@@ -41,11 +42,11 @@ function convertSchema(schema: unknown): unknown {
 	}
 
 	if (isJTDType(schema)) {
-		const jsonType = primitiveMap[schema.type as JTDPrimitive];
-		if (!jsonType) {
+		const converted = primitiveMap[schema.type as JTDPrimitive];
+		if (!converted) {
 			return { type: schema.type };
 		}
-		return { type: jsonType };
+		return { ...converted };
 	}
 
 	if (isJTDValues(schema)) {
@@ -266,9 +267,26 @@ function normalizeJsonSchemaNode(schema: unknown): unknown {
 
 export function jtdToJsonSchema(schema: unknown): unknown {
 	if (isJTDSchema(schema)) {
-		return convertSchema(schema);
+		return withRootDefinitions(schema, convertSchema(schema));
 	}
 	return normalizeJsonSchemaNode(schema);
+}
+
+// JTD `definitions` (and JSON Schema `$defs`) live only at the root; refs are emitted as
+// "#/$defs/<name>", so the converted schema must carry them or every ref fails to resolve.
+function withRootDefinitions(schema: unknown, converted: unknown): unknown {
+	if (!isRecord(schema) || !isRecord(converted)) return converted;
+	const sources: Record<string, unknown>[] = [];
+	if (isRecord(schema.definitions)) sources.push(schema.definitions);
+	if (isRecord(schema.$defs)) sources.push(schema.$defs);
+	if (sources.length === 0) return converted;
+	const defs: Record<string, unknown> = {};
+	for (const source of sources) {
+		for (const [name, def] of Object.entries(source)) {
+			defs[name] = normalizeJsonSchemaNode(def);
+		}
+	}
+	return { ...converted, $defs: defs };
 }
 
 export function normalizeSchema(schema: unknown): { normalized?: unknown; error?: string } {

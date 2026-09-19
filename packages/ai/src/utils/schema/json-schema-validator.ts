@@ -1,4 +1,3 @@
-import { logger } from "@oh-my-pi/pi-utils";
 import { areJsonValuesEqual } from "./equality";
 
 export interface JsonSchemaValidationIssue {
@@ -23,9 +22,33 @@ interface ValidationContext {
 	refDepth: number;
 }
 
+/** Instance locations a schema successfully evaluated, for unevaluatedProperties/Items. */
+interface EvaluatedTracker {
+	properties: Set<string>;
+	items: Set<number>;
+}
+
 const MAX_REF_DEPTH = 64;
 
-let seenUnevaluatedWarning = false;
+const ENFORCED_FORMATS: Record<string, RegExp> = {
+	"date-time":
+		/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])[Tt ]([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?([Zz]|[+-]([01]\d|2[0-3]):[0-5]\d)$/,
+	date: /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/,
+	time: /^([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?([Zz]|[+-]([01]\d|2[0-3]):[0-5]\d)$/,
+};
+
+function codePointLength(value: string): number {
+	let length = 0;
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+			const next = value.charCodeAt(index + 1);
+			if (next >= 0xdc00 && next <= 0xdfff) index++;
+		}
+		length++;
+	}
+	return length;
+}
 
 function getValueIdentity(ctx: ValidationContext, value: object): number {
 	let id = ctx.objectIds.get(value);
@@ -140,6 +163,7 @@ function validateSchemaNode(
 	path: readonly PropertyKey[],
 	ctx: ValidationContext,
 	issues: JsonSchemaValidationIssue[],
+	evaluated?: EvaluatedTracker,
 ): boolean {
 	if (schema === true) return true;
 	if (schema === false) {
@@ -151,33 +175,46 @@ function validateSchemaNode(
 		return false;
 	}
 
-	const ref = schema.$ref;
-	if (typeof ref === "string") {
-		const resolved = resolveLocalRef(ctx.root, ref);
+	// A node carrying unevaluatedProperties/Items needs to know everything its
+	// subschemas evaluated, so it validates its children against a fresh tracker.
+	const tracker: EvaluatedTracker | undefined =
+		schema.unevaluatedProperties !== undefined || schema.unevaluatedItems !== undefined
+			? { properties: new Set(), items: new Set() }
+			: evaluated;
+
+	let refValid = true;
+	if (typeof schema.$ref === "string") {
+		const resolved = resolveLocalRef(ctx.root, schema.$ref);
 		if (resolved === undefined) {
-			pushIssue(issues, path, `unresolved reference ${ref}`, { keyword: "$ref" });
+			pushIssue(issues, path, `unresolved reference ${schema.$ref}`, { keyword: "$ref" });
 			return false;
 		}
 
 		let pairKey: string | undefined;
 		if (value !== null && typeof value === "object") {
-			pairKey = `${ref}:${getValueIdentity(ctx, value)}`;
-			if (ctx.seenPairs.has(pairKey)) return true;
-			ctx.seenPairs.add(pairKey);
+			pairKey = `${schema.$ref}:${getValueIdentity(ctx, value)}`;
+			if (!ctx.seenPairs.has(pairKey)) {
+				ctx.seenPairs.add(pairKey);
+				refValid = validateSchemaNode(resolved, value, path, ctx, issues, tracker);
+				ctx.seenPairs.delete(pairKey);
+			}
+			// A ref/value pair already being validated is treated as satisfied; its
+			// adjacent keywords still apply below.
 		} else {
 			if (ctx.refDepth >= MAX_REF_DEPTH) {
 				pushIssue(issues, path, "reference depth exceeded", { keyword: "$ref" });
-				return false;
+				refValid = false;
+			} else {
+				ctx.refDepth += 1;
+				refValid = validateSchemaNode(resolved, value, path, ctx, issues, tracker);
+				ctx.refDepth -= 1;
 			}
-			ctx.refDepth += 1;
 		}
-		const ok = validateSchemaNode(resolved, value, path, ctx, issues);
-		if (pairKey !== undefined) ctx.seenPairs.delete(pairKey);
-		else ctx.refDepth -= 1;
-		return ok;
+		// JSON Schema 2020-12: keywords adjacent to $ref apply alongside the reference,
+		// so validation falls through to the local keywords instead of returning here.
 	}
 
-	if (value === null && schema.nullable === true) return true;
+	if (value === null && schema.nullable === true) return refValid;
 
 	let valid = true;
 	const types = schemaTypes(schema);
@@ -210,16 +247,20 @@ function validateSchemaNode(
 		}
 
 		let matches = 0;
-		let firstIssues: JsonSchemaValidationIssue[] | undefined;
 		let selectedIssues: JsonSchemaValidationIssue[] | undefined;
 		let selectedCount = 0;
+		const branchIssuesList: JsonSchemaValidationIssue[][] = [];
 		for (const branch of branches) {
 			const branchIssues: JsonSchemaValidationIssue[] = [];
-			if (validateSchemaNode(branch, value, path, ctx, branchIssues)) {
+			const branchEvaluated: EvaluatedTracker | undefined = tracker
+				? { properties: new Set(), items: new Set() }
+				: undefined;
+			if (validateSchemaNode(branch, value, path, ctx, branchIssues, branchEvaluated)) {
 				matches += 1;
+				mergeEvaluated(branchEvaluated, tracker);
 				continue;
 			}
-			if (!firstIssues) firstIssues = branchIssues;
+			branchIssuesList.push(branchIssues);
 			if (isTagSelectedBranch(branch, value)) {
 				selectedCount += 1;
 				if (selectedCount === 1) selectedIssues = branchIssues;
@@ -229,9 +270,42 @@ function validateSchemaNode(
 		if (!branchValid) {
 			if (matches === 0 && selectedCount === 1 && selectedIssues && selectedIssues.length > 0) {
 				issues.push(...selectedIssues);
-			} else if (matches === 0 && firstIssues && firstIssues.length > 0) {
-				for (const branchIssue of firstIssues) {
-					issues.push(branchIssue.fromUnionBranch ? branchIssue : { ...branchIssue, fromUnionBranch: true });
+			} else if (matches === 0) {
+				// No branch matched and no tag selected one: report every satisfiable
+				// alternative's failures so the model can pick a workable branch, instead of
+				// an arbitrary first branch it may not be able to satisfy at all.
+				const MAX_REPORTED_BRANCHES = 8;
+				const viable = branches
+					.map((branch, index) => ({ branch, issues: branchIssuesList[index] ?? [] }))
+					.filter(entry => entry.branch !== false);
+				if (viable.length === 1) {
+					for (const branchIssue of viable[0].issues) {
+						issues.push(branchIssue.fromUnionBranch ? branchIssue : { ...branchIssue, fromUnionBranch: true });
+					}
+				} else if (viable.length > 1 && viable.some(entry => entry.issues.length > 0)) {
+					const reported = viable.slice(0, MAX_REPORTED_BRANCHES);
+					pushIssue(
+						issues,
+						path,
+						keyword === "anyOf"
+							? `must match at least one of ${viable.length} alternatives; each viable branch's failures follow`
+							: `must match exactly one of ${viable.length} alternatives; each viable branch's failures follow`,
+						{ keyword },
+					);
+					for (const entry of reported) {
+						for (const branchIssue of entry.issues) {
+							issues.push(branchIssue.fromUnionBranch ? branchIssue : { ...branchIssue, fromUnionBranch: true });
+						}
+					}
+				} else {
+					pushIssue(
+						issues,
+						path,
+						keyword === "anyOf" ? "must match at least one schema" : "must match exactly one schema",
+						{
+							keyword,
+						},
+					);
 				}
 			} else {
 				pushIssue(
@@ -249,6 +323,7 @@ function validateSchemaNode(
 
 	if ("not" in schema) {
 		const notIssues: JsonSchemaValidationIssue[] = [];
+		// A failing `not` branch evaluates nothing, so it validates against a throwaway.
 		if (validateSchemaNode(schema.not, value, path, ctx, notIssues)) {
 			pushIssue(issues, path, "must not match excluded schema", { keyword: "not" });
 			valid = false;
@@ -260,22 +335,15 @@ function validateSchemaNode(
 		const ifOk = validateSchemaNode(schema.if, value, path, ctx, ifIssues);
 		const branch = ifOk ? schema.then : schema.else;
 		if (branch !== undefined) {
-			valid = validateSchemaNode(branch, value, path, ctx, issues) && valid;
+			valid = validateSchemaNode(branch, value, path, ctx, issues, tracker) && valid;
 		}
 	}
 
-	if (("unevaluatedProperties" in schema || "unevaluatedItems" in schema) && !seenUnevaluatedWarning) {
-		seenUnevaluatedWarning = true;
-		logger.warn(
-			"JSON Schema unevaluatedProperties/unevaluatedItems are not enforced by the in-tree validator; treating as permissive",
-		);
-	}
-
 	if (isJsonObject(value)) {
-		valid = validateObjectKeywords(schema, value, path, ctx, issues) && valid;
+		valid = validateObjectKeywords(schema, value, path, ctx, issues, tracker) && valid;
 	}
 	if (Array.isArray(value)) {
-		valid = validateArrayKeywords(schema, value, path, ctx, issues) && valid;
+		valid = validateArrayKeywords(schema, value, path, ctx, issues, tracker) && valid;
 	}
 	if (typeof value === "string") {
 		valid = validateStringKeywords(schema, value, path, issues) && valid;
@@ -284,7 +352,14 @@ function validateSchemaNode(
 		valid = validateNumberKeywords(schema, value, path, issues) && valid;
 	}
 
-	return valid;
+	if (tracker !== evaluated && evaluated !== undefined) mergeEvaluated(tracker, evaluated);
+	return valid && refValid;
+}
+
+function mergeEvaluated(source: EvaluatedTracker | undefined, target: EvaluatedTracker | undefined): void {
+	if (!source || !target) return;
+	for (const key of source.properties) target.properties.add(key);
+	for (const index of source.items) target.items.add(index);
 }
 
 function validateObjectKeywords(
@@ -293,6 +368,7 @@ function validateObjectKeywords(
 	path: readonly PropertyKey[],
 	ctx: ValidationContext,
 	issues: JsonSchemaValidationIssue[],
+	evaluated?: EvaluatedTracker,
 ): boolean {
 	let valid = true;
 	const properties = isJsonObject(schema.properties) ? schema.properties : {};
@@ -307,7 +383,9 @@ function validateObjectKeywords(
 
 	for (const key in properties) {
 		if (!(key in value)) continue;
-		valid = validateSchemaNode(properties[key], value[key], [...path, key], ctx, issues) && valid;
+		const propertyValid = validateSchemaNode(properties[key], value[key], [...path, key], ctx, issues, evaluated);
+		if (propertyValid) evaluated?.properties.add(key);
+		valid = propertyValid && valid;
 	}
 
 	if (schema.propertyNames !== undefined) {
@@ -332,7 +410,9 @@ function validateObjectKeywords(
 			for (const key in value) {
 				if (!re.test(key)) continue;
 				known.add(key);
-				valid = validateSchemaNode(patternSchema, value[key], [...path, key], ctx, issues) && valid;
+				const patternValid = validateSchemaNode(patternSchema, value[key], [...path, key], ctx, issues, evaluated);
+				if (patternValid) evaluated?.properties.add(key);
+				valid = patternValid && valid;
 			}
 		}
 	}
@@ -359,7 +439,7 @@ function validateObjectKeywords(
 		const dependentSchemas = schema.dependentSchemas;
 		for (const key in dependentSchemas) {
 			if (!(key in value)) continue;
-			valid = validateSchemaNode(dependentSchemas[key], value, path, ctx, issues) && valid;
+			valid = validateSchemaNode(dependentSchemas[key], value, path, ctx, issues, evaluated) && valid;
 		}
 	}
 
@@ -373,7 +453,9 @@ function validateObjectKeywords(
 	} else if (additional !== undefined && additional !== true) {
 		for (const key in value) {
 			if (known.has(key)) continue;
-			valid = validateSchemaNode(additional, value[key], [...path, key], ctx, issues) && valid;
+			const additionalValid = validateSchemaNode(additional, value[key], [...path, key], ctx, issues, evaluated);
+			if (additionalValid) evaluated?.properties.add(key);
+			valid = additionalValid && valid;
 		}
 	}
 
@@ -386,6 +468,28 @@ function validateObjectKeywords(
 		valid = false;
 	}
 
+	const unevaluatedProperties = schema.unevaluatedProperties;
+	if (unevaluatedProperties !== undefined && evaluated) {
+		for (const key of Object.keys(value)) {
+			if (evaluated.properties.has(key)) continue;
+			if (unevaluatedProperties === false) {
+				pushIssue(issues, [...path, key], "must not be present", { keyword: "unevaluatedProperties" });
+				valid = false;
+				continue;
+			}
+			const unevaluatedValid = validateSchemaNode(
+				unevaluatedProperties,
+				value[key],
+				[...path, key],
+				ctx,
+				issues,
+				evaluated,
+			);
+			if (unevaluatedValid) evaluated.properties.add(key);
+			valid = unevaluatedValid && valid;
+		}
+	}
+
 	return valid;
 }
 
@@ -395,6 +499,7 @@ function validateArrayKeywords(
 	path: readonly PropertyKey[],
 	ctx: ValidationContext,
 	issues: JsonSchemaValidationIssue[],
+	evaluated?: EvaluatedTracker,
 ): boolean {
 	let valid = true;
 	if (typeof schema.minItems === "number" && value.length < schema.minItems) {
@@ -425,16 +530,22 @@ function validateArrayKeywords(
 	} else if (prefixItems) {
 		const limit = Math.min(prefixItems.length, value.length);
 		for (let i = 0; i < limit; i += 1) {
-			valid = validateSchemaNode(prefixItems[i], value[i], [...path, i], ctx, issues) && valid;
+			const itemValid = validateSchemaNode(prefixItems[i], value[i], [...path, i], ctx, issues, evaluated);
+			if (itemValid) evaluated?.items.add(i);
+			valid = itemValid && valid;
 		}
 		if (items !== undefined) {
 			for (let i = prefixItems.length; i < value.length; i += 1) {
-				valid = validateSchemaNode(items, value[i], [...path, i], ctx, issues) && valid;
+				const itemValid = validateSchemaNode(items, value[i], [...path, i], ctx, issues, evaluated);
+				if (itemValid) evaluated?.items.add(i);
+				valid = itemValid && valid;
 			}
 		}
 	} else if (items !== undefined) {
 		for (let i = 0; i < value.length; i += 1) {
-			valid = validateSchemaNode(items, value[i], [...path, i], ctx, issues) && valid;
+			const itemValid = validateSchemaNode(items, value[i], [...path, i], ctx, issues, evaluated);
+			if (itemValid) evaluated?.items.add(i);
+			valid = itemValid && valid;
 		}
 	}
 
@@ -456,6 +567,27 @@ function validateArrayKeywords(
 			pushIssue(issues, path, `must contain at most ${maxContains} matching item(s)`, { keyword: "maxContains" });
 			valid = false;
 		}
+		// contains only evaluates indices when its count bounds hold
+		if (valid && evaluated) {
+			for (let i = 0; i < value.length; i += 1) {
+				if (validateSchemaNode(schema.contains, value[i], [...path, i], ctx, issues)) evaluated.items.add(i);
+			}
+		}
+	}
+
+	const unevaluatedItems = schema.unevaluatedItems;
+	if (unevaluatedItems !== undefined && evaluated) {
+		for (let i = 0; i < value.length; i += 1) {
+			if (evaluated.items.has(i)) continue;
+			if (unevaluatedItems === false) {
+				pushIssue(issues, [...path, i], "must not be present", { keyword: "unevaluatedItems" });
+				valid = false;
+				continue;
+			}
+			const unevaluatedValid = validateSchemaNode(unevaluatedItems, value[i], [...path, i], ctx, issues, evaluated);
+			if (unevaluatedValid) evaluated.items.add(i);
+			valid = unevaluatedValid && valid;
+		}
 	}
 
 	return valid;
@@ -468,13 +600,21 @@ function validateStringKeywords(
 	issues: JsonSchemaValidationIssue[],
 ): boolean {
 	let valid = true;
-	if (typeof schema.minLength === "number" && value.length < schema.minLength) {
+	// JSON Schema counts string length in code points, not UTF-16 code units
+	if (typeof schema.minLength === "number" && codePointLength(value) < schema.minLength) {
 		pushIssue(issues, path, `must be at least ${schema.minLength} characters`, { keyword: "minLength" });
 		valid = false;
 	}
-	if (typeof schema.maxLength === "number" && value.length > schema.maxLength) {
+	if (typeof schema.maxLength === "number" && codePointLength(value) > schema.maxLength) {
 		pushIssue(issues, path, `must be at most ${schema.maxLength} characters`, { keyword: "maxLength" });
 		valid = false;
+	}
+	if (typeof schema.format === "string") {
+		const formatPattern = ENFORCED_FORMATS[schema.format];
+		if (formatPattern && !formatPattern.test(value)) {
+			pushIssue(issues, path, `must be a valid ${schema.format} string`, { keyword: "format" });
+			valid = false;
+		}
 	}
 	if (typeof schema.pattern === "string") {
 		try {
