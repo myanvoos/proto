@@ -38,6 +38,17 @@ import { StreamingRevealController } from "./streaming-reveal";
 import { decodeStreamedToolArgs, streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
+type AssistantContentBlock = AssistantMessage["content"][number];
+type StreamedTimelineLocation =
+	| { kind: "before"; index: number }
+	| { kind: "after"; toolCallId: string; index: number };
+type StreamedToolCallState = {
+	id: string;
+	name: string;
+	partialJson: string | undefined;
+	argumentsKey: string;
+	rawInput: boolean;
+};
 
 const IRC_MESSAGE_VISIBLE_TTL_MS = 10_000;
 
@@ -60,7 +71,6 @@ type AgentSessionEventHandlers = {
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 
-	#lastVisibleBlockCount = 0;
 	#renderedCustomMessages = new Set<string>();
 	#lastIntent: string | undefined = undefined;
 
@@ -70,6 +80,16 @@ export class EventController {
 	#toolTimelineComponents = new Map<string, Component>();
 
 	#streamedToolCallIdByIndex = new Map<number, string>();
+	#streamedToolCallStates = new Map<number, StreamedToolCallState>();
+	#streamedContentBlockTypes = new Map<number, AssistantContentBlock["type"]>();
+	#streamedTimelineLocations = new Map<number, StreamedTimelineLocation>();
+	#streamedTimelineBeforeTools: AssistantMessage["content"] = [];
+	#streamedTimelineAfterTools = new Map<string, AssistantMessage["content"]>();
+	#streamedTimelineLastToolCallId: string | undefined;
+	#streamedTimelineHasToolCalls = false;
+	#streamedAssistantContentLength = 0;
+	#streamedVisibleBlocks = new Map<number, boolean>();
+	#streamedVisibleBlockCount = 0;
 
 	#retractedToolCallIds = new Set<string>();
 	#executionStartedCallIds = new Set<string>();
@@ -196,6 +216,95 @@ export class EventController {
 		this.#liveIrcCards.clear();
 	}
 
+	#resetStreamingAssistantState(): void {
+		this.#streamedToolCallIdByIndex.clear();
+		this.#streamedToolCallStates.clear();
+		this.#streamedContentBlockTypes.clear();
+		this.#streamedTimelineLocations.clear();
+		this.#streamedTimelineBeforeTools = [];
+		this.#streamedTimelineAfterTools.clear();
+		this.#streamedTimelineLastToolCallId = undefined;
+		this.#streamedTimelineHasToolCalls = false;
+		this.#streamedAssistantContentLength = 0;
+		this.#streamedVisibleBlocks.clear();
+		this.#streamedVisibleBlockCount = 0;
+	}
+
+	#streamedArgumentsKey(argumentsValue: unknown): string {
+		try {
+			return JSON.stringify(argumentsValue) ?? String(argumentsValue);
+		} catch {
+			return String(argumentsValue);
+		}
+	}
+
+	#streamedToolCallChanged(index: number, content: Extract<AssistantContentBlock, { type: "toolCall" }>): boolean {
+		const partialJson = getStreamingPartialJson(content);
+		const rawInput = content.customWireName !== undefined;
+		const state: StreamedToolCallState = {
+			id: content.id,
+			name: content.name,
+			partialJson,
+			argumentsKey: this.#streamedArgumentsKey(content.arguments),
+			rawInput,
+		};
+		const previous = this.#streamedToolCallStates.get(index);
+		if (
+			previous &&
+			previous.id === state.id &&
+			previous.name === state.name &&
+			previous.partialJson === state.partialJson &&
+			previous.argumentsKey === state.argumentsKey &&
+			previous.rawInput === state.rawInput
+		) {
+			return false;
+		}
+		this.#streamedToolCallStates.set(index, state);
+		return true;
+	}
+
+	#recordStreamingTimelineBlock(
+		index: number,
+		content: AssistantContentBlock,
+		changedAfterToolCallIds: Set<string>,
+	): void {
+		if (content.type === "toolCall") {
+			this.#streamedTimelineHasToolCalls = true;
+			if (!this.#streamedContentBlockTypes.has(index)) this.#streamedTimelineLastToolCallId = content.id;
+			return;
+		}
+
+		let location = this.#streamedTimelineLocations.get(index);
+		if (!location) {
+			if (this.#streamedTimelineLastToolCallId === undefined) {
+				location = { kind: "before", index };
+			} else {
+				const segment = this.#streamedTimelineAfterTools.get(this.#streamedTimelineLastToolCallId) ?? [];
+				location = { kind: "after", toolCallId: this.#streamedTimelineLastToolCallId, index: segment.length };
+			}
+			this.#streamedTimelineLocations.set(index, location);
+		}
+
+		if (location.kind === "before") {
+			this.#streamedTimelineBeforeTools[location.index] = content;
+			return;
+		}
+		const segment = this.#streamedTimelineAfterTools.get(location.toolCallId) ?? [];
+		segment[location.index] = content;
+		this.#streamedTimelineAfterTools.set(location.toolCallId, segment);
+		changedAfterToolCallIds.add(location.toolCallId);
+	}
+
+	#streamedTimelineSegment(message: AssistantMessage, content: AssistantMessage["content"]): AssistantMessage {
+		return {
+			...message,
+			content,
+			stopReason: "stop",
+			errorMessage: undefined,
+			retryRecovery: undefined,
+		};
+	}
+
 	#resetReadGroup(): void {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
@@ -244,14 +353,12 @@ export class EventController {
 
 	#detachToolCardForRendererMigration(toolCallId: string, component: ToolExecutionHandle): number | undefined {
 		const componentIndex = this.ctx.chatContainer.children.indexOf(component);
-		let replacementIndex = componentIndex >= 0 ? componentIndex : undefined;
+		const replacementIndex = componentIndex >= 0 ? componentIndex : undefined;
 		if (component instanceof ReadToolGroupComponent) {
 			const removeGroup = component.removeEntry(toolCallId);
 			if (component === this.#lastReadGroup) this.#resetReadGroup();
 			if (removeGroup) {
 				this.ctx.chatContainer.disposeAndRemoveChild(component);
-			} else if (replacementIndex !== undefined) {
-				replacementIndex++;
 			}
 		} else {
 			this.ctx.chatContainer.disposeAndRemoveChild(component);
@@ -478,11 +585,10 @@ export class EventController {
 		}
 		this.#pendingMessageUpdate = undefined;
 		this.#resetReadGroup();
-		this.#lastVisibleBlockCount = 0;
+		this.#resetStreamingAssistantState();
 		this.#renderedCustomMessages.clear();
 		this.#lastIntent = undefined;
 		this.#toolTimelineComponents.clear();
-		this.#streamedToolCallIdByIndex.clear();
 		this.#retractedToolCallIds.clear();
 		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
@@ -571,8 +677,8 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		this.#resetStreamingAssistantState();
 		this.#toolTimelineComponents.clear();
-		this.#streamedToolCallIdByIndex.clear();
 		this.#retractedToolCallIds.clear();
 		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
@@ -676,8 +782,7 @@ export class EventController {
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "assistant") {
-			this.#lastVisibleBlockCount = 0;
-			this.#streamedToolCallIdByIndex.clear();
+			this.#resetStreamingAssistantState();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
 			this.#updateWorkingSpinnerFrames(event.message);
@@ -819,6 +924,196 @@ export class EventController {
 		}
 	}
 
+	#updateStreamingVisibleBlock(index: number, content: AssistantContentBlock): number {
+		const visible =
+			(content.type === "text" && canonicalizeMessage(content.text).length > 0) ||
+			(content.type === "thinking" && canonicalizeMessage(content.thinking).length > 0);
+		const previous = this.#streamedVisibleBlocks.get(index);
+		if (previous === visible) return 0;
+		this.#streamedVisibleBlocks.set(index, visible);
+		return visible ? 1 : -1;
+	}
+
+	#updateStreamingToolIntent(content: Extract<AssistantContentBlock, { type: "toolCall" }>): void {
+		const args = content.arguments;
+		if (!args || typeof args !== "object") return;
+		if (INTENT_FIELD in args) {
+			this.#updateWorkingMessageFromIntent((args as Record<string, unknown>)[INTENT_FIELD]);
+			return;
+		}
+		const tool = this.ctx.viewSession.getToolByName(content.name);
+		if (typeof tool?.intent !== "function") return;
+		try {
+			const derived = tool.intent(args as never)?.trim();
+			if (derived) this.#updateWorkingMessageFromIntent(derived);
+		} catch {}
+	}
+
+	#processStreamingToolCall(
+		contentIndex: number,
+		content: Extract<AssistantContentBlock, { type: "toolCall" }>,
+	): void {
+		const priorId = this.#streamedToolCallIdByIndex.get(contentIndex);
+		if (priorId !== undefined && priorId !== content.id) {
+			this.#migrateStreamedToolCallId(priorId, content.id);
+		}
+		this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
+
+		let renderArgs: Record<string, unknown>;
+		let classificationArgs = content.arguments;
+		const partialJson = getStreamingPartialJson(content);
+		const rawInput = content.customWireName !== undefined;
+		const tool = this.ctx.viewSession.getToolByName(content.name);
+		const streamingStringKeys = streamingStringKeysForTool(content.name, rawInput);
+		if (partialJson !== undefined) {
+			classificationArgs = decodeStreamedToolArgs(partialJson, {
+				rawInput,
+				fullArgs: content.arguments,
+				streamingStringKeys,
+			});
+			renderArgs = this.#toolArgsReveal.setTarget(content.id, partialJson, {
+				rawInput,
+				exposeRawPartialJson: exposesRawPartialJson(content.name, rawInput, tool),
+				streamingStringKeys,
+			});
+		} else {
+			this.#toolArgsReveal.finish(content.id);
+			renderArgs = content.arguments;
+		}
+
+		let replacementIndex: number | undefined;
+		if (content.name === "read") {
+			if (!readArgsHaveTarget(classificationArgs)) return;
+			if (readArgsCollapseIntoGroup(classificationArgs)) {
+				let component = this.ctx.pendingTools.get(content.id);
+				if (component && !(component instanceof ReadToolGroupComponent)) {
+					replacementIndex = this.#detachToolCardForRendererMigration(content.id, component);
+					component = undefined;
+				}
+				if (!component) this.#resolveDisplaceablePoll(content.name);
+				this.#trackReadToolCall(content.id, classificationArgs);
+				if (component) {
+					component.updateArgs(renderArgs, content.id);
+					this.#toolArgsReveal.bind(content.id, component);
+				} else {
+					const group = this.#getReadGroup();
+					group.updateArgs(renderArgs, content.id);
+					this.ctx.pendingTools.set(content.id, group);
+					this.#toolTimelineComponents.set(content.id, group);
+					this.#toolArgsReveal.bind(content.id, group);
+					this.#moveTranscriptComponent(group, replacementIndex);
+				}
+				return;
+			}
+
+			const component = this.ctx.pendingTools.get(content.id);
+			if (component instanceof ReadToolGroupComponent) {
+				replacementIndex = this.#detachToolCardForRendererMigration(content.id, component);
+			}
+		}
+
+		if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
+			this.#resolveDisplaceablePoll(content.name);
+			this.#resetReadGroup();
+			const component = new ToolExecutionComponent(
+				content.name,
+				renderArgs,
+				{
+					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
+					showImages: settings.get("terminal.showImages"),
+				},
+				tool,
+				this.ctx.ui,
+			);
+			component.setExpanded(this.ctx.toolOutputExpanded);
+			this.ctx.chatContainer.addChild(component);
+			this.#moveTranscriptComponent(component, replacementIndex);
+			this.ctx.pendingTools.set(content.id, component);
+			this.#toolTimelineComponents.set(content.id, component);
+			this.#toolArgsReveal.bind(content.id, component);
+
+			const orphan = this.#orphanedToolCompletions.get(content.id);
+			if (orphan) {
+				this.#orphanedToolCompletions.delete(content.id);
+				this.#settleHeldCompletion(component, orphan);
+			}
+		} else {
+			const component = this.ctx.pendingTools.get(content.id);
+			if (component) {
+				component.updateArgs(renderArgs, content.id);
+				this.#toolArgsReveal.bind(content.id, component);
+			}
+		}
+	}
+
+	// Assistant updates carry the cumulative message plus the changed content index. Keep the
+	// timeline/cache state incremental for deltas; message_end invokes the authoritative full pass.
+	#processAssistantMessageUpdate(message: AssistantMessage, changedContentIndex?: number, fullPass = false): void {
+		if (fullPass) this.#resetStreamingAssistantState();
+		if (!fullPass && message.content.length < this.#streamedAssistantContentLength) {
+			this.#resetStreamingAssistantState();
+			fullPass = true;
+		}
+
+		const indices = new Set<number>();
+		if (fullPass) {
+			for (let index = 0; index < message.content.length; index++) indices.add(index);
+		} else {
+			for (let index = this.#streamedAssistantContentLength; index < message.content.length; index++) {
+				indices.add(index);
+			}
+			const changedIndex = changedContentIndex ?? message.content.length - 1;
+			if (changedIndex >= 0 && changedIndex < message.content.length) indices.add(changedIndex);
+			if (changedContentIndex === undefined && this.#streamedAssistantContentLength > 0) {
+				indices.add(this.#streamedAssistantContentLength - 1);
+			}
+		}
+		const orderedIndices = [...indices].sort((left, right) => left - right);
+		for (const index of orderedIndices) {
+			const content = message.content[index]!;
+			const priorType = this.#streamedContentBlockTypes.get(index);
+			if (priorType !== undefined && priorType !== content.type) {
+				this.#resetStreamingAssistantState();
+				return this.#processAssistantMessageUpdate(message, undefined, true);
+			}
+		}
+
+		const changedAfterToolCallIds = new Set<string>();
+		const previousVisibleBlockCount = this.#streamedVisibleBlockCount;
+		for (const index of orderedIndices) {
+			const content = message.content[index]!;
+			this.#recordStreamingTimelineBlock(index, content, changedAfterToolCallIds);
+			this.#streamedContentBlockTypes.set(index, content.type);
+			if (content.type !== "toolCall") {
+				this.#streamedVisibleBlockCount += this.#updateStreamingVisibleBlock(index, content);
+			}
+		}
+		if (this.#streamedVisibleBlockCount > previousVisibleBlockCount) this.#resetReadGroup();
+		for (const index of orderedIndices) {
+			const content = message.content[index]!;
+			if (content.type !== "toolCall" || !this.#streamedToolCallChanged(index, content)) continue;
+			this.#processStreamingToolCall(index, content);
+			this.#updateStreamingToolIntent(content);
+		}
+		this.#streamedAssistantContentLength = Math.max(this.#streamedAssistantContentLength, message.content.length);
+
+		const beforeTools = this.#streamedTimelineHasToolCalls
+			? this.#streamedTimelineSegment(message, this.#streamedTimelineBeforeTools)
+			: message;
+		this.#streamingReveal.setTarget(beforeTools, this.#streamedTimelineHasToolCalls);
+		if (this.#streamedTimelineHasToolCalls && !this.ctx.streamingComponent?.isTranscriptBlockFinalized()) {
+			this.ctx.streamingComponent?.markTranscriptBlockFinalized();
+		}
+
+		for (const toolCallId of changedAfterToolCallIds) {
+			const segmentContent = this.#streamedTimelineAfterTools.get(toolCallId);
+			this.#upsertPostToolAssistantSegment(
+				toolCallId,
+				segmentContent ? this.#streamedTimelineSegment(message, segmentContent) : undefined,
+			);
+		}
+	}
+
 	async #handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
@@ -829,140 +1124,7 @@ export class EventController {
 			}
 			this.ctx.streamingMessage = event.message;
 			this.#updateWorkingSpinnerFrames(event.message);
-			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
-			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
-			if (timeline.hasToolCalls && !this.ctx.streamingComponent.isTranscriptBlockFinalized()) {
-				this.ctx.streamingComponent.markTranscriptBlockFinalized();
-			}
-
-			const visibleBlockCount = this.ctx.streamingMessage.content.filter(
-				content =>
-					(content.type === "text" && canonicalizeMessage(content.text)) ||
-					(content.type === "thinking" && canonicalizeMessage(content.thinking)),
-			).length;
-			if (visibleBlockCount > this.#lastVisibleBlockCount) {
-				this.#resetReadGroup();
-				this.#lastVisibleBlockCount = visibleBlockCount;
-			}
-
-			for (let contentIndex = 0; contentIndex < this.ctx.streamingMessage.content.length; contentIndex++) {
-				const content = this.ctx.streamingMessage.content[contentIndex]!;
-				if (content.type !== "toolCall") continue;
-
-				const priorId = this.#streamedToolCallIdByIndex.get(contentIndex);
-				if (priorId !== undefined && priorId !== content.id) {
-					this.#migrateStreamedToolCallId(priorId, content.id);
-				}
-				this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
-
-				let renderArgs: Record<string, unknown>;
-				let classificationArgs = content.arguments;
-				const partialJson = getStreamingPartialJson(content);
-				const rawInput = content.customWireName !== undefined;
-				const tool = this.ctx.viewSession.getToolByName(content.name);
-				const streamingStringKeys = streamingStringKeysForTool(content.name, rawInput);
-				if (partialJson !== undefined) {
-					classificationArgs = decodeStreamedToolArgs(partialJson, {
-						rawInput,
-						fullArgs: content.arguments,
-						streamingStringKeys,
-					});
-					renderArgs = this.#toolArgsReveal.setTarget(content.id, partialJson, {
-						rawInput,
-						exposeRawPartialJson: exposesRawPartialJson(content.name, rawInput, tool),
-						streamingStringKeys,
-					});
-				} else {
-					this.#toolArgsReveal.finish(content.id);
-					renderArgs = content.arguments;
-				}
-
-				let replacementIndex: number | undefined;
-				if (content.name === "read") {
-					if (!readArgsHaveTarget(classificationArgs)) continue;
-					if (readArgsCollapseIntoGroup(classificationArgs)) {
-						let component = this.ctx.pendingTools.get(content.id);
-						if (component && !(component instanceof ReadToolGroupComponent)) {
-							replacementIndex = this.#detachToolCardForRendererMigration(content.id, component);
-							component = undefined;
-						}
-						if (!component) this.#resolveDisplaceablePoll(content.name);
-						this.#trackReadToolCall(content.id, classificationArgs);
-						if (component) {
-							component.updateArgs(renderArgs, content.id);
-							this.#toolArgsReveal.bind(content.id, component);
-						} else {
-							const group = this.#getReadGroup();
-							group.updateArgs(renderArgs, content.id);
-							this.ctx.pendingTools.set(content.id, group);
-							this.#toolTimelineComponents.set(content.id, group);
-							this.#toolArgsReveal.bind(content.id, group);
-							this.#moveTranscriptComponent(group, replacementIndex);
-						}
-						continue;
-					}
-
-					const component = this.ctx.pendingTools.get(content.id);
-					if (component instanceof ReadToolGroupComponent) {
-						replacementIndex = this.#detachToolCardForRendererMigration(content.id, component);
-					}
-				}
-
-				if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
-					this.#resolveDisplaceablePoll(content.name);
-					this.#resetReadGroup();
-					const component = new ToolExecutionComponent(
-						content.name,
-						renderArgs,
-						{
-							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
-							showImages: settings.get("terminal.showImages"),
-						},
-						tool,
-						this.ctx.ui,
-					);
-					component.setExpanded(this.ctx.toolOutputExpanded);
-					this.ctx.chatContainer.addChild(component);
-					this.#moveTranscriptComponent(component, replacementIndex);
-					this.ctx.pendingTools.set(content.id, component);
-					this.#toolTimelineComponents.set(content.id, component);
-					this.#toolArgsReveal.bind(content.id, component);
-
-					const orphan = this.#orphanedToolCompletions.get(content.id);
-					if (orphan) {
-						this.#orphanedToolCompletions.delete(content.id);
-						this.#settleHeldCompletion(component, orphan);
-					}
-				} else {
-					const component = this.ctx.pendingTools.get(content.id);
-					if (component) {
-						component.updateArgs(renderArgs, content.id);
-						this.#toolArgsReveal.bind(content.id, component);
-					}
-				}
-			}
-			for (const [toolCallId, segment] of timeline.afterToolCalls) {
-				this.#upsertPostToolAssistantSegment(toolCallId, segment);
-			}
-
-			for (const content of this.ctx.streamingMessage.content) {
-				if (content.type !== "toolCall") continue;
-				const args = content.arguments;
-				if (!args || typeof args !== "object") continue;
-				if (INTENT_FIELD in args) {
-					this.#updateWorkingMessageFromIntent(args[INTENT_FIELD]);
-					continue;
-				}
-				const tool = this.ctx.viewSession.getToolByName(content.name);
-				if (typeof tool?.intent !== "function") continue;
-				try {
-					const derived = tool.intent(args as never)?.trim();
-					if (derived) {
-						this.#updateWorkingMessageFromIntent(derived);
-					}
-				} catch {}
-			}
-
+			this.#processAssistantMessageUpdate(event.message, event.assistantMessageEvent?.contentIndex);
 			this.ctx.ui.requestRender();
 		}
 	}
@@ -977,6 +1139,7 @@ export class EventController {
 		}
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
 			this.ctx.streamingMessage = event.message;
+			this.#processAssistantMessageUpdate(event.message, undefined, true);
 			this.#streamingReveal.stop();
 			this.#toolArgsReveal.flushAll();
 			let errorMessage: string | undefined;
@@ -1319,7 +1482,7 @@ export class EventController {
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
 		this.#toolTimelineComponents.clear();
-		this.#streamedToolCallIdByIndex.clear();
+		this.#resetStreamingAssistantState();
 		this.#retractedToolCallIds.clear();
 		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();

@@ -1,0 +1,46 @@
+{
+	"suite": "event-controller",
+	"label": "baseline",
+	"recordedAt": "2026-09-19T11:47:00.292Z",
+	"commit": "b5d371c2ff",
+	"bunVersion": "1.4.2",
+	"platform": "linux-arm64",
+	"cases": [
+		{
+			"name": "100-tool-call-blocks",
+			"runs": 5,
+			"warmup": 1,
+			"min": 18.318068,
+			"median": 25.474963,
+			"p95": 28.2835432,
+			"max": 28.449029,
+			"mean": 24.9315158,
+			"stddev": 3.5682323819265696,
+			"opsPerSec": 40.10987571000396
+		},
+		{
+			"name": "500-tool-call-blocks",
+			"runs": 5,
+			"warmup": 1,
+			"min": 551.059998,
+			"median": 557.443301,
+			"p95": 582.3281542000001,
+			"max": 586.998949,
+			"mean": 562.0498086,
+			"stddev": 13.318096457234907,
+			"opsPerSec": 1.7792017445764858
+		},
+		{
+			"name": "1000-tool-call-blocks",
+			"runs": 5,
+			"warmup": 1,
+			"min": 2652.688951,
+			"median": 2775.806271,
+			"p95": 2821.3922116,
+			"max": 2824.530349,
+			"mean": 2757.3927142000002,
+			"stddev": 62.44856168221926,
+			"opsPerSec": 0.3626614355112377
+		}
+	]
+}

@@ -10,7 +10,7 @@ import { ToolExecutionComponent, type ToolExecutionHandle, type ToolExecutionUi 
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
-import { UiHelpers } from "../utils/ui-helpers";
+import { resolvePreservedLiveToolCallIds, UiHelpers } from "../utils/ui-helpers";
 import { EventController } from "./event-controller";
 
 await Settings.init();
@@ -18,6 +18,7 @@ await initTheme(false, false, "proto");
 
 const NOOP = () => {};
 const TOOL_CALL_ID = "streamed-read";
+const SECOND_TOOL_CALL_ID = "streamed-read-second";
 const STALE_PROVIDER_PATH = "arti";
 const UI: ToolExecutionUi & { terminal: { setProgress: (active: boolean) => void } } = {
 	requestRender: NOOP,
@@ -32,7 +33,7 @@ const USAGE = {
 	cacheRead: 0,
 	cacheWrite: 0,
 	totalTokens: 0,
-	cost: { input: 0, output: 0, total: 0 },
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
 function streamedReadMessage(partialJson: string): AssistantMessage {
@@ -46,6 +47,53 @@ function streamedReadMessage(partialJson: string): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [call, { type: "text", text: "after read" }],
+		stopReason: "toolUse",
+		api: "openai-completions",
+		provider: "test",
+		model: "test",
+		usage: USAGE,
+		timestamp: 1,
+	} as AssistantMessage;
+}
+
+function streamedReadOnlyMessage(partialJson: string): AssistantMessage {
+	const call = {
+		type: "toolCall" as const,
+		id: TOOL_CALL_ID,
+		name: "read",
+		arguments: { path: STALE_PROVIDER_PATH },
+	};
+	setStreamingPartialJson(call, partialJson);
+	return {
+		role: "assistant",
+		content: [call],
+		stopReason: "toolUse",
+		api: "openai-completions",
+		provider: "test",
+		model: "test",
+		usage: USAGE,
+		timestamp: 1,
+	} as AssistantMessage;
+}
+
+function streamedReadPairMessage(firstPartialJson: string, secondPartialJson: string): AssistantMessage {
+	const firstCall = {
+		type: "toolCall" as const,
+		id: TOOL_CALL_ID,
+		name: "read",
+		arguments: { path: STALE_PROVIDER_PATH },
+	};
+	const secondCall = {
+		type: "toolCall" as const,
+		id: SECOND_TOOL_CALL_ID,
+		name: "read",
+		arguments: { path: "other-file" },
+	};
+	setStreamingPartialJson(firstCall, firstPartialJson);
+	setStreamingPartialJson(secondCall, secondPartialJson);
+	return {
+		role: "assistant",
+		content: [firstCall, secondCall],
 		stopReason: "toolUse",
 		api: "openai-completions",
 		provider: "test",
@@ -130,7 +178,11 @@ test("live and from-scratch rebuilt reads classify the same growing partial targ
 			type: "message_start",
 			message: { ...first, content: [] },
 		} as unknown as AgentSessionEvent);
-		await controller.handleEvent({ type: "message_update", message: first } as unknown as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "message_update",
+			message: first,
+			assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta: "", partial: first },
+		} as unknown as AgentSessionEvent);
 
 		const firstLive = harness.pendingTools.get(TOOL_CALL_ID);
 		const firstRebuilt = rebuiltToolComponent(first);
@@ -138,13 +190,102 @@ test("live and from-scratch rebuilt reads classify the same growing partial targ
 		expect(firstRebuilt).toBeInstanceOf(ReadToolGroupComponent);
 		expect(firstLive?.constructor).toBe(firstRebuilt?.constructor);
 
-		await controller.handleEvent({ type: "message_update", message: second } as unknown as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "message_update",
+			message: second,
+			assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta: "", partial: second },
+		} as unknown as AgentSessionEvent);
 
 		const secondLive = harness.pendingTools.get(TOOL_CALL_ID);
 		const secondRebuilt = rebuiltToolComponent(second);
 		expect(secondRebuilt).toBeInstanceOf(ToolExecutionComponent);
 		expect(secondLive).toBeInstanceOf(ToolExecutionComponent);
 		expect(secondLive?.constructor).toBe(secondRebuilt?.constructor);
+	} finally {
+		controller.dispose();
+		harness.chatContainer.dispose();
+	}
+});
+
+test("live and rebuilt transcripts keep a migrating read before its shared read group", async () => {
+	const harness = createContext();
+	const controller = new EventController(harness.context);
+	const first = streamedReadOnlyMessage('{"path":"arti');
+	const joined = streamedReadPairMessage('{"path":"arti', '{"path":"other-file"}');
+	const second = streamedReadPairMessage('{"path":"artifact://12', '{"path":"other-file"}');
+	try {
+		await controller.handleEvent({
+			type: "message_start",
+			message: { ...first, content: [] },
+		} as unknown as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_update", message: first } as unknown as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "message_update",
+			message: joined,
+			assistantMessageEvent: { type: "toolcall_delta", contentIndex: 1, delta: "", partial: joined },
+		} as unknown as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "message_update",
+			message: second,
+			assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta: "", partial: second },
+		} as unknown as AgentSessionEvent);
+
+		const liveFirst = harness.pendingTools.get(TOOL_CALL_ID);
+		const liveSecond = harness.pendingTools.get(SECOND_TOOL_CALL_ID);
+		expect(liveFirst).toBeInstanceOf(ToolExecutionComponent);
+		expect(liveSecond).toBeInstanceOf(ReadToolGroupComponent);
+		expect(harness.chatContainer.children.indexOf(liveFirst as Component)).toBeLessThan(
+			harness.chatContainer.children.indexOf(liveSecond as Component),
+		);
+
+		const liveComponents = [...harness.chatContainer.children];
+		const livePendingTools = new Map(harness.pendingTools);
+		harness.chatContainer.clear();
+		const helpers = new UiHelpers(harness.context);
+		const preserved = resolvePreservedLiveToolCallIds({
+			livePendingTools,
+			liveComponents,
+			messages: [second],
+		});
+		helpers.renderSessionContextWithLiveToolComponents(
+			{ messages: [second] } as unknown as SessionContext,
+			{ preservedLiveToolCallIds: preserved },
+			livePendingTools,
+		);
+		const rebuiltFirst = livePendingTools.get(TOOL_CALL_ID);
+		const rebuiltSecond = livePendingTools.get(SECOND_TOOL_CALL_ID);
+		expect(harness.chatContainer.children.indexOf(rebuiltFirst as Component)).toBeLessThan(
+			harness.chatContainer.children.indexOf(rebuiltSecond as Component),
+		);
+	} finally {
+		controller.dispose();
+		harness.chatContainer.dispose();
+	}
+});
+test("message end performs a full pass for a skipped streamed tool delta", async () => {
+	const harness = createContext();
+	const controller = new EventController(harness.context);
+	const joined = streamedReadPairMessage('{"path":"arti', '{"path":"other-file"}');
+	const final = streamedReadPairMessage('{"path":"artifact://12', '{"path":"other-file"}');
+	try {
+		await controller.handleEvent({
+			type: "message_start",
+			message: { ...joined, content: [] },
+		} as unknown as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "message_update",
+			message: joined,
+			assistantMessageEvent: { type: "toolcall_delta", contentIndex: 1, delta: "", partial: joined },
+		} as unknown as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_end", message: final } as unknown as AgentSessionEvent);
+
+		const liveFirst = harness.pendingTools.get(TOOL_CALL_ID);
+		const liveSecond = harness.pendingTools.get(SECOND_TOOL_CALL_ID);
+		expect(liveFirst).toBeInstanceOf(ToolExecutionComponent);
+		expect(liveSecond).toBeInstanceOf(ReadToolGroupComponent);
+		expect(harness.chatContainer.children.indexOf(liveFirst as Component)).toBeLessThan(
+			harness.chatContainer.children.indexOf(liveSecond as Component),
+		);
 	} finally {
 		controller.dispose();
 		harness.chatContainer.dispose();
