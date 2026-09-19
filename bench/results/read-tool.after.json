@@ -1,0 +1,34 @@
+{
+	"suite": "read-tool",
+	"label": "after",
+	"recordedAt": "2026-09-19T12:24:04.403Z",
+	"commit": "143ebc8426",
+	"bunVersion": "1.4.2",
+	"platform": "linux-arm64",
+	"cases": [
+		{
+			"name": "ranges-8",
+			"runs": 10,
+			"warmup": 2,
+			"min": 28.087916,
+			"median": 36.950920499999995,
+			"p95": 54.24546759999999,
+			"max": 58.238971,
+			"mean": 39.329965,
+			"stddev": 9.162468450116595,
+			"opsPerSec": 25.425906176117877
+		},
+		{
+			"name": "ranges-32",
+			"runs": 10,
+			"warmup": 2,
+			"min": 31.397483,
+			"median": 42.102681,
+			"p95": 55.248253899999995,
+			"max": 57.074911,
+			"mean": 43.815438,
+			"stddev": 7.575931552483114,
+			"opsPerSec": 22.823005900340423
+		}
+	]
+}

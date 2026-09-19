@@ -58,6 +58,7 @@ export interface TruncationOptions {
 	direction: "head" | "tail" | "middle";
 	startLine?: number;
 	totalFileLines?: number;
+	maxBytes?: number;
 	artifactId?: string;
 }
 
@@ -80,7 +81,7 @@ export class OutputMetaBuilder {
 	truncation(result: TruncationResult, options: TruncationOptions): this {
 		if (!result.truncated) return this;
 
-		const { direction, startLine = 1, totalFileLines, artifactId } = options;
+		const { direction, startLine = 1, totalFileLines, maxBytes, artifactId } = options;
 		const outputLines = result.outputLines ?? result.totalLines;
 		const outputBytes = result.outputBytes ?? result.totalBytes;
 		const isMiddle = direction === "middle" || result.truncatedBy === "middle";
@@ -106,6 +107,7 @@ export class OutputMetaBuilder {
 				totalBytes: result.totalBytes,
 				outputLines,
 				outputBytes,
+				...(maxBytes === undefined ? {} : { maxBytes }),
 				headRange: headLines > 0 ? { start: 1, end: headLines } : undefined,
 				tailRange:
 					tailLines > 0 ? { start: effectiveTotalLines - tailLines + 1, end: effectiveTotalLines } : undefined,
@@ -134,6 +136,7 @@ export class OutputMetaBuilder {
 			totalBytes: result.totalBytes,
 			outputLines,
 			outputBytes,
+			...(maxBytes === undefined ? {} : { maxBytes }),
 			shownRange: { start: shownStart, end: shownEnd },
 			artifactId,
 			nextOffset: direction === "head" ? shownEnd + 1 : undefined,
@@ -551,13 +554,15 @@ async function spillLargeResultToArtifact(
 				maxLines: tailLines,
 			});
 
-	const newContent: (TextContent | ImageContent)[] = [];
-	for (const block of result.content) {
-		if (block.type !== "text") {
-			newContent.push(block);
+	let replacementInserted = false;
+	const newContent: (TextContent | ImageContent)[] = result.content.map(block => {
+		if (block.type !== "text") return block;
+		if (block.text.length > 0 && !replacementInserted) {
+			replacementInserted = true;
+			return { ...block, text: truncated.content };
 		}
-	}
-	newContent.push({ type: "text", text: truncated.content });
+		return block.text.length > 0 ? { ...block, text: "" } : block;
+	});
 
 	const outputLines = truncated.outputLines ?? truncated.totalLines;
 	const outputBytes = truncated.outputBytes ?? truncated.totalBytes;

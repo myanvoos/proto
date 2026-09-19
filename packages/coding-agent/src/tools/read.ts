@@ -61,6 +61,7 @@ import {
 	buildInMemoryMultiRangeResult,
 	buildInMemoryTextResult,
 	countTextLines,
+	decodeUtf8Text,
 	formatLineEntriesWithMode,
 	formatSummaryElisionFooter,
 	formatTextWithMode,
@@ -148,6 +149,8 @@ interface BufferedFileText {
 
 	readonly rawSegments: readonly string[];
 
+	readonly normalizedSegments: readonly string[];
+
 	readonly strippedText: string;
 
 	readonly normalizedText: string;
@@ -165,17 +168,19 @@ async function readWholeFile(absolutePath: string): Promise<Buffer | undefined> 
 	}
 }
 
-function deriveBufferedFileText(bytes: Buffer): BufferedFileText {
-	const rawText = bytes.toString("utf-8");
+function deriveBufferedFileText(bytes: Buffer, decodedText?: string): BufferedFileText {
+	const rawText = decodedText ?? bytes.toString("utf-8");
 	const { text: strippedText } = stripBom(rawText);
 
 	const normalizedText = strippedText.includes("\r") ? normalizeToLF(strippedText) : strippedText;
 	const rawSegments = rawText.split("\n");
+	const normalizedSegments = normalizedText.split("\n");
 	const addressableLines = splitAddressableFileLines(normalizedText);
 	return {
 		bytes,
 		rawText,
 		rawSegments,
+		normalizedSegments,
 		strippedText,
 		normalizedText,
 		addressableLines,
@@ -190,6 +195,7 @@ interface ReadLineWindow {
 	stoppedByByteLimit: boolean;
 	firstLinePreview?: { text: string; bytes: number };
 	firstLineByteLength?: number;
+	invalidUtf8: boolean;
 
 	hasTrailingNewline: boolean;
 
@@ -204,15 +210,18 @@ function collectLineWindowFromBuffer(
 	selectedLineLimit: number,
 	includeTerminalNewline: boolean,
 ): ReadLineWindow {
-	const { bytes, rawSegments, endsWithNewline } = file;
+	const { bytes, rawSegments, normalizedSegments, endsWithNewline } = file;
+	const displaySegments = includeTerminalNewline ? rawSegments : normalizedSegments;
 
-	const totalFileLines = endsWithNewline && rawSegments.length > 1 ? rawSegments.length - 1 : rawSegments.length;
-	const collectionLineCount = includeTerminalNewline ? rawSegments.length : totalFileLines;
+	const totalFileLines =
+		endsWithNewline && displaySegments.length > 1 ? displaySegments.length - 1 : displaySegments.length;
+	const collectionLineCount = includeTerminalNewline ? displaySegments.length : totalFileLines;
 	const window: ReadLineWindow = {
 		lines: [],
 		totalFileLines,
 		collectedBytes: 0,
 		stoppedByByteLimit: false,
+		invalidUtf8: false,
 		hasTrailingNewline: endsWithNewline,
 		reachedEof: true,
 	};
@@ -255,7 +264,7 @@ function collectLineWindowFromBuffer(
 				window.stoppedByByteLimit = true;
 				doneCollecting = true;
 			} else {
-				window.lines.push(rawSegments[index] ?? "");
+				window.lines.push(displaySegments[index] ?? "");
 				window.collectedBytes += separatorBytes + lineByteLength;
 				window.firstLineByteLength ??= lineByteLength;
 				if (window.collectedBytes > maxBytes) {
@@ -297,6 +306,8 @@ async function streamLinesFromFile(
 	let stoppedByByteLimit = false;
 	let doneCollecting = false;
 	let reachedEof = true;
+	let invalidUtf8 = false;
+	const utf8Validator = new TextDecoder("utf-8", { fatal: true });
 	let fileHandle: fs.FileHandle | null = null;
 	let currentLineLength = 0;
 	let currentLineChunks: Buffer[] = [];
@@ -326,10 +337,11 @@ async function streamLinesFromFile(
 
 	const decodeLine = (): string => {
 		if (currentLineLength === 0) return "";
-		if (currentLineChunks.length === 1 && currentLineChunks[0]?.length === currentLineLength) {
-			return currentLineChunks[0].toString("utf-8");
-		}
-		return Buffer.concat(currentLineChunks, currentLineLength).toString("utf-8");
+		const text =
+			currentLineChunks.length === 1 && currentLineChunks[0]?.length === currentLineLength
+				? currentLineChunks[0].toString("utf-8")
+				: Buffer.concat(currentLineChunks, currentLineLength).toString("utf-8");
+		return includeTerminalNewline || !text.endsWith("\r") ? text : text.slice(0, -1);
 	};
 
 	const maybeCapturePreview = (segment: Uint8Array) => {
@@ -407,6 +419,18 @@ async function streamLinesFromFile(
 
 			sawAnyByte = true;
 			const chunk = bufferChunk.subarray(0, bytesRead);
+			if (chunk.indexOf(0) !== -1) {
+				invalidUtf8 = true;
+				reachedEof = false;
+				break;
+			}
+			try {
+				utf8Validator.decode(chunk, { stream: true });
+			} catch {
+				invalidUtf8 = true;
+				reachedEof = false;
+				break;
+			}
 			endedWithNewline = chunk[bytesRead - 1] === 0x0a;
 
 			if (doneCollecting && selectedLineLimit !== null && selectedLinesSeen >= selectedLineLimit) {
@@ -451,14 +475,23 @@ async function streamLinesFromFile(
 		}
 	}
 
+	if (reachedEof) {
+		try {
+			utf8Validator.decode();
+		} catch {
+			invalidUtf8 = true;
+			reachedEof = false;
+		}
+	}
 	if (reachedEof && (currentLineLength > 0 || !sawAnyByte || (endedWithNewline && includeTerminalNewline))) {
 		finalizeLine();
 	}
 
 	let firstLinePreview: { text: string; bytes: number } | undefined;
 	if (firstLinePreviewBytes > 0) {
-		const { text, bytes } = truncateHeadBytes(Buffer.concat(firstLinePreviewChunks, firstLinePreviewBytes), maxBytes);
-		firstLinePreview = { text, bytes };
+		const preview = truncateHeadBytes(Buffer.concat(firstLinePreviewChunks, firstLinePreviewBytes), maxBytes);
+		const text = includeTerminalNewline || !preview.text.endsWith("\r") ? preview.text : preview.text.slice(0, -1);
+		firstLinePreview = { text, bytes: preview.bytes };
 	}
 
 	const totalFileLines =
@@ -471,8 +504,227 @@ async function streamLinesFromFile(
 		stoppedByByteLimit,
 		firstLinePreview,
 		firstLineByteLength,
+		invalidUtf8,
 		reachedEof,
 		hasTrailingNewline: reachedEof && endedWithNewline,
+	};
+}
+
+interface StreamRangeRequest {
+	startLine: number;
+	maxLines: number;
+	maxBytes: number;
+}
+
+interface StreamRangeAccumulator {
+	readonly request: StreamRangeRequest;
+	readonly lines: string[];
+	collectedBytes: number;
+	stoppedByByteLimit: boolean;
+	firstLinePreview?: { text: string; bytes: number };
+	firstLineByteLength?: number;
+	done: boolean;
+}
+
+interface StreamRangesResult {
+	windows: ReadLineWindow[];
+	totalFileLines: number;
+	reachedEof: boolean;
+	hasTrailingNewline: boolean;
+	invalidUtf8: boolean;
+}
+
+async function streamLinesForRanges(
+	filePath: string,
+	requests: readonly StreamRangeRequest[],
+	signal: AbortSignal | undefined,
+	includeTerminalNewline: boolean,
+): Promise<StreamRangesResult> {
+	const bufferChunk = Buffer.allocUnsafe(READ_CHUNK_SIZE);
+	const accumulators: StreamRangeAccumulator[] = requests.map(request => ({
+		request,
+		lines: [],
+		collectedBytes: 0,
+		stoppedByByteLimit: false,
+		done: false,
+	}));
+	const maxScanLine = Math.max(...requests.map(request => request.startLine + request.maxLines));
+	const sortedAccumulators = [...accumulators].sort((left, right) => left.request.startLine - right.request.startLine);
+	const activeAccumulators: StreamRangeAccumulator[] = [];
+	let nextAccumulatorIndex = 0;
+	const utf8Validator = new TextDecoder("utf-8", { fatal: true });
+	let fileHandle: fs.FileHandle | null = null;
+	let lineIndex = 0;
+	let currentLineLength = 0;
+	let currentLineChunks: Buffer[] = [];
+	let captureLimit = 0;
+	let sawAnyByte = false;
+	let endedWithNewline = false;
+	let reachedEof = true;
+	let invalidUtf8 = false;
+	let stopScanning = false;
+
+	const resetLine = () => {
+		lineIndex++;
+		currentLineLength = 0;
+		currentLineChunks = [];
+		captureLimit = 0;
+	};
+
+	const prepareLine = () => {
+		while (nextAccumulatorIndex < sortedAccumulators.length) {
+			const accumulator = sortedAccumulators[nextAccumulatorIndex];
+			if (accumulator.request.startLine > lineIndex) break;
+			activeAccumulators.push(accumulator);
+			nextAccumulatorIndex++;
+		}
+		for (let index = activeAccumulators.length - 1; index >= 0; index--) {
+			const accumulator = activeAccumulators[index];
+			if (accumulator.done || lineIndex >= accumulator.request.startLine + accumulator.request.maxLines) {
+				activeAccumulators.splice(index, 1);
+			}
+		}
+		captureLimit = activeAccumulators.reduce(
+			(limit, accumulator) => Math.max(limit, accumulator.request.maxBytes),
+			0,
+		);
+		if (captureLimit <= 0) currentLineChunks = [];
+	};
+
+	const appendSegment = (segment: Uint8Array) => {
+		const previousLength = currentLineLength;
+		currentLineLength += segment.length;
+		if (captureLimit <= previousLength || segment.length === 0) return;
+		const captureLength = Math.min(segment.length, captureLimit - previousLength);
+		currentLineChunks.push(Buffer.from(segment.subarray(0, captureLength)));
+	};
+
+	const decodeCurrentLine = (): string => {
+		if (currentLineLength === 0) return "";
+		const text =
+			currentLineChunks.length === 1 && currentLineChunks[0]?.length === currentLineLength
+				? currentLineChunks[0].toString("utf-8")
+				: Buffer.concat(currentLineChunks, Math.min(currentLineLength, captureLimit)).toString("utf-8");
+		return includeTerminalNewline || !text.endsWith("\r") ? text : text.slice(0, -1);
+	};
+
+	const finalizeLine = () => {
+		for (const accumulator of activeAccumulators) {
+			const { request } = accumulator;
+			if (accumulator.firstLineByteLength === undefined) accumulator.firstLineByteLength = currentLineLength;
+			if (accumulator.firstLinePreview === undefined && currentLineLength > 0) {
+				const preview = truncateHeadBytes(
+					Buffer.concat(currentLineChunks, Math.min(currentLineLength, captureLimit)),
+					request.maxBytes,
+				);
+				const text =
+					includeTerminalNewline || !preview.text.endsWith("\r") ? preview.text : preview.text.slice(0, -1);
+				accumulator.firstLinePreview = { text, bytes: preview.bytes };
+			}
+			if (accumulator.lines.length >= request.maxLines) {
+				accumulator.done = true;
+				continue;
+			}
+			const separatorBytes = accumulator.lines.length > 0 ? 1 : 0;
+			if (accumulator.lines.length === 0 && currentLineLength > request.maxBytes) {
+				accumulator.stoppedByByteLimit = true;
+				accumulator.done = true;
+			} else if (
+				accumulator.lines.length > 0 &&
+				accumulator.collectedBytes + separatorBytes + currentLineLength > request.maxBytes
+			) {
+				accumulator.stoppedByByteLimit = true;
+				accumulator.done = true;
+			} else {
+				accumulator.lines.push(decodeCurrentLine());
+				accumulator.collectedBytes += separatorBytes + currentLineLength;
+				if (accumulator.collectedBytes > request.maxBytes) {
+					accumulator.stoppedByByteLimit = true;
+					accumulator.done = true;
+				} else if (accumulator.lines.length >= request.maxLines) {
+					accumulator.done = true;
+				}
+			}
+		}
+		resetLine();
+		prepareLine();
+		if (
+			accumulators.every(accumulator => accumulator.done) ||
+			(lineIndex >= maxScanLine &&
+				accumulators.every(accumulator => accumulator.done || lineIndex >= accumulator.request.startLine))
+		) {
+			stopScanning = true;
+			reachedEof = false;
+		}
+	};
+
+	prepareLine();
+	try {
+		fileHandle = await fs.open(filePath, "r");
+		while (!stopScanning) {
+			throwIfAborted(signal);
+			const { bytesRead } = await fileHandle.read(bufferChunk, 0, bufferChunk.length, null);
+			if (bytesRead === 0) break;
+			sawAnyByte = true;
+			const chunk = bufferChunk.subarray(0, bytesRead);
+			if (chunk.indexOf(0) !== -1) {
+				invalidUtf8 = true;
+				reachedEof = false;
+				break;
+			}
+			try {
+				utf8Validator.decode(chunk, { stream: true });
+			} catch {
+				invalidUtf8 = true;
+				reachedEof = false;
+				break;
+			}
+			endedWithNewline = chunk[bytesRead - 1] === LF_BYTE;
+			let start = 0;
+			for (let index = 0; index < chunk.length; index++) {
+				if (chunk[index] !== LF_BYTE) continue;
+				const segment = chunk.subarray(start, index);
+				if (segment.length > 0) appendSegment(segment);
+				finalizeLine();
+				start = index + 1;
+				if (stopScanning) break;
+			}
+			if (!stopScanning && start < chunk.length) appendSegment(chunk.subarray(start));
+		}
+	} finally {
+		if (fileHandle) await fileHandle.close();
+	}
+
+	if (reachedEof) {
+		try {
+			utf8Validator.decode();
+		} catch {
+			invalidUtf8 = true;
+			reachedEof = false;
+		}
+	}
+	if (reachedEof && (currentLineLength > 0 || !sawAnyByte || (endedWithNewline && includeTerminalNewline))) {
+		finalizeLine();
+	}
+
+	const totalFileLines =
+		reachedEof && endedWithNewline && includeTerminalNewline && lineIndex > 1 ? lineIndex - 1 : lineIndex;
+	return {
+		windows: accumulators.map(accumulator => ({
+			lines: accumulator.lines,
+			totalFileLines,
+			collectedBytes: accumulator.collectedBytes,
+			stoppedByByteLimit: accumulator.stoppedByByteLimit,
+			firstLinePreview: accumulator.firstLinePreview,
+			firstLineByteLength: accumulator.firstLineByteLength,
+			invalidUtf8,
+			hasTrailingNewline: reachedEof && endedWithNewline,
+			reachedEof,
+		})),
+		totalFileLines,
+		reachedEof,
+		hasTrailingNewline: reachedEof && endedWithNewline,
+		invalidUtf8,
 	};
 }
 
@@ -772,6 +1024,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		columnTruncated: number;
 		displayContent?: { text: string; startLine: number; lineNumbers?: Array<number | null> };
 		bridgeResult?: AgentToolResult<ReadToolDetails>;
+		truncation?: {
+			result: TruncationResult;
+			options: { direction: "head"; startLine?: number; totalFileLines?: number; maxBytes?: number };
+		};
+		invalidUtf8?: boolean;
 	}> {
 		const rawSelector = isRawSelector(parsed);
 		const includeContext = shouldExpandRangeContext(absolutePath);
@@ -811,42 +1068,106 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const fullLines = rawSelector ? undefined : buffered?.addressableLines;
 		let columnTruncated = 0;
 		let displayContent: { text: string; startLine: number; lineNumbers?: Array<number | null> } | undefined;
+		let truncation:
+			| {
+					result: TruncationResult;
+					options: { direction: "head"; startLine?: number; totalFileLines?: number; maxBytes?: number };
+			  }
+			| undefined;
 
-		for (const range of ranges) {
-			const rangeStart = range.startLine - 1;
+		const requests = ranges.map(range => {
 			const requestedLength = range.endLine !== undefined ? range.endLine - range.startLine + 1 : this.#defaultLimit;
 			const maxLines = Math.min(requestedLength, DEFAULT_MAX_LINES);
+			return {
+				range,
+				requestedLength,
+				maxLines,
+				maxBytes: Math.max(DEFAULT_MAX_BYTES, maxLines * 512),
+			};
+		});
+		const streamedRanges =
+			fullLines || buffered
+				? undefined
+				: await streamLinesForRanges(
+						absolutePath,
+						requests.map(request => ({
+							startLine: request.range.startLine - 1,
+							maxLines: request.maxLines,
+							maxBytes: request.maxBytes,
+						})),
+						signal,
+						rawSelector,
+					);
+		if (streamedRanges?.invalidUtf8) return { outputText: "", columnTruncated: 0, invalidUtf8: true };
 
-			let collectedLines: string[];
-			let totalFileLines: number;
-			const maxBytesForRead = Math.max(DEFAULT_MAX_BYTES, maxLines * 512);
-			if (fullLines) {
-				totalFileLines = fullLines.length;
-				collectedLines = fullLines.slice(rangeStart, rangeStart + maxLines);
-			} else {
-				const window = buffered
-					? collectLineWindowFromBuffer(buffered, rangeStart, maxLines, maxBytesForRead, maxLines, rawSelector)
-					: await streamLinesFromFile(absolutePath, rangeStart, maxLines, maxBytesForRead, maxLines, signal, {
-							includeTerminalNewline: rawSelector,
-							stopScanAfterCollect: fileSize > MAX_BUFFERED_READ_BYTES,
-						});
-				totalFileLines = window.totalFileLines;
-				collectedLines = window.lines;
-			}
+		for (const [rangeIndex, request] of requests.entries()) {
+			const { range, requestedLength, maxLines, maxBytes } = request;
+			const rangeStart = range.startLine - 1;
+			const window = fullLines
+				? collectLineWindowFromBuffer(buffered!, rangeStart, maxLines, maxBytes, maxLines, rawSelector)
+				: (streamedRanges?.windows[rangeIndex] ??
+					(await streamLinesFromFile(absolutePath, rangeStart, maxLines, maxBytes, maxLines, signal, {
+						includeTerminalNewline: rawSelector,
+						stopScanAfterCollect: fileSize > MAX_BUFFERED_READ_BYTES,
+					})));
+			if (window.invalidUtf8) return { outputText: "", columnTruncated: 0, invalidUtf8: true };
 
+			const totalFileLines = fullLines ? fullLines.length : window.totalFileLines;
+			const collectedLines = window.lines;
 			if (rangeStart >= totalFileLines) {
 				const bound = range.endLine !== undefined ? `${range.startLine}-${range.endLine}` : `${range.startLine}`;
 				notices.push(`[Range ${bound} is beyond end of file (${totalFileLines} lines total); skipped]`);
 				continue;
 			}
 
-			let displayLines: string[] = collectedLines;
+			const hasMoreRequestedLines =
+				window.stoppedByByteLimit ||
+				(requestedLength > maxLines && (!window.reachedEof || rangeStart + maxLines < totalFileLines));
+			const shouldSuggestContinuation = hasMoreRequestedLines || !window.reachedEof;
+			if (hasMoreRequestedLines && truncation === undefined) {
+				const totalSelectedLines = window.reachedEof
+					? Math.max(0, totalFileLines - rangeStart)
+					: Math.max(requestedLength, collectedLines.length);
+				const totalBytes =
+					window.firstLineByteLength !== undefined && window.firstLineByteLength > maxBytes
+						? window.firstLineByteLength
+						: window.collectedBytes;
+				const result: TruncationResult = {
+					content: collectedLines.join("\n"),
+					truncated: true,
+					truncatedBy: window.stoppedByByteLimit ? "bytes" : "lines",
+					totalLines: totalSelectedLines,
+					totalBytes,
+					outputLines: collectedLines.length,
+					outputBytes: window.collectedBytes,
+					lastLinePartial: false,
+					firstLineExceedsLimit: window.firstLineByteLength !== undefined && window.firstLineByteLength > maxBytes,
+				};
+				truncation = {
+					result,
+					options: {
+						direction: "head",
+						startLine: range.startLine,
+						totalFileLines: window.reachedEof ? totalFileLines : undefined,
+						maxBytes,
+					},
+				};
+			}
+
+			const firstLineExceedsLimit =
+				window.firstLineByteLength !== undefined && window.firstLineByteLength > maxBytes;
+			let displayLines: string[] =
+				collectedLines.length > 0
+					? collectedLines
+					: firstLineExceedsLimit && window.firstLinePreview !== undefined
+						? [window.firstLinePreview.text]
+						: [];
 			if (!rawSelector && maxColumns > 0) {
 				let cloned: string[] | undefined;
-				for (let i = 0; i < collectedLines.length; i++) {
-					const { text, wasTruncated } = truncateLine(collectedLines[i], maxColumns);
+				for (let i = 0; i < displayLines.length; i++) {
+					const { text, wasTruncated } = truncateLine(displayLines[i], maxColumns);
 					if (wasTruncated) {
-						if (!cloned) cloned = collectedLines.slice();
+						if (!cloned) cloned = displayLines.slice();
 						cloned[i] = text;
 						columnTruncated = maxColumns;
 					}
@@ -863,6 +1184,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					const blockText = displayLines.join("\n");
 					blocks.push(formatTextWithMode(blockText, range.startLine, shouldAddLineNumbers));
 				}
+			}
+			if (shouldSuggestContinuation && !firstLineExceedsLimit && displayLines.length > 0) {
+				const nextOffset = range.startLine + displayLines.length;
+				notices.push(
+					`[More lines in file (${formatBytes(fileSize)} total; not scanned to EOF). Use :${nextOffset} to continue]`,
+				);
 			}
 		}
 
@@ -898,7 +1225,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (notices.length > 0) {
 			outputText = outputText ? `${outputText}\n${notices.join("\n")}` : notices.join("\n");
 		}
-		return { outputText, columnTruncated, displayContent };
+		return { outputText, columnTruncated, displayContent, truncation };
 	}
 
 	async execute(
@@ -1194,7 +1521,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		let sourcePath: string | undefined;
 		let columnTruncated = 0;
 		let truncationInfo:
-			| { result: TruncationResult; options: { direction: "head"; startLine?: number; totalFileLines?: number } }
+			| {
+					result: TruncationResult;
+					options: { direction: "head"; startLine?: number; totalFileLines?: number; maxBytes?: number };
+			  }
 			| undefined;
 
 		if (mimeType) {
@@ -1253,16 +1583,22 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		} else {
 			const wholeFileBytes = fileSize <= MAX_BUFFERED_READ_BYTES ? await readWholeFile(absolutePath) : undefined;
 
-			const looksBinary =
-				!isRawSelector(parsed) &&
-				(wholeFileBytes
-					? isProbablyBinaryHeader(wholeFileBytes.subarray(0, BINARY_SNIFF_BYTES))
-					: await isProbablyBinary(absolutePath));
+			let decodedWholeFile: string | undefined;
+			let looksBinary: boolean;
+			if (wholeFileBytes) {
+				looksBinary = isProbablyBinaryHeader(wholeFileBytes.subarray(0, BINARY_SNIFF_BYTES));
+				if (!looksBinary) {
+					decodedWholeFile = decodeUtf8Text(wholeFileBytes) ?? undefined;
+					looksBinary = decodedWholeFile === undefined;
+				}
+			} else {
+				looksBinary = await isProbablyBinary(absolutePath);
+			}
 			if (looksBinary) {
 				return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
 					.text(
 						prependSuffixResolutionNotice(
-							`[Cannot read binary file '${resolvedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text. Use ':raw' to read bytes verbatim.]`,
+							`[Cannot read binary file '${resolvedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text.]`,
 							suffixResolution,
 						),
 					)
@@ -1271,7 +1607,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 			await fsObservationLedgerFor(this.session).recordRead(absolutePath);
 
-			const buffered = wholeFileBytes ? deriveBufferedFileText(wholeFileBytes) : undefined;
+			const buffered = wholeFileBytes ? deriveBufferedFileText(wholeFileBytes, decodedWholeFile) : undefined;
 
 			if (
 				parsed.kind === "none" &&
@@ -1311,12 +1647,24 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						parsed,
 						displayMode,
 						suffixResolution,
-						undefined,
+						signal,
 					);
 					if (multiResult.bridgeResult) return multiResult.bridgeResult;
+					if (multiResult.invalidUtf8) {
+						return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
+							.text(
+								`[Cannot read binary file '${resolvedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text.]`,
+							)
+							.sourcePath(absolutePath)
+							.done();
+					}
 					content = [{ type: "text", text: multiResult.outputText }];
 					sourcePath = absolutePath;
 					details = multiResult.displayContent ? { displayContent: multiResult.displayContent } : {};
+					if (multiResult.truncation) {
+						details.truncation = multiResult.truncation.result;
+						truncationInfo = multiResult.truncation;
+					}
 					if (multiResult.columnTruncated > 0) {
 						columnTruncated = multiResult.columnTruncated;
 					}
@@ -1380,7 +1728,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 								maxLinesToCollect,
 								maxBytesForRead,
 								selectedLineLimit,
-								undefined,
+								signal,
 								{
 									includeTerminalNewline: rawSelector,
 									stopScanAfterCollect: fileSize > MAX_BUFFERED_READ_BYTES,
@@ -1394,9 +1742,19 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						stoppedByByteLimit,
 						firstLinePreview,
 						firstLineByteLength,
+						invalidUtf8,
 						reachedEof,
 						hasTrailingNewline,
 					} = lineWindow;
+
+					if (invalidUtf8) {
+						return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
+							.text(
+								`[Cannot read binary file '${resolvedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text.]`,
+							)
+							.sourcePath(absolutePath)
+							.done();
+					}
 
 					if (requestedStart >= totalFileLines) {
 						const suggestion =
@@ -1437,7 +1795,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					const userLimitedLines = collectedLines.length;
 
 					const totalSelectedLines = totalFileLines - startLine;
-					const totalSelectedBytes = collectedBytes;
+					const totalSelectedBytes =
+						stoppedByByteLimit && firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead
+							? firstLineByteLength
+							: collectedBytes;
 					const wasTruncated = collectedLines.length < totalSelectedLines || stoppedByByteLimit;
 					const firstLineExceedsLimit = firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead;
 
@@ -1515,6 +1876,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 								direction: "head",
 								startLine: startLineDisplay,
 								totalFileLines: reachedEof ? totalFileLines : undefined,
+								maxBytes: maxBytesForRead,
 							},
 						};
 					} else if (truncation.truncated) {
@@ -1527,6 +1889,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 								direction: "head",
 								startLine: startLineDisplay,
 								totalFileLines: reachedEof ? totalFileLines : undefined,
+								maxBytes: maxBytesForRead,
 							},
 						};
 					} else if (startLine + userLimitedLines < totalFileLines || !reachedEof) {
@@ -1727,7 +2090,17 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				false,
 			);
 			if (read.bridgeResult) return read.bridgeResult;
+			if (read.invalidUtf8) {
+				return toolResult<ReadToolDetails>(details)
+					.text(
+						`[Cannot read binary artifact '${artifactUrl}' (${formatBytes(artifact.size)}); not valid UTF-8 text.]`,
+					)
+					.sourcePath(artifact.path)
+					.sourceInternal(url.href)
+					.done();
+			}
 			if (read.displayContent) details.displayContent = read.displayContent;
+			if (read.truncation) details.truncation = read.truncation.result;
 			let text = read.outputText;
 			if (!rawSelector && artifact.size > MAX_ARTIFACT_RAW_INLINE_BYTES) {
 				text = text
@@ -1739,6 +2112,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				.sourcePath(artifact.path)
 				.sourceInternal(url.href);
 			if (read.columnTruncated > 0) resultBuilder.limits({ columnMax: read.columnTruncated });
+			if (read.truncation) resultBuilder.truncation(read.truncation.result, read.truncation.options);
 			return resultBuilder.done();
 		}
 
@@ -1772,9 +2146,20 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			stoppedByByteLimit,
 			firstLinePreview,
 			firstLineByteLength,
+			invalidUtf8,
 			reachedEof,
 			hasTrailingNewline,
 		} = streamResult;
+
+		if (invalidUtf8) {
+			return toolResult<ReadToolDetails>(details)
+				.text(
+					`[Cannot read binary artifact '${artifactUrl}' (${formatBytes(artifact.size)}); not valid UTF-8 text.]`,
+				)
+				.sourcePath(artifact.path)
+				.sourceInternal(url.href)
+				.done();
+		}
 
 		if (requestedStart >= totalFileLines) {
 			const suggestion =
@@ -1791,6 +2176,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const shouldAddLineNumbers = rawSelector ? false : displayMode.lineNumbers;
 		const selectedContent = collectedLines.join("\n");
 		const totalSelectedLines = totalFileLines - startLine;
+		const totalSelectedBytes =
+			stoppedByByteLimit && firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead
+				? firstLineByteLength
+				: collectedBytes;
 		const wasTruncated = collectedLines.length < totalSelectedLines || stoppedByByteLimit;
 		const firstLineExceedsLimit = firstLineByteLength !== undefined && firstLineByteLength > maxBytesForRead;
 		const truncation: TruncationResult = {
@@ -1798,7 +2187,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			truncated: wasTruncated,
 			truncatedBy: stoppedByByteLimit ? "bytes" : wasTruncated ? "lines" : undefined,
 			totalLines: totalSelectedLines,
-			totalBytes: collectedBytes,
+			totalBytes: totalSelectedBytes,
 			outputLines: collectedLines.length,
 			outputBytes: collectedBytes,
 			lastLinePartial: false,
@@ -1818,7 +2207,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 		let outputText: string;
 		let truncationInfo:
-			| { result: TruncationResult; options: { direction: "head"; startLine?: number; totalFileLines?: number } }
+			| {
+					result: TruncationResult;
+					options: { direction: "head"; startLine?: number; totalFileLines?: number; maxBytes?: number };
+			  }
 			| undefined;
 		if (truncation.firstLineExceedsLimit) {
 			const firstLineBytes = firstLineByteLength ?? 0;
@@ -1835,6 +2227,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					direction: "head",
 					startLine: startLineDisplay,
 					totalFileLines: reachedEof ? totalFileLines : undefined,
+					maxBytes: maxBytesForRead,
 				},
 			};
 		} else {
@@ -1846,6 +2239,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						direction: "head",
 						startLine: startLineDisplay,
 						totalFileLines: reachedEof ? totalFileLines : undefined,
+						maxBytes: maxBytesForRead,
 					},
 				};
 			} else if (startLine + collectedLines.length < totalFileLines || !reachedEof) {
