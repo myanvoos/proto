@@ -129,20 +129,76 @@ function ensureDir(dir: string): string {
 	return dir;
 }
 
-function jsonReplacer(_key: string, value: unknown): unknown {
+// Log entries are written on every event, so serialization must stay bounded: a huge or
+// deeply nested context object (or an Error with a long cause chain) would otherwise turn
+// into an unbounded log line and an unbounded allocation. Values that fit the bounds are
+// returned as-is (zero-copy); only subtrees that exceed a bound are rebuilt with markers.
+const LOG_VALUE_MAX_DEPTH = 8;
+const LOG_VALUE_MAX_STRING_LENGTH = 4096;
+const LOG_VALUE_MAX_ARRAY_ITEMS = 64;
+const LOG_VALUE_MAX_NODES = 1000;
+const LOG_LINE_MAX_LENGTH = 1 << 20;
+
+const LOG_TRUNCATED_MARKER = "[log truncated]";
+const LOG_CIRCULAR_MARKER = "[log circular]";
+
+function boundedLogValue(value: unknown, depth: number, budget: { nodes: number }, ancestors: Set<object>): unknown {
+	if (value === null || typeof value !== "object") {
+		if (typeof value === "string" && value.length > LOG_VALUE_MAX_STRING_LENGTH) {
+			return `${value.slice(0, LOG_VALUE_MAX_STRING_LENGTH)}…${LOG_TRUNCATED_MARKER}`;
+		}
+		return value;
+	}
+	if (ancestors.has(value as object)) return LOG_CIRCULAR_MARKER;
+	if (depth > LOG_VALUE_MAX_DEPTH) return LOG_TRUNCATED_MARKER;
+	if (--budget.nodes < 0) return LOG_TRUNCATED_MARKER;
+	ancestors.add(value as object);
+
 	if (value instanceof Error) {
 		const out: Record<string, unknown> = {
 			name: value.name,
 			message: value.message,
 			stack: value.stack,
 		};
-
-		const errAsRecord = value as unknown as Record<string, unknown>;
-		for (const k in errAsRecord) out[k] = errAsRecord[k];
-		if (value.cause !== undefined) out.cause = value.cause;
+		let keys = 0;
+		for (const k in value as unknown as Record<string, unknown>) {
+			if (++keys > LOG_VALUE_MAX_ARRAY_ITEMS) {
+				out[k] = LOG_TRUNCATED_MARKER;
+				break;
+			}
+			out[k] = boundedLogValue((value as unknown as Record<string, unknown>)[k], depth + 1, budget, ancestors);
+		}
+		if (value.cause !== undefined) out.cause = boundedLogValue(value.cause, depth + 1, budget, ancestors);
+		ancestors.delete(value);
 		return out;
 	}
-	return value;
+	if (Array.isArray(value)) {
+		if (value.length > LOG_VALUE_MAX_ARRAY_ITEMS) {
+			const out = boundedLogValue(value.slice(0, LOG_VALUE_MAX_ARRAY_ITEMS), depth, budget, ancestors) as unknown[];
+			out.push(`[+${value.length - LOG_VALUE_MAX_ARRAY_ITEMS} more]`);
+			return out;
+		}
+		let pruned = false;
+		const out = value.map(item => {
+			const next = boundedLogValue(item, depth + 1, budget, ancestors);
+			if (next !== item) pruned = true;
+			return next;
+		});
+		ancestors.delete(value);
+		return pruned ? out : value;
+	}
+	const proto = Object.getPrototypeOf(value);
+	if (proto !== Object.prototype && proto !== null) return value; // Dates, Maps, class instances: leave to JSON.stringify
+	let pruned = false;
+	const out: Record<string, unknown> = {};
+	const source = value as Record<string, unknown>;
+	for (const k of Object.keys(source)) {
+		const next = boundedLogValue(source[k], depth + 1, budget, ancestors);
+		if (next !== source[k]) pruned = true;
+		out[k] = next;
+	}
+	ancestors.delete(value);
+	return pruned ? out : value;
 }
 
 interface NormalizedLogInfo extends Record<string, unknown> {
@@ -194,7 +250,10 @@ function formatLogInfo(info: NormalizedLogInfo): string {
 	for (const [key, value] of Object.entries(info)) {
 		if (key !== "level" && key !== "timestamp" && key !== "message") entry[key] = value;
 	}
-	return JSON.stringify(entry, jsonReplacer) as string;
+	const bounded = boundedLogValue(entry, 0, { nodes: LOG_VALUE_MAX_NODES }, new Set());
+	const line = JSON.stringify(bounded) as string;
+	if (line.length <= LOG_LINE_MAX_LENGTH) return line;
+	return `${line.slice(0, LOG_LINE_MAX_LENGTH)}…${LOG_TRUNCATED_MARKER}`;
 }
 
 function makeFileTransport(dir?: string): RotatingFileSink {

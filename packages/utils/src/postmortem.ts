@@ -24,7 +24,7 @@ export const NATIVE_PROCESS_EXIT = Symbol.for("proto.postmortem.nativeProcessExi
 
 type HardExitFn = (code?: number) => never;
 
-function exitProcess(code: number): never {
+export function exitProcess(code: number): never {
 	const current: HardExitFn = typeof process.reallyExit === "function" ? process.reallyExit : process.exit;
 	const behind = Reflect.get(current, NATIVE_PROCESS_EXIT);
 	const nativeExit = typeof behind === "function" ? (behind as HardExitFn) : current;

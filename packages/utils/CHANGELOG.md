@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Log serialization is now depth-, size-, and cycle-bounded, so huge or self-referential context objects can no longer produce unbounded log lines or drop the entry.
+
+### Added
+
+- `postmortem.exitProcess` is now exported for callers that need the guarded process exit directly.
+
 ## [18.1.22] - 2026-09-18
 
 ### Fixed
