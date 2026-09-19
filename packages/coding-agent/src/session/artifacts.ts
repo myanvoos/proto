@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { realPathWithinRoot } from "../tools/path-utils";
 
 function sanitizeToolType(toolType: string): string {
 	const sanitized = toolType
@@ -79,6 +80,9 @@ export class ArtifactManager {
 	async getPath(id: string): Promise<string | null> {
 		const files = await this.listFiles();
 		const match = files.find(f => f.startsWith(`${id}.`));
-		return match ? path.join(this.#dir, match) : null;
+		if (!match) return null;
+		// A directory listing happily hands back symlinks, so confirm the target is really inside this
+		// artifacts directory before an id-addressed lookup turns into an arbitrary file read.
+		return await realPathWithinRoot(path.join(this.#dir, match), this.#dir);
 	}
 }

@@ -112,6 +112,24 @@ function stripFileUrl(filePath: string): string {
 	}
 }
 
+/**
+ * Resolves `candidate` through symlinks and returns it only when the real target stays inside `root`.
+ * Directory listings hand back symlinks, and `Bun.file().stat()` follows them, so a link planted in a
+ * readable directory would otherwise let an id-addressed lookup read anything the process can read.
+ */
+export async function realPathWithinRoot(candidate: string, root: string): Promise<string | null> {
+	let real: string;
+	let realRoot: string;
+	try {
+		real = await fs.promises.realpath(candidate);
+		realRoot = await fs.promises.realpath(root);
+	} catch {
+		return null;
+	}
+	const prefix = realRoot.endsWith(path.sep) ? realRoot : `${realRoot}${path.sep}`;
+	return real === realRoot || real.startsWith(prefix) ? real : null;
+}
+
 export function expandTilde(filePath: string, home?: string): string {
 	const h = home ?? os.homedir();
 	if (filePath === "~") return h;
