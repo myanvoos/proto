@@ -562,6 +562,15 @@ function matchDelim(src: string, i: number, open: string, close: string): number
 	return -1;
 }
 
+// A TeX control word is a backslash followed by a maximal run of letters, so
+// `\begin`/`\end` only match when the next character is not a letter;
+// otherwise real commands like `\begingroup` or `\endhead` corrupt nesting.
+function isControlSequenceAt(src: string, i: number, name: string): boolean {
+	if (!src.startsWith(name, i)) return false;
+	const next = src[i + name.length];
+	return next === undefined || !/[A-Za-z]/.test(next);
+}
+
 interface EnvParts {
 	env: string;
 	bodyStart: number;
@@ -578,12 +587,12 @@ function readEnvironment(src: string, start: number): EnvParts | null {
 	let depth = 1;
 	let bodyEnd = src.length;
 	while (k < src.length && depth > 0) {
-		if (src.startsWith("\\begin", k)) {
+		if (isControlSequenceAt(src, k, "\\begin")) {
 			depth++;
 			k += 6;
 			continue;
 		}
-		if (src.startsWith("\\end", k)) {
+		if (isControlSequenceAt(src, k, "\\end")) {
 			depth--;
 			if (depth === 0) bodyEnd = k;
 			k += 4;
@@ -609,12 +618,12 @@ function splitRows(body: string): string[] {
 	let last = 0;
 	let i = 0;
 	while (i < body.length) {
-		if (body.startsWith("\\begin", i)) {
+		if (isControlSequenceAt(body, i, "\\begin")) {
 			envDepth++;
 			i += 6;
 			continue;
 		}
-		if (body.startsWith("\\end", i)) {
+		if (isControlSequenceAt(body, i, "\\end")) {
 			envDepth--;
 			i += 4;
 			continue;
@@ -650,12 +659,12 @@ function splitCells(row: string): string[] {
 	let last = 0;
 	let i = 0;
 	while (i < row.length) {
-		if (row.startsWith("\\begin", i)) {
+		if (isControlSequenceAt(row, i, "\\begin")) {
 			envDepth++;
 			i += 6;
 			continue;
 		}
-		if (row.startsWith("\\end", i)) {
+		if (isControlSequenceAt(row, i, "\\end")) {
 			envDepth--;
 			i += 4;
 			continue;
@@ -1213,12 +1222,12 @@ function splitLines(src: string): string[] {
 	let last = 0;
 	let i = 0;
 	while (i < src.length) {
-		if (src.startsWith("\\begin", i)) {
+		if (isControlSequenceAt(src, i, "\\begin")) {
 			envDepth++;
 			i += 6;
 			continue;
 		}
-		if (src.startsWith("\\end", i)) {
+		if (isControlSequenceAt(src, i, "\\end")) {
 			envDepth--;
 			i += 4;
 			continue;
