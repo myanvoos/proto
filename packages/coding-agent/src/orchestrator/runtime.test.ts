@@ -50,6 +50,25 @@ describe("orchestrator lifecycle identity", () => {
 		expect(screen.terminal?.reason).toBe("ownership-lost");
 		expect(screen.terminal?.history).toBe("history://opaque-worker-1");
 	});
+	test("bounds terminal worker records while retaining the newest recovery entry", () => {
+		AgentRegistry.resetGlobalForTests();
+		OrchestratorRuntime.resetGlobalForTests();
+		const runtime = OrchestratorRuntime.global();
+		const session = scopedSession("bounded-terminal-history");
+		for (let index = 0; index < 130; index++) {
+			runtime.registerRecordForTests({
+				id: `terminal-worker-${index}`,
+				ownerId: "Main",
+				parentSessionId: "bounded-terminal-history",
+				state: "idle",
+			});
+		}
+		runtime.screens(session);
+		const retained = runtime.listIds(session);
+		expect(retained.length).toBeLessThanOrEqual(128);
+		expect(retained).toContain("terminal-worker-129");
+		expect(runtime.screens(session)).toHaveLength(retained.length);
+	});
 	test("duplicate display labels remain distinct across parent sessions", () => {
 		AgentRegistry.resetGlobalForTests();
 		OrchestratorRuntime.resetGlobalForTests();

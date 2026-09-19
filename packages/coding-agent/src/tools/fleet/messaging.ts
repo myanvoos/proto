@@ -165,6 +165,7 @@ export async function executeSend(
 				.wait(senderId, { from: id }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
 					drainPending: false,
 					fleetRoot,
+					liveness: { registry, senderId },
 				})
 				.then(
 					message => ({ message, error: null as Error | null }),

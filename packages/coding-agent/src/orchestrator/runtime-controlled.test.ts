@@ -19,6 +19,7 @@ import { Settings } from "../config/settings";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import type { CustomTool } from "../extensibility/custom-tools/types";
+import { artifactsDirsFromRegistry } from "../internal-urls/registry-helpers";
 import * as mcpConfig from "../mcp/config";
 import { MCPManager } from "../mcp/manager";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
@@ -154,7 +155,7 @@ function controlledEvalTool(settings: Settings): CustomTool {
 
 function parentSession(args: {
 	cwd: string;
-	file: string;
+	file: string | null;
 	manager: AsyncJobManager;
 	settings: Settings;
 	modelRegistry: ModelRegistry;
@@ -185,7 +186,7 @@ function parentSession(args: {
 		getSessionSpawns: () => "*",
 		getEvalSessionId: () => "parent-eval",
 		getEvalKernelOwnerId: () => `${OWNER_PREFIX}-parent`,
-		getArtifactsDir: () => path.dirname(args.file),
+		getArtifactsDir: () => (args.file ? path.dirname(args.file) : null),
 		getActiveModelString: () => undefined,
 		getModelString: () => undefined,
 	} as ToolSession;
@@ -205,7 +206,9 @@ afterEach(async () => {
 	}
 }, 30_000);
 
-async function controlledFixture(options: { streamFn?: StreamFn; maxConcurrency?: number } = {}) {
+async function controlledFixture(
+	options: { streamFn?: StreamFn; maxConcurrency?: number; maxJobs?: number; unsavedParent?: boolean } = {},
+) {
 	// Registry replacement must not leave a lifecycle bound to the prior test's registry.
 	AgentLifecycleManager.resetGlobalForTests();
 	AgentRegistry.resetGlobalForTests();
@@ -224,11 +227,14 @@ async function controlledFixture(options: { streamFn?: StreamFn; maxConcurrency?
 	const authStorage = await discoverAuthStorage(path.join(root, "auth"));
 	authStorage.setRuntimeApiKey("controlled-provider", "test-key");
 	const modelRegistry = new ModelRegistry(authStorage, undefined, { settings });
-	const manager = new AsyncJobManager({ retentionMs: 60_000 });
+	const manager = new AsyncJobManager({
+		retentionMs: 60_000,
+		...(options.maxJobs !== undefined ? { maxRunningJobs: options.maxJobs } : {}),
+	});
 	const streamFn = options.streamFn ?? controlledProvider();
 	const session = parentSession({
 		cwd: root,
-		file: parentFile,
+		file: options.unsavedParent ? null : parentFile,
 		manager,
 		settings,
 		modelRegistry,
@@ -496,6 +502,63 @@ test("independent messages queued behind a busy worker run as separate turns ins
 	expect(followupPrompts[1]).toContain("queued-second");
 	expect(followupPrompts[1]).not.toContain("queued-third");
 	expect(followupPrompts[2]).toContain("queued-third");
+}, 30_000);
+
+test("a queued follow-up runs after its own job releases the async job cap", async () => {
+	const holdStarted = Promise.withResolvers<void>();
+	const followupStarted = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const streamFn: StreamFn = (model, context) => {
+		const stream = createAssistantMessageEventStream();
+		const text = JSON.stringify(context.messages.findLast(message => message.role === "user"));
+		void (async () => {
+			if (text.includes("hold-turn")) {
+				holdStarted.resolve();
+				await release.promise;
+			}
+			if (text.includes("queued-followup")) followupStarted.resolve();
+			pushToolCall(stream, model, call("yield-result", "yield", { result: { data: "done" } }));
+		})();
+		return stream;
+	};
+	const { runtime, session, manager } = await controlledFixture({
+		streamFn,
+		maxConcurrency: 2,
+		maxJobs: 1,
+	});
+	const worker = await runtime.spawn(session, { message: "initial turn" });
+	await manager.waitForAll();
+	await runtime.wait(session, { sessions: [worker.id] });
+	try {
+		await runtime.send(session, { session: worker.id, message: "hold-turn" });
+		const queued = await runtime.send(session, { session: worker.id, message: "queued-followup" });
+		await withTimeout(holdStarted.promise, 5_000, "Held worker turn did not start");
+		expect(queued.receipt.status).toBe("queued");
+		release.resolve();
+		await withTimeout(followupStarted.promise, 5_000, "Queued follow-up did not start");
+	} finally {
+		release.resolve();
+	}
+	await manager.waitForAll();
+	const settled = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 1_000 });
+	expect(settled.settled).toMatchObject([{ status: "completed", receipt: { turn: 3 } }]);
+	expect(runtime.screens(session, [worker.id])).toMatchObject([{ queued: 0, lifecycle: "live" }]);
+}, 30_000);
+
+test("terminal unsaved-parent workers release and remove owned artifact directories", async () => {
+	const before = new Set((await fs.readdir(os.tmpdir())).filter(name => name.startsWith("proto-worker-")));
+	const { runtime, session, manager } = await controlledFixture({ unsavedParent: true });
+	const worker = await runtime.spawn(session, { message: "temporary artifacts" });
+	await manager.waitForAll();
+	await runtime.wait(session, { sessions: [worker.id] });
+	const afterRun = (await fs.readdir(os.tmpdir())).filter(name => name.startsWith("proto-worker-"));
+	const created = afterRun.filter(name => !before.has(name));
+	expect(created).toHaveLength(1);
+	const artifactsDir = path.join(os.tmpdir(), created[0]!);
+	expect(artifactsDirsFromRegistry()).toContain(path.resolve(artifactsDir));
+	await runtime.kill(session, worker.id);
+	await expect(fs.stat(artifactsDir)).rejects.toMatchObject({ code: "ENOENT" });
+	expect(artifactsDirsFromRegistry()).not.toContain(path.resolve(artifactsDir));
 }, 30_000);
 
 test("the configured concurrency cap applies across parent scopes", async () => {

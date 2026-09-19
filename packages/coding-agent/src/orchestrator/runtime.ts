@@ -54,6 +54,7 @@ const TEARDOWN_GRACE_MS = 5_000;
 
 const MAX_QUEUED_TURNS = 32;
 const MAX_QUEUED_TURN_BYTES = 256 * 1024;
+const MAX_TERMINAL_RECORDS = 128;
 
 const ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE = "orchestrator-worker-lifecycle";
 const WORKER_LIFECYCLE_VERSION = 1;
@@ -194,6 +195,10 @@ interface WorkerRecord {
 	};
 
 	lastJobId?: string;
+
+	temporaryArtifacts?: { dir: string; unregister: () => void };
+	temporaryArtifactsCleanup?: Promise<void>;
+	capacityWaitCleanup?: () => void;
 
 	queue: Array<{ message: string; turn: number }>;
 	turnCount: number;
@@ -555,6 +560,29 @@ export class OrchestratorRuntime {
 		if (records.size === 0) this.#recordsByScope.delete(key);
 	}
 
+	#scopeForRecord(record: WorkerRecord): OwnerScope {
+		return {
+			ownerId: record.ownerId,
+			parentSessionId: record.parentSessionId,
+			parentSessionFile: record.parentSessionFile,
+			jobOwnerId: record.jobOwnerId,
+		};
+	}
+
+	#trimTerminalRecords(scope: OwnerScope): void {
+		const records = this.#recordsByScope.get(scopeKey(scope, ""));
+		if (!records) return;
+		const terminal = [...records.values()].filter(record => record.state === "dead" || record.terminal);
+		if (terminal.length <= MAX_TERMINAL_RECORDS) return;
+		terminal.sort((left, right) => {
+			const leftAt = left.terminal?.at ?? left.lastActivityAt;
+			const rightAt = right.terminal?.at ?? right.lastActivityAt;
+			return leftAt - rightAt || left.createdAt - right.createdAt;
+		});
+		for (const record of terminal.slice(0, terminal.length - MAX_TERMINAL_RECORDS))
+			this.#deleteRecord(scope, record.id);
+	}
+
 	async #withTerminationLock<T>(scope: OwnerScope, operation: () => Promise<T>): Promise<T> {
 		const key = scopeKey(scope, "");
 		const predecessor = this.#terminationTails.get(key) ?? Promise.resolve();
@@ -715,6 +743,31 @@ export class OrchestratorRuntime {
 		};
 	}
 
+	#clearPendingCapacityWait(record: WorkerRecord): void {
+		record.capacityWaitCleanup?.();
+		record.capacityWaitCleanup = undefined;
+	}
+
+	#startTemporaryArtifactsCleanup(record: WorkerRecord): Promise<void> {
+		if (record.temporaryArtifactsCleanup) return record.temporaryArtifactsCleanup;
+		const owned = record.temporaryArtifacts;
+		if (!owned) return Promise.resolve();
+		record.temporaryArtifacts = undefined;
+		owned.unregister();
+		record.temporaryArtifactsCleanup = fs.rm(owned.dir, { recursive: true, force: true }).catch(error => {
+			logger.warn("orchestrator: failed to remove temporary worker artifacts", {
+				id: record.id,
+				dir: owned.dir,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		return record.temporaryArtifactsCleanup;
+	}
+
+	async #awaitTemporaryArtifactsCleanup(record: WorkerRecord): Promise<void> {
+		await record.temporaryArtifactsCleanup;
+	}
+
 	#compactTerminalRecord(record: WorkerRecord, clearTurn = false): void {
 		record.agent = undefined;
 		record.model = undefined;
@@ -740,12 +793,20 @@ export class OrchestratorRuntime {
 		}
 	}
 
-	#markRecordTerminal(record: WorkerRecord, reason: WorkerTombstoneReason, activity?: string): void {
+	#markRecordTerminal(
+		record: WorkerRecord,
+		reason: WorkerTombstoneReason,
+		activity?: string,
+		cleanupArtifacts = true,
+	): void {
+		this.#clearPendingCapacityWait(record);
 		record.state = "dead";
 		record.terminal = this.#terminalInfo(record, reason);
 		record.lastActivityAt = record.terminal.at;
 		record.lastActivity = activity ?? `terminal: ${reason}`;
 		this.#compactTerminalRecord(record);
+		if (cleanupArtifacts) void this.#startTemporaryArtifactsCleanup(record);
+		this.#trimTerminalRecords(this.#scopeForRecord(record));
 	}
 
 	#receipt(
@@ -851,7 +912,8 @@ export class OrchestratorRuntime {
 				this.#markRecordTerminal(record, "ownership-lost", "terminal: worker ownership is no longer addressable");
 			}
 		}
-		return records.map(record => {
+		const retainedRecords = records.filter(record => this.#scopeRecords(scope).get(record.id) === record);
+		return retainedRecords.map(record => {
 			const registered = this.#registeredAgent(record);
 			const lifecycle: WorkerLifecycle =
 				record.state === "dead" || record.terminal
@@ -1274,6 +1336,7 @@ export class OrchestratorRuntime {
 					throw new ToolError("Orchestrator parent session changed before spawn failure could be persisted.");
 				}
 			}
+			await this.#awaitTemporaryArtifactsCleanup(record);
 			this.#deleteRecord(scope, id);
 			throw error;
 		}
@@ -1430,12 +1493,14 @@ export class OrchestratorRuntime {
 
 	async suspendScope(scope: OwnerScope, manager?: AsyncJobManager): Promise<number> {
 		const records = [...this.#scopeRecords(scope).values()];
+		const artifactCleanups: Promise<void>[] = [];
 		const teardown = records.map(record => ({
 			record,
 			ref: this.#registeredAgent(record),
 			job: record.turn && manager ? manager.getJob(record.turn.jobId) : undefined,
 		}));
 		for (const { record } of teardown) {
+			this.#clearPendingCapacityWait(record);
 			record.suspended = true;
 			record.queue.length = 0;
 			record.state = "dead";
@@ -1465,6 +1530,8 @@ export class OrchestratorRuntime {
 					},
 				);
 				this.#continueSuspendedCleanup(scope, record, jobTask);
+			} else {
+				artifactCleanups.push(this.#startTemporaryArtifactsCleanup(record));
 			}
 			if (this.#scopeRecords(scope).has(record.id)) continue;
 			const lateRef = this.#registeredAgent(record);
@@ -1472,16 +1539,28 @@ export class OrchestratorRuntime {
 				await this.#releaseRefWithinDeadline(record.id, lateRef, deadline, "detach");
 			}
 		}
+		await Promise.all(artifactCleanups);
 		return records.length;
 	}
 
 	#continueSuspendedCleanup(scope: OwnerScope, record: WorkerRecord, jobTask: TrackedTeardown): void {
 		void jobTask.promise
 			.then(async () => {
-				if (this.#scopeRecords(scope).has(record.id)) return;
-				const lateRef = this.#registeredAgent(record);
-				if (!lateRef) return;
-				await this.#releaseRefWithinDeadline(record.id, lateRef, Date.now() + this.#teardownGraceMs, "detach");
+				try {
+					if (!this.#scopeRecords(scope).has(record.id)) {
+						const lateRef = this.#registeredAgent(record);
+						if (lateRef) {
+							await this.#releaseRefWithinDeadline(
+								record.id,
+								lateRef,
+								Date.now() + this.#teardownGraceMs,
+								"detach",
+							);
+						}
+					}
+				} finally {
+					await this.#startTemporaryArtifactsCleanup(record);
+				}
 			})
 			.catch(error => {
 				logger.warn("orchestrator: failed to finish suspended worker cleanup", {
@@ -1533,7 +1612,7 @@ export class OrchestratorRuntime {
 		}
 		record.killed = true;
 		let cancelledTurn = false;
-		this.#markRecordTerminal(record, reason, reason === "explicit-kill" ? "killed" : `terminal: ${reason}`);
+		this.#markRecordTerminal(record, reason, reason === "explicit-kill" ? "killed" : `terminal: ${reason}`, false);
 		if (record.turn && manager) {
 			const job = manager.getJob(record.turn.jobId);
 			if (job) settlingJobs.add(job);
@@ -1560,6 +1639,8 @@ export class OrchestratorRuntime {
 		}
 		const terminalRef = registered ?? this.#registeredAgent(record) ?? null;
 		await this.#markTerminalRecord(record, terminalRef, deadline);
+		await this.#startTemporaryArtifactsCleanup(record);
+		await this.#awaitTemporaryArtifactsCleanup(record);
 		if (pendingJobs.length > 0) {
 			this.#continueKilledCleanup(
 				record,
@@ -1652,7 +1733,9 @@ export class OrchestratorRuntime {
 		const sessionArtifactsDir = sessionFile ? sessionFile.slice(0, -6) : null;
 		const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `proto-worker-${Snowflake.next()}`);
 		await fs.mkdir(artifactsDir, { recursive: true });
-		if (!sessionArtifactsDir) registerArtifactsDir(artifactsDir);
+		if (!sessionArtifactsDir) {
+			record.temporaryArtifacts = { dir: artifactsDir, unregister: registerArtifactsDir(artifactsDir) };
+		}
 		const localProtocolOptions: LocalProtocolOptions = session.localProtocolOptions ?? {
 			getArtifactsDir: session.getArtifactsDir ?? (() => null),
 			getSessionId: session.getSessionId ?? (() => null),
@@ -1711,7 +1794,7 @@ export class OrchestratorRuntime {
 		manager: AsyncJobManager,
 		record: WorkerRecord,
 		message: string,
-		options: { first: boolean },
+		options: { first: boolean; reserveCapacity?: boolean },
 	): string {
 		const turnIndex = record.turnCount + 1;
 		if (record.lastJobId) this.#waitedJobIds.delete(record.lastJobId);
@@ -1803,7 +1886,12 @@ export class OrchestratorRuntime {
 					if (acquired) semaphore.release();
 				}
 			},
-			{ id: `${record.id}-t${turnIndex}`, agentId: record.id, ownerId: record.jobOwnerId, queued: true },
+			{
+				id: `${record.id}-t${turnIndex}`,
+				agentId: record.id,
+				ownerId: record.jobOwnerId,
+				queued: options.reserveCapacity !== true,
+			},
 		);
 		turn.jobId = jobId;
 		// Reservation precedes semaphore acquisition so cancellation cannot reuse a turn identity.
@@ -1826,6 +1914,7 @@ export class OrchestratorRuntime {
 			record.turn = undefined;
 			if (!record.terminal)
 				this.#markRecordTerminal(record, record.killed ? "explicit-kill" : "parent-session-changed");
+			await this.#awaitTemporaryArtifactsCleanup(record);
 			return;
 		}
 
@@ -1839,6 +1928,7 @@ export class OrchestratorRuntime {
 			const reason: WorkerTombstoneReason = registered?.status === "aborted" ? "unrecoverable" : "ownership-lost";
 			this.#markRecordTerminal(record, reason, `terminal: ${reason}`);
 			record.terminalPersisted = await this.#appendTombstone(session, record, reason);
+			await this.#awaitTemporaryArtifactsCleanup(record);
 			return;
 		}
 		record.state = "idle";
@@ -1869,6 +1959,7 @@ export class OrchestratorRuntime {
 			const deadline = Date.now() + this.#teardownGraceMs;
 			await this.#releaseRefWithinDeadline(record.id, registered, deadline, "release");
 			await this.#markTerminalRecord(record, registered, deadline);
+			await this.#awaitTemporaryArtifactsCleanup(record);
 			throw error;
 		}
 		if (record.childSessionFile && !settledPersisted) {
@@ -1878,20 +1969,60 @@ export class OrchestratorRuntime {
 				"parent-session-changed",
 				"terminal: parent session changed before settlement",
 			);
+			await this.#awaitTemporaryArtifactsCleanup(record);
 			return;
 		}
-		record.turn = undefined;
-		if (record.queue.length === 0) return;
-		const next = record.queue.shift()!;
-		try {
-			this.#registerTurnJob(session, manager, record, next.message, { first: false });
-		} catch (error) {
-			record.queue.unshift(next);
-			logger.warn("orchestrator: failed to start queued follow-up turn", {
-				id: record.id,
-				error: error instanceof Error ? error.message : String(error),
-			});
+		if (record.queue.length === 0) {
+			record.turn = undefined;
+			return;
 		}
+		let callbackInvoked = false;
+		const unregisterCapacityWait = manager.onCapacityAvailable(error => {
+			callbackInvoked = true;
+			record.capacityWaitCleanup = undefined;
+			if (error) {
+				record.turn = undefined;
+				this.#markRecordTerminal(
+					record,
+					"unrecoverable",
+					`terminal: queued follow-up could not start: ${error.message}`,
+				);
+				logger.error("orchestrator: queued follow-up could not start", {
+					id: record.id,
+					error: error.message,
+				});
+				return;
+			}
+			if (record.killed || record.suspended || record.terminal) {
+				record.turn = undefined;
+				record.queue.length = 0;
+				return;
+			}
+			const next = record.queue.shift();
+			if (!next) {
+				record.turn = undefined;
+				return;
+			}
+			record.turn = undefined;
+			try {
+				this.#registerTurnJob(session, manager, record, next.message, {
+					first: false,
+					reserveCapacity: true,
+				});
+			} catch (registrationError) {
+				record.queue.unshift(next);
+				this.#markRecordTerminal(
+					record,
+					"unrecoverable",
+					`terminal: queued follow-up could not start: ${registrationError instanceof Error ? registrationError.message : String(registrationError)}`,
+				);
+				logger.error("orchestrator: queued follow-up could not start", {
+					id: record.id,
+					error: registrationError instanceof Error ? registrationError.message : String(registrationError),
+				});
+			}
+		});
+		if (!callbackInvoked) record.capacityWaitCleanup = unregisterCapacityWait;
 	}
 
 	async #settleTurn(

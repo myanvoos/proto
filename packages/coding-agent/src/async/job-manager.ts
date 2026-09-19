@@ -41,6 +41,7 @@ export interface AsyncJob {
 }
 
 type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
+type AsyncJobCapacityWaiter = (error?: Error) => void;
 
 interface AsyncJobManagerOptions {
 	onJobComplete?: AsyncJobDeliverySink;
@@ -109,6 +110,7 @@ export class AsyncJobManager {
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
 	readonly #deliverySinks = new Map<string, AsyncJobDeliverySink>();
+	readonly #capacityWaiters = new Set<AsyncJobCapacityWaiter>();
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
@@ -140,6 +142,19 @@ export class AsyncJobManager {
 			if (job.status === "running" && !job.queued) activeCount++;
 		}
 		return activeCount >= this.#maxRunningJobs;
+	}
+
+	onCapacityAvailable(callback: (error?: Error) => void): () => void {
+		if (this.#disposed) {
+			callback(new Error("Async job manager is disposed"));
+			return () => {};
+		}
+		if (!this.atCapacity) {
+			callback();
+			return () => {};
+		}
+		this.#capacityWaiters.add(callback);
+		return () => this.#capacityWaiters.delete(callback);
 	}
 
 	register(
@@ -210,11 +225,13 @@ export class AsyncJobManager {
 				});
 				if (job.status === "cancelled") {
 					job.resultText = text;
+					this.#notifyCapacityAvailable();
 					this.#scheduleEviction(id);
 					return;
 				}
 				job.status = "completed";
 				job.resultText = text;
+				this.#notifyCapacityAvailable();
 				this.#enqueueDelivery(id, text);
 				this.#scheduleEviction(id);
 			} catch (error) {
@@ -226,6 +243,7 @@ export class AsyncJobManager {
 				const errorText = error instanceof Error ? error.message : String(error);
 				job.status = "failed";
 				job.errorText = errorText;
+				this.#notifyCapacityAvailable();
 				this.#enqueueDelivery(id, errorText);
 				this.#scheduleEviction(id);
 			}
@@ -242,6 +260,7 @@ export class AsyncJobManager {
 		if (job.status !== "running") return false;
 		job.status = "cancelled";
 		job.abortController.abort();
+		this.#notifyCapacityAvailable();
 		return true;
 	}
 
@@ -354,11 +373,12 @@ export class AsyncJobManager {
 		this.#cancelJobs(filter, reason);
 	}
 
-	#cancelJobs(filter?: AsyncJobFilter, reason?: unknown): void {
+	#cancelJobs(filter?: AsyncJobFilter, reason?: unknown, notifyCapacity = true): void {
 		for (const job of this.getRunningJobs(filter)) {
 			job.status = "cancelled";
 			job.abortController.abort(reason);
 		}
+		if (notifyCapacity) this.#notifyCapacityAvailable();
 	}
 
 	evictCompletedJobs(filter?: AsyncJobFilter): number {
@@ -485,7 +505,8 @@ export class AsyncJobManager {
 	async dispose(options?: { timeoutMs?: number }): Promise<boolean> {
 		this.#disposed = true;
 		this.#clearEvictionTimers();
-		this.#cancelJobs(undefined, ASYNC_JOB_MANAGER_SHUTDOWN_REASON);
+		this.#cancelJobs(undefined, ASYNC_JOB_MANAGER_SHUTDOWN_REASON, false);
+		this.#notifyCapacityAvailable(new Error("Async job manager is disposed"));
 		const timeoutMs = Math.max(options?.timeoutMs ?? 3_000, 0);
 		const deadline = Date.now() + timeoutMs;
 		const jobsSettled = await this.#waitForAllUntil(deadline);
@@ -500,6 +521,25 @@ export class AsyncJobManager {
 		this.#pollEscalation.clear();
 		this.#deliverySinks.clear();
 		return jobsSettled && drained;
+	}
+
+	#notifyCapacityAvailable(error?: Error): void {
+		if (error === undefined && this.atCapacity) return;
+		const waiters = [...this.#capacityWaiters];
+		this.#capacityWaiters.clear();
+		for (const waiter of waiters) {
+			if (error === undefined && this.atCapacity) {
+				this.#capacityWaiters.add(waiter);
+				continue;
+			}
+			try {
+				waiter(error);
+			} catch (callbackError) {
+				logger.warn("Async job capacity callback failed", {
+					error: callbackError instanceof Error ? callbackError.message : String(callbackError),
+				});
+			}
+		}
 	}
 
 	#resolveJobId(preferredId?: string): string {
