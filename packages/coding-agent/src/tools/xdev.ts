@@ -99,9 +99,10 @@ function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string 
 }
 
 function schemaProperties(schema: Record<string, unknown>): string[] | undefined {
-	if (schema.additionalProperties === true) return undefined;
+	// JSON Schema objects are open by default; only an explicit false closes the key set.
+	if (schema.additionalProperties !== false) return undefined;
 	const properties = schema.properties;
-	if (properties === null || typeof properties !== "object" || Array.isArray(properties)) return undefined;
+	if (!properties || typeof properties !== "object" || Array.isArray(properties)) return [];
 	return Object.keys(properties as Record<string, unknown>);
 }
 
@@ -226,6 +227,7 @@ export const XDEV_DOCS_PER_DEVICE_CAP = 10_000;
 export const XDEV_EXTERNAL_DESCRIPTION_CAP = 200;
 
 function resolveXdevTool(state: XdevState, name: string): Tool | undefined {
+	if (name in XDEV_TRANSPORT_TOOLS) return undefined;
 	if (!state.mountedNames.has(name) && !state.isActive(name)) return undefined;
 	return state.tools.get(name);
 }
@@ -451,7 +453,7 @@ export async function dispatchXdTarget(
 		return { ...result, details: { xdev } };
 	}
 	if (name !== undefined && isResolutionDeviceName(name)) {
-		const { result, xdev } = await dispatchResolutionDevice(session, name, content);
+		const { result, xdev } = await dispatchResolutionDevice(session, name, content, options.signal);
 		return { ...result, details: { xdev } };
 	}
 	const xdev = session.xdev;

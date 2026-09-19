@@ -11,7 +11,7 @@ import { Ellipsis, padToWidth, truncateToWidth } from "../tui/utils";
 import type { ToolSession } from ".";
 import { replaceTabs } from "./render-utils";
 import { tokenizeShellSegments } from "./shell-tokenize";
-import { ToolError } from "./tool-errors";
+import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import type { XdevDispatch } from "./xdev";
 import { parseXdBashCommand } from "./xdev";
 
@@ -89,7 +89,10 @@ export function resolveDispatchDetails(toolName: string, result: unknown): Resol
 interface ResolveInvocation {
 	action: ResolveAction;
 	reason: string;
+	signal?: AbortSignal;
 }
+
+type ResolveInvoker = (input: unknown, signal?: AbortSignal) => Promise<unknown> | unknown;
 
 let pendingPreviewSeq = 0;
 
@@ -98,8 +101,8 @@ export function queueResolveHandler(
 	options: {
 		label: string;
 		sourceToolName: string;
-		apply(reason: string): Promise<AgentToolResult<unknown>>;
-		reject?(reason: string): Promise<AgentToolResult<unknown> | undefined>;
+		apply(reason: string, signal?: AbortSignal): Promise<AgentToolResult<unknown>>;
+		reject?(reason: string, signal?: AbortSignal): Promise<AgentToolResult<unknown> | undefined>;
 	},
 ): void {
 	const queue = session.getToolChoiceQueue?.();
@@ -142,8 +145,8 @@ async function runResolveInvocation(
 	options: {
 		sourceToolName: string;
 		label: string;
-		apply(reason: string): Promise<AgentToolResult<unknown>>;
-		reject?(reason: string): Promise<AgentToolResult<unknown> | undefined>;
+		apply(reason: string, signal?: AbortSignal): Promise<AgentToolResult<unknown>>;
+		reject?(reason: string, signal?: AbortSignal): Promise<AgentToolResult<unknown> | undefined>;
 
 		onApplyError?(error: unknown): void;
 	},
@@ -156,9 +159,11 @@ async function runResolveInvocation(
 	};
 	if (params.action === "apply") {
 		let result: AgentToolResult<unknown>;
+		throwIfAborted(params.signal);
 		try {
-			result = await options.apply(params.reason);
+			result = await options.apply(params.reason, params.signal);
 		} catch (error) {
+			if (error instanceof ToolAbortError || params.signal?.aborted) throw error;
 			try {
 				options.onApplyError?.(error);
 			} catch {}
@@ -175,7 +180,9 @@ async function runResolveInvocation(
 		};
 	}
 	if (options.reject != null) {
-		const result = await options.reject(params.reason);
+		throwIfAborted(params.signal);
+		const result = await options.reject(params.reason, params.signal);
+		throwIfAborted(params.signal);
 		if (result != null) {
 			return {
 				...result,
@@ -196,7 +203,9 @@ export async function dispatchResolutionDevice(
 	session: ToolSession,
 	device: ResolutionDeviceName,
 	text: string,
+	signal?: AbortSignal,
 ): Promise<{ result: AgentToolResult<unknown>; xdev: XdevDispatch }> {
+	throwIfAborted(signal);
 	const body = text.trim();
 
 	const action: ResolveAction = device === RESOLVE_DEVICE_NAME ? "apply" : "discard";
@@ -219,8 +228,9 @@ export async function dispatchResolutionDevice(
 			`No pending action to apply — ${RESOLVE_DEVICE_PATH} is only valid while a staged preview is pending.`,
 		);
 	}
-	const invocation: ResolveInvocation = { action, reason: body };
-	const result = (await invoker(invocation)) as AgentToolResult<ResolveDetails>;
+	const invocation: ResolveInvocation = { action, reason: body, signal };
+	const result = (await (invoker as ResolveInvoker)(invocation, signal)) as AgentToolResult<ResolveDetails>;
+	throwIfAborted(signal);
 	return { result, xdev: { ...xdevBase, inner: result.details } };
 }
 

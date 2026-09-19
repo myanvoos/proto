@@ -845,7 +845,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			const joinedText = result.content
 				.filter(block => block.type === "text")
 				.map(block => block.text ?? "")
-				.join("");
+				.filter(Boolean)
+				.join("\n");
 			const text = joinedText.length > 0 && !joinedText.endsWith("\n") ? `${joinedText}\n` : joinedText;
 			const nonText = result.content.filter(block => block.type !== "text");
 			const isError = result.isError === true;
@@ -854,7 +855,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				record = JSON.stringify({ xdev: result.details?.xdev, details: result.details, content: nonText, isError });
 			} catch {
 				record = JSON.stringify({
-					xdev: result.details?.xdev,
 					content: [],
 					isError,
 					recordError: "non-text result was not serializable",

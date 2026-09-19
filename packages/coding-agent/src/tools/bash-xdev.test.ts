@@ -31,7 +31,12 @@ function systemPromptsSkill(dir: string): Skill {
 	};
 }
 
-function sessionWithProbe(cwd: string, state: ProbeState, skills: readonly Skill[] = []): ToolSession {
+function sessionWithProbe(
+	cwd: string,
+	state: ProbeState,
+	skills: readonly Skill[] = [],
+	activeNames: readonly string[] = [],
+): ToolSession {
 	const probe = {
 		name: "probe",
 		label: "Probe",
@@ -73,7 +78,7 @@ function sessionWithProbe(cwd: string, state: ProbeState, skills: readonly Skill
 			]),
 			mountedNames: new Set([probe.name, probe2.name]),
 			builtInNames: new Set([probe.name, probe2.name]),
-			isActive: () => false,
+			isActive: (name: string) => activeNames.includes(name),
 		},
 	} as unknown as ToolSession;
 }
@@ -87,11 +92,12 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
 
 async function withBash(
 	run: (bash: BashTool, state: ProbeState, session: ToolSession) => Promise<void>,
+	activeNames: readonly string[] = [],
 ): Promise<void> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-xdev-"));
 	const state: ProbeState = { calls: [], active: 0, maxActive: 0 };
 	try {
-		const session = sessionWithProbe(dir, state);
+		const session = sessionWithProbe(dir, state, [], activeNames);
 		await run(new BashTool(session), state, session);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -213,6 +219,127 @@ test("xd JSON supplied through an environment variable stays opaque", async () =
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
+});
+
+test("xd accepts extra MCP arguments when the input schema is open", async () => {
+	await withBash(async (bash, _state, session) => {
+		const makeTool = (name: string, additionalProperties?: unknown): Tool => {
+			const parameters = {
+				type: "object",
+				properties: { value: { type: "string" } },
+				required: ["value"],
+				...(additionalProperties === undefined ? {} : { additionalProperties }),
+			};
+			return {
+				name,
+				label: name,
+				description: "Accepts open MCP arguments.",
+				parameters,
+				async execute(_toolCallId: string, args: Record<string, unknown>) {
+					return { content: [{ type: "text" as const, text: `accepted:${String(args.extra)}\n` }] };
+				},
+			} as unknown as Tool;
+		};
+		const omitted = makeTool("mcp-open");
+		const schemaObject = makeTool("mcp-schema-open", { type: "string" });
+		session.xdev?.tools.set(omitted.name, omitted);
+		session.xdev?.tools.set(schemaObject.name, schemaObject);
+		session.xdev?.mountedNames.add(omitted.name);
+		session.xdev?.mountedNames.add(schemaObject.name);
+
+		for (const name of [omitted.name, schemaObject.name]) {
+			const result = await bash.execute(`xd-open-${name}`, {
+				command: `xd ${name} '{"value":"ok","extra":"forwarded"}'`,
+			});
+			expect(result.isError).not.toBe(true);
+			expect(textOf(result)).toContain("accepted:forwarded\n");
+		}
+	});
+});
+
+test("xd refuses the bash transport instead of recursively executing it", async () => {
+	await withBash(
+		async (bash, _state, session) => {
+			let nestedCalls = 0;
+			const nestedBash = {
+				name: "bash",
+				label: "Bash",
+				description: "Nested bash should never run through xd.",
+				parameters: type({ command: "string" }),
+				async execute() {
+					nestedCalls++;
+					return { content: [{ type: "text" as const, text: "nested bash ran\n" }] };
+				},
+			} as unknown as Tool;
+			session.xdev?.tools.set("bash", nestedBash);
+			const result = await bash.execute("xd-bash-transport", {
+				command: `xd bash '{"command":"echo nested"}'`,
+			});
+			expect(nestedCalls).toBe(0);
+			expect(textOf(result)).toContain("No such tool: xd://bash.");
+		},
+		["bash"],
+	);
+});
+
+test("xd preserves text block boundaries for shell output and rendering", async () => {
+	await withBash(async (bash, _state, session) => {
+		const multi = {
+			name: "multi-block",
+			label: "Multi block",
+			description: "Returns two text blocks.",
+			parameters: type({}),
+			async execute() {
+				return {
+					content: [
+						{ type: "text" as const, text: "first" },
+						{ type: "text" as const, text: "second" },
+					],
+				};
+			},
+		} as unknown as Tool;
+		session.xdev?.tools.set(multi.name, multi);
+		session.xdev?.mountedNames.add(multi.name);
+		const command = `xd ${multi.name} '{}'`;
+		const result = await bash.execute("xd-block-boundary", { command });
+		expect(result.isError).not.toBe(true);
+		expect(textOf(result)).toContain("first\nsecond\n");
+		expect(textOf(result)).not.toContain("firstsecond");
+
+		const resolveXdevMounted = (name: string) => {
+			const xdev = session.xdev;
+			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+		};
+		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
+		const normalizedRendered = rendered
+			.split("\n")
+			.map(line => line.trim())
+			.join("\n");
+		expect(normalizedRendered).toContain("first\nsecond");
+		expect(normalizedRendered).not.toContain("firstsecond");
+	});
+});
+
+test("xd keeps tool output when dispatch details are not JSON serializable", async () => {
+	await withBash(async (bash, _state, session) => {
+		const bigint = {
+			name: "bigint-details",
+			label: "BigInt details",
+			description: "Returns output with a BigInt detail.",
+			parameters: type({}),
+			async execute() {
+				return {
+					content: [{ type: "text" as const, text: "output survived\n" }],
+					details: { payload: 1n },
+				};
+			},
+		} as unknown as Tool;
+		session.xdev?.tools.set(bigint.name, bigint);
+		session.xdev?.mountedNames.add(bigint.name);
+		const result = await bash.execute("xd-bigint-details", { command: `xd ${bigint.name} '{}'` });
+		expect(result.isError).not.toBe(true);
+		expect(textOf(result)).toContain("output survived\n");
+	});
 });
 
 test("standalone command and environment path URIs still resolve", async () => {
