@@ -1,7 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
-import { formatCount, prompt, truncate } from "@oh-my-pi/pi-utils";
+import { formatCount, prompt, ptree, truncate } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../../config/model-registry";
 import { settings } from "../../config/settings";
 import type { CustomTool, CustomToolContext, RenderResultOptions } from "../../extensibility/custom-tools/types";
@@ -12,15 +12,8 @@ import { discoverAuthStorage } from "../../session/auth-broker-config";
 import type { ToolSession } from "../../tools";
 import { formatAge } from "../../tools/render-utils";
 import { throwIfAborted } from "../../tools/tool-errors";
-import {
-	formatSearchProviderFailure,
-	formatSearchProviderFailures,
-	getSearchProvider,
-	getSearchProviderLabel,
-	resolveProviderCandidates,
-	type SearchProvider,
-	type SearchProviderCandidate,
-} from "./provider";
+import type { SearchProvider, SearchProviderCandidate } from "./provider";
+import * as searchProvider from "./provider";
 import { applyQueryConstraints, getQueryConstraintLabels, parseSearchQuery, type StructuredQuery } from "./query";
 import {
 	formatConstraintLine,
@@ -121,6 +114,25 @@ interface ExecuteSearchOptions {
 	modelRegistry?: ModelRegistry;
 	sessionId?: string;
 	signal?: AbortSignal;
+	timeoutMs?: number;
+}
+
+async function awaitWithSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) throw signal.reason ?? new Error("Operation deadline exceeded");
+	const { promise, resolve, reject } = Promise.withResolvers<T>();
+	const onAbort = () => reject(signal.reason ?? new Error("Operation deadline exceeded"));
+	signal.addEventListener("abort", onAbort, { once: true });
+	void work
+		.then(resolve, reject)
+		.finally(() => signal.removeEventListener("abort", onAbort))
+		.catch(() => {});
+	return promise;
+}
+
+function isNonRetryableProviderError(error: unknown): boolean {
+	return (
+		error instanceof SearchProviderError && (error.status === 401 || error.status === 403 || error.status === 404)
+	);
 }
 
 function buildConstraintApplications(
@@ -159,7 +171,7 @@ async function executeSearch(
 	if (explicitProvider && explicitProvider !== "auto") {
 		candidates = [{ id: explicitProvider, explicit: true }];
 	} else {
-		candidates = resolveProviderCandidates();
+		candidates = searchProvider.resolveProviderCandidates();
 	}
 
 	const parsedQuery = parseSearchQuery(params.query);
@@ -178,26 +190,39 @@ async function executeSearch(
 		geminiModel = undefined;
 	}
 
-	let timeoutMs = DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS * 1_000;
-	try {
-		const configuredSeconds = settings.get("providers.webSearchTimeoutSeconds");
-		if (Number.isFinite(configuredSeconds) && configuredSeconds > 0) {
-			timeoutMs = Math.ceil(Math.min(configuredSeconds, MAX_WEB_SEARCH_TIMEOUT_SECONDS) * 1_000);
-		}
-	} catch {}
+	let timeoutMs =
+		options.timeoutMs !== undefined && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+			? options.timeoutMs
+			: DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS * 1_000;
+	if (options.timeoutMs === undefined || !Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
+		try {
+			const configuredSeconds = settings.get("providers.webSearchTimeoutSeconds");
+			if (Number.isFinite(configuredSeconds) && configuredSeconds > 0) {
+				timeoutMs = Math.ceil(Math.min(configuredSeconds, MAX_WEB_SEARCH_TIMEOUT_SECONDS) * 1_000);
+			}
+		} catch {}
+	}
+	timeoutMs = Math.max(1, Math.min(timeoutMs, MAX_WEB_SEARCH_TIMEOUT_SECONDS * 1_000));
+
+	const deadlineMs = Date.now() + timeoutMs;
+	const searchSignal = ptree.combineSignals(signal, timeoutMs);
+	if (!searchSignal) throw new Error("Web search deadline could not be initialized");
 
 	const failures: Array<{ provider: Pick<SearchProvider, "id" | "label">; error: unknown }> = [];
 	let availableProviderCount = 0;
 	let lastProvider: Pick<SearchProvider, "id" | "label"> | undefined;
 	for (const candidate of candidates) {
+		if (searchSignal.aborted) break;
+		const remainingMs = deadlineMs - Date.now();
+		if (remainingMs <= 0) break;
 		let provider: SearchProvider | undefined;
-		const providerMeta = { id: candidate.id, label: getSearchProviderLabel(candidate.id) };
+		const providerMeta = { id: candidate.id, label: searchProvider.getSearchProviderLabel(candidate.id) };
 		lastProvider = providerMeta;
 		try {
-			provider = await getSearchProvider(candidate.id);
+			provider = await awaitWithSignal(searchProvider.getSearchProvider(candidate.id), searchSignal);
 			const available = candidate.explicit
-				? await provider.isExplicitlyAvailable(authStorage)
-				: await provider.isAvailable(authStorage);
+				? await awaitWithSignal(Promise.resolve(provider.isExplicitlyAvailable(authStorage)), searchSignal)
+				: await awaitWithSignal(Promise.resolve(provider.isAvailable(authStorage)), searchSignal);
 			if (!available && !candidate.explicit) continue;
 			if (!available && candidate.explicit) {
 				throw new SearchProviderError(
@@ -208,23 +233,26 @@ async function executeSearch(
 			availableProviderCount++;
 			lastProvider = provider;
 
-			const response = await provider.search({
-				query: params.query,
-				parsedQuery,
-				limit: params.limit,
-				recency: params.recency,
-				systemPrompt: webSearchSystemPrompt,
-				maxOutputTokens: params.max_tokens,
-				numSearchResults: params.num_search_results,
-				temperature: params.temperature,
-				signal,
-				timeoutMs,
-				authStorage,
-				modelRegistry,
-				sessionId,
-				antigravityEndpointMode,
-				geminiModel,
-			});
+			const response = await awaitWithSignal(
+				provider.search({
+					query: params.query,
+					parsedQuery,
+					limit: params.limit,
+					recency: params.recency,
+					systemPrompt: webSearchSystemPrompt,
+					maxOutputTokens: params.max_tokens,
+					numSearchResults: params.num_search_results,
+					temperature: params.temperature,
+					signal: searchSignal,
+					timeoutMs: Math.max(1, deadlineMs - Date.now()),
+					authStorage,
+					modelRegistry,
+					sessionId,
+					antigravityEndpointMode,
+					geminiModel,
+				}),
+				searchSignal,
+			);
 
 			let finalResponse = mergeSearchReferences(response);
 			const constraintApplications = buildConstraintApplications(
@@ -258,7 +286,9 @@ async function executeSearch(
 			};
 		} catch (error) {
 			throwIfAborted(signal);
+			if (searchSignal.aborted) break;
 			failures.push({ provider: provider ?? providerMeta, error });
+			if (isNonRetryableProviderError(error)) break;
 		}
 	}
 
@@ -272,10 +302,12 @@ async function executeSearch(
 
 	const lastFailure = failures[failures.length - 1];
 	const baseMessage = lastFailure
-		? formatSearchProviderFailure(lastFailure.error, lastFailure.provider)
+		? searchProvider.formatSearchProviderFailure(lastFailure.error, lastFailure.provider)
 		: `Unknown error from ${lastProvider?.label ?? "web search provider"}`;
 	const message =
-		failures.length > 1 ? `All web search providers failed: ${formatSearchProviderFailures(failures)}` : baseMessage;
+		failures.length > 1
+			? `All web search providers failed: ${searchProvider.formatSearchProviderFailures(failures)}`
+			: baseMessage;
 
 	return {
 		content: [{ type: "text" as const, text: `Error: ${message}` }],
@@ -288,7 +320,13 @@ async function executeSearch(
 
 export async function runSearchQuery(
 	params: SearchQueryParams,
-	options: { authStorage?: AuthStorage; modelRegistry?: ModelRegistry; sessionId?: string; signal?: AbortSignal } = {},
+	options: {
+		authStorage?: AuthStorage;
+		modelRegistry?: ModelRegistry;
+		sessionId?: string;
+		signal?: AbortSignal;
+		timeoutMs?: number;
+	} = {},
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: SearchRenderDetails }> {
 	const createdAuthStorage = options.authStorage || options.modelRegistry ? undefined : await discoverAuthStorage();
 	const authStorage = options.authStorage ?? options.modelRegistry?.authStorage ?? createdAuthStorage;
@@ -302,6 +340,7 @@ export async function runSearchQuery(
 			modelRegistry,
 			sessionId: options.sessionId,
 			signal: options.signal,
+			timeoutMs: options.timeoutMs,
 		});
 	} finally {
 		createdAuthStorage?.close();

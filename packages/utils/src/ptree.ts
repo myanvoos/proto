@@ -47,7 +47,18 @@ export class TimeoutError extends AbortError {
 	}
 }
 
-export interface WaitOptions {
+export class OutputLimitError extends AbortError {
+	constructor(stream: "stdout" | "stderr", maxBytes: number, stderr: string) {
+		super(new Error(`${stream} exceeded the ${maxBytes} byte output limit`), stderr);
+	}
+}
+
+export interface OutputLimits {
+	maxStdoutBytes?: number;
+	maxStderrBytes?: number;
+}
+
+export interface WaitOptions extends OutputLimits {
 	allowNonZero?: boolean;
 	allowAbort?: boolean;
 
@@ -62,6 +73,67 @@ export interface ExecResult {
 	exitError?: Exception;
 }
 
+interface ChildOutputResult {
+	text: string;
+	overflow: boolean;
+	reason?: OutputLimitError;
+}
+
+function normalizeOutputLimit(value: number | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isFinite(value) || value < 0) throw new RangeError("Output limits must be finite and non-negative");
+	return Math.floor(value);
+}
+
+async function readChildOutput(
+	stream: ReadableStream<Uint8Array>,
+	maxBytes: number | undefined,
+	onOverflow: (reason: OutputLimitError) => void,
+	streamName: "stdout" | "stderr",
+): Promise<ChildOutputResult> {
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			if (maxBytes !== undefined && total + value.byteLength > maxBytes) {
+				const accepted = Math.max(0, maxBytes - total);
+				if (accepted > 0) {
+					chunks.push(value.subarray(0, accepted));
+					total += accepted;
+				}
+				const reason = new OutputLimitError(streamName, maxBytes, "");
+				await reader.cancel(reason).catch(() => {});
+				onOverflow(reason);
+				const bytes = new Uint8Array(total);
+				let offset = 0;
+				for (const chunk of chunks) {
+					bytes.set(chunk, offset);
+					offset += chunk.byteLength;
+				}
+				return { text: decoder.decode(bytes), overflow: true, reason };
+			}
+			chunks.push(value);
+			total += value.byteLength;
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const bytes = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return { text: decoder.decode(bytes), overflow: false };
+}
+
+const DEFAULT_STDERR_CAPTURE_BYTES = 1 * 1024 * 1024;
+
 export class ChildProcess<In extends InMask = InMask> {
 	#nothrow = false;
 	#stderrTail = "";
@@ -71,12 +143,18 @@ export class ChildProcess<In extends InMask = InMask> {
 	#stderrDone: Promise<void>;
 	#exited: Promise<number>;
 	#stderrStream?: ReadableStream<Uint8Array>;
+	#stderrLimitError?: OutputLimitError;
+	#maxStdoutBytes?: number;
+	#maxStderrBytes = DEFAULT_STDERR_CAPTURE_BYTES;
 
 	constructor(
 		readonly proc: PipedSubprocess<In>,
 		readonly exposeStderr: boolean,
 		retainFullStderr = exposeStderr,
+		outputLimits: OutputLimits = {},
 	) {
+		this.#maxStdoutBytes = normalizeOutputLimit(outputLimits.maxStdoutBytes);
+		this.#maxStderrBytes = normalizeOutputLimit(outputLimits.maxStderrBytes) ?? DEFAULT_STDERR_CAPTURE_BYTES;
 		if (retainFullStderr) this.#stderrChunks = [];
 
 		const dec = new TextDecoder();
@@ -92,10 +170,22 @@ export class ChildProcess<In extends InMask = InMask> {
 		}
 		this.#stderrDone = (async () => {
 			try {
+				let retainedBytes = 0;
 				for await (const chunk of stderrStream) {
-					this.#stderrChunks?.push(chunk);
-					this.#stderrTail += dec.decode(chunk, { stream: true });
-					trim();
+					const accepted = Math.max(0, Math.min(chunk.byteLength, this.#maxStderrBytes - retainedBytes));
+					if (accepted > 0) {
+						const retained = accepted === chunk.byteLength ? chunk : chunk.subarray(0, accepted);
+						this.#stderrChunks?.push(retained);
+						this.#stderrTail += dec.decode(retained, { stream: true });
+						retainedBytes += accepted;
+						trim();
+					}
+					if (accepted < chunk.byteLength) {
+						const reason = new OutputLimitError("stderr", this.#maxStderrBytes, this.#stderrTail);
+						this.#stderrLimitError = reason;
+						this.kill(reason);
+						break;
+					}
 				}
 			} catch {}
 			this.#stderrTail += dec.decode();
@@ -186,11 +276,17 @@ export class ChildProcess<In extends InMask = InMask> {
 				?.catch(e => void e);
 	}
 
-	async text(): Promise<string> {
-		const p = new Response(this.stdout).text();
-		if (this.#nothrow) return p;
-		const [text] = await Promise.all([p, this.exitedCleanly]);
-		return text;
+	async text(maxBytes?: number): Promise<string> {
+		const result = await readChildOutput(
+			this.stdout,
+			maxBytes === undefined ? this.#maxStdoutBytes : normalizeOutputLimit(maxBytes),
+			reason => this.kill(reason),
+			"stdout",
+		);
+		if (this.#nothrow) return result.text;
+		await this.exitedCleanly;
+		if (result.overflow) throw result.reason;
+		return result.text;
 	}
 
 	async blob(): Promise<Blob> {
@@ -220,13 +316,19 @@ export class ChildProcess<In extends InMask = InMask> {
 			throw new Error('Full stderr capture must be requested when spawning the process (pass stderr: "full")');
 		}
 
-		const stdoutP = new Response(this.stdout).text();
+		const stdoutP = readChildOutput(
+			this.stdout,
+			opts?.maxStdoutBytes === undefined ? this.#maxStdoutBytes : normalizeOutputLimit(opts.maxStdoutBytes),
+			reason => this.kill(reason),
+			"stdout",
+		);
 		const stderrP =
 			stderrMode === "full" && stderrChunks
 				? this.#stderrDone.then(() => new TextDecoder().decode(Buffer.concat(stderrChunks)))
 				: this.#stderrDone.then(() => this.#stderrTail);
 
-		const [stdout, stderr] = await Promise.all([stdoutP, stderrP]);
+		const [stdoutResult, stderr] = await Promise.all([stdoutP, stderrP]);
+		const stdout = stdoutResult.text;
 
 		let exitError: Exception | undefined;
 		try {
@@ -237,12 +339,13 @@ export class ChildProcess<In extends InMask = InMask> {
 		}
 
 		if (!exitError) exitError = this.exitReason;
+		if (!exitError) exitError = stdoutResult.reason ?? this.#stderrLimitError;
 		if (!exitError && this.exitCode !== null && this.exitCode !== 0) {
 			exitError = new NonZeroExitError(this.exitCode, this.#stderrTail);
 		}
 
-		const exitCode = this.exitCode ?? (exitError && !exitError.aborted ? exitError.exitCode : null);
-		const ok = exitCode === 0;
+		const exitCode = exitError?.aborted ? null : (this.exitCode ?? (exitError ? exitError.exitCode : null));
+		const ok = exitCode === 0 && !exitError;
 
 		if (exitError) {
 			if ((exitError.aborted && !allowAbort) || (!exitError.aborted && !allowNonZero)) throw exitError;
@@ -281,19 +384,20 @@ export class ChildProcess<In extends InMask = InMask> {
 type ChildSpawnOptions<In extends InMask = InMask> = Omit<
 	Spawn.SpawnOptions<In, "pipe", "pipe">,
 	"stdout" | "stderr" | "detached"
-> & {
-	signal?: AbortSignal;
-	detached?: boolean;
+> &
+	OutputLimits & {
+		signal?: AbortSignal;
+		detached?: boolean;
 
-	stderr?: "full" | null;
-};
+		stderr?: "full" | null;
+	};
 
 function spawnInternal<In extends InMask = InMask>(
 	cmd: string[],
 	opts: ChildSpawnOptions<In> | undefined,
 	retainFullStderr: boolean,
 ): ChildProcess<In> {
-	const { timeout = -1, signal, stderr, ...rest } = opts ?? {};
+	const { timeout = -1, signal, stderr, maxStdoutBytes, maxStderrBytes, ...rest } = opts ?? {};
 	const child = Bun.spawn(cmd, {
 		stdin: "ignore",
 		stdout: "pipe",
@@ -301,7 +405,7 @@ function spawnInternal<In extends InMask = InMask>(
 		windowsHide: true,
 		...rest,
 	});
-	const cp = new ChildProcess(child, stderr === "full", retainFullStderr);
+	const cp = new ChildProcess(child, stderr === "full", retainFullStderr, { maxStdoutBytes, maxStderrBytes });
 	if (signal) cp.attachSignal(signal);
 	if (timeout > 0) cp.attachTimeout(timeout);
 	return cp;
@@ -316,11 +420,14 @@ export interface ExecOptions extends Omit<ChildSpawnOptions, "stderr" | "stdin">
 }
 
 export async function exec(cmd: string[], opts?: ExecOptions): Promise<ExecResult> {
-	const { input, stderr, allowAbort, allowNonZero, ...spawnOpts } = opts ?? {};
+	const { input, stderr, allowAbort, allowNonZero, maxStdoutBytes, maxStderrBytes, ...spawnOpts } = opts ?? {};
 	const stdin = typeof input === "string" ? Buffer.from(input) : input;
-	const resolved: ChildSpawnOptions = stdin === undefined ? spawnOpts : { ...spawnOpts, stdin };
+	const resolved: ChildSpawnOptions =
+		stdin === undefined
+			? { ...spawnOpts, maxStdoutBytes, maxStderrBytes }
+			: { ...spawnOpts, stdin, maxStdoutBytes, maxStderrBytes };
 	using child = spawnInternal(cmd, resolved, stderr === "full");
-	return await child.wait({ stderr, allowAbort, allowNonZero });
+	return await child.wait({ stderr, allowAbort, allowNonZero, maxStdoutBytes, maxStderrBytes });
 }
 
 type SignalValue = AbortSignal | number | null | undefined;

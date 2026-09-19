@@ -15,7 +15,7 @@ import type { AgentStorage } from "../session/agent-storage";
 import { DEFAULT_MAX_BYTES, truncateHead } from "../session/streaming-output";
 import { renderStatusLine, urlHyperlink } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
-import type { RenderResult, SpecialHandler } from "../web/scrapers/types";
+import { MAX_BYTES, type RenderResult, readResponseText, type SpecialHandler } from "../web/scrapers/types";
 import { applyListLimit } from "./list-limit";
 import { formatStyledArtifactReference, type OutputMeta } from "./output-meta";
 import { isReadableUrlPath, type LineRange, parseLineRanges } from "./path-utils";
@@ -516,24 +516,7 @@ const JINA_READER_MAX_BYTES = 2 * 1024 * 1024;
  * declared `content-length`, which a missing, wrong, or chunked header makes unbounded.
  */
 export async function readBoundedText(response: Response, maxBytes: number): Promise<string | null> {
-	const body = response.body;
-	if (!body) return "";
-	const reader = (body as ReadableStream<Uint8Array>).getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (!value) continue;
-			total += value.byteLength;
-			if (total > maxBytes) return null;
-			chunks.push(value);
-		}
-	} finally {
-		await reader.cancel().catch(() => {});
-	}
-	return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
+	return readResponseText(response, maxBytes);
 }
 
 function parseJinaReaderContent(responseBody: string): string | null {
@@ -566,6 +549,8 @@ export async function renderHtmlToText(
 		allowNonZero: true,
 		allowAbort: true,
 		stderr: "full" as const,
+		maxStdoutBytes: MAX_BYTES,
+		maxStderrBytes: 64 * 1024,
 		signal: overallSignal,
 	};
 	const remoteBudgetMs = Math.min(timeout * 1000, REMOTE_READER_MAX_MS);

@@ -1,5 +1,6 @@
 import { type FetchImpl, getEnvApiKey } from "@oh-my-pi/pi-ai";
 import type { AgentStorage } from "../session/agent-storage";
+import { MAX_BYTES, readResponseText } from "./scrapers/types";
 import { findCredential, withHardTimeout } from "./search/providers/utils";
 
 const PARALLEL_API_URL = "https://api.parallel.ai";
@@ -146,13 +147,26 @@ export function parseParallelErrorResponse(statusCode: number, responseText: str
 	}
 }
 
-export async function parseParallelJsonResponse(response: Response, operation: "search" | "extract"): Promise<unknown> {
+export async function parseParallelJsonResponse(
+	response: Response,
+	operation: "search" | "extract",
+	maxBytes = MAX_BYTES,
+): Promise<unknown> {
+	const responseText = await readResponseText(response, maxBytes);
+	if (responseText === null) {
+		throw new ParallelApiError(`Parallel ${operation} response exceeded the ${maxBytes} byte limit.`);
+	}
 	try {
-		return await response.json();
+		return JSON.parse(responseText);
 	} catch (err) {
 		const detail = err instanceof Error ? err.message : String(err);
 		throw new ParallelApiError(`Parallel ${operation} returned invalid JSON: ${detail}`);
 	}
+}
+
+async function parseParallelErrorBody(response: Response): Promise<ParallelApiError> {
+	const responseText = await readResponseText(response, MAX_BYTES);
+	return parseParallelErrorResponse(response.status, responseText ?? "");
 }
 
 function getAuthHeaders(apiKey: string): {
@@ -322,7 +336,7 @@ export async function searchWithParallel(
 		signal: withHardTimeout(options.signal),
 	});
 	if (!response.ok) {
-		throw parseParallelErrorResponse(response.status, await response.text());
+		throw await parseParallelErrorBody(response);
 	}
 
 	const payload = await parseParallelJsonResponse(response, "search");
@@ -355,7 +369,7 @@ export async function extractWithParallel(
 		signal: withHardTimeout(options.signal),
 	});
 	if (!response.ok) {
-		throw parseParallelErrorResponse(response.status, await response.text());
+		throw await parseParallelErrorBody(response);
 	}
 
 	const payload = await parseParallelJsonResponse(response, "extract");

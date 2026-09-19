@@ -1,6 +1,7 @@
+import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import { $env, ptree, USER_AGENT } from "@oh-my-pi/pi-utils";
 import type { RenderResult, SpecialHandler } from "./types";
-import { buildResult, formatMediaDuration, loadPage } from "./types";
+import { buildResult, formatMediaDuration, loadPage, MAX_BYTES, readResponseText } from "./types";
 
 interface GitHubUrl {
 	type:
@@ -30,6 +31,14 @@ interface GitHubIssueComment {
 	user: { login: string };
 	created_at: string;
 	body: string;
+}
+
+export const MAX_GITHUB_COMMENT_PAGES = 100;
+export const MAX_GITHUB_COMMENTS = 10_000;
+
+interface GitHubApiOptions {
+	fetch?: FetchImpl;
+	maxBytes?: number;
 }
 
 export function parseGitHubUrl(url: string): GitHubUrl | null {
@@ -103,9 +112,11 @@ export async function fetchGitHubApi(
 	endpoint: string,
 	timeout: number,
 	signal?: AbortSignal,
+	options?: GitHubApiOptions,
 ): Promise<{ data: unknown; ok: boolean }> {
 	try {
-		const requestSignal = ptree.combineSignals(signal, timeout * 1000);
+		const timeoutMs = Number.isFinite(timeout) && timeout > 0 ? timeout * 1000 : 1;
+		const requestSignal = ptree.combineSignals(signal, timeoutMs);
 
 		const headers: Record<string, string> = {
 			Accept: "application/vnd.github.v3+json",
@@ -117,7 +128,7 @@ export async function fetchGitHubApi(
 			headers.Authorization = `Bearer ${token}`;
 		}
 
-		const response = await fetch(`https://api.github.com${endpoint}`, {
+		const response = await (options?.fetch ?? fetch)(`https://api.github.com${endpoint}`, {
 			signal: requestSignal,
 			headers,
 		});
@@ -126,10 +137,16 @@ export async function fetchGitHubApi(
 			return { data: null, ok: false };
 		}
 
-		return { data: await response.json(), ok: true };
+		const responseText = await readResponseText(response, options?.maxBytes ?? MAX_BYTES);
+		if (responseText === null) return { data: null, ok: false };
+		return { data: JSON.parse(responseText), ok: true };
 	} catch {
 		return { data: null, ok: false };
 	}
+}
+
+function remainingTimeoutSeconds(deadlineMs: number): number {
+	return Math.max((deadlineMs - Date.now()) / 1000, 0);
 }
 
 async function fetchGitHubIssueComments(
@@ -137,31 +154,29 @@ async function fetchGitHubIssueComments(
 	repo: string,
 	issueNumber: number,
 	expectedCount: number,
-	timeout: number,
+	deadlineMs: number,
 	signal?: AbortSignal,
 ): Promise<GitHubIssueComment[]> {
 	const perPage = 100;
 	const comments: GitHubIssueComment[] = [];
+	const commentBudget = Math.min(Math.max(expectedCount, 0), MAX_GITHUB_COMMENTS);
 
-	for (let page = 1; comments.length < expectedCount; page++) {
+	for (let page = 1; page <= MAX_GITHUB_COMMENT_PAGES && comments.length < commentBudget; page++) {
+		const remainingSeconds = remainingTimeoutSeconds(deadlineMs);
+		if (remainingSeconds <= 0) break;
 		const result = await fetchGitHubApi(
 			`/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=${perPage}&page=${page}`,
-			timeout,
+			remainingSeconds,
 			signal,
 		);
-		if (!result.ok || !Array.isArray(result.data)) {
-			break;
-		}
+		if (!result.ok || !Array.isArray(result.data)) break;
 
 		const pageComments = result.data as GitHubIssueComment[];
-		if (pageComments.length === 0) {
-			break;
-		}
+		if (pageComments.length === 0) break;
 
-		comments.push(...pageComments);
-		if (pageComments.length < perPage) {
-			break;
-		}
+		const remainingComments = commentBudget - comments.length;
+		comments.push(...pageComments.slice(0, remainingComments));
+		if (pageComments.length < perPage || comments.length >= commentBudget) break;
 	}
 
 	return comments;
@@ -177,7 +192,11 @@ async function renderGitHubIssue(
 			? `/repos/${gh.owner}/${gh.repo}/pulls/${gh.number}`
 			: `/repos/${gh.owner}/${gh.repo}/issues/${gh.number}`;
 
-	const result = await fetchGitHubApi(endpoint, timeout, signal);
+	const timeoutMs = Number.isFinite(timeout) && timeout > 0 ? timeout * 1000 : 1;
+	const deadlineMs = Date.now() + Math.max(timeoutMs, 1);
+	const initialTimeout = remainingTimeoutSeconds(deadlineMs);
+	if (initialTimeout <= 0) return { content: "", ok: false };
+	const result = await fetchGitHubApi(endpoint, initialTimeout, signal);
 	if (!result.ok || !result.data) return { content: "", ok: false };
 
 	const issue = result.data as {
@@ -204,7 +223,14 @@ async function renderGitHubIssue(
 	md += `\n\n---\n\n`;
 
 	if (issue.comments > 0) {
-		const comments = await fetchGitHubIssueComments(gh.owner, gh.repo, issue.number, issue.comments, timeout, signal);
+		const comments = await fetchGitHubIssueComments(
+			gh.owner,
+			gh.repo,
+			issue.number,
+			issue.comments,
+			deadlineMs,
+			signal,
+		);
 		if (comments.length > 0) {
 			const commentCount =
 				issue.comments > comments.length ? `${comments.length} of ${issue.comments}` : `${comments.length}`;

@@ -1,6 +1,10 @@
-import { expect, test } from "bun:test";
-import { formatForLLM } from "./index";
+import { expect, spyOn, test } from "bun:test";
+import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import { formatForLLM, runSearchQuery } from "./index";
+import * as providerModule from "./provider";
+import { setExcludedSearchProviders, setSearchProviderOrder } from "./provider";
 import { parseAnthropicResponse } from "./providers/anthropic";
+import type { SearchProvider } from "./providers/base";
 import type { AnthropicApiResponse, SearchResponse } from "./types";
 
 function anthropicFixture(): AnthropicApiResponse {
@@ -126,4 +130,47 @@ test("search formatting reports when a native constraint is relaxed", () => {
 	});
 
 	expect(text).toContain("relaxed site:github.com, no results matched");
+});
+
+test("automatic search stops slow providers at one shared deadline", async () => {
+	const calls: string[] = [];
+	const slowProviders: Record<string, SearchProvider> = {};
+	for (const id of ["perplexity", "gemini", "anthropic"] as const) {
+		slowProviders[id] = {
+			id,
+			label: id,
+			isAvailable: () => true,
+			isExplicitlyAvailable: () => true,
+			search: async params => {
+				calls.push(`${id}:${params.timeoutMs}`);
+				// Deliberately ignore the provider signal: the chain itself must enforce its deadline.
+				return Promise.withResolvers<SearchResponse>().promise;
+			},
+		} as SearchProvider;
+	}
+
+	const providerSpy = spyOn(providerModule, "getSearchProvider").mockImplementation(async id => {
+		const provider = slowProviders[id];
+		if (!provider) throw new Error(`unexpected provider ${id}`);
+		return provider;
+	});
+	setSearchProviderOrder(["perplexity", "gemini", "anthropic"]);
+	setExcludedSearchProviders([]);
+
+	try {
+		const started = performance.now();
+		const result = await runSearchQuery(
+			{ query: "slow provider regression", provider: "auto" },
+			{ authStorage: {} as AuthStorage, timeoutMs: 50 },
+		);
+		const elapsed = performance.now() - started;
+
+		expect(elapsed).toBeLessThan(300);
+		expect(calls[0]?.startsWith("perplexity:")).toBe(true);
+		expect(result.details.error).toBeDefined();
+	} finally {
+		providerSpy.mockRestore();
+		setSearchProviderOrder([]);
+		setExcludedSearchProviders([]);
+	}
 });
