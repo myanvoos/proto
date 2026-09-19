@@ -156,6 +156,9 @@ const agent = new Agent({
 
   // Tool execution context (late-bound UI/session access)
   getToolContext: () => ({ /* app-defined */ }),
+
+  // Safety valve on concurrent shared tools in one provider batch (default: 32)
+  sharedToolConcurrency: 32,
 });
 ```
 
@@ -192,6 +195,7 @@ await agent.prompt("What's in this image?", [{ type: "image", data: base64Data, 
 await agent.prompt({ role: "user", content: "Hello", timestamp: Date.now() });
 
 // Continue from current context (last message must be user or toolResult)
+// A terminal provider/runtime error is removed automatically before retrying.
 await agent.continue();
 ```
 

@@ -117,6 +117,8 @@ export const TERMINAL_TOOL_RESULT_ABORT_REASON = Symbol.for("pi-agent-core.termi
 
 const STEERING_INTERRUPT_POLL_MS = 250;
 
+export const DEFAULT_SHARED_TOOL_CONCURRENCY = 32;
+
 class HarmonyLeakInterruption extends Error {
 	constructor(
 		readonly detection: HarmonyDetection,
@@ -1820,10 +1822,7 @@ function emitAbortedAssistantMessage(
 ): AssistantMessage {
 	const model = config.getModel?.() ?? config.model;
 	const errorMessage = abortReasonText(requestSignal);
-	const errorId =
-		errorMessage === "Request was aborted"
-			? AIError.create(AIError.Flag.Abort)
-			: AIError.classify(requestSignal?.reason) || undefined;
+	const errorId = AIError.create(AIError.Flag.Abort);
 	const base: AssistantMessage = partialMessage
 		? { ...partialMessage, stopReason: "aborted", errorMessage, errorId }
 		: {
@@ -1963,6 +1962,39 @@ async function prepareToolCallDispatch(
 	return prepared;
 }
 
+function createToolSemaphore(limit: number): { acquire: () => Promise<() => void> } {
+	let available = limit;
+	const waiters: Array<() => void> = [];
+
+	const grant = (): (() => void) => {
+		available--;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			const next = waiters.shift();
+			available++;
+			if (next) next();
+		};
+	};
+
+	return {
+		acquire: () => {
+			if (available > 0) return Promise.resolve(grant());
+			const { promise, resolve } = Promise.withResolvers<() => void>();
+			waiters.push(() => resolve(grant()));
+			return promise;
+		},
+	};
+}
+
+function resolveSharedToolConcurrency(configured: number | undefined): number {
+	if (configured === undefined || !Number.isSafeInteger(configured) || configured < 1) {
+		return DEFAULT_SHARED_TOOL_CONCURRENCY;
+	}
+	return configured;
+}
+
 async function executeToolCalls(
 	currentContext: AgentContext,
 	assistantMessage: AssistantMessage,
@@ -1988,7 +2020,6 @@ async function executeToolCalls(
 		(c): c is ToolCallContent =>
 			c.type === "toolCall" && (c as CursorExecResolvedCarrier)[kCursorExecResolved] !== true,
 	);
-	const emittedToolResults: ToolResultMessage[] = [];
 	const toolCallInfos = toolCalls.map(call => ({ id: call.id, name: call.name }));
 	const batchId = `${assistantMessage.timestamp ?? Date.now()}_${toolCalls[0]?.id ?? "batch"}`;
 	const shouldInterruptImmediately = interruptMode !== "wait";
@@ -2118,11 +2149,12 @@ async function executeToolCalls(
 		record.isError = isError;
 		record.toolResultMessage = toolResultMessage;
 		record.resultEmitted = true;
-		emittedToolResults.push(toolResultMessage);
 
 		stream.push({ type: "message_start", message: toolResultMessage });
 		stream.push({ type: "message_end", message: toolResultMessage });
 	};
+
+	let reportSteeringWatchError: ((error: unknown) => void) | undefined;
 
 	const runTool = async (record: (typeof records)[number], index: number): Promise<void> => {
 		if (interruptState.triggered && (record.interruptible || interruptState.source !== "irc")) {
@@ -2277,7 +2309,12 @@ async function executeToolCalls(
 		const interrupted = interruptState.triggered;
 		const perToolAborted = record.signal.aborted;
 		const abortedDuringExecution = perToolAborted && isError && !completedToolExecution;
-		if (interrupted && abortedDuringExecution) {
+		if (abortedDuringExecution && signal?.aborted) {
+			record.skipped = true;
+			result = createToolSignalAbortedResult(record.signal);
+			isError = true;
+			emitToolResult(record, result, true);
+		} else if (interrupted && abortedDuringExecution) {
 			record.skipped = true;
 			emitToolResult(record, createSkippedToolResult(interruptState.source, executionStarted), true);
 		} else {
@@ -2304,11 +2341,16 @@ async function executeToolCalls(
 			toolName: toolCall.name,
 		});
 
-		await checkSteering();
+		try {
+			await checkSteering();
+		} catch (error) {
+			reportSteeringWatchError?.(error);
+		}
 	};
 
 	let lastExclusive: Promise<void> = Promise.resolve();
 	let sharedTasks: Promise<void>[] = [];
+	const sharedSemaphore = createToolSemaphore(resolveSharedToolConcurrency(config.sharedToolConcurrency));
 	const tasks: Promise<void>[] = [];
 
 	const watchSteeringWhileRunning =
@@ -2320,6 +2362,23 @@ async function executeToolCalls(
 		? AbortSignal.any([signal, steeringWatchAbortController.signal])
 		: steeringWatchAbortController.signal;
 
+	let steeringWatchFailed = false;
+	let steeringWatchError: unknown;
+	let steeringWatchTimer: Timer | undefined;
+	let steeringCheckInFlight = false;
+	const stopSteeringWatch = (error?: unknown): void => {
+		if (!steeringWatchFailed) {
+			steeringWatchFailed = true;
+			steeringWatchError = error;
+		}
+		steeringWatchAbortController.abort();
+		if (steeringWatchTimer !== undefined) {
+			clearInterval(steeringWatchTimer);
+			steeringWatchTimer = undefined;
+		}
+	};
+	reportSteeringWatchError = stopSteeringWatch;
+
 	const { promise: watchAborted, resolve: resolveWatchAbort } = Promise.withResolvers<void>();
 	if (steeringWatchSignal.aborted) {
 		resolveWatchAbort();
@@ -2329,29 +2388,36 @@ async function executeToolCalls(
 	const watchAbortedFalse = watchAborted.then(() => false);
 	const steeringWatchPromise = eventDrivenSteeringWatch
 		? (async (): Promise<void> => {
-				while (!steeringWatchSignal.aborted) {
-					const steeringQueued = config.waitForSteeringMessages?.(steeringWatchSignal).then(
-						() => true,
-						() => false,
-					);
-					const steeringChecked = checkSteering().then(
-						() => true,
-						() => false,
-					);
-					if (!(await Promise.race([steeringChecked, watchAbortedFalse]))) return;
-					if (steeringWatchSignal.aborted || interruptState.triggered) return;
-					if (!(await Promise.race([steeringQueued, watchAbortedFalse]))) return;
+				try {
+					while (!steeringWatchSignal.aborted) {
+						const steeringQueued = config.waitForSteeringMessages!(steeringWatchSignal).then(() => true);
+						const steeringChecked = checkSteering().then(() => true);
+						if (!(await Promise.race([steeringChecked, watchAbortedFalse]))) return;
+						if (steeringWatchSignal.aborted || interruptState.triggered) return;
+						if (!(await Promise.race([steeringQueued, watchAbortedFalse]))) return;
+					}
+				} catch (error) {
+					stopSteeringWatch(error);
 				}
 			})()
 		: undefined;
 
-	const steeringWatchTimer =
-		watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasIrcInterrupts !== undefined)
-			? setInterval(
-					() => void (eventDrivenSteeringWatch ? checkIrcInterrupts() : checkSteering()),
-					STEERING_INTERRUPT_POLL_MS,
-				)
-			: undefined;
+	if (watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasIrcInterrupts !== undefined)) {
+		steeringWatchTimer = setInterval(() => {
+			if (steeringWatchFailed || steeringCheckInFlight) return;
+			steeringCheckInFlight = true;
+			const check = eventDrivenSteeringWatch ? checkIrcInterrupts() : checkSteering();
+			void check.then(
+				() => {
+					steeringCheckInFlight = false;
+				},
+				error => {
+					steeringCheckInFlight = false;
+					stopSteeringWatch(error);
+				},
+			);
+		}, STEERING_INTERRUPT_POLL_MS);
+	}
 	for (let index = 0; index < records.length; index++) {
 		const record = records[index];
 		const concurrencyMode = record.tool?.concurrency;
@@ -2366,7 +2432,17 @@ async function executeToolCalls(
 			concurrency = concurrencyMode ?? "shared";
 		}
 		const start = concurrency === "exclusive" ? Promise.all([lastExclusive, ...sharedTasks]) : lastExclusive;
-		const task = start.then(() => runTool(record, index));
+		const task =
+			concurrency === "exclusive"
+				? start.then(() => runTool(record, index))
+				: start.then(async () => {
+						const release = await sharedSemaphore.acquire();
+						try {
+							await runTool(record, index);
+						} finally {
+							release();
+						}
+					});
 		tasks.push(task);
 		if (concurrency === "exclusive") {
 			lastExclusive = task;
@@ -2382,6 +2458,7 @@ async function executeToolCalls(
 		await steeringWatchPromise?.catch(() => undefined);
 		clearInterval(steeringWatchTimer);
 	}
+	if (steeringWatchFailed) throw steeringWatchError;
 
 	await yieldIfDue();
 
@@ -2397,7 +2474,9 @@ async function executeToolCalls(
 		}
 	}
 
-	return { toolResults: emittedToolResults };
+	return {
+		toolResults: records.flatMap(record => (record.toolResultMessage ? [record.toolResultMessage] : [])),
+	};
 }
 
 export interface SyntheticToolResultDetails {

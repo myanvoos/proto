@@ -667,14 +667,24 @@ function serializeRequestMessagesForTelemetry(
 	const serializer = telemetry.config.contentSerializer?.requestMessages;
 	if (serializer) return callContentSerializer(telemetry, "requestMessages", () => serializer(request));
 	const messages: TelemetryMessageSummary[] = [];
-	for (const text of normalizeSystemPromptParts(request.systemPrompt))
+	const systemPrompt = normalizeSystemPromptParts(request.systemPrompt);
+	const requestMessages = request.messages ?? [];
+	const totalMessages = systemPrompt.length + requestMessages.length;
+	for (const text of systemPrompt) {
+		if (messages.length >= MAX_TELEMETRY_MESSAGE_COUNT) break;
 		messages.push({ role: "system", content: summarizeTelemetryValue(text) });
-	if (request.messages) {
-		for (const message of request.messages) {
-			messages.push({ role: message.role, content: summarizeTelemetryValue(message.content) });
-		}
 	}
-	return messages.length === 0 ? undefined : stringifyJsonAttribute(limitTelemetryMessages(messages));
+	for (let index = 0; index < requestMessages.length && messages.length < MAX_TELEMETRY_MESSAGE_COUNT; index++) {
+		const message = requestMessages[index]!;
+		messages.push({ role: message.role, content: summarizeTelemetryValue(message.content) });
+	}
+	if (totalMessages > MAX_TELEMETRY_MESSAGE_COUNT) {
+		messages.push({
+			role: "system",
+			content: { kind: "truncated", omittedMessages: totalMessages - MAX_TELEMETRY_MESSAGE_COUNT },
+		});
+	}
+	return messages.length === 0 ? undefined : stringifyJsonAttribute(messages);
 }
 
 function serializeResponseTextForTelemetry(telemetry: AgentTelemetry, message: AssistantMessage): string | undefined {
@@ -852,17 +862,6 @@ function callContentSerializer(
 	}
 }
 
-function limitTelemetryMessages(messages: readonly TelemetryMessageSummary[]): TelemetryMessageSummary[] {
-	const limited = messages.slice(0, MAX_TELEMETRY_MESSAGE_COUNT);
-	if (messages.length > MAX_TELEMETRY_MESSAGE_COUNT) {
-		limited.push({
-			role: "system",
-			content: { kind: "truncated", omittedMessages: messages.length - MAX_TELEMETRY_MESSAGE_COUNT },
-		});
-	}
-	return limited;
-}
-
 function limitTelemetryToolCalls(toolCalls: readonly TelemetryToolCallSummary[]): TelemetryToolCallSummary[] {
 	const limited = toolCalls.slice(0, MAX_TELEMETRY_ARRAY_ITEMS);
 	if (toolCalls.length > MAX_TELEMETRY_ARRAY_ITEMS) {
@@ -980,7 +979,7 @@ export async function finishChatSpan(
 	applyGatewayAttributes(span, options.responseHeaders, options.baseUrl);
 	const cost = applyCostEstimate(telemetry, span, message, options.serviceTier, options.stepNumber);
 	if (telemetry) {
-		await emitChatUsage(telemetry, span, {
+		void emitChatUsage(telemetry, span, {
 			model: message.model,
 			provider: message.provider,
 			serviceTier: options.serviceTier,
@@ -1413,7 +1412,7 @@ export async function recordManualChatTelemetry(
 			stepNumber: options.stepNumber,
 			usage: options.usage,
 		});
-		await emitChatUsage(telemetry, span, {
+		void emitChatUsage(telemetry, span, {
 			model: options.responseModel ?? options.model.id,
 			provider: options.model.provider,
 			serviceTier: options.serviceTier,

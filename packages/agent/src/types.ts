@@ -99,6 +99,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	interruptMode?: "immediate" | "wait";
 
+	/** Maximum concurrent shared-tool executions in one batch (defaults to 32). */
+	sharedToolConcurrency?: number;
+
 	sessionId?: string;
 
 	deadline?: number;

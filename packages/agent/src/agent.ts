@@ -104,6 +104,9 @@ export interface AgentOptions {
 
 	interruptMode?: "immediate" | "wait";
 
+	/** Maximum concurrent shared-tool executions in one batch (defaults to 32). */
+	sharedToolConcurrency?: number;
+
 	kimiApiFormat?: "openai" | "anthropic";
 
 	preferWebsockets?: boolean;
@@ -222,6 +225,7 @@ export class Agent {
 	#steeringMode: "all" | "one-at-a-time";
 	#followUpMode: "all" | "one-at-a-time";
 	#interruptMode: "immediate" | "wait";
+	#sharedToolConcurrency?: number;
 	#sessionId?: string;
 	#deadline?: number;
 	#promptCacheKey?: string;
@@ -299,6 +303,7 @@ export class Agent {
 		this.#steeringMode = opts.steeringMode || "one-at-a-time";
 		this.#followUpMode = opts.followUpMode || "one-at-a-time";
 		this.#interruptMode = opts.interruptMode || "immediate";
+		this.#sharedToolConcurrency = opts.sharedToolConcurrency;
 		this.streamFn = opts.streamFn || streamSimple;
 		this.#sessionId = opts.sessionId;
 		this.#deadline = opts.deadline;
@@ -897,6 +902,15 @@ export class Agent {
 		return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
 	}
 
+	#removeTerminalErrorForContinuation(): void {
+		const messages = this.#state.messages;
+		let tail = messages.length;
+		while (tail > 0 && messages[tail - 1]?.role === "toolResult") tail--;
+		const terminal = messages[tail - 1];
+		if (terminal?.role !== "assistant" || terminal.stopReason !== "error") return;
+		messages.splice(tail - 1);
+	}
+
 	async continue(signal?: AbortSignal) {
 		if (this.#state.isStreaming) {
 			throw new AgentBusyError();
@@ -914,6 +928,7 @@ export class Agent {
 		try {
 			const dequeueSignal = this.#continuationDequeueSignal(signal);
 			const messages = this.#state.messages;
+			this.#removeTerminalErrorForContinuation();
 			if (messages.length === 0) {
 				const queuedSteering = await this.#dequeueSteeringMessagesAfterHooks(dequeueSignal);
 				if (queuedSteering.length > 0) {
@@ -1053,6 +1068,7 @@ export class Agent {
 			serviceTier: this.#serviceTier,
 			hideThinkingSummary: this.#hideThinkingSummary,
 			interruptMode: this.#interruptMode,
+			sharedToolConcurrency: this.#sharedToolConcurrency,
 			sessionId: this.#sessionId,
 			deadline: this.#deadline,
 			promptCacheKey: this.#promptCacheKey,

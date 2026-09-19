@@ -146,3 +146,33 @@ test("reset refuses an active run and preserves exclusive transcript ownership",
 		await agent.waitForIdle();
 	}
 }, 5_000);
+
+test("continue retries after removing a terminal provider error message", async () => {
+	let responseCount = 0;
+	const seenContexts: AgentMessage[][] = [];
+	const streamFn: StreamFn = (model, context) => {
+		seenContexts.push(context.messages as AgentMessage[]);
+		const stream = createAssistantMessageEventStream();
+		if (responseCount++ === 0) {
+			const error = assistantMessage(model, "", Date.now());
+			error.stopReason = "error";
+			error.errorMessage = "provider failed";
+			stream.end(error);
+		} else {
+			finishTextResponse(stream, model, "retried", Date.now());
+		}
+		return stream;
+	};
+	const agent = new Agent({ streamFn });
+
+	await agent.prompt("first");
+	expect(agent.state.messages.at(-1)?.role).toBe("assistant");
+	expect((agent.state.messages.at(-1) as AssistantMessage).stopReason).toBe("error");
+
+	await agent.continue();
+
+	expect(responseCount).toBe(2);
+	expect(seenContexts[1]?.map(message => message.role)).toEqual(["user"]);
+	expect(agent.state.messages.map(message => message.role)).toEqual(["user", "assistant"]);
+	expect(messageText(agent.state.messages.at(-1)!)).toBe("retried");
+});
