@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { listSessions } from "../packages/coding-agent/src/session/session-listing";
+import { findMostRecentSession, listSessions } from "../packages/coding-agent/src/session/session-listing";
 import { loadSessionFile, parseSessionContent } from "../packages/coding-agent/src/session/session-loader";
 import { FileSessionStorage } from "../packages/coding-agent/src/session/session-storage";
 import { serializeTitleSlot } from "../packages/coding-agent/src/session/session-title-slot";
@@ -88,9 +88,20 @@ const coldStart = Bun.nanoseconds();
 const coldSessions = await listSessions(coldDir, storage);
 const coldMs = (Bun.nanoseconds() - coldStart) / 1e6;
 
+// Resuming without a breadcrumb calls findMostRecentSession and then the picker lists the same directory.
+// Both walk the same files, so this measures whether the expensive scan is shared or paid twice.
+const resumeDir = path.join(root, "resume-listing");
+await fs.mkdir(resumeDir, { recursive: true });
+for (let i = 0; i < 100; i++) await writeFixture(resumeDir, `resume-${i}.jsonl`, 200);
+const resumeStart = Bun.nanoseconds();
+await findMostRecentSession(resumeDir, storage);
+await listSessions(resumeDir, storage);
+const resumeMs = (Bun.nanoseconds() - resumeStart) / 1e6;
+
 const artifact = await runSuite("session-scale", cases);
 process.stdout.write(`${formatArtifact(artifact)}\n`);
 process.stdout.write(`cold list of ${coldSessions.length} sessions (200 entries each): ${coldMs.toFixed(1)} ms\n`);
+process.stdout.write(`cold findMostRecentSession + listSessions over 100 sessions: ${resumeMs.toFixed(1)} ms\n`);
 
 // Growth check: doubling the transcript should roughly double the work, not quadruple it.
 const parseTimes = sizes.map(entries => artifact.cases.find(c => c.name === `parse-${entries}-entries`)!.median);

@@ -427,11 +427,7 @@ async function resumableScanState(
 	return boundaryHash === cached.boundaryHash ? cached : undefined;
 }
 
-async function scanSessionFile(
-	file: string,
-	storage: SessionStorage,
-	withStatus: boolean,
-): Promise<SessionInfo | undefined> {
+async function scanSessionFile(file: string, storage: SessionStorage): Promise<SessionInfo | undefined> {
 	let stat: SessionStorageStat;
 	try {
 		stat = storage.statSync(file);
@@ -440,17 +436,17 @@ async function scanSessionFile(
 	}
 	const cache = getSessionScanCache(storage);
 
-	const cacheKey = withStatus ? `s\0${file}` : `h\0${file}`;
+	// One cache entry per file, not one per caller shape. `withStatus` only decides whether a bounded tail
+	// read is turned into a status string; everything expensive — the full read, the JSONL fold, the
+	// boundary fingerprint — is identical. Keying them apart made findMostRecentSession (withStatus=false)
+	// and listSessions (withStatus=true) each pay the full cold scan for the same file in one process.
+	const cacheKey = file;
 	const cached = cache.get(cacheKey);
 	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
 		return cached.info ? attachSessionLiveState({ ...cached.info }, storage) : undefined;
 	}
 	try {
-		const [prefix, suffix] = await storage.readTextSlices(
-			file,
-			SESSION_LIST_PREFIX_BYTES,
-			withStatus ? SESSION_LIST_SUFFIX_BYTES : 0,
-		);
+		const [prefix, suffix] = await storage.readTextSlices(file, SESSION_LIST_PREFIX_BYTES, SESSION_LIST_SUFFIX_BYTES);
 		const { size, mtime } = stat;
 		const prefixHash = Bun.hash(prefix).toString();
 		const resumeCandidate = cached?.resume ?? loadPersistedResume(file);
@@ -503,7 +499,7 @@ async function scanSessionFile(
 			size,
 			firstMessage: acc.firstMessage || "(no messages)",
 			allMessagesText: acc.hasMessageText ? acc.searchText : acc.firstMessage,
-			status: withStatus ? deriveSessionStatus(suffix) : undefined,
+			status: deriveSessionStatus(suffix),
 		};
 
 		const nextResume: SessionScanResumeState = {
@@ -528,31 +524,26 @@ async function collectSessionsFromFileStride(
 	storage: SessionStorage,
 	startIndex: number,
 	stride: number,
-	withStatus: boolean,
 ): Promise<SessionInfo[]> {
 	const sessions: SessionInfo[] = [];
 
 	for (let i = startIndex; i < files.length; i += stride) {
-		const session = await scanSessionFile(files[i], storage, withStatus);
+		const session = await scanSessionFile(files[i], storage);
 		if (session) sessions.push(session);
 	}
 
 	return sessions;
 }
 
-async function collectSessionsFromFiles(
-	files: string[],
-	storage: SessionStorage,
-	withStatus: boolean,
-): Promise<SessionInfo[]> {
+async function collectSessionsFromFiles(files: string[], storage: SessionStorage): Promise<SessionInfo[]> {
 	const workerCount = getSessionListWorkerCount(files.length);
 	const sessions =
 		workerCount === 1
-			? await collectSessionsFromFileStride(files, storage, 0, 1, withStatus)
+			? await collectSessionsFromFileStride(files, storage, 0, 1)
 			: (
 					await Promise.all(
 						Array.from({ length: workerCount }, (_, workerIndex) =>
-							collectSessionsFromFileStride(files, storage, workerIndex, workerCount, withStatus),
+							collectSessionsFromFileStride(files, storage, workerIndex, workerCount),
 						),
 					)
 				).flat();
@@ -610,39 +601,31 @@ export async function recoverOrphanedBackups(sessionDir: string, storage: Sessio
 	}
 }
 
-async function scanSessionDir(
-	sessionDir: string,
-	storage: SessionStorage,
-	withStatus: boolean,
-): Promise<SessionInfo[]> {
+async function scanSessionDir(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
 	try {
 		await recoverOrphanedBackups(sessionDir, storage);
 		const files = storage.listFilesSync(sessionDir, "*.jsonl");
-		return await collectSessionsFromFiles(files, storage, withStatus);
+		return await collectSessionsFromFiles(files, storage);
 	} catch {
 		return [];
 	}
 }
 
-async function scanSessionDirReadOnly(
-	sessionDir: string,
-	storage: SessionStorage,
-	withStatus: boolean,
-): Promise<SessionInfo[]> {
+async function scanSessionDirReadOnly(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
 	try {
 		const files = storage.listFilesSync(sessionDir, "*.jsonl");
-		return await collectSessionsFromFiles(files, storage, withStatus);
+		return await collectSessionsFromFiles(files, storage);
 	} catch {
 		return [];
 	}
 }
 
 export function listSessions(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
-	return scanSessionDir(sessionDir, storage, true);
+	return scanSessionDir(sessionDir, storage);
 }
 
 export function listSessionsReadOnly(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
-	return scanSessionDirReadOnly(sessionDir, storage, true);
+	return scanSessionDirReadOnly(sessionDir, storage);
 }
 
 export async function listAllSessions(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
@@ -651,7 +634,7 @@ export async function listAllSessions(storage: SessionStorage = new FileSessionS
 		const files = await Array.fromAsync(new Bun.Glob("*/*.jsonl").scan(sessionsRoot), name =>
 			path.join(sessionsRoot, name),
 		);
-		return await collectSessionsFromFiles(files, storage, true);
+		return await collectSessionsFromFiles(files, storage);
 	} catch {
 		return [];
 	}
@@ -661,7 +644,7 @@ export async function findMostRecentSession(
 	sessionDir: string,
 	storage: SessionStorage = new FileSessionStorage(),
 ): Promise<string | null> {
-	const sessions = await scanSessionDir(sessionDir, storage, false);
+	const sessions = await scanSessionDir(sessionDir, storage);
 	return sessions[0]?.path ?? null;
 }
 
@@ -702,7 +685,7 @@ export async function getRecentSessions(
 			recent.push({ path: file, name: indexed, timeAgo: formatTimeAgo(stat.mtime) });
 			continue;
 		}
-		const info = await scanSessionFile(file, storage, false);
+		const info = await scanSessionFile(file, storage);
 		if (!info) continue;
 		const title = sanitizeSessionName(info.title);
 		if (useIndex && title && info.id) recordSessionTitle(info.id, title);
