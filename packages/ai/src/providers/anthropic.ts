@@ -10,6 +10,7 @@ import { isAnthropicOAuthToken } from "@oh-my-pi/pi-catalog/utils";
 import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 import {
 	$env,
+	classifyJsonPrefix,
 	getInstallId,
 	isEnoent,
 	logger,
@@ -1787,9 +1788,10 @@ const streamAnthropicOnce = (
 				| (ToolCall & { [kStreamingPartialJson]: string; [kStreamingLastParseLen]?: number })
 			) & { [kStreamingBlockIndex]: number };
 			const blocks = output.content as Block[];
-			const finalizeStreamBlock = (block: Block, contentIndex: number): void => {
+			const finalizeStreamBlock = (block: Block, contentIndex: number): boolean => {
 				if (block.type === "text") {
 					stream.push({ type: "text_end", contentIndex, content: block.text, partial: output });
+					return true;
 				} else if (block.type === "thinking") {
 					const unwrappedThinking = unwrapAnthropicThinkingEnvelope(block.thinking);
 					if (unwrappedThinking !== undefined) {
@@ -1797,6 +1799,7 @@ const streamAnthropicOnce = (
 						block.thinkingSignature = undefined;
 					}
 					stream.push({ type: "thinking_end", contentIndex, content: block.thinking, partial: output });
+					return true;
 				} else if (block.type === "anthropicServerTool" && block.block.type === "server_tool_use") {
 					const partialJson = block[kStreamingPartialJson];
 					if (partialJson) {
@@ -1814,11 +1817,16 @@ const streamAnthropicOnce = (
 						}
 					}
 					clearStreamingPartialJson(block);
+					return true;
 				} else if (block.type === "toolCall") {
 					const finalJson =
 						block[kStreamingPartialJson].length > 0
 							? block[kStreamingPartialJson]
 							: JSON.stringify(block.arguments ?? {});
+					if (classifyJsonPrefix(finalJson) === "prefix") {
+						reportAnthropicEnvelopeAnomaly(`tool_use ${block.id} ended before its input JSON was complete`);
+						return false;
+					}
 					try {
 						block.arguments = parseJsonWithRepair(finalJson) as ToolCall["arguments"];
 					} catch (parseError) {
@@ -1840,7 +1848,9 @@ const streamAnthropicOnce = (
 					}
 					clearStreamingPartialJson(block);
 					stream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
+					return true;
 				}
+				return true;
 			};
 			stream.push({ type: "start", partial: output });
 
@@ -1910,6 +1920,7 @@ const streamAnthropicOnce = (
 
 					let sawSplicedEnvelope = false;
 					const closedBlockIndexes = new Set<number>();
+					let hasIncompleteToolCall = false;
 					const openBlocks = new Map<
 						number,
 						{
@@ -2237,7 +2248,9 @@ const streamAnthropicOnce = (
 							}
 							openBlocks.delete(event.index);
 							closedBlockIndexes.add(event.index);
-							finalizeStreamBlock(block, openBlock.contentIndex);
+							if (!finalizeStreamBlock(block, openBlock.contentIndex) && openBlock.kind === "toolCall") {
+								hasIncompleteToolCall = true;
+							}
 						} else if (event.type === "message_delta") {
 							if (sawTerminalEnvelope) {
 								reportAnthropicEnvelopeAnomaly("received message_delta after terminal stop signal");
@@ -2324,9 +2337,15 @@ const streamAnthropicOnce = (
 							);
 							if (openBlock.kind === "ignored" || openBlock.contentIndex < 0) continue;
 							const danglingBlock = blocks[openBlock.contentIndex];
-							if (danglingBlock) finalizeStreamBlock(danglingBlock, openBlock.contentIndex);
+							if (danglingBlock && !finalizeStreamBlock(danglingBlock, openBlock.contentIndex)) {
+								if (openBlock.kind === "toolCall") hasIncompleteToolCall = true;
+							}
 						}
 						openBlocks.clear();
+					}
+					if (hasIncompleteToolCall) {
+						output.stopReason = "error";
+						output.errorMessage = "Anthropic stream ended before a tool-call input JSON value was complete";
 					}
 
 					if (output.stopReason === "aborted" || output.stopReason === "error") {

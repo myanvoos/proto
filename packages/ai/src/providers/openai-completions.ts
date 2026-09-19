@@ -3,7 +3,7 @@ import { isKimiModelId } from "@oh-my-pi/pi-catalog/identity";
 import { resolveWireModelId } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type { ResolvedOpenAICompat } from "@oh-my-pi/pi-catalog/types";
-import { $env, logger, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
+import { $env, classifyJsonPrefix, logger, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getKimiCommonHeaders } from "../registry/oauth/kimi";
@@ -749,6 +749,7 @@ const streamOpenAICompletionsOnce = (
 				if (block.partialArgs === undefined) return;
 				const contentIndex = blockIndex(block);
 				if (contentIndex < 0) return;
+				if (typeof block.partialArgs === "string" && classifyJsonPrefix(block.partialArgs) === "prefix") return;
 
 				if (typeof block.partialArgs === "object" && !Array.isArray(block.partialArgs)) {
 					const fullJson = JSON.stringify(block.partialArgs);
@@ -1189,6 +1190,11 @@ const streamOpenAICompletionsOnce = (
 			} else {
 				finishCurrentBlock(currentBlock);
 				finishPendingToolCallBlocks();
+			}
+
+			if (pendingToolCallBlocks.length > 0 && output.stopReason !== "error") {
+				output.stopReason = "length";
+				output.errorMessage = "OpenAI completions tool-call arguments ended before a complete JSON value";
 			}
 
 			if (output.stopReason === "stop" && output.content.some(b => b.type === "toolCall")) {

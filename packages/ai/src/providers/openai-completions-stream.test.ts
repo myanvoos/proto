@@ -105,6 +105,67 @@ describe("OpenAI Completions streamed tool-call arguments", () => {
 		expect(prefixAtEnd).toBeUndefined();
 	});
 
+	it("does not complete a prefix even when finish_reason claims tool completion", async () => {
+		const frames = [
+			{
+				choices: [
+					{
+						delta: {
+							tool_calls: [
+								{
+									index: 0,
+									id: "call_prefix",
+									type: "function",
+									function: { name: "bash", arguments: '{"command": "' },
+								},
+							],
+						},
+					},
+				],
+			},
+			{ choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+			"[DONE]",
+		];
+		const events: string[] = [];
+		const stream = streamOpenAICompletions(model, context, { apiKey: "test-key", fetch: fetchFor(frames) });
+		for await (const event of stream) {
+			if (event.type === "toolcall_end") events.push(event.toolCall.id);
+		}
+		const result = await stream.result();
+
+		expect(events).toEqual([]);
+		expect(result.stopReason).toBe("length");
+	});
+
+	it("still repairs malformed but complete tool arguments", async () => {
+		const result = await streamOpenAICompletions(model, context, {
+			apiKey: "test-key",
+			fetch: fetchFor([
+				{
+					choices: [
+						{
+							delta: {
+								tool_calls: [
+									{
+										index: 0,
+										id: "call_repair",
+										type: "function",
+										function: { name: "bash", arguments: "{command: 'pwd',}" },
+									},
+								],
+							},
+						},
+					],
+				},
+				{ choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+				"[DONE]",
+			]),
+		}).result();
+		const call = result.content.find(block => block.type === "toolCall");
+
+		expect(call).toMatchObject({ name: "bash", arguments: { command: "pwd" } });
+	});
+
 	it("parses the accumulated prefix into final arguments", async () => {
 		const result = await streamOpenAICompletions(model, context, {
 			apiKey: "test-key",

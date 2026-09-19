@@ -167,6 +167,41 @@ describe("Anthropic recognized SSE frames", () => {
 		expect(transport.calls()).toBe(1);
 	});
 
+	it("does not complete a prefix even when content_block_stop arrives", async () => {
+		const payload = [
+			sseFrame("message_start", {
+				type: "message_start",
+				message: { id: "message-prefix", usage: { input_tokens: 3, output_tokens: 0 } },
+			}),
+			sseFrame("content_block_start", {
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "tool_use", id: "call-prefix", name: "bash", input: {} },
+			}),
+			sseFrame("content_block_delta", {
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "input_json_delta", partial_json: '{"command": "' },
+			}),
+			sseFrame("content_block_stop", { type: "content_block_stop", index: 0 }),
+			sseFrame("message_delta", { type: "message_delta", delta: { stop_reason: "tool_use" } }),
+			sseFrame("message_stop", { type: "message_stop" }),
+		].join("");
+		const stream = streamAnthropic(streamModel, streamContext, {
+			apiKey: "test-key",
+			fetch: sseFetchSequence([payload]).fetch,
+			providerRetryWait: async () => {},
+		});
+		const endEvents: string[] = [];
+		for await (const event of stream) {
+			if (event.type === "toolcall_end") endEvents.push(event.toolCall.id);
+		}
+		const result = await stream.result();
+
+		expect(endEvents).toEqual([]);
+		expect(result.stopReason).toBe("error");
+	});
+
 	it("ignores unknown event types while preserving a complete response", async () => {
 		const transport = sseFetchSequence([
 			completeAnthropicSse("Hello", [rawSseFrame("future_anthropic_event", "not-json")]),

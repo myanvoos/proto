@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
-import { type AssistantMessage, createAssistantMessageEventStream, type Message, type Model } from "@oh-my-pi/pi-ai";
+import {
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	type FetchImpl,
+	type Message,
+	type Model,
+	streamAnthropic,
+	streamOpenAICompletions,
+} from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { agentLoop } from "./agent-loop";
 import type {
@@ -360,6 +369,188 @@ test("external cancellation replaces a rejected in-flight tool with the run abor
 		type: "text",
 		text: "Tool was not executed because the run was aborted: timeout.",
 	});
+});
+
+function openAIStreamResponse(body: string | ReadableStream<Uint8Array>): Response {
+	return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
+function openAIErroringFetch(firstBody: string): FetchImpl {
+	let calls = 0;
+	const encoder = new TextEncoder();
+	const fetchImpl = Object.assign(
+		async (): Promise<Response> => {
+			calls++;
+			if (calls > 1) {
+				return openAIStreamResponse(
+					[
+						'data: {"choices":[{"delta":{"content":"done"}}]}',
+						'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+						"data: [DONE]",
+					].join("\n\n"),
+				);
+			}
+			let sent = false;
+			const body = new ReadableStream<Uint8Array>({
+				pull(controller) {
+					if (!sent) {
+						sent = true;
+						controller.enqueue(encoder.encode(firstBody));
+						return;
+					}
+					controller.error(new Error("stream read error"));
+				},
+			});
+			return openAIStreamResponse(body);
+		},
+		{ preconnect: fetch.preconnect },
+	);
+	return fetchImpl;
+}
+
+const truncatedToolModel = buildModel({
+	id: "openai-truncated-tool-test",
+	name: "OpenAI Truncated Tool Test",
+	api: "openai-completions",
+	provider: "custom",
+	baseUrl: "https://completions.example.test/v1",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 32_000,
+	maxTokens: 4_096,
+});
+
+const anthropicTruncatedToolModel = buildModel({
+	id: "anthropic-truncated-tool-test",
+	name: "Anthropic Truncated Tool Test",
+	api: "anthropic-messages",
+	provider: "anthropic",
+	baseUrl: "https://anthropic.example.test",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 32_000,
+	maxTokens: 4_096,
+});
+
+function anthropicSseFrame(event: string, data: unknown): string {
+	return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function anthropicSequenceFetch(firstBody: string, nextBody: string): FetchImpl {
+	let calls = 0;
+	const fetchImpl = Object.assign(
+		async (): Promise<Response> => {
+			const body = calls++ === 0 ? firstBody : nextBody;
+			return new Response(body, { headers: { "content-type": "text/event-stream" } });
+		},
+		{ preconnect: fetch.preconnect },
+	);
+	return fetchImpl;
+}
+
+test("does not execute an OpenAI tool call after a stream-read error cuts off its JSON", async () => {
+	const received: unknown[] = [];
+	const tool = basicTool("record", async (_id, args) => {
+		received.push(args);
+		return okToolResult();
+	});
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [tool] };
+	const config = loopConfig(context, { model: truncatedToolModel, apiKey: "test-key" });
+	const firstBody = `data: ${JSON.stringify({
+		choices: [
+			{
+				delta: {
+					tool_calls: [
+						{
+							index: 0,
+							id: "call_truncated",
+							type: "function",
+							function: { name: "record", arguments: '{"value": "' },
+						},
+					],
+				},
+			},
+		],
+	})}\n\n`;
+	const fetchImpl = openAIErroringFetch(firstBody);
+	const streamFn: StreamFn = (targetModel, llmContext, options) => {
+		const apiKey = typeof options?.apiKey === "string" ? options.apiKey : undefined;
+		return streamOpenAICompletions(targetModel as Model<"openai-completions">, llmContext, {
+			apiKey,
+			signal: options?.signal,
+			fetch: fetchImpl,
+		});
+	};
+
+	const result = await agentLoop([userMessage("hello")], context, config, undefined, streamFn).result();
+
+	expect(received).toEqual([]);
+	const assistant = result.findLast((message): message is AssistantMessage => message.role === "assistant");
+	expect(assistant?.stopReason).not.toBe("toolUse");
+});
+
+test("does not execute an Anthropic tool call without its content-block stop event", async () => {
+	const received: unknown[] = [];
+	const tool = basicTool("record", async (_id, args) => {
+		received.push(args);
+		return okToolResult();
+	});
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [tool] };
+	const config = loopConfig(context, { model: anthropicTruncatedToolModel, apiKey: "test-key" });
+	const firstBody = [
+		anthropicSseFrame("message_start", {
+			type: "message_start",
+			message: { id: "message-truncated", usage: { input_tokens: 1, output_tokens: 0 } },
+		}),
+		anthropicSseFrame("content_block_start", {
+			type: "content_block_start",
+			index: 0,
+			content_block: { type: "tool_use", id: "call_truncated", name: "record", input: {} },
+		}),
+		anthropicSseFrame("content_block_delta", {
+			type: "content_block_delta",
+			index: 0,
+			delta: { type: "input_json_delta", partial_json: '{"value": "' },
+		}),
+		anthropicSseFrame("message_delta", {
+			type: "message_delta",
+			delta: { stop_reason: "tool_use" },
+			usage: { output_tokens: 1 },
+		}),
+		anthropicSseFrame("message_stop", { type: "message_stop" }),
+	].join("");
+	const nextBody = [
+		anthropicSseFrame("message_start", {
+			type: "message_start",
+			message: { id: "message-done", usage: { input_tokens: 1, output_tokens: 0 } },
+		}),
+		anthropicSseFrame("content_block_start", {
+			type: "content_block_start",
+			index: 0,
+			content_block: { type: "text", text: "done" },
+		}),
+		anthropicSseFrame("content_block_stop", { type: "content_block_stop", index: 0 }),
+		anthropicSseFrame("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" } }),
+		anthropicSseFrame("message_stop", { type: "message_stop" }),
+	].join("");
+	const fetchImpl = anthropicSequenceFetch(firstBody, nextBody);
+	const streamFn: StreamFn = (targetModel, llmContext, options) => {
+		const apiKey = typeof options?.apiKey === "string" ? options.apiKey : undefined;
+		return streamAnthropic(targetModel as Model<"anthropic-messages">, llmContext, {
+			apiKey,
+			signal: options?.signal,
+			fetch: fetchImpl,
+			providerRetryWait: async () => {},
+		});
+	};
+
+	const result = await agentLoop([userMessage("hello")], context, config, undefined, streamFn).result();
+
+	expect(received).toEqual([]);
+	const assistant = result.findLast((message): message is AssistantMessage => message.role === "assistant");
+	expect(assistant?.stopReason).toBe("error");
 });
 
 test("explicit abort reasons retain their text without becoming retryable", async () => {
