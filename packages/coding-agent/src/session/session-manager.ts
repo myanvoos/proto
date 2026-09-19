@@ -313,6 +313,12 @@ class SessionEntryIndex {
 		return branch;
 	}
 
+	pathToView(id: string | null | undefined = this.#leaf): readonly SessionEntry[] {
+		if (id !== this.#leaf) return this.pathTo(id);
+		if (!this.#leafPath) this.pathTo(id);
+		return this.#leafPath ?? [];
+	}
+
 	tree(entries: readonly SessionEntry[]): SessionTreeNode[] {
 		const nodes = new Map<string, SessionTreeNode>();
 		const roots: SessionTreeNode[] = [];
@@ -2279,6 +2285,14 @@ export class SessionManager {
 
 	getBranch(fromId?: string): SessionEntry[] {
 		return this.#materializeEntries(this.#index.pathTo(fromId ?? this.#index.leafId()));
+	}
+
+	/**
+	 * Returns the cached leaf path without copying or materializing retained entries.
+	 * Only bookkeeping that does not need the full persisted payload may use this view.
+	 */
+	getBranchForStats(): readonly SessionEntry[] {
+		return this.#index.pathToView();
 	}
 
 	buildSessionContext(options?: BuildSessionContextOptions): SessionContext {

@@ -1,0 +1,46 @@
+{
+	"suite": "session-turn",
+	"label": "after",
+	"recordedAt": "2026-09-19T13:21:36.077Z",
+	"commit": "4a99b46d5d",
+	"bunVersion": "1.4.2",
+	"platform": "linux-arm64",
+	"cases": [
+		{
+			"name": "context-breakdown-100-entries",
+			"runs": 20,
+			"warmup": 5,
+			"min": 0.029376,
+			"median": 0.042208499999999996,
+			"p95": 0.06272815000000001,
+			"max": 0.074416,
+			"mean": 0.044502,
+			"stddev": 0.01099115591737284,
+			"opsPerSec": 22470.90018426138
+		},
+		{
+			"name": "context-breakdown-1000-entries",
+			"runs": 20,
+			"warmup": 5,
+			"min": 0.074641,
+			"median": 0.14861,
+			"p95": 1.9225980500000046,
+			"max": 8.055666,
+			"mean": 0.61639065,
+			"stddev": 1.7366409134288896,
+			"opsPerSec": 1622.347775716585
+		},
+		{
+			"name": "context-breakdown-4000-entries",
+			"runs": 20,
+			"warmup": 5,
+			"min": 0.128657,
+			"median": 0.26001850000000004,
+			"p95": 0.765355,
+			"max": 0.799175,
+			"mean": 0.3503869,
+			"stddev": 0.22719140894538684,
+			"opsPerSec": 2853.987977290247
+		}
+	]
+}

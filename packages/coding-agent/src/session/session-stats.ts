@@ -3,7 +3,6 @@ import {
 	calculatePromptTokens,
 	findTranscriptUsageAnchor,
 	isTranscriptUsageAnchor,
-	type SessionMessageEntry,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model, ProviderResponseMetadata } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../config/model-registry";
@@ -14,7 +13,7 @@ import {
 	type NonMessageTokenSource,
 } from "../modes/utils/context-usage";
 import type { ContextUsageBreakdown, SessionStats } from "./agent-session-types";
-import { getLatestCompactionEntry } from "./session-context";
+import type { SessionEntry, SessionMessageEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
 interface PendingContextSnapshot {
@@ -34,6 +33,12 @@ export interface SessionStatsTrackerHost {
 	sessionId(): string;
 }
 
+interface ContextBranchCache {
+	entries: readonly SessionEntry[];
+	observedLength: number;
+	latestAnchor: SessionMessageEntry | undefined;
+}
+
 function correctedPromptTokens(assistant: AssistantMessage): number {
 	const providerPromptTokens = assistant.contextSnapshot?.promptTokens ?? calculatePromptTokens(assistant.usage);
 	return Math.max(0, providerPromptTokens - (assistant.contextSnapshot?.historyRewriteTokensRemoved ?? 0));
@@ -44,6 +49,7 @@ export class SessionStatsTracker {
 	#pendingContextSnapshot: PendingContextSnapshot | undefined;
 	#contextUsageRevision = 0;
 	#compactionEpoch = 0;
+	#contextBranchCache: ContextBranchCache | undefined;
 
 	constructor(host: SessionStatsTrackerHost) {
 		this.#host = host;
@@ -67,6 +73,41 @@ export class SessionStatsTracker {
 			this.#tokenizer.countMessages(activeMessages.slice(tailFromIndex)) +
 			pendingTokens
 		);
+	}
+
+	#contextBranch(): ContextBranchCache {
+		const entries = this.#host.sessionManager.getBranchForStats();
+		const cached = this.#contextBranchCache;
+		// setLeaf/clear/rebuild replace the path; insert appends only when it extends the current leaf.
+		if (cached?.entries === entries && entries.length >= cached.observedLength) {
+			for (let index = cached.observedLength; index < entries.length; index++) {
+				const entry = entries[index];
+				if (entry.type === "compaction") {
+					cached.latestAnchor = undefined;
+				} else if (entry.type === "message" && isTranscriptUsageAnchor(entry.message)) {
+					cached.latestAnchor = entry;
+				}
+			}
+			cached.observedLength = entries.length;
+			return cached;
+		}
+
+		let latestAnchor: SessionMessageEntry | undefined;
+		for (let index = 0; index < entries.length; index++) {
+			const entry = entries[index];
+			if (entry.type === "compaction") {
+				latestAnchor = undefined;
+			} else if (entry.type === "message" && isTranscriptUsageAnchor(entry.message)) {
+				latestAnchor = entry;
+			}
+		}
+		const next: ContextBranchCache = {
+			entries,
+			observedLength: entries.length,
+			latestAnchor,
+		};
+		this.#contextBranchCache = next;
+		return next;
 	}
 
 	getSessionStats(): SessionStats {
@@ -131,22 +172,14 @@ export class SessionStatsTracker {
 		);
 		const categoryNonMessageTokens = skillsTokens + toolsTokens + systemContextTokens + systemPromptTokens;
 		const currentNonMessageTokens = computeNonMessageTokens(this.#host.session, this.#tokenizer);
-		const branchEntries = this.#host.sessionManager.getBranch();
-		const latestCompaction = getLatestCompactionEntry(branchEntries);
-		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
+		const { entries: branchEntries, latestAnchor } = this.#contextBranch();
 		let usedTokens = 0;
 		let anchored = false;
 		const pendingMessages = options?.pendingMessages ?? [];
 		const pendingTokens = this.#tokenizer.countMessages(pendingMessages);
 		const pending = this.#pendingContextSnapshot;
 
-		let anchorEntry: SessionMessageEntry | undefined;
-		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
-			const entry = branchEntries[index];
-			if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
-			anchorEntry = entry;
-			break;
-		}
+		const anchorEntry = latestAnchor;
 
 		const activeMessages = this.#host.agent.state.messages;
 		let anchorIndex = -1;
@@ -249,26 +282,26 @@ export class SessionStatsTracker {
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void {
 		if (!Number.isFinite(tokensRemoved) || tokensRemoved <= 0) return;
 
-		const branchEntries = this.#host.sessionManager.getBranch();
-		const latestCompaction = getLatestCompactionEntry(branchEntries);
-		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
-		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
-			const entry = branchEntries[index];
-			if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
-			const assistant = entry.message;
-
-			if (!assistant.contextSnapshot) {
-				assistant.contextSnapshot = {
-					promptTokens: calculatePromptTokens(assistant.usage),
-					nonMessageTokens: computeNonMessageTokens(this.#host.session, this.#tokenizer),
-					compactionEpoch: this.#compactionEpoch,
-				};
-			}
-			const snapshot = assistant.contextSnapshot;
-			snapshot.historyRewriteTokensRemoved = (snapshot.historyRewriteTokensRemoved ?? 0) + Math.floor(tokensRemoved);
-			this.#contextUsageRevision++;
-			return;
+		const { latestAnchor } = this.#contextBranch();
+		if (!latestAnchor) return;
+		const materialized = this.#host.sessionManager.getEntry(latestAnchor.id);
+		const candidate = materialized?.type === "message" ? materialized.message : latestAnchor.message;
+		if (!isTranscriptUsageAnchor(candidate)) return;
+		const assistant = candidate;
+		if (this.#contextBranchCache?.latestAnchor === latestAnchor && materialized?.type === "message") {
+			this.#contextBranchCache.latestAnchor = materialized;
 		}
+
+		if (!assistant.contextSnapshot) {
+			assistant.contextSnapshot = {
+				promptTokens: calculatePromptTokens(assistant.usage),
+				nonMessageTokens: computeNonMessageTokens(this.#host.session, this.#tokenizer),
+				compactionEpoch: this.#compactionEpoch,
+			};
+		}
+		const snapshot = assistant.contextSnapshot;
+		snapshot.historyRewriteTokensRemoved = (snapshot.historyRewriteTokensRemoved ?? 0) + Math.floor(tokensRemoved);
+		this.#contextUsageRevision++;
 	}
 
 	setPendingSnapshot(snapshot: Omit<PendingContextSnapshot, "epoch"> | undefined): void {
