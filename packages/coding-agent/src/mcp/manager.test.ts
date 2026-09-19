@@ -311,7 +311,7 @@ test("same-name connection survives cleanup from an older disconnect", async () 
 				.getTools()
 				.filter(tool => tool.mcpServerName === "slow")
 				.map(tool => tool.name),
-		).toEqual(["mcp__slow_new_tool_q8oc9r75"]);
+		).toEqual(["mcp__slow_new_tool"]);
 
 		server.releaseDelete();
 		await withTimeout(oldDisconnect, 2_000, "old connection cleanup did not settle");
@@ -320,7 +320,7 @@ test("same-name connection survives cleanup from an older disconnect", async () 
 				.getTools()
 				.filter(tool => tool.mcpServerName === "slow")
 				.map(tool => tool.name),
-		).toEqual(["mcp__slow_new_tool_q8oc9r75"]);
+		).toEqual(["mcp__slow_new_tool"]);
 		server.setHangDeletes(false);
 	} finally {
 		server.stop();

@@ -22,19 +22,13 @@ function namedConnection(name: string): MCPServerConnection {
 }
 
 describe("MCP wire tool names", () => {
-	test("distinct (server, tool) pairs never collapse onto one wire name", () => {
-		const pairs = [
-			["a_b", "c"],
-			["a", "b_c"],
-			["foo", "foo_bar"],
-			["foo", "bar"],
-			["Foo", "bar"],
-			["foo", "Bar"],
-			["github-mcp", "search"],
-			["github.mcp", "search"],
-		];
-		const names = pairs.map(([server, tool]) => createMCPToolName(server, tool));
-		expect(new Set(names).size).toBe(pairs.length);
+	test("the wire name stays the plain shape a user can pin, even when parts need sanitizing", () => {
+		// These deliberately collide with each other; disambiguation is registration's
+		// job, not the name's, because this string is what allowlists refer to.
+		expect(createMCPToolName("github-mcp", "search")).toBe("mcp__github_mcp_search");
+		expect(createMCPToolName("github.mcp", "search")).toBe("mcp__github_mcp_search");
+		expect(createMCPToolName("Foo", "Bar")).toBe("mcp__foo_bar");
+		expect(createMCPToolName("foo", "foo_bar")).toBe("mcp__foo_bar");
 	});
 
 	test("unambiguous names keep the plain mcp__<server>_<tool> shape and round-trip", () => {
@@ -58,6 +52,23 @@ describe("MCP tool registration", () => {
 		expect(kept).toHaveLength(2);
 		const origins = kept.map(tool => `${tool.mcpServerName}\u0000${tool.mcpToolName}`).sort();
 		expect(origins).toEqual(["a\u0000b_c", "a_b\u0000c"]);
+	});
+
+	test("a renamed collision keeps the plain name for the stable winner", () => {
+		const connectionA = namedConnection("a");
+		const connectionAB = namedConnection("a_b");
+		const tools = [
+			...MCPTool.fromTools(connectionAB, [{ name: "c", inputSchema: { type: "object" } }]),
+			...MCPTool.fromTools(connectionA, [{ name: "b_c", inputSchema: { type: "object" } }]),
+		];
+		const kept = deduplicateMCPToolsByName(tools);
+		const names = kept.map(tool => tool.name);
+		// ("a", "b_c") sorts before ("a_b", "c"), so it owns the unsuffixed name
+		// regardless of the order discovery returned them in.
+		expect(names).toContain("mcp__a_b_c");
+		const renamed = names.find(name => name !== "mcp__a_b_c");
+		expect(renamed).toMatch(/^mcp__a_b_c_[a-z0-9]+$/);
+		expect(kept.find(tool => tool.name === "mcp__a_b_c")?.mcpServerName).toBe("a");
 	});
 
 	test("prefix-colliding tools from the same server all survive deduplication", () => {

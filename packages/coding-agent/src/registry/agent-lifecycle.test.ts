@@ -48,7 +48,7 @@ describe("revival failure", () => {
 		fs.writeFileSync(sessionFile, "", { encoding: "utf8" });
 		const registry = new AgentRegistry();
 		const lifecycle = new AgentLifecycleManager(registry);
-		const ref = registerParked(registry, sessionFile);
+		registerParked(registry, sessionFile);
 
 		const disposed = { count: 0 };
 		let attempt = 0;

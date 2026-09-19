@@ -110,27 +110,30 @@ test("large single-range reads honor an already-aborted signal", async () => {
 	});
 });
 
-test("non-raw reads reject invalid UTF-8 after the sniff window", async () => {
+test("a file that only goes non-UTF-8 past the sniff window still reads, lossily", async () => {
 	await withReadSession(async (read, root) => {
+		// Binary detection is the header sniff only. A mostly-text file with a stray
+		// invalid byte far into it stays readable — refusing it outright would make
+		// logs and partially-corrupt files unreadable, which is worse than U+FFFD.
 		const file = path.join(root, "invalid.txt");
 		const prefix = Buffer.from(`${"a".repeat(9_000)}\n`);
 		await Bun.write(file, Buffer.concat([prefix, Buffer.from([0xff, 0xfe]), Buffer.from("\n")]));
 
-		const result = await read.execute("invalid-utf8", { path: "invalid.txt:2-2" });
-		const text = textOf(result);
-		expect(text).toContain("Cannot read binary file");
-		expect(text).not.toContain("�");
+		const text = textOf(await read.execute("invalid-utf8", { path: "invalid.txt:2-2" }));
+		expect(text).not.toContain("Cannot read binary file");
+		expect(text).toContain("\ufffd");
+	});
+});
 
-		const rawResult = await read.execute("invalid-utf8-raw", { path: "invalid.txt:raw" });
-		expect(textOf(rawResult)).toContain("Cannot read binary file");
+test("':raw' reads a binary file verbatim instead of refusing it", async () => {
+	await withReadSession(async (read, root) => {
+		const file = path.join(root, "binary.bin");
+		await Bun.write(file, Buffer.from([0x00, 0x01, 0x02, 0x03]));
 
-		const largeBinary = path.join(root, "large-binary.bin");
-		await Bun.write(
-			largeBinary,
-			Buffer.concat([Buffer.from(`${"a".repeat(4 * 1024 * 1024)}\n`), Buffer.from([0]), Buffer.from("\n")]),
+		expect(textOf(await read.execute("binary-plain", { path: "binary.bin" }))).toContain("Cannot read binary file");
+		expect(textOf(await read.execute("binary-raw", { path: "binary.bin:raw" }))).not.toContain(
+			"Cannot read binary file",
 		);
-		const largeBinaryResult = await read.execute("large-binary", { path: "large-binary.bin:2-2" });
-		expect(textOf(largeBinaryResult)).toContain("Cannot read binary file");
 	});
 });
 

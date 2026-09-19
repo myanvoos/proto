@@ -304,6 +304,8 @@ async function reconnectWithAbort(
 function sanitizeMCPToolNamePart(value: string, fallback: string): string {
 	const sanitized = value
 		.toLowerCase()
+		// Digits are kept: stripping them (as this once did) collapsed tool_1 and
+		// tool_2 onto one name, which silently dropped one of them.
 		.replace(/[^a-z0-9_]+/g, "_")
 		.replace(/_+/g, "_")
 		.replace(/^_+|_+$/g, "");
@@ -322,26 +324,35 @@ function capMCPToolNameLength(name: string): string {
 	return `${name.slice(0, keep)}_${hash}`;
 }
 
+// The wire name a user sees and pins in a tools allowlist. It is intentionally
+// the plain mcp__<server>_<tool> shape and is NOT injective over the original
+// pair — (a_b, c) and (a, b_c) both produce mcp__a_b_c. Collisions are rare and
+// are resolved at registration by deduplicateMCPToolsByName, which renames the
+// later tool rather than dropping it; keeping this name stable matters more,
+// because it is what allowlists, --tools filters and saved configs refer to.
 export function createMCPToolName(serverName: string, toolName: string): string {
 	const sanitizedServerName = sanitizeMCPToolNamePart(serverName, "server");
 	const sanitizedToolName = sanitizeMCPToolNamePart(toolName, "tool");
 
-	let name = `mcp__${sanitizedServerName}_${sanitizedToolName}`;
-	// The wire name must be injective over the original (server, tool) pair:
-	// when sanitization changed either part, a distinct original could sanitize
-	// to the same parts, and when the sanitized server contains "_" the
-	// first-underscore split in parseMCPToolName cannot recover the boundary
-	// ((a_b, c) and (a, b_c) both concatenate to mcp__a_b_c). Such names carry
-	// a deterministic digest of the original pair so both survive registration.
-	if (sanitizedServerName !== serverName || sanitizedToolName !== toolName || sanitizedServerName.includes("_")) {
-		const digest = Bun.hash(`${serverName}\u0000${toolName}`).toString(36).slice(0, MCP_TOOL_NAME_HASH_LENGTH);
-		name = `${name}_${digest}`;
+	const prefixWithUnderscore = `${sanitizedServerName}_`;
+
+	let normalizedToolName = sanitizedToolName;
+	if (sanitizedToolName.startsWith(prefixWithUnderscore)) {
+		normalizedToolName = sanitizedToolName.slice(prefixWithUnderscore.length);
 	}
-	return capMCPToolNameLength(name);
+
+	return capMCPToolNameLength(`mcp__${sanitizedServerName}_${normalizedToolName}`);
+}
+
+// Only used when two distinct (server, tool) pairs land on one wire name.
+function disambiguateMCPToolName(name: string, serverName: string, toolName: string): string {
+	const digest = Bun.hash(`${serverName}\u0000${toolName}`).toString(36).slice(0, MCP_TOOL_NAME_HASH_LENGTH);
+	return capMCPToolNameLength(`${name}_${digest}`);
 }
 
 interface MCPToolOriginSource {
-	readonly name: string;
+	// Mutable because deduplicateMCPToolsByName renames a colliding tool in place.
+	name: string;
 	readonly mcpServerName?: unknown;
 	readonly mcpToolName?: unknown;
 }
@@ -370,30 +381,38 @@ export function deduplicateMCPToolsByName<T extends MCPToolOriginSource>(tools: 
 
 		if (existing.originKey === originKey) continue;
 
+		// Two different servers/tools produced one wire name. Both are real tools a user
+		// configured, so neither is dropped: the pair that sorts first keeps the plain
+		// name (stable regardless of discovery order) and the other is renamed.
+		const plainName = tool.name;
 		const keepExisting = existing.originKey < originKey;
-		const winner = keepExisting ? existing.tool : tool;
 		const loser = keepExisting ? tool : existing.tool;
+		const loserOriginKey = keepExisting ? originKey : existing.originKey;
 		if (!keepExisting) {
 			deduplicated[existing.index] = tool;
-			existing.tool = tool;
-			existing.originKey = originKey;
+			registered.set(plainName, { tool, originKey, index: existing.index });
 		}
-		logger.warn("MCP tool name collision; keeping stable winner", {
-			name: tool.name,
-			keptServer: winner.mcpServerName,
-			keptTool: winner.mcpToolName,
-			ignoredServer: loser.mcpServerName,
-			ignoredTool: loser.mcpToolName,
+
+		loser.name = disambiguateMCPToolName(
+			plainName,
+			typeof loser.mcpServerName === "string" ? loser.mcpServerName : "",
+			typeof loser.mcpToolName === "string" ? loser.mcpToolName : "",
+		);
+		registered.set(loser.name, { tool: loser, originKey: loserOriginKey, index: deduplicated.length });
+		deduplicated.push(loser);
+		logger.warn("MCP tool name collision; renamed the later tool instead of dropping it", {
+			name: plainName,
+			renamedTo: loser.name,
+			renamedServer: loser.mcpServerName,
+			renamedTool: loser.mcpToolName,
 		});
 	}
 
 	return deduplicated;
 }
 
-// Best-effort display parse of a wire name. createMCPToolName guarantees the
-// first-underscore split recovers (server, tool) exactly whenever it emitted a
-// plain (non-digest) name; digest-carrying names parse to their sanitized
-// parts, which is all display-only consumers can rely on.
+// Best-effort display parse of a wire name. The split is ambiguous when the
+// server name itself contains "_", which is why this is display-only.
 export function parseMCPToolName(name: string): { serverName: string; toolName: string } | null {
 	if (!name.startsWith("mcp__")) return null;
 

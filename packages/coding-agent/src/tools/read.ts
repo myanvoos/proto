@@ -61,7 +61,6 @@ import {
 	buildInMemoryMultiRangeResult,
 	buildInMemoryTextResult,
 	countTextLines,
-	decodeUtf8Text,
 	formatLineEntriesWithMode,
 	formatSummaryElisionFooter,
 	formatTextWithMode,
@@ -168,8 +167,8 @@ async function readWholeFile(absolutePath: string): Promise<Buffer | undefined> 
 	}
 }
 
-function deriveBufferedFileText(bytes: Buffer, decodedText?: string): BufferedFileText {
-	const rawText = decodedText ?? bytes.toString("utf-8");
+function deriveBufferedFileText(bytes: Buffer): BufferedFileText {
+	const rawText = bytes.toString("utf-8");
 	const { text: strippedText } = stripBom(rawText);
 
 	const normalizedText = strippedText.includes("\r") ? normalizeToLF(strippedText) : strippedText;
@@ -195,7 +194,6 @@ interface ReadLineWindow {
 	stoppedByByteLimit: boolean;
 	firstLinePreview?: { text: string; bytes: number };
 	firstLineByteLength?: number;
-	invalidUtf8: boolean;
 
 	hasTrailingNewline: boolean;
 
@@ -221,7 +219,6 @@ function collectLineWindowFromBuffer(
 		totalFileLines,
 		collectedBytes: 0,
 		stoppedByByteLimit: false,
-		invalidUtf8: false,
 		hasTrailingNewline: endsWithNewline,
 		reachedEof: true,
 	};
@@ -306,8 +303,6 @@ async function streamLinesFromFile(
 	let stoppedByByteLimit = false;
 	let doneCollecting = false;
 	let reachedEof = true;
-	let invalidUtf8 = false;
-	const utf8Validator = new TextDecoder("utf-8", { fatal: true });
 	let fileHandle: fs.FileHandle | null = null;
 	let currentLineLength = 0;
 	let currentLineChunks: Buffer[] = [];
@@ -419,18 +414,6 @@ async function streamLinesFromFile(
 
 			sawAnyByte = true;
 			const chunk = bufferChunk.subarray(0, bytesRead);
-			if (chunk.indexOf(0) !== -1) {
-				invalidUtf8 = true;
-				reachedEof = false;
-				break;
-			}
-			try {
-				utf8Validator.decode(chunk, { stream: true });
-			} catch {
-				invalidUtf8 = true;
-				reachedEof = false;
-				break;
-			}
 			endedWithNewline = chunk[bytesRead - 1] === 0x0a;
 
 			if (doneCollecting && selectedLineLimit !== null && selectedLinesSeen >= selectedLineLimit) {
@@ -475,14 +458,6 @@ async function streamLinesFromFile(
 		}
 	}
 
-	if (reachedEof) {
-		try {
-			utf8Validator.decode();
-		} catch {
-			invalidUtf8 = true;
-			reachedEof = false;
-		}
-	}
 	if (reachedEof && (currentLineLength > 0 || !sawAnyByte || (endedWithNewline && includeTerminalNewline))) {
 		finalizeLine();
 	}
@@ -504,7 +479,6 @@ async function streamLinesFromFile(
 		stoppedByByteLimit,
 		firstLinePreview,
 		firstLineByteLength,
-		invalidUtf8,
 		reachedEof,
 		hasTrailingNewline: reachedEof && endedWithNewline,
 	};
@@ -531,7 +505,6 @@ interface StreamRangesResult {
 	totalFileLines: number;
 	reachedEof: boolean;
 	hasTrailingNewline: boolean;
-	invalidUtf8: boolean;
 }
 
 async function streamLinesForRanges(
@@ -552,7 +525,6 @@ async function streamLinesForRanges(
 	const sortedAccumulators = [...accumulators].sort((left, right) => left.request.startLine - right.request.startLine);
 	const activeAccumulators: StreamRangeAccumulator[] = [];
 	let nextAccumulatorIndex = 0;
-	const utf8Validator = new TextDecoder("utf-8", { fatal: true });
 	let fileHandle: fs.FileHandle | null = null;
 	let lineIndex = 0;
 	let currentLineLength = 0;
@@ -561,7 +533,6 @@ async function streamLinesForRanges(
 	let sawAnyByte = false;
 	let endedWithNewline = false;
 	let reachedEof = true;
-	let invalidUtf8 = false;
 	let stopScanning = false;
 
 	const resetLine = () => {
@@ -667,18 +638,6 @@ async function streamLinesForRanges(
 			if (bytesRead === 0) break;
 			sawAnyByte = true;
 			const chunk = bufferChunk.subarray(0, bytesRead);
-			if (chunk.indexOf(0) !== -1) {
-				invalidUtf8 = true;
-				reachedEof = false;
-				break;
-			}
-			try {
-				utf8Validator.decode(chunk, { stream: true });
-			} catch {
-				invalidUtf8 = true;
-				reachedEof = false;
-				break;
-			}
 			endedWithNewline = chunk[bytesRead - 1] === LF_BYTE;
 			let start = 0;
 			for (let index = 0; index < chunk.length; index++) {
@@ -695,14 +654,6 @@ async function streamLinesForRanges(
 		if (fileHandle) await fileHandle.close();
 	}
 
-	if (reachedEof) {
-		try {
-			utf8Validator.decode();
-		} catch {
-			invalidUtf8 = true;
-			reachedEof = false;
-		}
-	}
 	if (reachedEof && (currentLineLength > 0 || !sawAnyByte || (endedWithNewline && includeTerminalNewline))) {
 		finalizeLine();
 	}
@@ -717,14 +668,12 @@ async function streamLinesForRanges(
 			stoppedByByteLimit: accumulator.stoppedByByteLimit,
 			firstLinePreview: accumulator.firstLinePreview,
 			firstLineByteLength: accumulator.firstLineByteLength,
-			invalidUtf8,
 			hasTrailingNewline: reachedEof && endedWithNewline,
 			reachedEof,
 		})),
 		totalFileLines,
 		reachedEof,
 		hasTrailingNewline: reachedEof && endedWithNewline,
-		invalidUtf8,
 	};
 }
 
@@ -1028,7 +977,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			result: TruncationResult;
 			options: { direction: "head"; startLine?: number; totalFileLines?: number; maxBytes?: number };
 		};
-		invalidUtf8?: boolean;
 	}> {
 		const rawSelector = isRawSelector(parsed);
 		const includeContext = shouldExpandRangeContext(absolutePath);
@@ -1098,7 +1046,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						signal,
 						rawSelector,
 					);
-		if (streamedRanges?.invalidUtf8) return { outputText: "", columnTruncated: 0, invalidUtf8: true };
 
 		for (const [rangeIndex, request] of requests.entries()) {
 			const { range, requestedLength, maxLines, maxBytes } = request;
@@ -1110,7 +1057,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						includeTerminalNewline: rawSelector,
 						stopScanAfterCollect: fileSize > MAX_BUFFERED_READ_BYTES,
 					})));
-			if (window.invalidUtf8) return { outputText: "", columnTruncated: 0, invalidUtf8: true };
 
 			const totalFileLines = fullLines ? fullLines.length : window.totalFileLines;
 			const collectedLines = window.lines;
@@ -1583,22 +1529,16 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		} else {
 			const wholeFileBytes = fileSize <= MAX_BUFFERED_READ_BYTES ? await readWholeFile(absolutePath) : undefined;
 
-			let decodedWholeFile: string | undefined;
-			let looksBinary: boolean;
-			if (wholeFileBytes) {
-				looksBinary = isProbablyBinaryHeader(wholeFileBytes.subarray(0, BINARY_SNIFF_BYTES));
-				if (!looksBinary) {
-					decodedWholeFile = decodeUtf8Text(wholeFileBytes) ?? undefined;
-					looksBinary = decodedWholeFile === undefined;
-				}
-			} else {
-				looksBinary = await isProbablyBinary(absolutePath);
-			}
+			const looksBinary =
+				!isRawSelector(parsed) &&
+				(wholeFileBytes
+					? isProbablyBinaryHeader(wholeFileBytes.subarray(0, BINARY_SNIFF_BYTES))
+					: await isProbablyBinary(absolutePath));
 			if (looksBinary) {
 				return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
 					.text(
 						prependSuffixResolutionNotice(
-							`[Cannot read binary file '${resolvedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text.]`,
+							`[Cannot read binary file '${resolvedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text. Use ':raw' to read bytes verbatim.]`,
 							suffixResolution,
 						),
 					)
@@ -1607,7 +1547,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 			await fsObservationLedgerFor(this.session).recordRead(absolutePath);
 
-			const buffered = wholeFileBytes ? deriveBufferedFileText(wholeFileBytes, decodedWholeFile) : undefined;
+			const buffered = wholeFileBytes ? deriveBufferedFileText(wholeFileBytes) : undefined;
 
 			if (
 				parsed.kind === "none" &&
@@ -1650,14 +1590,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						signal,
 					);
 					if (multiResult.bridgeResult) return multiResult.bridgeResult;
-					if (multiResult.invalidUtf8) {
-						return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
-							.text(
-								`[Cannot read binary file '${resolvedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text.]`,
-							)
-							.sourcePath(absolutePath)
-							.done();
-					}
 					content = [{ type: "text", text: multiResult.outputText }];
 					sourcePath = absolutePath;
 					details = multiResult.displayContent ? { displayContent: multiResult.displayContent } : {};
@@ -1742,19 +1674,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						stoppedByByteLimit,
 						firstLinePreview,
 						firstLineByteLength,
-						invalidUtf8,
 						reachedEof,
 						hasTrailingNewline,
 					} = lineWindow;
-
-					if (invalidUtf8) {
-						return toolResult<ReadToolDetails>({ resolvedPath: absolutePath, suffixResolution })
-							.text(
-								`[Cannot read binary file '${resolvedDisplayPath}' (${formatBytes(fileSize)}); not valid UTF-8 text.]`,
-							)
-							.sourcePath(absolutePath)
-							.done();
-					}
 
 					if (requestedStart >= totalFileLines) {
 						const suggestion =
@@ -2090,15 +2012,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				false,
 			);
 			if (read.bridgeResult) return read.bridgeResult;
-			if (read.invalidUtf8) {
-				return toolResult<ReadToolDetails>(details)
-					.text(
-						`[Cannot read binary artifact '${artifactUrl}' (${formatBytes(artifact.size)}); not valid UTF-8 text.]`,
-					)
-					.sourcePath(artifact.path)
-					.sourceInternal(url.href)
-					.done();
-			}
 			if (read.displayContent) details.displayContent = read.displayContent;
 			if (read.truncation) details.truncation = read.truncation.result;
 			let text = read.outputText;
@@ -2146,20 +2059,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			stoppedByByteLimit,
 			firstLinePreview,
 			firstLineByteLength,
-			invalidUtf8,
 			reachedEof,
 			hasTrailingNewline,
 		} = streamResult;
-
-		if (invalidUtf8) {
-			return toolResult<ReadToolDetails>(details)
-				.text(
-					`[Cannot read binary artifact '${artifactUrl}' (${formatBytes(artifact.size)}); not valid UTF-8 text.]`,
-				)
-				.sourcePath(artifact.path)
-				.sourceInternal(url.href)
-				.done();
-		}
 
 		if (requestedStart >= totalFileLines) {
 			const suggestion =
