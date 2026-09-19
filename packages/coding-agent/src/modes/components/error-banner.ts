@@ -1,5 +1,6 @@
 import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
-import { getPreviewLines, TRUNCATE_LENGTHS } from "../../tools/render-utils";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { getPreviewLines, replaceTabs, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 
@@ -8,7 +9,8 @@ const MAX_BANNER_LINES = 3;
 export class ErrorBannerComponent extends Container {
 	constructor(message: string) {
 		super();
-		const lines = getPreviewLines(message, MAX_BANNER_LINES, TRUNCATE_LENGTHS.LINE);
+		const safeMessage = replaceTabs(sanitizeText(message));
+		const lines = getPreviewLines(safeMessage, MAX_BANNER_LINES, TRUNCATE_LENGTHS.LINE);
 		if (lines.length === 0) {
 			lines.push("Unknown error");
 		}

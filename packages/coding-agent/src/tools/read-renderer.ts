@@ -11,7 +11,15 @@ import { formatFullOutputReference, formatStyledTruncationWarning, stripOutputNo
 import { isReadableUrlPath, splitInternalUrlSel, splitPathAndSel } from "./path-utils";
 import type { ReadToolDetails } from "./read";
 import { isRawSelector, parseSel } from "./read-selector";
-import { formatBytes, replaceTabs, sanitizeSingleLine, shortenPath, wrapBrackets } from "./render-utils";
+import {
+	formatBytes,
+	replaceTabs,
+	sanitizeSingleLine,
+	shortenPath,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
+	wrapBrackets,
+} from "./render-utils";
 
 interface ReadRenderArgs {
 	path?: unknown;
@@ -142,7 +150,10 @@ export const readToolRenderer = {
 				title += sanitizeSingleLine(`:${startLine}${endLine ? `-${endLine}` : ""}`);
 			}
 			const header = renderStatusLine({ icon: "error", title }, uiTheme);
-			const errorLines = errorText.split("\n").map(line => uiTheme.fg("error", replaceTabs(line)));
+			const safeErrorText = replaceTabs(sanitizeText(errorText));
+			const errorLines = safeErrorText
+				.split("\n")
+				.map(line => uiTheme.fg("error", truncateToWidth(line, TRUNCATE_LENGTHS.LINE)));
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({
 				render: (width: number) =>

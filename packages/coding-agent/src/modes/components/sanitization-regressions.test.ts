@@ -1,8 +1,11 @@
 import { afterEach, expect, test, vi } from "bun:test";
+import { visibleWidth } from "@oh-my-pi/pi-tui";
 import type { SessionTreeNode } from "../../session/session-entries";
 import type { SessionInfo } from "../../session/session-listing";
+import { readToolRenderer } from "../../tools/read-renderer";
 import * as open from "../../utils/open";
-import { initThemeSync } from "../theme/theme";
+import { initThemeSync, theme } from "../theme/theme";
+import { ErrorBannerComponent } from "./error-banner";
 import { HookSelectorComponent } from "./hook-selector";
 import { LoginDialogComponent } from "./login-dialog";
 import { LogoutAccountSelectorComponent } from "./logout-account-selector";
@@ -15,6 +18,61 @@ afterEach(() => vi.restoreAllMocks());
 function plain(rows: readonly string[]): string {
 	return rows.map(row => Bun.stripANSI(row)).join("\n");
 }
+
+test("sanitizes pinned error banners and keeps rows within the render width", () => {
+	const width = 32;
+	const message = `bad\x1b]0;PWN\x07\t${"x".repeat(160)}\nsecond\tline`;
+	const rows = new ErrorBannerComponent(message).render(width);
+
+	expect(rows.join("\n")).not.toContain("\x1b]");
+	expect(rows.join("\n")).not.toContain("\x07");
+	expect(rows.join("\n")).not.toContain("\t");
+	expect(rows.every(row => visibleWidth(row) <= width)).toBe(true);
+	expect(plain(rows)).toContain("bad");
+	expect(plain(rows)).toContain("second");
+	expect(plain(rows)).toContain("line");
+});
+
+test("sanitizes read tool errors and keeps long rows within the render width", () => {
+	const width = 32;
+	const component = readToolRenderer.renderResult(
+		{ isError: true, content: [{ type: "text", text: `bad\x1b]0;PWN\x07\t${"x".repeat(160)}` }] },
+		{ expanded: false, isPartial: false },
+		theme,
+		{ path: "/tmp/read-test.txt" },
+	);
+	const rows = component.render(width);
+
+	expect(rows.join("\n")).not.toContain("\x1b]");
+	expect(rows.join("\n")).not.toContain("\x07");
+	expect(rows.join("\n")).not.toContain("\t");
+	expect(rows.every(row => visibleWidth(row) <= width)).toBe(true);
+	expect(plain(rows)).toContain("bad");
+});
+
+test("keeps ordinary pinned and read errors unchanged", () => {
+	const banner = plain(new ErrorBannerComponent("plain failure").render(40));
+	const read = readToolRenderer
+		.renderResult(
+			{ isError: true, content: [{ type: "text", text: "plain failure" }] },
+			{ expanded: false, isPartial: false },
+			theme,
+			{ path: "/tmp/read-test.txt" },
+		)
+		.render(40);
+
+	expect(banner).toBe(
+		[
+			"",
+			"────────────────────────────────────────",
+			" ✗ plain failure                        ",
+			" Dismissed when you send your next      ",
+			" message.                               ",
+			"────────────────────────────────────────",
+		].join("\n"),
+	);
+	expect(plain(read)).toBe("✗ Read /tmp/read-test.txt\n▏  plain failure");
+});
 
 test("sanitizes hook slider labels at the segment-track boundary", () => {
 	const selector = new HookSelectorComponent(
