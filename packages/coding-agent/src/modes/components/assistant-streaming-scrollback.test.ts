@@ -204,6 +204,70 @@ for (const [cols, rows] of [
 
 const WRAPPED_PRE_TOOL_TEXT = "Step 2 is the real fix. Let me check the helpers I need to preserve semantics exactly.";
 
+const DIAGRAM_REPLY = `The renderer keeps a commit ledger so that rows which already entered terminal history are never rewritten by a later frame.
+
+\`\`\`mermaid
+flowchart TD
+  A[stream] --> B[freeze]
+  B --> C[commit]
+  C --> D[history]
+\`\`\`
+
+Each stage above hands rows to the next one, and the last stage is the only one that writes to the terminal at all.
+
+A closing paragraph keeps the block streaming for long enough that the composed frame outgrows the pane several times over.`;
+
+test("a streamed reply containing a diagram settles rows while it streams", () => {
+	const cols = 60;
+	const rows = 14;
+	const terminal = new BufferTerminal(cols, rows);
+	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
+	const transcript = new TranscriptContainer();
+	transcript.addChild(new StaticBlock(["> draw me a diagram"]));
+	const reply = new AssistantMessageComponent(undefined, false);
+	transcript.addChild(reply);
+	tui.addChild(transcript);
+	tui.addChild(new StaticBlock(["", "> editor", "", "status line"]));
+	tui.start({ deferInput: true });
+
+	try {
+		// Settled rows are what lets the commit ceiling advance past a live block.
+		// A reply that never settles strands every row it has scrolled past: they
+		// reach history in one burst, and a live-source change before that burst
+		// repaints from row zero, rewinding the pane to the title screen.
+		let settledRows: readonly string[] = [];
+		let maxSettled = 0;
+		for (let end = 20; end < DIAGRAM_REPLY.length; end += 20) {
+			reply.updateContent(message(DIAGRAM_REPLY.slice(0, end)), { transient: true });
+			tui.requestRender(true);
+			const rendered = reply.render(cols).map(line => stripAnsi(line).trimEnd());
+			expect(rendered.slice(0, settledRows.length), "settled rows must never be rewritten").toEqual([
+				...settledRows,
+			]);
+			const settled = reply.getTranscriptBlockSettledRows();
+			maxSettled = Math.max(maxSettled, settled);
+			settledRows = rendered.slice(0, settled);
+		}
+		reply.updateContent(message(DIAGRAM_REPLY));
+		reply.markTranscriptBlockFinalized();
+		tui.requestRender(true);
+
+		const finalRows = reply.render(cols).map(line => stripAnsi(line).trimEnd());
+		expect(finalRows.slice(0, settledRows.length), "finalizing must not rewrite settled rows").toEqual([
+			...settledRows,
+		]);
+		const rowAfterDiagram = finalRows.findIndex(line => line.includes("Each stage above"));
+		expect(rowAfterDiagram, "the fixture must keep prose after the diagram").toBeGreaterThan(0);
+		expect(maxSettled, "rows after the diagram must settle too").toBeGreaterThan(rowAfterDiagram);
+
+		const expected = tui.render(cols).map(line => stripAnsi(line).trimEnd());
+		while (expected.length > 0 && expected[expected.length - 1] === "") expected.pop();
+		expect(terminal.tape().map(stripAnsi)).toEqual(expected);
+	} finally {
+		tui.stop();
+	}
+});
+
 test("a finalized wrapped assistant rejects post-final updates instead of creating a scrollback staircase", () => {
 	const scheduledRenders: Array<() => void> = [];
 	const scheduler: RenderScheduler = {

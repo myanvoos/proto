@@ -11,6 +11,7 @@
 - xAI web search now returns the model's final answer instead of occasionally surfacing its intermediate commentary.
 - Skill, RPC, ACP and startup prompts submitted while `/compact` is running now wait for it to finish instead of starting a turn against the disconnected session.
 - Rewinding through the session tree (`/tree`, `/branch`, or the rewind key) no longer crashes long sessions with `Maximum call stack size exceeded`.
+- Replies containing a Mermaid diagram now enter terminal history as they scroll past instead of being held back until the reply finishes.
 
 ## [18.1.22] - 2026-09-18
 

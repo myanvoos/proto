@@ -5,6 +5,7 @@
 ### Fixed
 
 - Deeply nested blockquotes no longer multiply rendered rows exponentially, which could exhaust memory from a single small message.
+- A live region handing off to another one (a HUD appearing as a reply settles) now appends the rows it was holding instead of repainting from the first row, so the terminal no longer rewinds to the title screen and replays the session mid-stream.
 
 ## [18.1.22] - 2026-09-18
 

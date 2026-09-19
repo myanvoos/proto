@@ -726,6 +726,71 @@ test("a live block rewriting its scrolled-off head does not respray native scrol
 	}
 });
 
+class LiveContainerRows extends Container {
+	rows: string[] = [];
+	liveStart: number | undefined;
+
+	override render(): readonly string[] {
+		return this.rows;
+	}
+
+	getNativeScrollbackLiveRegionStart(): number | undefined {
+		return this.liveStart;
+	}
+}
+
+test("appends stranded rows when the live source changes instead of replaying the session", () => {
+	// A tall live block holds the commit ceiling at its own start, so the rows
+	// between the seam and the viewport reach neither history nor the screen.
+	// When the live region then moves to another component (a HUD appearing as a
+	// streamed reply settles), those rows must be appended. Replaying the frame
+	// from row zero instead reprints the welcome header and the whole session:
+	// the pane rewinds to the title screen mid-stream with no input.
+	const terminal = new FakeTerminal(30, 8);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const header = new ProtocolRows(["p r o t o", "a coding agent"]);
+	const transcript = new LiveContainerRows();
+	const hud = new LiveContainerRows();
+	const status = new ProtocolRows(["status-bar"]);
+	tui.addChild(header as unknown as Component);
+	tui.addChild(transcript);
+	tui.addChild(hud);
+	tui.addChild(status as unknown as Component);
+
+	const settled = Array.from({ length: 40 }, (_value, index) => `settled-${index}`);
+	const streamed = Array.from({ length: 20 }, (_value, index) => `streamed-${index}`);
+
+	try {
+		tui.start({ deferInput: true });
+		for (let revealed = 1; revealed <= streamed.length; revealed++) {
+			transcript.rows = [...settled, ...streamed.slice(0, revealed)];
+			transcript.liveStart = settled.length;
+			tui.requestRender(true);
+		}
+		const beforeWrites = terminal.writes.length;
+
+		transcript.liveStart = undefined;
+		hud.rows = ["hud-0", "hud-1"];
+		hud.liveStart = 0;
+		tui.requestRender(true);
+
+		const tape = terminal.normalLines().map(line => line.trimEnd());
+		const occurrences = (row: string): number => tape.filter(line => line === row).length;
+		expect(occurrences("p r o t o"), "the welcome header must not be reprinted").toBe(1);
+		for (const row of [...settled, ...streamed]) {
+			expect(occurrences(row), `${row} must reach history exactly once`).toBe(1);
+		}
+		expect(tape.indexOf("settled-39")).toBeLessThan(tape.indexOf("streamed-0"));
+
+		const emitted = terminal.writes.slice(beforeWrites).join("");
+		expect(emitted, "repairing the seam must not erase the screen").not.toContain("\x1b[2J");
+		expect(emitted, "repairing the seam must not erase scrollback").not.toContain("\x1b[3J");
+	} finally {
+		tui.stop();
+	}
+});
+
 test("keeps the exact mux tape after a width and height resize", () => {
 	const restore = setEnvironment({ TMUX: "1", TERM: "xterm-256color", PI_NO_SYNC_OUTPUT: "1" });
 	const terminal = new FakeTerminal(8, 2);

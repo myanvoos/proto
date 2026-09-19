@@ -3422,11 +3422,18 @@ export class TUI extends Container {
 		// repair instead of applying the mutable live ceiling and dropping them.
 		const structuralCommittedInsertion =
 			committedRowsResynced && frameLength > this.#previousFrameLength && !geometryChanged && !hasVisibleOverlay;
+		// A retracted live barrier leaves the rows between the seam and the old
+		// window in neither history nor the screen. Repainting the frame from row
+		// zero would put them there, but it also reprints the welcome header and
+		// every committed row below it: the pane rewinds to the title screen and
+		// replays the session, mid-stream, with no input. Raise the commit ceiling
+		// instead and let the ordinary update path append exactly the stranded
+		// rows. Divergence above the seam stays the committed-prefix audit's job.
 		const replayAllCurrentRows = liveBarrierRetractionPending || structuralCommittedInsertion;
 		const replayCommitCeiling = liveRegionPinned
 			? (this.#nativeScrollbackPinnedBoundary ?? commitCeiling)
 			: frameLength;
-		const fullPaint = firstPaint || replaceRequested || geometryRebuild || liveBarrierRetractionPending;
+		const fullPaint = firstPaint || replaceRequested || geometryRebuild;
 
 		let hostWindowTop: number | undefined;
 		if (fullPaint || widthChanged) {

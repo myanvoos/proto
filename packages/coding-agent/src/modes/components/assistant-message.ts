@@ -22,8 +22,6 @@ import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cach
 
 const MAX_TRANSCRIPT_ERROR_LINES = 8;
 
-const CODE_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-
 type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
 
@@ -37,29 +35,6 @@ function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean)
 		text: formatted.trim(),
 		visible: hasDisplayableThinking(rawThinking ?? block.thinking, formatted),
 	};
-}
-
-function containsMermaidFence(text: string): boolean {
-	let fence: string | null = null;
-	for (const line of text.split("\n")) {
-		const fenceMatch = CODE_FENCE_LINE.exec(line);
-		if (fence !== null) {
-			if (
-				fenceMatch &&
-				fenceMatch[2]!.trim() === "" &&
-				fenceMatch[1]![0] === fence[0] &&
-				fenceMatch[1]!.length >= fence.length
-			) {
-				fence = null;
-			}
-			continue;
-		}
-		if (fenceMatch) {
-			if (/^mermaid\b/.test(fenceMatch[2]!.trim())) return true;
-			fence = fenceMatch[1]!;
-		}
-	}
-	return false;
 }
 
 const THINKING_DOTS_FRAMES = ["⠀⠶⠀", "⠰⣿⠆", "⢸⣿⡇", "⢸⣉⡇", "⢾⣉⡷", "⣿⣉⣿", "⣏⠀⣹", "⡇⠀⢸", "⡁⠀⢈"] as const;
@@ -136,8 +111,6 @@ export class AssistantMessageComponent extends Container {
 	#showToolResultImages = true;
 	#kittyConversionsInFlight?: Set<string>;
 	#transcriptBlockFinalized: boolean;
-
-	#containsMermaidSource = false;
 
 	#errorPinned = false;
 
@@ -407,7 +380,6 @@ export class AssistantMessageComponent extends Container {
 
 	getTranscriptBlockSettledRows(): number {
 		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return 0;
-		if (this.#containsMermaidSource) return 0;
 		if (this.#cacheInvalidationMarker) return 0;
 		const items = this.#fastPathItems;
 		const width = this.#lastRenderWidth;
@@ -808,15 +780,6 @@ export class AssistantMessageComponent extends Container {
 			this.#thinkingTokens = 0;
 			this.#thinkingRateLive = false;
 		}
-
-		this.#containsMermaidSource = message.content.some(content => {
-			if (content.type === "text") return containsMermaidFence(content.text);
-			if (content.type === "thinking" && !this.hideThinkingBlock) {
-				const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
-				return display.visible && containsMermaidFence(display.text);
-			}
-			return false;
-		});
 
 		if (this.#tryFastPathUpdate(message, opts)) return;
 
