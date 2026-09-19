@@ -1,5 +1,14 @@
 import { TERMINAL } from "./terminal-capabilities";
 
+// A TeX control word is a backslash followed by a maximal run of letters, so
+// `\begin`/`\end` only match when the next character is not a letter;
+// otherwise real commands like `\begingroup` or `\endhead` corrupt nesting.
+export function isControlSequenceAt(src: string, i: number, name: string): boolean {
+	if (!src.startsWith(name, i)) return false;
+	const next = src[i + name.length];
+	return next === undefined || !/[A-Za-z]/.test(next);
+}
+
 const SUPERSCRIPT: Record<string, string> = {
 	"0": "⁰",
 	"1": "¹",
@@ -1887,7 +1896,7 @@ class LatexParser {
 		}
 		const body: Rendered = [];
 		while (this.#i < this.#s.length) {
-			if (this.#s.startsWith("\\end", this.#i)) {
+			if (isControlSequenceAt(this.#s, this.#i, "\\end")) {
 				this.#i += 4;
 				this.#rawArgument();
 				break;

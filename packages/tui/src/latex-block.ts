@@ -1,4 +1,4 @@
-import { latexColorScope, latexToUnicode, MATH_FONT_COMMANDS } from "./latex-to-unicode";
+import { isControlSequenceAt, latexColorScope, latexToUnicode, MATH_FONT_COMMANDS } from "./latex-to-unicode";
 import { visibleWidth } from "./utils";
 
 interface Box {
@@ -560,15 +560,6 @@ function matchDelim(src: string, i: number, open: string, close: string): number
 		}
 	}
 	return -1;
-}
-
-// A TeX control word is a backslash followed by a maximal run of letters, so
-// `\begin`/`\end` only match when the next character is not a letter;
-// otherwise real commands like `\begingroup` or `\endhead` corrupt nesting.
-function isControlSequenceAt(src: string, i: number, name: string): boolean {
-	if (!src.startsWith(name, i)) return false;
-	const next = src[i + name.length];
-	return next === undefined || !/[A-Za-z]/.test(next);
 }
 
 interface EnvParts {

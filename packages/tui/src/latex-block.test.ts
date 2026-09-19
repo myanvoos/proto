@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { latexToBlock } from "./latex-block";
+import { latexToUnicode } from "./latex-to-unicode";
 
 describe("latexToBlock text styles", () => {
 	test("preserves terminal bold across a stacked fraction", () => {
@@ -31,5 +32,18 @@ describe("latexToBlock environment name boundaries", () => {
 	test("matched \\begin/\\end still produce aligned matrix cells and rows", () => {
 		expect(latexToBlock(String.raw`\begin{matrix}a & b\end{matrix}`)).toEqual(["a  b"]);
 		expect(latexToBlock(String.raw`\begin{matrix}a\\b\end{matrix}`)).toEqual(["a", " ", "b"]);
+	});
+});
+
+describe("latexToUnicode environment name boundaries", () => {
+	// The inline renderer scanned for \end with a bare startsWith, so \endgroup closed the
+	// environment early and its name tail plus the following raw argument character were eaten.
+	test("keeps content after a control word that starts with \\end", () => {
+		expect(latexToUnicode(String.raw`\begin{matrix}\endgroup a & b\end{matrix} TAIL`)).toContain("TAIL");
+		expect(latexToUnicode(String.raw`\begin{matrix}a \endhead b\end{matrix} TAIL`)).toContain("b");
+	});
+
+	test("a real \\end still terminates the environment", () => {
+		expect(latexToUnicode(String.raw`\begin{matrix}a & b\end{matrix} TAIL`)).toBe("a    b TAIL");
 	});
 });
