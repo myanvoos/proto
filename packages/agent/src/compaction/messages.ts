@@ -85,7 +85,8 @@ function getPrunedToolResultContent(message: ToolResultMessage): (TextContent | 
 	}
 	const textBlocks = message.content.filter((content): content is TextContent => content.type === "text");
 	const text = textBlocks.map(block => block.text).join("") || "[Output truncated]";
-	return [{ type: "text", text }];
+	const images = message.content.filter((content): content is ImageContent => content.type === "image");
+	return [{ type: "text", text }, ...images];
 }
 
 export function renderBranchSummaryContext(summary: string): string {

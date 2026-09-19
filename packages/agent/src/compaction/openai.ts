@@ -5,10 +5,12 @@ import {
 	createOpenAICodexCompatibilityMetadata,
 	getCodexAttestationHeader,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import type { ResponseInput } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
 import {
 	hoistInterleavedResponsesToolBatchMessages,
 	parseAzureDeploymentNameMap,
 	parseTextSignature,
+	repairOrphanResponsesToolCalls,
 } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { transformMessages } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import type {
@@ -16,6 +18,7 @@ import type {
 	AssistantMessage,
 	CodexCompactionContext,
 	FetchImpl,
+	ImageContent,
 	Message,
 	Model,
 	ProviderSessionState,
@@ -352,6 +355,18 @@ function resolveOpenAiCodexCompactEndpoint(baseUrl: string | undefined): string 
 	return `${normalizedBase}/codex/responses/compact`;
 }
 
+function convertNativeInputImage(block: ImageContent): Record<string, unknown> {
+	const detail = "auto";
+	if (block.providerFile?.provider === "openai" && block.providerFile.id) {
+		return { type: "input_image", detail, file_id: block.providerFile.id };
+	}
+	return {
+		type: "input_image",
+		detail,
+		image_url: block.url ?? `data:${block.mimeType};base64,${block.data}`,
+	};
+}
+
 function normalizeOpenAiCompactionToolCallId(id: string): string {
 	const normalized = normalizeResponsesToolCallId(id);
 	return `${normalized.callId}|${normalized.itemId ?? normalized.callId}`;
@@ -517,11 +532,7 @@ export function buildOpenAiNativeHistory(
 						continue;
 					}
 					if (block.type === "image") {
-						contentBlocks.push({
-							type: "input_image",
-							detail: "auto",
-							image_url: `data:${block.mimeType};base64,${block.data}`,
-						});
+						contentBlocks.push(convertNativeInputImage(block));
 					}
 				}
 			}
@@ -725,11 +736,7 @@ export function buildOpenAiNativeHistory(
 				];
 				for (const block of message.content) {
 					if (block.type !== "image") continue;
-					contentBlocks.push({
-						type: "input_image",
-						detail: "auto",
-						image_url: `data:${block.mimeType};base64,${block.data}`,
-					});
+					contentBlocks.push(convertNativeInputImage(block));
 				}
 				input.push({ type: "message", role: "user", content: contentBlocks });
 			}
@@ -738,7 +745,10 @@ export function buildOpenAiNativeHistory(
 		msgIndex++;
 	}
 
-	return stripOpenAIResponsesOutputOnlyStatusesForReplay(hoistInterleavedResponsesToolBatchMessages(input));
+	const hoisted = hoistInterleavedResponsesToolBatchMessages(input);
+	// This builder emits wire items as plain records; the repair helper is typed against the wire union.
+	const repaired = repairOrphanResponsesToolCalls(hoisted as unknown as ResponseInput);
+	return stripOpenAIResponsesOutputOnlyStatusesForReplay(repaired as unknown as Array<Record<string, unknown>>);
 }
 
 export async function requestOpenAiRemoteCompaction(
@@ -956,14 +966,14 @@ export async function requestRemoteCompaction(
 				.map(part => part.text)
 				.join("");
 		}
-		if (typeof summary !== "string" || summary.length === 0) {
+		if (typeof summary !== "string" || summary.trim().length === 0) {
 			throw new Error("Remote compaction response missing choices[0].message.content");
 		}
 		return { summary };
 	}
 
 	const data = (await response.json()) as RemoteCompactionResponse | undefined;
-	if (!data || typeof data.summary !== "string") {
+	if (!data || typeof data.summary !== "string" || data.summary.trim().length === 0) {
 		throw new Error("Remote compaction response missing summary");
 	}
 

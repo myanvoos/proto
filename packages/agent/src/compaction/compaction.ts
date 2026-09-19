@@ -162,6 +162,7 @@ export interface CompactionSettings {
 export const DEFAULT_RESERVE_TOKENS = 16384;
 
 const MAX_SUMMARY_TOKENS = DEFAULT_RESERVE_TOKENS;
+const SUMMARY_PROMPT_SAFETY_TOKENS = 64;
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
@@ -475,6 +476,13 @@ function resolveCompactionEffort(model: Model, level: ThinkingLevel | undefined)
 	return clampThinkingLevelForModel(model, requested);
 }
 
+function requireNonEmptySummary(text: string, operation: string): string {
+	if (text.trim().length === 0) {
+		throw new Error(`${operation}: provider returned an empty summary`);
+	}
+	return text;
+}
+
 function createSummarizationError(prefix: string, response: AssistantMessage): Error {
 	const text = `${prefix}: ${response.errorMessage || "Unknown error"}`;
 	return response.errorStatus === undefined
@@ -560,6 +568,74 @@ function clampConversationToBudget(text: string, budgetTokens: number, tokens: n
 	const tailLength = Math.floor(keep / 2);
 	const truncatedCharacters = text.length - keep;
 	return `${text.slice(0, headLength)}\n\n[... ${truncatedCharacters} characters truncated from middle ...]\n\n${text.slice(-tailLength)}`;
+}
+
+function middleTruncateText(text: string, keep: number): string {
+	if (keep >= text.length) return text;
+	const headLength = Math.ceil(keep / 2);
+	const tailLength = Math.floor(keep / 2);
+	return `${text.slice(0, headLength)}\n\n[... ${text.length - keep} characters truncated from middle ...]\n\n${text.slice(-tailLength)}`;
+}
+
+function clampTextToTokenBudget(text: string, budgetTokens: number, tokenizer: Tokenizer): string {
+	if (text.length === 0 || budgetTokens <= 0) return "";
+
+	const upperboundTokens = tokenizer.countTokens(text, "upperbound");
+	if (upperboundTokens <= budgetTokens) return text;
+	let keep = Math.min(text.length, Math.floor((text.length * budgetTokens * 0.9) / Math.max(1, upperboundTokens)));
+	for (let attempt = 0; attempt < 12 && keep > 0; attempt++) {
+		const candidate = middleTruncateText(text, keep);
+		if (tokenizer.checkTokenBudget(candidate, budgetTokens).fits) return candidate;
+		keep = Math.floor(keep * 0.75);
+	}
+	return "";
+}
+
+interface BoundedSummaryPromptParts {
+	conversationText: string;
+	previousSummaryText?: string;
+}
+
+function boundSummaryPromptParts(
+	conversationText: string,
+	previousSummary: string | undefined,
+	model: Model,
+	maxTokens: number,
+	promptSuffix: string,
+	forceConversationBudget: boolean,
+): BoundedSummaryPromptParts {
+	const tokenizer = new Tokenizer(model);
+	const totalBudget = Math.max(0, summaryInputBudgetTokens(model, maxTokens) - SUMMARY_PROMPT_SAFETY_TOKENS);
+	const staticTokens = tokenizer.countTokens(`<conversation>\n\n</conversation>\n\n${promptSuffix}`, "strict");
+	const escapedPrevious = previousSummary ? escapeSummaryBoundaryTags(previousSummary) : undefined;
+	const previousWrapperTokens = escapedPrevious
+		? tokenizer.countTokens(`<previous-summary>\n\n</previous-summary>\n\n`, "strict")
+		: 0;
+	let available = Math.max(0, totalBudget - staticTokens - previousWrapperTokens);
+	const originalConversationTokens = tokenizer.countTokens(conversationText, "strict");
+	const previousTokens = escapedPrevious ? tokenizer.countTokens(escapedPrevious, "strict") : 0;
+	if (!forceConversationBudget) {
+		const previousBudget = Math.max(
+			0,
+			totalBudget - staticTokens - previousWrapperTokens - originalConversationTokens,
+		);
+		return {
+			conversationText,
+			previousSummaryText: escapedPrevious
+				? clampTextToTokenBudget(escapedPrevious, Math.min(previousTokens, previousBudget), tokenizer)
+				: undefined,
+		};
+	}
+
+	const reservedPreviousTokens = escapedPrevious ? Math.min(previousTokens, Math.floor(available * 0.25)) : 0;
+	const conversationBudget = Math.max(0, available - reservedPreviousTokens);
+	const boundedConversation = clampTextToTokenBudget(conversationText, conversationBudget, tokenizer);
+	const boundedConversationTokens = tokenizer.countTokens(boundedConversation, "strict");
+	available = Math.max(0, available - boundedConversationTokens);
+	const boundedPrevious = escapedPrevious
+		? clampTextToTokenBudget(escapedPrevious, Math.min(previousTokens, available), tokenizer)
+		: undefined;
+	return { conversationText: boundedConversation, previousSummaryText: boundedPrevious };
 }
 
 interface SummaryWindow {
@@ -835,12 +911,13 @@ async function summarizeConversationWindow(
 		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
 	}
 
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${escapeSummaryBoundaryTags(previousSummary)}\n</previous-summary>\n\n`;
+	const promptSuffix = `${formatAdditionalContext(options?.extraContext)}${basePrompt}`;
+	const bounded = boundSummaryPromptParts(conversationText, previousSummary, model, maxTokens, promptSuffix, false);
+	let promptText = `<conversation>\n${bounded.conversationText}\n</conversation>\n\n`;
+	if (bounded.previousSummaryText) {
+		promptText += `<previous-summary>\n${bounded.previousSummaryText}\n</previous-summary>\n\n`;
 	}
-	promptText += formatAdditionalContext(options?.extraContext);
-	promptText += basePrompt;
+	promptText += promptSuffix;
 
 	const summarizationMessages = [
 		{
@@ -863,7 +940,7 @@ async function summarizeConversationWindow(
 				),
 			{ signal, missingKeyMessage: "Remote compaction credentials unavailable" },
 		);
-		return remote.summary;
+		return requireNonEmptySummary(remote.summary, "Summarization failed");
 	}
 
 	const response = await instrumentedCompleteSimple(
@@ -899,7 +976,7 @@ async function summarizeConversationWindow(
 		.map(c => c.text)
 		.join("\n");
 
-	return textContent;
+	return requireNonEmptySummary(textContent, "Summarization failed");
 }
 
 export interface HandoffOptions {
@@ -1098,14 +1175,18 @@ async function generateShortSummary(
 ): Promise<string> {
 	const maxTokens = Math.min(512, Math.floor(0.2 * reserveTokens));
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(recentMessages);
-	const conversationText = serializeConversationForSummary(llmMessages, preferredDialect(model.id));
+	const dialect = preferredDialect(model.id);
+	const serialized = serializeConversationForSummary(llmMessages, dialect, {
+		toolResultMaxChars: TOOL_RESULT_MIN_CHARS,
+	});
+	const promptSuffix = `${formatAdditionalContext(options?.extraContext)}${SHORT_SUMMARY_PROMPT}`;
+	const bounded = boundSummaryPromptParts(serialized, historySummary, model, maxTokens, promptSuffix, true);
 
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (historySummary) {
-		promptText += `<previous-summary>\n${escapeSummaryBoundaryTags(historySummary)}\n</previous-summary>\n\n`;
+	let promptText = `<conversation>\n${bounded.conversationText}\n</conversation>\n\n`;
+	if (bounded.previousSummaryText) {
+		promptText += `<previous-summary>\n${bounded.previousSummaryText}\n</previous-summary>\n\n`;
 	}
-	promptText += formatAdditionalContext(options?.extraContext);
-	promptText += SHORT_SUMMARY_PROMPT;
+	promptText += promptSuffix;
 
 	if (options?.remoteEndpoint) {
 		const endpoint = options.remoteEndpoint;
@@ -1614,8 +1695,19 @@ async function generateTurnPrefixSummary(
 	const maxTokens = Math.min(Math.floor(0.5 * reserveTokens), MAX_SUMMARY_TOKENS);
 
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(messages);
-	const conversationText = serializeConversationForSummary(llmMessages, preferredDialect(model.id));
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	const dialect = preferredDialect(model.id);
+	const serialized = serializeConversationForSummary(llmMessages, dialect, {
+		toolResultMaxChars: TOOL_RESULT_MIN_CHARS,
+	});
+	const bounded = boundSummaryPromptParts(
+		serialized,
+		undefined,
+		model,
+		maxTokens,
+		TURN_PREFIX_SUMMARIZATION_PROMPT,
+		true,
+	);
+	const promptText = `<conversation>\n${bounded.conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
 	const summarizationMessages = [
 		{
 			role: "user" as const,

@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { ApiKey, AssistantMessage, Message, Model } from "@oh-my-pi/pi-ai";
+import type { Api, ApiKey, AssistantMessage, Context, Message, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { Tokenizer } from "../tokenizer";
 import type { AgentMessage } from "../types";
 import {
 	type CompactionSettings,
+	compact,
 	DEFAULT_COMPACTION_SETTINGS,
 	generateSummary,
 	MIN_COMPACTION_CONTEXT_TOKENS,
@@ -13,6 +14,7 @@ import {
 	shouldCompact,
 } from "./compaction";
 import {
+	createFileOps,
 	type SummaryMessage,
 	serializeConversationForSummary,
 	TOOL_RESULT_MIN_CHARS,
@@ -171,6 +173,18 @@ async function capturedConversations(messages: AgentMessage[], model: Model): Pr
 }
 
 describe("summary window serialization", () => {
+	test("fails instead of accepting an empty provider summary", async () => {
+		const model = testModel(100_000);
+		const emptyResponse: AssistantMessage = { ...RESPONSE, content: [] };
+
+		await expect(
+			generateSummary([user("history", 0)], model, 0, "" as ApiKey, undefined, undefined, undefined, {
+				promptOverride: "summary",
+				completeImpl: async () => emptyResponse,
+			}),
+		).rejects.toThrow(/empty summary/i);
+	});
+
 	test("keeps short conversations byte-identical", async () => {
 		const model = testModel(100_000);
 		const messages = [user("short transcript", 0), user("unicode 🙂\n\t", 1)];
@@ -344,6 +358,96 @@ function bigToolResult(index: number, head: string, tail: string): Message[] {
 		},
 	];
 }
+
+describe("summary request budgets", () => {
+	test("clamps a carried summary before sending the next summarization request", async () => {
+		const model = testModel(25_000);
+		const previousSummary = `PREVIOUS_HEAD${"x".repeat(40_000)}PREVIOUS_TAIL`;
+		let promptText = "";
+
+		await generateSummary([user("new history", 0)], model, 0, "" as ApiKey, undefined, undefined, previousSummary, {
+			promptOverride: "summary",
+			completeImpl: async (_model, context) => {
+				const content = context.messages[0]?.content;
+				if (!Array.isArray(content)) throw new Error("summary prompt has no content");
+				const text = content.find((block): block is { type: "text"; text: string } => block.type === "text")?.text;
+				if (text === undefined) throw new Error("summary prompt has no text");
+				promptText = text;
+				return RESPONSE;
+			},
+		});
+
+		const tokenizer = new Tokenizer(model);
+		expect(tokenizer.checkTokenBudget(promptText, summaryBudget(model.contextWindow ?? 200_000)).fits).toBe(true);
+		expect(promptText).toContain("PREVIOUS_HEAD");
+		expect(promptText).toContain("PREVIOUS_TAIL");
+	});
+
+	test("bounds short and split-turn side-summary requests", async () => {
+		const model = testModel(25_000);
+		const tokenizer = new Tokenizer(model);
+		const settings = { ...DEFAULT_COMPACTION_SETTINGS, remoteEnabled: false, remoteStreamingV2Enabled: false };
+		const oversizedRecent = `SHORT_RECENT_HEAD${"r".repeat(30_000)}SHORT_RECENT_TAIL`;
+		const oversizedTurn = `TURN_PREFIX_HEAD${"t".repeat(30_000)}TURN_PREFIX_TAIL`;
+		const prompts: string[] = [];
+		const completeImpl = async <TApi extends Api>(
+			_model: Model<TApi>,
+			context: Context,
+			_options: SimpleStreamOptions,
+		): Promise<AssistantMessage> => {
+			const content = context.messages[0]?.content;
+			if (!Array.isArray(content)) throw new Error("summary prompt has no content");
+			const text = content.find((block): block is { type: "text"; text: string } => block.type === "text")?.text;
+			if (text === undefined) throw new Error("summary prompt has no text");
+			prompts.push(text);
+			return RESPONSE;
+		};
+
+		await compact(
+			{
+				firstKeptEntryId: "kept",
+				messagesToSummarize: [user("history", 0)],
+				turnPrefixMessages: [],
+				recentMessages: [user(oversizedRecent, 1)],
+				isSplitTurn: false,
+				tokensBefore: 0,
+				fileOps: createFileOps(),
+				settings,
+			},
+			model,
+			"" as ApiKey,
+			undefined,
+			undefined,
+			{ completeImpl },
+		);
+
+		await compact(
+			{
+				firstKeptEntryId: "kept",
+				messagesToSummarize: [user("history", 0)],
+				turnPrefixMessages: [user(oversizedTurn, 1)],
+				recentMessages: [user("recent", 2)],
+				isSplitTurn: true,
+				tokensBefore: 0,
+				fileOps: createFileOps(),
+				settings,
+			},
+			model,
+			"" as ApiKey,
+			undefined,
+			undefined,
+			{ completeImpl },
+		);
+
+		for (const marker of ["SHORT_RECENT_HEAD", "TURN_PREFIX_HEAD"]) {
+			const prompt = prompts.find(value => value.includes(marker));
+			expect(prompt).toBeDefined();
+			expect(
+				tokenizer.checkTokenBudget(prompt!, Math.max(1_024, Math.floor((model.contextWindow ?? 200_000) / 8))).fits,
+			).toBe(true);
+		}
+	});
+});
 
 describe("detail-heavy tool results reaching the summarizer", () => {
 	test("keeps the tail of a clipped tool result instead of only its head", () => {
