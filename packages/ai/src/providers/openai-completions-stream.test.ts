@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { Context, FetchImpl } from "../types";
+import { getStreamingPartialJson } from "../utils/block-symbols";
 import { streamOpenAICompletions } from "./openai-completions";
 
 const model = buildModel({
@@ -61,5 +62,91 @@ describe("OpenAI Completions stream termination", () => {
 			errorMessage: "OpenAI completions stream closed before a finish_reason was received",
 			text: "Hello",
 		});
+	});
+});
+
+describe("OpenAI Completions streamed tool-call arguments", () => {
+	const toolFrames = [
+		{
+			choices: [
+				{
+					delta: {
+						tool_calls: [
+							{
+								index: 0,
+								id: "call_1",
+								type: "function",
+								function: { name: "bash", arguments: '{"command": "' },
+							},
+						],
+					},
+				},
+			],
+		},
+		{ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "rg -n needle" } }] } }] },
+		{ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: ' src"}' } }] } }] },
+		{ choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+		"[DONE]",
+	];
+
+	it("exposes the raw argument prefix on every delta so consumers can render partial args", async () => {
+		const stream = streamOpenAICompletions(model, context, { apiKey: "test-key", fetch: fetchFor(toolFrames) });
+		const prefixes: (string | undefined)[] = [];
+		let prefixAtEnd: string | undefined = "unset";
+		for await (const event of stream) {
+			if (event.type === "toolcall_delta") {
+				prefixes.push(getStreamingPartialJson(event.partial.content[event.contentIndex]));
+			} else if (event.type === "toolcall_end") {
+				prefixAtEnd = getStreamingPartialJson(event.toolCall);
+			}
+		}
+
+		expect(prefixes).toEqual(['{"command": "', '{"command": "rg -n needle', '{"command": "rg -n needle src"}']);
+		expect(prefixAtEnd).toBeUndefined();
+	});
+
+	it("parses the accumulated prefix into final arguments", async () => {
+		const result = await streamOpenAICompletions(model, context, {
+			apiKey: "test-key",
+			fetch: fetchFor(toolFrames),
+		}).result();
+		const call = result.content.find(block => block.type === "toolCall");
+
+		expect(call).toMatchObject({ name: "bash", arguments: { command: "rg -n needle src" } });
+	});
+});
+
+describe("OpenAI Completions tool-call TTFT", () => {
+	const toolCallOnlyFrames = [
+		{
+			choices: [
+				{
+					delta: {
+						tool_calls: [
+							{
+								index: 0,
+								id: "call_ttft",
+								type: "function",
+								function: { name: "bash", arguments: '{"command":"pwd"}' },
+							},
+						],
+					},
+				},
+			],
+		},
+		{ choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+		"[DONE]",
+	];
+
+	it("records firstTokenTime when the stream emits only tool-call deltas", async () => {
+		const result = await streamOpenAICompletions(model, context, {
+			apiKey: "test-key",
+			fetch: fetchFor(toolCallOnlyFrames),
+		}).result();
+
+		expect(result.stopReason).toBe("toolUse");
+		expect(result.ttft).toBeDefined();
+		expect(result.ttft).toBeGreaterThanOrEqual(0);
+		expect(result.ttft).toBeLessThanOrEqual(result.duration ?? Number.POSITIVE_INFINITY);
 	});
 });

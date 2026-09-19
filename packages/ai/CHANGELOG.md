@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenAI-compatible providers (`openai-completions`, e.g. local vLLM endpoints) now reveal tool-call arguments as they stream instead of showing the finished call once generation ends.
+- Time-to-first-token is now recorded for OpenAI-compatible streams that emit only tool calls.
+
 ## [18.1.22] - 2026-09-18
 
 ### Fixed

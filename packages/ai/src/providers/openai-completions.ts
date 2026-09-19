@@ -29,7 +29,12 @@ import type {
 } from "../types";
 import { normalizeSystemPrompts, resolveCacheRetention } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
-import { isDemotedThinking, kStreamingLastParseLen } from "../utils/block-symbols";
+import {
+	clearStreamingPartialJson,
+	isDemotedThinking,
+	kStreamingLastParseLen,
+	setStreamingPartialJson,
+} from "../utils/block-symbols";
 import { hasVisibleAssistantContent, withEmptyCompletionRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
@@ -754,6 +759,7 @@ const streamOpenAICompletionsOnce = (
 				block.arguments =
 					typeof block.partialArgs === "string" ? parseStreamingJson(block.partialArgs) : block.partialArgs;
 				delete block.partialArgs;
+				clearStreamingPartialJson(block);
 				if (block.streamIndex !== undefined) {
 					toolCallBlockByIndex.delete(block.streamIndex);
 					delete block.streamIndex;
@@ -904,6 +910,7 @@ const streamOpenAICompletionsOnce = (
 					partialArgs: call.arguments,
 				};
 				block.arguments = parseStreamingJson(call.arguments);
+				setStreamingPartialJson(block, call.arguments);
 				currentBlock = block;
 				output.content.push(block);
 				stream.push({ type: "toolcall_start", contentIndex: blockIndex(block), partial: output });
@@ -1036,6 +1043,7 @@ const streamOpenAICompletionsOnce = (
 
 					if (choice?.delta?.tool_calls && choice.delta.tool_calls.length > 0) {
 						const toolCalls = choice.delta.tool_calls;
+						if (!firstTokenTime) firstTokenTime = performance.now();
 						for (let toolCallOffset = 0; toolCallOffset < toolCalls.length; toolCallOffset++) {
 							const toolCall = toolCalls[toolCallOffset]!;
 							const streamIndex = typeof toolCall.index === "number" ? toolCall.index : undefined;
@@ -1102,6 +1110,7 @@ const streamOpenAICompletionsOnce = (
 									delta = rawArgs;
 									const prev = typeof block.partialArgs === "string" ? block.partialArgs : "";
 									block.partialArgs = prev + rawArgs;
+									setStreamingPartialJson(block, block.partialArgs);
 									const throttled = parseStreamingJsonThrottled(
 										block.partialArgs,
 										block[kStreamingLastParseLen] ?? 0,
@@ -1121,6 +1130,7 @@ const streamOpenAICompletionsOnce = (
 								const merged = mergeStreamingArgumentObjects(prev, rawArgs);
 								block.partialArgs = merged;
 								block.arguments = merged;
+								setStreamingPartialJson(block, JSON.stringify(merged));
 							}
 							stream.push({
 								type: "toolcall_delta",
