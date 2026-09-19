@@ -38,6 +38,7 @@ const RETRIABLE_PATTERNS = [
 	"transport not connected",
 	"transport closed",
 	"network error",
+	"request timeout",
 ];
 
 export function isRetriableConnectionError(error: unknown): boolean {
@@ -148,10 +149,6 @@ export interface MCPToolDetails {
 
 	isError?: boolean;
 
-	rawContent?: MCPContent[];
-
-	mcpMeta?: Record<string, unknown>;
-
 	provider?: string;
 
 	providerName?: string;
@@ -200,13 +197,14 @@ function buildResult(
 	provider?: string,
 	providerName?: string,
 ): CustomToolResult<MCPToolDetails> {
+	// Only the formatted content goes into the tool result: raw MCP content
+	// and _meta can carry unbounded blobs (multi-MB resources) that would
+	// otherwise reach the transcript and provider context unsanitized.
 	const content = formatMCPContent(result.content);
 	const details: MCPToolDetails = {
 		serverName,
 		mcpToolName,
 		isError: result.isError,
-		rawContent: result.content,
-		mcpMeta: result._meta,
 		provider,
 		providerName,
 	};
@@ -306,7 +304,7 @@ async function reconnectWithAbort(
 function sanitizeMCPToolNamePart(value: string, fallback: string): string {
 	const sanitized = value
 		.toLowerCase()
-		.replace(/[^a-z_]+/g, "_")
+		.replace(/[^a-z0-9_]+/g, "_")
 		.replace(/_+/g, "_")
 		.replace(/^_+|_+$/g, "");
 
@@ -328,14 +326,18 @@ export function createMCPToolName(serverName: string, toolName: string): string 
 	const sanitizedServerName = sanitizeMCPToolNamePart(serverName, "server");
 	const sanitizedToolName = sanitizeMCPToolNamePart(toolName, "tool");
 
-	const prefixWithUnderscore = `${sanitizedServerName}_`;
-
-	let normalizedToolName = sanitizedToolName;
-	if (sanitizedToolName.startsWith(prefixWithUnderscore)) {
-		normalizedToolName = sanitizedToolName.slice(prefixWithUnderscore.length);
+	let name = `mcp__${sanitizedServerName}_${sanitizedToolName}`;
+	// The wire name must be injective over the original (server, tool) pair:
+	// when sanitization changed either part, a distinct original could sanitize
+	// to the same parts, and when the sanitized server contains "_" the
+	// first-underscore split in parseMCPToolName cannot recover the boundary
+	// ((a_b, c) and (a, b_c) both concatenate to mcp__a_b_c). Such names carry
+	// a deterministic digest of the original pair so both survive registration.
+	if (sanitizedServerName !== serverName || sanitizedToolName !== toolName || sanitizedServerName.includes("_")) {
+		const digest = Bun.hash(`${serverName}\u0000${toolName}`).toString(36).slice(0, MCP_TOOL_NAME_HASH_LENGTH);
+		name = `${name}_${digest}`;
 	}
-
-	return capMCPToolNameLength(`mcp__${sanitizedServerName}_${normalizedToolName}`);
+	return capMCPToolNameLength(name);
 }
 
 interface MCPToolOriginSource {
@@ -388,6 +390,10 @@ export function deduplicateMCPToolsByName<T extends MCPToolOriginSource>(tools: 
 	return deduplicated;
 }
 
+// Best-effort display parse of a wire name. createMCPToolName guarantees the
+// first-underscore split recovers (server, tool) exactly whenever it emitted a
+// plain (non-digest) name; digest-carrying names parse to their sanitized
+// parts, which is all display-only consumers can rely on.
 export function parseMCPToolName(name: string): { serverName: string; toolName: string } | null {
 	if (!name.startsWith("mcp__")) return null;
 

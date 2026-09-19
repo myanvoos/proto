@@ -19,6 +19,106 @@ interface StdioSpawnCommand {
 	detached: boolean;
 }
 
+// stdio MCP servers are third-party executables; they must not receive the
+// agent's full environment (provider API keys, cloud tokens). The child gets a
+// curated, non-secret baseline that keeps real servers working (command lookup,
+// caches, temp files, locales, TLS/proxy settings) plus every variable the
+// server config explicitly grants via `env`. Grant additional variables by
+// listing them in the server's `env`: unless `envPolicy: "literal"` is set, a
+// value that names an existing environment variable resolves to that
+// variable's value (e.g. `NODE_EXTRA_CA_CERTS: "NODE_EXTRA_CA_CERTS"`), and
+// any other value is passed through literally.
+const POSIX_BASELINE_ENV_KEYS: readonly string[] = [
+	"PATH",
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"TMPDIR",
+	"TMP",
+	"TEMP",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"XDG_CONFIG_HOME",
+	"XDG_CACHE_HOME",
+	"XDG_DATA_HOME",
+	"XDG_STATE_HOME",
+	"XDG_RUNTIME_DIR",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"ALL_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"no_proxy",
+	"all_proxy",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"NODE_EXTRA_CA_CERTS",
+	"REQUESTS_CA_BUNDLE",
+	"CURL_CA_BUNDLE",
+];
+
+// Windows child processes need a wider baseline: node/python and the shell
+// resolve system directories, drives, and temp paths through these.
+const WINDOWS_BASELINE_ENV_KEYS: readonly string[] = [
+	"PATH",
+	"SystemRoot",
+	"SystemDrive",
+	"windir",
+	"ComSpec",
+	"PATHEXT",
+	"USERPROFILE",
+	"HOMEDRIVE",
+	"HOMEPATH",
+	"USERNAME",
+	"APPDATA",
+	"LOCALAPPDATA",
+	"ProgramData",
+	"ProgramFiles",
+	"ProgramFiles(x86)",
+	"CommonProgramFiles",
+	"NUMBER_OF_PROCESSORS",
+	"PROCESSOR_ARCHITECTURE",
+	"OS",
+	"TMP",
+	"TEMP",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"ALL_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"no_proxy",
+	"all_proxy",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"NODE_EXTRA_CA_CERTS",
+	"REQUESTS_CA_BUNDLE",
+	"CURL_CA_BUNDLE",
+];
+
+export function buildStdioChildEnv(
+	configEnv: Record<string, string> | undefined,
+	options?: { platform?: NodeJS.Platform; sourceEnv?: Record<string, string | undefined> },
+): Record<string, string> {
+	const baseline =
+		(options?.platform ?? process.platform) === "win32" ? WINDOWS_BASELINE_ENV_KEYS : POSIX_BASELINE_ENV_KEYS;
+	const source = options?.sourceEnv ?? Bun.env;
+	const env: Record<string, string> = {};
+	for (const key of baseline) {
+		const value = source[key];
+		if (value !== undefined) env[key] = value;
+	}
+	if (configEnv) {
+		for (const [key, value] of Object.entries(configEnv)) {
+			env[key] = value;
+		}
+	}
+	return env;
+}
+
 interface ResolveStdioSpawnOptions {
 	platform?: NodeJS.Platform;
 }
@@ -143,6 +243,7 @@ export class StdioTransport implements MCPTransport {
 	>();
 	#connected = false;
 	#readLoop: Promise<void> | null = null;
+	#terminateInFlight: Promise<void> | null = null;
 
 	#detached = false;
 	readonly #requestIds = new RequestIdAllocator();
@@ -169,10 +270,7 @@ export class StdioTransport implements MCPTransport {
 		if (options?.signal?.aborted) throw abortReason(options.signal);
 		if (this.#connected) return;
 
-		const env = {
-			...Bun.env,
-			...this.config.env,
-		};
+		const env = buildStdioChildEnv(this.config.env);
 		const cwd = this.config.cwd ?? getProjectDir();
 		const spawnCommand = await resolveStdioSpawnCommand(this.config, { platform: process.platform });
 
@@ -372,8 +470,14 @@ export class StdioTransport implements MCPTransport {
 
 		if (isMCPTimeoutEnabled(timeout)) {
 			timer = setTimeout(() => {
+				const timeoutError = new Error(`Request timeout after ${timeout}ms`);
 				cleanup();
-				reject(new Error(`Request timeout after ${timeout}ms`));
+				reject(timeoutError);
+				// A request that outlives its timeout means the server stopped
+				// answering this pipe. Tear the transport down so the manager
+				// reconnects instead of leaving every later call to burn the
+				// full timeout on the same wedged process.
+				void this.#handleTransportFailure(timeoutError).catch(() => {});
 			}, timeout);
 		}
 
@@ -441,7 +545,13 @@ export class StdioTransport implements MCPTransport {
 			proc.stdin.end();
 		} catch {}
 
-		await terminateStdioProcess(proc, this.#detached);
+		const termination = terminateStdioProcess(proc, this.#detached);
+		this.#terminateInFlight = termination;
+		try {
+			await termination;
+		} finally {
+			if (this.#terminateInFlight === termination) this.#terminateInFlight = null;
+		}
 	}
 
 	async close(_options?: MCPRequestOptions): Promise<void> {
@@ -450,6 +560,11 @@ export class StdioTransport implements MCPTransport {
 		}
 
 		await this.#terminateProcess();
+		// A concurrent teardown (e.g. a timed-out request) may still be killing
+		// the child; closing callers must not return until it is done.
+		while (this.#terminateInFlight) {
+			await this.#terminateInFlight;
+		}
 
 		if (this.#readLoop) {
 			this.#readLoop.catch(() => {});

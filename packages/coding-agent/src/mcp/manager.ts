@@ -190,6 +190,8 @@ export class MCPManager {
 	#notificationsEpoch = 0;
 	#subscribedResources = new Map<string, Set<string>>();
 	#pendingResourceRefresh = new Map<string, { connection: MCPServerConnection; promise: Promise<void> }>();
+	#pendingToolsRefresh = new Map<string, { connection: MCPServerConnection; promise: Promise<void> }>();
+	#dirtyToolsRefresh = new Set<string>();
 	#pendingReconnections = new Map<string, Promise<MCPServerConnection | null>>();
 	#connectAttempts = new Map<string, AbortController>();
 	#reconnectSuppressed = new Set<string>();
@@ -790,6 +792,8 @@ export class MCPManager {
 		this.#sources.delete(name);
 		this.#serverConfigs.delete(name);
 		this.#pendingResourceRefresh.delete(name);
+		this.#pendingToolsRefresh.delete(name);
+		this.#dirtyToolsRefresh.delete(name);
 		this.#reconnectHistory.delete(name);
 		this.#subscribedResources.delete(name);
 		if (connection) this.#detachConnection(name, connection);
@@ -816,6 +820,7 @@ export class MCPManager {
 		const pendingReconnections = new Map(this.#pendingReconnections);
 		const connectAttempts = new Map(this.#connectAttempts);
 		const pendingResourceRefresh = new Map(this.#pendingResourceRefresh);
+		const pendingToolsRefresh = new Map(this.#pendingToolsRefresh);
 		const sources = new Map(this.#sources);
 		const serverConfigs = new Map(this.#serverConfigs);
 		const subscribedResources = new Map(this.#subscribedResources);
@@ -827,6 +832,7 @@ export class MCPManager {
 			...pendingToolLoads.keys(),
 			...pendingReconnections.keys(),
 			...pendingResourceRefresh.keys(),
+			...pendingToolsRefresh.keys(),
 			...sources.keys(),
 			...serverConfigs.keys(),
 			...subscribedResources.keys(),
@@ -852,6 +858,8 @@ export class MCPManager {
 		deleteUnchangedMapEntries(this.#pendingToolLoads, pendingToolLoads, preserveFreshAttempt);
 		deleteUnchangedMapEntries(this.#pendingReconnections, pendingReconnections, preserveFreshAttempt);
 		deleteUnchangedMapEntries(this.#pendingResourceRefresh, pendingResourceRefresh, preserveFreshAttempt);
+		deleteUnchangedMapEntries(this.#pendingToolsRefresh, pendingToolsRefresh, preserveFreshAttempt);
+		this.#dirtyToolsRefresh.clear();
 
 		const promises = Array.from(connections, ([name, connection]) => this.#discardConnection(name, connection));
 		await Promise.allSettled(promises);
@@ -1122,9 +1130,39 @@ export class MCPManager {
 	}
 
 	async refreshServerTools(name: string): Promise<void> {
-		const connection = this.#connections.get(name);
-		if (!connection) return;
+		// tools/list_changed notifications are not awaited by the transports, so
+		// a burst would otherwise start one paginated tools/list walk per
+		// notification and let the slowest (oldest) snapshot win. Keep one
+		// in-flight walk per server; notifications arriving mid-walk set a dirty
+		// flag that triggers exactly one follow-up walk, so snapshots apply in
+		// order and the newest one wins.
+		while (true) {
+			const connection = this.#connections.get(name);
+			if (!connection) return;
 
+			const existing = this.#pendingToolsRefresh.get(name);
+			if (existing) {
+				if (existing.connection === connection) {
+					this.#dirtyToolsRefresh.add(name);
+					return existing.promise;
+				}
+				await existing.promise.catch(() => {});
+				continue;
+			}
+
+			const promise = this.#runToolsRefresh(name, connection);
+			this.#pendingToolsRefresh.set(name, { connection, promise });
+			try {
+				await promise;
+			} finally {
+				const pending = this.#pendingToolsRefresh.get(name);
+				if (pending?.promise === promise) this.#pendingToolsRefresh.delete(name);
+			}
+			if (!this.#dirtyToolsRefresh.delete(name)) return;
+		}
+	}
+
+	async #runToolsRefresh(name: string, connection: MCPServerConnection): Promise<void> {
 		connection.tools = undefined;
 
 		const serverTools = await listTools(connection);

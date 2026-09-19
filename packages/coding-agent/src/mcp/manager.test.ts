@@ -1,6 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
+import * as path from "node:path";
 import { withTimeout } from "@oh-my-pi/pi-utils";
 import { MCPManager } from "./manager";
+
+const STDIO_FIXTURE_PATH = path.resolve(import.meta.dir, "../../test/fixtures/mcp-stdio-server.ts");
 
 const managers: MCPManager[] = [];
 
@@ -308,7 +311,7 @@ test("same-name connection survives cleanup from an older disconnect", async () 
 				.getTools()
 				.filter(tool => tool.mcpServerName === "slow")
 				.map(tool => tool.name),
-		).toEqual(["mcp__slow_new_tool"]);
+		).toEqual(["mcp__slow_new_tool_q8oc9r75"]);
 
 		server.releaseDelete();
 		await withTimeout(oldDisconnect, 2_000, "old connection cleanup did not settle");
@@ -317,7 +320,7 @@ test("same-name connection survives cleanup from an older disconnect", async () 
 				.getTools()
 				.filter(tool => tool.mcpServerName === "slow")
 				.map(tool => tool.name),
-		).toEqual(["mcp__slow_new_tool"]);
+		).toEqual(["mcp__slow_new_tool_q8oc9r75"]);
 		server.setHangDeletes(false);
 	} finally {
 		server.stop();
@@ -357,3 +360,35 @@ test("disconnectAll keeps the singleton for a live reconnect", async () => {
 
 	expect(MCPManager.instance()).toBe(manager);
 });
+
+test("tools/list_changed storms coalesce into one in-flight refresh applying the newest snapshot", async () => {
+	const manager = new MCPManager(process.cwd());
+	managers.push(manager);
+	let toolsChanged = 0;
+	const settledThirdGeneration = Promise.withResolvers<void>();
+	manager.setOnToolsChanged(() => {
+		toolsChanged += 1;
+		if (toolsChanged >= 3) settledThirdGeneration.resolve();
+	});
+
+	await manager.connectServers(
+		{
+			storm: {
+				type: "stdio",
+				command: process.execPath,
+				args: ["--smol", STDIO_FIXTURE_PATH, "storm"],
+				timeout: 5000,
+			},
+		},
+		{},
+	);
+	expect(manager.getConnectedServers()).toEqual(["storm"]);
+	const stormToolName = () => manager.getTools().find(tool => tool.mcpServerName === "storm")?.name ?? "";
+	expect(stormToolName()).toMatch(/tool_1$/);
+
+	await withTimeout(settledThirdGeneration.promise, 5000, "coalesced tools/list refresh did not settle");
+	// The 8 notifications produced exactly one refresh plus one dirty re-run
+	// (initial load + 2 settled generations), and the newest generation won.
+	expect(toolsChanged).toBe(3);
+	expect(stormToolName()).toMatch(/tool_3$/);
+}, 15000);

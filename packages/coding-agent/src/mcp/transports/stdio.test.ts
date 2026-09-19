@@ -1,7 +1,11 @@
 import { afterEach, expect, spyOn, test, vi } from "bun:test";
+import * as path from "node:path";
 import type { Subprocess } from "bun";
 import { callTool, connectToServer, disconnectServer, listTools } from "../client";
-import { StdioTransport, writeFrame } from "./stdio";
+import type { MCPServerConnection } from "../types";
+import { buildStdioChildEnv, StdioTransport, writeFrame } from "./stdio";
+
+const FIXTURE_PATH = path.resolve(import.meta.dir, "../../../test/fixtures/mcp-stdio-server.ts");
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -191,5 +195,94 @@ test("stdio supports initialize, tool discovery, and tool calls", async () => {
 		expect(methods).toEqual(["initialize", "notifications/initialized", "tools/list", "tools/call"]);
 	} finally {
 		await disconnectServer(connection);
+	}
+});
+
+test("child env allowlist keeps infrastructure variables and drops everything else", () => {
+	const env = buildStdioChildEnv(undefined, {
+		platform: "linux",
+		sourceEnv: {
+			PATH: "/usr/bin",
+			HTTPS_PROXY: "http://proxy:8080",
+			ANTHROPIC_API_KEY: "sk-secret",
+			AWS_SECRET_ACCESS_KEY: "aws-secret",
+		},
+	});
+	expect(env.PATH).toBe("/usr/bin");
+	expect(env.HTTPS_PROXY).toBe("http://proxy:8080");
+	expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+	expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+});
+
+test("child env uses the Windows baseline entries the parent provides", () => {
+	const env = buildStdioChildEnv(
+		{ GRANTED: "yes" },
+		{
+			platform: "win32",
+			sourceEnv: { PATH: "C:\\bin", SystemRoot: "C:\\Windows", USERPROFILE: "C:\\Users\\u" },
+		},
+	);
+	expect(env.PATH).toBe("C:\\bin");
+	expect(env.SystemRoot).toBe("C:\\Windows");
+	expect(env.USERPROFILE).toBe("C:\\Users\\u");
+	expect(env.GRANTED).toBe("yes");
+	expect(env.HOME).toBeUndefined();
+});
+
+test("stdio children receive a minimal env plus explicitly granted variables", async () => {
+	process.env.PROTO_MCP_ENV_SENTINEL = "top-secret-value";
+	let connection: MCPServerConnection | undefined;
+	try {
+		connection = await connectToServer("envprobe", {
+			type: "stdio",
+			command: process.execPath,
+			args: ["--smol", FIXTURE_PATH, "env-probe", "PROTO_MCP_ENV_SENTINEL,MCP_GRANTED_VAR,PATH,HOME"],
+			env: { MCP_GRANTED_VAR: "granted-value" },
+			timeout: 5000,
+		});
+		const tools = await listTools(connection);
+		expect(tools).toHaveLength(1);
+		const observed = JSON.parse(tools[0]?.description ?? "{}") as Record<string, unknown>;
+		expect(observed.PROTO_MCP_ENV_SENTINEL).toBeNull();
+		expect(observed.MCP_GRANTED_VAR).toBe("granted-value");
+		expect(observed.PATH).toBe(true);
+		expect(observed.HOME).toBe(true);
+	} finally {
+		delete process.env.PROTO_MCP_ENV_SENTINEL;
+		if (connection) await disconnectServer(connection);
+	}
+});
+
+test("a timed-out stdio request tears the transport down instead of wedging it", async () => {
+	const connection = await connectToServer("wedged", {
+		type: "stdio",
+		command: process.execPath,
+		args: ["--smol", FIXTURE_PATH, "ignore-calls"],
+		timeout: 400,
+	});
+	try {
+		await expect(callTool(connection, "echo", {})).rejects.toThrow("Request timeout after 400ms");
+		expect(connection.transport.connected).toBe(false);
+
+		// A later call must fail fast on the closed transport instead of burning
+		// another full timeout against the wedged process.
+		const retryStarted = Date.now();
+		await expect(callTool(connection, "echo", {})).rejects.toThrow("Transport not connected");
+		expect(Date.now() - retryStarted).toBeLessThan(400);
+	} finally {
+		await disconnectServer(connection);
+	}
+});
+
+test("a timed-out request kills the wedged child process", async () => {
+	const { pid, killCalls } = installFakeProcess();
+	const transport = new StdioTransport({ type: "stdio", command: "fake-mcp-server", timeout: 250 });
+	await transport.connect();
+	try {
+		await expect(transport.request("tools/call")).rejects.toThrow("Request timeout after 250ms");
+		expect(transport.connected).toBe(false);
+		expect(killCalls[0]).toEqual({ pid: -pid, signal: "SIGTERM" });
+	} finally {
+		await transport.close();
 	}
 });
