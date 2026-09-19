@@ -30,7 +30,11 @@ async function connectBridge(bridge: KernelShellBridgeHandle) {
 	});
 	socket.on("error", error => {
 		connected.reject(error);
-		response.reject(error);
+		// The bridge closes the connection as soon as it rejects a request, so writes still in flight come
+		// back as ECONNRESET. That is the teardown the test is asserting, not a failure — so once any
+		// response bytes have arrived, deliver them. Only an error with nothing received is a real failure.
+		if (text.length > 0) response.resolve(text);
+		else response.reject(error);
 	});
 	socket.on("close", () => response.resolve(text));
 	await connected.promise;
@@ -75,7 +79,18 @@ test("rejects a request that streams past the frame limit without a newline", as
 	const client = await connectBridge(bridge);
 	try {
 		const chunk = Buffer.alloc(16 * 1024, 0x61);
-		for (let sent = 0; sent <= 8 * 1024 * 1024; sent += chunk.length) {
+		// The bridge rejects and tears the connection down as soon as the frame limit is passed, so the
+		// remaining writes land on a socket that is already closing. That ECONNRESET is the expected
+		// consequence of the behavior under test, not a failure — but under load it arrives early enough to
+		// surface as an unhandled socket error and fail the run. Stop writing once the peer is gone.
+		let peerGone = false;
+		client.socket.on("error", () => {
+			peerGone = true;
+		});
+		client.socket.on("close", () => {
+			peerGone = true;
+		});
+		for (let sent = 0; sent <= 8 * 1024 * 1024 && !peerGone; sent += chunk.length) {
 			client.socket.write(chunk);
 		}
 		const frames: Array<{ t: string; d?: string; c?: number }> = (await within(client.response))
