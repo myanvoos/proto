@@ -187,7 +187,6 @@ import {
 	getImageGenTools,
 	getSearchTools,
 	HIDDEN_TOOLS,
-	isIrcEnabled,
 	isMountableUnderXdev,
 	ORCHESTRATE_TOOL_NAMES,
 	releaseComputerSessionsForOwner,
@@ -199,6 +198,7 @@ import {
 import { BashTool } from "./tools/bash";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
 import { ToolContextStore } from "./tools/context";
+import { isIrcEnabled } from "./tools/fleet";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { ReadTool } from "./tools/read";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
@@ -1444,7 +1444,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		await logger.time("createAllTools", createTools, toolSession, effectiveToolNames);
 
-		const enableMCP = !restrictToolNames && (options.enableMCP ?? true);
+		const enableMCP = !restrictToolNames && options.toolNames?.length !== 0 && (options.enableMCP ?? true);
 		let mcpManager: MCPManager | undefined = enableMCP ? options.mcpManager : undefined;
 		toolSession.mcpManager = mcpManager;
 		toolSession.enableMCP = enableMCP;

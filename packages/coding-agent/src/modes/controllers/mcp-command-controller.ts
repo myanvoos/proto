@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
 import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
-import { getMCPConfigPath, getProjectDir, withTimeout } from "@oh-my-pi/pi-utils";
+import { getMCPConfigPath, getProjectDir, isTimeoutError, withTimeout } from "@oh-my-pi/pi-utils";
 import { clearCache as clearFsCache } from "../../capability/fs";
 import type { SourceMeta } from "../../capability/types";
 import { expandEnvVarsDeep } from "../../discovery/helpers";
@@ -55,7 +55,6 @@ import type {
 import { shortenPath } from "../../tools/render-utils";
 import { urlHyperlinkAlways } from "../../tui";
 import { copyToClipboard } from "../../utils/clipboard";
-import { isTimeoutError } from "../../utils/fetch-timeout";
 import { openPath } from "../../utils/open";
 import { ChatBlock } from "../components/chat-block";
 import { DynamicBorder } from "../components/dynamic-border";

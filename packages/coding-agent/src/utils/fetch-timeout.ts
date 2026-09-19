@@ -3,10 +3,6 @@ export function withTimeoutSignal(timeoutMs: number, signal?: AbortSignal): Abor
 	return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }
 
-export function isTimeoutError(error: unknown): boolean {
-	return error instanceof Error && error.name === "TimeoutError";
-}
-
 const PROXY_ENV_VARS = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"] as const;
 
 export function isUnsupportedProxyError(error: unknown): boolean {

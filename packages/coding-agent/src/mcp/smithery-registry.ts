@@ -1,5 +1,5 @@
-import { logger } from "@oh-my-pi/pi-utils";
-import { isTimeoutError, withTimeoutSignal } from "../utils/fetch-timeout";
+import { isTimeoutError, logger } from "@oh-my-pi/pi-utils";
+import { withTimeoutSignal } from "../utils/fetch-timeout";
 import type { MCPServerConfig } from "./types";
 
 const SMITHERY_REGISTRY_BASE_URL = "https://registry.smithery.ai";

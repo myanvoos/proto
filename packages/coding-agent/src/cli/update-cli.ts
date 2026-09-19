@@ -4,17 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { $env, $which, BINARY_NAME, compareVersions, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
+import { $env, $which, BINARY_NAME, compareVersions, isEnoent, isTimeoutError, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { $ } from "bun";
 import { theme } from "../modes/theme/theme";
-import {
-	isTimeoutError,
-	isUnsupportedProxyError,
-	unsupportedProxyMessage,
-	withTimeoutSignal,
-} from "../utils/fetch-timeout";
+import { isUnsupportedProxyError, unsupportedProxyMessage, withTimeoutSignal } from "../utils/fetch-timeout";
 
 const REPO = "myanvoos/proto";
 const HOMEBREW_FORMULA = "myanvoos/tap/proto";

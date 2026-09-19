@@ -323,10 +323,6 @@ export function supportsExternalThinking(model: Model | null | undefined): boole
 	);
 }
 
-export function isIrcEnabled(_settings: Settings, _taskDepth: number): boolean {
-	return true;
-}
-
 export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
 interface ProviderGlobalSettings {
