@@ -1,0 +1,58 @@
+{
+	"suite": "tui-markdown",
+	"label": "current",
+	"recordedAt": "2026-09-19T13:23:40.029Z",
+	"commit": "4a99b46d5d",
+	"bunVersion": "1.4.2",
+	"platform": "linux-arm64",
+	"cases": [
+		{
+			"name": "stream-code-200-lines",
+			"runs": 10,
+			"warmup": 2,
+			"min": 102.992812,
+			"median": 107.32511199999999,
+			"p95": 113.252165,
+			"max": 113.484194,
+			"mean": 107.2038098,
+			"stddev": 3.4724391559981527,
+			"opsPerSec": 9.328026698543693
+		},
+		{
+			"name": "stream-code-1000-lines",
+			"runs": 5,
+			"warmup": 1,
+			"min": 2185.375724,
+			"median": 2365.917138,
+			"p95": 2413.9669596,
+			"max": 2421.443322,
+			"mean": 2324.0406414,
+			"stddev": 86.8884410456157,
+			"opsPerSec": 0.43028507427374457
+		},
+		{
+			"name": "stream-code-4000-lines",
+			"runs": 3,
+			"warmup": 1,
+			"min": 9639.171744,
+			"median": 10063.25901,
+			"p95": 10120.41558,
+			"max": 10126.76631,
+			"mean": 9943.065688,
+			"stddev": 216.4438975627467,
+			"opsPerSec": 0.10057260319690649
+		},
+		{
+			"name": "stream-assistant-message",
+			"runs": 10,
+			"warmup": 2,
+			"min": 11.382238,
+			"median": 13.5876155,
+			"p95": 18.35133665,
+			"max": 19.165613,
+			"mean": 14.418518299999999,
+			"stddev": 2.2912415747615116,
+			"opsPerSec": 69.35525406934498
+		}
+	]
+}
