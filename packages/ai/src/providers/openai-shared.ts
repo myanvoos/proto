@@ -2044,7 +2044,11 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 	messages.push(imageMessage);
 }
 
-type ResponsesToolCallBlock = ToolCall & { [kStreamingPartialJson]: string; [kStreamingLastParseLen]?: number };
+type ResponsesToolCallBlock = ToolCall & {
+	[kStreamingPartialJson]: string;
+	[kStreamingLastParseLen]?: number;
+	[kStreamingArgumentsDone]?: boolean;
+};
 
 function ensureReasoningSummaryPart(
 	item: ResponseReasoningItem,
@@ -2276,7 +2280,13 @@ export function accumulateToolCallArgumentsDelta(
 
 export function finalizeToolCallArgumentsDone(block: ResponsesToolCallBlock, args: string): void {
 	block[kStreamingPartialJson] = args;
-	block.arguments = parseStreamingJson(block[kStreamingPartialJson]);
+	if (classifyJsonPrefix(args) === "prefix") {
+		block.arguments = {};
+		block[kStreamingArgumentsDone] = false;
+	} else {
+		block.arguments = parseStreamingJson(block[kStreamingPartialJson]);
+		block[kStreamingArgumentsDone] = true;
+	}
 	clearStreamingPartialJson(block);
 }
 
@@ -2294,6 +2304,7 @@ export function accumulateCustomToolCallInputDelta(
 
 export function finalizeCustomToolCallInputDone(block: ResponsesToolCallBlock, input: string): void {
 	block.arguments = { input };
+	block[kStreamingArgumentsDone] = true;
 }
 
 type OpenAIResponsesTerminalStreamEvent =
@@ -2365,6 +2376,7 @@ export async function processResponsesStream<TApi extends Api>(
 			| ResponseCustomToolCall
 			| ResponseComputerToolCall;
 		block: ThinkingContent | TextContent | StreamingToolCallBlock;
+		outputIndex?: number;
 	}
 
 	const openItemsByOutputIndex = new Map<number, StreamingItem>();
@@ -2383,7 +2395,15 @@ export async function processResponsesStream<TApi extends Api>(
 		alternateItemKey?: string,
 		prefixedAlternateItemKey?: string,
 	): void => {
-		if (typeof outputIndex === "number") openItemsByOutputIndex.set(outputIndex, entry);
+		entry.outputIndex = outputIndex;
+		if (typeof outputIndex === "number") {
+			const previous = openItemsByOutputIndex.get(outputIndex);
+			if (previous && previous !== entry) {
+				logger.debug("OpenAI Responses stream reused an output index", { outputIndex });
+			}
+			// Index-only events follow the newest item; item_id-qualified events use the exact item map.
+			openItemsByOutputIndex.set(outputIndex, entry);
+		}
 		if (itemId) openItemsByItemId.set(itemId, entry);
 		if (alternateItemKey && alternateItemKey !== itemId) openItemsByItemId.set(alternateItemKey, entry);
 		if (
@@ -2398,12 +2418,12 @@ export async function processResponsesStream<TApi extends Api>(
 	};
 	const lookupOpenItem = (event: { output_index?: number; item_id?: string }): StreamingItem | undefined => {
 		const hasKey = typeof event.output_index === "number" || event.item_id !== undefined;
-		if (typeof event.output_index === "number") {
-			const found = openItemsByOutputIndex.get(event.output_index);
-			if (found) return found;
-		}
 		if (event.item_id) {
 			const found = openItemsByItemId.get(event.item_id);
+			if (found) return found;
+		}
+		if (typeof event.output_index === "number") {
+			const found = openItemsByOutputIndex.get(event.output_index);
 			if (found) return found;
 		}
 
@@ -2447,7 +2467,7 @@ export async function processResponsesStream<TApi extends Api>(
 			if (
 				candidate?.item.type === "function_call" &&
 				candidate.block.type === "toolCall" &&
-				!candidate.block[kStreamingArgumentsDone]
+				candidate.block[kStreamingArgumentsDone] === undefined
 			) {
 				return true;
 			}
@@ -2461,15 +2481,15 @@ export async function processResponsesStream<TApi extends Api>(
 		event: { output_index?: number; item_id?: string },
 		type: "function_call" | "custom_tool_call",
 	): StreamingItem | undefined => {
-		if (typeof event.output_index === "number") {
-			const byOutputIndex = openItemsByOutputIndex.get(event.output_index);
-			if (byOutputIndex) return byOutputIndex;
-		}
 		if (event.item_id) {
 			const alias = openItemsByPrefixedCallId.get(event.item_id);
 			if (alias?.item.type === type) return alias;
 			const exact = openItemsByItemId.get(event.item_id);
 			if (exact) return exact;
+		}
+		if (typeof event.output_index === "number") {
+			const byOutputIndex = openItemsByOutputIndex.get(event.output_index);
+			if (byOutputIndex) return byOutputIndex;
 		}
 		return lookupOpenItem(event);
 	};
@@ -2478,7 +2498,12 @@ export async function processResponsesStream<TApi extends Api>(
 		item_id?: string;
 		delta?: unknown;
 	}): StreamingItem | undefined => {
-		if (hasOpenItemKey(event)) return lookupOpenToolCallAlias(event, "function_call");
+		if (hasOpenItemKey(event)) {
+			const entry = lookupOpenToolCallAlias(event, "function_call");
+			return entry?.block.type === "toolCall" && entry.block[kStreamingArgumentsDone] === undefined
+				? entry
+				: undefined;
+		}
 		const canContinuePreviousIdentifierlessDelta = typeof event.delta === "string";
 		if (canContinuePreviousIdentifierlessDelta && identifierlessFunctionDeltaTarget) {
 			const targetIndex = openItemsInOrder.indexOf(identifierlessFunctionDeltaTarget);
@@ -2486,7 +2511,7 @@ export async function processResponsesStream<TApi extends Api>(
 			if (
 				target?.item.type === "function_call" &&
 				target.block.type === "toolCall" &&
-				!target.block[kStreamingArgumentsDone]
+				target.block[kStreamingArgumentsDone] === undefined
 			) {
 				const shouldAdvanceFromTarget =
 					shouldAdvanceIdentifierlessFunctionDelta(event, target) && hasLaterUnfinishedFunctionCall(targetIndex);
@@ -2501,7 +2526,7 @@ export async function processResponsesStream<TApi extends Api>(
 			if (
 				candidate.item.type === "function_call" &&
 				candidate.block.type === "toolCall" &&
-				!candidate.block[kStreamingArgumentsDone]
+				candidate.block[kStreamingArgumentsDone] === undefined
 			) {
 				if (shouldAdvanceIdentifierlessFunctionDelta(event, candidate) && hasLaterUnfinishedFunctionCall(index)) {
 					skippedStartedCandidate = true;
@@ -2512,7 +2537,11 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 		}
 		if (skippedStartedCandidate && startsJsonObjectDelta(event.delta)) return undefined;
-		return lastOpenItem?.item.type === "function_call" ? lastOpenItem : undefined;
+		return lastOpenItem?.item.type === "function_call" &&
+			lastOpenItem.block.type === "toolCall" &&
+			lastOpenItem.block[kStreamingArgumentsDone] === undefined
+			? lastOpenItem
+			: undefined;
 	};
 	const closeOpenItem = (
 		outputIndex: number | undefined,
@@ -2521,9 +2550,18 @@ export async function processResponsesStream<TApi extends Api>(
 		alternateItemKey?: string,
 		prefixedAlternateItemKey?: string,
 	): void => {
-		if (typeof outputIndex === "number") openItemsByOutputIndex.delete(outputIndex);
-		if (itemId) openItemsByItemId.delete(itemId);
-		if (alternateItemKey && alternateItemKey !== itemId) openItemsByItemId.delete(alternateItemKey);
+		if (entry && typeof outputIndex === "number" && openItemsByOutputIndex.get(outputIndex) === entry) {
+			const replacement = openItemsInOrder
+				.slice()
+				.reverse()
+				.find(candidate => candidate !== entry && candidate.outputIndex === outputIndex);
+			if (replacement) openItemsByOutputIndex.set(outputIndex, replacement);
+			else openItemsByOutputIndex.delete(outputIndex);
+		}
+		if (itemId && openItemsByItemId.get(itemId) === entry) openItemsByItemId.delete(itemId);
+		if (alternateItemKey && alternateItemKey !== itemId && openItemsByItemId.get(alternateItemKey) === entry) {
+			openItemsByItemId.delete(alternateItemKey);
+		}
 		if (
 			prefixedAlternateItemKey &&
 			prefixedAlternateItemKey !== itemId &&
@@ -2537,7 +2575,9 @@ export async function processResponsesStream<TApi extends Api>(
 			if (index >= 0) openItemsInOrder.splice(index, 1);
 		}
 		if (entry && identifierlessFunctionDeltaTarget === entry) identifierlessFunctionDeltaTarget = undefined;
-		if (entry && lastOpenItem === entry) lastOpenItem = null;
+		if (entry && lastOpenItem === entry) {
+			lastOpenItem = openItemsInOrder[openItemsInOrder.length - 1] ?? null;
+		}
 	};
 	const contentIndexOf = (block: ThinkingContent | TextContent | StreamingToolCallBlock): number =>
 		output.content.indexOf(block);
@@ -2703,16 +2743,23 @@ export async function processResponsesStream<TApi extends Api>(
 			const entry = lookupOpenFunctionCallItem(event);
 			if (entry?.item.type === "function_call" && entry.block.type === "toolCall") {
 				finalizeToolCallArgumentsDone(entry.block, event.arguments);
-				entry.block[kStreamingArgumentsDone] = true;
 			}
 		} else if (event.type === "response.custom_tool_call_input.delta") {
 			const entry = lookupOpenToolCallAlias(event, "custom_tool_call");
-			if (entry?.item.type === "custom_tool_call" && entry.block.type === "toolCall") {
+			if (
+				entry?.item.type === "custom_tool_call" &&
+				entry.block.type === "toolCall" &&
+				entry.block[kStreamingArgumentsDone] === undefined
+			) {
 				accumulateCustomToolCallInputDelta(entry.block, event.delta, stream, output, contentIndexOf(entry.block));
 			}
 		} else if (event.type === "response.custom_tool_call_input.done") {
 			const entry = lookupOpenToolCallAlias(event, "custom_tool_call");
-			if (entry?.item.type === "custom_tool_call" && entry.block.type === "toolCall") {
+			if (
+				entry?.item.type === "custom_tool_call" &&
+				entry.block.type === "toolCall" &&
+				entry.block[kStreamingArgumentsDone] === undefined
+			) {
 				finalizeCustomToolCallInputDone(entry.block, event.input);
 				entry.block[kStreamingArgumentsDone] = true;
 			}
@@ -2759,13 +2806,18 @@ export async function processResponsesStream<TApi extends Api>(
 				closeOpenItem(event.output_index, item.id, entry);
 			} else if (item.type === "function_call") {
 				const block = entry?.block.type === "toolCall" ? entry.block : undefined;
-				const args = block?.[kStreamingArgumentsDone]
-					? block.arguments
-					: item.arguments
-						? parseStreamingJson(item.arguments)
-						: block?.[kStreamingPartialJson]
-							? parseStreamingJson(block[kStreamingPartialJson])
-							: parseStreamingJson("{}");
+				const rawArguments = item.arguments || block?.[kStreamingPartialJson];
+				const argumentsState = block?.[kStreamingArgumentsDone]
+					? "complete"
+					: rawArguments === undefined
+						? "prefix"
+						: classifyJsonPrefix(rawArguments);
+				const executable = argumentsState !== "prefix";
+				const args = executable
+					? block?.[kStreamingArgumentsDone]
+						? block.arguments
+						: parseStreamingJson(rawArguments)
+					: {};
 				const toolCall: ToolCall = {
 					type: "toolCall",
 					id: encodeResponsesToolCallId(item.call_id, item.id),
@@ -2775,14 +2827,17 @@ export async function processResponsesStream<TApi extends Api>(
 				let contentIndex: number;
 				if (block) {
 					block.arguments = args;
+					block[kStreamingArgumentsDone] = executable;
 					clearStreamingPartialJson(block);
 					contentIndex = contentIndexOf(block);
-				} else {
+				} else if (executable) {
 					output.content.push(toolCall);
 					contentIndex = output.content.length - 1;
+				} else {
+					contentIndex = -1;
 				}
 				closeOpenItem(event.output_index, item.id, entry, item.call_id, prefixedFunctionCallItemKey(item.call_id));
-				stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
+				if (executable) stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
 			} else if (item.type === "computer_call") {
 				const block = entry?.block.type === "toolCall" ? entry.block : undefined;
 				const toolCall: ToolCall = {
@@ -2796,6 +2851,7 @@ export async function processResponsesStream<TApi extends Api>(
 				if (block) {
 					block.id = toolCall.id;
 					block.providerMetadata = toolCall.providerMetadata;
+					block[kStreamingArgumentsDone] = true;
 					clearStreamingPartialJson(block);
 					contentIndex = contentIndexOf(block);
 				} else {
@@ -2817,6 +2873,7 @@ export async function processResponsesStream<TApi extends Api>(
 				let contentIndex: number;
 				if (block) {
 					block.arguments = { input: rawInput };
+					block[kStreamingArgumentsDone] = true;
 					clearStreamingPartialJson(block);
 					contentIndex = contentIndexOf(block);
 				} else {
@@ -2933,6 +2990,7 @@ export function hasExecutableIncompleteResponsesToolCalls(output: AssistantMessa
 			[kStreamingPartialJson]?: string;
 			[kStreamingArgumentsDone]?: boolean;
 		};
+		if (pending[kStreamingArgumentsDone] === false) return false;
 		if (pending.providerMetadata?.type === "computer") {
 			if (pending.providerMetadata.actions.length === 0) return false;
 			continue;
@@ -2941,7 +2999,7 @@ export function hasExecutableIncompleteResponsesToolCalls(output: AssistantMessa
 
 		if (pending[kStreamingArgumentsDone]) continue;
 		if (pending.customWireName !== undefined || rawArguments === undefined) return false;
-		if (classifyJsonPrefix(rawArguments) !== "complete") return false;
+		if (classifyJsonPrefix(rawArguments) === "prefix") return false;
 	}
 	return hasToolCall;
 }
@@ -2954,12 +3012,20 @@ export function finalizePendingResponsesToolCalls(output: AssistantMessage): voi
 			[kStreamingLastParseLen]?: number;
 			[kStreamingArgumentsDone]?: boolean;
 		};
-		if (pending[kStreamingPartialJson] && !pending[kStreamingArgumentsDone]) {
-			pending.arguments =
-				pending.customWireName !== undefined
-					? { input: pending[kStreamingPartialJson] }
-					: parseStreamingJson(pending[kStreamingPartialJson]);
+		if (pending[kStreamingArgumentsDone]) {
+			clearStreamingPartialJson(pending);
+			continue;
 		}
+		const partial = pending[kStreamingPartialJson];
+		if (partial === undefined) continue;
+		if (pending.customWireName !== undefined || classifyJsonPrefix(partial) === "prefix") {
+			pending.arguments = {};
+			pending[kStreamingArgumentsDone] = false;
+			clearStreamingPartialJson(pending);
+			continue;
+		}
+		pending.arguments = parseStreamingJson(partial);
+		pending[kStreamingArgumentsDone] = true;
 		clearStreamingPartialJson(pending);
 	}
 }
@@ -2969,7 +3035,17 @@ export function promoteResponsesToolUseStopReason(
 	endTurn: boolean | undefined,
 	promoteIncompleteToolUse = false,
 ): void {
-	if (
+	const hasIncompleteToolCall = output.content.some(block => {
+		if (block.type !== "toolCall") return false;
+		const pending = block as ToolCall & {
+			[kStreamingPartialJson]?: string;
+			[kStreamingArgumentsDone]?: boolean;
+		};
+		return pending[kStreamingArgumentsDone] === false || pending[kStreamingPartialJson] !== undefined;
+	});
+	if (hasIncompleteToolCall) {
+		if (output.stopReason === "stop") output.stopReason = "length";
+	} else if (
 		output.content.some(block => block.type === "toolCall") &&
 		(output.stopReason === "stop" || (promoteIncompleteToolUse && output.stopReason === "length"))
 	) {
