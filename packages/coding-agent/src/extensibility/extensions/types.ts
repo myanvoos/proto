@@ -1068,7 +1068,7 @@ export interface ExtensionContextActions {
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
-	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
+	compact: (instructionsOrOptions?: string | CompactOptions, advisory?: boolean) => Promise<void>;
 	getSystemPrompt: () => string[];
 }
 
@@ -1081,7 +1081,7 @@ export interface ExtensionCommandContextActions {
 	}) => Promise<{ cancelled: boolean }>;
 	branch: (entryId: string) => Promise<{ cancelled: boolean }>;
 	navigateTree: (targetId: string, options?: { summarize?: boolean }) => Promise<{ cancelled: boolean }>;
-	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
+	compact: (instructionsOrOptions?: string | CompactOptions, advisory?: boolean) => Promise<void>;
 	switchSession: (sessionPath: string) => Promise<{ cancelled: boolean }>;
 	reload: () => Promise<void>;
 }

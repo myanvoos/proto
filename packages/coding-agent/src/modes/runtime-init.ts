@@ -92,7 +92,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			shutdown,
 			getContextUsage: () => session.getContextUsage(),
 			getSystemPrompt: () => session.systemPrompt,
-			compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
+			compact: (instructionsOrOptions, advisory) => runExtensionCompact(session, instructionsOrOptions, advisory),
 		},
 
 		{
@@ -120,7 +120,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			reload: async () => {
 				await session.reload();
 			},
-			compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
+			compact: (instructionsOrOptions, advisory) => runExtensionCompact(session, instructionsOrOptions, advisory),
 		},
 		uiContext,
 		mode,

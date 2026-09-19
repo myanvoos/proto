@@ -117,6 +117,7 @@ import type {
 	TurnStartEvent,
 } from "../extensibility/extensions";
 import { emitSessionShutdownEvent } from "../extensibility/extensions";
+import { runExtensionCompact } from "../extensibility/extensions/compact-handler";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
@@ -3769,6 +3770,10 @@ export class AgentSession {
 		return this.#maintenance.compact(customInstructions, options);
 	}
 
+	advisoryCompactionAllowed(): boolean {
+		return this.#maintenance.advisoryCompactionAllowed();
+	}
+
 	abortCompaction(reason?: unknown): void {
 		void this.#maintenance.abortCompaction(reason);
 	}
@@ -4578,12 +4583,7 @@ export class AgentSession {
 				const result = await this.navigateTree(targetId, { summarize: options?.summarize });
 				return { cancelled: result.cancelled };
 			},
-			compact: async instructionsOrOptions => {
-				const instructions = typeof instructionsOrOptions === "string" ? instructionsOrOptions : undefined;
-				const options =
-					instructionsOrOptions && typeof instructionsOrOptions === "object" ? instructionsOrOptions : undefined;
-				await this.compact(instructions, options);
-			},
+			compact: instructionsOrOptions => runExtensionCompact(this, instructionsOrOptions),
 			switchSession: async sessionPath => {
 				const success = await this.switchSession(sessionPath);
 				return { cancelled: !success };

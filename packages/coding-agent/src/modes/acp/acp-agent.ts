@@ -2108,7 +2108,8 @@ export class AcpAgent implements Agent {
 				shutdown: () => {},
 				getContextUsage: () => record.session.getContextUsage(),
 				getSystemPrompt: () => record.session.systemPrompt,
-				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
+				compact: (instructionsOrOptions, advisory) =>
+					runExtensionCompact(record.session, instructionsOrOptions, advisory),
 			},
 			{
 				getContextUsage: () => record.session.getContextUsage(),
@@ -2135,7 +2136,8 @@ export class AcpAgent implements Agent {
 				reload: async () => {
 					await record.session.reload();
 				},
-				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
+				compact: (instructionsOrOptions, advisory) =>
+					runExtensionCompact(record.session, instructionsOrOptions, advisory),
 			},
 			uiContext,
 			"rpc",

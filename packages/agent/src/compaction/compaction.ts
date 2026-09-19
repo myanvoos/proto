@@ -40,7 +40,13 @@ import {
 } from "./compaction-v2-streaming";
 import type { CompactionEntry, SessionEntry } from "./entries";
 import { NativeCompactionError } from "./errors";
-import { type ConvertToLlm, createBranchSummaryMessage, createCustomMessage, defaultConvertToLlm } from "./messages";
+import {
+	type ConvertToLlm,
+	createBranchSummaryMessage,
+	createCompactionSummaryMessage,
+	createCustomMessage,
+	defaultConvertToLlm,
+} from "./messages";
 import {
 	buildOpenAiNativeHistory,
 	getPreservedOpenAiRemoteCompactionData,
@@ -51,6 +57,7 @@ import {
 	withOpenAiRemoteCompactionPreserveData,
 } from "./openai";
 import autoHandoffThresholdFocusPrompt from "./prompts/auto-handoff-threshold-focus.md" with { type: "text" };
+import compactionSelfSummaryPrompt from "./prompts/compaction-self-summary.md" with { type: "text" };
 import compactionShortSummaryPrompt from "./prompts/compaction-short-summary.md" with { type: "text" };
 import compactionSummaryPrompt from "./prompts/compaction-summary.md" with { type: "text" };
 import compactionTurnPrefixPrompt from "./prompts/compaction-turn-prefix.md" with { type: "text" };
@@ -67,6 +74,8 @@ import {
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversationForSummary,
 	stripReadSelector,
+	TOOL_RESULT_MAX_CHARS,
+	TOOL_RESULT_MIN_CHARS,
 	upsertFileOperations,
 } from "./utils";
 
@@ -255,21 +264,34 @@ export function compactionContextTokens(providerContextTokens: number, storedCon
 	return Math.max(Math.max(0, providerContextTokens), Math.max(0, storedConversationEstimate));
 }
 
+/**
+ * Compaction rewrites the cached prompt prefix, and a cache write costs several times what a cache
+ * read costs, so compacting early is a standing tax for the rest of a long session. No threshold
+ * compacts a session still holding less than this.
+ */
+export const MIN_COMPACTION_CONTEXT_TOKENS = 250_000;
+
+function windowThresholdCeiling(contextWindow: number, settings: CompactionSettings): number {
+	return Math.max(0, Math.min(contextWindow - 1, contextWindow - resolveBudgetReserveTokens(contextWindow, settings)));
+}
+
 export function resolveThresholdTokens(contextWindow: number, settings: CompactionSettings): number {
+	const ceiling = windowThresholdCeiling(contextWindow, settings);
+	// A window that cannot reach the floor with its reserve intact drops it entirely, rather than
+	// pinning every configured threshold to the ceiling and making the setting inert.
+	const floorTokens = MIN_COMPACTION_CONTEXT_TOKENS <= ceiling ? MIN_COMPACTION_CONTEXT_TOKENS : 0;
+
 	const thresholdTokens = settings.thresholdTokens;
 	if (typeof thresholdTokens === "number" && Number.isFinite(thresholdTokens) && thresholdTokens > 0) {
-		return Math.min(contextWindow - 1, Math.max(1, thresholdTokens));
+		return Math.max(floorTokens, Math.min(contextWindow - 1, Math.max(1, thresholdTokens)));
 	}
 
 	const thresholdPercent = settings.thresholdPercent;
 	if (typeof thresholdPercent !== "number" || !Number.isFinite(thresholdPercent) || thresholdPercent <= 0) {
-		return Math.max(
-			0,
-			Math.min(contextWindow - 1, contextWindow - resolveBudgetReserveTokens(contextWindow, settings)),
-		);
+		return ceiling;
 	}
 	const clampedThresholdPercent = Math.min(99, Math.max(1, thresholdPercent));
-	return Math.floor(contextWindow * (clampedThresholdPercent / 100));
+	return Math.max(floorTokens, Math.floor(contextWindow * (clampedThresholdPercent / 100)));
 }
 
 function estimateEntriesTokens(
@@ -413,6 +435,8 @@ const SUMMARIZATION_PROMPT = prompt.render(compactionSummaryPrompt);
 const UPDATE_SUMMARIZATION_PROMPT = prompt.render(compactionUpdateSummaryPrompt);
 
 const SHORT_SUMMARY_PROMPT = prompt.render(compactionShortSummaryPrompt);
+
+const SELF_SUMMARY_PROMPT = prompt.render(compactionSelfSummaryPrompt);
 
 const HANDOFF_DOCUMENT_PROMPT = prompt.render(handoffDocumentPrompt);
 
@@ -613,11 +637,12 @@ function planSummaryWindows(
 	budgetTokens: number,
 	composeFragments: boolean,
 	serializedMessages: WeakMap<Message, SerializedSummaryMessage>,
+	toolResultMaxChars: number,
 ): SummaryWindow[] {
 	const serialized = messages.map(message => {
 		const cached = serializedMessages.get(message);
 		if (cached !== undefined) return cached;
-		const text = serializeConversationForSummary([message], dialect);
+		const text = serializeConversationForSummary([message], dialect, { toolResultMaxChars });
 		const result = { text, tokens: tokenizer.countTokens(text) };
 		serializedMessages.set(message, result);
 		return result;
@@ -656,6 +681,62 @@ function planSummaryWindows(
 	return windows;
 }
 
+const TOOL_RESULT_CAP_PROBES = 4;
+
+const TOOL_RESULT_CAP_GRANULARITY = 2_000;
+
+interface FittedConversation {
+	toolResultMaxChars: number;
+
+	text: string;
+}
+
+/**
+ * Tool results are clipped before the summarizer ever sees them, so the clip width decides how much
+ * detail a compaction can possibly retain. Spend the summarizer's spare input budget on wider tool
+ * results instead of leaving it unused: find the widest clip whose whole-transcript serialization
+ * still fits one window, which also avoids the multi-window carry-forward that compounds detail loss.
+ */
+function fitConversationToBudget(
+	messages: Message[],
+	tokenizer: Tokenizer,
+	dialect: Dialect | undefined,
+	budgetTokens: number,
+): FittedConversation | undefined {
+	const serializeFitting = (toolResultMaxChars: number): string | undefined => {
+		const text = serializeConversationForSummary(messages, dialect, { toolResultMaxChars });
+		return tokenizer.checkTokenBudget(text, budgetTokens).fits ? text : undefined;
+	};
+
+	const baseText = serializeFitting(TOOL_RESULT_MIN_CHARS);
+	if (baseText === undefined) return undefined;
+
+	const clipped = messages.some(
+		message =>
+			message.role === "toolResult" &&
+			message.content.some(block => block.type === "text" && block.text.length > TOOL_RESULT_MIN_CHARS),
+	);
+	if (!clipped) return { toolResultMaxChars: TOOL_RESULT_MIN_CHARS, text: baseText };
+
+	const richText = serializeFitting(TOOL_RESULT_MAX_CHARS);
+	if (richText !== undefined) return { toolResultMaxChars: TOOL_RESULT_MAX_CHARS, text: richText };
+
+	let best: FittedConversation = { toolResultMaxChars: TOOL_RESULT_MIN_CHARS, text: baseText };
+	let low = TOOL_RESULT_MIN_CHARS;
+	let high = TOOL_RESULT_MAX_CHARS;
+	for (let probe = 0; probe < TOOL_RESULT_CAP_PROBES && high - low > TOOL_RESULT_CAP_GRANULARITY; probe++) {
+		const candidate = low + Math.floor((high - low) / 2);
+		const text = serializeFitting(candidate);
+		if (text === undefined) {
+			high = candidate;
+			continue;
+		}
+		best = { toolResultMaxChars: candidate, text };
+		low = candidate;
+	}
+	return best;
+}
+
 export async function generateSummary(
 	currentMessages: AgentMessage[],
 	model: Model,
@@ -671,19 +752,29 @@ export async function generateSummary(
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(currentMessages);
 	const dialect = preferredDialect(model.id);
 	const tokenizer = new Tokenizer(model);
-	const wholeConversation = serializeConversationForSummary(llmMessages, dialect);
 	const budgetTokens = summaryInputBudgetTokens(model, maxTokens);
+	const fitted = fitConversationToBudget(llmMessages, tokenizer, dialect, budgetTokens);
 
 	const serializedMessages = new WeakMap<Message, SerializedSummaryMessage>();
 	const composeFragments = canComposeSummaryFragments(llmMessages, dialect);
-	const pending: SummaryWindow[] = tokenizer.checkTokenBudget(wholeConversation, budgetTokens).fits
-		? [{ messages: llmMessages, budgetTokens, text: wholeConversation }]
-		: planSummaryWindows(llmMessages, tokenizer, dialect, budgetTokens, composeFragments, serializedMessages);
+	const pending: SummaryWindow[] = fitted
+		? [{ messages: llmMessages, budgetTokens, text: fitted.text }]
+		: planSummaryWindows(
+				llmMessages,
+				tokenizer,
+				dialect,
+				budgetTokens,
+				composeFragments,
+				serializedMessages,
+				TOOL_RESULT_MIN_CHARS,
+			);
 
 	let carriedSummary = previousSummary;
 	while (pending.length > 0) {
 		const window = pending[0];
-		const text = window.text ?? serializeConversationForSummary(window.messages, dialect);
+		const text =
+			window.text ??
+			serializeConversationForSummary(window.messages, dialect, { toolResultMaxChars: TOOL_RESULT_MIN_CHARS });
 
 		const budget = tokenizer.checkTokenBudget(text, window.budgetTokens);
 		try {
@@ -709,7 +800,15 @@ export async function generateSummary(
 			pending.splice(
 				0,
 				1,
-				...planSummaryWindows(window.messages, tokenizer, dialect, halved, composeFragments, serializedMessages),
+				...planSummaryWindows(
+					window.messages,
+					tokenizer,
+					dialect,
+					halved,
+					composeFragments,
+					serializedMessages,
+					TOOL_RESULT_MIN_CHARS,
+				),
 			);
 			continue;
 		}
@@ -815,6 +914,24 @@ export interface HandoffOptions {
 	telemetry?: AgentTelemetry;
 
 	thinkingLevel?: ThinkingLevel;
+
+	maxTokens?: number;
+
+	fetch?: FetchImpl;
+
+	sessionId?: string;
+
+	promptCacheKey?: string;
+
+	providerSessionState?: Map<string, ProviderSessionState>;
+
+	preferWebsockets?: boolean;
+
+	completeImpl?: <TApi extends Api>(
+		model: Model<TApi>,
+		ctx: Context,
+		options: SimpleStreamOptions,
+	) => Promise<AssistantMessage>;
 }
 
 export function renderHandoffPrompt(customInstructions?: string): string {
@@ -836,6 +953,8 @@ export interface HandoffFromContextOptions {
 	telemetry?: AgentTelemetry;
 
 	thinkingLevel?: ThinkingLevel;
+
+	oneshotKind?: string;
 }
 
 export async function generateHandoffFromContext(
@@ -848,9 +967,10 @@ export async function generateHandoffFromContext(
 		reasoning: resolveCompactionEffort(model, options.thinkingLevel),
 		toolChoice: "none" as const,
 	};
+	const oneshotKind = options.oneshotKind ?? "handoff";
 	let response = await instrumentedCompleteSimple(model, context, requestOptions, {
 		telemetry: options.telemetry,
-		oneshotKind: "handoff",
+		oneshotKind,
 		completeImpl: options.completeImpl,
 		retry: {},
 	});
@@ -859,7 +979,7 @@ export async function generateHandoffFromContext(
 			model,
 			context,
 			{ ...requestOptions, toolChoice: "auto" },
-			{ telemetry: options.telemetry, oneshotKind: "handoff", completeImpl: options.completeImpl, retry: {} },
+			{ telemetry: options.telemetry, oneshotKind, completeImpl: options.completeImpl, retry: {} },
 		);
 	}
 
@@ -873,19 +993,26 @@ export async function generateHandoffFromContext(
 		.join("\n");
 }
 
-export async function generateHandoff(
+/**
+ * The model writes in its own voice only when it is asked in its own context: the transcript is
+ * replayed at full fidelity, in provider message form, under the caller's system prompt and tools.
+ * That request is a prefix of the live session, so it reads the session's warm prompt cache.
+ */
+async function generateSelfAuthored(
 	messages: AgentMessage[],
 	model: Model,
 	apiKey: ApiKey,
+	instruction: string,
+	oneshotKind: string,
 	options: HandoffOptions,
-	signal?: AbortSignal,
+	signal: AbortSignal | undefined,
 ): Promise<string> {
 	const llmMessages = (options.convertToLlm ?? defaultConvertToLlm)(messages);
 	const requestMessages: Message[] = [
 		...llmMessages,
 		{
 			role: "user",
-			content: [{ type: "text", text: renderHandoffPrompt(options.customInstructions) }],
+			content: [{ type: "text", text: instruction }],
 			attribution: "agent",
 			timestamp: Date.now(),
 		},
@@ -898,13 +1025,66 @@ export async function generateHandoff(
 			streamOptions: {
 				apiKey,
 				signal,
+				maxTokens: options.maxTokens,
 				initiatorOverride: options.initiatorOverride,
 				metadata: options.metadata,
+				fetch: options.fetch,
+				sessionId: options.sessionId,
+				promptCacheKey: options.promptCacheKey,
+				providerSessionState: options.providerSessionState,
+				preferWebsockets: options.preferWebsockets,
 			},
+			completeImpl: options.completeImpl,
 			telemetry: options.telemetry,
 			thinkingLevel: options.thinkingLevel,
+			oneshotKind,
 		},
 	);
+}
+
+export async function generateHandoff(
+	messages: AgentMessage[],
+	model: Model,
+	apiKey: ApiKey,
+	options: HandoffOptions,
+	signal?: AbortSignal,
+): Promise<string> {
+	return generateSelfAuthored(
+		messages,
+		model,
+		apiKey,
+		renderHandoffPrompt(options.customInstructions),
+		"handoff",
+		options,
+		signal,
+	);
+}
+
+/**
+ * The structured summary is written by a summarizer that only ever sees a serialized transcript.
+ * This note is written by the session's own model, from the context it is about to lose, and is
+ * appended to whatever summary the compaction produced — including one supplied by an extension.
+ * The previous summary leads the replay: it is the only surviving record of history already folded.
+ */
+export async function generateSelfSummary(
+	preparation: CompactionPreparation,
+	model: Model,
+	apiKey: ApiKey,
+	options: HandoffOptions,
+	signal?: AbortSignal,
+): Promise<string> {
+	const messages: AgentMessage[] = [];
+	if (preparation.previousSummary) {
+		messages.push(
+			createCompactionSummaryMessage(
+				preparation.previousSummary,
+				preparation.tokensBefore,
+				new Date().toISOString(),
+			) as AgentMessage,
+		);
+	}
+	messages.push(...preparation.messagesToSummarize, ...preparation.turnPrefixMessages);
+	return generateSelfAuthored(messages, model, apiKey, SELF_SUMMARY_PROMPT, "self-summary", options, signal);
 }
 
 async function generateShortSummary(
@@ -1202,7 +1382,12 @@ export async function compact(
 		settings,
 	} = preparation;
 
-	const reserveTokens = settings.reserveTokens ?? DEFAULT_RESERVE_TOKENS;
+	// The compaction threshold already holds `effectiveReserveTokens` back for the summary; budgeting
+	// the summary against the raw default instead left that headroom unused and truncated detail.
+	const reserveTokens =
+		model.contextWindow && model.contextWindow > 0
+			? effectiveReserveTokens(model.contextWindow, settings)
+			: DEFAULT_RESERVE_TOKENS;
 
 	const summaryOptions: SummaryOptions = {
 		promptOverride: options?.promptOverride,

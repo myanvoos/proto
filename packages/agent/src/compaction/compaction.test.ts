@@ -4,8 +4,21 @@ import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { Tokenizer } from "../tokenizer";
 import type { AgentMessage } from "../types";
-import { generateSummary } from "./compaction";
-import { type SummaryMessage, serializeConversationForSummary } from "./utils";
+import {
+	type CompactionSettings,
+	DEFAULT_COMPACTION_SETTINGS,
+	generateSummary,
+	MIN_COMPACTION_CONTEXT_TOKENS,
+	resolveThresholdTokens,
+	shouldCompact,
+} from "./compaction";
+import {
+	type SummaryMessage,
+	serializeConversationForSummary,
+	TOOL_RESULT_MIN_CHARS,
+	truncateToolResultForSummary,
+	upsertSelfSummary,
+} from "./utils";
 
 const DIALECTS = [
 	"glm",
@@ -318,5 +331,104 @@ describe("content silently dropped from the compaction summary input", () => {
 		expect(actual[0]).toContain(" characters truncated from middle ...]");
 		const tokenizer = new Tokenizer(model);
 		expect(tokenizer.checkTokenBudget(actual[0]!, summaryBudget(model.contextWindow ?? 200_000)).fits).toBe(true);
+	});
+});
+
+function bigToolResult(index: number, head: string, tail: string): Message[] {
+	const [call, result] = toolPair(index);
+	return [
+		call,
+		{
+			...(result as Extract<Message, { role: "toolResult" }>),
+			content: [{ type: "text", text: `${head}\n${"filler line\n".repeat(4_000)}${tail}` }],
+		},
+	];
+}
+
+describe("detail-heavy tool results reaching the summarizer", () => {
+	test("keeps the tail of a clipped tool result instead of only its head", () => {
+		const text = `HEAD-MARKER${"x".repeat(50_000)}TAIL-MARKER`;
+		const clipped = truncateToolResultForSummary(text);
+
+		expect(clipped).toStartWith("HEAD-MARKER");
+		expect(clipped).toEndWith("TAIL-MARKER");
+		expect(clipped).toContain("characters truncated from middle");
+		expect(clipped.length).toBeLessThan(text.length);
+	});
+
+	test("spends spare input budget on wider tool results instead of leaving it unused", async () => {
+		const model = testModel(400_000);
+		const messages = [
+			user("investigate the failing suite", 0),
+			...bigToolResult(1, "SUITE-START", "SUITE-VERDICT 3 failed 118 passed"),
+		];
+		const atFloor = serializeConversationForSummary(messages, preferredDialect(model.id), {
+			toolResultMaxChars: TOOL_RESULT_MIN_CHARS,
+		});
+
+		const actual = await capturedConversations(messages as AgentMessage[], model);
+
+		expect(actual).toHaveLength(1);
+		expect(actual[0].length).toBeGreaterThan(atFloor.length);
+		expect(actual[0]).toContain("SUITE-START");
+		expect(actual[0]).toContain("SUITE-VERDICT 3 failed 118 passed");
+	});
+
+	test("holds the floor clip when the transcript cannot fit a single window", async () => {
+		const model = testModel(25_000);
+		const messages = Array.from({ length: 12 }, (_, index) =>
+			bigToolResult(index, `START-${index}`, `VERDICT-${index}`),
+		).flat();
+
+		const actual = await capturedConversations(messages as AgentMessage[], model);
+
+		expect(actual.length).toBeGreaterThan(1);
+		expect(actual).toEqual(expectedWindows(messages, model));
+	});
+});
+
+describe("the session model's own summary section", () => {
+	test("replaces the previous round's note instead of stacking a second one", () => {
+		const first = upsertSelfSummary("## Goal\nShip the parser rewrite", "Ruled out the streaming parser.");
+		const second = upsertSelfSummary(first, "parser.ts:88 is applied but unverified.");
+
+		expect(second.match(/<self-summary>/g)).toHaveLength(1);
+		expect(second).toContain("## Goal\nShip the parser rewrite");
+		expect(second).toContain("parser.ts:88 is applied but unverified.");
+		expect(second).not.toContain("Ruled out the streaming parser.");
+	});
+
+	test("leaves the summary untouched when the model produced no note", () => {
+		const summary = "## Goal\nShip the parser rewrite";
+
+		expect(upsertSelfSummary(summary, "  \n  ")).toBe(summary);
+	});
+});
+
+describe("the minimum context a compaction may fire at", () => {
+	function withSettings(overrides: Partial<CompactionSettings>): CompactionSettings {
+		return { ...DEFAULT_COMPACTION_SETTINGS, ...overrides };
+	}
+
+	test("holds an early configured threshold up to the floor on a window that can carry it", () => {
+		const settings = withSettings({ thresholdTokens: 100_000 });
+
+		expect(resolveThresholdTokens(1_000_000, settings)).toBe(MIN_COMPACTION_CONTEXT_TOKENS);
+		expect(shouldCompact(MIN_COMPACTION_CONTEXT_TOKENS - 1_000, 1_000_000, settings)).toBe(false);
+		expect(shouldCompact(MIN_COMPACTION_CONTEXT_TOKENS + 1_000, 1_000_000, settings)).toBe(true);
+	});
+
+	test("holds an early configured percentage up to the floor", () => {
+		const settings = withSettings({ thresholdPercent: 20 });
+
+		expect(resolveThresholdTokens(1_000_000, settings)).toBe(MIN_COMPACTION_CONTEXT_TOKENS);
+		expect(resolveThresholdTokens(2_000_000, settings)).toBe(400_000);
+	});
+
+	test("drops the floor on a window too small to reach it, leaving the setting in force", () => {
+		const settings = withSettings({ thresholdPercent: 50 });
+
+		expect(resolveThresholdTokens(200_000, settings)).toBe(100_000);
+		expect(shouldCompact(120_000, 200_000, settings)).toBe(true);
 	});
 });

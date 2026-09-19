@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `generateSelfSummary` and `upsertSelfSummary`: the session's own model writes a note from the context a compaction is about to drop, and the note is merged into the compaction summary in place of the previous round's note.
+
+### Changed
+
+- Compaction no longer fires below 250K context tokens on any model whose window can carry that much, whatever threshold percent or token limit is configured; smaller windows keep their configured threshold.
+- Compaction summaries now budget against the reserve the compaction threshold already holds back, so the summary can use the headroom that was previously left unused.
+- Detail-heavy tool results now reach the summarizer with both their head and their tail, and are clipped as widely as the summarizer's input budget allows, so verdicts, totals and trailing errors survive compaction.
+
 ## [18.1.22] - 2026-09-18
 
 ### Fixed

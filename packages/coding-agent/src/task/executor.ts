@@ -2914,7 +2914,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						shutdown: () => {},
 						getContextUsage: () => session.getContextUsage(),
 						getSystemPrompt: () => session.systemPrompt,
-						compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
+						compact: (instructionsOrOptions, advisory) =>
+							runExtensionCompact(session, instructionsOrOptions, advisory),
 					},
 				);
 				extensionRunner.onError(err => {

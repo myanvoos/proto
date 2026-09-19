@@ -2022,7 +2022,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "context",
 			group: "Compaction",
 			label: "Compaction Threshold",
-			description: "Percent threshold for context maintenance; set to Default to use legacy reserve-based behavior",
+			description:
+				"Percent threshold for context maintenance; set to Default to use legacy reserve-based behavior. Never fires below 250K tokens on a window large enough to reach it",
 			options: [
 				{ value: "default", label: "Default", description: "Legacy reserve-based threshold" },
 				{ value: "10", label: "10%", description: "Extremely early maintenance" },
@@ -2047,7 +2048,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "context",
 			group: "Compaction",
 			label: "Compaction Token Limit",
-			description: "Fixed token limit for context maintenance; overrides percentage if set",
+			description:
+				"Fixed token limit for context maintenance; overrides percentage if set. Never fires below 250K tokens on a window large enough to reach it",
 			options: [
 				{ value: "default", label: "Default", description: "Use percentage-based threshold" },
 				{ value: "25000", label: "25K tokens", description: "Quarter of a 200K window" },
@@ -2084,6 +2086,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"compaction.selfSummary": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "Compaction",
+			label: "Self-Written Summary",
+			description:
+				"Have the session's own model append its own note — reasoning, ruled-out approaches, unfinished state — to every compaction summary",
+		},
+	},
 	"compaction.reserveTokens": { type: "number", default: undefined },
 
 	"compaction.keepRecentTokens": { type: "number", default: 20000 },
@@ -4179,6 +4192,7 @@ export interface CompactionSettings {
 	keepRecentTokens: number;
 	midTurnEnabled: boolean;
 	asyncEnabled: boolean;
+	selfSummary: boolean;
 	autoContinue: boolean;
 	remoteEndpoint: string | undefined;
 	remoteStreamingV2Enabled: boolean;

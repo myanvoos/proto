@@ -35,7 +35,7 @@ export function canUseRemoteCompaction(model: Model | null | undefined, settings
 export function resolveSpeculationMethod(
 	model: Model | null | undefined,
 	settings: CompactionSettings,
-): "remote" | "soft" | undefined {
+): CompactionMethod | undefined {
 	for (const candidate of resolveCompactionMethodOrder(settings.methodOrder)) {
 		const available =
 			candidate === "remote" ? canUseRemoteCompaction(model, resolveMethodSettings(settings, candidate)) : true;

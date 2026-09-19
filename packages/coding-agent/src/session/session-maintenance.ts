@@ -17,6 +17,7 @@ import {
 	compact,
 	compactionContextTokens,
 	createCompactionSummaryMessage,
+	generateSelfSummary,
 	isTranscriptUsageAnchor,
 	NativeCompactionError,
 	prepareCompaction,
@@ -29,6 +30,7 @@ import {
 	type SummaryOptions,
 	shouldCompact,
 	shouldUseProviderNativeCompaction,
+	upsertSelfSummary,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	DEFAULT_PRUNE_CONFIG,
@@ -123,6 +125,8 @@ const PRUNE_CACHE_WARM_SUFFIX_TOKENS = 8_000;
 const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
 
 const COMPACTION_RECOVERY_BAND = 0.8;
+
+const SELF_SUMMARY_MAX_TOKENS = 4096;
 
 interface ArmedSpeculation {
 	result: CompactionResult;
@@ -563,19 +567,15 @@ export class SessionMaintenance {
 			let selectedMethod: CompactionMethod | undefined;
 			for (let index = methodOffset; index < methods.length; index++) {
 				const method = methods[index];
-				if (method === "remote") {
-					if (canUseRemoteCompaction(activeModel, resolveMethodSettings(compactionSettings, method))) {
-						selectedMethod = method;
-						selectedMethodIndex = index;
-						break;
-					}
+				if (
+					method === "remote" &&
+					!canUseRemoteCompaction(activeModel, resolveMethodSettings(compactionSettings, method))
+				) {
 					continue;
 				}
-				if (method === "soft") {
-					selectedMethod = method;
-					selectedMethodIndex = index;
-					break;
-				}
+				selectedMethod = method;
+				selectedMethodIndex = index;
+				break;
 			}
 			if (!selectedMethod) {
 				throw new Error("No configured compaction method can run manually.");
@@ -626,7 +626,9 @@ export class SessionMaintenance {
 					throw new CompactionCancelledError();
 				}
 
-				if (result?.compaction) {
+				// An explicit `/compact <mode>` states how the user wants this compaction produced, so an
+				// extension compactor observes it but no longer substitutes its own result.
+				if (result?.compaction && !compactMode) {
 					hookCompaction = result.compaction;
 					fromExtension = true;
 				}
@@ -690,6 +692,8 @@ export class SessionMaintenance {
 					throw err;
 				}
 			}
+
+			summary = await this.#appendSelfSummary(summary, preparation, compactionAbortController.signal);
 
 			if (compactionAbortController.signal.aborted) {
 				throw new CompactionCancelledError(undefined, {
@@ -811,7 +815,7 @@ export class SessionMaintenance {
 		this.#startSpeculationRun(contextTokens, method);
 	}
 
-	#startSpeculationRun(contextTokens: number, method: "remote" | "soft"): void {
+	#startSpeculationRun(contextTokens: number, method: CompactionMethod): void {
 		const controller = new AbortController();
 		const run: SpeculationRun = { controller, promise: Promise.resolve(), contextTokensAtStart: contextTokens };
 		this.#speculation = run;
@@ -851,7 +855,7 @@ export class SessionMaintenance {
 		return true;
 	}
 
-	async #runSpeculation(run: SpeculationRun, method: "remote" | "soft", contextTokens: number): Promise<void> {
+	async #runSpeculation(run: SpeculationRun, method: CompactionMethod, contextTokens: number): Promise<void> {
 		const clear = () => {
 			if (this.#speculation === run) this.#speculation = undefined;
 		};
@@ -902,6 +906,7 @@ export class SessionMaintenance {
 			armed = {
 				result: {
 					...result,
+					summary: await this.#appendSelfSummary(result.summary, preparation, signal),
 					preserveData: mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData),
 				},
 				action: method === "remote" ? "remote" : "context-full",
@@ -1513,6 +1518,56 @@ export class SessionMaintenance {
 		throw this.#buildCompactionAuthError();
 	}
 
+	/**
+	 * Every summary a compaction commits is written by something that only ever saw a serialized
+	 * transcript — the built-in summarizer, or an extension reading its own memory store. The
+	 * session's own model still holds the live context, so it appends its own note to that summary
+	 * before the context is dropped. It is best-effort: a failed or unauthorized note is skipped
+	 * rather than allowed to fail the compaction.
+	 */
+	async #appendSelfSummary(summary: string, preparation: CompactionPreparation, signal: AbortSignal): Promise<string> {
+		const model = this.#model;
+		if (!model) return summary;
+		if (!this.#host.settings.getGroup("compaction").selfSummary) return summary;
+		const sessionId = this.#host.sessionId();
+		if (!(await this.#host.modelRegistry.getApiKey(model, sessionId))) return summary;
+
+		try {
+			const note = await generateSelfSummary(
+				this.#host.obfuscatePreparationForProvider(preparation),
+				model,
+				this.#host.modelRegistry.resolver(model, sessionId),
+				{
+					systemPrompt: this.#host.baseSystemPrompt(),
+					tools: this.#host.agent.state.tools,
+					convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+					initiatorOverride: "agent",
+					metadata: this.#host.agent.metadataForProvider(model.provider),
+					telemetry: resolveTelemetry(this.#host.agent.telemetry, sessionId),
+					thinkingLevel: this.#host.thinkingLevel(),
+					maxTokens: SELF_SUMMARY_MAX_TOKENS,
+					sessionId,
+					promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+					providerSessionState: this.#host.providerSessionState,
+					preferWebsockets: this.#host.preferWebsockets,
+					completeImpl: async (requestModel, requestContext, requestOptions) => {
+						const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
+						return stream.result();
+					},
+				},
+				signal,
+			);
+			return upsertSelfSummary(summary, note);
+		} catch (error) {
+			if (signal.aborted) return summary;
+			logger.warn("Self-written compaction summary failed", {
+				error: error instanceof Error ? error.message : String(error),
+				model: `${model.provider}/${model.id}`,
+			});
+			return summary;
+		}
+	}
+
 	async #prepareCompactionFromHooks(
 		preparation: CompactionPreparation,
 		hookCompaction: CompactionResult | undefined,
@@ -2083,7 +2138,7 @@ export class SessionMaintenance {
 			}
 
 			return await this.#commitAutoCompactionResult({
-				summary,
+				summary: await this.#appendSelfSummary(summary, preparation, autoCompactionSignal),
 				shortSummary,
 				firstKeptEntryId,
 				tokensBefore,
@@ -2317,6 +2372,33 @@ export class SessionMaintenance {
 		}
 		if (continuationScheduled) return COMPACTION_CHECK_CONTINUATION;
 		return noProgressDeadEnd ? COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION : COMPACTION_CHECK_NONE;
+	}
+
+	advisoryCompactionAllowed(): boolean {
+		const contextWindow = this.#model?.contextWindow ?? 0;
+		if (contextWindow <= 0) return true;
+
+		const compactionSettings = this.#host.settings.getGroup("compaction");
+		if (!compactionSettings.enabled || !hasConfiguredCompactionMethod(compactionSettings)) return true;
+
+		const thresholdTokens = resolveThresholdTokens(contextWindow, compactionSettings);
+		const leadTokens = resolveSpeculationLeadTokens(thresholdTokens);
+		const lastAssistant = this.#host.findLastAssistantMessage();
+		const billedContextTokens =
+			lastAssistant && lastAssistant.stopReason !== "aborted" && lastAssistant.stopReason !== "error"
+				? calculateContextTokens(lastAssistant.usage)
+				: 0;
+		const contextTokens = compactionContextTokens(billedContextTokens, this.#estimateStoredContextTokens());
+		const allowed = contextTokens + leadTokens >= thresholdTokens;
+		if (!allowed) {
+			logger.debug("Declined advisory compaction request below host threshold band", {
+				contextTokens,
+				contextWindow,
+				thresholdTokens,
+				leadTokens,
+			});
+		}
+		return allowed;
 	}
 
 	setAutoCompactionEnabled(enabled: boolean): void {

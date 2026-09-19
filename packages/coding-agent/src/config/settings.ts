@@ -1270,7 +1270,6 @@ export class Settings {
 			let methodOrder: CompactionMethod[] | undefined;
 			switch (strategy) {
 				case "context-full":
-				case "handoff":
 				case "shake-summary":
 				case "shake":
 					methodOrder = remoteEnabled ? ["remote", "soft"] : ["soft"];

@@ -19,6 +19,7 @@ import type {
 	SendUserMessageHandler,
 	TerminalInputHandler,
 } from "../../extensibility/extensions";
+import { advisoryCompactionSuppressed, runExtensionCompact } from "../../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import { AskDialogComponent } from "../../modes/components/ask-dialog";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
@@ -151,7 +152,7 @@ export class ExtensionUiController {
 				this.ctx.shutdownRequested = true;
 			},
 			getContextUsage: () => this.ctx.session.getContextUsage(),
-			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
+			compact: (instructionsOrOptions, advisory) => this.#compactSession(instructionsOrOptions, advisory),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
 		};
 		const commandActions: ExtensionCommandContextActions = {
@@ -220,7 +221,8 @@ export class ExtensionUiController {
 
 				return { cancelled: false };
 			},
-			compact: async instructionsOrOptions => this.#handleInteractiveCompact(instructionsOrOptions),
+			compact: async (instructionsOrOptions, advisory) =>
+				this.#handleInteractiveCompact(instructionsOrOptions, advisory),
 			switchSession: async sessionPath => {
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath);
@@ -367,7 +369,7 @@ export class ExtensionUiController {
 				this.ctx.shutdownRequested = true;
 			},
 			getContextUsage: () => this.ctx.session.getContextUsage(),
-			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
+			compact: (instructionsOrOptions, advisory) => this.#compactSession(instructionsOrOptions, advisory),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
 		};
 		const commandActions: ExtensionCommandContextActions = {
@@ -433,7 +435,8 @@ export class ExtensionUiController {
 
 				return { cancelled: false };
 			},
-			compact: async instructionsOrOptions => this.#handleInteractiveCompact(instructionsOrOptions),
+			compact: async (instructionsOrOptions, advisory) =>
+				this.#handleInteractiveCompact(instructionsOrOptions, advisory),
 			switchSession: async sessionPath => {
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath);
@@ -466,7 +469,7 @@ export class ExtensionUiController {
 						...runner!.createContext(),
 						ui: uiContext,
 						hasUI: true,
-						compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
+						compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions, true),
 					});
 				} catch (err) {
 					this.showToolError(registeredTool.definition.name, err instanceof Error ? err.message : String(err));
@@ -835,15 +838,19 @@ export class ExtensionUiController {
 		);
 		this.ctx.present(errorText);
 	}
-	async #handleInteractiveCompact(instructionsOrOptions: string | CompactOptions | undefined): Promise<void> {
+	async #handleInteractiveCompact(
+		instructionsOrOptions: string | CompactOptions | undefined,
+		advisory?: boolean,
+	): Promise<void> {
+		if (advisoryCompactionSuppressed(this.ctx.session, instructionsOrOptions, advisory)) return;
 		await this.ctx.executeCompaction(instructionsOrOptions, false);
 	}
 
-	async #compactSession(instructionsOrOptions: string | CompactOptions | undefined): Promise<void> {
-		const instructions = typeof instructionsOrOptions === "string" ? instructionsOrOptions : undefined;
-		const options =
-			instructionsOrOptions && typeof instructionsOrOptions === "object" ? instructionsOrOptions : undefined;
-		await this.ctx.session.compact(instructions, options);
+	async #compactSession(
+		instructionsOrOptions: string | CompactOptions | undefined,
+		advisory?: boolean,
+	): Promise<void> {
+		await runExtensionCompact(this.ctx.session, instructionsOrOptions, advisory);
 	}
 
 	async #updateSessionName(name: string): Promise<void> {

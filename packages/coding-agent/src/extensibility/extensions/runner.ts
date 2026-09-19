@@ -393,7 +393,7 @@ export class ExtensionRunner {
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
-	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
+	#compactFn: (instructionsOrOptions?: string | CompactOptions, advisory?: boolean) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
@@ -852,7 +852,7 @@ export class ExtensionRunner {
 			ui: this.#uiContext,
 			mode: this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
-			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
+			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions, true),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
@@ -903,7 +903,7 @@ export class ExtensionRunner {
 			navigateTree: (targetId, options) => this.#navigateTreeHandler(targetId, options),
 			switchSession: sessionPath => this.#switchSessionHandler(sessionPath),
 			reload: () => this.#reloadHandler(),
-			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
+			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions, false),
 		};
 	}
 

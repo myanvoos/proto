@@ -32,6 +32,37 @@ test("compact options preserve extension-provided instructions", async () => {
 	expect(receivedInstructions).toBe("__pi_vcc__");
 });
 
+test("an advisory compaction request the session declines is cancelled, not run", async () => {
+	let compactions = 0;
+	const errors: string[] = [];
+	const session = {
+		advisoryCompactionAllowed: () => false,
+		async compact(): Promise<void> {
+			compactions++;
+		},
+	};
+
+	await runExtensionCompact(session, { onError: error => errors.push(error.message) }, true);
+
+	expect(compactions).toBe(0);
+	// Requesters clear their in-flight flag on this exact message and stay quiet about it.
+	expect(errors).toEqual(["Compaction cancelled"]);
+});
+
+test("a user-invoked compaction request runs even when the session would decline an advisory one", async () => {
+	let compactions = 0;
+	const session = {
+		advisoryCompactionAllowed: () => false,
+		async compact(): Promise<void> {
+			compactions++;
+		},
+	};
+
+	await runExtensionCompact(session, { customInstructions: "__pi_vcc__" }, false);
+
+	expect(compactions).toBe(1);
+});
+
 test("built-in memory extension produces deterministic structural compaction", async () => {
 	await using agentDir = await TempDir.create();
 	const packageDir = path.resolve(import.meta.dir, "../../..");

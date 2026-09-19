@@ -15,6 +15,7 @@ import { formatGroupedPaths, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "../types";
 import type { CoreCompactionMessage } from "./messages";
 import fileOperationsTemplate from "./prompts/file-operations.md" with { type: "text" };
+import selfSummarySectionTemplate from "./prompts/self-summary-section.md" with { type: "text" };
 import summarizationSystemPrompt from "./prompts/summarization-system.md" with { type: "text" };
 
 export interface FileOperations {
@@ -147,12 +148,37 @@ export function upsertFileOperations(
 	return `${baseSummary}\n\n${fileOperations}`;
 }
 
-const TOOL_RESULT_MAX_CHARS = 2000;
+const SELF_SUMMARY_TAG_RE = /<self-summary>[\s\S]*?<\/self-summary>\s*/g;
 
-export function truncateToolResultForSummary(text: string): string {
-	if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
-	const truncatedChars = text.length - TOOL_RESULT_MAX_CHARS;
-	return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n\n[... ${truncatedChars} more characters truncated]`;
+/**
+ * The session model's own note is regenerated on every compaction, and the summary it is appended
+ * to carries the previous round's note forward, so the old section is replaced rather than stacked.
+ */
+export function upsertSelfSummary(summary: string, note: string): string {
+	const baseSummary = summary.replace(SELF_SUMMARY_TAG_RE, "").trimEnd();
+	const trimmedNote = note.trim();
+	if (!trimmedNote) return baseSummary;
+	const section = prompt.render(selfSummarySectionTemplate, { note: trimmedNote });
+	if (!baseSummary) return section;
+	return `${baseSummary}\n\n${section}`;
+}
+
+export const TOOL_RESULT_MIN_CHARS = 2000;
+
+export const TOOL_RESULT_MAX_CHARS = 24_000;
+
+/**
+ * Detail-heavy tool results carry their verdict at both ends: the head names what ran, the tail
+ * carries the failure, the totals, the final diff. Dropping the tail is what silently loses the
+ * facts a summary exists to preserve, so keep both ends and cut from the middle.
+ */
+export function truncateToolResultForSummary(text: string, maxChars: number = TOOL_RESULT_MIN_CHARS): string {
+	const limit = Math.max(TOOL_RESULT_MIN_CHARS, Math.floor(maxChars));
+	if (text.length <= limit) return text;
+	const headLength = Math.ceil(limit / 2);
+	const tailLength = limit - headLength;
+	const truncatedChars = text.length - limit;
+	return `${text.slice(0, headLength)}\n\n[... ${truncatedChars} characters truncated from middle ...]\n\n${text.slice(text.length - tailLength)}`;
 }
 
 const SUMMARY_BOUNDARY_TAG_RE = /<\s*\/?\s*(?:conversation|previous-summary)\s*>/gi;
@@ -232,7 +258,15 @@ function contentText(content: string | UserContent[]): string {
 	return content.map(userContentText).join("");
 }
 
-function normalizeSummaryMessage(message: SummaryMessage, uselessCallIds: ReadonlySet<string>): Message | undefined {
+export interface SummarySerializationOptions {
+	toolResultMaxChars?: number;
+}
+
+function normalizeSummaryMessage(
+	message: SummaryMessage,
+	uselessCallIds: ReadonlySet<string>,
+	toolResultMaxChars: number,
+): Message | undefined {
 	switch (message.role) {
 		case "user":
 		case "developer":
@@ -250,7 +284,9 @@ function normalizeSummaryMessage(message: SummaryMessage, uselessCallIds: Readon
 			if (uselessCallIds.has(message.toolCallId)) return undefined;
 			return {
 				...message,
-				content: [{ type: "text", text: truncateToolResultForSummary(contentText(message.content)) }],
+				content: [
+					{ type: "text", text: truncateToolResultForSummary(contentText(message.content), toolResultMaxChars) },
+				],
 			};
 		}
 		case "custom":
@@ -281,21 +317,30 @@ function normalizeSummaryMessage(message: SummaryMessage, uselessCallIds: Readon
 	}
 }
 
-export function serializeConversationForSummary(messages: readonly SummaryMessage[], dialect?: Dialect): string {
-	const conversation = serializeConversation(messages, dialect);
+export function serializeConversationForSummary(
+	messages: readonly SummaryMessage[],
+	dialect?: Dialect,
+	options?: SummarySerializationOptions,
+): string {
+	const conversation = serializeConversation(messages, dialect, options);
 	const escaped = dialect === "harmony" ? escapeHarmonyControlTokens(conversation) : conversation;
 	return escapeSummaryBoundaryTags(escaped);
 }
 
-export function serializeConversation(messages: readonly SummaryMessage[], dialect?: Dialect): string {
+export function serializeConversation(
+	messages: readonly SummaryMessage[],
+	dialect?: Dialect,
+	options?: SummarySerializationOptions,
+): string {
 	const uselessCallIds = new Set<string>();
 	for (const message of messages) {
 		if (message.role === "toolResult" && message.useless === true && message.isError !== true) {
 			uselessCallIds.add(message.toolCallId);
 		}
 	}
+	const toolResultMaxChars = options?.toolResultMaxChars ?? TOOL_RESULT_MIN_CHARS;
 	const processed = messages
-		.map(message => normalizeSummaryMessage(message, uselessCallIds))
+		.map(message => normalizeSummaryMessage(message, uselessCallIds, toolResultMaxChars))
 		.filter((message): message is Message => message !== undefined);
 
 	if (dialect) return getDialectDefinition(dialect).renderTranscript(processed);

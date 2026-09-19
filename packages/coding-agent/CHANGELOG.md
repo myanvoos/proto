@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Compaction summaries now end with a note the session's own model writes from the context it is about to lose — why the current approach was chosen, what was ruled out, what is half-finished — appended to whatever produced the summary, including observational memory. Turn it off with `compaction.selfSummary`.
+
+### Changed
+
+- Context maintenance now holds off until the session actually holds 250K tokens on models whose window can carry that much, so a large-window session stops paying to rewrite its prompt cache at a fraction of its capacity; models with smaller windows are unaffected.
+- Observational memory no longer compacts on its own fixed token count: requests to compact that arrive while the session is still well below its own compaction threshold are declined, so a long session keeps reading its warm prompt cache instead of paying to rewrite it early.
+- Compaction now carries detail-heavy tool results into the summary with both their head and their tail, widened to whatever the summarizer's input budget allows, instead of clipping every result to its first 2000 characters.
+- Repeat compactions now consolidate rather than re-compress: the update prompt requires merging duplicates, replacing superseded facts with current ones, and carrying identifiers through verbatim.
+- An explicit `/compact <mode>` is now honored as written: an extension compactor observes the compaction but no longer substitutes its own result.
+
 ### Fixed
 
 - Ctrl+O now reveals the whole tool output instead of stopping at a larger fixed cap: expanding a generic tool card, MCP result, `xd` device card, `inspect_media` answer, URL read, `computer` output, fleet message body, or JSON display tree no longer leaves a dead `… N more lines` hint with no way to reach them.
