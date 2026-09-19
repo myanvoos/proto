@@ -354,7 +354,28 @@ export class AgentLifecycleManager {
 	}
 
 	async #revive(id: string, revive: AgentReviver, ref: AgentRef, adopted: AdoptedAgent): Promise<AgentSession> {
-		const session = await revive(ref);
+		let session: AgentSession;
+		try {
+			session = await revive(ref);
+		} catch (error) {
+			// A reviver builds its session with createAgentSession, which attaches it to this ref and marks it
+			// running before returning. If the reviver then fails while wiring tools, extensions or monitors, an
+			// attached-but-half-initialized session is left behind — and ensureLive short-circuits on ref.session,
+			// so every later wake hands back that broken session instead of retrying. Put the ref back the way
+			// we found it and dispose what was built.
+			const attached = this.#registry.get(id) === ref ? ref.session : null;
+			if (attached) {
+				this.#registry.detachSession(id, ref);
+				this.#registry.setStatus(id, "parked", ref);
+				await attached.dispose().catch(disposeError => {
+					logger.error("Failed to dispose a session whose revival failed", {
+						id,
+						error: disposeError instanceof Error ? disposeError.message : String(disposeError),
+					});
+				});
+			}
+			throw error;
+		}
 		if (this.#disposed) {
 			await session.dispose();
 			throw new Error(

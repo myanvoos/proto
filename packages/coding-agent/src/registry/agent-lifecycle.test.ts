@@ -33,6 +33,54 @@ afterEach(() => {
 	AgentLifecycleManager.resetGlobalForTests();
 });
 
+describe("revival failure", () => {
+	function fakeSession(disposed: { count: number }): AgentSession {
+		return {
+			dispose: async () => {
+				disposed.count++;
+			},
+		} as unknown as AgentSession;
+	}
+
+	test("a reviver that fails after attaching leaves the ref reusable", async () => {
+		const dir = makeTempDir();
+		const sessionFile = path.join(dir, "worker.jsonl");
+		fs.writeFileSync(sessionFile, "", { encoding: "utf8" });
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const ref = registerParked(registry, sessionFile);
+
+		const disposed = { count: 0 };
+		let attempt = 0;
+		const healthy = fakeSession(disposed);
+		lifecycle.setPersistedSubagentReviverFactory(
+			() =>
+				Promise.resolve(async target => {
+					attempt++;
+					if (attempt === 1) {
+						// Mirror createAgentSession: attach and mark running, then fail while wiring the rest.
+						const broken = fakeSession(disposed);
+						registry.attachSession("worker", broken, target.sessionFile, target);
+						registry.setStatus("worker", "running", target);
+						throw new Error("extension init failed");
+					}
+					return healthy;
+				}),
+			60_000,
+		);
+
+		await expect(lifecycle.ensureLive("worker")).rejects.toThrow("extension init failed");
+		expect(registry.get("worker")?.session).toBeNull();
+		expect(registry.get("worker")?.status).toBe("parked");
+		expect(disposed.count).toBe(1);
+
+		// The second wake must actually retry rather than hand back the broken session.
+		expect(await lifecycle.ensureLive("worker")).toBe(healthy);
+		expect(attempt).toBe(2);
+		await lifecycle.dispose();
+	});
+});
+
 describe("reclaimDeadCorpse", () => {
 	test("refuses a parked ref whose transcript has a fresh live marker", async () => {
 		const dir = makeTempDir();
