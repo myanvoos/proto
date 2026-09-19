@@ -690,11 +690,10 @@ export class Container
 		this.#memoChildrenSource = children;
 		this.#memoWidth = width;
 		if (unchanged) return this.#memoLines!;
-		const lines: string[] = [];
-		for (let i = 0; i < count; i++) {
-			const childLines = refs[i]!;
-			for (let j = 0; j < childLines.length; j++) lines.push(childLines[j]!);
-		}
+		// A fresh array identity is required whenever any child changed (callers
+		// diff by string identity against the previous compose), but the flatten
+		// itself is a native copy rather than a per-row push loop.
+		const lines = refs.flat();
 		this.#memoLines = lines;
 		return lines;
 	}
@@ -812,32 +811,6 @@ function frameOutputEscapeEnd(text: string, start: number): number {
 		return code >= 0x30 && code <= 0x7e ? i + 1 : i;
 	}
 	return text.length;
-}
-
-function frameOutputBoundary(text: string, start: number, maxLength: number): number {
-	const limit = Math.min(text.length, start + maxLength);
-	let cursor = start;
-	let safe = start;
-	while (cursor < limit) {
-		const code = text.charCodeAt(cursor);
-		if (code === CC_ESC) {
-			const end = frameOutputEscapeEnd(text, cursor);
-			if (end > limit) break;
-			cursor = end;
-		} else if (code >= 0xd800 && code <= 0xdbff) {
-			// Keep a surrogate pair in one terminal write. A high surrogate at the
-			// candidate boundary must wait for the next chunk; emitting it alone
-			// makes UTF-8 writers encode the pair's halves as replacement glyphs.
-			if (cursor + 1 >= limit) break;
-			const low = text.charCodeAt(cursor + 1);
-			if (low >= 0xdc00 && low <= 0xdfff) cursor += 2;
-			else cursor++;
-		} else {
-			cursor++;
-		}
-		safe = cursor;
-	}
-	return safe;
 }
 
 function isSgrParamByte(c: number): boolean {
@@ -1068,7 +1041,6 @@ export class TUI extends Container {
 	static readonly #MAX_ADAPTIVE_RENDER_MS = 200;
 
 	static readonly #MAX_PENDING_OUTPUT_BYTES = 256 * 1024;
-	static readonly #MAX_FRAME_WRITE_CHUNK_CODE_UNITS = 1024;
 
 	static readonly #OUTPUT_BACKLOG_RETRY_MS = 10;
 	#inputRenderGraceUntilMs = 0;
@@ -2996,58 +2968,15 @@ export class TUI extends Container {
 
 	#writeFrameOutput(): void {
 		const output = this.#frameOutput;
-		const maxChunk = TUI.#MAX_FRAME_WRITE_CHUNK_CODE_UNITS;
 		try {
-			let chunk = "";
-			const flush = (): void => {
-				if (chunk.length === 0) return;
-				this.terminal.write(chunk);
-				chunk = "";
-			};
-
-			for (const fragment of output) {
-				if (fragment.length === 0) continue;
-				if (fragment.length <= maxChunk) {
-					if (chunk.length > 0 && chunk.length + fragment.length > maxChunk) flush();
-					chunk += fragment;
-					continue;
-				}
-
-				let offset = 0;
-				while (offset < fragment.length) {
-					if (chunk.length === maxChunk) flush();
-					const capacity = maxChunk - chunk.length;
-					const remaining = fragment.length - offset;
-					if (remaining <= capacity) {
-						chunk += fragment.slice(offset);
-						offset = fragment.length;
-						continue;
-					}
-
-					let boundary = frameOutputBoundary(fragment, offset, capacity);
-					if (boundary === offset) {
-						if (chunk.length > 0) {
-							flush();
-							continue;
-						}
-						const escapeEnd =
-							fragment.charCodeAt(offset) === CC_ESC ? frameOutputEscapeEnd(fragment, offset) : offset + 1;
-						if (escapeEnd > offset + capacity) {
-							// A control sequence longer than the chunk cap must stay intact;
-							// plain text and shorter escape sequences remain bounded below.
-							this.terminal.write(fragment.slice(offset, escapeEnd));
-							offset = escapeEnd;
-							continue;
-						}
-						boundary = Math.min(fragment.length, offset + capacity);
-						if (boundary === offset) boundary = offset + 1;
-					}
-					chunk += fragment.slice(offset, boundary);
-					offset = boundary;
-					if (chunk.length === maxChunk) flush();
-				}
+			// A frame is one flush: escape sequences and surrogate pairs cannot be
+			// split because nothing is split, and each terminal.write pays per-call
+			// overhead (cursor-visibility scan, byte counting, pump bookkeeping)
+			// that used to multiply across 1KiB chunks on full repaints.
+			if (output.length > 0) {
+				const data = output.join("");
+				if (data.length > 0) this.terminal.write(data);
 			}
-			flush();
 		} finally {
 			output.length = 0;
 		}
@@ -3202,15 +3131,20 @@ export class TUI extends Container {
 		// those rows from the frame instead, so the seam and the window stay
 		// adjacent and the block reaches history exactly once, in its final form.
 		let clippedRows = 0;
+		let clipFrom = 0;
 		if (liveRegionSegment !== undefined && clipsNativeScrollbackLiveRegion(liveRegionSegment.component)) {
 			// Never drop a row the terminal already holds: the ceiling may retract
 			// below the seam, and scrollback cannot give those rows back.
-			const clipFrom = Math.max(commitCeiling, this.#committedRows);
-			const strandedRows = frameLength - height - clipFrom;
+			const resolvedClipFrom = Math.max(commitCeiling, this.#committedRows);
+			const strandedRows = frameLength - height - resolvedClipFrom;
 			if (strandedRows > 0) {
 				clippedRows = strandedRows;
-				rawFrame = [...rawFrame.slice(0, clipFrom), ...rawFrame.slice(clipFrom + strandedRows)];
-				frameLength = rawFrame.length;
+				clipFrom = resolvedClipFrom;
+				const clipped = rawFrame.slice();
+				clipped.copyWithin(clipFrom, clipFrom + strandedRows);
+				clipped.length = frameLength - strandedRows;
+				rawFrame = clipped;
+				frameLength = clipped.length;
 			}
 		}
 		// Clipping renumbers every row below the cut, and restoring those rows
@@ -3603,10 +3537,21 @@ export class TUI extends Container {
 		}
 
 		let cursorPos: { row: number; col: number } | null = null;
+		// Marker rows are logical (unclipped) frame rows: #writeFrameRows records
+		// them before the live-region clip removes rows from the emitted frame.
+		// Markers inside the clipped band point at rows that no longer exist and
+		// markers below it shift up by the clipped count; without this mapping the
+		// cursor is selected against stale rows and clamps to the wrong place.
+		const clipBandEnd = clipFrom + clippedRows;
 		for (let i = cursorMarkers.length - 1; i >= 0; i--) {
 			const marker = cursorMarkers[i]!;
-			if (marker.row >= windowTop) {
-				cursorPos = marker;
+			let row = marker.row;
+			if (clippedRows > 0) {
+				if (row >= clipBandEnd) row -= clippedRows;
+				else if (row >= clipFrom) continue;
+			}
+			if (row >= windowTop) {
+				cursorPos = row === marker.row ? marker : { row, col: marker.col };
 				break;
 			}
 		}

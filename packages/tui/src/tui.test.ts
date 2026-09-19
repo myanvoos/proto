@@ -684,8 +684,8 @@ console.log(JSON.stringify(terminal.writes));
 	expect(exitCode).toBe(0);
 	expect(stderr).toBe("");
 	const writes = JSON.parse(stdout) as string[];
-	expect(writes.length).toBeGreaterThan(1);
-	expect(Math.max(...writes.map(write => write.length))).toBeLessThanOrEqual(1024);
-	const stream = writes.join("");
-	expect(stream).toContain(`\x1b[31m${"a".repeat(5000)}\x1b[0m`);
+	// One flush per frame: the oversized line reaches the terminal as a single
+	// write with its escape sequences and payload intact.
+	expect(writes.length).toBe(1);
+	expect(writes[0]).toContain(`\x1b[31m${"a".repeat(5000)}\x1b[0m`);
 });

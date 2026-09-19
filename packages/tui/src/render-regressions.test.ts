@@ -214,7 +214,7 @@ function setEnvironment(values: Record<string, string | undefined>): () => void 
 	};
 }
 
-test("keeps an astral character whole when a frame write reaches the chunk cap", () => {
+test("keeps an astral character whole in the frame write", () => {
 	const terminal = new FakeTerminal(5_000, 1);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
@@ -222,17 +222,12 @@ test("keeps an astral character whole when a frame write reaches the chunk cap",
 
 	try {
 		tui.start({ deferInput: true });
-		const split = terminal.writes.findIndex((write, index) => {
-			const next = terminal.writes[index + 1];
-			if (!next || write.length === 0 || next.length === 0) return false;
-			const last = write.charCodeAt(write.length - 1);
-			const first = next.charCodeAt(0);
-			return last >= 0xd800 && last <= 0xdbff && first >= 0xdc00 && first <= 0xdfff;
-		});
-
-		expect(split).toBe(-1);
-		expect(terminal.writes.every(write => write.length <= 1_024)).toBe(true);
-		expect(terminal.writes.join("")).toContain(String.fromCodePoint(0x1f600));
+		// One flush per frame: the surrogate pair can never be split across
+		// writes because the frame is emitted as a single write.
+		const frameWrites = terminal.writes.filter(write => write.includes("a".repeat(50)));
+		expect(frameWrites.length).toBe(1);
+		expect(frameWrites[0]).toContain(String.fromCodePoint(0x1f600));
+		expect(frameWrites[0]).toContain(`${"a".repeat(1_005)}${String.fromCodePoint(0x1f600)}`);
 	} finally {
 		tui.stop();
 	}

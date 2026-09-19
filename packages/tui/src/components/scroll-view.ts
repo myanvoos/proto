@@ -44,7 +44,7 @@ function firstCellGlyph(value: string, fallback: string): string {
 }
 
 export class ScrollView implements Component {
-	#lines: string[];
+	#lines: readonly string[];
 	#height: number;
 	#scrollOffset = 0;
 	#totalRows: number | undefined;
@@ -56,7 +56,9 @@ export class ScrollView implements Component {
 	#fastScrollLines: number;
 
 	constructor(lines: readonly string[], options: ScrollViewOptions) {
-		this.#lines = [...lines];
+		// The array is adopted, not copied: callers hand over freshly built
+		// line arrays and must not mutate them afterwards.
+		this.#lines = lines;
 		this.#height = Number.isFinite(options.height) ? Math.max(0, Math.trunc(options.height)) : 0;
 		this.#totalRows = options.totalRows === undefined ? undefined : Math.max(0, Math.trunc(options.totalRows));
 		this.#scrollbar = normalizeScrollbarMode(options.scrollbar);
@@ -74,7 +76,9 @@ export class ScrollView implements Component {
 	setLines(lines: readonly string[], options: ScrollViewSetLinesOptions = {}): void {
 		const previousLines = this.#lines;
 		const previousOffset = this.#scrollOffset;
-		this.#lines = [...lines];
+		// Adopted without a copy (see the constructor): streaming callers rebuild
+		// the full line array per update and a spread copy would touch every row.
+		this.#lines = lines;
 		if (options.preserveAnchor !== false && this.#totalRows === undefined) {
 			const anchoredOffset = this.#findAnchoredOffset(previousLines, previousOffset);
 			if (anchoredOffset !== undefined) this.#scrollOffset = anchoredOffset;
@@ -209,22 +213,37 @@ export class ScrollView implements Component {
 		if (anchorRows.size === 0) return undefined;
 
 		const maxOffset = Math.max(0, this.#lines.length - this.#height);
+		const lines = this.#lines;
 		const candidates = new Set<number>();
-		for (let index = 0; index < this.#lines.length; index++) {
-			const rows = anchorRows.get(this.#lines[index] ?? "");
+		for (let index = 0; index < lines.length; index++) {
+			const rows = anchorRows.get(lines[index] ?? "");
 			if (!rows) continue;
 			for (const row of rows) candidates.add(Math.max(0, Math.min(index - row, maxOffset)));
 		}
 
+		// Score candidates nearest the previous offset first. Ties resolve by
+		// (score, distance, first-seen index) exactly as the previous
+		// insertion-order scan did — the stable sort keeps first-seen order among
+		// equal distances — and two admissible bounds skip scoring that cannot
+		// change the winner: once a candidate matches every visible row, no
+		// farther candidate can win, and a candidate whose remaining rows cannot
+		// beat (or tie at a smaller distance than) the running best is dropped at
+		// its first mismatch.
+		const ordered = [...candidates].sort((a, b) => Math.abs(a - previousOffset) - Math.abs(b - previousOffset));
 		let bestOffset: number | undefined;
 		let bestScore = 0;
 		let bestDistance = Number.POSITIVE_INFINITY;
-		for (const candidate of candidates) {
+		for (const candidate of ordered) {
+			const distance = Math.abs(candidate - previousOffset);
+			if (visibleRows <= bestScore) break;
 			let score = 0;
 			for (let row = 0; row < visibleRows; row++) {
-				if (previousLines[previousOffset + row] === this.#lines[candidate + row]) score++;
+				if (previousLines[previousOffset + row] === lines[candidate + row]) {
+					score++;
+				} else if (score + (visibleRows - row - 1) <= bestScore) {
+					break;
+				}
 			}
-			const distance = Math.abs(candidate - previousOffset);
 			if (score > bestScore || (score === bestScore && distance < bestDistance)) {
 				bestOffset = candidate;
 				bestScore = score;
