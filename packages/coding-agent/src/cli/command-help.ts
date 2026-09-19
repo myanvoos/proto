@@ -1,4 +1,5 @@
-import type { CommandMetadata } from "@oh-my-pi/pi-utils/cli";
+import { Args, type CommandMetadata, Flags } from "@oh-my-pi/pi-utils/cli";
+import { BINARY_NAME } from "@oh-my-pi/pi-utils/dirs";
 
 export const acpHelp = {
 	description: "Run Proto as an ACP (Agent Client Protocol) server over stdio",
@@ -45,7 +46,20 @@ export const galleryHelp = {
 	description: "Preview tool renderers across streaming, in-progress, success, and failure states",
 } satisfies CommandMetadata;
 
-export const gcHelp = { description: "Run storage garbage collection" } satisfies CommandMetadata;
+export const gcHelp = {
+	description: "Run storage garbage collection",
+	flags: {
+		apply: Flags.boolean({ description: "Apply changes (default is dry-run)" }),
+		json: Flags.boolean({ description: "Output JSON" }),
+		"agent-dir": Flags.string({ description: "Agent directory to maintain" }),
+		blobs: Flags.boolean({ description: "Sweep unreferenced blobs" }),
+		archive: Flags.boolean({ description: "Archive cold sessions" }),
+		wal: Flags.boolean({ description: "Checkpoint history/model database WAL files" }),
+		"cold-archive-after-days": Flags.integer({ description: "Minimum session age before archiving" }),
+		"retain-newest-global": Flags.integer({ description: "Always keep this many newest sessions active" }),
+		"retain-newest-per-cwd": Flags.integer({ description: "Always keep this many newest sessions per cwd" }),
+	},
+} satisfies CommandMetadata;
 
 export const grepHelp = { description: "Test grep tool" } satisfies CommandMetadata;
 
@@ -61,7 +75,41 @@ export const installHelp = {
 	description: "Install or link an extension package (alias of `plugin install`/`plugin link`)",
 } satisfies CommandMetadata;
 
-export const modelsHelp = { description: "List, search, and refresh available models" } satisfies CommandMetadata;
+export const modelsHelp = {
+	description: "List, search, and refresh available models",
+	args: {
+		action: Args.string({
+			description: "ls (default) | find | refresh | <provider>",
+			required: false,
+		}),
+		pattern: Args.string({
+			description: "Filter/search substring, or provider name (required for find)",
+			required: false,
+		}),
+	},
+	flags: {
+		json: Flags.boolean({ description: "Output JSON" }),
+		extension: Flags.string({
+			char: "e",
+			description: "Load an extension file before listing (repeatable)",
+			multiple: true,
+		}),
+		"no-extensions": Flags.boolean({
+			description: "Disable extension discovery (explicit -e paths still work)",
+		}),
+		config: Flags.string({
+			description: "Load an extra config.yml-style overlay for this run (repeatable)",
+			multiple: true,
+		}),
+	},
+	examples: [
+		`# List every available model, grouped by provider\n  ${BINARY_NAME} models`,
+		`# List one provider's models (any provider name works)\n  ${BINARY_NAME} models openai-codex`,
+		`# Find models by substring\n  ${BINARY_NAME} models find minimax`,
+		`# Force a fresh catalog fetch (replaces rm -rf ~/.proto/models.db)\n  ${BINARY_NAME} models refresh`,
+		`# Machine-readable output\n  ${BINARY_NAME} models --json`,
+	],
+} satisfies CommandMetadata;
 
 export const pluginHelp = { description: "Manage plugins (install, uninstall, list, etc.)" } satisfies CommandMetadata;
 
@@ -80,6 +128,17 @@ export const searchHelp = { description: "Test web search providers" } satisfies
 
 export const setupHelp = {
 	description: "Run onboarding setup or install dependencies for optional features",
+	args: {
+		component: Args.string({
+			description: "Optional component to install",
+			required: false,
+			options: ["python"],
+		}),
+	},
+	flags: {
+		check: Flags.boolean({ char: "c", description: "Check if dependencies are installed" }),
+		json: Flags.boolean({ description: "Output status as JSON" }),
+	},
 } satisfies CommandMetadata;
 
 export const shellHelp = { description: "Interactive shell console" } satisfies CommandMetadata;

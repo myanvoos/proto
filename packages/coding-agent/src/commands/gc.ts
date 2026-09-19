@@ -1,20 +1,10 @@
-import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command } from "@oh-my-pi/pi-utils/cli";
 import { gcHelp as commandHelp } from "../cli/command-help";
 import { collectGcErrors, type GcCommandArgs, runGcCommand } from "../cli/gc-cli";
 
 export default class Gc extends Command {
 	static description = commandHelp.description;
-	static flags = {
-		apply: Flags.boolean({ description: "Apply changes (default is dry-run)" }),
-		json: Flags.boolean({ description: "Output JSON" }),
-		"agent-dir": Flags.string({ description: "Agent directory to maintain" }),
-		blobs: Flags.boolean({ description: "Sweep unreferenced blobs" }),
-		archive: Flags.boolean({ description: "Archive cold sessions" }),
-		wal: Flags.boolean({ description: "Checkpoint history/model database WAL files" }),
-		"cold-archive-after-days": Flags.integer({ description: "Minimum session age before archiving" }),
-		"retain-newest-global": Flags.integer({ description: "Always keep this many newest sessions active" }),
-		"retain-newest-per-cwd": Flags.integer({ description: "Always keep this many newest sessions per cwd active" }),
-	};
+	static flags = commandHelp.flags;
 
 	async run(): Promise<void> {
 		const { flags } = await this.parse(Gc);

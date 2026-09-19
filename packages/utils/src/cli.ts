@@ -261,7 +261,7 @@ export function renderRootHelp(config: CliConfig<CommandMetadata>): void {
 	process.stdout.write(lines.join("\n"));
 }
 
-function formatUsageArgs(Cmd: CommandCtor): string {
+function formatUsageArgs(Cmd: CommandMetadata): string {
 	const entries = Object.entries(Cmd.args ?? {});
 	if (entries.length === 0) return "";
 	const parts = entries.map(([name, desc]) => {
@@ -271,12 +271,12 @@ function formatUsageArgs(Cmd: CommandCtor): string {
 	return ` ${parts.join(" ")}`;
 }
 
-export function commandUsageLine(bin: string, id: string, Cmd: CommandCtor): string {
+export function commandUsageLine(bin: string, id: string, Cmd: CommandMetadata): string {
 	const hasFlags = Object.keys(Cmd.flags ?? {}).length > 0;
 	return `$ ${bin} ${id}${formatUsageArgs(Cmd)}${hasFlags ? " [FLAGS]" : ""}`;
 }
 
-export function renderCommandHelp(bin: string, id: string, Cmd: CommandCtor): void {
+export function renderCommandHelp(bin: string, id: string, Cmd: CommandMetadata): void {
 	const lines: string[] = [];
 	if (Cmd.description) lines.push(`${Cmd.description}\n`);
 	lines.push("USAGE");
@@ -346,6 +346,12 @@ export interface RunOptions {
 	help?: (config: CliConfig) => Promise<void> | void;
 
 	metadataHelp?: (config: CliConfig<CommandMetadata>) => Promise<void> | void;
+
+	/**
+	 * Name of the command that backs a bare invocation. `<bin> <rootCommand> --version` answers from
+	 * here instead of loading the command, which otherwise pulls in the whole runtime graph.
+	 */
+	rootCommand?: string;
 }
 
 function findEntry(commands: CommandEntry[], id: string): CommandEntry | undefined {
@@ -377,11 +383,20 @@ export async function run(opts: RunOptions): Promise<void> {
 		return;
 	}
 
+	if (
+		opts.rootCommand !== undefined &&
+		commandId === opts.rootCommand &&
+		(commandArgv.includes("--version") || commandArgv.includes("-v"))
+	) {
+		process.stdout.write(`${version}\n`);
+		return;
+	}
+
 	if (commandArgv.includes("--help") || commandArgv.includes("-h")) {
 		const entry = findEntry(opts.commands, commandId);
 		if (entry) {
-			const Cmd = await loadEntry(entry);
-			renderCommandHelp(bin, entry.name, Cmd);
+			const metadata = entry.help ?? (await loadEntry(entry));
+			renderCommandHelp(bin, entry.name, metadata);
 		} else {
 			process.stderr.write(`Unknown command: ${commandId}\n`);
 		}

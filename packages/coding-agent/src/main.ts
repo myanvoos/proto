@@ -6,6 +6,7 @@ import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import {
 	$env,
 	directoryExists,
+	getAgentDbPath,
 	getLogPath,
 	getProjectDir,
 	isBunTestRuntime,
@@ -37,6 +38,7 @@ import {
 	type ScopedModel,
 } from "./config/model-resolver";
 import { ModelsConfigFile } from "./config/models-config";
+import { resolveConfigValue } from "./config/resolve-config-value";
 import { serviceTierSettingToTier } from "./config/service-tier";
 import { getDefault, type SettingPath, Settings, type SettingValue, settings } from "./config/settings";
 import { initializeWithSettings } from "./discovery";
@@ -45,6 +47,7 @@ import {
 	injectPluginDirRoots,
 	preloadPluginRoots,
 	resolveActiveProjectRegistryPath,
+	shouldPreloadPluginRoots,
 } from "./discovery/helpers";
 import { injectOmpExtensionCliRoots } from "./discovery/proto-extension-roots";
 import { formatExtensionLoadNotifications } from "./extensibility/extensions/load-errors";
@@ -78,8 +81,8 @@ import {
 	loadSessionExtensions,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
-import { describeAuthBrokerStartupError } from "./session/auth-broker-config";
-import type { AuthStorage } from "./session/auth-storage";
+import { describeAuthBrokerStartupError, resolveAuthBrokerConfig } from "./session/auth-broker-config";
+import { AuthStorage } from "./session/auth-storage";
 import { describePendingToolCalls } from "./session/exit-diagnostics";
 import {
 	createForeignSessionStore,
@@ -603,6 +606,7 @@ async function switchToResumedProject(
 	resumedCwd: string | undefined,
 	activeSettings: Settings,
 	pluginPreloadPromise: Promise<unknown>,
+	preloadPluginRootsEnabled: boolean,
 ): Promise<string> {
 	if (
 		!resumedCwd ||
@@ -618,7 +622,9 @@ async function switchToResumedProject(
 	resetCapabilities();
 	const cwd = getProjectDir();
 
-	await preloadPluginRoots(os.homedir(), cwd);
+	if (preloadPluginRootsEnabled) {
+		await preloadPluginRoots(os.homedir(), cwd);
+	}
 	await activeSettings.reloadForCwd(cwd);
 	return cwd;
 }
@@ -1033,6 +1039,7 @@ export async function buildSessionOptions(
 
 	if (parsed.noTools) {
 		options.toolNames = parsed.tools && parsed.tools.length > 0 ? parsed.tools : [];
+		options.enableMCP = false;
 	} else if (parsed.tools) {
 		options.toolNames = parsed.tools;
 	}
@@ -1087,6 +1094,18 @@ interface RunRootCommandDependencies {
 	settings?: Settings;
 	forceSetupWizard?: boolean;
 }
+async function reuseLocalAuthStorage(settingsInstance: Settings): Promise<AuthStorage | undefined> {
+	const storage = settingsInstance.getStorage();
+	if (!storage || (await resolveAuthBrokerConfig())) return undefined;
+
+	const authStorage = new AuthStorage(storage.authStore, {
+		configValueResolver: resolveConfigValue,
+		sourceLabel: `local ${getAgentDbPath(settingsInstance.getAgentDir())}`,
+	});
+	await authStorage.reload();
+	return authStorage;
+}
+
 const DEFAULT_RUN_ROOT_DEPENDENCIES: RunRootCommandDependencies = {};
 
 export async function runRootCommand(
@@ -1094,6 +1113,11 @@ export async function runRootCommand(
 	rawArgs: string[],
 	deps: RunRootCommandDependencies = DEFAULT_RUN_ROOT_DEPENDENCIES,
 ): Promise<void> {
+	if (parsed.version) {
+		writeStartupNotice(parsed, `${VERSION}\n`);
+		process.exit(0);
+	}
+
 	logger.startTiming();
 	startStartupWatchdog();
 	try {
@@ -1104,11 +1128,6 @@ export async function runRootCommand(
 
 		const notifs: (InteractiveModeNotify | null)[] = [];
 
-		if (parsedArgs.version) {
-			writeStartupNotice(parsedArgs, `${VERSION}\n`);
-			process.exit(0);
-		}
-
 		if ((parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") && parsedArgs.fileArgs.length > 0) {
 			process.stderr.write(`${chalk.red("Error: @file arguments are not supported in RPC mode")}\n`);
 			process.exit(1);
@@ -1118,10 +1137,13 @@ export async function runRootCommand(
 		const rpcInput = mode === "rpc" || mode === "rpc-ui" ? claimRpcInput() : undefined;
 
 		const home = os.homedir();
+		const preloadPluginRootsEnabled = shouldPreloadPluginRoots(parsedArgs);
 		const pluginPreloadPromise =
 			parsedArgs.pluginDirs && parsedArgs.pluginDirs.length > 0
 				? logger.time("injectPluginDirRoots", injectPluginDirRoots, home, parsedArgs.pluginDirs, getProjectDir())
-				: logger.time("preloadPluginRoots", preloadPluginRoots, home, getProjectDir());
+				: preloadPluginRootsEnabled
+					? logger.time("preloadPluginRoots", preloadPluginRoots, home, getProjectDir())
+					: Promise.resolve();
 
 		pluginPreloadPromise.catch(() => {});
 
@@ -1146,18 +1168,21 @@ export async function runRootCommand(
 			stopPendingStartupComposer();
 		}
 
+		const settingsInstance =
+			deps.settings ?? (await logger.time("settings:init", Settings.init, { cwd, configFiles: parsedArgs.config }));
+
 		let authStorage: AuthStorage;
 		try {
-			authStorage = await logger.time("discoverAuthStorage", deps.discoverAuthStorage ?? discoverAuthStorage);
+			authStorage = deps.discoverAuthStorage
+				? await logger.time("discoverAuthStorage", deps.discoverAuthStorage)
+				: ((await logger.time("reuseSettingsAuthStorage", () => reuseLocalAuthStorage(settingsInstance))) ??
+					(await logger.time("discoverAuthStorage", discoverAuthStorage)));
 		} catch (error) {
 			const message = await describeAuthBrokerStartupError(error);
 			if (message === null) throw error;
 			process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
 			process.exit(1);
 		}
-
-		const settingsInstance =
-			deps.settings ?? (await logger.time("settings:init", Settings.init, { cwd, configFiles: parsedArgs.config }));
 		if (parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") {
 			applyRpcDefaultSettingOverrides(settingsInstance);
 		} else if (parsedArgs.mode === "acp") {
@@ -1329,7 +1354,12 @@ export async function runRootCommand(
 
 		if ((typeof parsedArgs.resume === "string" || foreignSource) && sessionManager) {
 			const previousCwd = cwd;
-			cwd = await switchToResumedProject(sessionManager.getCwd(), settingsInstance, pluginPreloadPromise);
+			cwd = await switchToResumedProject(
+				sessionManager.getCwd(),
+				settingsInstance,
+				pluginPreloadPromise,
+				preloadPluginRootsEnabled,
+			);
 			if (cwd !== previousCwd) {
 				parsedArgs.cwd = cwd;
 
@@ -1372,7 +1402,12 @@ export async function runRootCommand(
 			}
 
 			const previousCwd = cwd;
-			cwd = await switchToResumedProject(selected.cwd, settingsInstance, pluginPreloadPromise);
+			cwd = await switchToResumedProject(
+				selected.cwd,
+				settingsInstance,
+				pluginPreloadPromise,
+				preloadPluginRootsEnabled,
+			);
 			if (cwd !== previousCwd) {
 				parsedArgs.cwd = cwd;
 				scopedModels = await resolveScopedModels(parsedArgs, modelRegistry, settingsInstance);

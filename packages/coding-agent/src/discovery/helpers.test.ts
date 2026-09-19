@@ -7,11 +7,22 @@ import { clearCache as clearFsCache } from "../capability/fs";
 import { type MCPServer, mcpCapability } from "../capability/mcp";
 import { MCPManager } from "../mcp/manager";
 import "./claude-plugins";
-import { clearClaudePluginRootsCache, expandEnvVarsDeep, resolveActiveProjectRegistryPath } from "./helpers";
+import {
+	clearClaudePluginRootsCache,
+	expandEnvVarsDeep,
+	resolveActiveProjectRegistryPath,
+	shouldPreloadPluginRoots,
+} from "./helpers";
 
 function envPlaceholder(name: string, defaultValue?: string): string {
 	return ["$", "{", name, defaultValue === undefined ? "" : `:-${defaultValue}`, "}"].join("");
 }
+
+test("plugin roots are not preloaded when extension discovery is disabled", () => {
+	expect(shouldPreloadPluginRoots({ noExtensions: true, pluginDirs: [] })).toBeFalse();
+	expect(shouldPreloadPluginRoots({ noExtensions: true, pluginDirs: ["./plugin"] })).toBeTrue();
+	expect(shouldPreloadPluginRoots({ noExtensions: false, pluginDirs: [] })).toBeTrue();
+});
 
 function restoreEnvValue(key: string, value: string | undefined): void {
 	if (value === undefined) {

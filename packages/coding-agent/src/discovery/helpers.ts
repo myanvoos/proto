@@ -989,6 +989,10 @@ let preloadedPluginRoots: ClaudePluginRoot[] = [];
 let injectedPluginDirRoots: ClaudePluginRoot[] = [];
 let lastPreloadHome: string | undefined;
 
+export function shouldPreloadPluginRoots(options: { noExtensions?: boolean; pluginDirs?: readonly string[] }): boolean {
+	return options.noExtensions !== true || (options.pluginDirs?.length ?? 0) > 0;
+}
+
 export async function preloadPluginRoots(home: string, cwd?: string): Promise<void> {
 	lastPreloadHome = home;
 	const { roots } = await listClaudePluginRoots(home, cwd);

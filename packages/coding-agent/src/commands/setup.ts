@@ -1,11 +1,9 @@
-import { Args, CliUsageError, Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { CliUsageError, Command } from "@oh-my-pi/pi-utils/cli";
 import { parseArgs } from "../cli/args";
 import { setupHelp as commandHelp } from "../cli/command-help";
 import { runSetupCommand, type SetupCommandArgs, type SetupComponent } from "../cli/setup-cli";
 import { runRootCommand } from "../main";
 import { initTheme } from "../modes/theme/theme";
-
-const COMPONENTS: SetupComponent[] = ["python"];
 
 interface OnboardingSetupDependencies {
 	runRoot?: typeof runRootCommand;
@@ -28,18 +26,8 @@ export async function runOnboardingSetup(deps: OnboardingSetupDependencies = {})
 
 export default class Setup extends Command {
 	static description = commandHelp.description;
-	static args = {
-		component: Args.string({
-			description: "Optional component to install",
-			required: false,
-			options: COMPONENTS,
-		}),
-	};
-
-	static flags = {
-		check: Flags.boolean({ char: "c", description: "Check if dependencies are installed" }),
-		json: Flags.boolean({ description: "Output status as JSON" }),
-	};
+	static args = commandHelp.args;
+	static flags = commandHelp.flags;
 
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Setup);
