@@ -115,6 +115,34 @@ test("routed python composes in pipelines and reports errors with real exit code
 	}
 }, 60000);
 
+test("a piped or redirected `-c` reads the caller's stdin instead of the kernel's", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-stdin-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		// This used to route to the kernel, whose stdin is its own long-lived idle pipe:
+		// the piped bytes were discarded and the read blocked until the command deadline.
+		const piped = await bash.execute("consume", {
+			command: `printf '{"a":1}' | python3 -c 'import json,sys; print("parsed", json.load(sys.stdin)["a"])'`,
+		});
+		expect(textOf(piped)).toContain("parsed 1");
+
+		await Bun.write(path.join(dir, "in.json"), '{"a":7}');
+		const redirected = await bash.execute("redirect", {
+			command: `python3 -c 'import json,sys; print("parsed", json.load(sys.stdin)["a"])' < in.json`,
+		});
+		expect(textOf(redirected)).toContain("parsed 7");
+
+		// Precedence the fix must not break: with nothing on stdin, `-c` is still a kernel
+		// cell, so its state is visible to the next bash call.
+		await bash.execute("set", { command: "python3 -c 'STDIN_GUARD_MARKER = 4242'" });
+		expect(textOf(await bash.execute("get", { command: "python3 -c 'print(STDIN_GUARD_MARKER)'" }))).toContain(
+			"4242",
+		);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
 test("large kernel output reaches shell pipeline consumers without quadratic frame parsing", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-large-pipe-"));
 	try {

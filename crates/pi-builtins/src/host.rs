@@ -614,6 +614,30 @@ impl Stdin {
 	pub const fn file(&self) -> &OpenFile {
 		&self.file
 	}
+
+	/// True when fd 0 carries bytes the invoked program is expected to read itself:
+	/// a pipe (`cmd | prog`), a redirected file (`prog < f`), or a socket. A
+	/// terminal or `/dev/null` carries nothing, so a builtin may take stdin's place.
+	#[cfg(unix)]
+	pub fn carries_program_input(&self) -> bool {
+		let Some(fd) = self.fd else {
+			return false;
+		};
+		let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+		// SAFETY: `fd` is an open descriptor owned by this Stdin for the duration of the call.
+		if unsafe { libc::fstat(fd, status.as_mut_ptr()) } != 0 {
+			return false;
+		}
+		// SAFETY: fstat returned 0, so the struct is initialized.
+		let status = unsafe { status.assume_init() };
+		let mode = u32::from(status.st_mode) & u32::from(libc::S_IFMT);
+		mode == u32::from(libc::S_IFIFO) || mode == u32::from(libc::S_IFREG) || mode == u32::from(libc::S_IFSOCK)
+	}
+
+	#[cfg(not(unix))]
+	pub const fn carries_program_input(&self) -> bool {
+		false
+	}
 }
 
 impl Read for Stdin {

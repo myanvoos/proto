@@ -82,6 +82,13 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> Plan {
 			if index + 2 < argv.len() {
 				return Plan::External { stdin_body: None };
 			}
+			// `-c CODE` takes its program text from argv, so stdin belongs to the program,
+			// not to us. A kernel cell runs in the long-lived kernel process and cannot see
+			// this pipeline's stdin, so `curl … | python -c 'json.load(sys.stdin)'` would
+			// read the kernel's own idle stdin and block until the command deadline.
+			if host.stdin.carries_program_input() {
+				return Plan::External { stdin_body: None };
+			}
 			return Plan::Cell { code: code.to_string(), stdin_body: None };
 		}
 		if arg == "-" {
