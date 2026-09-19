@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils/env";
 import { setKittyProtocolActive } from "./keys";
 import { ProcessTerminal } from "./terminal";
+import { NotifyProtocol, TERMINAL } from "./terminal-capabilities";
 
 const DA1 = "\x1b[?1;2c";
 
@@ -226,5 +227,159 @@ test("headless stop clears callbacks before the terminal is reused", () => {
 		expect(stalePrivateModeReports).toEqual([]);
 	} finally {
 		terminal.stop();
+	}
+});
+
+test("releases ordinary input when an unterminated OSC11 reply outlives the reply window", () => {
+	vi.useFakeTimers();
+	const input: string[] = [];
+	const terminal = new ProcessTerminal();
+	terminal.start(
+		data => input.push(data),
+		() => {},
+	);
+
+	try {
+		// A reply torn mid-body and never terminated: StdinBuffer flushes it on
+		// its hold timer, the parser buffers it, and ordinary keystrokes must
+		// surface again once the buffer outlives the reply window instead of
+		// being swallowed for the rest of the session.
+		feed("\x1b]11;rgb:ffff/00");
+		vi.advanceTimersByTime(500);
+		expect(input).toEqual([]);
+
+		vi.advanceTimersByTime(1500);
+		feed("q");
+		expect(input).toEqual(["q"]);
+	} finally {
+		terminal.stop();
+		vi.useRealTimers();
+	}
+});
+
+test("releases ordinary input when an unterminated OSC11 reply outgrows the reply bound", () => {
+	vi.useFakeTimers();
+	const input: string[] = [];
+	const reports: Array<"dark" | "light"> = [];
+	const terminal = new ProcessTerminal();
+	terminal.onAppearanceReport(appearance => reports.push(appearance));
+	terminal.start(
+		data => input.push(data),
+		() => {},
+	);
+
+	try {
+		// The oversized unterminated reply is one StdinBuffer burst: prefix and
+		// trailing keystrokes arrive as a single torn sequence, append, and trip
+		// the length bound. The next ordinary keystroke must reach input.
+		feed(
+			"\x1b]11;rgb:ffff/00xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+		);
+		vi.advanceTimersByTime(500);
+		expect(input).toEqual([]);
+
+		feed("y");
+		expect(input).toEqual(["y"]);
+
+		// The released query must not wedge appearance refreshes either.
+		terminal.refreshAppearance();
+		feed("\x1b]11;rgb:0000/ffff/0000\x07");
+		expect(reports).toEqual(["light"]);
+	} finally {
+		terminal.stop();
+		vi.useRealTimers();
+	}
+});
+
+test("keeps assembling a genuinely torn OSC11 reply across stdin bursts", () => {
+	vi.useFakeTimers();
+	const input: string[] = [];
+	const reports: Array<"dark" | "light"> = [];
+	const terminal = new ProcessTerminal();
+	terminal.onAppearanceReport(appearance => reports.push(appearance));
+	terminal.start(
+		data => input.push(data),
+		() => {},
+	);
+
+	try {
+		// A reply split across two bursts must still assemble and resolve:
+		// the stall release must not fire while the reply is still alive.
+		feed("\x1b]11;rgb:0000/0");
+		feed("000/0000\x07");
+		vi.advanceTimersByTime(500);
+		expect(reports).toEqual(["dark"]);
+		expect(input).toEqual([]);
+	} finally {
+		terminal.stop();
+		vi.useRealTimers();
+	}
+});
+
+// The OSC99 probe is skipped inside a terminal multiplexer, and CI/dev shells are often running in one
+// (tmux, screen, zellij, herdr). Clear those markers for the duration so the test exercises the probe
+// rather than silently asserting nothing.
+const MULTIPLEXER_ENV_KEYS = [
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"HERDR_ENV",
+	"HERDR_PANE_ID",
+	"HERDR_TAB_ID",
+	"HERDR_WORKSPACE_ID",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"CMUX_REMOTE_TRANSPORT",
+] as const;
+
+function suppressMultiplexerEnv(): () => void {
+	const saved = new Map<string, string | undefined>();
+	for (const key of MULTIPLEXER_ENV_KEYS) {
+		saved.set(key, Bun.env[key]);
+		delete Bun.env[key];
+	}
+	const savedTerm = Bun.env.TERM;
+	Bun.env.TERM = "xterm-256color";
+	return () => {
+		for (const [key, value] of saved) {
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+		if (savedTerm === undefined) delete Bun.env.TERM;
+		else Bun.env.TERM = savedTerm;
+	};
+}
+
+test("releases ordinary input when an unterminated OSC99 probe reply outgrows the reply bound", () => {
+	const previousProtocol = TERMINAL.notifyProtocol;
+	const restoreEnv = suppressMultiplexerEnv();
+	Bun.env.PI_TUI_OSC99_PROBE = "1";
+	(TERMINAL as { notifyProtocol: NotifyProtocol }).notifyProtocol = NotifyProtocol.Osc99;
+	vi.useFakeTimers();
+	const input: string[] = [];
+	const terminal = new ProcessTerminal();
+	terminal.start(
+		data => input.push(data),
+		() => {},
+	);
+
+	try {
+		// start() probes OSC99 support; an unterminated reply must release the
+		// probe (as unsupported) instead of swallowing keystrokes forever. If
+		// the probe were never armed, the bursts would surface as input and the
+		// first assertion would fail, so this also pins the arming.
+		// Longer than OSC99_REPLY_MAX_LENGTH so the length bound, not the time bound, releases the probe.
+		feed(`\x1b]99;id=probe;pay${"x".repeat(5_000)}`);
+		vi.advanceTimersByTime(500);
+		expect(input).toEqual([]);
+
+		feed("z");
+		expect(input).toEqual(["z"]);
+	} finally {
+		terminal.stop();
+		vi.useRealTimers();
+		(TERMINAL as { notifyProtocol: NotifyProtocol }).notifyProtocol = previousProtocol;
+		delete Bun.env.PI_TUI_OSC99_PROBE;
+		restoreEnv();
 	}
 });

@@ -30,6 +30,12 @@ function shouldEnableModifyOtherKeysFallback(env: NodeJS.ProcessEnv = Bun.env): 
 
 const MAX_STDOUT_BACKLOG_BYTES = 64 * 1024 * 1024;
 
+/** A capability reply (OSC 11/OSC 99) that has not terminated within this
+ * window is abandoned: a torn reply must not swallow ordinary input. */
+const OSC_REPLY_TIMEOUT_MS = 1000;
+const OSC11_REPLY_MAX_LENGTH = 128;
+const OSC99_REPLY_MAX_LENGTH = 4096;
+
 export class OutputBacklogGuard {
 	#bytes = 0;
 	#tracking = false;
@@ -311,9 +317,11 @@ export class ProcessTerminal implements Terminal {
 	#osc11QueuedQuery?: { route: Osc11QueryRoute; token?: TerminalAppearanceRequestToken };
 	#nextAppearanceRequestToken = 1;
 	#osc11ResponseBuffer = "";
+	#osc11ResponseStartedAt = 0;
 	#osc11TmuxRefreshTimer?: Timer;
 	#osc99PendingId: string | undefined;
 	#osc99ResponseBuffer = "";
+	#osc99ResponseStartedAt = 0;
 	#osc99Capabilities = new Map<string, string>();
 	#privateCsiResponseBuffer = "";
 	#cursorPositionResponseBuffer = "";
@@ -735,32 +743,29 @@ export class ProcessTerminal implements Terminal {
 					// through the normal OSC11 parser below.
 					this.#osc11ResponseBuffer = "";
 				}
+				if (
+					this.#osc11ResponseBuffer &&
+					this.#replyBufferStalled(
+						this.#osc11ResponseStartedAt,
+						this.#osc11ResponseBuffer.length,
+						OSC11_REPLY_MAX_LENGTH,
+					)
+				) {
+					// An unterminated torn reply must not wedge the parser either: once
+					// the buffer outlives the reply window, release the query and fall
+					// through so ordinary keystrokes reach the input handler instead
+					// of feeding the wedge.
+					this.#abandonOsc11Query();
+				}
 				if (this.#osc11ResponseBuffer || sequence.startsWith("\x1b]11;")) {
+					if (this.#osc11ResponseBuffer === "") this.#osc11ResponseStartedAt = Date.now();
 					this.#osc11ResponseBuffer += sequence;
 					const osc11Match = this.#osc11ResponseBuffer.match(osc11ResponsePattern);
 					if (!osc11Match) {
 						// A terminated but malformed reply must not wedge the parser:
 						// drop it and release ordinary input instead of buffering on.
 						if (/(\x07|\x1b\\)$/.test(this.#osc11ResponseBuffer)) {
-							this.#osc11Pending = false;
-							this.#osc11ActiveToken = undefined;
-							this.#osc11ResponseBuffer = "";
-							// The sentinel owner for the abandoned query must
-							// not linger either, or later refreshes queue
-							// forever behind it.
-							const staleOwner = this.#da1SentinelOwners.findIndex(o => o.kind === "osc11");
-							if (staleOwner !== -1) {
-								// Keep the entry in the FIFO. The terminal may still answer
-								// the query's DA1 sentinel after OSC11; removing it would
-								// shift that reply onto the next query owner.
-								this.#da1SentinelOwners[staleOwner] = { kind: "cursorPositionSettled" };
-							}
-							// A refresh queued behind the wedged query must not
-							// strand: settle it now that the pending state is
-							// cleared.
-							const queued = this.#osc11QueuedQuery;
-							this.#osc11QueuedQuery = undefined;
-							if (queued) this.#queryBackgroundColor(queued.route, queued.token);
+							this.#abandonOsc11Query();
 						}
 						return;
 					}
@@ -789,7 +794,21 @@ export class ProcessTerminal implements Terminal {
 			if (this.#osc99PendingId && (this.#osc99ResponseBuffer || sequence.startsWith("\x1b]99;"))) {
 				if (this.#osc99ResponseBuffer && sequence.startsWith("\x1b") && sequence !== "\x1b\\") {
 					this.#osc99ResponseBuffer = "";
+				} else if (
+					this.#osc99ResponseBuffer &&
+					this.#replyBufferStalled(
+						this.#osc99ResponseStartedAt,
+						this.#osc99ResponseBuffer.length,
+						OSC99_REPLY_MAX_LENGTH,
+					)
+				) {
+					// Same wedge rule as OSC 11: an unterminated probe reply releases
+					// as unsupported instead of swallowing ordinary input forever.
+					const probeId = this.#osc99PendingId;
+					this.#osc99ResponseBuffer = "";
+					if (probeId !== undefined) this.#resolveOsc99Support(probeId, false);
 				} else {
+					if (this.#osc99ResponseBuffer === "") this.#osc99ResponseStartedAt = Date.now();
 					this.#osc99ResponseBuffer += sequence;
 					const osc99Match = this.#osc99ResponseBuffer.match(/^\x1b\]99;([^;]*);([\s\S]*?)(?:\x07|\x1b\\)$/u);
 					if (!osc99Match) return;
@@ -823,6 +842,33 @@ export class ProcessTerminal implements Terminal {
 		this.#stdinDataHandler = (data: string) => {
 			this.#stdinBuffer!.process(data);
 		};
+	}
+
+	/** A capability-reply buffer that outgrew the reply length cap or outlived
+	 * the reply window can no longer be a valid reply: treat it as abandoned
+	 * so a torn, unterminated sequence stops swallowing ordinary input. */
+	#replyBufferStalled(startedAt: number, length: number, maxLength: number): boolean {
+		return length > maxLength || Date.now() - startedAt > OSC_REPLY_TIMEOUT_MS;
+	}
+
+	#abandonOsc11Query(): void {
+		this.#osc11Pending = false;
+		this.#osc11ActiveToken = undefined;
+		this.#osc11ResponseBuffer = "";
+		// The sentinel owner for the abandoned query must not linger either,
+		// or later refreshes queue forever behind it.
+		const staleOwner = this.#da1SentinelOwners.findIndex(o => o.kind === "osc11");
+		if (staleOwner !== -1) {
+			// Keep the entry in the FIFO. The terminal may still answer
+			// the query's DA1 sentinel after OSC11; removing it would
+			// shift that reply onto the next query owner.
+			this.#da1SentinelOwners[staleOwner] = { kind: "cursorPositionSettled" };
+		}
+		// A refresh queued behind the wedged query must not strand: settle
+		// it now that the pending state is cleared.
+		const queued = this.#osc11QueuedQuery;
+		this.#osc11QueuedQuery = undefined;
+		if (queued) this.#queryBackgroundColor(queued.route, queued.token);
 	}
 
 	#queryBackgroundColor(route: Osc11QueryRoute = "direct", token?: TerminalAppearanceRequestToken): void {
