@@ -17,6 +17,7 @@ const ADDR_VAR: &str = "PI_KERNEL_BRIDGE_ADDR";
 const TOKEN_VAR: &str = "PI_KERNEL_BRIDGE_TOKEN";
 const FLEET_VAR: &str = "PI_KERNEL_FLEET_ROOT";
 const CANCEL_GRACE: Duration = Duration::from_secs(2);
+const SIGPIPE_EXIT_CODE: i32 = 141;
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub(crate) struct KernelLang {
@@ -193,6 +194,14 @@ fn run_kernel_cell(spec: &KernelLang, host: &mut Host, code: &str) -> CellOutcom
 	let mut streamed = false;
 	let mut cancel_deadline: Option<Instant> = None;
 	loop {
+		// Our stdout consumer exited (`python -c '…big loop…' | head -1`). A real interpreter
+		// takes SIGPIPE here and dies; the cell runs in the kernel process, which never sees
+		// the broken pipe, so without this it keeps producing output nobody reads until the
+		// command deadline. Ask the kernel to stop and leave; dropping the stream tells it too.
+		if host.sigpipe_hit() {
+			let _ = stream.write_all(b"{\"t\":\"c\"}\n");
+			return CellOutcome::Exit(SIGPIPE_EXIT_CODE);
+		}
 		if host.is_cancelled() && cancel_deadline.is_none() {
 			cancel_deadline = Some(Instant::now() + CANCEL_GRACE);
 			let _ = stream.write_all(b"{\"t\":\"c\"}\n");

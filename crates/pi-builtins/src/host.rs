@@ -209,6 +209,14 @@ impl Host {
 	}
 
 
+	/// True once a write to guarded stdout/stderr failed with `BrokenPipe`: the consumer
+	/// on the other end of the pipe has exited. `SigpipeGuard` records this on every write,
+	/// so a long-running builtin can poll it and stop early the way `SIGPIPE` would kill a
+	/// real process.
+	pub(crate) fn sigpipe_hit(&self) -> bool {
+		self.sigpipe.is_hit()
+	}
+
 	pub fn cwd(&self) -> &Path {
 		&self.cwd
 	}

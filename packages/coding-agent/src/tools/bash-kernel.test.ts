@@ -143,6 +143,25 @@ test("a piped or redirected `-c` reads the caller's stdin instead of the kernel'
 	}
 }, 60000);
 
+test("a kernel cell stops as soon as its pipeline consumer exits", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-sigpipe-"));
+	try {
+		const bash = new BashTool(stubSession(dir));
+		const started = Date.now();
+		const result = await bash.execute("early-close", {
+			command: "python3 -c 'for i in range(2000000): print(i)' | head -1",
+		});
+		const elapsed = Date.now() - started;
+		expect(textOf(result)).toContain("0");
+		// A real interpreter dies on SIGPIPE here. The cell runs in the kernel process,
+		// which never saw the broken pipe, so it used to run the whole loop (~20s) and
+		// burn the command deadline after `head` had already taken its one line.
+		expect(elapsed).toBeLessThan(5_000);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60000);
+
 test("large kernel output reaches shell pipeline consumers without quadratic frame parsing", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-large-pipe-"));
 	try {
