@@ -43,6 +43,26 @@ type Metadata = {
 
 type Attempt = { element: ReadabilityElement; length: number; dir?: string | null };
 
+type TextSummary = {
+	collapsedLength: number;
+	startsWhitespace: boolean;
+	endsWhitespace: boolean;
+	allWhitespace: boolean;
+};
+
+type TextMetrics = TextSummary & {
+	textLength: number;
+	linkedTextLength: number;
+};
+
+const WHITESPACE = /\s/;
+const EMPTY_TEXT_SUMMARY: TextSummary = {
+	collapsedLength: 0,
+	startsWhitespace: false,
+	endsWhitespace: false,
+	allWhitespace: true,
+};
+
 function elements(collection: ArrayLike<ReadabilityElement>): ReadabilityElement[] {
 	return Array.from(collection);
 }
@@ -62,6 +82,123 @@ function descendants(root: ReadabilityElement): ReadabilityElement[] {
 
 function text(node: ReadabilityNode): string {
 	return (node.textContent ?? "").trim().replace(NORMALIZE, " ");
+}
+
+function summaryFromText(value: string): TextSummary {
+	if (!value) return EMPTY_TEXT_SUMMARY;
+	let collapsedLength = 0;
+	let startsWhitespace = false;
+	let endsWhitespace = false;
+	let allWhitespace = true;
+	let previousWhitespace = false;
+	for (let index = 0; index < value.length; index++) {
+		const whitespace = WHITESPACE.test(value[index]!);
+		if (whitespace) {
+			if (!previousWhitespace) collapsedLength += 1;
+			if (collapsedLength === 1) startsWhitespace = true;
+			endsWhitespace = true;
+		} else {
+			collapsedLength += 1;
+			allWhitespace = false;
+			endsWhitespace = false;
+		}
+		previousWhitespace = whitespace;
+	}
+	return { collapsedLength, startsWhitespace, endsWhitespace, allWhitespace };
+}
+
+function combineTextSummaries(left: TextSummary, right: TextSummary): TextSummary {
+	if (left.collapsedLength === 0) return right;
+	if (right.collapsedLength === 0) return left;
+	return {
+		collapsedLength:
+			left.collapsedLength + right.collapsedLength - (left.endsWhitespace && right.startsWhitespace ? 1 : 0),
+		startsWhitespace: left.startsWhitespace,
+		endsWhitespace: right.endsWhitespace,
+		allWhitespace: left.allWhitespace && right.allWhitespace,
+	};
+}
+
+function trimmedLength(summary: TextSummary): number {
+	if (summary.allWhitespace) return 0;
+	return summary.collapsedLength - Number(summary.startsWhitespace) - Number(summary.endsWhitespace);
+}
+
+function asElement(node: ReadabilityNode): ReadabilityElement | null {
+	const candidate = node as ReadabilityElement;
+	return typeof candidate.tagName === "string" && typeof candidate.getAttribute === "function" ? candidate : null;
+}
+
+function collectTextMetrics(root: ReadabilityNode, cache: WeakMap<ReadabilityNode, TextMetrics>): TextMetrics {
+	const existing = cache.get(root);
+	if (existing) return existing;
+	const pending: Array<{ node: ReadabilityNode; visited: boolean }> = [{ node: root, visited: false }];
+	while (pending.length) {
+		const current = pending.pop();
+		if (!current || cache.has(current.node)) continue;
+		const children = Array.from(current.node.childNodes);
+		if (!current.visited) {
+			pending.push({ node: current.node, visited: true });
+			for (let index = children.length - 1; index >= 0; index--)
+				pending.push({ node: children[index]!, visited: false });
+			continue;
+		}
+		let summary = EMPTY_TEXT_SUMMARY;
+		let linkedTextLength = 0;
+		if (!children.length) {
+			summary = summaryFromText(current.node.textContent ?? "");
+		} else {
+			for (const child of children) {
+				const childMetrics = cache.get(child);
+				if (!childMetrics) throw new Error("Readability text metrics traversal was incomplete");
+				summary = combineTextSummaries(summary, childMetrics);
+				linkedTextLength += childMetrics.linkedTextLength;
+				const element = asElement(child);
+				if (element?.tagName === "A") {
+					linkedTextLength +=
+						childMetrics.textLength * ((element.getAttribute("href") ?? "").startsWith("#") ? 0.3 : 1);
+				}
+			}
+		}
+		cache.set(current.node, {
+			...summary,
+			textLength: trimmedLength(summary),
+			linkedTextLength,
+		});
+	}
+	return cache.get(root)!;
+}
+
+function copyTextMetrics(
+	source: ReadabilityNode,
+	target: ReadabilityNode,
+	sourceCache: WeakMap<ReadabilityNode, TextMetrics>,
+	targetCache: WeakMap<ReadabilityNode, TextMetrics>,
+): boolean {
+	const pending: Array<[ReadabilityNode, ReadabilityNode]> = [[source, target]];
+	while (pending.length) {
+		const pair = pending.pop();
+		if (!pair) continue;
+		const [sourceNode, targetNode] = pair;
+		const sourceElement = asElement(sourceNode);
+		const targetElement = asElement(targetNode);
+		if (sourceElement?.tagName !== targetElement?.tagName) return false;
+		if (
+			sourceElement?.tagName === "A" &&
+			(sourceElement.getAttribute("href") ?? "") !== (targetElement?.getAttribute("href") ?? "")
+		)
+			return false;
+		const sourceChildren = Array.from(sourceNode.childNodes);
+		const targetChildren = Array.from(targetNode.childNodes);
+		if (sourceChildren.length !== targetChildren.length) return false;
+		if ((!sourceElement || !sourceChildren.length) && sourceNode.textContent !== targetNode.textContent) return false;
+		const metrics = sourceCache.get(sourceNode);
+		if (!metrics) return false;
+		targetCache.set(targetNode, metrics);
+		for (let index = 0; index < sourceChildren.length; index++)
+			pending.push([sourceChildren[index]!, targetChildren[index]!]);
+	}
+	return true;
 }
 
 function matchLabel(node: ReadabilityElement): string {
@@ -107,16 +244,6 @@ function initialScore(node: ReadabilityElement): number {
 	return score;
 }
 
-function linkDensity(node: ReadabilityElement): number {
-	const total = text(node).length;
-	if (!total) return 0;
-	let linked = 0;
-	for (const link of elements(node.getElementsByTagName("a"))) {
-		linked += text(link).length * ((link.getAttribute("href") ?? "").startsWith("#") ? 0.3 : 1);
-	}
-	return linked / total;
-}
-
 function visible(node: ReadabilityElement): boolean {
 	const style = node.getAttribute("style")?.toLowerCase() ?? "";
 	return (
@@ -126,10 +253,17 @@ function visible(node: ReadabilityElement): boolean {
 	);
 }
 
-function removeAll(root: ReadabilityNode, tags: readonly string[]): void {
+function removeAll(
+	root: ReadabilityNode,
+	tags: readonly string[],
+	onRemove?: (node: ReadabilityElement) => void,
+): void {
 	const container = root as ReadabilityElement;
 	for (const tag of tags) {
-		for (const node of elements(container.getElementsByTagName(tag))) node.remove();
+		for (const node of elements(container.getElementsByTagName(tag))) {
+			onRemove?.(node);
+			node.remove();
+		}
 	}
 }
 
@@ -276,6 +410,7 @@ export class Readability<T = string> {
 	readonly #document: ReadabilityDocument;
 	readonly #options: ReadabilityOptions<T>;
 	readonly #scores = new Map<ReadabilityElement, number>();
+	#textMetrics = new WeakMap<ReadabilityNode, TextMetrics>();
 	#byline: string | undefined;
 	#lang: string | null = null;
 
@@ -298,9 +433,18 @@ export class Readability<T = string> {
 		const body = this.#document.body;
 		if (!body) return null;
 		const source = body.innerHTML;
+		const sourceBody = body.cloneNode(true) as ReadabilityElement;
+		const sourceMetrics = new WeakMap<ReadabilityNode, TextMetrics>();
+		collectTextMetrics(sourceBody, sourceMetrics);
 		const attempts: Attempt[] = [];
 		for (const mode of [0, 1, 2, 3]) {
 			if (mode) body.innerHTML = source;
+			let modeMetrics = new WeakMap<ReadabilityNode, TextMetrics>();
+			if (!copyTextMetrics(sourceBody, body, sourceMetrics, modeMetrics)) {
+				modeMetrics = new WeakMap();
+				collectTextMetrics(body, modeMetrics);
+			}
+			this.#textMetrics = modeMetrics;
 			this.#scores.clear();
 			this.#byline = undefined;
 			const attempt = this.#extract(body, documentElement, metadata.title ?? "", mode);
@@ -347,34 +491,35 @@ export class Readability<T = string> {
 			if (node === documentElement || node.tagName === "BODY") continue;
 			const label = matchLabel(node);
 			if (!visible(node) || (node.getAttribute("aria-modal") === "true" && node.getAttribute("role") === "dialog")) {
-				node.remove();
+				this.#remove(node);
 				continue;
 			}
 			if (!this.#byline && this.#isByline(node, label)) {
 				this.#byline = text(node);
-				node.remove();
+				this.#remove(node);
 				continue;
 			}
 			if (!titleRemoved && /^(?:H1|H2)$/.test(node.tagName) && this.#similar(articleTitle, text(node)) > 0.75) {
 				titleRemoved = true;
-				node.remove();
+				this.#remove(node);
 				continue;
 			}
 			if (
 				(stripUnlikely && UNLIKELY.test(label) && !POSSIBLE.test(label)) ||
 				UNLIKELY_ROLES.has(node.getAttribute("role") ?? "")
 			) {
-				node.remove();
+				this.#remove(node);
 				continue;
 			}
 			if (SCORE_TAGS.has(node.tagName)) scored.push(node);
 		}
 		for (const paragraph of scored) this.#scoreParagraph(paragraph, weightClasses);
+		collectTextMetrics(body, this.#textMetrics);
 		let top: ReadabilityElement | undefined;
 		let topScore = Number.NEGATIVE_INFINITY;
 		for (const [candidate, raw] of this.#scores) {
 			if (candidate.tagName === "BODY" || candidate.tagName === "HTML") continue;
-			const score = raw * (1 - linkDensity(candidate));
+			const score = raw * (1 - this.#linkDensity(candidate));
 			this.#scores.set(candidate, score);
 			if (score > topScore) {
 				top = candidate;
@@ -400,21 +545,26 @@ export class Readability<T = string> {
 				sibling === top ||
 				(this.#scores.get(sibling) ?? 0) + sameClassBonus >= threshold ||
 				(sibling.tagName === "P" &&
-					((siblingText.length > 80 && linkDensity(sibling) < 0.25) ||
+					((siblingText.length > 80 && this.#linkDensity(sibling) < 0.25) ||
 						(siblingText.length > 0 &&
 							siblingText.length < 80 &&
-							linkDensity(sibling) === 0 &&
+							this.#linkDensity(sibling) === 0 &&
 							/\.(?: |$)/.test(siblingText))));
 			if (!include) continue;
 			if (["DIV", "ARTICLE", "SECTION", "P", "OL", "UL"].includes(sibling.tagName)) {
+				this.#invalidateTextMetrics(sibling);
 				article.appendChild(sibling);
+				this.#invalidateTextMetrics(article);
 				continue;
 			}
 			const replacement = this.#document.createElement("DIV");
 			for (const attribute of Array.from(sibling.attributes))
 				replacement.setAttribute(attribute.name, attribute.value);
+			this.#invalidateTextMetrics(sibling);
 			while (sibling.firstChild) replacement.appendChild(sibling.firstChild);
+			this.#invalidateTextMetrics(article);
 			article.appendChild(replacement);
+			this.#invalidateTextMetrics(article);
 		}
 		this.#clean(article, mode < 3);
 		const page = this.#document.createElement("DIV");
@@ -433,6 +583,21 @@ export class Readability<T = string> {
 			ancestor = ancestor.parentNode;
 		}
 		return { element: article, length: content.length, dir };
+	}
+
+	#linkDensity(node: ReadabilityElement): number {
+		const metrics = collectTextMetrics(node, this.#textMetrics);
+		return metrics.textLength ? metrics.linkedTextLength / metrics.textLength : 0;
+	}
+
+	#invalidateTextMetrics(node: ReadabilityNode): void {
+		for (let current: ReadabilityNode | null = node; current; current = current.parentNode)
+			this.#textMetrics.delete(current);
+	}
+
+	#remove(node: ReadabilityElement): void {
+		this.#invalidateTextMetrics(node);
+		node.remove();
 	}
 
 	#scoreParagraph(node: ReadabilityElement, weightClasses: boolean): void {
@@ -454,9 +619,9 @@ export class Readability<T = string> {
 	}
 
 	#clean(root: ReadabilityElement, conditional: boolean): void {
-		removeAll(root, DROP_TAGS);
+		removeAll(root, DROP_TAGS, node => this.#invalidateTextMetrics(node));
 		for (const heading of elements(root.querySelectorAll("h1, h2, h3, h4, h5, h6"))) {
-			if (classWeight(heading) < 0 || linkDensity(heading) > 0.33) heading.remove();
+			if (classWeight(heading) < 0 || this.#linkDensity(heading) > 0.33) this.#remove(heading);
 		}
 		if (conditional) {
 			for (const node of elements(root.querySelectorAll("table, ul, div"))) {
@@ -471,13 +636,13 @@ export class Readability<T = string> {
 					(nodeText.split(",").length < 10 &&
 						((images > paragraphs && paragraphs > 0) ||
 							inputs > Math.floor(paragraphs / 3) ||
-							linkDensity(node) > 0.5))
+							this.#linkDensity(node) > 0.5))
 				)
-					node.remove();
+					this.#remove(node);
 			}
 		}
 		for (const paragraph of elements(root.getElementsByTagName("p"))) {
-			if (!text(paragraph) && !paragraph.querySelector("img, embed, object, iframe")) paragraph.remove();
+			if (!text(paragraph) && !paragraph.querySelector("img, embed, object, iframe")) this.#remove(paragraph);
 		}
 		for (const node of [root, ...descendants(root)]) {
 			if (!this.#options.keepClasses) {
@@ -507,14 +672,14 @@ export class Readability<T = string> {
 	}
 
 	#isByline(node: ReadabilityElement, label: string): boolean {
+		if (
+			node.getAttribute("rel") !== "author" &&
+			!(node.getAttribute("itemprop") ?? "").includes("author") &&
+			!BYLINE.test(label)
+		)
+			return false;
 		const value = text(node);
-		return (
-			value.length > 0 &&
-			value.length < 100 &&
-			(node.getAttribute("rel") === "author" ||
-				(node.getAttribute("itemprop") ?? "").includes("author") ||
-				BYLINE.test(label))
-		);
+		return value.length > 0 && value.length < 100;
 	}
 
 	#similar(left: string, right: string): number {

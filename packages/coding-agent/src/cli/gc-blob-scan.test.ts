@@ -33,6 +33,20 @@ afterEach(async () => {
 });
 
 describe("blob GC streaming reference scan", () => {
+	it("skips malformed transcripts when the blob directory has no candidates", async () => {
+		const { agentDir, sessionsDir } = await fixture();
+		await Bun.write(path.join(sessionsDir, "broken.jsonl.gz"), "not gzip");
+		const result = await runGcCommand({ flags: { agentDir, blobs: true, archive: false, wal: false } });
+		expect(result.blobs).toMatchObject({
+			referenced: 0,
+			candidates: 0,
+			wouldDelete: 0,
+			deleted: 0,
+			bytes: 0,
+			errors: [],
+		});
+	});
+
 	it("keeps refs split anywhere in giant single-line plain, gzip archive, and backup transcripts", async () => {
 		const { agentDir, sessionsDir, archiveDir, blobsDir } = await fixture();
 		const blockBytes = 64 * 1024;

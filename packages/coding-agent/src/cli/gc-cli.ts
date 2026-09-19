@@ -356,16 +356,19 @@ async function collectBlobCandidates(blobDir: string): Promise<BlobCandidate[]> 
 async function runBlobGc(options: ResolvedGcOptions, archiveSessionsRoot: string): Promise<BlobGcResult> {
 	const blobDir = getBlobsDir(options.agentDir);
 	const sessionsRoot = getSessionsDir(options.agentDir);
-	const referenced = await collectReferencedBlobHashes([sessionsRoot, archiveSessionsRoot]);
 	const candidates = await collectBlobCandidates(blobDir);
 	const result: BlobGcResult = {
-		referenced: referenced.size,
+		referenced: 0,
 		candidates: candidates.length,
 		wouldDelete: 0,
 		deleted: 0,
 		bytes: 0,
 		errors: [],
 	};
+	if (!candidates.length) return result;
+
+	const referenced = await collectReferencedBlobHashes([sessionsRoot, archiveSessionsRoot]);
+	result.referenced = referenced.size;
 
 	const deleteBeforeMs = Date.now() - GC_WRITE_GRACE_MS;
 	for (const candidate of candidates) {
