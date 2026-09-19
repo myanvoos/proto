@@ -148,7 +148,14 @@ import { FileSessionStorage } from ${moduleUrl};
 const writer = new FileSessionStorage().openWriter(${JSON.stringify(sessionPath)});
 writer.appendSync?.("child committed entry\\n");
 process.stdout.write("ready\\n");
-setInterval(() => {}, 1_000);
+// The writer's fd and lock are released by a FinalizationRegistry, so the child must keep a live
+// reference until it is killed; otherwise GC can drop the lock while this process is still running.
+// The reference is parked on globalThis because an expression-statement reference is removable by the
+// optimizer, and under full-suite memory pressure it was in fact being collected.
+(globalThis as Record<string, unknown>).__protoTestWriter = writer;
+setInterval(() => {
+	if (!(globalThis as Record<string, unknown>).__protoTestWriter) process.exit(3);
+}, 1_000);
 `;
 	const child = Bun.spawn([process.execPath, "-e", childSource], {
 		stdout: "pipe",
