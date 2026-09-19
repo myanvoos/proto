@@ -4262,6 +4262,11 @@ export class AgentSession {
 			queueOnly?: boolean;
 		},
 	): Promise<void> {
+		// Skill invocations, collab peer prompts and the CLI initial message arrive
+		// here. They must park on the manual-compaction barrier exactly like
+		// prompt() does, or they start a turn against the session /compact has
+		// already disconnected from the agent.
+		await this.#maintenance.manualCompactionCleanup;
 		const textContent =
 			typeof message.content === "string"
 				? message.content

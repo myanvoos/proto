@@ -323,3 +323,40 @@ test("atomic title replacement keeps subsequent appends on the replaced file", a
 		await reopened.close();
 	}
 });
+
+test("getTree materializes a deep linear history instead of overflowing the stack", () => {
+	// Sessions are near-linear chains, so tree depth tracks entry count. The rewind
+	// selector materializes the whole tree, so a recursive walk crashed the TUI with
+	// "Maximum call stack size exceeded" once a history grew past ~10k entries.
+	const manager = SessionManager.inMemory();
+	const depth = 25_000;
+	for (let index = 0; index < depth; index++) {
+		manager.appendMessage({ role: "user", content: `message ${index}`, timestamp: index });
+	}
+
+	const roots = manager.getTree();
+	expect(roots).toHaveLength(1);
+
+	let node = roots[0];
+	let walked = 1;
+	while (node && node.children.length > 0) {
+		node = node.children[0];
+		walked++;
+	}
+	expect(walked).toBe(depth);
+	const leafId = manager.getLeafId();
+	if (!leafId) throw new Error("Expected a leaf entry");
+	expect(node?.entry.id).toBe(leafId);
+});
+
+test("getTree keeps sibling branches in the order the index sorted them", () => {
+	const manager = SessionManager.inMemory();
+	const rootId = manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+	const firstId = manager.appendMessage({ role: "user", content: "first", timestamp: 2 });
+	manager.branch(rootId);
+	const secondId = manager.appendMessage({ role: "user", content: "second", timestamp: 3 });
+
+	const root = manager.getTree()[0];
+	expect(root?.entry.id).toBe(rootId);
+	expect(root?.children.map(child => child.entry.id)).toEqual([firstId, secondId]);
+});

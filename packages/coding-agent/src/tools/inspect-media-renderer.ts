@@ -25,7 +25,6 @@ interface InspectMediaRendererResult {
 
 const INSPECT_QUESTION_PREVIEW_WIDTH = 100;
 const INSPECT_OUTPUT_COLLAPSED_LINES = 4;
-const INSPECT_OUTPUT_EXPANDED_LINES = 16;
 const INSPECT_OUTPUT_LINE_WIDTH = 120;
 
 function questionLine(question: string, uiTheme: Theme): string {
@@ -105,7 +104,7 @@ export const inspectMediaToolRenderer = {
 			}
 
 			const outputLines = replaceTabs(sanitizeText(outputText)).split("\n");
-			const maxLines = options.expanded ? INSPECT_OUTPUT_EXPANDED_LINES : INSPECT_OUTPUT_COLLAPSED_LINES;
+			const maxLines = options.expanded ? Number.POSITIVE_INFINITY : INSPECT_OUTPUT_COLLAPSED_LINES;
 			for (const line of outputLines.slice(0, maxLines)) {
 				bodyLines.push(uiTheme.fg("toolOutput", truncateToWidth(line, INSPECT_OUTPUT_LINE_WIDTH)));
 			}

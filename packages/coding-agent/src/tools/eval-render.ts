@@ -975,9 +975,11 @@ export function renderKernelCellLines(
 	let agentLines = agentEvents.length > 0 ? renderAgentProgressEvents(agentEvents, theme, spinnerFrame) : [];
 	if (isPartial) agentLines = capPreviewLines(agentLines, theme, { max: liveSectionCap });
 
-	const treeDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
-	const treeLineCap = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
-	const treeScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
+	// Uncapped trees follow the same deferral as the rest of the cell: a live
+	// block must stay inside the viewport (see EXPANSION_DEFERRED_NOTE).
+	const treeDepth = cellExpanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
+	const treeLineCap = cellExpanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
+	const treeScalarLen = cellExpanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
 	const labelOutputs = jsonOutputs.length > 1;
 	const jsonLines = jsonOutputs.flatMap((value, index) => {
 		const tree = renderJsonTreeLines(value, theme, treeDepth, treeLineCap, treeScalarLen);
@@ -1157,7 +1159,7 @@ export const evalToolRenderer = {
 		const output = stripOutputNotice(rawOutput, details?.meta).trimEnd();
 
 		const jsonOutputs = details?.jsonOutputs ?? [];
-		const treeExpanded = options.renderContext?.expanded ?? options.expanded;
+		const treeExpanded = (options.renderContext?.expanded ?? options.expanded) && !isPartialResult;
 		const treeDepth = treeExpanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
 		const treeLineCap = treeExpanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
 		const treeScalarLen = treeExpanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;

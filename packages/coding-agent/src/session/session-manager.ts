@@ -2313,12 +2313,28 @@ export class SessionManager {
 	}
 
 	getTree(): SessionTreeNode[] {
+		// A session is a near-linear chain, so tree depth tracks entry count. Walk
+		// it with an explicit stack like SessionEntryIndex.tree() does: recursing
+		// here overflowed the stack once a history grew past ~10k entries, taking
+		// down the rewind selector that materializes the whole tree.
 		const materializeNode = (node: SessionTreeNode): SessionTreeNode => ({
 			...node,
 			entry: this.#materializeEntry(node.entry),
-			children: node.children.map(materializeNode),
+			children: [],
 		});
-		return this.#index.tree(this.#entries).map(materializeNode);
+
+		const roots = this.#index.tree(this.#entries);
+		const materializedRoots = roots.map(materializeNode);
+		const stack = roots.map((source, index) => ({ source, target: materializedRoots[index]! }));
+		while (stack.length > 0) {
+			const { source, target } = stack.pop()!;
+			for (const child of source.children) {
+				const materializedChild = materializeNode(child);
+				target.children.push(materializedChild);
+				stack.push({ source: child, target: materializedChild });
+			}
+		}
+		return materializedRoots;
 	}
 
 	branch(branchFromId: string): void {

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Ctrl+O now reveals the whole tool output instead of stopping at a larger fixed cap: expanding a generic tool card, MCP result, `xd` device card, `inspect_media` answer, URL read, `computer` output, fleet message body, or JSON display tree no longer leaves a dead `… N more lines` hint with no way to reach them.
+- Cancelled background jobs now stay readable until their work actually settles, instead of disappearing mid-cancellation.
+- Pressing Ctrl+C now exits when closing a session fails, instead of leaving the process stuck retrying a teardown that cannot succeed.
+- MCP server names containing spaces (for example `MaaS Slack`) are now accepted when writing MCP configuration.
+- xAI web search now returns the model's final answer instead of occasionally surfacing its intermediate commentary.
+- Skill, RPC, ACP and startup prompts submitted while `/compact` is running now wait for it to finish instead of starting a turn against the disconnected session.
+- Rewinding through the session tree (`/tree`, `/branch`, or the rewind key) no longer crashes long sessions with `Maximum call stack size exceeded`.
+
 ## [18.1.22] - 2026-09-18
 
 ### Changed

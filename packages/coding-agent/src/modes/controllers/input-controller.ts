@@ -2,7 +2,7 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
-import { isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -890,7 +890,15 @@ export class InputController {
 		}
 
 		if (this.ctx.isShuttingDown) {
-			process.exit(130);
+			postmortem.exitProcess(130);
+		}
+
+		// The previous graceful close failed after disposal began, so retrying the
+		// memoized teardown can only fail again. Honour the escape hint with one
+		// Ctrl-C instead of requiring a fresh double-tap.
+		if (this.ctx.teardownFailed) {
+			void this.ctx.shutdown();
+			return;
 		}
 
 		const now = Date.now();

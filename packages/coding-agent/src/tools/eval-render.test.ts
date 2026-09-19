@@ -9,6 +9,7 @@ import {
 	evalToolRenderer,
 	renderKernelCellLines,
 } from "./eval-render";
+import { JSON_TREE_MAX_LINES_COLLAPSED } from "./json-tree";
 import { previewWindowRows } from "./render-utils";
 
 initThemeSync();
@@ -264,6 +265,33 @@ test("ctrl+o expansion is deferred while a cell still streams", () => {
 		const settledDiffRows = settled.filter(line => /[+-]\s*\d+│/.test(line)).length;
 		expect(settledDiffRows).toBeGreaterThan(lines.filter(line => /[+-]\s*\d+│/.test(line)).length);
 	});
+});
+
+test("a live cell defers expansion of its display trees too", () => {
+	const jsonOutputs = [Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`key${i}`, i]))];
+	const cell: EvalCellResult = {
+		index: 0,
+		title: "cell",
+		code: "pass",
+		language: "python",
+		output: "…",
+		status: "running",
+	};
+	const rows = (status: EvalCellResult["status"], isPartial: boolean) =>
+		renderKernelCellLines({ ...cell, status }, jsonOutputs, theme, {
+			expanded: true,
+			isPartial,
+			previewLines: EVAL_DEFAULT_PREVIEW_LINES,
+			width: WIDTH,
+		});
+
+	// An uncapped tree under a still-streaming cell would outgrow the viewport
+	// and strand rows out of scrollback, so it stays windowed until settle.
+	const live = rows("running", true).map(strip);
+	expect(live.filter(line => /key\d+/.test(line)).length).toBeLessThanOrEqual(JSON_TREE_MAX_LINES_COLLAPSED);
+
+	const settled = rows("complete", false).map(strip);
+	expect(settled.filter(line => /key\d+/.test(line)).length).toBe(300);
 });
 
 test("call-phase expansion is deferred while args stream", () => {

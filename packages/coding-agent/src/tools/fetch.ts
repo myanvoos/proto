@@ -1728,7 +1728,7 @@ export function renderReadUrlResult(
 			const { expanded } = options;
 
 			if (contentPreviewLines === undefined || lastExpanded !== expanded) {
-				const previewLimit = expanded ? 12 : 3;
+				const previewLimit = expanded ? Number.POSITIVE_INFINITY : 3;
 				const previewList = applyListLimit(contentLines, { headLimit: previewLimit });
 				const previewLines = previewList.items.map(line => line.trimEnd());
 				const remaining = Math.max(0, contentLines.length - previewList.items.length);

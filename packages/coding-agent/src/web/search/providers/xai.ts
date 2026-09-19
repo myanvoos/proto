@@ -42,6 +42,7 @@ interface XAIWebSearchSource {
 
 interface XAIResponseOutputItem {
 	type?: string;
+	phase?: "commentary" | "final_answer" | null;
 	content?: XAIResponseContentPart[] | null;
 	annotations?: XAIUrlCitationAnnotation[] | null;
 	action?: { sources?: XAIWebSearchSource[] | null } | null;
@@ -237,13 +238,16 @@ function collectWebSearchSources(
 }
 
 function parseAnswer(response: XAIResponsesResponse): string | undefined {
-	const topLevelText = response.output_text?.trim();
-	if (topLevelText) return topLevelText;
-
-	const answerParts: string[] = [];
 	const output = Array.isArray(response.output) ? response.output : [];
+	const hasExplicitPhase = output.some(item => item?.phase === "commentary" || item?.phase === "final_answer");
+	const hasFinalAnswer = output.some(item => item?.phase === "final_answer");
+	const answerParts: string[] = [];
+
 	for (const item of output) {
 		if (!item || typeof item !== "object") continue;
+		// Once the relay marks a final answer, it is authoritative: unphased
+		// and commentary items may contain narration or relay internals.
+		if (hasFinalAnswer ? item.phase !== "final_answer" : item.phase === "commentary") continue;
 		const content = Array.isArray(item.content) ? item.content : [];
 		for (const part of content) {
 			if (!part || typeof part !== "object") continue;
@@ -253,7 +257,13 @@ function parseAnswer(response: XAIResponsesResponse): string | undefined {
 	}
 
 	const answer = answerParts.join("\n").trim();
-	return answer ? answer : undefined;
+	if (answer) return answer;
+	// An explicit phase means output_text may be an aggregate that includes
+	// commentary; only use that legacy fallback when no phase was supplied.
+	if (hasExplicitPhase) return undefined;
+	const topLevelText = response.output_text?.trim();
+	if (topLevelText) return topLevelText;
+	return undefined;
 }
 
 function parseUsage(usage: XAIResponsesUsage | null | undefined): SearchUsage | undefined {

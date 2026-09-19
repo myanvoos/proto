@@ -333,7 +333,6 @@ export function executeInbox(
 }
 
 const BODY_LINES_COLLAPSED = 2;
-const BODY_LINES_EXPANDED = 12;
 const BODY_LINE_WIDTH = 100;
 
 const PEER_STATE_ORDER: Record<string, number> = { "live/running": 0, "live/idle": 1, "parked/idle": 2 };
@@ -383,7 +382,7 @@ function bodyLines(
 ): string[] {
 	const indent = options.indent ?? "";
 	const tone = options.tone ?? "toolOutput";
-	const max = expanded ? BODY_LINES_EXPANDED : (options.collapsedLines ?? BODY_LINES_COLLAPSED);
+	const max = expanded ? Number.POSITIVE_INFINITY : (options.collapsedLines ?? BODY_LINES_COLLAPSED);
 	const total = body.split("\n").filter(line => line.trim()).length;
 	const quote = theme.fg("dim", theme.md.quoteBorder);
 	const lines = getPreviewLines(body, max, BODY_LINE_WIDTH, Ellipsis.Unicode).map(

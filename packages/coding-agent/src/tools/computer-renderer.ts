@@ -89,7 +89,7 @@ function renderComputerCell(
 	return framedBlock(theme, width => {
 		const lineWidth = Math.max(1, width - 4);
 		const codeLimit = options.expanded ? Number.POSITIVE_INFINITY : PREVIEW_LIMITS.COMPUTER_CODE_COLLAPSED;
-		const outputLimit = options.expanded ? PREVIEW_LIMITS.OUTPUT_EXPANDED : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
+		const outputLimit = options.expanded ? Number.POSITIVE_INFINITY : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
 		const sections: Array<{ label?: string; lines: string[] }> = [];
 		const codeLines = previewLines(code, codeLimit, lineWidth).map(line => theme.fg("toolOutput", line));
 		if (codeLines.length > 0)

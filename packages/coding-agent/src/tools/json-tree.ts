@@ -3,10 +3,12 @@ import type { Theme } from "../modes/theme/theme";
 import { truncateToWidth } from "./render-utils";
 
 export const JSON_TREE_MAX_DEPTH_COLLAPSED = 2;
-export const JSON_TREE_MAX_DEPTH_EXPANDED = 6;
+export const JSON_TREE_MAX_DEPTH_EXPANDED = Number.POSITIVE_INFINITY;
 export const JSON_TREE_MAX_LINES_COLLAPSED = 6;
-export const JSON_TREE_MAX_LINES_EXPANDED = 200;
+export const JSON_TREE_MAX_LINES_EXPANDED = Number.POSITIVE_INFINITY;
 export const JSON_TREE_SCALAR_LEN_COLLAPSED = 60;
+// Per-value width, not a hidden-content cap — keep finite: truncateToWidth
+// coerces with `| 0`, so Infinity here would truncate every scalar to nothing.
 export const JSON_TREE_SCALAR_LEN_EXPANDED = 2000;
 
 const HIDDEN_ARG_KEYS = { [INTENT_FIELD]: 1, __partialJson: 1 };

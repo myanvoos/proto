@@ -184,6 +184,8 @@ export interface InteractiveModeContext {
 	shutdownRequested: boolean;
 
 	readonly isShuttingDown: boolean;
+	/** True after disposal-stage teardown failure; the next Ctrl-C force-exits. */
+	readonly teardownFailed: boolean;
 	hookSelector: HookSelectorComponent | undefined;
 	hookInput: HookInputComponent | undefined;
 	hookEditor: HookEditorComponent | undefined;

@@ -83,7 +83,7 @@ function renderMarkdownMCPResult(
 			}
 
 			const rendered = markdown.render(Math.max(1, contentWidth));
-			const maxOutputLines = options.expanded ? 12 : 4;
+			const maxOutputLines = options.expanded ? Number.POSITIVE_INFINITY : 4;
 			lines.push(...rendered.slice(0, maxOutputLines));
 			if (rendered.length > maxOutputLines) {
 				lines.push(
@@ -186,7 +186,7 @@ export function renderMCPResult(
 			}
 
 			const outputLines = trimmedOutput.split("\n");
-			const maxOutputLines = expanded ? 12 : 4;
+			const maxOutputLines = expanded ? Number.POSITIVE_INFINITY : 4;
 			const displayLines = outputLines.slice(0, maxOutputLines);
 
 			for (const line of displayLines) {

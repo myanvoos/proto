@@ -615,7 +615,7 @@ function formatXdevCompositeCard(
 
 	const outputLines = text.trimEnd() ? text.trimEnd().split("\n") : [];
 	const bodyWidth = Math.max(20, contentWidth - 2);
-	const maxLines = options.expanded ? PREVIEW_LIMITS.OUTPUT_EXPANDED : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
+	const maxLines = options.expanded ? Number.POSITIVE_INFINITY : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
 	const shown = outputLines.slice(0, maxLines);
 	for (const line of shown) {
 		lines.push(`  ${theme.fg("toolOutput", truncateToWidth(replaceTabs(line), bodyWidth))}`);

@@ -438,6 +438,16 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastRightTapTime = 0;
 	shutdownRequested = false;
 	#isShuttingDown = false;
+	/**
+	 * Set when session teardown fails after disposal has begun. The teardown is
+	 * promise-memoized, so retrying would repeat the same failure; the next
+	 * Ctrl-C uses the escape path instead.
+	 */
+	#teardownFailed = false;
+
+	get teardownFailed(): boolean {
+		return this.#teardownFailed;
+	}
 
 	get isShuttingDown(): boolean {
 		return this.#isShuttingDown;
@@ -2492,6 +2502,19 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async shutdown(): Promise<void> {
 		if (this.#isShuttingDown) return;
+		// Session disposal is memoized and has already latched its write failure,
+		// so retrying teardown cannot make progress. Exit without touching the
+		// session log; 130 matches the Ctrl-C hard-abort path.
+		if (this.#teardownFailed) {
+			try {
+				await postmortem.quit(130);
+			} catch {
+				// A guarded process.exit can reject while an extension or hook loads.
+				// Cleanup already failed once, so bypass that guard for the escape.
+				postmortem.exitProcess(130);
+			}
+			return;
+		}
 		this.#isShuttingDown = true;
 
 		this.#sideQuestionController.dispose();
@@ -2503,14 +2526,28 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showStatus("Still closing… (flushing session state / network)");
 		}, STILL_CLOSING_DELAY_MS);
 		try {
-			if (this.#signalTeardown) {
-				await this.#signalTeardown();
-			} else {
-				await this.session.dispose();
+			try {
+				if (this.#signalTeardown) {
+					await this.#signalTeardown();
+				} else {
+					await this.session.dispose();
+				}
+			} finally {
+				clearTimeout(stillClosingTimer);
+				await detachedSessionHolder.disposeAll();
 			}
-		} finally {
-			clearTimeout(stillClosingTimer);
-			await detachedSessionHolder.disposeAll();
+		} catch (error) {
+			this.#isShuttingDown = false;
+			const detail = error instanceof Error ? error.message : String(error);
+			// Only arm the escape after disposal has begun: before that point the
+			// teardown remains retryable.
+			this.#teardownFailed = this.session.isDisposed;
+			this.showError(
+				this.#teardownFailed
+					? `Could not close session: ${detail}\nPress Ctrl+C again to exit without saving the session log.`
+					: `Could not close session: ${detail}`,
+			);
+			return;
 		}
 
 		await this.ui.terminal.drainInput(1000, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
