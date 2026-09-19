@@ -60,6 +60,32 @@ const theme: MarkdownTheme = {
 	symbols,
 };
 
+describe("Markdown nested blockquotes", () => {
+	test("deeply nested blockquotes do not multiply rendered rows", () => {
+		// Pre-fix, each level past the width floor re-wrapped already-bordered rows and the
+		// row count grew as ~2^(depth - width/2); depth 44 at width 80 produced 128 rows.
+		const output = new Markdown(`${"> ".repeat(44)}hi`, 0, 0, theme).render(80);
+		expect(output.length).toBeLessThanOrEqual(8);
+		expect(output.join("\n")).toContain("hi");
+	});
+
+	test("deeply nested blockquote paragraphs stay bounded by content length", () => {
+		const sentence = "The quick brown fox jumps over the lazy dog. ";
+		const output = new Markdown("> ".repeat(24) + sentence.repeat(4), 0, 0, theme).render(40);
+		expect(output.length).toBeLessThanOrEqual(32);
+		const joined = output.join("\n");
+		for (const word of ["quick", "brown", "jumps", "lazy", "dog."]) {
+			expect(joined).toContain(word);
+		}
+	});
+
+	test("shallow quotes keep their border and content", () => {
+		const output = new Markdown("> quoted text", 0, 0, theme).render(80);
+		expect(output.join("\n")).toContain("quoted text");
+		expect(output.filter(line => line.startsWith("> ")).length).toBeGreaterThan(0);
+	});
+});
+
 describe("Markdown reference links", () => {
 	test("renders prototype-label references as literal text instead of crashing", () => {
 		for (const label of ["constructor", "toString", "valueOf", "isPrototypeOf"]) {

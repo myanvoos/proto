@@ -367,6 +367,9 @@ const TREE_GUIDE_ANCHOR_RE = /[│┃║├┣╠└┗╚╰]/;
 const TREE_BRANCH_CONNECTOR_RE = /[├┣╠└┗╚╰][─━═]/;
 
 const MIN_TREE_CONTENT_WIDTH = 8;
+// Below this content width a nested quote border no longer leaves readable room, so deeper
+// blockquotes render their children pass-through instead of re-wrapping bordered rows.
+const MIN_QUOTE_CONTENT_WIDTH = 8;
 
 const SGR_SEQUENCE_STICKY = /\x1b\[[0-9;:]*m/y;
 const SGR_SEQUENCE_GLOBAL = /\x1b\[[0-9;:]*m/g;
@@ -1256,6 +1259,7 @@ export class Markdown
 	#cacheRenderedOutput: boolean;
 
 	#codeBlockIndent: number;
+	#quoteDepth = 0;
 
 	#cachedText?: string;
 	#cachedWidth?: number;
@@ -2991,38 +2995,46 @@ export class Markdown
 					applyText: (text: string) => text,
 					stylePrefix: "",
 				};
-				const quoteContentWidth = Math.max(1, width - 2);
+				// Re-wrapping child rows that are already at their own content width multiplies the row
+				// count per nesting level once widths collapse, so nested quotes stop shrinking instead.
+				const canFitQuoteBorder = this.#quoteDepth === 0 || width - 2 >= MIN_QUOTE_CONTENT_WIDTH;
+				const quoteContentWidth = canFitQuoteBorder ? Math.max(1, width - 2) : width;
 				const quoteTokens = token.tokens || [];
 				const renderedQuoteLines: RenderedLine[] = [];
 				const blockquoteSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
 
-				for (let i = 0; i < quoteTokens.length; i++) {
-					const quoteToken = quoteTokens[i];
-					const nextQuoteToken = quoteTokens[i + 1];
-					const quoteTokenRowStart = renderedQuoteLines.length;
-					const quoteSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
-					const quoteTokenLines = this.#renderToken(
-						quoteToken,
-						quoteContentWidth,
-						nextQuoteToken?.type,
-						quoteInlineStyleContext,
-						`${tokenKey}/quote:${i}`,
-					);
-					for (const line of quoteTokenLines) renderedQuoteLines.push(line);
+				this.#quoteDepth++;
+				try {
+					for (let i = 0; i < quoteTokens.length; i++) {
+						const quoteToken = quoteTokens[i];
+						const nextQuoteToken = quoteTokens[i + 1];
+						const quoteTokenRowStart = renderedQuoteLines.length;
+						const quoteSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
+						const quoteTokenLines = this.#renderToken(
+							quoteToken,
+							quoteContentWidth,
+							nextQuoteToken?.type,
+							quoteInlineStyleContext,
+							`${tokenKey}/quote:${i}`,
+						);
+						for (const line of quoteTokenLines) renderedQuoteLines.push(line);
 
-					const tableSpecs = this.#activeTableRenderSpecs;
-					if (tableSpecs !== undefined) {
-						for (let specIndex = quoteSpecStart; specIndex < tableSpecs.length; specIndex++) {
-							const spec = tableSpecs[specIndex]!;
-							if (spec.startRow < 0) {
-								spec.startRow = quoteTokenRowStart;
-								spec.endRow = quoteTokenRowStart + Math.min(quoteTokenLines.length, spec.lineCount);
-							} else {
-								spec.startRow += quoteTokenRowStart;
-								spec.endRow += quoteTokenRowStart;
+						const tableSpecs = this.#activeTableRenderSpecs;
+						if (tableSpecs !== undefined) {
+							for (let specIndex = quoteSpecStart; specIndex < tableSpecs.length; specIndex++) {
+								const spec = tableSpecs[specIndex]!;
+								if (spec.startRow < 0) {
+									spec.startRow = quoteTokenRowStart;
+									spec.endRow = quoteTokenRowStart + Math.min(quoteTokenLines.length, spec.lineCount);
+								} else {
+									spec.startRow += quoteTokenRowStart;
+									spec.endRow += quoteTokenRowStart;
+								}
 							}
 						}
 					}
+				} finally {
+					this.#quoteDepth--;
 				}
 
 				while (renderedQuoteLines.length > 0 && renderedQuoteLines[renderedQuoteLines.length - 1]!.text === "") {
@@ -3030,7 +3042,9 @@ export class Markdown
 				}
 
 				const quoteRowOffsets: number[] = [];
-				const borderedQuoteLines = this.#applyQuoteBorder(renderedQuoteLines, width, quoteRowOffsets);
+				const borderedQuoteLines = canFitQuoteBorder
+					? this.#applyQuoteBorder(renderedQuoteLines, width, quoteRowOffsets)
+					: this.#passThroughQuoteLines(renderedQuoteLines, quoteRowOffsets);
 				const tableSpecs = this.#activeTableRenderSpecs;
 				if (tableSpecs !== undefined) {
 					for (let specIndex = blockquoteSpecStart; specIndex < tableSpecs.length; specIndex++) {
@@ -3114,6 +3128,12 @@ export class Markdown
 			sourceRowOffsets?.push(lines.length);
 		}
 		return lines;
+	}
+
+	#passThroughQuoteLines(renderedLines: RenderedLine[], sourceRowOffsets?: number[]): RenderedLine[] {
+		sourceRowOffsets?.push(0);
+		for (let i = 0; i < renderedLines.length; i++) sourceRowOffsets?.push(i + 1);
+		return renderedLines;
 	}
 
 	#renderHtmlBlock(raw: string, width: number): RenderedLine[] {

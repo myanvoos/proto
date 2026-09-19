@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Deeply nested blockquotes no longer multiply rendered rows exponentially, which could exhaust memory from a single small message.
+
 ## [18.1.22] - 2026-09-18
 
 ### Fixed
