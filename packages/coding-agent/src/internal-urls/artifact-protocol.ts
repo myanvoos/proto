@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
+import { realPathWithinRoot } from "../tools/path-utils";
 import { artifactsDirsFromRegistry } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, UrlCompletion } from "./types";
 
@@ -72,11 +73,15 @@ export async function resolveArtifactFile(url: InternalUrl, context?: ResolveCon
 		throw new Error(`Artifact ${id} not found. Available: ${availableStr}`);
 	}
 
-	const stat = await Bun.file(foundPath).stat();
+	const resolvedPath = await realPathWithinRoot(foundPath, path.dirname(foundPath));
+	if (!resolvedPath) {
+		throw new Error(`Artifact ${id} resolves outside the registered artifacts directory`);
+	}
+	const stat = await Bun.file(resolvedPath).stat();
 	if (stat.isDirectory()) {
 		throw new Error(`Artifact ${id} resolved to a directory, not a file`);
 	}
-	return { id, path: foundPath, size: stat.size };
+	return { id, path: resolvedPath, size: stat.size };
 }
 
 export class ArtifactProtocolHandler implements ProtocolHandler {

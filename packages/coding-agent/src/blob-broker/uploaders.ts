@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { type BlobDestinationId, type BlobDestinationMetadata, BUILTIN_BLOB_DESTINATIONS } from "./destinations";
 import type { BlobPublication, BlobUploader, BlobUploadRequest } from "./publication";
 import { type DestinationRuntimeConfig, DestinationUnavailableError, optionString } from "./uploader-runtime";
@@ -136,23 +137,37 @@ export function createConfiguredUploader(
 	throw new DestinationUnavailableError(destination, "no built-in uploader or serving adapter is implemented");
 }
 
+const UPLOAD_MEMO_MAX_ENTRIES = 256;
+
 export function memoizeUploader(
 	uploader: BlobUploader,
 ): (hash: string, request: BlobUploadRequest) => Promise<BlobPublication | null> {
-	const byHash = new Map<string, Promise<BlobPublication | null>>();
+	const completed = new LRUCache<string, BlobPublication>({ max: UPLOAD_MEMO_MAX_ENTRIES });
+	const inFlight = new Map<string, Promise<BlobPublication | null>>();
 	return (hash, request) => {
-		let pending = byHash.get(hash);
-		if (!pending) {
-			pending = uploader.upload(request).catch(error => {
-				byHash.delete(hash);
+		const cached = completed.get(hash);
+		if (cached) return Promise.resolve(cached);
+
+		const existing = inFlight.get(hash);
+		if (existing) return existing;
+
+		const pending = uploader.upload(request).then(
+			publication => {
+				completed.set(hash, publication);
+				return publication;
+			},
+			error => {
 				logger.warn("blob-broker: upload failed; image stays inline", {
 					uploader: uploader.destination,
 					error: error instanceof Error ? error.message : String(error),
 				});
 				return null;
-			});
-			byHash.set(hash, pending);
-		}
+			},
+		);
+		inFlight.set(hash, pending);
+		void pending.then(() => {
+			if (inFlight.get(hash) === pending) inFlight.delete(hash);
+		});
 		return pending;
 	};
 }

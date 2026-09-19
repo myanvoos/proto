@@ -112,6 +112,7 @@ export class BlobRegistry {
 	#misses = 0;
 	#duplicateTokenGets = 0;
 	#recentFetches: BlobFetchAttributionEvent[] = [];
+	#inFlightRegistrations = new Map<string, Promise<BlobRegistryEntry>>();
 
 	#now: () => number;
 
@@ -277,8 +278,21 @@ export class BlobRegistry {
 	}
 
 	async registerBytes(key: string, mimeType: string, bytes: Uint8Array): Promise<BlobRegistryEntry> {
+		const inFlight = this.#inFlightRegistrations.get(key);
+		if (inFlight) return inFlight;
 		const existing = this.lookup(key);
 		if (existing) return existing;
+
+		const operation = this.#registerBytes(key, mimeType, bytes);
+		let pending: Promise<BlobRegistryEntry>;
+		pending = operation.finally(() => {
+			if (this.#inFlightRegistrations.get(key) === pending) this.#inFlightRegistrations.delete(key);
+		});
+		this.#inFlightRegistrations.set(key, pending);
+		return pending;
+	}
+
+	async #registerBytes(key: string, mimeType: string, bytes: Uint8Array): Promise<BlobRegistryEntry> {
 		const entry = this.#insert(key, mimeType, false);
 		if (this.#sessionStore) {
 			const sha = new Bun.SHA256().update(bytes).digest("hex");
@@ -427,7 +441,9 @@ export class BlobRegistry {
 			if (entry.publication) publications.push(entry.publication);
 			if (apply && !canRemove(entry.publication)) continue;
 			purgedBlobs++;
-			reclaimedBytes += entry.bytes?.byteLength ?? (entry.sha ? entry.bytesCount : 0);
+			// Persistent blobs may still be referenced by session transcripts. Until a
+			// reference-aware disk collector runs, only resident bytes are reclaimed here.
+			reclaimedBytes += entry.bytes?.byteLength ?? 0;
 			if (apply) this.#drop(entry);
 		}
 		if (apply && purgedBlobs > 0) this.#scheduleSave();

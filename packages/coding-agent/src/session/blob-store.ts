@@ -20,6 +20,8 @@ export interface BlobPutResult {
 	get ref(): string;
 }
 
+export type BlobReader = (hash: string) => Promise<Buffer | null>;
+
 const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
 	"image/png": "png",
 	"image/jpeg": "jpg",
@@ -76,6 +78,28 @@ function ensureDisplayPathWithIo(
 	}
 }
 
+async function writeBlobAtomically(blobPath: string, data: Buffer): Promise<void> {
+	const temporaryPath = `${blobPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+	try {
+		await Bun.write(temporaryPath, data);
+		await fsp.rename(temporaryPath, blobPath);
+	} finally {
+		await fsp.rm(temporaryPath, { force: true }).catch(() => {});
+	}
+}
+
+function writeBlobAtomicallySync(blobPath: string, data: Buffer): void {
+	const temporaryPath = `${blobPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+	try {
+		fs.writeFileSync(temporaryPath, data);
+		fs.renameSync(temporaryPath, blobPath);
+	} finally {
+		try {
+			fs.rmSync(temporaryPath, { force: true });
+		} catch {}
+	}
+}
+
 async function ensureDisplayPath(blobPath: string, displayPath: string, data: Buffer): Promise<void> {
 	await ensureDisplayPathWithIo(
 		blobPath,
@@ -109,7 +133,7 @@ export class BlobStore {
 
 	async put(data: Buffer, options?: BlobPutOptions): Promise<BlobPutResult> {
 		const result = createBlobPutResult(this.dir, data, options);
-		await Bun.write(result.path, data);
+		await writeBlobAtomically(result.path, data);
 		await ensureDisplayPath(result.path, result.displayPath, data);
 		return result;
 	}
@@ -117,7 +141,7 @@ export class BlobStore {
 	putSync(data: Buffer, options?: BlobPutOptions): BlobPutResult {
 		const result = createBlobPutResult(this.dir, data, options);
 		fs.mkdirSync(this.dir, { recursive: true });
-		fs.writeFileSync(result.path, data);
+		writeBlobAtomicallySync(result.path, data);
 		ensureDisplayPathSync(result.path, result.displayPath, data);
 		return result;
 	}
@@ -197,11 +221,15 @@ export function externalizeImageDataSync(blobStore: BlobStore, base64Data: strin
 	}).ref;
 }
 
-export async function resolveImageDataUrl(blobStore: BlobStore, data: string): Promise<string> {
+export async function resolveImageDataUrl(
+	blobStore: BlobStore,
+	data: string,
+	readBlob: BlobReader = hash => blobStore.get(hash),
+): Promise<string> {
 	const hash = parseBlobRef(data);
 	if (!hash) return data;
 
-	const buffer = await blobStore.get(hash);
+	const buffer = await readBlob(hash);
 	if (!buffer) {
 		logger.warn("Blob not found for persisted image data URL", { hash });
 		return data;
@@ -209,11 +237,15 @@ export async function resolveImageDataUrl(blobStore: BlobStore, data: string): P
 	return buffer.toString("utf8");
 }
 
-export async function resolveImageData(blobStore: BlobStore, data: string): Promise<string> {
+export async function resolveImageData(
+	blobStore: BlobStore,
+	data: string,
+	readBlob: BlobReader = hash => blobStore.get(hash),
+): Promise<string> {
 	const hash = parseBlobRef(data);
 	if (!hash) return data;
 
-	const buffer = await blobStore.get(hash);
+	const buffer = await readBlob(hash);
 	if (!buffer) {
 		logger.warn("Blob not found for image reference", { hash });
 		return data;

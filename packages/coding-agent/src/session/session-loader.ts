@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { getBlobsDir, isEnoent, parseJsonlLenient } from "@oh-my-pi/pi-utils";
-import { BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
+import { type BlobReader, BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
 import { buildSessionContext } from "./session-context";
 import type { FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./session-entries";
 import { migrateToCurrentVersion } from "./session-migrations";
@@ -21,6 +21,7 @@ const STREAM_PARSE_BATCH_BYTES = 512 * 1024;
 const STREAM_GC_INTERVAL_BYTES = 8 * 1024 * 1024;
 const STREAM_YIELD_BYTES = 1 * 1024 * 1024;
 const STREAM_YIELD_ENTRIES = 8_192;
+const BLOB_RESOLUTION_CONCURRENCY = 8;
 
 interface VisitEntriesFromFileStreamOptions {
 	shouldContinue?: () => boolean;
@@ -349,14 +350,74 @@ function shouldResolveImagePayload(value: unknown, key: string | undefined): val
 	return (key === "content" && isImageBlock(value)) || key === "images";
 }
 
-async function resolvePersistedBlobRefs(value: unknown, blobStore: BlobStore, key?: string): Promise<void> {
+interface BlobResolutionState {
+	active: number;
+	waiters: Array<() => void>;
+	inFlight: Map<string, Promise<Buffer | null>>;
+}
+
+function createBlobResolutionState(): BlobResolutionState {
+	return { active: 0, waiters: [], inFlight: new Map() };
+}
+
+async function acquireBlobResolutionSlot(state: BlobResolutionState): Promise<void> {
+	if (state.active < BLOB_RESOLUTION_CONCURRENCY) {
+		state.active++;
+		return;
+	}
+	const deferred = Promise.withResolvers<void>();
+	state.waiters.push(deferred.resolve);
+	await deferred.promise;
+}
+
+function releaseBlobResolutionSlot(state: BlobResolutionState): void {
+	const next = state.waiters.shift();
+	if (next) {
+		next();
+	} else {
+		state.active--;
+	}
+}
+
+function createBoundedBlobReader(blobStore: BlobStore): BlobReader {
+	const state = createBlobResolutionState();
+	return hash => {
+		const existing = state.inFlight.get(hash);
+		if (existing) return existing;
+		const pending = (async () => {
+			await acquireBlobResolutionSlot(state);
+			try {
+				return await blobStore.get(hash);
+			} finally {
+				releaseBlobResolutionSlot(state);
+			}
+		})();
+		state.inFlight.set(hash, pending);
+		void pending.then(
+			() => {
+				if (state.inFlight.get(hash) === pending) state.inFlight.delete(hash);
+			},
+			() => {
+				if (state.inFlight.get(hash) === pending) state.inFlight.delete(hash);
+			},
+		);
+		return pending;
+	};
+}
+
+async function resolvePersistedBlobRefs(
+	value: unknown,
+	blobStore: BlobStore,
+	readBlob: BlobReader,
+	key?: string,
+): Promise<void> {
 	if (shouldResolveImagePayload(value, key)) {
-		value.data = await resolveImageData(blobStore, value.data);
+		value.data = await resolveImageData(blobStore, value.data, readBlob);
 		return;
 	}
 
 	if (Array.isArray(value)) {
-		await Promise.all(value.map(item => resolvePersistedBlobRefs(item, blobStore, key)));
+		await Promise.all(value.map(item => resolvePersistedBlobRefs(item, blobStore, readBlob, key)));
 		return;
 	}
 
@@ -368,15 +429,15 @@ async function resolvePersistedBlobRefs(value: unknown, blobStore: BlobStore, ke
 		typeof value.result === "string" &&
 		isBlobRef(value.result)
 	) {
-		value.result = await resolveImageData(blobStore, value.result);
+		value.result = await resolveImageData(blobStore, value.result, readBlob);
 	}
 
 	if (hasImageUrl(value) && isBlobRef(value.image_url)) {
-		value.image_url = await resolveImageDataUrl(blobStore, value.image_url);
+		value.image_url = await resolveImageDataUrl(blobStore, value.image_url, readBlob);
 	}
 
 	await Promise.all(
-		Object.entries(value).map(([childKey, item]) => resolvePersistedBlobRefs(item, blobStore, childKey)),
+		Object.entries(value).map(([childKey, item]) => resolvePersistedBlobRefs(item, blobStore, readBlob, childKey)),
 	);
 }
 
@@ -409,12 +470,13 @@ function containsBlobRef(value: unknown, key?: string): boolean {
 }
 
 export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
+	const readBlob = createBoundedBlobReader(blobStore);
 	const pending: Promise<void>[] = [];
 
 	for (const entry of entries) {
 		if (entry.type === "session") continue;
 		if (!containsBlobRef(entry)) continue;
-		pending.push(resolvePersistedBlobRefs(entry, blobStore));
+		pending.push(resolvePersistedBlobRefs(entry, blobStore, readBlob));
 	}
 	await Promise.all(pending);
 }
