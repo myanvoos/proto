@@ -25,7 +25,7 @@ impl From<pi_ast::block::BlockRange> for BlockRange {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> {
 	pi_ast::block::block_range_at(pi_ast::block::BlockRangeOptions {
 		code: options.code,
@@ -52,7 +52,7 @@ impl From<pi_ast::block::NodeSpan> for NodeSpan {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn node_chain_at(options: BlockRangeOptions) -> Result<Option<Vec<NodeSpan>>> {
 	pi_ast::block::node_chain_at(pi_ast::block::BlockRangeOptions {
 		code: options.code,
@@ -82,7 +82,7 @@ pub struct EnclosingBoundaryOptions {
 	pub ranges: Vec<LineRange>,
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn enclosing_block_boundaries(options: EnclosingBoundaryOptions) -> Result<Option<Vec<u32>>> {
 	pi_ast::block::enclosing_block_boundaries(pi_ast::block::EnclosingBoundaryOptions {
 		code:   options.code,

@@ -65,7 +65,7 @@ impl From<pi_ast::outline::OutlineResult> for OutlineResult {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn code_outline(options: OutlineOptions) -> Result<OutlineResult> {
 	pi_ast::outline::code_outline(pi_ast::outline::OutlineOptions {
 		code: options.code,

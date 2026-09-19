@@ -194,7 +194,7 @@ fn generate_svg(folded: &str) -> Option<String> {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn get_work_profile(last_seconds: f64) -> WorkProfile {
 	let window_us = (last_seconds * 1_000_000.0) as u64;
 	let now_us = PROCESS_START.elapsed().as_micros() as u64;

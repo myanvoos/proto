@@ -323,7 +323,7 @@ fn concat_tokens(tokens: &[&[u16]]) -> Vec<u16> {
 	out
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn diff_lines(old_text: JsString, new_text: JsString) -> Result<Vec<DiffChange>> {
 	let old_text = js::utf16(old_text)?;
 	let new_text = js::utf16(new_text)?;
@@ -337,7 +337,7 @@ fn diff_lines_impl(old_text: &[u16], new_text: &[u16]) -> Vec<DiffChange> {
 	build_changes(&runs, &old_tokens, &new_tokens, concat_tokens)
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn diff_line_runs(old_text: JsString, new_text: JsString) -> Result<Vec<DiffRun>> {
 	let old_text = js::utf16(old_text)?;
 	let new_text = js::utf16(new_text)?;
@@ -365,7 +365,7 @@ fn no_newline_marker() -> Vec<u16> {
 	"\\ No newline at end of file".encode_utf16().collect()
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn structured_patch_hunks(
 	old_text: JsString,
 	new_text: JsString,
@@ -837,7 +837,7 @@ fn word_post_process(changes: &mut [DiffChange]) {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn diff_words(old_text: JsString, new_text: JsString) -> Result<Vec<DiffChange>> {
 	let old_text = js::utf16(old_text)?;
 	let new_text = js::utf16(new_text)?;

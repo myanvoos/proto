@@ -598,7 +598,7 @@ fn compile_find_patterns(
 	Ok(compiled)
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 	let AstFindOptions {
 		patterns,
@@ -754,7 +754,7 @@ pub fn ast_grep(options: AstFindOptions<'_>) -> task::Promise<AstFindResult> {
 	})
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> {
 	let AstMatchOptions {
 		source,
@@ -857,7 +857,7 @@ pub fn ast_match(options: AstMatchOptions<'_>) -> task::Promise<AstMatchResult> 
 	})
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn ast_edit(options: AstReplaceOptions<'_>) -> task::Promise<AstReplaceResult> {
 	let AstReplaceOptions {
 		rewrites,

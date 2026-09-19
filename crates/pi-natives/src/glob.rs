@@ -209,7 +209,7 @@ fn run_glob(
 	Ok(GlobResult { matches, total_matches })
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn glob(
 	options: GlobOptions<'_>,
 	#[napi(ts_arg_type = "((error: Error | null, match: GlobMatch) => void) | undefined | null")]

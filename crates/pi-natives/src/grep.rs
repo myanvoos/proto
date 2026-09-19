@@ -2010,7 +2010,7 @@ fn grep_sync_with_matcher<M: Matcher + Sync>(
 	})
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn search(content: Either<JsString, Uint8Array>, options: SearchOptions) -> SearchResult {
 	match &content {
 		Either::A(js_str) => {
@@ -2024,7 +2024,7 @@ pub fn search(content: Either<JsString, Uint8Array>, options: SearchOptions) -> 
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn has_match(
 	content: Either<JsString, Uint8Array>,
 	pattern: Either<JsString, Uint8Array>,
@@ -2060,7 +2060,7 @@ pub fn has_match(
 	Ok(matcher.is_match(content_slice).unwrap_or(false))
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn grep(
 	options: GrepOptions<'_>,
 	#[napi(ts_arg_type = "((error: Error | null, match: GrepMatch) => void) | undefined | null")]

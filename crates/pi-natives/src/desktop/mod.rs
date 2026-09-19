@@ -723,12 +723,12 @@ pub struct DesktopSession {
 }
 #[napi]
 impl DesktopSession {
-	#[napi(constructor)]
+	#[napi(catch_unwind, constructor)]
 	pub fn new(options: Option<DesktopSessionOptions>) -> Result<Self> {
 		Ok(Self { core: SessionCore::new(DisplaySelector::parse(options.and_then(|o| o.display))) })
 	}
 
-	#[napi(getter)]
+	#[napi(catch_unwind, getter)]
 	pub fn capabilities(&self) -> DesktopCapabilities {
 		match self.core.call(|reply| Request::Capabilities { reply }) {
 			Ok(Response::Capabilities(c)) => c,
@@ -736,7 +736,7 @@ impl DesktopSession {
 		}
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn list_displays(&self) -> Result<task::Promise<Vec<DesktopDisplay>>> {
 		let c = Arc::clone(&self.core);
 		Ok(task::blocking("desktop.listDisplays", (), move |_| {
@@ -748,7 +748,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn list_windows(&self) -> Result<task::Promise<Vec<DesktopWindow>>> {
 		let c = Arc::clone(&self.core);
 		Ok(task::blocking("desktop.listWindows", (), move |_| {
@@ -760,7 +760,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn capture(
 		&self,
 		target: String,
@@ -777,7 +777,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn click(
 		&self,
 		target: String,
@@ -795,7 +795,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn move_mouse(
 		&self,
 		target: String,
@@ -815,7 +815,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn drag(
 		&self,
 		target: String,
@@ -832,7 +832,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn scroll(
 		&self,
 		target: String,
@@ -856,7 +856,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn type_text(
 		&self,
 		target: String,
@@ -874,7 +874,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn key_chord(
 		&self,
 		target: String,
@@ -893,13 +893,13 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn raise_window(&self, window_id: String) -> Result<task::Promise<()>> {
 		Ok(self
 			.unit("desktop.raiseWindow", move |reply| Request::RaiseWindow { id: window_id, reply }))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_snapshot(
 		&self,
 		target: String,
@@ -919,7 +919,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_query(&self, target: String, query: AxQuery) -> Result<task::Promise<Vec<AxNode>>> {
 		Ok(self.nodes("desktop.axQuery", move |reply| Request::AxQuery {
 			target: Target::parse(&target),
@@ -928,7 +928,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_element_at(
 		&self,
 		target: String,
@@ -943,12 +943,12 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_focused(&self) -> Result<task::Promise<Option<AxNode>>> {
 		Ok(self.node("desktop.axFocused", move |reply| Request::AxFocused { reply }))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_node(&self, reference: String) -> Result<task::Promise<AxNode>> {
 		let c = Arc::clone(&self.core);
 		Ok(task::blocking("desktop.axNode", (), move |_| {
@@ -960,7 +960,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_attributes(&self, reference: String) -> Result<task::Promise<Vec<(String, String)>>> {
 		let c = Arc::clone(&self.core);
 		Ok(task::blocking("desktop.axAttributes", (), move |_| {
@@ -972,17 +972,17 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_children(&self, reference: String) -> Result<task::Promise<Vec<AxNode>>> {
 		Ok(self.nodes("desktop.axChildren", move |reply| Request::AxChildren { reference, reply }))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_parent(&self, reference: String) -> Result<task::Promise<Option<AxNode>>> {
 		Ok(self.node("desktop.axParent", move |reply| Request::AxParent { reference, reply }))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_perform(&self, reference: String, action: String) -> Result<task::Promise<()>> {
 		Ok(self.unit("desktop.axPerform", move |reply| Request::AxPerform {
 			reference,
@@ -991,7 +991,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_set_value(&self, reference: String, value: String) -> Result<task::Promise<()>> {
 		Ok(self.unit("desktop.axSetValue", move |reply| Request::AxSetValue {
 			reference,
@@ -1000,12 +1000,12 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_focus(&self, reference: String) -> Result<task::Promise<()>> {
 		Ok(self.unit("desktop.axFocus", move |reply| Request::AxFocus { reference, reply }))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn ax_click(
 		&self,
 		reference: String,
@@ -1019,7 +1019,7 @@ impl DesktopSession {
 		}))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn close(&self) -> task::Promise<()> {
 		let c = Arc::clone(&self.core);
 		task::blocking("desktop.close", (), move |_| c.close().map_err(Into::into))

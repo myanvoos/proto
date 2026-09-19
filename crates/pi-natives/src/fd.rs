@@ -305,7 +305,7 @@ fn fuzzy_find_sync(config: FuzzyFindConfig, ct: task::CancelToken) -> Result<Fuz
 	Ok(FuzzyFindResult { matches, total_matches })
 }
 
-#[napi(js_name = "fuzzyFind")]
+#[napi(catch_unwind, js_name = "fuzzyFind")]
 pub fn fuzzy_find(options: FuzzyFindOptions<'_>) -> task::Promise<FuzzyFindResult> {
 	let FuzzyFindOptions { query, path, hidden, gitignore, cache, max_results, timeout_ms, signal } =
 		options;

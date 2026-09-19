@@ -64,7 +64,7 @@ pub const fn iso_backend() -> IsoBackendKind {
 	to_napi_kind(BackendKind::native())
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn iso_probe(kind: Option<IsoBackendKind>) -> IsoProbeResult {
 	let resolved = kind.map_or_else(BackendKind::native, from_napi_kind);
 	let backend = pi_iso::backend(resolved);
@@ -76,7 +76,7 @@ pub fn iso_probe(kind: Option<IsoBackendKind>) -> IsoProbeResult {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn iso_resolve(preferred: Option<IsoBackendKind>) -> IsoResolveResult {
 	let resolution = pi_iso::resolve(preferred.map(from_napi_kind));
 	IsoResolveResult {
@@ -125,7 +125,7 @@ pub async fn iso_diff(lower: String, merged: String) -> Result<IsoDiff> {
 	Ok(into_iso_diff(diff))
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn iso_is_unavailable_error(message: napi::JsString) -> Result<bool> {
 	let message = js::utf8(message)?;
 	Ok(message.starts_with(ISO_UNAVAILABLE_PREFIX)

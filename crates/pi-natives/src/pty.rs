@@ -121,12 +121,12 @@ impl Default for PtySession {
 
 #[napi]
 impl PtySession {
-	#[napi(constructor)]
+	#[napi(catch_unwind, constructor)]
 	pub fn new() -> Self {
 		Self { core: Arc::new(Mutex::new(None)) }
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn start<'env>(
 		&self,
 		env: &'env Env,
@@ -146,7 +146,7 @@ impl PtySession {
 		self.start_config(env, run_config, options.timeout_ms, options.signal, on_chunk, on_start)
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn start_argv<'env>(
 		&self,
 		env: &'env Env,
@@ -166,12 +166,12 @@ impl PtySession {
 		self.start_config(env, run_config, options.timeout_ms, options.signal, on_chunk, on_start)
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn write(&self, data: JsString) -> Result<()> {
 		self.send_control(ControlMessage::Input(into_string(data)?))
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
 		self.send_control(ControlMessage::Resize {
 			cols: cols.clamp(20, 400),
@@ -179,7 +179,7 @@ impl PtySession {
 		})
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn kill(&self) -> Result<()> {
 		self.send_control(ControlMessage::Kill)
 	}

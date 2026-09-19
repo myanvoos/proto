@@ -5,7 +5,7 @@ use image::{DynamicImage, ImageReader, imageops::FilterType};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn encode_sixel(
 	bytes: Uint8Array,
 	target_width_px: u32,

@@ -65,7 +65,7 @@ impl From<pi_ast::summary::SummaryResult> for SummaryResult {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn summarize_code(options: SummaryOptions) -> Result<SummaryResult> {
 	pi_ast::summary::summarize_code(pi_ast::summary::SummaryOptions {
 		code:               options.code,

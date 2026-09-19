@@ -547,7 +547,7 @@ const HANGUL_COMPAT_JAMO_NARROW_WIDTH: usize = 1;
 
 static HANGUL_COMPAT_JAMO_WIDTH_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn set_hangul_compat_jamo_width_override(value: u8) {
 	HANGUL_COMPAT_JAMO_WIDTH_OVERRIDE.store(value, Ordering::Relaxed);
 }
@@ -1214,7 +1214,7 @@ fn wrap_text_with_ansi_impl(
 	result
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn wrap_text_with_ansi<'env>(
 	env: &'env Env,
 	text: JsString<'env>,
@@ -1248,7 +1248,7 @@ pub fn wrap_text_with_ansi<'env>(
 	})
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn truncate_to_width<'env>(
 	env: &'env Env,
 	text: JsString<'env>,
@@ -1577,7 +1577,7 @@ fn slice_with_width_impl(
 	(out, out_w)
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn slice_with_width<'env>(
 	env: &'env Env,
 	line: JsString<'env>,
@@ -1804,7 +1804,7 @@ fn extract_segments_impl(
 	(before, before_w, after, after_w)
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn extract_segments<'env>(
 	env: &'env Env,
 	line: JsString<'env>,
@@ -1845,7 +1845,7 @@ pub fn extract_segments<'env>(
 	})
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn visible_width(text: JsString, tab_width: u32) -> Result<u32> {
 	let text = js::utf16(text)?;
 	let tab_width = clamp_tab_width_for_ops(tab_width);

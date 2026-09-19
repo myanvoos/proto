@@ -58,7 +58,7 @@ pub(crate) fn map_walker_error<E: std::fmt::Display>(err: pi_walker::WalkError<E
 	walker_error_to_napi(err)
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn invalidate_fs_scan_cache(path: Option<JsString>) -> Result<()> {
 	match path {
 		Some(path) => pi_walker::invalidate_path_string(&js::utf8(path)?),

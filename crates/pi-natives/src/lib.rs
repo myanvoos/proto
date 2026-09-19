@@ -55,6 +55,6 @@ fn install_native_crash_handler() {
 	crash_handler::install();
 }
 
-#[napi(js_name = "__ompInstallTokioRuntime")]
+#[napi(catch_unwind, js_name = "__ompInstallTokioRuntime")]
 #[allow(clippy::missing_const_for_fn, reason = "napi macro is incompatible with const fn")]
 pub fn proto_install_tokio_runtime() {}

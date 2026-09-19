@@ -167,7 +167,7 @@ pub struct MacOSPowerAssertion {
 
 #[napi]
 impl MacOSPowerAssertion {
-	#[napi(factory)]
+	#[napi(catch_unwind, factory)]
 	pub fn start(options: Option<MacOSPowerAssertionOptions>) -> napi::Result<Self> {
 		let reason = options
 			.as_ref()
@@ -209,7 +209,7 @@ impl MacOSPowerAssertion {
 		}
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	#[allow(clippy::missing_const_for_fn, reason = "not const on macOS")]
 	pub fn stop(&mut self) -> napi::Result<()> {
 		#[cfg(target_os = "macos")]

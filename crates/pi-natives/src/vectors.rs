@@ -49,7 +49,7 @@ fn cosine_one(a: &[f64], b: &[f64]) -> f64 {
 	dot / (norm_a.sqrt() * norm_b.sqrt())
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn cosine_similarity_pairs(
 	vectors: Float64Array,
 	count: u32,

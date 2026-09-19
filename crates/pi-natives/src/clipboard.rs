@@ -37,7 +37,7 @@ fn rgba_to_png(buffer: RgbaImage) -> Result<Vec<u8>> {
 	Ok(output)
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn copy_to_clipboard(text: JsString) -> Result<()> {
 	set_clipboard_text(&js::utf8(text)?)
 }
@@ -75,7 +75,7 @@ fn set_clipboard_text(text: &str) -> Result<()> {
 	Ok(())
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn read_image_from_clipboard() -> task::Promise<Option<ClipboardImage>> {
 	task::blocking("clipboard.read_image", (), move |_| -> Result<Option<ClipboardImage>> {
 		let mut clipboard = Clipboard::new()

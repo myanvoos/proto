@@ -270,7 +270,7 @@ static LETTERS: [&str; 26] = [
 	"t", "u", "v", "w", "x", "y", "z",
 ];
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn matches_kitty_sequence(
 	data: JsString,
 	expected_codepoint: i32,
@@ -337,13 +337,13 @@ const fn is_symbol_key(cp: i32) -> bool {
 	)
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn parse_key(data: JsString, kitty_protocol_active: bool) -> Result<Option<String>> {
 	let data = js::utf8(data)?;
 	Ok(parse_key_inner(data.as_bytes(), kitty_protocol_active).map(|key| key.into_owned()))
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn matches_legacy_sequence(data: JsString, key_name: JsString) -> Result<bool> {
 	let data = js::utf8(data)?;
 	let key_name = js::utf8(key_name)?;
@@ -352,14 +352,14 @@ pub fn matches_legacy_sequence(data: JsString, key_name: JsString) -> Result<boo
 		.is_some_and(|&id| id == &*key_name))
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn matches_key(data: JsString, key_id: JsString, kitty_protocol_active: bool) -> Result<bool> {
 	let data = js::utf8(data)?;
 	let key_id = js::utf8(key_id)?;
 	Ok(matches_key_inner(data.as_bytes(), &key_id, kitty_protocol_active))
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn parse_kitty_sequence(data: JsString) -> Result<Option<ParsedKittyResult>> {
 	let data = js::utf8(data)?;
 	Ok(parse_kitty_sequence_bytes(data.as_bytes()).map(|parsed| ParsedKittyResult {

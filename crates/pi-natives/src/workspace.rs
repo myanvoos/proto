@@ -308,7 +308,7 @@ fn run_list_workspace(
 	Ok(ListWorkspaceResult { entries, agents_md_files, truncated })
 }
 
-#[napi(js_name = "listWorkspace")]
+#[napi(catch_unwind, js_name = "listWorkspace")]
 pub fn list_workspace(options: ListWorkspaceOptions<'_>) -> task::Promise<ListWorkspaceResult> {
 	let ListWorkspaceOptions {
 		path,

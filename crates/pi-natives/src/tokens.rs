@@ -48,7 +48,7 @@ impl Encoding {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn count_tokens(
 	#[napi(ts_arg_type = "string | string[]")] input: Either<JsString, Array>,
 	encoding: Option<Encoding>,

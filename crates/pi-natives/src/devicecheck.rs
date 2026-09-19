@@ -13,7 +13,7 @@ pub struct DeviceCheckTokenResult {
 	pub latency_ms: f64,
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn device_check_generate_token() -> task::Promise<DeviceCheckTokenResult> {
 	task::blocking("devicecheck.generate_token", (), move |_| Ok(platform::generate_token()))
 }

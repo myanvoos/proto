@@ -58,12 +58,12 @@ pub struct Process {
 #[napi]
 #[allow(clippy::use_self, reason = "napi return types must name the exported class")]
 impl Process {
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn from_pid(pid: i32) -> Option<Process> {
 		core_process::Process::from_pid(pid).map(Self::from_inner)
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn from_path(path: JsString) -> Result<Vec<Process>> {
 		Ok(core_process::Process::from_path(into_string(path)?)
 			.into_iter()
@@ -76,22 +76,22 @@ impl Process {
 		self.inner.pid()
 	}
 
-	#[napi(getter)]
+	#[napi(catch_unwind, getter)]
 	pub fn ppid(&self) -> Option<i32> {
 		self.inner.ppid()
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn args(&self) -> Vec<String> {
 		self.inner.args()
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn kill_tree(&self, signal: Option<i32>) -> u32 {
 		self.inner.kill_tree(signal)
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn terminate<'env>(
 		&self,
 		env: &'env Env,
@@ -111,7 +111,7 @@ impl Process {
 		})
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn wait_for_exit<'env>(
 		&self,
 		env: &'env Env,
@@ -131,13 +131,13 @@ impl Process {
 		})
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	#[allow(clippy::missing_const_for_fn, reason = "#[napi] generates a non-const wrapper")]
 	pub fn group_id(&self) -> Option<i32> {
 		self.inner.group_id()
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn children(&self) -> Vec<Process> {
 		self
 			.inner
@@ -147,7 +147,7 @@ impl Process {
 			.collect()
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn status(&self) -> ProcessStatus {
 		self.inner.status().into()
 	}

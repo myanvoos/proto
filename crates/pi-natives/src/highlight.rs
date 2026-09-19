@@ -333,7 +333,7 @@ fn find_syntax<'a>(ss: &'a SyntaxSet, lang: &str) -> Option<&'a SyntaxReference>
 		.or_else(|| ss.find_syntax_by_token(alias))
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn highlight_code(
 	code: JsString,
 	lang: Option<JsString>,
@@ -444,7 +444,7 @@ pub struct HighlightStream {
 
 #[napi]
 impl HighlightStream {
-	#[napi(constructor)]
+	#[napi(catch_unwind, constructor)]
 	pub fn new(lang: Option<JsString>, colors: HighlightColors) -> Result<Self> {
 		let lang = lang.map(js::utf8).transpose()?;
 		let state = lang
@@ -459,7 +459,7 @@ impl HighlightStream {
 		self.state.is_some()
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn push(&mut self, chunk: JsString) -> Result<String> {
 		let chunk = js::utf8(chunk)?;
 		let Some((parse_state, scope_stack)) = self.state.as_mut() else {
@@ -478,7 +478,7 @@ impl HighlightStream {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn supports_language(lang: JsString) -> Result<bool> {
 	Ok(supports_language_impl(&js::utf8(lang)?))
 }
@@ -492,7 +492,7 @@ fn supports_language_impl(lang: &str) -> bool {
 	find_syntax(ss, lang).is_some()
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn get_supported_languages() -> Vec<String> {
 	let ss = get_syntax_set();
 	ss.syntaxes().iter().map(|s| s.name.clone()).collect()

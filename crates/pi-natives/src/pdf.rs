@@ -17,7 +17,7 @@ pub struct PdfMarkdownResult {
 	pub has_encoding_issues: bool,
 }
 
-#[napi(js_name = "pdfToMarkdown")]
+#[napi(catch_unwind, js_name = "pdfToMarkdown")]
 pub fn pdf_to_markdown(input: Uint8Array) -> task::Promise<PdfMarkdownResult> {
 	let input = input.to_vec();
 	task::blocking("pdf.to_markdown", (), move |_| convert_pdf(&input))

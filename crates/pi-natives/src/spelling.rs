@@ -192,7 +192,7 @@ mod platform {
 	}
 }
 
-#[napi(js_name = "macOSSpellCheckerAvailable")]
+#[napi(catch_unwind, js_name = "macOSSpellCheckerAvailable")]
 #[allow(clippy::missing_const_for_fn, reason = "napi macro is incompatible with const fn")]
 pub fn macos_spell_checker_available() -> bool {
 	cfg!(target_os = "macos")

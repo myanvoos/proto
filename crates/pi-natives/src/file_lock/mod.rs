@@ -33,7 +33,7 @@ pub struct FileLock {
 
 #[napi]
 impl FileLock {
-	#[napi(factory)]
+	#[napi(catch_unwind, factory)]
 	pub fn try_acquire(path: JsString) -> napi::Result<Self> {
 		let path = js::utf8(path)?;
 		let inner = platform::try_acquire(&path).map_err(|error| {
@@ -45,13 +45,13 @@ impl FileLock {
 		Ok(Self { inner })
 	}
 
-	#[napi(getter)]
+	#[napi(catch_unwind, getter)]
 	#[allow(clippy::missing_const_for_fn, reason = "napi method signature")]
 	pub fn acquired(&self) -> bool {
 		self.inner.is_some()
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn release(&mut self) -> napi::Result<()> {
 		let Some(mut inner) = self.inner.take() else {
 			return Ok(());

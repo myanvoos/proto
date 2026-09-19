@@ -247,12 +247,12 @@ pub struct Shell {
 
 #[napi]
 impl Shell {
-	#[napi(constructor)]
+	#[napi(catch_unwind, constructor)]
 	pub fn new(options: Option<ShellOptions>) -> Self {
 		Self { inner: Arc::new(CoreShell::new(options.map(Into::into))) }
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn run<'env>(
 		&self,
 		env: &'env Env,
@@ -300,7 +300,7 @@ impl Shell {
 		Ok(())
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn force_close(&self) -> Result<()> {
 		if self.inner.force_close() {
 			Ok(())
@@ -315,7 +315,7 @@ impl Shell {
 	}
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn execute_shell<'env>(
 	env: &'env Env,
 	options: ShellExecuteOptions<'env>,

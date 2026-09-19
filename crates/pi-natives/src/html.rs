@@ -14,7 +14,7 @@ pub struct HtmlToMarkdownOptions {
 	pub skip_images: Option<bool>,
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn html_to_markdown(
 	html: JsString,
 	options: Option<HtmlToMarkdownOptions>,

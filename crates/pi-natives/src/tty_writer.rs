@@ -211,7 +211,7 @@ pub struct TtyWriter {
 
 #[napi]
 impl TtyWriter {
-	#[napi(constructor)]
+	#[napi(catch_unwind, constructor)]
 	pub fn new(fd: i32) -> Result<Self> {
 		#[cfg(unix)]
 		{
@@ -250,7 +250,7 @@ impl TtyWriter {
 		}
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn write(&self, data: JsString) -> Result<u32> {
 		if self.inner.dead.load(Ordering::Acquire) {
 			return Ok(self.pending());
@@ -285,7 +285,7 @@ impl TtyWriter {
 		self.pending()
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn pending(&self) -> u32 {
 		self
 			.inner
@@ -294,12 +294,12 @@ impl TtyWriter {
 			.min(u32::MAX as usize) as u32
 	}
 
-	#[napi(getter)]
+	#[napi(catch_unwind, getter)]
 	pub fn dead(&self) -> bool {
 		self.inner.dead.load(Ordering::Acquire)
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn flush_sync(&self, timeout_ms: u32) -> bool {
 		let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
 		let mut back = self.inner.back.lock();
@@ -316,7 +316,7 @@ impl TtyWriter {
 		self.inner.pending.load(Ordering::Acquire) == 0
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	pub fn stop(&mut self, flush_timeout_ms: u32) {
 		if self.thread.is_none() {
 			#[cfg(unix)]

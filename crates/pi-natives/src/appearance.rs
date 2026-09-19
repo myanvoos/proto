@@ -293,7 +293,7 @@ mod platform {
 	}
 }
 
-#[napi(js_name = "detectMacOSAppearance")]
+#[napi(catch_unwind, js_name = "detectMacOSAppearance")]
 #[allow(clippy::missing_const_for_fn, reason = "napi macro is incompatible with const fn")]
 pub fn detect_macos_appearance() -> Option<MacOSAppearance> {
 	#[cfg(target_os = "macos")]
@@ -314,7 +314,7 @@ pub struct MacAppearanceObserver {
 
 #[napi]
 impl MacAppearanceObserver {
-	#[napi(factory)]
+	#[napi(catch_unwind, factory)]
 	pub fn start(
 		#[napi(ts_arg_type = "(err: null | Error, appearance: MacOSAppearance) => void")]
 		callback: napi::threadsafe_function::ThreadsafeFunction<MacOSAppearance>,
@@ -330,7 +330,7 @@ impl MacAppearanceObserver {
 		}
 	}
 
-	#[napi]
+	#[napi(catch_unwind)]
 	#[allow(clippy::missing_const_for_fn, reason = "napi macro is incompatible with const fn")]
 	pub fn stop(&mut self) {
 		#[cfg(target_os = "macos")]
