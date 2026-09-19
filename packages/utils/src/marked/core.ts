@@ -877,13 +877,24 @@ function parseList(lines: string[], index: number, lexer: Lexer): { token: Token
 
 function blockTokens(src: string, lexer: Lexer, output: Token[]): Token[] {
 	const lines = lineArray(src);
+	// Offset of each line in `src`, so the unconsumed suffix is a slice of the original string rather than a
+	// fresh slice-and-join of the remaining line array. The old form copied every remaining line on every
+	// block, which is quadratic in block count: 16k headings took 769ms.
+	const lineStarts = new Array<number>(lines.length + 1);
+	lineStarts[0] = 0;
+	for (let line = 0; line < lines.length; line++) lineStarts[line + 1] = lineStarts[line]! + lines[line]!.length;
+	const hasBlockExtensions = lexer.extensions.block.length > 0;
+	// The unconsumed suffix, materialized only for the tokenizers that actually take one.
+	const suffixFrom = (line: number): string => src.slice(lineStarts[line]!);
 	let i = 0;
 	while (i < lines.length) {
-		const remaining = lines.slice(i).join("");
 		let custom: Tokens.Generic | undefined;
-		for (const extension of lexer.extensions.block) {
-			custom = extension.tokenizer.call({ lexer }, remaining, output);
-			if (custom?.raw) break;
+		if (hasBlockExtensions) {
+			const remaining = suffixFrom(i);
+			for (const extension of lexer.extensions.block) {
+				custom = extension.tokenizer.call({ lexer }, remaining, output);
+				if (custom?.raw) break;
+			}
 		}
 		if (custom?.raw) {
 			output.push(custom);
@@ -1036,7 +1047,7 @@ function blockTokens(src: string, lexer: Lexer, output: Token[]): Token[] {
 		if (i + 1 < lines.length && /^ {0,3}(=+|-+)[ \t]*(?:\n|$)$/.test(lines[i + 1]!)) {
 			let fallback: Tokens.Heading | undefined | false;
 			const override = lexer.tokenizerOverrides.lheading;
-			if (override) fallback = override.call(lexer.tokenizer, remaining);
+			if (override) fallback = override.call(lexer.tokenizer, suffixFrom(i));
 			if (!override || fallback === false) {
 				const raw = line + lines[i + 1]!;
 				const text = stripFinalNewline(line);
