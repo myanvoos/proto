@@ -8,6 +8,10 @@
 
 ### Fixed
 
+- Description-only slash completions require explicit selection before Enter accepts them, and stale suggestion lists no longer replace a newly typed command.
+- In-place resizes repaint mutable live rows at the new width while preserving host-reflowed transcript history.
+- Explicit display resets replay updated content inside multiplexers, making already-scrolled tool output expandable.
+
 - `wrapTextWithAnsi` handed out its memoized row array to every caller, so appending to one result corrupted all later wraps of the same text — repeated renders of a list could grow its header block until rows disappeared.
 - Deeply nested blockquotes no longer multiply rendered rows exponentially, which could exhaust memory from a single small message.
 - A live region handing off to another one (a HUD appearing as a reply settles) now appends the rows it was holding instead of repainting from the first row, so the terminal no longer rewinds to the title screen and replays the session mid-stream.

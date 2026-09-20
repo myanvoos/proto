@@ -9,6 +9,9 @@
 
 ### Added
 
+- `/help` (alias `/?`) lists built-in commands and points to keyboard shortcuts, settings, and tool help.
+- Pressing Esc leaves a quiet `Interrupted` marker in the transcript, including when a tool call is interrupted.
+
 - `recall` responses are now bounded: one enormous stored line or a wide expand can no longer flood the context. Snippet lines clip around the match, expanded entries share a 48,000-character budget (`recallResponseMaxChars`, `0` disables), entries are dropped whole with a footer naming how to reach them, and the new `#N:text` drill-down pages any entry's own message text.
 - Compaction summary `(#N)` references now resolve in the same index space as `recall`: after the first compaction or on a branched session they pointed at unrelated entries, and a position that cannot be resolved renders no reference instead of a wrong one.
 - `recall` queries that mention a file now find it: a query is split into terms first, so `observer.ts` matches literally instead of compiling the whole sentence into one never-matching pattern (and no longer wildcards the dot onto `observerXts`).
@@ -20,6 +23,11 @@
 
 ### Changed
 
+- Bash and kernel cards no longer print internal execution diagnostics (`state=… | collector=…`) or duplicated wall-time/timeout trailers; exit code 1 keeps its dim, non-failure presentation.
+- Pending Ask cards show a short question summary instead of repeating all dialog options.
+- The sticky Todo panel shows an explicit completed/total count instead of a dangling progress line.
+- `/usage` summarizes available models on one line per provider instead of printing every model ID.
+
 - Bash calls that write a source file through a heredoc (`cat > probe.ts <<'EOF'`) now show that body as an AST outline on the settled card, matching embedded `python`/`bun` kernel cells; non-source writes (`.md`, `.json`, extensionless) keep their raw text, and ctrl+o still reveals the literal source.
 - The prompt editor supports shift+arrow text selection: `Shift+Arrow` extends a selection, typing/deleting/pasting replaces it, and `Ctrl+C` copies the selected text (falling back to its clear-draft/exit role when nothing is selected). Dequeueing a queued message moved fully to `Alt+Up` — `Shift+Up` no longer triggers it.
 - Context maintenance now picks its trigger from the model's context window: a small window runs nearly full before compacting, a million-token window folds at 40% rather than re-sending an enormous prompt every turn. Set `compaction.thresholdPercent` or `compaction.thresholdTokens` to override, and they are now honored exactly as written.
@@ -29,6 +37,12 @@
 - An explicit `/compact <mode>` is now honored as written: an extension compactor observes the compaction but no longer substitutes its own result.
 
 ### Fixed
+
+- Enter no longer executes a description-only slash suggestion or a stale highlighted command; unknown single-word commands stay in the editor.
+- Resizing a terminal keeps the status line visible.
+- Ctrl+O now redraws expanded tool output already in multiplexer scrollback.
+- Settings status previews stay inside their frame, and the status line shortens the session title before dropping the run clock.
+- Ask headers correctly display `1 question`.
 
 - A request that arrives just before a compaction is no longer lost: `[User Messages]` and the handoff note now cover the retained tail, not only the folded window.
 - Compaction no longer re-prints the answer it just dropped. The transcript already keeps pre-compaction turns on screen, so the display-only copy was a duplicate.

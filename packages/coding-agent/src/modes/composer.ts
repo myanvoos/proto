@@ -69,6 +69,10 @@ class StatusHost implements Component {
 		this.#component = component;
 	}
 
+	getNativeScrollbackLiveRegionStart(): number {
+		return 0;
+	}
+
 	render(width: number): readonly string[] {
 		return this.#component?.render(width) ?? [];
 	}
@@ -453,12 +457,11 @@ export class Composer {
 
 interface ComposerShortcutContext {
 	busy: boolean;
-	hasQueue: boolean;
 	focused: boolean;
 }
 
 interface ComposerShortcutChip {
-	id: "interrupt" | "dequeue";
+	id: "interrupt";
 	label: string;
 }
 
@@ -473,7 +476,6 @@ export function buildComposerShortcuts(
 			.replace(/Ctrl\+/g, "^")
 			.replace(/Alt\+/g, "M+");
 	if (ctx.busy && !ctx.focused) chips.push({ id: "interrupt", label: `${key("app.interrupt")} interrupt` });
-	if (ctx.hasQueue && !ctx.focused) chips.push({ id: "dequeue", label: `${key("app.message.dequeue")} dequeue` });
 	return chips;
 }
 

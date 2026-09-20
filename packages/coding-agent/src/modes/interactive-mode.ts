@@ -854,10 +854,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#composerShortcuts.setShortcutsProvider(() =>
 			buildComposerShortcuts(this.keybindings, {
 				busy: this.viewSession?.isStreaming ?? false,
-				hasQueue:
-					(this.viewSession?.getQueuedMessages().steering.length ?? 0) +
-						(this.viewSession?.getQueuedMessages().followUp.length ?? 0) >
-					0,
 				focused: this.focusedAgentId !== undefined,
 			}),
 		);
@@ -1862,41 +1858,40 @@ export class InteractiveMode implements InteractiveModeContext {
 		const phaseSlice = expanded ? phases.slice(baseIdx) : phases.slice(baseIdx, baseIdx + 1 + subsequentStageCap);
 		const hiddenStages = phases.length - baseIdx - phaseSlice.length;
 
-		const spineGlyphs: string[] = [];
-		const contentLines: string[] = [];
-		const pushBlock = (block: string | string[]): void => {
-			const rows = Array.isArray(block) ? block : [block];
-			if (rows.length === 0) return;
-			spineGlyphs.push(`${theme.tree.branch} `);
-			contentLines.push(replaceTabs(rows[0]!));
-			for (let i = 1; i < rows.length; i++) {
-				spineGlyphs.push(`${theme.tree.vertical}  `);
-				contentLines.push(replaceTabs(rows[i]!));
-			}
-		};
+		const blocks: string[][] = [];
 		for (let i = 0; i < phaseSlice.length; i++) {
-			pushBlock(renderPhase(phaseSlice[i], baseIdx + i + 1, baseIdx + i === activeIdx));
+			const block = renderPhase(phaseSlice[i], baseIdx + i + 1, baseIdx + i === activeIdx);
+			blocks.push(Array.isArray(block) ? block : [block]);
 		}
 		if (hiddenStages > 0) {
-			pushBlock(theme.fg("muted", formatMoreItems(hiddenStages, "stage")));
+			blocks.push([theme.fg("muted", formatMoreItems(hiddenStages, "stage"))]);
 		}
 
-		const tailLen = 6;
-		const tail = theme.tree.hook + theme.tree.horizontal.repeat(Math.max(0, tailLen - visibleWidth(theme.tree.hook)));
+		const spineGlyphs: string[] = [];
+		const contentLines: string[] = [];
+		for (let b = 0; b < blocks.length; b++) {
+			const rows = blocks[b]!;
+			const isLast = b === blocks.length - 1;
+			spineGlyphs.push(`${isLast ? theme.tree.last : theme.tree.branch} `);
+			contentLines.push(replaceTabs(rows[0]!));
+			for (let i = 1; i < rows.length; i++) {
+				spineGlyphs.push(isLast ? "   " : `${theme.tree.vertical}  `);
+				contentLines.push(replaceTabs(rows[i]!));
+			}
+		}
 
 		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
 		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
-		const pathLen = contentLines.length + tailLen;
+		const pathLen = contentLines.length;
 		let filled = Math.round((closedTasks / totalTasks) * pathLen);
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const lines = ["", theme.bold(theme.fg("accent", "Todo"))];
+		const header = theme.bold(theme.fg("accent", "Todo")) + theme.fg("dim", ` · ${closedTasks}/${totalTasks} done`);
+		const lines = ["", header];
 		for (let i = 0; i < contentLines.length; i++) {
 			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
 		}
-		const tailFilled = Math.max(0, Math.min(filled - contentLines.length, tail.length));
-		lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
 		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
@@ -2887,6 +2882,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleUsageCommand(reports?: UsageReport[] | null): Promise<void> {
 		return this.#commandController.handleUsageCommand(reports);
+	}
+
+	handleHelpCommand(): void {
+		this.#commandController.handleHelpCommand();
 	}
 
 	handleHotkeysCommand(): void {
