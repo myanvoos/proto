@@ -4164,9 +4164,9 @@ dependencies = [
 
 [[package]]
 name = "pdf-inspector"
-version = "1.21.0"
+version = "1.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00fa11f6e9c7cba91bed3386201c2d5cc4643e8a5f23ac0a00be984a2d029e62"
+checksum = "dd5b1c4fc795c03255e6a7fde582049fc65271ede8f9b6a21099c33458df079a"
 dependencies = [
  "env_logger",
  "include_dir",
@@ -4177,6 +4177,7 @@ dependencies = [
  "regex",
  "thiserror 2.0.20",
  "ttf-parser",
+ "unicode-bidi",
  "unicode-normalization",
 ]
 
@@ -4402,7 +4403,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ast"
-version = "18.1.23"
+version = "18.2.0"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -4469,7 +4470,7 @@ dependencies = [
 
 [[package]]
 name = "pi-builtins"
-version = "18.1.23"
+version = "18.2.0"
 dependencies = [
  "ansi-width",
  "argmax",
@@ -4549,7 +4550,7 @@ dependencies = [
 
 [[package]]
 name = "pi-iso"
-version = "18.1.23"
+version = "18.2.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -4560,7 +4561,7 @@ dependencies = [
 
 [[package]]
 name = "pi-natives"
-version = "18.1.23"
+version = "18.2.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4618,7 +4619,7 @@ dependencies = [
 
 [[package]]
 name = "pi-shell"
-version = "18.1.23"
+version = "18.2.0"
 dependencies = [
  "anyhow",
  "brush-core",
@@ -4640,7 +4641,7 @@ dependencies = [
 
 [[package]]
 name = "pi-walker"
-version = "18.1.23"
+version = "18.2.0"
 dependencies = [
  "dashmap",
  "globset",

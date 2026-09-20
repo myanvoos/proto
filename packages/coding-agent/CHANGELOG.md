@@ -2,10 +2,12 @@
 
 ## [Unreleased]
 
+## [18.2.0] - 2026-09-20
+
 ### Fixed
+
 - `fleet` messaging schema matches how agents write sends: the recipient field is `to` (`from` filters the wait sender), and `op` is optional because bare `to` + `message` infers send; `orchestrate_send` takes `to` as well.
 - Tool docs for `fleet`, `orchestrate_*`, `monitor`, and `browser` lead with the canonical JSON shapes, and invalid `xd` device args get a "did you mean" hint for mistyped keys.
-
 - `proto attach` keeps reasoning and subagent orchestration alive after the terminal closes: the RPC session runs in a daemon-supervised session host worker, `proto attach` connects over a per-session Unix socket (latest client wins), detach/EOF/Escape leaves the session running, and reattach replays recent messages. `proto attach --stop <session>` tears the host down.
 - `/queue` takes an optional leading delay: `/queue 3h run the benchmarks` sends the message after three hours instead of at the next yield. Delays are independent wall-clock deadlines, so entering `/queue 3h do A` then `/queue 18h do B` fires them 3 and 18 hours from now rather than chaining. Pending entries show a live countdown above the editor and are cancelled with `/queue --cancel <n|all>`.
 
