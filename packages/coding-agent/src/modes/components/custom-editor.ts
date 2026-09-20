@@ -63,7 +63,7 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.thinking.toggle": ["ctrl+t"],
 	"app.editor.external": ["ctrl+g"],
 	"app.history.search": ["ctrl+r"],
-	"app.message.dequeue": ["alt+up", "shift+up"],
+	"app.message.dequeue": ["alt+up"],
 	"app.retry": ["alt+r"],
 	"app.clipboard.pasteImage": ["ctrl+v"],
 	"app.clipboard.pasteTextRaw": ["ctrl+shift+v", "alt+shift+v"],
@@ -622,6 +622,14 @@ export class CustomEditor extends Editor {
 
 		if (canonical === "left" && this.onLeftAtStart && this.getText().trim() === "") {
 			this.onLeftAtStart();
+			return;
+		}
+
+		// Ctrl+C copies while a selection is visible and keeps its clear-draft /
+		// exit role otherwise; collapsing afterwards lets a second Ctrl+C clear.
+		if (this.hasSelection() && (canonical === "ctrl+c" || this.#matchesAction(canonical, "app.clear"))) {
+			super.handleInput(data);
+			this.clearSelection();
 			return;
 		}
 

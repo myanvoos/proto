@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- The editor supports text selection: `Shift+Arrow` (and `Shift+Alt+Arrow` for word-wise, `Shift+Home`/`Shift+End`, `Shift+PageUp`/`Shift+PageDown`) extends a selection from the cursor anchor. Typing, delete, paste, and kill commands replace or remove the selection, plain movement collapses it, and the copy key (`Ctrl+C`) copies the selected text via the new `onCopySelection` hook. Selected text renders in reverse video, including the trailing pad of lines whose newline is inside the selection.
+
 ### Fixed
 
 - Deeply nested blockquotes no longer multiply rendered rows exponentially, which could exhaust memory from a single small message.

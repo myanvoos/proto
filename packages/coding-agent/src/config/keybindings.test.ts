@@ -1,20 +1,22 @@
 import { expect, test } from "bun:test";
 import { KeybindingsManager } from "./keybindings";
 
-test("effective config matches dispatch keys when a user binding claims the fallback", () => {
-	const manager = KeybindingsManager.inMemory({ "app.retry": "shift+up" });
-	const effective = manager.getEffectiveConfig();
-	const dequeue = effective["app.message.dequeue"];
-	const keys = Array.isArray(dequeue) ? dequeue : [dequeue];
-	// Dispatch (getKeys) drops the shift+up fallback because app.retry claims
-	// it; the diagnostics-visible config must agree.
-	expect(keys).toEqual(manager.getKeys("app.message.dequeue"));
-	expect(keys).not.toContain("shift+up");
+test("dequeue no longer claims shift+up, which now extends the editor selection", () => {
+	const manager = KeybindingsManager.inMemory({});
+	expect(manager.getKeys("app.message.dequeue")).toEqual(["alt+up"]);
+	expect(manager.getEffectiveConfig()["app.message.dequeue"]).toEqual("alt+up");
 });
 
-test("the dequeue fallback stays in the effective config without a claiming binding", () => {
+test("an explicit user binding can still put shift+up on dequeue", () => {
+	const manager = KeybindingsManager.inMemory({ "app.message.dequeue": "shift+up" });
+	expect(manager.getKeys("app.message.dequeue")).toContain("shift+up");
+	expect(manager.getEffectiveConfig()["app.message.dequeue"]).toEqual("shift+up");
+});
+
+test("editor selection bindings resolve from the shared keybinding definitions", () => {
 	const manager = KeybindingsManager.inMemory({});
-	const dequeue = manager.getEffectiveConfig()["app.message.dequeue"];
-	const keys = Array.isArray(dequeue) ? dequeue : [dequeue];
-	expect(keys).toContain("shift+up");
+	expect(manager.getKeys("tui.editor.cursorSelectLeft")).toEqual(["shift+left"]);
+	expect(manager.getKeys("tui.editor.cursorSelectRight")).toEqual(["shift+right"]);
+	expect(manager.getKeys("tui.editor.cursorSelectUp")).toEqual(["shift+up"]);
+	expect(manager.getKeys("tui.editor.cursorSelectDown")).toEqual(["shift+down"]);
 });

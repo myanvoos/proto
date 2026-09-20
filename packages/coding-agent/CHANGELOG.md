@@ -8,6 +8,7 @@
 
 ### Changed
 
+- The prompt editor supports shift+arrow text selection: `Shift+Arrow` extends a selection, typing/deleting/pasting replaces it, and `Ctrl+C` copies the selected text (falling back to its clear-draft/exit role when nothing is selected). Dequeueing a queued message moved fully to `Alt+Up` — `Shift+Up` no longer triggers it.
 - Context maintenance now holds off until the session actually holds 250K tokens on models whose window can carry that much, so a large-window session stops paying to rewrite its prompt cache at a fraction of its capacity; models with smaller windows are unaffected.
 - Observational memory no longer compacts on its own fixed token count: requests to compact that arrive while the session is still well below its own compaction threshold are declined, so a long session keeps reading its warm prompt cache instead of paying to rewrite it early.
 - Compaction now carries detail-heavy tool results into the summary with both their head and their tail, widened to whatever the summarizer's input budget allows, instead of clipping every result to its first 2000 characters.

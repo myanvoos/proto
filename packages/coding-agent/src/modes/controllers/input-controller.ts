@@ -422,6 +422,7 @@ export class InputController {
 			this.ctx.keybindings.getKeys("app.clipboard.copyPrompt"),
 		);
 		this.ctx.editor.onCopyPrompt = () => this.handleCopyPrompt();
+		this.ctx.editor.onCopySelection = text => this.handleCopySelection(text);
 		this.ctx.editor.setActionKeys(
 			"app.tools.toggleVisibility",
 			this.ctx.keybindings.getKeys("app.tools.toggleVisibility"),
@@ -1552,6 +1553,17 @@ export class InputController {
 			this.ctx.showStatus("Nothing to copy");
 			return;
 		}
+		try {
+			copyToClipboard(text);
+			const sanitized = sanitizeText(text);
+			const preview = sanitized.length > 30 ? `${sanitized.slice(0, 30)}...` : sanitized;
+			this.ctx.showStatus(`Copied: ${preview}`);
+		} catch {
+			this.ctx.showWarning("Failed to copy to clipboard");
+		}
+	}
+
+	handleCopySelection(text: string): void {
 		try {
 			copyToClipboard(text);
 			const sanitized = sanitizeText(text);

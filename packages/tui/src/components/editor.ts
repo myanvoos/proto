@@ -31,6 +31,11 @@ import { type SelectItem, SelectList, type SelectListLayoutOptions, type SelectL
 
 const DEFAULT_PROMPT_GUTTER = "❯ ";
 const DEFAULT_HINT_STYLE = (text: string): string => `\x1b[2m${text}\x1b[0m`;
+const SELECTION_SGR_OPEN = "\x1b[7m";
+const SELECTION_SGR_CLOSE = "\x1b[27m";
+// Inner decorations may end with a full SGR reset, which would also clear the
+// selection's reverse video; re-assert it after every reset.
+const SGR_RESET_PATTERN = /\x1b\[0m|\x1b\[m/g;
 const EMPTY_DECORATION_CONTEXT: EditorTextDecorationContext = { line: 0, startCol: 0, endCol: 0 };
 
 const AUTOCOMPLETE_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
@@ -348,6 +353,13 @@ interface EditorState {
 	cursorCol: number;
 }
 
+interface SelectionRange {
+	startLine: number;
+	startCol: number;
+	endLine: number;
+	endCol: number;
+}
+
 interface LayoutLine {
 	text: string;
 
@@ -515,6 +527,11 @@ export class Editor implements Component, Focusable {
 
 	#preferredVisualCol: number | null = null;
 
+	#selectionAnchor: { line: number; col: number } | null = null;
+
+	/** Selection range resolved for the render in progress; only valid inside render(). */
+	#renderSelection: SelectionRange | null = null;
+
 	borderColor: (str: string) => string;
 
 	#autocompleteProvider?: AutocompleteProvider;
@@ -562,6 +579,9 @@ export class Editor implements Component, Focusable {
 	onAltEnter?: (text: string) => void;
 	onChange?: (text: string) => void;
 
+	/** Invoked when the copy key is pressed with an active selection. */
+	onCopySelection?: (text: string) => void;
+
 	onLargePaste?: (text: string, lineCount: number) => boolean;
 	onAutocompleteCancel?: () => void;
 	disableSubmit: boolean = false;
@@ -589,6 +609,8 @@ export class Editor implements Component, Focusable {
 		this.#layoutScratch = [];
 		this.#plainRenderCache = new WeakMap();
 		this.#state = { lines: [""], cursorLine: 0, cursorCol: 0 };
+		this.#selectionAnchor = null;
+		this.#renderSelection = null;
 		this.#linesRevision = 0;
 		this.#joinedTextRevision = -1;
 		this.#joinedText = "";
@@ -759,6 +781,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#setTextInternal(text: string, cursorAnchor: HistoryCursorAnchor = "end"): void {
+		this.#selectionAnchor = null;
 		this.#undoStack.length = 0;
 		this.#volatileTextLen = 0;
 		const lines = sanitizeLoadedText(text).split("\n");
@@ -819,16 +842,13 @@ export class Editor implements Component, Focusable {
 
 	#decorate(text: string, context: EditorTextDecorationContext): string {
 		const decorate = this.decorateText;
-		if (decorate === undefined || text.length === 0) return text;
+		if ((decorate === undefined && this.#renderSelection === null) || text.length === 0) return text;
 		const idx = text.indexOf(CURSOR_MARKER);
 		const sourceLength = Math.max(0, context.endCol - context.startCol);
 		if (idx === -1) {
 			const decoratedLength = Math.min(text.length, sourceLength);
 			return (
-				decorate(text.slice(0, decoratedLength), {
-					...context,
-					endCol: context.startCol + decoratedLength,
-				}) + text.slice(decoratedLength)
+				this.#decorateSlice(text.slice(0, decoratedLength), context.startCol, context) + text.slice(decoratedLength)
 			);
 		}
 		const before = text.slice(0, idx);
@@ -837,18 +857,73 @@ export class Editor implements Component, Focusable {
 		const afterLength = Math.min(after.length, sourceLength - beforeLength);
 		const cursorCol = context.startCol + beforeLength;
 		return (
-			(beforeLength > 0 ? decorate(before.slice(0, beforeLength), { ...context, endCol: cursorCol }) : "") +
+			(beforeLength > 0 ? this.#decorateSlice(before.slice(0, beforeLength), context.startCol, context) : "") +
 			before.slice(beforeLength) +
 			CURSOR_MARKER +
-			(afterLength > 0
-				? decorate(after.slice(0, afterLength), {
-						...context,
-						startCol: cursorCol,
-						endCol: cursorCol + afterLength,
-					})
-				: "") +
+			(afterLength > 0 ? this.#decorateSlice(after.slice(0, afterLength), cursorCol, context) : "") +
 			after.slice(afterLength)
 		);
+	}
+
+	#decorateSlice(slice: string, sliceStartCol: number, context: EditorTextDecorationContext): string {
+		const selection = this.#renderSelection;
+		if (selection === null) return this.#decoratePlain(slice, sliceStartCol, context);
+
+		const sliceEndCol = sliceStartCol + slice.length;
+		const line = context.line;
+		let selStart = sliceEndCol;
+		let selEnd = sliceStartCol;
+		if (line >= selection.startLine && line <= selection.endLine) {
+			selStart = line === selection.startLine ? Math.max(selection.startCol, sliceStartCol) : sliceStartCol;
+			selEnd = line === selection.endLine ? Math.min(selection.endCol, sliceEndCol) : sliceEndCol;
+		}
+		if (selEnd <= selStart) {
+			return this.#decoratePlain(slice, sliceStartCol, context);
+		}
+
+		const before = slice.slice(0, selStart - sliceStartCol);
+		const middle = slice.slice(selStart - sliceStartCol, selEnd - sliceStartCol);
+		const after = slice.slice(selEnd - sliceStartCol);
+		const styled =
+			SELECTION_SGR_OPEN +
+			this.#decoratePlain(middle, selStart, context).replace(
+				SGR_RESET_PATTERN,
+				match => `${match}${SELECTION_SGR_OPEN}`,
+			) +
+			SELECTION_SGR_CLOSE;
+		return this.#decoratePlain(before, sliceStartCol, context) + styled + this.#decoratePlain(after, selEnd, context);
+	}
+
+	#decoratePlain(part: string, partStartCol: number, context: EditorTextDecorationContext): string {
+		const decorate = this.decorateText;
+		if (part.length === 0) return "";
+		if (decorate === undefined) return part;
+		return decorate(part, {
+			...context,
+			startCol: partStartCol,
+			endCol: partStartCol + part.length,
+		});
+	}
+
+	#selectionSpanForLayout(
+		layoutLine: LayoutLine,
+		selection: SelectionRange,
+	): { start: number; end: number; coversEOL: boolean } | null {
+		const { sourceLine, sourceStartCol } = layoutLine;
+		if (sourceLine < selection.startLine || sourceLine > selection.endLine) return null;
+		const textEndCol = sourceStartCol + layoutLine.text.length;
+		const selStartCol = sourceLine === selection.startLine ? selection.startCol : sourceStartCol;
+		const selEndCol = sourceLine === selection.endLine ? selection.endCol : textEndCol;
+		const start = Math.max(sourceStartCol, selStartCol) - sourceStartCol;
+		const end = Math.min(textEndCol, selEndCol) - sourceStartCol;
+		const lineLength = this.#state.lines[sourceLine]?.length ?? 0;
+		// The line's trailing pad is highlighted when the selection spans past
+		// its last column, i.e. the newline after it is part of the selection.
+		const coversEOL =
+			(sourceLine > selection.startLine && sourceLine < selection.endLine) ||
+			(sourceLine === selection.startLine && sourceLine !== selection.endLine && selection.startCol >= lineLength);
+		if (end <= start && !coversEOL) return null;
+		return { start, end, coversEOL };
 	}
 
 	#getStyledInputCursor(): { text: string; width: number } {
@@ -972,6 +1047,8 @@ export class Editor implements Component, Focusable {
 	}
 
 	render(width: number): readonly string[] {
+		const activeSelection = this.#getSelectionRange();
+		this.#renderSelection = activeSelection;
 		const promptGutter = this.#getPromptGutter(width);
 		const contentAreaWidth = Math.max(0, width - (promptGutter?.width ?? 0));
 
@@ -1002,7 +1079,7 @@ export class Editor implements Component, Focusable {
 			let displayText = layoutLine.text;
 			let displayWidth = layoutLine.width;
 			const decorationContext =
-				this.decorateText === undefined
+				this.decorateText === undefined && activeSelection === null
 					? EMPTY_DECORATION_CONTEXT
 					: {
 							line: layoutLine.sourceLine,
@@ -1016,8 +1093,10 @@ export class Editor implements Component, Focusable {
 
 			const hasCursor = layoutLine.hasCursor && layoutLine.cursorPos !== undefined;
 			const marker = emitCursorMarker ? CURSOR_MARKER : "";
+			const selectionSpan =
+				activeSelection === null ? null : this.#selectionSpanForLayout(layoutLine, activeSelection);
 
-			if (!hasCursor && this.decorateText === undefined) {
+			if (!hasCursor && this.decorateText === undefined && selectionSpan === null) {
 				const cached = this.#plainRenderCache.get(layoutLine);
 				if (cached?.width === lineContentWidth && cached.gutter === gutterText) {
 					result.push(cached.output);
@@ -1161,7 +1240,11 @@ export class Editor implements Component, Focusable {
 				}
 			}
 
-			const linePad = padding(Math.max(0, lineContentWidth - displayWidth));
+			const padWidth = Math.max(0, lineContentWidth - displayWidth);
+			const linePad =
+				selectionSpan?.coversEOL && padWidth > 0
+					? `${SELECTION_SGR_OPEN}${padding(padWidth)}${SELECTION_SGR_CLOSE}`
+					: padding(padWidth);
 
 			result.push(gutterText + displayText + linePad);
 		}
@@ -1243,7 +1326,10 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		if (matchesKey(data, "ctrl+c")) {
+		if (matchesKey(data, "ctrl+c") || kb.matchesCanonical(canonical, "tui.input.copy")) {
+			if (this.#getSelectionRange() !== null) {
+				this.#copySelection();
+			}
 			return;
 		}
 
@@ -1315,6 +1401,7 @@ export class Editor implements Component, Focusable {
 						// coalescing so the next char snapshots separately.
 						this.#lastAction = null;
 						this.#setLines(result.lines);
+						this.#selectionAnchor = null;
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
 
@@ -1362,6 +1449,7 @@ export class Editor implements Component, Focusable {
 							// coalescing so the next char snapshots separately.
 							this.#lastAction = null;
 							this.#setLines(result.lines);
+							this.#selectionAnchor = null;
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
 							result.onApplied?.();
@@ -1391,6 +1479,7 @@ export class Editor implements Component, Focusable {
 							// coalescing so the next char snapshots separately.
 							this.#lastAction = null;
 							this.#setLines(result.lines);
+							this.#selectionAnchor = null;
 							this.#state.cursorLine = result.cursorLine;
 							this.#setCursorCol(result.cursorCol);
 
@@ -1486,6 +1575,7 @@ export class Editor implements Component, Focusable {
 						// coalescing so the next char snapshots separately.
 						this.#lastAction = null;
 						this.#setLines(result.lines);
+						this.#selectionAnchor = null;
 						this.#state.cursorLine = result.cursorLine;
 						this.#setCursorCol(result.cursorCol);
 						result.onApplied?.();
@@ -1515,6 +1605,44 @@ export class Editor implements Component, Focusable {
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorWordRight")) {
 			this.#resetKillSequence();
 			this.#moveWordForwards();
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectUp")) {
+			this.#beginSelection();
+			if (this.#isOnFirstVisualLine()) {
+				this.#moveToMessageStart(true);
+			} else {
+				this.#moveCursor(-1, 0, true);
+			}
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectDown")) {
+			this.#beginSelection();
+			if (this.#isOnLastVisualLine()) {
+				this.#moveToMessageEnd(true);
+			} else {
+				this.#moveCursor(1, 0, true);
+			}
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectRight")) {
+			this.#beginSelection();
+			this.#moveCursor(0, 1, true);
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectLeft")) {
+			this.#beginSelection();
+			this.#moveCursor(0, -1, true);
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectWordLeft")) {
+			this.#beginSelection();
+			this.#moveWordBackwards(true);
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectWordRight")) {
+			this.#beginSelection();
+			this.#moveWordForwards(true);
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectLineStart")) {
+			this.#beginSelection();
+			this.#moveToLineStart(true);
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectLineEnd")) {
+			this.#beginSelection();
+			this.#moveToLineEnd(true);
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectPageUp")) {
+			this.#beginSelection();
+			this.#pageScroll(-1, true);
+		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorSelectPageDown")) {
+			this.#beginSelection();
+			this.#pageScroll(1, true);
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorUp")) {
 			if (this.#isEditorEmpty()) {
 				this.#navigateHistory(-1);
@@ -1774,6 +1902,86 @@ export class Editor implements Component, Focusable {
 		return { line: this.#state.cursorLine, col: this.#state.cursorCol };
 	}
 
+	hasSelection(): boolean {
+		return this.#getSelectionRange() !== null;
+	}
+
+	getSelectedText(): string {
+		const selection = this.#getSelectionRange();
+		return selection === null ? "" : this.#extractRangeText(selection);
+	}
+
+	clearSelection(): void {
+		this.#selectionAnchor = null;
+	}
+
+	#clampCursor(line: number, col: number): { line: number; col: number } {
+		const clampedLine = Math.max(0, Math.min(line, this.#state.lines.length - 1));
+		const lineText = this.#state.lines[clampedLine] ?? "";
+		return { line: clampedLine, col: Math.max(0, Math.min(col, lineText.length)) };
+	}
+
+	#getSelectionRange(): SelectionRange | null {
+		const anchor = this.#selectionAnchor;
+		if (anchor === null) return null;
+		const head = this.#clampCursor(this.#state.cursorLine, this.#state.cursorCol);
+		const tail = this.#clampCursor(anchor.line, anchor.col);
+		const headFirst = head.line < tail.line || (head.line === tail.line && head.col <= tail.col);
+		const start = headFirst ? head : tail;
+		const end = headFirst ? tail : head;
+		if (start.line === end.line && start.col === end.col) return null;
+		return { startLine: start.line, startCol: start.col, endLine: end.line, endCol: end.col };
+	}
+
+	#extractRangeText(range: SelectionRange): string {
+		const lines = this.#state.lines;
+		if (range.startLine === range.endLine) {
+			return (lines[range.startLine] ?? "").slice(range.startCol, range.endCol);
+		}
+		const parts: string[] = [(lines[range.startLine] ?? "").slice(range.startCol)];
+		for (let i = range.startLine + 1; i < range.endLine; i++) {
+			parts.push(lines[i] ?? "");
+		}
+		parts.push((lines[range.endLine] ?? "").slice(0, range.endCol));
+		return parts.join("\n");
+	}
+
+	#beginSelection(): void {
+		this.#selectionAnchor ??= { line: this.#state.cursorLine, col: this.#state.cursorCol };
+	}
+
+	/**
+	 * Removes the selected range and returns the removed text. Clearing the
+	 * selection is unconditional so any edit collapses even an empty (anchor ==
+	 * cursor) selection.
+	 */
+	#deleteSelection(): string | null {
+		if (this.#selectionAnchor === null) return null;
+		const selection = this.#getSelectionRange();
+		this.#selectionAnchor = null;
+		if (selection === null) return null;
+		const removed = this.#extractRangeText(selection);
+		this.#recordUndoState();
+
+		const firstLine = this.#state.lines[selection.startLine] ?? "";
+		const lastLine = this.#state.lines[selection.endLine] ?? "";
+		if (selection.startLine === selection.endLine) {
+			this.#setLine(selection.startLine, firstLine.slice(0, selection.startCol) + firstLine.slice(selection.endCol));
+		} else {
+			const merged = firstLine.slice(0, selection.startCol) + lastLine.slice(selection.endCol);
+			this.#spliceLines(selection.startLine, selection.endLine - selection.startLine + 1, merged);
+		}
+		this.#state.cursorLine = selection.startLine;
+		this.#setCursorCol(selection.startCol);
+		return removed;
+	}
+
+	#copySelection(): void {
+		const selection = this.#getSelectionRange();
+		if (selection === null) return;
+		this.onCopySelection?.(this.#expandPasteMarkers(this.#extractRangeText(selection)));
+	}
+
 	moveToLineStart(): void {
 		this.#moveToLineStart();
 	}
@@ -1808,6 +2016,7 @@ export class Editor implements Component, Focusable {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
 		this.#preferredVisualCol = null;
+		this.#selectionAnchor = null;
 		this.#setLine(this.#state.cursorLine, beforeTransient + afterTransient);
 		this.#setCursorCol(transientStartCol);
 
@@ -1869,6 +2078,7 @@ export class Editor implements Component, Focusable {
 		const removable = Math.min(count, this.#state.cursorCol);
 		if (removable <= 0) return;
 		this.#exitHistoryForEditing();
+		this.#selectionAnchor = null;
 		this.#recordUndoState();
 		const line = this.#state.lines[this.#state.cursorLine] ?? "";
 		this.#setLine(
@@ -1949,6 +2159,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	#applyInlineReplacement(replacement: EditorInlineReplacement): boolean {
+		this.#selectionAnchor = null;
 		if (
 			!Number.isInteger(replacement.replaceLen) ||
 			replacement.replaceLen < 0 ||
@@ -1972,6 +2183,9 @@ export class Editor implements Component, Focusable {
 
 	#insertCharacter(char: string): void {
 		this.#exitHistoryForEditing();
+		if (this.#deleteSelection() !== null) {
+			this.#lastAction = null;
+		}
 
 		const isWordChunk =
 			char.length === 1
@@ -2148,7 +2362,9 @@ export class Editor implements Component, Focusable {
 	#addNewLine(): void {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
-		this.#recordUndoState();
+		if (this.#deleteSelection() === null) {
+			this.#recordUndoState();
+		}
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 
@@ -2187,6 +2403,7 @@ export class Editor implements Component, Focusable {
 		this.#setLines([""]);
 		this.#state.cursorLine = 0;
 		this.#state.cursorCol = 0;
+		this.#selectionAnchor = null;
 		this.#pastes.clear();
 		this.#pasteCounter = 0;
 		this.#atoms.clear();
@@ -2252,6 +2469,13 @@ export class Editor implements Component, Focusable {
 	#handleBackspace(): void {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
+		if (this.#deleteSelection() !== null) {
+			if (this.onChange) {
+				this.onChange(this.getText());
+			}
+			this.#retriggerAutocompleteAtCursor();
+			return;
+		}
 		if (this.#state.cursorCol === 0 && this.#state.cursorLine === 0) return;
 		this.#recordUndoState();
 
@@ -2388,25 +2612,29 @@ export class Editor implements Component, Focusable {
 		return result;
 	}
 
-	#moveToLineStart(): void {
+	#moveToLineStart(select = false): void {
 		this.#resetKillSequence();
+		if (!select) this.#selectionAnchor = null;
 		this.#setCursorCol(0);
 	}
 
-	#moveToLineEnd(): void {
+	#moveToLineEnd(select = false): void {
 		this.#resetKillSequence();
+		if (!select) this.#selectionAnchor = null;
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 		this.#setCursorCol(currentLine.length);
 	}
 
-	#moveToMessageStart(): void {
+	#moveToMessageStart(select = false): void {
 		this.#resetKillSequence();
+		if (!select) this.#selectionAnchor = null;
 		this.#state.cursorLine = 0;
 		this.#setCursorCol(0);
 	}
 
-	#moveToMessageEnd(): void {
+	#moveToMessageEnd(select = false): void {
 		this.#resetKillSequence();
+		if (!select) this.#selectionAnchor = null;
 		this.#state.cursorLine = this.#state.lines.length - 1;
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 		this.#setCursorCol(currentLine.length);
@@ -2446,6 +2674,7 @@ export class Editor implements Component, Focusable {
 		this.#resetKillSequence();
 		this.#preferredVisualCol = null;
 		this.#volatileTextLen = 0;
+		this.#selectionAnchor = null;
 		this.#setLines(snapshot.lines);
 		this.#state.cursorLine = snapshot.cursorLine;
 		this.#state.cursorCol = snapshot.cursorCol;
@@ -2504,7 +2733,9 @@ export class Editor implements Component, Focusable {
 	#insertTextAtCursor(text: string): void {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
-		this.#recordUndoState();
+		if (this.#deleteSelection() === null) {
+			this.#recordUndoState();
+		}
 
 		const normalized = text.replace(/\r\n?/g, "\n");
 		const lines = normalized.split("\n");
@@ -2617,6 +2848,15 @@ export class Editor implements Component, Focusable {
 
 	#deleteToStartOfLine(): void {
 		this.#historyIndex = -1;
+		const selected = this.#deleteSelection();
+		if (selected !== null) {
+			this.#recordKill(selected, "backward");
+			if (this.onChange) {
+				this.onChange(this.getText());
+			}
+			this.#retriggerAutocompleteAtCursor();
+			return;
+		}
 		if (this.#state.cursorCol === 0 && this.#state.cursorLine === 0) return;
 		this.#recordUndoState();
 
@@ -2647,6 +2887,15 @@ export class Editor implements Component, Focusable {
 
 	#deleteToEndOfLine(): void {
 		this.#historyIndex = -1;
+		const selected = this.#deleteSelection();
+		if (selected !== null) {
+			this.#recordKill(selected, "forward");
+			if (this.onChange) {
+				this.onChange(this.getText());
+			}
+			this.#retriggerAutocompleteAtCursor();
+			return;
+		}
 		const lineToEnd = this.#state.lines[this.#state.cursorLine] ?? "";
 		if (this.#state.cursorCol >= lineToEnd.length && this.#state.cursorLine >= this.#state.lines.length - 1) {
 			return;
@@ -2680,6 +2929,15 @@ export class Editor implements Component, Focusable {
 
 	#deleteWordBackwards(): void {
 		this.#historyIndex = -1;
+		const selected = this.#deleteSelection();
+		if (selected !== null) {
+			this.#recordKill(selected, "backward");
+			if (this.onChange) {
+				this.onChange(this.getText());
+			}
+			this.#retriggerAutocompleteAtCursor();
+			return;
+		}
 		if (this.#state.cursorCol === 0 && this.#state.cursorLine === 0) return;
 		this.#recordUndoState();
 
@@ -2714,6 +2972,15 @@ export class Editor implements Component, Focusable {
 
 	#deleteWordForwards(): void {
 		this.#historyIndex = -1;
+		const selected = this.#deleteSelection();
+		if (selected !== null) {
+			this.#recordKill(selected, "forward");
+			if (this.onChange) {
+				this.onChange(this.getText());
+			}
+			this.#retriggerAutocompleteAtCursor();
+			return;
+		}
 		const lineForGuard = this.#state.lines[this.#state.cursorLine] ?? "";
 		if (this.#state.cursorCol >= lineForGuard.length && this.#state.cursorLine >= this.#state.lines.length - 1) {
 			return;
@@ -2750,6 +3017,13 @@ export class Editor implements Component, Focusable {
 	#handleForwardDelete(): void {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
+		if (this.#deleteSelection() !== null) {
+			if (this.onChange) {
+				this.onChange(this.getText());
+			}
+			this.#retriggerAutocompleteAtCursor();
+			return;
+		}
 		const currentLineForGuard = this.#state.lines[this.#state.cursorLine] ?? "";
 		if (
 			this.#state.cursorCol >= currentLineForGuard.length &&
@@ -2852,8 +3126,9 @@ export class Editor implements Component, Focusable {
 		return visualLines.length - 1;
 	}
 
-	#moveCursor(deltaLine: number, deltaCol: number): void {
+	#moveCursor(deltaLine: number, deltaCol: number, select = false): void {
 		this.#resetKillSequence();
+		if (!select) this.#selectionAnchor = null;
 		const visualLines = this.#buildVisualLineMap(this.#lastLayoutWidth);
 		const currentVisualLine = this.#findCurrentVisualLine(visualLines);
 
@@ -2899,8 +3174,9 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
-	#pageScroll(direction: -1 | 1): void {
+	#pageScroll(direction: -1 | 1, select = false): void {
 		this.#resetKillSequence();
+		if (!select) this.#selectionAnchor = null;
 		const visualLines = this.#buildVisualLineMap(this.#lastLayoutWidth);
 		const currentVisualLine = this.#findCurrentVisualLine(visualLines);
 		const step = this.#getPageScrollStep(visualLines.length);
@@ -2909,7 +3185,8 @@ export class Editor implements Component, Focusable {
 		this.#moveToVisualLine(visualLines, currentVisualLine, targetVisualLine);
 	}
 
-	#moveWordBackwards(): void {
+	#moveWordBackwards(select = false): void {
+		if (!select) this.#selectionAnchor = null;
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 
 		if (this.#state.cursorCol === 0) {
@@ -2926,6 +3203,7 @@ export class Editor implements Component, Focusable {
 
 	#jumpToChar(char: string, direction: "forward" | "backward"): void {
 		this.#resetKillSequence();
+		this.#selectionAnchor = null;
 		const isForward = direction === "forward";
 		const lines = this.#state.lines;
 
@@ -2955,7 +3233,8 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
-	#moveWordForwards(): void {
+	#moveWordForwards(select = false): void {
+		if (!select) this.#selectionAnchor = null;
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 
 		if (this.#state.cursorCol >= currentLine.length) {

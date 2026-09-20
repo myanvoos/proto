@@ -7,6 +7,16 @@ export interface Keybindings {
 	"tui.editor.cursorRight": true;
 	"tui.editor.cursorWordLeft": true;
 	"tui.editor.cursorWordRight": true;
+	"tui.editor.cursorSelectLeft": true;
+	"tui.editor.cursorSelectRight": true;
+	"tui.editor.cursorSelectUp": true;
+	"tui.editor.cursorSelectDown": true;
+	"tui.editor.cursorSelectWordLeft": true;
+	"tui.editor.cursorSelectWordRight": true;
+	"tui.editor.cursorSelectLineStart": true;
+	"tui.editor.cursorSelectLineEnd": true;
+	"tui.editor.cursorSelectPageUp": true;
+	"tui.editor.cursorSelectPageDown": true;
 	"tui.editor.cursorLineStart": true;
 	"tui.editor.cursorLineEnd": true;
 	"tui.editor.jumpForward": true;
@@ -67,6 +77,46 @@ export const TUI_KEYBINDINGS = {
 	"tui.editor.cursorWordRight": {
 		defaultKeys: ["alt+right", "ctrl+right", "alt+f"],
 		description: "Move cursor word right",
+	},
+	"tui.editor.cursorSelectLeft": {
+		defaultKeys: "shift+left",
+		description: "Extend selection left",
+	},
+	"tui.editor.cursorSelectRight": {
+		defaultKeys: "shift+right",
+		description: "Extend selection right",
+	},
+	"tui.editor.cursorSelectUp": {
+		defaultKeys: "shift+up",
+		description: "Extend selection up",
+	},
+	"tui.editor.cursorSelectDown": {
+		defaultKeys: "shift+down",
+		description: "Extend selection down",
+	},
+	"tui.editor.cursorSelectWordLeft": {
+		defaultKeys: "shift+alt+left",
+		description: "Extend selection word left",
+	},
+	"tui.editor.cursorSelectWordRight": {
+		defaultKeys: "shift+alt+right",
+		description: "Extend selection word right",
+	},
+	"tui.editor.cursorSelectLineStart": {
+		defaultKeys: "shift+home",
+		description: "Extend selection to line start",
+	},
+	"tui.editor.cursorSelectLineEnd": {
+		defaultKeys: "shift+end",
+		description: "Extend selection to line end",
+	},
+	"tui.editor.cursorSelectPageUp": {
+		defaultKeys: "shift+pageUp",
+		description: "Extend selection page up",
+	},
+	"tui.editor.cursorSelectPageDown": {
+		defaultKeys: "shift+pageDown",
+		description: "Extend selection page down",
 	},
 	"tui.editor.cursorLineStart": {
 		defaultKeys: ["home", "ctrl+a"],

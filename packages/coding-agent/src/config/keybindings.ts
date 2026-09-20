@@ -128,7 +128,7 @@ const KEYBINDINGS = {
 		description: "Retry last failed assistant turn",
 	},
 	"app.message.dequeue": {
-		defaultKeys: ["alt+up", "shift+up"],
+		defaultKeys: "alt+up",
 		description: "Dequeue message",
 	},
 	"app.clipboard.pasteImage": {
@@ -468,52 +468,14 @@ function loadKeybindingsConfig(
 	return { config: migratedConfig, persistedPath: filePath };
 }
 
-const DEQUEUE_KEYBINDING: AppKeybinding = "app.message.dequeue";
-const MACOS_DEQUEUE_FALLBACK_KEY: KeyId = "shift+up";
-function getFallbackKey(keybinding: Keybinding): KeyId | undefined {
-	if (keybinding === DEQUEUE_KEYBINDING) return MACOS_DEQUEUE_FALLBACK_KEY;
-	return undefined;
-}
-function keyListIncludes(keys: KeyId | KeyId[] | undefined, target: KeyId): boolean {
-	if (keys === undefined) return false;
-	const keyList = Array.isArray(keys) ? keys : [keys];
-	for (const key of keyList) {
-		if (key.toLowerCase() === target) return true;
-	}
-	return false;
-}
-
-function userBindingClaimsKey(config: KeybindingsConfig, target: KeyId, except: Keybinding): boolean {
-	for (const [keybinding, keys] of Object.entries(config)) {
-		if (!(keybinding in KEYBINDINGS)) continue;
-		if (keybinding === except) continue;
-		if (keyListIncludes(keys, target)) return true;
-	}
-	return false;
-}
-
-function removeKey(keys: KeyId[], target: KeyId): KeyId[] {
-	return keys.filter(key => key !== target);
-}
-
-function keyConfigValue(keys: KeyId[]): KeyId | KeyId[] {
-	if (keys.length === 1) {
-		const key = keys[0];
-		if (key !== undefined) return key;
-	}
-	return [...keys];
-}
-
 export class KeybindingsManager extends TuiKeybindingsManager {
 	#configPath: string | undefined;
 	#inheritedConfigPath: string | undefined;
-	#userBindings: KeybindingsConfig;
 
 	constructor(userBindings: KeybindingsConfig = {}, configPath?: string, inheritedConfigPath?: string) {
 		super(KEYBINDINGS, userBindings);
 		this.#configPath = configPath;
 		this.#inheritedConfigPath = inheritedConfigPath;
-		this.#userBindings = userBindings;
 	}
 
 	static create(agentDir: string = getAgentDir(), options: KeybindingsCreateOptions = {}): KeybindingsManager {
@@ -535,31 +497,6 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 			: { config: {} };
 		const { config: profileConfig } = KeybindingsManager.#loadFromFile(this.#configPath);
 		this.setUserBindings(mergeKeybindingsConfig(inheritedConfig, profileConfig));
-	}
-
-	override setUserBindings(userBindings: KeybindingsConfig): void {
-		this.#userBindings = userBindings;
-		super.setUserBindings(userBindings);
-	}
-
-	override getKeys(keybinding: Keybinding): KeyId[] {
-		const keys = super.getKeys(keybinding);
-		const fallbackKey = getFallbackKey(keybinding);
-		if (fallbackKey === undefined || this.#userBindings[keybinding] !== undefined) return keys;
-		if (!userBindingClaimsKey(this.#userBindings, fallbackKey, keybinding)) return keys;
-		return removeKey(keys, fallbackKey);
-	}
-
-	override getResolvedBindings(): KeybindingsConfig {
-		// The effective config must match what dispatch actually uses: every
-		// action goes through this.getKeys so fallback-claim removal (e.g. a
-		// user binding claiming a fallback key like shift+up) is reflected,
-		// not just the follow-up special case.
-		const resolved = super.getResolvedBindings();
-		for (const keybinding of Object.keys(resolved) as Keybinding[]) {
-			resolved[keybinding] = keyConfigValue(this.getKeys(keybinding));
-		}
-		return resolved;
 	}
 
 	getEffectiveConfig(): KeybindingsConfig {
