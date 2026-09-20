@@ -31,6 +31,7 @@ import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	extractDisplayInputText,
+	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
 } from "../utils/transcript-render-helpers";
 import { isWarpCliAgentProtocolActive } from "../warp-events";
@@ -1145,6 +1146,7 @@ export class EventController {
 			this.#streamingReveal.resyncVisibility();
 		}
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
+			const lastStreamedToolCallId = this.#streamedTimelineLastToolCallId;
 			this.ctx.streamingMessage = event.message;
 			this.#processAssistantMessageUpdate(event.message, undefined, true);
 			this.#streamingReveal.stop();
@@ -1162,7 +1164,15 @@ export class EventController {
 						stopReason: "stop",
 					}
 				: this.ctx.streamingMessage;
-			const displayTimeline = splitAssistantMessageToolTimeline(displayMessage);
+			const interruptedDiscardedTool =
+				lastStreamedToolCallId !== undefined &&
+				!displayMessage.content.some(block => block.type === "toolCall" && block.id === lastStreamedToolCallId) &&
+				resolveAssistantErrorPresentation(displayMessage).kind === "interrupted";
+			const displayTimeline = splitAssistantMessageToolTimeline(
+				interruptedDiscardedTool
+					? { ...displayMessage, stopReason: "stop", errorMessage: undefined }
+					: displayMessage,
+			);
 			this.ctx.streamingComponent.updateContent(displayTimeline.beforeTools);
 
 			if (this.ctx.streamingMessage.stopReason !== "aborted" && this.ctx.streamingMessage.stopReason !== "error") {
@@ -1206,6 +1216,15 @@ export class EventController {
 				const component = this.#upsertPostToolAssistantSegment(toolCallId, segment);
 				component?.markTranscriptBlockFinalized();
 				if (component) lastPostToolAssistantComponent = component;
+			}
+			if (interruptedDiscardedTool) {
+				// The provider may discard an unfinished tool call at abort. Its prefix is
+				// already immutable scrollback, so append the marker after the live card.
+				lastPostToolAssistantComponent = this.#upsertPostToolAssistantSegment(lastStreamedToolCallId, {
+					...displayMessage,
+					content: [],
+				});
+				lastPostToolAssistantComponent?.markTranscriptBlockFinalized();
 			}
 			this.#lastAssistantComponent = lastPostToolAssistantComponent ?? this.ctx.streamingComponent;
 			if (settings.get("display.showTokenUsage") && assistantUsageIsBilled(event.message.usage)) {

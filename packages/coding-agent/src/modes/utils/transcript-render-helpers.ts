@@ -7,6 +7,7 @@ import type { MonitorEvent, MonitorEventKind } from "../../monitor/types";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
+	isUserInterruptAbort,
 	resolveAbortLabel,
 	shouldRenderAbortReason,
 } from "../../session/messages";
@@ -209,11 +210,14 @@ export function buildFileMentionBlock(files: FileMentionMessage["files"], indent
 }
 
 export function assistantHasVisibleContent(message: AssistantAgentMessage): boolean {
-	return message.content.some(
-		content =>
-			content.type === "image" ||
-			(content.type === "text" && canonicalizeMessage(content.text)) ||
-			(content.type === "thinking" && canonicalizeMessage(content.thinking)),
+	return (
+		resolveAssistantErrorPresentation(message).kind === "interrupted" ||
+		message.content.some(
+			content =>
+				content.type === "image" ||
+				(content.type === "text" && canonicalizeMessage(content.text)) ||
+				(content.type === "thinking" && canonicalizeMessage(content.thinking)),
+		)
 	);
 }
 
@@ -261,6 +265,12 @@ export function splitAssistantMessageToolTimeline(message: AssistantAgentMessage
 		return { beforeTools: message, afterToolCalls, hasToolCalls: false };
 	}
 
+	if (lastToolCallId !== undefined && resolveAssistantErrorPresentation(message).kind === "interrupted") {
+		// Display the turn's interrupt once, after the final tool, even if no prose followed it.
+		const trailingContent = afterToolCalls.get(lastToolCallId)?.content ?? [];
+		afterToolCalls.set(lastToolCallId, { ...message, content: trailingContent });
+	}
+
 	return { beforeTools: displaySegment(beforeTools), afterToolCalls, hasToolCalls: true };
 }
 
@@ -271,7 +281,8 @@ export function normalizeToolArgs(args: unknown): Record<string, unknown> {
 type AssistantErrorPresentation =
 	| { kind: "none" }
 	| { kind: "full"; text: string; isError: true }
-	| { kind: "compact-recovered"; text: string; isError: false };
+	| { kind: "compact-recovered"; text: string; isError: false }
+	| { kind: "interrupted"; text: string; isError: false };
 
 function sanitizeRecoveredRetryNote(note: string): string {
 	const normalized = replaceTabs(note).replace(/\s+/g, " ").trim();
@@ -291,7 +302,7 @@ export function resolveAssistantErrorPresentation(
 		};
 	}
 	if (message.stopReason === "aborted") {
-		if (!shouldRenderAbortReason(message)) return { kind: "none" };
+		if (isUserInterruptAbort(message)) return { kind: "interrupted", text: "Interrupted", isError: false };
 		return { kind: "full", text: resolveAbortLabel(message, retryAttempt), isError: true };
 	}
 	if (message.stopReason === "error") {

@@ -26,6 +26,8 @@ import type {
 } from "./types";
 
 const SESSION_CLOCK_GAP = "      ";
+/** Narrowest session title worth keeping on the quiet line; below this the title is dropped instead. */
+const QUIET_TITLE_MIN_WIDTH = 12;
 
 type QuietPart = { id: string; content: string };
 
@@ -1207,21 +1209,35 @@ export class StatusLineComponent implements Component {
 		let right = rightParts.map(part => part.content).join(sep);
 
 		const sepWidth = visibleWidth(sep);
+		const overflow = (): number => visibleWidth(left) + visibleWidth(right) + (left && right ? sepWidth : 0) - budget;
+		const shrinkTitle = (): boolean => {
+			const index = rightParts.findIndex(part => part.id === "session_name");
+			if (index < 0) return false;
+			const title = rightParts[index]!;
+			const fitWidth = visibleWidth(title.content) - overflow();
+			if (fitWidth < QUIET_TITLE_MIN_WIDTH) return false;
+			rightParts[index] = { id: title.id, content: truncateToWidth(title.content, fitWidth) };
+			right = rightParts.map(part => part.content).join(sep);
+			return true;
+		};
+		// Shed order: clock gap → session title → clock → title again → free-rank parts → location → ranked parts.
 		let clockStage = 0;
 		let locationShortened = false;
-		while (
-			rightParts.length > 0 &&
-			visibleWidth(left) + visibleWidth(right) + (left && right ? sepWidth : 0) > budget
-		) {
+		while (rightParts.length > 0 && overflow() > 0) {
 			if (clockStage === 0) {
 				clockStage = 1;
-				left = this.#locationWithRunClock(locationContents, sep, "  ");
+				left = this.#locationWithRunClock(locationContents, sep, " ");
 				continue;
 			}
 			if (clockStage === 1) {
 				clockStage = 2;
+				if (shrinkTitle()) continue;
 				left = locationContents.join(sep);
 				continue;
+			}
+			if (clockStage === 2) {
+				clockStage = 3;
+				if (shrinkTitle()) continue;
 			}
 			let dropIndex = -1;
 			let dropRank = Number.POSITIVE_INFINITY;

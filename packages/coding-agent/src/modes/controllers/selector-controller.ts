@@ -213,10 +213,9 @@ export class SelectorController {
 						});
 						this.ctx.ui.requestRender();
 					},
-					getStatusLinePreview: () => {
-						const width = this.ctx.editor.getTopBorderAvailableWidth(this.ctx.ui.terminal.columns);
+					getStatusLinePreview: width => {
 						const { locationLine, capabilityLine } = this.ctx.statusLine.renderQuietLines(width);
-						return [locationLine, capabilityLine].filter(line => line !== null).join("\n");
+						return [locationLine, capabilityLine].filter(line => line !== null);
 					},
 					onPluginsChanged: async () => {
 						const projectPath = await resolveActiveProjectRegistryPath(this.ctx.sessionManager.getCwd());

@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { initThemeSync } from "../theme/theme";
+import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import { initThemeSync, theme } from "../theme/theme";
 import { AssistantMessageComponent } from "./assistant-message";
 import { TranscriptContainer } from "./transcript-container";
 
 initThemeSync();
+
+function strip(line: string): string {
+	return line.replace(/\x1b\[[0-9;]*m/g, "");
+}
 
 const message: AssistantMessage = {
 	role: "assistant",
@@ -66,6 +71,48 @@ test("sanitizes assistant error content before collapsed and expanded rendering"
 		expect(output).not.toContain("\t");
 		expect(output).toContain("ERRBELLCTRLRED");
 	}
+});
+
+// Esc aborts the turn mid-stream. The red "Interrupted by user" line was dropped as
+// redundant, which left no trace at all: the text just stopped mid-word. A user
+// interrupt now renders a dim one-line marker; every other abort keeps its error label.
+test("an Esc-interrupted reply renders a dim marker instead of the error-styled interrupt line", () => {
+	const interrupted: AssistantMessage = { ...message, stopReason: "aborted", errorMessage: USER_INTERRUPT_LABEL };
+	const lines = new AssistantMessageComponent(interrupted).render(80);
+	const markerLine = lines.find(line => strip(line).includes("Interrupted"));
+	expect(markerLine).toBeDefined();
+	expect(strip(markerLine!)).toContain(`${theme.symbol("status.aborted")} Interrupted`);
+	expect(markerLine).toContain(theme.getFgAnsi("dim"));
+	expect(markerLine).not.toContain(theme.getFgAnsi("error"));
+	const plain = lines.map(strip).join("\n");
+	expect(plain).not.toContain(USER_INTERRUPT_LABEL);
+	expect(plain).not.toContain("Operation aborted");
+});
+
+test("a non-user abort keeps the error-styled abort label", () => {
+	const aborted: AssistantMessage = { ...message, stopReason: "aborted" };
+	const lines = new AssistantMessageComponent(aborted).render(80);
+	const abortLine = lines.find(line => strip(line).includes("Operation aborted"));
+	expect(abortLine).toBeDefined();
+	expect(abortLine).toContain(theme.getFgAnsi("error"));
+	expect(lines.map(strip).join("\n")).not.toContain("Interrupted");
+});
+
+// The streaming component updates text in place through a fast path keyed on content
+// shape; the abort only changes stopReason, so the marker must still force a rebuild.
+test("a streamed reply interrupted mid-turn shows the marker after its final update", () => {
+	const reply = new AssistantMessageComponent(undefined, false);
+	reply.updateContent({ ...message, content: [{ type: "text", text: "partial ans" }] }, { transient: true });
+	reply.render(80);
+	reply.updateContent({
+		...message,
+		content: [{ type: "text", text: "partial answ" }],
+		stopReason: "aborted",
+		errorMessage: USER_INTERRUPT_LABEL,
+	});
+	const plain = reply.render(80).map(strip).join("\n");
+	expect(plain).toContain("partial answ");
+	expect(plain).toContain(`${theme.symbol("status.aborted")} Interrupted`);
 });
 
 // TranscriptContainer turns this count into the live-region boundary: rows below

@@ -13,7 +13,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
+import { pluralize, prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
 import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
@@ -1093,27 +1093,15 @@ function renderNoteLines(uiTheme: Theme, note: string, width: number): string[] 
 		});
 }
 
+function renderPendingQuestionLine(uiTheme: Theme, mdTheme: MarkdownTheme, question: string, width: number): string {
+	const flattened = replaceTabs(sanitizeText(question)).replace(/\s+/g, " ").trim();
+	const rendered = renderInlineMarkdown(flattened, mdTheme, t => uiTheme.fg("accent", t));
+	return truncateToWidth(rendered, outputBlockContentWidth(width));
+}
+
 function optionMarker(uiTheme: Theme, multi: boolean | undefined, selected: boolean): string {
 	if (multi) return selected ? uiTheme.checkbox.checked : uiTheme.checkbox.unchecked;
 	return selected ? uiTheme.radio.selected : uiTheme.radio.unselected;
-}
-
-function renderQuestionOptionLines(
-	uiTheme: Theme,
-	mdTheme: MarkdownTheme,
-	options: AskRenderOption[],
-	multi: boolean | undefined,
-): string[] {
-	const out: string[] = [];
-	for (const opt of options) {
-		const optLabel = renderInlineMarkdown(opt.label, mdTheme, t => uiTheme.fg("muted", t));
-		out.push(` ${uiTheme.fg("dim", optionMarker(uiTheme, multi, false))} ${optLabel}`);
-		if (opt.description?.trim()) {
-			const description = renderInlineMarkdown(opt.description.trim(), mdTheme, t => uiTheme.fg("dim", t));
-			out.push(`   ${uiTheme.fg("dim", "↳")} ${description}`);
-		}
-	}
-	return out;
 }
 
 function renderAnswerOptionLines(
@@ -1154,28 +1142,17 @@ export const askToolRenderer = {
 	renderCall(args: AskRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const label = formatTitle("Ask", uiTheme);
 		const mdTheme = getMarkdownTheme();
-		const accentStyle = { color: (t: string) => uiTheme.fg("accent", t) };
-		const md = (text: string, width: number) =>
-			new Markdown(text, 1, 0, mdTheme, accentStyle).render(Math.max(1, outputBlockContentWidth(width) + 1));
 
 		const questions = normalizeRenderQuestions(args.questions);
 		if (questions && questions.length > 0) {
-			const header = `${label} ${uiTheme.fg("muted", `${questions.length} questions`)}`;
-			return framedBlock(uiTheme, width => {
-				const sections = questions.map(q => {
-					const meta: string[] = [];
-					if (q.multi) meta.push("multi");
-					if (q.options?.length) meta.push(`options:${q.options.length}`);
-					const metaStr = meta.length > 0 ? uiTheme.fg("dim", ` · ${meta.join(" · ")}`) : "";
-
-					const mdLines = md(q.question, width);
-					const lines = q.options?.length
-						? [...mdLines, ...renderQuestionOptionLines(uiTheme, mdTheme, q.options, q.multi)]
-						: mdLines;
-					return { label: `${uiTheme.fg("dim", `[${sanitizeText(q.id)}]`)}${metaStr}`, lines };
-				});
-				return { header, sections, state: "pending", borderColor: "borderMuted", width };
-			});
+			const header = `${label} ${uiTheme.fg("muted", `${questions.length} ${pluralize("question", questions.length)}`)}`;
+			return framedBlock(uiTheme, width => ({
+				header,
+				sections: [{ lines: questions.map(q => renderPendingQuestionLine(uiTheme, mdTheme, q.question, width)) }],
+				state: "pending",
+				borderColor: "borderMuted",
+				width,
+			}));
 		}
 
 		if (typeof args.question !== "string" || !args.question) {
@@ -1195,20 +1172,13 @@ export const askToolRenderer = {
 		const questionOptions = normalizeRenderOptions(args.options);
 		if (questionOptions?.length) meta.push(`options:${questionOptions.length}`);
 		const header = `${label}${formatMeta(meta, uiTheme)}`;
-		const multi = args.multi;
-		return framedBlock(uiTheme, width => {
-			const mdLines = md(question, width);
-			const bodyLines = questionOptions?.length
-				? [...mdLines, ...renderQuestionOptionLines(uiTheme, mdTheme, questionOptions, multi)]
-				: mdLines;
-			return {
-				header,
-				sections: bodyLines.length > 0 ? [{ lines: bodyLines }] : [],
-				state: "pending",
-				borderColor: "borderMuted",
-				width,
-			};
-		});
+		return framedBlock(uiTheme, width => ({
+			header,
+			sections: [{ lines: [renderPendingQuestionLine(uiTheme, mdTheme, question, width)] }],
+			state: "pending",
+			borderColor: "borderMuted",
+			width,
+		}));
 	},
 
 	renderResult(
@@ -1254,7 +1224,7 @@ export const askToolRenderer = {
 				{
 					icon: hasAnySelection ? "success" : "warning",
 					title: "Ask",
-					meta: [`${results.length} questions`],
+					meta: [`${results.length} ${pluralize("question", results.length)}`],
 				},
 				uiTheme,
 			);

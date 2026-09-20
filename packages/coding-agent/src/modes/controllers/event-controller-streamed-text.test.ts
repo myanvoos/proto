@@ -3,8 +3,9 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
+import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { TranscriptContainer } from "../components/transcript-container";
-import { initTheme } from "../theme/theme";
+import { initTheme, theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { EventController } from "./event-controller";
 
@@ -272,3 +273,46 @@ test("post-tool assistant text that grows alongside the next tool call renders i
 		chatContainer.dispose();
 	}
 });
+
+// Providers can retain a completed tool call or drop a partial one from their final
+// aborted snapshot. Both paths must append a marker after the live card, not try to
+// update the already-finalized assistant prefix above it.
+test.each(["retained", "discarded", "retained-prefix"] as const)(
+	"Esc while a tool call streams shows exactly one dim marker when the final call is %s",
+	async disposition => {
+		const { chatContainer, context } = createContext();
+		const controller = new EventController(context);
+		try {
+			await controller.handleEvent({ type: "message_start", message: snapshot([]) });
+			const prefix: Block[] = [{ type: "text", text: TEXT }];
+			if (disposition === "retained-prefix") prefix.push(toolCallBlock("call-complete"));
+			const partial = snapshot([...prefix, toolCallBlock("call-interrupted")]);
+			await controller.handleEvent({
+				type: "message_update",
+				message: partial,
+				assistantMessageEvent: { type: "toolcall_start", contentIndex: partial.content.length - 1, partial },
+			});
+			chatContainer.render(RENDER_WIDTH);
+
+			const interrupted: AssistantMessage = {
+				...snapshot(disposition === "retained" ? partial.content : prefix),
+				stopReason: "aborted",
+				errorMessage: USER_INTERRUPT_LABEL,
+			};
+			await controller.handleEvent({ type: "message_end", message: interrupted });
+			const lines = chatContainer.render(RENDER_WIDTH);
+			const marker = `${theme.symbol("status.aborted")} Interrupted`;
+			const markerLines = lines.filter(line => Bun.stripANSI(line).includes(marker));
+			expect(markerLines).toHaveLength(1);
+			expect(markerLines[0]).toContain(theme.getFgAnsi("dim"));
+			expect(markerLines[0]).not.toContain(theme.getFgAnsi("error"));
+			const output = Bun.stripANSI(lines.join("\n"));
+			expect(output).not.toContain(USER_INTERRUPT_LABEL);
+			expect(output.lastIndexOf(marker)).toBeGreaterThan(output.indexOf(TEXT));
+			expect(output.lastIndexOf(marker)).toBeGreaterThan(output.lastIndexOf("ls"));
+		} finally {
+			controller.dispose();
+			chatContainer.dispose();
+		}
+	},
+);

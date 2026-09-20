@@ -543,7 +543,8 @@ interface SettingsCallbacks {
 
 	onStatusLinePreview?: (settings: StatusLinePreviewSettings) => void;
 
-	getStatusLinePreview?: () => string;
+	/** Status line preview rows rendered to fit `width` columns; one entry per line. */
+	getStatusLinePreview?: (width: number) => string[];
 
 	onPluginsChanged?: () => void | Promise<void>;
 
@@ -574,6 +575,8 @@ export class SettingsSelectorComponent implements Component {
 	#tabRowCount = 0;
 	#contentRowStart = 0;
 	#contentRowCount = 0;
+	/** Inner column budget from the last render; submenus opened afterwards size their preview by it. */
+	#innerWidth = 76;
 
 	constructor(
 		private readonly context: SettingsRuntimeContext,
@@ -667,11 +670,14 @@ export class SettingsSelectorComponent implements Component {
 	render(width: number): readonly string[] {
 		const height = Math.max(14, process.stdout.rows || 40);
 		const innerWidth = Math.max(1, width - 4);
+		this.#innerWidth = innerWidth;
 
 		const tabLines = this.#tabBar.render(innerWidth);
 		const searching = this.#searchList !== null;
 		const showPreview = !searching && this.#currentTabId === "appearance";
-		const previewLines = showPreview ? ["", theme.fg("muted", "Preview:"), this.#getStatusPreviewString()] : [];
+		const previewLines = showPreview
+			? ["", theme.fg("muted", "Preview:"), ...this.#getStatusPreviewLines(innerWidth)]
+			: [];
 
 		const fixedRows = 1 + tabLines.length + 1 + (searching ? 1 : 0) + 1 + 1 + 1;
 		const contentRows = Math.max(7, height - fixedRows - previewLines.length);
@@ -1027,7 +1033,10 @@ export class SettingsSelectorComponent implements Component {
 		}
 
 		const isThemeSetting = def.path === "theme.dark" || def.path === "theme.light";
-		const getPreview = isThemeSetting ? this.callbacks.getStatusLinePreview : undefined;
+		const getPreview =
+			isThemeSetting && this.callbacks.getStatusLinePreview
+				? () => this.#getStatusPreviewLines(this.#innerWidth).join("\n")
+				: undefined;
 
 		return new SelectSubmenu(
 			def.label,
@@ -1232,11 +1241,11 @@ export class SettingsSelectorComponent implements Component {
 		this.#currentList.setItems(this.#buildItemsForDefs(defs));
 	}
 
-	#getStatusPreviewString(): string {
+	#getStatusPreviewLines(width: number): string[] {
 		if (this.callbacks.getStatusLinePreview) {
-			return this.callbacks.getStatusLinePreview();
+			return this.callbacks.getStatusLinePreview(width);
 		}
-		return theme.fg("dim", "(preview not available)");
+		return [theme.fg("dim", "(preview not available)")];
 	}
 
 	#triggerStatusLinePreview(): void {

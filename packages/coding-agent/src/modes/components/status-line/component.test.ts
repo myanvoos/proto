@@ -24,7 +24,12 @@ const usageStatistics = {
 	cost: 0,
 };
 
-function sessionWithMessages(options: { messages: AgentSession["messages"]; isStreaming?: boolean }): AgentSession {
+function sessionWithMessages(options: {
+	messages: AgentSession["messages"];
+	isStreaming?: boolean;
+	sessionName?: string;
+	cwd?: string;
+}): AgentSession {
 	const model = { id: "test-model", name: "Test Model", contextWindow: 100_000 };
 	const state = { model, thinkingLevel: "off" } as Record<string, unknown>;
 	Object.defineProperty(state, "messages", {
@@ -36,7 +41,11 @@ function sessionWithMessages(options: { messages: AgentSession["messages"]; isSt
 		state,
 		model,
 		isStreaming: options.isStreaming ?? false,
-		sessionManager: { getUsageStatistics: () => usageStatistics },
+		sessionManager: {
+			getUsageStatistics: () => usageStatistics,
+			getSessionName: () => options.sessionName,
+			getCwd: options.cwd === undefined ? undefined : () => options.cwd,
+		},
 		getAsyncJobSnapshot: () => ({ running: [] }),
 		isAdvisorActive: () => false,
 		isFastModeActive: () => false,
@@ -108,6 +117,51 @@ describe("StatusLineComponent token rate", () => {
 
 			now.mockReturnValue(11_000);
 			expect(component.renderQuietLine(120)).toContain("50.0 tok/s");
+		} finally {
+			component.dispose();
+		}
+	});
+});
+
+describe("StatusLineComponent quiet line shedding", () => {
+	// 61-column path + 28-column title: at 120 columns the line overflows by less than the title's slack.
+	const cwd = "/srv/projects/status-line-fixtures/quiet-line/clock-and-title";
+	const sessionName = "Fixing the flaky test matrix";
+
+	function runningComponent(): StatusLineComponent {
+		const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+		const component = new StatusLineComponent(sessionWithMessages({ messages: [], sessionName, cwd }));
+		component.updateSettings({
+			leftSegments: ["model", "time_spent", "path"],
+			rightSegments: ["session_name"],
+			segmentOptions: { path: { maxLength: 80 } },
+		});
+		component.markActivityStart();
+		now.mockReturnValue(57_000);
+		return component;
+	}
+
+	test("keeps the run clock at 120 columns by truncating the session title instead", () => {
+		const component = runningComponent();
+		try {
+			const line = Bun.stripANSI(component.renderQuietLine(120) ?? "");
+			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(120);
+			expect(line).toContain("0:47");
+			expect(line).toContain("Test Model");
+			expect(line).toContain("Fixing the flaky");
+			expect(line).not.toContain(sessionName);
+		} finally {
+			component.dispose();
+		}
+	});
+
+	test("drops the run clock before the model segment once the title cannot absorb the overflow", () => {
+		const component = runningComponent();
+		try {
+			const line = Bun.stripANSI(component.renderQuietLine(84) ?? "");
+			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(84);
+			expect(line).not.toContain("0:47");
+			expect(line).toContain("Test Model");
 		} finally {
 			component.dispose();
 		}

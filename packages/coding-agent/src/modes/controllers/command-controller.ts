@@ -15,12 +15,14 @@ import { TranscriptBlock } from "../../modes/components/transcript-container";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
+import { buildHelpMarkdown } from "../../modes/utils/help-markdown";
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
+import { BUILTIN_SLASH_COMMAND_DEFS } from "../../slash-commands/builtin-registry";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
@@ -268,6 +270,11 @@ export class CommandController {
 			usageModelSelectors,
 		);
 		this.ctx.presentCommandOutput([new Spacer(1), new Text(output, 1, 0)]);
+	}
+
+	handleHelpCommand(): void {
+		const help = buildHelpMarkdown({ commands: BUILTIN_SLASH_COMMAND_DEFS });
+		showMarkdownPanel(this.ctx, "Help", help);
 	}
 
 	handleHotkeysCommand(): void {
@@ -689,6 +696,7 @@ export class CommandController {
 
 const BAR_WIDTH_MAX = 24;
 const COLUMN_WIDTH_MIN = 4;
+const USAGE_MODEL_PREVIEW_COUNT = 3;
 
 function renderJobLine(job: AsyncJobSnapshotItem, now: number): string {
 	const duration = formatDuration(Math.max(0, now - job.startTime));
@@ -1055,10 +1063,12 @@ export function renderUsageReports(
 		}
 		const reportingModels = usageModelSelectors.filter(selector => selector.startsWith(`${provider}/`));
 		if (reportingModels.length > 0) {
-			lines.push(`  ${uiTheme.fg("accent", "Models with usage data")}`);
-			for (const selector of reportingModels) {
-				lines.push(`    ${replaceTabs(truncateToWidth(sanitizeText(selector), availableWidth - 4))}`);
-			}
+			const preview = reportingModels
+				.slice(0, USAGE_MODEL_PREVIEW_COUNT)
+				.map(selector => replaceTabs(sanitizeText(selector.slice(provider.length + 1))));
+			if (reportingModels.length > USAGE_MODEL_PREVIEW_COUNT) preview.push("…");
+			const summary = `${uiTheme.fg("accent", `Models with usage data: ${reportingModels.length}`)} ${uiTheme.fg("dim", preview.join(", "))}`;
+			lines.push(truncateToWidth(`  ${summary}`, availableWidth));
 		}
 
 		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
