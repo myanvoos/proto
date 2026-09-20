@@ -31,7 +31,7 @@ export type { StreamedKernelFailure } from "../eval/speculation";
 
 import { preflightStreamedInput } from "../eval/assertion-preflight";
 import { type KernelShellBridgeHandle, registerKernelShellRun } from "../eval/shell-bridge";
-import type { EvalCellResult, EvalStatusEvent } from "../eval/types";
+import type { EvalCellResult, EvalLanguage, EvalStatusEvent } from "../eval/types";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -51,9 +51,10 @@ import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } 
 import { renderStatusLine } from "../tui/status-line";
 import { webpExclusionForModel } from "../utils/image-loading";
 import { resizeImage } from "../utils/image-resize";
+import { getLanguageFromPath } from "../utils/lang-from-path";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
-import { findBashFileWrites } from "./bash-file-write";
+import { findBashFileWrites, normalizeBashWritePath } from "./bash-file-write";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
 import {
@@ -65,7 +66,12 @@ import {
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
-import { EVAL_DEFAULT_PREVIEW_LINES, renderKernelCellLines } from "./eval-render";
+import {
+	EVAL_DEFAULT_PREVIEW_LINES,
+	type EvalDisplayCell,
+	renderKernelCellLines,
+	renderShellWithCellOutlines,
+} from "./eval-render";
 import {
 	formatStyledTruncationWarning,
 	type OutputMeta,
@@ -510,12 +516,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				.filter(write => write.code.trim().length > 0)
 				.map(write => ({
 					start: write.start,
-					path: write.path
-						.replace(
-							/^(?:'([^']*)'|"([^"]*)")$/u,
-							(_, single: string | undefined, double: string | undefined) => single ?? double ?? write.path,
-						)
-						.replaceAll("\\", "/"),
+					path: normalizeBashWritePath(write.path),
 					digest: write.code,
 				})),
 		]
@@ -1877,8 +1878,10 @@ function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unknown> | u
 	return args.env ?? partialEnv;
 }
 
-function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] {
-	const command = replaceTabs(args.command || "…");
+// `outlineWidth` renders the settled view: each embedded code region becomes an
+// AST outline inside the surrounding shell source. Omit it for the raw listing.
+function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme, outlineWidth?: number): string[] {
+	const command = args.command || "…";
 	const cwd = getProjectDir();
 	const displayWorkdir = formatToolWorkingDirectory(args.cwd, cwd);
 	const envAssignments = formatBashEnvAssignments(getBashEnvForDisplay(args));
@@ -1886,9 +1889,41 @@ function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] 
 	if (displayWorkdir) prefixParts.push(`cd ${displayWorkdir} &&`);
 	if (envAssignments) prefixParts.push(envAssignments);
 	const prefix = uiTheme.fg("dim", `${prefixParts.join(" ")} `);
-	const highlightedLines = highlightCode(command, "bash");
+	const outlined =
+		outlineWidth === undefined
+			? undefined
+			: renderShellWithCellOutlines(command, bashDisplayCells(command), "bash", uiTheme, outlineWidth);
+	const highlightedLines = outlined?.lines ?? highlightCode(replaceTabs(command), "bash");
 	if (highlightedLines.length === 0) return [prefix.trimEnd()];
 	return highlightedLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+}
+
+// A heredoc that writes a source file carries code the same way a kernel cell
+// does, so its body earns the same AST outline; the file extension picks the
+// grammar. Anything that is not a JS/TS or Python file (`.md`, `.json`, `.sh`,
+// no extension) has no outline to show and keeps the plain shell rendering.
+function writeOutlineLanguage(writePath: string): EvalLanguage | undefined {
+	const base = path.basename(normalizeBashWritePath(writePath));
+	if (base.lastIndexOf(".") <= 0) return undefined;
+	const language = getLanguageFromPath(base);
+	if (language === "typescript" || language === "tsx" || language === "javascript") return "js";
+	return language === "python" ? "python" : undefined;
+}
+
+/** Every region of a bash command that renders as an AST outline: kernel cell bodies plus heredoc-written source files. */
+function bashDisplayCells(command: string): EvalDisplayCell[] {
+	const cells: EvalDisplayCell[] = findBashKernelCells(command).map(cell => ({
+		start: cell.start,
+		end: cell.end,
+		code: cell.code,
+		language: cell.language,
+	}));
+	for (const write of findBashFileWrites(command)) {
+		if (write.code.trim().length === 0) continue;
+		const language = writeOutlineLanguage(write.path);
+		if (language) cells.push({ start: write.start, end: write.end, code: write.code, language });
+	}
+	return cells.sort((a, b) => a.start - b.start);
 }
 
 // A kernel-routed `python`/`node`/`bun` bash cell renders identically to an `eval`
@@ -1929,7 +1964,7 @@ function kernelCellLines(
 		width: opts.width,
 		displayCode: opts.displayCode,
 		displayLanguage: opts.displayCode === undefined ? undefined : "bash",
-		displayCells: opts.displayCode === undefined ? undefined : findBashKernelCells(opts.displayCode),
+		displayCells: opts.displayCode === undefined ? undefined : bashDisplayCells(opts.displayCode),
 	});
 }
 
@@ -2204,7 +2239,17 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					if (timeoutLine) outputLines.push(timeoutLine);
 					if (warningLine) outputLines.push(warningLine);
 
-					const cmdLines = args ? formatBashCommandLines(renderArgs, uiTheme) : undefined;
+					// Outlines land on the settled, collapsed view only, matching the
+					// kernel-cell path: a live block that swapped source for an outline
+					// mid-stream would rewrite rows already committed to scrollback, and
+					// ctrl+o must still reveal the literal source.
+					const cmdLines = args
+						? formatBashCommandLines(
+								renderArgs,
+								uiTheme,
+								isPartial || expanded ? undefined : outputBlockContentWidth(width),
+							)
+						: undefined;
 					const framed = outputBlock.render(
 						{
 							header,

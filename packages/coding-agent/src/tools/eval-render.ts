@@ -790,11 +790,12 @@ function shellChunkLines(chunk: string, shellLanguage: string, theme: Theme): st
 	return highlightCode(replaceTabs(text), shellLanguage, theme);
 }
 
-// Settled view of a mixed bash call: the shell source with each kernel cell's
-// code region replaced by its AST outline (or the cell language's highlighted
-// source when it does not parse), so the block reads as shell around an
-// outlined kernel block instead of one flat bash listing.
-function renderShellWithCellOutlines(
+// Settled view of a mixed bash call: the shell source with each display cell's
+// code region (kernel cell body, heredoc-written source file) replaced by its
+// AST outline (or the cell language's highlighted source when it does not
+// parse), so the block reads as shell around an outlined code block instead of
+// one flat bash listing.
+export function renderShellWithCellOutlines(
 	source: string,
 	cells: readonly EvalDisplayCell[],
 	shellLanguage: string,

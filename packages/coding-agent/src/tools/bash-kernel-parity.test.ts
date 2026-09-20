@@ -358,3 +358,101 @@ test("bash kernel live and rebuilt partial results preserve heredoc payload sour
 		for (const line of code.split("\n")) expect(text).toContain(line);
 	}
 });
+
+// A heredoc that writes a source file carries code exactly like a kernel cell
+// does, so the settled card outlines it instead of listing the raw body — JS/TS
+// file writes used to read rawer than the python cells beside them.
+test("a settled .ts heredoc write is outlined between its shell lines", () => {
+	const command =
+		"cd /repo && cat > src/probe.ts <<'EOF'\nexport function probe(id: number): string {\n\treturn String(id);\n}\nEOF\nbun src/probe.ts";
+	const lines = renderBashResult({ content: [{ type: "text", text: "" }] }, command).split("\n");
+	const open = lines.findIndex(line => line.includes("cat > src/probe.ts <<'EOF'"));
+	const outline = lines.findIndex(line => line.includes("└─ export function probe(id: number) → string"));
+	const close = lines.findIndex(line => /\sEOF\s*$/.test(line));
+	const after = lines.findIndex(line => line.includes("bun src/probe.ts"));
+	expect([open, outline, close, after].every(index => index >= 0)).toBe(true);
+	expect(open < outline && outline < close && close < after).toBe(true);
+	expect(lines.some(line => line.includes("return String(id);"))).toBe(false);
+});
+
+// The extension picks the grammar: a python body is not valid JS, so an outline
+// at all proves the write was routed to the python parser.
+test("a settled .py heredoc write is outlined with the python grammar", () => {
+	const rendered = renderBashResult(
+		{ content: [{ type: "text", text: "" }] },
+		"cat > tools/probe.py <<'EOF'\ndef probe(id):\n    return str(id)\nEOF\npython tools/probe.py",
+	);
+	expect(rendered).toContain("└─ def probe(id)");
+	expect(rendered).toContain("python tools/probe.py");
+	expect(rendered).not.toContain("def probe(id):");
+});
+
+// Extensions with no AST grammar must not be guessed at: markdown, JSON, shell
+// and extensionless writes keep the literal body a raw bash listing shows.
+test("heredoc writes of non-source files keep their raw body", () => {
+	for (const [path, body] of [
+		["notes.md", "# Title"],
+		["cfg.json", '{ "a": 1 }'],
+		["run.sh", "echo hello"],
+		["runme", "export const x = 1;"],
+	]) {
+		const rendered = renderBashResult(
+			{ content: [{ type: "text", text: "" }] },
+			`cat > ${path} <<'EOF'\n${body}\nEOF\necho done`,
+		);
+		expect(rendered, path).toContain(body);
+		expect(rendered, path).not.toContain("Module ·");
+	}
+});
+
+// A body the parser yields nothing for still has to show its source: the
+// outline is a presentation of the code, never a replacement that can go blank.
+test("a .ts heredoc body with no outline falls back to its source", () => {
+	const rendered = renderBashResult(
+		{ content: [{ type: "text", text: "" }] },
+		"cat > src/note.ts <<'EOF'\n// only a comment\nEOF\necho done",
+	);
+	expect(rendered).toContain("// only a comment");
+	expect(rendered).toContain("echo done");
+	expect(rendered).not.toContain("├─");
+	expect(rendered).not.toContain("└─");
+});
+
+// Same deal a kernel cell gets: raw while the call streams (an outline swapped
+// in mid-stream would rewrite rows already committed to scrollback), and ctrl+o
+// expansion reveals the literal source it wrote.
+test("streaming and expanded views of a heredoc write keep the literal source", () => {
+	const command =
+		"cat > src/probe.ts <<'EOF'\nexport function probe(id: number): string {\n\treturn String(id);\n}\nEOF";
+	const streaming = strip(
+		bashRenderer
+			.renderResult({ content: [{ type: "text", text: "" }] }, { expanded: false, isPartial: true }, theme, {
+				command,
+			})
+			.render(90)
+			.join("\n"),
+	);
+	const expanded = strip(
+		bashRenderer
+			.renderResult({ content: [{ type: "text", text: "" }] }, { expanded: true }, theme, { command })
+			.render(90)
+			.join("\n"),
+	);
+	for (const text of [renderBashCall(command), streaming, expanded]) {
+		expect(text).toContain("return String(id);");
+		expect(text).not.toContain("Module ·");
+	}
+});
+
+// One command may both write a source file and run a kernel cell; each region
+// is outlined in its own language with the shell between them intact.
+test("a command that writes a source file and runs a kernel cell outlines both", () => {
+	const rendered = renderBashResult(
+		{ content: [{ type: "text", text: "" }] },
+		"cat > src/m.ts <<'EOF'\nexport const answer = 42;\nEOF\npython <<'PY'\ndef g():\n    return 3\nPY",
+	);
+	expect(rendered).toContain("└─ export answer ← 42");
+	expect(rendered).toContain("└─ def g()");
+	expect(rendered).toContain("cat > src/m.ts <<'EOF'");
+	expect(rendered).toContain("python <<'PY'");
+});

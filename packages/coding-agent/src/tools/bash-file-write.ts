@@ -175,6 +175,19 @@ function readHeredocBody(
 	};
 }
 
+/**
+ * The written path as a plain filesystem path: shell quoting removed and
+ * separators normalized, so callers can read its extension or match it against
+ * repo paths.
+ */
+export function normalizeBashWritePath(writePath: string): string {
+	return writePath
+		.replace(/^(?:'([^']*)'|"([^"]*)")$/u, (_, single: string | undefined, double: string | undefined) => {
+			return single ?? double ?? writePath;
+		})
+		.replaceAll("\\", "/");
+}
+
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

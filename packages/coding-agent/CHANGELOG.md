@@ -19,6 +19,7 @@
 
 ### Changed
 
+- Bash calls that write a source file through a heredoc (`cat > probe.ts <<'EOF'`) now show that body as an AST outline on the settled card, matching embedded `python`/`bun` kernel cells; non-source writes (`.md`, `.json`, extensionless) keep their raw text, and ctrl+o still reveals the literal source.
 - The prompt editor supports shift+arrow text selection: `Shift+Arrow` extends a selection, typing/deleting/pasting replaces it, and `Ctrl+C` copies the selected text (falling back to its clear-draft/exit role when nothing is selected). Dequeueing a queued message moved fully to `Alt+Up` — `Shift+Up` no longer triggers it.
 - Context maintenance now picks its trigger from the model's context window: a small window runs nearly full before compacting, a million-token window folds at 40% rather than re-sending an enormous prompt every turn. Set `compaction.thresholdPercent` or `compaction.thresholdTokens` to override, and they are now honored exactly as written.
 - Observational memory no longer compacts on its own fixed token count: requests to compact that arrive while the session is still well below its own compaction threshold are declined, so a long session keeps reading its warm prompt cache instead of paying to rewrite it early.
