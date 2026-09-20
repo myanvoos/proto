@@ -5,6 +5,7 @@
 ### Fixed
 
 - `xd` device calls written in other harnesses' vocabulary now succeed instead of failing validation: `xd fleet '{"to":"Main","message":"…"}'` infers `op:"send"` and maps `to`/`target` to the canonical `id`, orchestrate spawn/send/wait/kill accept `prompt`/`worker`/`workerId`/`timeout_seconds`-style keys, monitor accepts `action`/`name`/`job`, and recall maps `q` and `mode:"search"`. Every repair is reported as a `note:` on the result; unknown keys get "did you mean" hints.
+- Tool docs for `fleet`, `orchestrate_*`, `monitor`, and `browser` now lead with the exact JSON shapes agents get wrong most often (send without `op`, `to` instead of `id`, `worker` instead of `id`, `timeout` unit, browser action set).
 
 ### Added
 

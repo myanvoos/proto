@@ -1,4 +1,4 @@
-Spawns one persistent coding-agent worker; returns canonical `id` + `label` fields.
+Spawns one persistent coding-agent worker; returns canonical `id` + `label` fields. Shape: `{"message":"<first instruction>","label":"…"}` — instruction key is `message` (NEVER `prompt`), display key is `label` (NEVER `name`).
 
 `message`: worker's ONLY initial context; include files, constraints, acceptance criteria. `label`: optional display text matching `[A-Za-z0-9_-]{1,48}`; invalid labels are rejected, NEVER rewritten. Omitted label → generated label.
 

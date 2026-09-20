@@ -1,4 +1,4 @@
-Starts or steers work addressed by canonical worker `id`; `label` is NEVER an address.
+Starts or steers work addressed by canonical worker `id`; `label` is NEVER an address. Shape: `{"id":"<worker id>","message":"…"}` — NEVER `worker`/`workerId`/`to`/`session`.
 
 `message`: complete follow-up instruction. Running worker → steer accepted into current turn. Idle/parked worker → tracked turn starts. Busy but non-streaming worker → distinct queued turn; receipt reports its turn number. Queue full → explicit rejection with retry guidance.
 

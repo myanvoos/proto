@@ -1,5 +1,7 @@
 Wait for something to happen without burning turns. Each matching event is delivered as a message that wakes you; the command runs in the background meanwhile.
 
+`op` is required (`start` | `list` | `stop`). Start shape: `{"op":"start","command":"…","label":"…","match":"…"}` — display key `label` (NEVER `name`); stop targets `ids` (NEVER `id`/`job`).
+
 Loop: `start` a monitor → do other work, or END THE TURN. The event restarts you. NEVER `bash` sleep/poll loops, retry spins, or repeated `logs` calls to wait for an external condition.
 
 While any monitor runs, incomplete-todo and goal-continuation nudges are suppressed — stopping to wait IS the expected move, not an abandoned turn.

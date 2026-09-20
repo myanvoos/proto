@@ -1,4 +1,4 @@
-Drives real Chromium tabs; full puppeteer access via JS. Static content → `read` the URL; browser only for JS execution, auth, interactive actions.
+Drives real Chromium tabs; full puppeteer access via JS. Static content → `read` the URL; browser only for JS execution, auth, interactive actions. `action` is ONLY `open` | `close` | `run` — screenshots (`tab.screenshot()` inside `code`), clicks, and fills happen inside `run`; there is no selector/screenshot action parameter.
 
 - MUST `open` before `run`; tabs survive calls and subagents — open once, reuse.
 - `run` scope: `page`, `browser`, `tab`, `display`, `assert`, `wait`; `wait(fn)` polls until truthy — never poll inside `tab.evaluate`. `code` runs with full Node access — not sandboxed. `tab` mirrors puppeteer; drop to raw `page` for anything uncovered.

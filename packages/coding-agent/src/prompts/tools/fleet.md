@@ -1,10 +1,10 @@
-Agent coordination: peer messaging, background jobs, supervised processes. Main agent id: `Main`. Discover peers: `op:"list"`; rows return canonical `id` + `label`.
+Agent coordination: peer messaging, background jobs, supervised processes. Main agent id: `Main`; discover peers with `op:"list"` — rows return canonical `id` + `label`. Send shape: `{"op":"send","id":"<peer id>","message":"…"}` — recipient key is `id`, NEVER `to`/`target`, and `op` is required.
 
 All timeout fields use milliseconds: `timeoutMs`, `ready.timeoutMs`. NEVER supply seconds.
 
 Background jobs auto-deliver on finish — NEVER poll. `jobs`/`wait` first observation of a settled job consumes delivery and suppresses duplicate `async-result`. Job rows expire ~5 min after settlement; afterward use agent `id` with `send`, `agent://<id>`, or `history://<id>`.
 
-- Peer `send`: `id` + `message`; `id:"all"` broadcasts. Receipt outcome reports transport only. `effect:"injected"` = no worker turn started. `effect:"wake_requested"` = turn start not confirmed. `revived:true` = session loaded, NOT work started. NEVER infer `turnState=running` from delivery; use `orchestrate_send` for a guaranteed tracked worker turn. Reply: lead with answer, NEVER quote, set `replyTo`. Plain prose ONLY; share content through `local://`/`artifact://` URLs.
+- Peer `send`: `id` + `message`; `id:"all"` broadcasts. `{"to":…,"message":…}` without `op:"send"` is the most common rejected call — always lead with `op`. Receipt outcome reports transport only. `effect:"injected"` = no worker turn started. `effect:"wake_requested"` = turn start not confirmed. `revived:true` = session loaded, NOT work started. NEVER infer `turnState=running` from delivery; use `orchestrate_send` for a guaranteed tracked worker turn. Reply: lead with answer, NEVER quote, set `replyTo`. Plain prose ONLY; share content through `local://`/`artifact://` URLs.
 - `wait`: ONLY when completely blocked. Returns first incoming message, watched job, elapsed window, or steering interrupt — NOT all jobs. Bare wait watches every running job + incoming messages; NEVER pass every running job id.
 - `inbox`: drain queued messages. `cancel`: terminate jobs by `ids`. `jobs`: snapshot; running subagents without job entries still appear — coordinate through peer `send`.
 - Peer lifecycle: `live` | `parked` | `terminal`. Turn state: `running` | `idle`. A parked peer is `lifecycle=parked`, `turnState=idle`.
