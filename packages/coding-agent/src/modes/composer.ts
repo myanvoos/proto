@@ -93,13 +93,47 @@ class CardPadRow implements Component {
 	invalidate(): void {}
 }
 
+/**
+ * The welcome scene's top fill measures itself every frame. Startup rows
+ * (config warnings, MCP connection notices, the changelog block) appear and
+ * disappear after the one-shot anchor sync has already run, and a fill left at
+ * a stale height strands the banner above a blank band under the composer.
+ * Once conversation content exists the pushed height wins, so rows already
+ * committed to native scrollback never shift.
+ */
+class HomeFill implements Component {
+	#lines = 0;
+	#cached: string[] | undefined;
+
+	constructor(readonly measure: () => number | undefined) {}
+
+	setLines(lines: number): void {
+		if (lines === this.#lines) return;
+		this.#lines = lines;
+		this.#cached = undefined;
+	}
+
+	invalidate(): void {}
+
+	render(_width: number): readonly string[] {
+		const lines = this.measure() ?? this.#lines;
+		let cached = this.#cached;
+		if (cached === undefined || cached.length !== lines) {
+			cached = new Array(lines).fill("");
+			this.#cached = cached;
+		}
+		return cached;
+	}
+}
+
 export class Composer {
 	readonly ui: TUI;
 	#editor: CustomEditor;
 	readonly #header = new Container();
 	readonly #editorSlot = new Container();
 	readonly #statusHost = new StatusHost();
-	readonly #topFill = new Spacer(0);
+	readonly #topFill = new HomeFill(() => this.#measureHomeFill());
+	#conversationChildren = 0;
 	readonly #bottomFill = new Spacer(0);
 	readonly #bottomMargin = new Spacer(1);
 	readonly #composerHairline = new ComposerHairline();
@@ -299,13 +333,8 @@ export class Composer {
 		this.#transferred = true;
 	}
 
-	syncHomeAnchor(conversationChildCount: number): void {
-		if (this.#stopped) return;
-		const width = this.ui.terminal.columns;
-		const rows = this.ui.terminal.rows;
-		if (!Number.isFinite(rows) || rows <= 0) return;
-		const currentTop = this.#topFill.render(width).length;
-		const currentBottom = this.#bottomFill.render(width).length;
+	/** Rows the frame occupies excluding the two fills. */
+	#contentRows(width: number): number {
 		let content = 0;
 		for (const child of this.ui.children) {
 			if (child === this.#topFill || child === this.#bottomFill) continue;
@@ -315,19 +344,40 @@ export class Composer {
 				content += 1;
 			}
 		}
+		return content;
+	}
+
+	/** Live height for the top fill; undefined once committed rows freeze the anchor. */
+	#measureHomeFill(): number | undefined {
+		if (this.#stopped) return undefined;
+		// Freeze only once rows have reached native scrollback: re-measuring then
+		// would shift history that is already physically printed.
+		if (this.#conversationChildren > 0 && this.ui.committedRows > 0) return undefined;
+		const rows = this.ui.terminal.rows;
+		if (!Number.isFinite(rows) || rows <= 0) return undefined;
+		return Math.max(0, rows - this.#contentRows(this.ui.terminal.columns));
+	}
+
+	syncHomeAnchor(conversationChildCount: number): void {
+		if (this.#stopped) return;
+		this.#conversationChildren = conversationChildCount;
+		const width = this.ui.terminal.columns;
+		const rows = this.ui.terminal.rows;
+		if (!Number.isFinite(rows) || rows <= 0) return;
+		const currentTop = this.#topFill.render(width).length;
+		const currentBottom = this.#bottomFill.render(width).length;
+		const content = this.#contentRows(width);
 		const slack = Math.max(0, rows - content);
 
 		// Once transcript rows have entered native scrollback the top fill sits
 		// above them in history; resizing it would shift every committed row and
 		// make the append-only ledger re-emit them.
 		const topFrozen = conversationChildCount > 0 && this.ui.committedRows > 0;
-		const top = topFrozen
-			? currentTop
-			: conversationChildCount > 0
-				? slack
-				: this.#welcome !== undefined
-					? Math.floor((slack * 2) / 5)
-					: 0;
+		// The welcome scene pins to the bottom edge like a conversation does:
+		// splitting the slack to centre the banner left a visible blank band
+		// under the status line, worst on short or narrow screens where the
+		// wrapped banner leaves the most slack to divide.
+		const top = topFrozen ? currentTop : conversationChildCount > 0 || this.#welcome !== undefined ? slack : 0;
 		// Conversation content pins to the bottom edge through the top fill
 		// alone; slack a frozen top cannot absorb stays unallocated. This sync
 		// only runs on resize and on the first transcript child, so a bottom fill

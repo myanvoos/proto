@@ -117,3 +117,67 @@ test("a transcript rebuild that starts short leaves no blank band between the HU
 		composer.stop();
 	}
 });
+
+/** Blank rows the frame leaves directly above the composer hairline. */
+function blankRowsAboveHairline(frame: readonly string[]): number {
+	const rows = frame.map(stripAnsi);
+	const hairline = rows.findIndex(row => row.length > 0 && row === theme.boxSharp.horizontal.repeat(row.length));
+	expect(hairline).toBeGreaterThan(0);
+	let blank = 0;
+	for (let row = hairline - 1; row >= 0 && rows[row]!.trim().length === 0; row--) blank++;
+	return blank;
+}
+
+// The welcome scene used to split its slack to centre the banner, which opened
+// a blank band between the banner and the editor — the screen looked pushed up,
+// and the band grew as the terminal got shorter or narrower.
+test.each([
+	[60, 30],
+	[52, 30],
+	[60, 20],
+	[100, 30],
+])("the welcome banner sits against the composer at %ix%i", (columns, rows) => {
+	const composer = new Composer({
+		terminal: new SinkTerminal(columns, rows),
+		tuiOptions: { renderScheduler: IMMEDIATE_SCHEDULER },
+		preferences: { quiet: false },
+		welcome: { version: "1.2.3", modelName: "opus-5", providerName: "anthropic", recentSessions: [] },
+	});
+	composer.start({ deferInput: true });
+	try {
+		composer.syncHomeAnchor(0);
+		// One spacer row belongs to the header; anything beyond it is stranded slack.
+		expect(blankRowsAboveHairline(composer.ui.render(columns))).toBeLessThanOrEqual(1);
+	} finally {
+		composer.stop();
+	}
+});
+
+// Startup rows — config warnings, MCP connection notices, the changelog block —
+// vanish after the one-shot anchor sync has already run. The frame must follow
+// them down instead of stranding a blank band beneath the editor and status line.
+test("startup rows disappearing after the anchor sync leave no band under the composer", () => {
+	const columns = 60;
+	const rows = 30;
+	const composer = new Composer({
+		terminal: new SinkTerminal(columns, rows),
+		tuiOptions: { renderScheduler: IMMEDIATE_SCHEDULER },
+		preferences: { quiet: false },
+		welcome: { version: "1.2.3", modelName: "opus-5", providerName: "anthropic", recentSessions: [] },
+	});
+	const transcript = new TranscriptContainer();
+	composer.setRuntimeChildren([transcript]);
+	composer.start({ deferInput: true });
+	try {
+		composer.setHeaderExtras([], [new StaticBlock(Array.from({ length: 6 }, (_v, row) => `startup-notice-${row}`))]);
+		transcript.addChild(new StaticBlock(["session ready"]));
+		composer.syncHomeAnchor(transcript.children.length);
+		expect(composer.ui.render(columns).length).toBe(rows);
+
+		// The notices are cleared; nothing calls syncHomeAnchor again.
+		composer.setHeaderExtras([], []);
+		expect(composer.ui.render(columns).length).toBe(rows);
+	} finally {
+		composer.stop();
+	}
+});
