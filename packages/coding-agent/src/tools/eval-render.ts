@@ -30,7 +30,6 @@ import {
 	capPreviewLines,
 	formatBadge,
 	formatDuration,
-	formatExpandHint,
 	formatStatusIcon,
 	formatTitle,
 	getDiffStats,
@@ -608,17 +607,11 @@ interface StatusSection {
 }
 
 // Phase 1: one block per visible event with its head rows (summary line,
-// expanded detail lines, error detail). `headCap` bounds the head rows at
-// event granularity — whole earliest events collapse into a "… N earlier
-// lines" marker, mirroring capPreviewLines — so a live section's heads stay
-// inside the window regardless of hunk bodies.
-function buildStatusSection(
-	events: EvalStatusEvent[],
-	theme: Theme,
-	expanded: boolean,
-	width: number,
-	headCap?: number,
-): StatusSection {
+// expanded detail lines, error detail). Heads are never collapsed while the
+// cell streams: hiding the earliest events behind a "… N earlier lines" marker
+// to keep a live block inside the window made the card rewrite rows it had
+// already shown, and the transcript's own viewport allocator already bounds it.
+function buildStatusSection(events: EvalStatusEvent[], theme: Theme, expanded: boolean, width: number): StatusSection {
 	const nonFileOpIndexes: number[] = [];
 	for (let i = 0; i < events.length; i++) {
 		if (!isFileOpEvent(events[i])) nonFileOpIndexes.push(i);
@@ -642,26 +635,6 @@ function buildStatusSection(
 			headRows.push(...wrapTextWithAnsi(`${cont}${theme.fg("dim", line)}`, width));
 		}
 		blocks.push({ event, cont, headRows, withDiff });
-	}
-
-	if (headCap !== undefined) {
-		const cap = Math.max(1, headCap);
-		const totalHeadRows = blocks.reduce((sum, block) => sum + block.headRows.length, 0);
-		if (totalHeadRows > cap) {
-			let hiddenRows = 0;
-			let dropFrom = 0;
-			while (dropFrom < blocks.length && totalHeadRows - hiddenRows > cap) {
-				hiddenRows += blocks[dropFrom]!.headRows.length;
-				dropFrom++;
-			}
-			const marker = `… ${hiddenRows} earlier ${pluralize("line", hiddenRows)} ${formatExpandHint(theme, false, true)}`;
-			blocks.splice(0, dropFrom, {
-				event: blocks[0]!.event,
-				cont: "",
-				headRows: [theme.fg("dim", marker.trimEnd())],
-				withDiff: false,
-			});
-		}
 	}
 
 	const headRows = (hiddenCount > 0 ? 1 : 0) + blocks.reduce((sum, block) => sum + block.headRows.length, 0);
@@ -735,7 +708,6 @@ interface StatusRenderOptions {
 	// Live render: bound the whole section (heads + hunk bodies) so the block
 	// stays inside the window. Omitted → settled render, every hunk in full.
 	sectionRowBudget?: number;
-	headCap?: number;
 }
 
 function renderStatusEvents(
@@ -746,7 +718,7 @@ function renderStatusEvents(
 	options: StatusRenderOptions = {},
 ): string[] {
 	if (events.length === 0) return [];
-	const section = buildStatusSection(events, theme, expanded, width, options.headCap);
+	const section = buildStatusSection(events, theme, expanded, width);
 	assignHunkRows(
 		section,
 		theme,
@@ -896,7 +868,6 @@ function layoutLiveCell(params: {
 	const { cell, code, events, theme, width, previewLines, fixedRows } = params;
 	const liveWindow = previewWindowRows();
 	const contentWidth = outputBlockContentWidth(width);
-	const sectionCap = Math.min(EVAL_LIVE_SECTION_ROWS, Math.max(3, Math.floor(liveWindow / 2)));
 
 	const outputFor = (lines: number): string[] => {
 		const content = formatCellOutputLines(cell, false, lines, theme, width);
@@ -910,7 +881,7 @@ function layoutLiveCell(params: {
 	const lineRows = codeLineRows(code, contentWidth);
 	const codeFloor = codeTailForRows(lineRows, 0, EVAL_LIVE_FLOOR_LINES);
 
-	const section = buildStatusSection(events, theme, false, contentWidth, sectionCap);
+	const section = buildStatusSection(events, theme, false, contentWidth);
 	const statusLabelRows = section.blocks.length > 0 ? 1 : 0;
 
 	const base =
@@ -1266,8 +1237,7 @@ export const evalToolRenderer = {
 		const statusSectionOptions = (): StatusRenderOptions => {
 			if (!isPartialResult) return {};
 			const liveWindow = previewWindowRows();
-			const liveSectionCap = Math.min(EVAL_LIVE_SECTION_ROWS, Math.max(3, Math.floor(liveWindow / 2)));
-			return { sectionRowBudget: Math.max(0, liveWindow - 1 - EVAL_LIVE_SLACK_ROWS), headCap: liveSectionCap };
+			return { sectionRowBudget: Math.max(0, liveWindow - 1 - EVAL_LIVE_SLACK_ROWS) };
 		};
 
 		if (!combinedOutput && !hasStatusEvents) {

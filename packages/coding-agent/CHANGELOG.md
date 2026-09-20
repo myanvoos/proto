@@ -28,6 +28,8 @@
 
 ### Fixed
 
+- A streaming command's status lines no longer collapse behind a `… N earlier lines` marker while it runs: the live card keeps every line it has already shown instead of rewriting its own head to stay inside the viewport.
+- The transcript no longer duplicates rows in terminal scrollback or rewinds the pane to the startup screen mid-session: finished blocks are handed to the terminal once, a still-running card holds its place until it settles, and the welcome header leaves the live frame the moment it enters history.
 - Ctrl+O now reveals the whole tool output instead of stopping at a larger fixed cap: expanding a generic tool card, MCP result, `xd` device card, `inspect_media` answer, URL read, `computer` output, fleet message body, or JSON display tree no longer leaves a dead `… N more lines` hint with no way to reach them.
 - Cancelled background jobs now stay readable until their work actually settles, instead of disappearing mid-cancellation.
 - Pressing Ctrl+C now exits when closing a session fails, instead of leaving the process stuck retrying a teardown that cannot succeed.
