@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.23] - 2026-09-20
+
 ### Fixed
 
 - OpenAI-compatible providers (`openai-completions`, e.g. local vLLM endpoints) now reveal tool-call arguments as they stream instead of showing the finished call once generation ends.

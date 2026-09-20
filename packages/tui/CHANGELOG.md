@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.23] - 2026-09-20
+
 ### Added
 
 - The editor supports text selection: `Shift+Arrow` (and `Shift+Alt+Arrow` for word-wise, `Shift+Home`/`Shift+End`, `Shift+PageUp`/`Shift+PageDown`) extends a selection from the cursor anchor. Typing, delete, paste, and kill commands replace or remove the selection, plain movement collapses it, and the copy key (`Ctrl+C`) copies the selected text via the new `onCopySelection` hook. Selected text renders in reverse video, including the trailing pad of lines whose newline is inside the selection.
@@ -11,7 +13,6 @@
 - Description-only slash completions require explicit selection before Enter accepts them, and stale suggestion lists no longer replace a newly typed command.
 - In-place resizes repaint mutable live rows at the new width while preserving host-reflowed transcript history.
 - Explicit display resets replay updated content inside multiplexers, making already-scrolled tool output expandable.
-
 - `wrapTextWithAnsi` handed out its memoized row array to every caller, so appending to one result corrupted all later wraps of the same text — repeated renders of a list could grow its header block until rows disappeared.
 - Deeply nested blockquotes no longer multiply rendered rows exponentially, which could exhaust memory from a single small message.
 - A live region handing off to another one (a HUD appearing as a reply settles) now appends the rows it was holding instead of repainting from the first row, so the terminal no longer rewinds to the title screen and replays the session mid-stream.

@@ -2,10 +2,11 @@
 
 ## [Unreleased]
 
+## [18.1.23] - 2026-09-20
+
 ### Fixed
 
 - A Rust panic inside a synchronous native function now surfaces as a catchable JS error instead of aborting the whole process.
-
 - Process enumeration on macOS no longer misses processes when many are running.
 
 ## [18.1.9] - 2026-09-15

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.23] - 2026-09-20
+
 ### Breaking Changes
 
 - Removed the built-in structural summarizer engine: compaction always runs through observational memory, with remote compaction (provider-native or `compaction.remoteEndpoint`) as the only fallback method. `/compact soft` is gone; `/compact remote` still forces the remote path.
@@ -11,14 +13,12 @@
 
 - `/help` (alias `/?`) lists built-in commands and points to keyboard shortcuts, settings, and tool help.
 - Pressing Esc leaves a quiet `Interrupted` marker in the transcript, including when a tool call is interrupted.
-
 - `recall` responses are now bounded: one enormous stored line or a wide expand can no longer flood the context. Snippet lines clip around the match, expanded entries share a 48,000-character budget (`recallResponseMaxChars`, `0` disables), entries are dropped whole with a footer naming how to reach them, and the new `#N:text` drill-down pages any entry's own message text.
 - Compaction summary `(#N)` references now resolve in the same index space as `recall`: after the first compaction or on a branched session they pointed at unrelated entries, and a position that cannot be resolved renders no reference instead of a wrong one.
 - `recall` queries that mention a file now find it: a query is split into terms first, so `observer.ts` matches literally instead of compiling the whole sentence into one never-matching pattern (and no longer wildcards the dot onto `observerXts`).
 - Sessions larger than V8's maximum string length are searchable again — session history is read in chunks instead of one string, and a session file that does not exist yet reads as empty history.
 - Compaction now retains every user message across compaction instead of keeping only a recent tail: each folded user message appears verbatim in the summary's `[User Messages]` section with its session entry reference, and large pasted content is elided to a head plus a `recall #N` pointer placed right in that entry so the exact text stays one recall away.
 - Compaction summaries now end with a handoff note written from the context being dropped — why the current approach was chosen, what was ruled out, what is half-finished — appended to whatever produced the summary. Turn it off with `compaction.selfSummary`.
-
 - List views support shift+arrow range selection for mass operations: `Shift+↑/↓` (plus `Shift+PageUp`/`Shift+PageDown` in the session selector) marks a contiguous range — rendered as one highlighted block with a checkbox on each marked row, the cursor still visible, and an `N selected` badge in the title and footer. `Esc` clears the range before it closes the view; the session selector deletes a marked range through one batch confirmation, and the global agents view and agent fleet remove or kill every marked agent with a single key.
 
 ### Changed
@@ -27,7 +27,6 @@
 - Pending Ask cards show a short question summary instead of repeating all dialog options.
 - The sticky Todo panel shows an explicit completed/total count instead of a dangling progress line.
 - `/usage` summarizes available models on one line per provider instead of printing every model ID.
-
 - Bash calls that write a source file through a heredoc (`cat > probe.ts <<'EOF'`) now show that body as an AST outline on the settled card, matching embedded `python`/`bun` kernel cells; non-source writes (`.md`, `.json`, extensionless) keep their raw text, and ctrl+o still reveals the literal source.
 - The prompt editor supports shift+arrow text selection: `Shift+Arrow` extends a selection, typing/deleting/pasting replaces it, and `Ctrl+C` copies the selected text (falling back to its clear-draft/exit role when nothing is selected). Dequeueing a queued message moved fully to `Alt+Up` — `Shift+Up` no longer triggers it.
 - Context maintenance now picks its trigger from the model's context window: a small window runs nearly full before compacting, a million-token window folds at 40% rather than re-sending an enormous prompt every turn. Set `compaction.thresholdPercent` or `compaction.thresholdTokens` to override, and they are now honored exactly as written.
@@ -35,6 +34,7 @@
 - Compaction now carries detail-heavy tool results into the summary with both their head and their tail, widened to whatever the summarizer's input budget allows, instead of clipping every result to its first 2000 characters.
 - Repeat compactions now consolidate rather than re-compress: the update prompt requires merging duplicates, replacing superseded facts with current ones, and carrying identifiers through verbatim.
 - An explicit `/compact <mode>` is now honored as written: an extension compactor observes the compaction but no longer substitutes its own result.
+- Commands that exit with code 1 (grep/rg "no match", `test` false, `diff` differences) no longer render as `✗ failed` in the transcript or live view: they show a dim `(exit 1)` marker instead. Exit codes 2+, signal deaths, timeouts, and kernel-cell errors still mark the command as failed.
 
 ### Fixed
 
@@ -43,7 +43,6 @@
 - Ctrl+O now redraws expanded tool output already in multiplexer scrollback.
 - Settings status previews stay inside their frame, and the status line shortens the session title before dropping the run clock.
 - Ask headers correctly display `1 question`.
-
 - A request that arrives just before a compaction is no longer lost: `[User Messages]` and the handoff note now cover the retained tail, not only the folded window.
 - Compaction no longer re-prints the answer it just dropped. The transcript already keeps pre-compaction turns on screen, so the display-only copy was a duplicate.
 - The startup screen no longer strands a band of blank rows under the editor and status line: the frame follows startup notices down as they clear, worst on short or narrow terminals.
@@ -58,10 +57,6 @@
 - Rewinding through the session tree (`/tree`, `/branch`, or the rewind key) no longer crashes long sessions with `Maximum call stack size exceeded`.
 - Replies containing a Mermaid diagram now enter terminal history as they scroll past instead of being held back until the reply finishes.
 - A reply that ends with a tool call no longer freezes mid-sentence: the text or thinking written just before the tool card now streams to completion.
-
-### Changed
-
-- Commands that exit with code 1 (grep/rg "no match", `test` false, `diff` differences) no longer render as `✗ failed` in the transcript or live view: they show a dim `(exit 1)` marker instead. Exit codes 2+, signal deaths, timeouts, and kernel-cell errors still mark the command as failed.
 
 ### Removed
 

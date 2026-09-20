@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.23] - 2026-09-20
+
 ### Breaking Changes
 
 - Removed the built-in local summarizer engine: compaction summaries are produced by the observational-memory extension, with remote compaction (provider-native or the configured `remoteEndpoint`) as the only fallback. The handoff note is written by the observational-memory model roles (`@smol`, then `@tiny`), falling back to the session's own model.
