@@ -17,6 +17,10 @@
 - Compaction summaries now budget against the reserve the compaction threshold already holds back, so the summary can use the headroom that was previously left unused.
 - Detail-heavy tool results now reach the summarizer with both their head and their tail, and are clipped as widely as the summarizer's input budget allows, so verdicts, totals and trailing errors survive compaction.
 
+### Fixed
+
+- The compaction handoff note is written from the retained tail as well as the folded window, so a request still live at compaction time reaches the next model.
+
 ## [18.1.22] - 2026-09-18
 
 ### Fixed

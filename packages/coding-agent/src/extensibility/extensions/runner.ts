@@ -788,15 +788,6 @@ export class ExtensionRunner {
 		return false;
 	}
 
-	/** Custom types an extension can draw — plain `custom` entries only reach the transcript for these. */
-	renderableCustomTypes(): ReadonlySet<string> {
-		const types = new Set<string>();
-		for (const ext of this.extensions) {
-			for (const customType of ext.messageRenderers.keys()) types.add(customType);
-		}
-		return types;
-	}
-
 	getMessageRenderer(customType: string): MessageRenderer | undefined {
 		for (const ext of this.extensions) {
 			const renderer = ext.messageRenderers.get(customType);

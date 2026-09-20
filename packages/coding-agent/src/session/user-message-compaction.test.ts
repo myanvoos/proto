@@ -14,7 +14,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import type { ExtensionRunner } from "../extensibility/extensions";
-import vendorMemoryExtension, { PRE_COMPACTION_OUTPUT_TYPE } from "../vendor/pi-blackhole/index.js";
+import vendorMemoryExtension from "../vendor/pi-blackhole/index.js";
 import { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
 import { SessionManager } from "./session-manager";
@@ -40,8 +40,6 @@ type MemoryHandler = (event: unknown, ctx: unknown) => unknown;
 interface MemoryExtension {
 	/** Every handler the extension registered, by event type. */
 	handlers: Map<string, MemoryHandler[]>;
-	/** Custom entry types the extension can draw — the transcript projects only these. */
-	renderers: Set<string>;
 	/** Session the extension's `appendEntry` writes to; set once the session exists. */
 	appendTo(sessionManager: SessionManager): void;
 }
@@ -52,15 +50,11 @@ interface MemoryExtension {
  */
 async function loadMemoryExtension(): Promise<MemoryExtension> {
 	const handlers = new Map<string, MemoryHandler[]>();
-	const renderers = new Set<string>();
 	let target: SessionManager | undefined;
 	const pi = new Proxy(
 		{
 			on: (type: string, handler: MemoryHandler) => {
 				handlers.set(type, [...(handlers.get(type) ?? []), handler]);
-			},
-			registerMessageRenderer: (customType: string) => {
-				renderers.add(customType);
 			},
 			appendEntry: (customType: string, data: unknown) => {
 				target?.appendCustomEntry(customType, data);
@@ -79,7 +73,6 @@ async function loadMemoryExtension(): Promise<MemoryExtension> {
 	}
 	return {
 		handlers,
-		renderers,
 		appendTo(sessionManager: SessionManager) {
 			target = sessionManager;
 		},
@@ -101,6 +94,7 @@ describe("user message retention across compaction", () => {
 	beforeEach(async () => {
 		authStorage = await AuthStorage.create(":memory:");
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		selfSummaryContexts = [];
 	});
 
 	afterEach(async () => {
@@ -115,11 +109,15 @@ describe("user message retention across compaction", () => {
 		await agentDir.remove();
 	});
 
+	/** Every request the session's own model answered — here, only the self-summary. */
+	let selfSummaryContexts: Context[] = [];
+
 	function seedSession(memory: MemoryExtension): SessionManager {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5") as Model;
 		const mock = createMockModel({
 			handler: (context: Context): MockResponse => {
 				if (!isSessionRequest(context.systemPrompt ?? [])) return { content: ["unused summarizer reply"] };
+				selfSummaryContexts.push(context);
 				return { content: [SELF_NOTE] };
 			},
 		});
@@ -142,9 +140,6 @@ describe("user message retention across compaction", () => {
 			sideStreamFn: streamFn,
 			extensionRunner: {
 				hasHandlers: (event: string) => (memory.handlers.get(event)?.length ?? 0) > 0,
-				renderableCustomTypes: () => memory.renderers,
-				getMessageRenderer: (customType: string) =>
-					memory.renderers.has(customType) ? () => undefined : undefined,
 				emit: async (event: { type: string }) => {
 					const ctx = {
 						cwd: process.cwd(),
@@ -252,6 +247,60 @@ describe("user message retention across compaction", () => {
 		expect(injected).not.toContain(PASTE.slice(0, 500));
 	});
 
+	it("retains the newest request even when the tail keeps it live", async () => {
+		const memory = await loadMemoryExtension();
+		const sessionManager = seedSession(memory);
+		await session.reload();
+
+		await session.compact();
+		const summary = committedSummary(sessionManager);
+
+		// The minimal tail keeps the last user turn in context, so it is never part of the folded
+		// window. It still has to be recorded: that turn is the request the next model inherits.
+		const branch = sessionManager.getBranch();
+		const compaction = branch.find(entry => entry.type === "compaction");
+		const keptFrom = compaction?.type === "compaction" ? compaction.firstKeptEntryId : undefined;
+		const retained = branch.slice(branch.findIndex(entry => entry.id === keptFrom));
+		const retainedUserText = retained
+			.filter(entry => entry.type === "message" && entry.message.role === "user")
+			.map(entry => (entry.type === "message" ? textOf(convertMessageToLlm(entry.message)) : ""))
+			.join("\n");
+		expect(retainedUserText).toContain("follow-up: which entry point regressed?");
+
+		expect(summary).toContain("- [#4] follow-up: which entry point regressed?");
+	});
+
+	it("leaves the answers a compaction dropped on screen exactly once", async () => {
+		const memory = await loadMemoryExtension();
+		const sessionManager = seedSession(memory);
+		await session.reload();
+
+		await session.compact();
+
+		// The transcript keeps pre-compaction turns rendered, so nothing may re-append a display
+		// copy of them: the same answer twice on screen is the bug this guards. The summary's own
+		// brief transcript quotes turns, so only messages that lead with the answer count.
+		const transcript = session.buildTranscriptSessionContext().messages;
+		const rendered = transcript.map(message => textOf(convertMessageToLlm(message)));
+		expect(rendered.filter(text => text.startsWith("analysis of the pasted module"))).toHaveLength(1);
+		expect(transcript.filter(message => message.role === "custom")).toHaveLength(0);
+		expect(sessionManager.getBranch().filter(entry => entry.type === "custom")).toHaveLength(0);
+	});
+
+	it("hands the self-summary the live tail it is handing off", async () => {
+		const memory = await loadMemoryExtension();
+		seedSession(memory);
+		await session.reload();
+
+		await session.compact();
+
+		expect(selfSummaryContexts).toHaveLength(1);
+		const replayed = selfSummaryContexts[0]!.messages.map(message => textOf(message)).join("\n");
+		// Folded history and the still-live request both reach the note's author.
+		expect(replayed).toContain("first ask: fix the parser regression");
+		expect(replayed).toContain("follow-up: which entry point regressed?");
+	});
+
 	it("emits a pointer that resolves against the session history", async () => {
 		const memory = await loadMemoryExtension();
 		const sessionManager = seedSession(memory);
@@ -269,40 +318,5 @@ describe("user message retention across compaction", () => {
 		const pasteEntry = messageEntries.at(Number(pointer));
 		if (!pasteEntry) throw new Error("recall pointer did not resolve to a message entry");
 		expect(textOf(convertMessageToLlm(pasteEntry.message))).toContain("please port this module");
-	});
-
-	it("keeps the newest dropped answer on screen as a display-only copy", async () => {
-		const memory = await loadMemoryExtension();
-		const sessionManager = seedSession(memory);
-		await session.reload();
-
-		await session.compact();
-
-		const copy = sessionManager
-			.getBranch()
-			.find(entry => entry.type === "custom" && entry.customType === PRE_COMPACTION_OUTPUT_TYPE);
-		expect(copy?.type).toBe("custom");
-		const data = (copy as { data: { text: string; sourceEntryId: string; truncated: boolean } }).data;
-		// The newest answer the cut dropped — turn two survives in the retained tail, so the copy is
-		// the turn before it, and it names the entry it came from.
-		expect(data.text).toContain("analysis of the pasted module");
-		// These turns run past the copy's 16 KiB cap, so the copy is bounded and says so.
-		expect(data.truncated).toBe(true);
-		expect(Buffer.byteLength(data.text, "utf8")).toBeLessThanOrEqual(16 * 1024);
-		const source = sessionManager.getBranch().find(entry => entry.id === data.sourceEntryId);
-		expect(source?.type).toBe("message");
-
-		// Display only: the copy reaches the transcript but never the provider context.
-		const transcript = session.buildTranscriptSessionContext().messages;
-		const shown = transcript.find(
-			message => message.role === "custom" && message.customType === PRE_COMPACTION_OUTPUT_TYPE,
-		);
-		expect(shown).toBeDefined();
-		expect((shown as { details: { text: string } }).details.text).toBe(data.text);
-		expect(
-			session.agent.state.messages.some(
-				message => message.role === "custom" && message.customType === PRE_COMPACTION_OUTPUT_TYPE,
-			),
-		).toBe(false);
 	});
 });

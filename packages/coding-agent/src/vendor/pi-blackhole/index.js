@@ -2,11 +2,10 @@ import { mkdirSync, appendFileSync, existsSync, statSync, unlinkSync, renameSync
 import { join, dirname, sep, isAbsolute, resolve, relative, basename, parse } from 'path';
 import { tmpdir } from 'os';
 import { getAgentDir } from '@oh-my-pi/pi-utils/dirs';
-import { stripControlChars } from '@oh-my-pi/pi-utils';
-import { getMarkdownTheme, getSelectListTheme } from '@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters';
+import { getSelectListTheme } from '@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters';
 import { convertToLlm } from '@oh-my-pi/pi-coding-agent/session/messages';
 import { AgentSession } from '@oh-my-pi/pi-coding-agent/session/agent-session';
-import { fuzzyMatch, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, Container, Editor, Markdown, SelectList, Text, decodeKittyPrintable } from '@oh-my-pi/pi-tui';
+import { fuzzyMatch, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, Editor, Markdown, SelectList, decodeKittyPrintable } from '@oh-my-pi/pi-tui';
 import { AsyncLocalStorage } from 'async_hooks';
 import { appendFile } from 'fs/promises';
 import { pathToFileURL, fileURLToPath } from 'url';
@@ -388,7 +387,6 @@ var DECLARATIVE_ENV_OVERRIDES = {
   debug: "PI_BLACKHOLE_DEBUG",
   debugLog: "PI_BLACKHOLE_DEBUG_LOG",
   fullFoldAlways: "PI_BLACKHOLE_FULL_FOLD_ALWAYS",
-  showPreCompactionMessage: "PI_BLACKHOLE_SHOW_PRE_COMPACTION_MESSAGE",
   // Positive integers
   compactAfterTokens: "PI_BLACKHOLE_COMPACT_AFTER_TOKENS",
   observeAfterTokens: "PI_BLACKHOLE_OBSERVE_AFTER_TOKENS",
@@ -490,7 +488,6 @@ var DEFAULTS = {
   observationsPoolMaxTokens: 2e4,
   recallResponseMaxChars: 48e3,
   fullFoldAlways: true,
-  showPreCompactionMessage: true,
   observationsPoolTargetTokens: 1e4,
   reflectorInputMaxTokens: 8e4,
   dropperInputMaxTokens: 8e4,
@@ -551,7 +548,6 @@ function parseConfig(raw) {
   if (typeof raw.memory === "boolean") c.memory = raw.memory;
   if (typeof raw.fullFoldAlways === "boolean") c.fullFoldAlways = raw.fullFoldAlways;
   if (typeof raw.debugLog === "boolean") c.debugLog = raw.debugLog;
-  if (typeof raw.showPreCompactionMessage === "boolean") c.showPreCompactionMessage = raw.showPreCompactionMessage;
   const numKeys = [
     "recallResponseMaxChars",
     "observeAfterTokens",
@@ -3157,6 +3153,7 @@ function buildOwnCut(branchEntries, piFirstKeptEntryId, tailBehavior) {
           ok: true,
           messages: liveMessages.slice(0, liveCutIdx).map((e) => e.message),
           selectedIds: liveMessages.slice(0, liveCutIdx).map((e) => e.entry.id),
+          live: liveMessages,
           firstKeptEntryId: piFirstKeptEntryId,
           compactAll: false
         };
@@ -3182,6 +3179,7 @@ function buildOwnCut(branchEntries, piFirstKeptEntryId, tailBehavior) {
               ok: true,
               messages: liveMessages.slice(0, resolvedLiveIdx).map((e) => e.message),
               selectedIds: liveMessages.slice(0, resolvedLiveIdx).map((e) => e.entry.id),
+              live: liveMessages,
               firstKeptEntryId: resolvedId,
               compactAll: false
             };
@@ -3210,6 +3208,7 @@ function buildOwnCut(branchEntries, piFirstKeptEntryId, tailBehavior) {
       ok: true,
       messages: liveMessages.map((e) => e.message),
       selectedIds: liveMessages.map((e) => e.entry.id),
+      live: liveMessages,
       firstKeptEntryId: "",
       compactAll: true
     };
@@ -3218,6 +3217,7 @@ function buildOwnCut(branchEntries, piFirstKeptEntryId, tailBehavior) {
     ok: true,
     messages: liveMessages.slice(0, cutIdx).map((e) => e.message),
     selectedIds: liveMessages.slice(0, cutIdx).map((e) => e.entry.id),
+    live: liveMessages,
     firstKeptEntryId: liveMessages[cutIdx].entry.id,
     compactAll: false
   };
@@ -3272,7 +3272,17 @@ var buildSourceIndices = (agentMessages, selectedIds, recallIndexById, converted
   return indices.length === convertedLength ? indices : void 0;
 };var collectUserTurns = (ownCut, recallIndexById) => {
   const turns = [];
-  ownCut.messages.forEach((msg, i) => {
+  let lastResolved;
+  let sinceResolved = 0;
+  ownCut.live.forEach((live, i) => {
+    const mapped = live.entry.id === undefined ? void 0 : recallIndexById.get(live.entry.id);
+    if (mapped === void 0) {
+      sinceResolved++;
+    } else {
+      lastResolved = mapped;
+      sinceResolved = 0;
+    }
+    const msg = live.message;
     if (msg.role !== "user") return;
     if (msg.attribution === "agent") return;
     const images = [];
@@ -3281,7 +3291,7 @@ var buildSourceIndices = (agentMessages, selectedIds, recallIndexById, converted
         if (part.type === "image") images.push(`[image: ${part.mimeType}]`);
       }
     }
-    const recallIndex = recallIndexById.get(ownCut.selectedIds[i]) ?? i;
+    const recallIndex = mapped ?? (lastResolved === void 0 ? i : lastResolved + sinceResolved);
     turns.push({ recallIndex, text: sanitize(textOf(msg.content)), images });
   });
   return turns;
@@ -3557,7 +3567,6 @@ var registerBeforeCompactHook = (pi, omRuntime) => {
       }
     };
   });
-  registerPreCompactionOutput(pi, omRuntime);
   pi.on("session_compact", (event, ctx) => {
     const compactWasPiVcc = omRuntime.compactWasPiVcc;
     omRuntime.compactWasPiVcc = false;
@@ -3576,138 +3585,6 @@ var registerBeforeCompactHook = (pi, omRuntime) => {
   });
 };
 
-// src/hooks/cosmetic-output.ts (upstream #103, adapted to the Proto host)
-var PRE_COMPACTION_OUTPUT_TYPE = "blackhole-pre-compaction-output";
-var PRE_COMPACTION_MAX_BYTES = 16 * 1024;
-var PRE_COMPACTION_MAX_SCAN_ENTRIES = 600;
-function isPreCompactionRecord(value) {
-  return typeof value === "object" && value !== null;
-}
-function isPreCompactionOutputData(value) {
-  if (!isPreCompactionRecord(value)) return false;
-  return typeof value.text === "string" && value.text.trim().length > 0 && typeof value.sourceEntryId === "string" && value.sourceEntryId.length > 0 && typeof value.compactionEntryId === "string" && value.compactionEntryId.length > 0 && typeof value.truncated === "boolean";
-}
-function preCompactionAssistantText(message) {
-  if (!isPreCompactionRecord(message)) return void 0;
-  const content = message.content;
-  if (typeof content === "string") return content.trim().length > 0 ? content : void 0;
-  if (!Array.isArray(content)) return void 0;
-  const parts = [];
-  for (const block of content) {
-    if (isPreCompactionRecord(block) && block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0) {
-      parts.push(block.text);
-    }
-  }
-  return parts.length > 0 ? parts.join("\n\n") : void 0;
-}
-function truncateToBytes(text, maxBytes) {
-  if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
-  let bytes = 0;
-  let out = "";
-  for (const char of text) {
-    const size = Buffer.byteLength(char, "utf8");
-    if (bytes + size > maxBytes) break;
-    bytes += size;
-    out += char;
-  }
-  return { text: out, truncated: true };
-}
-/**
- * Entry ids that survive this compaction into provider context: the compaction entry itself plus
- * the retained tail it names. The host rebuilds context as summary + everything from
- * firstKeptEntryId onward, so an empty id (compact-all) retains nothing but the summary.
- */
-function retainedEntryIdsAfterCompaction(branch, compactionEntry) {
-  const retained = /* @__PURE__ */ new Set([compactionEntry.id]);
-  const firstKeptEntryId = compactionEntry.firstKeptEntryId;
-  if (typeof firstKeptEntryId !== "string" || firstKeptEntryId.length === 0) return retained;
-  const firstKeptIndex = branch.findIndex((entry) => entry?.id === firstKeptEntryId);
-  if (firstKeptIndex < 0) return retained;
-  for (let i = firstKeptIndex; i < branch.length; i++) {
-    const id = branch[i]?.id;
-    if (typeof id === "string" && id.length > 0) retained.add(id);
-  }
-  return retained;
-}
-/**
- * Newest assistant text this compaction dropped from view. The branch runs oldest-first, so the
- * folded region sits before the compaction entry; the walk stops at the first assistant message
- * with ordinary text that the cut did not retain.
- */
-function selectOmittedAssistantText(branch, retainedIds, compactionEntryId, maxScan = PRE_COMPACTION_MAX_SCAN_ENTRIES) {
-  const start = branch.findIndex((entry) => entry?.id === compactionEntryId);
-  if (start < 0) return void 0;
-  const limit = Math.max(0, start - maxScan);
-  for (let i = start - 1; i >= limit; i--) {
-    const entry = branch[i];
-    if (!entry?.id || retainedIds.has(entry.id)) continue;
-    if (entry.type !== "message") continue;
-    const message = entry.message;
-    if (!isPreCompactionRecord(message) || message.role !== "assistant") continue;
-    if (message.stopReason === "aborted") continue;
-    const text = preCompactionAssistantText(message);
-    if (text) return { entryId: entry.id, text };
-  }
-  return void 0;
-}
-function buildPreCompactionOutputData(branch, retainedIds, compactionEntry) {
-  const selected = selectOmittedAssistantText(branch, retainedIds, compactionEntry.id);
-  if (!selected) return void 0;
-  const bounded = truncateToBytes(stripControlChars(selected.text), PRE_COMPACTION_MAX_BYTES);
-  if (!bounded.text.trim()) return void 0;
-  return {
-    text: bounded.text,
-    sourceEntryId: selected.entryId,
-    compactionEntryId: compactionEntry.id,
-    truncated: bounded.truncated
-  };
-}
-function hasPreCompactionOutput(branch, compactionEntryId) {
-  return branch.some((entry) => entry.type === "custom" && entry.customType === PRE_COMPACTION_OUTPUT_TYPE && isPreCompactionOutputData(entry.data) && entry.data.compactionEntryId === compactionEntryId);
-}
-function registerPreCompactionOutput(pi, omRuntime) {
-  pi.registerMessageRenderer(PRE_COMPACTION_OUTPUT_TYPE, (message, _options, theme) => {
-    const data = message?.details;
-    if (!isPreCompactionOutputData(data)) return void 0;
-    const container = new Container();
-    container.addChild(new Text(theme.fg("dim", "[Previous output \u2014 display only]"), 0, 0));
-    container.addChild(new Markdown(data.text, 0, 0, getMarkdownTheme()));
-    if (data.truncated) container.addChild(new Text(theme.fg("dim", "[Copy truncated]"), 0, 0));
-    return container;
-  });
-  pi.on("session_compact", (event, ctx) => {
-    try {
-      omRuntime.ensureConfig(ctx.cwd ?? process.cwd());
-      const log = (ev, data) => debugLog(ev, data, omRuntime.config.debugLog === true);
-      if (omRuntime.config.showPreCompactionMessage !== true) return;
-      if (event?.fromExtension !== true) return;
-      const compactionEntry = event.compactionEntry;
-      const details = compactionEntry?.details;
-      if (!isPreCompactionRecord(details) || details.compactor !== "blackhole") return;
-      if (typeof compactionEntry?.id !== "string") return;
-      const branch = ctx.sessionManager.getBranch();
-      if (hasPreCompactionOutput(branch, compactionEntry.id)) {
-        log("pre_compaction_message.skip", { reason: "already_copied" });
-        return;
-      }
-      const retainedIds = retainedEntryIdsAfterCompaction(branch, compactionEntry);
-      const data = buildPreCompactionOutputData(branch, retainedIds, compactionEntry);
-      if (!data) {
-        log("pre_compaction_message.skip", { reason: "no_omitted_assistant_text" });
-        return;
-      }
-      pi.appendEntry(PRE_COMPACTION_OUTPUT_TYPE, data);
-      log("pre_compaction_message.append", {
-        sourceEntryId: data.sourceEntryId,
-        compactionEntryId: data.compactionEntryId,
-        bytes: Buffer.byteLength(data.text, "utf8"),
-        truncated: data.truncated
-      });
-    } catch (error) {
-      debugLog("pre_compaction_message.failed", { error: error instanceof Error ? error.message : String(error) }, omRuntime.config?.debugLog === true);
-    }
-  });
-}
 // src/hooks/compact-failed.ts
 function getErrorMessage(error) {
   if (error instanceof Error) return error.message;
@@ -14787,6 +14664,6 @@ var index_default = async (pi) => {
   registerRecallTool(pi);
 };
 
-export { MEMORY_THINKING_LEVEL, PRE_COMPACTION_OUTPUT_TYPE, buildPreCompactionOutputData, capRecallBlocks, compile as compileSummary, index_default as default, expandEntryFile, loadAllMessages, resolveMemoryModelCandidates, retainedEntryIdsAfterCompaction, searchEntries };
+export { MEMORY_THINKING_LEVEL, capRecallBlocks, compile as compileSummary, index_default as default, expandEntryFile, loadAllMessages, resolveMemoryModelCandidates, searchEntries };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

@@ -230,12 +230,13 @@ pi-blackhole also adds:
 
 Configuration lives at `~/.proto/agent/pi-blackhole/pi-blackhole-config.json`, with an optional project override at `.pi/pi-blackhole-config.json`. The default mode is deterministic compaction with observational memory enabled. Blackhole is the only summary engine; remote compaction remains the fallback method when Blackhole declines. The scheduler and recovery settings described below remain authoritative. See the [upstream configuration reference](https://github.com/k0valik/pi-blackhole/blob/270aa0912800b2b7ce64414ef4247be84106d8f8/docs/CONFIG.md) for Blackhole-specific options.
 
+The `[User Messages]` section records every genuine user turn still live at compaction time — the folded ones *and* the retained tail. With the default minimal tail the newest request is kept in context rather than folded, so collecting only the folded window dropped exactly the request the next model was supposed to act on. The self-summary note is written from the same range for the same reason.
+
 Summary `(#N)` references and the `[User Messages]` pointers share one index space: positions among `type: "message"` session entries, counted from the session file — the same numbering `recall` resolves. A converted window position that cannot be mapped back to a session entry renders no reference at all.
 
-Two Blackhole knobs are Proto-local additions, both live in the same config file:
+One Blackhole knob is a Proto-local addition, in the same config file:
 
 - `recallResponseMaxChars` (default `48000`, `0` disables, env `PI_BLACKHOLE_RECALL_RESPONSE_MAX_CHARS`) bounds one `recall` response: snippet lines clip at 1,000 characters around the match, expanded entries share the budget, and entries are dropped whole with a footer naming the continuation (`page:N`, `#N:text`) rather than sliced mid-entry.
-- `showPreCompactionMessage` (default `true`, env `PI_BLACKHOLE_SHOW_PRE_COMPACTION_MESSAGE`) re-renders the newest assistant answer a compaction dropped from view as a display-only entry, capped at 16 KiB. It is a plain `custom` entry: the transcript shows it, the provider context never does.
 
 Observational memory runs background Observer, Reflector, and Dropper model calls. Structural compaction itself is deterministic and model-free; memory is not. Configure explicit inexpensive worker models and set `sessionFallback: false` to prevent workers from falling back to the active session model.
 

@@ -6,15 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import {
-	buildPreCompactionOutputData,
-	capRecallBlocks,
-	expandEntryFile,
-	loadAllMessages,
-	PRE_COMPACTION_OUTPUT_TYPE,
-	retainedEntryIdsAfterCompaction,
-	searchEntries,
-} from "../../vendor/pi-blackhole/index.js";
+import { capRecallBlocks, expandEntryFile, loadAllMessages, searchEntries } from "../../vendor/pi-blackhole/index.js";
 
 interface Rendered {
 	index: number;
@@ -174,58 +166,5 @@ describe("#N:text drill-down", () => {
 
 		expect(out).toContain("$ bun test");
 		expect(out).toContain("3 pass");
-	});
-});
-
-describe("pre-compaction output copy", () => {
-	const compactionEntry = { id: "c1", firstKeptEntryId: "m3" };
-	const branch = [
-		{ id: "m0", type: "message", message: { role: "user", content: [{ type: "text", text: "start" }] } },
-		{
-			id: "m1",
-			type: "message",
-			message: { role: "assistant", content: [{ type: "text", text: "the answer you asked for" }] },
-		},
-		{ id: "m2", type: "message", message: { role: "user", content: [{ type: "text", text: "thanks" }] } },
-		{ id: "m3", type: "message", message: { role: "assistant", content: [{ type: "text", text: "still visible" }] } },
-		{ id: "c1", type: "compaction", summary: "folded", firstKeptEntryId: "m3" },
-	];
-
-	test("copies the newest assistant text the cut dropped, not one the tail still shows", () => {
-		const retained = retainedEntryIdsAfterCompaction(branch, compactionEntry);
-		const data = buildPreCompactionOutputData(branch, retained, compactionEntry);
-
-		expect(retained.has("m3")).toBe(true);
-		expect(data?.text).toBe("the answer you asked for");
-		expect(data?.sourceEntryId).toBe("m1");
-		expect(data?.compactionEntryId).toBe("c1");
-		expect(data?.truncated).toBe(false);
-		expect(PRE_COMPACTION_OUTPUT_TYPE).toBe("blackhole-pre-compaction-output");
-	});
-
-	test("an oversized copy is bounded and marked", () => {
-		const huge = "y".repeat(40_000);
-		const wide = [
-			{ id: "m0", type: "message", message: { role: "assistant", content: [{ type: "text", text: huge }] } },
-			{ id: "c1", type: "compaction", summary: "folded", firstKeptEntryId: "" },
-		];
-
-		const data = buildPreCompactionOutputData(wide, retainedEntryIdsAfterCompaction(wide, { id: "c1" }), {
-			id: "c1",
-		});
-
-		expect(data?.truncated).toBe(true);
-		expect(Buffer.byteLength(data!.text, "utf8")).toBeLessThanOrEqual(16 * 1024);
-	});
-
-	test("a compaction that dropped no assistant text copies nothing", () => {
-		const onlyUser = [
-			{ id: "m0", type: "message", message: { role: "user", content: [{ type: "text", text: "question" }] } },
-			{ id: "c1", type: "compaction", summary: "folded", firstKeptEntryId: "" },
-		];
-
-		expect(
-			buildPreCompactionOutputData(onlyUser, retainedEntryIdsAfterCompaction(onlyUser, { id: "c1" }), { id: "c1" }),
-		).toBeUndefined();
 	});
 });

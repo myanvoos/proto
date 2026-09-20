@@ -13,7 +13,6 @@
 - Compaction summary `(#N)` references now resolve in the same index space as `recall`: after the first compaction or on a branched session they pointed at unrelated entries, and a position that cannot be resolved renders no reference instead of a wrong one.
 - `recall` queries that mention a file now find it: a query is split into terms first, so `observer.ts` matches literally instead of compiling the whole sentence into one never-matching pattern (and no longer wildcards the dot onto `observerXts`).
 - Sessions larger than V8's maximum string length are searchable again — session history is read in chunks instead of one string, and a session file that does not exist yet reads as empty history.
-- After a compaction, the newest answer it dropped from view stays on screen as a display-only copy (16 KiB cap, `showPreCompactionMessage` to turn it off). It is never sent to the model.
 - Compaction now retains every user message across compaction instead of keeping only a recent tail: each folded user message appears verbatim in the summary's `[User Messages]` section with its session entry reference, and large pasted content is elided to a head plus a `recall #N` pointer placed right in that entry so the exact text stays one recall away.
 - Compaction summaries now end with a handoff note written from the context being dropped — why the current approach was chosen, what was ruled out, what is half-finished — appended to whatever produced the summary. Turn it off with `compaction.selfSummary`.
 
@@ -31,6 +30,8 @@
 
 ### Fixed
 
+- A request that arrives just before a compaction is no longer lost: `[User Messages]` and the handoff note now cover the retained tail, not only the folded window.
+- Compaction no longer re-prints the answer it just dropped. The transcript already keeps pre-compaction turns on screen, so the display-only copy was a duplicate.
 - The startup screen no longer strands a band of blank rows under the editor and status line: the frame follows startup notices down as they clear, worst on short or narrow terminals.
 - A streaming command's status lines no longer collapse behind a `… N earlier lines` marker while it runs: the live card keeps every line it has already shown instead of rewriting its own head to stay inside the viewport.
 - The transcript no longer duplicates rows in terminal scrollback or rewinds the pane to the startup screen mid-session: finished blocks are handed to the terminal once, a still-running card holds its place until it settles, and the welcome header leaves the live frame the moment it enters history.

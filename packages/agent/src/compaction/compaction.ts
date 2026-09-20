@@ -905,9 +905,11 @@ export async function generateHandoff(
 
 /**
  * The structured summary is written by a summarizer that only ever sees a serialized transcript.
- * This note is written by the session's own model, from the context it is about to lose, and is
- * appended to whatever summary the compaction produced — including one supplied by an extension.
+ * This note is written by a memory-role model from the whole live transcript, and is appended to
+ * whatever summary the compaction produced — including one supplied by an extension.
  * The previous summary leads the replay: it is the only surviving record of history already folded.
+ * The retained tail trails it: with a minimal tail the newest request is still live, and a handoff
+ * note that cannot see the request it is handing off is worse than useless.
  */
 export async function generateSelfSummary(
 	preparation: CompactionPreparation,
@@ -926,7 +928,7 @@ export async function generateSelfSummary(
 			) as AgentMessage,
 		);
 	}
-	messages.push(...preparation.messagesToSummarize, ...preparation.turnPrefixMessages);
+	messages.push(...preparation.messagesToSummarize, ...preparation.turnPrefixMessages, ...preparation.recentMessages);
 	return generateSelfAuthored(messages, model, apiKey, SELF_SUMMARY_PROMPT, "self-summary", options, signal);
 }
 

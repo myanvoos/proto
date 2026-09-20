@@ -28,29 +28,6 @@ export declare function compileSummary(input: {
 	userTurns?: SummaryUserTurn[];
 }): string;
 
-/** Custom entry type carrying the display-only copy of text a compaction dropped from view. */
-export const PRE_COMPACTION_OUTPUT_TYPE: "blackhole-pre-compaction-output";
-
-export interface PreCompactionOutputData {
-	text: string;
-	sourceEntryId: string;
-	compactionEntryId: string;
-	truncated: boolean;
-}
-
-/** Entry ids this compaction keeps in provider context: the summary plus its retained tail. */
-export declare function retainedEntryIdsAfterCompaction(
-	branch: readonly Record<string, unknown>[],
-	compactionEntry: { id: string; firstKeptEntryId?: string },
-): Set<string>;
-
-/** Newest assistant text the compaction dropped, bounded to 16 KiB; undefined when nothing was dropped. */
-export declare function buildPreCompactionOutputData(
-	branch: readonly Record<string, unknown>[],
-	retainedIds: ReadonlySet<string>,
-	compactionEntry: { id: string },
-): PreCompactionOutputData | undefined;
-
 /** One entry as recall ranks it: `index` is the `#N` the tool resolves. */
 export interface RecallRenderedEntry {
 	index: number;
