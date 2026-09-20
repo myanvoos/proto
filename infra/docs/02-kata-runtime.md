@@ -330,8 +330,8 @@ This is the most important block to understand for a CI runner.
 - `static_sandbox_resource_mgmt = false` still enables **dynamic** sizing: Kata
   reads the pod's CPU/memory **limits** that the kubelet/CRI hands the shim and
   hotplugs beyond the boot floor as needed. So a runner pod requesting `2 CPU /
-  4Gi` with limits `8 CPU / 12Gi` now boots at 2 vCPU/4 GiB and grows toward
-  8 vCPU / 12 GiB. If a pod sets no limits, the VM stays at the defaults.
+  4Gi` with limits `8 CPU / 14Gi` now boots at 2 vCPU/4 GiB and grows toward
+  8 vCPU / 14 GiB. If a pod sets no limits, the VM stays at the defaults.
 
 The practical rule here is simple: align the defaults to the runner pod's
 requests when every job creates a fresh VM and immediately needs that baseline

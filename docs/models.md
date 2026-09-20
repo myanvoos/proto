@@ -101,7 +101,7 @@ Custom models default to reasoning-capable with the full standard effort list (`
 
 ### Allowed auth/discovery values
 
-- `auth`: `apiKey` (default), `none`, or `oauth`; for `models.yml` custom models, `oauth` is accepted by schema but does not waive the `apiKey` requirement
+- `auth`: `apiKey` (default), `none`, or `oauth`; `none` and `oauth` waive the `apiKey` requirement for custom models
 - `discovery.type`: `ollama`, `llama.cpp`, `lm-studio`, `openai-models-list`, `proxy`, or `litellm`
 - `transport`: `pi-native` only. When set, every model under that provider is sent to an `proto auth-gateway` compatible `baseUrl` via `POST /v1/pi/stream`; `apiKey` is the gateway bearer.
 - `imageInputDecoder`: `stb` only. Set this on a custom model or `modelOverrides` entry when the serving backend uses an STB-compatible image decoder that cannot accept WebP; PROTO converts attached and historical WebP images before provider dispatch.
@@ -114,7 +114,7 @@ Custom models default to reasoning-capable with the full standard effort list (`
 Required:
 
 - `baseUrl`
-- `apiKey` unless `auth: none`
+- `apiKey` unless `auth: none` or `auth: oauth`
 - `api` at provider level or each model
 
 ### Override-only provider (`models` missing or empty)
@@ -395,9 +395,9 @@ and fuzzy patterns are resolved against the available concrete models.
 
 Supported model roles:
 
-- `default`, `smol`, `slow`, `vision`, `designer`, `commit`, `tiny`, `task`, `advisor`
+- `default`, `smol`, `slow`, `vision`, `designer`, `commit`, `tiny`, `worker`, `advisor`
 
-The `tiny` role overrides the online model used for lightweight background tasks (session titles, memory, `auto`-thinking difficulty classification, unexpected-stop detection); when unset, these fall back to `@smol`. Pick one in `/models`.
+The `tiny` role overrides the online model used for lightweight background tasks (session titles, memory, unexpected-stop classification); when unset, these fall back to `@smol`. Pick one in `/models`.
 
 Role aliases like `@smol` expand through `settings.modelRoles`; `*` selects `@default`. Quote `@` aliases in YAML values (`fable: "@slow"`). Each role value can also append a thinking selector such as `:minimal`, `:low`, `:medium`, or `:high`.
 
@@ -562,7 +562,7 @@ The same `compat` slot accepts `promptCacheMode` (`none`, `automatic`, or `expli
 
 ### Strict tool schemas (`disableStrictTools`)
 
-Anthropic's API supports a `strict` field on tool definitions that forces the model to always follow the provided schema exactly. PROTO enables it by default for a small allowlist of high-frequency built-in `anthropic-messages` tools (`bash`, `python`, `edit`, and `find`) whose schemas fit Anthropic's strict grammar limits; other tools still send normalized schemas but omit `strict`.
+Anthropic's API supports a `strict` field on tool definitions that forces the model to always follow the provided schema exactly. PROTO enables it by default for the Anthropic transport's allowlist of high-frequency tools (`bash`, `python`, `edit`, and `find`; proto's builtin registry currently supplies only `bash` from that list) whose schemas fit Anthropic's strict grammar limits; other tools still send normalized schemas but omit `strict`.
 
 Third-party providers that front the Anthropic API (AWS Bedrock, Azure, self-hosted proxies) do not always implement this field and will reject requests that include it. Set `disableStrictTools: true` at the provider level to opt out of strict mode for the allowlisted tools:
 

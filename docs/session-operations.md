@@ -1,4 +1,4 @@
-# Session Operations: fresh, clear, fork, resume/continue
+# Session Operations: new, clear, delete, fork, resume/continue
 
 This document describes operator-visible behavior for conversation reset, lifecycle, fork, and resume operations as currently implemented.
 
@@ -14,9 +14,8 @@ This document describes operator-visible behavior for conversation reset, lifecy
 | Operation                               | Entry path                   | Session mutation                              | Session file creation/switch                                                               | Output artifact                                                                     |
 | --------------------------------------- | ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
 | `/new`                                  | Interactive slash command    | Yes (starts an empty conversation)            | Switches identity; assigns a new transcript path in persistent mode                        | None                                                                                |
-| `/fresh`                                | Slash command (TUI/headless) | Yes (provider-facing in-memory id/state only) | No; keeps current session file/header                                                      | None                                                                                |
 | `/clear`                                | Interactive slash command    | Yes (clears live/model conversation context)  | No; retains session identity, metadata, transcript file, and full on-disk history          | Appends a durable `reset_boundary`                                                  |
-| `/drop`                                 | Interactive slash command    | Yes (starts an empty conversation)            | Attempts to delete the current persisted session and artifacts, then switches to a new one | None                                                                                |
+| `/session delete`                       | Interactive slash command    | Yes (after confirmation, returns to selector) | Deletes the current persisted session JSONL and artifact directory, then opens the session selector | None                                                                                |
 | `/fork`                                 | Interactive slash command    | Yes (active session identity changes)         | Creates new session file and switches current session to it (persistent mode only)         | Copies artifact directory to new session namespace when present                     |
 | `--fork <id\|path>`                     | CLI startup                  | Yes after session creation                    | Creates a new session fork from the selected source into current cwd/session dir           | None                                                                                |
 | `/resume [id\|@claude\|@codex]`         | Interactive slash command    | Yes (active in-memory state replaced)         | Switches to a selected/matched session, or imports a selected foreign session              | None                                                                                |
@@ -24,30 +23,11 @@ This document describes operator-visible behavior for conversation reset, lifecy
 | `--resume <id\|path>`                   | CLI startup                  | Yes after session creation                    | Opens existing session; a missing recorded cwd may be re-rooted into the current directory | None                                                                                |
 | `--continue`                            | CLI startup                  | Yes after session creation                    | Opens terminal breadcrumb or most-recent session; creates new one if none exists           | None                                                                                |
 
-## Fresh
-
-Interactive `/fresh` resets the provider-facing stream state of the current
-session **without touching the local transcript, session file, or header**. Use
-it to recover from a wedged or corrupted provider stream (stale prompt cache,
-a mid-turn glitch, or a server-side conversation id that has drifted) while
-keeping the conversation you can see.
-
-`AgentSession.freshSession()`:
-
-- Is rejected while the agent is streaming — wait for the response to finish or
-  abort it first.
-- Closes every cached provider-session state entry (server-side conversation /
-  prompt-cache handles) and reports how many were pruned.
-- Mints a fresh provider session id and invalidates the append-only context so
-  the next turn re-sends the full local transcript to the provider.
-- Leaves the local transcript, session file, and session identity unchanged, so
-  nothing you have said or received is lost.
-
-Because it keeps both the visible and model-facing conversation, `/fresh`
-differs from `/clear` (clear the live/model conversation in place), `/new`
-(start a brand-new empty session), and `/drop` (attempt to delete the current
-session and start a new one). Only `/fresh` preserves the existing conversation
-while giving the provider stream state a clean slate.
+There is no `/fresh` command and no `AgentSession.freshSession()`: to reset
+provider stream state, `/clear` rotates it in place while keeping the session
+identity and transcript file; `/new` starts a brand-new empty session. To
+remove a persisted session, `/session delete` confirms, deletes the session
+JSONL and its artifact directory, and returns to the session selector.
 
 ## Clear
 
@@ -72,10 +52,8 @@ command aborts it and waits for it to stop before resetting.
   retains the pre-reset history on disk.
 
 The TUI clears its rendered transcript after a successful clear. This differs
-from `/fresh`, which rotates provider stream state without clearing the
-conversation; `/new`, which creates a new session identity and transcript file;
-and `/drop`, which attempts to delete the old persisted session before starting
-a new one.
+from `/new`, which creates a new session identity and transcript file, and from
+`/session delete`, which deletes the persisted session entirely.
 
 ## Fork
 
@@ -246,8 +224,6 @@ When session manager is created with `SessionManager.inMemory()` (`--no-session`
 ## Known implementation caveats (as of current code)
 
 - `SelectorController.handleResumeSession()` does not check the boolean result from `session.switchSession(...)`; a hook-cancelled switch can still proceed through UI "Resumed session" repaint/status path.
-- `/drop` treats deletion as best-effort: it attempts to delete the current
-  session JSONL and artifact directory, logs any deletion failure, and still
-  creates and switches to a new session. A failed or partial deletion can leave
-  the old session or its artifacts on disk, so `/drop` is not a guaranteed
-  erasure boundary.
+- `/session delete` asks for confirmation, then deletes the current session
+  JSONL and artifact directory and returns to the session selector. Deletion is
+  permanent for the persisted session and its artifacts.

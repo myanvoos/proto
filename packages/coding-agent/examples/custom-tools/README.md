@@ -4,43 +4,25 @@ Example custom tools for proto-coding-agent.
 
 ## Examples
 
-Each example uses the `subdirectory/index.ts` structure required for tool discovery.
-
 ### hello/
 
 Minimal example showing the basic structure of a custom tool.
 
-### todo/
-
-Full-featured example demonstrating:
-
-- `onSession` for state reconstruction from session history
-- Custom `renderCall` and `renderResult`
-- Proper branching support via details storage
-- State management without external files
+Discovery accepts both single `.ts` files and directories containing an `index.ts` (plus a sibling `package.json` when the tool needs its own metadata).
 
 ## Usage
 
 ```bash
-# Test directly (can point to any .ts file)
-proto --tool examples/custom-tools/todo/index.ts
+# Test directly (can point to any .ts file or directory)
+proto --tools examples/custom-tools/hello/index.ts
 
-# Or copy entire folder to tools directory for persistent use
-cp -r todo ~/.proto/agent/tools/
-```
-
-Then in proto:
-
-```
-> add a todo "test custom tools"
-> list todos
-> toggle todo #1
-> clear todos
+# Or copy into a tools directory for persistent use
+cp -r hello ~/.proto/agent/tools/
 ```
 
 ## Writing Custom Tools
 
-See [docs/custom-tools.md](../../docs/custom-tools.md) for full documentation.
+See [docs/custom-tools.md](../../../docs/custom-tools.md) for full documentation.
 
 ### Key Points
 
@@ -78,7 +60,7 @@ export default factory;
 **Custom rendering:**
 
 ```typescript
-renderCall(args, theme) {
+renderCall(args, options, theme) {
   return new Text(
     theme.fg("toolTitle", theme.bold("my_tool ")) + args.action,
     0, 0  // No padding - Box handles it

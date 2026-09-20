@@ -153,6 +153,7 @@ Multi-line text editor with autocomplete, file completion, and paste handling. S
 ```typescript
 interface SymbolTheme {
 	cursor: string;
+	inputCursor: string;
 	ellipsis: string;
 	boxRound: {
 		topLeft: string;
@@ -212,8 +213,7 @@ editor.borderColor = (s) => chalk.blue(s); // Change border dynamically
 - Multi-line editing with word wrap
 - Slash command autocomplete (type `/`)
 - File path autocomplete (press `Tab`)
-- Large paste handling (>10 lines creates `[paste #1 +50 lines]` marker)
-- Horizontal lines above/below editor
+- Large paste handling (>10 lines creates a `[Paste #1, +50 lines]` marker)
 - Fake cursor rendering (hidden real cursor)
 
 **Key Bindings:**
@@ -221,7 +221,7 @@ editor.borderColor = (s) => chalk.blue(s); // Change border dynamically
 - `Enter` - Submit
 - `Shift+Enter`, `Ctrl+Enter`, or `Alt+Enter` - New line (terminal-dependent, Alt+Enter most reliable)
 - `Tab` - Autocomplete
-- `Ctrl+K` - Delete line
+- `Ctrl+K` - Delete to end of line
 - `Alt+D` / `Alt+Delete` - Delete word forward
 - `Ctrl+A` / `Ctrl+E` - Line start/end
 - `Ctrl+-` - Undo last edit
@@ -461,11 +461,11 @@ editor.setAutocompleteProvider(provider);
 - Type `/` to see slash commands
 - Press `Tab` for file path completion
 - Works with `~/`, `./`, `../`, and `@` prefix
-- Filters to attachable files for `@` prefix
+- Completes matching files and directories for `@` prefix (excluding `.git`; fuzzy and direct path rules)
 
 ## Key Detection
 
-Helper functions for detecting keyboard input (supports Kitty keyboard protocol):
+Key matching utilities (supports Kitty keyboard protocol):
 
 ```typescript
 import {
@@ -509,7 +509,7 @@ if (isCtrlC(data)) {
 The TUI uses three rendering strategies:
 
 1. **First Render**: Output all lines without clearing scrollback
-2. **Width Changed or Change Above Viewport**: Clear screen and full re-render
+2. **Width Changed or Change Above Viewport**: Repaint, preserving host-reflowed native scrollback where supported
 3. **Normal Update**: Move cursor to first changed line, clear to end, render changed lines
 
 All updates are wrapped in **synchronized output** (`\x1b[?2026h` ... `\x1b[?2026l`) for atomic, flicker-free rendering unless `PI_NO_SYNC_OUTPUT=1` is set. The opt-out removes only the DEC 2026 wrapper; paint writes still guard terminal autowrap to avoid pending-wrap cursor artifacts.
@@ -552,7 +552,7 @@ const truncated = truncateToWidth("Hello World", 8); // "Hello…" (default: Ell
 // Truncate without ellipsis
 const truncatedNoEllipsis = truncateToWidth("Hello World", 8, Ellipsis.Omit); // "Hello Wo"
 
-// Wrap text to width (Bun.wrapAnsi word wrap, trims line ends, preserves ANSI)
+// Wrap text to width (native ANSI-aware word wrap from pi-natives, trims line ends, preserves ANSI)
 const lines = wrapTextWithAnsi("This is a long line that needs wrapping", 20);
 // ["This is a long line", "that needs wrapping"]
 ```
@@ -566,7 +566,7 @@ When creating custom components, **each line returned by `render()` must not exc
 Use the key detection utilities to handle keyboard input:
 
 ```typescript
-import { isEnter, isEscape, isArrowUp, isArrowDown, isCtrlC, isTab, isBackspace } from "@oh-my-pi/pi-tui";
+import { matchesKey } from "@oh-my-pi/pi-tui";
 import type { Component } from "@oh-my-pi/pi-tui";
 
 class MyInteractiveComponent implements Component {
@@ -577,13 +577,13 @@ class MyInteractiveComponent implements Component {
 	onCancel?: () => void;
 
 	handleInput(data: string): void {
-		if (isArrowUp(data)) {
+		if (matchesKey(data, "up")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-		} else if (isArrowDown(data)) {
+		} else if (matchesKey(data, "down")) {
 			this.selectedIndex = Math.min(this.items.length - 1, this.selectedIndex + 1);
-		} else if (isEnter(data)) {
+		} else if (matchesKey(data, "enter")) {
 			this.onSelect?.(this.selectedIndex);
-		} else if (isEscape(data) || isCtrlC(data)) {
+		} else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
 			this.onCancel?.();
 		}
 	}
@@ -692,10 +692,10 @@ npx tsx test/chat-simple.ts
 
 ```bash
 # Install dependencies (from monorepo root)
-npm install
+bun install
 
 # Run type checking
-npm run check
+bun --cwd=packages/tui run check
 
 # Run the demo
 npx tsx test/chat-simple.ts

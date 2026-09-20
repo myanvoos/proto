@@ -245,10 +245,10 @@ Field by field:
   no build-system function anymore.
 - **`securityContext.fsGroup: 1001`** - makes the mounted PVC writable by the
   image's `runner` user without replacing image-owned `~/.cargo/bin` or `~/.rustup`.
-- **`initContainers.prepare-runner-cache`** - uses the same locally imported image
-  to create the PVC subdirectories as root before the runner starts. This avoids
-  relying on kubelet's subPath auto-create permissions and does not pull another
-  image.
+- **`initContainers.prepare-runner-cache`** (host-config example, not tracked in
+  this repo) - uses the same locally imported image to create the PVC
+  subdirectories as root before the runner starts. This avoids relying on
+  kubelet's subPath auto-create permissions and does not pull another image.
 - **`volumeMounts`** - mounts the shared PVC only at `~/.bun/install/cache` and
   `~/.cargo/registry`. `node_modules`, Cargo `target/`, and Cargo git checkouts
   stay inside the throwaway VM filesystem.
@@ -570,9 +570,7 @@ helm install <release> \
   oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set
 ```
 
-Jobs in the other repo then target `runs-on: <other-repo>-kata`. (On this host a
-convenience wrapper, `proto-add-repo-runner <OWNER>/<REPO> [label]`, performs exactly
-this install.)
+Jobs in the other repo then target `runs-on: <other-repo>-kata`.
 
 **Uninstall** (leaves k3s/Kata in place):
 

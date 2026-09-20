@@ -137,7 +137,7 @@ System prompt construction (`src/system-prompt.ts`) uses discovered skills as fo
 
 `hide: true` does not disable the skill. Hidden skills are still loaded and remain reachable through `skill://<name>` and `/skill:<name>` when skill commands are enabled.
 
-Task tool subagents receive the session's discovered/provided skills list via normal session creation; there is no per-task skill pinning override.
+Subagents receive the session's discovered/provided skills list via normal session creation; an agent definition may set `autoloadSkills` to select named skills for automatic injection (unmatched names are ignored).
 
 ### Interactive `/skill:<name>` commands
 

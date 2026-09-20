@@ -12,7 +12,7 @@ npm install @oh-my-pi/omptype
 bun add @oh-my-pi/omptype
 ```
 
-Runs on Node 20+ (published as compiled ESM with bundled type declarations)
+Runs on Node 20+ (source-published: the package entry points resolve directly to TypeScript sources)
 and Bun 1.3.14+ (which resolves the TypeScript source directly via the `bun`
 export condition). No runtime dependencies.
 

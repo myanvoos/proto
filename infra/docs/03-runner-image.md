@@ -195,9 +195,6 @@ In order:
     lld llvm` stay as a generic C toolchain; `gcc-aarch64-linux-gnu` and
     `musl-tools` provide the cross linkers/compilers for the aarch64-gnu and
     x86_64-musl addon targets.
-  - **canvas / cairo native stack:** `libcairo2-dev libpango1.0-dev libjpeg-dev
-    libgif-dev librsvg2-dev` - the `-dev` headers the canvas/rsvg native modules
-    compile against.
   - **CLI tools:** `fd-find ripgrep imagemagick`, used by the agent and tests.
 - **The two shims** normalize Debian's binary names to what callers expect:
   Debian ships `fd` as `fdfind`, so `ln -sf "$(command -v fdfind)"
@@ -235,7 +232,12 @@ no-ops - the warm-start payoff.
 
 ## 3. Build, import, and roll out (`reload.sh`)
 
-`/root/proto-kata-runner-image/reload.sh` does the whole cycle: build, in-image
+> **Legacy snapshot.** The reproduced `reload.sh` below is the older Docker-based
+> flow kept as a fallback (`BUILD_BACKEND=docker` in
+> [`infra/reload-runner.sh`](../reload-runner.sh)), which is the canonical,
+> version-controlled rollout path (direct containerd build by default).
+
+The host-side `/root/proto-kata-runner-image/reload.sh` did the whole cycle: build, in-image
 smoke test, import into k3s containerd, point ARC at the new tag, and verify the
 rollout. It is idempotent and cache-fast on an unchanged rebuild. Reproduced
 verbatim (no secrets; the `/root` and kubeconfig paths are the real host paths):

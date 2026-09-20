@@ -65,7 +65,7 @@ bun run stats:followups -- --max-fix 2 --min-dup 8 --show 20
 ```
 
 All three accept `-n N` / `--folder SUBSTR` to scope the query, plus
-`--since <h|d|w|m|Nh|Nd|Nw>` to keep only calls newer than a time window
+`--since <h|d|w|m|Nh|Nd|Nw|Nm>` to keep only calls newer than a time window
 (per-call `timestamp`, so it slices long sessions precisely). The `edits`
 audit reads each call's `is_error` flag as the authoritative success/failure
 signal and decodes hashline op kinds (`replace`, `insert after`, `delete`,

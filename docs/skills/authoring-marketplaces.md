@@ -88,7 +88,7 @@ The catalog file lives at either `.proto-plugin/marketplace.json` or `.claude-pl
     "email": "plugins@acme.example"
   },
   "metadata": {
-    "description": "Official Acme plugins for oh-my-pi"
+    "description": "Official Acme plugins for proto"
   },
   "plugins": [
     {

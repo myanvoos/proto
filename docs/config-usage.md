@@ -53,9 +53,10 @@ Key integration points:
 `src/config.ts` defines a fixed source priority list:
 
 1. `.proto` (native)
-2. `.claude`
-3. `.codex`
-4. `.gemini`
+2. `.pi`
+3. `.claude`
+4. `.codex`
+5. `.gemini`
 
 User-level bases:
 
@@ -87,7 +88,7 @@ The other source bases are not profile-scoped and load identically under every p
 
 ## Important constraint
 
-The generic helpers in `src/config.ts` do **not** include `.pi` in source discovery order.
+The generic helpers in `src/config.ts` include `.pi` in source discovery order, right after the native `.proto` root and before `.claude`.
 
 ---
 

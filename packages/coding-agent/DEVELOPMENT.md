@@ -6,7 +6,7 @@ the repo [`docs/`](../../docs/) tree is the authoritative reference.
 
 The long architecture walkthrough that used to live here drifted out of date faster
 than anyone re-read it. The `docs/` tree is kept current (and indexed for the
-in-agent `docs://` / `/docs` surface), so this file links there instead of
+in-agent `proto://` / `proto://docs` surface), so this file links there instead of
 duplicating prose that goes stale.
 
 ## Local development
@@ -18,7 +18,7 @@ Run from `packages/coding-agent/` (or add `--cwd=packages/coding-agent`):
 | Typecheck + lint (the gate) | `bun run check` |
 | Types only | `bun run check:types` |
 | Lint only | `bun run lint` |
-| Tests | `bun run test` |
+| Tests | `bun test` (from the package directory) |
 | Autofix: lint + format prompts | `bun run fix` |
 | Build the `dist/proto` binary | `bun run build` |
 
@@ -63,17 +63,17 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 | `session/` | `AgentSession`, JSONL session tree, storage, history | [session.md](../../docs/session.md), [session-tree-plan.md](../../docs/session-tree-plan.md) |
 | `config/`, `registry/`, `secrets/` | Settings, model/provider registry, secret obfuscation | [settings.md](../../docs/settings.md), [config-usage.md](../../docs/config-usage.md), [models.md](../../docs/models.md), [secrets.md](../../docs/secrets.md) |
 | `tools/` | Built-in tool implementations + render/meta helpers | [custom-tools.md](../../docs/custom-tools.md), [`tools/`](../../docs/tools/) |
-| `exec/`, `eval/`, `ssh/`, `dap/`, `debug/` | Execution backends (shell, py/js kernels, ssh, debugger) | [bash-tool-runtime.md](../../docs/bash-tool-runtime.md), [python-repl.md](../../docs/python-repl.md) |
+| `exec/`, `eval/`, `ssh/`, `debug/` | Execution backends (shell, py/js kernels, ssh, raw SSE debug capture) | [bash-tool-runtime.md](../../docs/bash-tool-runtime.md), [python-repl.md](../../docs/python-repl.md) |
 | `task/`, `orchestrator/`, `irc/`, `goals/` | Shared worker execution, orchestration, inter-agent IRC | [orchestration.md](../../docs/orchestration.md), [worker-agent-discovery.md](../../docs/worker-agent-discovery.md) |
 | `web/`, `exa/` | Fetch, browser automation, search providers, scrapers | [tools/web_search.md](../../docs/tools/web_search.md), [tools/browser.md](../../docs/tools/browser.md) |
 | `mcp/` | MCP transport / manager / loader / tool bridge | [mcp-config.md](../../docs/mcp-config.md), [mcp-runtime-lifecycle.md](../../docs/mcp-runtime-lifecycle.md) |
 | `extensibility/`, `slash-commands/` | Extensions, hooks, custom tools/commands, skills, plugins | [extensions.md](../../docs/extensions.md), [hooks.md](../../docs/hooks.md), [skills.md](../../docs/skills.md) |
 | `capability/`, `discovery/` | Capability registry + provider discovery modules | [extension-loading.md](../../docs/extension-loading.md), [context-files.md](../../docs/context-files.md) |
 | `advisor/`, `autolearn/` | Advisor/watchdog, managed skills | [advisor-watchdog.md](../../docs/advisor-watchdog.md) |
-| `internal-urls/` | Router + handlers (`agent://`, `docs://`, `rule://`, …) | [tree.md](../../docs/tree.md) |
+| `internal-urls/` | Router + handlers (`agent://`, `proto://`, `rule://`, …) | [tree.md](../../docs/tree.md) |
 | `tui/` | Low-level TUI primitives | [tui.md](../../docs/tui.md) |
 | `tiny/` | Embedded tiny-model experiments | [local-models.md](../../docs/local-models.md) |
-| `async/`, `lib/`, `utils/`, `prompts/`, `edit/` | Shared plumbing, prompt assets, patch/diff engine | [tools/edit.md](../../docs/tools/edit.md) |
+| `async/`, `lib/`, `utils/`, `prompts/` | Shared plumbing and prompt assets | |
 
 ## Subsystem reference
 
@@ -101,7 +101,7 @@ Top-level entry modules: `cli.ts`, `main.ts`, `sdk.ts`, `index.ts` (SDK barrel),
 - Authoring + registry: [custom-tools.md](../../docs/custom-tools.md)
 - Output/artifacts: [blob-artifact-architecture.md](../../docs/blob-artifact-architecture.md)
 - Tool resolution devices: [resolve-tool-runtime.md](../../docs/resolve-tool-runtime.md)
-- Per-tool reference: [`docs/tools/`](../../docs/tools/) — `read`, `bash`, `fleet`, `orchestrate_*`, `web_search`, `browser`, `github`, `inspect_media`, `ask`, `todo`, `recall`, `retain`, `reflect`, `checkpoint`, `rewind`
+- Per-tool reference: [`docs/tools/`](../../docs/tools/) — `read`, `bash`, `ask`, `inspect_media`, `browser`, `computer`, `checkpoint`, `rewind`, `orchestrate_*`, `fleet`, `monitor`, `todo`, `web_search`, `manage_skill`
 
 ### Execution backends
 - [bash-tool-runtime.md](../../docs/bash-tool-runtime.md), [tools/bash.md](../../docs/tools/bash.md)

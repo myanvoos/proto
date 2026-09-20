@@ -1,17 +1,17 @@
-# @oh-my-pi/pi-agent
+# @oh-my-pi/pi-agent-core
 
 Stateful agent with tool execution and event streaming. Built on `@oh-my-pi/pi-ai`.
 
 ## Installation
 
 ```bash
-npm install @oh-my-pi/pi-agent
+npm install @oh-my-pi/pi-agent-core
 ```
 
 ## Quick Start
 
 ```typescript
-import { Agent } from "@oh-my-pi/pi-agent";
+import { Agent } from "@oh-my-pi/pi-agent-core";
 import { getModel } from "@oh-my-pi/pi-ai";
 
 const agent = new Agent({
@@ -134,7 +134,7 @@ const agent = new Agent({
   initialState: {
     systemPrompt: string[],
     model: Model,
-    thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
+    thinkingLevel: Effort, // optional
     tools: AgentTool<any>[],
     messages: AgentMessage[],
   },
@@ -145,8 +145,11 @@ const agent = new Agent({
   // Transform context before convertToLlm (for pruning, compaction)
   transformContext: async (messages, signal) => pruneOldMessages(messages),
 
-  // How to handle queued messages: "one-at-a-time" (default) or "all"
-  queueMode: "one-at-a-time",
+  // How to handle queued steering messages: "all" (default) or "one-at-a-time"
+  steeringMode: "all",
+
+  // How to handle queued follow-up messages: "all" (default) or "one-at-a-time"
+  followUpMode: "all",
 
   // Custom stream function (for proxy backends)
   streamFn: streamProxy,
@@ -168,7 +171,7 @@ const agent = new Agent({
 interface AgentState {
 	systemPrompt: string[];
 	model: Model;
-	thinkingLevel: ThinkingLevel;
+	thinkingLevel?: Effort;
 	tools: AgentTool<any>[];
 	messages: AgentMessage[];
 	isStreaming: boolean;
@@ -209,7 +212,7 @@ agent.setTools([myTool]);
 agent.replaceMessages(newMessages);
 agent.appendMessage(message);
 agent.clearMessages();
-agent.reset(); // Clear everything
+agent.reset(); // Clear messages and transient queues; keeps systemPrompt/model/tools
 ```
 
 ### Control
@@ -259,7 +262,7 @@ steering until the current turn completes.
 Extend `AgentMessage` via declaration merging:
 
 ```typescript
-declare module "@oh-my-pi/pi-agent" {
+declare module "@oh-my-pi/pi-agent-core" {
 	interface CustomAgentMessages {
 		notification: { role: "notification"; text: string; timestamp: number };
 	}
@@ -332,7 +335,7 @@ Thrown errors are caught by the agent and reported to the LLM as tool errors wit
 For browser apps that proxy through a backend:
 
 ```typescript
-import { Agent, streamProxy } from "@oh-my-pi/pi-agent";
+import { Agent, streamProxy } from "@oh-my-pi/pi-agent-core";
 
 const agent = new Agent({
 	streamFn: (model, context, options) =>
@@ -349,7 +352,7 @@ const agent = new Agent({
 For direct control without the Agent class:
 
 ```typescript
-import { agentLoop, agentLoopContinue } from "@oh-my-pi/pi-agent";
+import { agentLoop, agentLoopContinue } from "@oh-my-pi/pi-agent-core";
 
 const context: AgentContext = {
 	systemPrompt: ["You are helpful."],
@@ -410,7 +413,7 @@ const stream = agentLoop([userMessage], context, {
 	...config,
 	telemetry: {
 		onRunEnd: (summary, coverage) => {
-			await persistRunSummary(summary, coverage);
+			void persistRunSummary(summary, coverage);
 		},
 	},
 });
@@ -449,7 +452,7 @@ fold N summaries with `aggregateAgentRunSummaries` / `aggregateAgentRunCoverage`
 import {
 	aggregateAgentRunSummaries,
 	aggregateAgentRunCoverage,
-} from "@oh-my-pi/pi-agent";
+} from "@oh-my-pi/pi-agent-core";
 
 const summaries: AgentRunSummary[] = [];
 const coverages: AgentRunCoverage[] = [];

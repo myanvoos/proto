@@ -46,6 +46,8 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 
 ## Supported Providers
 
+Selected providers (the registry wires many more lazily, including Azure, Cursor, Devin, GitLab Duo, DeepSeek, Fireworks, Kimi, MiniMax, Perplexity, SiliconFlow, Tavily, and others — see `packages/ai/src/registry/registry-lazy.ts`):
+
 - **OpenAI**
 - **OpenAI Codex** (ChatGPT Plus/Pro subscription, requires OAuth, see below)
 - **Anthropic**
@@ -390,7 +392,7 @@ All streaming events emitted during assistant message generation:
 | `thinking_end`   | Thinking block complete  | `content`: Full thinking, `contentIndex`: Position                                          |
 | `toolcall_start` | Tool call begins         | `contentIndex`: Position in content array                                                   |
 | `toolcall_delta` | Tool arguments streaming | `delta`: JSON chunk, `partial.content[contentIndex].arguments`: Partial parsed args         |
-| `toolcall_end`   | Tool call complete       | `toolCall`: Complete validated tool call with `id`, `name`, `arguments`                     |
+| `toolcall_end`   | Tool call complete       | `toolCall`: Complete tool call with `id`, `name`, `arguments` (raw, not schema-validated — the agent loop validates) |
 | `done`           | Stream complete          | `reason`: Stop reason ("stop", "length", "toolUse"), `message`: Final assistant message     |
 | `error`          | Error occurred           | `reason`: Error type ("error" or "aborted"), `error`: AssistantMessage with partial content |
 
@@ -541,7 +543,7 @@ Every `AssistantMessage` includes a `stopReason` field that indicates how the ge
 
 ## Error Handling
 
-When a request ends with an error (including aborts and tool call validation errors), the streaming API emits an error event:
+When a request ends with an error (including aborts and provider/request errors), the streaming API emits an error event. Tool-call schema validation happens in the agent loop, not in the streaming layer:
 
 ```typescript
 // In streaming
@@ -650,7 +652,7 @@ const response = await complete(model, context, {
 
 ## APIs, Models, and Providers
 
-The library implements 4 API interfaces, each with its own streaming function and options:
+The library implements 14 API interfaces, each with its own streaming function and options (Anthropic Messages, OpenAI completions and responses, Google Generative AI, Gemini CLI, Vertex, Bedrock, OpenRouter, Codex, Azure, Ollama, Cursor, GitLab Duo, Devin):
 
 - **`anthropic-messages`**: Anthropic's Messages API (`streamAnthropic`, `AnthropicOptions`)
 - **`google-generative-ai`**: Google's Generative AI API (`streamGoogle`, `GoogleOptions`)
@@ -900,9 +902,9 @@ const continuation = await complete(newModel, restored);
 
 > **Note**: If the context contains images (encoded as base64 as shown in the Image Input section), those will also be serialized.
 
-## Browser Usage
+## Server-Side Usage
 
-The library supports browser environments. You must pass the API key explicitly since environment variables are not available in browsers:
+The library is a server-side (Bun/Node) package: provider transports use `node:crypto` and `node:fs`. Do not ship it in a browser bundle; for web apps, call it from a backend and pass keys there. When you must pass keys explicitly (self-hosted jobs, proxies), hand them to the call:
 
 ```typescript
 import { getModel, complete } from "@oh-my-pi/pi-ai";

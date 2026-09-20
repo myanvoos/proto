@@ -6,7 +6,7 @@ Shared utilities for the proto packages. Zero ceremony, Bun-first.
 
 | Module | Purpose |
 | --- | --- |
-| `logger` | Centralized logger writing to `~/.proto/logs/` with rotation (TUI-safe — never stdout) |
+| `logger` | Centralized logger writing to the configured state log dir (`~/.proto/logs/` by default, XDG/profile-aware) with rotation (TUI-safe — never stdout) |
 | `prompt` | Handlebars-based prompt templating and formatting helpers |
 | `dirs` | Path helpers for proto config directories (`~/.proto`, XDG-aware on Linux) |
 | `stream` | `readStream` / `readLines` helpers over `ReadableStream` |
@@ -18,7 +18,7 @@ Shared utilities for the proto packages. Zero ceremony, Bun-first.
 | `env` / `worker-host` | Environment plumbing and side-effect-free worker-host entry contract (`workerHostEntry`) |
 | `abortable` / `async` | AbortSignal-aware stream/promise helpers |
 | `peek-file` | Read the first N bytes of a file with pooled buffers |
-| `frontmatter`, `glob`, `mime`, `temp`, `format`, `color`, `snowflake`, `tab-spacing`, `path-tree`, `sanitize-text` | Smaller single-purpose helpers |
+| `frontmatter`, `mime`, `temp`, `format`, `color`, `snowflake`, `tab-spacing`, `path-tree`, `sanitize-text` | Smaller single-purpose helpers |
 
 Import from the root barrel or per-module subpaths (`@oh-my-pi/pi-utils/<module>`).
 

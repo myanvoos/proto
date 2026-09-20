@@ -5,7 +5,7 @@ description: Use when creating a new proto extension. Covers ExtensionAPI, facto
 
 # Authoring Extensions
 
-Extensions are the primary way to add capabilities to `oh-my-pi`. A single extension module can register tools the LLM can call, slash commands users can invoke, and event handlers that run throughout the session lifecycle — all from one TypeScript file. Its default factory may initialize synchronously or return a promise.
+Extensions are the primary way to add capabilities to `proto`. A single extension module can register tools the LLM can call, slash commands users can invoke, and event handlers that run throughout the session lifecycle — all from one TypeScript file. Its default factory may initialize synchronously or return a promise.
 
 ## Minimum viable extension
 
@@ -163,8 +163,8 @@ pi.registerCommand("my-cmd", {
 ## Registering tools
 
 Tools are called by the LLM. Parameter definitions may use the injected
-Zod-compatible omptype builder; `pi.arktype` and the legacy-compatible
-`pi.typebox` are also available:
+Zod-compatible omptype builder; the ArkType-compatible `pi.arktype` facade is
+also available:
 
 ```ts
 const z = pi.zod;
@@ -191,7 +191,7 @@ pi.registerTool({
 });
 ```
 
-Tool definitions may also set `loadMode: "essential" | "discoverable"` (`"discoverable"` by default) and `strict` for provider structured-output grammar behavior.
+Tool definitions may also set `loadMode: "essential" | "discoverable"` (essential by default only for `bash`, `read`, `ask`, `todo`, `web_search`, and `inspect_media`; discoverable otherwise) and `strict` for provider structured-output grammar behavior.
 
 ## Subscribing to events
 

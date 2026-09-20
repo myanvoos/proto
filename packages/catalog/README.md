@@ -6,7 +6,7 @@ Model catalog for proto: bundled model database, provider discovery, model ident
 
 | Module                          | Purpose                                                                                                     |
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `models.json` + `models`        | Bundled model database (pricing, context windows, modalities, thinking support)                             |
+| `models/*.json`                  | Bundled per-provider model database (pricing, context windows, modalities, thinking support)                |
 | `provider-models`               | Provider catalog descriptors (`CATALOG_PROVIDERS`), per-provider model resolution rules                     |
 | `discovery`                     | Runtime model discovery for OpenAI-compatible endpoints, Gemini, Codex, Cursor, Antigravity, Ollama         |
 | `identity`                      | Model id parsing and classification (family/version), reference resolution, equivalence, selection priority |
@@ -19,9 +19,9 @@ Model catalog for proto: bundled model database, provider discovery, model ident
 
 Import from subpaths (`@oh-my-pi/pi-catalog/<module>`) or the root barrel.
 
-## models.json is generated
+## models/ is generated
 
-Never edit `src/models.json` by hand — it is produced from upstream sources (stencil.so, the Pi Codex catalog, provider catalog discovery, OpenCode docs) by `scripts/generate-models.ts` and the resolvers in `src/provider-models/`. Regenerate with:
+Never edit `src/models/*.json` by hand — they are produced from upstream sources (stencil.so, the Pi Codex catalog, provider catalog discovery, OpenCode docs) by `scripts/generate-models.ts` and the resolvers in `src/provider-models/`. Regenerate with:
 
 ```sh
 bun run gen:models

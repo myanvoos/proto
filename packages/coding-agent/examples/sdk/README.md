@@ -10,20 +10,21 @@ Programmatic usage of proto-coding-agent via `createAgentSession()`.
 | `02-custom-model.ts`       | Select model and thinking level                |
 | `03-custom-prompt.ts`      | Replace or modify system prompt                |
 | `04-skills.ts`             | Discover, filter, or replace skills            |
-| `05-tools.ts`              | Built-in tools, custom tools                   |
-| `06-hooks.ts`              | Logging, blocking, result modification         |
+| `06-extensions.ts`         | Extensions as hooks: logging, blocking         |
+| `06-hooks.ts`              | Hook factories via the extensions option       |
 | `07-context-files.ts`      | AGENTS.md context files                        |
+| `08-prompt-templates.ts`   | Prompt templates                               |
 | `08-slash-commands.ts`     | File-based slash commands                      |
 | `09-api-keys-and-oauth.ts` | API key resolution, OAuth config               |
-| `10-settings.ts`           | Override compaction, retry, terminal settings  |
 | `11-sessions.ts`           | In-memory, persistent, continue, list sessions |
-| `12-full-control.ts`       | Replace everything, no discovery               |
+| `12-redis-sessions.ts`     | Redis-backed session storage                   |
+| `13-sql-sessions.ts`       | SQLite-backed session storage                  |
 
 ## Running
 
 ```bash
 cd packages/coding-agent
-npx tsx examples/sdk/01-minimal.ts
+bun examples/sdk/01-minimal.ts
 ```
 
 ## Quick Reference
@@ -34,13 +35,10 @@ import {
 	AuthStorage,
 	createAgentSession,
 	discoverAuthStorage,
-	discoverModels,
-	discoverSkills,
-	discoverHooks,
-	discoverCustomTools,
 	discoverContextFiles,
+	discoverMCPServers,
+	discoverSkills,
 	discoverSlashCommands,
-	loadSettings,
 	buildSystemPrompt,
 	ModelRegistry,
 	SessionManager,
@@ -49,9 +47,9 @@ import {
 	createTools,
 } from "@oh-my-pi/pi-coding-agent";
 
-// Auth and models setup
-const authStorage = discoverAuthStorage();
-const modelRegistry = discoverModels(authStorage);
+// Auth and models setup (all discover* functions are async)
+const authStorage = await discoverAuthStorage();
+const modelRegistry = new ModelRegistry(authStorage);
 
 // Minimal
 const { session } = await createAgentSession({ authStorage, modelRegistry });
@@ -62,13 +60,13 @@ const { session } = await createAgentSession({ model, thinkingLevel: "high", aut
 
 // Modify prompt
 const { session } = await createAgentSession({
-	systemPrompt: (defaultPrompt) => defaultPrompt + "\n\nBe concise.",
+	systemPrompt: (defaultPrompt) => [...defaultPrompt, "Be concise."],
 	authStorage,
 	modelRegistry,
 });
 
 // Read-only tools
-const { session } = await createAgentSession({ toolNames: ["read", "search", "find"], authStorage, modelRegistry });
+const { session } = await createAgentSession({ toolNames: ["read"], authStorage, modelRegistry });
 
 // In-memory
 const { session } = await createAgentSession({
@@ -88,8 +86,8 @@ const { session } = await createAgentSession({
 	modelRegistry: customRegistry,
 	systemPrompt: ["You are helpful."],
 	toolNames: ["read", "bash"],
-	customTools: [{ tool: myTool }],
-	hooks: [{ factory: myHook }],
+	customTools: [myTool],
+	extensions: [myHook],
 	skills: [],
 	contextFiles: [],
 	slashCommands: [],
@@ -105,24 +103,6 @@ session.subscribe((event) => {
 await session.prompt("Hello");
 ```
 
-## Resolve preview workflow (AST edit apply/discard)
-
-`ast_edit` now always returns a preview. To finalize, write plain text to the appropriate virtual device with the `write` tool.
-
-- `xd://resolve` → apply the pending preview; body = reason text
-- `xd://reject` → discard the pending preview; body = reason text
-
-`createAgentSession()` / `createTools()` auto-include `write` whenever a deferrable tool (e.g. `ast_edit`) is present, so the devices are always reachable.
-
-```typescript
-const tools = await createTools(toolSession, ["ast_edit"]); // write is auto-included
-const writeTool = tools.find(t => t.name === "write")!;
-
-await writeTool.execute("call-1", {
-  path: "xd://resolve",
-  content: "Preview matches expected replacements",
-});
-```
 ## Options
 
 | Option                      | Default                       | Description                       |
