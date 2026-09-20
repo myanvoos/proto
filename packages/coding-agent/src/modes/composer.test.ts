@@ -129,35 +129,12 @@ function blankRowsAboveHairline(frame: readonly string[]): number {
 }
 
 // The welcome scene used to split its slack to centre the banner, which opened
-// a blank band between the banner and the editor — the screen looked pushed up,
-// and the band grew as the terminal got shorter or narrower.
-test.each([
-	[60, 30],
-	[52, 30],
-	[60, 20],
-	[100, 30],
-])("the welcome banner sits against the composer at %ix%i", (columns, rows) => {
-	const composer = new Composer({
-		terminal: new SinkTerminal(columns, rows),
-		tuiOptions: { renderScheduler: IMMEDIATE_SCHEDULER },
-		preferences: { quiet: false },
-		welcome: { version: "1.2.3", modelName: "opus-5", providerName: "anthropic", recentSessions: [] },
-	});
-	composer.start({ deferInput: true });
-	try {
-		composer.syncHomeAnchor(0);
-		// One spacer row belongs to the header; anything beyond it is stranded slack.
-		expect(blankRowsAboveHairline(composer.ui.render(columns))).toBeLessThanOrEqual(1);
-	} finally {
-		composer.stop();
-	}
-});
-
-// Startup rows — config warnings, MCP connection notices, the changelog block —
-// vanish after the one-shot anchor sync has already run. The frame must follow
-// them down instead of stranding a blank band beneath the editor and status line.
-test("startup rows disappearing after the anchor sync leave no band under the composer", () => {
-	const columns = 60;
+// a blank band between the banner and the editor — the screen looked pushed up.
+// Startup rows (config warnings, MCP notices, the changelog block) then vanish
+// after the one-shot anchor sync has run, and the frame has to follow them down
+// instead of stranding blank rows under the composer.
+test("the welcome scene holds the composer against the bottom edge as startup rows clear", () => {
+	const columns = 52;
 	const rows = 30;
 	const composer = new Composer({
 		terminal: new SinkTerminal(columns, rows),
@@ -169,13 +146,70 @@ test("startup rows disappearing after the anchor sync leave no band under the co
 	composer.setRuntimeChildren([transcript]);
 	composer.start({ deferInput: true });
 	try {
+		composer.syncHomeAnchor(0);
+		// One spacer row belongs to the header; anything beyond it is stranded slack.
+		expect(blankRowsAboveHairline(composer.ui.render(columns))).toBeLessThanOrEqual(1);
+
 		composer.setHeaderExtras([], [new StaticBlock(Array.from({ length: 6 }, (_v, row) => `startup-notice-${row}`))]);
 		transcript.addChild(new StaticBlock(["session ready"]));
 		composer.syncHomeAnchor(transcript.children.length);
 		expect(composer.ui.render(columns).length).toBe(rows);
 
-		// The notices are cleared; nothing calls syncHomeAnchor again.
+		// The notices clear; nothing calls syncHomeAnchor again.
 		composer.setHeaderExtras([], []);
+		expect(composer.ui.render(columns).length).toBe(rows);
+		expect(blankRowsAboveHairline(composer.ui.render(columns))).toBeLessThanOrEqual(1);
+	} finally {
+		composer.stop();
+	}
+});
+
+/** A live tool card: tall while it runs, short once it settles. */
+class SettlingCard implements Component {
+	settled = false;
+
+	constructor(readonly liveRows: number) {}
+
+	render(): readonly string[] {
+		return this.settled ? ["settled card"] : Array.from({ length: this.liveRows }, (_v, row) => `live-row-${row}`);
+	}
+
+	invalidate(): void {}
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.settled;
+	}
+}
+
+// A tall live card commits rows, which freezes the top fill. When the card
+// settles the frame collapses, and with nothing holding the bottom edge the
+// editor and status line jumped into the middle of the screen until the reply
+// grew back — visible as the prompt bar leaping up on the first send.
+test("a live card settling after rows commit keeps the composer on the bottom edge", () => {
+	const columns = 100;
+	const rows = 50;
+	const composer = new Composer({
+		terminal: new SinkTerminal(columns, rows),
+		tuiOptions: { renderScheduler: IMMEDIATE_SCHEDULER },
+		preferences: { quiet: false },
+		welcome: { version: "1.2.3", modelName: "opus-5", providerName: "anthropic", recentSessions: [] },
+	});
+	const transcript = new TranscriptContainer();
+	transcript.onFirstContent = () => composer.syncHomeAnchor(transcript.children.length);
+	composer.setRuntimeChildren([transcript]);
+	composer.start({ deferInput: true });
+	try {
+		composer.syncHomeAnchor(0);
+		transcript.addChild(new StaticBlock(["> hello there"]));
+		composer.ui.requestRender(true);
+
+		const card = new SettlingCard(rows - 10);
+		transcript.addChild(card);
+		composer.ui.requestRender(true);
+		expect(composer.ui.committedRows).toBeGreaterThan(0);
+
+		card.settled = true;
+		composer.ui.requestRender(true);
 		expect(composer.ui.render(columns).length).toBe(rows);
 	} finally {
 		composer.stop();

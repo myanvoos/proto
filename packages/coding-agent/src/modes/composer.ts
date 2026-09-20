@@ -134,7 +134,7 @@ export class Composer {
 	readonly #statusHost = new StatusHost();
 	readonly #topFill = new HomeFill(() => this.#measureHomeFill());
 	#conversationChildren = 0;
-	readonly #bottomFill = new Spacer(0);
+	readonly #bottomFill = new HomeFill(() => this.#measureBottomFill());
 	readonly #bottomMargin = new Spacer(1);
 	readonly #composerHairline = new ComposerHairline();
 	readonly #padAboveEditor = new CardPadRow();
@@ -356,6 +356,22 @@ export class Composer {
 		const rows = this.ui.terminal.rows;
 		if (!Number.isFinite(rows) || rows <= 0) return undefined;
 		return Math.max(0, rows - this.#contentRows(this.ui.terminal.columns));
+	}
+
+	/**
+	 * Rows to hold below the transcript so the editor and status line stay on
+	 * the bottom edge. Once the top fill freezes it can no longer absorb a
+	 * shrinking frame — a live tool card settling from forty rows to one used to
+	 * drop the composer into the middle of the screen until the reply grew back.
+	 * Measuring every frame is what keeps this from outliving the shrink: the
+	 * moment content returns, the fill collapses to zero again.
+	 */
+	#measureBottomFill(): number | undefined {
+		if (this.#stopped) return undefined;
+		const rows = this.ui.terminal.rows;
+		if (!Number.isFinite(rows) || rows <= 0) return undefined;
+		const width = this.ui.terminal.columns;
+		return Math.max(0, rows - (this.#contentRows(width) + this.#topFill.render(width).length));
 	}
 
 	syncHomeAnchor(conversationChildCount: number): void {
