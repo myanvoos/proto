@@ -3,6 +3,7 @@ import {
 	Container,
 	FuzzyText,
 	Input,
+	ListRangeSelection,
 	matchesKey,
 	padding,
 	replaceTabs,
@@ -14,7 +15,15 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
-import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
+import {
+	matchesAppInterrupt,
+	matchesSelectDown,
+	matchesSelectExtendDown,
+	matchesSelectExtendPageDown,
+	matchesSelectExtendPageUp,
+	matchesSelectExtendUp,
+	matchesSelectUp,
+} from "../../modes/utils/keybinding-matchers";
 import type { SessionInfo, SessionStatus } from "../../session/session-listing";
 import { sanitizeSingleLine, shortenPath } from "../../tools/render-utils";
 import { HookSelectorComponent } from "./hook-selector";
@@ -215,6 +224,7 @@ class SessionList implements Component {
 	#filteredTitlePrefix: number[] = [0];
 	#filteredTotalRows = 0;
 	#selectedIndex: number = 0;
+	readonly #rangeSelection = new ListRangeSelection<string>();
 
 	#hitRows: (number | undefined)[] = [];
 	readonly #searchInput: Input;
@@ -225,7 +235,7 @@ class SessionList implements Component {
 
 	readonly #getTerminalRows: () => number;
 
-	onDeleteRequest?: (session: SessionInfo) => void;
+	onDeleteRequest?: (sessions: SessionInfo[]) => void;
 
 	#allSessions: SessionInfo[];
 	#showCwd: boolean;
@@ -411,6 +421,7 @@ class SessionList implements Component {
 			this.#scanTimer = undefined;
 		}
 		this.#selectionMoved = false;
+		this.#remapRangeSelection();
 		this.#historyIds = [];
 		this.#literalRanked = [];
 		this.#fuzzyRanked = [];
@@ -479,6 +490,11 @@ class SessionList implements Component {
 			if (pinned >= 0) this.#selectedIndex = pinned;
 		}
 		this.#selectedIndex = Math.min(this.#selectedIndex, Math.max(0, this.#filteredSessions.length - 1));
+		this.#remapRangeSelection();
+	}
+
+	#remapRangeSelection(): void {
+		this.#rangeSelection.remap(path => this.#filteredSessions.findIndex(session => session.path === path));
 	}
 
 	#scheduleHistoryMerge(query: string): void {
@@ -513,6 +529,15 @@ class SessionList implements Component {
 		}
 	}
 
+	#extendSelection(delta: number): void {
+		if (this.#filteredSessions.length === 0) return;
+		this.#selectionMoved = true;
+		// Anchor at the pre-move cursor so the first extend spans the traveled rows.
+		this.#rangeSelection.extend(this.#selectedIndex, this.#filteredSessions[this.#selectedIndex]!.path);
+		const next = Math.max(0, Math.min(this.#filteredSessions.length - 1, this.#selectedIndex + delta));
+		this.#selectedIndex = next;
+	}
+
 	removeSession(sessionPath: string): void {
 		const index = this.#allSessions.findIndex(s => s.path === sessionPath);
 		if (index === -1) return;
@@ -532,6 +557,7 @@ class SessionList implements Component {
 	handleWheel(delta: -1 | 1): void {
 		if (this.#filteredSessions.length === 0) return;
 		this.#selectionMoved = true;
+		this.#rangeSelection.collapse();
 		this.#selectedIndex = Math.max(0, Math.min(this.#filteredSessions.length - 1, this.#selectedIndex + delta));
 	}
 
@@ -540,6 +566,12 @@ class SessionList implements Component {
 		if (!session) return;
 		this.#selectedIndex = index;
 		this.onSelect?.(session);
+	}
+
+	/** Number of sessions in the active shift-selected range; 0 when only the cursor row is selected. */
+	markedCount(): number {
+		const span = this.#rangeSelection.range(this.#selectedIndex);
+		return span === null ? 0 : span[1] - span[0] + 1;
 	}
 
 	invalidate(): void {
@@ -596,10 +628,16 @@ class SessionList implements Component {
 		const hasPinnedSessions = this.#pinnedIds.size > 0;
 		const pinPrefixWidth = hasPinnedSessions ? visibleWidth(`${theme.icon.pin} `) : 0;
 		const pinnedPrefix = hasPinnedSessions ? theme.fg("accent", `${theme.icon.pin} `) : "";
+		const rangeSpan = this.#rangeSelection.range(this.#selectedIndex);
+		const inRange = (index: number): boolean => rangeSpan !== null && index >= rangeSpan[0] && index <= rangeSpan[1];
+		const markedCursor = `${theme.fg("accent", theme.checkbox.checked)} `;
+		const tint = (line: string): string =>
+			theme.bgFill("selectedBg", `${line}${padding(Math.max(0, rowWidth - visibleWidth(line)))}`);
 		for (let i = startIndex; i < endIndex; i++) {
 			const blockStart = sessionLines.length;
 			const session = this.#filteredSessions[i];
 			const isSelected = i === this.#selectedIndex;
+			const marked = inRange(i);
 			const modified = this.#formatDate(session, nowMs);
 			const modifiedMs = session.modified.getTime();
 			const pinned = this.#pinnedIds.has(session.id);
@@ -629,9 +667,17 @@ class SessionList implements Component {
 				);
 				this.#renderedRows.set(session.path, cached);
 			}
-			sessionLines.push(...(isSelected ? cached.selectedRendered : cached.normalRendered));
+			let block = isSelected ? cached.selectedRendered : cached.normalRendered;
+			if (marked) {
+				// The cursor row keeps its cursor glyph; the other rows of the block carry the checkbox on
+				// their title line, and the whole block is tinted so the range reads as one unit.
+				block = block.map((line, k) =>
+					tint(k === 0 && !isSelected ? `${markedCursor}${line.slice(cursorWidth)}` : line),
+				);
+			}
+			sessionLines.push(...block);
 
-			if (i < endIndex - 1) sessionLines.push("");
+			if (i < endIndex - 1) sessionLines.push(marked && inRange(i + 1) ? tint("") : "");
 			for (let k = blockStart; k < sessionLines.length; k++) sessionRowIndex[k] = i;
 		}
 		const totalRows = this.#filteredTotalRows - 1;
@@ -668,33 +714,62 @@ class SessionList implements Component {
 			matchesKey(keyData, "delete") ||
 			(matchesKey(keyData, "backspace") && this.#searchInput.getValue().length === 0)
 		) {
-			const selected = this.#filteredSessions[this.#selectedIndex];
-			if (selected && this.onDeleteRequest) {
-				this.onDeleteRequest(selected);
+			if (!this.onDeleteRequest) return;
+			const span = this.#rangeSelection.range(this.#selectedIndex);
+			const targets =
+				span === null
+					? this.#filteredSessions.slice(this.#selectedIndex, this.#selectedIndex + 1)
+					: this.#filteredSessions.slice(span[0], span[1] + 1);
+			if (targets.length > 0) {
+				this.onDeleteRequest(targets);
 			}
+			return;
+		}
+
+		if (matchesSelectExtendUp(keyData)) {
+			this.#extendSelection(-1);
+			return;
+		}
+
+		if (matchesSelectExtendDown(keyData)) {
+			this.#extendSelection(1);
+			return;
+		}
+
+		if (matchesSelectExtendPageUp(keyData)) {
+			this.#extendSelection(-this.#pageSize());
+			return;
+		}
+
+		if (matchesSelectExtendPageDown(keyData)) {
+			this.#extendSelection(this.#pageSize());
 			return;
 		}
 
 		if (matchesSelectUp(keyData)) {
 			this.#selectionMoved = true;
+			this.#rangeSelection.collapse();
 			this.#selectedIndex = Math.max(0, this.#selectedIndex - 1);
 			return;
 		}
 
 		if (matchesSelectDown(keyData)) {
 			this.#selectionMoved = true;
+			this.#rangeSelection.collapse();
 			this.#selectedIndex = Math.min(this.#filteredSessions.length - 1, this.#selectedIndex + 1);
 			return;
 		}
 
 		if (matchesKey(keyData, "pageUp")) {
 			this.#selectionMoved = true;
+			this.#rangeSelection.collapse();
 			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.#pageSize());
 			return;
 		}
 
 		if (matchesKey(keyData, "pageDown")) {
 			this.#selectionMoved = true;
+			this.#rangeSelection.collapse();
 			this.#selectedIndex = Math.min(this.#filteredSessions.length - 1, this.#selectedIndex + this.#pageSize());
 			return;
 		}
@@ -708,6 +783,10 @@ class SessionList implements Component {
 		}
 
 		if (matchesAppInterrupt(keyData)) {
+			if (this.#rangeSelection.range(this.#selectedIndex) !== null) {
+				this.#rangeSelection.collapse();
+				return;
+			}
 			if (this.onCancel) {
 				this.onCancel();
 			}
@@ -817,8 +896,8 @@ export class SessionSelectorComponent extends OverlayPanel {
 			onExit();
 		};
 		this.#sessionList.onRequestRender = () => this.#onRequestRender?.();
-		this.#sessionList.onDeleteRequest = (session: SessionInfo) => {
-			this.#showDeleteConfirmation(session);
+		this.#sessionList.onDeleteRequest = (sessions: SessionInfo[]) => {
+			this.#showDeleteConfirmation(sessions);
 		};
 		if (this.#loadAllSessions || this.#globalSessions) {
 			this.#sessionList.onToggleScope = () => {
@@ -895,8 +974,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 		this.#messageContainer.addChild(new Spacer(1));
 	}
 
-	#showDeleteConfirmation(session: SessionInfo): void {
-		const displayName = session.title || session.firstMessage.slice(0, 40) || session.id;
+	#showDeleteConfirmation(sessions: SessionInfo[]): void {
 		const closeDialog = () => {
 			this.#confirmationDialog = null;
 
@@ -905,19 +983,12 @@ export class SessionSelectorComponent extends OverlayPanel {
 			this.#onRequestRender?.();
 		};
 		this.#confirmationDialog = new HookSelectorComponent(
-			`Delete session?\n${displayName}`,
+			this.#deletePrompt(sessions),
 			["Yes", "No"],
 			async (option: string) => {
 				if (option === "Yes" && this.#onDelete) {
 					this.#clearError();
-					try {
-						const deleted = await this.#onDelete(session);
-						if (deleted) {
-							this.#sessionList.removeSession(session.path);
-						}
-					} catch (err) {
-						this.#showError(err instanceof Error ? err.message : String(err));
-					}
+					await this.#deleteSessions(sessions);
 				}
 				closeDialog();
 			},
@@ -929,9 +1000,44 @@ export class SessionSelectorComponent extends OverlayPanel {
 		this.#onRequestRender?.();
 	}
 
+	#deletePrompt(sessions: SessionInfo[]): string {
+		if (sessions.length === 1) {
+			const session = sessions[0]!;
+			const displayName = session.title || session.firstMessage.slice(0, 40) || session.id;
+			return `Delete session?\n${displayName}`;
+		}
+		const names = sessions.map(session => sanitizeSingleLine(session.title || session.firstMessage || session.id));
+		const listed = names.slice(0, 3).join(", ");
+		const remaining = names.length - Math.min(3, names.length);
+		return `Delete ${sessions.length} sessions?\n${listed}${remaining > 0 ? ` +${remaining} more` : ""}`;
+	}
+
+	async #deleteSessions(sessions: SessionInfo[]): Promise<void> {
+		const deletedPaths: string[] = [];
+		let firstError: Error | undefined;
+		for (const session of sessions) {
+			try {
+				if (await this.#onDelete?.(session)) {
+					deletedPaths.push(session.path);
+				}
+			} catch (err) {
+				firstError ??= err instanceof Error ? err : new Error(String(err));
+			}
+		}
+		for (const sessionPath of deletedPaths) {
+			this.#sessionList.removeSession(sessionPath);
+		}
+		if (firstError) {
+			const suffix =
+				deletedPaths.length < sessions.length ? ` (deleted ${deletedPaths.length} of ${sessions.length})` : "";
+			this.#showError(`${firstError.message}${suffix}`);
+		}
+	}
+
 	override render(width: number): readonly string[] {
 		const innerWidth = Math.max(1, width - 4);
-		const lines: string[] = [topBorder(width, this.title)];
+		const marked = this.#sessionList.markedCount();
+		const lines: string[] = [topBorder(width, marked > 0 ? `${this.title} · ${marked} selected` : this.title)];
 		for (const child of this.children) {
 			const childLines = child.render(innerWidth);
 			if (child === this.#contentSlot) this.#listLineOffset = lines.length;
@@ -950,7 +1056,11 @@ export class SessionSelectorComponent extends OverlayPanel {
 
 	#footerLines(width: number): string[] {
 		const scopeHint = this.#scope === "all" ? "current folder" : "all projects";
-		const hint = theme.fg("muted", `[Del/⌫ delete · Enter select · Tab ${scopeHint} · Esc cancel]`);
+		const marked = this.#sessionList.markedCount();
+		const hint =
+			marked > 0
+				? theme.fg("muted", `[${marked} selected · Shift+↑/↓ extend · Del/⌫ delete ${marked} · Esc clear]`)
+				: theme.fg("muted", `[Del/⌫ delete · Enter select · Tab ${scopeHint} · Esc cancel]`);
 		return [row("", width), row(hint, width), row("", width), bottomBorder(width)];
 	}
 

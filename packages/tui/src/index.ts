@@ -5,6 +5,7 @@ export * from "./components/cancellable-loader";
 export * from "./components/editor";
 export * from "./components/image";
 export * from "./components/input";
+export * from "./components/list-selection";
 export * from "./components/loader";
 export * from "./components/markdown";
 export * from "./components/scroll-view";

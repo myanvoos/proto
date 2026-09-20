@@ -45,6 +45,10 @@ export interface Keybindings {
 	"tui.select.pageDown": true;
 	"tui.select.confirm": true;
 	"tui.select.cancel": true;
+	"tui.select.extendUp": true;
+	"tui.select.extendDown": true;
+	"tui.select.extendPageUp": true;
+	"tui.select.extendPageDown": true;
 }
 
 export type Keybinding = keyof Keybindings;
@@ -178,6 +182,10 @@ export const TUI_KEYBINDINGS = {
 		defaultKeys: "pageDown",
 		description: "Selection page down",
 	},
+	"tui.select.extendUp": { defaultKeys: "shift+up", description: "Extend list selection up" },
+	"tui.select.extendDown": { defaultKeys: "shift+down", description: "Extend list selection down" },
+	"tui.select.extendPageUp": { defaultKeys: "shift+pageUp", description: "Extend list selection page up" },
+	"tui.select.extendPageDown": { defaultKeys: "shift+pageDown", description: "Extend list selection page down" },
 	"tui.select.confirm": { defaultKeys: "enter", description: "Confirm selection" },
 	"tui.select.cancel": {
 		defaultKeys: ["escape", "ctrl+c"],

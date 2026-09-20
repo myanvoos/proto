@@ -1,6 +1,7 @@
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
 	Container,
+	ListRangeSelection,
 	matchesKey,
 	type OverlayHandle,
 	padding,
@@ -24,7 +25,12 @@ import { shortenPath, truncateToWidth } from "../../tools/render-utils";
 import { formatLocalDateTimeWithOffset } from "../../utils/local-date";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
-import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
+import {
+	matchesSelectDown,
+	matchesSelectExtendDown,
+	matchesSelectExtendUp,
+	matchesSelectUp,
+} from "../utils/keybinding-matchers";
 import {
 	type AgentMetrics,
 	type AggregateMetrics,
@@ -124,6 +130,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 	#loadingPersistedSubagents = false;
 
 	#rows: AgentRef[] = [];
+	readonly #rangeSelection = new ListRangeSelection<string>();
 	#statusCounts: Record<AgentStatus, number> = { running: 0, idle: 0, parked: 0, aborted: 0 };
 	#selectedRow = 0;
 	#hoveredRow: number | null = null;
@@ -387,6 +394,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		}
 		const keptIndex = selectedId ? this.#rows.findIndex(ref => ref.id === selectedId) : -1;
 		this.#selectedRow = keptIndex >= 0 ? keptIndex : Math.min(this.#selectedRow, Math.max(0, this.#rows.length - 1));
+		this.#rangeSelection.remap(id => this.#rows.findIndex(ref => ref.id === id));
 		const detailAgentId = this.#rows[this.#selectedRow]?.id;
 		if (detailAgentId !== this.#detailAgentId) {
 			this.#detailAgentId = detailAgentId;
@@ -435,7 +443,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			const detailWidth = splitBodyWidth(width, split);
 			const roster = this.#renderRosterPanel(split, contentRows, observedById);
 			const details = this.#renderDetailPanel(selected, detailWidth, contentRows, observedById);
-			lines.push(topBorderSplit(width, "Agent Fleet", split));
+			lines.push(topBorderSplit(width, this.#frameTitle(), split));
 			for (let i = 0; i < contentRows; i++) {
 				const hit = roster.hitRows[i];
 				if (hit !== undefined) this.#hitRows[lines.length] = hit;
@@ -454,7 +462,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			for (const detail of details) lines.push(row(detail, width));
 		} else {
 			const roster = this.#renderRosterPanel(innerWidth, contentRows, observedById);
-			lines.push(topBorder(width, "Agent Fleet"));
+			lines.push(topBorder(width, this.#frameTitle()));
 			for (let i = 0; i < contentRows; i++) {
 				const hit = roster.hitRows[i];
 				if (hit !== undefined) this.#hitRows[lines.length] = hit;
@@ -473,17 +481,31 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		return splitBodyWidth(width, rosterWidth) >= DETAIL_MIN_WIDTH ? rosterWidth : undefined;
 	}
 
+	#markedCount(): number {
+		const span = this.#rangeSelection.range(this.#selectedRow);
+		return span === null ? 0 : span[1] - span[0] + 1;
+	}
+
+	#frameTitle(): string {
+		const marked = this.#markedCount();
+		return marked > 0 ? `Agent Fleet · ${marked} selected` : "Agent Fleet";
+	}
+
 	#footer(showingNarrowDetails: boolean, availableWidth: number): string {
 		const nextView = this.#viewMode === "roster" ? "by parent" : "flat";
 		if (showingNarrowDetails) {
 			return theme.fg("dim", `Tab:roster  PgUp/PgDn:scroll  Enter:open  t:${nextView}  Esc:roster`);
+		}
+		const marked = this.#markedCount();
+		if (marked > 0) {
+			return `${theme.fg("accent", `${marked} selected`)}${theme.fg("dim", `  shift+↑/↓:extend  x:kill ${marked}  Esc:clear`)}`;
 		}
 		if (availableWidth < 96) {
 			return theme.fg("dim", `j/k:select  Enter:open  t:${nextView}  Tab:details  r/x:manage  Esc:close`);
 		}
 		return theme.fg(
 			"dim",
-			`j/k/wheel:select  PgUp/PgDn:details  Enter/click:open  t:${nextView}  r:revive  x:kill  Esc:close`,
+			`j/k/wheel:select  shift+↑/↓:select range  PgUp/PgDn:details  Enter/click:open  t:${nextView}  r:revive  x:kill  Esc:close`,
 		);
 	}
 
@@ -547,6 +569,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 				width,
 				this.#observableFor(this.#rows[index].id),
 				index === this.#hoveredRow,
+				this.#rangeSelection.covers(this.#selectedRow, index),
 			);
 			rendered.set(index, entry);
 			return entry;
@@ -776,9 +799,14 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		width: number,
 		observed: ObservableSession | undefined,
 		hovered = false,
+		marked = false,
 	): string[] {
 		const max = Math.max(1, width);
-		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
+		const cursor = selected
+			? theme.fg("accent", theme.nav.cursor)
+			: marked
+				? theme.fg("accent", theme.checkbox.checked)
+				: " ";
 		const depth = this.#viewMode === "tree" ? (this.#treeDepthById.get(ref.id) ?? 0) : 0;
 		const branch =
 			this.#viewMode === "tree"
@@ -833,7 +861,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		for (const wrapped of wrapTextWithAnsi(details, detailWidth)) {
 			entry.push(`${padding(Math.max(0, detailIndent))}${wrapped}`);
 		}
-		if (!hovered) return entry;
+		if (!hovered && !marked) return entry;
 		return entry.map(lineRow => {
 			const rowWidth = visibleWidth(lineRow);
 			return theme.bg("selectedBg", rowWidth < max ? lineRow + padding(max - rowWidth) : lineRow);
@@ -882,6 +910,11 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 
 	#handleTableInput(keyData: string): void {
 		if (matchesKey(keyData, "escape")) {
+			if (this.#markedCount() > 0) {
+				this.#rangeSelection.collapse();
+				this.#requestRender();
+				return;
+			}
 			if (this.#narrowDetailsOpen && !this.#lastRenderWasSplit) {
 				this.#narrowDetailsOpen = false;
 				this.#requestRender();
@@ -928,7 +961,16 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			return;
 		}
 		this.#hoveredRow = null;
+		if (matchesSelectExtendDown(keyData)) {
+			this.#extendSelection(1);
+			return;
+		}
+		if (matchesSelectExtendUp(keyData)) {
+			this.#extendSelection(-1);
+			return;
+		}
 		if (matchesKey(keyData, "j") || matchesSelectDown(keyData)) {
+			this.#rangeSelection.collapse();
 			if (this.#rows.length > 0) {
 				this.#selectRow(Math.min(this.#selectedRow + 1, this.#rows.length - 1));
 			}
@@ -936,6 +978,7 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			return;
 		}
 		if (matchesKey(keyData, "k") || matchesSelectUp(keyData)) {
+			this.#rangeSelection.collapse();
 			if (this.#rows.length > 0) {
 				this.#selectRow(Math.max(this.#selectedRow - 1, 0));
 			}
@@ -1000,7 +1043,20 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 		this.#requestRender();
 	}
 
+	#extendSelection(delta: number): void {
+		if (this.#rows.length === 0) return;
+		// Anchor at the pre-move cursor so the first extend spans the traveled rows.
+		this.#rangeSelection.extend(this.#selectedRow, this.#rows[this.#selectedRow]!.id);
+		this.#selectedRow = Math.max(0, Math.min(this.#rows.length - 1, this.#selectedRow + delta));
+		this.#requestRender();
+	}
+
 	#killSelected(): void {
+		const span = this.#rangeSelection.range(this.#selectedRow);
+		if (span !== null) {
+			this.#killRange(span);
+			return;
+		}
 		const ref = this.#rows[this.#selectedRow];
 		if (!ref) return;
 		if (ref.kind === "advisor") {
@@ -1018,6 +1074,34 @@ export class AgentFleetOverlayComponent extends Container implements SelectListM
 			} catch (error) {
 				logger.warn("Agent fleet: kill failed", { id: ref.id, error: String(error) });
 				this.#notice = error instanceof Error ? error.message : String(error);
+			}
+			this.#refreshRows();
+			this.#requestRender();
+		})();
+	}
+
+	#killRange(span: [number, number]): void {
+		const targets = this.#rows.slice(span[0], span[1] + 1).filter(ref => ref.kind !== "advisor");
+		if (targets.length === 0) return;
+		this.#notice = undefined;
+		void (async () => {
+			let killed = 0;
+			let lastError: string | undefined;
+			for (const ref of targets) {
+				try {
+					if (ref.status === "running" && ref.session) {
+						await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
+					}
+					await this.#lifecycle().release(ref.id, ref, { tombstone: true });
+					killed++;
+				} catch (error) {
+					lastError = error instanceof Error ? error.message : String(error);
+					logger.warn("Agent fleet: kill failed", { id: ref.id, error: lastError });
+				}
+			}
+			this.#rangeSelection.clear();
+			if (lastError) {
+				this.#notice = `Killed ${killed} of ${targets.length} agents — last failure: ${lastError}`;
 			}
 			this.#refreshRows();
 			this.#requestRender();

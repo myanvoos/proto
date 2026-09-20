@@ -69,6 +69,49 @@ function writeSessionTree(workerId = "worker"): { parentFile: string; childFile:
 	return { parentFile, childFile, parentInfo };
 }
 
+function writeSessionTreeWithWorkers(workerIds: string[]): {
+	parentFile: string;
+	childFiles: string[];
+	parentInfo: SessionInfo;
+} {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-agents-view-"));
+	tempDirs.push(dir);
+	const parentFile = path.join(dir, "sess_parent.jsonl");
+	const timestamp = new Date().toISOString();
+	fs.writeFileSync(parentFile, `${JSON.stringify({ type: "session", id: "parent", cwd: dir, timestamp })}\n`);
+	const root = parentFile.slice(0, -".jsonl".length);
+	fs.mkdirSync(root, { recursive: true });
+	const childFiles = workerIds.map(workerId => {
+		const childFile = path.join(root, `${workerId}.jsonl`);
+		fs.writeFileSync(
+			childFile,
+			[
+				JSON.stringify({ type: "session", id: `${workerId}-session`, cwd: dir, timestamp }),
+				JSON.stringify({
+					type: "session_init",
+					timestamp,
+					task: `work on ${workerId}`,
+					systemPrompt: "You are a worker.",
+				}),
+				"",
+			].join("\n"),
+		);
+		return childFile;
+	});
+	const parentInfo: SessionInfo = {
+		path: parentFile,
+		id: "parent",
+		cwd: dir,
+		created: new Date(timestamp),
+		modified: new Date(timestamp),
+		messageCount: 1,
+		size: 128,
+		firstMessage: "parent task",
+		allMessagesText: "parent task",
+	};
+	return { parentFile, childFiles, parentInfo };
+}
+
 function mountView(overrides: Partial<AgentsViewDeps>): AgentsViewComponent {
 	const view = new AgentsViewComponent({
 		ui: { terminal: { rows: 40 } } as unknown as TUI,
@@ -148,6 +191,99 @@ describe("agents view Ctrl+X", () => {
 		await waitFor(() => !fs.existsSync(childFile), "the transcript to be deleted");
 		expect(registry.get("worker")).toBeUndefined();
 		await waitFor(() => !renderPlain(view).includes(row), "the worker row to disappear");
+		expect(fs.existsSync(parentFile)).toBe(true);
+	});
+});
+
+describe("agents view shift-range mass selection", () => {
+	const SHIFT_DOWN = "\x1b[1;2B";
+	const SHIFT_UP = "\x1b[1;2A";
+	const DOWN = "\x1b[B";
+	const UP = "\x1b[A";
+	const ESC = "\x1b";
+
+	test("shift+down marks a range and ctrl+x twice stops every marked agent, then deletes them", async () => {
+		const { parentFile, childFiles, parentInfo } = writeSessionTreeWithWorkers(["worker-a", "worker-b"]);
+		const registry = AgentRegistry.global();
+		await registerPersistedSubagents(registry, parentFile);
+		listAllSpy = spyOn(SessionManager, "listAll").mockResolvedValue([parentInfo]);
+
+		let closed = false;
+		const view = mountView({
+			currentSessionFile: parentFile,
+			initialScopeIdentity: `file:${path.resolve(parentFile)}`,
+			initialScopeTitle: "parent",
+			close: () => {
+				closed = true;
+			},
+		});
+		await waitFor(
+			() => renderPlain(view).includes("worker-a") && renderPlain(view).includes("worker-b"),
+			"both worker rows",
+		);
+
+		// Extend the range until it spans both workers; the hint announces the count.
+		for (let pressed = 0; pressed < 6 && !renderPlain(view).includes("remove 2"); pressed++) {
+			view.handleInput(SHIFT_DOWN);
+		}
+		expect(renderPlain(view)).toContain("remove 2");
+		const marked = renderPlain(view);
+		expect(marked).toContain("2 selected");
+		// the cursor row keeps its cursor glyph; the other range row carries the checkbox
+		expect(marked.match(/■/g)?.length).toBe(1);
+
+		// Esc drops the range without closing the view
+		view.handleInput(ESC);
+		expect(renderPlain(view)).not.toContain("2 selected");
+		expect(renderPlain(view).match(/■/g)).toBeNull();
+		expect(closed).toBe(false);
+		expect(renderPlain(view)).toContain("worker-a");
+		// re-mark from the top so the cursor ends on the bottom worker again
+		for (let pressed = 0; pressed < 6; pressed++) view.handleInput(UP);
+		for (let pressed = 0; pressed < 6 && !renderPlain(view).includes("remove 2"); pressed++) {
+			view.handleInput(SHIFT_DOWN);
+		}
+		expect(renderPlain(view)).toContain("remove 2");
+
+		view.handleInput(CTRL_X);
+		expect(renderPlain(view)).toContain("again to remove 2 sessions");
+		view.handleInput(CTRL_X);
+		await waitFor(
+			() => registry.get("worker-a")?.status === "aborted" && registry.get("worker-b")?.status === "aborted",
+			"both workers to be tombstoned",
+		);
+		await waitFor(
+			() =>
+				sectionOf(renderPlain(view), "worker-a") === "Inactive" &&
+				sectionOf(renderPlain(view), "worker-b") === "Inactive",
+			"both workers under Inactive",
+		);
+		expect(fs.existsSync(childFiles[0]!)).toBe(true);
+		expect(fs.existsSync(childFiles[1]!)).toBe(true);
+		// executing the mass operation collapses the range
+		expect(renderPlain(view)).not.toContain("remove 2");
+
+		// the "Removed 2" status message temporarily replaces the hints line, so assert
+		// on the row checkboxes rather than the hints while it is visible.
+		view.handleInput(SHIFT_UP);
+		expect(renderPlain(view).match(/■/g)?.length).toBe(1);
+		view.handleInput(DOWN);
+		expect(renderPlain(view).match(/■/g)).toBeNull();
+
+		// the tombstoned rows can now be mass-deleted from the inactive section
+		view.handleInput(SHIFT_UP);
+		expect(renderPlain(view).match(/■/g)?.length).toBe(1);
+		view.handleInput(CTRL_X);
+		expect(renderPlain(view)).toContain("again to remove 2 sessions");
+		view.handleInput(CTRL_X);
+		await waitFor(
+			() => !fs.existsSync(childFiles[0]!) && !fs.existsSync(childFiles[1]!),
+			"both transcripts to be deleted",
+		);
+		await waitFor(
+			() => !renderPlain(view).includes("worker-a") && !renderPlain(view).includes("worker-b"),
+			"the worker rows to disappear",
+		);
 		expect(fs.existsSync(parentFile)).toBe(true);
 	});
 });

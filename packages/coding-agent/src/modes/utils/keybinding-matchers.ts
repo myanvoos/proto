@@ -21,6 +21,22 @@ export function matchesSelectDown(data: string): boolean {
 	return getKeybindings().matches(data, "tui.select.down");
 }
 
+export function matchesSelectExtendUp(data: string): boolean {
+	return getKeybindings().matches(data, "tui.select.extendUp");
+}
+
+export function matchesSelectExtendDown(data: string): boolean {
+	return getKeybindings().matches(data, "tui.select.extendDown");
+}
+
+export function matchesSelectExtendPageUp(data: string): boolean {
+	return getKeybindings().matches(data, "tui.select.extendPageUp");
+}
+
+export function matchesSelectExtendPageDown(data: string): boolean {
+	return getKeybindings().matches(data, "tui.select.extendPageDown");
+}
+
 export function matchesSelectPageUp(data: string): boolean {
 	return getKeybindings().matches(data, "tui.select.pageUp");
 }

@@ -4,6 +4,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
 	type Component,
 	Editor,
+	ListRangeSelection,
 	matchesKey,
 	type OverlayHandle,
 	routeSgrMouseInput,
@@ -32,7 +33,14 @@ import { parseSlashCommand } from "../../../slash-commands/helpers/parse";
 import { shortenPath } from "../../../tools/render-utils";
 import { getEditorTheme, getSymbolTheme, theme } from "../../theme/theme";
 import type { InteractiveModeContext } from "../../types";
-import { matchesSelectDown, matchesSelectUp } from "../../utils/keybinding-matchers";
+import {
+	matchesSelectDown,
+	matchesSelectExtendDown,
+	matchesSelectExtendPageDown,
+	matchesSelectExtendPageUp,
+	matchesSelectExtendUp,
+	matchesSelectUp,
+} from "../../utils/keybinding-matchers";
 import { AgentTranscriptViewer } from "../agent-transcript-viewer";
 import { heroWordmark } from "../welcome";
 import {
@@ -204,6 +212,7 @@ export class AgentsViewComponent implements Component {
 	#index: AgentsViewIndex = { byKey: new Map(), childrenByParent: new Map() };
 	#rows: AgentsViewRow[] = [];
 	#selectedIndex = 0;
+	readonly #rangeSelection = new ListRangeSelection<string>();
 	#selectedIdentity: string | undefined;
 
 	#scopeFrames: AgentsViewScopeFrame[] = [];
@@ -226,7 +235,7 @@ export class AgentsViewComponent implements Component {
 	#replyHeadline: string | undefined;
 	#replyHeadlineLoading = false;
 	#renameTarget: RenameTarget | undefined;
-	#pendingDelete: { identity: string; timer: NodeJS.Timeout } | undefined;
+	#pendingDelete: { identity: string; rangeCount?: number; timer: NodeJS.Timeout } | undefined;
 
 	#statusMessage: StatusMessage | undefined;
 	#statusTimer: NodeJS.Timeout | undefined;
@@ -388,6 +397,7 @@ export class AgentsViewComponent implements Component {
 		this.#records = [];
 		this.#index = { byKey: new Map(), childrenByParent: new Map() };
 		this.#rows = [];
+		this.#rangeSelection.clear();
 		this.#persistedChildSessions = [];
 		this.#persistSeededPaths.clear();
 		this.#cwdKeys.clear();
@@ -505,6 +515,7 @@ export class AgentsViewComponent implements Component {
 		this.#rows = rows;
 		this.#selectedIndex = resolveAgentsViewSelectionIndex(this.#rows, this.#selectedIdentity, this.#selectedIndex);
 		this.#setSelectedIdentity(this.#rows[this.#selectedIndex]?.identity);
+		this.#rangeSelection.remap(identity => this.#rows.findIndex(row => row.identity === identity));
 		this.#loadSpawnTasksForExpandedRows();
 	}
 
@@ -561,6 +572,22 @@ export class AgentsViewComponent implements Component {
 	}
 
 	#handleBrowseInput(data: string): void {
+		if (matchesSelectExtendDown(data)) {
+			this.#moveSelection(1, { extend: true });
+			return;
+		}
+		if (matchesSelectExtendUp(data)) {
+			this.#moveSelection(-1, { extend: true });
+			return;
+		}
+		if (matchesSelectExtendPageDown(data)) {
+			this.#moveSelection(this.#visibleListRows(), { extend: true });
+			return;
+		}
+		if (matchesSelectExtendPageUp(data)) {
+			this.#moveSelection(-this.#visibleListRows(), { extend: true });
+			return;
+		}
 		if (matchesSelectDown(data) || matchesKey(data, "down")) {
 			this.#moveSelection(1);
 			return;
@@ -626,12 +653,17 @@ export class AgentsViewComponent implements Component {
 				this.#exitRenameMode();
 				return;
 			case "browse":
+				if (this.#rangeSelection.range(this.#selectedIndex) !== null) {
+					this.#rangeSelection.collapse();
+					this.#deps.requestRender();
+					return;
+				}
 				this.#deps.close();
 				return;
 		}
 	}
 
-	#moveSelection(delta: number): void {
+	#moveSelection(delta: number, options: { extend?: boolean } = {}): void {
 		if (this.#rows.length === 0) return;
 		let index = this.#selectedIndex;
 		let remaining = Math.abs(delta);
@@ -648,6 +680,13 @@ export class AgentsViewComponent implements Component {
 		// A full page delta can outrun the list; commit the furthest reachable
 		// selectable row instead of ignoring the key press entirely.
 		if (lastSelectable === -1) return;
+		if (options.extend) {
+			// Anchor at the pre-move cursor so the first extend spans the traveled rows.
+			const origin = this.#rows[this.#selectedIndex];
+			if (origin?.selectable) this.#rangeSelection.extend(this.#selectedIndex, origin.identity);
+		} else {
+			this.#rangeSelection.collapse();
+		}
 		this.#selectedIndex = lastSelectable;
 		this.#setSelectedIdentity(this.#rows[lastSelectable]?.identity);
 		this.#deps.requestRender();
@@ -1002,17 +1041,90 @@ export class AgentsViewComponent implements Component {
 		const row = this.#rows[this.#selectedIndex];
 		if ((row?.kind !== "agent" && row?.kind !== "subagent") || !row.record) return;
 		const identity = row.identity;
+		const range = this.#deletableRange();
+		if (range.size > 1) {
+			if (this.#pendingDelete?.identity === identity && this.#pendingDelete.rangeCount === range.size) {
+				void this.#executeMassDelete(range);
+				return;
+			}
+			this.#armPendingDelete(identity, range.size);
+			return;
+		}
 		if (this.#pendingDelete?.identity === identity) {
 			void this.#executeDelete(row.record);
 			return;
 		}
+		this.#armPendingDelete(identity);
+	}
+
+	#armPendingDelete(identity: string, rangeCount?: number): void {
 		this.#clearPendingDelete();
 		const timer = setTimeout(() => {
 			this.#pendingDelete = undefined;
 			this.#deps.requestRender();
 		}, DELETE_CONFIRM_DURATION_MS);
 		timer.unref?.();
-		this.#pendingDelete = { identity, timer };
+		this.#pendingDelete = { identity, rangeCount, timer };
+		this.#deps.requestRender();
+	}
+
+	/** Identities of mass-deletable rows inside the active range, in list order. */
+	#deletableRange(): Set<string> {
+		const span = this.#rangeSelection.range(this.#selectedIndex);
+		const identities = new Set<string>();
+		if (span === null) return identities;
+		for (let index = span[0]; index <= span[1]; index++) {
+			const row = this.#rows[index];
+			if (row?.selectable && (row.kind === "agent" || row.kind === "subagent") && row.record) {
+				identities.add(row.identity);
+			}
+		}
+		return identities;
+	}
+
+	async #executeMassDelete(identities: Set<string>): Promise<void> {
+		this.#clearPendingDelete();
+		let stopped = 0;
+		let deleted = 0;
+		let skipped = 0;
+		let firstError: string | undefined;
+		for (const identity of identities) {
+			const row = this.#rows.find(candidate => candidate.identity === identity);
+			const record = row?.record;
+			const sessionPath = record?.session?.path ?? record?.ref?.sessionFile ?? undefined;
+			if (!record || !sessionPath || (row?.kind !== "agent" && row?.kind !== "subagent")) {
+				skipped++;
+				continue;
+			}
+			if (isCurrentSessionFile(sessionPath, this.#deps.currentSessionFile)) {
+				skipped++;
+				continue;
+			}
+			const live = readSessionLiveState(sessionPath);
+			if (live.fresh && live.pid !== process.pid) {
+				skipped++;
+				continue;
+			}
+			const ref = record.ref;
+			const result =
+				ref && agentRemovalAction(record) === "stop"
+					? await this.#stopAgent(record, ref)
+					: await this.#deleteSession(record, sessionPath);
+			if (result.ok) {
+				if (result.action === "stop") stopped++;
+				else deleted++;
+			} else {
+				firstError ??= result.message;
+			}
+		}
+		this.#rangeSelection.clear();
+		const parts: string[] = [];
+		if (deleted > 0) parts.push(`deleted ${deleted}`);
+		if (stopped > 0) parts.push(`stopped ${stopped}`);
+		if (skipped > 0) parts.push(`skipped ${skipped}`);
+		const summary = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+		if (firstError) this.#setStatusMessage(`Delete failed: ${firstError}${summary}`, "error");
+		else if (parts.length > 0) this.#setStatusMessage(`Removed ${identities.size}${summary}`, "muted");
 		this.#deps.requestRender();
 	}
 
@@ -1050,13 +1162,23 @@ export class AgentsViewComponent implements Component {
 			this.#deps.requestRender();
 			return;
 		}
-		if (ref && agentRemovalAction(record) === "stop") await this.#stopAgent(record, ref);
-		else await this.#deleteSession(record, sessionPath);
+		const result =
+			ref && agentRemovalAction(record) === "stop"
+				? await this.#stopAgent(record, ref)
+				: await this.#deleteSession(record, sessionPath);
+		if (result.ok) {
+			this.#setStatusMessage(result.action === "stop" ? "Stopped" : "Deleted", "muted");
+		} else {
+			this.#setStatusMessage(`${result.action === "stop" ? "Stop" : "Delete"} failed: ${result.message}`, "error");
+		}
 		this.#deps.requestRender();
 	}
 
 	/** Tombstones the agent: it moves to the inactive section with its transcript intact and can be deleted from there. */
-	async #stopAgent(record: AgentsViewRecord, ref: AgentRef): Promise<void> {
+	async #stopAgent(
+		record: AgentsViewRecord,
+		ref: AgentRef,
+	): Promise<{ ok: true; action: "stop" } | { ok: false; action: "stop"; message: string }> {
 		try {
 			if (ref.status === "running" && ref.session) {
 				await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
@@ -1065,13 +1187,20 @@ export class AgentsViewComponent implements Component {
 			if (this.#replyTarget?.identity === record.identity) this.#disarmComposer();
 			this.#lastSignature = "";
 			await this.refresh();
-			this.#setStatusMessage("Stopped", "muted");
+			return { ok: true, action: "stop" };
 		} catch (error) {
-			this.#setStatusMessage(`Stop failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			return {
+				ok: false,
+				action: "stop",
+				message: error instanceof Error ? error.message : String(error),
+			};
 		}
 	}
 
-	async #deleteSession(record: AgentsViewRecord, sessionPath: string): Promise<void> {
+	async #deleteSession(
+		record: AgentsViewRecord,
+		sessionPath: string,
+	): Promise<{ ok: true; action: "delete" } | { ok: false; action: "delete"; message: string }> {
 		const ref = record.ref;
 		try {
 			if (ref) {
@@ -1087,9 +1216,13 @@ export class AgentsViewComponent implements Component {
 			if (this.#replyTarget?.identity === record.identity) this.#disarmComposer();
 			this.#forgetDeletedSession(sessionPath);
 			await this.refresh();
-			this.#setStatusMessage("Deleted", "muted");
+			return { ok: true, action: "delete" };
 		} catch (error) {
-			this.#setStatusMessage(`Delete failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			return {
+				ok: false,
+				action: "delete",
+				message: error instanceof Error ? error.message : String(error),
+			};
 		}
 	}
 
@@ -1336,18 +1469,26 @@ export class AgentsViewComponent implements Component {
 			visibleRows - (showLeadingEllipsis ? 1 : 0) - (showTrailingEllipsis ? 1 : 0),
 		);
 		const visibleItems = displayItems.slice(start, start + contentVisibleRows);
+		const rangeSpan = this.#rangeSelection.range(this.#selectedIndex);
+		const markedIdentities = new Set<string>();
+		if (rangeSpan !== null) {
+			for (let index = rangeSpan[0]; index <= rangeSpan[1]; index++) {
+				const row = this.#rows[index];
+				if (row?.selectable) markedIdentities.add(row.identity);
+			}
+		}
 		const lines = visibleItems.map(item => {
 			if (item.type === "spacer") return "";
 			if (item.type === "heading") return theme.bold(sectionTitle(item.section));
 			if (item.type === "empty") return theme.fg("dim", "  No agents");
-			return this.#renderRow(item.row, width);
+			return this.#renderRow(item.row, width, markedIdentities.has(item.row.identity));
 		});
 		if (showLeadingEllipsis) lines.unshift(theme.fg("dim", "  ..."));
 		if (showTrailingEllipsis) lines.push(theme.fg("dim", "  ..."));
 		return lines;
 	}
 
-	#renderRow(row: AgentsViewRow, width: number): string {
+	#renderRow(row: AgentsViewRow, width: number, marked = false): string {
 		const selected = row.selectable && row.identity === this.#rows[this.#selectedIndex]?.identity;
 		if (row.kind === "subagent-code") {
 			const indent = "  ".repeat(row.depth);
@@ -1360,20 +1501,35 @@ export class AgentsViewComponent implements Component {
 
 			const modelSuffix = row.record ? getRecordModelLabel(row.record) : undefined;
 			const modelCell = modelSuffix ? theme.fg("dim", ` \u00b7 ${modelSuffix}`) : "";
-			const label = `${theme.fg("dim", `${row.expanded ? "▾" : "▸"} ${row.title}`)}${modelCell}${hint}`;
+			const label = marked
+				? `${theme.fg("accent", `${selected ? theme.nav.cursor : theme.checkbox.checked} ${row.title}`)}${modelCell}${hint}`
+				: `${theme.fg("dim", `${row.expanded ? "▾" : "▸"} ${row.title}`)}${modelCell}${hint}`;
 			return `${SELECTED_ROW_MARKER}${padLine(truncateToWidth(`${indent}${label}`, width), width)}`;
 		}
 		const pendingDelete = this.#pendingDelete?.identity === row.identity;
 
 		const settledChild =
 			row.kind === "subagent" && row.record?.ref !== undefined && row.record.ref.status !== "running";
-		const rawIcon = settledChild ? INACTIVE_ROW_ICON : this.#getRowIcon(row.section);
-		const icon = settledChild ? theme.fg("dim", rawIcon) : this.#formatRowIcon(row.section, rawIcon);
+		const rawIcon = marked
+			? selected
+				? theme.nav.cursor
+				: theme.checkbox.checked
+			: settledChild
+				? INACTIVE_ROW_ICON
+				: this.#getRowIcon(row.section);
+		const icon = marked
+			? theme.fg("accent", rawIcon)
+			: settledChild
+				? theme.fg("dim", rawIcon)
+				: this.#formatRowIcon(row.section, rawIcon);
 		const indent = "  ".repeat(row.depth);
 		const record = row.record;
 		const details = formatRowDetails(row);
+		const pendingRangeCount = pendingDelete ? this.#pendingDelete?.rangeCount : undefined;
 		const title = pendingDelete
-			? `${formatViewKey("ctrl+x")} again to ${record ? agentRemovalAction(record) : "remove"}`
+			? pendingRangeCount !== undefined && pendingRangeCount > 1
+				? `${formatViewKey("ctrl+x")} again to remove ${pendingRangeCount} sessions`
+				: `${formatViewKey("ctrl+x")} again to ${record ? agentRemovalAction(record) : "remove"}`
 			: this.#styleRowTitle(row);
 		const suffixes: string[] = [];
 		const identityVisible =
@@ -1390,9 +1546,9 @@ export class AgentsViewComponent implements Component {
 		const titleContent = suffixes.length > 0 ? `${title} ${theme.fg("dim", `· ${suffixes.join(" · ")}`)}` : title;
 		const titleWidth = Math.max(0, width - visibleWidth(indent) - visibleWidth(rawIcon) - row.detailsWidth - 2);
 		const titleCell = formatTableCell(pendingDelete ? theme.fg("error", titleContent) : titleContent, titleWidth);
-		const marked = selected ? SELECTED_ROW_MARKER : "";
+		const rowMarker = selected || marked ? SELECTED_ROW_MARKER : "";
 		const base = `${indent}${icon} ${titleCell} ${formatRightTableCell(details, row.detailsWidth)}`;
-		return `${marked}${padLine(truncateToWidth(base, width), width)}`;
+		return `${rowMarker}${padLine(truncateToWidth(base, width), width)}`;
 	}
 
 	#getRowIcon(section: AgentsViewSection): string {
@@ -1464,6 +1620,17 @@ export class AgentsViewComponent implements Component {
 		const selectedAgent = row?.kind === "agent";
 		const selectedSubagent = row?.kind === "subagent";
 		const selectedSummary = row?.kind === "subagent-summary";
+		const rangeSize = this.#deletableRange().size;
+		if (rangeSize > 1) {
+			// Range mode replaces the browse hints so the mass actions stay visible at narrow widths.
+			const rangeHints = [
+				`${rangeSize} selected`,
+				`${this.#keyText("tui.select.extendUp")}/${this.#keyText("tui.select.extendDown")} extend`,
+				`${formatViewKey("ctrl+x")} remove ${rangeSize}`,
+				`${formatViewKey("esc")} clear`,
+			].join("   ");
+			return truncateToWidth(theme.fg("muted", rangeHints), width);
+		}
 		const hints = [
 			`${this.#keyText("tui.select.up")}/${this.#keyText("tui.select.down")} move`,
 			selectedSummary

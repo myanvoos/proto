@@ -17,6 +17,8 @@
 - Compaction now retains every user message across compaction instead of keeping only a recent tail: each folded user message appears verbatim in the summary's `[User Messages]` section with its session entry reference, and large pasted content is elided to a head plus a `recall #N` pointer placed right in that entry so the exact text stays one recall away.
 - Compaction summaries now end with a handoff note written from the context being dropped — why the current approach was chosen, what was ruled out, what is half-finished — appended to whatever produced the summary. Turn it off with `compaction.selfSummary`.
 
+- List views support shift+arrow range selection for mass operations: `Shift+↑/↓` (plus `Shift+PageUp`/`Shift+PageDown` in the session selector) marks a contiguous range — rendered as one highlighted block with a checkbox on each marked row, the cursor still visible, and an `N selected` badge in the title and footer. `Esc` clears the range before it closes the view; the session selector deletes a marked range through one batch confirmation, and the global agents view and agent fleet remove or kill every marked agent with a single key.
+
 ### Changed
 
 - Bash calls that write a source file through a heredoc (`cat > probe.ts <<'EOF'`) now show that body as an AST outline on the settled card, matching embedded `python`/`bun` kernel cells; non-source writes (`.md`, `.json`, extensionless) keep their raw text, and ctrl+o still reveals the literal source.
