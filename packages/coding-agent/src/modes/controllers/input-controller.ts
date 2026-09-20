@@ -2,7 +2,7 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
-import { isEnoent, logger, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatCount, isEnoent, logger, pluralize, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -15,8 +15,15 @@ import { TreeSelectorComponent } from "../../modes/components/tree-selector";
 import { chipLabel, compactImageMarkers, shiftImageMarkers } from "../../modes/composer-attachments";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
 import { materializeImageReferenceLinks, setCachedImageDimensions } from "../../modes/image-references";
+import { deliverMessages } from "../../modes/message-delivery";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
-import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-input";
+import {
+	formatQueueDue,
+	parseQueueArgs,
+	parseQueueShorthand,
+	QUEUE_USAGE,
+	splitQueuedMessages,
+} from "../../modes/queue-input";
 import { buildSkillCommandPrompt, isKnownSkillCommand } from "../../modes/skill-command";
 import type { InteractiveModeContext } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
@@ -1014,7 +1021,59 @@ export class InputController {
 		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
 		const imageLinks =
 			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
-		await this.#queueForYield(text, { images, imageLinks });
+		const command = parseQueueArgs(text);
+		if (command.kind === "error") {
+			this.ctx.showWarning(command.message);
+			return;
+		}
+		if (command.kind === "cancel") {
+			this.#cancelScheduled(command.target);
+			return;
+		}
+		if (command.kind === "schedule") {
+			this.#scheduleForLater(command.delayMs, command.text, { images, imageLinks });
+			return;
+		}
+		await this.#queueForYield(command.text, { images, imageLinks });
+	}
+
+	#cancelScheduled(target: number | "all"): void {
+		if (target === "all") {
+			const count = this.ctx.scheduledQueue.cancelAll();
+			this.ctx.showStatus(
+				count === 0
+					? "No scheduled messages to cancel"
+					: `Cancelled ${count} scheduled ${pluralize("message", count)}`,
+			);
+		} else if (this.ctx.scheduledQueue.cancel(target)) {
+			this.ctx.showStatus(`Cancelled scheduled message ${target}`);
+		} else {
+			this.ctx.showWarning(`No scheduled message ${target}.`);
+			return;
+		}
+		this.ctx.editor.clearDraft();
+		this.ctx.updatePendingMessagesDisplay();
+		this.ctx.ui.requestRender();
+	}
+
+	#scheduleForLater(
+		delayMs: number,
+		text: string,
+		options: { images?: ImageContent[]; imageLinks?: (string | undefined)[] },
+	): void {
+		const messages = splitQueuedMessages(text);
+		if (messages.length === 0) {
+			this.ctx.editor.clearDraft();
+			this.ctx.showWarning(QUEUE_USAGE);
+			return;
+		}
+		this.ctx.editor.clearDraft();
+		const entry = this.ctx.scheduledQueue.schedule(delayMs, messages, options);
+		this.ctx.updatePendingMessagesDisplay();
+		this.ctx.showStatus(
+			`${messages.length === 1 ? "Message" : `${messages.length} messages`} scheduled in ${formatQueueDue(entry.dueAtMs)}`,
+		);
+		this.ctx.ui.requestRender();
 	}
 
 	async #queueForYield(
@@ -1028,7 +1087,7 @@ export class InputController {
 		const splitMessages = splitQueuedMessages(text);
 		if (splitMessages.length === 0 && !options.images?.length) {
 			this.ctx.editor.clearDraft();
-			this.ctx.showWarning("Usage: /queue <message> (or start a prompt with -> / =>)");
+			this.ctx.showWarning(QUEUE_USAGE);
 			return;
 		}
 
@@ -1042,91 +1101,55 @@ export class InputController {
 				: undefined;
 		this.ctx.editor.clearDraft(options.historyText);
 
-		if (this.ctx.session.isCompacting) {
-			for (let index = 0; index < messages.length; index++) {
-				this.ctx.compactionQueuedMessages.push({
-					text: messages[index] ?? "",
-					mode: "followUp",
-					images: index === 0 ? images : undefined,
-				});
-			}
+		const result = await deliverMessages(this.ctx, messages, { images, imageLinks });
+		if (result.outcome === "compaction") {
 			this.ctx.updatePendingMessagesDisplay();
-			this.ctx.showStatus(
-				messages.length === 1
-					? "Queued message for after compaction"
-					: `Queued ${messages.length} messages for after compaction`,
-			);
+			this.ctx.showStatus(`Queued ${formatCount("message", messages.length)} for after compaction`);
 			this.ctx.ui.requestRender();
 			return;
 		}
 
-		const startImmediately = !this.ctx.session.isStreaming && this.ctx.session.queuedMessageCount === 0;
-		let queuedCount = 0;
-		try {
-			if (startImmediately && this.ctx.onInputCallback) {
-				const first = messages[0] ?? "";
-				const submission = this.ctx.startPendingSubmission({
-					text: first,
-					images,
-					imageLinks,
-					streamingBehavior: "followUp",
-				});
-				this.ctx.onInputCallback(submission);
-				queuedCount = 1;
-			}
-			while (queuedCount < messages.length) {
-				const message = messages[queuedCount] ?? "";
-				const queuedImages = queuedCount === 0 ? images : undefined;
-				await this.ctx.withLocalSubmission(
-					message,
-					async () => {
-						if (startImmediately && queuedCount === 0) {
-							await this.ctx.session.prompt(message, {
-								images: queuedImages,
-								streamingBehavior: "followUp",
-							});
-						} else {
-							await this.ctx.session.followUp(message, queuedImages);
-						}
-					},
-					{ imageCount: queuedImages?.length ?? 0 },
-				);
-				queuedCount++;
-			}
-		} catch (error) {
-			if (queuedCount === 0) {
-				this.ctx.editor.setText(originalDraft);
-				if (images) {
-					this.ctx.editor.pendingImages = images;
-					this.ctx.editor.pendingImageLinks = imageLinks ?? images.map(() => undefined);
-					this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-				}
-			} else {
-				const remaining = messages.slice(queuedCount);
-				const restored =
-					remaining.length === 1
-						? `=> ${remaining[0]}`
-						: `=>\n${remaining
-								.map((message, index) => `${index + 1}. ${message.replaceAll("\n", "\n   ")}`)
-								.join("\n")}`;
-				this.ctx.editor.setText(restored);
-			}
-			this.ctx.showError(error instanceof Error ? error.message : String(error));
+		if (result.error) {
+			this.#restoreUndeliveredQueueDraft(messages, result.delivered, originalDraft, images, imageLinks);
+			this.ctx.showError(result.error instanceof Error ? result.error.message : String(result.error));
 		}
 
 		this.ctx.updatePendingMessagesDisplay();
-		if (queuedCount === messages.length) {
+		if (result.delivered === messages.length) {
 			this.ctx.showStatus(
-				startImmediately
-					? queuedCount === 1
+				result.outcome === "sent"
+					? result.delivered === 1
 						? "Sent queued message"
-						: `Sent first message; queued ${queuedCount - 1} for later yields`
-					: queuedCount === 1
-						? "Queued message for when the agent yields"
-						: `Queued ${queuedCount} messages for when the agent yields`,
+						: `Sent first message; queued ${result.delivered - 1} for later yields`
+					: `Queued ${formatCount("message", result.delivered)} for when the agent yields`,
 			);
 		}
 		this.ctx.ui.requestRender();
+	}
+
+	/** Puts whatever never reached the session back in the editor so the text is not lost. */
+	#restoreUndeliveredQueueDraft(
+		messages: readonly string[],
+		delivered: number,
+		originalDraft: string,
+		images: ImageContent[] | undefined,
+		imageLinks: (string | undefined)[] | undefined,
+	): void {
+		if (delivered === 0) {
+			this.ctx.editor.setText(originalDraft);
+			if (images) {
+				this.ctx.editor.pendingImages = images;
+				this.ctx.editor.pendingImageLinks = imageLinks ?? images.map(() => undefined);
+				this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+			}
+			return;
+		}
+		const remaining = messages.slice(delivered);
+		this.ctx.editor.setText(
+			remaining.length === 1
+				? `=> ${remaining[0]}`
+				: `=>\n${remaining.map((message, index) => `${index + 1}. ${message.replaceAll("\n", "\n   ")}`).join("\n")}`,
+		);
 	}
 
 	async handleFollowUp(): Promise<void> {

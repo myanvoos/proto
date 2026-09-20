@@ -1,3 +1,5 @@
+import { DURATION_UNIT_LIST, durationUnitMs, parseCompoundDurationMs } from "./duration-args";
+
 type LoopLimitConfig =
 	| {
 			kind: "iterations";
@@ -19,24 +21,6 @@ export type LoopLimitRuntime =
 			durationMs: number;
 			deadlineMs: number;
 	  };
-
-const TIME_UNITS_MS = new Map<string, number>([
-	["s", 1_000],
-	["sec", 1_000],
-	["secs", 1_000],
-	["second", 1_000],
-	["seconds", 1_000],
-	["m", 60_000],
-	["min", 60_000],
-	["mins", 60_000],
-	["minute", 60_000],
-	["minutes", 60_000],
-	["h", 3_600_000],
-	["hr", 3_600_000],
-	["hrs", 3_600_000],
-	["hour", 3_600_000],
-	["hours", 3_600_000],
-]);
 
 const LOOP_USAGE = "Usage: /loop [count|duration]. Examples: /loop 10, /loop 10m, /loop 10min.";
 
@@ -62,7 +46,7 @@ export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
 	if (/^\d+$/.test(token)) {
 		if (rest) {
 			const restTokens = rest.split(/\s+/);
-			const unitMs = TIME_UNITS_MS.get(restTokens[0].toLowerCase());
+			const unitMs = durationUnitMs(restTokens[0]);
 			if (unitMs !== undefined) {
 				const limit = makeDuration(token, unitMs);
 				if (typeof limit === "string") return limit;
@@ -100,25 +84,11 @@ function makeDuration(amountText: string, unitMs: number): LoopLimitConfig | str
 }
 
 function parseCompoundDuration(token: string): LoopLimitConfig | string | undefined {
-	if (!/^(?:\d+[a-z]+)+$/.test(token)) return undefined;
-	const segments = token.match(/\d+[a-z]+/g);
-	if (!segments) return undefined;
-	let totalMs = 0;
-	for (const segment of segments) {
-		const match = /^(\d+)([a-z]+)$/.exec(segment);
-		if (!match) return LOOP_USAGE;
-		const unitMs = TIME_UNITS_MS.get(match[2]);
-		if (unitMs === undefined) {
-			return "Loop duration unit must be seconds, minutes, or hours.";
-		}
-		const amount = Number(match[1]);
-		if (!Number.isSafeInteger(amount) || amount <= 0) {
-			return "Loop duration must be positive.";
-		}
-		totalMs += amount * unitMs;
-	}
-	if (totalMs <= 0) return "Loop duration must be positive.";
-	return { kind: "duration", durationMs: totalMs };
+	const parsed = parseCompoundDurationMs(token);
+	if (parsed === undefined) return undefined;
+	if (parsed === "unknown-unit") return `Loop duration unit must be ${DURATION_UNIT_LIST}.`;
+	if (parsed === "non-positive") return "Loop duration must be positive.";
+	return { kind: "duration", durationMs: parsed };
 }
 
 export function createLoopLimitRuntime(

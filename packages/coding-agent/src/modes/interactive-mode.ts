@@ -117,6 +117,7 @@ import { EventController } from "./controllers/event-controller";
 import { ExtensionUiController } from "./controllers/extension-ui-controller";
 import { InputController } from "./controllers/input-controller";
 import { MCPCommandController } from "./controllers/mcp-command-controller";
+import { ScheduledQueueController } from "./controllers/scheduled-queue-controller";
 import { SelectorController } from "./controllers/selector-controller";
 import { SessionFocusController } from "./controllers/session-focus-controller";
 import { SideAgentController } from "./controllers/side-agent-controller";
@@ -496,6 +497,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #inputController: InputController;
 	readonly #selectorController: SelectorController;
 	readonly #focusController: SessionFocusController;
+	readonly scheduledQueue: ScheduledQueueController;
 	get viewSession(): AgentSession {
 		return this.#focusController.target ?? this.session;
 	}
@@ -733,6 +735,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
+		this.scheduledQueue = new ScheduledQueueController(this);
 		this.session.setTitleGenerationStart?.(() => {
 			this.#inputController.notifyTitleGenerationStart();
 		});
@@ -2505,6 +2508,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.#sideQuestionController.dispose();
 		this.#focusController.dispose();
+		this.scheduledQueue.dispose();
 
 		this.showStatus("Closing session…");
 

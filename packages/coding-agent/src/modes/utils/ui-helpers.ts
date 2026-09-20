@@ -31,6 +31,7 @@ import { createUsageRowBlock } from "../../modes/components/usage-row";
 import { UserMessageComponent } from "../../modes/components/user-message";
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../../modes/controllers/tool-args-reveal";
 import { materializeImageReferenceLinksSync } from "../../modes/image-references";
+import { formatQueueDue } from "../../modes/queue-input";
 import { theme } from "../../modes/theme/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext, RenderSessionContextOptions } from "../../modes/types";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
@@ -72,6 +73,11 @@ export interface TranscriptWindow {
 	end: number;
 	pageFromLatest: number;
 	totalMessages: number;
+}
+
+/** Collapses tabs and newlines so a queued or scheduled message stays on one rendered row. */
+function previewQueuedMessage(message: string): string {
+	return replaceTabs(message).replace(/\r?\n/g, " ↵ ");
 }
 
 function estimateValueBytes(value: unknown, limit: number): number {
@@ -1068,7 +1074,7 @@ export class UiHelpers {
 				const heading = theme.fg("muted", `${group.label}${theme.sep.dot}${group.messages.length}`);
 				this.ctx.pendingMessagesContainer.addChild(new TruncatedText(heading, 1, 0));
 				for (let index = 0; index < group.messages.length; index++) {
-					const message = replaceTabs(group.messages[index] ?? "").replace(/\r?\n/g, " ↵ ");
+					const message = previewQueuedMessage(group.messages[index] ?? "");
 					const queuedText = theme.fg("dim", `  ${index + 1}. ${message}`);
 					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
 				}
@@ -1076,6 +1082,20 @@ export class UiHelpers {
 			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
 			const hintText = theme.fg("dim", `  ${theme.tree.hook} ${dequeueKey} to edit`);
 			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
+		}
+
+		const scheduled = this.ctx.scheduledQueue.list();
+		if (scheduled.length > 0) {
+			const now = Date.now();
+			if (groups.length === 0) this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
+			const heading = theme.fg("muted", `Scheduled${theme.sep.dot}${scheduled.length}`);
+			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(heading, 1, 0));
+			for (const [index, entry] of scheduled.entries()) {
+				const extra = entry.messages.length > 1 ? ` (+${entry.messages.length - 1} more)` : "";
+				const preview = `${previewQueuedMessage(entry.messages[0] ?? "")}${extra}`;
+				const line = theme.fg("dim", `  ${index + 1}. in ${formatQueueDue(entry.dueAtMs, now)} ${preview}`);
+				this.ctx.pendingMessagesContainer.addChild(new TruncatedText(line, 1, 0));
+			}
 		}
 		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);
 	}

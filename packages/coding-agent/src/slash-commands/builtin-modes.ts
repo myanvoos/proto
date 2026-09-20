@@ -1,3 +1,4 @@
+import { formatCount } from "@oh-my-pi/pi-utils";
 import {
 	expandRoleAlias,
 	formatModelString,
@@ -233,9 +234,13 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "queue",
-		description: "Queue a message for after the agent yields",
-		inlineHint: "<message>",
+		description: "Queue a message for after the agent yields, or after a delay",
+		inlineHint: "[duration] <message> | --cancel <n|all>",
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const count = runtime.ctx.scheduledQueue.list().length;
+			return count === 0 ? undefined : `${formatCount("message", count)} scheduled`;
+		},
 		handleTui: async (command, runtime) => {
 			await runtime.ctx.handleQueueCommand(command.args);
 		},

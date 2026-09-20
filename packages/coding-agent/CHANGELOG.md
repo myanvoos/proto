@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/queue` takes an optional leading delay: `/queue 3h run the benchmarks` sends the message after three hours instead of at the next yield. Delays are independent wall-clock deadlines, so entering `/queue 3h do A` then `/queue 18h do B` fires them 3 and 18 hours from now rather than chaining. Pending entries show a live countdown above the editor and are cancelled with `/queue --cancel <n|all>`.
+
 ## [18.1.23] - 2026-09-20
 
 ### Breaking Changes

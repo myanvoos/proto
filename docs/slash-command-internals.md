@@ -263,6 +263,19 @@ TUI and ACP/RPC dispatch the shared built-in registry before `session.prompt(...
   - non-native commands: warning + fallback key/value parse
 - Extension/custom command handler exceptions are caught and reported via extension error channel (or logger fallback for custom commands without extension runner), and treated as handled (no unintended fallback execution).
 
+## 11) Built-in command note: `/queue`
+
+`/queue` has two delivery triggers behind one command:
+
+- `/queue <message>` — hands the message to the session immediately when the agent is idle and nothing is queued, otherwise onto the follow-up queue.
+- `/queue <duration> <message>` — records an absolute deadline and delivers then, through the same path.
+
+A leading token is read as a delay only when it is a bare compound duration (`3h`, `1h30m`, `2d`) **and** message text follows, so `/queue 3 hours of cleanup remain` and `/queue 3h` still queue verbatim. The `-> ` / `=> ` prompt shorthand never parses delays or flags.
+
+Delays are independent deadlines rather than a chain: entering `/queue 3h do A` then `/queue 18h do B` fires them 3 and 18 hours from when each was entered. Both spellings share `deliverMessages` (`modes/message-delivery.ts`), so compaction queuing, streaming follow-ups, and turn-start ordering behave identically.
+
+`ScheduledQueueController` (`modes/controllers/scheduled-queue-controller.ts`) owns the deadlines. It arms one timer at a time, re-arming in ≤60 s chunks so suspend/resume drift and the 2^31 ms `setTimeout` ceiling cannot strand an entry, and each tick refreshes the countdown rendered above the editor. Entries are in-memory and TUI-scoped: they survive `/clear` and `/resume` and deliver into whatever session is then current, and they are dropped on shutdown rather than persisted.
+
 ## 10) Built-in command note: `/pause`
 
 `/pause` is available only in the interactive TUI. It engages a process-global gate for the main agent, in-process subagents, and the advisor. Each agent parks at its next safe boundary: in-flight calls finish, nothing is aborted, and no new work starts until the gate is released.

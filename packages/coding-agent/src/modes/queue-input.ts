@@ -1,3 +1,6 @@
+import { formatDuration } from "@oh-my-pi/pi-utils";
+import { parseCompoundDurationMs } from "./duration-args";
+
 const QUEUE_PREFIXES: readonly string[] = ["->", "=>"];
 
 export const QUEUE_LIST_MARKER_RE = /^([\t ]*)(\d+|[A-Za-z]+)([.)])(?=[\t ]|$)/;
@@ -15,6 +18,71 @@ interface EnumeratedList {
 	source: string;
 	lines: string[];
 	items: EnumeratedItem[];
+}
+
+/** Longest delay `/queue` accepts; keeps a typo like `/queue 99999999h ship it` from producing a dead entry. */
+export const MAX_QUEUE_DELAY_MS = 365 * 86_400_000;
+
+export const QUEUE_USAGE =
+	"Usage: /queue [duration] <message> (or start a prompt with -> / =>). Examples: /queue ship it, /queue 3h run the benchmarks, /queue --cancel 1.";
+
+export type QueueCommand =
+	/** Deliver when the agent next yields. */
+	| { kind: "queue"; text: string }
+	/** Deliver once `delayMs` of wall-clock time has passed. */
+	| { kind: "schedule"; delayMs: number; text: string }
+	| { kind: "cancel"; target: number | "all" }
+	| { kind: "error"; message: string };
+
+function splitFirstToken(text: string): [string, string] {
+	const boundary = text.search(/\s/);
+	if (boundary === -1) return [text, ""];
+	return [text.slice(0, boundary), text.slice(boundary + 1).trim()];
+}
+
+function parseCancelTarget(rest: string): QueueCommand {
+	const target = rest.trim().toLowerCase();
+	if (!target || target === "all") return { kind: "cancel", target: "all" };
+	const position = Number(target);
+	if (!Number.isSafeInteger(position) || position <= 0) {
+		return { kind: "error", message: "Usage: /queue --cancel <n|all>" };
+	}
+	return { kind: "cancel", target: position };
+}
+
+/**
+ * Splits `/queue` arguments into its three shapes. A leading token is read as a delay only when it is
+ * a bare compound duration (`3h`, `1h30m`) followed by message text, so ordinary messages that merely
+ * mention a duration still queue verbatim. The `-> ` / `=> ` shorthand never takes a delay or flags.
+ */
+export function parseQueueArgs(args: string): QueueCommand {
+	const trimmed = args.trim();
+	if (!trimmed) return { kind: "queue", text: "" };
+
+	const [token, rest] = splitFirstToken(trimmed);
+	if (token.toLowerCase() === "--cancel") return parseCancelTarget(rest);
+	if (!rest) return { kind: "queue", text: trimmed };
+
+	const delayMs = parseCompoundDurationMs(token);
+	if (delayMs === undefined) return { kind: "queue", text: trimmed };
+	if (delayMs === "unknown-unit") return { kind: "queue", text: trimmed };
+	if (delayMs === "non-positive") return { kind: "error", message: `Queue delay must be positive. ${QUEUE_USAGE}` };
+	if (delayMs > MAX_QUEUE_DELAY_MS) {
+		return { kind: "error", message: `Queue delay must be at most ${formatDuration(MAX_QUEUE_DELAY_MS)}.` };
+	}
+	return { kind: "schedule", delayMs, text: rest };
+}
+
+function formatClockTime(dueAtMs: number, nowMs: number): string {
+	const due = new Date(dueAtMs);
+	const time = due.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+	if (due.toDateString() === new Date(nowMs).toDateString()) return time;
+	return `${due.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
+}
+
+/** Countdown plus resolved wall-clock time, e.g. `2h58m (14:32)` or `17h (Sat 09:15)`. */
+export function formatQueueDue(dueAtMs: number, nowMs = Date.now()): string {
+	return `${formatDuration(Math.max(0, dueAtMs - nowMs))} (${formatClockTime(dueAtMs, nowMs)})`;
 }
 
 export function parseQueueShorthand(text: string): string | undefined {
