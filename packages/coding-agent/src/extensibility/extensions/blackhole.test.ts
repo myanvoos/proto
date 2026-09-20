@@ -1,8 +1,12 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { MEMORY_THINKING_LEVEL, resolveMemoryModelCandidates } from "../../vendor/pi-blackhole/index.js";
+import {
+	compileSummary,
+	MEMORY_THINKING_LEVEL,
+	resolveMemoryModelCandidates,
+} from "../../vendor/pi-blackhole/index.js";
 import { runExtensionCompact } from "./compact-handler";
 
 test("memory workers use a provider-compatible thinking effort", () => {
@@ -179,4 +183,94 @@ authStorage.close();
 	expect(output.result.compaction.firstKeptEntryId).toBe("");
 	expect(output.result.compaction.summary).toContain("[Session Goal]\n- Fix the authentication bug");
 	expect(output.result.compaction.summary).toContain("I will update src/auth.ts");
+	expect(output.result.compaction.summary).toContain("[User Messages]\n- [#0] Fix the authentication bug");
 }, 15_000);
+
+describe("summary source references", () => {
+	test("brief transcript refs use the session-wide recall index, not the window position", () => {
+		// The window starts at session entry #40; a ref of (#0) would send recall to an unrelated turn.
+		const summary = compileSummary({
+			messages: [
+				{ role: "user", content: "fix the parser regression" },
+				{ role: "assistant", content: "patched src/parser.ts" },
+			],
+			sourceIndices: [40, 41],
+			userTurns: [{ recallIndex: 40, text: "fix the parser regression" }],
+		});
+
+		expect(summary).toContain("(#40)");
+		expect(summary).not.toContain("(#0)");
+	});
+
+	test("a position with no resolvable entry renders no ref at all", () => {
+		const summary = compileSummary({
+			messages: [{ role: "user", content: "fix the parser regression" }],
+			sourceIndices: [undefined],
+		});
+
+		expect(summary).toContain("fix the parser regression");
+		expect(summary).not.toMatch(/\(#\d+\)/);
+	});
+});
+
+describe("user message retention in the structural summary", () => {
+	test("retains every user turn verbatim with its recall pointer", () => {
+		const summary = compileSummary({
+			messages: [{ role: "assistant", content: "done" }],
+			userTurns: [
+				{ recallIndex: 0, text: "Fix the auth bug in src/auth.ts" },
+				{ recallIndex: 5, text: "Now make the tests pass" },
+			],
+		});
+
+		expect(summary).toContain(
+			"[User Messages]\n- [#0] Fix the auth bug in src/auth.ts\n- [#5] Now make the tests pass",
+		);
+	});
+
+	test("elides an oversized paste down to a head plus a recall pointer", () => {
+		const paste = `Please port this module:\n${"x".repeat(3000)}\nlast line`;
+		const summary = compileSummary({
+			messages: [{ role: "assistant", content: "done" }],
+			userTurns: [{ recallIndex: 4, text: paste }],
+		});
+
+		const entry = summary.split("\n").find(line => line.startsWith("- [#4] "));
+		expect(entry).toBeDefined();
+		expect(entry).toContain("Please port this module:");
+		expect(entry).toContain(`[paste: ${paste.length} chars / 3 lines elided \u2014 recall #4 for the full text]`);
+		expect(entry).not.toContain("x".repeat(100));
+	});
+
+	test("carries previous rounds' entries forward in order without duplicating indices", () => {
+		const previous = compileSummary({
+			messages: [{ role: "assistant", content: "done" }],
+			userTurns: [{ recallIndex: 2, text: "earlier question" }],
+		});
+		const summary = compileSummary({
+			messages: [{ role: "assistant", content: "done" }],
+			previousSummary: previous,
+			userTurns: [
+				{ recallIndex: 7, text: "follow-up request" },
+				{ recallIndex: 2, text: "earlier question" },
+			],
+		});
+
+		expect(summary.indexOf("- [#2] earlier question")).toBe(summary.lastIndexOf("- [#2] earlier question"));
+		expect(summary).toContain("- [#7] follow-up request");
+		expect(summary.indexOf("- [#2]")).toBeLessThan(summary.indexOf("- [#7]"));
+	});
+
+	test("keeps noise out of the section instead of archiving system reminders", () => {
+		const summary = compileSummary({
+			messages: [{ role: "assistant", content: "done" }],
+			userTurns: [
+				{ recallIndex: 1, text: "<system-reminder>context window usage</system-reminder>" },
+				{ recallIndex: 2, text: "real instruction" },
+			],
+		});
+
+		expect(summary).not.toContain("system-reminder");
+		expect(summary).toContain("- [#2] real instruction");
+	});
+});

@@ -9,6 +9,12 @@
 
 ### Added
 
+- `recall` responses are now bounded: one enormous stored line or a wide expand can no longer flood the context. Snippet lines clip around the match, expanded entries share a 48,000-character budget (`recallResponseMaxChars`, `0` disables), entries are dropped whole with a footer naming how to reach them, and the new `#N:text` drill-down pages any entry's own message text.
+- Compaction summary `(#N)` references now resolve in the same index space as `recall`: after the first compaction or on a branched session they pointed at unrelated entries, and a position that cannot be resolved renders no reference instead of a wrong one.
+- `recall` queries that mention a file now find it: a query is split into terms first, so `observer.ts` matches literally instead of compiling the whole sentence into one never-matching pattern (and no longer wildcards the dot onto `observerXts`).
+- Sessions larger than V8's maximum string length are searchable again — session history is read in chunks instead of one string, and a session file that does not exist yet reads as empty history.
+- After a compaction, the newest answer it dropped from view stays on screen as a display-only copy (16 KiB cap, `showPreCompactionMessage` to turn it off). It is never sent to the model.
+- Compaction now retains every user message across compaction instead of keeping only a recent tail: each folded user message appears verbatim in the summary's `[User Messages]` section with its session entry reference, and large pasted content is elided to a head plus a `recall #N` pointer placed right in that entry so the exact text stays one recall away.
 - Compaction summaries now end with a handoff note written from the context being dropped — why the current approach was chosen, what was ruled out, what is half-finished — appended to whatever produced the summary. Turn it off with `compaction.selfSummary`.
 
 ### Changed

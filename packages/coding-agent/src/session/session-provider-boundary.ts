@@ -15,6 +15,7 @@ import type { ModelRegistry } from "../config/model-registry";
 import { formatModelString } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { validateProviderMaxInFlightRequests } from "../config/settings";
+import type { ExtensionRunner } from "../extensibility/extensions";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { deobfuscateSessionContext, obfuscateMessages } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
@@ -49,6 +50,7 @@ export interface SessionProviderBoundaryHost {
 	onResponse: SimpleStreamOptions["onResponse"] | undefined;
 	onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
 	obfuscator: SecretObfuscator | undefined;
+	extensionRunner(): ExtensionRunner | undefined;
 }
 
 export class SessionProviderBoundary {
@@ -99,6 +101,7 @@ export class SessionProviderBoundary {
 				transcript: true,
 				collapseCompactedHistory: options?.collapseCompactedHistory,
 				keepDanglingToolCalls: options?.keepDanglingToolCalls,
+				renderableCustomEntryTypes: this.#host.extensionRunner()?.renderableCustomTypes(),
 			}),
 			this.#host.obfuscator,
 		);

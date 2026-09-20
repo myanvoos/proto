@@ -2,10 +2,11 @@ import { mkdirSync, appendFileSync, existsSync, statSync, unlinkSync, renameSync
 import { join, dirname, sep, isAbsolute, resolve, relative, basename, parse } from 'path';
 import { tmpdir } from 'os';
 import { getAgentDir } from '@oh-my-pi/pi-utils/dirs';
-import { getSelectListTheme } from '@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters';
+import { stripControlChars } from '@oh-my-pi/pi-utils';
+import { getMarkdownTheme, getSelectListTheme } from '@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters';
 import { convertToLlm } from '@oh-my-pi/pi-coding-agent/session/messages';
 import { AgentSession } from '@oh-my-pi/pi-coding-agent/session/agent-session';
-import { fuzzyMatch, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, Editor, SelectList, decodeKittyPrintable } from '@oh-my-pi/pi-tui';
+import { fuzzyMatch, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, Container, Editor, Markdown, SelectList, Text, decodeKittyPrintable } from '@oh-my-pi/pi-tui';
 import { AsyncLocalStorage } from 'async_hooks';
 import { appendFile } from 'fs/promises';
 import { pathToFileURL, fileURLToPath } from 'url';
@@ -387,9 +388,11 @@ var DECLARATIVE_ENV_OVERRIDES = {
   debug: "PI_BLACKHOLE_DEBUG",
   debugLog: "PI_BLACKHOLE_DEBUG_LOG",
   fullFoldAlways: "PI_BLACKHOLE_FULL_FOLD_ALWAYS",
+  showPreCompactionMessage: "PI_BLACKHOLE_SHOW_PRE_COMPACTION_MESSAGE",
   // Positive integers
   compactAfterTokens: "PI_BLACKHOLE_COMPACT_AFTER_TOKENS",
   observeAfterTokens: "PI_BLACKHOLE_OBSERVE_AFTER_TOKENS",
+  recallResponseMaxChars: "PI_BLACKHOLE_RECALL_RESPONSE_MAX_CHARS",
   reflectAfterTokens: "PI_BLACKHOLE_REFLECT_AFTER_TOKENS",
   observationsPoolMaxTokens: "PI_BLACKHOLE_OBSERVATIONS_POOL_MAX_TOKENS",
   observationsPoolTargetTokens: "PI_BLACKHOLE_OBSERVATIONS_POOL_TARGET_TOKENS",
@@ -440,7 +443,7 @@ var DECLARATIVE_ENV_OVERRIDES = {
     var: "PI_BLACKHOLE_COMPACTION_ENGINE",
     parse: (raw) => {
       const trimmed = raw.trim().toLowerCase();
-      return ["blackhole", "pi-default"].includes(trimmed) ? trimmed : void 0;
+      return trimmed === "blackhole" ? "blackhole" : void 0;
     }
   },
   compactionSummaryMode: {
@@ -485,7 +488,9 @@ var DEFAULTS = {
   reflectAfterTokens: 25e3,
   compactAfterTokens: 81e3,
   observationsPoolMaxTokens: 2e4,
+  recallResponseMaxChars: 48e3,
   fullFoldAlways: true,
+  showPreCompactionMessage: true,
   observationsPoolTargetTokens: 1e4,
   reflectorInputMaxTokens: 8e4,
   dropperInputMaxTokens: 8e4,
@@ -498,7 +503,7 @@ var DEFAULTS = {
   debugLog: false
 };
 var COMPACTION_VALUES = ["auto", "manual", "off"];
-var COMPACTION_ENGINE_VALUES = ["blackhole", "pi-default"];
+var COMPACTION_ENGINE_VALUES = ["blackhole"];
 var COMPACTION_SUMMARY_MODE_VALUES = ["default", "append"];
 var TAIL_BEHAVIOR_VALUES = ["pi-default", "minimal"];
 var MID_RUN_COMPACTION_VALUES = ["resume", "pause", "off"];
@@ -546,7 +551,9 @@ function parseConfig(raw) {
   if (typeof raw.memory === "boolean") c.memory = raw.memory;
   if (typeof raw.fullFoldAlways === "boolean") c.fullFoldAlways = raw.fullFoldAlways;
   if (typeof raw.debugLog === "boolean") c.debugLog = raw.debugLog;
+  if (typeof raw.showPreCompactionMessage === "boolean") c.showPreCompactionMessage = raw.showPreCompactionMessage;
   const numKeys = [
+    "recallResponseMaxChars",
     "observeAfterTokens",
     "reflectAfterTokens",
     "compactAfterTokens",
@@ -566,7 +573,7 @@ function parseConfig(raw) {
     c.dropperPoolFullnessThreshold = raw.dropperPoolFullnessThreshold;
   }
   for (const k of numKeys) {
-    const validator = k === "observerPreambleMaxTokens" || k === "providerIdleTimeoutMs" ? nonNegativeInt : positiveInt;
+    const validator = k === "observerPreambleMaxTokens" || k === "providerIdleTimeoutMs" || k === "recallResponseMaxChars" ? nonNegativeInt : positiveInt;
     const v = validator(raw[k]);
     if (v !== void 0) c[k] = v;
   }
@@ -587,8 +594,6 @@ function migrateOldKnobs(parsed) {
     if (parsed.tailBehavior === void 0) {
       parsed.tailBehavior = "minimal";
     }
-  } else if (parsed.overrideDefaultCompaction === false) {
-    parsed.compactionEngine = "pi-default";
   }
   delete parsed.passive;
   delete parsed.noAutoCompact;
@@ -912,7 +917,7 @@ var normalizeOne = (msg, msgIndex) => {
   }
   return [];
 };
-var normalize = (messages) => messages.flatMap((msg, i) => normalizeOne(msg, i));
+var normalize = (messages, sourceIndices) => messages.flatMap((msg, i) => normalizeOne(msg, sourceIndices ? sourceIndices[i] : i));
 
 // src/core/filter-noise.ts
 var NOISE_TOOLS = /* @__PURE__ */ new Set([
@@ -1604,6 +1609,30 @@ var formatFileActivity = (blocks) => {
   if (act.read.size > 0) lines.push(`Read: ${cap(act.read, 10)}`);
   return lines;
 };
+var USER_MESSAGE_VERBATIM_MAX_CHARS = 1500;
+var USER_PASTE_HEAD_CHARS = 200;
+var formatUserMessageEntry = (turn) => {
+  const ref = `[#${turn.recallIndex}]`;
+  const text = turn.text.replace(/\r\n?/g, "\n").trim();
+  if (!text) return `${ref} (empty message)`;
+  if (text.length <= USER_MESSAGE_VERBATIM_MAX_CHARS) {
+    return `${ref} ${text.replace(/\n(?!$)/g, "\n  ")}`;
+  }
+  const firstLine = (text.split("\n")[0] ?? "").trim();
+  const head = firstLine.length > USER_PASTE_HEAD_CHARS ? `${firstLine.slice(0, USER_PASTE_HEAD_CHARS)}…` : firstLine || "(no leading line)";
+  const lineCount = text.split("\n").length;
+  const marker = `[paste: ${text.length} chars / ${lineCount} lines elided — recall #${turn.recallIndex} for the full text]`;
+  return `${ref} ${head} — ${marker}`;
+};
+var buildUserMessageEntries = (userTurns) => {
+  const entries = [];
+  for (const turn of userTurns ?? []) {
+    const text = [cleanOrNull(turn.text), ...(turn.images ?? [])].filter(Boolean).join("\n");
+    if (!text) continue;
+    entries.push(formatUserMessageEntry({ recallIndex: turn.recallIndex, text }));
+  }
+  return entries;
+};
 var buildSections = (input) => {
   const { blocks } = input;
   const briefSections = buildBriefSections(blocks);
@@ -1615,6 +1644,7 @@ var buildSections = (input) => {
     filesAndChanges: formatFileActivity(blocks),
     commits: formatCommits(extractCommits(blocks)),
     userPreferences,
+    userMessages: buildUserMessageEntries(input.userTurns),
     briefTranscript: stringifyBrief(briefSections)
   };
 };
@@ -1650,14 +1680,15 @@ var capBrief = (text) => {
 
 ${clean.join("\n")}`;
 };
-var RECALL_NOTE = "The conversation before this point has been compacted into the summary above. Details not captured here \u2014 exact code, error messages, file paths \u2014 are only recoverable via `recall`. Use `recall` to search the session history. Do not redo work already completed.";
+var RECALL_NOTE = "The conversation before this point has been compacted into the summary above. Details not captured here \u2014 exact code, error messages, file paths \u2014 are only recoverable via `recall`. Use `recall` to search the session history. Large pasted user content is elided in [User Messages] with its size and its `#N` entry pointer \u2014 recover the full text with `recall` using that pointer. Do not redo work already completed.";
 var formatSummary = (data) => {
   const headerParts = [
     section("Session Goal", data.sessionGoal),
     section("Files And Changes", data.filesAndChanges),
     section("Commits", data.commits),
     section("Outstanding Context", data.outstandingContext),
-    section("User Preferences", data.userPreferences)
+    section("User Preferences", data.userPreferences),
+    section("User Messages", data.userMessages)
   ].filter(Boolean);
   const parts = [];
   if (headerParts.length > 0) {
@@ -1676,7 +1707,8 @@ var HEADER_NAMES = [
   "Files And Changes",
   "Commits",
   "Outstanding Context",
-  "User Preferences"
+  "User Preferences",
+  "User Messages"
 ];
 var SEPARATOR = "\n\n---\n\n";
 var sectionOf = (text, header) => {
@@ -1701,7 +1733,34 @@ var briefOf = (text) => {
   if (idx < 0) return "";
   return text.slice(idx + SEPARATOR.length).trim();
 };
+var USER_MESSAGE_ENTRY_LINE_RE = /^- \[#(\d+)\]/;
+var splitUserMessageEntries = (body) => {
+  if (!body) return [];
+  const entries = [];
+  for (const raw of body.split("\n")) {
+    if (USER_MESSAGE_ENTRY_LINE_RE.test(raw)) entries.push([raw]);
+    else if (entries.length > 0 && raw.trim().length > 0) entries[entries.length - 1].push(raw);
+  }
+  return entries.map((lines) => lines.join("\n"));
+};
+var mergeUserMessageSections = (prev, fresh) => {
+  const seen = new Set();
+  const merged = [];
+  for (const entry of [...splitUserMessageEntries(prev), ...splitUserMessageEntries(fresh)]) {
+    const id = entry.match(USER_MESSAGE_ENTRY_LINE_RE)?.[1] ?? entry;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(entry);
+  }
+  return merged;
+};
 var mergeHeaderSection = (header, prev, fresh) => {
+  if (header === "User Messages") {
+    const merged = mergeUserMessageSections(prev, fresh);
+    if (merged.length === 0) return "";
+    return `[User Messages]
+${merged.join("\n")}`;
+  }
   if (header === "Outstanding Context") return fresh;
   if (!prev) return fresh;
   if (!fresh) return prev;
@@ -1775,8 +1834,8 @@ var mergePrevious = (prev, fresh) => {
   return parts.join(SEPARATOR);
 };
 var compileFresh = (input) => {
-  const blocks = filterNoise(normalize(input.messages));
-  const data = buildSections({ blocks });
+  const blocks = filterNoise(normalize(input.messages, input.sourceIndices));
+  const data = buildSections({ blocks, userTurns: input.userTurns });
   return formatSummary(data);
 };
 var compileSegment = (input) => {
@@ -3167,6 +3226,66 @@ var REASON_MESSAGES = {
   no_live_messages: "Nothing to compact (no live messages)",
   too_few_live_messages: `Too few live messages \u2014 Pi's default logic preserves visible context. Set tailBehavior to "minimal" in config to force compaction with fewer messages.`
 };
+var buildRecallIndexById = (ctx, branchEntries) => {
+  try {
+    const sessionFile = ctx?.sessionManager?.getSessionFile?.();
+    if (sessionFile) {
+      const indexById = new Map();
+      for (const rendered of loadAllMessages(sessionFile, false).rendered) {
+        if (rendered.id) indexById.set(rendered.id, rendered.index);
+      }
+      if (indexById.size > 0) return indexById;
+    }
+  } catch {
+  }
+  const branchIndexById = new Map();
+  let messageCount = 0;
+  for (const entry of branchEntries) {
+    if (entry.type === "message" && entry.message) {
+      if (entry.id) branchIndexById.set(entry.id, messageCount);
+      messageCount++;
+    }
+  }
+  return branchIndexById;
+};
+/**
+ * Position-for-position recall indices of the converted summary window.
+ *
+ * `convertToLlm` may split or drop a message, so a converted position is not a session position:
+ * each source message is converted alone to learn how many slots it occupies, and its session-wide
+ * `#N` is repeated across them. When the per-message conversion does not reproduce the batch
+ * conversion exactly, this returns undefined and the summary renders no refs at all — a missing
+ * pointer costs a recall; a wrong one sends the model to an unrelated entry.
+ */
+var buildSourceIndices = (agentMessages, selectedIds, recallIndexById, convertedLength) => {
+  const indices = [];
+  for (let i = 0; i < agentMessages.length; i++) {
+    let slots;
+    try {
+      slots = convertToLlm([agentMessages[i]]).length;
+    } catch {
+      return void 0;
+    }
+    const recallIndex = recallIndexById.get(selectedIds[i]);
+    for (let slot = 0; slot < slots; slot++) indices.push(recallIndex);
+  }
+  return indices.length === convertedLength ? indices : void 0;
+};var collectUserTurns = (ownCut, recallIndexById) => {
+  const turns = [];
+  ownCut.messages.forEach((msg, i) => {
+    if (msg.role !== "user") return;
+    if (msg.attribution === "agent") return;
+    const images = [];
+    if (msg.content && typeof msg.content !== "string") {
+      for (const part of msg.content) {
+        if (part.type === "image") images.push(`[image: ${part.mimeType}]`);
+      }
+    }
+    const recallIndex = recallIndexById.get(ownCut.selectedIds[i]) ?? i;
+    turns.push({ recallIndex, text: sanitize(textOf(msg.content)), images });
+  });
+  return turns;
+};
 var registerBeforeCompactHook = (pi, omRuntime) => {
   pi.on("session_before_compact", (event, ctx) => {
     const { preparation, branchEntries, customInstructions } = event;
@@ -3194,30 +3313,9 @@ var registerBeforeCompactHook = (pi, omRuntime) => {
       trace("before_compact.return_early", { reason: "compaction_off" });
       return;
     }
-    if (omRuntime.config.compactionEngine === "pi-default" && !isPiVcc) {
-      trace("before_compact.return_early", {
-        reason: "compactionEngine_pi_default"
-      });
-      return;
-    }
     if (omRuntime.config.compaction === "manual" && !isPiVcc) {
       trace("before_compact.return_early", { reason: "compaction_manual" });
       return;
-    }
-    if (omRuntime.config.compaction === void 0 && omRuntime.config.compactionEngine === void 0) {
-      if (!isPiVcc && !omRuntime.config.overrideDefaultCompaction) {
-        trace("before_compact.return_early", {
-          reason: "overrideDefaultCompaction=false and not /memory"
-        });
-        return;
-      }
-      if ((omRuntime.config.compaction === "manual" || omRuntime.config.noAutoCompact) && !isPiVcc) {
-        trace("before_compact.cancel", {
-          reason: "manual mode and not /memory"
-        });
-        omRuntime.lastCompactCancelled = true;
-        return { cancel: true };
-      }
     }
     const effectiveTailBehavior = omRuntime.config.tailBehavior ?? "minimal";
     trace("before_compact.tail_behavior", {
@@ -3342,10 +3440,15 @@ var registerBeforeCompactHook = (pi, omRuntime) => {
       readFiles: [...preparation.fileOps.read],
       modifiedFiles: [...preparation.fileOps.written, ...preparation.fileOps.edited]
     });
+    const recallIndexById = buildRecallIndexById(ctx, branchEntries);
+    const userTurns = collectUserTurns(ownCut, recallIndexById);
+    const sourceIndices = buildSourceIndices(agentMessages, agentSelectedIds, recallIndexById, messages.length);
     const summary = compile({
       messages,
-      previousSummary: preparation.previousSummary});
-    const freshSegmentSummary = omRuntime.config.compactionSummaryMode === "append" ? compileSegment({ messages}) : "";
+      previousSummary: preparation.previousSummary,
+      sourceIndices,
+      userTurns});
+    const freshSegmentSummary = omRuntime.config.compactionSummaryMode === "append" ? compileSegment({ messages, sourceIndices, userTurns}) : "";
     const branchIds = branchEntries.map((e) => e.id);
     const cutIdx = branchIds.indexOf(firstKeptEntryId);
     const cutWindow = cutIdx >= 0 ? branchEntries.slice(Math.max(0, cutIdx - 3), Math.min(branchEntries.length, cutIdx + 3)).map((e) => ({
@@ -3454,6 +3557,7 @@ var registerBeforeCompactHook = (pi, omRuntime) => {
       }
     };
   });
+  registerPreCompactionOutput(pi, omRuntime);
   pi.on("session_compact", (event, ctx) => {
     const compactWasPiVcc = omRuntime.compactWasPiVcc;
     omRuntime.compactWasPiVcc = false;
@@ -3472,6 +3576,138 @@ var registerBeforeCompactHook = (pi, omRuntime) => {
   });
 };
 
+// src/hooks/cosmetic-output.ts (upstream #103, adapted to the Proto host)
+var PRE_COMPACTION_OUTPUT_TYPE = "blackhole-pre-compaction-output";
+var PRE_COMPACTION_MAX_BYTES = 16 * 1024;
+var PRE_COMPACTION_MAX_SCAN_ENTRIES = 600;
+function isPreCompactionRecord(value) {
+  return typeof value === "object" && value !== null;
+}
+function isPreCompactionOutputData(value) {
+  if (!isPreCompactionRecord(value)) return false;
+  return typeof value.text === "string" && value.text.trim().length > 0 && typeof value.sourceEntryId === "string" && value.sourceEntryId.length > 0 && typeof value.compactionEntryId === "string" && value.compactionEntryId.length > 0 && typeof value.truncated === "boolean";
+}
+function preCompactionAssistantText(message) {
+  if (!isPreCompactionRecord(message)) return void 0;
+  const content = message.content;
+  if (typeof content === "string") return content.trim().length > 0 ? content : void 0;
+  if (!Array.isArray(content)) return void 0;
+  const parts = [];
+  for (const block of content) {
+    if (isPreCompactionRecord(block) && block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0) {
+      parts.push(block.text);
+    }
+  }
+  return parts.length > 0 ? parts.join("\n\n") : void 0;
+}
+function truncateToBytes(text, maxBytes) {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
+  let bytes = 0;
+  let out = "";
+  for (const char of text) {
+    const size = Buffer.byteLength(char, "utf8");
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    out += char;
+  }
+  return { text: out, truncated: true };
+}
+/**
+ * Entry ids that survive this compaction into provider context: the compaction entry itself plus
+ * the retained tail it names. The host rebuilds context as summary + everything from
+ * firstKeptEntryId onward, so an empty id (compact-all) retains nothing but the summary.
+ */
+function retainedEntryIdsAfterCompaction(branch, compactionEntry) {
+  const retained = /* @__PURE__ */ new Set([compactionEntry.id]);
+  const firstKeptEntryId = compactionEntry.firstKeptEntryId;
+  if (typeof firstKeptEntryId !== "string" || firstKeptEntryId.length === 0) return retained;
+  const firstKeptIndex = branch.findIndex((entry) => entry?.id === firstKeptEntryId);
+  if (firstKeptIndex < 0) return retained;
+  for (let i = firstKeptIndex; i < branch.length; i++) {
+    const id = branch[i]?.id;
+    if (typeof id === "string" && id.length > 0) retained.add(id);
+  }
+  return retained;
+}
+/**
+ * Newest assistant text this compaction dropped from view. The branch runs oldest-first, so the
+ * folded region sits before the compaction entry; the walk stops at the first assistant message
+ * with ordinary text that the cut did not retain.
+ */
+function selectOmittedAssistantText(branch, retainedIds, compactionEntryId, maxScan = PRE_COMPACTION_MAX_SCAN_ENTRIES) {
+  const start = branch.findIndex((entry) => entry?.id === compactionEntryId);
+  if (start < 0) return void 0;
+  const limit = Math.max(0, start - maxScan);
+  for (let i = start - 1; i >= limit; i--) {
+    const entry = branch[i];
+    if (!entry?.id || retainedIds.has(entry.id)) continue;
+    if (entry.type !== "message") continue;
+    const message = entry.message;
+    if (!isPreCompactionRecord(message) || message.role !== "assistant") continue;
+    if (message.stopReason === "aborted") continue;
+    const text = preCompactionAssistantText(message);
+    if (text) return { entryId: entry.id, text };
+  }
+  return void 0;
+}
+function buildPreCompactionOutputData(branch, retainedIds, compactionEntry) {
+  const selected = selectOmittedAssistantText(branch, retainedIds, compactionEntry.id);
+  if (!selected) return void 0;
+  const bounded = truncateToBytes(stripControlChars(selected.text), PRE_COMPACTION_MAX_BYTES);
+  if (!bounded.text.trim()) return void 0;
+  return {
+    text: bounded.text,
+    sourceEntryId: selected.entryId,
+    compactionEntryId: compactionEntry.id,
+    truncated: bounded.truncated
+  };
+}
+function hasPreCompactionOutput(branch, compactionEntryId) {
+  return branch.some((entry) => entry.type === "custom" && entry.customType === PRE_COMPACTION_OUTPUT_TYPE && isPreCompactionOutputData(entry.data) && entry.data.compactionEntryId === compactionEntryId);
+}
+function registerPreCompactionOutput(pi, omRuntime) {
+  pi.registerMessageRenderer(PRE_COMPACTION_OUTPUT_TYPE, (message, _options, theme) => {
+    const data = message?.details;
+    if (!isPreCompactionOutputData(data)) return void 0;
+    const container = new Container();
+    container.addChild(new Text(theme.fg("dim", "[Previous output \u2014 display only]"), 0, 0));
+    container.addChild(new Markdown(data.text, 0, 0, getMarkdownTheme()));
+    if (data.truncated) container.addChild(new Text(theme.fg("dim", "[Copy truncated]"), 0, 0));
+    return container;
+  });
+  pi.on("session_compact", (event, ctx) => {
+    try {
+      omRuntime.ensureConfig(ctx.cwd ?? process.cwd());
+      const log = (ev, data) => debugLog(ev, data, omRuntime.config.debugLog === true);
+      if (omRuntime.config.showPreCompactionMessage !== true) return;
+      if (event?.fromExtension !== true) return;
+      const compactionEntry = event.compactionEntry;
+      const details = compactionEntry?.details;
+      if (!isPreCompactionRecord(details) || details.compactor !== "blackhole") return;
+      if (typeof compactionEntry?.id !== "string") return;
+      const branch = ctx.sessionManager.getBranch();
+      if (hasPreCompactionOutput(branch, compactionEntry.id)) {
+        log("pre_compaction_message.skip", { reason: "already_copied" });
+        return;
+      }
+      const retainedIds = retainedEntryIdsAfterCompaction(branch, compactionEntry);
+      const data = buildPreCompactionOutputData(branch, retainedIds, compactionEntry);
+      if (!data) {
+        log("pre_compaction_message.skip", { reason: "no_omitted_assistant_text" });
+        return;
+      }
+      pi.appendEntry(PRE_COMPACTION_OUTPUT_TYPE, data);
+      log("pre_compaction_message.append", {
+        sourceEntryId: data.sourceEntryId,
+        compactionEntryId: data.compactionEntryId,
+        bytes: Buffer.byteLength(data.text, "utf8"),
+        truncated: data.truncated
+      });
+    } catch (error) {
+      debugLog("pre_compaction_message.failed", { error: error instanceof Error ? error.message : String(error) }, omRuntime.config?.debugLog === true);
+    }
+  });
+}
 // src/hooks/compact-failed.ts
 function getErrorMessage(error) {
   if (error instanceof Error) return error.message;
@@ -3549,10 +3785,6 @@ function handleCompactFailed(event, ctx, runtime) {
   }
   if (reason === "overflow" && aborted && willRetry) {
     notifySafely(hasUI, ui, "Overflow compaction aborted, retrying turn", "info");
-  }
-  if (runtime.config.compactionEngine === "pi-default" && !attributedFromExtension) {
-    trace("compact_failed.skipped_pi_default", { reason });
-    return;
   }
   if (!aborted && errorMessage && attributedFromExtension) {
     notifySafely(hasUI, ui, `Compaction failed \u2014 ${errorMessage}`, "error");
@@ -8619,18 +8851,6 @@ var config = new ConfigManager({
       }
     },
     {
-      key: "compactionEngine",
-      type: "enum",
-      label: "Compaction engine",
-      description: "structural=structured summary+OM, pi-default=built-in Pi summarization",
-      value: cfg.compactionEngine,
-      options: ["blackhole", "pi-default"],
-      optionLabels: {
-        blackhole: "structural \u2014 structured summary + OM",
-        "pi-default": "pi-default \u2014 built-in Pi summarization"
-      }
-    },
-    {
       key: "compactionSummaryMode",
       type: "enum",
       label: "Summary history",
@@ -8851,8 +9071,6 @@ var config = new ConfigManager({
         if (parsed.tailBehavior === void 0) {
           parsed.tailBehavior = "minimal";
         }
-      } else if (parsed.overrideDefaultCompaction === false) {
-        parsed.compactionEngine = "pi-default";
       }
       delete parsed.passive;
       delete parsed.noAutoCompact;
@@ -8883,7 +9101,7 @@ var config = new ConfigManager({
     const envCompactionEngine = process.env.PI_BLACKHOLE_COMPACTION_ENGINE;
     if (envCompactionEngine !== void 0) {
       const trimmed = envCompactionEngine.trim().toLowerCase();
-      if (!["blackhole", "pi-default"].includes(trimmed)) {
+      if (trimmed !== "blackhole") {
         console.warn(
           `Invalid PI_BLACKHOLE_COMPACTION_ENGINE value "${envCompactionEngine}"; ignoring`
         );
@@ -9411,22 +9629,73 @@ function setCache(sessionFile, full, allowedEntryIds, result) {
   } catch {
   }
 }
-var loadAllMessages = (sessionFile, full, allowedEntryIds) => {
-  const cached = getCached(sessionFile, full, allowedEntryIds);
-  if (cached) return cached;
-  const content = readFileSync(sessionFile, "utf-8");
-  const entries = [];
+// src/core/session-lines.ts (upstream 0.5.3, adapted from pi-vcc #26)
+var SESSION_SCAN_CHUNK_SIZE = 64 * 1024;
+var SESSION_SCAN_NEWLINE = 10;
+/**
+ * Read a session JSONL file line by line without materializing it as one string: a long-running
+ * session exceeds V8's maximum string length, and `readFileSync(file, "utf-8")` throws before a
+ * single entry is parsed. A file pi has not written yet reads as missing, not as a failure.
+ */
+function scanSessionEntries(sessionFile, onEntry) {
   let parseErrors = 0;
-  for (const line of content.split("\n")) {
-    if (!line.trim()) continue;
+  const processLine = (line) => {
+    if (line.length === 0) return;
+    const text = line.toString("utf8");
+    if (!text.trim()) return;
     try {
-      entries.push(JSON.parse(line));
+      onEntry(JSON.parse(text));
     } catch {
       parseErrors++;
     }
+  };
+  let fd;
+  try {
+    fd = openSync(sessionFile, "r");
+  } catch (err) {
+    if (err?.code === "ENOENT") return { missing: true, parseErrors: 0 };
+    throw err;
   }
-  if (parseErrors > 0) {
-    console.warn(`memory: ${parseErrors} malformed JSONL line(s) in ${sessionFile}`);
+  const chunk = Buffer.allocUnsafe(SESSION_SCAN_CHUNK_SIZE);
+  let pending = [];
+  let pendingLength = 0;
+  const flushLine = (segment) => {
+    if (pendingLength > 0) {
+      pending.push(segment);
+      processLine(Buffer.concat(pending, pendingLength + segment.length));
+      pending = [];
+      pendingLength = 0;
+    } else {
+      processLine(segment);
+    }
+  };
+  try {
+    let bytesRead;
+    while ((bytesRead = readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      let start = 0;
+      for (let i = 0; i < bytesRead; i++) {
+        if (chunk[i] !== SESSION_SCAN_NEWLINE) continue;
+        flushLine(chunk.subarray(start, i));
+        start = i + 1;
+      }
+      if (start < bytesRead) {
+        const remainder = Buffer.from(chunk.subarray(start, bytesRead));
+        pending.push(remainder);
+        pendingLength += remainder.length;
+      }
+    }
+    if (pendingLength > 0) processLine(Buffer.concat(pending, pendingLength));
+  } finally {
+    closeSync(fd);
+  }
+  return { missing: false, parseErrors };
+}var loadAllMessages = (sessionFile, full, allowedEntryIds) => {
+  const cached = getCached(sessionFile, full, allowedEntryIds);
+  if (cached) return cached;
+  const entries = [];
+  const scan = scanSessionEntries(sessionFile, (entry) => entries.push(entry));
+  if (scan.parseErrors > 0) {
+    console.warn(`memory: ${scan.parseErrors} malformed JSONL line(s) in ${sessionFile}`);
   }
   const rendered = [];
   const rawMessages = [];
@@ -9458,18 +9727,15 @@ var safeRegex = (pattern) => {
     return new RegExp(escapeRegex(pattern), "i");
   }
 };
-var looksLikeRegex = (query) => /[|*+?{}()[\]\\^$.]/.test(query);
-var snippetRegex = (terms) => {
-  const alts = terms.map((t) => {
-    try {
-      new RegExp(t, "i");
-      return t;
-    } catch {
-      return escapeRegex(t);
-    }
-  });
-  return new RegExp(alts.join("|"), "i");
-};
+var literalRegex = (term) => new RegExp(escapeRegex(term), "i");
+/**
+ * Operator characters that mark a term as a pattern. A bare dot is excluded on purpose: filenames
+ * ("observer.ts") and versions ("v1.0") are prose, so they match literally instead of wildcarding.
+ */
+var REGEX_TERM_HINT = /[|*+?{}()[\]\\^$]/;
+var compileTerm = (term) => REGEX_TERM_HINT.test(term) ? safeRegex(term) : literalRegex(term);
+var compileTerms = (terms) => terms.map((term) => ({ term, pattern: compileTerm(term) }));
+var snippetRegex = (terms) => new RegExp(terms.map((t) => compileTerm(t).source).join("|"), "i");
 var STOPWORDS = /* @__PURE__ */ new Set([
   // English
   "the",
@@ -9564,10 +9830,10 @@ var filterStopwords = (terms) => {
   const meaningful = terms.filter((t) => !STOPWORDS.has(t.toLowerCase()) && t.length > 1);
   return meaningful.length > 0 ? meaningful : terms;
 };
-var countMatches = (hay, terms) => {
+var countMatches = (hay, compiled) => {
   let count = 0;
-  for (const t of terms) {
-    if (safeRegex(t).test(hay)) count++;
+  for (const c of compiled) {
+    if (c.pattern.test(hay)) count++;
   }
   return count;
 };
@@ -9578,32 +9844,53 @@ var termFreq = (text, pattern) => {
   const matches = text.match(new RegExp(pattern.source, "gi"));
   return matches ? matches.length : 0;
 };
-var buildBM25Context = (docs, terms) => {
+var buildBM25Context = (docs, compiled) => {
   const n = docs.length;
   const df = /* @__PURE__ */ new Map();
   let totalLen = 0;
   for (const doc of docs) {
     totalLen += doc.split(/\s+/).length;
-    for (const t of terms) {
-      if (safeRegex(t).test(doc)) {
-        df.set(t, (df.get(t) ?? 0) + 1);
+    for (const c of compiled) {
+      if (c.pattern.test(doc)) {
+        df.set(c.term, (df.get(c.term) ?? 0) + 1);
       }
     }
   }
   return { n, avgDl: totalLen / Math.max(n, 1), df };
 };
-var bm25Score = (doc, terms, ctx) => {
+var bm25Score = (doc, compiled, ctx) => {
   const dl = doc.split(/\s+/).length;
   let score = 0;
-  for (const t of terms) {
-    const tf = termFreq(doc, safeRegex(t));
+  for (const c of compiled) {
+    const tf = termFreq(doc, c.pattern);
     if (tf === 0) continue;
-    const docFreq = ctx.df.get(t) ?? 0;
+    const docFreq = ctx.df.get(c.term) ?? 0;
     const idf = Math.log((ctx.n - docFreq + 0.5) / (docFreq + 0.5) + 1);
     const tfNorm = tf * (BM25_K + 1) / (tf + BM25_K * (1 - BM25_B + BM25_B * dl / Math.max(ctx.avgDl, 1)));
     score += idf * (tfNorm + BM25_DELTA);
   }
   return score;
+};
+/**
+ * Longest single snippet line kept. One dumped tool result must not blow the whole response, so a
+ * long line is clipped — around the match itself when this is the matched line.
+ */
+var SNIPPET_LINE_MAX = 1e3;
+var clipSnippetLine = (line, regex) => {
+  if (line.length <= SNIPPET_LINE_MAX) return line;
+  let trimmed = line.slice(0, SNIPPET_LINE_MAX);
+  let prefix = "";
+  if (regex) {
+    const match = regex.exec(line);
+    if (match) {
+      const radius = Math.max(0, Math.floor((SNIPPET_LINE_MAX - match[0].length) / 2));
+      const start = Math.max(0, match.index - radius);
+      const end = Math.min(line.length, match.index + match[0].length + radius);
+      prefix = start > 0 ? "\u2026 " : "";
+      trimmed = line.slice(start, end);
+    }
+  }
+  return `${prefix}${trimmed} \u2026 [truncated]`;
 };
 var lineSnippet = (text, regex, contextLines = 2) => {
   const lines = text.split("\n");
@@ -9620,7 +9907,7 @@ var lineSnippet = (text, regex, contextLines = 2) => {
   const slice = lines.slice(start, end);
   const parts = [];
   if (start > 0) parts.push(`...(${start} lines above)`);
-  parts.push(...slice);
+  parts.push(...slice.map((line, i) => clipSnippetLine(line, i === matchIdx - start ? regex : void 0)));
   if (end < lines.length) parts.push(`...(${lines.length - end} lines below)`);
   return parts.join("\n");
 };
@@ -9688,12 +9975,10 @@ function getFileIndicators(msg) {
   }
   return fileMatches;
 }
-function computeFileMatches(msg, query) {
+function computeFileMatches(msg, terms) {
   if (!msg?.content || typeof msg.content === "string") return [];
-  const rawQuery = query.trim();
-  const hasQuery = rawQuery.length > 0;
-  if (!hasQuery) return getFileIndicators(msg);
-  const regex = looksLikeRegex(rawQuery) ? safeRegex(rawQuery) : snippetRegex(rawQuery.split(/\s+/));
+  if (terms.length === 0) return getFileIndicators(msg);
+  const regex = snippetRegex(terms);
   const fileMatches = [];
   for (const part of msg.content) {
     if (!part || typeof part !== "object" || part.type !== "toolCall") continue;
@@ -9730,29 +10015,17 @@ function getTouchedFiles(messages, rendered) {
   }
   return Array.from(map.values());
 }
+/**
+ * Every query is split into terms first: operator-bearing terms ("login|auth", "Read.*auth") stay
+ * patterns, plain terms — dotted filenames included — match literally. A natural sentence that
+ * names a file therefore reaches BM25 ranking instead of compiling to one never-matching pattern.
+ */
 var searchEntries = (entries, messages, query, _page, mode) => {
   if (!query?.trim()) return entries;
   const rawQuery = query.trim();
-  if (looksLikeRegex(rawQuery)) {
-    const regex = safeRegex(rawQuery);
-    const hits = [];
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      const msg = messages[i];
-      const text = msg ? fullText(msg, mode) : e.summary;
-      const filePart = e.files?.join(" ") ?? "";
-      const hay = `${e.role} ${text} ${filePart}`;
-      if (regex.test(hay)) {
-        const snip = lineSnippet(text, regex);
-        const fileMatches = computeFileMatches(msg, rawQuery);
-        const extra = fileMatches.length > 0 ? { fileMatches } : {};
-        hits.push({ ...e, snippet: snip, matchCount: 1, ...extra });
-      }
-    }
-    return hits;
-  }
   const rawTerms = rawQuery.split(/\s+/);
   const terms = filterStopwords(rawTerms);
+  const compiled = compileTerms(terms);
   const snipRe = snippetRegex(terms);
   const docs = [];
   const fullTextCache = [];
@@ -9764,17 +10037,17 @@ var searchEntries = (entries, messages, query, _page, mode) => {
     const filePart = e.files?.join(" ") ?? "";
     docs.push(`${e.role} ${text} ${filePart}`);
   }
-  const ctx = buildBM25Context(docs, terms);
+  const ctx = buildBM25Context(docs, compiled);
   const scored = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
     const hay = docs[i];
-    const mc = countMatches(hay, terms);
+    const mc = countMatches(hay, compiled);
     if (mc === 0) continue;
-    const score = bm25Score(hay, terms, ctx);
+    const score = bm25Score(hay, compiled, ctx);
     const text = fullTextCache[i];
     const snip = lineSnippet(text, snipRe);
-    const fileMatches = computeFileMatches(messages[i], rawQuery);
+    const fileMatches = computeFileMatches(messages[i], terms);
     const extra = fileMatches.length > 0 ? { fileMatches } : {};
     scored.push({
       hit: { ...e, snippet: snip, matchCount: mc, ...extra },
@@ -9835,9 +10108,13 @@ ${lines.join("\n")}`;
   }
   return result;
 }
-var formatRecallOutput = (entries, query, headerOverride) => {
+/** Header plus one block per entry — the recall tool budgets these; the TUI command joins them. */
+var recallOutputBlocks = (entries, query, headerOverride) => {
   if (entries.length === 0) {
-    return query ? `No matches for "${query}" in session history.` : "No entries in session history.";
+    return {
+      header: query ? `No matches for "${query}" in session history.` : "No entries in session history.",
+      blocks: []
+    };
   }
   const header = headerOverride ? `${headerOverride} for "${query}":` : query ? `Found ${entries.length} matches for "${query}":` : `Session history (${entries.length} entries):`;
   const lines = entries.map((e) => {
@@ -9864,11 +10141,100 @@ ${formatFileMatch(fm, e.index, isQuery)}`;
     }
     return line;
   });
-  return `${header}
-
-${lines.join("\n\n")}`;
+  return { header, blocks: lines };
+};
+var formatRecallOutput = (entries, query, headerOverride) => {
+  const { header, blocks } = recallOutputBlocks(entries, query, headerOverride);
+  return blocks.length > 0 ? `${header}\n\n${blocks.join("\n\n")}` : header;
 };
 
+// src/core/recall-budget.ts (upstream 0.5.3, issue #83)
+/** Total characters one recall response may spend before entries are dropped. */
+var DEFAULT_RECALL_RESPONSE_MAX_CHARS = 48e3;
+/** Readability floor for one expanded entry sharing the budget. */
+var EXPAND_FLOOR_CHARS = 2e3;
+/** Header/marker/join overhead reserved per expanded entry so allocations stay under budget. */
+var EXPAND_ENTRY_OVERHEAD = 200;
+/** Longest observation or reflection body rendered beside the entries. */
+var RELATED_BODY_MAX_CHARS = 1200;
+function resolveRecallResponseMaxChars(cwd) {
+  try {
+    const configured = loadUnifiedConfig(cwd ?? process.cwd())?.recallResponseMaxChars;
+    if (typeof configured === "number" && Number.isFinite(configured) && configured >= 0) return configured;
+  } catch {
+  }
+  return DEFAULT_RECALL_RESPONSE_MAX_CHARS;
+}
+/**
+ * Characters each of `count` expanded entries may render: the whole budget for a single entry,
+ * otherwise an even share that never drops below the readability floor unless the floor itself
+ * would blow the total.
+ */
+function expandAllocation(count, budget) {
+  if (count <= 0 || budget <= 0) return 0;
+  const usable = Math.max(0, budget - count * EXPAND_ENTRY_OVERHEAD);
+  const share = Math.floor(usable / count);
+  return count * EXPAND_FLOOR_CHARS <= usable ? Math.max(share, EXPAND_FLOOR_CHARS) : share;
+}
+/**
+ * Bound a recall response without ever slicing an entry in half: the header always survives,
+ * trailing entries go first, then trailing extras, and a footer names what was dropped and how to
+ * reach it. The footer is appended after budgeting, so a capped response can exceed the budget by
+ * its length — assert on the marker, not on a hard byte count.
+ */
+function capRecallBlocks({ header, entryBlocks, tailBlocks = [], budget, continuation = "" }) {
+  const totalEntries = entryBlocks.length;
+  if (budget <= 0 || (entryBlocks.length === 0 && tailBlocks.length === 0)) {
+    return {
+      text: [header, ...entryBlocks, ...tailBlocks].filter(Boolean).join("\n\n"),
+      omittedEntries: 0,
+      totalEntries,
+      capped: false
+    };
+  }
+  let total = header.length;
+  const kept = [];
+  for (const block of entryBlocks) {
+    const cost = block.length + (kept.length > 0 ? 2 : 0);
+    if (total + cost > budget) break;
+    kept.push(block);
+    total += cost;
+  }
+  const omittedEntries = totalEntries - kept.length;
+  const keptTail = [];
+  for (const block of tailBlocks) {
+    const cost = block.length + (kept.length + keptTail.length > 0 ? 2 : 0);
+    if (total + cost > budget) break;
+    keptTail.push(block);
+    total += cost;
+  }
+  const text = [header, ...kept, ...keptTail].filter(Boolean).join("\n\n");
+  const droppedTail = tailBlocks.length - keptTail.length;
+  if (omittedEntries > 0) {
+    return {
+      text: `${text}\n\n--- recall response capped at ${budget} characters; ${omittedEntries} of ${totalEntries} entries omitted.${continuation ? ` ${continuation}` : ""} ---`,
+      omittedEntries,
+      totalEntries,
+      capped: true
+    };
+  }
+  if (droppedTail > 0) {
+    return {
+      text: `${text}\n\n--- recall response capped at ${budget} characters; related content omitted.${continuation ? ` ${continuation}` : ""} ---`,
+      omittedEntries: 0,
+      totalEntries,
+      capped: true
+    };
+  }
+  return { text, omittedEntries: 0, totalEntries, capped: false };
+}
+/** Clip one expanded entry body to its allocation, naming the drill-down that pages the rest. */
+function clipExpandedEntry(entry, allocation) {
+  if (allocation <= 0) return entry;
+  const body = entry.summary ?? "";
+  if (body.length <= allocation) return entry;
+  return { ...entry, summary: `${body.slice(0, allocation)}\n\u2026 [clipped \u2014 use #${entry.index}:text:full for the whole entry]` };
+}
 // src/core/lineage.ts
 var getActiveLineageEntryIds = (sessionManager) => {
   try {
@@ -9939,6 +10305,8 @@ function findReflectionsForEntryIds(entries, targetEntryIds) {
     content: r.reflection.content
   }));
 }
+/** Memory bodies ride along with search hits; a long one is clipped to its own id for recovery. */
+var clipRelatedBody = (text, memoryId) => typeof text === "string" && text.length > RELATED_BODY_MAX_CHARS ? `${text.slice(0, RELATED_BODY_MAX_CHARS)}\u2026 [clipped \u2014 recall ${memoryId} for the whole memory]` : text;
 function formatRelatedObservations(observations, reflections) {
   const parts = [];
   if (observations.length > 0) {
@@ -9947,7 +10315,7 @@ function formatRelatedObservations(observations, reflections) {
       const dropped = obs.status === "dropped" ? " [dropped]" : "";
       const entryRefs = obs.matchedEntryIds.length > 0 ? ` (${obs.matchedEntryIds.join(", ")})` : "";
       parts.push(
-        `  [${obs.memoryId}]${dropped} ${obs.timestamp} [${obs.relevance}] ${obs.content}${entryRefs}`
+        `  [${obs.memoryId}]${dropped} ${obs.timestamp} [${obs.relevance}] ${clipRelatedBody(obs.content, obs.memoryId)}${entryRefs}`
       );
     }
   }
@@ -9955,7 +10323,7 @@ function formatRelatedObservations(observations, reflections) {
     if (parts.length > 0) parts.push("");
     parts.push("Related reflections:");
     for (const ref of reflections) {
-      parts.push(`  [${ref.memoryId}] ${ref.content}`);
+      parts.push(`  [${ref.memoryId}] ${clipRelatedBody(ref.content, ref.memoryId)}`);
     }
   }
   return parts.join("\n");
@@ -13080,13 +13448,6 @@ function notifySafely2(hasUI, ui, message, level) {
 function autoCompactionSkipReason(runtime) {
   if (runtime.config.compaction === "off") return "compaction_off";
   if (runtime.config.compaction === "manual") return "compaction_manual";
-  if (runtime.config.compactionEngine === "pi-default") return "compactionEngine_pi_default";
-  if (runtime.config.compaction === void 0 && runtime.config.compactionEngine === void 0) {
-    if (runtime.config.passive === true) return "passive";
-    if (runtime.config.noAutoCompact === true) return "manual";
-    if (runtime.config.overrideDefaultCompaction === false)
-      return "overrideDefaultCompaction_false";
-  }
   return null;
 }
 var MID_RUN_RETRY_MAX_DELAY_MS = 3e4;
@@ -13609,7 +13970,56 @@ function parseDrillDown(query) {
     limit: void 0
   };
 }
-function expandEntryFile(sessionFile, entryIndex, pathPattern, full = false, offset, limit) {
+/** Raw body of an entry for `#N:text`: message text, or a bash command with its output. */
+function messageBodyText(msg) {
+  if (msg?.role === "bashExecution") {
+    return `$ ${String(msg.command ?? "")}\n${String(msg.output ?? "")}`;
+  }
+  return textOf(msg?.content);
+}
+/**
+ * Page an entry's own message text with the same preview / window / full semantics file
+ * drill-down uses, so an entry the response budget clipped stays fully readable.
+ */
+function formatMessageText(msg, entryIndex, options) {
+  const body = messageBodyText(msg);
+  if (!body.trim()) return `Entry #${entryIndex} has no message text.`;
+  const full = options?.full ?? false;
+  const offset = options?.offset;
+  const limit = options?.limit;
+  const allLines = body.split("\n");
+  const totalLines = allLines.length;
+  const previewLimit = 30;
+  const MAX_FULL_BYTES = 50 * 1024;
+  if (full) {
+    if (Buffer.byteLength(body, "utf8") > MAX_FULL_BYTES) {
+      const truncated = body.slice(0, MAX_FULL_BYTES);
+      return `Entry #${entryIndex} message text:\n\n${truncated}\n\n... (${Buffer.byteLength(body, "utf8") - MAX_FULL_BYTES} more bytes \u2014 entry exceeds 50KB display limit. Use #${entryIndex}:text:${previewLimit} for next page.)`;
+    }
+    return `Entry #${entryIndex} message text:\n\n${body}`;
+  }
+  if (offset !== void 0) {
+    const startLine = Math.max(0, offset);
+    const maxLines = limit ?? 30;
+    const endLine = Math.min(startLine + maxLines, totalLines);
+    const visible = allLines.slice(startLine, endLine);
+    if (visible.length === 0) {
+      return `Offset ${startLine} is beyond message length ${totalLines}. Use #${entryIndex}:text for the first ${previewLimit} lines.`;
+    }
+    let result = `Entry #${entryIndex} message text \u2014 lines ${startLine + 1}-${endLine} (of ${totalLines}):\n\n${visible.join("\n")}`;
+    if (endLine < totalLines) {
+      result += `\n\n--- Use #${entryIndex}:text:${endLine} or #${entryIndex}:text:${endLine}:${maxLines} for next ${maxLines} lines, #${entryIndex}:text:full for complete ---`;
+    } else if (offset > 0) {
+      result += `\n\n(End of message)`;
+    }
+    return result;
+  }
+  if (totalLines > previewLimit) {
+    const preview = allLines.slice(0, previewLimit).join("\n");
+    return `Entry #${entryIndex} message text:\n\n${preview}\n\n...(${totalLines - previewLimit} more lines \u2014 use #${entryIndex}:text:full for complete content, or #${entryIndex}:text:${previewLimit} for next ${previewLimit} lines)`;
+  }
+  return `Entry #${entryIndex} message text:\n\n${body}`;
+}function expandEntryFile(sessionFile, entryIndex, pathPattern, full = false, offset, limit) {
   const { rawMessages } = loadAllMessages(sessionFile, true);
   if (entryIndex < 0 || entryIndex >= rawMessages.length) {
     return `Entry #${entryIndex} not found in session history.`;
@@ -13617,6 +14027,19 @@ function expandEntryFile(sessionFile, entryIndex, pathPattern, full = false, off
   const msg = rawMessages[entryIndex];
   const content = msg.content;
   const calls = findContentBearingCalls(content);
+  // `#N:text` renders the entry's own body. "text" is also a substring of real paths, so message
+  // text wins when there is any, with matching file ops named; otherwise file matching applies.
+  if (pathPattern === "text") {
+    const matchedText = calls.filter((tc) => tc.path.includes(pathPattern));
+    if (messageBodyText(msg).trim()) {
+      let out = formatMessageText(msg, entryIndex, { full, offset, limit });
+      if (matchedText.length > 0) {
+        out += `\n\n--- Note: entry #${entryIndex} also has ${matchedText.length} file operation(s) matching "text" \u2014 use #${entryIndex}:<more-specific-path> or #${entryIndex}:file for file content ---`;
+      }
+      return out;
+    }
+    if (matchedText.length === 0) return formatMessageText(msg, entryIndex, { full, offset, limit });
+  }
   if (pathPattern === "file") {
     if (calls.length === 0) {
       return `No file content found in entry #${entryIndex}.`;
@@ -13677,6 +14100,7 @@ async function vccRecall(params, ctx) {
   }
   const scope = normalizeRecallScope(params.scope);
   const mode = normalizeRecallMode(params.mode);
+  const responseBudget = resolveRecallResponseMaxChars(ctx.cwd);
   const lineageEntryIds = scope === "lineage" ? getActiveLineageEntryIds(ctx.sessionManager) : void 0;
   if (mode === "touched") {
     const { rendered, rawMessages: rawMessages2 } = loadAllMessages(sessionFile, false, lineageEntryIds);
@@ -13705,21 +14129,31 @@ async function vccRecall(params, ctx) {
     }
     expandedFullEntries = requested.map((i) => byIndex.get(i)).filter((m) => Boolean(m));
     if (!params.query) {
-      let output2 = (scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(expandedFullEntries);
-      const expandedIds = expandedFullEntries.map((e) => e.id).filter(Boolean);
+      const allocation = expandAllocation(expandedFullEntries.length, responseBudget);
+      const clipped = expandedFullEntries.map((entry) => clipExpandedEntry(entry, allocation));
+      const { header, blocks } = recallOutputBlocks(clipped);
+      const tailBlocks = [];
+      const expandedIds = clipped.map((e) => e.id).filter(Boolean);
       if (expandedIds.length > 0) {
         try {
           const branchEntries = ctx.sessionManager.getBranch();
           const obs = findObservationsForEntryIds(branchEntries, expandedIds);
           const refs = findReflectionsForEntryIds(branchEntries, expandedIds);
           if (obs.length > 0 || refs.length > 0) {
-            output2 += "\n\n" + formatRelatedObservations(obs, refs);
+            tailBlocks.push(formatRelatedObservations(obs, refs));
           }
         } catch {
         }
       }
+      const capped = capRecallBlocks({
+        header: (scope === "all" ? "Scope: all\n\n" : "") + header,
+        entryBlocks: blocks,
+        tailBlocks,
+        budget: responseBudget,
+        continuation: "Expand fewer entries, or page one with #N:text."
+      });
       return {
-        content: [{ type: "text", text: output2 }],
+        content: [{ type: "text", text: capped.text }],
         details: void 0
       };
     }
@@ -13752,27 +14186,45 @@ async function vccRecall(params, ctx) {
     const header = totalPages > 1 ? `Page ${page}/${totalPages} (${matchCount} matches${appendedExpandCount > 0 ? ` + ${appendedExpandCount} expanded` : ""}${scopeSuffix})` : `${matchCount} matches${appendedExpandCount > 0 ? ` (+ ${appendedExpandCount} expanded)` : ""}${scopeSuffix}`;
     const footer = page < totalPages ? `
 --- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---` : "";
-    let output2 = formatRecallOutput(pageResults, params.query, header) + footer;
-    const pageResultIds = pageResults.map((r) => r.id).filter(Boolean);
+    const expandedIndices = new Set((expandedFullEntries ?? []).map((entry) => entry.index));
+    const allocation = expandAllocation(Math.max(1, expandedIndices.size), responseBudget);
+    const budgetedResults = expandedIndices.size > 0 ? pageResults.map((entry) => expandedIndices.has(entry.index) ? clipExpandedEntry(entry, allocation) : entry) : pageResults;
+    const { header: pageHeader, blocks } = recallOutputBlocks(budgetedResults, params.query, header);
+    const tailBlocks = [];
+    const pageResultIds = budgetedResults.map((r) => r.id).filter(Boolean);
     if (pageResultIds.length > 0) {
       try {
         const branchEntries = ctx.sessionManager.getBranch();
         const obs = findObservationsForEntryIds(branchEntries, pageResultIds);
         const refs = findReflectionsForEntryIds(branchEntries, pageResultIds);
         if (obs.length > 0 || refs.length > 0) {
-          output2 += "\n\n" + formatRelatedObservations(obs, refs);
+          tailBlocks.push(formatRelatedObservations(obs, refs));
         }
       } catch {
       }
     }
+    if (footer) tailBlocks.push(footer.trim());
+    const capped = capRecallBlocks({
+      header: pageHeader,
+      entryBlocks: blocks,
+      tailBlocks,
+      budget: responseBudget,
+      continuation: `Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""}, or #N:text to page one entry.`
+    });
     return {
-      content: [{ type: "text", text: output2 }],
+      content: [{ type: "text", text: capped.text }],
       details: void 0
     };
   }
-  const output = (scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(allResults, params.query);
+  const { header: recentHeader, blocks: recentBlocks } = recallOutputBlocks(allResults, params.query);
+  const capped = capRecallBlocks({
+    header: (scope === "all" ? "Scope: all\n\n" : "") + recentHeader,
+    entryBlocks: recentBlocks,
+    budget: responseBudget,
+    continuation: "Search with a query, or expand one entry with #N."
+  });
   return {
-    content: [{ type: "text", text: output }],
+    content: [{ type: "text", text: capped.text }],
     details: void 0
   };
 }
@@ -13840,15 +14292,15 @@ function registerRecallTool(pi) {
     name: "recall",
     label: "Recall",
     description: "Search session history and earlier lines omitted, file write/edit content by text/regex. Expand entries (#N), drill-down file content (#N:path) with paging, or aggregate touched files (mode:touched).",
-    promptSnippet: "Search session history + file write/edit content by text/regex. #N expand, #N:path drill-down with optional :offset:limit or :full, mode:file/touched.",
+    promptSnippet: "Search session history + file write/edit content by text/regex. #N expand, #N:path drill-down with optional :offset:limit or :full, #N:text pages one entry's own text, mode:file/touched.",
     promptGuidelines: [
-      "Use recall \u2014 literal text/regex search across session history and file write/edit content. #N expands an entry; #N:path with optional :offset:limit or :full drills down into file content; 12-char hex ids recover observation/reflection sources. mode:file for file-content-only, mode:touched for aggregated files-by-path. scope:'all' to search the full session. If no results, try fewer terms or a regex pattern.",
+      "Use recall \u2014 literal text/regex search across session history and file write/edit content. #N expands an entry; #N:path with optional :offset:limit or :full drills down into file content; #N:text pages the entry's own message text when a response was clipped; 12-char hex ids recover observation/reflection sources. mode:file for file-content-only, mode:touched for aggregated files-by-path. scope:'all' to search the full session. If no results, try fewer terms or a regex pattern.",
       "Use recall \u2014 when a drill-down path matches multiple files, options are listed. Narrow with a more specific path substring. Only full-file writes are indexed for text search (edit diffs are not)."
     ],
     parameters: Type.Object({
       query: Type.Optional(
         Type.String({
-          description: "Text/regex search; #N expands entry; #N:path drills file (#N:file auto-selects); #N:path:full all lines; #N:path:offset:limit range; 12-char hex for observations. Only full-file writes indexed."
+          description: "Text/regex search; #N expands entry; #N:path drills file (#N:file auto-selects); #N:text pages the entry's own text; #N:path:full all lines; #N:path:offset:limit range; 12-char hex for observations. Only full-file writes indexed."
         })
       ),
       expand: Type.Optional(
@@ -14063,7 +14515,7 @@ var Runtime = class {
   /** Whether the current compaction attempt was triggered by /memory.
    *  Overwritten at every session_before_compact and consumed by either the
    *  session_compact or session_compact_failed handler, preventing stale
-   *  attribution from leaking into a later pi-default attempt. */
+   *  attribution from leaking into a later non-extension compaction attempt. */
   compactWasPiVcc = false;
   /** True when the current session_before_compact returned { cancel: true } from
    *  blackhole's own-cut guards. Set immediately before the cancel return and reset
@@ -14335,6 +14787,6 @@ var index_default = async (pi) => {
   registerRecallTool(pi);
 };
 
-export { MEMORY_THINKING_LEVEL, index_default as default, resolveMemoryModelCandidates };
+export { MEMORY_THINKING_LEVEL, PRE_COMPACTION_OUTPUT_TYPE, buildPreCompactionOutputData, capRecallBlocks, compile as compileSummary, index_default as default, expandEntryFile, loadAllMessages, resolveMemoryModelCandidates, retainedEntryIdsAfterCompaction, searchEntries };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

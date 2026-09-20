@@ -1193,6 +1193,7 @@ export class AgentSession {
 			onResponse: this.#onResponse,
 			onSseEvent: this.#onSseEvent,
 			obfuscator: this.#obfuscator,
+			extensionRunner: () => this.extensionRunner,
 		};
 		this.#providerBoundary = new SessionProviderBoundary(providerBoundaryHost);
 		const streamGuardsHost: StreamGuardsHost = {

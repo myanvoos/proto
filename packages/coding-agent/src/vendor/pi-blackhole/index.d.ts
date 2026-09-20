@@ -8,6 +8,95 @@ export function resolveMemoryModelCandidates(context: {
 	models: { resolve(spec: string): Model | undefined };
 }): Model[];
 
+/** One folded user message: `recallIndex` is the `#N` the recall tool resolves. */
+export interface SummaryUserTurn {
+	recallIndex: number;
+	text: string;
+	images?: string[];
+}
+
+/**
+ * Deterministic structural compaction summary: header sections, every user turn in
+ * `[User Messages]` (oversized pastes elided behind a `recall #N:full` pointer), then the brief
+ * transcript and the recall note.
+ */
+export declare function compileSummary(input: {
+	messages: Array<Record<string, unknown>>;
+	previousSummary?: string;
+	/** Session-global `#N` of each converted message; `undefined` entries render no ref. */
+	sourceIndices?: Array<number | undefined>;
+	userTurns?: SummaryUserTurn[];
+}): string;
+
+/** Custom entry type carrying the display-only copy of text a compaction dropped from view. */
+export const PRE_COMPACTION_OUTPUT_TYPE: "blackhole-pre-compaction-output";
+
+export interface PreCompactionOutputData {
+	text: string;
+	sourceEntryId: string;
+	compactionEntryId: string;
+	truncated: boolean;
+}
+
+/** Entry ids this compaction keeps in provider context: the summary plus its retained tail. */
+export declare function retainedEntryIdsAfterCompaction(
+	branch: readonly Record<string, unknown>[],
+	compactionEntry: { id: string; firstKeptEntryId?: string },
+): Set<string>;
+
+/** Newest assistant text the compaction dropped, bounded to 16 KiB; undefined when nothing was dropped. */
+export declare function buildPreCompactionOutputData(
+	branch: readonly Record<string, unknown>[],
+	retainedIds: ReadonlySet<string>,
+	compactionEntry: { id: string },
+): PreCompactionOutputData | undefined;
+
+/** One entry as recall ranks it: `index` is the `#N` the tool resolves. */
+export interface RecallRenderedEntry {
+	index: number;
+	id?: string;
+	role: string;
+	summary: string;
+	files?: string[];
+	snippet?: string;
+	matchCount?: number;
+}
+
+/** BM25 search over rendered entries; every query is split into terms before matching. */
+export declare function searchEntries(
+	entries: RecallRenderedEntry[],
+	messages: Array<Record<string, unknown>>,
+	query?: string,
+	page?: number,
+	mode?: string,
+): RecallRenderedEntry[];
+
+/** Read a session JSONL file in chunks; a file that does not exist yet reads as empty history. */
+export declare function loadAllMessages(
+	sessionFile: string,
+	full: boolean,
+	allowedEntryIds?: ReadonlySet<string>,
+): { rendered: RecallRenderedEntry[]; rawMessages: Array<Record<string, unknown>>; entryIds: string[] };
+
+/** Resolve one `#N:path` / `#N:text` drill-down against a session file. */
+export declare function expandEntryFile(
+	sessionFile: string,
+	entryIndex: number,
+	pathPattern: string,
+	full?: boolean,
+	offset?: number,
+	limit?: number,
+): string;
+
+/** Bound one recall response: entries drop before the header, and a footer names what was cut. */
+export declare function capRecallBlocks(input: {
+	header: string;
+	entryBlocks: string[];
+	tailBlocks?: string[];
+	budget: number;
+	continuation?: string;
+}): { text: string; omittedEntries: number; totalEntries: number; capped: boolean };
+
 declare const piBlackhole: ExtensionFactory;
 
 export default piBlackhole;
