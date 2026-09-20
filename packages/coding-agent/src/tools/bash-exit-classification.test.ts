@@ -95,7 +95,7 @@ test("command not found (127) marks the command failed", async () => {
 	}
 }, 30000);
 
-test("renderer marks hard failures, keeps soft exits as neutral stats", async () => {
+test("renderer marks hard failures but keeps soft exits out of failure status", async () => {
 	const soft = renderBashResult(
 		{
 			content: [{ type: "text", text: "" }],
@@ -104,8 +104,9 @@ test("renderer marks hard failures, keeps soft exits as neutral stats", async ()
 		},
 		"exit 1",
 	);
+	// Soft exit 1 is not a failure, and execution footers are gone entirely.
 	expect(soft).not.toContain("failed");
-	expect(soft).toContain("Exit: 1");
+	expect(soft).not.toMatch(/\(exit 1\)/);
 
 	const hard = renderBashResult(
 		{
@@ -116,7 +117,6 @@ test("renderer marks hard failures, keeps soft exits as neutral stats", async ()
 		"exit 2",
 	);
 	expect(hard).toContain("failed");
-	expect(hard).toContain("Exit: 2");
 });
 
 test("kernel cells exit 1 on a raised exception and must stay failures", async () => {
@@ -132,3 +132,44 @@ test("kernel cells exit 1 on a raised exception and must stay failures", async (
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 }, 30000);
+
+for (const command of ["printf result", "python -c 'print(42)'"]) {
+	test(`${command}: output carries the artifact id and no timing or diagnostics`, () => {
+		const output = renderBashResult(
+			{
+				content: [{ type: "text", text: "result\n[raw output: artifact://42]" }],
+				details: {
+					execution: { ...exitedExecution(0), elapsedMs: 42 },
+					wallTimeMs: 42,
+					timeoutSeconds: 300,
+				},
+			},
+			command,
+		);
+		expect(output).not.toMatch(/Execution:|collector=|renderer=|output=|Wall:|Timeout:|42ms|exit 0/i);
+		if (command === "printf result") {
+			// Plain shell cards keep the artifact id after stripping the notice;
+			// kernel cells render their own output section without it, as before.
+			expect(output).toContain("Artifact: 42");
+			expect(output.indexOf("Artifact: 42")).toBeGreaterThan(output.indexOf("result"));
+		} else {
+			expect(output).not.toContain("artifact://42");
+			expect(output).toContain("result");
+		}
+	});
+
+	test(`${command}: a finished output tail uses the same earlier-lines expand notice as streaming`, () => {
+		const output = renderBashResult(
+			{
+				content: [{ type: "text", text: Array.from({ length: 21 }, (_, i) => `line ${i}`).join("\n") }],
+				details: { execution: exitedExecution(0), wallTimeMs: 42 },
+			},
+			command,
+		);
+		expect(output).toContain("… 11 earlier lines");
+		expect(output).toContain("Ctrl+O expand");
+		expect(output).not.toMatch(/showing \d+ of|ctrl\+o to expand/);
+		expect(output).toContain("line 20");
+		expect(output.indexOf("11 earlier lines")).toBeLessThan(output.indexOf("line 11"));
+	});
+}

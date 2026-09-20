@@ -15,7 +15,6 @@ import {
 	createCollapsedPreview,
 	type ExecutionColorKey,
 	type ExecutionStatus,
-	formatExecutionMetadata,
 	resolveExecutionStatus,
 } from "./execution-shared";
 
@@ -147,7 +146,7 @@ export class EvalExecutionComponent extends Container {
 		},
 	): void {
 		this.#exitCode = exitCode;
-		this.#execution = options?.execution ? { ...options.execution, renderer: { state: "complete" } } : undefined;
+		this.#execution = options?.execution;
 		this.#status = resolveExecutionStatus(exitCode, cancelled, this.#execution);
 		this.#truncation = options?.truncation;
 		if (options?.displayOutputs !== undefined) {
@@ -242,8 +241,6 @@ export class EvalExecutionComponent extends Container {
 
 		const colorKey: ExecutionColorKey = this.excludeFromContext ? "dim" : "pythonMode";
 		this.#contentContainer.addChild(this.#formatHeader(colorKey));
-		const executionLine = formatExecutionMetadata(this.#execution);
-		if (executionLine) this.#contentContainer.addChild(new Text(executionLine, 1, 0));
 
 		if (availableLines.length > 0) {
 			if (this.#expanded) {

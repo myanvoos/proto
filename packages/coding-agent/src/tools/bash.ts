@@ -36,7 +36,7 @@ import type { EvalCellResult, EvalLanguage, EvalStatusEvent } from "../eval/type
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
-import { formatExecutionMetadata } from "../modes/components/execution-shared";
+import { formatHiddenLinesNotice } from "../modes/components/execution-shared";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
@@ -84,7 +84,6 @@ import { expandPath } from "./path-utils";
 import {
 	capPreviewLines,
 	DEFAULT_TERMINAL_PREVIEW_LINES,
-	expandKeyHint,
 	formatToolWorkingDirectory,
 	previewWindowRows,
 	replaceTabs,
@@ -1964,7 +1963,7 @@ function kernelCellLines(
 		status: opts.status,
 		statusEvents: opts.details?.statusEvents,
 		durationMs: opts.details?.wallTimeMs !== undefined ? Math.round(opts.details.wallTimeMs) : undefined,
-		execution: opts.details?.execution ? { ...opts.details.execution, renderer: { state: "complete" } } : undefined,
+		execution: opts.details?.execution,
 	};
 	return renderKernelCellLines(cell, opts.details?.jsonOutputs ?? [], uiTheme, {
 		expanded: opts.expanded,
@@ -2174,50 +2173,13 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 
 					const showingFullOutput = expanded && renderContext?.isFullOutput === true;
 
-					const timeoutDisabled = details?.timeoutDisabled === true || renderContext?.timeout === 0;
-					const timeoutSeconds = timeoutDisabled ? undefined : (details?.timeoutSeconds ?? renderContext?.timeout);
-					const requestedTimeoutSeconds = details?.requestedTimeoutSeconds;
-					const wallTimeMs = details?.wallTimeMs;
-					const statsParts: string[] = [];
-					if (details?.async?.state === "running") {
-						statsParts.push(`Backgrounded: ${details.async.jobId}`);
-					}
-					if (wallTimeMs !== undefined) {
-						statsParts.push(`Wall: ${formatWallTimeSeconds(wallTimeMs)}s`);
-					}
-					if (timeoutDisabled) {
-						statsParts.push("Timeout: disabled");
-					}
-					if (typeof timeoutSeconds === "number") {
-						statsParts.push(
-							requestedTimeoutSeconds !== undefined && requestedTimeoutSeconds !== timeoutSeconds
-								? `Timeout: ${timeoutSeconds}s (requested ${requestedTimeoutSeconds}s clamped)`
-								: `Timeout: ${timeoutSeconds}s`,
-						);
-					}
-					if (rawOutputArtifact.artifactId) {
-						statsParts.push(`Artifact: ${rawOutputArtifact.artifactId}`);
-					}
-					if (typeof details?.exitCode === "number") {
-						statsParts.push(`Exit: ${details.exitCode}`);
-					}
-					const timeoutLine =
-						statsParts.length > 0
-							? uiTheme.fg(
-									"dim",
-									`${uiTheme.format.bracketLeft}${statsParts.join(" | ")}${uiTheme.format.bracketRight}`,
-								)
-							: undefined;
+					const backgroundJobId = details?.async?.state === "running" ? details.async.jobId : undefined;
 					let warningLine: string | undefined;
 					if (details?.meta?.truncation && !showingFullOutput) {
 						warningLine = formatStyledTruncationWarning(details.meta, uiTheme) ?? undefined;
 					}
 
 					const outputLines: string[] = [];
-					const executionLine = formatExecutionMetadata(
-						execution ? { ...execution, renderer: { state: "complete" } } : undefined,
-					);
-					if (executionLine) outputLines.push(uiTheme.fg("dim", executionLine));
 					const hasOutput = displayOutput.trim().length > 0;
 					const rawOutputLines = displayOutput.split("\n");
 					const sixelLineMask =
@@ -2241,19 +2203,15 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							const previewBudget = Math.min(previewLines, previewWindow);
 							const result = truncateToVisualLines(textContent, previewBudget, outputBlockContentWidth(width));
 							if (result.skippedCount > 0) {
-								const expandHint = expandKeyHint().toLowerCase();
-								outputLines.push(
-									uiTheme.fg(
-										"dim",
-										`… (${result.skippedCount} earlier lines, showing ${result.visualLines.length} of ${result.skippedCount + result.visualLines.length})${expandHint ? ` (${expandHint} to expand)` : ""}`,
-									),
-								);
+								outputLines.push(formatHiddenLinesNotice(result.skippedCount, uiTheme));
 							}
 							outputLines.push(...result.visualLines);
 						}
 					}
-					if (timeoutLine) outputLines.push(timeoutLine);
 					if (warningLine) outputLines.push(warningLine);
+					if (backgroundJobId) outputLines.push(uiTheme.fg("dim", `Backgrounded: ${backgroundJobId}`));
+					const artifactId = rawOutputArtifact.artifactId;
+					if (artifactId) outputLines.push(uiTheme.fg("dim", `Artifact: ${artifactId}`));
 
 					// Outlines land on the settled, collapsed view only, matching the
 					// kernel-cell path: a live block that swapped source for an outline

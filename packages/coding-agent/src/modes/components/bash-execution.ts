@@ -24,7 +24,6 @@ import {
 	buildStatusFooter,
 	createCollapsedPreview,
 	type ExecutionStatus,
-	formatExecutionMetadata,
 	resolveExecutionStatus,
 } from "./execution-shared";
 
@@ -202,7 +201,7 @@ export class BashExecutionComponent extends Container {
 	): void {
 		this.#flushPendingOutput();
 		this.#exitCode = exitCode;
-		this.#execution = options?.execution ? { ...options.execution, renderer: { state: "complete" } } : undefined;
+		this.#execution = options?.execution;
 		this.#status = resolveExecutionStatus(exitCode, cancelled, this.#execution);
 		this.#truncation = options?.truncation;
 		if (options?.output !== undefined) {
@@ -241,8 +240,6 @@ export class BashExecutionComponent extends Container {
 		this.#contentContainer.clear();
 
 		this.#contentContainer.addChild(this.#headerText);
-		const executionLine = formatExecutionMetadata(this.#execution);
-		if (executionLine) this.#contentContainer.addChild(new Text(executionLine, 1, 0));
 
 		if (availableLines.length > 0) {
 			if (showingAllLines) {

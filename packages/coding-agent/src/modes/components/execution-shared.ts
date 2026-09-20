@@ -1,28 +1,21 @@
 import { Loader } from "@oh-my-pi/pi-tui/components/loader";
 import { Text } from "@oh-my-pi/pi-tui/components/text";
 import { type Component, Container, type TUI } from "@oh-my-pi/pi-tui/tui";
-import { formatDuration } from "@oh-my-pi/pi-utils";
-import { getSymbolTheme, theme } from "../../modes/theme/theme";
+import { pluralize } from "@oh-my-pi/pi-utils";
+import { getSymbolTheme, type Theme, theme } from "../../modes/theme/theme";
 import { type ExecutionMetadata, isHardFailureExit } from "../../session/execution-metadata";
 import { formatTruncationMetaNotice, type TruncationMeta } from "../../tools/output-meta";
+import { formatExpandHint } from "../../tools/render-utils";
 import { DynamicBorder } from "./dynamic-border";
 import { truncateToVisualLines } from "./visual-truncate";
 
 export type ExecutionStatus = "running" | "complete" | "cancelled" | "error" | "unknown";
 
-export function formatExecutionMetadata(execution: ExecutionMetadata | undefined): string | undefined {
-	if (!execution) return undefined;
-	const parts = [`state=${execution.state}`];
-	if (execution.exitCode !== undefined) parts.push(`exit=${execution.exitCode}`);
-	if (execution.signal !== undefined) parts.push(`signal=${execution.signal}`);
-	if (execution.elapsedMs !== undefined) parts.push(`elapsed=${formatDuration(Math.round(execution.elapsedMs))}`);
-	if (execution.timeout) parts.push(`timeout=${execution.timeout.cause}/${execution.timeout.scope}`);
-	parts.push(`collector=${execution.collector.state}`);
-	if (execution.renderer) parts.push(`renderer=${execution.renderer.state}`);
-	if (execution.output) parts.push(`output=${execution.output.disposition}`);
-	return `Execution: ${parts.join(" | ")}`;
+/** `… N earlier lines ▸ Ctrl+O expand` — the one marker for output hidden from a tail preview. */
+export function formatHiddenLinesNotice(hiddenLineCount: number, uiTheme: Theme = theme): string {
+	const notice = uiTheme.fg("dim", `… ${hiddenLineCount} earlier ${pluralize("line", hiddenLineCount)}`);
+	return `${notice} ${formatExpandHint(uiTheme)}`;
 }
-
 export type ExecutionColorKey = "dim" | "bashMode" | "pythonMode";
 
 export function buildExecutionFrame(
@@ -61,14 +54,13 @@ export function buildStatusFooter(opts: {
 	exitCode: number | undefined;
 	truncation: TruncationMeta | undefined;
 	hiddenLineCount: number;
-	execution?: ExecutionMetadata;
 
 	suppressHiddenCount?: boolean;
 }): Text | undefined {
 	const parts: string[] = [];
 
 	if (opts.hiddenLineCount > 0 && !opts.suppressHiddenCount) {
-		parts.push(theme.fg("dim", `… ${opts.hiddenLineCount} more lines (ctrl+o to expand)`));
+		parts.push(formatHiddenLinesNotice(opts.hiddenLineCount));
 	}
 	if (opts.status === "cancelled") {
 		parts.push(theme.fg("warning", "(cancelled)"));
@@ -81,8 +73,6 @@ export function buildStatusFooter(opts: {
 		// visible for reference, but not failure-styled.
 		parts.push(theme.fg("dim", `(exit ${opts.exitCode})`));
 	}
-	const executionLine = formatExecutionMetadata(opts.execution);
-	if (executionLine) parts.push(theme.fg("dim", executionLine));
 	if (opts.truncation) {
 		parts.push(theme.fg("warning", formatTruncationMetaNotice(opts.truncation)));
 	}

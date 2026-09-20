@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import type { Text } from "@oh-my-pi/pi-tui/components/text";
 import type { ExecutionMetadata } from "../../session/execution-metadata";
-import { initThemeSync } from "../theme/theme";
+import { initThemeSync, theme } from "../theme/theme";
 import { buildStatusFooter, resolveExecutionStatus } from "./execution-shared";
 
 initThemeSync();
@@ -15,14 +16,12 @@ function metadata(overrides: Partial<ExecutionMetadata> = {}): ExecutionMetadata
 	};
 }
 
-function footerText(opts: Parameters<typeof buildStatusFooter>[0]): string {
-	const footer = buildStatusFooter(opts);
-	return footer
-		? footer
-				.render(80)
-				.map(row => Bun.stripANSI(row))
-				.join("\n")
-		: "";
+function renderFooter(footer: Text | undefined): string {
+	return Bun.stripANSI(footer?.render(120).join("\n") ?? "")
+		.split("\n")
+		.map(line => line.trim())
+		.filter(Boolean)
+		.join("\n");
 }
 
 test("shell exit 1 completes when marked soft (rg no-match must not render as failure)", () => {
@@ -65,17 +64,28 @@ test("unknown and running execution states pass through", () => {
 	expect(resolveExecutionStatus(undefined, false, metadata({ state: "running" }))).toBe("running");
 });
 
-test("soft non-zero exit shows a dim exit marker; clean success shows none", () => {
-	expect(footerText({ status: "complete", exitCode: 1, truncation: undefined, hiddenLineCount: 0 })).toContain(
-		"(exit 1)",
-	);
-	expect(
-		buildStatusFooter({ status: "complete", exitCode: 0, truncation: undefined, hiddenLineCount: 0 }),
-	).toBeUndefined();
-});
+test("buildStatusFooter keeps outcome markers and never prints execution diagnostics", () => {
+	const cancelled = buildStatusFooter({
+		status: "cancelled",
+		exitCode: 143,
+		truncation: undefined,
+		hiddenLineCount: 0,
+	});
+	expect(renderFooter(cancelled)).toBe("(cancelled)");
 
-test("hard failures keep the failure-styled exit marker", () => {
-	expect(footerText({ status: "error", exitCode: 2, truncation: undefined, hiddenLineCount: 0 })).toContain(
-		"(exit 2)",
-	);
+	const hard = buildStatusFooter({ status: "error", exitCode: 2, truncation: undefined, hiddenLineCount: 0 });
+	expect(renderFooter(hard)).toContain("(exit 2)");
+
+	// Soft non-zero exit stays visible for reference without failure styling.
+	const soft = buildStatusFooter({ status: "complete", exitCode: 1, truncation: undefined, hiddenLineCount: 0 });
+	expect(renderFooter(soft)).toContain("(exit 1)");
+	expect(soft?.render(120).join("\n")).toContain(theme.fg("dim", "(exit 1)"));
+	expect(soft?.render(120).join("\n")).not.toContain(theme.fg("error", "(exit 1)"));
+
+	// A clean exit renders no outcome line at all — no timing, no diagnostics.
+	const clean = buildStatusFooter({ status: "complete", exitCode: 0, truncation: undefined, hiddenLineCount: 0 });
+	expect(clean).toBeUndefined();
+
+	const hidden = buildStatusFooter({ status: "error", exitCode: 2, truncation: undefined, hiddenLineCount: 2 });
+	expect(renderFooter(hidden)).toContain("… 2 earlier lines");
 });

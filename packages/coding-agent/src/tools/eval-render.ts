@@ -7,10 +7,10 @@ import { settings } from "../config/settings";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { renderDiff as renderDiffColored } from "../modes/components/diff";
+import { formatHiddenLinesNotice } from "../modes/components/execution-shared";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { getMarkdownTheme, highlightCode, type Theme } from "../modes/theme/theme";
-import type { ExecutionMetadata } from "../session/execution-metadata";
 import { renderCodeCell } from "../tui/code-cell";
 import { markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
 import { formatEvalCodeForDisplay } from "./eval-format";
@@ -52,7 +52,7 @@ export const EVAL_DEFAULT_PREVIEW_LINES = 10;
 // prefix and re-emits the whole block — duplicating it in scrollback. So while
 // the result is partial the block is laid out to fit previewWindowRows(), by
 // priority (see layoutLiveCell):
-//   1. header, execution line, agent progress, JSON display, notes
+//   1. header, footer, agent progress, JSON display, notes
 //   2. Status heads — one line per event, earliest events drop past the cap
 //   3. floors: code tail (3 lines + hint) and output tail (3 lines + hint)
 //   4. hunk bodies, newest event first, tail-truncated at a logical line
@@ -129,25 +129,6 @@ function getRenderCells(args: EvalRenderArgs | undefined): EvalRenderCell[] {
 
 type AgentEventStatus = "pending" | "running" | "completed" | "failed" | "aborted";
 
-function formatExecutionMetadataLine(execution: ExecutionMetadata | undefined, theme: Theme): string | undefined {
-	if (!execution) return undefined;
-	const parts = [`state=${execution.state}`];
-	if (execution.exitCode !== undefined) parts.push(`exit=${execution.exitCode}`);
-	if (execution.signal !== undefined) parts.push(`signal=${execution.signal}`);
-	if (execution.elapsedMs !== undefined) parts.push(`elapsed=${formatDuration(Math.round(execution.elapsedMs))}`);
-	if (execution.timeout) parts.push(`timeout=${execution.timeout.cause}/${execution.timeout.scope}`);
-	parts.push(`collector=${execution.collector.state}`);
-	if (execution.renderer) parts.push(`renderer=${execution.renderer.state}`);
-	if (execution.collector.error) parts.push(`collector error: ${statusValue(execution.collector.error)}`);
-	if (execution.output) parts.push(`output=${execution.output.disposition}`);
-	const color =
-		execution.state === "running"
-			? "accent"
-			: execution.state === "exited" && execution.exitCode === 0
-				? "success"
-				: "warning";
-	return theme.fg(color, wrapBrackets(`Execution: ${parts.join(" | ")}`, theme));
-}
 function eventString(value: unknown): string | undefined {
 	if (typeof value !== "string" || value.length === 0) return undefined;
 	const cleaned = sanitizeText(value);
@@ -855,7 +836,7 @@ function codeTailForRows(lineRows: number[], rowBudget: number, floorLines: numb
 
 // Lay out a streaming cell inside the live window (see EVAL_LIVE_SECTION_ROWS
 // for the priority order). `fixedRows` counts everything the cell renders
-// besides code, output and Status: header, execution line, agent progress,
+// besides code, output and Status: header, footer, agent progress,
 // JSON display and the deferred-expansion note.
 function layoutLiveCell(params: {
 	cell: EvalCellResult;
@@ -873,7 +854,7 @@ function layoutLiveCell(params: {
 	const outputFor = (lines: number): string[] => {
 		const content = formatCellOutputLines(cell, false, lines, theme, width);
 		const rows = [...content.lines];
-		if (content.hiddenCount > 0) rows.push(theme.fg("dim", `… ${content.hiddenCount} more lines (ctrl+o to expand)`));
+		if (content.hiddenCount > 0) rows.unshift(formatHiddenLinesNotice(content.hiddenCount, theme));
 		return rows;
 	};
 	const outputFloor = outputFor(Math.min(previewLines, EVAL_LIVE_FLOOR_LINES));
@@ -959,10 +940,6 @@ export function renderKernelCellLines(
 		return labelOutputs ? [theme.fg("dim", `display[${index + 1}]`), ...body] : body;
 	});
 
-	const executionLine = formatExecutionMetadataLine(
-		cell.execution ? { ...cell.execution, renderer: { state: "complete" } } : undefined,
-		theme,
-	);
 	const expansionDeferred = expanded && cellLive;
 
 	let codeMaxLines: number;
@@ -978,7 +955,6 @@ export function renderKernelCellLines(
 			previewLines,
 			fixedRows:
 				1 /* cell header */ +
-				(executionLine ? 1 : 0) +
 				agentLines.length +
 				(jsonLines.length > 0 ? jsonLines.length + 1 /* separator */ : 0) +
 				(expansionDeferred ? 1 : 0),
@@ -990,7 +966,7 @@ export function renderKernelCellLines(
 		const outputContent = formatCellOutputLines(cell, cellExpanded, previewLines, theme, width);
 		outputLines = [...outputContent.lines];
 		if (!cellExpanded && outputContent.hiddenCount > 0) {
-			outputLines.push(theme.fg("dim", `… ${outputContent.hiddenCount} more lines (ctrl+o to expand)`));
+			outputLines.unshift(formatHiddenLinesNotice(outputContent.hiddenCount, theme));
 		}
 		statusLines = renderStatusEvents(otherEvents, theme, cellExpanded, outputBlockContentWidth(width));
 		codeMaxLines = liveWindow;
@@ -1008,6 +984,8 @@ export function renderKernelCellLines(
 		}
 	}
 
+	const extraSections: Array<{ label?: string; lines: readonly string[] }> = [];
+	if (statusLines.length > 0) extraSections.push({ label: theme.fg("toolTitle", "Status"), lines: statusLines });
 	const cellLines = renderCodeCell(
 		{
 			code,
@@ -1018,12 +996,10 @@ export function renderKernelCellLines(
 			title: typeof cell.title === "string" ? sanitizeSingleLine(cell.title) : undefined,
 			status: cell.status,
 			spinnerFrame,
-			duration: cell.durationMs,
 			output: outputLines.length > 0 ? outputLines.join("\n") : undefined,
 			outputTrusted: true,
 			outputMaxLines: outputLines.length,
-			extraSections:
-				statusLines.length > 0 ? [{ label: theme.fg("toolTitle", "Status"), lines: statusLines }] : undefined,
+			extraSections,
 			codeTail: true,
 			codeMaxLines,
 			expanded: cellExpanded,
@@ -1034,7 +1010,7 @@ export function renderKernelCellLines(
 		theme,
 	);
 
-	const lines = executionLine ? [executionLine, ...cellLines, ...agentLines] : [...cellLines, ...agentLines];
+	const lines = [...cellLines, ...agentLines];
 	// Ctrl+O expansion is deferred for live cells — an expanded block could
 	// outgrow the viewport again. The toggle sticks and applies on settle.
 	if (expansionDeferred) {
@@ -1116,10 +1092,6 @@ export const evalToolRenderer = {
 		_args?: EvalRenderArgs,
 	): Component {
 		const details = result.details;
-		const executionLine = formatExecutionMetadataLine(
-			details?.execution ? { ...details.execution, renderer: { state: "complete" } } : undefined,
-			uiTheme,
-		);
 		// Captured at build time; every isPartial flip rebuilds this component
 		// (tool-execution keys its display on isPartial), so this stays accurate.
 		const isPartialResult = options.isPartial === true;
@@ -1142,11 +1114,6 @@ export const evalToolRenderer = {
 			return labelOutputs ? [uiTheme.fg("dim", `display[${index + 1}]`), ...body] : body;
 		});
 
-		const timeoutSeconds = options.renderContext?.timeout;
-		const timeoutLine =
-			typeof timeoutSeconds === "number"
-				? uiTheme.fg("dim", wrapBrackets(`Timeout: ${timeoutSeconds}s`, uiTheme))
-				: undefined;
 		let warningLine: string | undefined;
 		if (details?.meta?.truncation) {
 			warningLine = formatStyledTruncationWarning(details.meta, uiTheme) ?? undefined;
@@ -1154,10 +1121,6 @@ export const evalToolRenderer = {
 		const noticeLine = details?.notice
 			? uiTheme.fg("dim", wrapBrackets(statusValue(details.notice), uiTheme))
 			: undefined;
-		const asyncLine =
-			details?.async?.state === "running"
-				? uiTheme.fg("dim", wrapBrackets(`Backgrounded: ${details.async.jobId}`, uiTheme))
-				: undefined;
 
 		const cellResults = details?.cells;
 		if (cellResults && cellResults.length > 0) {
@@ -1206,14 +1169,8 @@ export const evalToolRenderer = {
 						}
 						lines.push(...jsonLines);
 					}
-					if (timeoutLine) {
-						lines.push(timeoutLine);
-					}
 					if (noticeLine) {
 						lines.push(noticeLine);
-					}
-					if (asyncLine) {
-						lines.push(asyncLine);
 					}
 					if (warningLine) {
 						lines.push(warningLine);
@@ -1242,19 +1199,16 @@ export const evalToolRenderer = {
 		};
 
 		if (!combinedOutput && !hasStatusEvents) {
-			const lines = [executionLine, timeoutLine, noticeLine, asyncLine, warningLine].filter(Boolean) as string[];
+			const lines = [noticeLine, warningLine].filter(Boolean) as string[];
 			return new Text(lines.join("\n"), 0, 0);
 		}
 
 		if (!combinedOutput && hasStatusEvents) {
 			return widthAwareText(width => {
 				const lines = [
-					executionLine,
 					uiTheme.fg("dim", "Status"),
 					...renderStatusEvents(statusEvents, uiTheme, expandedStatus, width, statusSectionOptions()),
-					timeoutLine,
 					noticeLine,
-					asyncLine,
 					warningLine,
 				].filter(Boolean) as string[];
 				return lines;
@@ -1274,12 +1228,9 @@ export const evalToolRenderer = {
 						: undefined,
 				});
 				const lines = [
-					executionLine,
 					styledOutput,
 					...(statusLines.length > 0 ? [uiTheme.fg("dim", "Status"), ...statusLines] : []),
-					timeoutLine,
 					noticeLine,
-					asyncLine,
 					warningLine,
 				].filter(Boolean) as string[];
 				return lines;
@@ -1310,13 +1261,10 @@ export const evalToolRenderer = {
 					cachedWidth = width;
 					cachedPreviewLines = previewLines;
 				}
-				const outputLines: string[] = executionLine ? [executionLine] : [];
+				const outputLines: string[] = [];
 				if (cachedSkipped && cachedSkipped > 0) {
 					outputLines.push("");
-					const skippedLine = uiTheme.fg(
-						"dim",
-						`… (${cachedSkipped} earlier lines, showing ${cachedLines.length} of ${cachedSkipped + cachedLines.length}) (ctrl+o to expand)`,
-					);
+					const skippedLine = formatHiddenLinesNotice(cachedSkipped, uiTheme);
 					outputLines.push(truncateToWidth(skippedLine, width));
 				}
 				outputLines.push(...cachedLines);
@@ -1330,14 +1278,8 @@ export const evalToolRenderer = {
 					outputLines.push(uiTheme.fg("dim", "Status"));
 					outputLines.push(...statusLines);
 				}
-				if (timeoutLine) {
-					outputLines.push(truncateToWidth(timeoutLine, width));
-				}
 				if (noticeLine) {
 					outputLines.push(truncateToWidth(noticeLine, width));
-				}
-				if (asyncLine) {
-					outputLines.push(truncateToWidth(asyncLine, width));
 				}
 				if (warningLine) {
 					outputLines.push(truncateToWidth(warningLine, width));
