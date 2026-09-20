@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `xd` device calls written in other harnesses' vocabulary now succeed instead of failing validation: `xd fleet '{"to":"Main","message":"…"}'` infers `op:"send"` and maps `to`/`target` to the canonical `id`, orchestrate spawn/send/wait/kill accept `prompt`/`worker`/`workerId`/`timeout_seconds`-style keys, monitor accepts `action`/`name`/`job`, and recall maps `q` and `mode:"search"`. Every repair is reported as a `note:` on the result; unknown keys get "did you mean" hints.
+
 ### Added
 
 - `/queue` takes an optional leading delay: `/queue 3h run the benchmarks` sends the message after three hours instead of at the next yield. Delays are independent wall-clock deadlines, so entering `/queue 3h do A` then `/queue 18h do B` fires them 3 and 18 hours from now rather than chaining. Pending entries show a live countdown above the editor and are cancelled with `/queue --cancel <n|all>`.

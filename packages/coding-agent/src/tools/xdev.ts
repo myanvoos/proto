@@ -25,6 +25,7 @@ import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-to
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
 import { tokenizeShellSegments } from "./shell-tokenize";
 import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
+import { normalizeXdDeviceArgs, suggestKnownKey } from "./xdev-normalize";
 
 /**
  * Tool names that always stay top-level native tools, even if something declares them
@@ -123,9 +124,14 @@ function validateXdArgs(
 	const unknown = unknownXdKeys(args, schema);
 	if (unknown.length > 0) {
 		const accepted = schemaProperties(schema) ?? [];
-		const acceptedText = accepted.length > 0 ? accepted.join(", ") : "(none)";
+		const acceptedText = accepted.length > 0 ? accepted.join(", ") : "(none — this device takes no parameters)";
+		const hints = unknown
+			.map(key => suggestKnownKey(key, accepted))
+			.filter((hint): hint is string => hint !== undefined)
+			.map(hint => `did you mean \`${hint}\`?`);
+		const hintText = hints.length > 0 ? ` ${hints.join(" ")}` : "";
 		throw new ToolError(
-			`Invalid args for ${XD_URL_PREFIX}${device.name}: unknown top-level key${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Accepted keys: ${acceptedText}.`,
+			`Invalid args for ${XD_URL_PREFIX}${device.name}: unknown top-level key${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.${hintText} Accepted keys: ${acceptedText}.`,
 		);
 	}
 	try {
@@ -141,7 +147,11 @@ function validateXdArgs(
 	}
 }
 
-function parseDeviceArgs(device: AiTool, content: string, toolCallId: string): Record<string, unknown> {
+function parseDeviceArgs(
+	device: AiTool,
+	content: string,
+	toolCallId: string,
+): { args: Record<string, unknown>; notes: string[] } {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(content);
@@ -159,7 +169,15 @@ function parseDeviceArgs(device: AiTool, content: string, toolCallId: string): R
 	const args: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
 	const schema = toolWireSchema(device);
 	if ("i" in args && !schemaDeclaresIntentField(schema)) delete args.i;
-	return validateXdArgs(device, args, toolCallId, schema, () => renderDocsParts(device as Tool).schema);
+	const { args: normalized, notes } = normalizeXdDeviceArgs(device.name, args);
+	const validated = validateXdArgs(
+		device,
+		normalized,
+		toolCallId,
+		schema,
+		() => renderDocsParts(device as Tool).schema,
+	);
+	return { args: validated, notes };
 }
 
 function toolSummary(inst: Tool): string {
@@ -389,7 +407,7 @@ export async function dispatchXdevTool(
 			};
 		}
 
-		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId);
+		const { args: validated, notes } = parseDeviceArgs(canonical as AiTool, content, toolCallId);
 		throwIfAborted(signal);
 		xdev = { ...xdev, args: validated };
 		const innerOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
@@ -402,7 +420,7 @@ export async function dispatchXdevTool(
 			: undefined;
 		const executable = canonical;
 		const result = await executable.execute(toolCallId, validated as never, signal, innerOnUpdate, context);
-		return { result, xdev: { ...xdev, inner: result.details } };
+		return { result: withNormalizationNotes(result, notes), xdev: { ...xdev, inner: result.details } };
 	} catch (error) {
 		if (
 			error instanceof ToolAbortError ||
@@ -419,6 +437,22 @@ export async function dispatchXdevTool(
 			xdev,
 		};
 	}
+}
+
+/** Surfaces alias/normalization repairs on the result so the calling agent corrects future calls. */
+function withNormalizationNotes(result: AgentToolResult<unknown>, notes: readonly string[]): AgentToolResult<unknown> {
+	if (notes.length === 0) return result;
+	const line = `note: ${notes.join("; ")}`;
+	let prefixed = false;
+	const content = result.content.map(block => {
+		if (!prefixed && block.type === "text") {
+			prefixed = true;
+			return { ...block, text: `${line}\n\n${block.text}` };
+		}
+		return block;
+	});
+	if (!prefixed) content.unshift({ type: "text", text: line });
+	return { ...result, content };
 }
 
 export type XdBashDispatch = { kind: "listing" } | { kind: "device"; name: string; content: string };
