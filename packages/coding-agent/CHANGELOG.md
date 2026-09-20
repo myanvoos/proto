@@ -49,6 +49,10 @@
 
 - Commands that exit with code 1 (grep/rg "no match", `test` false, `diff` differences) no longer render as `✗ failed` in the transcript or live view: they show a dim `(exit 1)` marker instead. Exit codes 2+, signal deaths, timeouts, and kernel-cell errors still mark the command as failed.
 
+### Removed
+
+- The status line no longer shows a rough `~N tok` estimate of the draft you are typing next to the context gauge.
+
 ## [18.1.22] - 2026-09-18
 
 ### Changed

@@ -32,8 +32,7 @@ type QuietPart = { id: string; content: string };
 const RIGHT_PART_SHED_RANK: Record<string, number> = {
 	context_pct: 1,
 	mode: 2,
-	location_right: 3,
-	subagents: 4,
+	subagents: 3,
 };
 
 interface QuietSegmentBounds {
@@ -286,7 +285,6 @@ export class StatusLineComponent implements Component {
 	#disposed = false;
 	#autoCompactEnabled: boolean = true;
 	#hookStatuses: Map<string, string> = new Map();
-	#locationRightProvider: (() => string | null) | undefined;
 	#subagentCount: number = 0;
 	#activeMeters: WeakMap<AgentSession, ActiveMeter> = new WeakMap();
 	#loopModeStatus: { enabled: boolean } | null = null;
@@ -1189,7 +1187,7 @@ export class StatusLineComponent implements Component {
 		return truncateToWidth(focusExitBadge(this.#focusedAgentId), Math.max(1, width));
 	}
 
-	renderQuietLine(width: number, extras?: { locationRight?: string | null; previewTitle?: string }): string | null {
+	renderQuietLine(width: number, extras?: { previewTitle?: string }): string | null {
 		this.#previewTitle = extras?.previewTitle;
 		const rawBadge = this.#focusedAgentId ? focusExitBadge(this.#focusedAgentId) : "";
 		const badge = rawBadge === "" ? "" : truncateToWidth(rawBadge, Math.max(1, width));
@@ -1206,7 +1204,6 @@ export class StatusLineComponent implements Component {
 		const locationContents = location.map(part => part.content);
 		let left = this.#locationWithRunClock(locationContents, sep);
 		const rightParts = [...capLeft, ...capRight];
-		if (extras?.locationRight) rightParts.push({ id: "location_right", content: extras.locationRight });
 		let right = rightParts.map(part => part.content).join(sep);
 
 		const sepWidth = visibleWidth(sep);
@@ -1302,7 +1299,7 @@ export class StatusLineComponent implements Component {
 
 	renderQuietLines(
 		width: number,
-		extras?: { locationRight?: string | null; previewTitle?: string },
+		extras?: { previewTitle?: string },
 	): { locationLine: string | null; capabilityLine: string | null } {
 		this.#previewTitle = extras?.previewTitle;
 		const gathered = this.#gatherQuietSegments(width);
@@ -1315,12 +1312,7 @@ export class StatusLineComponent implements Component {
 		let locationLine: string | null = null;
 		if (location.length > 0) {
 			const left = this.#locationWithRunClock(location, sep);
-			const right = extras?.locationRight ?? null;
-			if (right && visibleWidth(left) + visibleWidth(right) + 2 <= budget) {
-				locationLine = left + padding(budget - visibleWidth(left) - visibleWidth(right)) + right;
-			} else {
-				locationLine = truncateToWidth(left, budget);
-			}
+			locationLine = truncateToWidth(left, budget);
 		}
 		let capabilityLine: string | null = null;
 		if (capLeft.length > 0 || capRight.length > 0) {
@@ -1344,7 +1336,7 @@ export class StatusLineComponent implements Component {
 		const rows: string[] = [];
 
 		if (settings.get("statusLine.enabled")) {
-			const footline = this.renderQuietLine(width, { locationRight: this.#locationRightProvider?.() ?? null });
+			const footline = this.renderQuietLine(width);
 			if (footline) rows.push(footline);
 		} else {
 			const badge = this.renderFocusBadge(width);
@@ -1360,9 +1352,5 @@ export class StatusLineComponent implements Component {
 			.sort(([a], [b]) => a.localeCompare(b))
 			.map(([, text]) => sanitizeStatusText(text));
 		return [truncateToWidth(sortedStatuses.join(" "), width)];
-	}
-
-	setLocationRightProvider(provider: (() => string | null) | undefined): void {
-		this.#locationRightProvider = provider;
 	}
 }

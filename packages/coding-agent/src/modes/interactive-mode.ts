@@ -851,7 +851,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusLine.watchBranch(() => {
 			this.ui.requestRender();
 		});
-		this.statusLine.setLocationRightProvider(() => this.#footlineRightZone());
 		this.#composerShortcuts.setShortcutsProvider(() =>
 			buildComposerShortcuts(this.keybindings, {
 				busy: this.viewSession?.isStreaming ?? false,
@@ -1523,14 +1522,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			autocomplete: this.settings.get("spelling.autocomplete"),
 			autocorrect: this.settings.get("spelling.autocorrect"),
 		});
-	}
-
-	#footlineRightZone(): string | null {
-		const draft = this.editor.getText();
-		const trimmed = draft.trim();
-		if (trimmed.length === 0) return null;
-		if (trimmed.startsWith("/") && !/\s/.test(trimmed)) return null;
-		return theme.fg("matchHighlight", `~${Math.max(1, Math.round(trimmed.length / 4))} tok`);
 	}
 
 	updateEditorBorderColor(): void {
