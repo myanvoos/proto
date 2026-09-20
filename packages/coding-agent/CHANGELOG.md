@@ -36,6 +36,7 @@
 - Skill, RPC, ACP and startup prompts submitted while `/compact` is running now wait for it to finish instead of starting a turn against the disconnected session.
 - Rewinding through the session tree (`/tree`, `/branch`, or the rewind key) no longer crashes long sessions with `Maximum call stack size exceeded`.
 - Replies containing a Mermaid diagram now enter terminal history as they scroll past instead of being held back until the reply finishes.
+- A reply that ends with a tool call no longer freezes mid-sentence: the text or thinking written just before the tool card now streams to completion.
 
 ## [18.1.22] - 2026-09-18
 

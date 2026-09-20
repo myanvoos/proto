@@ -83,8 +83,8 @@ export class EventController {
 	#streamedToolCallStates = new Map<number, StreamedToolCallState>();
 	#streamedContentBlockTypes = new Map<number, AssistantContentBlock["type"]>();
 	#streamedTimelineLocations = new Map<number, StreamedTimelineLocation>();
-	#streamedTimelineBeforeTools: AssistantMessage["content"] = [];
-	#streamedTimelineAfterTools = new Map<string, AssistantMessage["content"]>();
+	#streamedTimelineBeforeToolIndices: number[] = [];
+	#streamedTimelineAfterToolIndices = new Map<string, number[]>();
 	#streamedTimelineLastToolCallId: string | undefined;
 	#streamedTimelineHasToolCalls = false;
 	#streamedAssistantContentLength = 0;
@@ -221,8 +221,8 @@ export class EventController {
 		this.#streamedToolCallStates.clear();
 		this.#streamedContentBlockTypes.clear();
 		this.#streamedTimelineLocations.clear();
-		this.#streamedTimelineBeforeTools = [];
-		this.#streamedTimelineAfterTools.clear();
+		this.#streamedTimelineBeforeToolIndices = [];
+		this.#streamedTimelineAfterToolIndices.clear();
 		this.#streamedTimelineLastToolCallId = undefined;
 		this.#streamedTimelineHasToolCalls = false;
 		this.#streamedAssistantContentLength = 0;
@@ -279,23 +279,30 @@ export class EventController {
 			if (this.#streamedTimelineLastToolCallId === undefined) {
 				location = { kind: "before", index };
 			} else {
-				const segment = this.#streamedTimelineAfterTools.get(this.#streamedTimelineLastToolCallId) ?? [];
+				const segment = this.#streamedTimelineAfterToolIndices.get(this.#streamedTimelineLastToolCallId) ?? [];
 				location = { kind: "after", toolCallId: this.#streamedTimelineLastToolCallId, index: segment.length };
 			}
 			this.#streamedTimelineLocations.set(index, location);
 		}
 
 		if (location.kind === "before") {
-			this.#streamedTimelineBeforeTools[location.index] = content;
+			this.#streamedTimelineBeforeToolIndices[location.index] = index;
 			return;
 		}
-		const segment = this.#streamedTimelineAfterTools.get(location.toolCallId) ?? [];
-		segment[location.index] = content;
-		this.#streamedTimelineAfterTools.set(location.toolCallId, segment);
+		const segment = this.#streamedTimelineAfterToolIndices.get(location.toolCallId) ?? [];
+		segment[location.index] = index;
+		this.#streamedTimelineAfterToolIndices.set(location.toolCallId, segment);
 		changedAfterToolCallIds.add(location.toolCallId);
 	}
 
-	#streamedTimelineSegment(message: AssistantMessage, content: AssistantMessage["content"]): AssistantMessage {
+	// Blocks are read out of the live message: each update is a fresh snapshot that shares
+	// untouched blocks, so a cached block is a frozen copy of the text it held back then.
+	#streamedTimelineSegment(message: AssistantMessage, indices: readonly number[]): AssistantMessage {
+		const content: AssistantMessage["content"] = [];
+		for (const index of indices) {
+			const block = message.content[index];
+			if (block) content.push(block);
+		}
 		return {
 			...message,
 			content,
@@ -1048,6 +1055,8 @@ export class EventController {
 
 	// Assistant updates carry the cumulative message plus the changed content index. Keep the
 	// timeline/cache state incremental for deltas; message_end invokes the authoritative full pass.
+	// Updates are coalesced, so the surviving event can report a newly opened block while the block
+	// that was streaming before it also grew: that one is revisited too.
 	#processAssistantMessageUpdate(message: AssistantMessage, changedContentIndex?: number, fullPass = false): void {
 		if (fullPass) this.#resetStreamingAssistantState();
 		if (!fullPass && message.content.length < this.#streamedAssistantContentLength) {
@@ -1064,9 +1073,7 @@ export class EventController {
 			}
 			const changedIndex = changedContentIndex ?? message.content.length - 1;
 			if (changedIndex >= 0 && changedIndex < message.content.length) indices.add(changedIndex);
-			if (changedContentIndex === undefined && this.#streamedAssistantContentLength > 0) {
-				indices.add(this.#streamedAssistantContentLength - 1);
-			}
+			if (this.#streamedAssistantContentLength > 0) indices.add(this.#streamedAssistantContentLength - 1);
 		}
 		const orderedIndices = [...indices].sort((left, right) => left - right);
 		for (const index of orderedIndices) {
@@ -1098,7 +1105,7 @@ export class EventController {
 		this.#streamedAssistantContentLength = Math.max(this.#streamedAssistantContentLength, message.content.length);
 
 		const beforeTools = this.#streamedTimelineHasToolCalls
-			? this.#streamedTimelineSegment(message, this.#streamedTimelineBeforeTools)
+			? this.#streamedTimelineSegment(message, this.#streamedTimelineBeforeToolIndices)
 			: message;
 		this.#streamingReveal.setTarget(beforeTools, this.#streamedTimelineHasToolCalls);
 		if (this.#streamedTimelineHasToolCalls && !this.ctx.streamingComponent?.isTranscriptBlockFinalized()) {
@@ -1106,10 +1113,10 @@ export class EventController {
 		}
 
 		for (const toolCallId of changedAfterToolCallIds) {
-			const segmentContent = this.#streamedTimelineAfterTools.get(toolCallId);
+			const segmentIndices = this.#streamedTimelineAfterToolIndices.get(toolCallId);
 			this.#upsertPostToolAssistantSegment(
 				toolCallId,
-				segmentContent ? this.#streamedTimelineSegment(message, segmentContent) : undefined,
+				segmentIndices ? this.#streamedTimelineSegment(message, segmentIndices) : undefined,
 			);
 		}
 	}

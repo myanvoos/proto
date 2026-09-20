@@ -1,0 +1,274 @@
+import { expect, test } from "bun:test";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { Component } from "@oh-my-pi/pi-tui";
+import { Settings } from "../../config/settings";
+import type { AgentSessionEvent } from "../../session/agent-session";
+import { TranscriptContainer } from "../components/transcript-container";
+import { initTheme } from "../theme/theme";
+import type { InteractiveModeContext } from "../types";
+import { EventController } from "./event-controller";
+
+await Settings.init();
+await initTheme(false, false, "proto");
+
+const NOOP = () => {};
+const RENDER_WIDTH = 120;
+const TEXT = "I will read the controller first.";
+const THINKING = "Upstream organizes its TUI code with separate modules.";
+const POST_TOOL_TEXT = "Now I will apply the patch.";
+
+const USAGE = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+type Block = AssistantMessage["content"][number];
+
+function toolCallBlock(id: string, name = "bash"): Block {
+	return { type: "toolCall", id, name, arguments: { command: "ls" } } as Block;
+}
+
+// Mirrors the provider snapshot the agent loop pushes: every update is a fresh
+// message object whose blocks are fresh objects, so a stored block reference
+// never observes later growth.
+function snapshot(blocks: Block[], stopReason: "toolUse" | "stop" = "toolUse"): AssistantMessage {
+	return {
+		role: "assistant",
+		content: blocks.map(block => ({ ...block })),
+		stopReason,
+		api: "openai-completions",
+		provider: "test",
+		model: "test",
+		usage: USAGE,
+		timestamp: 1,
+	} as AssistantMessage;
+}
+
+function createContext() {
+	const chatContainer = new TranscriptContainer();
+	const context = {
+		isInitialized: true,
+		init: async () => {},
+		ui: { requestRender: NOOP, requestComponentRender: NOOP, resetDisplay: NOOP, terminal: { setProgress: NOOP } },
+		chatContainer,
+		pendingTools: new Map(),
+		settings: { get: () => false },
+		viewSession: {
+			isStreaming: true,
+			isRetrying: false,
+			isTtsrAbortPending: false,
+			extensionRunner: undefined,
+			hasBuiltInTool: () => true,
+			getToolByName: () => undefined,
+			retryAttempt: undefined,
+		},
+		session: { isAborting: false },
+		toolOutputExpanded: false,
+		hideToolActivity: false,
+		effectiveHideThinkingBlock: false,
+		proseOnlyThinking: false,
+		noteDisplayableThinkingContent: () => false,
+		transcriptMessageComponents: new WeakMap<object, Component>(),
+		statusLine: { invalidate: NOOP, markActivityEnd: NOOP, markActivityStart: NOOP },
+		loadingAnimation: undefined,
+		autoCompactionLoader: undefined,
+		retryLoader: undefined,
+		statusContainer: { disposeChildren: NOOP },
+		ensureLoadingAnimation: NOOP,
+		setWorkingMessage: NOOP,
+		clearPinnedError: NOOP,
+		showPinnedError: NOOP,
+		showError: NOOP,
+		showWarning: NOOP,
+		showStatus: NOOP,
+		editor: { setText: NOOP },
+		updatePendingMessagesDisplay: NOOP,
+		clearOptimisticUserMessage: NOOP,
+		replaceOptimisticUserMessage: NOOP,
+		optimisticSkillMessagePending: false,
+		optimisticUserMessageSignature: undefined,
+		locallySubmittedUserSignatures: new Set<string>(),
+		flushPendingCommandOutput: NOOP,
+		setTodos: NOOP,
+		addMessageToChat: () => [] as Component[],
+		lastAssistantUsage: undefined,
+		streamingComponent: undefined,
+		streamingMessage: undefined,
+	};
+	return { chatContainer, context: context as unknown as InteractiveModeContext };
+}
+
+function visibleText(component: Component | undefined): string {
+	if (!component) return "";
+	return component
+		.render(RENDER_WIDTH)
+		.map(row =>
+			row
+				.replace(/\x1b\[[0-9;:?]*[A-Za-z]/g, "")
+				.replace(/\x1b\][^\x07]*\x07/g, "")
+				.trim(),
+		)
+		.filter(row => row.length > 0)
+		.join(" ");
+}
+
+test("assistant text that grows in the same update as its tool call renders in full", async () => {
+	const { chatContainer, context } = createContext();
+	const controller = new EventController(context);
+	try {
+		await controller.handleEvent({
+			type: "message_start",
+			message: snapshot([]),
+		} as unknown as AgentSessionEvent);
+
+		const partial = snapshot([{ type: "text", text: "I" } as Block]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "I", partial },
+		} as unknown as AgentSessionEvent);
+
+		// One coalesced update: the text block finished growing and the tool call appeared,
+		// so the provider reports the tool call index as the changed one.
+		const joined = snapshot([{ type: "text", text: TEXT } as Block, toolCallBlock("call-1")]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: joined,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 1, partial: joined },
+		} as unknown as AgentSessionEvent);
+
+		expect(visibleText(context.streamingComponent)).toBe(TEXT);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+test("assistant thinking that grows in the same update as its tool call renders in full", async () => {
+	const { chatContainer, context } = createContext();
+	const controller = new EventController(context);
+	try {
+		await controller.handleEvent({
+			type: "message_start",
+			message: snapshot([]),
+		} as unknown as AgentSessionEvent);
+
+		const partial = snapshot([{ type: "thinking", thinking: "Upstream organizes its TUI code with separ" } as Block]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "separ", partial },
+		} as unknown as AgentSessionEvent);
+
+		const joined = snapshot([{ type: "thinking", thinking: THINKING } as Block, toolCallBlock("call-1")]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: joined,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 1, partial: joined },
+		} as unknown as AgentSessionEvent);
+
+		expect(visibleText(context.streamingComponent)).toBe(`Thinking ${THINKING}`);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+test("assistant text that grows in the last update before message_end renders in full", async () => {
+	const { chatContainer, context } = createContext();
+	const controller = new EventController(context);
+	try {
+		await controller.handleEvent({
+			type: "message_start",
+			message: snapshot([]),
+		} as unknown as AgentSessionEvent);
+
+		const thinkingOnly = snapshot([{ type: "thinking", thinking: "Upstream organizes" } as Block]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: thinkingOnly,
+			assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "organizes", partial: thinkingOnly },
+		} as unknown as AgentSessionEvent);
+
+		// Thinking finished growing in the update that opened the text block.
+		const withText = snapshot([
+			{ type: "thinking", thinking: THINKING } as Block,
+			{ type: "text", text: "I" } as Block,
+		]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: withText,
+			assistantMessageEvent: { type: "text_start", contentIndex: 1, partial: withText },
+		} as unknown as AgentSessionEvent);
+
+		// Text finished growing in the update that opened the tool call.
+		const withToolCall = snapshot([
+			{ type: "thinking", thinking: THINKING } as Block,
+			{ type: "text", text: TEXT } as Block,
+			toolCallBlock("call-1"),
+		]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: withToolCall,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 2, partial: withToolCall },
+		} as unknown as AgentSessionEvent);
+
+		const component = context.streamingComponent;
+		await controller.handleEvent({
+			type: "message_end",
+			message: withToolCall,
+		} as unknown as AgentSessionEvent);
+
+		expect(visibleText(component)).toBe(`Thinking ${THINKING} ${TEXT}`);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+test("post-tool assistant text that grows alongside the next tool call renders in full", async () => {
+	const { chatContainer, context } = createContext();
+	const controller = new EventController(context);
+	try {
+		await controller.handleEvent({
+			type: "message_start",
+			message: snapshot([]),
+		} as unknown as AgentSessionEvent);
+
+		const firstCall = snapshot([toolCallBlock("call-1")]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: firstCall,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial: firstCall },
+		} as unknown as AgentSessionEvent);
+
+		const withPartialText = snapshot([toolCallBlock("call-1"), { type: "text", text: "Now" } as Block]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: withPartialText,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Now", partial: withPartialText },
+		} as unknown as AgentSessionEvent);
+
+		const withSecondCall = snapshot([
+			toolCallBlock("call-1"),
+			{ type: "text", text: POST_TOOL_TEXT } as Block,
+			toolCallBlock("call-2"),
+		]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: withSecondCall,
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 2, partial: withSecondCall },
+		} as unknown as AgentSessionEvent);
+
+		const postToolComponents = controller.getLivePostToolAssistantComponents();
+		expect(postToolComponents).toHaveLength(1);
+		expect(visibleText(postToolComponents[0])).toBe(POST_TOOL_TEXT);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
