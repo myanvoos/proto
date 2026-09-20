@@ -55,6 +55,7 @@
     "@opentelemetry/sdk-metrics": "catalog:",
     "@opentelemetry/sdk-trace-base": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
+    "chalk": "catalog:",
     "diff": "catalog:",
     "puppeteer-core": "catalog:",
     "typebox": "catalog:"
