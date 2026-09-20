@@ -2,14 +2,19 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the built-in structural summarizer engine: compaction always runs through observational memory, with remote compaction (provider-native or `compaction.remoteEndpoint`) as the only fallback method. `/compact soft` is gone; `/compact remote` still forces the remote path.
+- The model handoff note is now written by the observational-memory model roles (`@smol`, then `@tiny`) from the full folded transcript, falling back to the session's own model when they fail.
+
 ### Added
 
-- Compaction summaries now end with a note the session's own model writes from the context it is about to lose — why the current approach was chosen, what was ruled out, what is half-finished — appended to whatever produced the summary, including observational memory. Turn it off with `compaction.selfSummary`.
+- Compaction summaries now end with a handoff note written from the context being dropped — why the current approach was chosen, what was ruled out, what is half-finished — appended to whatever produced the summary. Turn it off with `compaction.selfSummary`.
 
 ### Changed
 
 - The prompt editor supports shift+arrow text selection: `Shift+Arrow` extends a selection, typing/deleting/pasting replaces it, and `Ctrl+C` copies the selected text (falling back to its clear-draft/exit role when nothing is selected). Dequeueing a queued message moved fully to `Alt+Up` — `Shift+Up` no longer triggers it.
-- Context maintenance now holds off until the session actually holds 250K tokens on models whose window can carry that much, so a large-window session stops paying to rewrite its prompt cache at a fraction of its capacity; models with smaller windows are unaffected.
+- Context maintenance now picks its trigger from the model's context window: a small window runs nearly full before compacting, a million-token window folds at 40% rather than re-sending an enormous prompt every turn. Set `compaction.thresholdPercent` or `compaction.thresholdTokens` to override, and they are now honored exactly as written.
 - Observational memory no longer compacts on its own fixed token count: requests to compact that arrive while the session is still well below its own compaction threshold are declined, so a long session keeps reading its warm prompt cache instead of paying to rewrite it early.
 - Compaction now carries detail-heavy tool results into the summary with both their head and their tail, widened to whatever the summarizer's input budget allows, instead of clipping every result to its first 2000 characters.
 - Repeat compactions now consolidate rather than re-compress: the update prompt requires merging duplicates, replacing superseded facts with current ones, and carrying identifiers through verbatim.

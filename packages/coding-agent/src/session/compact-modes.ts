@@ -1,6 +1,6 @@
 import type { CompactionMethod } from "./compaction-methods";
 
-export type CompactMode = "soft" | "remote";
+export type CompactMode = "remote";
 
 interface CompactionOverride {
 	methodOrder?: CompactionMethod[];
@@ -16,14 +16,9 @@ interface CompactModeDef {
 
 export const COMPACT_MODES: readonly CompactModeDef[] = [
 	{
-		name: "soft",
-		description: "Summarize locally with the active model (skip server compaction)",
-		overrides: { methodOrder: ["soft"] },
-	},
-	{
 		name: "remote",
-		description: "Summarize via OpenAI-compatible server compaction, then fall back to a local summary",
-		overrides: { methodOrder: ["remote", "soft"] },
+		description: "Compact via OpenAI-compatible server compaction or the configured remote endpoint",
+		overrides: { methodOrder: ["remote"] },
 	},
 ];
 

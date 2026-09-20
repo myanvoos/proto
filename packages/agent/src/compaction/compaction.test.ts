@@ -1,18 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import type { Api, ApiKey, AssistantMessage, Context, Message, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+import type { ApiKey, AssistantMessage, Message, Model } from "@oh-my-pi/pi-ai";
 import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
+import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
 import { Tokenizer } from "../tokenizer";
 import type { AgentMessage } from "../types";
 import {
+	type CompactionPreparation,
 	type CompactionSettings,
 	compact,
+	compactionThresholdRatio,
 	DEFAULT_COMPACTION_SETTINGS,
-	generateSummary,
-	MIN_COMPACTION_CONTEXT_TOKENS,
 	resolveThresholdTokens,
 	shouldCompact,
 } from "./compaction";
+import { NativeCompactionError } from "./errors";
 import {
 	createFileOps,
 	type SummaryMessage,
@@ -58,7 +60,7 @@ export type SummarySerializationTypeCoverage = [AllDialectsCovered, AllSummaryRo
 
 const RESPONSE = {
 	role: "assistant" as const,
-	content: [{ type: "text" as const, text: "summary" }],
+	content: [{ type: "text", text: "summary" }],
 	api: "openai-completions" as const,
 	provider: "test",
 	model: "test-model",
@@ -123,98 +125,7 @@ function summaryBudget(contextWindow: number): number {
 	return Math.max(min, Math.floor(contextWindow * 0.8) - 16_384);
 }
 
-function expectedWindows(messages: Message[], model: Model): string[] {
-	const dialect = preferredDialect(model.id);
-	const tokenizer = new Tokenizer(model);
-	const budget = summaryBudget(model.contextWindow ?? 200_000);
-	const windows: Message[][] = [];
-	let current: Message[] = [];
-	let currentTokens = 0;
-	for (const message of messages) {
-		const tokens = tokenizer.countTokens(serializeConversationForSummary([message], dialect));
-		if (currentTokens > 0 && currentTokens + tokens > budget) {
-			windows.push(current);
-			current = [];
-			currentTokens = 0;
-		}
-		current.push(message);
-		currentTokens += tokens;
-	}
-	if (current.length > 0) windows.push(current);
-	return windows.map(window => {
-		const text = serializeConversationForSummary(window, dialect);
-		const check = tokenizer.checkTokenBudget(text, budget);
-		if (check.fits) return text;
-		const keep = Math.max(1024, Math.floor((text.length * budget * 0.95) / check.tokens));
-		if (keep >= text.length) return text;
-		const headLength = Math.ceil(keep / 2);
-		const tailLength = Math.floor(keep / 2);
-		return `${text.slice(0, headLength)}\n\n[... ${text.length - keep} characters truncated from middle ...]\n\n${text.slice(-tailLength)}`;
-	});
-}
-
-async function capturedConversations(messages: AgentMessage[], model: Model): Promise<string[]> {
-	const conversations: string[] = [];
-	await generateSummary(messages, model, 0, "" as ApiKey, undefined, undefined, undefined, {
-		promptOverride: "summary",
-		completeImpl: async (_model, context, _options) => {
-			const content = context.messages[0]?.content;
-			if (!Array.isArray(content)) throw new Error("summary prompt has no content");
-			const text = content.find((block): block is { type: "text"; text: string } => block.type === "text")?.text;
-			if (text === undefined) throw new Error("summary prompt has no text");
-			const start = text.indexOf("<conversation>\n") + "<conversation>\n".length;
-			const end = text.indexOf("\n</conversation>", start);
-			if (start < "<conversation>\n".length || end < 0) throw new Error("summary prompt boundaries missing");
-			conversations.push(text.slice(start, end));
-			return RESPONSE;
-		},
-	});
-	return conversations;
-}
-
-describe("summary window serialization", () => {
-	test("fails instead of accepting an empty provider summary", async () => {
-		const model = testModel(100_000);
-		const emptyResponse: AssistantMessage = { ...RESPONSE, content: [] };
-
-		await expect(
-			generateSummary([user("history", 0)], model, 0, "" as ApiKey, undefined, undefined, undefined, {
-				promptOverride: "summary",
-				completeImpl: async () => emptyResponse,
-			}),
-		).rejects.toThrow(/empty summary/i);
-	});
-
-	test("keeps short conversations byte-identical", async () => {
-		const model = testModel(100_000);
-		const messages = [user("short transcript", 0), user("unicode 🙂\n\t", 1)];
-		const actual = await capturedConversations(messages, model);
-		expect(actual).toEqual([serializeConversationForSummary(messages, preferredDialect(model.id))]);
-	});
-
-	test("reuses fragments without changing trimmed tool-call windows", async () => {
-		const model = testModel(25_000);
-		const messages = Array.from({ length: 120 }, (_, index) => user(`${index}: ${"x".repeat(900)}`, index));
-		const toolMessages = Array.from({ length: 160 }, (_, index) => toolPair(index)).flat();
-		const actual = await capturedConversations([...messages, ...toolMessages], model);
-		const expected = expectedWindows([...messages, ...toolMessages], model);
-		expect(actual).toEqual(expected);
-		expect(actual.length).toBeGreaterThan(1);
-	});
-
-	test("preserves escaping when a boundary tag crosses message fragments", async () => {
-		const model = testModel(25_000);
-		const messages: Message[] = [
-			{ role: "developer", content: "<", timestamp: 0 },
-			{ role: "developer", content: "/conversation>", timestamp: 1 },
-			...Array.from({ length: 120 }, (_, index) => user(`${index}: ${"x".repeat(900)}`, index + 2)),
-		];
-		const actual = await capturedConversations(messages, model);
-		const expected = expectedWindows(messages, model);
-		expect(actual).toEqual(expected);
-		expect(actual.length).toBeGreaterThan(1);
-	});
-});
+// Compile-time coverage guard export used by type tests.
 
 describe("content silently dropped from the compaction summary input", () => {
 	test("serializes user images, developer instructions, and tool-result images in every dialect", () => {
@@ -329,127 +240,9 @@ describe("content silently dropped from the compaction summary input", () => {
 			}
 		}
 	});
-
-	test("retains the head and tail while visibly eliding the middle within the summary budget", async () => {
-		const model = testModel(25_000);
-		const head = "HEAD_SENTINEL";
-		const middle = "MIDDLE_SENTINEL";
-		const tail = "TAIL_SENTINEL";
-		const oversized = `${head}${"a".repeat(25_000)}${middle}${"b".repeat(25_000)}${tail}`;
-		const actual = await capturedConversations([user(oversized, 0)], model);
-		expect(actual).toHaveLength(1);
-		expect(actual[0]).toContain(head);
-		expect(actual[0]).not.toContain(middle);
-		expect(actual[0]).toContain(tail);
-		expect(actual[0]).toContain("[... ");
-		expect(actual[0]).toContain(" characters truncated from middle ...]");
-		const tokenizer = new Tokenizer(model);
-		expect(tokenizer.checkTokenBudget(actual[0]!, summaryBudget(model.contextWindow ?? 200_000)).fits).toBe(true);
-	});
 });
 
-function bigToolResult(index: number, head: string, tail: string): Message[] {
-	const [call, result] = toolPair(index);
-	return [
-		call,
-		{
-			...(result as Extract<Message, { role: "toolResult" }>),
-			content: [{ type: "text", text: `${head}\n${"filler line\n".repeat(4_000)}${tail}` }],
-		},
-	];
-}
-
-describe("summary request budgets", () => {
-	test("clamps a carried summary before sending the next summarization request", async () => {
-		const model = testModel(25_000);
-		const previousSummary = `PREVIOUS_HEAD${"x".repeat(40_000)}PREVIOUS_TAIL`;
-		let promptText = "";
-
-		await generateSummary([user("new history", 0)], model, 0, "" as ApiKey, undefined, undefined, previousSummary, {
-			promptOverride: "summary",
-			completeImpl: async (_model, context) => {
-				const content = context.messages[0]?.content;
-				if (!Array.isArray(content)) throw new Error("summary prompt has no content");
-				const text = content.find((block): block is { type: "text"; text: string } => block.type === "text")?.text;
-				if (text === undefined) throw new Error("summary prompt has no text");
-				promptText = text;
-				return RESPONSE;
-			},
-		});
-
-		const tokenizer = new Tokenizer(model);
-		expect(tokenizer.checkTokenBudget(promptText, summaryBudget(model.contextWindow ?? 200_000)).fits).toBe(true);
-		expect(promptText).toContain("PREVIOUS_HEAD");
-		expect(promptText).toContain("PREVIOUS_TAIL");
-	});
-
-	test("bounds short and split-turn side-summary requests", async () => {
-		const model = testModel(25_000);
-		const tokenizer = new Tokenizer(model);
-		const settings = { ...DEFAULT_COMPACTION_SETTINGS, remoteEnabled: false, remoteStreamingV2Enabled: false };
-		const oversizedRecent = `SHORT_RECENT_HEAD${"r".repeat(30_000)}SHORT_RECENT_TAIL`;
-		const oversizedTurn = `TURN_PREFIX_HEAD${"t".repeat(30_000)}TURN_PREFIX_TAIL`;
-		const prompts: string[] = [];
-		const completeImpl = async <TApi extends Api>(
-			_model: Model<TApi>,
-			context: Context,
-			_options: SimpleStreamOptions,
-		): Promise<AssistantMessage> => {
-			const content = context.messages[0]?.content;
-			if (!Array.isArray(content)) throw new Error("summary prompt has no content");
-			const text = content.find((block): block is { type: "text"; text: string } => block.type === "text")?.text;
-			if (text === undefined) throw new Error("summary prompt has no text");
-			prompts.push(text);
-			return RESPONSE;
-		};
-
-		await compact(
-			{
-				firstKeptEntryId: "kept",
-				messagesToSummarize: [user("history", 0)],
-				turnPrefixMessages: [],
-				recentMessages: [user(oversizedRecent, 1)],
-				isSplitTurn: false,
-				tokensBefore: 0,
-				fileOps: createFileOps(),
-				settings,
-			},
-			model,
-			"" as ApiKey,
-			undefined,
-			undefined,
-			{ completeImpl },
-		);
-
-		await compact(
-			{
-				firstKeptEntryId: "kept",
-				messagesToSummarize: [user("history", 0)],
-				turnPrefixMessages: [user(oversizedTurn, 1)],
-				recentMessages: [user("recent", 2)],
-				isSplitTurn: true,
-				tokensBefore: 0,
-				fileOps: createFileOps(),
-				settings,
-			},
-			model,
-			"" as ApiKey,
-			undefined,
-			undefined,
-			{ completeImpl },
-		);
-
-		for (const marker of ["SHORT_RECENT_HEAD", "TURN_PREFIX_HEAD"]) {
-			const prompt = prompts.find(value => value.includes(marker));
-			expect(prompt).toBeDefined();
-			expect(
-				tokenizer.checkTokenBudget(prompt!, Math.max(1_024, Math.floor((model.contextWindow ?? 200_000) / 8))).fits,
-			).toBe(true);
-		}
-	});
-});
-
-describe("detail-heavy tool results reaching the summarizer", () => {
+describe("tool result clipping for summaries", () => {
 	test("keeps the tail of a clipped tool result instead of only its head", () => {
 		const text = `HEAD-MARKER${"x".repeat(50_000)}TAIL-MARKER`;
 		const clipped = truncateToolResultForSummary(text);
@@ -459,35 +252,124 @@ describe("detail-heavy tool results reaching the summarizer", () => {
 		expect(clipped).toContain("characters truncated from middle");
 		expect(clipped.length).toBeLessThan(text.length);
 	});
+});
 
-	test("spends spare input budget on wider tool results instead of leaving it unused", async () => {
-		const model = testModel(400_000);
-		const messages = [
-			user("investigate the failing suite", 0),
-			...bigToolResult(1, "SUITE-START", "SUITE-VERDICT 3 failed 118 passed"),
-		];
-		const atFloor = serializeConversationForSummary(messages, preferredDialect(model.id), {
-			toolResultMaxChars: TOOL_RESULT_MIN_CHARS,
-		});
+describe("remote endpoint compaction", () => {
+	const settings: CompactionSettings = {
+		...DEFAULT_COMPACTION_SETTINGS,
+		remoteEnabled: true,
+		remoteStreamingV2Enabled: false,
+		remoteEndpoint: "https://compaction.example/api/summarize",
+	};
 
-		const actual = await capturedConversations(messages as AgentMessage[], model);
+	function endpointCapture(): {
+		requests: Array<{ url: string; body: Record<string, unknown> }>;
+		fetch: FetchImpl;
+	} {
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		return {
+			requests,
+			fetch: (async (input, init) => {
+				requests.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+				return new Response(JSON.stringify({ summary: "endpoint summary text" }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}) as FetchImpl,
+		};
+	}
 
-		expect(actual).toHaveLength(1);
-		expect(actual[0].length).toBeGreaterThan(atFloor.length);
-		expect(actual[0]).toContain("SUITE-START");
-		expect(actual[0]).toContain("SUITE-VERDICT 3 failed 118 passed");
+	function preparation(): CompactionPreparation {
+		return {
+			firstKeptEntryId: "kept",
+			messagesToSummarize: [user("investigate the failing suite", 0)],
+			turnPrefixMessages: [],
+			recentMessages: [],
+			isSplitTurn: false,
+			previousSummary: undefined,
+			previousPreserveData: undefined,
+			tokensBefore: 0,
+			fileOps: createFileOps(),
+			settings,
+		};
+	}
+
+	test("summarizes through the configured endpoint when provider-native compaction is unavailable", async () => {
+		const model = testModel(200_000);
+		const { requests, fetch } = endpointCapture();
+
+		const result = await compact(preparation(), model, "" as ApiKey, undefined, undefined, { fetch });
+
+		expect(requests).toHaveLength(1);
+		expect(requests[0].url).toBe("https://compaction.example/api/summarize");
+		expect(requests[0].body.systemPrompt).toBeString();
+		const promptText = String(requests[0].body.prompt);
+		expect(promptText).toContain("<conversation>");
+		expect(promptText).toContain("investigate the failing suite");
+		expect(result.summary).toContain("endpoint summary text");
+		expect(result.shortSummary).toBe("Remote compaction");
+		expect(result.preserveData).toBeUndefined();
 	});
 
-	test("holds the floor clip when the transcript cannot fit a single window", async () => {
+	test("elides oversized transcript middles so the endpoint request fits its input budget", async () => {
 		const model = testModel(25_000);
-		const messages = Array.from({ length: 12 }, (_, index) =>
-			bigToolResult(index, `START-${index}`, `VERDICT-${index}`),
-		).flat();
+		const oversized = `HEAD_SENTINEL${"a".repeat(25_000)}MIDDLE_SENTINEL${"b".repeat(25_000)}TAIL_SENTINEL`;
+		const { requests, fetch } = endpointCapture();
 
-		const actual = await capturedConversations(messages as AgentMessage[], model);
+		const prep = preparation();
+		prep.messagesToSummarize = [user(oversized, 0)];
+		await compact(prep, model, "" as ApiKey, undefined, undefined, { fetch });
 
-		expect(actual.length).toBeGreaterThan(1);
-		expect(actual).toEqual(expectedWindows(messages, model));
+		const promptText = String(requests[0].body.prompt);
+		expect(promptText).toContain("HEAD_SENTINEL");
+		expect(promptText).toContain("TAIL_SENTINEL");
+		expect(promptText).not.toContain("MIDDLE_SENTINEL");
+		expect(promptText).toContain("characters truncated from middle");
+		const tokenizer = new Tokenizer(model);
+		expect(tokenizer.checkTokenBudget(promptText, summaryBudget(model.contextWindow ?? 200_000)).fits).toBe(true);
+	});
+
+	test("spends the endpoint input budget on wider tool-result clips instead of leaving it unused", async () => {
+		const model = testModel(400_000);
+		const { requests, fetch } = endpointCapture();
+		const [call, result] = toolPair(1);
+		const fatResult = {
+			...(result as Extract<Message, { role: "toolResult" }>),
+			content: [
+				{
+					type: "text" as const,
+					text: `SUITE-START\n${"filler line\n".repeat(4_000)}\nSUITE-VERDICT 3 failed 118 passed`,
+				},
+			],
+		};
+		const atFloor = serializeConversationForSummary(
+			[user("investigate the failing suite", 0), call, fatResult],
+			preferredDialect(model.id),
+			{ toolResultMaxChars: TOOL_RESULT_MIN_CHARS },
+		);
+
+		const prep = preparation();
+		prep.messagesToSummarize = [user("investigate the failing suite", 0), call, fatResult] as AgentMessage[];
+		await compact(prep, model, "" as ApiKey, undefined, undefined, { fetch });
+
+		const promptText = String(requests[0].body.prompt);
+		expect(promptText.length).toBeGreaterThan(atFloor.length);
+		expect(promptText).toContain("SUITE-START");
+		expect(promptText).toContain("SUITE-VERDICT 3 failed 118 passed");
+	});
+
+	test("fails when neither provider-native nor endpoint compaction can run", async () => {
+		const model = testModel(200_000);
+		const withoutEndpoint: CompactionSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			remoteEnabled: true,
+			remoteStreamingV2Enabled: false,
+			remoteEndpoint: undefined,
+		};
+
+		const prep = preparation();
+		prep.settings = withoutEndpoint;
+		await expect(compact(prep, model, "" as ApiKey)).rejects.toThrow(NativeCompactionError);
 	});
 });
 
@@ -509,30 +391,48 @@ describe("the session model's own summary section", () => {
 	});
 });
 
-describe("the minimum context a compaction may fire at", () => {
+describe("the context a compaction fires at", () => {
 	function withSettings(overrides: Partial<CompactionSettings>): CompactionSettings {
 		return { ...DEFAULT_COMPACTION_SETTINGS, ...overrides };
 	}
 
-	test("holds an early configured threshold up to the floor on a window that can carry it", () => {
-		const settings = withSettings({ thresholdTokens: 100_000 });
+	/** Unconfigured: `thresholdPercent`/`thresholdTokens` at their "not set" sentinel. */
+	const unconfigured = DEFAULT_COMPACTION_SETTINGS;
 
-		expect(resolveThresholdTokens(1_000_000, settings)).toBe(MIN_COMPACTION_CONTEXT_TOKENS);
-		expect(shouldCompact(MIN_COMPACTION_CONTEXT_TOKENS - 1_000, 1_000_000, settings)).toBe(false);
-		expect(shouldCompact(MIN_COMPACTION_CONTEXT_TOKENS + 1_000, 1_000_000, settings)).toBe(true);
+	test("an unconfigured window compacts at the anchor ratio for its size", () => {
+		// The share of the window a session may fill falls as the window grows.
+		expect(resolveThresholdTokens(131_072, unconfigured)).toBe(104_857);
+		expect(resolveThresholdTokens(262_144, unconfigured)).toBe(183_500);
+		expect(resolveThresholdTokens(1_048_576, unconfigured)).toBe(419_430);
 	});
 
-	test("holds an early configured percentage up to the floor", () => {
-		const settings = withSettings({ thresholdPercent: 20 });
+	test("a window between anchors interpolates instead of stepping", () => {
+		const ratio = compactionThresholdRatio(200_000);
 
-		expect(resolveThresholdTokens(1_000_000, settings)).toBe(MIN_COMPACTION_CONTEXT_TOKENS);
-		expect(resolveThresholdTokens(2_000_000, settings)).toBe(400_000);
+		expect(ratio).toBeGreaterThan(compactionThresholdRatio(262_144));
+		expect(ratio).toBeLessThan(compactionThresholdRatio(131_072));
+		expect(resolveThresholdTokens(200_000, unconfigured)).toBe(149_482);
 	});
 
-	test("drops the floor on a window too small to reach it, leaving the setting in force", () => {
-		const settings = withSettings({ thresholdPercent: 50 });
+	test("windows past the last anchor hold its ratio rather than falling further", () => {
+		expect(compactionThresholdRatio(4_000_000)).toBe(0.4);
+		expect(resolveThresholdTokens(2_000_000, unconfigured)).toBe(800_000);
+	});
 
-		expect(resolveThresholdTokens(200_000, settings)).toBe(100_000);
-		expect(shouldCompact(120_000, 200_000, settings)).toBe(true);
+	test("a window too small for the curve's headroom is bounded by the room a compaction needs", () => {
+		// 90% of 32k would leave less than the summary itself needs, so the reserve governs.
+		expect(compactionThresholdRatio(32_768)).toBe(0.9);
+		expect(resolveThresholdTokens(32_768, unconfigured)).toBe(16_384);
+		expect(shouldCompact(20_000, 32_768, unconfigured)).toBe(true);
+	});
+
+	test("a configured threshold is obeyed as written, early or late", () => {
+		const byTokens = withSettings({ thresholdTokens: 100_000 });
+		const byPercent = withSettings({ thresholdPercent: 20 });
+
+		expect(resolveThresholdTokens(1_000_000, byTokens)).toBe(100_000);
+		expect(shouldCompact(99_000, 1_000_000, byTokens)).toBe(false);
+		expect(shouldCompact(101_000, 1_000_000, byTokens)).toBe(true);
+		expect(resolveThresholdTokens(1_000_000, byPercent)).toBe(200_000);
 	});
 });

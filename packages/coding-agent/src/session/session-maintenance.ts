@@ -5,7 +5,7 @@ import {
 	type AgentTurnEndContext,
 	resolveTelemetry,
 	type StreamFn,
-	type ThinkingLevel,
+	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import {
 	applyShakeRegions,
@@ -43,6 +43,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
+import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model-resolver";
 import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { CompactionSettings as ConfiguredCompactionSettings, Settings } from "../config/settings";
 import type {
@@ -127,6 +128,9 @@ const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
 const COMPACTION_RECOVERY_BAND = 0.8;
 
 const SELF_SUMMARY_MAX_TOKENS = 4096;
+// The observational-memory observation agent runs its stages at a low thinking level; the handoff
+// note uses the same memory-role models at that level.
+const MEMORY_ROLE_THINKING_LEVEL: ThinkingLevel = ThinkingLevel.Low;
 
 interface ArmedSpeculation {
 	result: CompactionResult;
@@ -529,7 +533,6 @@ export class SessionMaintenance {
 	async compact(
 		customInstructions?: string,
 		options?: CompactOptions,
-		methodOffset = 0,
 		retryController?: AbortController,
 	): Promise<CompactionResult> {
 		const ownsCompactionController = retryController === undefined;
@@ -538,11 +541,7 @@ export class SessionMaintenance {
 		}
 
 		const compactMode = options?.mode ? findCompactMode(options.mode) : undefined;
-		let methods: CompactionMethod[] = [];
-		let selectedMethodIndex = -1;
-		let compactionCommitted = false;
 		let fromExtension = false;
-		let methodAttempted = false;
 		const compactionAbortController = retryController ?? new AbortController();
 		const manualCompactionCleanup = ownsCompactionController ? Promise.withResolvers<void>() : undefined;
 		if (ownsCompactionController) {
@@ -563,43 +562,19 @@ export class SessionMaintenance {
 			}
 
 			const compactionSettings = this.#host.settings.getGroup("compaction");
-			methods = resolveCompactionMethodOrder(compactMode?.overrides.methodOrder ?? compactionSettings.methodOrder);
-			let selectedMethod: CompactionMethod | undefined;
-			for (let index = methodOffset; index < methods.length; index++) {
-				const method = methods[index];
-				if (
-					method === "remote" &&
-					!canUseRemoteCompaction(activeModel, resolveMethodSettings(compactionSettings, method))
-				) {
-					continue;
-				}
-				selectedMethod = method;
-				selectedMethodIndex = index;
-				break;
-			}
-			if (!selectedMethod) {
-				throw new Error("No configured compaction method can run manually.");
-			}
-
-			const effectiveSettings = resolveMethodSettings(compactionSettings, selectedMethod);
-			const availableModels = this.#host.modelRegistry.getAvailable();
-			const requireProviderRemote = selectedMethod === "remote" && !effectiveSettings.remoteEndpoint;
+			// The built-in local summarizer engine is gone: the observational-memory extension answers
+			// session_before_compact with the structured summary, and remote compaction is the only
+			// in-repo fallback when it does not.
+			const effectiveSettings = resolveMethodSettings(compactionSettings, "remote");
+			const requireProviderRemote = !effectiveSettings.remoteEndpoint;
 			const compactionCandidates = this.#getCompactionModelCandidates(
-				availableModels,
+				this.#host.modelRegistry.getAvailable(),
 				requireProviderRemote
 					? candidate =>
 							candidate.provider === activeModel.provider &&
 							shouldUseProviderNativeCompaction(candidate, effectiveSettings)
 					: undefined,
 			);
-			if (requireProviderRemote && compactionCandidates.length === 0) {
-				this.#host.emitNotice(
-					"warning",
-					`remote compaction is unavailable for ${activeModel.id}; trying the next preferred method`,
-					"compaction",
-				);
-				return await this.compact(customInstructions, options, selectedMethodIndex + 1, compactionAbortController);
-			}
 			const pathEntries = this.#host.sessionManager.getBranch();
 			const preparation = prepareCompaction(pathEntries, effectiveSettings, activeModel, this.#tokenizer);
 			if (!preparation) {
@@ -635,7 +610,6 @@ export class SessionMaintenance {
 			}
 
 			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
-			if (compactionPrep.kind !== "fromHook") methodAttempted = true;
 
 			let summary: string;
 			let shortSummary: string | undefined;
@@ -657,6 +631,11 @@ export class SessionMaintenance {
 					phase: "standalone_turn",
 				});
 
+				if (requireProviderRemote && compactionCandidates.length === 0) {
+					throw new Error(
+						`Remote compaction is unavailable for ${activeModel.id}, and no in-repo summarizer engine exists`,
+					);
+				}
 				try {
 					const result = await this.#compactWithFallbackModel(
 						preparation,
@@ -701,7 +680,6 @@ export class SessionMaintenance {
 				});
 			}
 
-			compactionCommitted = true;
 			await this.#commitCompactionEntry({
 				summary,
 				shortSummary,
@@ -710,7 +688,7 @@ export class SessionMaintenance {
 				details,
 				fromExtension,
 				preserveData,
-				method: fromExtension ? undefined : selectedMethod,
+				method: fromExtension ? undefined : "remote",
 				codexCompaction,
 				advisorResetReason: "compact",
 			});
@@ -727,21 +705,6 @@ export class SessionMaintenance {
 			return compactionResult;
 		} catch (error) {
 			const err = error instanceof Error ? error : new Error(String(error));
-			if (
-				methodAttempted &&
-				!compactionCommitted &&
-				!compactionAbortController.signal.aborted &&
-				!(error instanceof CompactionCancelledError) &&
-				selectedMethodIndex >= 0 &&
-				selectedMethodIndex + 1 < methods.length
-			) {
-				this.#host.emitNotice(
-					"warning",
-					`${methods[selectedMethodIndex]} compaction failed; trying the next preferred method`,
-					"compaction",
-				);
-				return await this.compact(customInstructions, options, selectedMethodIndex + 1, compactionAbortController);
-			}
 			await this.#emitCompactionFailed({
 				type: "session_compact_failed",
 				reason: "manual",
@@ -876,7 +839,7 @@ export class SessionMaintenance {
 			if (compactionPrep.kind === "fromHook") return clear();
 			const candidates = this.#getCompactionModelCandidates(
 				this.#host.modelRegistry.getAvailable(),
-				method === "remote" && !effectiveSettings.remoteEndpoint
+				!effectiveSettings.remoteEndpoint
 					? candidate =>
 							candidate.provider === model.provider &&
 							shouldUseProviderNativeCompaction(candidate, effectiveSettings)
@@ -909,7 +872,7 @@ export class SessionMaintenance {
 					summary: await this.#appendSelfSummary(result.summary, preparation, signal),
 					preserveData: mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData),
 				},
-				action: method === "remote" ? "remote" : "context-full",
+				action: "remote",
 				method,
 				codexCompaction,
 				snapshotLeafId,
@@ -1520,52 +1483,85 @@ export class SessionMaintenance {
 
 	/**
 	 * Every summary a compaction commits is written by something that only ever saw a serialized
-	 * transcript — the built-in summarizer, or an extension reading its own memory store. The
-	 * session's own model still holds the live context, so it appends its own note to that summary
-	 * before the context is dropped. It is best-effort: a failed or unauthorized note is skipped
-	 * rather than allowed to fail the compaction.
+	 * transcript — the observational-memory extension, or a remote compactor. The handoff note is
+	 * written from that transcript by the same memory-role models the observation agent uses
+	 * (@smol, then @tiny), falling back to the session's own model when they are unavailable or
+	 * fail. Best-effort: a failed or unauthorized note is skipped rather than allowed to fail the
+	 * compaction.
 	 */
 	async #appendSelfSummary(summary: string, preparation: CompactionPreparation, signal: AbortSignal): Promise<string> {
 		const model = this.#model;
 		if (!model) return summary;
 		if (!this.#host.settings.getGroup("compaction").selfSummary) return summary;
 		const sessionId = this.#host.sessionId();
-		if (!(await this.#host.modelRegistry.getApiKey(model, sessionId))) return summary;
 
-		try {
-			const note = await generateSelfSummary(
-				this.#host.obfuscatePreparationForProvider(preparation),
-				model,
-				this.#host.modelRegistry.resolver(model, sessionId),
-				{
-					systemPrompt: this.#host.baseSystemPrompt(),
-					tools: this.#host.agent.state.tools,
-					convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
-					initiatorOverride: "agent",
-					metadata: this.#host.agent.metadataForProvider(model.provider),
-					telemetry: resolveTelemetry(this.#host.agent.telemetry, sessionId),
-					thinkingLevel: this.#host.thinkingLevel(),
-					maxTokens: SELF_SUMMARY_MAX_TOKENS,
-					sessionId,
-					promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
-					providerSessionState: this.#host.providerSessionState,
-					preferWebsockets: this.#host.preferWebsockets,
-					completeImpl: async (requestModel, requestContext, requestOptions) => {
-						const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
-						return stream.result();
+		for (const candidate of this.#selfSummaryModelCandidates(model)) {
+			const apiKey = await this.#host.modelRegistry.getApiKey(candidate.model, sessionId);
+			if (!apiKey) continue;
+			try {
+				const note = await generateSelfSummary(
+					this.#host.obfuscatePreparationForProvider(preparation),
+					candidate.model,
+					this.#host.modelRegistry.resolver(candidate.model, sessionId),
+					{
+						systemPrompt: this.#host.baseSystemPrompt(),
+						tools: this.#host.agent.state.tools,
+						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+						initiatorOverride: "agent",
+						metadata: this.#host.agent.metadataForProvider(candidate.model.provider),
+						telemetry: resolveTelemetry(this.#host.agent.telemetry, sessionId),
+						thinkingLevel: candidate.memoryRole ? MEMORY_ROLE_THINKING_LEVEL : this.#host.thinkingLevel(),
+						maxTokens: SELF_SUMMARY_MAX_TOKENS,
+						sessionId,
+						promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+						providerSessionState: this.#host.providerSessionState,
+						preferWebsockets: this.#host.preferWebsockets,
+						completeImpl: async (requestModel, requestContext, requestOptions) => {
+							const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
+							return stream.result();
+						},
 					},
-				},
-				signal,
-			);
-			return upsertSelfSummary(summary, note);
-		} catch (error) {
-			if (signal.aborted) return summary;
-			logger.warn("Self-written compaction summary failed", {
-				error: error instanceof Error ? error.message : String(error),
-				model: `${model.provider}/${model.id}`,
-			});
-			return summary;
+					signal,
+				);
+				return upsertSelfSummary(summary, note);
+			} catch (error) {
+				if (signal.aborted) return summary;
+				logger.warn("Self-written compaction summary failed; trying the next memory-role model", {
+					error: error instanceof Error ? error.message : String(error),
+					model: `${candidate.model.provider}/${candidate.model.id}`,
+				});
+			}
 		}
+		return summary;
+	}
+
+	/**
+	 * Mirrors the observational-memory model candidate order: the @smol and @tiny roles first
+	 * (cheaper models with the transcript handed to them), the session's own model last as the
+	 * fallback — unless the session model already fills a memory role, which keeps it first.
+	 */
+	#selfSummaryModelCandidates(sessionModel: Model): Array<{ model: Model; memoryRole: boolean }> {
+		const settings = this.#host.settings;
+		const resolveRole = (spec: string): Model | undefined =>
+			resolveModelRoleValue(spec, this.#host.modelRegistry.getAvailable(), {
+				settings,
+				matchPreferences: getModelMatchPreferences(settings),
+			}).model;
+		const roles = [resolveRole("@smol"), resolveRole("@tiny")].filter((model): model is Model => model !== undefined);
+		const isMemoryRole = (model: Model): boolean =>
+			roles.some(role => role.provider === model.provider && role.id === model.id);
+		const currentUsesMemoryRole = isMemoryRole(sessionModel);
+		const ordered = currentUsesMemoryRole ? [sessionModel, ...roles] : [...roles, sessionModel];
+
+		const candidates: Array<{ model: Model; memoryRole: boolean }> = [];
+		const seen = new Set<string>();
+		for (const model of ordered) {
+			const key = `${model.provider}/${model.id}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			candidates.push({ model, memoryRole: isMemoryRole(model) });
+		}
+		return candidates;
 	}
 
 	async #prepareCompactionFromHooks(
@@ -1741,39 +1737,32 @@ export class SessionMaintenance {
 			terminalTextAnswer?: boolean;
 
 			detachPostCommit?: boolean;
-
-			methodIndex?: number;
 		} = {},
 	): Promise<CompactionCheckResult> {
 		const compactionSettings = this.#host.settings.getGroup("compaction");
 		if (reason !== "idle" && !compactionSettings.enabled) return COMPACTION_CHECK_NONE;
 		const methods = resolveCompactionMethodOrder(compactionSettings.methodOrder);
 		if (methods.length === 0) return COMPACTION_CHECK_NONE;
+		const hasCompactionHook = this.#host.extensionRunner?.hasHandlers("session_before_compact") ?? false;
 		const generation = this.#host.promptGeneration();
 		const terminalTextAnswer =
 			options.terminalTextAnswer ?? isTerminalTextAssistantAnswer(this.#host.findLastAssistantMessage());
 		const suppressContinuation = options.suppressContinuation === true;
 		const shouldAutoContinue =
 			!suppressContinuation && options.autoContinue !== false && compactionSettings.autoContinue !== false;
-		const startIndex = options.methodIndex ?? 0;
-		let methodIndex = -1;
-		let method: CompactionMethod | undefined;
-		for (let index = startIndex; index < methods.length; index++) {
-			const candidate = methods[index];
-			const available =
-				candidate === "remote"
-					? canUseRemoteCompaction(this.#model, resolveMethodSettings(compactionSettings, candidate))
-					: true;
-			if (!available) continue;
-			method = candidate;
-			methodIndex = index;
-			break;
-		}
-		if (!method) return COMPACTION_CHECK_NONE;
+		// Remote compaction is the only in-repo fallback; the observational-memory extension answers
+		// session_before_compact regardless of remote availability.
+		const method: CompactionMethod | undefined = canUseRemoteCompaction(
+			this.#model,
+			resolveMethodSettings(compactionSettings, "remote"),
+		)
+			? "remote"
+			: undefined;
+		if (!method && !hasCompactionHook) return COMPACTION_CHECK_NONE;
 
 		const claimedSpec = this.#claimArmedSpeculation();
 		const armedSpec = claimedSpec;
-		const effectiveSettings = resolveMethodSettings(compactionSettings, method);
+		const effectiveSettings = resolveMethodSettings(compactionSettings, "remote");
 		const action: "context-full" | "remote" = armedSpec?.action ?? (method === "remote" ? "remote" : "context-full");
 
 		this.#autoCompactionAbortController?.abort();
@@ -1781,7 +1770,6 @@ export class SessionMaintenance {
 		this.#autoCompactionAbortController = autoCompactionAbortController;
 		const autoCompactionSignal = autoCompactionAbortController.signal;
 
-		let compactionCommitted = false;
 		let fromExtension = false;
 		try {
 			const startEvent = { type: "auto_compaction_start" as const, reason, action };
@@ -1814,9 +1802,7 @@ export class SessionMaintenance {
 					suppressContinuation,
 					detachPostCommit: options.detachPostCommit === true,
 					autoCompactionSignal,
-					onCommitted: () => {
-						compactionCommitted = true;
-					},
+					onCommitted: () => {},
 				});
 			}
 
@@ -1965,9 +1951,14 @@ export class SessionMaintenance {
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
 			} else {
+				if (!method) {
+					throw new Error(
+						"Compaction failed: no extension summary was produced and remote compaction is unavailable for this model",
+					);
+				}
 				const candidates = this.#getCompactionModelCandidates(
 					availableModels,
-					method === "remote" && !effectiveSettings.remoteEndpoint
+					!effectiveSettings.remoteEndpoint
 						? candidate =>
 								candidate.provider === this.#model?.provider &&
 								shouldUseProviderNativeCompaction(candidate, effectiveSettings)
@@ -2156,9 +2147,7 @@ export class SessionMaintenance {
 				suppressContinuation,
 				detachPostCommit: options.detachPostCommit === true,
 				autoCompactionSignal,
-				onCommitted: () => {
-					compactionCommitted = true;
-				},
+				onCommitted: () => {},
 			});
 		} catch (error) {
 			if (autoCompactionSignal.aborted) {
@@ -2189,27 +2178,6 @@ export class SessionMaintenance {
 					: reason === "incomplete"
 						? `Incomplete response recovery failed: ${errorMessage}`
 						: `Auto-compaction failed: ${errorMessage}`;
-			if (!compactionCommitted && methodIndex + 1 < methods.length) {
-				logger.warn("Automatic compaction method failed; trying next preference", {
-					method,
-					error: errorMessage,
-				});
-				await this.#emitLifecycleEvent(
-					{
-						type: "auto_compaction_end",
-						action,
-						result: undefined,
-						aborted: false,
-						willRetry: false,
-						errorMessage: `${contextErrorMessage}; trying the next preferred compaction method.`,
-					},
-					options.detachPostCommit === true,
-				);
-				return await this.runAutoCompaction(reason, willRetry, {
-					...options,
-					methodIndex: methodIndex + 1,
-				});
-			}
 			await this.#emitCompactionFailed({
 				type: "session_compact_failed",
 				reason,

@@ -253,7 +253,7 @@ function assistantContent(content: AssistantContent): TextContent | AssistantCon
 	}
 }
 
-function contentText(content: string | UserContent[]): string {
+export function contentText(content: string | UserContent[]): string {
 	if (typeof content === "string") return content;
 	return content.map(userContentText).join("");
 }

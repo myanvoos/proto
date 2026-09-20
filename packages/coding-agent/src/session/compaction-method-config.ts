@@ -1,23 +1,18 @@
 export const COMPACTION_METHOD_CHOICES = [
 	{
 		value: "remote",
-		label: "OpenAI server compaction",
-		description: "Use provider-native OpenAI-compatible server compaction when the active route supports it",
-	},
-	{
-		value: "soft",
-		label: "Soft compaction",
-		description: "Summarize in place with a compaction model without using server compaction",
+		label: "Remote compaction",
+		description:
+			"Use provider-native OpenAI-compatible server compaction, or the configured compaction.remoteEndpoint, when the active route supports it",
 	},
 ] as const;
 
 export type CompactionMethod = (typeof COMPACTION_METHOD_CHOICES)[number]["value"];
 
-export const DEFAULT_COMPACTION_METHOD_ORDER: CompactionMethod[] = ["remote", "soft"];
+export const DEFAULT_COMPACTION_METHOD_ORDER: CompactionMethod[] = ["remote"];
 
 const COMPACTION_METHODS: Record<CompactionMethod, true> = {
 	remote: true,
-	soft: true,
 };
 
 function isCompactionMethod(value: unknown): value is CompactionMethod {

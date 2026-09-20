@@ -2023,9 +2023,9 @@ export const SETTINGS_SCHEMA = {
 			group: "Compaction",
 			label: "Compaction Threshold",
 			description:
-				"Percent threshold for context maintenance; set to Default to use legacy reserve-based behavior. Never fires below 250K tokens on a window large enough to reach it",
+				"Percent threshold for context maintenance; set to Default to scale with the model's context window (90% at 32K falling to 40% at 1M)",
 			options: [
-				{ value: "default", label: "Default", description: "Legacy reserve-based threshold" },
+				{ value: "default", label: "Default", description: "Scales with the model's context window" },
 				{ value: "10", label: "10%", description: "Extremely early maintenance" },
 				{ value: "20", label: "20%", description: "Very early maintenance" },
 				{ value: "30", label: "30%", description: "Early maintenance" },
@@ -2049,7 +2049,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Compaction",
 			label: "Compaction Token Limit",
 			description:
-				"Fixed token limit for context maintenance; overrides percentage if set. Never fires below 250K tokens on a window large enough to reach it",
+				"Fixed token limit for context maintenance; overrides percentage if set, and is used exactly as written",
 			options: [
 				{ value: "default", label: "Default", description: "Use percentage-based threshold" },
 				{ value: "25000", label: "25K tokens", description: "Quarter of a 200K window" },

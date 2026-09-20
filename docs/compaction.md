@@ -11,7 +11,7 @@ Both are persisted as session entries and converted back into user-context messa
 
 - `packages/coding-agent/src/vendor/pi-blackhole/index.js` (pi-blackhole 0.4.10 runtime)
 - `packages/coding-agent/src/sdk.ts` (built-in extension registration)
-- `packages/agent/src/compaction/compaction.ts` (preparation and optional pi-default summarization)
+- `packages/agent/src/compaction/compaction.ts` (preparation and remote compaction)
 - `packages/agent/src/compaction/branch-summarization.ts`
 - `packages/agent/src/compaction/pruning.ts`
 - `packages/agent/src/compaction/compaction-v2-streaming.ts` (provider-native streaming compaction)
@@ -117,7 +117,7 @@ The automatic paths are intentionally different:
   - The incomplete assistant message is removed from active agent state before recovery.
   - Context promotion is tried first.
   - If promotion is unavailable and compaction is enabled, auto maintenance walks `compaction.methodOrder` with `reason: "incomplete"` and `willRetry: true`.
-  - On soft-compaction success, `agent.continue()` is scheduled to retry the turn.
+  - On remote-compaction success, `agent.continue()` is scheduled to retry the turn.
 
 - **Threshold maintenance**
   - Trigger: successful, non-error assistant message whose adjusted context tokens exceed `resolveThresholdTokens(...)`.
@@ -228,11 +228,11 @@ pi-blackhole also adds:
 - `/memory settings`, `/observations`, and `/recall`.
 - the agent-facing `recall` tool for transcript search, entry expansion, file drill-down, and observation/reflection evidence lookup.
 
-Configuration lives at `~/.proto/agent/pi-blackhole/pi-blackhole-config.json`, with an optional project override at `.pi/pi-blackhole-config.json`. The default mode is deterministic compaction with observational memory enabled. Set `compactionEngine` to `"pi-default"` in that file to bypass Blackhole's result producer and use Proto's previous remote/soft summarizer path; the scheduler and recovery settings described below remain authoritative in either mode. See the [upstream configuration reference](https://github.com/k0valik/pi-blackhole/blob/270aa0912800b2b7ce64414ef4247be84106d8f8/docs/CONFIG.md) for Blackhole-specific options.
+Configuration lives at `~/.proto/agent/pi-blackhole/pi-blackhole-config.json`, with an optional project override at `.pi/pi-blackhole-config.json`. The default mode is deterministic compaction with observational memory enabled. Blackhole is the only summary engine; remote compaction remains the fallback method when Blackhole declines. The scheduler and recovery settings described below remain authoritative. See the [upstream configuration reference](https://github.com/k0valik/pi-blackhole/blob/270aa0912800b2b7ce64414ef4247be84106d8f8/docs/CONFIG.md) for Blackhole-specific options.
 
 Observational memory runs background Observer, Reflector, and Dropper model calls. Structural compaction itself is deterministic and model-free; memory is not. Configure explicit inexpensive worker models and set `sessionFallback: false` to prevent workers from falling back to the active session model.
 
-When `compactionEngine: "pi-default"`, the previous generator remains available as a compatibility fallback: it serializes the prepared conversation, treats it as untrusted data, and uses either provider-native compaction, a configured remote endpoint, or the structured LLM summary prompts in `packages/agent/src/compaction/prompts/`.
+The previous local structured summarizer was removed; the fallback serializes the prepared conversation, treats it as untrusted data, and uses provider-native compaction or a configured remote endpoint (`compaction.remoteEndpoint`) only.
 
 ### File-operation context in summaries
 
@@ -393,8 +393,8 @@ Post-navigation event exposing new/old leaf and optional summary entry.
 From `settings-schema.ts`:
 
 - `compaction.enabled` = `true`
-- `compaction.methodOrder` = `["remote", "soft"]`. `remote` uses provider-native OpenAI-compatible server compaction when available; unavailable or failed methods advance to the next preference. Legacy configured orders containing the removed `handoff`/`shake` methods are filtered down to their surviving `remote`/`soft` entries.
-- `compaction.asyncEnabled` = `true`. Async (speculative) compaction: when context enters the pre-threshold band `[threshold − lead, threshold)` (lead = `clamp(threshold × 0.125, 8192, 32000)`), maintenance starts a background summarization for the first configured LLM-backed method (`remote` or `soft`) off a branch snapshot, isolated from the live turn by a side session id. The armed result is committed instantly when the threshold is actually crossed, hiding summarization latency; post-snapshot turns are appended after the summary unchanged. Armed results are discarded when the branch prefix changes (new compaction, reset boundary, `/tree` navigation), when a provider-native replay payload is no longer readable by the active model, or when context grows past `keepRecentTokens` since compute (a fresh speculation replaces it). Speculation is skipped while an extension registers `session_before_compact`. The status line pulses the auto-compact icon while a speculation runs and holds it in accent when a result is armed.
+- `compaction.methodOrder` = `["remote"]`. `remote` uses provider-native OpenAI-compatible server compaction or the configured remote endpoint when available. Legacy configured orders containing the removed `handoff`/`shake`/`soft` methods are filtered down to their surviving `remote` entries.
+- `compaction.asyncEnabled` = `true`. Async (speculative) compaction: when context enters the pre-threshold band `[threshold − lead, threshold)` (lead = `clamp(threshold × 0.125, 8192, 32000)`), maintenance starts a background remote compaction off a branch snapshot, isolated from the live turn by a side session id. The armed result is committed instantly when the threshold is actually crossed, hiding summarization latency; post-snapshot turns are appended after the summary unchanged. Armed results are discarded when the branch prefix changes (new compaction, reset boundary, `/tree` navigation), when a provider-native replay payload is no longer readable by the active model, or when context drifts too far.
 - `compaction.reserveTokens` is unset by default. The compaction layer normally applies a `16384`-token floor and at least 15% of the context window; on small windows where that default would be impractical, budget checks use the 15% proportional reserve. An explicit configured reserve is honored.
 - `compaction.keepRecentTokens` = `20000`
 - `compaction.autoContinue` = `true`
@@ -402,7 +402,7 @@ From `settings-schema.ts`:
 - `compaction.remoteEndpoint` = `undefined`
 - `compaction.remoteStreamingV2Enabled` = `true`
 - `compaction.v2RetainedMessageBudget` = `64000`
-- `compaction.thresholdPercent` = `-1` and `compaction.thresholdTokens` = `-1`; a positive fixed token limit takes precedence over percentage, and otherwise the reserve-based threshold is used.
+- `compaction.thresholdPercent` = `-1` and `compaction.thresholdTokens` = `-1`; a positive fixed token limit takes precedence over percentage, and both are used exactly as written. With neither set, the threshold scales with the model's context window: `floor(window × ratio)` where the ratio is read off the anchors 0.90 @ 32,768, 0.80 @ 131,072, 0.70 @ 262,144, 0.40 @ 1,048,576 — interpolated between, held constant outside — and capped by the room a compaction needs to run (`window − reserve`), which is what governs windows below ~110K.
 - `compaction.idleEnabled` = `false`
 - `compaction.idleThresholdTokens` = `200000`
 - `compaction.idleTimeoutSeconds` = `300`

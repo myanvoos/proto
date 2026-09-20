@@ -2,13 +2,18 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the built-in local summarizer engine: compaction summaries are produced by the observational-memory extension, with remote compaction (provider-native or the configured `remoteEndpoint`) as the only fallback. The handoff note is written by the observational-memory model roles (`@smol`, then `@tiny`), falling back to the session's own model.
+
 ### Added
 
-- Added `generateSelfSummary` and `upsertSelfSummary`: the session's own model writes a note from the context a compaction is about to drop, and the note is merged into the compaction summary in place of the previous round's note.
+- Remote-only compaction keeps provider-native OpenAI compaction and configured-endpoint summarization as the fallback when observational memory declines.
+- Added `generateSelfSummary` and `upsertSelfSummary`: a handoff note is written from the context a compaction is about to drop and merged into the compaction summary in place of the previous round's note.
 
 ### Changed
 
-- Compaction no longer fires below 250K context tokens on any model whose window can carry that much, whatever threshold percent or token limit is configured; smaller windows keep their configured threshold.
+- The default compaction threshold now scales with the model's context window — 90% at 32K falling to 40% at 1M, interpolated between — instead of a flat reserve-based cut; a configured percent or token limit is used exactly as written.
 - Compaction summaries now budget against the reserve the compaction threshold already holds back, so the summary can use the headroom that was previously left unused.
 - Detail-heavy tool results now reach the summarizer with both their head and their tail, and are clipped as widely as the summarizer's input budget allows, so verdicts, totals and trailing errors survive compaction.
 

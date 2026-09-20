@@ -11,7 +11,6 @@ import { type CompactionMethod, resolveCompactionMethodOrder } from "./compactio
 
 const STRATEGY_BY_COMPACTION_METHOD: Record<CompactionMethod, "context-full"> = {
 	remote: "context-full",
-	soft: "context-full",
 };
 
 export function resolveMethodSettings(

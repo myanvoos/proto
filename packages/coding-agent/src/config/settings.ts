@@ -25,7 +25,7 @@ import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
 import { isLightTheme, setAutoThemeMapping, setColorBlindMode } from "../modes/theme/theme";
 import { AgentStorage } from "../session/agent-storage";
-import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-method-config";
+import type { CompactionMethod } from "../session/compaction-method-config";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
 import { INSPECT_MEDIA_MODES } from "../utils/inspect-media-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
@@ -1272,14 +1272,14 @@ export class Settings {
 				case "context-full":
 				case "shake-summary":
 				case "shake":
-					methodOrder = remoteEnabled ? ["remote", "soft"] : ["soft"];
+					methodOrder = remoteEnabled ? ["remote"] : [];
 					break;
 				case "off":
 					methodOrder = [];
 					break;
 				default:
 					if (legacyRemoteEnabled === false) {
-						methodOrder = DEFAULT_COMPACTION_METHOD_ORDER.filter(method => method !== "remote");
+						methodOrder = [];
 					}
 			}
 			if (methodOrder) {

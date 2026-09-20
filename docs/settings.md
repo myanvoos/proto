@@ -201,7 +201,7 @@ modelRoles:
   slow: anthropic/claude-opus-4-5:high
 
 compaction:
-  methodOrder: [remote, soft]
+  methodOrder: [remote]
   thresholdPercent: 80
 
 theme:
@@ -553,7 +553,7 @@ edit:
 
 ### Context and compaction
 
-Proto loads pi-blackhole as its built-in compaction engine. The settings below remain the scheduler, recovery, and pi-default fallback controls. Blackhole-specific memory, worker-model, tail, and engine settings live in `~/.proto/agent/pi-blackhole/pi-blackhole-config.json` (project override: `.pi/pi-blackhole-config.json`) and are also available through `/memory settings`.
+Proto loads pi-blackhole as its built-in compaction engine. The settings below remain the scheduler and remote-fallback controls. Blackhole-specific memory, worker-model, tail, and engine settings live in `~/.proto/agent/pi-blackhole/pi-blackhole-config.json` (project override: `.pi/pi-blackhole-config.json`) and are also available through `/memory settings`.
 
 ```yaml
 contextPromotion:
@@ -561,9 +561,9 @@ contextPromotion:
 
 compaction:
   enabled: true
-  methodOrder: [remote, soft]
+  methodOrder: [remote]
   midTurnEnabled: true # check thresholds between tool-loop provider requests
-  thresholdPercent: -1 # -1 = default reserve-based behavior
+  thresholdPercent: -1 # -1 = scale with the model's context window
   thresholdTokens: -1 # fixed token limit when > 0
 ```
 
@@ -572,9 +572,9 @@ compaction:
 | `contextPromotion.enabled`    | boolean | `false`                                  | Promote to the active model's explicit `contextPromotionTarget` on context overflow.                                                                                                                                                      |
 | `compaction.enabled`          | boolean | `true`                                   | Automatic conversation compaction.                                                                                                                                                                                                        |
 | `compaction.midTurnEnabled`   | boolean | `true`                                   | Check thresholds at safe mid-turn tool-loop boundaries before the next provider request.                                                                                                                                                  |
-| `compaction.methodOrder`      | array   | `remote, soft`                           | Ordered pi-default fallbacks used when Blackhole delegates to the host. `remote` uses provider-native OpenAI-compatible server compaction; unavailable or failed methods advance. |
-| `compaction.thresholdPercent` | number  | `-1`                                     | Percent-of-context trigger; `-1` = reserve-based default.                                                                                                                                                                                 |
-| `compaction.thresholdTokens`  | number  | `-1`                                     | Fixed token trigger when `> 0`.                                                                                                                                                                                                           |
+| `compaction.methodOrder`      | array   | `remote`                                 | Ordered fallbacks used when Blackhole declines to compact. `remote` uses provider-native OpenAI-compatible server compaction or the configured remote endpoint; unavailable or failed methods advance. |
+| `compaction.thresholdPercent` | number  | `-1`                                     | Percent-of-context trigger; `-1` scales with the model's context window (90% at 32K → 40% at 1M).                                                                                                                                         |
+| `compaction.thresholdTokens`  | number  | `-1`                                     | Fixed token trigger when `> 0`; used exactly as written.                                                                                                                                                                                  |
 | `compaction.reserveTokens`    | number  | _(unset)_                                | Absolute reserve floor. When unset, the effective reserve is the larger of `16384` and 15% of the context window; if that default would leave no practical small-window budget, it falls back to the 15% reserve.                         |
 | `compaction.keepRecentTokens` | number  | `20000`                                  | Recent-token tail for pi-default compaction and Blackhole's `tailBehavior: "pi-default"`; Blackhole's default minimal tail chooses its own boundary. |
 | `compaction.autoContinue`     | boolean | `true`                                   | Continue automatically after compaction.                                                                                                                                                                                                  |
