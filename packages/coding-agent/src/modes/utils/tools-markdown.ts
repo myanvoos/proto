@@ -6,7 +6,7 @@ interface ToolsMarkdownBindings {
 	xdevTools?: ReadonlyArray<{ name: string; summary: string }>;
 }
 
-function escapeTableCell(value: string): string {
+export function escapeTableCell(value: string): string {
 	return value
 		.replace(/\|/g, "\\|")
 		.replace(/\r?\n+/g, " ")

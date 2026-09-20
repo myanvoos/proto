@@ -2,6 +2,17 @@
 
 Run `/hotkeys` inside an `proto` session to see the active chords for your current build. The list reflects any remaps loaded from disk and any bindings added by extensions.
 
+Use `/help` (or `/?`) to list built-in commands. Command-name and alias matches
+rank above description-only suggestions. Enter does not accept an unselected
+description-only match; use Tab or arrow navigation to choose it explicitly.
+An unknown single-word command stays in the editor instead of being sent to the
+model.
+
+`Ctrl+O` redraws the transcript with tool output expanded or collapsed, including
+output already in tmux scrollback. Explicit redraws replace pane history where
+the terminal supports it; multiplexers that ignore history clearing keep the
+older copy above the refreshed transcript.
+
 ## Customize keybindings
 
 User remaps live in `~/.proto/agent/keybindings.yml`. The file is a YAML mapping whose keys are keybinding action IDs and whose values are either one chord string or an array of chord strings. It is not read from `~/.proto/agent/config.yml`, and there is no nested `keybindings` object.

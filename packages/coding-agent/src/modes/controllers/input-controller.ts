@@ -668,6 +668,18 @@ export class InputController {
 				if (typeof slashResult === "string") {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 					text = slashResult;
+				} else if (
+					/^\/[^\s/]+$/.test(text) &&
+					!isKnownSkillCommand(this.ctx, text) &&
+					!this.#isLocalExtensionCommand(text) &&
+					!this.ctx.isKnownSlashCommand(text) &&
+					!this.ctx.session.promptTemplates.some(template => template.name === text.slice(1))
+				) {
+					// A bare `/name` nothing claims is a typo, not a prompt: keep the
+					// draft so it can be fixed instead of sending it to the model.
+					this.ctx.showStatus(`Unknown command ${text} — type / to browse commands`);
+					this.ctx.editor.setText(text);
+					return;
 				}
 			}
 

@@ -162,6 +162,12 @@ export interface AutocompleteItem {
 	icon?: string;
 
 	hint?: string;
+
+	/**
+	 * Matched only via description/keywords; Enter must not accept it unless
+	 * the user explicitly navigated to it.
+	 */
+	weakMatch?: boolean;
 }
 
 type Awaitable<T> = T | Promise<T>;
@@ -304,11 +310,14 @@ function buildSlashCommandCompletions(
 				};
 			}
 
+			let aliasMatched = false;
 			if (lowerPrefix.length > 0) {
 				for (const alias of getCommandAliases(cmd)) {
 					if (alias === name) continue;
 					const aliasScore = scoreCommandTextMatch(lowerPrefix, alias.toLowerCase());
-					if (aliasScore === 0 || (best && aliasScore <= best.score)) continue;
+					if (aliasScore === 0) continue;
+					aliasMatched = true;
+					if (best && aliasScore <= best.score) continue;
 					const fullDesc = resolveFullDesc();
 					best = {
 						value: alias,
@@ -320,10 +329,16 @@ function buildSlashCommandCompletions(
 				}
 			}
 
-			return best ? [best] : [];
+			if (!best) return [];
+			// A description-only hit is kept for discovery but flagged so the
+			// editor never lets a plain Enter run a command the user did not type.
+			if (nameScore === 0 && !aliasMatched) best.weakMatch = true;
+			return [best];
 		})
-
-		.sort((a, b) => b.score - a.score || b.usage - a.usage)
+		.sort((a, b) => {
+			// Name/alias matches always outrank description-only discovery hits.
+			return Number(a.weakMatch === true) - Number(b.weakMatch === true) || b.score - a.score || b.usage - a.usage;
+		})
 		.map(({ score: _, usage: _usage, ...rest }) => rest);
 }
 

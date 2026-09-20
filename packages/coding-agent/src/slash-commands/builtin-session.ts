@@ -333,6 +333,15 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "help",
+		aliases: ["?"],
+		description: "Show commands, shortcuts and where to look next",
+		handleTui: (_command, runtime) => {
+			runtime.ctx.handleHelpCommand();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "hotkeys",
 		description: "Show all keyboard shortcuts",
 		handleTui: (_command, runtime) => {

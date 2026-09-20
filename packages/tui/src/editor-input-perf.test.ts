@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { CombinedAutocompleteProvider, type SlashCommand } from "./autocomplete";
 import {
 	Editor,
 	type EditorInlineReplacement,
@@ -342,4 +343,80 @@ test("undo resets volatile text bookkeeping before the next draft", () => {
 	editor.clearVolatileText();
 
 	expect(editor.getText()).toBe("new");
+});
+
+const SLASH_COMMANDS: SlashCommand[] = [
+	{ name: "clear", description: "Clear the conversation context in place, keeping the session" },
+	{ name: "model", description: "Switch model for this session" },
+];
+
+/** Editor showing the live suggestion list for the slash prefix `text`. */
+async function editorWithOpenSlashList(text: string): Promise<{ editor: Editor; submitted: string[] }> {
+	const editor = editorWith(text.slice(0, -1));
+	const submitted: string[] = [];
+	editor.onSubmit = value => {
+		submitted.push(value);
+	};
+	editor.setAutocompleteProvider(new CombinedAutocompleteProvider(SLASH_COMMANDS, "/tmp"));
+	const listShown = Promise.withResolvers<void>();
+	editor.onAutocompleteUpdate = () => listShown.resolve();
+	editor.handleInput(text.slice(-1));
+	await listShown.promise;
+	expect(editor.isAutocompleteActive()).toBe(true);
+	return { editor, submitted };
+}
+
+test("Enter submits the typed command instead of a description-only match nobody selected", async () => {
+	// `/help` matches no command name; `clear` is only a fuzzy hit on its description.
+	const { editor, submitted } = await editorWithOpenSlashList("/help");
+
+	editor.handleInput("\r");
+
+	expect(submitted).toEqual(["/help"]);
+	expect(editor.isAutocompleteActive()).toBe(false);
+	expect(editor.getText()).toBe("");
+});
+
+test("Enter accepts a description-only match once the user navigated to it", async () => {
+	const { editor, submitted } = await editorWithOpenSlashList("/help");
+
+	editor.handleInput("\x1b[B");
+	editor.handleInput("\r");
+
+	expect(submitted).toEqual(["/clear"]);
+});
+
+test("Tab still completes the highlighted description-only match", async () => {
+	const { editor, submitted } = await editorWithOpenSlashList("/help");
+
+	editor.handleInput("\t");
+
+	expect(editor.getText()).toBe("/clear ");
+	expect(submitted).toEqual([]);
+});
+
+test("Enter without an open list only auto-completes a name match on submit", () => {
+	const editor = editorWith();
+	const submitted: string[] = [];
+	editor.onSubmit = value => {
+		submitted.push(value);
+	};
+	editor.setAutocompleteProvider(new CombinedAutocompleteProvider(SLASH_COMMANDS, "/tmp"));
+
+	editor.setText("/help");
+	editor.handleInput("\r");
+	editor.setText("/mod");
+	editor.handleInput("\r");
+
+	expect(submitted).toEqual(["/help", "/model"]);
+});
+
+test("Enter resolves the current slash text instead of accepting an unnavigated stale row", async () => {
+	const { editor, submitted } = await editorWithOpenSlashList("/");
+	for (const char of "help") editor.handleInput(char);
+
+	// Submit before the debounced refresh replaces the list opened for `/`.
+	editor.handleInput("\r");
+
+	expect(submitted).toEqual(["/help"]);
 });

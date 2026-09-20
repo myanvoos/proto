@@ -543,6 +543,10 @@ export class Editor implements Component, Focusable {
 		| { line: number; startCol: number; endCol: number; original: string; cursorOffset: number }
 		| undefined;
 	#autocompletePrefix: string = "";
+	// True once the user moved the highlight (Up/Down/PageUp/PageDown) in the
+	// current suggestion list; a description-only ("weak") match may only be
+	// accepted by Enter after such an explicit choice.
+	#autocompleteNavigated = false;
 	#autocompleteRequestId: number = 0;
 	#autocompletePendingRequest: AutocompleteRequest | undefined;
 	#autocompleteRequestRunning = false;
@@ -1372,6 +1376,7 @@ export class Editor implements Component, Focusable {
 					kb.matchesCanonical(canonical, "tui.select.pageDown")
 				) {
 					this.#autocompleteList.handleInput(data);
+					this.#autocompleteNavigated = true;
 					this.#widthEpochRevision++;
 					this.onAutocompleteUpdate?.();
 					return;
@@ -1432,7 +1437,13 @@ export class Editor implements Component, Focusable {
 
 					const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
 					const currentTextBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
-					if (!this.#autocompletePrefixMatchesCursorText(currentTextBeforeCursor, selected)) {
+					if (
+						!this.#autocompletePrefixMatchesCursorText(currentTextBeforeCursor, selected) ||
+						this.#selectedCompletionNeedsExplicitAcceptance(currentTextBeforeCursor)
+					) {
+						// Enter on a highlight the user never chose must not swap the
+						// typed command for a description-only match: drop the list
+						// and let the literal text submit below.
 						this.#cancelAutocomplete();
 					} else {
 						if (selected && this.#autocompleteProvider) {
@@ -1461,7 +1472,10 @@ export class Editor implements Component, Focusable {
 
 					const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
 					const currentTextBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
-					if (!this.#autocompletePrefixMatchesCursorText(currentTextBeforeCursor, selected)) {
+					if (
+						!this.#autocompletePrefixMatchesCursorText(currentTextBeforeCursor, selected) ||
+						this.#selectedCompletionNeedsExplicitAcceptance(currentTextBeforeCursor)
+					) {
 						this.#cancelAutocomplete();
 					} else {
 						if (selected && this.#autocompleteProvider) {
@@ -1559,7 +1573,9 @@ export class Editor implements Component, Focusable {
 					this.#autocompleteProvider?.trySyncSlashCompletion
 				) {
 					const syncResult = this.#autocompleteProvider.trySyncSlashCompletion(textBeforeCursor);
-					if (syncResult && syncResult.items.length > 0) {
+					// No active selection to accept: a description-only top match
+					// must not replace the typed command on submit.
+					if (syncResult && syncResult.items.length > 0 && !syncResult.items[0]!.weakMatch) {
 						this.#autocompleteRequestId += 1;
 
 						const selected = syncResult.items[0]!;
@@ -3325,6 +3341,21 @@ export class Editor implements Component, Focusable {
 		return this.#autocompleteList?.getSelectedItem()?.value === SKILL_NAMESPACE;
 	}
 
+	#selectedCompletionNeedsExplicitAcceptance(textBeforeCursor: string): boolean {
+		if (this.#autocompleteNavigated) return false;
+		// SelectList preserves the provider's AutocompleteItem objects.
+		const selected: AutocompleteItem | null | undefined = this.#autocompleteList?.getSelectedItem();
+		return (
+			selected?.weakMatch === true ||
+			// A debounced refresh may leave a strong row for an older slash query.
+			// Drop that implicit selection too; the sync submit path resolves the
+			// current query instead of executing an unrelated stale command.
+			(this.#isSlashCommandNameAutocompleteSelection() &&
+				!this.#selectedCompletionIsPath() &&
+				textBeforeCursor !== this.#autocompletePrefix)
+		);
+	}
+
 	#isSlashCommandNameAutocompleteSelection(): boolean {
 		if (this.#autocompleteState !== "regular") {
 			return false;
@@ -3374,6 +3405,8 @@ export class Editor implements Component, Focusable {
 		items: Array<{ value: string; label: string; description?: string }>,
 	): SelectList {
 		const layout = prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : AUTOCOMPLETE_SELECT_LIST_LAYOUT;
+		// A fresh list starts on row 0 by construction, not by user choice.
+		this.#autocompleteNavigated = false;
 		return new SelectList(items, this.#autocompleteMaxVisible, this.#theme.selectList, layout);
 	}
 
@@ -3491,6 +3524,7 @@ export class Editor implements Component, Focusable {
 		this.#invalidateAutocompleteRequests();
 		this.#autocompleteState = null;
 		this.#autocompleteList = undefined;
+		this.#autocompleteNavigated = false;
 		this.#textAssistReplacement = undefined;
 		this.#autocompletePrefix = "";
 		if (wasAutocompleting) this.#widthEpochRevision++;
