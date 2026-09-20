@@ -207,8 +207,8 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
 - Unsupported/undecodable image formats throw a `ToolError`.
 
 ### Internal URLs
-- `read` delegates internal and MCP-advertised schemes to `InternalUrlRouter`; the built-in registry currently includes `agent://`, `artifact://`, `history://`, `local://`, `mcp://`, `memory://`, `proto://`, `rule://`, `skill://`, `ssh://`, and `xd://`.
-  - `xd://` lists mounted tool devices; `xd://<name>` returns that device's input documentation. Writing JSON to the same URI dispatches the device through `write`.
+- `read` delegates internal and MCP-advertised schemes to `InternalUrlRouter`; the built-in registry currently includes `agent://`, `artifact://`, `history://`, `local://`, `mcp://`, `proto://`, `rule://`, `skill://`, `ssh://`, and `xd://`.
+  - `xd://` lists mounted tool devices; `xd://<name>` returns that device's input documentation. Writing JSON to the same URI dispatches the device through the xdev protocol layer.
   - `ssh://host/<path>` reads a remote UTF-8 file or directory; bare `ssh://` lists configured hosts. Remote paths are limited to 1 MiB and require a POSIX remote shell. Percent-encode literal `:`, `?`, or `#` in the path.
 - `#handleInternalUrl()` behavior:
   - parses the URL with `parseInternalUrl()` so colons inside the host segment are legal
@@ -256,7 +256,7 @@ Notes: ...
   - URL mode performs HTTP fetches, binary refetches, and alternate-endpoint probes.
 - Subprocesses / native bindings
   - Uses Bun SQLite for `.db`/`.sqlite*`.
-  - Uses `Bun.Archive` for tar/tgz; ZIP is framed in `packages/coding-agent/src/utils/zip.ts` over the `node:zlib` DEFLATE codec.
+  - Uses `Bun.Archive` for tar/tgz; ZIP is framed in `packages/utils/src/ar/zip.ts` over the `node:zlib` DEFLATE codec.
   - URL HTML rendering can delegate into site handlers and HTML-to-text backends from `packages/coding-agent/src/tools/fetch.ts`.
 - Session state
   - Passes session `cwd`, `settings`, and `localProtocolOptions` into the process-global `InternalUrlRouter.instance().resolve()` for internal URLs.

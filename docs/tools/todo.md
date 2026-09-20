@@ -43,8 +43,9 @@ The params object **is** a single op — the discriminator and its fields live a
 The tool returns a single-shot `AgentToolResult`:
 
 - `content`: one text part containing the summary from `formatSummary(...)`.
-  - Empty final state with no errors: `Todo list cleared.` (`Todo list is empty.` for a pure-`view` call).
-  - Non-empty final state: remaining-item list, current phase progress, then a per-phase tree.
+  - `view`: overall counts, active phase, and the full per-phase tree (`Todo list is empty.` when empty).
+  - `init`: initialized counts plus the per-phase tree.
+  - Every other successful state-changing op returns a compact one-line acknowledgement (`Todo list updated.` when no entry was named); it does not reprint the tree.
   - If the op produced validation/runtime errors, the summary starts with `Errors: ...` and the result is marked `isError: true`; the mutation is discarded — the returned and persisted state stay at the pre-call list.
 - `details`:
   - `phases: TodoPhase[]`

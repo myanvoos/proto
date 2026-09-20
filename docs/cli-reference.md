@@ -205,7 +205,7 @@ Run `proto <command> --help` for each command's own flags and examples.
 | `auth-gateway` | Run an auth-gateway forward proxy backed by the configured broker. | [auth broker / gateway](./auth-broker-gateway.md) |
 | `agents` | Manage bundled worker agents. | [worker agent discovery](./worker-agent-discovery.md) |
 | `attach` | Attach to a daemon-hosted session: watch it live, send prompts, detach without stopping it. | [session host](./session-host.md) |
-| `bench` | Benchmark models with the same prompt: time-to-first-token and generation throughput (tokens/s). | |
+| `bench` | Benchmark models: TTFT/prefill vs decode throughput with p50/p95, across chat, prefill, generation, and prompt-cache workloads. | |
 | `browser-relay` | Run the local CDP relay that lets the browser tool drive your own Chrome tabs. | [computer use](./computer-use.md) |
 | `commit` | Generate a commit message and update changelogs. | |
 | `completions` | Print a shell completion script (bash, zsh, or fish). | |
@@ -213,9 +213,10 @@ Run `proto <command> --help` for each command's own flags and examples.
 | `config` | Manage configuration settings. | [config usage](./config-usage.md), [settings](./settings.md) |
 | `dry-balance` | Dry-run OAuth account balancing across random session ids. | |
 | `gc` | Run storage garbage collection. | |
-| `grep` | Search files with the native grep engine. | |
+| `grep` | Test the native grep engine against a path and query (diagnostic; the agent searches through bash). | |
 | `gallery` | Preview tool renderers across streaming, in-progress, success, and failure states. | |
 | `grievances` | View, clean, or push reported tool issues (auto-QA grievances). | |
+| `images`, `img` | Inspect, diagnose, probe, and purge image publication backends. | |
 | `install` | Install or link an extension package (alias of `plugin install` / `plugin link`). | [extensions](./extensions.md) |
 | `models` | List, search, and refresh available models. | [models](./models.md) |
 | `plugin` | Manage plugins (install, uninstall, list, etc.). | [extensions](./extensions.md), [marketplace](./marketplace.md) |
@@ -223,15 +224,16 @@ Run `proto <command> --help` for each command's own flags and examples.
 | `setup` | Run onboarding setup or install dependencies for optional features. | |
 | `shell` | Interactive shell console. | |
 | `read` | Show what the read tool will return for a path, URL, or internal URI. (The [`read` tool](./tools/read.md) is a separate agent tool.) | |
+| `render` | Draw a session's entire thread through the production transcript pipeline (with repaint timing). | |
 | `ssh` | Manage SSH host configurations. | |
-| `stats` | View usage statistics. | |
 | `update` | Check for and install updates. | |
 | `usage` | Show provider usage limits for every authenticated account. | |
-| `tiny-models` | Download tiny local models (session titles + memory). | [local models](./local-models.md) |
+| `tiny-models` | Download tiny local models (session titles). | [local models](./local-models.md) |
 | `token` | Get the API key or OAuth token for a provider. | [secrets](./secrets.md) |
 | `ttsr` | Inspect and test Time-Traveling Stream Rules (TTSR). (Covers the CLI command; the [TTSR feature](./ttsr-injection-lifecycle.md) is documented separately.) | |
 | `worktree`, `wt` | List or clear agent-managed git worktrees (`~/.proto/wt`). | |
 | `search`, `q` | Test web search providers from the CLI. | [web_search tool](./tools/web_search.md) |
+| `__complete` | Hidden: internal shell-completion hook for installed completions. | |
 
 > `install`, `browser-relay`, `auth-gateway`, and `tiny-models` are also
 > reachable through related mechanisms (the `plugin` command and so on).

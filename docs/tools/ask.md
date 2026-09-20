@@ -40,7 +40,7 @@
 - Cancellation and headless cases throw instead of returning a structured success result. The tool does not stream updates.
 
 ## Flow
-1. `AskTool.createIf()` only registers the discoverable tool when `session.hasUI` is true; headless sessions never get it.
+1. `AskTool.createIf()` only registers the discoverable tool when the session can prompt the user (`canPromptUser`, falling back to `hasUI`); headless sessions never get it.
 2. `execute()` also requires `context.hasUI` and `context.ui`; if missing it aborts the context and throws `ToolAbortError("Ask tool requires interactive mode")`.
 3. It reads `ask.timeout` from settings and converts seconds to milliseconds (`0` disables timeout).
 4. If `ask.notify` is not `off`, it sends a terminal notification: `Waiting for input`.

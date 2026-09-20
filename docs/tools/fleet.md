@@ -25,32 +25,30 @@ Merged from the former `irc`, `job`, and `launch` tools; each op family keeps it
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `op` | `"send" \| "wait" \| "inbox" \| "list" \| "jobs" \| "cancel" \| "start" \| "ps" \| "logs" \| "stop" \| "restart" \| "describe"` | Yes | Operation. |
-| `to` | `string` | `send` (peer) | Recipient agent id, or `"all"` for broadcast. Mutually exclusive with `name`. |
+| `id` | `string` | `send` (peer) | `send`: recipient agent id, or `"all"` for broadcast. `wait` (pure message wait): only accept a message from this agent id. Mutually exclusive with `name`. |
 | `message` | `string` | `send` (peer) | Message body. Empty-after-trim is rejected. |
 | `replyTo` | `string` | No | `send`: message id being answered. |
-| `await` | `boolean` | No | Peer `send`: after delivery, block until the next message from that peer arrives. Invalid with `to: "all"`. |
-| `from` | `string` | No | `wait`: only accept a message from this agent id (pure message wait). |
+| `await` | `boolean` | No | Peer `send`: after delivery, block until the next message from that peer arrives. Invalid with `id: "all"`. |
 | `ids` | `string[]` | No | `wait`: job ids to watch (omit = all running jobs); `cancel`: job ids to kill (required). |
-| `timeoutMs` | `number` | No | Peer `send` with `await`, and message/job `wait`: milliseconds; `0` waits indefinitely. Defaults to `irc.timeoutMs` for a reply/pure-message wait and to the poll window when jobs are watched. |
+| `timeoutMs` | `number` | No | Milliseconds for peer `send` with `await`, message/job `wait`, and `logs`/`stop`/readiness windows; `0` waits indefinitely where supported. Defaults to `irc.timeoutMs` for a reply/pure-message wait, to the poll window when jobs are watched, and to 30000 for process readiness. |
 | `peek` | `boolean` | No | `inbox`: leave messages in the process-global bus mailbox. Note that messages already buffered on the live recipient session are still drained into this result by the current implementation. |
 | `name` | `string` | process ops | Stable project-scoped launch name (1-48 chars). On `send`/`wait` it routes the op to the process broker. |
 | `application`, `args`, `env`, `cwd`, `pty`, `ready`, `restart`, `persist`, `detached` | — | `start` | Launch spec, unchanged from the former `launch` tool. |
 | `lines`, `head`, `grep`, `follow`, `cursor` | — | `logs` | Log window controls, unchanged. |
 | `for`, `pattern` | — | `wait` (name) | Process lifecycle condition / output regex. |
 | `text`, `enter`, `keys`, `signal` | — | `send` (name) | Process stdin / terminal keys / signal. |
-| `timeout` | `number` | No | `logs`/`stop`/`wait`-with-`name`: seconds; default 30 (stop: 5). |
 
 ## Op families and dispatch
-- **Messaging** — `send` (with `to`), `inbox`, `list`, and `wait` with `from`. Fire-and-forget sends return delivery receipts (`injected`/`woken`/`revived`/`failed`); direct sends can revive parked agents, while broadcasts target visible live peers without reviving every parked agent. `await: true` waits for one reply after delivery. A busy recipient with async execution disabled may auto-reply rather than strand an awaiting sender.
+- **Messaging** — `send` (with `id`), `inbox`, `list`, and pure-message `wait` with `id`. Fire-and-forget sends return delivery receipts (`injected`/`woken`/`revived`/`failed`); direct sends can revive parked agents, while broadcasts target visible live peers without reviving every parked agent. `await: true` waits for one reply after delivery. A busy recipient with async execution disabled may auto-reply rather than strand an awaiting sender.
 - **Jobs** — `wait` (bare or with `ids`), `cancel`, `jobs`. Owner-scoped visibility, watch/unwatch delivery suppression, `acknowledgeDeliveries` on returned completions, 500 ms `onUpdate` snapshots while waiting, and the `async.pollWaitDuration` fixed/smart wait window. `jobs` is the former job-list snapshot plus the roster of running subagents with no running job entry.
 - **Processes** — `start`, `ps`, `logs`, `stop`, `restart`, `describe`, plus `send`/`wait` when they carry `name`. Exact behavior of the former `launch` tool; `ps` is the broker's `list`, scoped by default to processes launched from the current session (including its exited records); `all: true` lists every record for the project directory. See the launch sections below.
 
-`send` with both `to` and `name` is rejected as ambiguous. `wait` routes by target: `name` → process wait; otherwise the unified coordination wait.
+`send` with both `id` and `name` is rejected as ambiguous. `wait` routes by target: `name` → process wait; otherwise the unified coordination wait.
 
 ## The unified `wait`
 One blocking primitive. It resolves job legs (explicit `ids`, owner-scoped and silently filtered, or every running job the caller owns) and — when the session can message peers — parks a bus waiter, then races:
 - every watched running job's `job.promise`,
-- the first matching incoming message (`from`-filtered when given),
+- the first matching incoming message (`id`-filtered when given),
 - the wait window — explicit `timeoutMs` if passed (`0` = no window), else `manager.nextPollWaitMs(...)` under `smart` or the fixed `async.pollWaitDuration`,
 - the tool-call abort signal.
 
@@ -64,12 +62,12 @@ Outcomes:
 Smart-ladder bookkeeping (`recordPollWaitEnd`) runs only when the smart window was actually used (no explicit `timeoutMs`).
 
 ## Outputs
-- Messaging and job results: single text block plus `details: CoordinationDetails` — `{ op, from?, to?, receipts?, waited?, inbox?, peers?, jobs?, cancelled?, agents? }`. Shapes are unchanged from the former tools except that job-op details now carry `op` (`"wait" | "cancel" | "jobs"`).
+- Messaging and job results: single text block plus `details: CoordinationDetails` — `{ op, senderId?, id?, receipts?, waited?, inbox?, peers?, jobs?, cancelled?, agents? }`. Shapes are unchanged from the former tools except that job-op details now carry `op` (`"wait" | "cancel" | "jobs"`).
 - Process results: `details: LaunchToolDetails` — `{ op, daemon?, daemons?, cursor?, timedOut?, state?, terminalRows?, matched?, spec? }`, unchanged from the former `launch` tool (internally `ps` stores the broker op `list`).
 - Streaming: job-watching waits emit `onUpdate` every 500 ms with fresh snapshots; everything else is single-shot.
 
 ## Availability
-- The tool is always registered (`loadMode: "essential"`).
+- The tool is registered discoverable (`loadMode: "discoverable"`); mount it explicitly or call it through `xd` when it is not in the essential set.
 - Messaging ops require an `AgentRegistry` and a caller agent id; otherwise they return `Peer messaging is unavailable in this session.` (`isIrcEnabled` still gates the peer-roster prompt sections: true for every subagent and for any session that can still spawn subagents).
 - Job ops require `session.asyncJobManager`; otherwise `Async execution is disabled; no background jobs are available.`
 - Process ops require `launch.enabled`; otherwise `Process supervision is disabled (launch.enabled=false).`
@@ -83,18 +81,18 @@ Smart-ladder bookkeeping (`recordPollWaitEnd`) runs only when the smart window w
   "name": "web",
   "application": "bun",
   "args": ["run", "dev"],
-  "ready": { "log": "Local:.*http", "port": 5173, "timeout": 30 }
+  "ready": { "log": "Local:.*http", "port": 5173, "timeoutMs": 30000 }
 }
 ```
 
-Defaults: `cwd` = session directory, `args: []`, `env: {}`, `pty: true`, `restart: "no"`, `persist: false`, `detached: false`, readiness timeout 30 s. `detached: true` implies `persist`, forces `pty: false`, and disables stdin. `ready.log` is a regex over captured output; `ready.port` probes TCP at `ready.host` (default `127.0.0.1`); when both are present, both must pass. A readiness timeout leaves the process running and reports its state.
+Defaults: `cwd` = session directory, `args: []`, `env: {}`, `pty: true`, `restart: "no"`, `persist: false`, `detached: false`, readiness `timeoutMs` 30000. `detached: true` implies `persist`, forces `pty: false`, and disables stdin. `ready.log` is a regex over captured output; `ready.port` probes TCP at `ready.host` (default `127.0.0.1`); when both are present, both must pass. A readiness timeout leaves the process running and reports its state.
 
 Names are stable and unique within one project directory. A live name must be stopped or restarted; starting a completed name creates a new launch and rotates its prior output log.
 
 ## Logs, input, signals (processes)
 ```json
 {"op":"logs","name":"web","grep":"error|warn","lines":50}
-{"op":"logs","name":"web","follow":true,"cursor":1842,"timeout":30}
+{"op":"logs","name":"web","follow":true,"cursor":1842,"timeoutMs":30000}
 {"op":"send","name":"debugger","text":"breakpoint set --name main"}
 {"op":"send","name":"debugger","keys":["CTRL_C"]}
 ```

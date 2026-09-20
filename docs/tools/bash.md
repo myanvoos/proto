@@ -71,14 +71,14 @@ bashInterceptor:
     - pattern: '^\s*(cat|head|tail)\s+'
       tool: read
       message: "Use the read tool instead; it handles binary files and provides better context."
-    - pattern: '^\s*(grep|rg)\s+'
-      tool: grep
-      message: "Use the grep tool instead; it respects .gitignore and returns structured results."
+    - pattern: '^\s*nohup\s+'
+      tool: fleet
+      message: "Use the fleet tool (op:\"start\") instead of nohup so the process stays observable and managed."
 ```
 
 An interceptor rule only applies when its `tool` is available in the current session. If `read` is disabled, a `cat` rule targeting `read` does not block the Bash call. This makes the interceptor a best-effort capability preference rather than an execution-security boundary.
 
-The built-in default rules route common operations such as `cat` to `read`, `rg` to `grep`, in-place `sed` to `edit`, shell redirection to `write`, and unmanaged services/background processes to `fleet`. See `DEFAULT_BASH_INTERCEPTOR_RULES` in `packages/coding-agent/src/config/settings-schema.ts` for the complete list.
+The built-in default rules route common operations such as `cat`/`head`/`tail` to `read`, and unmanaged services, background processes, watch modes, and debuggers to `fleet`. See `DEFAULT_BASH_INTERCEPTOR_RULES` in `packages/coding-agent/src/config/settings-schema.ts` for the complete list.
 
 For compatibility with existing custom regexes, the interceptor always checks the complete original command first. It then checks raw, flat command fragments separated by unquoted and unescaped `&&`, `||`, `;`, `|`, `&`, or newlines. It also checks fragments after leading environment assignments are removed:
 
