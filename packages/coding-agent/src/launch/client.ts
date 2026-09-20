@@ -48,6 +48,8 @@ export interface DaemonBrokerClient {
 	): (options?: DaemonCompletionUnregisterOptions) => void;
 
 	readonly projectDir: string;
+	/** Runtime directory this client's broker endpoint lives in. */
+	readonly runtimeDir: string;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
 	close(): void;
 }
@@ -122,6 +124,7 @@ function openSocket(endpoint: string, timeoutMs: number): Promise<net.Socket> {
 
 class SocketDaemonClient implements DaemonBrokerClient {
 	readonly projectDir: string;
+	readonly runtimeDir: string;
 	readonly #runtimeDir: string;
 	readonly #endpoint: string;
 	readonly #token: string;
@@ -142,6 +145,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 
 	constructor(projectDir: string, runtimeDir: string, token: string, options: DaemonBrokerClientOptions) {
 		this.projectDir = projectDir;
+		this.runtimeDir = runtimeDir;
 		this.#runtimeDir = runtimeDir;
 		this.#endpoint = daemonBrokerEndpoint(projectDir, runtimeDir);
 		this.#token = token;

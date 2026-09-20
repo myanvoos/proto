@@ -16,6 +16,7 @@ import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
+import { getSessionHostRpcSink } from "../../session-host/transport";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
@@ -647,6 +648,13 @@ export async function runRpcMode(
 	const writeFrames = (frames: Iterable<string>) => {
 		stdoutQueue = stdoutQueue
 			.then(async () => {
+				const sessionHostSink = getSessionHostRpcSink();
+				if (sessionHostSink) {
+					for (const line of frames) {
+						sessionHostSink(line);
+					}
+					return;
+				}
 				for (const line of frames) {
 					if (!process.stdout.write(line)) await once(process.stdout, "drain");
 				}
@@ -1290,8 +1298,8 @@ export async function runRpcMode(
 			}
 
 			default: {
-				const unknownCommand = command as { type: string };
-				return error(undefined, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
+				const unknownCommand = command as { type: string; id?: string };
+				return error(unknownCommand.id, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
 			}
 		}
 	};

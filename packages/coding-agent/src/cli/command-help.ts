@@ -111,6 +111,10 @@ export const modelsHelp = {
 	],
 } satisfies CommandMetadata;
 
+export const attachHelp = {
+	description: "Attach to a daemon-hosted session: watch it live, send prompts, detach without stopping it",
+} satisfies CommandMetadata;
+
 export const pluginHelp = { description: "Manage plugins (install, uninstall, list, etc.)" } satisfies CommandMetadata;
 
 export const psHelp = {

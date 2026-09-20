@@ -23,6 +23,7 @@ import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cl
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
+import { SESSION_HOST_WORKER_ARG } from "./session-host/protocol";
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
@@ -92,6 +93,11 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === BLOB_BROKER_WORKER_ARG) {
 		const { startBlobBrokerFromEnvironment } = await import("./blob-broker/server");
 		await startBlobBrokerFromEnvironment();
+		return true;
+	}
+	if (arg === SESSION_HOST_WORKER_ARG) {
+		const { startSessionHostFromEnvironment } = await import("./session-host/worker-entry");
+		await startSessionHostFromEnvironment();
 		return true;
 	}
 	return false;

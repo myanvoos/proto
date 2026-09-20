@@ -204,6 +204,7 @@ Run `proto <command> --help` for each command's own flags and examples.
 | `auth-broker` | Manage the proto auth-broker (credential vault). | [auth broker / gateway](./auth-broker-gateway.md) |
 | `auth-gateway` | Run an auth-gateway forward proxy backed by the configured broker. | [auth broker / gateway](./auth-broker-gateway.md) |
 | `agents` | Manage bundled worker agents. | [worker agent discovery](./worker-agent-discovery.md) |
+| `attach` | Attach to a daemon-hosted session: watch it live, send prompts, detach without stopping it. | [session host](./session-host.md) |
 | `bench` | Benchmark models with the same prompt: time-to-first-token and generation throughput (tokens/s). | |
 | `browser-relay` | Run the local CDP relay that lets the browser tool drive your own Chrome tabs. | [computer use](./computer-use.md) |
 | `commit` | Generate a commit message and update changelogs. | |

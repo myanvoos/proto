@@ -1,6 +1,10 @@
 import { readLines } from "@oh-my-pi/pi-utils";
 
+import { getSessionHostRpcInput } from "../../session-host/transport";
+
 export function claimRpcInput(): ReadableStream<Uint8Array> {
+	const sessionHostInput = getSessionHostRpcInput();
+	if (sessionHostInput) return sessionHostInput;
 	const reader = Bun.stdin.stream().getReader();
 	let released = false;
 	const release = () => {

@@ -61,8 +61,10 @@ export function resolveWorkerSpawnCmd(workerArg: string): WorkerSpawnCommand {
 	if (hostEntry) {
 		return { cmd: [executable, hostEntry, workerArg] };
 	}
-	const packageRoot = path.resolve(import.meta.dir, "..", "..");
-	return { cmd: [executable, "src/cli.ts", workerArg], cwd: packageRoot };
+	// Absolute entry so the command works from any supervisor cwd (e.g. the
+	// daemon broker starting grandchild workers with a project cwd).
+	const hostPath = path.resolve(import.meta.dir, "..", "..", "src", "cli.ts");
+	return { cmd: [executable, hostPath, workerArg] };
 }
 
 export function workerEnvFromParent(overlay?: Record<string, string>): Record<string, string> {
