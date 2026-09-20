@@ -206,10 +206,12 @@ export function wrapTextWithAnsi(text: string, width: number): string[] {
 
 	const key = `${widthConfigEpoch}:${width}\x00${text}`;
 	const cached = wrapCache.get(key);
-	if (cached !== undefined) return cached;
+	// Callers may mutate the returned array (push rows onto it), so hand out copies —
+	// sharing the cached instance would let one caller's appends poison every later wrap.
+	if (cached !== undefined) return cached.slice();
 	const lines = nativeWrapTextWithAnsi(text, width, DEFAULT_TAB_WIDTH);
 	wrapCache.set(key, lines);
-	return lines;
+	return lines.slice();
 }
 
 export function extractSegments(

@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- `wrapTextWithAnsi` handed out its memoized row array to every caller, so appending to one result corrupted all later wraps of the same text — repeated renders of a list could grow its header block until rows disappeared.
 - Deeply nested blockquotes no longer multiply rendered rows exponentially, which could exhaust memory from a single small message.
 - A live region handing off to another one (a HUD appearing as a reply settles) now appends the rows it was holding instead of repainting from the first row, so the terminal no longer rewinds to the title screen and replays the session mid-stream.
 
