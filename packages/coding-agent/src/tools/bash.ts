@@ -25,6 +25,7 @@ import {
 	type ExecutionMetadata,
 	type ExecutionTimeoutMetadata,
 	executionMetadataForResult,
+	isHardFailureExit,
 } from "../session/execution-metadata";
 
 export type { StreamedKernelFailure } from "../eval/speculation";
@@ -963,10 +964,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			statusEvents?: readonly EvalStatusEvent[];
 			jsonOutputs?: readonly unknown[];
 			xdDispatches?: readonly string[];
+			kernelRouted?: boolean;
 		} = {},
 	): Promise<AgentToolResult<BashToolDetails>> {
 		const exitCode = result.exitCode;
 		const failedExit = exitCode !== undefined && exitCode !== 0;
+		// Exit 1 is a soft Unix signal only for plain shell commands; kernel
+		// cells exit 1 on any raised exception, so they stay hard failures.
+		const softExit = exitCode === 1 && options.kernelRouted !== true;
 		const isTimeout = result.timedOut === true;
 		const observedSignal = "signal" in result ? result.signal : undefined;
 		const observedExecution = "execution" in result ? result.execution : undefined;
@@ -978,16 +983,19 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					effectiveMs: timeoutSec !== undefined ? timeoutSec * 1000 : undefined,
 				}
 			: undefined;
-		const execution =
-			observedExecution ??
-			executionMetadataForResult(
-				{ exitCode, cancelled: result.cancelled, timedOut: isTimeout, signal: observedSignal },
-				{
-					elapsedMs: options.wallTimeMs,
-					timeout: executionTimeout,
-					summary: { ...result, collector: result.collector ?? { state: "complete" } },
-				},
-			);
+		const execution = {
+			...(observedExecution ??
+				executionMetadataForResult(
+					{ exitCode, cancelled: result.cancelled, timedOut: isTimeout, signal: observedSignal },
+					{
+						elapsedMs: options.wallTimeMs,
+						timeout: executionTimeout,
+						summary: { ...result, collector: result.collector ?? { state: "complete" } },
+					},
+				)),
+			// The soft-exit ruling is made here, where the command routing is known.
+			softExit: softExit || undefined,
+		};
 
 		const xdResult = parseXdDispatches(options.xdDispatches ?? readXdDispatches(result));
 		const xdImages: ImageContent[] = [];
@@ -1129,7 +1137,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const resultBuilder = toolResult(details).truncationFromSummary(result, { direction: "tail" });
 		const contentImages = [...(options.images ?? []), ...xdImages];
 		resultBuilder.content([{ type: "text", text: cappedOutputText }, ...contentImages]);
-		if (failedExit || xdTransportFailure) resultBuilder.error();
+		if (isHardFailureExit(exitCode, softExit) || xdTransportFailure) resultBuilder.error();
 		return resultBuilder.done();
 	}
 
@@ -1237,6 +1245,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						requestedTimeoutSec: options.requestedTimeoutSec,
 						notices: options.notices ?? [],
 						wallTimeMs,
+						kernelRouted: detectBashKernelCell(options.command) !== undefined,
 						images: await this.#drainBridgeImages(pyBridge),
 						statusEvents: pyBridge?.drainStatusEvents(),
 						jsonOutputs: pyBridge?.drainJsonOutputs(),
@@ -1827,6 +1836,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				requestedTimeoutSec,
 				notices: pendingNotices,
 				wallTimeMs,
+				kernelRouted: detectBashKernelCell(command) !== undefined,
 				images: await this.#drainBridgeImages(pyBridge),
 				statusEvents: pyBridge?.drainStatusEvents(),
 				jsonOutputs: pyBridge?.drainJsonOutputs(),
@@ -2058,13 +2068,19 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const isError =
 				result.isError === true ||
 				(execution
-					? execution.state === "exited" && execution.exitCode !== undefined && execution.exitCode !== 0
+					? execution.state === "exited" && isHardFailureExit(execution.exitCode, execution.softExit)
 					: false);
 			const isUnknown = execution
 				? execution.state === "unknown" || (execution.state === "exited" && execution.exitCode === undefined)
 				: false;
 			const success =
 				!isPartial && !isError && (execution ? execution.state === "exited" && execution.exitCode === 0 : true);
+			const softExit =
+				!isPartial &&
+				!isError &&
+				execution?.state === "exited" &&
+				execution.exitCode === 1 &&
+				execution.softExit === true;
 			// A backgrounded command reports a running execution: it has neither
 			// failed nor finished, so it gets the pending treatment, not the red one.
 			const isRunning = execution?.state === "running";
@@ -2072,7 +2088,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const warningStatus = isTimeout || isUnknown;
 			const header =
 				config.showHeader === false
-					? success || isPartial || isRunning
+					? success || softExit || isPartial || isRunning
 						? undefined
 						: renderStatusLine(
 								{
@@ -2083,7 +2099,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								uiTheme,
 							)
 					: renderStatusLine(
-							success
+							success || softExit
 								? {
 										iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
 										title: config.resolveTitle(args, options),
@@ -2182,7 +2198,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					if (rawOutputArtifact.artifactId) {
 						statsParts.push(`Artifact: ${rawOutputArtifact.artifactId}`);
 					}
-					if (isError && typeof details?.exitCode === "number") {
+					if (typeof details?.exitCode === "number") {
 						statsParts.push(`Exit: ${details.exitCode}`);
 					}
 					const timeoutLine =

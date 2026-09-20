@@ -45,6 +45,10 @@
 - Replies containing a Mermaid diagram now enter terminal history as they scroll past instead of being held back until the reply finishes.
 - A reply that ends with a tool call no longer freezes mid-sentence: the text or thinking written just before the tool card now streams to completion.
 
+### Changed
+
+- Commands that exit with code 1 (grep/rg "no match", `test` false, `diff` differences) no longer render as `✗ failed` in the transcript or live view: they show a dim `(exit 1)` marker instead. Exit codes 2+, signal deaths, timeouts, and kernel-cell errors still mark the command as failed.
+
 ## [18.1.22] - 2026-09-18
 
 ### Changed

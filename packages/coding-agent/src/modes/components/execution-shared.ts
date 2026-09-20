@@ -3,7 +3,7 @@ import { Text } from "@oh-my-pi/pi-tui/components/text";
 import { type Component, Container, type TUI } from "@oh-my-pi/pi-tui/tui";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
-import type { ExecutionMetadata } from "../../session/execution-metadata";
+import { type ExecutionMetadata, isHardFailureExit } from "../../session/execution-metadata";
 import { formatTruncationMetaNotice, type TruncationMeta } from "../../tools/output-meta";
 import { DynamicBorder } from "./dynamic-border";
 import { truncateToVisualLines } from "./visual-truncate";
@@ -76,6 +76,10 @@ export function buildStatusFooter(opts: {
 		parts.push(theme.fg("error", `(exit ${opts.exitCode})`));
 	} else if (opts.status === "unknown") {
 		parts.push(theme.fg("warning", "(status unknown)"));
+	} else if (opts.status === "complete" && opts.exitCode !== undefined && opts.exitCode !== 0) {
+		// Soft non-zero exit (grep/rg no-match, test false, diff differences):
+		// visible for reference, but not failure-styled.
+		parts.push(theme.fg("dim", `(exit ${opts.exitCode})`));
 	}
 	const executionLine = formatExecutionMetadata(opts.execution);
 	if (executionLine) parts.push(theme.fg("dim", executionLine));
@@ -95,6 +99,12 @@ export function resolveExecutionStatus(
 	if (cancelled) return "cancelled";
 	if (execution?.state === "unknown") return "unknown";
 	if (execution?.state === "running") return "running";
-	if (exitCode !== 0 && exitCode !== undefined && exitCode !== null) return "error";
+	if (
+		isHardFailureExit(exitCode, execution?.softExit) ||
+		execution?.signal !== undefined ||
+		execution?.timeout !== undefined
+	) {
+		return "error";
+	}
 	return "complete";
 }

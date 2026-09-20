@@ -54,6 +54,10 @@ export interface ExecutionStageMetadata {
 export interface ExecutionMetadata {
 	state: ExecutionState;
 	exitCode?: number;
+	/** Exit 1 came from a plain shell command, where it is a soft Unix signal
+	 * (grep/rg "no match", test false, diff differences), not a failure.
+	 * Kernel cells exit 1 on any raised exception, so they never set this. */
+	softExit?: boolean;
 	signal?: string | number;
 	elapsedMs?: number;
 	timeout?: ExecutionTimeoutMetadata;
@@ -88,6 +92,22 @@ export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Classify an exit code as an unambiguous failure.
+ *
+ * Exit 1 is a soft signal for plain shell commands — grep/rg "no match",
+ * test "[ ]" false, diff "differences found" — so it does not mark the
+ * command as failed when `softExit` is set. Without that marker (kernel
+ * cells exit 1 on any raised exception, and unknown origins) exit 1 is
+ * hard. Everything else fails: 2-125 tool errors, 126/127 exec failures,
+ * >=128 signal deaths, negative codes.
+ */
+export function isHardFailureExit(exitCode: number | undefined, softExit?: boolean): boolean {
+	if (exitCode === undefined || exitCode === 0) return false;
+	if (exitCode === 1 && softExit === true) return false;
+	return true;
+}
+
 export interface ExecutionSummaryInput {
 	truncated: boolean;
 	truncatedBy?: "lines" | "bytes" | "middle";
@@ -110,6 +130,7 @@ export function executionMetadataForResult(
 		summary?: ExecutionSummaryInput;
 		stages?: ExecutionStageMetadata[];
 		state?: ExecutionState;
+		softExit?: boolean;
 	},
 ): ExecutionMetadata {
 	const summary = options.summary;
@@ -137,6 +158,7 @@ export function executionMetadataForResult(
 	return {
 		state: options.state ?? executionStateForResult(result),
 		exitCode: result.exitCode,
+		softExit: options.softExit === true || undefined,
 		signal: result.signal,
 		elapsedMs: options.elapsedMs,
 		timeout: options.timeout,

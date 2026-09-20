@@ -387,8 +387,12 @@ test("xd redirects and pipeline status use the native shell", async () => {
 		expect(redirected.isError).not.toBe(true);
 		expect(textOf(redirected)).toContain("probe:redirect\n");
 
-		const failed = await bash.execute("xd-pipe-failure", { command: `xd probe '{"value":"closed"}' | false` });
+		// Pipeline status is computed natively; exit 2 is a hard failure, while
+		// exit 1 is the soft Unix signal and stays a data result.
+		const failed = await bash.execute("xd-pipe-failure", { command: `xd probe '{"value":"closed"}' | exit 2` });
 		expect(failed.isError).toBe(true);
+		const soft = await bash.execute("xd-pipe-soft", { command: `xd probe '{"value":"closed"}' | exit 1` });
+		expect(soft.isError ?? false).toBe(false);
 	});
 });
 
