@@ -319,6 +319,12 @@ function parseSizeValue(value: SizeValue | undefined, referenceSize: number): nu
 	return undefined;
 }
 
+/**
+ * Sentinel for a screen row whose contents are unknown after an in-place
+ * resize; it never equals a composed row, so the next update pass repaints it.
+ */
+const RESIZE_DISPLACED_ROW = "\u0000resize-displaced";
+
 function isMultiplexerSession(): boolean {
 	if (!isInsideTerminalMultiplexer()) return false;
 	if (Bun.env.HERDR_ENV !== "1") return true;
@@ -1099,6 +1105,7 @@ export class TUI extends Container {
 	#previousWindow: string[] = [];
 	#previousLiveRegionSource: Component | undefined;
 	#previousLiveRegionHasTrailingRows = false;
+	#previousLiveRegionScreenStart: number | undefined;
 	#nativeScrollbackLiveRegionStart: number | undefined;
 	#nativeScrollbackLiveRegionPinned = false;
 	#nativeScrollbackCommittedDirtyFromRow: number | undefined;
@@ -2130,11 +2137,14 @@ export class TUI extends Container {
 
 		this.invalidate();
 
+		// Explicit redraws (including tool expansion) replay committed history.
+		// tmux honors ED3; hosts that ignore it still receive the expanded frame,
+		// but retain their old history. Ordinary resizes never take this path.
 		if (this.#multiplexerResizeTimer) {
-			this.#armMultiplexerResizeTimer({ clearScrollback: !isMultiplexerSession(), hasPendingRender: true });
+			this.#armMultiplexerResizeTimer({ clearScrollback: true, hasPendingRender: true });
 			return;
 		}
-		this.#prepareForcedRender(!isMultiplexerSession());
+		this.#prepareForcedRender(true);
 		this.#resizeEventPending = true;
 		this.#renderRequested = false;
 		this.#executeRender();
@@ -2489,6 +2499,39 @@ export class TUI extends Container {
 				if (this.#resizeCursorProbe === probe) probe.failed = true;
 			},
 		);
+	}
+
+	/**
+	 * Screen row where the live region starts on the host after an in-place
+	 * resize, or `undefined` when there is no live region on screen or no
+	 * cursor measurement to anchor it. Live rows above the cursor that were
+	 * wider than the new width now occupy several host rows each; count them
+	 * from the pre-resize window so the boundary lands on the host's first
+	 * fragment rather than on the composed row count.
+	 */
+	#displacedLiveRegionScreenStart(
+		finalBoundary: number,
+		frameLength: number,
+		hostRowShift: number | undefined,
+		width: number,
+		height: number,
+	): number | undefined {
+		const hostCursorRow = this.#resizeCursorScreenRow;
+		if (hostCursorRow === undefined || hostRowShift === undefined) return undefined;
+		if (finalBoundary >= frameLength || this.#previousLiveRegionScreenStart === undefined) return undefined;
+		const previousCursorRow = hostCursorRow + hostRowShift;
+		// A draft can gain/lose wrapped rows at the new width. Count the rows
+		// actually painted before resizing, not the newly composed cursor span.
+		const liveRowsAboveCursor = Math.max(0, previousCursorRow - Math.max(0, this.#previousLiveRegionScreenStart));
+		let hostRowsAboveCursor = 0;
+		for (let i = 1; i <= liveRowsAboveCursor; i++) {
+			const previousRow = this.#previousWindow[previousCursorRow - i];
+			hostRowsAboveCursor +=
+				previousRow === undefined ? 1 : Math.max(1, Math.ceil(visibleWidth(previousRow) / Math.max(1, width)));
+		}
+		const start = hostCursorRow - hostRowsAboveCursor;
+		if (start >= height) return undefined;
+		return Math.max(0, start);
 	}
 
 	/**
@@ -3605,7 +3648,45 @@ export class TUI extends Container {
 				this.#resizeCursorScreenRow === undefined
 					? undefined
 					: Math.max(0, Math.min(frameLength, logicalCursorRow - this.#resizeCursorScreenRow));
-			this.#committedRows = measuredWindowTop === windowTop ? measuredWindowTop : windowTop;
+			// The host reflowed the committed transcript, but it did not preserve
+			// the mutable live region: tmux deletes the rows below the cursor when
+			// the pane shrinks, and every host keeps the old-width wrap of the rows
+			// it did keep. Anchor the window on the live boundary instead of the
+			// cursor, then forget what the screen holds from that boundary down so
+			// the next update pass repaints the live rows (and slides the window
+			// when they no longer fit) instead of trusting the adopted composition.
+			const displacedLiveStart = this.#displacedLiveRegionScreenStart(
+				finalBoundary,
+				frameLength,
+				hostRowShift,
+				width,
+				height,
+			);
+			const displaced = displacedLiveStart !== undefined;
+			// When the host holds more rows above the live region than the frame
+			// composes (wrapped fragments, a short frame), scroll those extra rows
+			// into history so the live boundary lands on a screen row the frame
+			// can address; the window origin can never sit above the frame.
+			let displacedScrollRows = 0;
+			let displacedScreenStart = displacedLiveStart ?? 0;
+			if (displaced) {
+				const anchoredTop = finalBoundary - displacedLiveStart;
+				if (anchoredTop >= 0) {
+					windowTop = Math.min(frameLength, anchoredTop);
+				} else {
+					windowTop = 0;
+					displacedScrollRows = -anchoredTop;
+					displacedScreenStart = finalBoundary;
+				}
+				// Re-anchor the adopted comparison window too. Keeping the old
+				// slice would make the next diff overwrite native-reflowed transcript
+				// rows above the live boundary with a shifted logical prefix.
+				for (let screenRow = 0; screenRow < height; screenRow++) {
+					window[screenRow] =
+						screenRow < displacedScreenStart ? (frame[windowTop + screenRow] ?? "") : RESIZE_DISPLACED_ROW;
+				}
+			}
+			this.#committedRows = displaced || measuredWindowTop !== windowTop ? windowTop : measuredWindowTop;
 			this.#committedPrefix = rawFrame.slice(0, this.#committedRows);
 			this.#committedPrefixAuditRows = Math.min(this.#committedRows, finalBoundary);
 			this.#windowTopRow = windowTop;
@@ -3653,12 +3734,26 @@ export class TUI extends Container {
 				this.#imageBudget.takePurgeIds();
 			}
 
+			let hardwareCursorRow = target?.row ?? Math.max(windowTop, frameLength - 1);
+			if (displaced) {
+				const hostCursorRow = this.#resizeCursorScreenRow ?? height - 1;
+				if (displacedScrollRows > 0) {
+					this.terminal.write(`\x1b[${height};1H${"\n".repeat(displacedScrollRows)}`);
+					hardwareCursorRow = windowTop + height - 1;
+				} else {
+					hardwareCursorRow = windowTop + hostCursorRow;
+				}
+			}
 			this.#commit(frame, window, width, height, {
-				toRow: target?.row ?? Math.max(windowTop, frameLength - 1),
+				toRow: hardwareCursorRow,
 				state: graphicsOutput.length > 0 ? target : null,
 				visible: target?.visible ?? false,
 			});
 			this.#publishCommittedRows();
+			if (displaced) {
+				this.invalidate();
+				this.requestRender();
+			}
 			return;
 		}
 		if (resizeEventOccurred) this.#preserveNativeResize = false;
@@ -4275,6 +4370,10 @@ export class TUI extends Container {
 	): void {
 		this.#previousFrameLength = lines.length;
 		this.#previousWindow = window;
+		this.#previousLiveRegionScreenStart =
+			this.#nativeScrollbackLiveRegionStart === undefined
+				? undefined
+				: this.#nativeScrollbackLiveRegionStart - this.#windowTopRow;
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#previousWidth = width;
 		this.#previousHeight = height;
@@ -4879,6 +4978,13 @@ export class TUI extends Container {
 
 		const clampedCursor = Math.min(prevHardwareCursorRow, prevWindowTop + height - 1);
 		const currentScreenRow = Math.max(0, Math.min(height - 1, clampedCursor - prevWindowTop));
+		const displacedStart = previousWindow.indexOf(RESIZE_DISPLACED_ROW);
+		if (displacedStart >= 0) {
+			// Erase the mutable suffix in the same synchronized paint. Merely
+			// overwriting rows leaves host soft-wrap flags from the old geometry;
+			// a later grow would join those rows and shift the live boundary again.
+			purgeSequence += `\x1b[${displacedStart + 1};1H\x1b[J\x1b[${currentScreenRow + 1};1H`;
+		}
 
 		if (
 			!forceWindowRewrite &&

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
 import type { TerminalCursorPosition } from "./terminal";
-import { TUI } from "./tui";
+import { CURSOR_MARKER, TUI } from "./tui";
 
 class FakeTerminal {
 	columns: number;
@@ -143,7 +143,7 @@ class WrappedProse {
 }
 
 function setResizeEnvironment(inPlace: boolean): () => void {
-	const keys = ["TMUX", "STY", "ZELLIJ", "HERDR_ENV", "PI_TUI_RESIZE_IN_PLACE"] as const;
+	const keys = ["TMUX", "STY", "ZELLIJ", "HERDR_ENV", "PI_TUI_RESIZE_IN_PLACE", "TERM"] as const;
 	const previous = Object.fromEntries(keys.map(key => [key, Bun.env[key]]));
 	for (const key of keys) delete Bun.env[key];
 	Bun.env.TERM = "xterm-256color";
@@ -285,3 +285,113 @@ for (const inPlace of [false, true]) {
 		}
 	});
 }
+
+/** Composer-style live region: hairline, prompt, status line — width-dependent rows the host cannot reflow. */
+class LiveFooter {
+	prompt = "› ask anything";
+	constructor(private readonly terminal: FakeTerminal) {}
+	render(): readonly string[] {
+		const promptRows = wrap(this.prompt, this.terminal.columns);
+		promptRows[promptRows.length - 1] += CURSOR_MARKER;
+		return ["─".repeat(this.terminal.columns), "", ...promptRows, "", "▫ workspace · main · 97% left"];
+	}
+	getNativeScrollbackLiveRegionStart(): number {
+		return 0;
+	}
+}
+
+test("in-place shrink repaints the live region at the new width and keeps it on screen", async () => {
+	const restore = setResizeEnvironment(true);
+	const terminal = new FakeTerminal(120, 40, true);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const footer = new LiveFooter(terminal);
+	tui.addChild(new WrappedProse(terminal) as never);
+	tui.addChild(footer as never);
+	const screen = (): string[] => terminal.normalLines().slice(-terminal.rows);
+	try {
+		tui.start({ deferInput: true });
+		await scheduler.flush();
+		terminal.resize(80, 24);
+		terminal.triggerResize();
+		await scheduler.flush();
+
+		// The host wrapped the 120-wide hairline into two rows; the settled
+		// screen shows exactly the composed footer at 80 columns instead.
+		const footerRows = screen()
+			.filter(line => line.length > 0)
+			.slice(-3);
+		expect(footerRows).toEqual(["─".repeat(80), "› ask anything", "▫ workspace · main · 97% left"]);
+		expect(screen().filter(line => line === "─".repeat(40))).toHaveLength(0);
+
+		// Grow, height-only shrink and another width shrink must preserve the
+		// live tail too. Input always lands on the repainted prompt row.
+		for (const [columns, rows] of [
+			[120, 40],
+			[120, 24],
+			[60, 20],
+		] as const) {
+			terminal.resize(columns, rows);
+			terminal.triggerResize();
+			await scheduler.flush();
+			expect(
+				screen()
+					.filter(line => line.length > 0)
+					.slice(-3),
+			).toEqual(["─".repeat(columns), footer.prompt, "▫ workspace · main · 97% left"]);
+			footer.prompt = `› typed at ${columns}x${rows}`;
+			tui.invalidate();
+			tui.requestRender();
+			await scheduler.flush();
+			expect(screen().filter(line => line.startsWith("›"))).toEqual([footer.prompt]);
+		}
+	} finally {
+		tui.stop();
+		restore();
+	}
+});
+
+test("a wrapped draft keeps exactly one separator after shrinking and growing", async () => {
+	const restore = setResizeEnvironment(true);
+	const terminal = new FakeTerminal(120, 40, true);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const footer = new LiveFooter(terminal);
+	footer.prompt =
+		"› alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega";
+	tui.addChild({ render: () => Array.from({ length: 50 }, (_v, row) => `history-${row}`) });
+	tui.addChild(footer as never);
+	try {
+		tui.start({ deferInput: true });
+		await scheduler.flush();
+		for (const [columns, rows] of [
+			[60, 20],
+			[120, 40],
+		] as const) {
+			terminal.resize(columns, rows);
+			const hostRows = terminal.normalLines();
+			const hostHistory = hostRows.slice(
+				0,
+				hostRows.findIndex(line => /^─+$/.test(line)),
+			);
+			terminal.triggerResize();
+			await scheduler.flush();
+			const allRows = terminal.normalLines();
+			expect(
+				allRows.slice(
+					0,
+					allRows.findIndex(line => /^─+$/.test(line)),
+				),
+			).toEqual(hostHistory);
+			const screen = allRows.slice(-rows);
+			expect(screen.filter(line => /^─+$/.test(line))).toEqual(["─".repeat(columns)]);
+			expect(screen.slice(screen.indexOf("─".repeat(columns)) + 1).filter(line => line.length > 0)).toEqual([
+				...wrap(footer.prompt, columns),
+				"▫ workspace · main · 97% left",
+			]);
+		}
+	} finally {
+		tui.stop();
+		restore();
+	}
+});

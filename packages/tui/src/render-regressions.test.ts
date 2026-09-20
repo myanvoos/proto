@@ -825,6 +825,54 @@ test("clears mux tape for an explicit scrollback clear", () => {
 	}
 });
 
+test("resetDisplay replaces collapsed tool output already in tmux scrollback", () => {
+	const restore = setEnvironment({ TMUX: "1", TERM: "xterm-256color", PI_NO_SYNC_OUTPUT: "1" });
+	const terminal = new FakeTerminal(40, 4);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const component = new ProtocolRows(["tool header", "collapsed preview", "reply", "prompt", "status"]);
+	tui.addChild(component);
+
+	try {
+		tui.start({ deferInput: true });
+		// Expanding a card changes rows that are no longer in the viewport.
+		component.rows = ["tool header", "detail one", "detail two", "detail three", "reply", "prompt", "status"];
+		tui.resetDisplay();
+		scheduler.flush();
+		expect(terminal.normalLines()).toEqual(component.rows);
+		component.rows = ["tool header", "collapsed preview", "reply", "prompt", "status"];
+		tui.resetDisplay();
+		scheduler.flush();
+		expect(terminal.normalLines()).toEqual(component.rows);
+	} finally {
+		tui.stop();
+		restore();
+	}
+});
+
+test("resetDisplay replays expanded output when a multiplexer ignores scrollback clear", () => {
+	const restore = setEnvironment({ TMUX: undefined, STY: "1", TERM: "screen", PI_NO_SYNC_OUTPUT: "1" });
+	const terminal = new FakeTerminal(40, 4);
+	const originalWrite = terminal.write.bind(terminal);
+	terminal.write = data => originalWrite(data.replaceAll("\x1b[3J", ""));
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const component = new ProtocolRows(["tool header", "collapsed preview", "reply", "prompt", "status"]);
+	tui.addChild(component);
+	try {
+		tui.start({ deferInput: true });
+		component.rows = ["tool header", "detail one", "detail two", "detail three", "reply", "prompt", "status"];
+		tui.resetDisplay();
+		scheduler.flush();
+		// The host may keep an older copy above this, but the complete expanded
+		// card is reachable, followed by the current composer at the tail.
+		expect(terminal.normalLines().slice(-component.rows.length)).toEqual(component.rows);
+	} finally {
+		tui.stop();
+		restore();
+	}
+});
+
 test("recommits current rows after a mux width epoch before a live progress tail", () => {
 	const restore = setEnvironment({ TMUX: "1", TERM: "xterm-256color", PI_NO_SYNC_OUTPUT: "1" });
 	const terminal = new FakeTerminal(8, 3);

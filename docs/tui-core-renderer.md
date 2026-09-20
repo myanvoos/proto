@@ -91,18 +91,12 @@ needs to know whether the user has scrolled away from the tail.
   window never starts above the host's screen top. A host that answers the
   sentinel without a report falls back to the pull assumption. Direct HerdR panes
   use this path because clearing and replaying scrollback flickers in its
-  host-owned pane. What the settled frame then does to native history is
-  governed by `ResizeScrollbackMode` (`setResizeScrollback`; engine default
-  `preserve`, and the coding agent applies its `tui.resizeScrollback`
-  setting, default `append`): `append` replays the transcript at the settled width below the
-  host-rewrapped history (one fresh copy per settled resize — the host's own
-  rewrap hard-breaks old-width rows, so without a replay scrollback stays
-  width-shredded); `rebuild` clears pane history first (ED3) so it holds the
-  transcript exactly once at the current width; `preserve` repaints the
-  viewport only and keeps the old-width wrap. The logical-boundary machinery
-  above stays load-bearing for `preserve` and for epochs settled under a
-  visible overlay, where the replay defers to the next uncovered width
-  settle.
+  host-owned pane. A settled in-place resize adopts the host-reflowed history
+  without replaying it. Mutable live rows are different: tmux may trim rows below
+  the cursor on shrink, and old-width separators can occupy several host rows.
+  The cursor report anchors the live boundary; those rows are invalidated and
+  repainted at the new width, preserving the committed transcript. The coding
+  agent declares its composer chrome as live even when the transcript is idle.
 
 ---
 
@@ -135,25 +129,17 @@ needs to know whether the user has scrolled away from the tail.
 | `#emitUpdate` seam rewrite   | commit chunk plus full window rewrite              | commit/window re-anchor or hidden-gap backfill                      |
 
 **ED3 (`CSI 3 J`) is emitted in exactly one place** —
-`#emitFullPaint({ clearScrollback: true })`. The normal callers are explicit
-user gestures: session replace/branch/resume
-(`requestRender(true, { clearScrollback: true })`), resize outside a
-multiplexer, `resetDisplay()` (the display-reset chord, `Alt+L` by
-default), and a settled in-place width resize when the resize-scrollback
-mode is `rebuild`. It clears native history without `ED2` first; the replay
-overwrites every row from home so terminals without synchronized output do
-not expose a blank viewport. A gesture pins the user to the tail, so the
-history snap is acceptable.
+`#emitFullPaint({ clearScrollback: true })`. Callers include explicit
+session replace/branch/resume (`requestRender(true, { clearScrollback: true })`),
+full geometry rebuilds outside the in-place path, and `resetDisplay()` (the
+`Alt+L` display-reset chord and `Ctrl+O` tool expansion). It clears native history
+without `ED2` first; the replay overwrites every row from home so terminals
+without synchronized output do not expose a blank viewport.
 
-The second caller is an ordinary-render divergence when
-`tui.scrollbackRebuild` is enabled: if the committed prefix structurally
-resynchronizes or the current frame collapses into committed rows, the renderer
-clears and replays the current frame to replace stale preview history with the
-final form. This path is disabled by default and never runs after the first
-paint, during an explicit replacement/geometry frame, or inside a multiplexer.
-Multiplexers receive ED3 only through the opt-in `rebuild` resize-scrollback
-mode — tmux honors an inner ED3 and clears pane history; hosts that ignore it
-(GNU screen) degrade to the `append` behavior.
+Explicit resets replay the current transcript inside multiplexers too. tmux
+honors ED3 and replaces its old pane history. Hosts that ignore ED3 still receive
+the updated frame but retain older history above it. A user-requested replay
+pins the view to the tail; ordinary in-place resizes never take this path.
 
 The ordinary update path never emits ED2/ED3 or an absolute cursor home —
 several terminal families snap a scrolled reader to the bottom on those.
@@ -380,8 +366,6 @@ default-on only for kitty/ghostty (`PI_NO_KITTY_PLACEHOLDERS` /
 | `PI_NOTIFICATIONS=off\|0\|false`                         | Suppress terminal notifications.                                                                                                                                            |
 | `PI_DEBUG_REDRAW=1`                                      | Log the chosen render intent + ledger state per frame to the debug log.                                                                                                     |
 | `PI_TUI_RESIZE_IN_PLACE=1\|0`                            | Force resize to repaint in place (no alt-screen borrow, no ED3 rewrap) on / off. Default-on for terminals that re-report size on alt-screen toggles (Warp).                 |
-| `PI_TUI_SCROLLBACK_REBUILD=1`                            | Initialize low-level `TUI` divergence rebuild on. Coding-agent subsequently applies `tui.scrollbackRebuild` (default `false`), so use the setting for interactive sessions. |
-| `PI_TUI_RESIZE_SCROLLBACK=rebuild\|append\|preserve`    | Initialize the low-level `TUI` resize-scrollback mode. Coding-agent subsequently applies `tui.resizeScrollback` (default `append`), so use the setting for interactive sessions.  |
 
 Removed with the old engine: `PI_TUI_ED3_SAFE` (no ED3-risk lever exists),
 `PI_CLEAR_ON_SHRINK`, and `PI_TUI_DEBUG` (per-render dump superseded by

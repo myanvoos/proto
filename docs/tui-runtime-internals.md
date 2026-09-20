@@ -131,13 +131,21 @@ This keeps key parsing/editor mechanics in `packages/tui` and mode semantics in 
 2. Audit the already committed raw prefix for structural shifts; an insertion/deletion re-anchors commits at the first changed row so stale history may duplicate but new content is not lost.
 3. Advance the append-only ledger. Rows before the live boundary are exact/final; mutable rows that scroll above the window normally commit as frozen snapshots, while a pinned live region stays viewport-local.
 4. Extract and strip `CURSOR_MARKER`, normalize lines, slice the visible window, and composite overlays into that screen-coordinate window slice (overlays freeze commits).
-5. Emit one of: gesture-driven or divergence-rebuild full paint, scroll-append, in-window row diff, or seam rewrite.
+5. Emit one of: gesture-driven or geometry-rebuild full paint, scroll-append, in-window row diff, or seam rewrite.
 
-By default, native scrollback is append-only: committed frame rows are never rewritten. Exact rows enter history after the component seam declares them final; an unpinned mutable row that scrolls off is recorded as the snapshot that was visible at commit time. There are no viewport-position probes or deferred reconciliation; see [`tui-core-renderer.md`](./tui-core-renderer.md).
+By default, native scrollback is append-only: committed frame rows are never rewritten. Exact rows enter history after the component seam declares them final; an unpinned mutable row that scrolls off is recorded as the snapshot that was visible at commit time. Resize cursor reports measure host displacement, not the user’s scroll position; see [`tui-core-renderer.md`](./tui-core-renderer.md).
 
-The opt-in `tui.scrollbackRebuild` setting (default `false`) changes how a committed-prefix divergence is repaired. When finalized content replaces a scrolled-off preview, or a frame collapses into already committed rows, a direct terminal session clears native scrollback with ED3 and replays the current frame so the stale and final forms do not both remain. Multiplexer sessions never take this destructive path and retain the append/repair-below fallback. `PI_TUI_SCROLLBACK_REBUILD=1` initializes the low-level `TUI` flag, but `InteractiveMode` then applies the configured `tui.scrollbackRebuild` value; the setting is therefore the effective control in coding-agent.
+In-place resizes preserve host-reflowed native history instead of replaying the
+transcript. A cursor-position report anchors the mutable tail: the renderer
+accounts for old-width rows that wrapped above the cursor, then repaints the live
+region, including composer and status rows that the host may have trimmed. The
+composer declares a live boundary even when the transcript is idle.
 
-The `tui.resizeScrollback` setting (default `append`) controls what a settled in-place width resize (multiplexer panes, or direct terminals latched onto the in-place path) does to native scrollback, which the host rewrapped naively at the old width: `append` replays the transcript at the settled width below the old-wrap history (one fresh copy per settled resize), `rebuild` clears pane history first with ED3 so it holds exactly one current-width copy (tmux honors an inner ED3; GNU screen ignores it and degrades to `append`; erases pre-session pane history), and `preserve` repaints the viewport only, keeping the old-width wrap with zero history growth. `PI_TUI_RESIZE_SCROLLBACK` initializes the low-level `TUI` mode (engine default `preserve`), but `InteractiveMode` then applies the configured setting.
+Explicit `resetDisplay()` gestures, including `Ctrl+O` tool expansion, replay the
+current frame on direct terminals and inside multiplexers. tmux honors ED3 and
+replaces pane history; hosts that ignore ED3 receive the updated frame but keep
+older history above it. This explicit reset is separate from ordinary resize
+handling.
 
 Render writes use synchronized output mode (`CSI ? 2026 h/l`) when enabled; capability detection, DECRQM, or `PI_NO_SYNC_OUTPUT` can disable the wrappers while leaving autowrap discipline on.
 
