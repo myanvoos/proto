@@ -255,7 +255,11 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 		}
 	}
 
-	console.log(chalk.dim("commands: /bash <cmd>  /abort  /stop  /detach  (Ctrl-C aborts, twice detaches)"));
+	console.log(
+		chalk.dim(
+			"commands: /bash <cmd>  /abort  /stop  /detach  (Esc aborts and detaches; Ctrl-C aborts, twice detaches)",
+		),
+	);
 
 	let detached = false;
 	const detach = (reason: string): void => {
@@ -274,6 +278,24 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 		client.send({ type: "abort" });
 		console.log(chalk.yellow("abort requested"));
 	};
+
+	// Escape aborts and detaches in one press, mirroring the TUI's Escape
+	// interrupt. Readline still receives the same bytes for line editing; a
+	// lone ESC byte (no continuation) is an actual Escape press — terminal
+	// escape sequences for arrows etc. arrive as one multi-byte chunk.
+	if (process.stdin.isTTY) {
+		process.stdin.on("data", (chunk: Buffer | string) => {
+			if (detached) return;
+			const text = typeof chunk === "string" ? chunk : chunk.toString("latin1");
+			// Strip CSI/SS3 sequences (arrows, Home, F-keys...) before looking
+			// for a lone Escape — keypresses can coalesce into one chunk.
+			const stripped = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\x1bO[A-Za-z]/g, "");
+			if (stripped.includes("\x1b")) {
+				client.send({ type: "abort" });
+				detach("esc — aborted and detached");
+			}
+		});
+	}
 
 	let lastInterrupt = 0;
 	const onSigInt = (): void => {
@@ -323,7 +345,11 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 			return;
 		}
 		if (text === "/help") {
-			console.log(chalk.dim("/bash <cmd>  /abort  /stop  /detach  /help — anything else is sent as a prompt"));
+			console.log(
+				chalk.dim(
+					"/bash <cmd>  /abort  /stop  /detach  /help — Esc aborts and detaches; anything else is sent as a prompt",
+				),
+			);
 			return;
 		}
 		client.send({ type: "prompt", message: text });

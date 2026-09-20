@@ -48,7 +48,7 @@ describe("fleet send reply waits", () => {
 		const controller = new AbortController();
 		const send = executeSend(
 			{ registry, senderId: "Main", fleetRoot: "fleet", settings },
-			{ id: "peer", message: "hello", await: true },
+			{ to: "peer", message: "hello", await: true },
 			controller.signal,
 		);
 		const timeout = Promise.withResolvers<"timed-out">();

@@ -40,7 +40,7 @@ import {
 	messagingRenderResult,
 	normalizeIrcTimeoutMs,
 } from "./messaging";
-import { type FleetDetails, type FleetRenderArgs, fleetErrorResult } from "./types";
+import { type FleetDetails, type FleetOp, type FleetRenderArgs, fleetErrorResult } from "./types";
 
 export { isWaitingPollDetails } from "./jobs";
 export type { LaunchParams, LaunchToolDetails } from "./launch";
@@ -48,13 +48,16 @@ export { createIrcMessageCard, isIrcEnabled } from "./messaging";
 export * from "./types";
 
 const fleetSchema = type({
-	op: type(
+	"op?": type(
 		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
-	).describe("fleet operation"),
-	"id?": type("string").describe('send: recipient agent id or "all"; wait: only accept a message from this agent id'),
+	).describe(
+		"fleet operation; inferred as 'send' when to/message/text/keys are given, as 'wait' when from/for/pattern are given",
+	),
+	"to?": type("string").describe('send: recipient agent id or "all"'),
+	"from?": type("string").describe("wait: only accept a message from this agent id"),
 	"message?": type("string").describe("send: message body"),
 	"replyTo?": type("string").describe("send: message id being answered"),
-	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with id:"all")'),
+	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with to:"all")'),
 	"ids?": type("string[]").describe("wait: job ids to watch (omit = all running jobs); cancel: job ids to kill"),
 	"timeoutMs?": type("number").describe(
 		"wait/logs/stop/readiness timeout in milliseconds (0 waits indefinitely where supported)",
@@ -97,9 +100,25 @@ const fleetSchema = type({
 
 type FleetParams = typeof fleetSchema.infer;
 
+/** Resolves the fleet op: explicit `op`, else the only op the supplied fields could belong to. */
+function resolveFleetOp(params: Partial<FleetParams>): FleetOp | undefined {
+	if (params.op) return params.op;
+	if (
+		params.to !== undefined ||
+		params.message !== undefined ||
+		params.text !== undefined ||
+		params.keys !== undefined
+	) {
+		return "send";
+	}
+	if (params.from !== undefined || params.for !== undefined || params.pattern !== undefined) return "wait";
+	return undefined;
+}
+
 const FLEET_PARAM_KEYS: Record<string, true> = {
 	op: true,
-	id: true,
+	to: true,
+	from: true,
 	message: true,
 	replyTo: true,
 	await: true,
@@ -147,8 +166,9 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 	readonly parameters = fleetSchema;
 	readonly strict = true;
 	readonly interruptible = (params: Partial<FleetParams>): boolean => {
-		if (params.op === "wait") return true;
-		return params.op === "logs" && params.follow === true;
+		const op = resolveFleetOp(params);
+		if (op === "wait") return true;
+		return op === "logs" && params.follow === true;
 	};
 	readonly loadMode = "discoverable";
 
@@ -158,10 +178,9 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			call: { op: "list" },
 		},
 		{
-			caption: "Fire-and-forget DM — same send wakes idle/parked peers",
+			caption: "Fire-and-forget DM — op inferred as send; same send wakes idle/parked peers",
 			call: {
-				op: "send",
-				id: "AuthLoader",
+				to: "AuthLoader",
 				message: "Still touching src/server/auth.ts? I need to add a 401 path.",
 			},
 		},
@@ -169,7 +188,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			caption: "Round-trip when you cannot proceed without the answer",
 			call: {
 				op: "send",
-				id: "Main",
+				to: "Main",
 				message: "JWT or session cookies for the auth flow?",
 				await: true,
 			},
@@ -180,7 +199,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		},
 		{
 			caption: "Block until a specific peer answers",
-			call: { op: "wait", id: "AuthLoader", timeoutMs: 60_000 },
+			call: { op: "wait", from: "AuthLoader", timeoutMs: 60_000 },
 		},
 		{
 			caption: "Kill a hung background job",
@@ -236,26 +255,33 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		onUpdate?: AgentToolUpdateCallback<FleetDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<FleetDetails>> {
+		const op = resolveFleetOp(params);
 		const unknown = Object.keys(params).filter(key => FLEET_PARAM_KEYS[key] !== true);
 		if (unknown.length > 0) {
 			return fleetErrorResult(`Unknown fleet parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`, {
-				op: params.op,
+				op,
 			});
 		}
-		if (params.ready && Object.keys(params.ready).some(key => !["log", "port", "host", "timeoutMs"].includes(key))) {
-			return fleetErrorResult("Unknown fleet readiness parameter.", { op: params.op });
+		if (!op) {
+			return fleetErrorResult(
+				"`op` is required (one of send, wait, inbox, list, jobs, cancel, start, ps, logs, stop, restart, describe); `to` + `message` alone is treated as send.",
+				{ op },
+			);
 		}
-		switch (params.op) {
+		if (params.ready && Object.keys(params.ready).some(key => !["log", "port", "host", "timeoutMs"].includes(key))) {
+			return fleetErrorResult("Unknown fleet readiness parameter.", { op });
+		}
+		switch (op) {
 			case "list": {
 				const messaging = this.#messaging();
 				if (!messaging) return fleetErrorResult("Peer messaging is unavailable in this session.", { op: "list" });
 				return executeList(messaging.registry, messaging.senderId, messaging.fleetRoot);
 			}
 			case "send": {
-				const toPeer = params.id?.trim();
+				const toPeer = params.to?.trim();
 				const toProcess = params.name?.trim();
 				if (toPeer && toProcess) {
-					return fleetErrorResult('`id` (peer) and `name` (process) are mutually exclusive for op="send".', {
+					return fleetErrorResult('`to` (peer) and `name` (process) are mutually exclusive for op="send".', {
 						op: "send",
 					});
 				}
@@ -291,9 +317,9 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 			case "stop":
 			case "restart":
 			case "describe":
-				return this.#launch(params, params.op === "ps" ? "list" : params.op, signal);
+				return this.#launch(params, op === "ps" ? "list" : op, signal);
 			default:
-				return fleetErrorResult("Unknown fleet op.", { op: params.op });
+				return fleetErrorResult("Unknown fleet op.", { op });
 		}
 	}
 
@@ -314,7 +340,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<FleetDetails>> {
 		if (!this.session.settings.get("launch.enabled")) {
-			return fleetErrorResult("Process supervision is disabled (launch.enabled=false).", { op: params.op });
+			return fleetErrorResult("Process supervision is disabled (launch.enabled=false).", { op });
 		}
 		const { op: _fleetOp, ...rest } = params;
 		return executeLaunch(this.session, { ...rest, op }, signal);
@@ -328,10 +354,10 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		const messaging = this.#messaging();
 		const manager = this.session.asyncJobManager;
 		const ownerId = this.#ownerId();
-		const id = params.id?.trim() || undefined;
+		const from = params.from?.trim() || undefined;
 
 		if (messaging) {
-			const pending = drainPendingInbox(messaging.registry, messaging.senderId, id, messaging.fleetRoot);
+			const pending = drainPendingInbox(messaging.registry, messaging.senderId, from, messaging.fleetRoot);
 			if (pending) return messageResult(messaging.senderId, pending);
 		}
 
@@ -352,13 +378,13 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		if (!manager || runningJobs.length === 0) {
 			if (!messaging) return nothingToWaitForResult(this.session);
 
-			const queued = IrcBus.global().take(messaging.senderId, id, messaging.fleetRoot);
+			const queued = IrcBus.global().take(messaging.senderId, from, messaging.fleetRoot);
 			if (queued) return messageResult(messaging.senderId, queued);
-			if (!id) {
+			if (!from) {
 				const hasActivePeer = messaging.registry.listVisibleTo(messaging.senderId, messaging.fleetRoot).length > 0;
 				if (!hasActivePeer) return nothingToWaitForResult(this.session);
 			}
-			return executeMessageWait(messaging, { id, timeoutMs: params.timeoutMs }, signal);
+			return executeMessageWait(messaging, { from, timeoutMs: params.timeoutMs }, signal);
 		}
 
 		const window = resolvePollWindow(this.session, manager, ownerId);
@@ -373,7 +399,7 @@ export class FleetTool implements AgentTool<typeof fleetSchema, FleetDetails> {
 		const busLeg =
 			messaging && busAbort
 				? IrcBus.global()
-						.wait(messaging.senderId, { from: id }, 0, busAbort.signal, { fleetRoot: messaging.fleetRoot })
+						.wait(messaging.senderId, { from }, 0, busAbort.signal, { fleetRoot: messaging.fleetRoot })
 						.then(
 							message => ({ message, error: null as Error | null }),
 							error => ({
@@ -459,7 +485,7 @@ const LAUNCH_OPS: Record<string, true> = {
 function isLaunchStyleArgs(args: FleetRenderArgs | undefined): boolean {
 	if (!args?.op) return false;
 	if (LAUNCH_OPS[args.op]) return true;
-	return (args.op === "send" || args.op === "wait") && !!args.name && !args.id;
+	return (args.op === "send" || args.op === "wait") && !!args.name && !args.to;
 }
 
 function isJobStyleArgs(args: FleetRenderArgs | undefined): boolean {
@@ -468,7 +494,7 @@ function isJobStyleArgs(args: FleetRenderArgs | undefined): boolean {
 		case "cancel":
 			return true;
 		case "wait":
-			return !!args.ids?.length || (!args.id && !args.name);
+			return !!args.ids?.length || (!args.from && !args.name);
 		default:
 			return false;
 	}

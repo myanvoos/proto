@@ -46,7 +46,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		label: "Fleet send",
 		renderer: "fleet",
 
-		streamingArgs: { op: "send", id: "AuthLoader", message: "Are you still touching" },
+		streamingArgs: { op: "send", to: "AuthLoader", message: "Are you still touching" },
 		args: {
 			op: "send",
 			id: "AuthLoader",
@@ -102,7 +102,7 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 		label: "Fleet wait",
 		customRendered: true,
 		renderer: "fleet",
-		streamingArgs: { op: "wait", id: "AuthLoader" },
+		streamingArgs: { op: "wait", from: "AuthLoader" },
 		args: { op: "wait", id: "AuthLoader", timeoutMs: 60_000 },
 		result: {
 			content: [

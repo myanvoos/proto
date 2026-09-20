@@ -23,7 +23,7 @@ While attached you see live session events and can type prompts. Slash commands:
 | `/detach` | Disconnect; the session keeps running daemon-side. |
 | `/help` | List the commands. |
 
-`Ctrl-C` aborts the current turn; press it again within three seconds to detach. Closing the terminal (stdin EOF) detaches too.
+`Escape` aborts the current turn and detaches in one press (mirroring the interactive interrupt chord). `Ctrl-C` aborts; press it again within three seconds to detach. Closing the terminal (stdin EOF) detaches too.
 
 Reattach at any time — the latest client wins, and the last messages are replayed from session state:
 

@@ -50,7 +50,7 @@ const session: ToolSession = {
 const listed = await new OrchestrateListTool(session).execute();
 const id = listed.details?.screens[0]?.id;
 if (!id) throw new Error("Worker listing did not return an id");
-const sent = await new OrchestrateSendTool(session).execute("send-round-trip", { id, message: "continue" });
+const sent = await new OrchestrateSendTool(session).execute("send-round-trip", { to: id, message: "continue" });
 const fleet = new FleetTool(session);
 const peers = await fleet.execute("list-peers", { op: "list" });
 const peerId = peers.details && "peers" in peers.details ? peers.details.peers?.[0]?.id : undefined;
@@ -58,7 +58,7 @@ if (!peerId) throw new Error("Fleet listing did not return a peer id");
 const waiting = IrcBus.global().wait(peerId, { from: "Main" }, 1_000, undefined, {
 	fleetRoot: "/round-trip/fleet",
 });
-const delivered = await fleet.execute("send-peer", { op: "send", id: peerId, message: "coordinate" });
+const delivered = await fleet.execute("send-peer", { to: peerId, message: "coordinate" });
 const waited = await waiting;
 registry.setStatus(peerId, "parked");
 const parkedWorker = (await new OrchestrateListTool(session).execute()).details?.screens.find(

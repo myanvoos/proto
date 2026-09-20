@@ -85,6 +85,7 @@ test("schemas expose one canonical label, message, id, and millisecond-timeout v
 	for (const [tool, args] of [
 		[spawn, { name: "old", prompt: "old" }],
 		[send, { worker: "old", message: "old" }],
+		[send, { id: "old", message: "old" }],
 		[wait, { workers: ["old"], timeout: 1 }],
 		[kill, { worker: "old" }],
 	] as const) {
@@ -92,10 +93,16 @@ test("schemas expose one canonical label, message, id, and millisecond-timeout v
 	}
 	const legacyFleet = await Reflect.apply(fleet.execute, fleet, [
 		"legacy-fleet",
-		{ op: "send", to: "old", message: "old" },
+		{ op: "send", id: "old", message: "old" },
 	]);
 	expect(legacyFleet).toMatchObject({ isError: true });
 	expect(legacyFleet.content[0]).toMatchObject({ text: expect.stringContaining("Unknown fleet parameter") });
+	// Bare to + message routes to send (unknown-recipient rejection), never an op-required error.
+	const inferredSend = await Reflect.apply(fleet.execute, fleet, ["inferred-send", { to: "someone", message: "old" }]);
+	expect(inferredSend).toMatchObject({ isError: true });
+	const inferredText = inferredSend.content[0].type === "text" ? inferredSend.content[0].text : "";
+	expect(inferredText).not.toContain("`op` is required");
+	expect(inferredText).toContain("No recipients accepted");
 	const legacyReady = await Reflect.apply(fleet.execute, fleet, [
 		"legacy-ready",
 		{ op: "start", name: "server", application: "server", ready: { log: "ready", timeout: 30 } },
@@ -113,6 +120,12 @@ test("schemas expose one canonical label, message, id, and millisecond-timeout v
 	expect(Object.keys(spawnProperties)).not.toContain("prompt");
 	const sendProperties = toolWireSchema(send).properties as Record<string, unknown>;
 	expect(Object.keys(sendProperties)).not.toContain("worker");
+	expect(Object.keys(sendProperties)).not.toContain("id");
+	expect(Object.keys(sendProperties)).toContain("to");
+	expect(validateToolArguments(send, toolCall(send.name, { to: "worker-round-trip", message: "go" }))).toEqual({
+		to: "worker-round-trip",
+		message: "go",
+	});
 	const killProperties = toolWireSchema(kill).properties as Record<string, unknown>;
 	expect(Object.keys(killProperties)).not.toContain("worker");
 	const waitSchema = toolWireSchema(wait);
@@ -124,8 +137,10 @@ test("schemas expose one canonical label, message, id, and millisecond-timeout v
 	const fleetProperties = fleetSchema.properties as Record<string, { properties?: Record<string, unknown> }>;
 	expect(Object.keys(fleetProperties)).toContain("timeoutMs");
 	expect(Object.keys(fleetProperties)).not.toContain("timeout");
-	expect(Object.keys(fleetProperties)).not.toContain("to");
-	expect(Object.keys(fleetProperties)).not.toContain("from");
+	expect(Object.keys(fleetProperties)).toContain("to");
+	expect(Object.keys(fleetProperties)).toContain("from");
+	expect(Object.keys(fleetProperties)).not.toContain("id");
+	expect(fleetSchema.required ?? []).not.toContain("op");
 	expect(Object.keys(fleetProperties.ready?.properties ?? {})).toContain("timeoutMs");
 	expect(Object.keys(fleetProperties.ready?.properties ?? {})).not.toContain("timeout");
 });

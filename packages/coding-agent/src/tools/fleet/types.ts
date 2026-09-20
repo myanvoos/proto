@@ -3,7 +3,7 @@ import type { AsyncJobType } from "../../async";
 import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
 import type { LaunchParams, LaunchToolDetails } from "./launch";
 
-type FleetOp =
+export type FleetOp =
 	| "send"
 	| "wait"
 	| "inbox"
@@ -61,7 +61,7 @@ export interface AgentActivitySnapshot {
 }
 
 export interface CoordinationDetails {
-	op: FleetOp;
+	op?: FleetOp;
 	senderId?: string;
 	id?: string;
 	receipts?: IrcDeliveryReceipt[];
@@ -79,7 +79,8 @@ export type FleetDetails = CoordinationDetails | LaunchToolDetails;
 
 export type FleetRenderArgs = {
 	op?: string;
-	id?: string;
+	to?: string;
+	from?: string;
 	message?: string;
 	replyTo?: string;
 	await?: boolean;

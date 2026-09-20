@@ -121,7 +121,7 @@ export async function executeList(
 }
 
 interface FleetSendParams {
-	id?: string;
+	to?: string;
 	message?: string;
 	replyTo?: string;
 	await?: boolean;
@@ -134,23 +134,23 @@ export async function executeSend(
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {
 	const { registry, senderId, fleetRoot, settings } = deps;
-	const id = params.id?.trim();
+	const to = params.to?.trim();
 	const message = params.message?.trim();
-	if (!id) {
-		return fleetErrorResult('`id` is required for op="send".', { op: "send", senderId });
+	if (!to) {
+		return fleetErrorResult('`to` is required for op="send".', { op: "send", senderId });
 	}
 	if (!message) {
 		return fleetErrorResult('`message` is required for op="send".', { op: "send", senderId });
 	}
-	if (id === senderId) {
-		return fleetErrorResult("Cannot send a message to yourself.", { op: "send", senderId, id });
+	if (to === senderId) {
+		return fleetErrorResult("Cannot send a message to yourself.", { op: "send", senderId, id: to });
 	}
-	const isBroadcast = id === "all";
+	const isBroadcast = to === "all";
 	if (isBroadcast && params.await) {
-		return fleetErrorResult('`await` is invalid with id:"all" — broadcasts have no single replier.', {
+		return fleetErrorResult('`await` is invalid with to:"all" — broadcasts have no single replier.', {
 			op: "send",
 			senderId,
-			id,
+			id: to,
 		});
 	}
 
@@ -162,7 +162,7 @@ export async function executeSend(
 	let removeAwaitAbortListener: (() => void) | undefined;
 	const waiting = params.await
 		? bus
-				.wait(senderId, { from: id }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
+				.wait(senderId, { from: to }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
 					drainPending: false,
 					fleetRoot,
 					liveness: { registry, senderId },
@@ -188,7 +188,7 @@ export async function executeSend(
 	}
 
 	try {
-		const targets = isBroadcast ? registry.listVisibleTo(senderId, fleetRoot).map(ref => ref.id) : [id];
+		const targets = isBroadcast ? registry.listVisibleTo(senderId, fleetRoot).map(ref => ref.id) : [to];
 
 		const suppressRelay = isBroadcast && targets.includes(MAIN_AGENT_ID);
 		const receipts = await Promise.all(
@@ -231,7 +231,7 @@ export async function executeSend(
 				if (reply.error) {
 					if (signal?.aborted) {
 						lines.push(
-							`Send delivered but the reply wait was interrupted before ${id} answered. ` +
+							`Send delivered but the reply wait was interrupted before ${to} answered. ` +
 								"Check `inbox` or `wait` again after handling the interrupt.",
 						);
 					} else {
@@ -244,7 +244,7 @@ export async function executeSend(
 						lines.push(waited.body);
 					} else {
 						lines.push(
-							`No reply from ${id} within ${formatDuration(timeoutMs)}. ` +
+							`No reply from ${to} within ${formatDuration(timeoutMs)}. ` +
 								"They may answer later — check `inbox` or `wait` again.",
 						);
 					}
@@ -261,7 +261,7 @@ export async function executeSend(
 			details: {
 				op: "send",
 				senderId,
-				id,
+				id: to,
 				receipts,
 				...(waited !== undefined ? { waited } : {}),
 			},
@@ -275,19 +275,19 @@ export async function executeSend(
 
 export async function executeMessageWait(
 	deps: { registry: AgentRegistry; senderId: string; fleetRoot?: string; settings: Settings },
-	params: { id?: string; timeoutMs?: number },
+	params: { from?: string; timeoutMs?: number },
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<CoordinationDetails>> {
 	const { registry, senderId, fleetRoot, settings } = deps;
-	const id = params.id?.trim() || undefined;
+	const from = params.from?.trim() || undefined;
 	const timeoutMs = resolveMessageTimeoutMs(settings, params.timeoutMs);
 	try {
-		const waited = await IrcBus.global().wait(senderId, { from: id }, timeoutMs, signal, {
+		const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal, {
 			fleetRoot,
 			liveness: { registry, senderId },
 		});
 		if (!waited) {
-			const filterNote = id ? ` from ${id}` : "";
+			const filterNote = from ? ` from ${from}` : "";
 			return {
 				content: [{ type: "text", text: `No message${filterNote} within ${formatDuration(timeoutMs)}.` }],
 				details: { op: "wait", senderId, waited: null },
@@ -399,9 +399,9 @@ function bodyLines(
 function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
 		case "send":
-			return `IRC ${theme.nav.selected} ${sanitizeText(args.id?.trim() || "…")}`;
+			return `IRC ${theme.nav.selected} ${sanitizeText(args.to?.trim() || "…")}`;
 		case "wait":
-			return `IRC ${theme.nav.back} ${sanitizeText(args.id?.trim() || "anyone")}`;
+			return `IRC ${theme.nav.back} ${sanitizeText(args.from?.trim() || "anyone")}`;
 		case "inbox":
 			return "IRC inbox";
 		case "list":
@@ -414,7 +414,7 @@ function callTitle(args: FleetRenderArgs | undefined, theme: Theme): string {
 function callMeta(args: FleetRenderArgs | undefined): string[] {
 	const meta: string[] = [];
 	if (args?.op === "send") {
-		if (args.id === "all") meta.push("broadcast");
+		if (args.to === "all") meta.push("broadcast");
 		if (args.await) meta.push("await reply");
 		if (args.replyTo) meta.push("reply");
 	}
@@ -481,7 +481,7 @@ function renderSendResult(
 	theme: Theme,
 ): string[] {
 	const receipts = details.receipts ?? [];
-	const to = sanitizeText(details.id ?? args?.id?.trim() ?? "?");
+	const to = sanitizeText(details.id ?? args?.to?.trim() ?? "?");
 	const title = `IRC ${theme.nav.selected} ${to}`;
 
 	if (receipts.length === 0) {
@@ -574,7 +574,7 @@ function renderWaitResult(
 		const text = textContent(result) || "No message arrived.";
 		return [
 			renderStatusLine(
-				{ icon: "warning", title: `IRC ${theme.nav.back} ${args?.id?.trim() || "anyone"}`, meta: ["timed out"] },
+				{ icon: "warning", title: `IRC ${theme.nav.back} ${args?.from?.trim() || "anyone"}`, meta: ["timed out"] },
 				theme,
 			),
 			`  ${theme.fg("muted", replaceTabs(text))}`,

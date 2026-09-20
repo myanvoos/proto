@@ -71,7 +71,7 @@ const orchestrateSpawnSchema = type({
 });
 
 const orchestrateSendSchema = type({
-	id: type("string > 0").describe("worker id from orchestrate_spawn / orchestrate_list"),
+	to: type("string > 0").describe("worker id from orchestrate_spawn / orchestrate_list"),
 	message: type("string > 0").describe("message for the worker; steers mid-turn, else runs as its next turn"),
 });
 
@@ -278,9 +278,9 @@ export class OrchestrateSendTool implements AgentTool<typeof orchestrateSendSche
 		_toolCallId: string,
 		params: typeof orchestrateSendSchema.infer,
 	): Promise<AgentToolResult<OrchestrateToolDetails>> {
-		assertKnownParams("orchestrate_send", params, ["id", "message"]);
+		assertKnownParams("orchestrate_send", params, ["to", "message"]);
 		const outcome = await (await getOrchestratorRuntimeModule()).OrchestratorRuntime.global().send(this.session, {
-			session: params.id,
+			session: params.to,
 			message: params.message,
 		});
 		const ack =
@@ -485,6 +485,7 @@ function turnStateToColor(state: WorkerTurnState): ToolUIColor {
 interface OrchestrateRenderArgs {
 	agent?: string;
 	label?: string;
+	to?: string;
 	id?: string;
 	message?: string;
 	ids?: string[];
@@ -612,7 +613,7 @@ function describeCall(op: OrchestrateOp, args: OrchestrateRenderArgs | undefined
 		case "spawn":
 			return `spawn ${args?.agent ?? "worker"}${args?.label ? ` · ${frameText(args.label, 40)}` : ""}`;
 		case "send":
-			return `send → ${args?.id ? frameText(args.id, 40) : "?"}`;
+			return `send → ${args?.to ? frameText(args.to, 40) : "?"}`;
 		case "wait":
 			return args?.ids?.length ? `wait on ${frameText(args.ids.join(", "), 60)}` : "wait on running workers";
 		case "kill":
@@ -684,7 +685,7 @@ export function createOrchestrateToolRenderer(op: OrchestrateOp) {
 				const target =
 					op === "spawn"
 						? `${uiTheme.fg("muted", "orchestrate spawn")} ${formatBadge(details.spawned?.agent ?? args?.agent ?? "worker", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(spawnName, 40))}${spawnId}`
-						: `${uiTheme.fg("muted", "orchestrate send →")} ${uiTheme.fg("accent", frameText(args?.id ?? "?", 40))}`;
+						: `${uiTheme.fg("muted", "orchestrate send →")} ${uiTheme.fg("accent", frameText(args?.to ?? "?", 40))}`;
 				const ack =
 					op === "spawn"
 						? uiTheme.fg("success", `turn started${details.spawned ? ` (job ${details.spawned.jobId})` : ""}`)

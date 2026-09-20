@@ -25,7 +25,6 @@ import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-to
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
 import { tokenizeShellSegments } from "./shell-tokenize";
 import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
-import { normalizeXdDeviceArgs, suggestKnownKey } from "./xdev-normalize";
 
 /**
  * Tool names that always stay top-level native tools, even if something declares them
@@ -114,6 +113,42 @@ function unknownXdKeys(args: Record<string, unknown>, schema: Record<string, unk
 	return Object.keys(args).filter(key => !declared.has(key));
 }
 
+/** Closest accepted key for an unknown key, for "did you mean" hints in validation errors. */
+function suggestKnownKey(unknown: string, accepted: readonly string[]): string | undefined {
+	const lower = unknown.toLowerCase();
+	const caseless = accepted.find(key => key.toLowerCase() === lower);
+	if (caseless) return caseless;
+	let best: string | undefined;
+	let bestDistance = Number.POSITIVE_INFINITY;
+	for (const key of accepted) {
+		if (Math.abs(key.length - unknown.length) > 2) continue;
+		const distance = levenshtein(unknown.toLowerCase(), key.toLowerCase(), bestDistance);
+		if (distance < bestDistance) {
+			bestDistance = distance;
+			best = key;
+		}
+	}
+	return bestDistance <= 2 ? best : undefined;
+}
+
+function levenshtein(a: string, b: string, cap: number): number {
+	if (a === b) return 0;
+	let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i++) {
+		const current = [i];
+		let rowMin = i;
+		for (let j = 1; j <= b.length; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			const value = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
+			current.push(value);
+			if (value < rowMin) rowMin = value;
+		}
+		if (rowMin > cap) return cap + 1;
+		previous = current;
+	}
+	return previous[b.length];
+}
+
 function validateXdArgs(
 	device: AiTool,
 	args: Record<string, unknown>,
@@ -147,11 +182,7 @@ function validateXdArgs(
 	}
 }
 
-function parseDeviceArgs(
-	device: AiTool,
-	content: string,
-	toolCallId: string,
-): { args: Record<string, unknown>; notes: string[] } {
+function parseDeviceArgs(device: AiTool, content: string, toolCallId: string): Record<string, unknown> {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(content);
@@ -169,15 +200,7 @@ function parseDeviceArgs(
 	const args: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
 	const schema = toolWireSchema(device);
 	if ("i" in args && !schemaDeclaresIntentField(schema)) delete args.i;
-	const { args: normalized, notes } = normalizeXdDeviceArgs(device.name, args);
-	const validated = validateXdArgs(
-		device,
-		normalized,
-		toolCallId,
-		schema,
-		() => renderDocsParts(device as Tool).schema,
-	);
-	return { args: validated, notes };
+	return validateXdArgs(device, args, toolCallId, schema, () => renderDocsParts(device as Tool).schema);
 }
 
 function toolSummary(inst: Tool): string {
@@ -407,7 +430,7 @@ export async function dispatchXdevTool(
 			};
 		}
 
-		const { args: validated, notes } = parseDeviceArgs(canonical as AiTool, content, toolCallId);
+		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId);
 		throwIfAborted(signal);
 		xdev = { ...xdev, args: validated };
 		const innerOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
@@ -420,7 +443,7 @@ export async function dispatchXdevTool(
 			: undefined;
 		const executable = canonical;
 		const result = await executable.execute(toolCallId, validated as never, signal, innerOnUpdate, context);
-		return { result: withNormalizationNotes(result, notes), xdev: { ...xdev, inner: result.details } };
+		return { result, xdev: { ...xdev, inner: result.details } };
 	} catch (error) {
 		if (
 			error instanceof ToolAbortError ||
@@ -437,22 +460,6 @@ export async function dispatchXdevTool(
 			xdev,
 		};
 	}
-}
-
-/** Surfaces alias/normalization repairs on the result so the calling agent corrects future calls. */
-function withNormalizationNotes(result: AgentToolResult<unknown>, notes: readonly string[]): AgentToolResult<unknown> {
-	if (notes.length === 0) return result;
-	const line = `note: ${notes.join("; ")}`;
-	let prefixed = false;
-	const content = result.content.map(block => {
-		if (!prefixed && block.type === "text") {
-			prefixed = true;
-			return { ...block, text: `${line}\n\n${block.text}` };
-		}
-		return block;
-	});
-	if (!prefixed) content.unshift({ type: "text", text: line });
-	return { ...result, content };
 }
 
 export type XdBashDispatch = { kind: "listing" } | { kind: "device"; name: string; content: string };
