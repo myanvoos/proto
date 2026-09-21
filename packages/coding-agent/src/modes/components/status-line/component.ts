@@ -289,7 +289,6 @@ export class StatusLineComponent implements Component {
 	#hookStatuses: Map<string, string> = new Map();
 	#subagentCount: number = 0;
 	#activeMeters: WeakMap<AgentSession, ActiveMeter> = new WeakMap();
-	#loopModeStatus: { enabled: boolean } | null = null;
 	#goalModeStatus: { enabled: boolean; paused: boolean } | null = null;
 	#focusedAgentId: string | undefined;
 	#previewTitle: string | undefined;
@@ -454,10 +453,6 @@ export class StatusLineComponent implements Component {
 			this.#activeMeters.set(this.session, meter);
 		}
 		return meter;
-	}
-
-	setLoopModeStatus(status: { enabled: boolean } | undefined): void {
-		this.#loopModeStatus = status ?? null;
 	}
 
 	setGoalModeStatus(status: { enabled: boolean; paused: boolean } | undefined): void {
@@ -1025,7 +1020,6 @@ export class StatusLineComponent implements Component {
 			width,
 			options: segmentOptions ?? {},
 			compactThinkingLevel: this.#resolveSettings().compactThinkingLevel ?? false,
-			loopMode: this.#loopModeStatus,
 			prewalk:
 				typeof this.session.getPrewalkState === "function" && this.session.getPrewalkState()
 					? { enabled: true }

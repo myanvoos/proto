@@ -553,8 +553,7 @@ function renderEventHunkRows(event: EvalStatusEvent, theme: Theme, width: number
 	const rows: string[] = [];
 	const groupStarts: number[] = [];
 	if (renderedDiff) {
-		const filePath = typeof event.path === "string" ? event.path : undefined;
-		for (const diffLine of renderDiffColored(renderedDiff, { filePath, theme }).split("\n")) {
+		for (const diffLine of renderDiffColored(renderedDiff, { theme }).split("\n")) {
 			groupStarts.push(rows.length);
 			rows.push(...wrapCodeFrameLine(diffLine, width));
 		}
@@ -762,26 +761,29 @@ export interface EvalDisplayCell {
 // Shell chunks keep the newline that separated them from the cell body; drop
 // it so heredoc delimiter lines sit flush against the outline, and trim the
 // partial line around a `-c` word so `python -c` / `&& echo` read as lines.
-function shellChunkLines(chunk: string, shellLanguage: string, theme: Theme): string[] {
+function shellChunkLines(chunk: string, shellLanguage: string, theme: Theme, highlight = true): string[] {
 	const text = chunk
 		.replace(/^\r?\n/, "")
 		.replace(/\r?\n$/, "")
 		.trim();
 	if (text.length === 0) return [];
-	return highlightCode(replaceTabs(text), shellLanguage, theme);
+	return highlight ? highlightCode(replaceTabs(text), shellLanguage, theme) : replaceTabs(text).split("\n");
 }
 
 // Settled view of a mixed bash call: the shell source with each display cell's
 // code region (kernel cell body, heredoc-written source file) replaced by its
 // AST outline (or the cell language's highlighted source when it does not
 // parse), so the block reads as shell around an outlined code block instead of
-// one flat bash listing.
+// one flat bash listing. `highlight` syntax-colors the shell source and any
+// cell code that has no AST outline; the committed bash card passes false so
+// scrollback keeps the plain literal source.
 export function renderShellWithCellOutlines(
 	source: string,
 	cells: readonly EvalDisplayCell[],
 	shellLanguage: string,
 	theme: Theme,
 	width: number,
+	highlight = true,
 ): { lines: string[]; outlined: boolean } | undefined {
 	if (cells.length === 0) return undefined;
 	const lines: string[] = [];
@@ -789,17 +791,20 @@ export function renderShellWithCellOutlines(
 	let cursor = 0;
 	for (const cell of cells) {
 		if (cell.start < cursor || cell.end < cell.start || cell.end > source.length) return undefined;
-		lines.push(...shellChunkLines(source.slice(cursor, cell.start), shellLanguage, theme));
+		lines.push(...shellChunkLines(source.slice(cursor, cell.start), shellLanguage, theme, highlight));
 		const ast = astPreviewLines(cell.code, cell.language, theme, width);
 		if (ast) {
 			lines.push(...ast);
 			outlined = true;
 		} else {
-			lines.push(...highlightCode(replaceTabs(cell.code), languageForHighlighter(cell.language), theme));
+			const cellLines = highlight
+				? highlightCode(replaceTabs(cell.code), languageForHighlighter(cell.language), theme)
+				: replaceTabs(cell.code).split("\n");
+			lines.push(...cellLines);
 		}
 		cursor = cell.end;
 	}
-	lines.push(...shellChunkLines(source.slice(cursor), shellLanguage, theme));
+	lines.push(...shellChunkLines(source.slice(cursor), shellLanguage, theme, highlight));
 	return { lines, outlined };
 }
 

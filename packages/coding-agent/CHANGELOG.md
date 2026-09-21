@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the `/loop` command and loop mode: the slash command, its status-line indicator, the `loop.mode` setting, and the automatic prompt re-submission it drove are gone.
+
 ### Added
 
 - Kernel `completion()` accepts a model id, not just the `"smol"`/`"default"`/`"slow"` tiers: a bare id resolves when a single provider offers it, several providers ask you to qualify it as `provider/id`, and an id outside the pool names its closest available matches.
@@ -13,8 +17,8 @@
 - `/side --agent` agents behave like small main sessions: they can `ask` you questions (the dialog is chipped with the agent id so you can tell who is asking), and `/model` or the model picker now switches the agent you have focused instead of silently retargeting the main session.
 - Focusing any agent — worker, subagent or side agent — keeps it live while you read or type: it no longer parks out from under you after the idle TTL and bounces the view back to the main session.
 - Default themes (`proto`, `light`) adopt the Catppuccin Mocha/Latte syntax palette (the one Codex CLI uses): command names blue, keywords mauve, flags and variables red, strings green, numbers peach, operators teal, comments and punctuation quiet gray.
-- Multi-statement bash commands render one subcommand per line in the tool view, aligned under the first command and led by the operator that introduced them (`&&`, `;`, `|`, ...); quoted strings, heredoc bodies, and fd duplications like `2>&1` never split.
-- Bash command syntax highlighting now applies only while the tool cell is streaming; once the cell commits to scrollback the command renders as plain text.
+- Bash command syntax highlighting applies only while the tool cell is streaming; once a cell commits to scrollback it renders the plain literal command.
+- Kernel cell diff hunks no longer syntax-highlight context lines; hunks keep only the added/removed line coloring.
 
 ## [18.2.0] - 2026-09-20
 

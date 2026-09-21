@@ -98,10 +98,7 @@ export function buildTuiBuiltinSlashCommands(runtime: TuiSlashCommandRuntime): R
 
 export const BUILTIN_SLASH_COMMANDS_INTERNAL: ReadonlyArray<SlashCommandSpec> = BUILTIN_SLASH_COMMAND_REGISTRY;
 
-export async function executeBuiltinSlashCommand(
-	text: string,
-	runtime: BuiltinSlashCommandRuntime,
-): Promise<string | boolean> {
+export async function executeBuiltinSlashCommand(text: string, runtime: BuiltinSlashCommandRuntime): Promise<boolean> {
 	const parsed = parseSlashCommand(text);
 	if (!parsed) return false;
 
@@ -115,8 +112,7 @@ export async function executeBuiltinSlashCommand(
 		return true;
 	}
 	if (command.handleTui) {
-		const result = await command.handleTui(parsed, runtime);
-		if (result && typeof result === "object" && "prompt" in result) return result.prompt;
+		await command.handleTui(parsed, runtime);
 		return true;
 	}
 	if (command.handle) {
@@ -132,9 +128,8 @@ export async function executeBuiltinSlashCommand(
 			refreshCommands: () => ctx.refreshSlashCommandState(),
 			reloadPlugins: () => reloadTuiPluginState(ctx),
 		};
-		const result = await command.handle(parsed, adapted);
+		await command.handle(parsed, adapted);
 		ctx.editor.setText("");
-		if (result && typeof result === "object" && "prompt" in result) return result.prompt;
 		return true;
 	}
 	return false;

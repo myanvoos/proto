@@ -13,7 +13,6 @@ function renderPathSegment(worktree: { projectName: string; worktreeName: string
 		options: {},
 		compactThinkingLevel: false,
 		prewalk: null,
-		loopMode: null,
 		worktree,
 		git: { branch, ahead: 0, behind: 0, dirty: false },
 	} as never);

@@ -1,6 +1,6 @@
 import { diffWords } from "@oh-my-pi/pi-natives";
 import { DEFAULT_TAB_WIDTH, sanitizeText } from "@oh-my-pi/pi-utils";
-import { theme as defaultTheme, getLanguageFromPath, highlightCode, type Theme } from "../../modes/theme/theme";
+import { theme as defaultTheme, type Theme } from "../../modes/theme/theme";
 import { type CodeFrameMarker, formatCodeFrameLine, replaceTabs } from "../../tools/render-utils";
 
 const DIM = "\x1b[2m";
@@ -109,7 +109,6 @@ function renderIntraLineDiff(
 }
 
 interface RenderDiffOptions {
-	filePath?: string;
 	theme?: Theme;
 }
 
@@ -123,8 +122,6 @@ export function renderDiff(diffText: string, options: RenderDiffOptions = {}): s
 		const lineNumber = parsed?.lineNum.trim() ?? "";
 		return Math.max(width, lineNumber.length);
 	}, 3);
-
-	const contextHighlights = highlightContextLines(parsedLines, options.filePath, renderTheme);
 
 	let prevLineNum = "";
 
@@ -197,48 +194,12 @@ export function renderDiff(diffText: string, options: RenderDiffOptions = {}): s
 			result.push(renderTheme.fg("toolDiffAdded", formatLine("+", parsed.lineNum, visualizeIndent(parsed.content))));
 			i++;
 		} else {
-			const highlighted = contextHighlights.get(i);
-			const content = highlighted !== undefined ? replaceTabs(highlighted) : visualizeIndent(parsed.content);
-			result.push(renderTheme.fg("toolDiffContext", formatLine(" ", parsed.lineNum, content)));
+			result.push(
+				renderTheme.fg("toolDiffContext", formatLine(" ", parsed.lineNum, visualizeIndent(parsed.content))),
+			);
 			i++;
 		}
 	}
 
 	return result.join("\n");
-}
-
-function highlightContextLines(
-	parsedLines: Array<{ prefix: CodeFrameMarker; lineNum: string; content: string } | null>,
-	filePath: string | undefined,
-	renderTheme: Theme,
-): Map<number, string> {
-	const map = new Map<number, string>();
-	const lang = filePath ? getLanguageFromPath(filePath) : undefined;
-	if (!lang) return map;
-
-	let runIndices: number[] = [];
-	let runContents: string[] = [];
-	const flush = () => {
-		if (runContents.length === 0) return;
-		const highlighted = highlightCode(runContents.join("\n"), lang, renderTheme);
-		for (let k = 0; k < runIndices.length; k++) {
-			map.set(runIndices[k], highlighted[k] ?? runContents[k]);
-		}
-		runIndices = [];
-		runContents = [];
-	};
-
-	for (let j = 0; j < parsedLines.length; j++) {
-		const p = parsedLines[j];
-
-		const isCollapseMarker = p?.prefix === " " && (p.content === "..." || p.content === "…");
-		if (p && p.prefix === " " && !isCollapseMarker) {
-			runIndices.push(j);
-			runContents.push(p.content);
-		} else {
-			flush();
-		}
-	}
-	flush();
-	return map;
 }

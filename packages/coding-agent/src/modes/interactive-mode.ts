@@ -125,15 +125,6 @@ import { SideAgentController } from "./controllers/side-agent-controller";
 import { SideQuestionController } from "./controllers/side-question-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { imageReferenceHyperlink, materializeImageReferenceLinks } from "./image-references";
-import {
-	consumeLoopLimitIteration,
-	createLoopLimitRuntime,
-	describeLoopLimit,
-	describeLoopLimitRuntime,
-	isLoopDurationExpired,
-	type LoopLimitRuntime,
-	parseLoopLimitArgs,
-} from "./loop-limit";
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { countRunningSubagentBadgeAgents } from "./running-subagent-badge";
 import {
@@ -372,11 +363,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	checklistExpanded = false;
 	goalModeEnabled = false;
 	goalModePaused = false;
-	loopModeEnabled = false;
-	loopModePaused = false;
-	loopPrompt: string | undefined = undefined;
-	loopLimit: LoopLimitRuntime | undefined = undefined;
-	#loopAutoSubmitTimer: NodeJS.Timeout | undefined;
 	#checklistAutoClearTimer: NodeJS.Timeout | undefined;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	#nextAppearanceRequestToken = 1;
@@ -1122,41 +1108,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.editor.disableSubmit = false;
 			this.ui.requestRender();
 		}
-		this.#scheduleLoopAutoSubmit();
 		this.#scheduleGoalContinuation();
 
 		using _ = new EventLoopKeepalive();
 		return await promise;
 	}
 
-	#scheduleLoopAutoSubmit(): void {
-		this.#cancelLoopAutoSubmit();
-		if (!this.loopModeEnabled || !this.loopPrompt) return;
-		const prompt = this.loopPrompt;
-		const loopAction = settings.get("loop.mode");
-		this.#deferLoopAutoSubmit(() => {
-			void this.#runLoopIteration(loopAction, prompt);
-		});
-	}
-
-	#deferLoopAutoSubmit(callback: () => void): void {
-		this.#loopAutoSubmitTimer = setTimeout(() => {
-			this.#loopAutoSubmitTimer = undefined;
-			if (!this.loopModeEnabled || !this.onInputCallback) return;
-			callback();
-		}, 800);
-	}
-
-	#cancelLoopAutoSubmit(): void {
-		if (this.#loopAutoSubmitTimer) {
-			clearTimeout(this.#loopAutoSubmitTimer);
-			this.#loopAutoSubmitTimer = undefined;
-		}
-	}
-
 	#scheduleGoalContinuation(): void {
 		this.#cancelGoalContinuation();
-		if (this.loopModeEnabled) return;
 		if (!this.onInputCallback) return;
 		if (!this.session.settings.get("goal.continuationModes").includes("interactive")) return;
 		if (!this.goalModeEnabled || this.goalModePaused) return;
@@ -1201,99 +1160,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#isAutoSubmitBlocked(): boolean {
 		return this.session.isStreaming || this.session.isCompacting || this.session.hasPostPromptWork;
-	}
-
-	#submitLoopPromptWhenReady(prompt: string): void {
-		if (!this.loopModeEnabled || this.loopPrompt !== prompt || !this.onInputCallback) return;
-		if (isLoopDurationExpired(this.loopLimit)) {
-			this.disableLoopMode("Loop time limit reached. Loop mode disabled.");
-			return;
-		}
-		if (this.#isAutoSubmitBlocked()) {
-			this.#deferLoopAutoSubmit(() => this.#submitLoopPromptWhenReady(prompt));
-			return;
-		}
-		this.onInputCallback(this.startPendingSubmission({ text: prompt }));
-	}
-
-	async #runLoopIteration(action: "prompt" | "compact" | "reset", prompt: string): Promise<void> {
-		if (!this.loopModeEnabled || this.loopPrompt !== prompt || !this.onInputCallback) return;
-		if (this.#isAutoSubmitBlocked()) {
-			this.#deferLoopAutoSubmit(() => {
-				void this.#runLoopIteration(action, prompt);
-			});
-			return;
-		}
-
-		if (!consumeLoopLimitIteration(this.loopLimit)) {
-			this.disableLoopMode("Loop limit reached. Loop mode disabled.");
-			return;
-		}
-		this.#syncLoopModeStatus();
-
-		if (action === "compact") {
-			await this.handleCompactCommand();
-		} else if (action === "reset") {
-			await this.handleClearCommand();
-		}
-		this.#submitLoopPromptWhenReady(prompt);
-	}
-
-	#syncLoopModeStatus(): void {
-		this.statusLine.setLoopModeStatus(this.loopModeEnabled ? { enabled: true } : undefined);
-		this.ui.requestRender();
-	}
-
-	disableLoopMode(message = "Loop mode disabled."): void {
-		const wasEnabled = this.loopModeEnabled;
-		this.loopModeEnabled = false;
-		this.loopModePaused = false;
-		this.loopPrompt = undefined;
-		this.loopLimit = undefined;
-		this.#cancelLoopAutoSubmit();
-		this.#syncLoopModeStatus();
-		if (wasEnabled) {
-			this.showStatus(message);
-		}
-	}
-
-	setLoopPrompt(prompt: string): void {
-		if (!this.loopModeEnabled) return;
-		this.loopPrompt = prompt;
-		this.loopModePaused = false;
-		this.#syncLoopModeStatus();
-	}
-
-	pauseLoop(): void {
-		this.loopPrompt = undefined;
-		this.loopModePaused = true;
-		this.#cancelLoopAutoSubmit();
-		this.#syncLoopModeStatus();
-	}
-
-	async handleLoopCommand(args = ""): Promise<string | undefined> {
-		if (this.loopModeEnabled) {
-			this.disableLoopMode();
-			return undefined;
-		}
-		const parsed = parseLoopLimitArgs(args);
-		if (typeof parsed === "string") {
-			this.showError(parsed);
-			return undefined;
-		}
-		this.loopModeEnabled = true;
-		this.loopModePaused = false;
-		this.loopPrompt = undefined;
-		this.loopLimit = createLoopLimitRuntime(parsed.limit);
-		this.#syncLoopModeStatus();
-		const limitSuffix = parsed.limit ? ` Limited to ${describeLoopLimit(parsed.limit)}.` : "";
-		const remainingSuffix = this.loopLimit ? ` ${describeLoopLimitRuntime(this.loopLimit)}.` : "";
-		const tail = parsed.prompt ? "Repeating it after each turn." : "Your next prompt will repeat after each turn.";
-		this.showStatus(
-			`Loop mode enabled.${limitSuffix}${remainingSuffix} ${tail} Esc cancels the current iteration; /loop again to disable.`,
-		);
-
-		return parsed.prompt;
 	}
 
 	recordLocalSubmission(text: string, imageCount = 0): () => void {

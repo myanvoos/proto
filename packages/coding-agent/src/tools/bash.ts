@@ -41,7 +41,6 @@ import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import { resolveSpawnPolicy } from "../task/spawn-policy";
-import { splitShellCommands } from "./bash-command-split";
 import "./kernel-prelude";
 import type {
 	ClientBridgeTerminalExitStatus,
@@ -1890,8 +1889,9 @@ function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unknown> | u
 
 // `outlineWidth` renders the settled view: each embedded code region becomes an
 // AST outline inside the surrounding shell source. Omit it for the raw listing.
-// `highlight` syntax-colors the shell source; only the live, in-progress cell
-// may use it. Once the cell commits to scrollback the command renders plain.
+// `highlight` formats for the live, in-progress cell: syntax colors plus the
+// one-subcommand-per-line reflow. Once the cell commits to scrollback the
+// command renders as plain literal source.
 function formatBashCommandLines(
 	args: BashRenderArgs,
 	uiTheme: Theme,
@@ -1909,36 +1909,13 @@ function formatBashCommandLines(
 	const outlined =
 		outlineWidth === undefined
 			? undefined
-			: renderShellWithCellOutlines(command, bashDisplayCells(command), "bash", uiTheme, outlineWidth);
+			: renderShellWithCellOutlines(command, bashDisplayCells(command), "bash", uiTheme, outlineWidth, highlight);
 	if (outlined) {
 		return outlined.lines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
 	}
-
-	// Multi-statement commands render one subcommand per line, aligned under
-	// the first and led by the operator that introduced them (`&&`, `;`, `|`,
-	// ...). Newline-separated lines stack without an operator.
-	const segments = splitShellCommands(command);
-	if (segments.length <= 1) {
-		const commandLines = highlight ? highlightCode(replaceTabs(command), "bash") : replaceTabs(command).split("\n");
-		if (commandLines.length === 0) return [prefix.trimEnd()];
-		return commandLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
-	}
-	const continuationIndent = " ".repeat(Bun.stringWidth(`${prefixParts.join(" ")} `));
-	const lines: string[] = [];
-	for (const [i, segment] of segments.entries()) {
-		const operator =
-			segment.separator === "" || segment.separator === "\n" || segment.separator === "\r"
-				? ""
-				: uiTheme.fg("dim", `${segment.separator} `);
-		const indent = i === 0 ? prefix : continuationIndent;
-		const segmentLines = highlight
-			? highlightCode(replaceTabs(segment.raw), "bash")
-			: replaceTabs(segment.raw).split("\n");
-		for (const [j, line] of segmentLines.entries()) {
-			lines.push(j === 0 ? `${indent}${operator}${line}` : `${continuationIndent}${line}`);
-		}
-	}
-	return lines.length > 0 ? lines : [prefix.trimEnd()];
+	const commandLines = highlight ? highlightCode(replaceTabs(command), "bash") : replaceTabs(command).split("\n");
+	if (commandLines.length === 0) return [prefix.trimEnd()];
+	return commandLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
 }
 
 // A heredoc that writes a source file carries code the same way a kernel cell

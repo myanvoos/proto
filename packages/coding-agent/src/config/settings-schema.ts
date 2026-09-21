@@ -1615,31 +1615,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"loop.mode": {
-		type: "enum",
-		values: ["prompt", "compact", "reset"] as const,
-		default: "prompt",
-		ui: {
-			tab: "interaction",
-			group: "Input",
-			label: "Loop Mode",
-			description: "What happens between /loop iterations before re-submitting the prompt",
-			options: [
-				{
-					value: "prompt",
-					label: "Prompt",
-					description: "Re-submit the prompt as a follow-up message (current behavior)",
-				},
-				{
-					value: "compact",
-					label: "Compact",
-					description: "Compact the session context, then re-submit the prompt",
-				},
-				{ value: "reset", label: "Reset", description: "Start a new session, then re-submit the prompt" },
-			],
-		},
-	},
-
 	doubleEscapeAction: {
 		type: "enum",
 		values: ["branch", "tree", "none"] as const,

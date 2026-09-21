@@ -1,4 +1,4 @@
-/** Shared parsing for the compound duration tokens accepted by `/loop` and `/wait` (`10m`, `1h30m`, `2d`). */
+/** Shared parsing for the compound duration tokens accepted by `/wait` (`10m`, `1h30m`, `2d`). */
 
 const DURATION_UNITS_MS: Readonly<Record<string, number>> = {
 	s: 1_000,

@@ -229,13 +229,6 @@ const BASE_MODE_STATES: readonly BaseModeState[] = [
 			return renderGoalMode(ctx, goal);
 		},
 	},
-	{
-		id: "loop",
-		render(ctx) {
-			if (!ctx.loopMode?.enabled) return "";
-			return theme.fg(MODE_ACCENT, withIcon(theme.icon.loop, "Loop"));
-		},
-	},
 ];
 
 function renderBaseMode(ctx: SegmentContext): string {

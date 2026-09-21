@@ -35,7 +35,6 @@ import type { ToolExecutionHandle } from "./components/tool-execution";
 import type { TranscriptContainer } from "./components/transcript-container";
 import type { EventController } from "./controllers/event-controller";
 import type { ScheduledQueueController } from "./controllers/scheduled-queue-controller";
-import type { LoopLimitRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
 
@@ -145,10 +144,6 @@ export interface InteractiveModeContext {
 	checklistExpanded: boolean;
 	goalModeEnabled: boolean;
 	goalModePaused: boolean;
-	loopModeEnabled: boolean;
-	loopModePaused: boolean;
-	loopPrompt?: string;
-	loopLimit?: LoopLimitRuntime;
 	hideThinkingBlock: boolean;
 
 	readonly effectiveHideThinkingBlock: boolean;
@@ -381,10 +376,6 @@ export interface InteractiveModeContext {
 	setToolsExpanded(expanded: boolean): void;
 	toggleThinkingBlockVisibility(): void;
 	handleGoalModeCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
-	handleLoopCommand(args?: string): Promise<string | undefined>;
-	setLoopPrompt(prompt: string): void;
-	disableLoopMode(): void;
-	pauseLoop(): void;
 
 	initHooksAndCustomTools(): Promise<void>;
 

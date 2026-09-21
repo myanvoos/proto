@@ -327,15 +327,6 @@ export class InputController {
 				if (aborted) return;
 			}
 
-			if (this.ctx.loopModeEnabled) {
-				if (this.ctx.session.isStreaming) {
-					this.#abortStreamingTurn();
-				} else {
-					this.ctx.pauseLoop();
-					this.ctx.cancelPendingSubmission();
-				}
-				return;
-			}
 			if (this.ctx.focusedAgentId) {
 				if (this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText("");
@@ -676,10 +667,7 @@ export class InputController {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 					return;
 				}
-				if (typeof slashResult === "string") {
-					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
-					text = slashResult;
-				} else if (
+				if (
 					/^\/[^\s/]+$/.test(text) &&
 					!isKnownSkillCommand(this.ctx, text) &&
 					!this.#isLocalExtensionCommand(text) &&
@@ -739,10 +727,6 @@ export class InputController {
 					this.ctx.updateEditorBorderColor();
 					return;
 				}
-			}
-
-			if (this.ctx.loopModeEnabled) {
-				this.ctx.setLoopPrompt(text);
 			}
 
 			if (this.ctx.session.isCompacting) {
@@ -1163,7 +1147,7 @@ export class InputController {
 	}
 
 	async handleFollowUp(): Promise<void> {
-		let text = this.#compactDraftImages(this.ctx.editor.getExpandedText().trim());
+		const text = this.#compactDraftImages(this.ctx.editor.getExpandedText().trim());
 		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
 		const imageLinks =
 			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
@@ -1186,10 +1170,6 @@ export class InputController {
 			if (slashResult === true) {
 				if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 				return;
-			}
-			if (typeof slashResult === "string") {
-				if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
-				text = slashResult;
 			}
 		}
 

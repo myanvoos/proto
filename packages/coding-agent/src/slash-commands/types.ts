@@ -30,7 +30,7 @@ export interface ParsedSlashCommand {
 	text: string;
 }
 
-export type SlashCommandResult = undefined | { consumed: true } | { prompt: string };
+export type SlashCommandResult = undefined | { consumed: true };
 
 export interface SlashCommandRuntime {
 	session: AgentSession;
@@ -79,4 +79,4 @@ export interface SlashCommandSpec extends BuiltinSlashCommand {
 		| ((command: ParsedSlashCommand, runtime: TuiSlashCommandRuntime) => void | Promise<void>);
 }
 
-export type AcpBuiltinSlashCommandResult = false | { consumed: true } | { prompt: string };
+export type AcpBuiltinSlashCommandResult = false | { consumed: true };

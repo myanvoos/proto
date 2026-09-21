@@ -802,17 +802,6 @@ export class AcpAgent implements Agent {
 			},
 		});
 		if (builtinResult !== false) {
-			if ("prompt" in builtinResult) {
-				const residualBaseline = new Set(record.extensionUserMessageTasks);
-				const residualAgentInvoked = await record.session.prompt(builtinResult.prompt, { images });
-
-				if (!residualAgentInvoked) {
-					await this.#waitForExtensionUserMessages(record, residualBaseline);
-					await this.#waitForPromptEventHandlers(record);
-					this.#finishPrompt(record, { stopReason: "end_turn" });
-				}
-				return;
-			}
 			const promptTurn = record.promptTurn;
 			this.#finishPrompt(record, {
 				stopReason: "end_turn",

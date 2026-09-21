@@ -48,9 +48,6 @@ export interface SegmentContext {
 	prewalk: {
 		enabled: boolean;
 	} | null;
-	loopMode: {
-		enabled: boolean;
-	} | null;
 	goalMode: {
 		enabled: boolean;
 		paused: boolean;
