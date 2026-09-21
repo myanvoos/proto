@@ -122,6 +122,101 @@ function submitHarness(options: { fileSlashCommands?: string[]; promptTemplates?
 	};
 }
 
+function focusedSubmitHarness() {
+	vi.spyOn(commandUsage, "recordSlashCommandUsage").mockImplementation(() => {});
+	const statuses: string[] = [];
+	const prompted: Array<{ text: string; streamingBehavior: string }> = [];
+	let modelSelectors = 0;
+	const editor = {
+		onSubmit: undefined as ((text: string) => Promise<void>) | undefined,
+		text: "",
+		pendingImages: [] as unknown[],
+		pendingImageLinks: [] as unknown[],
+		imageLinks: undefined,
+		setText(text: string) {
+			this.text = text;
+		},
+		setCollapsedText(text: string) {
+			this.text = text;
+		},
+		getExpandedText() {
+			return this.text;
+		},
+		addToHistory: () => {},
+		clearDraft: () => {},
+	};
+	const mainSession = {
+		isStreaming: false,
+		isCompacting: false,
+		prompt: () => Promise.reject(new Error("the main session must not receive a focused submission")),
+		maybeStartTitleGeneration: () => {},
+	} as unknown as AgentSession;
+	const viewSession = {
+		isStreaming: false,
+		queuedMessageCount: 0,
+		prompt: (text: string, options: { streamingBehavior: string }) => {
+			prompted.push({ text, streamingBehavior: options.streamingBehavior });
+			return Promise.resolve();
+		},
+	} as unknown as AgentSession;
+	const context = {
+		editor,
+		session: mainSession,
+		viewSession,
+		focusedAgentId: "Side-1",
+		loopModeEnabled: false,
+		skillCommands: new Map(),
+		fileSlashCommands: new Set<string>(),
+		isKnownSlashCommand: () => false,
+		withLocalSubmission: (_text: string, run: () => Promise<void>) => run(),
+		updatePendingMessagesDisplay: () => {},
+		showModelSelector: () => {
+			modelSelectors++;
+		},
+		ui: { requestRender: () => {} },
+		showStatus: (message: string) => statuses.push(message),
+		showWarning: () => {},
+		showError: () => {},
+	} as unknown as InteractiveModeContext;
+	const controller = new InputController(context);
+	controller.setupEditorSubmitHandler();
+	return {
+		submit: (text: string) => editor.onSubmit?.(text) ?? Promise.resolve(),
+		followUp: () => controller.handleFollowUp(),
+		editor,
+		statuses,
+		prompted,
+		get modelSelectors() {
+			return modelSelectors;
+		},
+	};
+}
+
+test("a focused agent takes plain messages as steers and follow-ups instead of the main session", async () => {
+	const harness = focusedSubmitHarness();
+
+	await harness.submit("keep going on the parser");
+	harness.editor.text = "and then run the tests";
+	await harness.followUp();
+
+	expect(harness.prompted).toEqual([
+		{ text: "keep going on the parser", streamingBehavior: "steer" },
+		{ text: "and then run the tests", streamingBehavior: "followUp" },
+	]);
+	expect(harness.statuses).toEqual([]);
+});
+
+test("/model retargets the focused agent while other commands still bounce to the main session", async () => {
+	const harness = focusedSubmitHarness();
+
+	await harness.submit("/model");
+	await harness.submit("/compact");
+
+	expect(harness.modelSelectors).toBe(1);
+	expect(harness.statuses).toEqual(["Commands run in the main session — press ←← to return first"]);
+	expect(harness.prompted).toEqual([]);
+});
+
 test("a bare unknown slash command is reported and kept in the editor instead of prompting the model", async () => {
 	const { submit, editor, statuses, submitted } = submitHarness({ fileSlashCommands: ["review"] });
 

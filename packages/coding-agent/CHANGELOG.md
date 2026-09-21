@@ -5,6 +5,7 @@
 ### Changed
 
 - Background agents from `/side --agent` are their own agent kind now: they stay live and idle after finishing instead of being parked, so you can keep talking to one without waiting for it to revive, and they are never auto-parked by the worker idle TTL.
+- `/side --agent` agents behave like small main sessions: they can `ask` you questions (the dialog is chipped with the agent id so you can tell who is asking), and `/model` or the model picker now switches the agent you have focused instead of silently retargeting the main session.
 
 ## [18.2.0] - 2026-09-20
 

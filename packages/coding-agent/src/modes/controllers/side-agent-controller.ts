@@ -87,6 +87,7 @@ export class SideAgentController {
 			getSessionId: () => parentLocalSessionId,
 		};
 
+		const toolUiContext = this.ctx.getToolUIContext();
 		const sessionDir = parentFile.slice(0, -6);
 		const settings = createSubagentSettings(this.ctx.settings);
 		const customTools = mcpManager ? createMCPProxyTools(mcpManager) : undefined;
@@ -137,8 +138,12 @@ export class SideAgentController {
 							agentRegistry,
 							disableExtensionDiscovery: true,
 							localProtocolOptions,
+							// A side agent talks to the same user the parent does, so it keeps `ask`. `hasUI`
+							// stays false: it owns no transcript view, it just borrows the parent's dialogs.
+							interactivePrompts: toolUiContext !== undefined,
 						});
 						clone = created.session;
+						if (toolUiContext) created.setToolUIContext(toolUiContext, true);
 						// The side agent outlives this turn, so its registry status has to follow the session
 						// instead of being frozen at whatever the dispatch left behind.
 						unsyncStatus = agentRegistry.syncSessionStatus(cloneId, clone);

@@ -104,6 +104,10 @@ function pythonCommandPrefixLength(trimmedText: string): 0 | 1 | 2 {
 	return next === 32 || next === 9 || next === 10 || next === 13 ? prefixLength : 0;
 }
 
+// Commands the focused-agent view answers itself instead of bouncing to the main session: the model
+// selector already retargets whatever session is in view.
+const FOCUS_SCOPED_COMMANDS: Record<string, true> = { model: true, models: true };
+
 function parsePythonCommandInput(text: string): { code: string; isExcluded: boolean } | undefined {
 	const trimmed = text.trimStart();
 	const prefixLength = pythonCommandPrefixLength(trimmed);
@@ -879,6 +883,12 @@ export class InputController {
 			return;
 		}
 		if (text && (text.startsWith("/") || text.startsWith("!") || parsePythonCommandInput(text))) {
+			const command = parseSlashCommand(text)?.name;
+			if (command && FOCUS_SCOPED_COMMANDS[command]) {
+				this.ctx.editor.clearDraft(text);
+				this.ctx.showModelSelector();
+				return;
+			}
 			this.ctx.showStatus("Commands run in the main session — press ←← to return first");
 			return;
 		}

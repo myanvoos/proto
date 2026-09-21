@@ -18,6 +18,7 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
 import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
+import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
 import { formatErrorMessage, formatMeta, formatTitle } from "./render-utils";
@@ -795,6 +796,11 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			};
 		}
 
+		// A background agent borrows the main TUI's dialogs, so an unlabelled question gives the user no
+		// way to tell who is asking. Fall back to the agent id as the chip when the model supplied none.
+		const askingAgentId = this.session.getAgentId?.();
+		const fallbackHeader = askingAgentId && askingAgentId !== MAIN_AGENT_ID ? askingAgentId : undefined;
+
 		const richAskDialog = extensionUi.askDialog;
 		if (richAskDialog) {
 			try {
@@ -803,7 +809,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 						params.questions.map(q => ({
 							id: q.id,
 							question: q.question,
-							...(q.header?.trim() ? { header: q.header } : {}),
+							...(q.header?.trim() ? { header: q.header } : fallbackHeader ? { header: fallbackHeader } : {}),
 							options: q.options.map(option => ({
 								label: option.label,
 								...(option.description?.trim() ? { description: option.description.trim() } : {}),

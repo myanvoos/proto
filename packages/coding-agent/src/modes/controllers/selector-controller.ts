@@ -697,6 +697,13 @@ export class SelectorController {
 		}
 	}
 
+	// Model changes apply to whatever session the user is looking at. Focused on a side agent, the
+	// picker and the hub's default-role assignment must retarget it, or the switch silently lands on
+	// the parent instead.
+	get #modelSession(): AgentSession {
+		return this.ctx.viewSession;
+	}
+
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {
 		if (options?.temporaryOnly) {
 			this.#showModelPicker();
@@ -706,10 +713,10 @@ export class SelectorController {
 	}
 
 	#showModelPicker(): void {
-		const currentContextTokens = this.ctx.session.getContextUsage()?.tokens ?? 0;
-		const current = this.ctx.session.model;
+		const currentContextTokens = this.#modelSession.getContextUsage()?.tokens ?? 0;
+		const current = this.#modelSession.model;
 		const quickRoleOrder = this.ctx.settings.get("cycleOrder");
-		const quickRoleCycle = this.ctx.session.getRoleModelCycle(quickRoleOrder);
+		const quickRoleCycle = this.#modelSession.getRoleModelCycle(quickRoleOrder);
 		let overlayHandle: OverlayHandle | undefined;
 		let closed = false;
 		const done = () => {
@@ -722,20 +729,23 @@ export class SelectorController {
 		const picker = new ModelPickerComponent(
 			this.ctx.ui,
 			this.ctx.settings,
-			this.ctx.session.modelRegistry,
-			this.ctx.session.scopedModels,
+			this.#modelSession.modelRegistry,
+			this.#modelSession.scopedModels,
 			{
 				onPick: async (model, selector, { overContext }) => {
 					const applySessionModel = async () => {
-						const roleThinkingLevel = this.ctx.session.resolveTemporaryModelThinkingLevel(model);
-						await this.ctx.session.setModelTemporary(model, roleThinkingLevel);
+						const roleThinkingLevel = this.#modelSession.resolveTemporaryModelThinkingLevel(model);
+						await this.#modelSession.setModelTemporary(model, roleThinkingLevel);
 						this.ctx.statusLine.invalidate();
 						this.ctx.updateEditorBorderColor();
 						const roleSelectorHint = this.ctx.keybindings.getKeys("app.model.select")[0] ?? "Alt+M";
-						this.ctx.showStatus(`Session-only model: ${selector}. Use ${roleSelectorHint} or /model for roles.`);
+						const scope = this.ctx.focusedAgentId ? `${this.ctx.focusedAgentId} model` : "Session-only model";
+						this.ctx.showStatus(`${scope}: ${selector}. Use ${roleSelectorHint} or /model for roles.`);
 					};
 					try {
-						if (overContext) {
+						// Compaction is a main-session command, so it can only front-run the switch when the
+						// main session is the one being switched.
+						if (overContext && this.#modelSession === this.ctx.session) {
 							done();
 							let switched = false;
 							const switchAfterCompaction = async (outcome: CompactionOutcome) => {
@@ -755,7 +765,7 @@ export class SelectorController {
 				},
 				onPickRole: async entry => {
 					try {
-						await this.ctx.session.applyRoleModel(entry);
+						await this.#modelSession.applyRoleModel(entry);
 						this.ctx.statusLine.invalidate();
 						this.ctx.updateEditorBorderColor();
 						this.ctx.showModelCycleTrack(
@@ -804,8 +814,8 @@ export class SelectorController {
 		hub = new ModelHubComponent(
 			this.ctx.ui,
 			this.ctx.settings,
-			this.ctx.session.modelRegistry,
-			this.ctx.session.scopedModels,
+			this.#modelSession.modelRegistry,
+			this.#modelSession.scopedModels,
 			{
 				onAssign: async (model, role, thinkingLevel, selector, scope?: ModelRoleSelectionScope) => {
 					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;
@@ -844,7 +854,7 @@ export class SelectorController {
 									formatModelSelectorValue(selectorValue, concreteThinking),
 								);
 							} else {
-								const { switched } = await this.ctx.session.setModel(model, role, {
+								const { switched } = await this.#modelSession.setModel(model, role, {
 									selector,
 									thinkingLevel: concreteThinking ?? ThinkingLevel.Inherit,
 									persist: targetScope === "global",
@@ -857,7 +867,7 @@ export class SelectorController {
 									);
 								}
 								if (concreteThinking) {
-									this.ctx.session.setThinkingLevel(concreteThinking);
+									this.#modelSession.setThinkingLevel(concreteThinking);
 								}
 								this.ctx.statusLine.invalidate();
 								this.ctx.updateEditorBorderColor();
@@ -911,9 +921,9 @@ export class SelectorController {
 								fallbackRoleValue !== previousEffectiveRoleValue &&
 								exposesPersistedFallback
 							) {
-								const scopedModels = this.ctx.session.scopedModels.map(sm => sm.model);
+								const scopedModels = this.#modelSession.scopedModels.map(sm => sm.model);
 								const availableModels =
-									scopedModels.length > 0 ? scopedModels : this.ctx.session.getAvailableModels();
+									scopedModels.length > 0 ? scopedModels : this.#modelSession.getAvailableModels();
 								const resolved = resolveModelRoleValue(fallbackRoleValue, availableModels, {
 									settings: this.ctx.settings,
 								});
@@ -922,13 +932,13 @@ export class SelectorController {
 									if (fallbackThinking === undefined) {
 										fallbackThinking = parseThinkingLevel(this.ctx.settings.get("defaultThinkingLevel"));
 									}
-									const { switched } = await this.ctx.session.setModel(resolved.model, "default", {
+									const { switched } = await this.#modelSession.setModel(resolved.model, "default", {
 										persist: false,
 										thinkingLevel: fallbackThinking ?? ThinkingLevel.Inherit,
 									});
 									if (!switched) return;
 									if (fallbackThinking && fallbackThinking !== ThinkingLevel.Inherit) {
-										this.ctx.session.setThinkingLevel(fallbackThinking);
+										this.#modelSession.setThinkingLevel(fallbackThinking);
 									}
 									this.ctx.statusLine.invalidate();
 									this.ctx.updateEditorBorderColor();
