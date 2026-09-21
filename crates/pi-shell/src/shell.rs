@@ -103,11 +103,13 @@ const XD_BRIDGE_FAILURE_EXIT: i32 = 125;
 fn xd_content(name: &str, content_type: ContentType) -> String {
 	let content = match content_type {
 		ContentType::ShortDescription => "dispatch a mounted xdev tool through the agent session",
-		ContentType::ShortUsage => "xd [tool [JSON-ARGS...]]",
+		ContentType::ShortUsage => "xd [tool [ARGS...]]  (? = docs)",
 		ContentType::DetailedHelp | ContentType::ManPage => {
 			return format!(
-				"{name}: dispatch a mounted agent tool.\nUsage: xd [tool [JSON-ARGS...]]\n\nThe Brush \
-				 builtin is available only in the agent shell; external bash does not inherit it."
+				"{name}: dispatch a mounted agent tool.\nUsage: xd [tool [ARGS...]]  (? = docs)\n\nArgs are \
+				 CLI flags mapped from the tool schema (xd <tool> ? prints usage); --json '<json>' passes a \
+				 raw args object. The Brush builtin is available only in the agent shell; external bash \
+				 does not inherit it."
 			);
 		},
 	};
