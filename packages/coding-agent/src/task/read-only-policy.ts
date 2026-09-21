@@ -6,7 +6,7 @@ export const READ_ONLY_TOOL_NAMES: Record<string, true> = {
 	yield: true,
 	fleet: true,
 	ask: true,
-	todo: true,
+	checklist: true,
 	recall: true,
 	reflect: true,
 	retain: true,

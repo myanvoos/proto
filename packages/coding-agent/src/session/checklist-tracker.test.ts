@@ -2,13 +2,13 @@ import { expect, test } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Message } from "@oh-my-pi/pi-ai";
 import { Settings } from "../config/settings";
-import type { TodoPhase } from "../tools/todo";
-import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
+import type { ChecklistPhase } from "../tools/checklist";
+import { ChecklistTracker, type ChecklistTrackerHost } from "./checklist-tracker";
 
 const settings = await Settings.init();
 
 interface TrackerFixture {
-	tracker: TodoTracker;
+	tracker: ChecklistTracker;
 	appended: Message[];
 	continues: number;
 }
@@ -16,17 +16,17 @@ interface TrackerFixture {
 function createTracker(options: { hasActiveMonitors: boolean }): TrackerFixture {
 	const appended: Message[] = [];
 	const fixture = { appended, continues: 0 } as TrackerFixture;
-	const host: TodoTrackerHost = {
+	const host: ChecklistTrackerHost = {
 		agent: {
 			state: { messages: [] as Message[] },
 			appendMessage: (message: Message) => {
 				appended.push(message);
 			},
-		} as unknown as TodoTrackerHost["agent"],
+		} as unknown as ChecklistTrackerHost["agent"],
 		sessionManager: {
 			getBranch: () => [],
 			appendMessage: () => {},
-		} as unknown as TodoTrackerHost["sessionManager"],
+		} as unknown as ChecklistTrackerHost["sessionManager"],
 		settings,
 		model: () => undefined,
 		agentKind: () => "main",
@@ -37,12 +37,12 @@ function createTracker(options: { hasActiveMonitors: boolean }): TrackerFixture 
 		promptGeneration: () => 1,
 		hasPendingAsyncWake: () => false,
 		hasActiveMonitors: () => options.hasActiveMonitors,
-		getActiveToolNames: () => ["todo"],
-		getEnabledToolNames: () => ["todo"],
+		getActiveToolNames: () => ["checklist"],
+		getEnabledToolNames: () => ["checklist"],
 		toolRegistry: () => new Map<string, AgentTool>(),
 	};
-	const tracker = new TodoTracker(host);
-	const phases: TodoPhase[] = [
+	const tracker = new ChecklistTracker(host);
+	const phases: ChecklistPhase[] = [
 		{ name: "Ship it", tasks: [{ content: "wait for the deploy to finish", status: "in_progress" }] },
 	];
 	tracker.setPhases(phases);
@@ -55,7 +55,7 @@ const finishedTurn: AssistantMessage = {
 	content: [{ type: "text", text: "Deploy kicked off; monitoring the rollout log." }],
 } as unknown as AssistantMessage;
 
-test("incomplete todos still nudge the agent to keep going when no monitor is running", async () => {
+test("incomplete checklist items still nudge the agent to keep going when no monitor is running", async () => {
 	const fixture = createTracker({ hasActiveMonitors: false });
 
 	expect(await fixture.tracker.checkCompletion(finishedTurn)).toBe(true);
@@ -66,7 +66,7 @@ test("incomplete todos still nudge the agent to keep going when no monitor is ru
 	expect(JSON.stringify(reminder?.content)).toContain("wait for the deploy to finish");
 });
 
-test("an active monitor suppresses the incomplete-todo reminder without consuming an attempt", async () => {
+test("an active monitor suppresses the incomplete-checklist reminder without consuming an attempt", async () => {
 	const fixture = createTracker({ hasActiveMonitors: true });
 
 	expect(await fixture.tracker.checkCompletion(finishedTurn)).toBe(false);

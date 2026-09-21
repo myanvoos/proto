@@ -5,8 +5,8 @@ const home = "/home/example";
 
 test("expandTilde expands exact home markers", () => {
 	expect(expandTilde("~", home)).toBe(home);
-	expect(expandTilde("~/notes/todo.md", home)).toBe(`${home}/notes/todo.md`);
-	expect(expandTilde("~\\notes\\todo.md", home)).toBe(`${home}\\notes\\todo.md`);
+	expect(expandTilde("~/notes/checklist.md", home)).toBe(`${home}/notes/checklist.md`);
+	expect(expandTilde("~\\notes\\checklist.md", home)).toBe(`${home}\\notes\\checklist.md`);
 });
 
 test("expandTilde preserves named-user and literal tilde paths", () => {

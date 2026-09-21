@@ -6,23 +6,23 @@ import { INTENT_FIELD, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
+import { ChecklistReminderComponent } from "../../modes/components/checklist-reminder";
 import {
 	groupedReadUsageCallIds,
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
-import { TodoReminderComponent } from "../../modes/components/todo-reminder";
 import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
 import { TtsrNotificationComponent } from "../../modes/components/ttsr-notification";
 import { createUsageRowBlock } from "../../modes/components/usage-row";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
-import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
+import type { ChecklistPhase, InteractiveModeContext } from "../../modes/types";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { isUserInvokedSkillPrompt, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import { nextActionableTask } from "../../tools/checklist";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
-import { nextActionableTask } from "../../tools/todo";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { setTerminalTitleState } from "../../utils/title-generator";
 import { interruptHint } from "../shared";
@@ -118,7 +118,7 @@ export class EventController {
 
 	#displaceablePollComponent: ToolExecutionComponent | undefined = undefined;
 
-	#displaceableTodoComponent: ToolExecutionComponent | undefined = undefined;
+	#displaceableChecklistComponent: ToolExecutionComponent | undefined = undefined;
 
 	#lastTtsrNotification: TtsrNotificationComponent | undefined = undefined;
 	#streamingReveal: StreamingRevealController;
@@ -165,8 +165,8 @@ export class EventController {
 			retry_fallback_applied: e => this.#handleRetryFallbackApplied(e),
 			retry_fallback_succeeded: e => this.#handleRetryFallbackSucceeded(e),
 			ttsr_triggered: e => this.#handleTtsrTriggered(e),
-			todo_reminder: e => this.#handleTodoReminder(e),
-			todo_auto_clear: e => this.#handleTodoAutoClear(e),
+			checklist_reminder: e => this.#handleChecklistReminder(e),
+			checklist_auto_clear: e => this.#handleChecklistAutoClear(e),
 			irc_message: e => this.#handleIrcMessage(e),
 			notice: e => this.#handleNotice(e),
 			model_changed: async () => {
@@ -618,7 +618,7 @@ export class EventController {
 		this.#ircExpiryTimers.clear();
 		this.#liveIrcCards.clear();
 		this.#displaceablePollComponent = undefined;
-		this.#displaceableTodoComponent = undefined;
+		this.#displaceableChecklistComponent = undefined;
 		this.#lastTtsrNotification = undefined;
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
@@ -696,7 +696,7 @@ export class EventController {
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
 		this.#resetReadGroup();
-		this.#resolveDisplaceableTodo();
+		this.#resolveDisplaceableChecklist();
 		this.#lastAssistantComponent = undefined;
 
 		if (this.#restorePinnedErrorInline) this.#pinnedErrorComponent?.setErrorPinned(false);
@@ -745,7 +745,7 @@ export class EventController {
 		} else if (event.message.role === "developer") {
 			this.#resetReadGroup();
 			this.#resolveDisplaceablePoll();
-			this.#resolveDisplaceableTodo();
+			this.#resolveDisplaceableChecklist();
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "user") {
@@ -764,7 +764,7 @@ export class EventController {
 
 			this.#resetReadGroup();
 			this.#resolveDisplaceablePoll();
-			this.#resolveDisplaceableTodo();
+			this.#resolveDisplaceableChecklist();
 			const wasOptimistic = this.ctx.optimisticUserMessageSignature === signature;
 			const matchedLocalSubmission = this.ctx.locallySubmittedUserSignatures.delete(signature);
 			const replacesOptimistic =
@@ -895,15 +895,15 @@ export class EventController {
 		this.ctx.ui.requestRender();
 	}
 
-	#resolveDisplaceableTodo(nextToolName?: string): void {
-		const previous = this.#displaceableTodoComponent;
+	#resolveDisplaceableChecklist(nextToolName?: string): void {
+		const previous = this.#displaceableChecklistComponent;
 		if (!previous) return;
 		if (!previous.isDisplaceableBlock()) {
-			this.#displaceableTodoComponent = undefined;
+			this.#displaceableChecklistComponent = undefined;
 			return;
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
-			this.#displaceableTodoComponent = undefined;
+			this.#displaceableChecklistComponent = undefined;
 			if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
 				this.ctx.chatContainer.disposeAndRemoveChild(previous);
 			}
@@ -912,13 +912,13 @@ export class EventController {
 			return;
 		}
 		if (nextToolName !== undefined) return;
-		this.#displaceableTodoComponent = undefined;
+		this.#displaceableChecklistComponent = undefined;
 		previous.seal();
 		this.ctx.ui.requestRender();
 	}
 
-	inheritDisplaceableTodo(component: ToolExecutionComponent | null | undefined): void {
-		this.#displaceableTodoComponent = component?.canBeDisplacedBy("todo") ? component : undefined;
+	inheritDisplaceableChecklist(component: ToolExecutionComponent | null | undefined): void {
+		this.#displaceableChecklistComponent = component?.canBeDisplacedBy("checklist") ? component : undefined;
 	}
 
 	async #handleNotice(event: Extract<AgentSessionEvent, { type: "notice" }>): Promise<void> {
@@ -1364,18 +1364,18 @@ export class EventController {
 		if (
 			component instanceof ToolExecutionComponent &&
 			component.isDisplaceableBlock() &&
-			event.toolName === "todo" &&
-			component.canBeDisplacedBy("todo")
+			event.toolName === "checklist" &&
+			component.canBeDisplacedBy("checklist")
 		) {
-			const previous = this.#displaceableTodoComponent;
+			const previous = this.#displaceableChecklistComponent;
 			if (previous && previous !== component && previous.isDisplaceableBlock()) {
-				this.#displaceableTodoComponent = undefined;
+				this.#displaceableChecklistComponent = undefined;
 				if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
 					this.ctx.chatContainer.disposeAndRemoveChild(previous);
 				}
 				previous.seal();
 			}
-			this.#displaceableTodoComponent = component;
+			this.#displaceableChecklistComponent = component;
 		}
 		this.ctx.ui.requestRender();
 	}
@@ -1434,38 +1434,38 @@ export class EventController {
 				if (component instanceof ToolExecutionComponent && component.isDisplaceableBlock()) {
 					if (event.toolName === "fleet" && component.canBeDisplacedBy("fleet")) {
 						this.#displaceablePollComponent = component;
-					} else if (event.toolName === "todo" && component.canBeDisplacedBy("todo")) {
-						const previous = this.#displaceableTodoComponent;
+					} else if (event.toolName === "checklist" && component.canBeDisplacedBy("checklist")) {
+						const previous = this.#displaceableChecklistComponent;
 						if (previous && previous !== component && previous.isDisplaceableBlock()) {
-							this.#displaceableTodoComponent = undefined;
+							this.#displaceableChecklistComponent = undefined;
 							if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
 								this.ctx.chatContainer.disposeAndRemoveChild(previous);
 							}
 							previous.seal();
 						}
-						this.#displaceableTodoComponent = component;
+						this.#displaceableChecklistComponent = component;
 					}
 				}
 				this.ctx.ui.requestRender();
-			} else if (event.toolName === "todo") {
+			} else if (event.toolName === "checklist") {
 				this.#orphanedToolCompletions.set(event.toolCallId, event);
 			}
 		}
 		if (syntheticFailureCard) this.#syntheticFailureCards.set(event.toolCallId, syntheticFailureCard);
 
-		if (event.toolName === "todo" && !event.isError) {
-			const details = event.result.details as { phases?: TodoPhase[] } | undefined;
+		if (event.toolName === "checklist" && !event.isError) {
+			const details = event.result.details as { phases?: ChecklistPhase[] } | undefined;
 			if (details?.phases) {
-				this.ctx.setTodos(details.phases);
+				this.ctx.setChecklist(details.phases);
 			}
-		} else if (event.toolName === "todo" && event.isError) {
+		} else if (event.toolName === "checklist" && event.isError) {
 			const textContent = event.result.content.find(
 				(content: { type: string; text?: string }) => content.type === "text",
 			)?.text;
 
 			const detail = textContent ? previewLine(sanitizeText(textContent), TRUNCATE_LENGTHS.LINE) : "";
 			this.ctx.showWarning(
-				`Todo update failed${detail ? `: ${detail}` : ". Progress may be stale until todo succeeds."}`,
+				`Checklist update failed${detail ? `: ${detail}` : ". Progress may be stale until checklist succeeds."}`,
 				{ hideWithToolActivity: true },
 			);
 		}
@@ -1517,7 +1517,7 @@ export class EventController {
 		this.#resetReadGroup();
 
 		this.#resolveDisplaceablePoll();
-		this.#resolveDisplaceableTodo();
+		this.#resolveDisplaceableChecklist();
 		this.ctx.flushPendingCommandOutput();
 		this.ctx.flushPendingBashComponents();
 		this.#lastAssistantComponent = undefined;
@@ -1739,12 +1739,14 @@ export class EventController {
 		this.#lastTtsrNotification = component;
 	}
 
-	async #handleTodoReminder(event: Extract<AgentSessionEvent, { type: "todo_reminder" }>): Promise<void> {
-		const component = new TodoReminderComponent(event.todos, event.attempt, event.maxAttempts);
+	async #handleChecklistReminder(event: Extract<AgentSessionEvent, { type: "checklist_reminder" }>): Promise<void> {
+		const component = new ChecklistReminderComponent(event.items, event.attempt, event.maxAttempts);
 		this.ctx.present(component);
 	}
-	async #handleTodoAutoClear(_event: Extract<AgentSessionEvent, { type: "todo_auto_clear" }>): Promise<void> {
-		await this.ctx.reloadTodos();
+	async #handleChecklistAutoClear(
+		_event: Extract<AgentSessionEvent, { type: "checklist_auto_clear" }>,
+	): Promise<void> {
+		await this.ctx.reloadChecklist();
 	}
 
 	#cancelIdleCompaction(): void {
@@ -1816,7 +1818,7 @@ export class EventController {
 
 		const promptText = prompt.render(idleRecapPrompt, {
 			goal: this.#idleRecapGoalText() ?? "",
-			task: nextActionableTask(this.ctx.todoPhases)?.content ?? "",
+			task: nextActionableTask(this.ctx.checklistPhases)?.content ?? "",
 		});
 
 		const abort = new AbortController();

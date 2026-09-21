@@ -51,7 +51,7 @@ export class PrewalkCoordinator {
 	#prewalk: Prewalk | undefined;
 	#planInjected = false;
 	#continuePending = false;
-	#todoSeen = false;
+	#checklistSeen = false;
 
 	constructor(host: PrewalkCoordinatorHost, options: PrewalkCoordinatorOptions = {}) {
 		this.#host = host;
@@ -75,7 +75,7 @@ export class PrewalkCoordinator {
 		this.#prewalk = undefined;
 		this.#planInjected = false;
 		this.#continuePending = false;
-		this.#todoSeen = false;
+		this.#checklistSeen = false;
 	}
 
 	#disarmNoop(prewalk: Prewalk): void {
@@ -95,7 +95,8 @@ export class PrewalkCoordinator {
 			this.#disarmNoop(prewalk);
 			return;
 		}
-		if (context.toolResults.some(result => result.toolName === "todo" && !result.isError)) this.#todoSeen = true;
+		if (context.toolResults.some(result => result.toolName === "checklist" && !result.isError))
+			this.#checklistSeen = true;
 
 		const hasToolResults = context.toolResults.length > 0;
 		if (this.#planInjected && hasToolResults) {
@@ -112,8 +113,8 @@ export class PrewalkCoordinator {
 			});
 		}
 
-		const todoGateOpen = this.#todoSeen || !this.#host.getActiveToolNames().includes("todo");
-		const action = todoGateOpen
+		const checklistGateOpen = this.#checklistSeen || !this.#host.getActiveToolNames().includes("checklist");
+		const action = checklistGateOpen
 			? context.toolResults.find(result => isPrewalkImplementationAction(result))
 			: undefined;
 		if (!action) {
@@ -182,7 +183,7 @@ export class PrewalkCoordinator {
 		this.#prewalk = candidate;
 		this.#planInjected = true;
 		this.#continuePending = true;
-		this.#todoSeen = false;
+		this.#checklistSeen = false;
 		this.#host.agent.steer({
 			role: "custom",
 			customType: PREWALK_PLAN_MESSAGE_TYPE,
@@ -193,7 +194,7 @@ export class PrewalkCoordinator {
 		});
 		this.#host.emitNotice(
 			"info",
-			`Prewalk: armed for ${target.provider}/${target.id} — will switch at the first edit/write once the todo list exists.`,
+			`Prewalk: armed for ${target.provider}/${target.id} — will switch at the first edit/write once the checklist list exists.`,
 			"prewalk",
 		);
 		return true;

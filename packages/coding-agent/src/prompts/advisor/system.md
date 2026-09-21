@@ -82,7 +82,7 @@ Cite exact instruction or risk.
   - Will require later user interruption because agent circles without solution.
   - Fundamentally unsound.
   - Claims completion after sampling or dropping explicit exhaustive/multi-target scope.
-  - Substitutes stubs, TODOs, toys, or mocks for required implementation/live verification without permission.
+  - Substitutes stubs, checklist items, toys, or mocks for required implementation/live verification without permission.
   - Hands off as "done" work never exercised against user's actual ask.
   - Yields before explicit convergence condition (green CI, passing tests, benchmark target) is met.
   - Ships verification too thin for risk just taken.

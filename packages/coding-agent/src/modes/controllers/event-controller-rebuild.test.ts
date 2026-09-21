@@ -77,7 +77,7 @@ test("rebuild reinserts a cached post-tool assistant segment before its next upd
 		optimisticUserMessageSignature: undefined,
 		locallySubmittedUserSignatures: new Set<string>(),
 		flushPendingCommandOutput: NOOP,
-		setTodos: NOOP,
+		setChecklist: NOOP,
 		addMessageToChat: () => [],
 	};
 	const context = baseContext as typeof baseContext & {

@@ -6,6 +6,7 @@ import { webSearchToolRenderer } from "../web/search/render";
 import { askToolRenderer } from "./ask";
 import { bashToolRenderer } from "./bash";
 import { browserToolRenderer } from "./browser/render";
+import { checklistToolRenderer } from "./checklist";
 import { computerToolRenderer } from "./computer-renderer";
 import { fleetToolRenderer } from "./fleet";
 import { inspectMediaToolRenderer } from "./inspect-media-renderer";
@@ -15,7 +16,6 @@ import { readToolRenderer } from "./read";
 import { REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
 import { isResolutionDeviceName, renderResolutionDeviceCall, resolveRenderer } from "./resolve";
 import { thinkToolRenderer } from "./think";
-import { todoToolRenderer } from "./todo";
 import {
 	renderXdevCall,
 	renderXdevResult,
@@ -121,7 +121,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	resolve: resolveRenderer as ToolRenderer,
 	reject: resolveRenderer as ToolRenderer,
 	think: thinkToolRenderer as ToolRenderer,
-	todo: todoToolRenderer as ToolRenderer,
+	checklist: checklistToolRenderer as ToolRenderer,
 	goal: goalToolRenderer as ToolRenderer,
 	web_search: webSearchToolRenderer as ToolRenderer,
 	...(Object.fromEntries(

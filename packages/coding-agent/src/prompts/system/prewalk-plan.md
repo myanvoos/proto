@@ -7,6 +7,6 @@ Plan first; explicit, comprehensive; reference for remainder:
 
 Thorough, concrete. Tools may verify details only after plan.
 
-Then, same reply and only after complete plan, use todo tool to capture 5–9 items: one per MEANINGFUL step; each concrete target + verification. Only code-changing or code-verifying steps; exclude reporting, bookkeeping, cleanup-ceremony, release-note items. Todo serves task, not reverse: reality/item conflict → fix actual problem, not checklist.
+Then, same reply and only after complete plan, use checklist tool to capture 5–9 items: one per MEANINGFUL step; each concrete target + verification. Only code-changing or code-verifying steps; exclude reporting, bookkeeping, cleanup-ceremony, release-note items. Checklist serves task, not reverse: reality/item conflict → fix actual problem, not checklist.
 
-Checkpoint, not final answer: after todo list, continue task; NEVER stop on plan alone.
+Checkpoint, not final answer: after checklist list, continue task; NEVER stop on plan alone.

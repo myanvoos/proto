@@ -10,7 +10,7 @@ export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
 	bash: true,
 	read: true,
 	ask: true,
-	todo: true,
+	checklist: true,
 	web_search: true,
 	inspect_media: true,
 };

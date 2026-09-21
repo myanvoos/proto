@@ -161,7 +161,7 @@ export class ExtensionUiController {
 			reload: async () => {
 				await this.ctx.session.reload();
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				this.ctx.showStatus("Reloaded session");
 			},
 			newSession: async options => {
@@ -188,7 +188,7 @@ export class ExtensionUiController {
 					new Spacer(1),
 					new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 1),
 				]);
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
 
 				return { cancelled: false };
@@ -200,7 +200,7 @@ export class ExtensionUiController {
 				}
 
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 				this.ctx.showStatus("Branched to new session");
 
@@ -213,7 +213,7 @@ export class ExtensionUiController {
 				}
 
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setDraft(result.editorText, result.editorImages);
 				}
@@ -231,7 +231,7 @@ export class ExtensionUiController {
 				}
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				return { cancelled: false };
 			},
 		};
@@ -378,7 +378,7 @@ export class ExtensionUiController {
 			reload: async () => {
 				await this.ctx.session.reload();
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				this.ctx.showStatus("Reloaded session");
 			},
 			newSession: async options => {
@@ -402,7 +402,7 @@ export class ExtensionUiController {
 					new Spacer(1),
 					new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 1),
 				]);
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
 
 				return { cancelled: false };
@@ -414,7 +414,7 @@ export class ExtensionUiController {
 				}
 
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 				this.ctx.showStatus("Branched to new session");
 
@@ -427,7 +427,7 @@ export class ExtensionUiController {
 				}
 
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setDraft(result.editorText, result.editorImages);
 				}
@@ -444,7 +444,7 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-				await this.ctx.reloadTodos();
+				await this.ctx.reloadChecklist();
 				return { cancelled: false };
 			},
 		};

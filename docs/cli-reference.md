@@ -106,7 +106,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 
 | Flag | Description |
 | --- | --- |
-| `--prewalk` | Switch to a fast/cheap model at the first edit/write after the plan's todo list exists (default off; see `prewalk.enabled`). |
+| `--prewalk` | Switch to a fast/cheap model at the first edit/write after the plan's checklist list exists (default off; see `prewalk.enabled`). |
 | `--no-prewalk` | Disable prewalk even if `prewalk.enabled` is set. |
 | `--prewalk-into <id>` | Target model for prewalk (default the `smol` role). |
 
@@ -167,7 +167,7 @@ proto -p "Summarize the changes in the last commit"
 proto -p --print-thoughts "Explain your reasoning for this refactor"
 
 # Machine-readable output for pipelines
-proto -p --mode json "List every TODO in src/" > todos.json
+proto -p --mode json "List every CHECKLIST in src/" > checklists.json
 
 # Pipe a prompt via stdin
 echo "review this diff" | proto -p

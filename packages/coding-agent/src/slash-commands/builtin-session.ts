@@ -4,13 +4,13 @@ import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import { reloadTuiPluginState } from "./builtin-marketplace";
 import { formatTokenCount } from "./builtin-modes";
+import { handleChecklistAcp } from "./helpers/checklist";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } from "./helpers/reset-usage";
 import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
-import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, SlashCommandSpec } from "./types";
 
@@ -133,15 +133,23 @@ async function handleSessionPinCommand(
 
 export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
-		name: "todo",
-		description: "View or modify the agent's todo list",
-		acpDescription: "Manage todos",
+		name: "checklist",
+		description: "View or modify the agent's checklist",
+		acpDescription: "Manage checklist items",
 		acpInputHint: "<subcommand>",
 		subcommands: [
-			{ name: "edit", description: "Open todos in $EDITOR (Markdown round-trip)" },
-			{ name: "copy", description: "Copy todos as Markdown to clipboard" },
-			{ name: "export", description: "Write todos as Markdown to a file (default: TODO.md)", usage: "[<path>]" },
-			{ name: "import", description: "Replace todos from a Markdown file (default: TODO.md)", usage: "[<path>]" },
+			{ name: "edit", description: "Open checklist items in $EDITOR (Markdown round-trip)" },
+			{ name: "copy", description: "Copy checklist items as Markdown to clipboard" },
+			{
+				name: "export",
+				description: "Write checklist items as Markdown to a file (default: CHECKLIST.md)",
+				usage: "[<path>]",
+			},
+			{
+				name: "import",
+				description: "Replace checklist items from a Markdown file (default: CHECKLIST.md)",
+				usage: "[<path>]",
+			},
 			{
 				name: "append",
 				description: "Append a task; phase fuzzy-matched or auto-created",
@@ -154,16 +162,16 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
-			const tasks = runtime.ctx.todoPhases.flatMap(phase => phase.tasks);
-			if (tasks.length === 0) return "Todos: none";
+			const tasks = runtime.ctx.checklistPhases.flatMap(phase => phase.tasks);
+			if (tasks.length === 0) return "Checklist: none";
 			const pending = tasks.filter(task => task.status === "pending").length;
 			const inProgress = tasks.filter(task => task.status === "in_progress").length;
 			const completed = tasks.filter(task => task.status === "completed").length;
-			return `Todos: ${pending + inProgress} open (${inProgress} in progress, ${completed} done)`;
+			return `Checklist: ${pending + inProgress} open (${inProgress} in progress, ${completed} done)`;
 		},
-		handle: handleTodoAcp,
+		handle: handleChecklistAcp,
 		handleTui: async (command, runtime) => {
-			await runtime.ctx.handleTodoCommand(command.args);
+			await runtime.ctx.handleChecklistCommand(command.args);
 			runtime.ctx.editor.setText("");
 		},
 	},

@@ -60,6 +60,7 @@ import type {
 	AutoCompactionStartEvent,
 	AutoRetryEndEvent,
 	AutoRetryStartEvent,
+	ChecklistReminderEvent,
 	ContextEvent,
 	GoalUpdatedEvent,
 	RetryFallbackAppliedEvent,
@@ -84,7 +85,6 @@ import type {
 	SessionStopEventResult,
 	SessionSwitchEvent,
 	SessionTreeEvent,
-	TodoReminderEvent,
 	ToolCallEventResult,
 	ToolResultEventResult,
 	TtsrTriggeredEvent,
@@ -550,9 +550,9 @@ export type {
 	AutoCompactionStartEvent,
 	AutoRetryEndEvent,
 	AutoRetryStartEvent,
+	ChecklistReminderEvent,
 	RetryFallbackAppliedEvent,
 	RetryFallbackSucceededEvent,
-	TodoReminderEvent,
 	TtsrTriggeredEvent,
 } from "../shared-events";
 
@@ -683,7 +683,7 @@ export type ExtensionEvent =
 	| RetryFallbackAppliedEvent
 	| RetryFallbackSucceededEvent
 	| TtsrTriggeredEvent
-	| TodoReminderEvent
+	| ChecklistReminderEvent
 	| GoalUpdatedEvent
 	| CredentialDisabledEvent
 	| McpNotificationEvent
@@ -826,7 +826,7 @@ export interface ExtensionAPI {
 	on(event: "retry_fallback_applied", handler: ExtensionHandler<RetryFallbackAppliedEvent>): void;
 	on(event: "retry_fallback_succeeded", handler: ExtensionHandler<RetryFallbackSucceededEvent>): void;
 	on(event: "ttsr_triggered", handler: ExtensionHandler<TtsrTriggeredEvent>): void;
-	on(event: "todo_reminder", handler: ExtensionHandler<TodoReminderEvent>): void;
+	on(event: "checklist_reminder", handler: ExtensionHandler<ChecklistReminderEvent>): void;
 	on(event: "goal_updated", handler: ExtensionHandler<GoalUpdatedEvent>): void;
 	on(event: "credential_disabled", handler: ExtensionHandler<CredentialDisabledEvent>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;

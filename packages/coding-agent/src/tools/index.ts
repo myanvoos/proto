@@ -38,8 +38,8 @@ import { setExcludedSearchProviders, setSearchProviderOrder } from "../web/searc
 import { isSearchProviderId } from "../web/search/types";
 import type { WorkspaceTree } from "../workspace-tree";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
+import type { ChecklistPhase } from "./checklist";
 import type { CheckpointState, CompletedRewindState } from "./checkpoint";
-import type { TodoPhase } from "./todo";
 import type { XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
@@ -50,6 +50,7 @@ export type * from "./ask";
 export type * from "./bash";
 export type * from "./browser";
 export * from "./builtin-names";
+export type * from "./checklist";
 export type * from "./checkpoint";
 export type * from "./computer";
 export type * from "./computer/supervisor";
@@ -65,7 +66,6 @@ export type * from "./read";
 export type * from "./report-tool-issue";
 export type * from "./resolve";
 export type * from "./think";
-export type * from "./todo";
 export type * from "./xdev";
 export * from "./yield";
 
@@ -225,9 +225,9 @@ export interface ToolSession {
 
 	getClientBridge?: () => ClientBridge | undefined;
 
-	getTodoPhases?: () => TodoPhase[];
+	getChecklistPhases?: () => ChecklistPhase[];
 
-	setTodoPhases?: (phases: TodoPhase[]) => void;
+	setChecklistPhases?: (phases: ChecklistPhase[]) => void;
 
 	getToolChoiceQueue?(): ToolChoiceQueue;
 
@@ -282,7 +282,7 @@ export const ORCHESTRATE_TOOL_NAMES = [
 
 const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 	ask: true,
-	todo: true,
+	checklist: true,
 	web_search: true,
 	inspect_media: true,
 };
@@ -323,7 +323,7 @@ export function supportsExternalThinking(model: Model | null | undefined): boole
 	);
 }
 
-export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
+export const USER_CHECKLIST_EDIT_CUSTOM_TYPE = "user_checklist_edit";
 
 interface ProviderGlobalSettings {
 	get(path: "providers.webSearchOrder" | "providers.webSearchExclude" | "providers.imageOrder"): unknown;
@@ -372,7 +372,7 @@ export const BUILTIN_TOOLS: Record<Exclude<BuiltinToolName, "read">, ToolFactory
 	orchestrate_list: async s => new (await import("./orchestrate")).OrchestrateListTool(s),
 	fleet: async s => new (await import("./fleet")).FleetTool(s),
 	monitor: async s => new (await import("./monitor")).MonitorTool(s),
-	todo: async s => new (await import("./todo")).TodoTool(s),
+	checklist: async s => new (await import("./checklist")).ChecklistTool(s),
 	web_search: async s => new (await import("../web/search")).WebSearchTool(s),
 	manage_skill: async s => (await import("./manage-skill")).ManageSkillTool.createIf(s),
 };
@@ -453,8 +453,8 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			const goalState = session.getGoalModeState?.();
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
-		if (name === "todo")
-			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");
+		if (name === "checklist")
+			return (!includeYield || session.prewalkArmed === true) && session.settings.get("checklist.enabled");
 		if (name === "inspect_media") return isInspectMediaToolActive(session);
 		if (name === "web_search") return session.settings.get("web_search.enabled");
 		if (name === "think") return externalThinkingActive;

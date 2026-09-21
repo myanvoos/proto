@@ -1243,9 +1243,34 @@ export class Settings {
 			delete taskObj.simple;
 		}
 
-		const todoObj = raw.todo as Record<string, unknown> | undefined;
-		if (todoObj && typeof todoObj.eager === "boolean") {
-			todoObj.eager = todoObj.eager ? "always" : "default";
+		// Legacy "todo" settings section renamed to "checklist".
+		const legacyTodoObj = isRecord(raw.todo) ? (raw.todo as Record<string, unknown>) : undefined;
+		const legacyTodoFlatKeys = Object.keys(raw).filter(key => key.startsWith("todo."));
+		if (legacyTodoObj || legacyTodoFlatKeys.length > 0) {
+			if (!isRecord(raw.checklist)) {
+				raw.checklist = {};
+			}
+			const target = raw.checklist as Record<string, unknown>;
+			if (legacyTodoObj) {
+				for (const [key, value] of Object.entries(legacyTodoObj)) {
+					if (target[key] === undefined) {
+						target[key] = value;
+					}
+				}
+			}
+			for (const key of legacyTodoFlatKeys) {
+				const leaf = key.slice("todo.".length);
+				if (target[leaf] === undefined) {
+					target[leaf] = raw[key];
+				}
+				delete raw[key];
+			}
+			delete raw.todo;
+		}
+
+		const checklistObj = raw.checklist as Record<string, unknown> | undefined;
+		if (checklistObj && typeof checklistObj.eager === "boolean") {
+			checklistObj.eager = checklistObj.eager ? "always" : "default";
 		}
 
 		if (isolationObj && typeof isolationObj.mode === "string") {
@@ -1450,7 +1475,7 @@ export class Settings {
 		);
 		migrateNestedLeafRename(
 			raw,
-			"todo",
+			"checklist",
 			"reminders",
 			"max",
 			"remindersMax",

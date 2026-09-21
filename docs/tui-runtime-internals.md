@@ -35,7 +35,7 @@ Boundary rule: the TUI engine is message-agnostic. It only knows `Component.rend
 - `chatContainer`
 - `pendingMessagesContainer`
 - `statusContainer`
-- `todoContainer`
+- `checklistContainer`
 - `subagentContainer`
 - `btwContainer`
 - `errorBannerContainer`

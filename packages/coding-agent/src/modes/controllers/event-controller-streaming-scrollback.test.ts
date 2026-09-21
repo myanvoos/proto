@@ -191,7 +191,7 @@ test("a wrapped pre-tool continuation is not permanently re-appended on every re
 		optimisticUserMessageSignature: undefined,
 		locallySubmittedUserSignatures: new Set<string>(),
 		flushPendingCommandOutput: NOOP,
-		setTodos: NOOP,
+		setChecklist: NOOP,
 		addMessageToChat: () => [] as Component[],
 		streamingComponent: undefined,
 		streamingMessage: undefined,

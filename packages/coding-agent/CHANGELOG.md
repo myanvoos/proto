@@ -7,6 +7,7 @@
 - Kernel `completion()` accepts a model id, not just the `"smol"`/`"default"`/`"slow"` tiers: a bare id resolves when a single provider offers it, several providers ask you to qualify it as `provider/id`, and an id outside the pool names its closest available matches.
 
 ### Changed
+- The task-tracking tool and its UI are "Checklist" now: the `todo` tool is `checklist`, `/todo` is `/checklist`, the default export/import file is `CHECKLIST.md`, settings keys moved from `todo.*` to `checklist.*` (old values migrate automatically), and the `checklist_reminder` / `checklist_auto_clear` extension events plus `set_checklist` RPC command carry the new names.
 
 - Background agents from `/side --agent` are their own agent kind now: they stay live and idle after finishing instead of being parked, so you can keep talking to one without waiting for it to revive, and they are never auto-parked by the worker idle TTL.
 - `/side --agent` agents behave like small main sessions: they can `ask` you questions (the dialog is chipped with the agent id so you can tell who is asking), and `/model` or the model picker now switches the agent you have focused instead of silently retargeting the main session.

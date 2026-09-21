@@ -17,6 +17,7 @@ import type {
 	AutoCompactionStartEvent,
 	AutoRetryEndEvent,
 	AutoRetryStartEvent,
+	ChecklistReminderEvent,
 	ContextEvent,
 	SessionBeforeBranchEvent,
 	SessionBeforeBranchResult,
@@ -36,7 +37,6 @@ import type {
 	SessionStartEvent,
 	SessionSwitchEvent,
 	SessionTreeEvent,
-	TodoReminderEvent,
 	ToolCallEventResult,
 	ToolResultEventResult,
 	TtsrTriggeredEvent,
@@ -145,7 +145,7 @@ export type {
 	AutoCompactionStartEvent,
 	AutoRetryEndEvent,
 	AutoRetryStartEvent,
-	TodoReminderEvent,
+	ChecklistReminderEvent,
 	TtsrTriggeredEvent,
 	TurnEndEvent,
 	TurnStartEvent,
@@ -203,7 +203,7 @@ export type HookEvent =
 	| AutoRetryStartEvent
 	| AutoRetryEndEvent
 	| TtsrTriggeredEvent
-	| TodoReminderEvent
+	| ChecklistReminderEvent
 	| ToolCallEvent
 	| ToolResultEvent;
 
@@ -272,7 +272,7 @@ export interface HookAPI {
 	on(event: "auto_retry_start", handler: HookHandler<AutoRetryStartEvent>): void;
 	on(event: "auto_retry_end", handler: HookHandler<AutoRetryEndEvent>): void;
 	on(event: "ttsr_triggered", handler: HookHandler<TtsrTriggeredEvent>): void;
-	on(event: "todo_reminder", handler: HookHandler<TodoReminderEvent>): void;
+	on(event: "checklist_reminder", handler: HookHandler<ChecklistReminderEvent>): void;
 	on(event: "tool_call", handler: HookHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: HookHandler<ToolResultEvent, ToolResultEventResult>): void;
 

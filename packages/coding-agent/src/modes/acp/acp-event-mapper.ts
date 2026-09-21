@@ -8,9 +8,9 @@ import type {
 } from "@oh-my-pi/pi-utils/acp";
 import { parseXdUrl } from "../../internal-urls/xd-protocol";
 import type { AgentSessionEvent } from "../../session/agent-session";
+import type { ChecklistStatus } from "../../tools/checklist";
 import { resolveToCwd } from "../../tools/path-utils";
 import { tokenizeShellSegments } from "../../tools/shell-tokenize";
-import type { TodoStatus } from "../../tools/todo";
 import { parseXdBashCommand } from "../../tools/xdev";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 
@@ -184,7 +184,7 @@ function mapToolKind(toolName: string): ToolKind {
 			return "execute";
 		case "web_search":
 			return "fetch";
-		case "todo":
+		case "checklist":
 			return "think";
 		default:
 			return "other";
@@ -255,21 +255,21 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 				update.locations = locations;
 			}
 			const notifications = [toSessionNotification(sessionId, update)];
-			const planUpdate = mapTodoResultToPlanUpdate(event);
+			const planUpdate = mapChecklistResultToPlanUpdate(event);
 			if (planUpdate) {
 				notifications.push(toSessionNotification(sessionId, planUpdate));
 			}
 			return notifications;
 		}
-		case "todo_reminder": {
-			const entries = event.todos.map(todo => ({
-				content: todo.content,
+		case "checklist_reminder": {
+			const entries = event.items.map(checklist => ({
+				content: checklist.content,
 				priority: "medium" as const,
-				status: mapTodoStatus(todo.status),
+				status: mapChecklistStatus(checklist.status),
 			}));
 			return [toSessionNotification(sessionId, { sessionUpdate: "plan", entries })];
 		}
-		case "todo_auto_clear":
+		case "checklist_auto_clear":
 			return [toSessionNotification(sessionId, { sessionUpdate: "plan", entries: [] })];
 		default:
 			return [];
@@ -380,7 +380,7 @@ function toSessionNotification(sessionId: string, update: SessionUpdate): Sessio
 	return { sessionId, update };
 }
 
-const todoStatusMap: Record<TodoStatus, "pending" | "in_progress" | "completed"> = {
+const checklistStatusMap: Record<ChecklistStatus, "pending" | "in_progress" | "completed"> = {
 	pending: "pending",
 	in_progress: "in_progress",
 	completed: "completed",
@@ -388,31 +388,31 @@ const todoStatusMap: Record<TodoStatus, "pending" | "in_progress" | "completed">
 	blocked: "pending",
 };
 
-function mapTodoStatus(status: TodoStatus): "pending" | "in_progress" | "completed" {
-	return todoStatusMap[status];
+function mapChecklistStatus(status: ChecklistStatus): "pending" | "in_progress" | "completed" {
+	return checklistStatusMap[status];
 }
 
-function mapTodoResultToPlanUpdate(
+function mapChecklistResultToPlanUpdate(
 	event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>,
 ): SessionUpdate | undefined {
-	if (event.toolName !== "todo" || event.isError) {
+	if (event.toolName !== "checklist" || event.isError) {
 		return undefined;
 	}
-	const phases = extractTodoPhases(event.result);
+	const phases = extractChecklistPhases(event.result);
 	if (!Array.isArray(phases)) {
 		return undefined;
 	}
 	return {
 		sessionUpdate: "plan",
-		entries: extractTodoEntries(phases).map(todo => ({
-			content: todo.content,
+		entries: extractChecklistEntries(phases).map(checklist => ({
+			content: checklist.content,
 			priority: "medium" as const,
-			status: mapTodoStatus(todo.status),
+			status: mapChecklistStatus(checklist.status),
 		})),
 	};
 }
 
-function extractTodoPhases(result: unknown): unknown {
+function extractChecklistPhases(result: unknown): unknown {
 	if (typeof result !== "object" || result === null || !("details" in result)) {
 		return undefined;
 	}
@@ -423,8 +423,8 @@ function extractTodoPhases(result: unknown): unknown {
 	return (details as { phases?: unknown }).phases;
 }
 
-function extractTodoEntries(phases: unknown[]): Array<{ content: string; status: TodoStatus }> {
-	const entries: Array<{ content: string; status: TodoStatus }> = [];
+function extractChecklistEntries(phases: unknown[]): Array<{ content: string; status: ChecklistStatus }> {
+	const entries: Array<{ content: string; status: ChecklistStatus }> = [];
 	for (const phase of phases) {
 		if (typeof phase !== "object" || phase === null || !("tasks" in phase)) {
 			continue;
@@ -441,14 +441,14 @@ function extractTodoEntries(phases: unknown[]): Array<{ content: string; status:
 			if (typeof content !== "string" || content.length === 0) {
 				continue;
 			}
-			const status = (task as { status?: TodoStatus }).status;
-			entries.push({ content, status: isTodoStatus(status) ? status : "pending" });
+			const status = (task as { status?: ChecklistStatus }).status;
+			entries.push({ content, status: isChecklistStatus(status) ? status : "pending" });
 		}
 	}
 	return entries;
 }
 
-function isTodoStatus(status: unknown): status is TodoStatus {
+function isChecklistStatus(status: unknown): status is ChecklistStatus {
 	return (
 		status === "pending" ||
 		status === "in_progress" ||

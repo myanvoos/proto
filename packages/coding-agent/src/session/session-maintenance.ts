@@ -222,7 +222,7 @@ export interface SessionMaintenanceHost {
 	obfuscatePreparationForProvider(preparation: CompactionPreparation): CompactionPreparation;
 	closeCodexProviderSessionsForHistoryRewrite(): void;
 	resetCodexProviderAfterCompaction(compaction: CodexCompactionContext): void;
-	syncTodoPhasesFromBranch(): void;
+	syncChecklistPhasesFromBranch(): void;
 	resetAdvisorRuntimes(reason?: string): void;
 	rebaseAfterCompaction(): void;
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void;
@@ -371,7 +371,7 @@ export class SessionMaintenance {
 		);
 		this.#replaceModelContext(branchEntries);
 		this.#host.resetAdvisorRuntimes("prune-tool-outputs");
-		this.#host.syncTodoPhasesFromBranch();
+		this.#host.syncChecklistPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return result;
 	}
@@ -398,7 +398,7 @@ export class SessionMaintenance {
 		);
 		this.#replaceModelContext(branchEntries);
 		this.#host.resetAdvisorRuntimes("prune-stale-tool-results");
-		this.#host.syncTodoPhasesFromBranch();
+		this.#host.syncChecklistPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return result;
 	}
@@ -955,7 +955,7 @@ export class SessionMaintenance {
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAfterCompaction();
 		this.#host.resetAdvisorRuntimes(args.advisorResetReason);
-		this.#host.syncTodoPhasesFromBranch();
+		this.#host.syncChecklistPhasesFromBranch();
 		if (args.codexCompaction) {
 			this.#host.resetCodexProviderAfterCompaction(args.codexCompaction);
 		} else {

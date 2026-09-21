@@ -3,7 +3,7 @@ import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Rule } from "../capability/rule";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import type { Goal, GoalModeState } from "../goals/state";
-import type { TodoItem } from "../tools/todo";
+import type { ChecklistItem } from "../tools/checklist";
 import type { CustomMessage } from "./messages";
 
 export type AgentSessionEvent =
@@ -45,8 +45,8 @@ export type AgentSessionEvent =
 	| { type: "retry_fallback_succeeded"; model: string; role: string }
 	| { type: "model_changed" }
 	| { type: "ttsr_triggered"; rules: Rule[] }
-	| { type: "todo_reminder"; todos: TodoItem[]; attempt: number; maxAttempts: number }
-	| { type: "todo_auto_clear" }
+	| { type: "checklist_reminder"; items: ChecklistItem[]; attempt: number; maxAttempts: number }
+	| { type: "checklist_auto_clear" }
 	| { type: "irc_message"; message: CustomMessage }
 	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
 	| {

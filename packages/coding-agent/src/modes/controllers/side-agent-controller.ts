@@ -11,7 +11,7 @@ import type { AgentSession } from "../../session/agent-session";
 import { BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE } from "../../session/messages";
 import { SessionManager } from "../../session/session-manager";
 import { createMCPProxyTools, createSubagentSettings } from "../../task/executor";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
+import { USER_CHECKLIST_EDIT_CUSTOM_TYPE } from "../../tools/checklist";
 import type { InteractiveModeContext } from "../types";
 
 const SIDE_WORK_PREVIEW_LENGTH = 80;
@@ -157,8 +157,8 @@ export class SideAgentController {
 						};
 						signal.addEventListener("abort", abortClone, { once: true });
 
-						clone.setTodoPhases([]);
-						cloneManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [] });
+						clone.setChecklistPhases([]);
+						cloneManager.appendCustomEntry(USER_CHECKLIST_EDIT_CUSTOM_TYPE, { phases: [] });
 						const injectContextSwitch = () => {
 							clone?.agent.appendMessage({
 								role: "developer",

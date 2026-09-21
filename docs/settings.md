@@ -696,7 +696,7 @@ Every schema path not individually tabulated in this catalog is explicitly defer
 
 - Agent behavior and safety: `ask.*`, `eval.*`, `features.*`, `goal.*`, `loop.*`, `model.loopGuard.*`, `model.toolCallLoopGuard.*`, `prewalk.*`, `recap.*`, `tools.*`, and `vault.*`.
 - Execution and content: `commit.*`, `completion.*`, `edit.*`, `error.*`, `extensionHandlers.*`, `generate_image.*`, `git.*`, `images.*`, `paste.*`, `power.*`, `read.*`, `shellMinimizer.*`, `terminal.*`, and `title.*`.
-- Integrations, storage, and discovery: `async.*`, `bashInterceptor.*`, `codexResets.*`, `commands.*`, `dev.*`, `exa.*`, `gc.*`, `github.*`, `magicKeywords.*`, `mcp.*`, `providers.*`, `searxng.*`, `skills.*`, `orchestrator.*`, `todo.*`, and `workspace.*`.
+- Integrations, storage, and discovery: `async.*`, `bashInterceptor.*`, `codexResets.*`, `commands.*`, `dev.*`, `exa.*`, `gc.*`, `github.*`, `magicKeywords.*`, `mcp.*`, `providers.*`, `searxng.*`, `skills.*`, `orchestrator.*`, `checklist.*`, and `workspace.*`.
 - Ungrouped keys: `setupVersion`, `proseOnlyThinking`, `omitThinking`, `externalThinking`, `includeWorkspaceTree`, `autocompleteMaxVisible`, `emojiAutocomplete`, `extendedContext`, `disabledExtensions`, `inlineToolDescriptors`, and `treeFilterMode`.
 
 These settings follow the same schema-defined type and default rules shown above.

@@ -32,7 +32,7 @@ Use `fleet` messaging only for quick coordination, never long-form content. Addr
 {{/if}}
 
 § Completion
-No TODO tracking, no progress updates. Execute; report results with `yield`.
+No CHECKLIST tracking, no progress updates. Execute; report results with `yield`.
 
 While work remains, you MUST continue with another tool call — investigate, edit, run, verify. Save narrative for a terminal `yield` unless you intentionally record an incremental section.
 

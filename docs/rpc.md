@@ -23,7 +23,7 @@ Behavior notes:
 
 - `@file` CLI arguments are rejected in RPC mode.
 - RPC mode disables automatic session title generation by default to avoid an extra model call.
-- RPC/ACP host defaults cover worker isolation/execution, memory, advisor, tier, async-job, and bash auto-background settings. They are applied only when a path is not explicitly configured; project/global config, `--config`, and isolated settings remain authoritative. Todo settings are not host-defaulted.
+- RPC/ACP host defaults cover worker isolation/execution, memory, advisor, tier, async-job, and bash auto-background settings. They are applied only when a path is not explicitly configured; project/global config, `--config`, and isolated settings remain authoritative. Checklist settings are not host-defaulted.
 - The process claims stdin before extension discovery, then parses it one non-empty JSONL line at a time. Malformed JSON emits a recoverable `command: "parse"` failure and does not terminate the loop.
 - At startup it writes a `ready` frame before processing commands. The frame advertises supported protocol versions and transport limits.
 - When stdin closes, pending extension UI, host-tool, and host-URI requests are rejected; accepted commands are drained, the session is disposed, and the process exits with code `0`.
@@ -126,7 +126,7 @@ Important edge behavior from runtime:
 - `{ id?, type: "get_state" }`
 - `{ id?, type: "set_fast_mode", enabled: boolean }`
 - `{ id?, type: "get_available_commands" }`
-- `{ id?, type: "set_todos", phases: TodoPhase[] }`
+- `{ id?, type: "set_checklist", phases: ChecklistPhase[] }`
 - `{ id?, type: "set_host_tools", tools: RpcHostToolDefinition[] }`
 - `{ id?, type: "set_host_uri_schemes", schemes: RpcHostUriSchemeDefinition[] }`
 - `{ id?, type: "set_subagent_subscription", level: "off" | "progress" | "events" }`
@@ -261,10 +261,10 @@ is re-armed.
   "autoCompactionEnabled": true,
   "messageCount": 0,
   "queuedMessageCount": 0,
-  "todoPhases": [
+  "checklistPhases": [
     {
       "id": "phase-1",
-      "name": "Todos",
+      "name": "Checklist",
       "tasks": [
         {
           "id": "task-1",
@@ -357,14 +357,14 @@ The corresponding `get_state` result reports the same computed state:
 }
 ```
 
-### `set_todos` payload
+### `set_checklist` payload
 
-Replaces the in-memory todo state for the current session and returns the normalized phase list:
+Replaces the in-memory checklist state for the current session and returns the normalized phase list:
 
 ```json
 {
   "id": "req_2",
-  "type": "set_todos",
+  "type": "set_checklist",
   "phases": [
     {
       "id": "phase-1",
@@ -478,7 +478,7 @@ Common event types:
 - `retry_fallback_applied`, `retry_fallback_succeeded`
 - `model_changed`, `thinking_level_changed`
 - `ttsr_triggered`
-- `todo_reminder`, `todo_auto_clear`
+- `checklist_reminder`, `checklist_auto_clear`
 - `irc_message`, `notice`, `goal_updated`
 
 Extension runner errors are emitted separately as:

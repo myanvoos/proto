@@ -21,7 +21,7 @@
   rejected). Supplying `match` filters at the source; every event enters the context.
 - Defaults: `maxEvents` from settings (50) — the monitor stops itself when reached;
   `timeout` unbounded when omitted; `cwd` the session directory.
-- While any monitor runs, incomplete-todo and goal-continuation nudges are suppressed —
+- While any monitor runs, incomplete-checklist and goal-continuation nudges are suppressed —
   stopping to wait is the expected move.
 - Session-scoped: monitors die with the session and are main-agent only.
 

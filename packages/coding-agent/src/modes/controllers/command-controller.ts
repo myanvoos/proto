@@ -326,7 +326,7 @@ export class CommandController {
 		this.ctx.resetTranscript();
 
 		this.ctx.present([new Spacer(1), new Text(`${theme.fg("accent", `${theme.status.success} ${label}`)}`, 1, 1)]);
-		await this.ctx.reloadTodos();
+		await this.ctx.reloadChecklist();
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}
 
@@ -464,7 +464,7 @@ export class CommandController {
 		await this.ctx.applyCwdChange(resolvedPath);
 
 		this.ctx.updateEditorBorderColor();
-		await this.ctx.reloadTodos();
+		await this.ctx.reloadChecklist();
 		this.ctx.ui.requestRender();
 
 		this.ctx.present([
@@ -549,7 +549,7 @@ export class CommandController {
 		await this.ctx.sessionManager.moveTo(resolvedPath);
 		await this.ctx.applyCwdChange(resolvedPath);
 		this.ctx.updateEditorBorderColor();
-		await this.ctx.reloadTodos();
+		await this.ctx.reloadChecklist();
 	}
 
 	async #applyBashResultCwd(result: BashResult): Promise<void> {

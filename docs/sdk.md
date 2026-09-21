@@ -228,7 +228,7 @@ const unsubscribe = session.subscribe((event) => {
 - `model_changed`
 - `thinking_level_changed`
 - `ttsr_triggered`
-- `todo_reminder` / `todo_auto_clear`
+- `checklist_reminder` / `checklist_auto_clear`
 - `irc_message`
 - `notice`
 - `goal_updated`
@@ -416,6 +416,6 @@ session.subscribe((event) => {
   }
 });
 
-await session.prompt("Find all TODO comments in this repo and propose fixes.");
+await session.prompt("Find all CHECKLIST comments in this repo and propose fixes.");
 await session.dispose();
 ```

@@ -94,7 +94,7 @@ function createContext() {
 		optimisticUserMessageSignature: undefined,
 		locallySubmittedUserSignatures: new Set<string>(),
 		flushPendingCommandOutput: NOOP,
-		setTodos: NOOP,
+		setChecklist: NOOP,
 		addMessageToChat: () => [] as Component[],
 		lastAssistantUsage: undefined,
 		streamingComponent: undefined,

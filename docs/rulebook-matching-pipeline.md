@@ -301,11 +301,11 @@ match:
 ```
 
 ```yaml
-# Require three TODO markers in a TypeScript source buffer.
+# Require three CHECKLIST markers in a TypeScript source buffer.
 match:
   all:
     - lang: ts
-    - regex: '\bTODO\b'
+    - regex: '\bCHECKLIST\b'
       count: 3
       in: code
 ```

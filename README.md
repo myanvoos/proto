@@ -20,7 +20,7 @@ Downloads a prebuilt binary (macOS / Linux, glibc and musl) from GitHub Releases
   `parallel()`, `tool.<name>()`), and `xd` device dispatch for auxiliary tools. The builtin
   registry is deliberately small: `read`, `bash`, `ask`, `inspect_media`, `browser`,
   `computer`, `checkpoint`, `rewind`, the `orchestrate_*` family, `fleet`, `monitor`,
-  `todo`, `web_search`, `manage_skill`.
+  `checklist`, `web_search`, `manage_skill`.
 - **Sessions that survive your terminal** — `proto attach` connects to a
   daemon-supervised session host (latest client wins, reattach replays recent messages,
   detach keeps the session running); parked sessions keep thinking in the background;

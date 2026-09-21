@@ -193,7 +193,7 @@ import {
 	supportsExternalThinking,
 	type Tool,
 	type ToolSession,
-	USER_TODO_EDIT_CUSTOM_TYPE,
+	USER_CHECKLIST_EDIT_CUSTOM_TYPE,
 } from "./tools";
 import { BashTool } from "./tools/bash";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
@@ -791,11 +791,11 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
 		api.on("ttsr_triggered", async (event, ctx) =>
 			runOnSession({ reason: "ttsr_triggered", rules: event.rules }, ctx),
 		);
-		api.on("todo_reminder", async (event, ctx) =>
+		api.on("checklist_reminder", async (event, ctx) =>
 			runOnSession(
 				{
-					reason: "todo_reminder",
-					todos: event.todos,
+					reason: "checklist_reminder",
+					items: event.items,
 					attempt: event.attempt,
 					maxAttempts: event.maxAttempts,
 				},
@@ -1374,8 +1374,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				return next;
 			},
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
-			getTodoPhases: () => session.getTodoPhases(),
-			setTodoPhases: phases => session.setTodoPhases(phases),
+			getChecklistPhases: () => session.getChecklistPhases(),
+			setChecklistPhases: phases => session.setChecklistPhases(phases),
 			getCheckpointState: () => session.getCheckpointState(),
 			setCheckpointState: state => session.setCheckpointState(state ?? undefined),
 			getLastCompletedRewind: () => session.getLastCompletedRewind(),
@@ -2179,9 +2179,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getToolContext: () => toolContextStore.getContext(),
 			mcpResources: cursorMcpResources,
 			emitEvent: event => cursorEventEmitter?.(event),
-			getTodoPhases: () => session.getTodoPhases(),
-			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+			getChecklistPhases: () => session.getChecklistPhases(),
+			setChecklistPhases: phases => session.setChecklistPhases(phases),
+			persistChecklistPhases: phases =>
+				sessionManager.appendCustomEntry(USER_CHECKLIST_EDIT_CUSTOM_TYPE, { phases }),
 
 			allowDirectFileMutation: false,
 		});

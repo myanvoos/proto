@@ -1285,7 +1285,7 @@ export class SelectorController {
 						if (!fastRewind) {
 							await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 						}
-						await this.ctx.reloadTodos();
+						await this.ctx.reloadChecklist();
 						if (result.editorText && !this.ctx.editor.getText().trim()) {
 							this.ctx.editor.setDraft(result.editorText, result.editorImages);
 						}
@@ -1532,7 +1532,7 @@ export class SelectorController {
 		this.ctx.ui.requestRender();
 		this.ctx.updateEditorBorderColor();
 		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-		await this.ctx.reloadTodos();
+		await this.ctx.reloadChecklist();
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
 		return true;
 	}
@@ -1618,7 +1618,7 @@ export class SelectorController {
 		if (!swappedIn) {
 			await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		}
-		await this.ctx.reloadTodos();
+		await this.ctx.reloadChecklist();
 
 		const evicted = await detachedSessionHolder.evictLRU(8);
 		const evictionNote =

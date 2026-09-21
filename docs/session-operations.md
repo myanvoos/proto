@@ -114,7 +114,7 @@ Without an argument:
 1. Opens the session selector populated via `SessionManager.list(currentCwd, currentSessionDir)`.
 2. The picker starts in current-folder scope; Tab toggles to all-projects scope, lazily loading and caching `SessionManager.listAll()`.
 3. On selection, `SelectorController.handleResumeSession(sessionPath)` calls `session.switchSession(sessionPath)`.
-4. UI clears/rebuilds chat and todos, then reports `Resumed session` (or `Resumed session in <dir>` when the resumed session belongs to another project, in which case the process cwd and cwd-derived caches are re-pointed via `applyCwdChange`).
+4. UI clears/rebuilds chat and checklist items, then reports `Resumed session` (or `Resumed session in <dir>` when the resumed session belongs to another project, in which case the process cwd and cwd-derived caches are re-pointed via `applyCwdChange`).
 
 With an argument:
 
@@ -169,7 +169,7 @@ This is startup-only behavior; there is no interactive `/continue` slash command
 4. Clear agent and next-turn queues. For a different file, drain/detach advisor recorders.
 5. `sessionManager.setSessionFile(sessionPath)`, update provider-cache/session ids and memory keys, build the display context, and rehydrate checkpoint state.
 6. Emit `session_switch` with `reason: "resume"`.
-7. Replace agent messages, reset advisor state, and synchronize todos. Close cached provider sessions for a different file, or for a same-file reload whose replay messages changed.
+7. Replace agent messages, reset advisor state, and synchronize checklist items. Close cached provider sessions for a different file, or for a same-file reload whose replay messages changed.
 8. Restore an available persisted model. If the loaded branch ended with an interrupted turn, append its synthetic abort message and rebuild context.
 9. Restore configured/effective thinking and per-family service tiers, falling back to current settings when the target branch has no corresponding entries.
 10. For a different transcript, reset memory context; for any conversation rewrite, clear session-scoped tool state.

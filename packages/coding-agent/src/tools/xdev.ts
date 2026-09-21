@@ -33,7 +33,7 @@ import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-e
 export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 	read: true,
 	ask: true,
-	todo: true,
+	checklist: true,
 	web_search: true,
 	inspect_media: true,
 };

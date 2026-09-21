@@ -1006,7 +1006,7 @@ export async function runRpcMode(
 					sessionName: session.sessionName,
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					queuedMessageCount: session.queuedMessageCount,
-					todoPhases: session.getTodoPhases(),
+					checklistPhases: session.getChecklistPhases(),
 					fastModeEnabled: session.isFastModeEnabled(),
 					tokensPerSecond: calculateTokensPerSecond(session.messages, session.isStreaming),
 					fastModeActive: session.isFastModeActive(),
@@ -1038,9 +1038,9 @@ export async function runRpcMode(
 				return success(id, "get_available_commands", { commands: await getAvailableCommands() });
 			}
 
-			case "set_todos": {
-				session.setTodoPhases(command.phases);
-				return success(id, "set_todos", { todoPhases: session.getTodoPhases() });
+			case "set_checklist": {
+				session.setChecklistPhases(command.phases);
+				return success(id, "set_checklist", { checklistPhases: session.getChecklistPhases() });
 			}
 
 			case "set_host_tools": {

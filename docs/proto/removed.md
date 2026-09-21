@@ -40,7 +40,7 @@ Upstream builtins with **no proto equivalent**: `edit`, `write`, `glob`, `grep`,
 | `ast_edit` | Dropped — kernel/bash edits |
 
 Proto keeps: `read`, `bash`, `ask`, `inspect_media` (new), `browser`, `computer`,
-`checkpoint`, `rewind`, `orchestrate_*` (new), `fleet` (new), `monitor` (new), `todo`,
+`checkpoint`, `rewind`, `orchestrate_*` (new), `fleet` (new), `monitor` (new), `checklist`,
 `web_search`, `manage_skill`; hidden: `yield`, `goal`, `think`.
 
 ## Removed docs

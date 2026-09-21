@@ -116,7 +116,7 @@ Automated QA: tool output inconsistent with described behavior → run `{{toolRe
 § Delivery
 <contract>
 Inviolable.
-- NEVER yield before complete end-to-end deliverable; phase boundary/todo flip/substep ≠ yield.
+- NEVER yield before complete end-to-end deliverable; phase boundary/checklist flip/substep ≠ yield.
 - NEVER fabricate: MUST ground code/tool/test/doc/source claims; NEVER ask for tool/repo/file info; NEVER punt partial work.
 - Clean cutover: migrate every caller; obsolete code/comments/aliases/re-exports/deprecated paths removed; no shims.
 </contract>

@@ -2,7 +2,7 @@ import { expect, test, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { type Component, type RenderScheduler, type Terminal, TUI } from "@oh-my-pi/pi-tui";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
-import type { TodoToolDetails } from "../../tools/todo";
+import type { ChecklistToolDetails } from "../../tools/checklist";
 import { initThemeSync } from "../theme/theme";
 import { AssistantMessageComponent } from "./assistant-message";
 import { ToolExecutionComponent, type ToolExecutionUi } from "./tool-execution";
@@ -329,13 +329,13 @@ test("a finalized wrapped assistant rejects post-final updates instead of creati
 	}
 });
 
-// A completed-todo card animates its strike-through reveal for ~900 ms after the
+// A completed-checklist card animates its strike-through reveal for ~900 ms after the
 // block is already finalized. When the reply streaming below it pushes the card
 // into native scrollback mid-reveal, every further tick used to rewrite rows the
 // terminal can no longer repaint: the renderer re-anchored its commit seam to the
 // card and re-appended everything below it once per tick, so scrolling up showed
 // the reply spliced and replayed over and over.
-test("a todo card that scrolls into history mid-strike leaves the transcript in scrollback once", () => {
+test("a checklist card that scrolls into history mid-strike leaves the transcript in scrollback once", () => {
 	vi.useFakeTimers();
 	const cols = 55;
 	const rows = 20;
@@ -348,7 +348,7 @@ test("a todo card that scrolls into history mid-strike leaves the transcript in 
 		requestComponentRender: () => tui.requestRender(true),
 		resetDisplay: () => {},
 	};
-	const details: TodoToolDetails = {
+	const details: ChecklistToolDetails = {
 		op: "done",
 		storage: "session",
 		phases: [
@@ -366,7 +366,7 @@ test("a todo card that scrolls into history mid-strike leaves the transcript in 
 			{ phase: "Playtest", content: "Fix what the playtest finds and re-verify" },
 		],
 	};
-	const card = new ToolExecutionComponent("todo", { op: "done" }, { useBuiltInRenderer: true }, undefined, ui);
+	const card = new ToolExecutionComponent("checklist", { op: "done" }, { useBuiltInRenderer: true }, undefined, ui);
 	transcript.addChild(card);
 	const reply = new AssistantMessageComponent(undefined, false);
 	transcript.addChild(reply);

@@ -15,7 +15,7 @@ Budget:
 Autonomous continuation; objective persists across turns. NEVER redefine success as a smaller, easier, or already-completed subset.
 
 Before `goal({op:"complete"})`, MUST audit repo:
-objective→deliverables(files/behaviors/tests/gates/artifacts)→todo/reasoning;
+objective→deliverables(files/behaviors/tests/gates/artifacts)→checklist/reasoning;
 each→authoritative evidence(file/command/test pass/PR issue state);
 inspect(read files/run commands/tests); NEVER trust prior memory; repo may change;
 verification=claim scope(narrow≠broad E2E);

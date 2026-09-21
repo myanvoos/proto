@@ -1,15 +1,15 @@
-# todo
+# checklist
 
-> Applies one mutation to the session todo list and returns a text summary plus the full phase/task state.
+> Applies one mutation to the session checklist and returns a text summary plus the full phase/task state.
 
 ## Source
-- Entry: `packages/coding-agent/src/tools/todo.ts`
-- Model-facing prompt: `packages/coding-agent/src/prompts/tools/todo.md`
+- Entry: `packages/coding-agent/src/tools/checklist.ts`
+- Model-facing prompt: `packages/coding-agent/src/prompts/tools/checklist.md`
 - Key collaborators:
   - `packages/coding-agent/src/tools/index.ts` — registers tool, exposes session hooks, gates availability.
-  - `packages/coding-agent/src/modes/controllers/event-controller.ts` — updates the visible todo UI on tool completion.
+  - `packages/coding-agent/src/modes/controllers/event-controller.ts` — updates the visible checklist UI on tool completion.
   - `packages/coding-agent/src/session/agent-session.ts` — stores cached phases, strips done/dropped tasks on session resume, emits failure reminders.
-  - `packages/coding-agent/src/modes/controllers/todo-command-controller.ts` — `/todo` command path, custom-entry persistence, transcript reminder injection.
+  - `packages/coding-agent/src/modes/controllers/checklist-command-controller.ts` — `/checklist` command path, custom-entry persistence, transcript reminder injection.
   - `packages/coding-agent/src/tools/render-utils.ts` — collapsed-preview cap for renderer trees.
 
 ## Inputs
@@ -43,26 +43,26 @@ The params object **is** a single op — the discriminator and its fields live a
 The tool returns a single-shot `AgentToolResult`:
 
 - `content`: one text part containing the summary from `formatSummary(...)`.
-  - `view`: overall counts, active phase, and the full per-phase tree (`Todo list is empty.` when empty).
+  - `view`: overall counts, active phase, and the full per-phase tree (`Checklist list is empty.` when empty).
   - `init`: initialized counts plus the per-phase tree.
-  - Every other successful state-changing op returns a compact one-line acknowledgement (`Todo list updated.` when no entry was named); it does not reprint the tree.
+  - Every other successful state-changing op returns a compact one-line acknowledgement (`Checklist list updated.` when no entry was named); it does not reprint the tree.
   - If the op produced validation/runtime errors, the summary starts with `Errors: ...` and the result is marked `isError: true`; the mutation is discarded — the returned and persisted state stay at the pre-call list.
 - `details`:
-  - `phases: TodoPhase[]`
+  - `phases: ChecklistPhase[]`
   - `storage: "session" | "memory"`
-  - `completedTasks?: TodoCompletionTransition[]` when a task changed from non-completed to `completed` during the call
-  - `op?: TodoOperation` identifies the resolved operation, including a mutation that later produced op-specific errors; absent on schema-validation failures and legacy transcript entries.
+  - `completedTasks?: ChecklistCompletionTransition[]` when a task changed from non-completed to `completed` during the call
+  - `op?: ChecklistOperation` identifies the resolved operation, including a mutation that later produced op-specific errors; absent on schema-validation failures and legacy transcript entries.
 
-`TodoPhase` / `TodoItem` state model:
+`ChecklistPhase` / `ChecklistItem` state model:
 
-- `TodoPhase`: `{ name: string, tasks: TodoItem[] }`
-- `TodoItem`: `{ content: string, status: "pending" | "in_progress" | "completed" | "abandoned" | "blocked", blocker?: string }`
+- `ChecklistPhase`: `{ name: string, tasks: ChecklistItem[] }`
+- `ChecklistItem`: `{ content: string, status: "pending" | "in_progress" | "completed" | "abandoned" | "blocked", blocker?: string }`
 
-The TUI renderer (`todoToolRenderer`) merges call and result into one transcript block and renders phases as a tree. Collapsed transcript previews cap tree items at `PREVIEW_LIMITS.COLLAPSED_ITEMS` (`8`).
+The TUI renderer (`checklistToolRenderer`) merges call and result into one transcript block and renders phases as a tree. Collapsed transcript previews cap tree items at `PREVIEW_LIMITS.COLLAPSED_ITEMS` (`8`).
 
 ## Flow
-1. `TodoTool.execute(...)` clones the current cached phases from `session.getTodoPhases?.() ?? []` (`packages/coding-agent/src/tools/todo.ts`).
-2. `resolveTodoParams(...)` validates the raw single-op payload. Because the tool enables `lenientArgValidation`, it may repair a missing `op` only when the shape is unambiguous: non-empty `list` means `init`; non-empty `items` plus `phase` means `append`; bare non-empty `items` means `init` only when no phases exist. Ambiguous targeting fields and all other schema failures return `Invalid todo arguments: ...`.
+1. `ChecklistTool.execute(...)` clones the current cached phases from `session.getChecklistPhases?.() ?? []` (`packages/coding-agent/src/tools/checklist.ts`).
+2. `resolveChecklistParams(...)` validates the raw single-op payload. Because the tool enables `lenientArgValidation`, it may repair a missing `op` only when the shape is unambiguous: non-empty `list` means `init`; non-empty `items` plus `phase` means `append`; bare non-empty `items` means `init` only when no phases exist. Ambiguous targeting fields and all other schema failures return `Invalid checklist arguments: ...`.
 3. `applyParams(...)` applies the resolved op with `applyEntry(...)`.
 4. Each op mutates the working phase array:
    - `initPhases(...)` rebuilds the list from scratch.
@@ -77,11 +77,11 @@ The TUI renderer (`todoToolRenderer`) merges call and result into one transcript
    - if multiple tasks are `in_progress`, only the first stays active and the rest become `pending`;
    - if none are `in_progress`, the first `pending` task in phase/task order is auto-promoted to `in_progress`;
    - blocked tasks are skipped, so a list may have no active task when all open work is blocked.
-7. `execute(...)` stores the updated phases with `session.setTodoPhases?.(...)` only when the op produced no errors and was not a `view`; a failed op is discarded. `storage` is `"session"` when `session.getSessionFile()` exists, else `"memory"`.
+7. `execute(...)` stores the updated phases with `session.setChecklistPhases?.(...)` only when the op produced no errors and was not a `view`; a failed op is discarded. `storage` is `"session"` when `session.getSessionFile()` exists, else `"memory"`.
 8. `getCompletionTransitions(...)` compares the previous and updated phases (skipped for failed or `view` calls); newly completed tasks are returned in `details.completedTasks`.
 9. Details include the resolved `op` on success or op-specific failure, including an op inferred from omitted input. A payload that cannot be schema-validated returns before an op is available.
-10. The agent runtime watches `todo` tool results in `packages/coding-agent/src/session/agent-session.ts`; successful results refresh cached todos, failed results inject a hidden next-turn reminder telling the model that todo progress is not visible until it retries.
-11. The event controller updates the visible todo UI from `result.details.phases` on success, or shows a warning on error (`packages/coding-agent/src/modes/controllers/event-controller.ts`).
+10. The agent runtime watches `checklist` tool results in `packages/coding-agent/src/session/agent-session.ts`; successful results refresh cached checklist items, failed results inject a hidden next-turn reminder telling the model that checklist progress is not visible until it retries.
+11. The event controller updates the visible checklist UI from `result.details.phases` on success, or shows a warning on error (`packages/coding-agent/src/modes/controllers/event-controller.ts`).
 
 ## Modes / Variants
 ### State transitions
@@ -106,37 +106,37 @@ Normalization then re-applies the single-active-task rule after the op runs.
 - `init` discards previous phases entirely.
 
 ### Markdown round-trip helpers
-The same file also exposes non-tool helpers used by `/todo`:
+The same file also exposes non-tool helpers used by `/checklist`:
 - `phasesToMarkdown(...)` serializes phases as headings plus checklist items (`[ ]`, `[/]`, `[x]`, `[-]`, `[!]`). A blocked reason is preserved in a trailing `<!-- blocker: ... -->` comment.
-- `markdownToPhases(...)` parses that format, defaults orphan tasks into a `Todos` phase, also accepts `>` as `in_progress` and `~` as `abandoned`, restores blocked notes, and runs the same normalization step.
+- `markdownToPhases(...)` parses that format, defaults orphan tasks into a `Checklist` phase, also accepts `>` as `in_progress` and `~` as `abandoned`, restores blocked notes, and runs the same normalization step.
 
 ## Side Effects
 - Filesystem
   - None in the tool itself.
 - Session state (transcript, memory, jobs, checkpoints, registries)
-  - Mutates the session todo cache through `setTodoPhases`.
+  - Mutates the session checklist cache through `setChecklistPhases`.
   - `storage` reports whether the session has a backing session file, but the tool does not append a custom session entry itself.
-  - Successful tool-result messages carry `details.phases`; `getLatestTodoPhasesFromEntries(...)` can reconstruct state later from those transcript entries.
-  - Failed `todo` results cause `agent-session` to enqueue a hidden next-turn reminder (`customType: "todo-error-reminder"`).
+  - Successful tool-result messages carry `details.phases`; `getLatestChecklistPhasesFromEntries(...)` can reconstruct state later from those transcript entries.
+  - Failed `checklist` results cause `agent-session` to enqueue a hidden next-turn reminder (`customType: "checklist-error-reminder"`).
 - User-visible prompts / interactive UI
-  - Transcript block is rendered by `todoToolRenderer` and merged with the call line.
-  - `event-controller` updates the visible todo panel from successful results.
-  - On error, `event-controller` shows `Todo update failed...`; the visible panel may stay stale until a later successful call.
+  - Transcript block is rendered by `checklistToolRenderer` and merged with the call line.
+  - `event-controller` updates the visible checklist panel from successful results.
+  - On error, `event-controller` shows `Checklist update failed...`; the visible panel may stay stale until a later successful call.
 - Background work / cancellation
-  - Session-level auto-clear of `completed`/`abandoned` tasks was removed (the timer mutated canonical phases between tool calls); the TUI todo widget still clears closed entries after `tasks.todoClearDelay` (display-only, `packages/coding-agent/src/modes/interactive-mode.ts`).
+  - Session-level auto-clear of `completed`/`abandoned` tasks was removed (the timer mutated canonical phases between tool calls); the TUI checklist widget still clears closed entries after `tasks.checklistClearDelay` (display-only, `packages/coding-agent/src/modes/interactive-mode.ts`).
 
 ## Limits & Caps
-- `init.list`: applies to a single op (`todoSchema`). The params object carries exactly one op.
+- `init.list`: applies to a single op (`checklistSchema`). The params object carries exactly one op.
 - `init.list[*].items`: schema-level `minItems: 1`.
 - Flat `init.items` and `append.items`: the shared schema allows any array length, but op-specific execution rejects missing/empty lists.
 - Renderer collapsed preview: `PREVIEW_LIMITS.COLLAPSED_ITEMS = 8` (`packages/coding-agent/src/tools/render-utils.ts`).
 - Execution-time repair: an omitted `op` is inferred only for the unambiguous payloads described above; the schema itself still requires `op`.
-- Auto-clear delay: `tasks.todoClearDelay` default `60` seconds; `< 0` disables auto-clear, `0` clears immediately. Display-only — applied by the TUI widget (`packages/coding-agent/src/modes/interactive-mode.ts`); the setting is inert at the session level.
+- Auto-clear delay: `tasks.checklistClearDelay` default `60` seconds; `< 0` disables auto-clear, `0` clears immediately. Display-only — applied by the TUI widget (`packages/coding-agent/src/modes/interactive-mode.ts`); the setting is inert at the session level.
 - Tool execution mode: `concurrency = "exclusive"`, `strict = true`, `loadMode = "discoverable"`.
 
 ## Errors
 - Ordinary bad op payloads are accumulated as human-readable strings in `errors`; the result is marked `isError: true` and the mutation is discarded — the returned and persisted state stay at the pre-call list.
-- Error strings come from the helpers in `packages/coding-agent/src/tools/todo.ts`, including:
+- Error strings come from the helpers in `packages/coding-agent/src/tools/checklist.ts`, including:
   - `Missing list for init operation`
   - `Missing task content`
   - `Duplicate phase "..." in init list` / `Duplicate task "..." in init list`
@@ -148,7 +148,7 @@ The same file also exposes non-tool helpers used by `/todo`:
   - `unblock requires a task or phase target`
   - `Missing items for append operation`
   - `Task "..." already exists`
-- A `todo` call carries a single op; any error in it discards every mutation the op made.
+- A `checklist` call carries a single op; any error in it discards every mutation the op made.
 - Runtime-level tool failure is handled outside the tool body: `agent-session` injects a hidden reminder and the event controller warns the user that visible progress may be stale.
 - Idempotency is op-specific:
   - `init` is a full replacement; replaying the same payload yields the same state.
@@ -162,8 +162,8 @@ The same file also exposes non-tool helpers used by `/todo`:
 - `normalizeInProgressTask(...)` runs once after the op, not mid-op. A single op (e.g. `init`) can build an intermediate invalid state and rely on final normalization.
 - `storage: "session"` means the session has a session-file backing; it does not mean this tool wrote a durable custom entry.
 - Reload persistence differs by path:
-  - plain `todo` calls survive in transcript tool-result details;
-  - `/todo` command edits additionally append `customType: "user_todo_edit"` entries and inject a visible-to-model `<system-reminder>` developer message describing the manual edit.
-- On session resume, `AgentSession.#syncTodoPhasesFromBranch()` strips `completed` and `abandoned` tasks before restoring the cached list. The `/todo` command works around that by reading the latest transcript/custom-entry state so historical done/dropped tasks still appear to the user.
-- Tool availability is gated by `todo.enabled`, and the registry excludes it when `includeYield` is enabled unless the session is prewalk-armed (`packages/coding-agent/src/tools/index.ts`).
-- Subagents do not inherit `todo`; `packages/coding-agent/src/task/executor.ts` also filters it from the active set as a parent-owned tool. Exception (both layers): prewalk-armed subagents keep it — the prewalk plan nudge and todo gate require the child to commit its own todo list before the hand-off.
+  - plain `checklist` calls survive in transcript tool-result details;
+  - `/checklist` command edits additionally append `customType: "user_checklist_edit"` entries and inject a visible-to-model `<system-reminder>` developer message describing the manual edit.
+- On session resume, `AgentSession.#syncChecklistPhasesFromBranch()` strips `completed` and `abandoned` tasks before restoring the cached list. The `/checklist` command works around that by reading the latest transcript/custom-entry state so historical done/dropped tasks still appear to the user.
+- Tool availability is gated by `checklist.enabled`, and the registry excludes it when `includeYield` is enabled unless the session is prewalk-armed (`packages/coding-agent/src/tools/index.ts`).
+- Subagents do not inherit `checklist`; `packages/coding-agent/src/task/executor.ts` also filters it from the active set as a parent-owned tool. Exception (both layers): prewalk-armed subagents keep it — the prewalk plan nudge and checklist gate require the child to commit its own checklist list before the hand-off.

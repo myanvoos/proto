@@ -13,7 +13,7 @@ import type {
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
 } from "../../task";
-import type { TodoPhase } from "../../tools/todo";
+import type { ChecklistPhase } from "../../tools/checklist";
 import type { RpcMessagesPage } from "./rpc-messages";
 
 export type RpcCommand =
@@ -27,7 +27,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_state" }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "get_available_commands" }
-	| { id?: string; type: "set_todos"; phases: TodoPhase[] }
+	| { id?: string; type: "set_checklist"; phases: ChecklistPhase[] }
 	| { id?: string; type: "set_host_tools"; tools: RpcHostToolDefinition[] }
 	| { id?: string; type: "set_host_uri_schemes"; schemes: RpcHostUriSchemeDefinition[] }
 	| { id?: string; type: "set_subagent_subscription"; level: RpcSubagentSubscriptionLevel }
@@ -75,7 +75,7 @@ export interface RpcSessionState {
 	tokensPerSecond: number | null;
 	messageCount: number;
 	queuedMessageCount: number;
-	todoPhases: TodoPhase[];
+	checklistPhases: ChecklistPhase[];
 
 	systemPrompt?: string[];
 	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
@@ -161,7 +161,13 @@ export type RpcResponse =
 			success: true;
 			data: { commands: RpcAvailableSlashCommand[] };
 	  }
-	| { id?: string; type: "response"; command: "set_todos"; success: true; data: { todoPhases: TodoPhase[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_checklist";
+			success: true;
+			data: { checklistPhases: ChecklistPhase[] };
+	  }
 	| { id?: string; type: "response"; command: "set_host_tools"; success: true; data: { toolNames: string[] } }
 	| { id?: string; type: "response"; command: "set_host_uri_schemes"; success: true; data: { schemes: string[] } }
 	| {

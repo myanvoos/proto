@@ -1,6 +1,6 @@
 # Prewalk
 
-Prewalk is a one-shot handoff from the active model to a faster or cheaper model after planning reaches implementation. It lets the starting model inspect the repository, create a todo list, and begin the change before the target model continues the session.
+Prewalk is a one-shot handoff from the active model to a faster or cheaper model after planning reaches implementation. It lets the starting model inspect the repository, create a checklist list, and begin the change before the target model continues the session.
 
 Prewalk is off by default. Its default target is the model assigned to the `@smol` role.
 
@@ -39,7 +39,7 @@ At startup, PROTO resolves the target with the normal model-role and model-match
 
 ## Handoff trigger
 
-An armed prewalk injects a planning nudge. When the `todo` tool is active, any successful `todo` call—including the read-only `view` operation—opens the handoff gate. PROTO then switches models after the first completed `edit` or `write` call.
+An armed prewalk injects a planning nudge. When the `checklist` tool is active, any successful `checklist` call—including the read-only `view` operation—opens the handoff gate. PROTO then switches models after the first completed `edit` or `write` call.
 
 Calls to other tools do not trigger the handoff. A read-only `xd://` device request routed through `write` also does not count; only device operations classified as workspace writes or execution count.
 

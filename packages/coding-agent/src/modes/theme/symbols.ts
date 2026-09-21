@@ -184,7 +184,7 @@ export type SymbolKey =
 	| "tool.mcp"
 	| "tool.job"
 	| "tool.launch"
-	| "tool.todo"
+	| "tool.checklist"
 	| "tool.memory"
 	| "tool.ask"
 	| "tool.resolve"
@@ -400,7 +400,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.mcp": "",
 	"tool.job": "",
 	"tool.launch": "",
-	"tool.todo": "",
+	"tool.checklist": "",
 	"tool.memory": "R",
 	"tool.ask": "?",
 	"tool.resolve": "✓",

@@ -312,7 +312,7 @@ export class MarketplaceManager {
 
 		const freshInstReg = await readInstalledPluginsRegistry(registryPath);
 		const newInstReg = addInstalledPlugin(freshInstReg, pluginId, installedEntry);
-		// TODO(install-atomicity): Persisting the registry before the runtime link/config means a later failure can
+		// CHECKLIST(install-atomicity): Persisting the registry before the runtime link/config means a later failure can
 		// leave an installed entry that the runtime cannot load. Commit these updates as one rollback-safe transaction.
 		await writeInstalledPluginsRegistry(registryPath, newInstReg);
 

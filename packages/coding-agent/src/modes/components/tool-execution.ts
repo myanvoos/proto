@@ -18,11 +18,11 @@ import type { RenderResultOptions } from "../../extensibility/custom-tools/types
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
+import { CHECKLIST_STRIKE_TOTAL_FRAMES, type ChecklistToolDetails } from "../../tools/checklist";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { isWaitingPollDetails } from "../../tools/fleet";
 import { replaceTabs, resolveImageOptions } from "../../tools/render-utils";
 import { type FirstResultViewportRepaint, type ToolRenderer, toolRenderers } from "../../tools/renderers";
-import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import type { XdevState } from "../../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, WidthAwareText } from "../../tui";
 import { convertImageToPng } from "../../utils/image-loading";
@@ -30,9 +30,9 @@ import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 
 const COMPOSER_INSET_COLS = 2;
 
-type DisplaceableToolName = "fleet" | "todo";
+type DisplaceableToolName = "fleet" | "checklist";
 
-function isTodoToolDetails(details: unknown): details is TodoToolDetails {
+function isChecklistToolDetails(details: unknown): details is ChecklistToolDetails {
 	return (
 		typeof details === "object" &&
 		details !== null &&
@@ -84,7 +84,7 @@ function displaceableToolName(
 ): DisplaceableToolName | undefined {
 	if (result.isError === true) return undefined;
 	if (toolName === "fleet" && isWaitingPollDetails(result.details)) return "fleet";
-	if (toolName === "todo" && !isPartial && isTodoToolDetails(result.details)) return "todo";
+	if (toolName === "checklist" && !isPartial && isChecklistToolDetails(result.details)) return "checklist";
 	return undefined;
 }
 
@@ -285,7 +285,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#spinnerFrame?: number;
 	#spinnerActive = false;
 
-	#todoStrikeInterval?: NodeJS.Timeout;
+	#checklistStrikeInterval?: NodeJS.Timeout;
 	#nativeScrollbackCommittedRows = 0;
 
 	#argsComplete = false;
@@ -393,7 +393,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.#argsComplete = true;
 		}
 		this.#updateSpinnerAnimation();
-		this.#updateTodoStrikeAnimation();
+		this.#updateChecklistStrikeAnimation();
 		this.#updateDisplay();
 		this.#resetDisplayForResultTopologyChange(
 			hadNoResult && firstResultRepaintShapePainted,
@@ -462,7 +462,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					: partialAnimation === true);
 		const isLivePartialTool =
 			this.#isPartial &&
-			this.#toolName !== "todo" &&
+			this.#toolName !== "checklist" &&
 			!isBackgroundAsyncRunning &&
 			(pendingCallConsumesSpinner || partialResultConsumesSpinner);
 		const needsSpinner = isLivePartialTool || this.#displaceableByToolName === "fleet";
@@ -477,7 +477,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.#spinnerActive = false;
 			unregisterSpinnerBlock(this);
 
-			if (!this.#todoStrikeInterval) {
+			if (!this.#checklistStrikeInterval) {
 				this.#spinnerFrame = undefined;
 				this.#renderState.spinnerFrame = undefined;
 			}
@@ -491,26 +491,26 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#ui.requestComponentRender(this);
 	}
 
-	#updateTodoStrikeAnimation(): void {
-		if (this.#toolName !== "todo" || this.#isPartial || this.#result?.isError) {
-			this.#stopTodoStrikeAnimation();
+	#updateChecklistStrikeAnimation(): void {
+		if (this.#toolName !== "checklist" || this.#isPartial || this.#result?.isError) {
+			this.#stopChecklistStrikeAnimation();
 			return;
 		}
 		const completedTasks = (this.#result?.details as { completedTasks?: unknown[] } | undefined)?.completedTasks;
 		if (!completedTasks || completedTasks.length === 0) {
-			this.#stopTodoStrikeAnimation();
+			this.#stopChecklistStrikeAnimation();
 			return;
 		}
 		// A row that has entered native scrollback can never be repainted, so the
 		// reveal must not (re)start over one.
-		if (this.#todoStrikeInterval || this.#nativeScrollbackCommittedRows > 0) return;
+		if (this.#checklistStrikeInterval || this.#nativeScrollbackCommittedRows > 0) return;
 
 		this.#spinnerFrame = 0;
 		this.#renderState.spinnerFrame = 0;
-		this.#todoStrikeInterval = setInterval(() => {
+		this.#checklistStrikeInterval = setInterval(() => {
 			const nextFrame = (this.#spinnerFrame ?? 0) + 1;
-			if (nextFrame > TODO_STRIKE_TOTAL_FRAMES) {
-				this.#stopTodoStrikeAnimation();
+			if (nextFrame > CHECKLIST_STRIKE_TOTAL_FRAMES) {
+				this.#stopChecklistStrikeAnimation();
 			} else {
 				this.#spinnerFrame = nextFrame;
 				this.#renderState.spinnerFrame = nextFrame;
@@ -521,10 +521,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		}, 65);
 	}
 
-	#stopTodoStrikeAnimation(): void {
-		if (this.#todoStrikeInterval) {
-			clearInterval(this.#todoStrikeInterval);
-			this.#todoStrikeInterval = undefined;
+	#stopChecklistStrikeAnimation(): void {
+		if (this.#checklistStrikeInterval) {
+			clearInterval(this.#checklistStrikeInterval);
+			this.#checklistStrikeInterval = undefined;
 		}
 		if (!this.#spinnerActive) {
 			this.#spinnerFrame = undefined;
@@ -541,9 +541,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// commit seam to this card and re-appends the whole transcript below it,
 		// once per 65ms tick. Freeze the reveal on the frame history recorded --
 		// clearing #spinnerFrame here would itself be one such rewrite.
-		if (this.#nativeScrollbackCommittedRows > 0 && this.#todoStrikeInterval) {
-			clearInterval(this.#todoStrikeInterval);
-			this.#todoStrikeInterval = undefined;
+		if (this.#nativeScrollbackCommittedRows > 0 && this.#checklistStrikeInterval) {
+			clearInterval(this.#checklistStrikeInterval);
+			this.#checklistStrikeInterval = undefined;
 		}
 	}
 
@@ -610,7 +610,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 	override dispose(): void {
 		this.stopAnimation();
-		this.#stopTodoStrikeAnimation();
+		this.#stopChecklistStrikeAnimation();
 		this.#onTranscriptBlockChange?.();
 		this.#onTranscriptBlockChange = undefined;
 		super.dispose();

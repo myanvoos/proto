@@ -65,7 +65,7 @@ export class ChatTranscriptBuilder {
 	#pendingReadUsageCallIds: string[] | undefined;
 	#lastAssistantUsage: Usage | undefined;
 	#waitingPoll: ToolExecutionComponent | null = null;
-	#todoSnapshot: ToolExecutionComponent | null = null;
+	#checklistSnapshot: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
 
@@ -110,7 +110,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingReadUsageCallIds = undefined;
 		this.#lastAssistantUsage = undefined;
 		this.#waitingPoll = null;
-		this.#todoSnapshot = null;
+		this.#checklistSnapshot = null;
 		this.#expandables = [];
 		this.container.dispose();
 		this.container.clear();
@@ -135,15 +135,15 @@ export class ChatTranscriptBuilder {
 		previous.seal();
 	}
 
-	#resolveTodoSnapshot(nextToolName?: string): void {
-		const previous = this.#todoSnapshot;
+	#resolveChecklistSnapshot(nextToolName?: string): void {
+		const previous = this.#checklistSnapshot;
 		if (!previous) return;
 		if (!previous.isDisplaceableBlock()) {
-			this.#todoSnapshot = null;
+			this.#checklistSnapshot = null;
 			return;
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
-			this.#todoSnapshot = null;
+			this.#checklistSnapshot = null;
 			if (this.container.isBlockUncommitted(previous)) {
 				this.container.disposeAndRemoveChild(previous);
 			}
@@ -151,7 +151,7 @@ export class ChatTranscriptBuilder {
 			return;
 		}
 		if (nextToolName !== undefined) return;
-		this.#todoSnapshot = null;
+		this.#checklistSnapshot = null;
 		previous.seal();
 	}
 
@@ -213,7 +213,7 @@ export class ChatTranscriptBuilder {
 			case "user":
 			case "developer": {
 				if (message.role === "user") this.#resolveWaitingPoll();
-				if (message.role === "user") this.#resolveTodoSnapshot();
+				if (message.role === "user") this.#resolveChecklistSnapshot();
 				const textContent = extractDisplayInputText(message);
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
@@ -413,12 +413,12 @@ export class ChatTranscriptBuilder {
 		if (message.toolName === "fleet" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
 			this.#waitingPoll = pending;
 		} else if (
-			message.toolName === "todo" &&
+			message.toolName === "checklist" &&
 			pending instanceof ToolExecutionComponent &&
-			pending.canBeDisplacedBy("todo")
+			pending.canBeDisplacedBy("checklist")
 		) {
-			this.#resolveTodoSnapshot("todo");
-			this.#todoSnapshot = pending;
+			this.#resolveChecklistSnapshot("checklist");
+			this.#checklistSnapshot = pending;
 		}
 	}
 	#appendCustomMessage(message: Extract<AgentMessage, { role: "custom" | "hookMessage" }>): void {

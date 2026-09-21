@@ -298,7 +298,7 @@ test("a reply crosses the seam while an earlier displaceable block remains live"
 	transcript.addChild(poll);
 	transcript.addChild(reply);
 	tui.addChild(transcript);
-	tui.addChild(new TrackedBlock(["todo", "editor"]));
+	tui.addChild(new TrackedBlock(["checklist", "editor"]));
 	tui.start({ deferInput: true });
 
 	const response = Array.from({ length: 12 }, (_value, index) => `stream-${index}`);
@@ -310,7 +310,7 @@ test("a reply crosses the seam while an earlier displaceable block remains live"
 	expect(reply.committedRows, "the active reply enters native history before it finalizes").toBeGreaterThan(0);
 	const lines = terminal.normalLines();
 	for (const row of response) expect(lines).toContain(row);
-	expect(lines.slice(-2)).toEqual(["todo", "editor"]);
+	expect(lines.slice(-2)).toEqual(["checklist", "editor"]);
 	tui.stop();
 });
 
@@ -322,7 +322,7 @@ test("a completed tall tool block remains in scrollback while the next reply str
 	const tool = new TrackedBlock([], false);
 	transcript.addChild(tool);
 	tui.addChild(transcript);
-	tui.addChild(new TrackedBlock(["todo", "editor"]));
+	tui.addChild(new TrackedBlock(["checklist", "editor"]));
 	tui.start({ deferInput: true });
 
 	const preview = Array.from({ length: 12 }, (_value, index) => `tool-preview-${index}`);
@@ -359,7 +359,7 @@ test("a completed tall tool block remains in scrollback while the next reply str
 		"the finished card is appended once rather than resprayed",
 	).toEqual([result[0]!]);
 	for (const row of response.slice(0, -1)) expect(lines).toContain(row);
-	expect(lines.slice(-2)).toEqual(["todo", "editor"]);
+	expect(lines.slice(-2)).toEqual(["checklist", "editor"]);
 	tui.stop();
 });
 

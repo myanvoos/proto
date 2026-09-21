@@ -20,10 +20,10 @@ import type {
 import { omitUndefinedArgs, piLsPath, piReadPath, piTimeout } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { MCPResourceReadResult } from "./mcp/types";
+import type { ChecklistPhase, ChecklistStatus } from "./tools/checklist";
 import { confineToWorkspace, resolveToCwd } from "./tools/path-utils";
-import type { TodoPhase, TodoStatus } from "./tools/todo";
 
-const CURSOR_TODO_PHASE = "Tasks";
+const CURPH = "Tasks";
 
 export interface CursorMcpResourceAdapter {
 	serverNames(): string[];
@@ -45,10 +45,10 @@ interface CursorExecBridgeOptions {
 
 	allowDirectFileMutation?: boolean;
 
-	setTodoPhases?: (phases: TodoPhase[]) => void;
-	getTodoPhases?: () => TodoPhase[];
+	setChecklistPhases?: (phases: ChecklistPhase[]) => void;
+	getChecklistPhases?: () => ChecklistPhase[];
 
-	persistTodoPhases?: (phases: TodoPhase[]) => void;
+	persistChecklistPhases?: (phases: ChecklistPhase[]) => void;
 
 	mcpResources?: CursorMcpResourceAdapter;
 }
@@ -228,24 +228,27 @@ function formatMcpToolErrorMessage(toolName: string, availableTools: string[]): 
 	return `MCP tool "${toolName}" not found. Available tools: ${list}`;
 }
 
-function formatTodoSyncSummary(phases: TodoPhase[]): string {
+function formatChecklistSyncSummary(phases: ChecklistPhase[]): string {
 	const tasks = phases.flatMap(phase => phase.tasks);
-	if (tasks.length === 0) return "No todos";
+	if (tasks.length === 0) return "No checklist items";
 	const done = tasks.filter(task => task.status === "completed").length;
 	return `${done}/${tasks.length} tasks completed`;
 }
 
-function buildTodoSyncResult(
+function buildChecklistSyncResult(
 	toolCallId: string,
-	phases: TodoPhase[] | undefined,
+	phases: ChecklistPhase[] | undefined,
 	error: string | null,
 ): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
-		toolName: "todo",
+		toolName: "checklist",
 		content: [
-			{ type: "text", text: error ?? (phases ? formatTodoSyncSummary(phases) : "Todo snapshot not mirrored") },
+			{
+				type: "text",
+				text: error ?? (phases ? formatChecklistSyncSummary(phases) : "Checklist snapshot not mirrored"),
+			},
 		],
 		details: phases ? { phases, storage: "session" } : undefined,
 		isError: error !== null,
@@ -474,28 +477,28 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 	}
 
 	todoSync(snapshot: CursorTodoSnapshot | null, toolCallId: string, error: string | null = null): ToolResultMessage {
-		const setPhases = this.options.setTodoPhases;
-		const existing = this.options.getTodoPhases?.() ?? [];
+		const setPhases = this.options.setChecklistPhases;
+		const existing = this.options.getChecklistPhases?.() ?? [];
 
-		let phases: TodoPhase[] | undefined;
+		let phases: ChecklistPhase[] | undefined;
 		if (snapshot && setPhases) {
 			const phaseByContent = new Map<string, string>();
 			for (const phase of existing) {
 				for (const task of phase.tasks) phaseByContent.set(task.content, phase.name);
 			}
 
-			const grouped = new Map<string, TodoPhase["tasks"]>();
-			for (const todo of snapshot.todos) {
-				const name = phaseByContent.get(todo.content) ?? CURSOR_TODO_PHASE;
+			const grouped = new Map<string, ChecklistPhase["tasks"]>();
+			for (const checklist of snapshot.todos) {
+				const name = phaseByContent.get(checklist.content) ?? CURPH;
 				let tasks = grouped.get(name);
 				if (!tasks) {
 					tasks = [];
 					grouped.set(name, tasks);
 				}
-				tasks.push({ content: todo.content, status: todo.status as TodoStatus });
+				tasks.push({ content: checklist.content, status: checklist.status as ChecklistStatus });
 			}
 
-			const next: TodoPhase[] = [];
+			const next: ChecklistPhase[] = [];
 			for (const phase of existing) {
 				const tasks = grouped.get(phase.name);
 				if (!tasks) continue;
@@ -504,16 +507,16 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 			}
 			for (const [name, tasks] of grouped) next.push({ name, tasks });
 			setPhases(next);
-			this.options.persistTodoPhases?.(next);
+			this.options.persistChecklistPhases?.(next);
 			phases = next;
 		}
 
-		const result = buildTodoSyncResult(toolCallId, phases, error);
+		const result = buildChecklistSyncResult(toolCallId, phases, error);
 
 		this.options.emitEvent?.({
 			type: "tool_execution_end",
 			toolCallId,
-			toolName: "todo",
+			toolName: "checklist",
 			result: { content: result.content, details: result.details },
 			isError: error !== null,
 		});

@@ -4,7 +4,7 @@ Wait for something to happen without burning turns. Each matching event is deliv
 
 Loop: `start` a monitor → do other work, or END THE TURN. The event restarts you. NEVER `bash` sleep/poll loops, retry spins, or repeated `logs` calls to wait for an external condition.
 
-While any monitor runs, incomplete-todo and goal-continuation nudges are suppressed — stopping to wait IS the expected move, not an abandoned turn.
+While any monitor runs, incomplete-checklist and goal-continuation nudges are suppressed — stopping to wait IS the expected move, not an abandoned turn.
 
 - stream (`every` omitted): one long-running process; one event per matching output line (stdout+stderr). Process exit stops the monitor and delivers an `exit` event.
 - poll (`every: N`): command re-runs every N seconds; one event per CHANGED matching output. Identical consecutive output is skipped — a stable value delivers once, not forever.

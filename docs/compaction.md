@@ -277,7 +277,7 @@ After summary generation (or hook-provided summary), agent session:
 1. Appends `CompactionEntry` with `appendCompaction(...)`.
 2. Rebuilds display context from the active leaf via `buildDisplaySessionContext()`.
 3. Replaces live agent messages with rebuilt context.
-4. Synchronizes active todo phases from the rebuilt branch and closes provider sessions whose history was rewritten.
+4. Synchronizes active checklist phases from the rebuilt branch and closes provider sessions whose history was rewritten.
 5. Emits `session_compact` hook event.
 
 ## Branch summarization pipeline

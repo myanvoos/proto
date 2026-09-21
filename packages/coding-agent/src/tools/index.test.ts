@@ -18,7 +18,7 @@ const EXPECTED_SCHEMA_HASHES = {
 	orchestrate_list: "32062bdb9024160d3b9816f12ba2f337808ee107449f8bf08d55b0026944f51e",
 	fleet: "305745a52cc3bc9a15d6cc362657dd7bfab856697fc4b8b399bdfe1ee9a38324",
 	monitor: "90846dcddd901e0af27df42aba20c3de3351b0b7cedd8d0284141fa1cf7907f0",
-	todo: "8463ccdf5b49fbcc8a2b6f82f3f79c9fcd936fdf24fd32f70935942db8a5e365",
+	checklist: "f1c164b6e734b737b003cd93a8e5ffb45a624486f5e0e8878032b94955892bff",
 	web_search: "0d4dfea8a9d98cfe1831327673162cdd4e1e3cd366f5d440c47c482b2495b67f",
 	manage_skill: "ba3244f6b123cda00f8f2eddad7b681a0f62ac7d3b25162169c21779502bc4c0",
 } as const satisfies Record<keyof typeof BUILTIN_TOOLS, string>;
@@ -40,7 +40,7 @@ function enabledToolSession(): ToolSession {
 		"goal.enabled": false,
 		"inspect_media.mode": "on",
 		"monitor.enabled": true,
-		"todo.enabled": true,
+		"checklist.enabled": true,
 		"tools.xdev": false,
 		"web_search.enabled": true,
 	});

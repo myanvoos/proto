@@ -436,7 +436,7 @@ Cursor's integration in `packages/ai` operates over an HTTP/2 Connect RPC transp
 - **Pure Argument Translation (`cursor-pi-args.ts`)**: Path and argument formatting functions (`piReadPath`, `piReadPathHasRange`, `piReadDisplayPath`, `piGrepSkip`, `piJoinPath`, `piLsPath`, `piEscapeRegexLiteral`, `piLimit`, `piTimeout`) are kept strictly independent of Protobuf imports so legacy shims can share them without bundling protobuf schemas into virtual registries.
 - **Empty Grep Pattern Rejection**: `grepArgs` frames with an empty `pattern` and non-empty `glob` are rejected up front (`emptyGrepPatternRejection`) with a descriptive error, forcing the model to retry or switch tools rather than triggering local tool failure after block persistence.
 - **Native Tools & `SoftToolRequirement` Interplay**:
-  - Native tools (`CURSOR_NATIVE_TOOL_NAMES`: `bash`, `read`, `write`, `delete`, `ls`, `grep`, `todo`) are omitted when building `requestContext` MCP tool definitions.
+  - Native tools (`CURSOR_NATIVE_TOOL_NAMES`: `bash`, `read`, `write`, `delete`, `ls`, `grep`, `checklist`) are omitted when building `requestContext` MCP tool definitions.
   - **Exception**: `write` is explicitly re-included in `buildMcpToolDefinitions` whenever pi-agent tools are advertised. `write` acts as the `xd://` transport for staged previews (e.g. `ast_edit`). Without `write`, staged previews cannot be resolved and `SoftToolRequirement('write')` escalation aborts the turn.
 - **`rootPromptMessagesJson` & Blob Store**:
   - `buildGrpcRequest` passes conversation history as SHA-256 binary blob IDs (`blobStore`) in `rootPromptMessagesJson` and `turns`.

@@ -1,4 +1,4 @@
 {{goalContext}}
-{{#if todoContext}}
-{{todoContext}}
+{{#if checklistContext}}
+{{checklistContext}}
 {{/if}}

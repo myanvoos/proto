@@ -14,7 +14,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"orchestrate_list",
 	"fleet",
 	"monitor",
-	"todo",
+	"checklist",
 	"web_search",
 	"manage_skill",
 ] as const;

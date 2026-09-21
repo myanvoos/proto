@@ -172,7 +172,7 @@ Lifecycle/state transition:
 4. for a different session, drain/detach advisor recorders
 5. `sessionManager.setSessionFile(sessionPath)`: update breadcrumb, load/migrate/blob-resolve/index entries, and adopt an existing recorded cwd
 6. sync session id, memory key, inherited provider-cache key, display context, and checkpoint/rewind state
-7. emit `session_switch`, replace messages, reset advisor session state, and sync todos
+7. emit `session_switch`, replace messages, reset advisor session state, and sync checklist items
 8. close provider sessions for a different session, or for a same-session reload whose replay changed
 9. restore the first available recorded model in role/default fallback order
 10. if the loaded branch ended with an interrupted tool flow, append a synthetic abort message and rebuild display context
@@ -193,10 +193,10 @@ Any failure after the snapshot restores the previous manager and runtime state, 
 - call `session.switchSession(...)`
 - if the resumed session's cwd differs from the previous one, re-point the process and cwd-derived caches at it (`applyCwdChange`)
 - clear chat container and rerender from session context (`renderInitialMessages`)
-- reload todos from new session artifacts
+- reload checklist items from new session artifacts
 - show `Resumed session` (or `Resumed session in <dir>` for a cross-project resume)
 
-Visible conversation/todo state is rebuilt from the new session file. Transcript component hydration starts with the newest window (soft limits: 256 messages and 2 MiB of estimated message data). An assistant and its associated tool results stay together; one oversized message or tool group may exceed those limits. Long autonomous turns can span multiple windows without waiting for another user message.
+Visible conversation/checklist state is rebuilt from the new session file. Transcript component hydration starts with the newest window (soft limits: 256 messages and 2 MiB of estimated message data). An assistant and its associated tool results stay together; one oversized message or tool group may exceed those limits. Long autonomous turns can span multiple windows without waiting for another user message.
 
 `Alt+PageUp` / `Alt+PageDown` / `Alt+End`, or `/history older|newer|latest`, navigate the display windows. Previous rendered components are disposed rather than retained as an ever-growing UI cache. The persisted entries and model context remain complete; this bounds eager UI hydration, not all session-storage memory.
 
@@ -215,7 +215,7 @@ Visible conversation/todo state is rebuilt from the new session file. Transcript
 - Uses `AgentSession.switchSession(...)` on an already-running session.
 - Messages/model/thinking/tier and session-scoped runtime state are rebuilt in place.
 - `session_before_switch`/`session_switch` hooks are emitted.
-- UI chat/todos are refreshed.
+- UI chat/checklist items are refreshed.
 - Interactive mode reconciliation runs through the registered session-switch reconciler.
 
 ## Failure and edge-case behavior

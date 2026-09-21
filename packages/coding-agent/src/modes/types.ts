@@ -61,18 +61,18 @@ export type SubmittedUserInput = {
 	started: boolean;
 };
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+export type ChecklistStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
-export type TodoItem = {
+export type ChecklistItem = {
 	content: string;
-	status: TodoStatus;
+	status: ChecklistStatus;
 	details?: string;
 	notes?: string[];
 };
 
-export type TodoPhase = {
+export type ChecklistPhase = {
 	name: string;
-	tasks: TodoItem[];
+	tasks: ChecklistItem[];
 };
 
 export interface InteractiveModeInitOptions {
@@ -95,7 +95,7 @@ export interface InteractiveModeContext {
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
-	todoContainer: Container;
+	checklistContainer: Container;
 	subagentContainer: Container;
 	sideQuestionContainer: Container;
 	errorBannerContainer: Container;
@@ -142,7 +142,7 @@ export interface InteractiveModeContext {
 	isBashMode: boolean;
 	toolOutputExpanded: boolean;
 	hideToolActivity: boolean;
-	todoExpanded: boolean;
+	checklistExpanded: boolean;
 	goalModeEnabled: boolean;
 	goalModePaused: boolean;
 	loopModeEnabled: boolean;
@@ -196,7 +196,7 @@ export interface InteractiveModeContext {
 	fileSlashCommands: Set<string>;
 	skillCommands: Map<string, Skill>;
 	oauthManualInput: OAuthManualInputManager;
-	todoPhases: TodoPhase[];
+	checklistPhases: ChecklistPhase[];
 
 	init(options?: InteractiveModeInitOptions): Promise<void>;
 	shutdown(): Promise<void>;
@@ -294,11 +294,11 @@ export interface InteractiveModeContext {
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
 	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
-	setTodos(todos: TodoItem[] | TodoPhase[]): void;
-	reloadTodos(): Promise<void>;
-	toggleTodoExpansion(): void;
+	setChecklist(items: ChecklistItem[] | ChecklistPhase[]): void;
+	reloadChecklist(): Promise<void>;
+	toggleChecklistExpansion(): void;
 
-	handleTodoCommand(args: string): Promise<void>;
+	handleChecklistCommand(args: string): Promise<void>;
 	handleAdvisorStatusCommand(): Promise<void>;
 	handleJobsCommand(): Promise<void>;
 	handleUsageCommand(reports?: UsageReport[] | null): Promise<void>;

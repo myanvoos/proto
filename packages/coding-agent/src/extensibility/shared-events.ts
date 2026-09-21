@@ -4,7 +4,7 @@ import type { AssistantRetryRecovery, ImageContent, TextContent, ToolResultMessa
 import type { Rule } from "../capability/rule";
 import type { Goal, GoalModeState } from "../goals/state";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session/session-entries";
-import type { TodoItem } from "../tools/todo";
+import type { ChecklistItem } from "../tools/checklist";
 
 export interface SessionStartEvent {
 	type: "session_start";
@@ -230,9 +230,9 @@ export interface TtsrTriggeredEvent {
 	rules: Rule[];
 }
 
-export interface TodoReminderEvent {
-	type: "todo_reminder";
-	todos: TodoItem[];
+export interface ChecklistReminderEvent {
+	type: "checklist_reminder";
+	items: ChecklistItem[];
 	attempt: number;
 	maxAttempts: number;
 }

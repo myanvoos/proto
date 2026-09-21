@@ -553,16 +553,16 @@ export class UiHelpers {
 
 			previous.seal();
 		};
-		let todoSnapshot: ToolExecutionComponent | null = null;
-		const resolveTodoSnapshot = (nextToolName?: string) => {
-			const previous = todoSnapshot;
+		let checklistSnapshot: ToolExecutionComponent | null = null;
+		const resolveChecklistSnapshot = (nextToolName?: string) => {
+			const previous = checklistSnapshot;
 			if (!previous) return;
 			if (!previous.isDisplaceableBlock()) {
-				todoSnapshot = null;
+				checklistSnapshot = null;
 				return;
 			}
 			if (previous.canBeDisplacedBy(nextToolName)) {
-				todoSnapshot = null;
+				checklistSnapshot = null;
 				if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
 					this.ctx.chatContainer.removeChild(previous);
 				}
@@ -570,7 +570,7 @@ export class UiHelpers {
 				return;
 			}
 			if (nextToolName !== undefined) return;
-			todoSnapshot = null;
+			checklistSnapshot = null;
 			previous.seal();
 		};
 		const messages = sessionContext.messages;
@@ -773,12 +773,12 @@ export class UiHelpers {
 					) {
 						waitingPoll = component;
 					} else if (
-						message.toolName === "todo" &&
+						message.toolName === "checklist" &&
 						component instanceof ToolExecutionComponent &&
-						component.canBeDisplacedBy("todo")
+						component.canBeDisplacedBy("checklist")
 					) {
-						resolveTodoSnapshot("todo");
-						todoSnapshot = component;
+						resolveChecklistSnapshot("checklist");
+						checklistSnapshot = component;
 					}
 				}
 			} else {
@@ -786,7 +786,7 @@ export class UiHelpers {
 				readGroup = null;
 
 				if (message.role === "user") resolveWaitingPoll();
-				if (message.role === "user") resolveTodoSnapshot();
+				if (message.role === "user") resolveChecklistSnapshot();
 
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 			}
@@ -797,11 +797,11 @@ export class UiHelpers {
 
 		resolveWaitingPoll();
 
-		if (todoSnapshot && this.ctx.viewSession.isStreaming) {
-			this.ctx.eventController?.inheritDisplaceableTodo(todoSnapshot);
-			todoSnapshot = null;
+		if (checklistSnapshot && this.ctx.viewSession.isStreaming) {
+			this.ctx.eventController?.inheritDisplaceableChecklist(checklistSnapshot);
+			checklistSnapshot = null;
 		} else {
-			resolveTodoSnapshot();
+			resolveChecklistSnapshot();
 		}
 
 		if (this.ctx.viewSession.isStreaming) {

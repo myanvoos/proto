@@ -114,7 +114,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	shell: ["Bash", "Eval & Runtimes"],
 	tools: [
 		"Available Tools",
-		"Todos",
+		"Checklist",
 		"Grep & Browser",
 		"Computer",
 		"GitHub",
@@ -376,7 +376,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Prewalk",
 			label: "Enable Prewalk",
 			description:
-				"Start on the active model, then switch to a fast/cheap model (default the 'smol' role) at the first edit/write after the plan nudge's todo list exists — the strong model plans, commits the todos, and starts the implementation before handing off. Overridable per session with --prewalk / --no-prewalk.",
+				"Start on the active model, then switch to a fast/cheap model (default the 'smol' role) at the first edit/write after the plan nudge's checklist exists — the strong model plans, commits it, and starts the implementation before handing off. Overridable per session with --prewalk / --no-prewalk.",
 		},
 	},
 	"advisor.syncBacklog": {
@@ -2651,36 +2651,36 @@ export const SETTINGS_SCHEMA = {
 				"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.",
 		},
 	},
-	"todo.enabled": {
+	"checklist.enabled": {
 		type: "boolean",
 		default: true,
 		ui: {
 			tab: "tools",
 			group: "Available Tools",
-			label: "Todos",
-			description: "Enable the todo tool for task tracking",
+			label: "Checklist",
+			description: "Enable the checklist tool for task tracking",
 		},
 	},
 
-	"todo.reminders": {
+	"checklist.reminders": {
 		type: "boolean",
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Todos",
-			label: "Todo Reminders",
-			description: "Remind the agent to complete todos before stopping",
+			group: "Checklist",
+			label: "Checklist Reminders",
+			description: "Remind the agent to complete checklist items before stopping",
 		},
 	},
 
-	"todo.remindersMax": {
+	"checklist.remindersMax": {
 		type: "number",
 		default: 3,
 		ui: {
 			tab: "tools",
-			group: "Todos",
-			label: "Todo Reminder Limit",
-			description: "Maximum number of todo reminders before giving up",
+			group: "Checklist",
+			label: "Checklist Reminder Limit",
+			description: "Maximum number of checklist reminders before giving up",
 			options: [
 				{ value: "1", label: "1 reminder" },
 				{ value: "2", label: "2 reminders" },
@@ -2690,23 +2690,23 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"todo.eager": {
+	"checklist.eager": {
 		type: "enum",
 		values: ["default", "preferred", "always"] as const,
 		default: "default",
 		ui: {
 			tab: "tools",
-			group: "Todos",
-			label: "Create Todos Automatically",
-			description: "How strongly to push automatic todo-list creation after the first message",
+			group: "Checklist",
+			label: "Create Checklist Automatically",
+			description: "How strongly to push automatic checklist creation after the first message",
 			options: [
-				{ value: "default", label: "Default", description: "Model decides; no automatic todo list" },
+				{ value: "default", label: "Default", description: "Model decides; no automatic checklist" },
 				{
 					value: "preferred",
 					label: "Preferred",
-					description: "Suggests a todo list on the first message (reminder, not forced)",
+					description: "Suggests a checklist on the first message (reminder, not forced)",
 				},
-				{ value: "always", label: "Always", description: "Forces a comprehensive todo list on the first message" },
+				{ value: "always", label: "Always", description: "Forces a comprehensive checklist on the first message" },
 			],
 		},
 	},
@@ -3208,7 +3208,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "tasks",
 			group: "Modes",
 			label: "Refresh Title on Replan",
-			description: "Refresh generated session titles after todo init replans unless the title was set by the user",
+			description:
+				"Refresh generated session titles after checklist init replans unless the title was set by the user",
 		},
 	},
 
@@ -3437,14 +3438,14 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"tasks.todoClearDelay": {
+	"tasks.checklistClearDelay": {
 		type: "number",
 		default: 60,
 		ui: {
 			tab: "tools",
-			group: "Todos",
-			label: "Todo Auto-Clear Delay",
-			description: "Delay before completed or abandoned todos are removed from the todo widget",
+			group: "Checklist",
+			label: "Checklist Auto-Clear Delay",
+			description: "Delay before completed or abandoned checklist items are removed from the checklist widget",
 			options: [
 				{ value: "0", label: "Instant" },
 				{ value: "60", label: "1 minute", description: "Default" },

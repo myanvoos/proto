@@ -2834,7 +2834,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				});
 			}
 
-			const isParentOwnedTool = (name: string): boolean => !prewalk && name === "todo";
+			const isParentOwnedTool = (name: string): boolean => !prewalk && name === "checklist";
 			const subagentToolNames = session.getEnabledToolNames();
 			const filteredSubagentTools = subagentToolNames.filter(name => !isParentOwnedTool(name));
 			if (filteredSubagentTools.length !== subagentToolNames.length) {

@@ -3,13 +3,13 @@ import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 import {
 	applyOpsToPhases,
-	getLatestTodoPhasesFromEntries,
-	type TodoPhase,
-	TodoTool,
-	USER_TODO_EDIT_CUSTOM_TYPE,
-} from "./todo";
+	type ChecklistPhase,
+	ChecklistTool,
+	getLatestChecklistPhasesFromEntries,
+	USER_CHECKLIST_EDIT_CUSTOM_TYPE,
+} from "./checklist";
 
-const phases: TodoPhase[] = [
+const phases: ChecklistPhase[] = [
 	{
 		name: "Phase",
 		tasks: [
@@ -19,18 +19,18 @@ const phases: TodoPhase[] = [
 	},
 ];
 
-function persistedTodoEntry(id: string, restoredPhases: unknown): SessionEntry {
+function persistedChecklistEntry(id: string, restoredPhases: unknown): SessionEntry {
 	return {
 		type: "custom",
 		id,
 		parentId: null,
 		timestamp: "2026-09-18T00:00:00.000Z",
-		customType: USER_TODO_EDIT_CUSTOM_TYPE,
+		customType: USER_CHECKLIST_EDIT_CUSTOM_TYPE,
 		data: { phases: restoredPhases },
 	};
 }
 
-function historicalTodoEntry(id: string, restoredPhases: unknown): SessionEntry {
+function historicalChecklistEntry(id: string, restoredPhases: unknown): SessionEntry {
 	return {
 		type: "message",
 		id,
@@ -39,8 +39,8 @@ function historicalTodoEntry(id: string, restoredPhases: unknown): SessionEntry 
 		message: {
 			role: "toolResult",
 			toolCallId: `call-${id}`,
-			toolName: "todo",
-			content: [{ type: "text", text: "todo updated" }],
+			toolName: "checklist",
+			content: [{ type: "text", text: "checklist updated" }],
 			details: { phases: restoredPhases },
 			isError: false,
 			timestamp: 0,
@@ -48,27 +48,27 @@ function historicalTodoEntry(id: string, restoredPhases: unknown): SessionEntry 
 	};
 }
 
-describe("todo restoration", () => {
+describe("checklist restoration", () => {
 	test("skips malformed directly persisted phases and restores the preceding valid state", () => {
-		const restored = getLatestTodoPhasesFromEntries([
-			persistedTodoEntry("valid", phases),
-			persistedTodoEntry("malformed", [{ name: "legacy phase" }]),
+		const restored = getLatestChecklistPhasesFromEntries([
+			persistedChecklistEntry("valid", phases),
+			persistedChecklistEntry("malformed", [{ name: "legacy phase" }]),
 		]);
 
 		expect(restored).toEqual(phases);
 	});
 
-	test("skips malformed todo result details and restores the preceding valid history state", () => {
-		const restored = getLatestTodoPhasesFromEntries([
-			historicalTodoEntry("valid", phases),
-			historicalTodoEntry("malformed", [{ name: "external phase", tasks: "not-an-array" }]),
+	test("skips malformed checklist result details and restores the preceding valid history state", () => {
+		const restored = getLatestChecklistPhasesFromEntries([
+			historicalChecklistEntry("valid", phases),
+			historicalChecklistEntry("malformed", [{ name: "external phase", tasks: "not-an-array" }]),
 		]);
 
 		expect(restored).toEqual(phases);
 	});
 });
 
-describe("todo state transitions", () => {
+describe("checklist state transitions", () => {
 	test("phase start selects its first pending task", () => {
 		const result = applyOpsToPhases(phases, [{ op: "start", phase: "Phase" }]);
 		expect(result.errors).toEqual([]);
@@ -87,7 +87,7 @@ describe("todo state transitions", () => {
 });
 
 test("done acknowledgement names only the completed and next tasks", async () => {
-	let current: TodoPhase[] = [
+	let current: ChecklistPhase[] = [
 		{
 			name: "Phase",
 			tasks: [
@@ -98,13 +98,13 @@ test("done acknowledgement names only the completed and next tasks", async () =>
 		},
 	];
 	const session = {
-		getTodoPhases: () => current,
-		setTodoPhases: (phases: TodoPhase[]) => {
+		getChecklistPhases: () => current,
+		setChecklistPhases: (phases: ChecklistPhase[]) => {
 			current = phases;
 		},
 		getSessionFile: () => undefined,
 	} as unknown as ToolSession;
-	const result = await new TodoTool(session).execute("call-1", { op: "done", task: "first task" });
+	const result = await new ChecklistTool(session).execute("call-1", { op: "done", task: "first task" });
 	const text = result.content.find(content => content.type === "text")?.text ?? "";
 
 	expect(text).toContain('done "first task"');

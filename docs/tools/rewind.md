@@ -48,7 +48,7 @@ The returned tool result is not the final rewind. `AgentSession` waits until `tu
 7. `#applyRewind()` first calls `sessionManager.branchWithSummary(checkpointEntryId, report, { startedAt })`, recording a `branch_summary` at the checkpoint branch point. If that entry no longer resolves, it logs a warning and branches from root instead.
 8. It appends a hidden persisted `rewind-report` custom message. Its content is rendered from `prompts/system/rewind-report.md`, which tells the next turn that the checkpoint completed, not to call `rewind` again, and includes the report; details contain `{ report, startedAt, rewoundAt }`.
 9. It sets `#lastCompletedRewind`, rebuilds the display/LLM session context from the new active branch, and replaces both the turn's active message array and `agent.state.messages`. The exploratory branch and successful rewind tool result are therefore absent from the next provider call.
-10. It resets advisor session state while preserving cost, synchronizes todo state from the new branch, and closes provider sessions whose history was rewritten.
+10. It resets advisor session state while preserving cost, synchronizes checklist state from the new branch, and closes provider sessions whose history was rewritten.
 11. Finally it clears `#checkpointState` and `#pendingRewindReport`. On later resume or tree navigation, the persisted retained report rehydrates `#lastCompletedRewind`.
 
 ## Modes / Variants
@@ -61,7 +61,7 @@ The returned tool result is not the final rewind. `AgentSession` waits until `tu
 - Session state (transcript, memory, jobs, checkpoints, registries)
   - Rebuilds active conversation history from the checkpoint branch plus the retained summary/report; it does not restore files or process state.
   - Adds a hidden custom message `rewind-report` carrying rendered recovery guidance and the report.
-  - Records `#lastCompletedRewind`, clears the active checkpoint and pending report, resets advisors, resynchronizes todo state, and closes provider sessions invalidated by the history rewrite.
+  - Records `#lastCompletedRewind`, clears the active checkpoint and pending report, resets advisors, resynchronizes checklist state, and closes provider sessions invalidated by the history rewrite.
   - Repositions the persisted session leaf to the checkpoint branch point and appends new session entries.
 - Filesystem
   - Persists the new `branch_summary` and `custom_message` entries into the session `.jsonl` file through normal `SessionManager` append persistence.

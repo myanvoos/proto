@@ -7,30 +7,30 @@ import { isRecord, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
-import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
+import checklistDescription from "../prompts/tools/checklist.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 import { framedBlock, renderStatusLine, renderTreeList } from "../tui";
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 import { formatErrorDetail, formatMoreItems, PREVIEW_LIMITS, pluralize, replaceTabs } from "./render-utils";
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+export type ChecklistStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
-export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view";
+export type ChecklistOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view";
 
-export interface TodoItem {
+export interface ChecklistItem {
 	content: string;
-	status: TodoStatus;
+	status: ChecklistStatus;
 
 	blocker?: string;
 }
 
-export interface TodoPhase {
+export interface ChecklistPhase {
 	name: string;
-	tasks: TodoItem[];
+	tasks: ChecklistItem[];
 }
 
-export function isTodoPhase(value: unknown): value is TodoPhase {
+export function isChecklistPhase(value: unknown): value is ChecklistPhase {
 	if (!isRecord(value) || typeof value.name !== "string" || !Array.isArray(value.tasks)) return false;
 	return value.tasks.every(
 		task =>
@@ -44,43 +44,46 @@ export function isTodoPhase(value: unknown): value is TodoPhase {
 	);
 }
 
-export interface TodoCompletionTransition {
+export interface ChecklistCompletionTransition {
 	phase: string;
 	content: string;
 }
 
-export interface TodoToolDetails {
-	op?: TodoOperation;
-	phases: TodoPhase[];
+export interface ChecklistToolDetails {
+	op?: ChecklistOperation;
+	phases: ChecklistPhase[];
 	storage: "session" | "memory";
-	completedTasks?: TodoCompletionTransition[];
+	completedTasks?: ChecklistCompletionTransition[];
 }
 
-const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"').describe(
-	"operation to apply",
-);
+const ChecklistOp = type(
+	'"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"',
+).describe("operation to apply");
 
 const InitListEntry = type({
 	phase: type("string").describe("phase name"),
 	items: type("string").describe("task content").array().atLeastLength(1).describe("tasks for this phase"),
 });
 
-const todoSchema = type({
-	op: TodoOp,
+const checklistSchema = type({
+	op: ChecklistOp,
 	"list?": InitListEntry.array().describe("phased task list (init)"),
 	"task?": type("string").describe("task content"),
 	"phase?": type("string").describe("phase name"),
 
 	"items?": type("string").describe("task content").array().describe("tasks for single-phase init or append"),
 	"reason?": type("string").describe("blocker note (block op)"),
-}).describe("apply a single todo operation");
+}).describe("apply a single checklist operation");
 
-type TodoParams = TodoSchema;
-type TodoSchema = typeof todoSchema.infer;
+type ChecklistParams = ChecklistSchema;
+type ChecklistSchema = typeof checklistSchema.infer;
 
-type TodoOpEntryValue = TodoParams;
+type ChecklistOpEntryValue = ChecklistParams;
 
-function findTaskByContent(phases: TodoPhase[], content: string): { task: TodoItem; phase: TodoPhase } | undefined {
+function findTaskByContent(
+	phases: ChecklistPhase[],
+	content: string,
+): { task: ChecklistItem; phase: ChecklistPhase } | undefined {
 	for (const phase of phases) {
 		const task = phase.tasks.find(t => t.content === content);
 		if (task) return { task, phase };
@@ -88,37 +91,40 @@ function findTaskByContent(phases: TodoPhase[], content: string): { task: TodoIt
 	return undefined;
 }
 
-function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefined {
+function findPhaseByName(phases: ChecklistPhase[], name: string): ChecklistPhase | undefined {
 	return phases.find(phase => phase.name === name);
 }
 
-function cloneTask(task: TodoItem): TodoItem {
+function cloneTask(task: ChecklistItem): ChecklistItem {
 	return task.blocker !== undefined
 		? { content: task.content, status: task.status, blocker: task.blocker }
 		: { content: task.content, status: task.status };
 }
 
-function clonePhases(phases: TodoPhase[]): TodoPhase[] {
+function clonePhases(phases: ChecklistPhase[]): ChecklistPhase[] {
 	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
 }
 
-function todoTransitionKey(phase: string, content: string): string {
+function checklistTransitionKey(phase: string, content: string): string {
 	return `${phase}\u0000${content}`;
 }
 
-function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): TodoCompletionTransition[] {
-	const previousStatuses = new Map<string, TodoStatus>();
+function getCompletionTransitions(
+	previous: ChecklistPhase[],
+	updated: ChecklistPhase[],
+): ChecklistCompletionTransition[] {
+	const previousStatuses = new Map<string, ChecklistStatus>();
 	for (const phase of previous) {
 		for (const task of phase.tasks) {
-			previousStatuses.set(todoTransitionKey(phase.name, task.content), task.status);
+			previousStatuses.set(checklistTransitionKey(phase.name, task.content), task.status);
 		}
 	}
 
-	const transitions: TodoCompletionTransition[] = [];
+	const transitions: ChecklistCompletionTransition[] = [];
 	for (const phase of updated) {
 		for (const task of phase.tasks) {
 			if (task.status !== "completed") continue;
-			const previousStatus = previousStatuses.get(todoTransitionKey(phase.name, task.content));
+			const previousStatus = previousStatuses.get(checklistTransitionKey(phase.name, task.content));
 			if (previousStatus && previousStatus !== "completed") {
 				transitions.push({ phase: phase.name, content: task.content });
 			}
@@ -127,7 +133,7 @@ function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): 
 	return transitions;
 }
 
-function normalizeInProgressTask(phases: TodoPhase[]): void {
+function normalizeInProgressTask(phases: ChecklistPhase[]): void {
 	const orderedTasks = phases.flatMap(phase => phase.tasks);
 	if (orderedTasks.length === 0) return;
 
@@ -144,8 +150,8 @@ function normalizeInProgressTask(phases: TodoPhase[]): void {
 	if (firstPendingTask) firstPendingTask.status = "in_progress";
 }
 
-export function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | undefined {
-	let firstPending: TodoItem | undefined;
+export function nextActionableTask(phases: readonly ChecklistPhase[]): ChecklistItem | undefined {
+	let firstPending: ChecklistItem | undefined;
 	for (const phase of phases) {
 		for (const task of phase.tasks) {
 			if (task.status === "in_progress") return task;
@@ -155,26 +161,26 @@ export function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | und
 	return firstPending;
 }
 
-export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
+export const USER_CHECKLIST_EDIT_CUSTOM_TYPE = "user_checklist_edit";
 
-export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
+export function getLatestChecklistPhasesFromEntries(entries: SessionEntry[]): ChecklistPhase[] {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
-		if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
+		if (entry.type === "custom" && entry.customType === USER_CHECKLIST_EDIT_CUSTOM_TYPE) {
 			const data = entry.data as { phases?: unknown } | undefined;
 			const phases = data?.phases;
-			if (Array.isArray(phases) && phases.every(isTodoPhase)) {
+			if (Array.isArray(phases) && phases.every(isChecklistPhase)) {
 				return clonePhases(phases);
 			}
 			continue;
 		}
 		if (entry.type !== "message") continue;
 		const message = entry.message as { role?: string; toolName?: string; details?: unknown; isError?: boolean };
-		if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) continue;
+		if (message.role !== "toolResult" || message.toolName !== "checklist" || message.isError) continue;
 
 		const details = message.details as { phases?: unknown } | undefined;
 		const phases = details?.phases;
-		if (!Array.isArray(phases) || !phases.every(isTodoPhase)) continue;
+		if (!Array.isArray(phases) || !phases.every(isChecklistPhase)) continue;
 
 		return clonePhases(phases);
 	}
@@ -182,57 +188,57 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 	return [];
 }
 
-const TODO_DESCRIPTION_MIN_OVERLAP = 6;
+const CHECKLIST_DESCRIPTION_MIN_OVERLAP = 6;
 
-function normalizeForTodoMatch(value: string): string {
+function normalizeForChecklistMatch(value: string): string {
 	return value
 		.toLowerCase()
 		.replace(/[^\p{L}\p{N}]+/gu, " ")
 		.trim();
 }
 
-export function todoMatchesAnyDescription(content: string, descriptions: readonly string[]): boolean {
-	const target = normalizeForTodoMatch(content);
+export function checklistMatchesAnyDescription(content: string, descriptions: readonly string[]): boolean {
+	const target = normalizeForChecklistMatch(content);
 	if (!target) return false;
 	for (const desc of descriptions) {
-		const candidate = normalizeForTodoMatch(desc);
+		const candidate = normalizeForChecklistMatch(desc);
 		if (!candidate) continue;
 		if (target === candidate) return true;
-		if (target.length >= TODO_DESCRIPTION_MIN_OVERLAP && candidate.includes(target)) return true;
-		if (candidate.length >= TODO_DESCRIPTION_MIN_OVERLAP && target.includes(candidate)) return true;
+		if (target.length >= CHECKLIST_DESCRIPTION_MIN_OVERLAP && candidate.includes(target)) return true;
+		if (candidate.length >= CHECKLIST_DESCRIPTION_MIN_OVERLAP && target.includes(candidate)) return true;
 	}
 	return false;
 }
 
-export function isClosedTodo<T extends { status: TodoStatus }>(task: T): boolean {
+export function isClosedChecklist<T extends { status: ChecklistStatus }>(task: T): boolean {
 	return task.status === "completed" || task.status === "abandoned";
 }
 
-function isActiveTodo<T extends { status: TodoStatus }>(task: T, isMatched: (task: T) => boolean): boolean {
+function isActiveChecklist<T extends { status: ChecklistStatus }>(task: T, isMatched: (task: T) => boolean): boolean {
 	return task.status === "in_progress" || (task.status === "pending" && isMatched(task));
 }
 
-interface CollapsedTodoSelection<T> {
+interface CollapsedChecklistSelection<T> {
 	items: T[];
 	summary: string;
 }
 
 const COLLAPSED_CLOSED_CONTEXT = 1;
 
-function selectWithinCap<T extends { status: TodoStatus }>(
+function selectWithinCap<T extends { status: ChecklistStatus }>(
 	base: T[],
 	isMatched: (task: T) => boolean,
 	cap: number,
-): CollapsedTodoSelection<T> {
+): CollapsedChecklistSelection<T> {
 	if (base.length <= cap) return { items: base, summary: "" };
 
-	const active = base.filter(task => isActiveTodo(task, isMatched));
+	const active = base.filter(task => isActiveChecklist(task, isMatched));
 
 	if (active.length > cap) {
 		const hiddenActive = active.length - cap;
 		return {
 			items: active.slice(0, cap),
-			summary: `… ${hiddenActive} more active ${pluralize("todo", hiddenActive)}`,
+			summary: `… ${hiddenActive} more active ${pluralize("checklist", hiddenActive)}`,
 		};
 	}
 
@@ -240,33 +246,33 @@ function selectWithinCap<T extends { status: TodoStatus }>(
 	const fill: T[] = [];
 	for (let i = firstActiveIdx; i < base.length && active.length + fill.length < cap; i++) {
 		const task = base[i];
-		if (isActiveTodo(task, isMatched)) continue;
+		if (isActiveChecklist(task, isMatched)) continue;
 		fill.push(task);
 	}
 	const items = [...active, ...fill];
 	const hidden = base.length - items.length;
-	return { items, summary: hidden > 0 ? formatMoreItems(hidden, "todo") : "" };
+	return { items, summary: hidden > 0 ? formatMoreItems(hidden, "checklist") : "" };
 }
 
-export function selectCollapsedTodos<T extends { status: TodoStatus }>(
+export function selectCollapsedChecklist<T extends { status: ChecklistStatus }>(
 	tasks: T[],
 	isMatched: (task: T) => boolean,
 	cap: number,
-): CollapsedTodoSelection<T> {
-	const open = tasks.filter(task => !isClosedTodo(task));
+): CollapsedChecklistSelection<T> {
+	const open = tasks.filter(task => !isClosedChecklist(task));
 
 	if (open.length === 0) return selectWithinCap(tasks, isMatched, cap);
 
-	const lead = tasks.filter(isClosedTodo).slice(-COLLAPSED_CLOSED_CONTEXT);
+	const lead = tasks.filter(isClosedChecklist).slice(-COLLAPSED_CLOSED_CONTEXT);
 	const selected = selectWithinCap(open, isMatched, cap);
 	return { items: [...lead, ...selected.items], summary: selected.summary };
 }
 
 function resolveTaskOrError(
-	phases: TodoPhase[],
+	phases: ChecklistPhase[],
 	content: string | undefined,
 	errors: string[],
-): { task: TodoItem; phase: TodoPhase } | undefined {
+): { task: ChecklistItem; phase: ChecklistPhase } | undefined {
 	if (!content) {
 		errors.push("Missing task content");
 		return undefined;
@@ -279,14 +285,18 @@ function resolveTaskOrError(
 			);
 		} else {
 			const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
-			const hint = totalTasks === 0 ? " (todo list is empty — was it replaced or not yet created?)" : "";
+			const hint = totalTasks === 0 ? " (checklist list is empty — was it replaced or not yet created?)" : "";
 			errors.push(`Task "${content}" not found${hint}`);
 		}
 	}
 	return hit;
 }
 
-function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, errors: string[]): TodoPhase | undefined {
+function resolvePhaseOrError(
+	phases: ChecklistPhase[],
+	name: string | undefined,
+	errors: string[],
+): ChecklistPhase | undefined {
 	if (!name) {
 		errors.push("Missing phase name");
 		return undefined;
@@ -296,7 +306,7 @@ function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, erro
 	return phase;
 }
 
-function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoItem[] {
+function getTaskTargets(phases: ChecklistPhase[], entry: ChecklistOpEntryValue, errors: string[]): ChecklistItem[] {
 	if (entry.task) {
 		const hit = resolveTaskOrError(phases, entry.task, errors);
 		return hit ? [hit.task] : [];
@@ -310,10 +320,10 @@ function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: st
 }
 
 function resolveStartTask(
-	phases: TodoPhase[],
-	entry: TodoOpEntryValue,
+	phases: ChecklistPhase[],
+	entry: ChecklistOpEntryValue,
 	errors: string[],
-): { task: TodoItem; phase: TodoPhase } | undefined {
+): { task: ChecklistItem; phase: ChecklistPhase } | undefined {
 	if (entry.task && entry.phase) {
 		errors.push("start accepts either task or phase, not both");
 		return undefined;
@@ -337,7 +347,7 @@ function resolveStartTask(
 
 const DEFAULT_INIT_PHASE = "Tasks";
 
-function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+function initPhases(entry: ChecklistOpEntryValue, errors: string[]): ChecklistPhase[] {
 	const list =
 		entry.list ??
 		(entry.items && entry.items.length > 0
@@ -364,11 +374,11 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	}
 	return list.map(listEntry => ({
 		name: listEntry.phase,
-		tasks: listEntry.items.map<TodoItem>(content => ({ content, status: "pending" })),
+		tasks: listEntry.items.map<ChecklistItem>(content => ({ content, status: "pending" })),
 	}));
 }
 
-function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+function appendItems(phases: ChecklistPhase[], entry: ChecklistOpEntryValue, errors: string[]): ChecklistPhase[] {
 	if (!entry.phase) {
 		errors.push("Missing phase name for append operation");
 		return phases;
@@ -401,7 +411,7 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	return phases;
 }
 
-function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+function removeTasks(phases: ChecklistPhase[], entry: ChecklistOpEntryValue, errors: string[]): ChecklistPhase[] {
 	if (entry.task) {
 		const hit = resolveTaskOrError(phases, entry.task, errors);
 		if (!hit) return phases;
@@ -420,7 +430,7 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	return phases;
 }
 
-function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+function applyEntry(phases: ChecklistPhase[], entry: ChecklistOpEntryValue, errors: string[]): ChecklistPhase[] {
 	switch (entry.op) {
 		case "init":
 			return initPhases(entry, errors);
@@ -493,7 +503,7 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 	}
 }
 
-function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: boolean): TodoOperation | undefined {
+function inferChecklistOp(args: Record<string, unknown>, hasExistingPhases: boolean): ChecklistOperation | undefined {
 	if (Array.isArray(args.list) && args.list.length > 0) return "init";
 	if (Array.isArray(args.items) && args.items.length > 0) {
 		if (typeof args.phase === "string" && args.phase) return "append";
@@ -502,20 +512,23 @@ function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: boolean):
 	return undefined;
 }
 
-function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntryValue | string {
-	const direct = todoSchema(raw);
+function resolveChecklistParams(raw: unknown, hasExistingPhases: boolean): ChecklistOpEntryValue | string {
+	const direct = checklistSchema(raw);
 	if (!(direct instanceof type.errors)) return direct;
 	if (isRecord(raw) && raw.op === undefined) {
-		const inferred = inferTodoOp(raw, hasExistingPhases);
+		const inferred = inferChecklistOp(raw, hasExistingPhases);
 		if (inferred) {
-			const repaired = todoSchema({ ...raw, op: inferred });
+			const repaired = checklistSchema({ ...raw, op: inferred });
 			if (!(repaired instanceof type.errors)) return repaired;
 		}
 	}
-	return `Invalid todo arguments: ${direct.summary}`;
+	return `Invalid checklist arguments: ${direct.summary}`;
 }
 
-function applyParams(phases: TodoPhase[], params: TodoOpEntryValue): { phases: TodoPhase[]; errors: string[] } {
+function applyParams(
+	phases: ChecklistPhase[],
+	params: ChecklistOpEntryValue,
+): { phases: ChecklistPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	const next = applyEntry(phases, params, errors);
 	normalizeInProgressTask(next);
@@ -523,9 +536,9 @@ function applyParams(phases: TodoPhase[], params: TodoOpEntryValue): { phases: T
 }
 
 export function applyOpsToPhases(
-	currentPhases: TodoPhase[],
-	ops: TodoOpEntryValue[],
-): { phases: TodoPhase[]; errors: string[] } {
+	currentPhases: ChecklistPhase[],
+	ops: ChecklistOpEntryValue[],
+): { phases: ChecklistPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	let next = clonePhases(currentPhases);
 	for (const op of ops) {
@@ -535,7 +548,7 @@ export function applyOpsToPhases(
 	return { phases: next, errors };
 }
 
-const STATUS_TO_MARKER: Record<TodoStatus, string> = {
+const STATUS_TO_MARKER: Record<ChecklistStatus, string> = {
 	pending: " ",
 	in_progress: "/",
 	completed: "x",
@@ -543,13 +556,13 @@ const STATUS_TO_MARKER: Record<TodoStatus, string> = {
 	blocked: "!",
 };
 
-export function resolveTodoMarkdownPath(input: string, cwd: string): string {
-	const raw = normalizePathLikeInput(input) || "TODO.md";
+export function resolveChecklistMarkdownPath(input: string, cwd: string): string {
+	const raw = normalizePathLikeInput(input) || "CHECKLIST.md";
 	return resolveToCwd(raw, cwd);
 }
 
-export function phasesToMarkdown(phases: TodoPhase[]): string {
-	if (phases.length === 0) return "# Todos\n";
+export function phasesToMarkdown(phases: ChecklistPhase[]): string {
+	if (phases.length === 0) return "# Checklist\n";
 	const out: string[] = [];
 	for (let i = 0; i < phases.length; i++) {
 		if (i > 0) out.push("");
@@ -562,7 +575,7 @@ export function phasesToMarkdown(phases: TodoPhase[]): string {
 	return `${out.join("\n")}\n`;
 }
 
-const MARKER_TO_STATUS: Record<string, TodoStatus> = {
+const MARKER_TO_STATUS: Record<string, ChecklistStatus> = {
 	" ": "pending",
 	"": "pending",
 	x: "completed",
@@ -574,10 +587,10 @@ const MARKER_TO_STATUS: Record<string, TodoStatus> = {
 	"!": "blocked",
 };
 
-export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: string[] } {
+export function markdownToPhases(md: string): { phases: ChecklistPhase[]; errors: string[] } {
 	const errors: string[] = [];
-	const phases: TodoPhase[] = [];
-	let currentPhase: TodoPhase | undefined;
+	const phases: ChecklistPhase[] = [];
+	let currentPhase: ChecklistPhase | undefined;
 
 	const lines = md.split(/\r?\n/);
 	for (let lineNum = 0; lineNum < lines.length; lineNum++) {
@@ -596,7 +609,7 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 		const taskMatch = /^[-*+]\s*\\?\[(.?)\\?\]\s+(.+?)\s*$/.exec(trimmed);
 		if (taskMatch) {
 			if (!currentPhase) {
-				currentPhase = { name: "Todos", tasks: [] };
+				currentPhase = { name: "Checklist", tasks: [] };
 				phases.push(currentPhase);
 			}
 			const marker = taskMatch[1];
@@ -623,17 +636,17 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 	return { phases, errors };
 }
 
-const TODO_VIEW_HINT = 'Use op:"view" to see exact task names.';
+const CHECKLIST_VIEW_HINT = 'Use op:"view" to see exact task names.';
 
-function quoteTodo(value: string): string {
+function quoteChecklist(value: string): string {
 	return JSON.stringify(value);
 }
 
-function isOpenTodo(task: TodoItem): boolean {
+function isOpenChecklist(task: ChecklistItem): boolean {
 	return task.status === "pending" || task.status === "in_progress";
 }
 
-function formatTodoTree(phases: TodoPhase[]): string[] {
+function formatChecklistTree(phases: ChecklistPhase[]): string[] {
 	const lines: string[] = [];
 	for (const phase of phases) {
 		lines.push(`  ${phase.name}:`);
@@ -655,31 +668,31 @@ function formatTodoTree(phases: TodoPhase[]): string[] {
 	return lines;
 }
 
-function phaseCompletionTransition(previous: TodoPhase[], updated: TodoPhase[]): TodoPhase | undefined {
+function phaseCompletionTransition(previous: ChecklistPhase[], updated: ChecklistPhase[]): ChecklistPhase | undefined {
 	for (const phase of updated) {
 		const before = previous.find(candidate => candidate.name === phase.name);
-		if (!before?.tasks.some(isOpenTodo)) continue;
-		if (phase.tasks.length > 0 && phase.tasks.every(isClosedTodo)) return phase;
+		if (!before?.tasks.some(isOpenChecklist)) continue;
+		if (phase.tasks.length > 0 && phase.tasks.every(isClosedChecklist)) return phase;
 	}
 	return undefined;
 }
 
-function phaseForTask(phases: TodoPhase[], task: TodoItem): TodoPhase | undefined {
+function phaseForTask(phases: ChecklistPhase[], task: ChecklistItem): ChecklistPhase | undefined {
 	return phases.find(phase => phase.tasks.includes(task));
 }
 
-function formatTodoTarget(entry: TodoOpEntryValue): string {
-	if (entry.task) return quoteTodo(entry.task);
-	if (entry.phase) return `phase ${quoteTodo(entry.phase)}`;
+function formatChecklistTarget(entry: ChecklistOpEntryValue): string {
+	if (entry.task) return quoteChecklist(entry.task);
+	if (entry.phase) return `phase ${quoteChecklist(entry.phase)}`;
 	return "all tasks";
 }
 
-function formatMutationAck(phases: TodoPhase[], previous: TodoPhase[], entry: TodoOpEntryValue): string {
+function formatMutationAck(phases: ChecklistPhase[], previous: ChecklistPhase[], entry: ChecklistOpEntryValue): string {
 	const tasks = phases.flatMap(phase => phase.tasks);
-	const closed = tasks.filter(isClosedTodo).length;
+	const closed = tasks.filter(isClosedChecklist).length;
 	const next = nextActionableTask(phases);
-	const target = formatTodoTarget(entry);
-	const verbs: Record<TodoOperation, string> = {
+	const target = formatChecklistTarget(entry);
+	const verbs: Record<ChecklistOperation, string> = {
 		init: "initialized",
 		start: "started",
 		done: "done",
@@ -708,39 +721,41 @@ function formatMutationAck(phases: TodoPhase[], previous: TodoPhase[], entry: To
 	const completedPhase = phaseCompletionTransition(previous, phases);
 	if (completedPhase) {
 		const nextPhase = next ? phaseForTask(phases, next)?.name : undefined;
-		summary += `; phase ${quoteTodo(completedPhase.name)} complete`;
-		if (nextPhase) summary += ` → next phase ${quoteTodo(nextPhase)}`;
+		summary += `; phase ${quoteChecklist(completedPhase.name)} complete`;
+		if (nextPhase) summary += ` → next phase ${quoteChecklist(nextPhase)}`;
 		return summary;
 	}
-	return `${summary} → in progress: ${next ? quoteTodo(next.content) : "none"}`;
+	return `${summary} → in progress: ${next ? quoteChecklist(next.content) : "none"}`;
 }
 
 function formatSummary(
-	phases: TodoPhase[],
+	phases: ChecklistPhase[],
 	errors: string[],
 	readOnly = false,
-	entry?: TodoOpEntryValue,
-	previous: TodoPhase[] = [],
+	entry?: ChecklistOpEntryValue,
+	previous: ChecklistPhase[] = [],
 ): string {
-	if (errors.length > 0) return `${errors.join("; ")}\n${TODO_VIEW_HINT}`;
+	if (errors.length > 0) return `${errors.join("; ")}\n${CHECKLIST_VIEW_HINT}`;
 
 	const tasks = phases.flatMap(phase => phase.tasks);
 	if (readOnly) {
-		if (tasks.length === 0) return "Todo list is empty.";
+		if (tasks.length === 0) return "Checklist list is empty.";
 		const remainingByPhase = phases
 			.map(phase => ({
 				name: phase.name,
-				tasks: phase.tasks.filter(isOpenTodo),
+				tasks: phase.tasks.filter(isOpenChecklist),
 			}))
 			.filter(phase => phase.tasks.length > 0);
 		const remainingTasks = remainingByPhase.flatMap(phase => phase.tasks);
-		let currentIdx = phases.findIndex(phase => phase.tasks.some(isOpenTodo));
+		let currentIdx = phases.findIndex(phase => phase.tasks.some(isOpenChecklist));
 		if (currentIdx === -1) currentIdx = phases.length - 1;
 		const current = phases[currentIdx];
-		const done = current.tasks.filter(isClosedTodo).length;
-		const closedAll = tasks.filter(isClosedTodo).length;
+		const done = current.tasks.filter(isClosedChecklist).length;
+		const closedAll = tasks.filter(isClosedChecklist).length;
 		const blockedAll = tasks.filter(task => task.status === "blocked").length;
-		const workedAhead = phases.some((phase, idx) => idx > currentIdx && phase.tasks.some(task => isClosedTodo(task)));
+		const workedAhead = phases.some(
+			(phase, idx) => idx > currentIdx && phase.tasks.some(task => isClosedChecklist(task)),
+		);
 		const lines = [
 			`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${
 				blockedAll > 0 ? `, ${blockedAll} blocked` : ""
@@ -751,32 +766,32 @@ function formatSummary(
 					: "."
 			}`,
 		];
-		lines.push(...formatTodoTree(phases));
+		lines.push(...formatChecklistTree(phases));
 		return lines.join("\n");
 	}
 
-	if (!entry) return tasks.length === 0 ? "Todo list cleared." : "Todo list updated.";
+	if (!entry) return tasks.length === 0 ? "Checklist list cleared." : "Checklist list updated.";
 	if (entry.op === "init") {
 		const next = nextActionableTask(phases);
 		return [
-			`Initialized ${tasks.length} tasks in ${phases.length} phases; in progress: ${next ? quoteTodo(next.content) : "none"}`,
-			...formatTodoTree(phases),
+			`Initialized ${tasks.length} tasks in ${phases.length} phases; in progress: ${next ? quoteChecklist(next.content) : "none"}`,
+			...formatChecklistTree(phases),
 		].join("\n");
 	}
 	return formatMutationAck(phases, previous, entry);
 }
-export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
-	readonly name = "todo";
-	readonly label = "Todo";
-	readonly summary = "Write a structured todo list to track progress within a session";
+export class ChecklistTool implements AgentTool<typeof checklistSchema, ChecklistToolDetails> {
+	readonly name = "checklist";
+	readonly label = "Checklist";
+	readonly summary = "Write a structured checklist list to track progress within a session";
 	readonly description: string;
-	readonly parameters = todoSchema;
+	readonly parameters = checklistSchema;
 	readonly concurrency = "exclusive";
 	readonly strict = true;
 
 	readonly lenientArgValidation = true;
 
-	readonly examples: readonly ToolExample<typeof todoSchema.infer>[] = [
+	readonly examples: readonly ToolExample<typeof checklistSchema.infer>[] = [
 		{
 			caption: "Initial setup (multi-phase)",
 			call: {
@@ -822,22 +837,22 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	];
 	readonly loadMode = "essential";
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(todoDescription);
+		this.description = prompt.render(checklistDescription);
 	}
 
 	async execute(
 		_toolCallId: string,
-		params: TodoParams,
+		params: ChecklistParams,
 		_signal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
+		_onUpdate?: AgentToolUpdateCallback<ChecklistToolDetails>,
 		_context?: AgentToolContext,
-	): Promise<AgentToolResult<TodoToolDetails>> {
-		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
+	): Promise<AgentToolResult<ChecklistToolDetails>> {
+		const previousPhases = clonePhases(this.session.getChecklistPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
-		const resolved = resolveTodoParams(params, previousPhases.length > 0);
+		const resolved = resolveChecklistParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
 			return {
-				content: [{ type: "text", text: `${resolved}\n${TODO_VIEW_HINT}` }],
+				content: [{ type: "text", text: `${resolved}\n${CHECKLIST_VIEW_HINT}` }],
 				details: { phases: previousPhases, storage },
 				isError: true,
 			};
@@ -853,8 +868,8 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const failed = errors.length > 0;
 		const effective = failed ? previousPhases : updated;
 		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
-		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
-		const details: TodoToolDetails = { op, phases: effective, storage };
+		if (!readOnly && !failed) this.session.setChecklistPhases?.(updated);
+		const details: ChecklistToolDetails = { op, phases: effective, storage };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {
@@ -865,21 +880,21 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	}
 }
 
-type TodoRenderOp = {
+type ChecklistRenderOp = {
 	op?: string;
 	task?: string;
 	phase?: string;
 	items?: string[];
 };
 
-type TodoRenderArgs = TodoRenderOp & {
-	ops?: TodoRenderOp[];
+type ChecklistRenderArgs = ChecklistRenderOp & {
+	ops?: ChecklistRenderOp[];
 };
 
-function normalizeTodoArg(args: TodoRenderArgs | undefined): TodoRenderOp[] {
+function normalizeChecklistArg(args: ChecklistRenderArgs | undefined): ChecklistRenderOp[] {
 	if (!args || typeof args !== "object") return [];
 	if (Array.isArray(args.ops)) {
-		return args.ops.filter((entry): entry is TodoRenderOp => !!entry && typeof entry === "object");
+		return args.ops.filter((entry): entry is ChecklistRenderOp => !!entry && typeof entry === "object");
 	}
 	return typeof args.op === "string" ? [args] : [];
 }
@@ -921,9 +936,9 @@ export function formatPhaseDisplayName(name: string, oneBasedIndex: number): str
 	return `${phaseRomanNumeral(oneBasedIndex)}. ${forDisplay(name)}`;
 }
 
-export const TODO_STRIKE_HOLD_FRAMES = 2;
-const TODO_STRIKE_REVEAL_FRAMES = 12;
-export const TODO_STRIKE_TOTAL_FRAMES = TODO_STRIKE_HOLD_FRAMES + TODO_STRIKE_REVEAL_FRAMES;
+export const CHECKLIST_STRIKE_HOLD_FRAMES = 2;
+const CHECKLIST_STRIKE_REVEAL_FRAMES = 12;
+export const CHECKLIST_STRIKE_TOTAL_FRAMES = CHECKLIST_STRIKE_HOLD_FRAMES + CHECKLIST_STRIKE_REVEAL_FRAMES;
 const EMPTY_COMPLETION_KEYS = new Set<string>();
 const STRIKE_START = "\x1b[9m";
 const STRIKE_END = "\x1b[29m";
@@ -941,15 +956,15 @@ function partialStrikethrough(text: string, visibleChars: number): string {
 
 function strikeRevealCount(text: string, frame: number | undefined): number | undefined {
 	if (frame === undefined) return undefined;
-	if (frame <= TODO_STRIKE_HOLD_FRAMES) return 0;
+	if (frame <= CHECKLIST_STRIKE_HOLD_FRAMES) return 0;
 	const chars = [...text];
 	if (chars.length === 0) return undefined;
-	const revealFrame = Math.min(frame - TODO_STRIKE_HOLD_FRAMES, TODO_STRIKE_REVEAL_FRAMES);
-	return Math.ceil((chars.length * revealFrame) / TODO_STRIKE_REVEAL_FRAMES);
+	const revealFrame = Math.min(frame - CHECKLIST_STRIKE_HOLD_FRAMES, CHECKLIST_STRIKE_REVEAL_FRAMES);
+	return Math.ceil((chars.length * revealFrame) / CHECKLIST_STRIKE_REVEAL_FRAMES);
 }
 
-function formatTodoLine(
-	item: TodoItem,
+function formatChecklistLine(
+	item: ChecklistItem,
 	uiTheme: Theme,
 	prefix: string,
 	completionKeys: Set<string>,
@@ -980,9 +995,9 @@ function formatTodoLine(
 }
 
 function computeTouchedPhases(
-	args: TodoRenderArgs | undefined,
-	phases: TodoPhase[],
-	completedTasks: TodoCompletionTransition[],
+	args: ChecklistRenderArgs | undefined,
+	phases: ChecklistPhase[],
+	completedTasks: ChecklistCompletionTransition[],
 ): Set<string> | null {
 	const touched = new Set<string>();
 
@@ -992,7 +1007,7 @@ function computeTouchedPhases(
 
 	for (const transition of completedTasks) touched.add(transition.phase);
 
-	const ops = normalizeTodoArg(args);
+	const ops = normalizeChecklistArg(args);
 	for (const op of ops) {
 		if (!op || typeof op !== "object") continue;
 		if (op.op === "init") {
@@ -1011,25 +1026,25 @@ function computeTouchedPhases(
 	return touched.size > 0 ? touched : null;
 }
 
-function formatPhaseProgress(phase: TodoPhase, uiTheme: Theme): string {
-	const done = phase.tasks.filter(isClosedTodo).length;
+function formatPhaseProgress(phase: ChecklistPhase, uiTheme: Theme): string {
+	const done = phase.tasks.filter(isClosedChecklist).length;
 	return uiTheme.fg("dim", `  ${done}/${phase.tasks.length}`);
 }
 
-function formatPhaseSummary(phase: TodoPhase, oneBasedIndex: number, uiTheme: Theme): string {
+function formatPhaseSummary(phase: ChecklistPhase, oneBasedIndex: number, uiTheme: Theme): string {
 	const name = uiTheme.fg("dim", chalk.bold(formatPhaseDisplayName(phase.name, oneBasedIndex)));
 	return `${name}${formatPhaseProgress(phase, uiTheme)}`;
 }
 
-let activeTodoDescriptionsProvider: () => readonly string[] = () => [];
+let activeChecklistDescriptionsProvider: () => readonly string[] = () => [];
 
-export function setActiveTodoDescriptionsProvider(provider: () => readonly string[]): void {
-	activeTodoDescriptionsProvider = provider;
+export function setActiveChecklistDescriptionsProvider(provider: () => readonly string[]): void {
+	activeChecklistDescriptionsProvider = provider;
 }
 
-export const todoToolRenderer = {
-	renderCall(args: TodoRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
-		const opsList = normalizeTodoArg(args);
+export const checklistToolRenderer = {
+	renderCall(args: ChecklistRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
+		const opsList = normalizeChecklistArg(args);
 
 		const ops =
 			opsList.length === 0
@@ -1045,21 +1060,22 @@ export const todoToolRenderer = {
 					});
 
 		const header = renderStatusLine(
-			{ icon: "pending", spinnerFrame: options?.spinnerFrame, title: "Todo", meta: ops },
+			{ icon: "pending", spinnerFrame: options?.spinnerFrame, title: "Checklist", meta: ops },
 			uiTheme,
 		);
 		return new Text(header, 0, 0);
 	},
 
 	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: TodoToolDetails; isError?: boolean },
+		result: { content: Array<{ type: string; text?: string }>; details?: ChecklistToolDetails; isError?: boolean },
 		options: RenderResultOptions,
 		uiTheme: Theme,
-		args?: TodoRenderArgs,
+		args?: ChecklistRenderArgs,
 	): Component {
 		if (result.isError) {
-			const errorText = result.content?.find(content => content.type === "text")?.text ?? "Todo operation failed";
-			const header = renderStatusLine({ icon: "error", title: "Todo" }, uiTheme);
+			const errorText =
+				result.content?.find(content => content.type === "text")?.text ?? "Checklist operation failed";
+			const header = renderStatusLine({ icon: "error", title: "Checklist" }, uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header,
 				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],
@@ -1083,14 +1099,16 @@ export const todoToolRenderer = {
 		const allTasks = phases.flatMap(phase => phase.tasks);
 		const header = renderStatusLine(
 			{
-				iconOverride: uiTheme.styledSymbol("tool.todo", "accent"),
-				title: "Todo",
+				iconOverride: uiTheme.styledSymbol("tool.checklist", "accent"),
+				title: "Checklist",
 				meta: [`${allTasks.length} tasks`],
 			},
 			uiTheme,
 		);
 		if (allTasks.length === 0) {
-			const fallback = forDisplay(result.content?.find(content => content.type === "text")?.text ?? "No todos");
+			const fallback = forDisplay(
+				result.content?.find(content => content.type === "text")?.text ?? "No checklist items",
+			);
 			return new Text(`${header}\n  ${uiTheme.fg("dim", fallback)}`, 0, 0);
 		}
 
@@ -1101,9 +1119,9 @@ export const todoToolRenderer = {
 
 			const touched = expanded || !multiPhase ? null : computeTouchedPhases(args, phases, completedTasks);
 
-			const activeDescs = expanded ? [] : activeTodoDescriptionsProvider();
-			const isMatched = (task: TodoItem): boolean =>
-				activeDescs.length > 0 && todoMatchesAnyDescription(task.content, activeDescs);
+			const activeDescs = expanded ? [] : activeChecklistDescriptionsProvider();
+			const isMatched = (task: ChecklistItem): boolean =>
+				activeDescs.length > 0 && checklistMatchesAnyDescription(task.content, activeDescs);
 			const bodyLines: string[] = [];
 			for (let p = 0; p < phases.length; p++) {
 				const phase = phases[p];
@@ -1122,20 +1140,28 @@ export const todoToolRenderer = {
 							{
 								items: phase.tasks,
 								expanded,
-								itemType: "todo",
-								renderItem: todo => formatTodoLine(todo, uiTheme, "", completionKeys, spinnerFrame),
+								itemType: "checklist",
+								renderItem: checklist =>
+									formatChecklistLine(checklist, uiTheme, "", completionKeys, spinnerFrame),
 							},
 							uiTheme,
 						)
 					: (() => {
-							const selection = selectCollapsedTodos(phase.tasks, isMatched, PREVIEW_LIMITS.COLLAPSED_ITEMS);
+							const selection = selectCollapsedChecklist(phase.tasks, isMatched, PREVIEW_LIMITS.COLLAPSED_ITEMS);
 							return renderTreeList(
 								{
 									items: selection.items,
-									itemType: "todo",
+									itemType: "checklist",
 									trailingSummary: selection.summary,
-									renderItem: todo =>
-										formatTodoLine(todo, uiTheme, "", completionKeys, spinnerFrame, isMatched(todo)),
+									renderItem: checklist =>
+										formatChecklistLine(
+											checklist,
+											uiTheme,
+											"",
+											completionKeys,
+											spinnerFrame,
+											isMatched(checklist),
+										),
 								},
 								uiTheme,
 							);

@@ -83,7 +83,7 @@ Flow:
    - with summary: `branchWithSummary(newLeafId, ...)`
    - without summary and `newLeafId === null`: `resetLeaf()`
    - otherwise: `branch(newLeafId)`
-7. Rebuild agent context from the new leaf, reset branch-scoped todo/advisor/checkpoint state, close Codex provider sessions whose history was rewritten, and emit `session_tree`.
+7. Rebuild agent context from the new leaf, reset branch-scoped checklist/advisor/checkpoint state, close Codex provider sessions whose history was rewritten, and emit `session_tree`.
 
 Important: summary entries are attached at the **new navigation position**, not on the abandoned branch tail.
 

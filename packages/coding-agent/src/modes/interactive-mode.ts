@@ -76,15 +76,15 @@ import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-pro
 import { formatWorkerId, workerTypeBadge } from "../task/display";
 import { labelEchoesHandle } from "../task/label";
 import { tinyTitleClient } from "../tiny/title-client";
+import {
+	checklistMatchesAnyDescription,
+	formatPhaseDisplayName,
+	isClosedChecklist,
+	selectCollapsedChecklist,
+	setActiveChecklistDescriptionsProvider,
+} from "../tools/checklist";
 import { formatMoreItems, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
-import {
-	formatPhaseDisplayName,
-	isClosedTodo,
-	selectCollapsedTodos,
-	setActiveTodoDescriptionsProvider,
-	todoMatchesAnyDescription,
-} from "../tools/todo";
 import { renderTreeList } from "../tui/tree-list";
 import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import type { EventBus } from "../utils/event-bus";
@@ -112,6 +112,7 @@ import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/
 import { TranscriptContainer } from "./components/transcript-container";
 import { buildComposerShortcuts, COMPOSER_PLACEHOLDER, Composer, ComposerShortcutsBar } from "./composer";
 import { writeComposerWelcomeCache } from "./composer-cache";
+import { ChecklistCommandController } from "./controllers/checklist-command-controller";
 import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
 import { ExtensionUiController } from "./controllers/extension-ui-controller";
@@ -123,7 +124,6 @@ import { SessionFocusController } from "./controllers/session-focus-controller";
 import { SideAgentController } from "./controllers/side-agent-controller";
 import { SideQuestionController } from "./controllers/side-question-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
-import { TodoCommandController } from "./controllers/todo-command-controller";
 import { imageReferenceHyperlink, materializeImageReferenceLinks } from "./image-references";
 import {
 	consumeLoopLimitIteration,
@@ -157,6 +157,8 @@ import {
 	theme,
 } from "./theme/theme";
 import type {
+	ChecklistItem,
+	ChecklistPhase,
 	CompactionQueuedMessage,
 	InteractiveModeContext,
 	InteractiveModeInitOptions,
@@ -164,8 +166,6 @@ import type {
 	RenderSessionContextOptions,
 	SideCommandMode,
 	SubmittedUserInput,
-	TodoItem,
-	TodoPhase,
 } from "./types";
 import { resolvePreservedLiveToolCallIds, UiHelpers } from "./utils/ui-helpers";
 
@@ -348,7 +348,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
-	todoContainer: Container;
+	checklistContainer: Container;
 	subagentContainer: Container;
 	sideQuestionContainer: Container;
 	errorBannerContainer: Container;
@@ -369,7 +369,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	isBashMode = false;
 	toolOutputExpanded = false;
 	hideToolActivity = false;
-	todoExpanded = false;
+	checklistExpanded = false;
 	goalModeEnabled = false;
 	goalModePaused = false;
 	loopModeEnabled = false;
@@ -377,11 +377,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	loopPrompt: string | undefined = undefined;
 	loopLimit: LoopLimitRuntime | undefined = undefined;
 	#loopAutoSubmitTimer: NodeJS.Timeout | undefined;
-	#todoAutoClearTimer: NodeJS.Timeout | undefined;
+	#checklistAutoClearTimer: NodeJS.Timeout | undefined;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	#nextAppearanceRequestToken = 1;
 	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
-	todoPhases: TodoPhase[] = [];
+	checklistPhases: ChecklistPhase[] = [];
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
 
@@ -485,7 +485,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #sideQuestionController: SideQuestionController;
 	readonly #sideAgentController: SideAgentController;
 	readonly #commandController: CommandController;
-	readonly #todoCommandController: TodoCommandController;
+	readonly #checklistCommandController: ChecklistCommandController;
 	readonly #eventController: EventController;
 	get eventController(): EventController {
 		return this.#eventController;
@@ -569,7 +569,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#sessionSwitchReconciler = (): Promise<void> => this.#reconcileModeFromSession({ preserveActiveGoal: true });
 	#observerUiSyncTimer?: NodeJS.Timeout;
-	#observerUiSyncNeedsTodoReconcile = false;
+	#observerUiSyncNeedsChecklistReconcile = false;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentRegistry;
 	#mcpStatusOrder: string[] = [];
@@ -653,7 +653,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		};
 		this.pendingMessagesContainer = new AnchoredLiveContainer();
 		this.statusContainer = new AnchoredLiveContainer();
-		this.todoContainer = new AnchoredLiveContainer();
+		this.checklistContainer = new AnchoredLiveContainer();
 		this.subagentContainer = new AnchoredLiveContainer();
 		this.sideQuestionContainer = new AnchoredLiveContainer();
 		this.errorBannerContainer = new AnchoredLiveContainer();
@@ -731,7 +731,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#extensionUiController = new ExtensionUiController(this);
 		this.#eventController = new EventController(this);
 		this.#commandController = new CommandController(this);
-		this.#todoCommandController = new TodoCommandController(this);
+		this.#checklistCommandController = new ChecklistCommandController(this);
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
@@ -866,7 +866,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			[
 				this.chatContainer,
 				this.pendingMessagesContainer,
-				this.todoContainer,
+				this.checklistContainer,
 				this.subagentContainer,
 				this.sideQuestionContainer,
 				this.errorBannerContainer,
@@ -893,9 +893,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#scheduleObserverUiSync(kind);
 		});
 
-		setActiveTodoDescriptionsProvider(() => this.#getActiveSubagentDescriptions());
+		setActiveChecklistDescriptionsProvider(() => this.#getActiveSubagentDescriptions());
 
-		await this.#loadTodoList();
+		await this.#loadChecklistList();
 
 		if (process.platform === "darwin" && TERMINAL.id === "wezterm" && !isInsideTerminalMultiplexer()) {
 			this.#eventBusUnsubscribers.push(startMacOSAppearanceReprobeFallback(this.ui.terminal));
@@ -1642,21 +1642,25 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 
-	#formatTodoLine(todo: TodoItem, prefix: string, matched: boolean): string {
+	#formatChecklistLine(checklist: ChecklistItem, prefix: string, matched: boolean): string {
 		const checkbox = theme.checkbox;
-		const marker = formatHudNoteMarker(todo.notes?.length ?? 0);
-		switch (todo.status) {
+		const marker = formatHudNoteMarker(checklist.notes?.length ?? 0);
+		switch (checklist.status) {
 			case "completed":
-				return theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(todo.content)}`) + marker;
+				return (
+					theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(checklist.content)}`) + marker
+				);
 			case "in_progress":
-				return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
+				return theme.fg("accent", `${prefix}${checkbox.unchecked} ${checklist.content}`) + marker;
 			case "abandoned":
-				return theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`) + marker;
+				return (
+					theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(checklist.content)}`) + marker
+				);
 			case "blocked":
-				return theme.fg("warning", `${prefix}${checkbox.unchecked} ${todo.content} (blocked)`) + marker;
+				return theme.fg("warning", `${prefix}${checkbox.unchecked} ${checklist.content} (blocked)`) + marker;
 			default:
-				if (matched) return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
-				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
+				if (matched) return theme.fg("accent", `${prefix}${checkbox.unchecked} ${checklist.content}`) + marker;
+				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${checklist.content}`) + marker;
 		}
 	}
 
@@ -1672,7 +1676,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return out;
 	}
 
-	#reconcileTodosWithSubagents(): void {
+	#reconcileChecklistWithSubagents(): void {
 		const completedDescs: string[] = [];
 		for (const session of this.#observerRegistry.getSessions()) {
 			if (session.kind !== "subagent") continue;
@@ -1684,56 +1688,57 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (completedDescs.length === 0) return;
 
 		let mutated = false;
-		const next: TodoPhase[] = this.todoPhases.map(phase => ({
+		const next: ChecklistPhase[] = this.checklistPhases.map(phase => ({
 			name: phase.name,
 			tasks: phase.tasks.map(task => {
 				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") {
 					return task;
 				}
-				if (!todoMatchesAnyDescription(task.content, completedDescs)) return task;
+				if (!checklistMatchesAnyDescription(task.content, completedDescs)) return task;
 				mutated = true;
 
 				return { content: task.content, status: "completed" as const };
 			}),
 		}));
 		if (!mutated) return;
-		this.session.setTodoPhases(next);
-		this.setTodos(next);
+		this.session.setChecklistPhases(next);
+		this.setChecklist(next);
 	}
 
-	#cancelTodoAutoClearTimer(): void {
-		if (!this.#todoAutoClearTimer) return;
-		clearTimeout(this.#todoAutoClearTimer);
-		this.#todoAutoClearTimer = undefined;
+	#cancelChecklistAutoClearTimer(): void {
+		if (!this.#checklistAutoClearTimer) return;
+		clearTimeout(this.#checklistAutoClearTimer);
+		this.#checklistAutoClearTimer = undefined;
 	}
 
-	#isTodoListSettled(phases: TodoPhase[]): boolean {
+	#isChecklistListSettled(phases: ChecklistPhase[]): boolean {
 		let seenTask = false;
 		for (const phase of phases) {
 			for (const task of phase.tasks) {
-				if (!isClosedTodo(task)) return false;
+				if (!isClosedChecklist(task)) return false;
 				seenTask = true;
 			}
 		}
 		return seenTask;
 	}
 
-	#syncTodoAutoClearTimer(): void {
-		this.#cancelTodoAutoClearTimer();
-		const delaySeconds = this.settings.get("tasks.todoClearDelay");
-		if (!Number.isFinite(delaySeconds) || delaySeconds < 0 || !this.#isTodoListSettled(this.todoPhases)) return;
+	#syncChecklistAutoClearTimer(): void {
+		this.#cancelChecklistAutoClearTimer();
+		const delaySeconds = this.settings.get("tasks.checklistClearDelay");
+		if (!Number.isFinite(delaySeconds) || delaySeconds < 0 || !this.#isChecklistListSettled(this.checklistPhases))
+			return;
 		if (delaySeconds === 0) {
-			this.todoPhases = [];
+			this.checklistPhases = [];
 			return;
 		}
 
-		this.#todoAutoClearTimer = setTimeout(() => {
-			this.#todoAutoClearTimer = undefined;
-			this.todoPhases = [];
-			this.#renderTodoList();
+		this.#checklistAutoClearTimer = setTimeout(() => {
+			this.#checklistAutoClearTimer = undefined;
+			this.checklistPhases = [];
+			this.#renderChecklistList();
 			this.ui.requestRender();
 		}, delaySeconds * 1000);
-		this.#todoAutoClearTimer.unref?.();
+		this.#checklistAutoClearTimer.unref?.();
 	}
 
 	showModelCycleTrack(track: string): void {
@@ -1765,7 +1770,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#modelCycleClearTimer.unref?.();
 	}
 
-	#getActivePhase(phases: TodoPhase[]): TodoPhase | undefined {
+	#getActivePhase(phases: ChecklistPhase[]): ChecklistPhase | undefined {
 		const nonEmpty = phases.filter(phase => phase.tasks.length > 0);
 		const active = nonEmpty.find(phase =>
 			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
@@ -1775,7 +1780,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
 		if (kind !== "progress") {
-			this.#observerUiSyncNeedsTodoReconcile = true;
+			this.#observerUiSyncNeedsChecklistReconcile = true;
 		}
 		if (this.#observerUiSyncTimer) return;
 		this.#observerUiSyncTimer = setTimeout(() => {
@@ -1787,12 +1792,12 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#flushObserverUiSync(): void {
 		this.syncRunningSubagentBadge({ requestRender: false });
-		if (this.#observerUiSyncNeedsTodoReconcile) {
-			this.#observerUiSyncNeedsTodoReconcile = false;
-			this.#reconcileTodosWithSubagents();
+		if (this.#observerUiSyncNeedsChecklistReconcile) {
+			this.#observerUiSyncNeedsChecklistReconcile = false;
+			this.#reconcileChecklistWithSubagents();
 		}
-		this.#syncTodoAutoClearTimer();
-		this.#renderTodoList();
+		this.#syncChecklistAutoClearTimer();
+		this.#renderChecklistList();
 		this.#renderSubagentList();
 		this.ui.requestRender();
 	}
@@ -1802,14 +1807,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			clearTimeout(this.#observerUiSyncTimer);
 			this.#observerUiSyncTimer = undefined;
 		}
-		this.#observerUiSyncNeedsTodoReconcile = false;
+		this.#observerUiSyncNeedsChecklistReconcile = false;
 	}
 
-	#renderTodoList(): void {
-		this.todoContainer.clear();
-		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
+	#renderChecklistList(): void {
+		this.checklistContainer.clear();
+		const phases = this.checklistPhases.filter(phase => phase.tasks.length > 0);
 		if (phases.length === 0) return;
-		const expanded = this.todoExpanded;
+		const expanded = this.checklistExpanded;
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
 
@@ -1818,36 +1823,36 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		const activeDescs = this.#getActiveSubagentDescriptions();
 
-		const isMatched = (todo: TodoItem): boolean =>
-			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
+		const isMatched = (checklist: ChecklistItem): boolean =>
+			activeDescs.length > 0 && checklistMatchesAnyDescription(checklist.content, activeDescs);
 
-		const renderTasks = (phase: TodoPhase): string[] => {
+		const renderTasks = (phase: ChecklistPhase): string[] => {
 			if (expanded) {
 				return renderTreeList(
 					{
 						items: phase.tasks,
 						expanded: true,
-						renderItem: todo => this.#formatTodoLine(todo, "", isMatched(todo)),
+						renderItem: checklist => this.#formatChecklistLine(checklist, "", isMatched(checklist)),
 					},
 					theme,
 				);
 			}
-			const selection = selectCollapsedTodos(phase.tasks, isMatched, activeTaskCap);
+			const selection = selectCollapsedChecklist(phase.tasks, isMatched, activeTaskCap);
 			return renderTreeList(
 				{
 					items: selection.items,
 					itemType: "task",
 					trailingSummary: selection.summary,
-					renderItem: todo => this.#formatTodoLine(todo, "", isMatched(todo)),
+					renderItem: checklist => this.#formatChecklistLine(checklist, "", isMatched(checklist)),
 				},
 				theme,
 			);
 		};
 
-		const renderPhase = (phase: TodoPhase, oneBased: number, isActive: boolean): string | string[] => {
+		const renderPhase = (phase: ChecklistPhase, oneBased: number, isActive: boolean): string | string[] => {
 			const label = multiPhase ? formatPhaseDisplayName(phase.name, oneBased) : phase.name;
 
-			const done = phase.tasks.filter(isClosedTodo).length;
+			const done = phase.tasks.filter(isClosedChecklist).length;
 			const progress = ` · ${done}/${phase.tasks.length}`;
 			if (!isActive) {
 				const header = theme.fg("muted", label) + theme.fg("dim", progress);
@@ -1884,18 +1889,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
-		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
+		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedChecklist).length, 0);
 		const pathLen = contentLines.length;
 		let filled = Math.round((closedTasks / totalTasks) * pathLen);
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const header = theme.bold(theme.fg("accent", "Todo")) + theme.fg("dim", ` · ${closedTasks}/${totalTasks} done`);
+		const header =
+			theme.bold(theme.fg("accent", "Checklist")) + theme.fg("dim", ` · ${closedTasks}/${totalTasks} done`);
 		const lines = ["", header];
 		for (let i = 0; i < contentLines.length; i++) {
 			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
 		}
-		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.checklistContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
 	#renderSubagentList(): void {
@@ -1907,10 +1913,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
-	async #loadTodoList(): Promise<void> {
-		this.todoPhases = this.session.getTodoPhases();
-		this.#syncTodoAutoClearTimer();
-		this.#renderTodoList();
+	async #loadChecklistList(): Promise<void> {
+		this.checklistPhases = this.session.getChecklistPhases();
+		this.#syncChecklistAutoClearTimer();
+		this.#renderChecklistList();
 	}
 
 	#updateGoalModeStatus(): void {
@@ -2455,7 +2461,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		stopSharedSpinnerTicker();
-		this.#cancelTodoAutoClearTimer();
+		this.#cancelChecklistAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
 		this.#cancelGoalContinuation();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
@@ -2872,8 +2878,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleDebugTranscriptCommand();
 	}
 
-	handleTodoCommand(args: string): Promise<void> {
-		return this.#todoCommandController.handleTodoCommand(args);
+	handleChecklistCommand(args: string): Promise<void> {
+		return this.#checklistCommandController.handleChecklistCommand(args);
 	}
 
 	handleAdvisorStatusCommand(): Promise<void> {
@@ -3182,30 +3188,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#inputController.toggleThinkingBlockVisibility();
 	}
 
-	toggleTodoExpansion(): void {
-		this.todoExpanded = !this.todoExpanded;
-		this.#renderTodoList();
+	toggleChecklistExpansion(): void {
+		this.checklistExpanded = !this.checklistExpanded;
+		this.#renderChecklistList();
 		this.ui.requestRender();
 	}
 
-	setTodos(todos: TodoItem[] | TodoPhase[]): void {
-		if (todos.length > 0 && "tasks" in todos[0]) {
-			this.todoPhases = todos as TodoPhase[];
+	setChecklist(items: ChecklistItem[] | ChecklistPhase[]): void {
+		if (items.length > 0 && "tasks" in items[0]) {
+			this.checklistPhases = items as ChecklistPhase[];
 		} else {
-			this.todoPhases = [
+			this.checklistPhases = [
 				{
-					name: "Todos",
-					tasks: todos as TodoItem[],
+					name: "Checklist",
+					tasks: items as ChecklistItem[],
 				},
 			];
 		}
-		this.#syncTodoAutoClearTimer();
-		this.#renderTodoList();
+		this.#syncChecklistAutoClearTimer();
+		this.#renderChecklistList();
 		this.ui.requestRender();
 	}
 
-	async reloadTodos(): Promise<void> {
-		await this.#loadTodoList();
+	async reloadChecklist(): Promise<void> {
+		await this.#loadChecklistList();
 		this.ui.requestRender();
 	}
 

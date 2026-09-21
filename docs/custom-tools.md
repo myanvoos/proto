@@ -149,7 +149,7 @@ execute(toolCallId, params, onUpdate, ctx, signal);
 
 The session bootstrap bridge converts custom tools to extension `ToolDefinition`s and forwards calls in the correct argument order. `CustomToolAdapter` remains available to library consumers that directly adapt a custom tool to the agent tool interface.
 
-Tool definitions may also declare `strict`, `hidden`, `loadMode`, `deferrable`, `mcpServerName`, and `mcpToolName`. When `loadMode` is omitted, custom tool names default to `"discoverable"` except for the canonical essential built-in names (`bash`, `read`, `ask`, `todo`, `web_search`, and `inspect_media`), which default to `"essential"` so wrappers or re-registrations do not demote them. An explicit `loadMode` always wins; use `"essential"` to keep any other tool top-level.
+Tool definitions may also declare `strict`, `hidden`, `loadMode`, `deferrable`, `mcpServerName`, and `mcpToolName`. When `loadMode` is omitted, custom tool names default to `"discoverable"` except for the canonical essential built-in names (`bash`, `read`, `ask`, `checklist`, `web_search`, and `inspect_media`), which default to `"essential"` so wrappers or re-registrations do not demote them. An explicit `loadMode` always wins; use `"essential"` to keep any other tool top-level.
 
 ## How tools are exposed to the model
 
@@ -180,7 +180,7 @@ Optional `onSession(event, ctx)` receives session lifecycle events, including:
 - `start`, `switch`, `branch`, `tree`, `shutdown`
 - `auto_compaction_start`, `auto_compaction_end`
 - `auto_retry_start`, `auto_retry_end`
-- `ttsr_triggered`, `todo_reminder`
+- `ttsr_triggered`, `checklist_reminder`
 
 Use `ctx.sessionManager` to reconstruct state from history when branch/session context changes.
 

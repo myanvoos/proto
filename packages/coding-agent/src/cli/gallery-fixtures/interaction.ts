@@ -1,8 +1,8 @@
 import type { GalleryFixture } from "./types";
 
 export const interactionFixtures: Record<string, GalleryFixture> = {
-	todo: {
-		label: "Todo",
+	checklist: {
+		label: "Checklist",
 		streamingArgs: {
 			op: "init",
 			list: [{ phase: "Foundation", items: ["Scaffold crate"] }],

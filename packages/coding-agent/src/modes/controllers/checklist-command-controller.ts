@@ -1,30 +1,30 @@
 import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
-	getLatestTodoPhasesFromEntries,
+	type ChecklistItem,
+	type ChecklistPhase,
+	getLatestChecklistPhasesFromEntries,
 	markdownToPhases,
 	phasesToMarkdown,
-	resolveTodoMarkdownPath,
-	type TodoItem,
-	type TodoPhase,
-	USER_TODO_EDIT_CUSTOM_TYPE,
-} from "../../tools/todo";
+	resolveChecklistMarkdownPath,
+	USER_CHECKLIST_EDIT_CUSTOM_TYPE,
+} from "../../tools/checklist";
 import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import type { InteractiveModeContext } from "../types";
 
 const USAGE = [
-	"Usage: /todo <verb> [args]",
-	"  /todo                              Show current todos",
-	"  /todo edit                         Open todos in $EDITOR",
-	"  /todo copy                         Copy todos as Markdown to clipboard",
-	"  /todo export [<path>]              Write todos to file (default: TODO.md)",
-	"  /todo import [<path>]              Replace todos from file (default: TODO.md)",
-	"  /todo append [<phase>] <task...>   Append a task; phase fuzzy-matched or auto-created",
-	"  /todo start  <task>                Mark task in_progress (fuzzy content match)",
-	"  /todo done   [<task|phase>]        Mark task/phase/all completed",
-	"  /todo drop   [<task|phase>]        Mark task/phase/all abandoned",
-	"  /todo rm     [<task|phase>]        Remove task/phase/all",
+	"Usage: /checklist <verb> [args]",
+	"  /checklist                              Show current checklist items",
+	"  /checklist edit                         Open checklist items in $EDITOR",
+	"  /checklist copy                         Copy checklist items as Markdown to clipboard",
+	"  /checklist export [<path>]              Write checklist items to file (default: CHECKLIST.md)",
+	"  /checklist import [<path>]              Replace checklist items from file (default: CHECKLIST.md)",
+	"  /checklist append [<phase>] <task...>   Append a task; phase fuzzy-matched or auto-created",
+	"  /checklist start  <task>                Mark task in_progress (fuzzy content match)",
+	"  /checklist done   [<task|phase>]        Mark task/phase/all completed",
+	"  /checklist drop   [<task|phase>]        Mark task/phase/all abandoned",
+	"  /checklist rm     [<task|phase>]        Remove task/phase/all",
 ].join("\n");
 
 function tokenize(input: string): string[] {
@@ -62,7 +62,7 @@ function titleCase(s: string): string {
 		.join(" ");
 }
 
-function findPhaseFuzzy(phases: TodoPhase[], query: string): TodoPhase | undefined {
+function findPhaseFuzzy(phases: ChecklistPhase[], query: string): ChecklistPhase | undefined {
 	const q = query.trim().toLowerCase();
 	if (!q) return undefined;
 
@@ -76,7 +76,10 @@ function findPhaseFuzzy(phases: TodoPhase[], query: string): TodoPhase | undefin
 	return undefined;
 }
 
-function findTaskFuzzy(phases: TodoPhase[], query: string): { task: TodoItem; phase: TodoPhase } | undefined {
+function findTaskFuzzy(
+	phases: ChecklistPhase[],
+	query: string,
+): { task: ChecklistItem; phase: ChecklistPhase } | undefined {
 	const q = query.trim().toLowerCase();
 	if (!q) return undefined;
 
@@ -85,7 +88,7 @@ function findTaskFuzzy(phases: TodoPhase[], query: string): { task: TodoItem; ph
 			if (task.content.toLowerCase() === q) return { task, phase };
 		}
 	}
-	const matches: Array<{ task: TodoItem; phase: TodoPhase }> = [];
+	const matches: Array<{ task: ChecklistItem; phase: ChecklistPhase }> = [];
 	for (const phase of phases) {
 		for (const task of phase.tasks) {
 			if (task.content.toLowerCase().includes(q)) {
@@ -100,30 +103,30 @@ function findTaskFuzzy(phases: TodoPhase[], query: string): { task: TodoItem; ph
 	return undefined;
 }
 
-function buildSystemReminder(action: string, phases: TodoPhase[], removed = false): string {
+function buildSystemReminder(action: string, phases: ChecklistPhase[], removed = false): string {
 	const md = phases.length === 0 ? "(empty)" : phasesToMarkdown(phases).trimEnd();
-	const lines = ["<system-reminder>", `The user manually modified the todo list (${action}).`];
+	const lines = ["<system-reminder>", `The user manually modified the checklist list (${action}).`];
 	if (removed) {
 		lines.push(
 			phases.length === 0
-				? "The user intentionally cleared the todo list. Do NOT recreate or re-populate it unless the user explicitly asks; continue the current request without a todo list."
+				? "The user intentionally cleared the checklist list. Do NOT recreate or re-populate it unless the user explicitly asks; continue the current request without a checklist list."
 				: "The user intentionally removed the entries no longer shown below. Do NOT re-add them unless the user explicitly asks.",
 		);
 	}
-	lines.push("Current todo list:", "", md, "</system-reminder>");
+	lines.push("Current checklist list:", "", md, "</system-reminder>");
 	return lines.join("\n");
 }
 
-export class TodoCommandController {
+export class ChecklistCommandController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
-	#currentPhases(): TodoPhase[] {
-		const fromEntries = getLatestTodoPhasesFromEntries(this.ctx.sessionManager.getBranch());
+	#currentPhases(): ChecklistPhase[] {
+		const fromEntries = getLatestChecklistPhasesFromEntries(this.ctx.sessionManager.getBranch());
 		if (fromEntries.length > 0) return fromEntries;
-		return this.ctx.session.getTodoPhases();
+		return this.ctx.session.getChecklistPhases();
 	}
 
-	async handleTodoCommand(args: string): Promise<void> {
+	async handleChecklistCommand(args: string): Promise<void> {
 		const trimmed = args.trim();
 		if (!trimmed) {
 			this.#showCurrent();
@@ -167,14 +170,14 @@ export class TodoCommandController {
 				this.#remove(rest);
 				return;
 			default:
-				this.ctx.showError(`Unknown /todo verb "${verb}".\n${USAGE}`);
+				this.ctx.showError(`Unknown /checklist verb "${verb}".\n${USAGE}`);
 		}
 	}
 
 	#showCurrent(): void {
 		const phases = this.#currentPhases();
 		if (phases.length === 0) {
-			this.ctx.showStatus("No todos. Use /todo append <task> to start one.");
+			this.ctx.showStatus("No checklist items. Use /checklist append <task> to start one.");
 			return;
 		}
 		this.ctx.showStatus(phasesToMarkdown(phases).trimEnd());
@@ -183,33 +186,33 @@ export class TodoCommandController {
 	#copyMarkdown(): void {
 		const phases = this.#currentPhases();
 		if (phases.length === 0) {
-			this.ctx.showWarning("No todos to copy.");
+			this.ctx.showWarning("No checklist items to copy.");
 			return;
 		}
 		try {
 			copyToClipboard(phasesToMarkdown(phases));
-			this.ctx.showStatus("Copied todos as Markdown to clipboard.");
+			this.ctx.showStatus("Copied checklist items as Markdown to clipboard.");
 		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
 	}
 
-	#resolveTodoPath(rest: string): string {
-		return resolveTodoMarkdownPath(rest, this.ctx.sessionManager.getCwd());
+	#resolveChecklistPath(rest: string): string {
+		return resolveChecklistMarkdownPath(rest, this.ctx.sessionManager.getCwd());
 	}
 
 	async #exportToFile(rest: string): Promise<void> {
 		const phases = this.#currentPhases();
 		if (phases.length === 0) {
-			this.ctx.showWarning("No todos to export.");
+			this.ctx.showWarning("No checklist items to export.");
 			return;
 		}
 		try {
-			const target = this.#resolveTodoPath(rest);
+			const target = this.#resolveChecklistPath(rest);
 			await fs.writeFile(target, phasesToMarkdown(phases), "utf8");
-			this.ctx.showStatus(`Wrote todos to ${target}`);
+			this.ctx.showStatus(`Wrote checklist items to ${target}`);
 		} catch (error) {
-			this.ctx.showError(`Failed to write todos: ${error instanceof Error ? error.message : String(error)}`);
+			this.ctx.showError(`Failed to write items: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
@@ -217,10 +220,10 @@ export class TodoCommandController {
 		let source = "";
 		let content: string;
 		try {
-			source = this.#resolveTodoPath(rest);
+			source = this.#resolveChecklistPath(rest);
 			content = await fs.readFile(source, "utf8");
 		} catch (error) {
-			this.ctx.showError(`Failed to read todos: ${error instanceof Error ? error.message : String(error)}`);
+			this.ctx.showError(`Failed to read items: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		const { phases, errors } = markdownToPhases(content);
@@ -228,7 +231,7 @@ export class TodoCommandController {
 			this.ctx.showError(`Could not parse ${source}:\n  ${errors.join("\n  ")}`);
 			return;
 		}
-		this.#commit(phases, `/todo import ${source}`);
+		this.#commit(phases, `/checklist import ${source}`);
 		const taskCount = phases.reduce((sum, p) => sum + p.tasks.length, 0);
 		this.ctx.showStatus(`Imported ${phases.length} phase(s), ${taskCount} task(s) from ${source}.`);
 	}
@@ -236,7 +239,7 @@ export class TodoCommandController {
 	#append(rest: string): void {
 		const tokens = tokenize(rest);
 		if (tokens.length === 0) {
-			this.ctx.showError("Usage: /todo append [<phase>] <task...>");
+			this.ctx.showError("Usage: /checklist append [<phase>] <task...>");
 			return;
 		}
 
@@ -252,7 +255,7 @@ export class TodoCommandController {
 		}
 
 		const next = current.map(phase => ({ ...phase, tasks: phase.tasks.slice() }));
-		let targetPhase: TodoPhase | undefined;
+		let targetPhase: ChecklistPhase | undefined;
 
 		if (phaseName) {
 			targetPhase = findPhaseFuzzy(next, phaseName);
@@ -263,7 +266,7 @@ export class TodoCommandController {
 		} else if (next.length > 0) {
 			targetPhase = next[next.length - 1];
 		} else {
-			targetPhase = { name: "Todos", tasks: [] };
+			targetPhase = { name: "Checklist", tasks: [] };
 			next.push(targetPhase);
 		}
 
@@ -273,19 +276,19 @@ export class TodoCommandController {
 			status: "pending",
 		});
 
-		this.#commit(next, `/todo append → ${targetPhase.name}`);
+		this.#commit(next, `/checklist append → ${targetPhase.name}`);
 		this.ctx.showStatus(`Appended to ${targetPhase.name}: ${finalContent}`);
 	}
 
 	#start(rest: string): void {
 		if (!rest) {
-			this.ctx.showError("Usage: /todo start <task>");
+			this.ctx.showError("Usage: /checklist start <task>");
 			return;
 		}
 		const current = this.#currentPhases();
 		const hit = findTaskFuzzy(current, rest);
 		if (!hit) {
-			this.ctx.showError(`No task matched "${rest}". Use /todo to list current tasks.`);
+			this.ctx.showError(`No task matched "${rest}". Use /checklist to list current tasks.`);
 			return;
 		}
 		const { phases, errors } = applyOpsToPhases(current, [{ op: "start", task: hit.task.content }]);
@@ -293,7 +296,7 @@ export class TodoCommandController {
 			this.ctx.showError(errors.join("; "));
 			return;
 		}
-		this.#commit(phases, `/todo start ${hit.task.content}`);
+		this.#commit(phases, `/checklist start ${hit.task.content}`);
 		this.ctx.showStatus(`Started: ${hit.task.content}`);
 	}
 
@@ -307,7 +310,7 @@ export class TodoCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo ${op} (all)`);
+			this.#commit(phases, `/checklist ${op} (all)`);
 			this.ctx.showStatus(`Marked all tasks ${target}.`);
 			return;
 		}
@@ -319,7 +322,7 @@ export class TodoCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo ${op} ${taskHit.task.content}`);
+			this.#commit(phases, `/checklist ${op} ${taskHit.task.content}`);
 			this.ctx.showStatus(`Marked ${target}: ${taskHit.task.content}`);
 			return;
 		}
@@ -331,7 +334,7 @@ export class TodoCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo ${op} ${phaseHit.name}`);
+			this.#commit(phases, `/checklist ${op} ${phaseHit.name}`);
 			this.ctx.showStatus(`Marked phase ${phaseHit.name} ${target}.`);
 			return;
 		}
@@ -343,8 +346,8 @@ export class TodoCommandController {
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
 		if (!trimmed) {
-			this.#commit([], "/todo rm (all)", { removed: true });
-			this.ctx.showStatus("Cleared all todos.");
+			this.#commit([], "/checklist rm (all)", { removed: true });
+			this.ctx.showStatus("Cleared all checklist items.");
 			return;
 		}
 		const taskHit = findTaskFuzzy(current, trimmed);
@@ -354,7 +357,7 @@ export class TodoCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo rm ${taskHit.task.content}`, { removed: true });
+			this.#commit(phases, `/checklist rm ${taskHit.task.content}`, { removed: true });
 			this.ctx.showStatus(`Removed: ${taskHit.task.content}`);
 			return;
 		}
@@ -365,7 +368,7 @@ export class TodoCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/todo rm ${phaseHit.name}`, { removed: true });
+			this.#commit(phases, `/checklist rm ${phaseHit.name}`, { removed: true });
 			this.ctx.showStatus(`Removed phase: ${phaseHit.name}`);
 			return;
 		}
@@ -381,13 +384,13 @@ export class TodoCommandController {
 
 		const current = this.#currentPhases();
 		const initialMarkdown =
-			current.length > 0 ? phasesToMarkdown(current) : "# Todos\n- [ ] (replace this with your tasks)\n";
+			current.length > 0 ? phasesToMarkdown(current) : "# Checklist\n- [ ] (replace this with your tasks)\n";
 
 		this.ctx.ui.stop();
 		try {
-			const result = await openInEditor(editorCmd, initialMarkdown, { extension: ".todo.md" });
+			const result = await openInEditor(editorCmd, initialMarkdown, { extension: ".checklist.md" });
 			if (result === null) {
-				this.ctx.showWarning("Editor exited without saving; todos unchanged.");
+				this.ctx.showWarning("Editor exited without saving; checklist items unchanged.");
 				return;
 			}
 			const { phases: parsed, errors } = markdownToPhases(result);
@@ -395,9 +398,9 @@ export class TodoCommandController {
 				this.ctx.showError(`Could not parse Markdown:\n  ${errors.join("\n  ")}`);
 				return;
 			}
-			this.#commit(parsed, "/todo edit");
+			this.#commit(parsed, "/checklist edit");
 			const taskCount = parsed.reduce((sum, p) => sum + p.tasks.length, 0);
-			this.ctx.showStatus(`Todos updated from editor: ${parsed.length} phase(s), ${taskCount} task(s).`);
+			this.ctx.showStatus(`Checklist updated from editor: ${parsed.length} phase(s), ${taskCount} task(s).`);
 		} catch (error) {
 			this.ctx.showWarning(
 				`Failed to open external editor: ${error instanceof Error ? error.message : String(error)}`,
@@ -408,11 +411,11 @@ export class TodoCommandController {
 		}
 	}
 
-	#commit(nextPhases: TodoPhase[], action: string, opts?: { removed?: boolean }): void {
-		this.ctx.session.setTodoPhases(nextPhases);
-		this.ctx.setTodos(nextPhases);
+	#commit(nextPhases: ChecklistPhase[], action: string, opts?: { removed?: boolean }): void {
+		this.ctx.session.setChecklistPhases(nextPhases);
+		this.ctx.setChecklist(nextPhases);
 
-		this.ctx.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: nextPhases });
+		this.ctx.sessionManager.appendCustomEntry(USER_CHECKLIST_EDIT_CUSTOM_TYPE, { phases: nextPhases });
 
 		const reminderText = buildSystemReminder(action, nextPhases, opts?.removed ?? false);
 		const message = {

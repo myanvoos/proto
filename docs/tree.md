@@ -197,7 +197,7 @@ Flow details:
 - emits cancellable `session_before_tree`; an extension may supply the requested summary
 - runs the default summarizer only when requested, entries need summarizing, and no hook summary was supplied
 - applies `branchWithSummary(...)`, `branch(newLeafId)`, or `resetLeaf()` as appropriate
-- rebuilds model context, checkpoint/rewind state, advisor state, todos, and provider sessions affected by the history rewrite
+- rebuilds model context, checkpoint/rewind state, advisor state, checklist items, and provider sessions affected by the history rewrite
 - emits `session_tree` and rebuilds again if handlers may have appended entries
 
 If summary is requested but there is nothing to summarize, navigation proceeds without a summary entry.

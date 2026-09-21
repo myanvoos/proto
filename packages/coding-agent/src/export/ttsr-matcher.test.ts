@@ -49,9 +49,9 @@ test("all/not expresses an escape hatch that suppresses the rule", async () => {
 });
 
 test("count only fires once the buffer holds enough distinct matches", async () => {
-	const spec = { regex: "TODO", count: 3 };
-	expect(await run(spec, { text: "TODO a\nTODO b", source: "text" })).toBeUndefined();
-	const evidence = await run(spec, { text: "TODO a\nTODO b\nTODO c", source: "text" });
+	const spec = { regex: "CHECKLIST", count: 3 };
+	expect(await run(spec, { text: "CHECKLIST a\nCHECKLIST b", source: "text" })).toBeUndefined();
+	const evidence = await run(spec, { text: "CHECKLIST a\nCHECKLIST b\nCHECKLIST c", source: "text" });
 	expect(evidence?.snippets).toHaveLength(3);
 });
 
@@ -152,7 +152,7 @@ test("the scan prefilter rejects buffers that cannot match and passes the rest",
 	const { program } = compileMatchProgram({ all: [{ lang: "ts" }, { regex: "useFakeTimers\\(" }] }, "r");
 	expect(mayMatch(program!, "const x = 1;")).toBe(false);
 	expect(mayMatch(program!, "vi.useFakeTimers();")).toBe(true);
-	const { program: broad } = compileMatchProgram({ regex: "(?i)todo" }, "r");
+	const { program: broad } = compileMatchProgram({ regex: "(?i)checklist" }, "r");
 	expect(mayMatch(broad!, "anything")).toBe(true);
 });
 
@@ -321,10 +321,10 @@ test("a judge is only asked once the cheaper conditions in the rule have matched
 });
 
 test("an any branch that already matched never consults its judge", async () => {
-	const { program } = compileMatchProgram({ any: [{ llm: "Is this suspicious?" }, { regex: "TODO" }] }, "r");
+	const { program } = compileMatchProgram({ any: [{ llm: "Is this suspicious?" }, { regex: "CHECKLIST" }] }, "r");
 	let asked = 0;
 	const ctx = new MatchContext({
-		text: "TODO: finish",
+		text: "CHECKLIST: finish",
 		source: "text",
 		judge: async () => {
 			asked++;
@@ -336,8 +336,11 @@ test("an any branch that already matched never consults its judge", async () => 
 });
 
 test("without a judge an llm leaf settles as no match instead of blocking the program", async () => {
-	const { program } = compileMatchProgram({ all: [{ regex: "TODO" }, { llm: "Is this a real TODO?" }] }, "r");
-	const ctx = new MatchContext({ text: "TODO: finish", source: "text" });
+	const { program } = compileMatchProgram(
+		{ all: [{ regex: "CHECKLIST" }, { llm: "Is this a real CHECKLIST?" }] },
+		"r",
+	);
+	const ctx = new MatchContext({ text: "CHECKLIST: finish", source: "text" });
 	expect(await matchProgram(program!, ctx)).toBeUndefined();
 	expect(await prepareProgram(program!, ctx).then(() => evaluateProgram(program!, ctx))).toBeUndefined();
 });

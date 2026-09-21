@@ -136,8 +136,8 @@ import { computeNonMessageTokens } from "../modes/utils/context-usage";
 import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
 import { MonitorManager } from "../monitor";
 import type { MonitorEvent } from "../monitor/types";
+import goalChecklistContextPrompt from "../prompts/goals/goal-checklist-context.md" with { type: "text" };
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
-import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
 import checkpointActiveNoticeTemplate from "../prompts/system/checkpoint-active-notice.md" with { type: "text" };
 import interruptedThinkingTemplate from "../prompts/system/interrupted-thinking.md" with { type: "text" };
@@ -156,11 +156,11 @@ import { shutdownTinyTitleClient } from "../tiny/title-client";
 import type { ImageAttachmentEntry } from "../tools";
 import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../tools/ask";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
+import type { ChecklistPhase } from "../tools/checklist";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
 import { releaseComputerSessionsForOwner } from "../tools/computer/supervisor";
 import { buildResolveReminderMessage, isPreviewResolutionToolCall } from "../tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
-import type { TodoPhase } from "../tools/todo";
 import { parseCommandArgs } from "../utils/command-args";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
@@ -299,10 +299,10 @@ export * from "./agent-session-types";
 export type { AdvisorStats, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
-const TODO_ERROR_REMINDER_TYPE = "todo-error-reminder";
+const CHECKLIST_ERROR_REMINDER_TYPE = "checklist-error-reminder";
 
+import { ChecklistTracker, type ChecklistTrackerHost } from "./checklist-tracker";
 import { LoopGuards, type StreamGuardsHost } from "./stream-guards";
-import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 import { createTtsrJudge } from "./ttsr-judge";
 
@@ -533,7 +533,7 @@ export class AgentSession {
 
 	readonly #recovery: TurnRecovery;
 	#textOutputCommitted = true;
-	readonly #todo: TodoTracker;
+	readonly #checklist: ChecklistTracker;
 	#replanTitleRefreshInFlight: Promise<void> | undefined = undefined;
 
 	#titleSystemPrompt: string | undefined;
@@ -898,7 +898,7 @@ export class AgentSession {
 		this.#prewalk = new PrewalkCoordinator(prewalkHost, {
 			prewalk: config.prewalk,
 		});
-		const todoHost: TodoTrackerHost = {
+		const checklistHost: ChecklistTrackerHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			settings: this.settings,
@@ -913,7 +913,7 @@ export class AgentSession {
 			getEnabledToolNames: () => this.getEnabledToolNames(),
 			toolRegistry: () => this.#tools.registry,
 		};
-		this.#todo = new TodoTracker(todoHost);
+		this.#checklist = new ChecklistTracker(checklistHost);
 		this.#ownedAsyncJobManager = config.ownedAsyncJobManager;
 		this.#shouldDisposeOwnedAsyncJobManager = config.shouldDisposeOwnedAsyncJobManager;
 		this.#asyncJobManager = config.asyncJobManager ?? config.ownedAsyncJobManager;
@@ -1116,7 +1116,7 @@ export class AgentSession {
 			const thunks: AsideMessage[] = this.#irc.drainPending().map(record => () => record);
 			thunks.push(...this.yieldQueue.drainLazy());
 
-			thunks.push(() => this.#todo.takeMidRunNudge());
+			thunks.push(() => this.#checklist.takeMidRunNudge());
 			return thunks;
 		});
 		this.#convertToLlm = config.convertToLlm ?? convertToLlm;
@@ -1236,7 +1236,7 @@ export class AgentSession {
 		this.agent.beforeToolCall = (ctx, signal) => this.#beforeToolCall(ctx, signal);
 		this.agent.providerSessionState = this.#providerSessionState;
 		this.#syncAgentSessionId();
-		this.#todo.syncFromBranch();
+		this.#checklist.syncFromBranch();
 		this.#goalRuntime = new GoalRuntime({
 			getState: () => this.#goalModeState,
 			setState: state => {
@@ -1380,7 +1380,7 @@ export class AgentSession {
 			obfuscatePreparationForProvider: preparation => this.#obfuscatePreparationForProvider(preparation),
 			closeCodexProviderSessionsForHistoryRewrite: () => this.#closeCodexProviderSessionsForHistoryRewrite(),
 			resetCodexProviderAfterCompaction: compaction => this.#resetCodexProviderAfterCompaction(compaction),
-			syncTodoPhasesFromBranch: () => this.#todo.syncFromBranch(),
+			syncChecklistPhasesFromBranch: () => this.#checklist.syncFromBranch(),
 			resetAdvisorRuntimes: (reason?: string) => {
 				this.#advisors.resetAllRuntimes(reason);
 			},
@@ -2077,7 +2077,7 @@ export class AgentSession {
 		}
 
 		if (event.type === "message_end" && event.message.role === "toolResult") {
-			this.#todo.onToolResult(event.message.toolName, event.message.isError, event.message.details);
+			this.#checklist.onToolResult(event.message.toolName, event.message.isError, event.message.details);
 		}
 
 		if (event.type === "message_end" && event.message.role === "assistant") {
@@ -2263,26 +2263,26 @@ export class AgentSession {
 				const semanticResult = semanticToolResult(toolName, event.message);
 				const semanticDetails = isRecord(semanticResult?.details) ? semanticResult.details : undefined;
 
-				if (toolName === "todo" && !isError) {
+				if (toolName === "checklist" && !isError) {
 					this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(
-						message => message.customType !== TODO_ERROR_REMINDER_TYPE,
+						message => message.customType !== CHECKLIST_ERROR_REMINDER_TYPE,
 					);
-					if (details && this.#todo.onTodoResultDetails(details, toolCallId)) {
+					if (details && this.#checklist.onChecklistResultDetails(details, toolCallId)) {
 						this.#scheduleReplanTitleRefresh();
 					}
 				}
-				if (toolName === "todo" && isError) {
+				if (toolName === "checklist" && isError) {
 					const errorText = content.find(part => part.type === "text")?.text;
 					const reminderText = [
 						"<system-reminder>",
-						"todo failed, so todo progress is not visible to the user.",
-						errorText ? `Failure: ${errorText}` : "Failure: todo returned an error.",
-						"Fix the todo payload and call todo again before continuing.",
+						"checklist failed, so checklist progress is not visible to the user.",
+						errorText ? `Failure: ${errorText}` : "Failure: checklist returned an error.",
+						"Fix the checklist payload and call checklist again before continuing.",
 						"</system-reminder>",
 					].join("\n");
 					await this.sendCustomMessage(
 						{
-							customType: TODO_ERROR_REMINDER_TYPE,
+							customType: CHECKLIST_ERROR_REMINDER_TYPE,
 							content: reminderText,
 							display: false,
 							details: { toolName, errorText },
@@ -2538,8 +2538,8 @@ export class AgentSession {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
-				const todoContinuationScheduled = await this.#todo.checkCompletion(msg);
-				if (todoContinuationScheduled) {
+				const checklistContinuationScheduled = await this.#checklist.checkCompletion(msg);
+				if (checklistContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
@@ -2689,7 +2689,7 @@ export class AgentSession {
 
 	#scheduleAutoContinuePrompt(generation: number): boolean {
 		const continuePrompt = async () => {
-			const eagerNudges = this.#todo.buildPostCompactionEagerNudges();
+			const eagerNudges = this.#checklist.buildPostCompactionEagerNudges();
 			await this.#promptWithMessage(
 				{
 					role: "developer",
@@ -3039,10 +3039,10 @@ export class AgentSession {
 			});
 		} else if (event.type === "ttsr_triggered") {
 			await this.#extensionRunner.emit({ type: "ttsr_triggered", rules: event.rules });
-		} else if (event.type === "todo_reminder") {
+		} else if (event.type === "checklist_reminder") {
 			await this.#extensionRunner.emit({
-				type: "todo_reminder",
-				todos: event.todos,
+				type: "checklist_reminder",
+				items: event.items,
 				attempt: event.attempt,
 				maxAttempts: event.maxAttempts,
 			});
@@ -4031,18 +4031,18 @@ export class AgentSession {
 	#buildGoalModeMessage(): CustomMessage | null {
 		const content = this.#goalRuntime.buildActivePrompt();
 		if (!content) return null;
-		const todoContext = this.#buildGoalTodoContext();
+		const checklistContext = this.#buildGoalChecklistContext();
 		return {
 			role: "custom",
 			customType: "goal-mode-context",
-			content: prompt.render(goalModeContextPrompt, { goalContext: content, todoContext }),
+			content: prompt.render(goalModeContextPrompt, { goalContext: content, checklistContext }),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
 		};
 	}
 
-	#sanitizeGoalTodoText(text: string): string {
+	#sanitizeGoalChecklistText(text: string): string {
 		return escapeXmlText(text)
 			.replace(/\r\n/g, "\\n")
 			.replace(/\r/g, "\\r")
@@ -4051,18 +4051,18 @@ export class AgentSession {
 			.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
 	}
 
-	#buildGoalTodoContext(): string | undefined {
-		if (!this.settings.get("todo.enabled")) return undefined;
-		const canCallTodoTool = this.getActiveToolNames().includes("todo");
-		if (!canCallTodoTool) return undefined;
-		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
+	#buildGoalChecklistContext(): string | undefined {
+		if (!this.settings.get("checklist.enabled")) return undefined;
+		const canCallChecklistTool = this.getActiveToolNames().includes("checklist");
+		if (!canCallChecklistTool) return undefined;
+		const phases = this.getChecklistPhases().filter(phase => phase.tasks.length > 0);
 		if (phases.length === 0) return undefined;
 
 		let total = 0;
 		let closed = 0;
 		let open = 0;
 		const promptPhases = phases.map(phase => ({
-			name: this.#sanitizeGoalTodoText(phase.name),
+			name: this.#sanitizeGoalChecklistText(phase.name),
 			tasks: phase.tasks.map(task => {
 				total++;
 				if (task.status === "completed" || task.status === "abandoned") {
@@ -4070,12 +4070,12 @@ export class AgentSession {
 				} else {
 					open++;
 				}
-				return { content: this.#sanitizeGoalTodoText(task.content), status: task.status };
+				return { content: this.#sanitizeGoalChecklistText(task.content), status: task.status };
 			}),
 		}));
 
-		return prompt.render(goalTodoContextPrompt, {
-			canCallTodoTool,
+		return prompt.render(goalChecklistContextPrompt, {
+			canCallChecklistTool,
 			closed: String(closed),
 			open: String(open),
 			phases: promptPhases,
@@ -4191,7 +4191,9 @@ export class AgentSession {
 			supportsExternalThinking(activeModel)
 				? buildNamedToolChoice("think", activeModel)
 				: undefined;
-		const eagerTodoPrelude = !options?.synthetic ? this.#todo.createEagerTodoPrelude(expandedText) : undefined;
+		const eagerChecklistPrelude = !options?.synthetic
+			? this.#checklist.createEagerChecklistPrelude(expandedText)
+			: undefined;
 		const normalizedImages = await this.#normalizeImagesForModel(options?.images);
 
 		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
@@ -4231,13 +4233,13 @@ export class AgentSession {
 			: { role: "user" as const, content: userContent, attribution: promptAttribution, timestamp: Date.now() };
 
 		const preludeMessages: AgentMessage[] = [];
-		if (eagerTodoPrelude) {
-			if (eagerTodoPrelude.toolChoice) {
-				this.#toolChoiceQueue.pushOnce(eagerTodoPrelude.toolChoice, {
-					label: "eager-todo",
+		if (eagerChecklistPrelude) {
+			if (eagerChecklistPrelude.toolChoice) {
+				this.#toolChoiceQueue.pushOnce(eagerChecklistPrelude.toolChoice, {
+					label: "eager-checklist",
 				});
 			}
-			preludeMessages.push(eagerTodoPrelude.message);
+			preludeMessages.push(eagerChecklistPrelude.message);
 		}
 
 		let dispatched = false;
@@ -4251,7 +4253,7 @@ export class AgentSession {
 						: undefined,
 			});
 		} finally {
-			this.#toolChoiceQueue.removeByLabel("eager-todo");
+			this.#toolChoiceQueue.removeByLabel("eager-checklist");
 			this.#toolChoiceQueue.removeByLabel("external-thinking");
 		}
 		if (!dispatched && message.role === "user") {
@@ -4355,7 +4357,7 @@ export class AgentSession {
 			this.#eval.flushPending();
 			this.#irc.flushPending();
 
-			this.#todo.resetCycle();
+			this.#checklist.resetCycle();
 			this.#resetPromptMaintenanceState();
 			this.#recovery.setAcceptTerminalEmptyStop(options?.acceptTerminalEmptyStop === true);
 
@@ -5138,12 +5140,12 @@ export class AgentSession {
 		return this.#tools.skillWarnings;
 	}
 
-	getTodoPhases(): TodoPhase[] {
-		return this.#todo.phases;
+	getChecklistPhases(): ChecklistPhase[] {
+		return this.#checklist.phases;
 	}
 
-	setTodoPhases(phases: TodoPhase[]): void {
-		this.#todo.setPhases(phases);
+	setChecklistPhases(phases: ChecklistPhase[]): void {
+		this.#checklist.setPhases(phases);
 	}
 
 	#buildReplanTitleContext(): string {
@@ -5376,7 +5378,7 @@ export class AgentSession {
 
 			this.#clearSessionScopedToolState();
 			this.#clearCheckpointRuntimeState();
-			this.setTodoPhases([]);
+			this.setChecklistPhases([]);
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
@@ -5386,7 +5388,7 @@ export class AgentSession {
 			this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
 			this.sessionManager.appendServiceTierChange(this.#models.serviceTierEntry());
 
-			this.#todo.resetCycle();
+			this.#checklist.resetCycle();
 			this.#advisors.resetSessionState();
 			advisorRecordersDetached = false;
 			this.#reconnectToAgent();
@@ -5727,7 +5729,7 @@ export class AgentSession {
 		}
 		this.agent.replaceMessages(activeMessages ?? sessionContext.messages);
 		this.#advisors.resetSessionState({ preserveCost: true });
-		this.#todo.syncFromBranch();
+		this.#checklist.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		this.#checkpointState = undefined;
 		this.#pendingRewindReport = undefined;
@@ -6207,7 +6209,7 @@ export class AgentSession {
 
 				this.agent.replaceMessages(sessionContext.messages);
 				this.#advisors.resetSessionState({ preserveCost: true });
-				this.#todo.syncFromBranch();
+				this.#checklist.syncFromBranch();
 				if (switchingToDifferentSession) {
 					this.#closeAllProviderSessions("session switch");
 				} else if (didReloadConversationChange) {
@@ -6345,7 +6347,7 @@ export class AgentSession {
 				if (modelRolledBack) {
 					this.#emit({ type: "model_changed" });
 				}
-				this.#todo.syncFromBranch();
+				this.#checklist.syncFromBranch();
 				this.#advisors.resetAllRuntimes();
 				this.#advisors.reattachRecorderFeeds();
 				this.#reconnectToAgent();
@@ -6446,7 +6448,7 @@ export class AgentSession {
 			await Promise.resolve();
 			this.#clearSessionScopedToolState();
 			this.#rehydrateCheckpointRewindState();
-			this.#todo.syncFromBranch();
+			this.#checklist.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
@@ -6562,7 +6564,7 @@ export class AgentSession {
 				timestamp: Date.now(),
 			});
 			this.sessionManager.appendMessage(sanitizeAssistantForReparentedHistory(assistantMessage));
-			this.#todo.syncFromBranch();
+			this.#checklist.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#syncAgentSessionId();
 
@@ -6806,7 +6808,7 @@ export class AgentSession {
 			this.agent.replaceMessages(displayContext.messages);
 			this.#rehydrateCheckpointRewindState();
 			this.#advisors.resetSessionState({ preserveCost: true });
-			this.#todo.syncFromBranch();
+			this.#checklist.syncFromBranch();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 		} finally {
 		}

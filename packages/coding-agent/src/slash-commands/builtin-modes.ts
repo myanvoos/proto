@@ -489,7 +489,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const armed = runtime.session.armPrewalk(resolved.model, resolved.thinkingLevel);
 			if (armed) {
 				await runtime.output(
-					`Prewalk on: switching to ${resolved.model.provider}/${resolved.model.id} at the next edit/write (todo-gated).`,
+					`Prewalk on: switching to ${resolved.model.provider}/${resolved.model.id} at the next edit/write (checklist-gated).`,
 				);
 			}
 			return commandConsumed();

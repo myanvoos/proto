@@ -67,7 +67,7 @@ Scale: `"find any bugs"` → few finders, single-vote verify. `"thoroughly audit
 </patterns>
 
 <execution>
-- Decompose surface first; multi-phase work: capture in `todo`.
+- Decompose surface first; multi-phase work: capture in `checklist`.
 - Agent output branched on → prefer `schema=`.
 - Fan-out return: YOU own correctness — read artifacts, gate, verify before action. Subagents do legwork, not final word.
 - Continue until closed; returned fan-out is a step, not endpoint.

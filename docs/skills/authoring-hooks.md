@@ -74,7 +74,7 @@ export default function myExtension(pi: ExtensionAPI): void {
 | `auto_retry_start` | Auto-retry begins | — |
 | `auto_retry_end` | Auto-retry ends | — |
 | `ttsr_triggered` | A Time-Traveling Stream Rule matched the model's output | — |
-| `todo_reminder` | Todo reminder fires | — |
+| `checklist_reminder` | Checklist reminder fires | — |
 
 Extension-only events such as `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `input`, `user_bash`, and `user_python` require `ExtensionAPI`.
 

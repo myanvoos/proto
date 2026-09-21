@@ -191,7 +191,7 @@ pi.registerTool({
 });
 ```
 
-Tool definitions may also set `loadMode: "essential" | "discoverable"` (essential by default only for `bash`, `read`, `ask`, `todo`, `web_search`, and `inspect_media`; discoverable otherwise) and `strict` for provider structured-output grammar behavior.
+Tool definitions may also set `loadMode: "essential" | "discoverable"` (essential by default only for `bash`, `read`, `ask`, `checklist`, `web_search`, and `inspect_media`; discoverable otherwise) and `strict` for provider structured-output grammar behavior.
 
 ## Subscribing to events
 

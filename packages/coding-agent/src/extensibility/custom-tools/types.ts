@@ -14,7 +14,7 @@ import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { Theme } from "../../modes/theme/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
-import type { TodoItem } from "../../tools/todo";
+import type { ChecklistItem } from "../../tools/checklist";
 import type { RetryErrorUpdate } from "../shared-events";
 
 export type CustomToolUIContext = HookUIContext;
@@ -114,8 +114,8 @@ export type CustomToolSessionEvent =
 			rules: Rule[];
 	  }
 	| {
-			reason: "todo_reminder";
-			todos: TodoItem[];
+			reason: "checklist_reminder";
+			items: ChecklistItem[];
 			attempt: number;
 			maxAttempts: number;
 	  };

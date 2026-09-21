@@ -2,9 +2,14 @@ import type { Agent, AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Message, Model, TextContent, ToolChoice } from "@oh-my-pi/pi-ai";
 import { isRecord, logger, prompt, stringProperty } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
-import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
-import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
-import { getLatestTodoPhasesFromEntries, isTodoPhase, type TodoItem, type TodoPhase } from "../tools/todo";
+import eagerChecklistPrompt from "../prompts/system/eager-checklist.md" with { type: "text" };
+import midRunChecklistNudgePrompt from "../prompts/system/mid-run-checklist-nudge.md" with { type: "text" };
+import {
+	type ChecklistItem,
+	type ChecklistPhase,
+	getLatestChecklistPhasesFromEntries,
+	isChecklistPhase,
+} from "../tools/checklist";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { SessionManager } from "./session-manager";
@@ -17,7 +22,7 @@ const MUTATING_TOOLS: Record<string, true> = {
 	edit: true,
 	write: true,
 };
-const MID_RUN_NUDGE_MESSAGE_TYPE = "mid-run-todo-nudge";
+const MID_RUN_NUDGE_MESSAGE_TYPE = "mid-run-checklist-nudge";
 
 function hasFileMutation(details: unknown): boolean {
 	if (!isRecord(details)) return false;
@@ -46,7 +51,7 @@ interface PromptLine {
 	hadPromptLabel: boolean;
 }
 
-export interface TodoTrackerHost {
+export interface ChecklistTrackerHost {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
@@ -62,31 +67,31 @@ export interface TodoTrackerHost {
 	toolRegistry(): Map<string, AgentTool>;
 }
 
-export class TodoTracker {
-	readonly #host: TodoTrackerHost;
-	#phases: TodoPhase[] = [];
+export class ChecklistTracker {
+	readonly #host: ChecklistTrackerHost;
+	#phases: ChecklistPhase[] = [];
 	#reminderCount = 0;
 	#reminderAwaitingProgress = false;
 	#mutationsSinceLastTouch = 0;
 	#midRunNudgeCount = 0;
 
-	constructor(host: TodoTrackerHost) {
+	constructor(host: ChecklistTrackerHost) {
 		this.#host = host;
 	}
 
-	get phases(): TodoPhase[] {
+	get phases(): ChecklistPhase[] {
 		return this.#clonePhases(this.#phases);
 	}
 
-	setPhases(phases: TodoPhase[]): void {
+	setPhases(phases: ChecklistPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
 	}
 
 	syncFromBranch(): void {
-		this.setPhases(getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()));
+		this.setPhases(getLatestChecklistPhasesFromEntries(this.#host.sessionManager.getBranch()));
 	}
 
-	clonePhases(phases: TodoPhase[]): TodoPhase[] {
+	clonePhases(phases: ChecklistPhase[]): ChecklistPhase[] {
 		return this.#clonePhases(phases);
 	}
 
@@ -98,7 +103,7 @@ export class TodoTracker {
 	}
 
 	onToolResult(toolName: string, isError: boolean, details?: unknown): void {
-		if (toolName === "todo") {
+		if (toolName === "checklist") {
 			this.#mutationsSinceLastTouch = 0;
 		} else if (!isError && MUTATING_TOOLS[toolName]) {
 			const mutatesFiles = toolName === "edit" || toolName === "write" || hasFileMutation(details);
@@ -107,9 +112,9 @@ export class TodoTracker {
 		this.#reminderAwaitingProgress = false;
 	}
 
-	onTodoResultDetails(details: Record<string, unknown>, toolCallId: string | undefined): boolean {
+	onChecklistResultDetails(details: Record<string, unknown>, toolCallId: string | undefined): boolean {
 		const phases = details.phases;
-		if (!Array.isArray(phases) || !phases.every(isTodoPhase)) return false;
+		if (!Array.isArray(phases) || !phases.every(isChecklistPhase)) return false;
 		const detailOp = stringProperty(details, "op");
 		if (detailOp) return detailOp === "init";
 		if (!toolCallId) return false;
@@ -122,11 +127,11 @@ export class TodoTracker {
 		return false;
 	}
 
-	createEagerTodoPrelude(
+	createEagerChecklistPrelude(
 		promptText: string | undefined,
 	): { message: AgentMessage; toolChoice?: ToolChoice } | undefined {
-		const mode = this.#host.settings.get("todo.eager");
-		if (mode === "default" || !this.#host.settings.get("todo.enabled")) return undefined;
+		const mode = this.#host.settings.get("checklist.eager");
+		if (mode === "default" || !this.#host.settings.get("checklist.enabled")) return undefined;
 		if (this.#phases.length > 0) return undefined;
 		if (promptText !== undefined) {
 			if (this.#host.agent.state.messages.some(message => message.role === "user")) return undefined;
@@ -134,24 +139,27 @@ export class TodoTracker {
 			if (trimmedPromptText.endsWith("?") || trimmedPromptText.endsWith("!")) return undefined;
 		}
 		const activeToolNames = this.#host.getActiveToolNames();
-		if (!activeToolNames.includes("todo")) {
-			logger.warn("Eager todo enforcement skipped because todo is not active", { activeToolNames });
+		if (!activeToolNames.includes("checklist")) {
+			logger.warn("Eager checklist enforcement skipped because checklist is not active", { activeToolNames });
 			return undefined;
 		}
 		const message: AgentMessage = {
 			role: "custom",
-			customType: "eager-todo-prelude",
-			content: prompt.render(eagerTodoPrompt, { ...this.#buildEagerPreludeContext(), forced: mode === "always" }),
+			customType: "eager-checklist-prelude",
+			content: prompt.render(eagerChecklistPrompt, {
+				...this.#buildEagerPreludeContext(),
+				forced: mode === "always",
+			}),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
 		};
 		if (promptText === undefined || mode === "preferred") return { message };
 		const model = this.#host.model();
-		const toolChoice = buildNamedToolChoice("todo", model);
+		const toolChoice = buildNamedToolChoice("checklist", model);
 		if (!toolChoice) {
 			logger.warn(
-				"Eager todo proceeding with the reminder only because the current model does not support a forced todo tool_choice",
+				"Eager checklist proceeding with the reminder only because the current model does not support a forced checklist tool_choice",
 				{ modelApi: model?.api, modelId: model?.id },
 			);
 			return { message };
@@ -161,26 +169,26 @@ export class TodoTracker {
 
 	buildPostCompactionEagerNudges(): AgentMessage[] {
 		const nudges: AgentMessage[] = [];
-		const todo = this.createEagerTodoPrelude(undefined);
-		if (todo) nudges.push(todo.message);
+		const checklist = this.createEagerChecklistPrelude(undefined);
+		if (checklist) nudges.push(checklist.message);
 		return nudges;
 	}
 
 	async checkCompletion(message: AssistantMessage): Promise<boolean> {
 		if (this.#reminderAwaitingProgress) {
-			logger.debug("Todo completion: prior reminder still awaiting agent action; staying silent", {
+			logger.debug("Checklist completion: prior reminder still awaiting agent action; staying silent", {
 				attempt: this.#reminderCount,
 			});
 			return false;
 		}
-		if (!this.#host.settings.get("todo.reminders") || !this.#host.settings.get("todo.enabled")) {
+		if (!this.#host.settings.get("checklist.reminders") || !this.#host.settings.get("checklist.enabled")) {
 			this.#reminderCount = 0;
 			this.#reminderAwaitingProgress = false;
 			return false;
 		}
-		const remindersMax = this.#host.settings.get("todo.remindersMax");
+		const remindersMax = this.#host.settings.get("checklist.remindersMax");
 		if (this.#reminderCount >= remindersMax) {
-			logger.debug("Todo completion: max reminders reached", { count: this.#reminderCount });
+			logger.debug("Checklist completion: max reminders reached", { count: this.#reminderCount });
 			return false;
 		}
 		const phases = this.phases;
@@ -194,7 +202,7 @@ export class TodoTracker {
 				name: phase.name,
 				tasks: phase.tasks
 					.filter(
-						(task): task is TodoItem & { status: "pending" | "in_progress" } =>
+						(task): task is ChecklistItem & { status: "pending" | "in_progress" } =>
 							task.status === "pending" || task.status === "in_progress",
 					)
 					.map(task => ({ content: task.content, status: task.status })),
@@ -207,40 +215,40 @@ export class TodoTracker {
 			return false;
 		}
 		if (isAwaitingUserAnswer(message)) {
-			logger.debug("Todo completion: assistant is waiting for user input; skipping reminder", {
+			logger.debug("Checklist completion: assistant is waiting for user input; skipping reminder", {
 				incomplete: incomplete.length,
 			});
 			return false;
 		}
 		if (this.#host.hasPendingAsyncWake()) {
-			logger.debug("Todo completion: async jobs in flight will re-wake the loop; skipping reminder", {
+			logger.debug("Checklist completion: async jobs in flight will re-wake the loop; skipping reminder", {
 				incomplete: incomplete.length,
 			});
 			return false;
 		}
 		if (this.#host.hasActiveMonitors()) {
-			logger.debug("Todo completion: an active monitor will re-wake the loop; skipping reminder", {
+			logger.debug("Checklist completion: an active monitor will re-wake the loop; skipping reminder", {
 				incomplete: incomplete.length,
 			});
 			return false;
 		}
 		this.#reminderCount++;
-		const todoList = incompleteByPhase
+		const checklistList = incompleteByPhase
 			.map(phase => `- ${phase.name}\n${phase.tasks.map(task => `  - ${task.content}`).join("\n")}`)
 			.join("\n");
 		const reminder =
 			`<system-reminder>\n` +
-			`You stopped with ${incomplete.length} incomplete todo item(s):\n${todoList}\n\n` +
+			`You stopped with ${incomplete.length} incomplete checklist item(s):\n${checklistList}\n\n` +
 			`Please continue working on these tasks or mark them complete if finished.\n` +
 			`(Reminder ${this.#reminderCount}/${remindersMax})\n` +
 			`</system-reminder>`;
-		logger.debug("Todo completion: sending reminder", {
+		logger.debug("Checklist completion: sending reminder", {
 			incomplete: incomplete.length,
 			attempt: this.#reminderCount,
 		});
 		await this.#host.emitSessionEvent({
-			type: "todo_reminder",
-			todos: incomplete,
+			type: "checklist_reminder",
+			items: incomplete,
 			attempt: this.#reminderCount,
 			maxAttempts: remindersMax,
 		});
@@ -261,8 +269,8 @@ export class TodoTracker {
 	takeMidRunNudge(): AgentMessage | null {
 		if (this.#mutationsSinceLastTouch < MID_RUN_NUDGE_MUTATION_THRESHOLD) return null;
 		if (this.#midRunNudgeCount >= MID_RUN_NUDGE_MAX_PER_CYCLE) return null;
-		if (!this.#host.settings.get("todo.enabled") || !this.#host.settings.get("todo.reminders")) return null;
-		if (!this.#host.getActiveToolNames().includes("todo")) return null;
+		if (!this.#host.settings.get("checklist.enabled") || !this.#host.settings.get("checklist.reminders")) return null;
+		if (!this.#host.getActiveToolNames().includes("checklist")) return null;
 		const incomplete = this.#phases
 			.flatMap(phase => phase.tasks)
 			.filter(task => task.status === "pending" || task.status === "in_progress");
@@ -270,12 +278,12 @@ export class TodoTracker {
 		this.#mutationsSinceLastTouch = 0;
 		this.#midRunNudgeCount++;
 		const { toolRefs } = this.#buildEagerPreludeContext();
-		const reminder = prompt.render(midRunTodoNudgePrompt, {
+		const reminder = prompt.render(midRunChecklistNudgePrompt, {
 			toolRefs,
 			incompleteCount: incomplete.length,
 			plural: incomplete.length !== 1,
 		});
-		logger.debug("Mid-run todo nudge fired", {
+		logger.debug("Mid-run checklist nudge fired", {
 			incomplete: incomplete.length,
 			nudge: this.#midRunNudgeCount,
 		});
@@ -290,13 +298,15 @@ export class TodoTracker {
 	}
 
 	#buildEagerPreludeContext(): { toolRefs: Record<string, string> } {
-		const todo = this.#host.toolRegistry().get("todo");
+		const checklist = this.#host.toolRegistry().get("checklist");
 		return {
-			toolRefs: { todo: typeof todo?.customWireName === "string" ? todo.customWireName : "todo" },
+			toolRefs: {
+				checklist: typeof checklist?.customWireName === "string" ? checklist.customWireName : "checklist",
+			},
 		};
 	}
 
-	#clonePhases(phases: TodoPhase[]): TodoPhase[] {
+	#clonePhases(phases: ChecklistPhase[]): ChecklistPhase[] {
 		return phases.map(phase => ({
 			name: phase.name,
 			tasks: phase.tasks.map(task =>
