@@ -89,10 +89,11 @@ import {
 	replaceTabs,
 } from "./render-utils";
 import { extractLeadingCdTarget } from "./shell-tokenize";
-import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
+import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
-import { dispatchXdTarget, type XdBashDispatch, xdevListing } from "./xdev";
+import { dispatchXdArgv, type XdBashDispatch, xdevListing } from "./xdev";
+import { XdevUsageError } from "./xdev-cli";
 
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
 
@@ -756,7 +757,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				: "xd:// is not mounted in this session. Enable tools.xdev to mount discoverable tools as xd:// devices.";
 			return { content: [{ type: "text", text }], details: {} };
 		}
-		return (await dispatchXdTarget(this.session, parsed.name, parsed.content, {
+		return (await dispatchXdArgv(this.session, parsed.name, parsed.argv, parsed.stdin, parsed.stdinTruncated, {
 			toolCallId,
 			signal,
 			onUpdate: onUpdate as AgentToolUpdateCallback | undefined,
@@ -807,17 +808,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				});
 			}
 			throwIfAborted(signal);
-			const args = request.args ?? [];
-			const stdinArgs = args.length === 0 && (request.stdin ?? "").trim().length > 0 ? request.stdin : undefined;
-			if (request.name && stdinArgs !== undefined && request.stdinTruncated === true) {
-				return JSON.stringify({
-					stdout: "",
-					stderr: "xd: stdin exceeds the 1 MiB bridge limit; pass smaller JSON args\n",
-					exitCode: 125,
-				});
-			}
 			const parsed: XdBashDispatch = request.name
-				? { kind: "device", name: request.name, content: stdinArgs ?? args.join(" ") }
+				? {
+						kind: "device",
+						name: request.name,
+						argv: request.args ?? [],
+						stdin: request.stdin,
+						stdinTruncated: request.stdinTruncated,
+					}
 				: { kind: "listing" };
 			let result: AgentToolResult<BashToolDetails> | undefined;
 			try {
@@ -837,6 +835,13 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					(error instanceof Error && error.name === "AbortError")
 				)
 					throw error;
+				if (error instanceof XdevUsageError) {
+					return JSON.stringify({
+						stdout: "",
+						stderr: `${renderError(error)}\n`,
+						exitCode: 2,
+					});
+				}
 				const message = error instanceof Error ? error.message : String(error);
 				return JSON.stringify({ stdout: "", stderr: `xd: dispatcher failed: ${message}\n`, exitCode: 125 });
 			}

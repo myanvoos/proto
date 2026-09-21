@@ -55,8 +55,8 @@ function getBashXdRenderer(): ToolRenderer {
 		renderCall(args: unknown, options: RenderResultOptions, uiTheme: Theme): Component {
 			const xd = xdDeviceCallFromBashArgs(args);
 			if (xd) {
-				if (isResolutionDeviceName(xd.name)) return renderResolutionDeviceCall(xd.name, xd.content, uiTheme);
-				if (xd.name === REPORT_ISSUE_DEVICE_NAME) return renderReportIssueDeviceCall(xd.content, uiTheme);
+				if (isResolutionDeviceName(xd.name)) return renderResolutionDeviceCall(xd.name, xd.content ?? "", uiTheme);
+				if (xd.name === REPORT_ISSUE_DEVICE_NAME) return renderReportIssueDeviceCall(xd.content ?? "", uiTheme);
 				const context = (options as { renderContext?: { resolveXdevMounted?: (name: string) => unknown } })
 					.renderContext;
 				const delegated = renderXdevCall(
@@ -65,6 +65,7 @@ function getBashXdRenderer(): ToolRenderer {
 					options,
 					uiTheme,
 					context?.resolveXdevMounted as Parameters<typeof renderXdevCall>[4],
+					xd.argv,
 				);
 				if (delegated) return delegated;
 			}

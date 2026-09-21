@@ -1,13 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { type Tool as AiTool, toolWireSchema } from "@oh-my-pi/pi-ai";
-import {
-	formatCliUsageSynopsis,
-	formatXdevCliCommand,
-	parseXdevCliArgs,
-	XdevUsageError,
-	xdevFlagSpecs,
-} from "./xdev-cli";
+import { formatCliUsageSynopsis, formatXdevCliCommand, parseXdevCliArgs, xdevFlagSpecs } from "./xdev-cli";
 
 function schemaOf(parameters: unknown): Record<string, unknown> {
 	const tool = {
@@ -124,12 +118,15 @@ describe("parseXdevCliArgs", () => {
 		expect(() => parse(["--json", "-"], richSchema, "not json")).toThrow(/not a valid JSON object/);
 	});
 
-	test("bare stdin maps to JSON object, or plain text for a single string device", () => {
+	test("bare stdin maps to a JSON object; plain-text stdin is rejected", () => {
 		expect(parse([], richSchema, '{"value":"piped"}')).toEqual({ args: { value: "piped" }, viaJson: true });
 		const pathSchema = schemaOf(type({ path: "string" }));
-		expect(parseXdevCliArgs(pathSchema, [], { deviceName: "read", stdin: "src/file.ts\n" }).args).toEqual({
-			path: "src/file.ts\n",
+		expect(parseXdevCliArgs(pathSchema, [], { deviceName: "read", stdin: '{"path":"a.ts"}' }).args).toEqual({
+			path: "a.ts",
 		});
+		expect(() => parseXdevCliArgs(pathSchema, [], { deviceName: "read", stdin: "plain text" })).toThrow(
+			/piped stdin must be a JSON args object/,
+		);
 	});
 
 	test("jsonOnly devices accept only single JSON object args", () => {

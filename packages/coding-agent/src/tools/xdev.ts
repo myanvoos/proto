@@ -25,6 +25,7 @@ import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-to
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
 import { tokenizeShellSegments } from "./shell-tokenize";
 import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
+import { formatXdevCliCommand, parseXdevCliArgs, type XdevCliParseOptions } from "./xdev-cli";
 
 /**
  * Tool names that always stay top-level native tools, even if something declares them
@@ -52,6 +53,9 @@ export interface XdevDispatch {
 	mode: "help" | "execute";
 
 	args?: Record<string, unknown>;
+
+	/** Original shell argv when dispatched via the CLI form (`xd browser --action run`). */
+	argv?: string[];
 
 	inner?: unknown;
 
@@ -113,41 +117,7 @@ function unknownXdKeys(args: Record<string, unknown>, schema: Record<string, unk
 	return Object.keys(args).filter(key => !declared.has(key));
 }
 
-/** Closest accepted key for an unknown key, for "did you mean" hints in validation errors. */
-function suggestKnownKey(unknown: string, accepted: readonly string[]): string | undefined {
-	const lower = unknown.toLowerCase();
-	const caseless = accepted.find(key => key.toLowerCase() === lower);
-	if (caseless) return caseless;
-	let best: string | undefined;
-	let bestDistance = Number.POSITIVE_INFINITY;
-	for (const key of accepted) {
-		if (Math.abs(key.length - unknown.length) > 2) continue;
-		const distance = levenshtein(unknown.toLowerCase(), key.toLowerCase(), bestDistance);
-		if (distance < bestDistance) {
-			bestDistance = distance;
-			best = key;
-		}
-	}
-	return bestDistance <= 2 ? best : undefined;
-}
-
-function levenshtein(a: string, b: string, cap: number): number {
-	if (a === b) return 0;
-	let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
-	for (let i = 1; i <= a.length; i++) {
-		const current = [i];
-		let rowMin = i;
-		for (let j = 1; j <= b.length; j++) {
-			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-			const value = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
-			current.push(value);
-			if (value < rowMin) rowMin = value;
-		}
-		if (rowMin > cap) return cap + 1;
-		previous = current;
-	}
-	return previous[b.length];
-}
+import { suggestKnownKey } from "./xdev-cli";
 
 function validateXdArgs(
 	device: AiTool,
@@ -394,43 +364,45 @@ function resolveRequiredXdevTool(state: XdevState, name: string): Tool {
 	return inst;
 }
 
-function scopeReadArgsToCwd(content: string, cwd: string): string {
-	try {
-		const parsed: unknown = JSON.parse(content);
-		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return content;
-		const args = { ...(parsed as Record<string, unknown>) };
-		if (typeof args.path !== "string") return content;
-		const split = splitPathAndSel(args.path);
-		const resolved = isReadableUrlPath(split.path) ? split.path : resolveToCwd(split.path, cwd);
-		args.path = split.sel ? `${resolved}:${split.sel}` : resolved;
-		return JSON.stringify(args);
-	} catch {
-		return content;
-	}
+/** Scope a `read` device args object to the dispatching shell's working directory. */
+function scopeXdevReadArgs(args: Record<string, unknown>, cwd: string): void {
+	if (typeof args.path !== "string") return;
+	const split = splitPathAndSel(args.path);
+	const resolved = isReadableUrlPath(split.path) ? split.path : resolveToCwd(split.path, cwd);
+	args.path = split.sel ? `${resolved}:${split.sel}` : resolved;
 }
 
-export async function dispatchXdevTool(
+interface XdevExecuteOptions {
+	toolCallId: string;
+	signal?: AbortSignal;
+	onUpdate?: AgentToolUpdateCallback;
+	context?: AgentToolContext;
+	/** Original CLI argv, carried on the dispatch record for TUI previews. */
+	argv?: readonly string[];
+}
+
+async function executeResolvedXdev(
 	state: XdevState,
 	name: string,
-	content: string,
-	toolCallId: string,
-	signal?: AbortSignal,
-	onUpdate?: AgentToolUpdateCallback,
-	context?: AgentToolContext,
+	canonical: Tool,
+	args: Record<string, unknown>,
+	options: XdevExecuteOptions,
 ): Promise<{ result: AgentToolResult<unknown>; xdev: XdevDispatch }> {
-	let xdev: XdevDispatch = { tool: name, mode: "execute" };
+	const { toolCallId, signal, onUpdate, context } = options;
+	let xdev: XdevDispatch = {
+		tool: name,
+		mode: "execute",
+		...(options.argv && options.argv.length > 0 ? { argv: [...options.argv] } : {}),
+	};
 	try {
 		throwIfAborted(signal);
-		const canonical = resolveRequiredXdevTool(state, name);
-
-		if (HELP_CONTENT_RE.test(content)) {
-			return {
-				result: { content: [{ type: "text", text: renderDocs(canonical) }] },
-				xdev: { tool: name, mode: "help" },
-			};
-		}
-
-		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId);
+		const validated = validateXdArgs(
+			canonical as AiTool,
+			args,
+			toolCallId,
+			toolWireSchema(canonical as AiTool),
+			() => renderDocsParts(canonical).schema,
+		);
 		throwIfAborted(signal);
 		xdev = { ...xdev, args: validated };
 		const innerOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
@@ -441,8 +413,7 @@ export async function dispatchXdevTool(
 						isError: partial.isError,
 					})
 			: undefined;
-		const executable = canonical;
-		const result = await executable.execute(toolCallId, validated as never, signal, innerOnUpdate, context);
+		const result = await canonical.execute(toolCallId, validated as never, signal, innerOnUpdate, context);
 		return { result, xdev: { ...xdev, inner: result.details } };
 	} catch (error) {
 		if (
@@ -462,39 +433,78 @@ export async function dispatchXdevTool(
 	}
 }
 
-export type XdBashDispatch = { kind: "listing" } | { kind: "device"; name: string; content: string };
+export async function dispatchXdevTool(
+	state: XdevState,
+	name: string,
+	content: string,
+	toolCallId: string,
+	signal?: AbortSignal,
+	onUpdate?: AgentToolUpdateCallback,
+	context?: AgentToolContext,
+): Promise<{ result: AgentToolResult<unknown>; xdev: XdevDispatch }> {
+	const canonical = resolveRequiredXdevTool(state, name);
+	if (HELP_CONTENT_RE.test(content)) {
+		return {
+			result: { content: [{ type: "text", text: renderDocs(canonical) }] },
+			xdev: { tool: name, mode: "help" },
+		};
+	}
+	const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId);
+	return executeResolvedXdev(state, name, canonical, validated, { toolCallId, signal, onUpdate, context });
+}
+
+export type XdBashDispatch =
+	| { kind: "listing" }
+	| {
+			kind: "device";
+			name: string;
+			argv: string[];
+			stdin?: string;
+			stdinTruncated?: boolean;
+	  };
 
 export function parseXdBashCommand(argv: readonly string[]): XdBashDispatch | undefined {
 	if (argv.length === 0 || argv[0] !== "xd") return undefined;
 	const rest = argv.slice(1);
 	if (rest.length === 0 || (rest.length === 1 && HELP_CONTENT_RE.test(rest[0]))) return { kind: "listing" };
 	const [name, ...args] = rest;
-	if (isResolutionDeviceName(name) || name === REPORT_ISSUE_DEVICE_NAME) {
-		return { kind: "device", name, content: args.join(" ") };
-	}
-	if (args.length === 0) return { kind: "device", name, content: "" };
-	if (args.length === 1) return { kind: "device", name, content: args[0] };
-	return undefined;
+	return { kind: "device", name, argv: args };
 }
 
-export async function dispatchXdTarget(
+export interface XdDispatchOptions {
+	toolCallId: string;
+	signal?: AbortSignal;
+	onUpdate?: AgentToolUpdateCallback;
+	context?: AgentToolContext;
+	cwd?: string;
+}
+
+/** `xd <tool> ?` / `help` / `--help` variants request the docs card. */
+function isHelpArgv(argv: readonly string[]): boolean {
+	return argv.length > 0 && /^(?:\?|help|--help|-h)$/i.test(argv[0]);
+}
+
+/**
+ * Dispatch an `xd` invocation from the shell bridge: raw argv + captured stdin.
+ * CLI flags are mapped through the device wire schema; JSON payloads (single `{...}`
+ * positional, `--json`, bare stdin) stay first-class. XdevUsageError propagates so the
+ * bridge can exit 2 (usage) instead of 1 (tool failure).
+ */
+export async function dispatchXdArgv(
 	session: ToolSession,
 	name: string | undefined,
-	content: string,
-	options: {
-		toolCallId: string;
-		signal?: AbortSignal;
-		onUpdate?: AgentToolUpdateCallback;
-		context?: AgentToolContext;
-		cwd?: string;
-	},
+	argv: readonly string[],
+	stdin: string | undefined,
+	stdinTruncated: boolean | undefined,
+	options: XdDispatchOptions,
 ): Promise<AgentToolResult<unknown>> {
+	const textContent = argv.join(" ");
 	if (name === REPORT_ISSUE_DEVICE_NAME) {
-		const { result, xdev } = await dispatchReportIssueDevice(session, content);
+		const { result, xdev } = await dispatchReportIssueDevice(session, textContent);
 		return { ...result, details: { xdev } };
 	}
 	if (name !== undefined && isResolutionDeviceName(name)) {
-		const { result, xdev } = await dispatchResolutionDevice(session, name, content, options.signal);
+		const { result, xdev } = await dispatchResolutionDevice(session, name, textContent, options.signal);
 		return { ...result, details: { xdev } };
 	}
 	const xdev = session.xdev;
@@ -504,17 +514,41 @@ export async function dispatchXdTarget(
 	if (!name) {
 		throw new ToolError(`Cannot dispatch to ${XD_URL_PREFIX} itself — pick a device:\n${xdevListing(xdev)}`);
 	}
-	const scopedContent = name === "read" && options.cwd ? scopeReadArgsToCwd(content, options.cwd) : content;
-	const { result, xdev: dispatch } = await dispatchXdevTool(
-		xdev,
-		name,
-		scopedContent,
-		options.toolCallId,
-		options.signal,
-		options.onUpdate,
-		options.context,
-	);
+	const canonical = resolveRequiredXdevTool(xdev, name);
+
+	if (isHelpArgv(argv)) {
+		return {
+			content: [{ type: "text", text: renderDocs(canonical) }],
+			details: { xdev: { tool: name, mode: "help" } },
+		};
+	}
+
+	const parseOptions: XdevCliParseOptions = {
+		deviceName: name,
+		stdin,
+		stdinTruncated,
+		jsonOnly: parseMCPToolName(name) !== null,
+	};
+	const parsed = parseXdevCliArgs(toolWireSchema(canonical as AiTool), argv, parseOptions);
+	if (name === "read" && options.cwd) scopeXdevReadArgs(parsed.args, options.cwd);
+	const { result, xdev: dispatch } = await executeResolvedXdev(xdev, name, canonical, parsed.args, {
+		toolCallId: options.toolCallId,
+		signal: options.signal,
+		onUpdate: options.onUpdate,
+		context: options.context,
+		argv,
+	});
 	return { ...result, details: { xdev: dispatch } };
+}
+
+/** Compatibility entry: dispatch a device from its legacy single-string content form. */
+export async function dispatchXdTarget(
+	session: ToolSession,
+	name: string | undefined,
+	content: string,
+	options: XdDispatchOptions,
+): Promise<AgentToolResult<unknown>> {
+	return dispatchXdArgv(session, name, content.length > 0 ? [content] : [], undefined, undefined, options);
 }
 
 function resolveDeviceRenderer(
@@ -690,13 +724,20 @@ function renderXdevHelpCard(
  * The xd device call when `args.command` is exactly one xd invocation (no chaining, no
  * surrounding commands). Composite commands render through the composite card instead.
  */
-export function xdDeviceCallFromBashArgs(args: unknown): { name: string; content: string } | undefined {
+export function xdDeviceCallFromBashArgs(
+	args: unknown,
+): { name: string; content?: string; argv?: string[] } | undefined {
 	const command = (args as { command?: unknown } | undefined)?.command;
 	if (typeof command !== "string") return undefined;
 	const segments = tokenizeShellSegments(command);
 	if (segments.length !== 1) return undefined;
 	const parsed = parseXdBashCommand(segments[0]);
-	return parsed?.kind === "device" ? { name: parsed.name, content: parsed.content } : undefined;
+	if (parsed?.kind !== "device") return undefined;
+	if (parsed.argv.length === 1) {
+		// Single-token form: legacy JSON object payload, MCP JSON, or a plain-text device arg.
+		return { name: parsed.name, content: parsed.argv[0], argv: parsed.argv };
+	}
+	return { name: parsed.name, argv: parsed.argv };
 }
 
 function renderQueuedXdevCall(
@@ -715,24 +756,50 @@ function renderQueuedXdevCall(
 	);
 }
 
+/** Best-effort CLI argv → args for call previews; parse failures render an empty preview. */
+function argsFromXdevArgv(mounted: Tool | undefined, name: string, argv: readonly string[]): Record<string, unknown> {
+	if (!mounted) return {};
+	try {
+		return parseXdevCliArgs(toolWireSchema(mounted as AiTool), argv, {
+			deviceName: name,
+			jsonOnly: parseMCPToolName(name) !== null,
+		}).args;
+	} catch {
+		return {};
+	}
+}
+
 export function renderXdevCall(
 	name: string,
 	content: unknown,
 	options: RenderResultOptions,
 	theme: Theme,
 	resolveMounted?: (name: string) => Tool | undefined,
+	argv?: readonly string[],
 ): Component | undefined {
 	const mounted = resolveMounted?.(name);
-	if (typeof content === "string" && HELP_CONTENT_RE.test(content)) {
+	const isHelpCall = (typeof content === "string" && HELP_CONTENT_RE.test(content)) || argv?.[0] === "?";
+	if (isHelpCall) {
 		return renderDefaultToolExecution({ label: `xd ${displayDeviceLabel(name, mounted)}`, args: {}, options }, theme);
 	}
-	const args = decodeInnerArgs(content);
+	let args: Record<string, unknown>;
+	if (typeof content === "string" && content.length > 0) {
+		args = decodeInnerArgs(content);
+	} else if (argv && argv.length > 0) {
+		args = argsFromXdevArgv(mounted, name, argv);
+	} else {
+		args = {};
+	}
 	if (!options.executionStarted) {
 		return renderQueuedXdevCall(displayDeviceLabel(name, mounted), args, options, theme);
 	}
 	const renderer = resolveDeviceRenderer(name, mounted);
 	if (renderer?.renderCall) {
 		return renderer.renderCall(args, options, theme);
+	}
+	if (argv && argv.length > 0) {
+		// No device-specific renderer: preview the typed CLI command instead of JSON args.
+		return renderDefaultToolExecution({ label: formatXdevCliCommand(name, args), args: {}, options }, theme);
 	}
 	return renderDefaultToolExecution({ label: mounted?.label ?? name, args, options }, theme);
 }
@@ -743,7 +810,7 @@ export function renderXdevResult(
 	options: RenderResultOptions,
 	theme: Theme,
 	resolveMounted?: (name: string) => Tool | undefined,
-	singleCall?: { name: string; content: string },
+	singleCall?: { name: string; content?: string; argv?: string[] },
 ): Component | undefined {
 	const dispatches = Array.isArray(dispatch) ? dispatch : [dispatch];
 	const text = result.content

@@ -148,7 +148,7 @@ const XDEV_POSITIONAL_ORDER: Record<string, readonly string[]> = {
 	orchestrate_kill: ["id"],
 	browser: ["action", "name", "url", "code"],
 	monitor: ["op", "command", "match"],
-	fleet: ["op", "to", "message"],
+	fleet: ["to", "message"],
 	computer: ["code"],
 	checkpoint: ["op"],
 	rewind: ["op"],
@@ -385,6 +385,27 @@ export function parseXdevCliArgs(
 		);
 	}
 
+	const order = positionalOrder(options.deviceName, schema).filter(prop => !(prop in args));
+
+	// Bare stdin with no argv keeps the existing JSON-payload behavior.
+	if (
+		positionals.length === 0 &&
+		Object.keys(args).length === 0 &&
+		explicitJson === undefined &&
+		options.stdin &&
+		options.stdin.trim().length > 0
+	) {
+		if (options.stdinTruncated) {
+			throw new XdevUsageError("xd: stdin exceeds the 1 MiB bridge limit; pass smaller JSON args");
+		}
+		const parsedJson = tryParseJsonObject(options.stdin.trim());
+		if (parsedJson) return { args: parsedJson, viaJson: true };
+		const firstFlag = order[0];
+		throw new XdevUsageError(
+			`xd ${options.deviceName}: piped stdin must be a JSON args object (text payloads: --${firstFlag ?? "<flag>"} -)`,
+		);
+	}
+
 	if (options.jsonOnly) {
 		if (positionals.length === 1) {
 			const parsed = tryParseJsonObject(positionals[0]);
@@ -400,7 +421,6 @@ export function parseXdevCliArgs(
 		);
 	}
 
-	const order = positionalOrder(options.deviceName, schema).filter(prop => !(prop in args));
 	for (const token of positionals) {
 		const prop = order.shift();
 		if (!prop) {
@@ -424,28 +444,6 @@ export function parseXdevCliArgs(
 			args[prop] = token === "true" || token === "yes";
 		} else {
 			args[prop] = parseScalarToken(spec, token, prop);
-		}
-	}
-
-	// Bare stdin with no argv keeps the existing JSON-payload behavior; plain-text stdin maps to
-	// the first remaining positional property when it is a plain string field.
-	if (
-		positionals.length === 0 &&
-		Object.keys(args).length === 0 &&
-		explicitJson === undefined &&
-		options.stdin &&
-		options.stdin.trim().length > 0
-	) {
-		if (options.stdinTruncated) {
-			throw new XdevUsageError("xd: stdin exceeds the 1 MiB bridge limit; pass smaller JSON args");
-		}
-		const trimmed = options.stdin.trim();
-		const parsedJson = looksLikeJson(trimmed) ? tryParseJsonObject(trimmed) : undefined;
-		if (parsedJson) return { args: parsedJson, viaJson: true };
-		const prop = order[0];
-		const spec = prop ? specByName.get(prop) : undefined;
-		if (spec && spec.type === "string") {
-			return { args: { [prop]: options.stdin }, viaJson: false };
 		}
 	}
 
@@ -575,4 +573,35 @@ export function formatCliFlagReference(name: string, tool: AiTool): string {
 			"` with piped stdin takes a JSON object (or the plain payload for single-string devices).",
 	);
 	return lines.join("\n");
+}
+
+/** Schema-less best-effort argv → {args, positionals} for consumers that classify commands without a tool schema. */
+export function probeXdevCliArgs(argv: readonly string[]): {
+	args: Record<string, unknown>;
+	positionals: string[];
+} {
+	const args: Record<string, unknown> = {};
+	const positionals: string[] = [];
+	let endOfFlags = false;
+	for (let i = 0; i < argv.length; i++) {
+		const token = argv[i];
+		if (!endOfFlags && token === "--") {
+			endOfFlags = true;
+			continue;
+		}
+		if (!endOfFlags && token.startsWith("--") && token.length > 2) {
+			const body = token.slice(2);
+			const eq = body.indexOf("=");
+			const flag = eq === -1 ? body : body.slice(0, eq);
+			let value: unknown = eq === -1 ? argv[i + 1] : body.slice(eq + 1);
+			if (eq === -1 && value === undefined) value = true;
+			if (eq === -1) i++;
+			if (value === "true") value = true;
+			else if (value === "false") value = false;
+			args[flag] = value;
+			continue;
+		}
+		positionals.push(token);
+	}
+	return { args, positionals };
 }

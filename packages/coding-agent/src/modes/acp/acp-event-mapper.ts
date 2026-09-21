@@ -12,6 +12,7 @@ import type { ChecklistStatus } from "../../tools/checklist";
 import { resolveToCwd } from "../../tools/path-utils";
 import { tokenizeShellSegments } from "../../tools/shell-tokenize";
 import { parseXdBashCommand } from "../../tools/xdev";
+import { probeXdevCliArgs } from "../../tools/xdev-cli";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 
 interface MessageProgress {
@@ -139,20 +140,38 @@ function isInternalFleetMessageTool(toolName: string, args: unknown): boolean {
 		if (xdevDispatchDevice(toolName, args) !== "fleet" || typeof args !== "object" || args === null) {
 			return false;
 		}
-		let content: unknown;
 		if (toolName === "bash") {
 			const command = extractStringProperty<{ command?: string }>(args, "command");
 			const segments = command ? tokenizeShellSegments(command) : [];
 			const parsed = segments.length === 1 ? parseXdBashCommand(segments[0]) : undefined;
-			content = parsed?.kind === "device" ? parsed.content : undefined;
+			if (parsed?.kind !== "device") return false;
+			if (parsed.argv.length === 1) {
+				try {
+					hubArgs = JSON.parse(parsed.argv[0]);
+				} catch {
+					return false;
+				}
+			} else {
+				// CLI form: schema-less flag probe + fleet's positional order (to, message).
+				const probe = probeXdevCliArgs(parsed.argv);
+				const probeArgs: Record<string, unknown> = { ...probe.args };
+				const [to, message] = probe.positionals;
+				if (to !== undefined && probeArgs.to === undefined) probeArgs.to = to;
+				if (message !== undefined && probeArgs.message === undefined) probeArgs.message = message;
+				if (probeArgs.op === undefined) {
+					if (probeArgs.to !== undefined || probeArgs.message !== undefined) probeArgs.op = "send";
+					else if (probeArgs.from !== undefined) probeArgs.op = "wait";
+				}
+				hubArgs = probeArgs;
+			}
 		} else {
-			content = Reflect.get(args, "content");
-		}
-		if (typeof content !== "string") return false;
-		try {
-			hubArgs = JSON.parse(content);
-		} catch {
-			return false;
+			const content = Reflect.get(args, "content");
+			if (typeof content !== "string") return false;
+			try {
+				hubArgs = JSON.parse(content);
+			} catch {
+				return false;
+			}
 		}
 	}
 	if (typeof hubArgs !== "object" || hubArgs === null) return false;

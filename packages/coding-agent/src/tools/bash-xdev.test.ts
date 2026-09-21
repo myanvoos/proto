@@ -410,8 +410,8 @@ test("piped stdin supplies the xd JSON args when no positional args are given", 
 		});
 		expect(textOf(explicit)).toContain("probe:arg\n");
 		const invalid = await bash.execute("xd-stdin-invalid", { command: `printf 'nope' | xd probe; echo rc=$?` });
-		expect(textOf(invalid)).toContain("expects a JSON args object");
-		expect(textOf(invalid)).toContain("rc=1");
+		expect(textOf(invalid)).toContain("piped stdin must be a JSON args object");
+		expect(textOf(invalid)).toContain("rc=2");
 		expect(state.calls).toEqual(["from-stdin", "first", "first-again", "arg"]);
 	});
 });
@@ -805,4 +805,48 @@ test("a backgrounded command renders as pending, not failed", () => {
 	const rendered = renderBashResult(result, "sleep 30", false);
 	expect(rendered).not.toContain("failed");
 	expect(rendered).toContain(`Backgrounded: ${jobId}`);
+});
+
+test("xd CLI flags dispatch through the schema without JSON quoting", async () => {
+	await withBash(async (bash, state) => {
+		const result = await bash.execute("xd-cli-flags", { command: `xd probe --value one` });
+		expect(result.isError).not.toBe(true);
+		expect(textOf(result)).toContain("probe:one\n");
+		expect(state.calls).toEqual(["one"]);
+
+		const mixed = await bash.execute("xd-cli-positional", { command: `xd probe two` });
+		expect(textOf(mixed)).toContain("probe:two\n");
+		expect(state.calls).toEqual(["one", "two"]);
+	});
+});
+
+test("xd CLI usage failures exit 2 while tool failures exit 1", async () => {
+	await withBash(async bash => {
+		const usage = await bash.execute("xd-usage-exit", { command: `xd probe --vale x; echo rc=$?` });
+		expect(textOf(usage)).toContain("unknown flag --vale (did you mean --value?)");
+		expect(textOf(usage)).toContain("rc=2");
+
+		const missing = await bash.execute("xd-missing-value-exit", { command: `xd probe --value; echo rc=$?` });
+		expect(textOf(missing)).toContain("needs a value");
+		expect(textOf(missing)).toContain("rc=2");
+
+		const toolFailure = await bash.execute("xd-tool-exit", { command: `xd probe '{"value":"fail"}'; echo rc=$?` });
+		expect(textOf(toolFailure)).toContain("rc=1");
+	});
+});
+
+test("xd CLI renders flag-style calls through device renderers", async () => {
+	await withBash(async (bash, _state, session) => {
+		const command = `xd probe --value cli`;
+		const result = await bash.execute("xd-cli-render", { command });
+		const resolveXdevMounted = (name: string) => {
+			const xdev = session.xdev;
+			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+		};
+		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
+		// The device's own renderer engages for CLI-form calls: label + parsed args preview.
+		expect(rendered).toContain("Probe");
+		expect(rendered).toContain('value="cli"');
+		expect(rendered).toContain("probe:cli");
+	});
 });
