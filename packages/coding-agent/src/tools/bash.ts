@@ -41,6 +41,7 @@ import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import { resolveSpawnPolicy } from "../task/spawn-policy";
+import { splitShellCommands } from "./bash-command-split";
 import "./kernel-prelude";
 import type {
 	ClientBridgeTerminalExitStatus,
@@ -1902,9 +1903,33 @@ function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme, outlineWid
 		outlineWidth === undefined
 			? undefined
 			: renderShellWithCellOutlines(command, bashDisplayCells(command), "bash", uiTheme, outlineWidth);
-	const highlightedLines = outlined?.lines ?? highlightCode(replaceTabs(command), "bash");
-	if (highlightedLines.length === 0) return [prefix.trimEnd()];
-	return highlightedLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+	if (outlined) {
+		return outlined.lines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+	}
+
+	// Multi-statement commands render one subcommand per line, aligned under
+	// the first and led by the operator that introduced them (`&&`, `;`, `|`,
+	// ...). Newline-separated lines stack without an operator.
+	const segments = splitShellCommands(command);
+	if (segments.length <= 1) {
+		const highlightedLines = highlightCode(replaceTabs(command), "bash");
+		if (highlightedLines.length === 0) return [prefix.trimEnd()];
+		return highlightedLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+	}
+	const continuationIndent = " ".repeat(Bun.stringWidth(`${prefixParts.join(" ")} `));
+	const lines: string[] = [];
+	for (const [i, segment] of segments.entries()) {
+		const operator =
+			segment.separator === "" || segment.separator === "\n" || segment.separator === "\r"
+				? ""
+				: uiTheme.fg("dim", `${segment.separator} `);
+		const indent = i === 0 ? prefix : continuationIndent;
+		const segmentLines = highlightCode(replaceTabs(segment.raw), "bash");
+		for (const [j, line] of segmentLines.entries()) {
+			lines.push(j === 0 ? `${indent}${operator}${line}` : `${continuationIndent}${line}`);
+		}
+	}
+	return lines.length > 0 ? lines : [prefix.trimEnd()];
 }
 
 // A heredoc that writes a source file carries code the same way a kernel cell
