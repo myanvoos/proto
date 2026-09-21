@@ -382,7 +382,6 @@ interface XdevExecuteOptions {
 }
 
 async function executeResolvedXdev(
-	state: XdevState,
 	name: string,
 	canonical: Tool,
 	args: Record<string, unknown>,
@@ -450,7 +449,7 @@ export async function dispatchXdevTool(
 		};
 	}
 	const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId);
-	return executeResolvedXdev(state, name, canonical, validated, { toolCallId, signal, onUpdate, context });
+	return executeResolvedXdev(name, canonical, validated, { toolCallId, signal, onUpdate, context });
 }
 
 export type XdBashDispatch =
@@ -531,7 +530,7 @@ export async function dispatchXdArgv(
 	};
 	const parsed = parseXdevCliArgs(toolWireSchema(canonical as AiTool), argv, parseOptions);
 	if (name === "read" && options.cwd) scopeXdevReadArgs(parsed.args, options.cwd);
-	const { result, xdev: dispatch } = await executeResolvedXdev(xdev, name, canonical, parsed.args, {
+	const { result, xdev: dispatch } = await executeResolvedXdev(name, canonical, parsed.args, {
 		toolCallId: options.toolCallId,
 		signal: options.signal,
 		onUpdate: options.onUpdate,
