@@ -22,6 +22,7 @@ import {
 } from "../../config/model-resolver";
 import { getRoleInfo } from "../../config/model-roles";
 import { settings } from "../../config/settings";
+import type { TreeFilterMode } from "../../config/settings-schema";
 import { disableProvider, enableProvider } from "../../discovery";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
@@ -54,7 +55,7 @@ import {
 	persistForeignSession,
 } from "../../session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource } from "../../session/foreign-session-store";
-import type { SessionEntry } from "../../session/session-entries";
+import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { SessionInfo } from "../../session/session-listing";
 import { readSessionLiveState } from "../../session/session-liveness";
 import { SessionManager } from "../../session/session-manager";
@@ -1164,7 +1165,7 @@ export class SelectorController {
 		this.ctx.ui.requestRender();
 	}
 
-	showTreeSelector(): void {
+	showTreeSelector(options?: { filterMode?: TreeFilterMode }): void {
 		const tree = this.ctx.sessionManager.getTree();
 		const realLeafId = this.ctx.sessionManager.getLeafId();
 
@@ -1312,7 +1313,7 @@ export class SelectorController {
 					this.ctx.sessionManager.appendLabelChange(entryId, label);
 					this.ctx.ui.requestRender();
 				},
-				settings.get("treeFilterMode"),
+				options?.filterMode ?? settings.get("treeFilterMode"),
 			);
 			return { component: selector, focus: selector };
 		});
@@ -2012,4 +2013,65 @@ export class SelectorController {
 			showReadyFleet();
 		}
 	}
+
+	/**
+	 * Session entry id of the most recent assistant message that carries prose.
+	 * Bookmarks anchor here so `/annotate` labels the response the user just read.
+	 */
+	#lastAssistantEntryId(): string | undefined {
+		const entries = this.ctx.sessionManager.getEntries();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			const hasText = entry.message.content.some(block => block.type === "text" && block.text.trim().length > 0);
+			if (hasText) return entry.id || undefined;
+		}
+		return undefined;
+	}
+
+	/**
+	 * Bookmark the last agent response by labelling its session-tree node. An
+	 * empty note clears the bookmark; cancelling the prompt leaves it untouched.
+	 */
+	async annotateLastResponse(note?: string): Promise<void> {
+		const entryId = this.#lastAssistantEntryId();
+		if (!entryId) {
+			this.ctx.showStatus("No agent response to bookmark yet");
+			return;
+		}
+
+		const current = this.ctx.sessionManager.getLabel(entryId);
+		let label = note?.trim();
+		if (label === undefined) {
+			const entered = await this.ctx.showHookEditor("Bookmark note (empty clears)", current ?? "");
+			if (entered === undefined) return;
+			label = entered.trim();
+		}
+
+		try {
+			this.ctx.sessionManager.appendLabelChange(entryId, label.length > 0 ? label : undefined);
+		} catch (error) {
+			this.ctx.showError(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		this.ctx.showStatus(label.length > 0 ? `Bookmarked: ${label}` : "Bookmark cleared");
+		this.ctx.ui.requestRender();
+	}
+
+	/** Browse bookmarks: the session tree filtered to labelled nodes. */
+	showBookmarks(): void {
+		if (!hasLabelledNode(this.ctx.sessionManager.getTree())) {
+			this.ctx.showStatus("No bookmarks yet — /annotate bookmarks the last response");
+			return;
+		}
+		this.showTreeSelector({ filterMode: "labeled-only" });
+	}
+}
+
+function hasLabelledNode(nodes: readonly SessionTreeNode[]): boolean {
+	for (const node of nodes) {
+		if (node.label !== undefined) return true;
+		if (hasLabelledNode(node.children)) return true;
+	}
+	return false;
 }

@@ -37,6 +37,7 @@ import { reset as resetCapabilities } from "../capability";
 import { KeybindingsManager } from "../config/keybindings";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { isSettingsInitialized, Settings, settings } from "../config/settings";
+import type { TreeFilterMode } from "../config/settings-schema";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AutocompleteProviderFactory,
@@ -2893,8 +2894,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showCopySelector();
 	}
 
-	showTreeSelector(): void {
-		this.#selectorController.showTreeSelector();
+	showTreeSelector(options?: { filterMode?: TreeFilterMode }): void {
+		this.#selectorController.showTreeSelector(options);
+	}
+
+	annotateLastResponse(note?: string): Promise<void> {
+		return this.#selectorController.annotateLastResponse(note);
+	}
+
+	showBookmarks(): void {
+		this.#selectorController.showBookmarks();
 	}
 
 	showSessionSelector(source?: ForeignSessionSource): void {

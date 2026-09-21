@@ -4,6 +4,7 @@ import type { AssistantMessage, ImageContent, Usage, UsageReport } from "@oh-my-
 import type { Component, Container, EditorTheme, Loader, Spacer, Text, TUI } from "@oh-my-pi/pi-tui";
 import type { KeybindingsManager } from "../config/keybindings";
 import type { Settings } from "../config/settings";
+import type { TreeFilterMode } from "../config/settings-schema";
 import type {
 	AutocompleteProviderFactory,
 	ExtensionCustomOptions,
@@ -336,7 +337,9 @@ export interface InteractiveModeContext {
 	showPluginSelector(mode?: "install" | "uninstall"): void;
 	showUserMessageSelector(): void;
 	showCopySelector(): void;
-	showTreeSelector(): void;
+	showTreeSelector(options?: { filterMode?: TreeFilterMode }): void;
+	annotateLastResponse(note?: string): Promise<void>;
+	showBookmarks(): void;
 	showSessionSelector(source?: ForeignSessionSource): void;
 	handleResumeSession(sessionPath: string): Promise<void>;
 	handleSessionDeleteCommand(): Promise<void>;

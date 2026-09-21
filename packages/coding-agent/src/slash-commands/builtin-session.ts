@@ -449,6 +449,21 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "annotate",
+		description: "Bookmark the last response (labels it in the session tree)",
+		allowArgs: true,
+		subcommands: [{ name: "view", description: "Browse bookmarked points in the session tree" }],
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			const arg = command.args.trim();
+			if (arg === "view") {
+				runtime.ctx.showBookmarks();
+				return;
+			}
+			await runtime.ctx.annotateLastResponse(arg.length > 0 ? arg : undefined);
+		},
+	},
+	{
 		name: "login",
 		description: "Login with OAuth provider",
 		inlineHint: "[provider|redirect URL]",
