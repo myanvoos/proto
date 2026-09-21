@@ -27,6 +27,8 @@ export class SessionFocusController {
 	async focusAgent(id: string): Promise<void> {
 		if (id === MAIN_AGENT_ID) return this.unfocus();
 		const session = await this.lifecycle().ensureLive(id);
+		// After ensureLive, because reviving a parked agent re-arms its idle timer on the way out.
+		this.lifecycle().holdForFocus(id);
 		if (id === this.#focusedAgentId && session === this.#attachedSession) return;
 		this.#focusedAgentId = id;
 		this.#attachedSession = session;
@@ -46,6 +48,7 @@ export class SessionFocusController {
 
 	async unfocus(): Promise<void> {
 		if (!this.#focusedAgentId) return;
+		this.lifecycle().holdForFocus(undefined);
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = undefined;
 		await this.#attach(this.ctx.session);
@@ -53,12 +56,14 @@ export class SessionFocusController {
 	}
 
 	async attachSwappedMain(target: AgentSession): Promise<void> {
+		this.lifecycle().holdForFocus(undefined);
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = target;
 		await this.#attach(target);
 	}
 
 	dispose(): void {
+		if (this.#focusedAgentId) this.lifecycle().holdForFocus(undefined);
 		this.#registryUnsubscribe?.();
 		this.#registryUnsubscribe = undefined;
 	}
@@ -81,6 +86,7 @@ export class SessionFocusController {
 	}
 
 	async #recoverRegistryUnfocus(error: unknown): Promise<void> {
+		this.lifecycle().holdForFocus(undefined);
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = undefined;
 		try {

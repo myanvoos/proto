@@ -77,6 +77,7 @@ export class AgentLifecycleManager {
 			current.#adopted.clear();
 			current.#revivals.clear();
 			current.#parks.clear();
+			current.#focusHeldId = undefined;
 			current.#persistedReviverFactory = undefined;
 		}
 		AgentLifecycleManager.#global = undefined;
@@ -88,6 +89,7 @@ export class AgentLifecycleManager {
 	readonly #parks = new Map<string, ParkInFlight>();
 
 	readonly #revivals = new Map<string, RevivingAgent>();
+	#focusHeldId: string | undefined;
 	#unsubscribe: (() => void) | undefined;
 	#persistedReviverFactory: PersistedSubagentReviverFactory | undefined;
 
@@ -121,6 +123,24 @@ export class AgentLifecycleManager {
 		};
 		this.#adopted.set(id, adopted);
 		this.#armTimer(id, adopted);
+	}
+
+	// The user reading or typing to an agent is activity the idle TTL cannot see: without this hold a
+	// focused agent parks mid-conversation and the view snaps back to the main session.
+	holdForFocus(id: string | undefined): void {
+		const released = this.#focusHeldId;
+		if (released === id) return;
+		this.#focusHeldId = id;
+		if (id !== undefined) {
+			const held = this.#adopted.get(id);
+			if (held?.timer) {
+				clearTimeout(held.timer);
+				held.timer = undefined;
+			}
+		}
+		if (released === undefined) return;
+		const adopted = this.#adopted.get(released);
+		if (adopted && this.#registry.get(released)?.status === "idle") this.#armTimer(released, adopted);
 	}
 
 	has(id: string, expected?: AgentRefExpectation): boolean {
@@ -344,6 +364,7 @@ export class AgentLifecycleManager {
 	async dispose(deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
 		this.#unsubscribe?.();
 		this.#disposed = true;
+		this.#focusHeldId = undefined;
 		this.#unsubscribe = undefined;
 		const ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])];
 		await this.#releaseWithinDeadline(ids, deadlineAt);
@@ -411,8 +432,9 @@ export class AgentLifecycleManager {
 
 	#armTimer(id: string, adopted: AdoptedAgent): void {
 		// Side agents (`/side --agent`) are a background conversation the user owns, not a task runner
-		// the orchestrator reclaims: they stay live until released explicitly or the lifecycle shuts down.
-		if (adopted.idleTtlMs <= 0 || adopted.ref.kind === "side") return;
+		// the orchestrator reclaims, and a focused agent is one the user is actively reading or typing
+		// to: neither is idle in the sense this timer reclaims.
+		if (adopted.idleTtlMs <= 0 || adopted.ref.kind === "side" || this.#focusHeldId === id) return;
 		clearTimeout(adopted.timer);
 		const timer = setTimeout(() => {
 			adopted.timer = undefined;

@@ -62,13 +62,17 @@ test("registry-driven unfocus restores the main subscription and surfaces attach
 		status: "running",
 		session: focusedSession,
 	});
+	const holds: Array<string | undefined> = [];
 	const lifecycle = {
 		ensureLive: async () => focusedSession,
+		holdForFocus: (id: string | undefined) => holds.push(id),
 	} as unknown as AgentLifecycleManager;
 	const controller = new SessionFocusController(context, registry, () => lifecycle);
 	try {
 		await controller.focusAgent("focused-worker");
 		expect(focusedSubscriptions).toBe(1);
+		// Focus pins the agent against the idle reclaim timer for as long as it is on screen.
+		expect(holds).toEqual(["focused-worker"]);
 
 		failNextMainSubscription = true;
 		expect(registry.setStatus("focused-worker", "parked")).toBe(true);
@@ -78,6 +82,7 @@ test("registry-driven unfocus restores the main subscription and surfaces attach
 
 		expect(controller.focusedAgentId).toBeUndefined();
 		expect(controller.target).toBeUndefined();
+		expect(holds).toEqual(["focused-worker", undefined]);
 		expect(focusedSubscriptions).toBe(0);
 		expect(mainSubscriptions).toBe(1);
 		expect(errors).toEqual(["Failed to return to the main session: main subscription failed once"]);

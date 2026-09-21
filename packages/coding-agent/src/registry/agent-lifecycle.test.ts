@@ -92,6 +92,32 @@ describe("idle auto-park", () => {
 		vi.useRealTimers();
 	});
 
+	test("focusing an idle subagent holds it live until focus moves on", async () => {
+		vi.useFakeTimers();
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const session = registerIdle(registry, "worker", "sub");
+		lifecycle.adopt("worker", { idleTtlMs: 30_000 });
+
+		lifecycle.holdForFocus("worker");
+		// The realistic sequence: you focus a worker mid-turn, it finishes, and going idle is what
+		// re-arms the reclaim timer underneath you.
+		registry.setStatus("worker", "running", session);
+		registry.setStatus("worker", "idle", session);
+		vi.advanceTimersByTime(120_000);
+		expect(registry.get("worker")).toMatchObject({ status: "idle", session });
+
+		// Releasing focus re-arms the timer rather than leaving the agent pinned forever.
+		lifecycle.holdForFocus(undefined);
+		vi.advanceTimersByTime(30_001);
+
+		await lifecycle.park("worker");
+		expect(registry.get("worker")).toMatchObject({ status: "parked", session: null });
+
+		vi.useRealTimers();
+		await lifecycle.dispose();
+	});
+
 	test("an idle subagent parks once its TTL elapses but a side agent stays live", async () => {
 		vi.useFakeTimers();
 		const registry = new AgentRegistry();
