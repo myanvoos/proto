@@ -14,6 +14,7 @@
 - Focusing any agent — worker, subagent or side agent — keeps it live while you read or type: it no longer parks out from under you after the idle TTL and bounces the view back to the main session.
 - Default themes (`proto`, `light`) adopt the Catppuccin Mocha/Latte syntax palette (the one Codex CLI uses): command names blue, keywords mauve, flags and variables red, strings green, numbers peach, operators teal, comments and punctuation quiet gray.
 - Multi-statement bash commands render one subcommand per line in the tool view, aligned under the first command and led by the operator that introduced them (`&&`, `;`, `|`, ...); quoted strings, heredoc bodies, and fd duplications like `2>&1` never split.
+- Bash command syntax highlighting now applies only while the tool cell is streaming; once the cell commits to scrollback the command renders as plain text.
 
 ## [18.2.0] - 2026-09-20
 

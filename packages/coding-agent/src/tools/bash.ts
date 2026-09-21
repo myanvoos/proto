@@ -1890,7 +1890,14 @@ function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unknown> | u
 
 // `outlineWidth` renders the settled view: each embedded code region becomes an
 // AST outline inside the surrounding shell source. Omit it for the raw listing.
-function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme, outlineWidth?: number): string[] {
+// `highlight` syntax-colors the shell source; only the live, in-progress cell
+// may use it. Once the cell commits to scrollback the command renders plain.
+function formatBashCommandLines(
+	args: BashRenderArgs,
+	uiTheme: Theme,
+	outlineWidth?: number,
+	highlight = true,
+): string[] {
 	const command = args.command || "…";
 	const cwd = getProjectDir();
 	const displayWorkdir = formatToolWorkingDirectory(args.cwd, cwd);
@@ -1912,9 +1919,9 @@ function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme, outlineWid
 	// ...). Newline-separated lines stack without an operator.
 	const segments = splitShellCommands(command);
 	if (segments.length <= 1) {
-		const highlightedLines = highlightCode(replaceTabs(command), "bash");
-		if (highlightedLines.length === 0) return [prefix.trimEnd()];
-		return highlightedLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+		const commandLines = highlight ? highlightCode(replaceTabs(command), "bash") : replaceTabs(command).split("\n");
+		if (commandLines.length === 0) return [prefix.trimEnd()];
+		return commandLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
 	}
 	const continuationIndent = " ".repeat(Bun.stringWidth(`${prefixParts.join(" ")} `));
 	const lines: string[] = [];
@@ -1924,7 +1931,9 @@ function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme, outlineWid
 				? ""
 				: uiTheme.fg("dim", `${segment.separator} `);
 		const indent = i === 0 ? prefix : continuationIndent;
-		const segmentLines = highlightCode(replaceTabs(segment.raw), "bash");
+		const segmentLines = highlight
+			? highlightCode(replaceTabs(segment.raw), "bash")
+			: replaceTabs(segment.raw).split("\n");
 		for (const [j, line] of segmentLines.entries()) {
 			lines.push(j === 0 ? `${indent}${operator}${line}` : `${continuationIndent}${line}`);
 		}
@@ -2247,6 +2256,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								renderArgs,
 								uiTheme,
 								isPartial || expanded ? undefined : outputBlockContentWidth(width),
+								isPartial,
 							)
 						: undefined;
 					const framed = outputBlock.render(
