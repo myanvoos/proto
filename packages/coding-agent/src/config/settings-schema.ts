@@ -3060,7 +3060,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Discovery & MCP",
 			label: "xd:// Tools",
 			description:
-				"Mount rarely-used (discoverable) tools as xd:// devices instead of shipping their schemas on every request; dispatch them from bash with `xd <tool> '<json>'`. Sessions without bash skip mounting and expose every tool top-level. Disable to expose every enabled tool top-level.",
+				"Mount rarely-used (discoverable) tools as xd:// devices instead of shipping their schemas on every request; dispatch them from bash with `xd <tool> [flags]`. Sessions without bash skip mounting and expose every tool top-level. Disable to expose every enabled tool top-level.",
 		},
 	},
 

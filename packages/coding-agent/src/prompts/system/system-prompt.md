@@ -66,7 +66,7 @@ Most file tools auto-resolve these to FS paths.
 
 {{#if xdevTools.length}}
 # xd:// Tool Devices
-Dispatch mounted devices from bash: `xd <tool> '<json>'` executes; `xd <tool> ?` prints docs + JSON schema. Invalid args return the schema in the error → fix/retry. Compose `xd` with native commands, pipes, redirects, substitutions, subshells, control flow, and background jobs. External shells do not inherit it.
+Dispatch mounted devices from bash: `xd <tool> [flags]` executes (schema-mapped CLI flags; `--json '<json>'` passes a raw object); `xd <tool> ?` prints docs + CLI usage. Invalid args return the schema in the error → fix/retry. Compose `xd` with native commands, pipes, redirects, substitutions, subshells, control flow, and background jobs. External shells do not inherit it.
 {{xdevDocs}}
 {{/if}}
 

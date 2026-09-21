@@ -9,13 +9,11 @@ Tool results are text-only: trailing `Command exited with code N`, `[Command tim
 
 Avoid `head`/`tail`/redirection: output is captured; truncation is reported by the trailing `[Showing lines … Read artifact://N …]` footer. Trust the trailing lifecycle lines, not program text or unseen details.
 
-When `xd://` devices are mounted, `xd` is an agent-shell Brush builtin, not a PATH executable. Use `xd <tool> '<json>'`; for payloads containing code or quotes (e.g. browser `code`, fleet `message`), prefer a quoted stdin heredoc:
+When `xd://` devices are mounted, `xd` is an agent-shell Brush builtin, not a PATH executable. Author device args as CLI flags mapped from the tool schema (`xd <tool> ?` prints usage): `xd browser --action run --name main`. Positional values fill the unflagged scalar props in usage order (`xd read src/foo.ts:50-200`). Regex/code/message payloads take ordinary single-quoted shell strings — `xd monitor --op start --match 'ERR [0-9]+'`; a `-` value reads that flag from stdin (heredoc-friendly):
 ```sh
-xd browser <<'EOF'
-{"i":"Inspect page","action":"run","name":"main","code":"return await tab.observe();"}
-EOF
+printf '%s' 'return await tab.observe();' | xd browser --action run --name main --code -
 ```
-Omit positional JSON to read arguments from stdin (e.g. `printf '%s' '{"path":"src"}' | xd read`). Positional JSON takes precedence. The real shell parser handles pipes, redirects, substitutions, groups, loops, conditionals, `&&`/`||`, background jobs, and `pipefail` around it. Successful text goes to stdout; tool failures go to stderr with a nonzero status; images and structured details stay in the tool result side channel and never enter pipes. External shells started by `fleet`, a client terminal, or a user process do not inherit this builtin.
+`xd <tool> --json '<json>'` passes a raw args object (required for MCP devices; a lone `'{...}'` positional or piped-in JSON object works too). The real shell parser handles pipes, redirects, substitutions, groups, loops, conditionals, `&&`/`||`, background jobs, and `pipefail` around it. Successful text goes to stdout; usage errors exit 2, tool failures exit 1 with the error on stderr; images and structured details stay in the tool result side channel and never enter pipes. External shells started by `fleet`, a client terminal, or a user process do not inherit this builtin.
 {{#if hasLaunch}}Services, watchers, debuggers, REPLs MUST use `fleet` (`op:"start"`).{{/if}}
 {{#if autoBackgroundEnabled}}Long foreground calls may auto-background and deliver later. `timeout: 0` disables the job deadline; otherwise `timeout` sets it without extending foreground waiting.{{/if}}
 {{#if hasKernelBridge}}

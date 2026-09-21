@@ -13,10 +13,12 @@ import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool, ToolSession } from "./index";
 import { isReadableUrlPath, resolveToCwd, splitPathAndSel } from "./path-utils";
 import {
+	formatBadge,
 	formatExpandHint,
 	PREVIEW_LIMITS,
 	pluralize,
 	replaceTabs,
+	type ToolUIColor,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "./render-utils";
@@ -25,7 +27,14 @@ import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME } from "./report-to
 import { dispatchResolutionDevice, isResolutionDeviceName } from "./resolve";
 import { tokenizeShellSegments } from "./shell-tokenize";
 import { renderError, ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
-import { formatXdevCliCommand, parseXdevCliArgs, type XdevCliParseOptions } from "./xdev-cli";
+import {
+	formatCliFlagReference,
+	formatCliUsageSynopsis,
+	formatXdevCliCommand,
+	parseXdevCliArgs,
+	type XdevCliParseOptions,
+	xdevFlagSpecs,
+} from "./xdev-cli";
 
 /**
  * Tool names that always stay top-level native tools, even if something declares them
@@ -81,24 +90,36 @@ interface RenderedDocs {
 	footer: string;
 }
 
-function renderDocsParts(inst: Tool, heading = "#", descriptionCap?: number): RenderedDocs {
-	const schema = jsonSchemaToTypeScript(toolWireSchema(inst as AiTool));
+function renderDocsParts(
+	inst: Tool,
+	heading = "#",
+	descriptionCap?: number,
+	cliDetail: "synopsis" | "reference" = "synopsis",
+): RenderedDocs {
+	const wireSchema = toolWireSchema(inst as AiTool);
+	const schema = jsonSchemaToTypeScript(wireSchema);
 	let description = inst.description ?? "";
 	if (descriptionCap !== undefined && description.length > descriptionCap) {
 		description = `${description.slice(0, descriptionCap).trimEnd()}… (full docs: \`xd ${inst.name} ?\`)`;
 	}
+	const usage =
+		cliDetail === "reference"
+			? formatCliFlagReference(inst.name, inst as AiTool)
+			: `usage: ${formatCliUsageSynopsis(inst.name, wireSchema)}`;
 	return {
 		prose: [`${heading} ${inst.name}${inst.label ? ` — ${inst.label}` : ""}`, "", description].join("\n"),
 		schema: [`${heading}# Schema`, "```ts", `type Args = ${schema};`, "```"].join("\n"),
 		footer: [
-			`Execute from bash: \`xd ${inst.name} '<json>'\` (or \`xd ${inst.name} ?\` for these docs).`,
-			`For payloads with quotes/newlines, pipe JSON on stdin: \`xd ${inst.name} <<'EOF'\` … \`EOF\` (or \`jq -cn '{…}' | xd ${inst.name}\`).`,
+			usage,
+			"",
+			`Execute from bash with the flags/positionals above (or \`xd ${inst.name} ?\` for these docs).`,
+			`JSON escape hatch: \`xd ${inst.name} --json '<json>'\`, or pipe a JSON args object on stdin; a \`-\` flag value reads stdin. MCP devices accept JSON only.`,
 		].join("\n"),
 	};
 }
 
-function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string {
-	const parts = renderDocsParts(inst, heading, descriptionCap);
+function renderDocs(inst: Tool, heading = "#", descriptionCap?: number, cliDetail?: "synopsis" | "reference"): string {
+	const parts = renderDocsParts(inst, heading, descriptionCap, cliDetail);
 	return [parts.prose, parts.schema, parts.footer].join("\n\n");
 }
 
@@ -276,12 +297,12 @@ export function xdevListing(state: XdevState): string {
 		`${XD_URL_PREFIX} ${state.mountedNames.size} mounted tool devices.`,
 		...rows,
 		"",
-		`Docs + JSON schema: run \`xd <tool> ?\` in bash; execute with \`xd <tool> '<json>'\`. Active top-level tools accept the same dispatch.`,
+		`Docs + CLI usage: run \`xd <tool> ?\` in bash; execute with \`xd <tool> [flags]\` or \`xd <tool> --json '<json>'\`. Active top-level tools accept the same dispatch.`,
 	].join("\n");
 }
 
 export function xdevDocs(state: XdevState, name: string): string {
-	return renderDocs(resolveRequiredXdevTool(state, name));
+	return renderDocs(resolveRequiredXdevTool(state, name), "#", undefined, "reference");
 }
 
 export function xdevDocsAll(
@@ -575,6 +596,58 @@ function displayDeviceArgs(args: Record<string, unknown>): Record<string, unknow
 const HELP_SUMMARY_MAX_CHARS = TRUNCATE_LENGTHS.RECAP;
 const HELP_META_MAX_REQUIRED = 4;
 
+/**
+ * Per-device TUI identity for the proto built-ins: a family badge rendered on xdev cards so
+ * each device family is visually distinct in transcripts and composite listings. Devices not
+ * listed here (extensions, MCP bridges) render without a badge.
+ */
+const XDEV_DEVICE_PROFILES: Record<string, { family: string; color: ToolUIColor }> = {
+	read: { family: "files", color: "accent" },
+	browser: { family: "web", color: "accent" },
+	monitor: { family: "watch", color: "warning" },
+	fleet: { family: "processes", color: "accent" },
+	orchestrate_spawn: { family: "workers", color: "accent" },
+	orchestrate_send: { family: "workers", color: "accent" },
+	orchestrate_wait: { family: "workers", color: "accent" },
+	orchestrate_kill: { family: "workers", color: "error" },
+	orchestrate_list: { family: "workers", color: "accent" },
+	computer: { family: "desktop", color: "accent" },
+	checkpoint: { family: "snapshots", color: "success" },
+	rewind: { family: "snapshots", color: "warning" },
+	manage_skill: { family: "skills", color: "muted" },
+	ask: { family: "user", color: "accent" },
+	checklist: { family: "tasks", color: "success" },
+	web_search: { family: "search", color: "accent" },
+	inspect_media: { family: "media", color: "accent" },
+};
+
+function deviceBadge(name: string, theme: Theme): string | undefined {
+	const profile = XDEV_DEVICE_PROFILES[name];
+	return profile ? formatBadge(profile.family, profile.color, theme) : undefined;
+}
+
+/** Flag rows for the collapsed schema card, Submit-Result tree style. */
+function schemaCardRows(mounted: Tool | undefined, name: string): string[] {
+	const rows: string[] = [];
+	const specs = mounted ? xdevFlagSpecs(toolWireSchema(mounted as AiTool)) : [];
+	rows.push(`usage: ${formatCliUsageSynopsis(name, mounted ? toolWireSchema(mounted as AiTool) : {})}`);
+	for (const spec of specs) {
+		const typeLabel =
+			spec.type === "enum"
+				? (spec.enumValues?.join("|") ?? "value")
+				: spec.type === "array"
+					? `${spec.items ?? "string"}…`
+					: spec.type === "json"
+						? "json"
+						: spec.type;
+		const flag = spec.type === "boolean" ? `--${spec.name}` : `--${spec.name} <${typeLabel}>`;
+		const required = spec.required ? " (required)" : "";
+		const description = spec.description ? ` — ${spec.description.split(/\. /)[0]}` : "";
+		rows.push(`${flag}${required}${description}`);
+	}
+	return rows;
+}
+
 /** Description body of rendered docs: everything between the heading and the next markdown heading. */
 function docsDescriptionBody(text: string): string {
 	const lines = text.split("\n");
@@ -625,6 +698,7 @@ function formatXdevHelpCard(
 	contentWidth: number,
 	theme: Theme,
 ): string {
+	const badge = deviceBadge(dispatch.tool, theme);
 	const lines = [
 		renderStatusLine(
 			{
@@ -632,6 +706,14 @@ function formatXdevHelpCard(
 				spinnerFrame: options.spinnerFrame,
 				title: `${XD_URL_PREFIX}${dispatch.tool}`,
 				meta: ["docs", ...helpArgsMeta(mounted)],
+				...(badge
+					? {
+							badge: {
+								label: XDEV_DEVICE_PROFILES[dispatch.tool].family,
+								color: XDEV_DEVICE_PROFILES[dispatch.tool].color,
+							},
+						}
+					: {}),
 			},
 			theme,
 		),
@@ -642,13 +724,22 @@ function formatXdevHelpCard(
 		}
 		return lines.join("\n");
 	}
-	const summary = flatFirstParagraph(docsDescriptionBody(text));
-	if (summary) {
-		const bodyWidth = Math.max(20, contentWidth - 2);
-		const wrapped = Bun.wrapAnsi(summary, bodyWidth, { hard: true }).split("\n");
-		for (const line of wrapped.slice(0, PREVIEW_LIMITS.COLLAPSED_LINES)) {
-			lines.push(`  ${theme.fg("toolOutput", truncateToWidth(line, bodyWidth))}`);
-		}
+	const bodyWidth = Math.max(20, contentWidth - 4);
+	const hook = theme.fg("dim", theme.tree.last);
+	const description = flatFirstParagraph(docsDescriptionBody(text));
+	const rows = schemaCardRows(mounted, dispatch.tool);
+	const reserved = 1; // expand hint
+	const maxRows = Math.max(0, PREVIEW_LIMITS.COLLAPSED_LINES - reserved);
+	const visibleRows = rows.slice(0, maxRows);
+	for (const row of visibleRows) {
+		lines.push(` ${hook} ${theme.fg("toolOutput", truncateToWidth(replaceTabs(row), bodyWidth))}`);
+	}
+	const hiddenRows = rows.length - visibleRows.length;
+	const tail: string[] = [];
+	if (hiddenRows > 0) tail.push(`… ${hiddenRows} more flags`);
+	if (description && rows.length <= maxRows) tail.push(description);
+	if (tail.length > 0) {
+		lines.push(`  ${theme.fg("dim", truncateToWidth(tail.join(" — "), bodyWidth))}`);
 	}
 	const hint = formatExpandHint(theme, options.expanded, true);
 	if (hint) lines.push(`  ${hint}`);
@@ -677,12 +768,21 @@ function formatXdevCompositeCard(
 	const lines: string[] = [];
 	for (const dispatch of dispatches) {
 		const meta = helpStatusMeta(dispatch, resolveMounted);
+		const badge = deviceBadge(dispatch.tool, theme);
 		lines.push(
 			renderStatusLine(
 				{
 					icon: dispatch.isError ? "error" : "done",
 					title: `${XD_URL_PREFIX}${dispatch.tool}`,
 					...(meta.length > 0 ? { meta } : {}),
+					...(badge
+						? {
+								badge: {
+									label: XDEV_DEVICE_PROFILES[dispatch.tool].family,
+									color: XDEV_DEVICE_PROFILES[dispatch.tool].color,
+								},
+							}
+						: {}),
 				},
 				theme,
 			),

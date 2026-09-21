@@ -419,7 +419,7 @@ test("piped stdin supplies the xd JSON args when no positional args are given", 
 test("xd text output is newline-terminated so following commands start on their own line", async () => {
 	await withBash(async bash => {
 		const docs = await bash.execute("xd-docs-newline", { command: `xd probe ?; printf next` });
-		expect(textOf(docs)).toContain("for these docs).\nFor payloads with quotes/newlines");
+		expect(textOf(docs)).toContain("for these docs).\nJSON escape hatch:");
 		const failure = await bash.execute("xd-error-newline", { command: `xd missing '{}'; printf next` });
 		expect(textOf(failure)).toContain("No such tool: xd://missing.");
 		expect(textOf(failure)).toMatch(/xd:\/\/<tool>\.\nnext/);
@@ -692,7 +692,8 @@ test("xd help card expands to the full docs", async () => {
 		const rendered = renderBashResult(result, `xd probe ?`, true);
 		expect(rendered).toContain("xd://probe docs");
 		expect(rendered).toContain("type Args");
-		expect(rendered).toContain("Execute from bash:");
+		expect(rendered).toContain("usage: xd probe <value>");
+		expect(rendered).toContain("Execute from bash");
 	});
 });
 
