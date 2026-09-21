@@ -4,7 +4,8 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import backgroundSideDispatchPrompt from "../../prompts/system/background-side-dispatch.md" with { type: "text" };
 import sideAgentContextSwitchPrompt from "../../prompts/system/side-agent-context-switch.md" with { type: "text" };
-import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
+import { AgentRegistry, MAIN_AGENT_ID, newSideAgentId } from "../../registry/agent-registry";
 import * as sdk from "../../sdk";
 import type { AgentSession } from "../../session/agent-session";
 import { BACKGROUND_SIDE_DISPATCH_MESSAGE_TYPE } from "../../session/messages";
@@ -90,7 +91,7 @@ export class SideAgentController {
 		const settings = createSubagentSettings(this.ctx.settings);
 		const customTools = mcpManager ? createMCPProxyTools(mcpManager) : undefined;
 		const agentRegistry = AgentRegistry.global();
-		const cloneId = `Side-${Snowflake.next()}`;
+		const cloneId = newSideAgentId();
 		const cloneFile = path.join(sessionDir, `${cloneId}.jsonl`);
 		const label = `/side --agent ${previewWork(trimmedWork)}`;
 
@@ -112,6 +113,7 @@ export class SideAgentController {
 					if (signal.aborted) throw new Error("Aborted before execution");
 
 					let clone: AgentSession | undefined;
+					let unsyncStatus: (() => void) | undefined;
 					try {
 						const created = await sdk.createAgentSession({
 							cwd,
@@ -137,6 +139,9 @@ export class SideAgentController {
 							localProtocolOptions,
 						});
 						clone = created.session;
+						// The side agent outlives this turn, so its registry status has to follow the session
+						// instead of being frozen at whatever the dispatch left behind.
+						unsyncStatus = agentRegistry.syncSessionStatus(cloneId, clone);
 						clone.sessionManager?.appendSessionInit?.({
 							systemPrompt: clone.systemPrompt ? clone.systemPrompt.join("\n\n") : systemPrompt.join("\n\n"),
 							task: trimmedWork,
@@ -180,12 +185,15 @@ export class SideAgentController {
 					} finally {
 						if (clone) {
 							if (signal.aborted) {
+								unsyncStatus?.();
 								agentRegistry.setStatus(cloneId, "aborted");
 								await clone.dispose();
 							} else {
-								agentRegistry.setStatus(cloneId, "parked");
-								await clone.dispose();
-								agentRegistry.detachSession(cloneId);
+								// A finished side agent stays live and idle so the user can keep talking to it
+								// without a revive round-trip. Adopting it with no idle TTL never arms the park
+								// timer but still hands the session to the lifecycle for shutdown release.
+								agentRegistry.setStatus(cloneId, "idle");
+								AgentLifecycleManager.global().adopt(cloneId, { idleTtlMs: 0 });
 							}
 						}
 					}

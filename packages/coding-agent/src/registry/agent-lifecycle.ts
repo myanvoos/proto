@@ -410,7 +410,9 @@ export class AgentLifecycleManager {
 	}
 
 	#armTimer(id: string, adopted: AdoptedAgent): void {
-		if (adopted.idleTtlMs <= 0) return;
+		// Side agents (`/side --agent`) are a background conversation the user owns, not a task runner
+		// the orchestrator reclaims: they stay live until released explicitly or the lifecycle shuts down.
+		if (adopted.idleTtlMs <= 0 || adopted.ref.kind === "side") return;
 		clearTimeout(adopted.timer);
 		const timer = setTimeout(() => {
 			adopted.timer = undefined;

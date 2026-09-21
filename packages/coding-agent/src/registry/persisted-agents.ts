@@ -17,6 +17,7 @@ import {
 	type AgentMetricsSummary,
 	type AgentRegistry,
 	hasAgentTombstone,
+	isSideAgentId,
 	MAIN_AGENT_ID,
 } from "./agent-registry";
 
@@ -551,7 +552,7 @@ async function registerPersistedSubagentsFromDir(
 					registry.register({
 						id,
 						label: orchestratorLabel ?? id,
-						kind: "sub",
+						kind: isSideAgentId(id) ? "side" : "sub",
 						parentId: parentId ?? MAIN_AGENT_ID,
 						session: null,
 						sessionFile,

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Background agents from `/side --agent` are their own agent kind now: they stay live and idle after finishing instead of being parked, so you can keep talking to one without waiting for it to revive, and they are never auto-parked by the worker idle TTL.
+
 ## [18.2.0] - 2026-09-20
 
 ### Fixed

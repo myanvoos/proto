@@ -128,7 +128,7 @@ import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } fr
 import { type OrchestratorParent, OrchestratorRuntime } from "./orchestrator/runtime";
 import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
-import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
+import { type AgentKind, type AgentRef, AgentRegistry, isSideAgentId, MAIN_AGENT_ID } from "./registry/agent-registry";
 import {
 	buildSecretObfuscator,
 	deobfuscateSessionContext,
@@ -477,7 +477,14 @@ export type { Skill } from "./extensibility/skills";
 export type { FileSlashCommand } from "./extensibility/slash-commands";
 export type { MCPManager, MCPServerConfig, MCPServerConnection, MCPToolsLoadResult } from "./mcp";
 
-export { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
+export {
+	type AgentKind,
+	type AgentRef,
+	AgentRegistry,
+	isSideAgentId,
+	MAIN_AGENT_ID,
+	newSideAgentId,
+} from "./registry/agent-registry";
 export type { Tool } from "./tools";
 export { buildDirectoryTree, buildWorkspaceTree, type DirectoryTree, type WorkspaceTree } from "./workspace-tree";
 
@@ -1250,6 +1257,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const resolvedAgentDisplayName =
 		options.agentDisplayName ?? ((options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? "sub" : "main");
 	const agentKind = (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? ("sub" as const) : ("main" as const);
+	// `/side --agent` clones are structurally subagents but are a user-owned background conversation:
+	// the `side` kind is what exempts them from the idle-TTL auto-park every other subagent gets.
+	const registryKind: AgentKind = isSideAgentId(resolvedAgentId) ? "side" : agentKind;
 	let registeredAgentRef: AgentRef | undefined;
 
 	const unregisterUnlessParked = (): void => {
@@ -2363,7 +2373,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const registrationInput = {
 			id: resolvedAgentId,
 			label: resolvedAgentDisplayName,
-			kind: agentKind,
+			kind: registryKind,
 			parentId: options.parentAgentId,
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,

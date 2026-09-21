@@ -72,6 +72,16 @@ describe("registerPersistedSubagents", () => {
 		expect(ref?.sessionFile).toBeTruthy();
 	});
 
+	test("restores a persisted side agent under the side kind so it stays exempt from idle parking", async () => {
+		const { parentFile, childFile } = makeSessionTree();
+		const transcript = await Bun.file(childFile).text();
+		await Bun.write(path.join(path.dirname(childFile), "Side-1789.jsonl"), transcript);
+		const registry = new AgentRegistry();
+		await registerPersistedSubagents(registry, parentFile);
+		expect(registry.get("Side-1789")?.kind).toBe("side");
+		expect(registry.get("worker")?.kind).toBe("sub");
+	});
+
 	test("skips registration while the transcript is live in another process", async () => {
 		const { parentFile, childFile } = makeSessionTree();
 		writeLiveMarker(childFile, true, process.pid);

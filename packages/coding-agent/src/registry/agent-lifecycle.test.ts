@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -77,6 +77,38 @@ describe("revival failure", () => {
 		// The second wake must actually retry rather than hand back the broken session.
 		expect(await lifecycle.ensureLive("worker")).toBe(healthy);
 		expect(attempt).toBe(2);
+		await lifecycle.dispose();
+	});
+});
+
+describe("idle auto-park", () => {
+	function registerIdle(registry: AgentRegistry, id: string, kind: "sub" | "side"): AgentSession {
+		const session = { dispose: async () => {} } as unknown as AgentSession;
+		registry.register({ id, label: id, kind, session, sessionFile: null, status: "idle" });
+		return session;
+	}
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test("an idle subagent parks once its TTL elapses but a side agent stays live", async () => {
+		vi.useFakeTimers();
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		registerIdle(registry, "worker", "sub");
+		const sideSession = registerIdle(registry, "Side-1", "side");
+		lifecycle.adopt("worker", { idleTtlMs: 30_000 });
+		lifecycle.adopt("Side-1", { idleTtlMs: 30_000 });
+
+		vi.advanceTimersByTime(30_001);
+		await lifecycle.park("worker");
+
+		expect(registry.get("worker")).toMatchObject({ status: "parked", session: null });
+		expect(registry.get("Side-1")).toMatchObject({ status: "idle", session: sideSession });
+		expect(lifecycle.isParking("Side-1")).toBe(false);
+
+		vi.useRealTimers();
 		await lifecycle.dispose();
 	});
 });

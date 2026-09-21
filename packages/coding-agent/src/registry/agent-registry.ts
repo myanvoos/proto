@@ -1,9 +1,22 @@
 import * as fs from "node:fs/promises";
-import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import { oneLineLabel } from "../task/types";
 
 export const MAIN_AGENT_ID = "Main";
+
+// `/side --agent` clones mint their id with this reserved prefix, and the prefix is what identifies
+// them as the `side` kind everywhere they are rebuilt — in-process registration and the persisted
+// restore that only sees transcript filenames. Keep minting and detection on this pair.
+const SIDE_AGENT_ID_PREFIX = "Side-";
+
+export function newSideAgentId(): string {
+	return `${SIDE_AGENT_ID_PREFIX}${Snowflake.next()}`;
+}
+
+export function isSideAgentId(id: string): boolean {
+	return id.startsWith(SIDE_AGENT_ID_PREFIX);
+}
 
 const AGENT_TOMBSTONE_SUFFIX = ".tombstone";
 
@@ -25,7 +38,7 @@ export type AgentStatus = "running" | "idle" | "parked" | "aborted";
 
 type AgentDurationKind = "active" | "span" | "unknown";
 
-type AgentKind = "main" | "sub" | "advisor";
+export type AgentKind = "main" | "sub" | "side" | "advisor";
 
 export interface AgentMetricsSummary {
 	tokens: number;
