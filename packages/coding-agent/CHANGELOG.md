@@ -18,6 +18,7 @@
 
 ### Changed
 
+- Heredoc bodies in a streaming bash command are highlighted in their own language instead of one flat string: a kernel cell's body follows its interpreter (`python`/`node`/`bun`) and a `cat`/`tee` heredoc follows the written file's extension (`.py`, `.md`, `.json`, `.rs`, …), while the shell around it keeps shell coloring.
 - `xd <tool> ?` collapses to a per-device schema card in the TUI — usage line plus flag rows in the Submit-Result tree style, with a family badge (files/web/watch/workers/processes/…) identifying each proto built-in; expanding shows the full docs.
 
 ## [18.3.0] - 2026-09-21

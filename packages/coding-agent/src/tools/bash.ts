@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { supportsLanguage } from "@oh-my-pi/pi-natives";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { getProjectDir, isEnoent, isRecord, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
@@ -38,7 +39,7 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { formatHiddenLinesNotice } from "../modes/components/execution-shared";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
-import { highlightCode, type Theme } from "../modes/theme/theme";
+import type { Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import { resolveSpawnPolicy } from "../task/spawn-policy";
 import "./kernel-prelude";
@@ -68,8 +69,10 @@ import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
 import {
+	type EmbeddedCodeRegion,
 	EVAL_DEFAULT_PREVIEW_LINES,
 	type EvalDisplayCell,
+	highlightShellWithEmbeddedCode,
 	renderKernelCellLines,
 	renderShellWithCellOutlines,
 } from "./eval-render";
@@ -1942,7 +1945,7 @@ function formatBashCommandLines(
 		return outlined.lines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
 	}
 	const commandLines = highlight
-		? highlightCode(replaceTabs(displayCommand), "bash")
+		? highlightShellWithEmbeddedCode(displayCommand, bashEmbeddedRegions(displayCommand), "bash", uiTheme)
 		: replaceTabs(displayCommand).split("\n");
 	if (commandLines.length === 0) return [prefix.trimEnd()];
 	return commandLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
@@ -1976,6 +1979,28 @@ function bashDisplayCells(command: string): EvalDisplayCell[] {
 	return cells.sort((a, b) => a.start - b.start);
 }
 
+/**
+ * Every heredoc body in a command whose language the call already names: the
+ * interpreter for a kernel cell, the file extension for a written file. The
+ * shell grammar can only paint those bodies as one long string, so the live
+ * preview highlights each with its own grammar instead.
+ */
+function bashEmbeddedRegions(command: string): EmbeddedCodeRegion[] {
+	const regions: EmbeddedCodeRegion[] = findBashKernelCells(command).map(cell => ({
+		start: cell.start,
+		end: cell.end,
+		language: cell.language === "js" ? "javascript" : "python",
+	}));
+	for (const write of findBashFileWrites(command)) {
+		if (write.code.trim().length === 0) continue;
+		const language = getLanguageFromPath(normalizeBashWritePath(write.path));
+		// An unknown or ungrammared extension keeps the shell's own coloring.
+		if (language && supportsLanguage(language)) {
+			regions.push({ start: write.start, end: write.end, language });
+		}
+	}
+	return regions.sort((a, b) => a.start - b.start);
+}
 // A kernel-routed `python`/`node`/`bun` bash cell renders identically to an `eval`
 // cell (header, AST preview, output, Status hunks, JSON display trees) by
 // building an EvalCellResult and handing it to the shared renderKernelCellLines.
@@ -2015,6 +2040,7 @@ function kernelCellLines(
 		displayCode: opts.displayCode,
 		displayLanguage: opts.displayCode === undefined ? undefined : "bash",
 		displayCells: opts.displayCode === undefined ? undefined : bashDisplayCells(opts.displayCode),
+		displayRegions: opts.displayCode === undefined ? undefined : bashEmbeddedRegions(opts.displayCode),
 	});
 }
 

@@ -808,6 +808,61 @@ export function renderShellWithCellOutlines(
 	return { lines, outlined };
 }
 
+/** A region of shell source written in another language (a heredoc body), by code offsets. */
+export interface EmbeddedCodeRegion {
+	start: number;
+	end: number;
+	/** Highlighter language for the region's source. */
+	language: string;
+}
+
+// The shell grammar paints a heredoc body as one string token, so a 40-line
+// Python (or Markdown, or Rust) body arrives as a single green block. Recolor
+// those bodies with their own grammar: the shell source is highlighted whole —
+// keeping every redirect, delimiter and trailing command exactly as the shell
+// pass colors them — and then each region's lines are swapped for the region
+// language's highlighting. Only lines a region covers end to end are swapped,
+// so an inline `python -c '…'` word keeps the shell coloring: splitting a line
+// mid-token would hand both halves to a parser as unbalanced fragments.
+// Offsets index the raw source; tabs are expanded here, not by the caller.
+export function highlightShellWithEmbeddedCode(
+	source: string,
+	regions: readonly EmbeddedCodeRegion[],
+	shellLanguage: string,
+	theme: Theme,
+): string[] {
+	const text = replaceTabs(source);
+	const lines = highlightCode(text, shellLanguage, theme);
+	const sourceLines = source.split("\n");
+	// A highlighter that reflowed would desynchronize the overlay from the source.
+	if (regions.length === 0 || lines.length !== sourceLines.length) return lines;
+	const displayLines = text.split("\n");
+
+	const lineStarts: number[] = [];
+	let offset = 0;
+	for (const line of sourceLines) {
+		lineStarts.push(offset);
+		offset += line.length + 1;
+	}
+
+	for (const region of regions) {
+		let first = -1;
+		let last = -1;
+		for (let i = 0; i < sourceLines.length; i++) {
+			const lineStart = lineStarts[i]!;
+			if (lineStart < region.start || lineStart + sourceLines[i]!.length > region.end) continue;
+			if (first === -1) first = i;
+			last = i;
+		}
+		if (first === -1) continue;
+		const body = displayLines.slice(first, last + 1);
+		const highlighted = highlightCode(body.join("\n"), region.language, theme);
+		if (highlighted.length !== body.length) continue;
+		for (let i = 0; i < highlighted.length; i++) lines[first + i] = highlighted[i]!;
+	}
+	return lines;
+}
+
 interface LiveCellLayout {
 	codeMaxLines: number;
 	outputLines: string[];
@@ -914,6 +969,8 @@ export function renderKernelCellLines(
 		displayLanguage?: string;
 		/** Kernel cells embedded in `displayCode`; each renders as an outline inside the shell source when settled. */
 		displayCells?: readonly EvalDisplayCell[];
+		/** Embedded-language regions of `displayCode`; each keeps its own syntax coloring while the cell is live. */
+		displayRegions?: readonly EmbeddedCodeRegion[];
 	},
 ): string[] {
 	const { expanded, isPartial, spinnerFrame, previewLines, width } = opts;
@@ -980,13 +1037,27 @@ export function renderKernelCellLines(
 	let codeVariant: string | undefined;
 	if (!cellLive && !cellExpanded) {
 		if (hasDisplayCode) {
-			const composite = renderShellWithCellOutlines(code, opts.displayCells ?? [], displayLanguage, theme, width);
+			const composite = renderShellWithCellOutlines(
+				code,
+				opts.displayCells ?? [],
+				displayLanguage,
+				theme,
+				width,
+				false,
+			);
 			preRenderedCodeLines = composite?.lines;
 			codeVariant = composite?.outlined ? "ast" : undefined;
 		} else {
 			preRenderedCodeLines = astPreviewLines(code, language, theme, width);
 			codeVariant = preRenderedCodeLines ? "ast" : undefined;
 		}
+	} else if (cellExpanded && hasDisplayCode) {
+		// Expanded committed bash card: the full literal shell source, plain —
+		// a committed command never re-highlights (code-cell would).
+		preRenderedCodeLines = replaceTabs(code).split("\n");
+	} else if (hasDisplayCode && opts.displayRegions && opts.displayRegions.length > 0) {
+		// Live shell source: a kernel body inside it is code, not a shell string.
+		preRenderedCodeLines = highlightShellWithEmbeddedCode(code, opts.displayRegions, displayLanguage, theme);
 	}
 
 	const extraSections: Array<{ label?: string; lines: readonly string[] }> = [];
