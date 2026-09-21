@@ -114,6 +114,24 @@ function controlledProvider(): StreamFn {
 	};
 }
 
+// A worker that submits results several times before finalizing: three incremental sections
+// (`type: [label]`, non-terminal) followed by a data-less terminal yield.
+function multiSubmitProvider(): StreamFn {
+	const submissions: ToolCall[] = [
+		call("y1", "yield", { type: ["findings"], result: { data: "FINDING_ONE" } }),
+		call("y2", "yield", { type: ["findings"], result: { data: "FINDING_TWO" } }),
+		call("y3", "yield", { type: ["summary"], result: { data: "SUMMARY_TEXT" } }),
+		call("y4", "yield", { type: "result", result: {} }),
+	];
+	let step = 0;
+	return (model, _context) => {
+		const stream = createAssistantMessageEventStream();
+		const submission = submissions[Math.min(step++, submissions.length - 1)];
+		queueMicrotask(() => pushToolCall(stream, model, submission));
+		return stream;
+	};
+}
+
 function cellCommand(language: "py" | "js", code: string): string {
 	const interpreter = language === "js" ? "node" : "python";
 	return `${interpreter} <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`;
@@ -633,6 +651,33 @@ function yieldingProvider(gates = new Map<string, Promise<void>>()): StreamFn {
 		return stream;
 	};
 }
+
+test("repeated worker submissions merge into the single result orchestrate_wait delivers", async () => {
+	const { runtime, session, manager } = await controlledFixture({ streamFn: multiSubmitProvider() });
+	const worker = await runtime.spawn(session, {
+		message: "submit sections before finalizing",
+		outputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				findings: { type: "array", items: { type: "string" } },
+				summary: { type: "string" },
+			},
+			required: ["findings", "summary"],
+		},
+	});
+	await manager.waitForAll();
+	const outcome = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
+	expect(outcome.settled).toHaveLength(1);
+	const settled = outcome.settled[0];
+	expect(settled?.status).toBe("completed");
+	// Every submission survives: earlier sections are not replaced by the later ones, and the
+	// data-less terminal yield finalizes them instead of blanking the result.
+	expect(JSON.parse(/<response>\n([\s\S]*?)\n<\/response>/.exec(settled?.resultText ?? "")?.[1] ?? "null")).toEqual({
+		findings: ["FINDING_ONE", "FINDING_TWO"],
+		summary: "SUMMARY_TEXT",
+	});
+}, 30_000);
 
 test("failed turn-settlement persistence cannot strand a worker as running or accept undeliverable followups", async () => {
 	const { runtime, session, manager, sessionManager } = await controlledFixture({ streamFn: yieldingProvider() });
