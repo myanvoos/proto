@@ -106,10 +106,10 @@ fn xd_content(name: &str, content_type: ContentType) -> String {
 		ContentType::ShortUsage => "xd [tool [ARGS...]]  (? = docs)",
 		ContentType::DetailedHelp | ContentType::ManPage => {
 			return format!(
-				"{name}: dispatch a mounted agent tool.\nUsage: xd [tool [ARGS...]]  (? = docs)\n\nArgs are \
-				 CLI flags mapped from the tool schema (xd <tool> ? prints usage); --json '<json>' passes a \
-				 raw args object. The Brush builtin is available only in the agent shell; external bash \
-				 does not inherit it."
+				"{name}: dispatch a mounted agent tool.\nUsage: xd [tool [ARGS...]]  (? = \
+				 docs)\n\nArgs are CLI flags mapped from the tool schema (xd <tool> ? prints usage); \
+				 --json '<json>' passes a raw args object. The Brush builtin is available only in the \
+				 agent shell; external bash does not inherit it."
 			);
 		},
 	};
