@@ -1903,10 +1903,26 @@ function formatBashCommandLines(
 	outlineWidth?: number,
 	highlight = true,
 ): string[] {
+	// While the argument JSON is still streaming, `cwd`/`env` arrive truncated
+	// or after `command`. Withhold the synthetic prefix until the arguments are
+	// complete so the first line settles once instead of rewriting through
+	// partial values (the trailing "cd …" flicker at end of stream).
+	const streaming = getPartialJson(args) !== undefined;
 	const command = args.command || "…";
 	const cwd = getProjectDir();
-	const displayWorkdir = formatToolWorkingDirectory(args.cwd, cwd);
-	const envAssignments = formatBashEnvAssignments(getBashEnvForDisplay(args));
+	const displayWorkdir = streaming ? undefined : formatToolWorkingDirectory(args.cwd, cwd);
+	const envAssignments = streaming ? undefined : formatBashEnvAssignments(getBashEnvForDisplay(args));
+	let displayCommand = command;
+	if (displayWorkdir && args.cwd !== undefined) {
+		// The prefix already announces the workdir; execution keeps the
+		// command's own leading `cd` as a no-op, but rendering it twice reads
+		// as `cd X && cd X && …`. Drop it when it targets the same directory.
+		const leading = extractLeadingCdTarget(command);
+		const startDir = path.resolve(cwd, args.cwd);
+		if (leading && path.resolve(startDir, leading.path) === startDir) {
+			displayCommand = leading.rest;
+		}
+	}
 	const prefixParts = ["$"];
 	if (displayWorkdir) prefixParts.push(`cd ${displayWorkdir} &&`);
 	if (envAssignments) prefixParts.push(envAssignments);
@@ -1914,11 +1930,20 @@ function formatBashCommandLines(
 	const outlined =
 		outlineWidth === undefined
 			? undefined
-			: renderShellWithCellOutlines(command, bashDisplayCells(command), "bash", uiTheme, outlineWidth, highlight);
+			: renderShellWithCellOutlines(
+					displayCommand,
+					bashDisplayCells(displayCommand),
+					"bash",
+					uiTheme,
+					outlineWidth,
+					highlight,
+				);
 	if (outlined) {
 		return outlined.lines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
 	}
-	const commandLines = highlight ? highlightCode(replaceTabs(command), "bash") : replaceTabs(command).split("\n");
+	const commandLines = highlight
+		? highlightCode(replaceTabs(displayCommand), "bash")
+		: replaceTabs(displayCommand).split("\n");
 	if (commandLines.length === 0) return [prefix.trimEnd()];
 	return commandLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
 }
