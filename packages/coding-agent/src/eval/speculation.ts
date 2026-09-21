@@ -8,11 +8,10 @@ export interface StreamedKernelFailure {
 }
 
 export type StreamedCompletionLanguage = "python" | "js";
-export type CompletionTier = "smol" | "default" | "slow";
 
 export interface LiteralCompletionArgs {
 	prompt: string;
-	model: CompletionTier;
+	model: string;
 	system?: string;
 	schema?: Record<string, unknown>;
 }
@@ -667,13 +666,13 @@ function parseLiteralArgs(inner: string, language: StreamedCompletionLanguage): 
 	const cursor = new LiteralCursor(lexed.tokens);
 	const prompt = parseLiteral(cursor);
 	if (typeof prompt !== "string" || prompt.length === 0) return undefined;
-	let model: CompletionTier = "default";
+	let model = "default";
 	let system: string | undefined;
 	let schema: Record<string, unknown> | undefined;
 	const setOption = (key: string, value: unknown): boolean => {
 		if (key === "model") {
-			if (typeof value !== "string" || !["smol", "default", "slow"].includes(value)) return false;
-			model = value as CompletionTier;
+			if (typeof value !== "string" || value.length === 0) return false;
+			model = value;
 			return true;
 		}
 		if (key === "system") {

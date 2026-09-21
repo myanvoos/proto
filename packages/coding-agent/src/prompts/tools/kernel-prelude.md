@@ -9,7 +9,7 @@ defs() → dict    kernel-defined names → cell number
 {{/if}}env(key?=None, value?=None) → str | None | dict
 output(*ids, format?="raw"|"json"|"stripped", query?=<jq path>, offset?, limit?) → reads agent/task outputs by id (e.g. "scout_0"); `query` is exclusive with `offset`/`limit`; bash artifacts are read with `read artifact://N:A-B`, not `output()`.
 tool.<name>(args) → unknown    invoke any session tool; `args` = its parameter object
-completion(prompt, model?="default"|"smol"|"slow", system?=None, schema?=None) → str | dict    oneshot, stateless; `schema` → parsed object
+completion(prompt, model?="default"|"smol"|"slow"|<pool model id>, system?=None, schema?=None) → str | dict    oneshot, stateless; `schema` → parsed object; bare model id resolves only when one provider offers it, else `provider/id`
 {{#if spawns}}agent(prompt, agent?="{{spawnDefaultAgent}}", model?=None, label?=None, schema?=None, schema{{#if js}}Mode{{else}}_mode{{/if}}?="permissive", isolated?=None, apply?=None, merge?=None, handle?=False) → str | dict
     Subagent → final output; omit `agent` → `{{spawnDefaultAgent}}`.{{#if spawnAllowedAgentsText}} Allowed: {{spawnAllowedAgentsText}}.{{/if}} `isolated` = worktree; `apply`/`merge` control its changes. Background via `local://` files named in the prompt. `handle` → { text, output, handle: "agent://<id>", id, agent }; `schema` overrides agent/session schemas → parsed data; `model` overrides the worker's model (bank-validated).
 {{#if js}}    JS: ONE trailing object — agent(prompt, { agent, model, label, schema, schemaMode, isolated, apply, merge, handle }).{{/if}}

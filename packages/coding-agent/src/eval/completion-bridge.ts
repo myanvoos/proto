@@ -11,6 +11,7 @@ import {
 	formatModelString,
 	getModelMatchPreferences,
 	resolveModelFromString,
+	resolveProviderModelReference,
 } from "../config/model-resolver";
 import type { ToolSession } from "../tools";
 import { ToolError } from "../tools/tool-errors";
@@ -29,9 +30,17 @@ const TIER_TO_PATTERN: Record<CompletionTier, string> = {
 	slow: "@slow",
 };
 
+const TIER_LIST = Object.keys(TIER_TO_PATTERN)
+	.map(tier => `"${tier}"`)
+	.join(", ");
+
+function asCompletionTier(value: string): CompletionTier | undefined {
+	return Object.hasOwn(TIER_TO_PATTERN, value) ? (value as CompletionTier) : undefined;
+}
+
 const completionArgsSchema = type({
 	prompt: "string>0",
-	"model?": "'smol'|'default'|'slow'",
+	"model?": "string>0",
 	"system?": "string",
 	"schema?": { "[string]": "unknown" },
 });
@@ -56,17 +65,20 @@ export interface EvalCompletionBridgeOptions {
 
 export interface EvalCompletionResult {
 	text: string;
-	details: { model: string; tier: CompletionTier; structured: boolean };
+	details: { model: string; selector: string; tier?: CompletionTier; structured: boolean };
 }
 
 interface ResolvedCompletionRequest {
 	parsed: {
 		prompt: string;
-		model?: CompletionTier;
+		model?: string;
 		system?: string;
 		schema?: Record<string, unknown>;
 	};
-	finalTier: CompletionTier;
+	/** Selector exactly as requested: a tier name or a model reference. Identity for speculation claims. */
+	selector: string;
+	/** Set only when the selector named a role tier. */
+	tier?: CompletionTier;
 	model: Model<Api>;
 	registry: NonNullable<ToolSession["modelRegistry"]>;
 }
@@ -97,7 +109,7 @@ function resolvedArgsFingerprint(
 	language: StreamedCompletionLanguage,
 	args: {
 		prompt: string;
-		model?: CompletionTier;
+		model?: string;
 		system?: string;
 		schema?: Record<string, unknown>;
 	},
@@ -122,21 +134,83 @@ async function resolveCompletionRequest(args: unknown, session: ToolSession): Pr
 	if (parsed instanceof type.errors) {
 		throw new ToolError(`completion() received invalid arguments: ${parsed.summary}`);
 	}
-	const finalTier: CompletionTier = parsed.model ?? "default";
-	const model = resolveTierModel(finalTier, session);
-	if (!model) {
-		throw new ToolError(
-			`completion() could not resolve a model for the "${finalTier}" tier. Configure modelRoles.${finalTier === "default" ? "default" : finalTier} or ensure a provider is available.`,
-		);
+	const selector = parsed.model ?? "default";
+	const tier = asCompletionTier(selector);
+	let model: Model<Api>;
+	if (tier) {
+		const resolved = resolveTierModel(tier, session);
+		if (!resolved) {
+			throw new ToolError(
+				`completion() could not resolve a model for the "${tier}" tier. Configure modelRoles.${tier} or ensure a provider is available.`,
+			);
+		}
+		model = resolved;
+	} else {
+		model = resolveRequestedModel(selector, session);
 	}
 	const registry = session.modelRegistry;
 	const apiKey = await registry?.getApiKey(model);
 	if (!registry || !apiKey) {
 		throw new ToolError(
-			`completion() has no API key for ${formatModelString(model)}. Configure credentials for this provider or choose another tier.`,
+			`completion() has no API key for ${formatModelString(model)}. Configure credentials for this provider or choose another model.`,
 		);
 	}
-	return { parsed, finalTier, model, registry };
+	return { parsed, selector, tier, model, registry };
+}
+
+/** Pool entries whose id contains the requested one, so a typo names its neighbours. */
+function suggestModelReferences(reference: string, available: readonly Model<Api>[]): string[] {
+	const needle = reference.slice(reference.indexOf("/") + 1).toLowerCase();
+	const suggestions: string[] = [];
+	for (const model of available) {
+		if (!model.id.toLowerCase().includes(needle)) continue;
+		suggestions.push(formatModelString(model));
+		if (suggestions.length === 5) break;
+	}
+	return suggestions;
+}
+
+function unknownModelError(reference: string, available: readonly Model<Api>[]): ToolError {
+	const suggestions = suggestModelReferences(reference, available);
+	const hint = suggestions.length > 0 ? ` Closest available: ${suggestions.join(", ")}.` : "";
+	return new ToolError(
+		`completion() model "${reference}" is not in the model pool. Pass a tier (${TIER_LIST}) or an available model id.${hint}`,
+	);
+}
+
+/**
+ * Resolve a caller-supplied model reference against the session's pool. A bare id is accepted
+ * only when a single provider offers it; when several do, the call fails and asks for an explicit
+ * `provider/id` rather than silently landing on whichever provider sorts first.
+ */
+function resolveRequestedModel(reference: string, session: ToolSession): Model<Api> {
+	const available = session.modelRegistry?.getAvailable() ?? [];
+	if (available.length === 0) {
+		throw new ToolError(
+			`completion() has no models available; configure a provider before requesting "${reference}".`,
+		);
+	}
+	const slashIndex = reference.indexOf("/");
+	if (slashIndex > 0) {
+		const match = resolveProviderModelReference(
+			reference.slice(0, slashIndex),
+			reference.slice(slashIndex + 1),
+			available,
+		);
+		if (!match) throw unknownModelError(reference, available);
+		return match;
+	}
+	const lowerReference = reference.toLowerCase();
+	const matches = available.filter(model => model.id.toLowerCase() === lowerReference);
+	const first = matches[0];
+	if (!first) throw unknownModelError(reference, available);
+	const providers = [...new Set(matches.map(model => model.provider))].sort();
+	if (providers.length > 1) {
+		throw new ToolError(
+			`completion() model "${reference}" is ambiguous: ${providers.join(", ")} all provide it. Qualify it as ${providers.map(provider => `"${provider}/${first.id}"`).join(" or ")}.`,
+		);
+	}
+	return first;
 }
 
 function resolveTierModel(tier: CompletionTier, session: ToolSession): Model<Api> | undefined {
@@ -159,7 +233,7 @@ function resolveTierModel(tier: CompletionTier, session: ToolSession): Model<Api
 	return resolve(TIER_TO_PATTERN[tier]);
 }
 
-function reasoningForTier(tier: CompletionTier, model: Model<Api>): Effort | undefined {
+function reasoningForTier(tier: CompletionTier | undefined, model: Model<Api>): Effort | undefined {
 	if (tier !== "slow" || !model.reasoning) return undefined;
 	const efforts = getSupportedEfforts(model);
 	if (efforts.length === 0) return undefined;
@@ -270,7 +344,7 @@ async function claimEvalCompletion(
 	if (
 		entry.fingerprint !== fingerprint ||
 		entry.args.prompt !== request.parsed.prompt ||
-		(entry.args.model ?? "default") !== request.finalTier ||
+		(entry.args.model ?? "default") !== request.selector ||
 		(entry.args.system ?? undefined) !== request.parsed.system ||
 		JSON.stringify(entry.args.schema ?? undefined) !== JSON.stringify(request.parsed.schema ?? undefined)
 	) {
@@ -291,7 +365,7 @@ async function claimEvalCompletion(
 	try {
 		const result = options.signal ? await untilAborted(options.signal, entry.promise) : await entry.promise;
 		if (entries?.get(current.key) === entry) entries.delete(current.key);
-		if (result.details.model !== formatModelString(request.model) || result.details.tier !== request.finalTier)
+		if (result.details.model !== formatModelString(request.model) || result.details.selector !== request.selector)
 			return undefined;
 		return result;
 	} catch {
@@ -319,7 +393,7 @@ export async function runEvalCompletion(
 		}
 		return claimed;
 	}
-	const { parsed, finalTier, model, registry } = request;
+	const { parsed, selector, tier, model, registry } = request;
 	const { prompt, system, schema } = parsed;
 	const tools: Tool[] | undefined = schema
 		? [
@@ -345,7 +419,7 @@ export async function runEvalCompletion(
 				apiKey: registry.resolver(model, options.session.getSessionId?.() ?? undefined),
 				fetch: options.session.fetch,
 				signal: options.signal,
-				reasoning: reasoningForTier(finalTier, model),
+				reasoning: reasoningForTier(tier, model),
 				toolChoice: schema ? { type: "tool", name: STRUCTURED_TOOL_NAME } : undefined,
 			},
 			{ telemetry, oneshotKind: "eval_completion" },
@@ -376,12 +450,12 @@ export async function runEvalCompletion(
 		options.emitStatus?.({
 			op: "completion",
 			model: formatModelString(model),
-			tier: finalTier,
+			tier,
 			chars: resultText.length,
 		});
 	}
 	return {
 		text: resultText,
-		details: { model: formatModelString(model), tier: finalTier, structured: Boolean(schema) },
+		details: { model: formatModelString(model), selector, tier, structured: Boolean(schema) },
 	};
 }

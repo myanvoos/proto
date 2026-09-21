@@ -15,6 +15,13 @@ test("finds literal Python completion calls in a quoted heredoc", () => {
 	expect(calls[0]?.args).toEqual({ prompt: "summarize", model: "smol", system: "brief" });
 });
 
+test("speculates on a pool model id, not just the role tiers", () => {
+	const command = `python <<'PY'\nanswer = completion("summarize", model="openai-codex/gpt-5.6-sol")\nPY`;
+	const calls = findHeredocCompletionCalls(command);
+	expect(calls).toHaveLength(1);
+	expect(calls[0]?.args).toEqual({ prompt: "summarize", model: "openai-codex/gpt-5.6-sol" });
+});
+
 test("stops speculative Python calls at raw heredoc bodies, including partial streams", () => {
 	const code = [
 		'answer = completion("before")',

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Kernel `completion()` accepts a model id, not just the `"smol"`/`"default"`/`"slow"` tiers: a bare id resolves when a single provider offers it, several providers ask you to qualify it as `provider/id`, and an id outside the pool names its closest available matches.
+
 ### Changed
 
 - Background agents from `/side --agent` are their own agent kind now: they stay live and idle after finishing instead of being parked, so you can keep talking to one without waiting for it to revive, and they are never auto-parked by the worker idle TTL.

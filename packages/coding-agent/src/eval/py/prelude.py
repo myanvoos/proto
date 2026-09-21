@@ -1187,12 +1187,14 @@ if "__proto_prelude_loaded__" not in globals():
         return str(value)
 
     def completion(prompt, *, model="default", system=None, schema=None):
-        """Oneshot, stateless completion against a model tier.
+        """Oneshot, stateless completion against a model tier or a named model.
 
-        `model` selects a tier: "smol", "default" (the session's active model),
-        or "slow". Pass `system` for a system prompt. Pass a JSON-Schema dict
-        as `schema` to force a structured response; the parsed object is then
-        returned instead of the completion text.
+        `model` takes a tier — "smol", "default" (the session's active model),
+        or "slow" — or a model id from the session's pool. A bare id resolves
+        only when a single provider offers it; when several do, qualify it as
+        "provider/id". Pass `system` for a system prompt. Pass a JSON-Schema
+        dict as `schema` to force a structured response; the parsed object is
+        then returned instead of the completion text.
         """
         args = {"prompt": prompt, "model": model}
         if system is not None:
