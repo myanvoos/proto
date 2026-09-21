@@ -6,6 +6,10 @@
 
 - `/annotate [note]` — bookmark the last agent response; it becomes a label on that point in the session tree, so `/annotate view` browses bookmarks with the usual tree navigation and an empty note clears one.
 
+### Fixed
+
+- Kernel cells that `savefig()` then `plt.close()` a matplotlib figure now still display the figure inline at cell end — previously closed figures were dropped, so the most common plotting pattern produced no image in the TUI.
+
 - `xd` devices take CLI args now: flags are mapped from each tool's schema (`xd <tool> --flag value`, `--flag=value`, booleans, repeatable/comma-split arrays, positional fills, `-` reads a flag from stdin), so device calls no longer need JSON embedded in shell quotes. `xd <tool> ?` prints usage + flag reference; `xd <tool> --json '<json>'` (and lone `'{...}'` / piped-stdin JSON) remains the escape hatch, and MCP devices stay JSON-only.
 - `xd` shell results are scriptable end to end: usage errors exit 2 (unknown flag, missing value, bad JSON) while tool failures keep exit 1, and outputs stay plain newline-terminated text you can pipe, slice, and redirect.
 

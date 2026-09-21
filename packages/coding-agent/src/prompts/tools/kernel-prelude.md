@@ -1,6 +1,6 @@
 {{#ifAll py js}}Python: sync, kwargs. JS: async, ONE trailing object literal, never positional.{{else}}{{#if py}}Sync; kwargs.{{/if}}{{#if js}}Async; ONE trailing object literal, never positional.{{/if}}{{/ifAll}}
 ```
-display(value) → None        print(value, ...) → None
+display(value) → None        print(value, ...) → None    # images render inline in the TUI: display(PIL.Image) or display(pandas.DataFrame); open matplotlib figures auto-display at cell end even after plt.close()
 {{#if py}}symbols(path?, code?=None, lang?=None) → str    tree-sitter outline, bodies elided; code= outlines an in-memory string (validate structure BEFORE writing; lang= required without a path)
 defs() → dict    kernel-defined names → cell number
 {{/if}}{{#if py}}proto_path(path) → Path    resolve a plain, `~/…`, or scheme URL (fleet//local//skill) path to a real filesystem path for the raw file APIs{{/if}}

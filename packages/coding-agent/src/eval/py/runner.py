@@ -34,6 +34,7 @@ import base64
 import builtins
 import codecs
 import contextvars
+import importlib
 import inspect
 import io
 import json
@@ -51,6 +52,7 @@ import time
 import tokenize
 import traceback
 import types
+import weakref
 from pathlib import Path
 from typing import Any, Callable
 
@@ -255,6 +257,15 @@ _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS: contextvars.ContextVar[set[int] | None] = (
     contextvars.ContextVar(
         "proto_displayed_matplotlib_figure_ids",
+        default=None,
+    )
+)
+
+# Figures saved via Figure.savefig() this cell (weakrefs). Closed figures are
+# unreachable from pyplot at flush time, so the savefig hook records them here.
+_SAVED_MATPLOTLIB_FIGURES: contextvars.ContextVar[list["weakref.Reference"] | None] = (
+    contextvars.ContextVar(
+        "proto_saved_matplotlib_figures",
         default=None,
     )
 )
@@ -1566,27 +1577,115 @@ def _reset_fs_status() -> None:
         fn()
 
 
-def _flush_matplotlib_figures() -> None:
-    plt = sys.modules.get("matplotlib.pyplot")
-    if plt is None:
+def _ensure_matplotlib_saved_hook() -> None:
+    """Patch Figure.savefig to remember figures for end-of-cell display.
+
+    pyplot drops closed figures, so without this hook the dominant agent
+    pattern -- ``fig.savefig(path); plt.close(fig)`` -- never displays.
+    Installs lazily via an import hook so sessions that never import
+    matplotlib pay nothing.
+    """
+    if "matplotlib.pyplot" in sys.modules:
+        _patch_pyplot(sys.modules["matplotlib.pyplot"])
         return
-    try:
-        fignums = list(plt.get_fignums())
-    except Exception:
+    if _PYLOT_IMPORT_HOOK in sys.meta_path:
         return
-    for num in fignums:
+    sys.meta_path.insert(0, _PYLOT_IMPORT_HOOK)
+
+
+class _PyplotLoaderWrap:
+    def __init__(self, loader: Any, on_load: Callable[[Any], None]) -> None:
+        self._loader = loader
+        self._on_load = on_load
+
+    def create_module(self, spec: Any) -> Any:
+        return self._loader.create_module(spec)
+
+    def exec_module(self, module: Any) -> None:
+        self._loader.exec_module(module)
+        self._on_load(module)
+
+
+class _PyplotImportHook:
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+        if fullname != "matplotlib.pyplot":
+            return None
+        sys.meta_path.remove(self)
         try:
-            fig = plt.figure(num)
-            if id(fig) in (_CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.get() or set()):
-                plt.close(fig)
-                continue
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", bbox_inches="tight")
-            data = base64.b64encode(buf.getvalue()).decode("ascii")
-            _emit_display({"image/png": data, "text/plain": f"<Figure {num}>"})
-            plt.close(fig)
+            spec = importlib.util.find_spec(fullname)
+        finally:
+            sys.meta_path.insert(0, self)
+        if spec is None or spec.loader is None:
+            return spec
+        spec.loader = _PyplotLoaderWrap(spec.loader, _patch_pyplot)
+        return spec
+
+
+_PYLOT_IMPORT_HOOK = _PyplotImportHook()
+
+
+def _patch_pyplot(plt: Any) -> None:
+    if getattr(plt, "_proto_saved_hook_installed", False):
+        return
+    plt._proto_saved_hook_installed = True
+    figure_cls = getattr(sys.modules.get("matplotlib.figure"), "Figure", None)
+    if figure_cls is None:
+        return
+    orig_savefig = figure_cls.savefig
+
+    def savefig(self: Any, *args: Any, **kwargs: Any) -> Any:
+        saved = _SAVED_MATPLOTLIB_FIGURES.get()
+        if saved is not None:
+            try:
+                saved.append(weakref.ref(self))
+            except TypeError:
+                pass
+        return orig_savefig(self, *args, **kwargs)
+
+    figure_cls.savefig = savefig
+
+
+def _flush_matplotlib_figures() -> None:
+    displayed = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.get() or set()
+    emitted: set[int] = set()
+    plt = sys.modules.get("matplotlib.pyplot")
+    if plt is not None:
+        try:
+            fignums = list(plt.get_fignums())
         except Exception:
-            continue
+            fignums = []
+        for num in fignums:
+            try:
+                fig = plt.figure(num)
+                if id(fig) in displayed or id(fig) in emitted:
+                    plt.close(fig)
+                    continue
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", bbox_inches="tight")
+                data = base64.b64encode(buf.getvalue()).decode("ascii")
+                _emit_display({"image/png": data, "text/plain": f"<Figure {num}>"})
+                emitted.add(id(fig))
+                plt.close(fig)
+            except Exception:
+                continue
+    # Figures the cell saved to disk but closed before flush could see them.
+    saved = _SAVED_MATPLOTLIB_FIGURES.get()
+    if saved:
+        remaining: list[Any] = []
+        for ref in saved:
+            fig = ref()
+            if fig is None or id(fig) in displayed or id(fig) in emitted:
+                continue
+            try:
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", bbox_inches="tight")
+                data = base64.b64encode(buf.getvalue()).decode("ascii")
+                _emit_display({"image/png": data, "text/plain": "<Figure>"})
+                emitted.add(id(fig))
+            except Exception:
+                remaining.append(ref)
+        # Drop consumed entries so a repeat flush does not re-emit.
+        saved[:] = remaining
 
 
 # Force a non-interactive backend before user code imports matplotlib. Set as
@@ -1992,6 +2091,11 @@ async def _handle_request_async(req: dict) -> None:
     rid = str(req.get("id"))
     token = _CURRENT_RID.set(rid)
     displayed_matplotlib_token = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.set(set())
+    saved_matplotlib_token = _SAVED_MATPLOTLIB_FIGURES.set([])
+    try:
+        _ensure_matplotlib_saved_hook()
+    except Exception:
+        pass
     capture = _begin_fd_capture(rid)
     _STATE.user_ns["__proto_run_id__"] = rid
     _STATE.cancel_requested = False
@@ -2124,6 +2228,7 @@ async def _handle_request_async(req: dict) -> None:
         _flush_stream_proxies(rid)
         _CURRENT_RID.reset(token)
         _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)
+        _SAVED_MATPLOTLIB_FIGURES.reset(saved_matplotlib_token)
 
 
 def _emit_error(rid: str, exc: BaseException) -> None:
