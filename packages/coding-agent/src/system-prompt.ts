@@ -809,11 +809,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 
 	const inventoryToolNames =
 		xdevToolNames.size === 0 ? toolNames : toolNames.filter(name => tools?.has(name) || !xdevToolNames.has(name));
-	const toolInfo = inventoryToolNames.map(name => ({
-		name: toolPromptNames.get(name) ?? name,
-		internalName: name,
-		label: tools?.get(name)?.label ?? "",
-	}));
 	const toolInventory = toolListMode
 		? ""
 		: renderToolInventory(
@@ -852,10 +847,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		customPrompt: resolvedCustomPrompt,
 		appendPrompt: resolvedAppendPrompt ?? "",
 		tools: [...new Set([...toolNames, ...xdevTools.map(mounted => mounted.name)])],
-		toolInfo,
 		toolInventory,
 		inlineToolDescriptors,
-		toolListMode,
 		toolRefs,
 		environment,
 		contextFiles,

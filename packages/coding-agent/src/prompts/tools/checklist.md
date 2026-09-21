@@ -11,7 +11,7 @@ Results: `init` prints one compact tree after its initialization summary; `view`
 |`append`|`phase` + `items: string[]`; lazily creates phase|
 |`view`|Echo list (also: lost exact task text → `view`, NEVER guess)|
 
-Starting a completed, abandoned, or blocked task is rejected; completed tasks NEVER revert. Task content: 5–10 words, what not how, unique. Phase: short noun phrase; NEVER prefix `1.`/`A)`. Keep strings stable.
+Starting a completed, abandoned, or blocked task is rejected. Task content: 5–10 words, what not how, unique. Phase: short noun phrase; NEVER prefix `1.`/`A)`. Keep strings stable.
 
 Blocked on user decision/external service → `block`; the active task blocked hands `in_progress` to the next `pending` task; blocker agent-actionable → `append` an unblocking task instead.
 

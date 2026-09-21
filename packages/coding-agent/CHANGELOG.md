@@ -18,6 +18,7 @@
 
 ### Changed
 
+- Sessions whose tools are declared natively no longer carry the `# Tool Inventory` list: the names were already in the tool declarations, so the system prompt drops one line per tool (inband/dialect sessions keep the full `## functions` inventory). Duplicated guidance was also removed from the bash, checklist, and inspect_media docs — about 135 tokens per request on a 7-tool session.
 - Heredoc bodies in a streaming bash command are highlighted in their own language instead of one flat string: a kernel cell's body follows its interpreter (`python`/`node`/`bun`) and a `cat`/`tee` heredoc follows the written file's extension (`.py`, `.md`, `.json`, `.rs`, …), while the shell around it keeps shell coloring.
 - `xd <tool> ?` collapses to a per-device schema card in the TUI — usage line plus flag rows in the Submit-Result tree style, with a family badge (files/web/watch/workers/processes/…) identifying each proto built-in; expanding shows the full docs.
 

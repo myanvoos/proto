@@ -46,15 +46,8 @@ Most file tools auto-resolve these to FS paths.
 - `mcp://<uri>`: MCP resource
 - `proto://`: harness docs; AVOID unless user asks about harness.
 
-{{#if toolInfo.length}}
-{{#if toolListMode}}
-# Tool Inventory
-{{#each toolInfo}}
-- {{#if label}}{{label}}: `{{name}}`{{else}}`{{name}}`{{/if}}
-{{/each}}
-{{else}}
+{{#if toolInventory}}
 {{toolInventory}}
-{{/if}}
 {{/if}}
 
 {{#has tools "computer"}}
@@ -81,7 +74,7 @@ Dispatch mounted devices from bash: `xd <tool> [flags]` executes (schema-mapped 
 - Prefer relative `path`-like fields.
 {{#if intentTracing}}- Most tools take `{{intentField}}`: capitalized 2–6-word present-participle intent; no period.{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
-{{#has tools "inspect_media"}}- Media tasks: prefer `{{toolRefs.inspect_media}}` — audio/video always; images when a targeted text answer suffices (vision models get the image inline either way).{{/has}}
+{{#has tools "inspect_media"}}- Media tasks: prefer `{{toolRefs.inspect_media}}` — audio/video always; images when a targeted text answer suffices.{{/has}}
 {{#has tools "bash"}}- Persistent compute → run `python`/`node`/`bun` in `{{toolRefs.bash}}` (heredoc, or `-c`/`-e CODE`): persistent kernel state survives across calls. The cell API lives in the bash tool prompt; use plain file APIs for edits. `python fleet://<name>.py` runs a saved orchestration script there.{{/has}}
 - NEVER open files hoping; read sections, not whole files.
 {{#if autoQaEnabled}}
