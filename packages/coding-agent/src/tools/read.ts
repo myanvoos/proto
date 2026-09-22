@@ -924,9 +924,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			return { content: [{ type: "text", text: metadataLines.join("\n") }], details: {}, sourcePath: absolutePath };
 		}
 
-		const { ImageInputTooLargeError, loadImageInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } = await import(
-			"../utils/image-loading"
-		);
+		const {
+			ImageDecodeError,
+			ImageInputTooLargeError,
+			loadImageInput,
+			MAX_IMAGE_INPUT_BYTES,
+			webpExclusionForModel,
+		} = await import("../utils/image-loading");
 		if (fileSize > MAX_IMAGE_INPUT_BYTES) {
 			const sizeStr = formatBytes(fileSize);
 			const maxStr = formatBytes(MAX_IMAGE_INPUT_BYTES);
@@ -954,7 +958,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				sourcePath: imageInput.resolvedPath,
 			};
 		} catch (error) {
-			if (error instanceof ImageInputTooLargeError) {
+			if (error instanceof ImageInputTooLargeError || error instanceof ImageDecodeError) {
 				throw new ToolError(error.message);
 			}
 			throw error;

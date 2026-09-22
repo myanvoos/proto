@@ -320,15 +320,61 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 	};
 }
 
+/**
+ * A factory that never settles used to take the whole process down with it: the awaited promise kept
+ * no handle alive, so Bun drained the event loop and exited 0 before the TUI drew or a single request
+ * was made. Loading is bounded, and a factory that is merely slow is reported instead of silently
+ * costing the user seconds of startup.
+ */
+export const EXTENSION_FACTORY_TIMEOUT_MS = 10_000;
+export const EXTENSION_FACTORY_SLOW_MS = 2_000;
+
+function factoryTimeoutMs(): number {
+	const raw = process.env.PI_EXTENSION_LOAD_TIMEOUT_MS;
+	if (raw === undefined) return EXTENSION_FACTORY_TIMEOUT_MS;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : EXTENSION_FACTORY_TIMEOUT_MS;
+}
+
+/** A factory that eats half the loading budget is worth reporting even when the budget is small. */
+function factorySlowMs(timeoutMs: number): number {
+	if (timeoutMs === 0) return EXTENSION_FACTORY_SLOW_MS;
+	return Math.min(EXTENSION_FACTORY_SLOW_MS, Math.floor(timeoutMs / 2));
+}
+
 async function runExtensionFactory(
 	factory: ExtensionFactory,
 	api: ExtensionAPI,
 	runtime: IExtensionRuntime,
+	extensionPath: string,
 ): Promise<void> {
 	const providerRegistrationCheckpoint = [...runtime.pendingProviderRegistrations];
 
+	const work = (async () => factory(api))();
+	// The factory keeps running after a timeout (it cannot be cancelled); this keeps a late failure
+	// from surfacing as an unhandled rejection long after the extension was given up on.
+	work.catch(() => {});
+
+	const timeoutMs = factoryTimeoutMs();
 	try {
-		await factory(api);
+		if (timeoutMs === 0) {
+			await work;
+		} else {
+			const expiry = Promise.withResolvers<never>();
+			const timer = setTimeout(() => {
+				expiry.reject(
+					new Error(
+						`Extension factory did not finish within ${timeoutMs}ms: ${extensionPath}. ` +
+							"Loading continued without it; check for a promise the factory never resolves.",
+					),
+				);
+			}, timeoutMs);
+			try {
+				await Promise.race([work, expiry.promise]);
+			} finally {
+				clearTimeout(timer);
+			}
+		}
 	} catch (error) {
 		runtime.pendingProviderRegistrations.splice(
 			0,
@@ -373,7 +419,7 @@ async function bindExtension(
 	cwd: string,
 	eventBus: EventBus,
 	runtime: IExtensionRuntime,
-): Promise<{ extension: Extension | null; error: string | null }> {
+): Promise<{ extension: Extension | null; error: string | null; warning?: string }> {
 	const factory = imported.factory;
 	if (imported.error !== null || factory === null) {
 		return { extension: null, error: imported.error };
@@ -383,9 +429,19 @@ async function bindExtension(
 		const extension = createExtension(extensionPath, imported.resolvedPath);
 		const pi = await import("../../index");
 		const api = new ConcreteExtensionAPI(pi, extension, runtime, cwd, eventBus);
-		await withHostGuard(() => runExtensionFactory(factory, api, runtime));
+		const startedAt = Date.now();
+		await withHostGuard(() => runExtensionFactory(factory, api, runtime, extensionPath));
+		const elapsedMs = Date.now() - startedAt;
 
-		return { extension, error: null };
+		return {
+			extension,
+			error: null,
+			...(elapsedMs >= factorySlowMs(factoryTimeoutMs())
+				? {
+						warning: `loaded, but its factory took ${(elapsedMs / 1000).toFixed(1)}s and delayed startup by that long`,
+					}
+				: {}),
+		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return { extension: null, error: `Failed to load extension: ${message}` };
@@ -403,13 +459,14 @@ export async function loadExtensionFromFactory(
 	const extension = createExtension(name, name);
 	const pi = await import("../../index");
 	const api = new ConcreteExtensionAPI(pi, extension, runtime, cwd, eventBus);
-	await runExtensionFactory(factory, api, runtime);
+	await runExtensionFactory(factory, api, runtime, name);
 	return extension;
 }
 
 export async function loadExtensions(paths: string[], cwd: string, eventBus?: EventBus): Promise<LoadExtensionsResult> {
 	const extensions: Extension[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
+	const warnings: Array<{ path: string; warning: string }> = [];
 	const resolvedEventBus = eventBus ?? new EventBus();
 	const runtime = new ExtensionRuntime();
 
@@ -417,11 +474,15 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 
 	for (let i = 0; i < paths.length; i++) {
 		const extPath = paths[i]!;
-		const { extension, error } = await bindExtension(extPath, imported[i]!, cwd, resolvedEventBus, runtime);
+		const { extension, error, warning } = await bindExtension(extPath, imported[i]!, cwd, resolvedEventBus, runtime);
 
 		if (error) {
 			errors.push({ path: extPath, error });
 			continue;
+		}
+
+		if (warning) {
+			warnings.push({ path: extPath, warning });
 		}
 
 		if (extension) {
@@ -432,6 +493,7 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 	return {
 		extensions,
 		errors,
+		warnings,
 		runtime,
 	};
 }

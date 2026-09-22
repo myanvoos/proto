@@ -76,7 +76,7 @@ export const inspectMediaToolRenderer = {
 			return framedBlock(uiTheme, width => {
 				const bodyLines: string[] = [];
 				if (question) bodyLines.push(questionLine(question, uiTheme));
-				bodyLines.push(formatErrorDetail(outputText || "inspection failed", uiTheme));
+				bodyLines.push(...formatErrorDetail(outputText || "inspection failed", uiTheme).split("\n"));
 				return {
 					header,
 					sections: [{ lines: bodyLines }],

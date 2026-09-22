@@ -1,6 +1,14 @@
 import { MISSING, OmpErrors } from "./errors";
 import { canRefineUnionFailure, materializeDefault, unionFail, walk } from "./interp";
-import { expectedOf, hasMorph, type IR, type MorphContext, type PropIR, type TupleIR } from "./ir";
+import {
+	expectedOf,
+	hasMorph,
+	type IR,
+	type MorphContext,
+	type PropIR,
+	type TupleIR,
+	violatedConstraintOf,
+} from "./ir";
 
 const own = Object.prototype.hasOwnProperty;
 const IDENT = /^[A-Za-z_$][\w$]*$/;
@@ -297,7 +305,7 @@ class Builder {
 					this.push(
 						`else if(${v}.length<${node.min}){${this.appendError(
 							errors,
-							this.error(segs, `at least length ${node.min}`, `${v}.length`),
+							this.error(segs, `at least length ${node.min}`, v),
 						)}}`,
 					);
 				}
@@ -305,7 +313,7 @@ class Builder {
 					this.push(
 						`else if(${v}.length>${node.max}){${this.appendError(
 							errors,
-							this.error(segs, `at most length ${node.max}`, `${v}.length`),
+							this.error(segs, `at most length ${node.max}`, v),
 						)}}`,
 					);
 				}
@@ -429,8 +437,8 @@ class Builder {
 			}
 			case "union": {
 				const failure = node.members.some(canRefineUnionFailure)
-					? `UF(${this.ref(node)},${failureData},${this.pathExpr(segs)},${JSON.stringify(expectedOf(node))})`
-					: this.error(segs, expectedOf(node), failureData);
+					? `UF(${this.ref(node)},${failureData},${this.pathExpr(segs)},${JSON.stringify(violatedConstraintOf(node))})`
+					: this.error(segs, violatedConstraintOf(node), failureData);
 				this.push(`if(!(${this.predicate(node, v)})){${this.appendError(errors, failure)}}`);
 				return;
 			}
@@ -442,7 +450,7 @@ class Builder {
 					this.push(
 						`else if(${v}.length<${node.min}){${this.appendError(
 							errors,
-							this.error(segs, `at least length ${node.min}`, `${v}.length`),
+							this.error(segs, `at least length ${node.min}`, v),
 						)}}`,
 					);
 				}
@@ -450,7 +458,7 @@ class Builder {
 					this.push(
 						`else if(${v}.length>${node.max}){${this.appendError(
 							errors,
-							this.error(segs, `at most length ${node.max}`, `${v}.length`),
+							this.error(segs, `at most length ${node.max}`, v),
 						)}}`,
 					);
 				}
@@ -696,7 +704,7 @@ class Builder {
 					this.push(
 						`if(${v}.length<${node.min}){${this.appendError(
 							errors,
-							this.error(segs, `at least length ${node.min}`, `${v}.length`),
+							this.error(segs, `at least length ${node.min}`, v),
 						)}break ${brk};}`,
 					);
 				}
@@ -704,7 +712,7 @@ class Builder {
 					this.push(
 						`if(${v}.length>${node.max}){${this.appendError(
 							errors,
-							this.error(segs, `at most length ${node.max}`, `${v}.length`),
+							this.error(segs, `at most length ${node.max}`, v),
 						)}break ${brk};}`,
 					);
 				}

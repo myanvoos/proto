@@ -31,6 +31,7 @@ interface ImageContentWithPng extends ImageContent {
 
 export class AttachmentChipsBand implements Component {
 	#imageIds = new Map<string, { key: string; id: number }>();
+	#maxHeight = INNER_ROWS + 2;
 
 	constructor(
 		private readonly editor: CustomEditor,
@@ -38,18 +39,39 @@ export class AttachmentChipsBand implements Component {
 		private readonly requestRender: () => void,
 	) {}
 
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(0, Math.floor(rows));
+		if (this.#maxHeight === 0) this.#releaseInactiveImages(new Set());
+	}
+
 	render(width: number): readonly string[] {
 		const chips = this.editor.composerChips();
 		const activeImageChips = new Set<string>();
-		if (chips.length === 0) {
+		if (chips.length === 0 || this.#maxHeight === 0 || width <= 0) {
 			this.#releaseInactiveImages(activeImageChips);
 			return [];
+		}
+		if (this.#maxHeight < INNER_ROWS + 2 || width < CARD_COLS) {
+			// Never expose half a box: the atom in the editor retains the payload,
+			// while a complete compact caption identifies the hidden preview.
+			this.#releaseInactiveImages(activeImageChips);
+			const captions = chips.map(chip => {
+				const detail =
+					chip.kind === "image"
+						? "image"
+						: chip.text.lineCount > 1
+							? `${chip.text.lineCount} lines`
+							: `${chip.text.charCount} chars`;
+				return `#${chip.n} ${detail}`;
+			});
+			const summary = chips.length > 1 ? `${chips.length} attachments · ${captions.join(" · ")}` : captions[0]!;
+			return [theme.fg("muted", truncateToWidth(summary, width))];
 		}
 		const rows = ["", "", "", "", "", ""];
 		const gap = " ".repeat(CARD_GAP);
 		let x = 0;
 		for (const chip of chips) {
-			if (x + CARD_COLS > width) break;
+			if (x + (x > 0 ? CARD_GAP : 0) + CARD_COLS > width) break;
 			const card = this.#card(chip, activeImageChips);
 			for (let r = 0; r < rows.length; r++) rows[r] += (x > 0 ? gap : "") + card[r];
 			x += (x > 0 ? CARD_GAP : 0) + CARD_COLS;

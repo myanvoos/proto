@@ -1,17 +1,20 @@
-import { type SgrMouseEvent, TabBar } from "@oh-my-pi/pi-tui";
+import { type SgrMouseEvent, TabBar, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { getTabBarTheme } from "../../shared";
+import { theme } from "../../theme/theme";
 import { SignInTab } from "./sign-in";
 import type { SetupScene, SetupSceneController, SetupSceneHost, SetupTab } from "./types";
 import { WebSearchTab } from "./web-search";
 
 class ProvidersSceneController implements SetupSceneController {
 	title = "Set up your providers";
-	subtitle = "Sign in and pick a web search provider. Press Esc when you're done.";
+	subtitle = "Sign in and pick a web search provider. Esc skips this step.";
 
 	#tabs: SetupTab[];
 	#tabBar: TabBar;
 
 	#tabRowCount = 1;
+	#bodyRowStart = 2;
+	#compactTabs = false;
 
 	constructor(host: SetupSceneHost) {
 		this.#tabs = [new SignInTab(host), new WebSearchTab(host)];
@@ -52,6 +55,10 @@ class ProvidersSceneController implements SetupSceneController {
 		const tab = this.#activeTab();
 		if (event.wheel === null && line >= 0 && line < this.#tabRowCount) {
 			if (tab.modal) return;
+			if (this.#compactTabs) {
+				if (event.leftClick && col >= 0) this.#tabBar.nextTab();
+				return;
+			}
 			const hit = this.#tabBar.tabAt(line, col);
 			if (event.motion) {
 				this.#tabBar.setHoverTab(hit && !hit.muted ? hit.id : null);
@@ -61,8 +68,7 @@ class ProvidersSceneController implements SetupSceneController {
 			return;
 		}
 		if (event.motion) this.#tabBar.setHoverTab(null);
-		const spacerRowsAfterTabs = 1;
-		const bodyLine = line - this.#tabRowCount - spacerRowsAfterTabs;
+		const bodyLine = line - this.#bodyRowStart;
 		if (tab.routeMouse) {
 			tab.routeMouse(event, bodyLine, col);
 			return;
@@ -73,10 +79,17 @@ class ProvidersSceneController implements SetupSceneController {
 	}
 
 	render(width: number, maxLines?: number): readonly string[] {
-		const tabLines = this.#tabBar.render(width);
+		let tabLines = [...this.#tabBar.render(width)];
+		this.#compactTabs = maxLines !== undefined && tabLines.length + 4 > maxLines;
+		if (this.#compactTabs) {
+			tabLines =
+				maxLines! >= 4 ? [truncateToWidth(theme.fg("accent", `${this.#activeTab().label} ↔ Tab`), width)] : [];
+		}
 		this.#tabRowCount = tabLines.length;
-		const tabBudget = maxLines === undefined ? undefined : Math.max(1, maxLines - tabLines.length - 1);
-		return [...tabLines, "", ...this.#activeTab().render(width, tabBudget)];
+		const header = this.#compactTabs ? tabLines : [...tabLines, ""];
+		this.#bodyRowStart = header.length;
+		const tabBudget = maxLines === undefined ? undefined : Math.max(0, maxLines - header.length);
+		return [...header, ...this.#activeTab().render(width, tabBudget)];
 	}
 
 	dispose(): void {

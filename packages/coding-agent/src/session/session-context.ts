@@ -176,7 +176,9 @@ export function buildSessionContext(
 		if (entry.type === "reset_boundary") {
 			resetBoundaryIdx = i;
 		} else if (entry.type === "thinking_level_change") {
-			thinkingLevel = entry.thinkingLevel ?? "off";
+			// A recorded `null` means the session had no thinking level of its own; restoring it as an
+			// explicit "off" would pin a level nobody chose (and change the model string it reports).
+			thinkingLevel = entry.thinkingLevel ?? undefined;
 			configuredThinkingLevel = entry.configured ?? entry.thinkingLevel ?? undefined;
 		} else if (entry.type === "model_change") {
 			if (entry.model) {

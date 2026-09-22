@@ -34,6 +34,7 @@ import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import { type LocalProtocolOptions, resolveFleetRoot } from "../internal-urls";
 import type { MCPManager } from "../mcp/manager";
 import { initializeExtensions } from "../modes/runtime-init";
+import { claimWakeTurn } from "../orchestrator/wake-turns";
 import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
@@ -45,9 +46,9 @@ import type { ArtifactManager } from "../session/artifacts";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
+import type { SubagentUsageTotals } from "../session/session-entries";
 import { SessionManager } from "../session/session-manager";
 import { TailAccumulator, truncateTail } from "../session/streaming-output";
-
 import { prewalkWouldBeNoop, resolveWorkerEffortLevel, type WorkerEffort } from "../thinking";
 import type { ContextFileEntry } from "../tools";
 import { isIrcEnabled } from "../tools/fleet";
@@ -467,6 +468,7 @@ export const SUBAGENT_WARNING_SCHEMA_OVERRIDDEN =
 export const SUBAGENT_WARNING_NULL_YIELD = "SYSTEM WARNING: Subagent called yield with null data.";
 export const SUBAGENT_WARNING_MISSING_YIELD =
 	"SYSTEM WARNING: Subagent exited without calling yield tool after 3 reminders.";
+export const SUBAGENT_TURN_FAILED = "SYSTEM ERROR: Subagent turn failed before yielding a result.";
 
 function buildSchemaViolationOutcome(
 	failure: { message: string; missingRequired: string[] },
@@ -611,6 +613,13 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 		} else if (!hasOutputSchema && allowFallback && rawOutput.trim().length > 0) {
 			exitCode = 0;
 			stderr = "";
+		} else if (exitCode !== 0 && !doneAborted && !signalAborted) {
+			// A failed turn (e.g. a provider error) never reaches yield, so its only
+			// durable record of the failure is the output the run result persists.
+			const failure = stderr.trim();
+			const notice = failure ? `${SUBAGENT_TURN_FAILED}\n${failure}` : SUBAGENT_TURN_FAILED;
+			rawOutput = rawOutput.trim() ? `${notice}\n\n${rawOutput}` : notice;
+			if (!failure) stderr = SUBAGENT_TURN_FAILED;
 		} else if (exitCode === 0) {
 			const hasRawOutput = rawOutput.trim().length > 0;
 			rawOutput = rawOutput ? `${SUBAGENT_WARNING_MISSING_YIELD}\n\n${rawOutput}` : SUBAGENT_WARNING_MISSING_YIELD;
@@ -1777,6 +1786,9 @@ async function driveSessionToYield(
 
 interface FinalizeRunArgs {
 	monitor: SubagentRunMonitor;
+
+	/** Cumulative spend of the subagents the finished agent owns; its own usage never includes them. */
+	subagentUsage?: SubagentUsageTotals;
 	done: { exitCode: number; error?: string; aborted?: boolean; abortReason?: string; durationMs: number };
 	index: number;
 	id: string;
@@ -1926,6 +1938,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		aborted: wasAborted,
 		abortReason: finalAbortReason,
 		usage: monitor.hasUsage() ? monitor.accumulatedUsage : undefined,
+		...(args.subagentUsage && args.subagentUsage.runs > 0 ? { subagentUsage: args.subagentUsage } : {}),
 		outputPath,
 		extractedToolData: progress.extractedToolData,
 		retryFailure: progress.retryFailure,
@@ -1970,6 +1983,9 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				.filter(Boolean)
 				.join("\n\n") || "IRC follow-up";
 		const turnStartTime = Date.now();
+		// A worker woken by IRC still owes its result to whoever owns it; the claim makes the turn
+		// visible to that owner while it runs and delivers the result when it finishes.
+		const claim = claimWakeTurn(id, ircTask);
 		const sessionFile = AgentRegistry.global().get(id)?.sessionFile ?? options.sessionFile ?? undefined;
 		const turnMonitor = createSubagentRunMonitor({
 			index,
@@ -1979,6 +1995,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			description: options.description,
 			modelOverride: options.modelOverride,
 			modelRole: options.modelRole,
+			onProgress: claim ? progress => claim.progress(progress) : undefined,
 			eventBus: options.eventBus,
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
@@ -2024,8 +2041,9 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 						: undefined;
 			turnMonitor.finish();
 			try {
-				await finalizeRunResult({
+				const result = await finalizeRunResult({
 					monitor: turnMonitor,
+					subagentUsage: session.sessionManager?.getSubagentUsage(),
 					done: {
 						exitCode: aborted || error ? 1 : 0,
 						error,
@@ -2050,11 +2068,13 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					fleetRoot: options.fleetRoot,
 					startTime: turnStartTime,
 				});
+				claim?.settle(result);
 			} catch (finalizeError) {
 				logger.warn("IRC subagent turn finalization failed", {
 					id,
 					error: finalizeError instanceof Error ? finalizeError.message : String(finalizeError),
 				});
+				claim?.fail(finalizeError);
 			}
 		};
 	});
@@ -2238,6 +2258,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 
 	return finalizeRunResult({
 		monitor,
+		subagentUsage: session.sessionManager?.getSubagentUsage(),
 		done: { ...outcome, abortReason: outcome.abortReasonText, durationMs: Date.now() - startTime },
 		index,
 		id,
@@ -2510,6 +2531,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		artifactsDir: options.artifactsDir,
 	};
 
+	let nestedSubagentUsage: SubagentUsageTotals | undefined;
 	const runSubagent = async (): Promise<{
 		exitCode: number;
 		error?: string;
@@ -3014,6 +3036,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				unsubscribe = null;
 			}
 			const session = monitor.takeActiveSession();
+			// Read before teardown: the rollup lives on the child session manager, which the parent
+			// cannot reach once the session is disposed.
+			nestedSubagentUsage = session?.sessionManager?.getSubagentUsage() ?? nestedSubagentUsage;
 			const asyncJobOwnerId = session?.getAsyncJobOwnerId() ?? id;
 			const jobManager = AsyncJobManager.instance();
 			if (jobManager) {
@@ -3111,6 +3136,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 	const result = await finalizeRunResult({
 		monitor,
+		subagentUsage: nestedSubagentUsage,
 		done,
 		index,
 		id,

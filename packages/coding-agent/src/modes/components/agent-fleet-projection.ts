@@ -72,7 +72,7 @@ export function progressMetrics(observed: ObservableSession | undefined): AgentM
 	};
 }
 
-function readSessionMetrics(session: NonNullable<AgentRef["session"]>): AgentMetrics | undefined {
+export function readSessionMetrics(session: NonNullable<AgentRef["session"]>): AgentMetrics | undefined {
 	try {
 		const stats = session.getSessionStats();
 		const messages = session.agent?.state?.messages;
@@ -113,6 +113,17 @@ function readSessionMetrics(session: NonNullable<AgentRef["session"]>): AgentMet
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Spend of one agent for callers without a live progress feed: the persisted scan when it exists,
+ * otherwise the agent's own session. Always own spend only — every agent in a tree is reported
+ * separately, so rolling descendants in here would double count them.
+ */
+export function agentRefMetrics(ref: AgentRef | undefined): AgentMetrics | undefined {
+	if (!ref) return undefined;
+	if (ref.history?.metrics) return ref.history.metrics;
+	return ref.session ? readSessionMetrics(ref.session) : undefined;
 }
 
 export function aggregateMetrics(args: {

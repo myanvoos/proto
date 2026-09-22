@@ -97,7 +97,10 @@ export function getSymbolTheme(): SymbolTheme {
 			table: box,
 			quoteBorder: "|",
 			hrChar: "-",
+			search: "/",
 			colorSwatch: "[]",
+			taskChecked: "[x]",
+			taskUnchecked: "[ ]",
 			spinnerFrames: ["-", "\\", "|", "/"],
 		};
 	}
@@ -109,7 +112,10 @@ export function getSymbolTheme(): SymbolTheme {
 		table: theme.boxSharp,
 		quoteBorder: theme.md.quoteBorder,
 		hrChar: theme.md.hrChar,
+		search: theme.symbol("icon.search"),
 		colorSwatch: theme.md.colorSwatch,
+		taskChecked: theme.checkbox.checked,
+		taskUnchecked: theme.checkbox.unchecked,
 		spinnerFrames: theme.getSpinnerFrames("activity"),
 	};
 }

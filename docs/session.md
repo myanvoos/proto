@@ -58,6 +58,12 @@ Terminal breadcrumb files are written under:
 
 Breadcrumb content is original cwd and session file path, plus an optional third line `fresh`. A fresh breadcrumb preserves a `/new` boundary whose lazily-created JSONL file does not exist yet, preventing `continueRecent()` from reopening the previous session. Writes are synchronous, ordered, and best-effort.
 
+### Ownership
+
+A session file is written by exactly one live process. Ownership is claimed in `session-liveness.ts` (`claimSessionOwnership`) before the file is read, using a process-owned OS lock keyed on `<session>.jsonl.owner` plus the `<session>.jsonl.live` heartbeat marker, which the claim publishes immediately so other processes can name the owner. Every CLI entry point that resolves a session to write — `--resume`, the resume picker, `--continue`, `autoResume`, `--session-dir`, and a freshly created session — takes the claim; `--no-session` and read-only opens (listing, rendering, subagent transcripts) do not.
+
+A second process that tries to resume an owned session is refused with the owning pid and a `proto --fork <file>` hint instead of silently writing nothing; `--continue`/`autoResume` skip an owned candidate and start a new session. The claim dies with its process (killed owners release it immediately) and the marker goes stale after `SESSION_LIVE_FRESH_WINDOW_MS`.
+
 ## File Format
 
 Session files are JSONL: one JSON object per line. Current files physically begin with a fixed-width, 256-byte `type: "title"` slot, followed by the session header and then `SessionEntry` values. Legacy files may begin directly with the header. Loaders strip the physical slot and fold its current title/source into the logical header.

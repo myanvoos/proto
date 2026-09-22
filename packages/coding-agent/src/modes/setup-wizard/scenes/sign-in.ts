@@ -125,7 +125,10 @@ export class SignInTab implements SetupTab {
 	}
 
 	render(width: number, maxLines?: number): readonly string[] {
+		if (maxLines !== undefined && maxLines <= 0) return [];
 		const lines: string[] = [];
+		const budget = maxLines ?? Number.POSITIVE_INFINITY;
+		let inputRow: number | undefined;
 		if (this.#loggingInProvider) {
 			lines.push(theme.bold(`Signing in to ${this.#loggingInProvider}`));
 		} else {
@@ -133,7 +136,10 @@ export class SignInTab implements SetupTab {
 				lines.push(theme.fg("muted", "Pick a provider to sign in — you can connect more than one."), "");
 			}
 			this.#selectorRowStart = lines.length;
-			if (maxLines !== undefined) this.#selector.setMaxHeight(maxLines - lines.length);
+			if (maxLines !== undefined) {
+				const statusRows = this.#statusLines.length > 0 && maxLines - lines.length >= 2 ? 1 : 0;
+				this.#selector.setMaxHeight(maxLines - lines.length - statusRows);
+			}
 			lines.push(...this.#selector.render(width));
 		}
 
@@ -152,19 +158,18 @@ export class SignInTab implements SetupTab {
 			if (this.#prompt.placeholder) {
 				lines.push(theme.fg("dim", this.#prompt.placeholder));
 			}
+			inputRow = lines.length;
 			lines.push(this.#prompt.input.render(width)[0] ?? "");
-		}
-		if (urlLines.length > 2) {
-			lines.push(...urlLines);
 		}
 		if (this.#statusLines.length > 0) {
 			lines.push(...this.#statusLines.flatMap(line => wrapTextWithAnsi(line, width)));
 		}
-		return lines;
+		const start = inputRow === undefined ? 0 : Math.max(0, inputRow - budget + 1);
+		return lines.slice(start, start + budget);
 	}
 
 	#createSelector(): OAuthSelectorComponent {
-		return new OAuthSelectorComponent(
+		const selector = new OAuthSelectorComponent(
 			"login",
 			this.#authStorage,
 			providerId => {
@@ -173,6 +178,10 @@ export class SignInTab implements SetupTab {
 			() => this.host.finish("skipped"),
 			{ requestRender: () => this.host.requestRender() },
 		);
+		// The wizard step already owns the title and frame; a nested box here would be
+		// chrome the sibling tabs do not have.
+		selector.setFramed(false);
+		return selector;
 	}
 
 	async #login(providerId: string): Promise<void> {

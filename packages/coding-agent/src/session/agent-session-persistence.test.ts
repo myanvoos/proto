@@ -551,6 +551,42 @@ test("a new session cannot list parked agents from the previous session fleet", 
 	}
 });
 
+test("nonpersistent resume exposes disk history without writing or claiming its source", async () => {
+	const harness = await createHarness();
+	try {
+		harness.sessionManager.appendMessage(userMessage("VISIBLE_IMPORTED_HISTORY"));
+		const source = await harness.sessionManager.persistCopy({
+			sessionDir: path.join(harness.agentDir, "resume-source"),
+			suppressBreadcrumb: true,
+		});
+		const sourceFile = source.getSessionFile()!;
+		await source.close();
+		const original = await Bun.file(sourceFile).text();
+		await harness.session.newSession();
+		expect(await harness.session.switchSession(sourceFile)).toBe(true);
+		expect(JSON.stringify(harness.session.agent.state.messages)).toContain("VISIBLE_IMPORTED_HISTORY");
+		expect(harness.session.sessionFile).toBeUndefined();
+		expect(readSessionLiveState(sourceFile).fresh).toBe(false);
+		await emitMessage(harness, userMessage("UNSAVED_AFTER_RESUME"));
+		await harness.sessionManager.flush();
+		expect(JSON.stringify(harness.session.agent.state.messages)).toContain("VISIBLE_IMPORTED_HISTORY");
+		expect(branchMessages(harness.sessionManager).some(message => message.content === "UNSAVED_AFTER_RESUME")).toBe(
+			true,
+		);
+		expect(await Bun.file(sourceFile).text()).toBe(original);
+		const corrupt = path.join(harness.agentDir, "corrupt.jsonl");
+		await Bun.write(corrupt, "{invalid header\n");
+		await expect(harness.session.switchSession(corrupt)).rejects.toThrow("header is missing or malformed");
+		expect(harness.session.sessionFile).toBeUndefined();
+		expect(branchMessages(harness.sessionManager).some(message => message.content === "UNSAVED_AFTER_RESUME")).toBe(
+			true,
+		);
+		expect(await Bun.file(sourceFile).text()).toBe(original);
+	} finally {
+		await closeHarness(harness);
+	}
+});
+
 test("marks a resumed file live before reconciliation and restores liveness after a failed switch", async () => {
 	const harness = await createHarness(true);
 	try {

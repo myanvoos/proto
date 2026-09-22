@@ -5,7 +5,7 @@ import { getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
 import { type AgentRef, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { parseThinkingLevel } from "../../thinking";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { formatCost, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import type { AgentMetrics } from "./agent-fleet-projection";
@@ -104,13 +104,6 @@ export function formatMetricDuration(metrics: AgentMetrics): string | undefined 
 	if (durationMs <= 0) return undefined;
 	const label = metrics.durationKind === "active" ? "active" : metrics.durationKind === "span" ? "span" : "duration";
 	return `${formatDuration(durationMs)} ${label}`;
-}
-
-export function formatCost(cost: number): string {
-	const amount = metricNumber(cost);
-	if (amount < 0.01) return `$${amount.toFixed(4)}`;
-	if (amount < 1) return `$${amount.toFixed(3)}`;
-	return `$${amount.toFixed(2)}`;
 }
 
 export function formatMetrics(metrics: AgentMetrics): string {

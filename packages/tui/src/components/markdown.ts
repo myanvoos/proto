@@ -763,6 +763,9 @@ const EMPTY_RENDER_LINES: readonly string[] = [];
 interface RenderedLine {
 	text: string;
 	literalCode?: true;
+	// Indent baked into `text` that wrapping must re-apply to continuation rows so a
+	// wrapped code line keeps aligning with its block instead of the surrounding prose.
+	wrapIndent?: string;
 }
 
 interface RenderedListItemLine extends RenderedLine {
@@ -776,8 +779,22 @@ interface MutableListParagraphCapture {
 	lineCount: number;
 }
 
-function renderedLine(text: string, literalCode?: boolean): RenderedLine {
-	return literalCode ? { text, literalCode: true } : { text };
+function renderedLine(text: string, literalCode?: boolean, wrapIndent?: string): RenderedLine {
+	const line: RenderedLine = literalCode ? { text, literalCode: true } : { text };
+	if (wrapIndent) line.wrapIndent = wrapIndent;
+	return line;
+}
+
+// Wraps a rendered row, hanging continuation rows under the indent the row already
+// carries. Rows without `wrapIndent` wrap exactly as before.
+function wrapRenderedRow(line: RenderedLine, width: number): string[] {
+	const hang = line.wrapIndent;
+	if (hang === undefined || hang.length === 0) return wrapTextWithAnsi(line.text, width);
+	const hangWidth = visibleWidth(hang);
+	if (hangWidth >= width || !line.text.startsWith(hang)) return wrapTextWithAnsi(line.text, width);
+	const rows = wrapTextWithAnsi(line.text.slice(hang.length), width - hangWidth);
+	if (rows.length === 0) return [line.text];
+	return rows.map(row => hang + row);
 }
 
 interface RenderCacheEntry {
@@ -1001,11 +1018,33 @@ interface InlineStyleContext {
 interface RenderableListItem {
 	raw?: string;
 	tokens?: Token[];
+	task?: boolean;
+	checked?: boolean;
 }
 
 type ListToken = Token & { items: RenderableListItem[]; ordered: boolean; start?: number };
 type TableCellToken = { tokens?: Token[] };
-type TableToken = Token & { header: TableCellToken[]; rows: TableCellToken[][]; raw?: string };
+type TableAlign = "left" | "center" | "right" | null;
+type TableToken = Token & {
+	header: TableCellToken[];
+	rows: TableCellToken[][];
+	align?: TableAlign[];
+	raw?: string;
+};
+
+const DEFAULT_TASK_CHECKED_GLYPH = "■";
+const DEFAULT_TASK_UNCHECKED_GLYPH = "□";
+
+// A GFM task item carries its state in the marker: the checkbox replaces an unordered bullet so
+// the row never shows two markers, while an ordered item keeps the ordinal the source spelled out.
+function listItemMarker(item: RenderableListItem, bullet: string, ordered: boolean, symbols: SymbolTheme): string {
+	if (item.task !== true) return bullet;
+	const glyph =
+		item.checked === true
+			? symbols.taskChecked || DEFAULT_TASK_CHECKED_GLYPH
+			: symbols.taskUnchecked || DEFAULT_TASK_UNCHECKED_GLYPH;
+	return ordered ? `${bullet}${glyph} ` : `${glyph} `;
+}
 
 function formatHyperlink(text: string, target: string): string {
 	if (!TERMINAL.hyperlinks || !target) {
@@ -1832,7 +1871,12 @@ export class Markdown implements Component {
 		}
 
 		const itemIndex = listToken.items.length - 1;
-		const bullet = listToken.ordered ? `${(listToken.start ?? 1) + itemIndex}. ` : "- ";
+		const bullet = listItemMarker(
+			lastItem,
+			listToken.ordered ? `${(listToken.start ?? 1) + itemIndex}. ` : "- ",
+			listToken.ordered,
+			this.#theme.symbols,
+		);
 		const firstPrefix = this.#theme.listBullet(bullet);
 		const continuationPrefix = padding(visibleWidth(bullet));
 		const firstPrefixWidth = visibleWidth(firstPrefix);
@@ -2002,9 +2046,9 @@ export class Markdown implements Component {
 					? highlightedLines[globalLineIndex]
 					: this.#theme.codeBlock(sourceLine);
 			if (renderedText === undefined) return undefined;
-			const bodyLine = renderedLine(literalCode ? renderedText : codeIndent + renderedText, literalCode);
+			const bodyLine = renderedLine(literalCode ? renderedText : codeIndent + renderedText, literalCode, codeIndent);
 			if (TERMINAL.isImageLine(bodyLine.text) || isOsc66Line(bodyLine.text)) return undefined;
-			const wrappedRows = literalCode ? [bodyLine.text] : wrapTextWithAnsi(bodyLine.text, contentWidth);
+			const wrappedRows = literalCode ? [bodyLine.text] : wrapRenderedRow(bodyLine, contentWidth);
 			if (wrappedRows.length === 0) return undefined;
 			rowCounts.push(wrappedRows.length);
 			for (const wrappedRow of wrappedRows) {
@@ -2435,7 +2479,7 @@ export class Markdown implements Component {
 						) {
 							wrappedLines.push(renderedRow);
 						} else {
-							const wrappedRows = wrapTextWithAnsi(renderedRow.text, contentWidth);
+							const wrappedRows = wrapRenderedRow(renderedRow, contentWidth);
 							if (wrappedRows.length === 1 && wrappedRows[0] === renderedRow.text) {
 								wrappedLines.push(renderedRow);
 							} else {
@@ -2615,7 +2659,7 @@ export class Markdown implements Component {
 		const tokenText = "text" in token && typeof token.text === "string" ? token.text : "";
 		const lang = "lang" in token && typeof token.lang === "string" ? token.lang : undefined;
 		const addBodyLine = (line: string): void => {
-			bodyLines.push(renderedLine(literalCode ? line : codeIndent + line, literalCode));
+			bodyLines.push(renderedLine(literalCode ? line : codeIndent + line, literalCode, codeIndent));
 		};
 
 		const streaming = this.transientRenderCache && !this.#renderingFrozenPrefix;
@@ -3052,7 +3096,8 @@ export class Markdown implements Component {
 				}
 			} else {
 				const styledLine = applyQuoteStyle(quoteLine.text);
-				for (const wrappedLine of wrapTextWithAnsi(styledLine, quoteContentWidth)) {
+				const quoteRows = wrapRenderedRow({ ...quoteLine, text: styledLine }, quoteContentWidth);
+				for (const wrappedLine of quoteRows) {
 					lines.push(renderedLine(this.#theme.quoteBorder(`${this.#theme.symbols.quoteBorder} `) + wrappedLine));
 				}
 			}
@@ -3177,6 +3222,26 @@ export class Markdown implements Component {
 					break;
 				}
 
+				// An image has no terminal representation beyond its alt text, so it renders exactly
+				// like the link it is: the alt text carries the target and the URL stays visible.
+				case "image": {
+					markHtmlItemWhenContent(token.text);
+					const href = typeof token.href === "string" ? token.href : "";
+					const altText =
+						token.tokens && token.tokens.length > 0
+							? this.#renderInlineTokens(token.tokens, resolvedStyleContext)
+							: applyTextWithNewlines(normalizeHtmlEntitiesForTerminal(token.text ?? ""));
+					const styledUrl = href ? formatHyperlink(this.#theme.linkUrl(`(${href})`), href) : "";
+					if (!altText) {
+						result += styledUrl + stylePrefix;
+						break;
+					}
+					const styledAlt = formatHyperlink(this.#theme.link(this.#theme.underline(altText)), href);
+					if (!href || token.text === href) result += styledAlt + stylePrefix;
+					else result += `${styledAlt} ${styledUrl}${stylePrefix}`;
+					break;
+				}
+
 				case "br":
 					result += "\n";
 					trimLeadingWhitespace = true;
@@ -3252,7 +3317,7 @@ export class Markdown implements Component {
 				return;
 			}
 			const bodyWidth = width - prefixWidth;
-			const wrapped = wrapTextWithAnsi(line.text, bodyWidth);
+			const wrapped = wrapRenderedRow(line, bodyWidth);
 			if (wrapped.length === 0) {
 				lines.push(renderedLine(firstPrefix));
 				return;
@@ -3270,7 +3335,12 @@ export class Markdown implements Component {
 		for (let i = firstItemIndex; i <= lastItemIndex; i++) {
 			const item = token.items[i];
 			const itemLineStart = lines.length;
-			const bullet = token.ordered ? `${startNumber + i}. ` : "- ";
+			const bullet = listItemMarker(
+				item,
+				token.ordered ? `${startNumber + i}. ` : "- ",
+				token.ordered,
+				this.#theme.symbols,
+			);
 			const firstPrefix = indent + this.#theme.listBullet(bullet);
 
 			const continuationIndent = indent + padding(visibleWidth(bullet));
@@ -3414,6 +3484,19 @@ export class Markdown implements Component {
 		return splitTerminalLines(text).map(line => visibleWidth(line));
 	}
 
+	// GFM delimiter rows (`:-`, `:-:`, `-:`) choose where the slack in a column goes; a cell
+	// without an alignment keeps the left-aligned padding tables always used.
+	#padCell(text: string, width: number, align: TableAlign | undefined): string {
+		const slack = Math.max(0, width - visibleWidth(text));
+		if (slack === 0) return text;
+		if (align === "right") return padding(slack) + text;
+		if (align === "center") {
+			const left = Math.floor(slack / 2);
+			return padding(left) + text + padding(slack - left);
+		}
+		return text + padding(slack);
+	}
+
 	#wrapCellText(text: string, maxWidth: number): string[] {
 		const cellWidth = Math.max(1, maxWidth);
 
@@ -3548,12 +3631,12 @@ export class Markdown implements Component {
 			return this.#wrapCellText(text, columnWidths[i]);
 		});
 		const headerLineCount = Math.max(...headerCellLines.map(c => c.length));
+		const align = token.align;
 
 		for (let lineIdx = 0; lineIdx < headerLineCount; lineIdx++) {
 			const rowParts = headerCellLines.map((cellLines, colIdx) => {
 				const text = cellLines[lineIdx] || "";
-				const padded = text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
-				return this.#theme.bold(padded);
+				return this.#theme.bold(this.#padCell(text, columnWidths[colIdx], align?.[colIdx]));
 			});
 			lines.push(`${v} ${rowParts.join(` ${v} `)} ${v}`);
 		}
@@ -3573,7 +3656,7 @@ export class Markdown implements Component {
 			for (let lineIdx = 0; lineIdx < rowLineCount; lineIdx++) {
 				const rowParts = rowCellLines.map((cellLines, colIdx) => {
 					const text = cellLines[lineIdx] || "";
-					return text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
+					return this.#padCell(text, columnWidths[colIdx], align?.[colIdx]);
 				});
 				lines.push(`${v} ${rowParts.join(` ${v} `)} ${v}`);
 			}
@@ -3609,7 +3692,12 @@ export function renderInlineMarkdown(text: string, mdTheme: MarkdownTheme, baseC
 		} else if (token.type === "list") {
 			result += token.items
 				.map((item: Tokens.ListItem, index: number) => {
-					const prefix = token.ordered ? `${(token.start || 1) + index}. ` : "• ";
+					const prefix = listItemMarker(
+						item,
+						token.ordered ? `${(token.start || 1) + index}. ` : "• ",
+						token.ordered === true,
+						mdTheme.symbols,
+					);
 					const content = item.tokens ? renderInlineTokens(item.tokens, mdTheme, applyText) : applyText(item.text);
 					return `${applyText(prefix)}${content}`;
 				})

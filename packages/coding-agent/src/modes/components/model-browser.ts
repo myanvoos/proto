@@ -284,6 +284,7 @@ export class ModelBrowser implements Component {
 	#selectedIndex = 0;
 	#hoveredIndex: number | null = null;
 	#maxVisible = 10;
+	#listRowStart = LIST_ROW_START;
 	#showProvider: boolean;
 	#currentContextTokens: number;
 	#markOverContext: boolean;
@@ -339,7 +340,10 @@ export class ModelBrowser implements Component {
 	}
 
 	setMaxVisible(rows: number): void {
-		this.#maxVisible = Math.max(1, rows);
+		const next = Math.max(1, rows);
+		if (next === this.#maxVisible) return;
+		this.#maxVisible = next;
+		this.#ensureSelectedVisible();
 	}
 
 	setShowProvider(show: boolean): void {
@@ -356,10 +360,6 @@ export class ModelBrowser implements Component {
 
 	setFocused(focused: boolean): void {
 		this.#focused = focused;
-	}
-
-	get renderedRows(): number {
-		return LIST_ROW_START + this.#maxVisible + DETAIL_ROWS;
 	}
 
 	get query(): string {
@@ -594,7 +594,7 @@ export class ModelBrowser implements Component {
 	}
 
 	#hoverIndexAt(line: number): number | null {
-		const listLine = line - LIST_ROW_START;
+		const listLine = line - this.#listRowStart;
 		if (listLine < 0 || listLine >= this.#windowCount) return null;
 		const index = this.#windowStart + listLine;
 		const item = this.#visibleItems[index];
@@ -628,7 +628,7 @@ export class ModelBrowser implements Component {
 		}
 		const overContext = this.isOverContext(item);
 		const prefix = selected && this.#focused ? `${theme.fg("accent", theme.nav.cursor)} ` : "  ";
-		const providerPrefix = this.#showProvider ? theme.fg("dim", `${item.provider}/`) : "";
+		const providerPrefix = this.#showProvider && width >= 48 ? theme.fg("dim", `${item.provider}/`) : "";
 		const name = item.labelColor
 			? theme.fg(item.labelColor, item.id)
 			: selected
@@ -645,11 +645,13 @@ export class ModelBrowser implements Component {
 			perfWidth > 0 ? `${theme.fg("dim", padLeftVisible(this.#perfCell(item, perfMode), perfWidth))}  ` : "";
 		const meta = `${perfCol}${theme.fg("dim", padLeftVisible(formatContext(item.model), ctxWidth))}  ${theme.fg("dim", padLeftVisible(formatCostPair(item.model), costWidth))}`;
 		const metaWidth = ctxWidth + costWidth + 2 + (perfWidth > 0 ? perfWidth + 2 : 0);
-		const available = Math.max(1, width - metaWidth - 1);
+		// Identification wins over aligned metadata in a narrow pane.
+		const showMeta = width >= 48 && width - metaWidth - 1 >= 24;
+		const available = Math.max(1, showMeta ? width - metaWidth - 1 : width);
 		left = truncateToWidth(left, available);
 		const gap = Math.max(0, available - visibleWidth(left));
 
-		let line = `${left}${" ".repeat(gap)} ${meta}`;
+		let line = showMeta ? `${left}${" ".repeat(gap)} ${meta}` : left;
 		if (overContext) {
 			const plainPrefix = Bun.stripANSI(prefix);
 			line = `${prefix}${theme.fg("dim", Bun.stripANSI(line).slice(plainPrefix.length))}`;
@@ -703,7 +705,15 @@ export class ModelBrowser implements Component {
 		return [line1, line2];
 	}
 
-	render(width: number): string[] {
+	render(width: number, height?: number): string[] {
+		if (height !== undefined && height <= 0) {
+			this.#windowCount = 0;
+			return [];
+		}
+		const spacious = height === undefined || height >= 8;
+		const showSearch = height === undefined || height >= 3;
+		this.#listRowStart = spacious ? LIST_ROW_START : showSearch ? 1 : 0;
+		if (height !== undefined) this.setMaxVisible(height - this.#listRowStart - (spacious ? DETAIL_ROWS : 0));
 		const lines: string[] = [];
 
 		const searchIcon = theme.fg("accent", theme.symbol("icon.search"));
@@ -711,8 +721,8 @@ export class ModelBrowser implements Component {
 		const inputWidth = Math.max(1, width - visibleWidth(prefix));
 		// Clamp the composed row: the fixed prefix would overflow below its
 		// natural minimum width.
-		lines.push(truncateToWidth(`${prefix}${this.#searchInput.render(inputWidth)[0] ?? ""}`, width));
-		lines.push("");
+		if (showSearch) lines.push(truncateToWidth(`${prefix}${this.#searchInput.render(inputWidth)[0] ?? ""}`, width));
+		if (spacious) lines.push("");
 
 		const total = this.#visibleItems.length;
 
@@ -767,10 +777,12 @@ export class ModelBrowser implements Component {
 			for (let i = rows.length; i < this.#maxVisible; i++) lines.push("");
 		}
 
-		lines.push("");
-		const [detail1, detail2] = this.#detailLines(width);
-		lines.push(detail1);
-		lines.push(detail2);
+		if (spacious) {
+			lines.push("");
+			const [detail1, detail2] = this.#detailLines(width);
+			lines.push(detail1);
+			lines.push(detail2);
+		}
 		return lines;
 	}
 

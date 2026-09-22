@@ -8,6 +8,7 @@ import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
+import { emptyUsageStatistics } from "../../../session/session-entries";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
 import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../utils/active-repo-context";
 import * as git from "../../../utils/git";
@@ -964,18 +965,7 @@ export class StatusLineComponent implements Component {
 
 		this.refreshUsageInBackground();
 
-		const aggregateUsageStats = this.session.sessionManager?.getUsageStatistics() ?? {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			orchestrationInput: 0,
-			orchestrationOutput: 0,
-			orchestrationCacheRead: 0,
-			premiumRequests: 0,
-			cost: 0,
-		};
+		const aggregateUsageStats = this.session.sessionManager?.getUsageStatistics() ?? emptyUsageStatistics();
 		const usageStats = {
 			...aggregateUsageStats,
 			tokensPerSecond: includeTokenRate ? this.#getTokensPerSecond() : null,

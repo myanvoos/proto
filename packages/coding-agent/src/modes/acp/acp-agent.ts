@@ -1,3 +1,5 @@
+import type { Stats } from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getBlobsDir, logger, type postmortem, VERSION } from "@oh-my-pi/pi-utils";
@@ -28,6 +30,7 @@ import {
 	PROTOCOL_VERSION,
 	type PromptRequest,
 	type PromptResponse,
+	RequestError,
 	type ResumeSessionRequest,
 	type ResumeSessionResponse,
 	type SessionConfigOption,
@@ -104,8 +107,6 @@ type PromptLifecycleError = Error & { readonly code: "ACP_SESSION_CLOSED" };
 type PromptTurnState = {
 	cancelRequested: boolean;
 	settled: boolean;
-
-	errorTextDelivery: Promise<boolean> | undefined;
 
 	cleanup: Promise<void> | undefined;
 	usageBaseline: UsageStatistics;
@@ -461,6 +462,25 @@ export function createAcpExtensionUiContext(
 	};
 }
 
+/** JSON-RPC server error the LSP ecosystem uses for "initialize has not run yet". */
+const SERVER_NOT_INITIALIZED = -32002;
+
+function requireObjectParams(method: string, params: unknown): Record<string, unknown> {
+	if (typeof params !== "object" || params === null || Array.isArray(params)) {
+		throw RequestError.invalidParams({ method }, `${method} requires a params object`);
+	}
+	return params as Record<string, unknown>;
+}
+
+function requireStringField(method: string, params: unknown, field: string): string {
+	const record = requireObjectParams(method, params);
+	const value = record[field];
+	if (typeof value !== "string" || value.length === 0) {
+		throw RequestError.invalidParams({ method, field }, `${method} requires a non-empty string "${field}"`);
+	}
+	return value;
+}
+
 export class AcpAgent implements Agent {
 	#connection: AgentSideConnection;
 	#initialSession: AgentSession | undefined;
@@ -469,6 +489,7 @@ export class AcpAgent implements Agent {
 	#disposePromise: Promise<void> | undefined;
 	#cleanupRegistered = false;
 	#clientCapabilities: ClientCapabilities | undefined;
+	#initialized = false;
 	#cancelCleanupTimeoutMs = ACP_CANCEL_CLEANUP_TIMEOUT_MS;
 	#blobs = new BlobStore(getBlobsDir());
 
@@ -483,7 +504,31 @@ export class AcpAgent implements Agent {
 	}
 
 	async initialize(params: InitializeRequest): Promise<InitializeResponse> {
+		const record = requireObjectParams("initialize", params);
+		const requested = record.protocolVersion;
+		if (typeof requested !== "number" || !Number.isInteger(requested) || requested < 1) {
+			throw RequestError.invalidParams(
+				{ method: "initialize", field: "protocolVersion", supported: PROTOCOL_VERSION },
+				`initialize requires an integer protocolVersion >= 1, got ${JSON.stringify(requested)}`,
+			);
+		}
+		// Spec negotiation: answer with the highest version both sides speak. A
+		// client asking for something newer gets our version, not its own back.
+		const negotiated = Math.min(requested, PROTOCOL_VERSION);
+		if (negotiated !== requested) {
+			logger.warn("ACP client requested an unsupported protocol version", {
+				requested,
+				negotiated,
+				supported: PROTOCOL_VERSION,
+			});
+			// stderr is the only channel an ACP client shows its operator, and a
+			// silent downgrade is what made version mismatches invisible.
+			process.stderr.write(
+				`proto acp: client requested protocol version ${requested}; serving version ${negotiated}.\n`,
+			);
+		}
 		this.#registerConnectionCleanup();
+		this.#initialized = true;
 		this.#clientCapabilities = params.clientCapabilities;
 		const authMethods: AuthMethod[] = [
 			{
@@ -502,7 +547,7 @@ export class AcpAgent implements Agent {
 			});
 		}
 		return {
-			protocolVersion: PROTOCOL_VERSION,
+			protocolVersion: negotiated,
 			agentInfo: {
 				name: "proto",
 				title: "Proto",
@@ -530,17 +575,23 @@ export class AcpAgent implements Agent {
 	}
 
 	async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse> {
+		this.#requireInitialized("authenticate");
+		requireStringField("authenticate", params, "methodId");
 		const supportsTerminalAuth = this.#clientCapabilities?.auth?.terminal === true;
 		const validMethods = supportsTerminalAuth ? ["agent", "terminal"] : ["agent"];
 		if (!validMethods.includes(params.methodId)) {
-			throw new Error(`Unknown ACP auth method: ${params.methodId}`);
+			throw RequestError.invalidParams(
+				{ field: "methodId", methodId: params.methodId, supported: validMethods },
+				`unknown auth method: ${params.methodId}`,
+			);
 		}
 		return {};
 	}
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-		this.#assertAbsoluteCwd(params.cwd);
-		const record = await this.#createNewSessionRecord(params.cwd, params.mcpServers);
+		this.#requireInitialized("session/new");
+		const cwd = await this.#requireWorkingDirectory("session/new", params);
+		const record = await this.#createNewSessionRecord(cwd, params.mcpServers);
 		const response: NewSessionResponse = {
 			sessionId: record.session.sessionId,
 			configOptions: this.#buildConfigOptions(record.session),
@@ -551,8 +602,10 @@ export class AcpAgent implements Agent {
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-		this.#assertAbsoluteCwd(params.cwd);
-		const record = await this.#loadManagedSession(params.sessionId, params.cwd, params.mcpServers);
+		this.#requireInitialized("session/load");
+		const sessionId = requireStringField("session/load", params, "sessionId");
+		const cwd = await this.#requireWorkingDirectory("session/load", params);
+		const record = await this.#loadManagedSession(sessionId, cwd, params.mcpServers);
 		await this.#replaySessionHistory(record);
 		const response: LoadSessionResponse = {
 			configOptions: this.#buildConfigOptions(record.session),
@@ -563,8 +616,9 @@ export class AcpAgent implements Agent {
 	}
 
 	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
-		if (params.cwd) {
-			this.#assertAbsoluteCwd(params.cwd);
+		this.#requireInitialized("session/list");
+		if (params?.cwd) {
+			await this.#requireWorkingDirectory("session/list", params);
 		}
 		for (const record of this.#sessions.values()) {
 			await record.session.sessionManager.flush();
@@ -580,8 +634,10 @@ export class AcpAgent implements Agent {
 	}
 
 	async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
-		this.#assertAbsoluteCwd(params.cwd);
-		const record = await this.#resumeManagedSession(params.sessionId, params.cwd, params.mcpServers ?? []);
+		this.#requireInitialized("session/resume");
+		const sessionId = requireStringField("session/resume", params, "sessionId");
+		const cwd = await this.#requireWorkingDirectory("session/resume", params);
+		const record = await this.#resumeManagedSession(sessionId, cwd, params.mcpServers ?? []);
 		const response: ResumeSessionResponse = {
 			configOptions: this.#buildConfigOptions(record.session),
 			modes: this.#buildModeState(record.session),
@@ -591,7 +647,9 @@ export class AcpAgent implements Agent {
 	}
 
 	async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
-		this.#assertAbsoluteCwd(params.cwd);
+		this.#requireInitialized("session/fork");
+		requireStringField("session/fork", params, "sessionId");
+		await this.#requireWorkingDirectory("session/fork", params);
 		const record = await this.#forkManagedSession(params);
 		const response: ForkSessionResponse = {
 			sessionId: record.session.sessionId,
@@ -603,7 +661,8 @@ export class AcpAgent implements Agent {
 	}
 
 	async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
-		const record = this.#sessions.get(params.sessionId);
+		this.#requireInitialized("session/close");
+		const record = this.#sessions.get(requireStringField("session/close", params, "sessionId"));
 		if (!record) {
 			return {};
 		}
@@ -612,7 +671,9 @@ export class AcpAgent implements Agent {
 	}
 
 	async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
-		const record = this.#getSessionRecord(params.sessionId);
+		this.#requireInitialized("session/set_mode");
+		const record = this.#getSessionRecord(requireStringField("session/set_mode", params, "sessionId"));
+		requireStringField("session/set_mode", params, "modeId");
 		this.#applyModeChange(record.session, params.modeId);
 		await this.#connection.sessionUpdate({
 			sessionId: record.session.sessionId,
@@ -623,9 +684,14 @@ export class AcpAgent implements Agent {
 	}
 
 	async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
-		const record = this.#getSessionRecord(params.sessionId);
+		this.#requireInitialized("session/set_config_option");
+		const record = this.#getSessionRecord(requireStringField("session/set_config_option", params, "sessionId"));
+		requireStringField("session/set_config_option", params, "configId");
 		if (typeof params.value === "boolean") {
-			throw new Error(`Unsupported boolean ACP config option: ${params.configId}`);
+			throw RequestError.invalidParams(
+				{ field: "value", configId: params.configId },
+				`config option ${params.configId} does not take a boolean`,
+			);
 		}
 
 		switch (params.configId) {
@@ -639,7 +705,10 @@ export class AcpAgent implements Agent {
 				this.#setThinkingLevelById(record.session, params.value);
 				break;
 			default:
-				throw new Error(`Unknown ACP config option: ${params.configId}`);
+				throw RequestError.invalidParams(
+					{ field: "configId", configId: params.configId },
+					`unknown config option: ${params.configId}`,
+				);
 		}
 
 		if (params.configId === MODE_CONFIG_ID) {
@@ -659,7 +728,14 @@ export class AcpAgent implements Agent {
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
-		const record = this.#getSessionRecord(params.sessionId);
+		this.#requireInitialized("session/prompt");
+		const record = this.#getSessionRecord(requireStringField("session/prompt", params, "sessionId"));
+		if (!Array.isArray(params.prompt)) {
+			throw RequestError.invalidParams(
+				{ method: "session/prompt", field: "prompt" },
+				"session/prompt requires a prompt array",
+			);
+		}
 		const activeTurn = record.promptTurn;
 		if (activeTurn && !activeTurn.settled && record.session.isStreaming) {
 			this.#beginCancelCleanup(record, activeTurn).catch(async (error: unknown) => {
@@ -683,7 +759,6 @@ export class AcpAgent implements Agent {
 			record.promptTurn = {
 				cancelRequested: false,
 				settled: false,
-				errorTextDelivery: undefined,
 				cleanup: undefined,
 				usageBaseline: this.#cloneUsageStatistics(record.session.sessionManager.getUsageStatistics()),
 				unsubscribe: undefined,
@@ -851,6 +926,7 @@ export class AcpAgent implements Agent {
 	}
 
 	async cancel(params: { sessionId: string }): Promise<void> {
+		requireStringField("session/cancel", params, "sessionId");
 		const record = this.#getSessionRecord(params.sessionId);
 		const promptTurn = record.promptTurn;
 		if (!promptTurn || promptTurn.settled) {
@@ -971,7 +1047,7 @@ export class AcpAgent implements Agent {
 				return { enabled: true };
 			}
 			default:
-				throw new Error(`Unknown ACP ext method: ${method}`);
+				throw RequestError.methodNotFound(method);
 		}
 	}
 
@@ -1149,7 +1225,7 @@ export class AcpAgent implements Agent {
 	#getSessionRecord(sessionId: string): ManagedSessionRecord {
 		const record = this.#sessions.get(sessionId);
 		if (!record) {
-			throw new Error(`Unsupported ACP session: ${sessionId}`);
+			throw RequestError.invalidParams({ field: "sessionId", sessionId }, `unknown session: ${sessionId}`);
 		}
 		return record;
 	}
@@ -1203,10 +1279,6 @@ export class AcpAgent implements Agent {
 			imageDataCache.set(key, resolved);
 			return resolved;
 		};
-		const streamedAssistantError =
-			event.type === "message_update" &&
-			event.message.role === "assistant" &&
-			event.assistantMessageEvent.type === "error";
 		for (const notification of mapAgentSessionEventToAcpSessionUpdates(event, record.session.sessionId, {
 			getMessageId: message => this.#getLiveMessageId(record, message),
 			getMessageProgress: message => this.#getLiveMessageProgress(record, message),
@@ -1214,16 +1286,7 @@ export class AcpAgent implements Agent {
 			cwd: record.session.sessionManager.getCwd(),
 			resolveImageData: resolveImageDataForAcp,
 		})) {
-			const delivery = this.#connection.sessionUpdate(notification);
-			if (streamedAssistantError) {
-				const outcome = delivery.then(
-					() => true,
-					() => false,
-				);
-				const prior = promptTurn.errorTextDelivery;
-				promptTurn.errorTextDelivery = prior ? Promise.all([prior, outcome]).then(([a, b]) => a || b) : outcome;
-			}
-			await delivery;
+			await this.#connection.sessionUpdate(notification);
 		}
 		if (event.type === "tool_execution_end") {
 			record.toolArgsById.delete(event.toolCallId);
@@ -1232,7 +1295,17 @@ export class AcpAgent implements Agent {
 
 		if (event.type === "agent_end") {
 			await this.#flushMissedFinalAssistantText(record, event);
-			await this.#flushUnreportedTurnError(record, event);
+			const failure = this.#turnFailure(event, promptTurn.cancelRequested);
+			if (failure) {
+				// Report the failure now. Waiting for the session to go idle first
+				// would hold the client for as long as recovery keeps re-running the
+				// broken turn, which is exactly how an unreachable provider used to
+				// leave session/prompt unanswered.
+				record.liveMessageId = undefined;
+				record.liveMessageProgress = undefined;
+				this.#finishPrompt(record, undefined, failure);
+				return;
+			}
 			await this.#emitEndOfTurnUpdates(record);
 			await this.#waitForAcpPromptIdle(record);
 			record.liveMessageId = undefined;
@@ -1269,34 +1342,6 @@ export class AcpAgent implements Agent {
 				sessionUpdate: "agent_message_chunk",
 				content: { type: "text", text },
 				messageId: record.liveMessageId,
-			},
-		});
-	}
-
-	async #flushUnreportedTurnError(
-		record: ManagedSessionRecord,
-		event: Extract<AgentSessionEvent, { type: "agent_end" }>,
-	): Promise<void> {
-		const streamedDelivery = record.promptTurn?.errorTextDelivery;
-		if (streamedDelivery && (await streamedDelivery)) {
-			return;
-		}
-		const lastAssistant = [...event.messages]
-			.reverse()
-			.find((message): message is AssistantMessage => message.role === "assistant");
-		if (lastAssistant?.stopReason !== "error") {
-			return;
-		}
-		const errorMessage = lastAssistant.errorMessage;
-		if (!errorMessage) {
-			return;
-		}
-		await this.#connection.sessionUpdate({
-			sessionId: record.session.sessionId,
-			update: {
-				sessionUpdate: "agent_message_chunk",
-				content: { type: "text", text: errorMessage },
-				messageId: record.liveMessageId ?? crypto.randomUUID(),
 			},
 		});
 	}
@@ -1370,6 +1415,32 @@ export class AcpAgent implements Agent {
 		promptTurn.resolve(response ?? { stopReason: "end_turn" });
 	}
 
+	/**
+	 * A provider failure is not a completed turn. Print mode reports these on
+	 * stderr with exit 1; over ACP the equivalent is a JSON-RPC error on
+	 * session/prompt instead of a successful stopReason with the error text
+	 * dressed up as assistant output.
+	 */
+	#turnFailure(
+		event: Extract<AgentSessionEvent, { type: "agent_end" }>,
+		cancelRequested: boolean,
+	): RequestError | undefined {
+		if (cancelRequested) return undefined;
+		const lastAssistant = [...event.messages]
+			.reverse()
+			.find((message): message is AssistantMessage => message.role === "assistant");
+		const reason = lastAssistant?.stopReason;
+		if (reason !== "error" && reason !== "aborted") return undefined;
+		const errorMessage = lastAssistant?.errorMessage ?? "";
+		// A refusal is a legitimate ACP stop reason, not a transport failure.
+		if (reason === "error" && /content[_ ]?filter|refus(al|ed)/i.test(errorMessage)) return undefined;
+		const details = errorMessage || `turn ended with stopReason ${reason}`;
+		if (/\b(401|403)\b|unauthor|invalid[_ ]api[_ ]key|authentication/i.test(errorMessage)) {
+			return RequestError.authRequired({ details }, details);
+		}
+		return RequestError.internalError({ details }, details);
+	}
+
 	#resolveStopReason(
 		event: Extract<AgentSessionEvent, { type: "agent_end" }>,
 		cancelRequested: boolean,
@@ -1412,10 +1483,33 @@ export class AcpAgent implements Agent {
 		});
 	}
 
-	#assertAbsoluteCwd(cwd: string): void {
+	#requireInitialized(method: string): void {
+		if (this.#initialized) return;
+		throw new RequestError(SERVER_NOT_INITIALIZED, "Server not initialized", {
+			details: `${method} requires a successful initialize request first`,
+		});
+	}
+
+	/**
+	 * A session is only as good as the directory it runs in: reject anything that
+	 * is not an existing absolute directory before a session is created for it.
+	 */
+	async #requireWorkingDirectory(method: string, params: unknown): Promise<string> {
+		const cwd = requireStringField(method, params, "cwd");
 		if (!path.isAbsolute(cwd)) {
-			throw new Error(`ACP cwd must be absolute: ${cwd}`);
+			throw RequestError.invalidParams({ method, field: "cwd", cwd }, `cwd must be an absolute path: ${cwd}`);
 		}
+		let stats: Stats;
+		try {
+			stats = await fs.stat(cwd);
+		} catch (error) {
+			const detail = (error as NodeJS.ErrnoException).code === "ENOENT" ? "does not exist" : "is not readable";
+			throw RequestError.invalidParams({ method, field: "cwd", cwd }, `cwd ${detail}: ${cwd}`);
+		}
+		if (!stats.isDirectory()) {
+			throw RequestError.invalidParams({ method, field: "cwd", cwd }, `cwd is not a directory: ${cwd}`);
+		}
+		return cwd;
 	}
 
 	#convertPromptBlocks(blocks: PromptRequest["prompt"]): { text: string; images: AgentImageContent[] } {
@@ -1534,7 +1628,10 @@ export class AcpAgent implements Agent {
 	async #setModelById(session: AgentSession, modelId: string): Promise<void> {
 		const model = session.getAvailableModels().find(candidate => this.#toModelId(candidate) === modelId);
 		if (!model) {
-			throw new Error(`Unknown ACP model: ${modelId}`);
+			throw RequestError.invalidParams(
+				{ field: "value", configId: MODEL_CONFIG_ID, value: modelId },
+				`unknown model: ${modelId}`,
+			);
 		}
 		await session.setModel(model);
 	}
@@ -1542,7 +1639,10 @@ export class AcpAgent implements Agent {
 	#setThinkingLevelById(session: AgentSession, value: string): void {
 		const thinkingLevel = parseThinkingLevel(value);
 		if (!thinkingLevel) {
-			throw new Error(`Unknown ACP thinking level: ${value}`);
+			throw RequestError.invalidParams(
+				{ field: "value", configId: THINKING_CONFIG_ID, value },
+				`unknown thinking level: ${value}`,
+			);
 		}
 		session.setThinkingLevel(thinkingLevel);
 	}
@@ -1697,6 +1797,7 @@ export class AcpAgent implements Agent {
 			orchestrationCacheRead: usage.orchestrationCacheRead,
 			premiumRequests: usage.premiumRequests,
 			cost: usage.cost,
+			subagent: { ...usage.subagent },
 		};
 	}
 

@@ -1,10 +1,10 @@
 import * as path from "node:path";
-import { $env, BINARY_NAME, logger } from "@oh-my-pi/pi-utils";
+import { $env, BINARY_NAME } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import type { ServiceTierOpenAISettingValue } from "../config/service-tier";
 import { CLI_THINKING_LEVELS, parseCliThinkingLevel, type ThinkingLevel } from "../thinking";
-import { normalizeToolNames } from "../tools/builtin-names";
+import { BUILTIN_TOOL_NAMES, normalizeToolNames } from "../tools/builtin-names";
 import {
 	OPTIONAL_FLAGS,
 	OPTIONAL_VALUE_FLAGS,
@@ -79,7 +79,6 @@ export interface Args {
 }
 
 const PARSE_DEPS: ParseDeps = {
-	logger,
 	parseThinking: parseCliThinkingLevel,
 	normalizeToolNames,
 	thinkingEfforts: CLI_THINKING_LEVELS,
@@ -230,13 +229,18 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 	return result;
 }
 
+/**
+ * `known` is the session's registry, which `--tools` has already filtered — validating against it
+ * alone would reject every built-in the user filtered out. The accepted set is every built-in name
+ * plus whatever else this session actually carries (MCP, extension and custom tools).
+ */
 export function validateToolNames(requested: readonly string[] | undefined, known: readonly string[]): void {
 	if (!requested) return;
-	const knownNames = new Set(known);
-	const unknown = requested.filter(name => !knownNames.has(name));
+	const valid = new Set<string>([...BUILTIN_TOOL_NAMES, ...known]);
+	const unknown = requested.filter(name => !valid.has(name));
 	if (unknown.length === 0) return;
 	throw new CliUsageError(
-		`Unknown tool${unknown.length === 1 ? "" : "s"} in --tools: ${unknown.join(", ")}. Valid tools: ${known.join(", ")}.`,
+		`Unknown tool${unknown.length === 1 ? "" : "s"} in --tools: ${unknown.join(", ")}. Valid tools: ${[...valid].sort().join(", ")}.`,
 	);
 }
 
@@ -247,7 +251,7 @@ export function reportUnrecognizedFlags(
 	if (args.unrecognizedFlags.length === 0) return false;
 	const flags = args.unrecognizedFlags;
 	const plural = flags.length === 1 ? "" : "s";
-	write(`${chalk.red(`Error: unknown flag${plural}: ${flags.join(", ")}`)}\n`);
+	write(`${chalk.red(`error: unknown flag${plural}: ${flags.join(", ")}`)}\n`);
 	write(`Run \`${BINARY_NAME} --help\` for available flags.\n`);
 	return true;
 }
@@ -257,7 +261,7 @@ export function reportCliUsageError(
 	write: (text: string) => void = text => process.stderr.write(text),
 ): boolean {
 	if (!(error instanceof CliUsageError)) return false;
-	write(`${chalk.red(`Error: ${error.message}`)}\n`);
+	write(`${chalk.red(`error: ${error.message}`)}\n`);
 	write(`Run \`${BINARY_NAME} --help\` for available flags.\n`);
 	return true;
 }

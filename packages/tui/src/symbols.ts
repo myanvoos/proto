@@ -20,7 +20,10 @@ export interface SymbolTheme {
 	table: BoxSymbols;
 	quoteBorder: string;
 	hrChar: string;
+	search?: string;
 
 	colorSwatch?: string;
+	taskChecked?: string;
+	taskUnchecked?: string;
 	spinnerFrames: string[];
 }

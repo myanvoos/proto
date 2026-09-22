@@ -262,6 +262,22 @@ export function resolvePreservedLiveToolCallIds(params: {
 	return preserved;
 }
 
+/** Maintenance changes model context, not the already-published transcript. */
+export function appendLatestCompactionSummary(ctx: InteractiveModeContext): void {
+	ctx.lastAssistantUsage = undefined;
+	const summary = ctx.viewSession
+		.buildTranscriptSessionContext()
+		.messages.findLast(message => message.role === "compactionSummary");
+	if (!summary) return;
+	if (
+		ctx.chatContainer.children.some(
+			child => child instanceof CompactionSummaryMessageComponent && child.represents(summary),
+		)
+	)
+		return;
+	ctx.addMessageToChat(summary);
+}
+
 export class UiHelpers {
 	#transcriptPageFromLatest = 0;
 	#transcriptRenderQueue: Promise<void> = Promise.resolve();
@@ -510,7 +526,6 @@ export class UiHelpers {
 
 		let readGroup: ReadToolGroupComponent | null = null;
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
-		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 
 		let pendingUsage: Usage | undefined;
 		let pendingUsageDuration: number | undefined;
@@ -675,15 +690,9 @@ export class UiHelpers {
 							}
 							readGroup.updateArgs(renderArgs, content.id);
 							this.ctx.pendingTools.set(content.id, readGroup);
-							if (assistantComponent) {
-								readToolCallAssistantComponents.set(content.id, assistantComponent);
-							}
 						} else {
 							const normalizedArgs = normalizeToolArgs(renderArgs);
 							readToolCallArgs.set(content.id, normalizedArgs);
-							if (assistantComponent) {
-								readToolCallAssistantComponents.set(content.id, assistantComponent);
-							}
 						}
 						appendAssistantSegment(afterToolSegment);
 						continue;
@@ -738,19 +747,9 @@ export class UiHelpers {
 					message.toolName === "read" &&
 					(!pendingReadComponent || pendingReadComponent instanceof ReadToolGroupComponent);
 				if (isReadGroupResult) {
-					const assistantComponent = readToolCallAssistantComponents.get(message.toolCallId);
 					const images: ImageContent[] = message.content.filter(
 						(content): content is ImageContent => content.type === "image",
 					);
-					if (images.length > 0 && assistantComponent) {
-						assistantComponent.setToolResultImages(message.toolCallId, images);
-						const hasText = message.content.some(c => c.type === "text");
-						if (!hasText && settings.get("terminal.showImages")) {
-							readToolCallArgs.delete(message.toolCallId);
-							readToolCallAssistantComponents.delete(message.toolCallId);
-							continue;
-						}
-					}
 					let component = this.ctx.pendingTools.get(message.toolCallId);
 					if (!component) {
 						if (!readGroup) {
@@ -767,10 +766,12 @@ export class UiHelpers {
 						component = readGroup;
 						this.ctx.pendingTools.set(message.toolCallId, readGroup);
 					}
+					if (images.length > 0 && component instanceof ReadToolGroupComponent) {
+						component.setToolResultImages(message.toolCallId, images);
+					}
 					component.updateResult(message, false, message.toolCallId);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					readToolCallArgs.delete(message.toolCallId);
-					readToolCallAssistantComponents.delete(message.toolCallId);
 					continue;
 				}
 

@@ -44,6 +44,7 @@ import os
 import re
 import runpy
 import shlex
+import select
 import signal
 import subprocess
 import sys
@@ -80,6 +81,13 @@ except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
     _DEVNULL_FD = None
     _CAPTURE_SUPPORTED = False
 _OUT_LOCK = threading.Lock()
+# The request whose pipes are currently installed on fd 1/2. Cell writes are
+# emitted as frames from this thread while child output arrives on a drain
+# thread, so a frame must first let anything already sitting in those pipes
+# out — otherwise a line a child printed earlier lands after it.
+_CAPTURE_RID: str | None = None
+_CAPTURE_STATE: "_FdCapture | None" = None
+_CAPTURE_LOCK = threading.Lock()
 
 
 def _json_default(o: Any) -> Any:
@@ -150,14 +158,80 @@ class _StreamProxy(io.TextIOBase):
     def __init__(self, kind: str) -> None:
         super().__init__()
         self._kind = kind
+        self._fd = 1 if kind == "stdout" else 2
         self._lock = threading.Lock()
         self._buffers: dict[str, str] = {}
+        self._buffer_proxy: "_BinaryStreamProxy | None" = None
 
     def writable(self) -> bool:  # noqa: D401 - protocol method
         return True
 
     def isatty(self) -> bool:  # noqa: D401 - protocol method
         return False
+
+    @property
+    def encoding(self) -> str:  # noqa: D401 - matches a real text stream
+        return "utf-8"
+
+    @property
+    def errors(self) -> str:  # noqa: D401 - matches a real text stream
+        return "backslashreplace"
+
+    @property
+    def line_buffering(self) -> bool:  # noqa: D401 - writes leave on each newline
+        return True
+
+    @property
+    def buffer(self) -> "_BinaryStreamProxy":
+        """The binary layer, as on a real ``sys.stdout``.
+
+        Code that writes bytes (``sys.stdout.buffer.write``, ``shutil``,
+        anything handing a stream to a C extension) must not crash with an
+        ``AttributeError`` just because output is being captured.
+        """
+        proxy = self._buffer_proxy
+        if proxy is None:
+            proxy = _BinaryStreamProxy(self)
+            self._buffer_proxy = proxy
+        return proxy
+
+    def fileno(self) -> int:
+        """The captured fd for the running request, as a real stream would.
+
+        While this request owns fd 1/2 its capture pipe *is* this stream, so
+        handing the number to ``subprocess``/``os.write`` keeps that output in
+        this cell. Without capture the number would be the runner's own frame
+        channel, so the unsupported-operation error stands.
+        """
+        rid = _CURRENT_RID.get()
+        if rid is not None and self._routed_fd(rid) is not None:
+            return self._fd
+        raise io.UnsupportedOperation("fileno")
+
+    def _routed_fd(self, rid: str) -> int | None:
+        """This stream's captured fd for ``rid``, or ``None`` without capture."""
+        if not _CAPTURE_SUPPORTED or rid != _CAPTURE_RID:
+            return None
+        return self._fd
+
+    def _deliver(self, rid: str, text: str) -> None:
+        """Emit ``text`` as a typed frame, behind any output already captured."""
+        if not text:
+            return
+        _drain_capture_before_frame(rid)
+        _emit({"type": self._kind, "id": rid, "data": text})
+
+    def _deliver_bytes(self, rid: str, data: bytes) -> None:
+        """Emit raw bytes, ordered behind buffered text and captured output.
+
+        Undecodable bytes keep the ``backslashreplace`` spelling the fd-capture
+        path already uses, so a byte written through ``.buffer`` reads the same
+        as the identical byte written by a child process.
+        """
+        if not data:
+            return
+        self.flush_rid(rid)
+        self._deliver(rid, data.decode("utf-8", "backslashreplace"))
 
     def write(self, data: Any) -> int:  # type: ignore[override]
         if not isinstance(data, str):
@@ -190,9 +264,9 @@ class _StreamProxy(io.TextIOBase):
                 self._buffers[rid] = rest
         if evicted is not None:
             evicted_rid, evicted_text = evicted
-            _emit({"type": self._kind, "id": evicted_rid, "data": evicted_text})
+            self._deliver(evicted_rid, evicted_text)
         if emit_text:
-            _emit({"type": self._kind, "id": rid, "data": emit_text})
+            self._deliver(rid, emit_text)
         return len(data)
 
     def flush(self) -> None:  # noqa: D401 - protocol method
@@ -202,11 +276,71 @@ class _StreamProxy(io.TextIOBase):
         return None
 
     def flush_rid(self, rid: str) -> None:
-        """Flush any buffered partial line for ``rid`` as its own frame."""
+        """Flush any buffered partial line for ``rid``."""
         with self._lock:
             buf = self._buffers.pop(rid, None)
         if buf:
-            _emit({"type": self._kind, "id": rid, "data": buf})
+            self._deliver(rid, buf)
+
+
+class _BinaryStreamProxy(io.RawIOBase):
+    """The ``.buffer`` of a captured text stream.
+
+    Bytes reach the host exactly as written when the request owns its capture
+    fd; otherwise they are decoded (``backslashreplace``, so invalid bytes stay
+    visible) and travel as a typed frame like any other cell output.
+    """
+
+    def __init__(self, text: "_StreamProxy") -> None:
+        super().__init__()
+        self._text = text
+
+    def writable(self) -> bool:  # noqa: D401 - protocol method
+        return True
+
+    def readable(self) -> bool:  # noqa: D401 - protocol method
+        return False
+
+    def seekable(self) -> bool:  # noqa: D401 - protocol method
+        return False
+
+    def isatty(self) -> bool:  # noqa: D401 - protocol method
+        return False
+
+    def fileno(self) -> int:
+        return self._text.fileno()
+
+    @property
+    def raw(self) -> "_BinaryStreamProxy":
+        return self
+
+    @property
+    def name(self) -> str:
+        return f"<{self._text._kind}>"
+
+    def write(self, data: Any) -> int:  # type: ignore[override]
+        if isinstance(data, memoryview):
+            payload = data.tobytes()
+        elif isinstance(data, (bytes, bytearray)):
+            payload = bytes(data)
+        else:
+            raise TypeError(f"a bytes-like object is required, not '{type(data).__name__}'")
+        if not payload:
+            return 0
+        rid = _CURRENT_RID.get()
+        if rid is None:
+            _RAW_STDERR.write(payload.decode("utf-8", "backslashreplace"))
+            _RAW_STDERR.flush()
+            return len(payload)
+        self._text._deliver_bytes(rid, payload)
+        return len(payload)
+
+    def writelines(self, lines: Any) -> None:  # type: ignore[override]
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:  # noqa: D401 - protocol method
+        self._text.flush()
 
 
 def _flush_stream_proxies(rid: str) -> None:
@@ -281,6 +415,33 @@ class _FdCapture:
         self.marker = b"\x00proto-sync:" + os.urandom(24) + b"\x00"
         self.stdout_synced = threading.Event()
         self.stderr_synced = threading.Event()
+        # Set when a drain thread exits: syncing a dead stream would just burn
+        # the timeout, and mid-cell syncs repeat.
+        self.stdout_closed = threading.Event()
+        self.stderr_closed = threading.Event()
+        # Read ends stay reachable so a frame can check, without consuming
+        # anything, whether a child left output waiting in the pipe.
+        self.read_fds: dict[str, int] = {}
+        # Set by the audit hook when this request spawns a child. Once the
+        # drain thread has read (but not yet emitted) an exited child's bytes
+        # there is nothing left for ``select`` to see, so the spawn itself is
+        # what arms the next sync.
+        self.child_started = False
+
+    def pending_streams(self) -> list[int]:
+        """Capture fds holding child output that has not been emitted yet."""
+        live = [
+            fd
+            for kind, fd in self.read_fds.items()
+            if not (self.stdout_closed if kind == "stdout" else self.stderr_closed).is_set()
+        ]
+        if not live:
+            return []
+        try:
+            readable, _, _ = select.select(live, [], [], 0)
+        except (OSError, ValueError):
+            return []
+        return list(readable)
 
 
 def _emit_captured_bytes(
@@ -295,7 +456,12 @@ def _emit_captured_bytes(
 
 
 def _drain_capture_fd(
-    read_fd: int, rid: str, kind: str, marker: bytes, synced: threading.Event
+    read_fd: int,
+    rid: str,
+    kind: str,
+    marker: bytes,
+    synced: threading.Event,
+    closed: threading.Event,
 ) -> None:
     decoder = codecs.getincrementaldecoder("utf-8")("backslashreplace")
     pending = b""
@@ -324,6 +490,7 @@ def _drain_capture_fd(
                 break
         _emit_captured_bytes(rid, kind, decoder, pending, final=True)
     finally:
+        closed.set()
         synced.set()
         try:
             os.close(read_fd)
@@ -335,45 +502,130 @@ def _begin_fd_capture(rid: str) -> _FdCapture | None:
     if not _CAPTURE_SUPPORTED:
         return None
     capture = _FdCapture()
-    streams = ((1, "stdout", capture.stdout_synced), (2, "stderr", capture.stderr_synced))
-    for target_fd, kind, synced in streams:
+    streams = (
+        (1, "stdout", capture.stdout_synced, capture.stdout_closed),
+        (2, "stderr", capture.stderr_synced, capture.stderr_closed),
+    )
+    for target_fd, kind, synced, closed in streams:
         read_fd, write_fd = os.pipe()
         os.dup2(write_fd, target_fd)
         os.close(write_fd)
+        capture.read_fds[kind] = read_fd
         threading.Thread(
             target=_drain_capture_fd,
-            args=(read_fd, rid, kind, capture.marker, synced),
+            args=(read_fd, rid, kind, capture.marker, synced, closed),
             name=f"proto-{kind}-capture-{rid}",
             daemon=True,
         ).start()
+    global _CAPTURE_RID, _CAPTURE_STATE
+    with _CAPTURE_LOCK:
+        _CAPTURE_RID = rid
+        _CAPTURE_STATE = capture
     return capture
 
 
 def _sync_fd_capture(capture: _FdCapture | None) -> None:
+    """Block until everything already written to the capture fds has been emitted."""
     if capture is None:
         return
-    for target_fd, synced in ((1, capture.stdout_synced), (2, capture.stderr_synced)):
-        if synced.is_set():
+    streams = (
+        (1, capture.stdout_synced, capture.stdout_closed),
+        (2, capture.stderr_synced, capture.stderr_closed),
+    )
+    for target_fd, synced, closed in streams:
+        if closed.is_set():
             continue
+        synced.clear()
         try:
             os.write(target_fd, capture.marker)
         except OSError:
             synced.set()
-    capture.stdout_synced.wait(timeout=1.0)
-    capture.stderr_synced.wait(timeout=1.0)
+    for _target_fd, synced, closed in streams:
+        if closed.is_set():
+            continue
+        synced.wait(timeout=1.0)
+
+
+# Spawning a child is the one event that can put output into the capture pipes
+# behind the cell's back; the hook only flips a flag, so unaudited work keeps
+# its speed.
+_CHILD_SPAWN_AUDIT_EVENTS = frozenset(
+    {
+        "subprocess.Popen",
+        "os.system",
+        "os.exec",
+        "os.posix_spawn",
+        "os.spawn",
+        "os.fork",
+        "os.forkpty",
+        "pty.spawn",
+    }
+)
+
+
+def _audit_child_spawn(event: str, _args: tuple) -> None:
+    if event not in _CHILD_SPAWN_AUDIT_EVENTS:
+        return
+    capture = _CAPTURE_STATE
+    if capture is not None:
+        capture.child_started = True
+
+
+def _install_child_spawn_audit() -> None:
+    try:
+        sys.addaudithook(_audit_child_spawn)
+    except Exception:
+        pass
+
+
+def _drain_capture_before_frame(rid: str | None) -> None:
+    """Let output a child already wrote reach the host before the next frame.
+
+    The drain threads only run when the executing cell gives up the GIL, so a
+    line a subprocess printed can sit unread in the pipe while the cell keeps
+    printing — the host then shows it after output that came later. Checking
+    the pipe costs one non-blocking ``select``; only when it actually holds
+    bytes (or a child has just been spawned) is the blocking marker sync worth
+    paying for.
+    """
+    if rid is None or rid != _CAPTURE_RID:
+        return
+    capture = _CAPTURE_STATE
+    if capture is None:
+        return
+    if not capture.child_started and not capture.pending_streams():
+        return
+    _sync_fd_capture(capture)
+    capture.child_started = False
+
+
+def _sync_before_frame(rid: str | None) -> None:
+    """Order a non-text frame (``display``, an error) behind cell output."""
+    if rid is None or rid != _CAPTURE_RID:
+        return
+    _flush_stream_proxies(rid)
+    _drain_capture_before_frame(rid)
 
 
 def _end_fd_capture() -> None:
-    if _DEVNULL_FD is None:
-        return
-    # Closing the runner's copies lets a request pipe reach EOF promptly, while
-    # background children retain their inherited copies and keep their fixed
-    # request attribution until they exit.
-    try:
-        os.dup2(_DEVNULL_FD, 1)
-        os.dup2(_DEVNULL_FD, 2)
-    except OSError:
-        pass
+    global _CAPTURE_RID, _CAPTURE_STATE
+    # Stop routing before the fds move: a racing write then takes the frame
+    # path instead of landing in /dev/null.
+    with _CAPTURE_LOCK:
+        _CAPTURE_RID = None
+        _CAPTURE_STATE = None
+        if _DEVNULL_FD is None:
+            return
+        # Closing the runner's copies lets a request pipe reach EOF promptly,
+        # while background children retain their inherited copies and keep
+        # their fixed request attribution until they exit. Holding the routing
+        # lock across the swap keeps a concurrent write on one side or the
+        # other, never split across it.
+        try:
+            os.dup2(_DEVNULL_FD, 1)
+            os.dup2(_DEVNULL_FD, 2)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -980,6 +1232,7 @@ def _emit_status(op: str, **data: Any) -> None:
     rid = _CURRENT_RID.get()
     if rid is None:
         return
+    _sync_before_frame(rid)
     _emit({"type": "display", "id": rid, "bundle": bundle})
 
 
@@ -1290,6 +1543,7 @@ def _magic_reset(_args: str) -> None:
 def _magic_load(args: str) -> None:
     path = Path(os.path.expanduser(args.strip()))
     source = path.read_text(encoding="utf-8")
+    _sync_before_frame(_CURRENT_RID.get())
     _emit(
         {"type": "display", "id": _CURRENT_RID.get(), "bundle": {"text/plain": source}}
     )
@@ -1532,6 +1786,7 @@ def _emit_display(bundle: dict, *, kind: str = "display") -> None:
     rid = _CURRENT_RID.get()
     if rid is None:
         return
+    _sync_before_frame(rid)
     _emit({"type": kind, "id": rid, "bundle": bundle})
 
 
@@ -2067,7 +2322,9 @@ def _track_cell_defs(source: str, rid: str, execution_count: int) -> None:
         _STATE.defs.clear()
         return
     defs, bound = _cell_bound_names(source)
-    for name in defs:
+    # Variables, imports and loop targets are cell-defined names too: report
+    # every top-level binding, not only functions and classes.
+    for name in (*defs, *bound):
         _STATE.defs[name] = execution_count
     if _STATE.prelude_names is None:
         return
@@ -2223,6 +2480,9 @@ async def _handle_request_async(req: dict) -> None:
             }
         )
     finally:
+        # Buffered text goes to the capture fd, so it must be flushed and
+        # drained before those fds are swapped back to /dev/null.
+        _flush_stream_proxies(rid)
         _sync_fd_capture(capture)
         _end_fd_capture()
         _flush_stream_proxies(rid)
@@ -2232,6 +2492,7 @@ async def _handle_request_async(req: dict) -> None:
 
 
 def _emit_error(rid: str, exc: BaseException) -> None:
+    _sync_before_frame(rid)
     if isinstance(exc, SyntaxError) and exc.filename == "<cell>":
         # Syntax error in the cell source itself: every stack frame is runner
         # machinery, so emit only the caret display, like a REPL.
@@ -2331,6 +2592,7 @@ async def _main_async() -> None:
     sys.stdout = _StreamProxy("stdout")
     sys.stderr = _StreamProxy("stderr")
     _install_idle_sigint()
+    _install_child_spawn_audit()
     _start_parent_watchdog()
 
     stdin = sys.__stdin__

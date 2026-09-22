@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
+import * as path from "node:path";
 import { getProjectDir, prompt } from "@oh-my-pi/pi-utils";
 import {
 	isValidManagedSkillName,
@@ -37,6 +38,11 @@ export interface SkillWarning {
 export interface LoadSkillsResult {
 	skills: Skill[];
 	warnings: SkillWarning[];
+}
+
+/** Presentational only: every surface prefixes skill diagnostics the same way. */
+export function formatSkillWarning(warning: SkillWarning): string {
+	return `Skills: ${warning.message}`;
 }
 
 let activeSkills: readonly Skill[] = [];
@@ -152,20 +158,17 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		(disabledExtensions ?? []).filter(id => id.startsWith("skill:")).map(id => id.slice(6)),
 	);
 
-	const seenAuthoredSkillNames = new Set<string>();
-	const filteredSkills = result.all.filter(capSkill => {
+	const eligibleSkills = result.all.filter(capSkill => {
 		if (capSkill._source.provider === MANAGED_SKILLS_PROVIDER_ID) return false;
 		if (disabledSkillNames.has(capSkill.name)) return false;
 		if (!isSourceEnabled(capSkill._source)) return false;
 		if (matchesIgnorePatterns(capSkill.name)) return false;
 		if (!matchesIncludePatterns(capSkill.name)) return false;
-		if (seenAuthoredSkillNames.has(capSkill.name)) return false;
-		seenAuthoredSkillNames.add(capSkill.name);
 		return true;
 	});
 
-	const realPaths = await Promise.all(
-		filteredSkills.map(async capSkill => {
+	const eligibleRealPaths = await Promise.all(
+		eligibleSkills.map(async capSkill => {
 			try {
 				return await fs.realpath(capSkill.path);
 			} catch {
@@ -174,33 +177,54 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		}),
 	);
 
-	for (let i = 0; i < filteredSkills.length; i++) {
-		const capSkill = filteredSkills[i];
-		const resolvedPath = realPaths[i];
+	// Two files claiming one name used to be resolved by discovery order alone — whichever directory
+	// sorted first won, and `skill://<name>` silently read the other author's file. The winner is now
+	// the skill whose directory matches the name it declares (and discovery order only breaks ties),
+	// and every shadowed file is named.
+	const candidatesByName = new Map<string, Array<{ skill: CapabilitySkill; realPath: string }>>();
+	for (let i = 0; i < eligibleSkills.length; i++) {
+		const skill = eligibleSkills[i]!;
+		const candidates = candidatesByName.get(skill.name);
+		const entry = { skill, realPath: eligibleRealPaths[i]! };
+		if (candidates) candidates.push(entry);
+		else candidatesByName.set(skill.name, [entry]);
+	}
 
-		if (realPathSet.has(resolvedPath)) {
-			continue;
-		}
-
-		const existing = skillMap.get(capSkill.name);
-		if (existing) {
+	const filteredSkills: CapabilitySkill[] = [];
+	const realPaths: string[] = [];
+	for (const [name, candidates] of candidatesByName) {
+		const winner =
+			candidates.find(candidate => path.basename(path.dirname(candidate.skill.path)) === name) ?? candidates[0]!;
+		filteredSkills.push(winner.skill);
+		realPaths.push(winner.realPath);
+		for (const loser of candidates) {
+			// The same file reached through two providers or a symlink is not a collision.
+			if (loser === winner || loser.realPath === winner.realPath) continue;
 			collisionWarnings.push({
-				skillPath: capSkill.path,
-				message: `name collision: "${capSkill.name}" already loaded from ${existing.filePath}, skipping this one`,
+				skillPath: loser.skill.path,
+				message: `name collision: "${name}" is declared by both ${winner.skill.path} and ${loser.skill.path}; using ${winner.skill.path}`,
 			});
-		} else {
-			skillMap.set(capSkill.name, {
-				name: capSkill.name,
-				description: typeof capSkill.frontmatter?.description === "string" ? capSkill.frontmatter.description : "",
-				filePath: capSkill.path,
-				baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
-				source: `${capSkill._source.provider}:${capSkill.level}`,
-				...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
-				hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
-				_source: capSkill._source,
-			});
-			realPathSet.add(resolvedPath);
 		}
+	}
+
+	// Names are unique by construction above, so each survivor is simply recorded.
+	for (let i = 0; i < filteredSkills.length; i++) {
+		const capSkill = filteredSkills[i]!;
+		const resolvedPath = realPaths[i]!;
+
+		if (realPathSet.has(resolvedPath)) continue;
+
+		skillMap.set(capSkill.name, {
+			name: capSkill.name,
+			description: typeof capSkill.frontmatter?.description === "string" ? capSkill.frontmatter.description : "",
+			filePath: capSkill.path,
+			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
+			source: `${capSkill._source.provider}:${capSkill.level}`,
+			...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
+			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
+			_source: capSkill._source,
+		});
+		realPathSet.add(resolvedPath);
 	}
 
 	const customDirectoryResults = await Promise.all(

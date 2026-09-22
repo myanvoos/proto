@@ -36,7 +36,9 @@ export function renderStatusLine(options: StatusLineOptions, theme: Theme): stri
 
 	const meta = options.meta?.map(flattenForHeader).filter(value => value.trim().length > 0) ?? [];
 	if (meta.length > 0) {
-		line += ` ${theme.fg("dim", meta.join(theme.sep.dot))}`;
+		// Meta is a separate clause from the title, so it takes the same separator that already
+		// divides meta entries; a bare space ran the two together ("Fleet peers no other agents").
+		line += theme.fg("dim", `${theme.sep.dot}${meta.join(theme.sep.dot)}`);
 	}
 
 	return line;

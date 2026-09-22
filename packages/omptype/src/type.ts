@@ -414,7 +414,7 @@ export interface ConfigureSelector {
 
 function errorConfigOf(config: SchemaConfig): ErrorConfig {
 	return {
-		...(config.description === undefined || config.expected !== undefined ? {} : { expected: config.description }),
+		...(config.description === undefined ? {} : { description: config.description }),
 		...(config.expected === undefined ? {} : { expected: config.expected }),
 		...(config.actual === undefined ? {} : { actual: config.actual }),
 		...(config.problem === undefined ? {} : { problem: config.problem }),
@@ -672,7 +672,7 @@ function normalizeDefaults(ir: IR, seen = new WeakSet<object>()): void {
 const OPAQUE_OUTPUT_IR: IR = { k: "unknown" };
 const typeMethods = {
 	describe(this: InternalType, description: string): InternalType {
-		const ir = { ...this.ir, desc: description, cfg: { ...this.ir.cfg, expected: description } };
+		const ir = { ...this.ir, desc: description, cfg: { ...this.ir.cfg, description } };
 		return makeType(ir, this[kSteps], { ...metaOf(this), description });
 	},
 

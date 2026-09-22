@@ -11,6 +11,8 @@ export interface ErrorContext {
 }
 
 export interface ErrorConfig {
+	/** Human documentation for the value; used for missing-value messages, never as the constraint. */
+	readonly description?: string;
 	readonly expected?: string | ((context: ErrorContext) => string);
 	readonly actual?: string | ((data: unknown) => string);
 	readonly problem?: string | ((context: ErrorContext) => string);
@@ -57,7 +59,8 @@ export class OmpError {
 	}
 
 	#context(expected: string, actual: string, problem = ""): ErrorContext {
-		const { description, rule } = describeExpectation(this.#rawExpected);
+		const { description: derived, rule } = describeExpectation(this.#rawExpected);
+		const description = this.#config?.description ?? derived;
 		return {
 			code: this.code,
 			path: this.path,
@@ -90,7 +93,7 @@ export class OmpError {
 		const actual = this.actual;
 		const fallback =
 			this.data === MISSING
-				? `is required (${expected})`
+				? `is required (${this.#config?.description ?? expected})`
 				: actual === ""
 					? `must be ${expected}`
 					: `must be ${expected} (was ${actual})`;

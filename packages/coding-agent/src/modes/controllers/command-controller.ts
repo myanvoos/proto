@@ -18,12 +18,14 @@ import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/c
 import { buildHelpMarkdown } from "../../modes/utils/help-markdown";
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
+import { appendLatestCompactionSummary } from "../../modes/utils/ui-helpers";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
 import { BUILTIN_SLASH_COMMAND_DEFS } from "../../slash-commands/builtin-registry";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
+import { renderSessionUsageSummary } from "../../slash-commands/helpers/usage-report";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
 import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
@@ -235,20 +237,23 @@ export class CommandController {
 		let usageReports = reports ?? null;
 		if (!usageReports) {
 			const provider = this.ctx.session as { fetchUsageReports?: () => Promise<UsageReport[] | null> };
-			if (!provider.fetchUsageReports) {
-				this.ctx.showWarning("Usage reporting is not configured for this session.");
-				return;
-			}
-			try {
-				usageReports = await provider.fetchUsageReports();
-			} catch (error) {
-				this.ctx.showError(`Failed to fetch usage data: ${error instanceof Error ? error.message : String(error)}`);
-				return;
+			if (provider.fetchUsageReports) {
+				try {
+					usageReports = await provider.fetchUsageReports();
+				} catch (error) {
+					this.ctx.showError(
+						`Failed to fetch usage data: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					return;
+				}
 			}
 		}
 
 		if (!usageReports || usageReports.length === 0) {
-			this.ctx.showWarning("No usage data available.");
+			// No provider quota to report: what the session itself spent, subagents included, is still
+			// the answer the user asked for.
+			const summary = renderSessionUsageSummary(this.ctx.session.sessionManager.getUsageStatistics());
+			this.ctx.presentCommandOutput([new Spacer(1), new Text(summary, 1, 0)]);
 			return;
 		}
 
@@ -437,7 +442,7 @@ export class CommandController {
 				return;
 			}
 			const confirmed = await this.ctx.showHookConfirm(
-				"Create directory?",
+				`${path.basename(resolvedPath)}: create?`,
 				`"${path.basename(resolvedPath)}" does not exist. Create it?`,
 			);
 			if (!confirmed) return;
@@ -669,7 +674,7 @@ export class CommandController {
 
 			compactingLoader.stop();
 			this.ctx.statusContainer.disposeChildren();
-			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
+			appendLatestCompactionSummary(this.ctx);
 
 			this.ctx.statusLine.invalidate();
 

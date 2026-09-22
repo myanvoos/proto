@@ -3,7 +3,6 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { initThemeSync, theme } from "../theme/theme";
 import { AssistantMessageComponent } from "./assistant-message";
-import { TranscriptContainer } from "./transcript-container";
 
 initThemeSync();
 
@@ -28,31 +27,6 @@ const message: AssistantMessage = {
 	stopReason: "stop",
 	timestamp: 1,
 };
-
-const image = { type: "image", data: "aGVsbG8=", mimeType: "image/png" } as const;
-
-test("notifies the transcript when a finalized assistant image is hidden", () => {
-	const assistant = new AssistantMessageComponent(message);
-	assistant.setToolResultImages("call-1", [image]);
-	const transcript = new TranscriptContainer();
-	transcript.addChild(assistant);
-	expect(transcript.render(80).join("\n")).toContain("[Image: image/png]");
-
-	assistant.setToolResultImagesVisible(false);
-	const updated = transcript.render(80).join("\n");
-	expect(updated).not.toContain("[Image: image/png]");
-});
-
-test("notifies the transcript when a tool image arrives after final compaction", () => {
-	const assistant = new AssistantMessageComponent(message);
-	const transcript = new TranscriptContainer();
-	transcript.addChild(assistant);
-	expect(transcript.render(80).join("\n")).not.toContain("[Image: image/png]");
-
-	assistant.setToolResultImages("call-1", [image]);
-	const updated = transcript.render(80).join("\n");
-	expect(updated).toContain("[Image: image/png]");
-});
 
 test("sanitizes assistant error content before collapsed and expanded rendering", () => {
 	for (const expanded of [false, true]) {

@@ -159,7 +159,7 @@ class DirResolver {
 
 		const defaultAgent = path.join(this.configRoot, "agent");
 		const agentDirOverride = profile ? undefined : options.agentDirOverride;
-		this.agentDir = agentDirOverride ? path.resolve(agentDirOverride) : defaultAgent;
+		this.agentDir = agentDirOverride ? path.resolve(expandTildePath(agentDirOverride)) : defaultAgent;
 		const isDefault = this.agentDir === defaultAgent;
 
 		let xdgData: string | undefined;
@@ -314,6 +314,56 @@ export function getAgentDir(): string {
 	return dirs.agentDir;
 }
 
+export interface AgentDirEnvIssue {
+	level: "error" | "warning";
+	message: string;
+}
+
+/**
+ * `PI_CODING_AGENT_DIR` decides where every session, credential and database lives, so a value that
+ * cannot work has to be reported before anything is written. A relative value silently follows the
+ * working directory and a file where a directory belongs only surfaces as an sqlite error much later.
+ */
+export function validateAgentDirEnv(raw = process.env.PI_CODING_AGENT_DIR): AgentDirEnvIssue | undefined {
+	if (raw === undefined) return undefined;
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) {
+		return {
+			level: "warning",
+			message: `PI_CODING_AGENT_DIR is set but empty; using the default agent directory ${getAgentDir()}`,
+		};
+	}
+	if (isProfileDerivedAgentDir(getActiveProfile(), trimmed)) return undefined;
+	const expanded = expandTildePath(trimmed);
+	if (!path.isAbsolute(expanded)) {
+		return {
+			level: "error",
+			message:
+				`PI_CODING_AGENT_DIR must be an absolute path, but is "${raw}". ` +
+				`It would resolve to ${path.resolve(expanded)} and move with the working directory, ` +
+				"so sessions and credentials would be split across directories.",
+		};
+	}
+	let stat: fs.Stats;
+	try {
+		stat = fs.statSync(expanded);
+	} catch {
+		return undefined; // A missing directory is fine: it is created on first use.
+	}
+	if (!stat.isDirectory()) {
+		return {
+			level: "error",
+			message: `PI_CODING_AGENT_DIR must point to a directory, but ${expanded} is a ${stat.isSymbolicLink() ? "symlink" : "file"}.`,
+		};
+	}
+	try {
+		fs.accessSync(expanded, fs.constants.W_OK | fs.constants.X_OK);
+	} catch {
+		return { level: "error", message: `PI_CODING_AGENT_DIR is not writable: ${expanded}` };
+	}
+	return undefined;
+}
+
 export function getProjectAgentDir(cwd: string = getProjectDir()): string {
 	return path.join(cwd, CONFIG_DIR_NAME);
 }
@@ -353,16 +403,22 @@ export function getRemoteDir(): string {
 	return dirs.rootSubdir("remote", "data");
 }
 
+/**
+ * Expands a leading `~`. Environment variables and config files carry the literal character when the
+ * shell never got a chance to expand it, and `path.resolve` would otherwise create a directory named `~`.
+ */
+export function expandTildePath(value: string): string {
+	if (value === "~") return os.homedir();
+	if (!value.startsWith("~/") && !value.startsWith("~\\")) return value;
+	// Join through `path` so the accepted backslash form does not survive as a
+	// literal filename character on POSIX (`~\\wt` -> `/home/u\\wt`).
+	return path.join(os.homedir(), value.slice(2).replace(/\\/g, "/"));
+}
+
 function resolveWorktreeBase(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
 	if (!trimmed) return undefined;
-	let p = trimmed;
-	if (p === "~") p = os.homedir();
-	else if (p.startsWith("~/") || p.startsWith("~\\")) {
-		// Join through `path` so the accepted backslash form does not survive as a
-		// literal filename character on POSIX (`~\\wt` -> `/home/u\\wt`).
-		p = path.join(os.homedir(), p.slice(2).replace(/\\/g, "/"));
-	}
+	const p = expandTildePath(trimmed);
 	return path.isAbsolute(p) ? path.normalize(p) : undefined;
 }
 

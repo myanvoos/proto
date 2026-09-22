@@ -161,6 +161,7 @@ test("json output tree: expanded keeps no depth or line cap", () => {
 		JSON_TREE_MAX_DEPTH_EXPANDED,
 		JSON_TREE_MAX_LINES_EXPANDED,
 		JSON_TREE_SCALAR_LEN_EXPANDED,
+		100,
 	);
 
 	expect(tree.truncated).toBe(false);

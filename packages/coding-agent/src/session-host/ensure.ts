@@ -20,6 +20,8 @@ const ENSURE_ATTEMPTS = 3;
 export interface LiveSessionHost {
 	name: string;
 	socket: string;
+	/** True when this call started the host; false when an existing one was adopted. */
+	created: boolean;
 }
 
 export type SessionHostProbe = "live" | "connecting" | "refused";
@@ -88,12 +90,12 @@ export async function ensureSessionHost(
 
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		const first = await negotiateSessionHost(socket, sessionHostProbeTimeoutMs());
-		if (first.socket === "live") return { name, socket };
+		if (first.socket === "live") return { name, socket, created: false };
 		if (first.socket === "connecting") {
 			// Listener up but the RPC loop is still bootstrapping; give it the full
 			// ready window before concluding the worker is wedged.
 			const retry = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs());
-			if (retry.socket === "live") return { name, socket };
+			if (retry.socket === "live") return { name, socket, created: false };
 			await stopQuietly(client, name, "session host");
 		}
 
@@ -103,7 +105,7 @@ export async function ensureSessionHost(
 				await waitReady(client, name, "session host", undefined, sessionHostReadyTimeoutMs());
 			}
 			const adopted = await negotiateSessionHost(socket, sessionHostProbeTimeoutMs());
-			if (adopted.socket === "live") return { name, socket };
+			if (adopted.socket === "live") return { name, socket, created: false };
 			await stopQuietly(client, name, "session host");
 			continue;
 		}
@@ -128,7 +130,7 @@ export async function ensureSessionHost(
 			});
 			if (started.op !== "start") continue;
 			const probe = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs());
-			if (probe.socket === "live") return { name, socket };
+			if (probe.socket === "live") return { name, socket, created: true };
 			await stopQuietly(client, name, "session host");
 		} catch (error) {
 			logger.debug("session host start contention", {

@@ -11,8 +11,6 @@ import type { SetupScene, SetupSceneController, SetupSceneHost } from "./types";
 
 const MAX_VISIBLE_MODELS = 10;
 
-const BROWSER_FRAME_ROWS = 5;
-
 class ModelSceneController implements SetupSceneController {
 	title = "Choose your default model";
 	subtitle = "Search configured models and save the model used for new sessions.";
@@ -56,14 +54,18 @@ class ModelSceneController implements SetupSceneController {
 	}
 
 	render(width: number, maxLines?: number): readonly string[] {
-		const lines = [
-			this.#status ?? theme.fg("muted", "Type to search. Enter saves the highlighted model as your default."),
-			"",
-		];
-		const budget = maxLines === undefined ? MAX_VISIBLE_MODELS : maxLines - lines.length - BROWSER_FRAME_ROWS;
-		this.#browser.setMaxVisible(Math.max(1, Math.min(MAX_VISIBLE_MODELS, budget)));
+		if (maxLines !== undefined && maxLines <= 0) return [];
+		const lines =
+			maxLines === undefined || maxLines >= 7
+				? [
+						this.#status ??
+							theme.fg("muted", "Type to search. Enter saves the highlighted model as your default."),
+						"",
+					]
+				: [];
+		this.#browser.setMaxVisible(MAX_VISIBLE_MODELS);
 		this.#browserRowStart = lines.length;
-		lines.push(...this.#browser.render(width));
+		lines.push(...this.#browser.render(width, maxLines === undefined ? undefined : maxLines - lines.length));
 		return lines;
 	}
 

@@ -350,6 +350,10 @@ export class Agent {
 		this.#transformProviderContext = opts.transformProviderContext;
 	}
 
+	get deadline(): number | undefined {
+		return this.#deadline;
+	}
+
 	get sessionId(): string | undefined {
 		return this.#sessionId;
 	}

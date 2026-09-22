@@ -137,6 +137,14 @@ export function formatBadge(label: string, color: ToolUIColor, theme: Theme): st
 	return theme.fg(color, `${left}${label}${right}`);
 }
 
+/** Spend, at the precision that keeps sub-cent amounts readable. */
+export function formatCost(cost: number): string {
+	const amount = typeof cost === "number" && Number.isFinite(cost) ? cost : 0;
+	if (amount < 0.01) return `$${amount.toFixed(4)}`;
+	if (amount < 1) return `$${amount.toFixed(3)}`;
+	return `$${amount.toFixed(2)}`;
+}
+
 export function formatMoreItems(remaining: number, itemType: string): string {
 	const safeRemaining = Number.isFinite(remaining) ? remaining : 0;
 	return `… ${safeRemaining} more ${pluralize(itemType, safeRemaining)}`;
@@ -172,19 +180,28 @@ export function formatMeta(meta: string[], theme: Theme): string {
 	return meta.length > 0 ? ` ${theme.fg("muted", meta.join(theme.sep.dot))}` : "";
 }
 
-function sanitizeErrorText(message: string | undefined): string {
-	const clean = sanitizeText(message ?? "")
-		.replace(/^Error:\s*/, "")
-		.trim();
-	return clean ? truncateToWidth(replaceTabs(clean), TRUNCATE_LENGTHS.LINE) : "Unknown error";
+/**
+ * Tool errors are routinely multi-line (validation reports, stack-shaped provider text). Measuring
+ * and truncating the whole blob as one line cut messages mid-word and left every line after the
+ * first without the detail indent, so each line is sanitized, truncated and indented on its own.
+ */
+function sanitizeErrorLines(message: string | undefined): string[] {
+	const clean = sanitizeText(message ?? "").replace(/^Error:\s*/, "");
+	const lines = clean.split("\n").map(line => truncateToWidth(replaceTabs(line), TRUNCATE_LENGTHS.LINE).trimEnd());
+	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+	while (lines.length > 0 && lines[0] === "") lines.shift();
+	return lines.length > 0 ? lines : ["Unknown error"];
 }
 
 export function formatErrorMessage(message: string | undefined, theme: Theme): string {
-	return `${theme.styledSymbol("status.error", "error")} ${theme.fg("error", `Error: ${sanitizeErrorText(message)}`)}`;
+	const text = sanitizeErrorLines(message).join(" ");
+	return `${theme.styledSymbol("status.error", "error")} ${theme.fg("error", `Error: ${truncateToWidth(text, TRUNCATE_LENGTHS.LINE)}`)}`;
 }
 
 export function formatErrorDetail(message: string | undefined, theme: Theme): string {
-	return `  ${theme.fg("error", sanitizeErrorText(message))}`;
+	return sanitizeErrorLines(message)
+		.map(line => `  ${theme.fg("error", line)}`)
+		.join("\n");
 }
 
 export function formatEmptyMessage(message: string, theme: Theme): string {

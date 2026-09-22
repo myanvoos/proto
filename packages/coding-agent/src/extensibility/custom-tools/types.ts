@@ -130,6 +130,13 @@ export interface RenderResultOptions {
 	argsComplete?: boolean;
 
 	executionStarted?: boolean;
+
+	/**
+	 * The call's declared intent (`i`). It is stripped from the tool's arguments before execution
+	 * and otherwise only survives as the transient "Working…" message, so a renderer that wants to
+	 * keep it on a finished card — a failure, say — has to read it here.
+	 */
+	intent?: string;
 }
 
 export type CustomToolResult<TDetails = any> = AgentToolResult<TDetails>;

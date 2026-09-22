@@ -1108,6 +1108,8 @@ export interface Extension {
 export interface LoadExtensionsResult {
 	extensions: Extension[];
 	errors: Array<{ path: string; error: string }>;
+	/** Extensions that loaded, but not without something the user should know (e.g. a slow factory). */
+	warnings: Array<{ path: string; warning: string }>;
 	runtime: ExtensionRuntime;
 }
 

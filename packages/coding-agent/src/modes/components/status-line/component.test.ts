@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import { Settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
+import { emptyUsageStatistics } from "../../../session/session-entries";
 import { initThemeSync } from "../../theme/theme";
 import { StatusLineComponent } from "./component";
 
@@ -11,18 +12,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-const usageStatistics = {
-	input: 0,
-	output: 0,
-	cacheRead: 0,
-	cacheWrite: 0,
-	totalTokens: 0,
-	orchestrationInput: 0,
-	orchestrationOutput: 0,
-	orchestrationCacheRead: 0,
-	premiumRequests: 0,
-	cost: 0,
-};
+const usageStatistics = emptyUsageStatistics();
 
 function sessionWithMessages(options: {
 	messages: AgentSession["messages"];

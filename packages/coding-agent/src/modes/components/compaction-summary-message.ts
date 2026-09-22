@@ -93,6 +93,14 @@ export class CompactionSummaryMessageComponent implements Component {
 		});
 	}
 
+	represents(message: CompactionSummaryMessage): boolean {
+		return (
+			this.message.timestamp === message.timestamp &&
+			this.message.summary === message.summary &&
+			this.message.tokensBefore === message.tokensBefore
+		);
+	}
+
 	#label(): string {
 		const name = (this.message.method && COMPACTION_METHOD_LABELS[this.message.method]) || "compacted";
 		let label = `${theme.icon.camera} ${name}`;

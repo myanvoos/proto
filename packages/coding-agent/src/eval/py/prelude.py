@@ -68,6 +68,9 @@ if "__proto_prelude_loaded__" not in globals():
         _proto_display({"application/x-proto-status": {"op": op, **data}}, raw=True)
 
     _MAX_DIFF_CHARS = 32000
+    # Characters alone do not bound the transcript: thousands of short rows stay
+    # under the char ceiling while flooding the scrollback of a single tool card.
+    _MAX_DIFF_ROWS = 400
 
     # --- filesystem mutation tracking ----------------------------------------
     # The host forwards its filesystem-observation ledger before each cell to
@@ -677,20 +680,36 @@ if "__proto_prelude_loaded__" not in globals():
             last_was_change = False
         return rows
 
+    def _omitted_rows_marker(count: int) -> str:
+        return f"… {count} diff {'line' if count == 1 else 'lines'} omitted"
+
     def _capped_numbered_diff(before: str, after: str) -> tuple[list[str], bool]:
-        """Diff rows capped for status events; the cap trims output rows, never skips the diff."""
+        """Diff rows capped for status events by characters and by rows; an
+        over-budget diff keeps its head and its tail, because a whole-file
+        rewrite emits every removal before the first addition and a head-only
+        cut would render that rewrite as a pure deletion."""
         rows = _numbered_diff(before, after)
         total = sum(len(row) + 1 for row in rows)
-        if total <= _MAX_DIFF_CHARS:
+        if total <= _MAX_DIFF_CHARS and len(rows) <= _MAX_DIFF_ROWS:
             return rows, False
-        kept: list[str] = []
-        used = 0
-        for row in rows:
-            if used + len(row) + 1 > _MAX_DIFF_CHARS:
-                break
-            kept.append(row)
-            used += len(row) + 1
-        return kept, True
+        chars_per_side = (_MAX_DIFF_CHARS - len(_omitted_rows_marker(len(rows))) - 1) // 2
+        rows_per_side = (_MAX_DIFF_ROWS - 1) // 2
+        head: list[str] = []
+        head_chars = 0
+        first = 0
+        while first < len(rows) and len(head) < rows_per_side and head_chars + len(rows[first]) + 1 <= chars_per_side:
+            head.append(rows[first])
+            head_chars += len(rows[first]) + 1
+            first += 1
+        tail: list[str] = []
+        tail_chars = 0
+        last = len(rows) - 1
+        while last >= first and len(tail) < rows_per_side and tail_chars + len(rows[last]) + 1 <= chars_per_side:
+            tail.append(rows[last])
+            tail_chars += len(rows[last]) + 1
+            last -= 1
+        tail.reverse()
+        return head + [_omitted_rows_marker(last - first + 1)] + tail, True
 
     def _emit_file_status(op: str, path, *, before: str | None, after: str) -> None:
         """Emit a file-op status event, attaching a capped hunk diff when content changed."""

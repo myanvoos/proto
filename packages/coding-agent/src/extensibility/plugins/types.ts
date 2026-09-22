@@ -123,6 +123,16 @@ export interface InstallOptions {
 	dryRun?: boolean;
 }
 
+export interface LinkOptions {
+	/** Link despite validation problems, reporting them as warnings instead. */
+	force?: boolean;
+}
+
+/** A linked plugin plus the validation problems that were tolerated while linking it. */
+export interface LinkedPlugin extends InstalledPlugin {
+	warnings: string[];
+}
+
 export interface DoctorOptions {
 	fix?: boolean;
 }

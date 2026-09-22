@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { SessionInfo } from "../../session/session-listing";
-import { initThemeSync } from "../theme/theme";
+import { initThemeSync, theme } from "../theme/theme";
 import { SessionSelectorComponent } from "./session-selector";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
@@ -174,4 +174,46 @@ describe("session selector shift-range selection", () => {
 		expect(renderPlain(selector)).toContain("Delete session?");
 		selector.dispose();
 	});
+});
+
+test("session picker retains selected title at short heights and reports unmatched search", () => {
+	const sessions = Array.from({ length: 12 }, (_, index) => makeSession(index));
+	let height = 24;
+	const selector = new SessionSelectorComponent(
+		sessions,
+		() => {},
+		() => {},
+		() => {},
+		{ getTerminalRows: () => height, fillHeight: true },
+	);
+	for (let i = 0; i < 8; i++) selector.handleInput(DOWN);
+	for (height of [24, 1, 2, 3, 4, 6, 10, 24]) {
+		const lines = selector.render(32).map(line => Bun.stripANSI(line));
+		expect(lines.length).toBeLessThanOrEqual(height);
+		if (height >= 3) expect(lines[0]).toContain("Resume Session");
+		expect(lines.some(line => line.startsWith(theme.boxRound.vertical))).toBe(height >= 3);
+		expect(lines.some(line => line.includes("Session 8") && line.includes("›"))).toBe(true);
+		for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(32);
+	}
+	selector.handleInput("\x1b[3~");
+	for (height of [4, 6, 8, 10, 24]) {
+		const lines = selector.render(32).map(line => Bun.stripANSI(line));
+		const text = lines.join("\n");
+		expect(lines.length).toBeLessThanOrEqual(height);
+		// One frame per dialog: a single border/title from the host, the question
+		// and its destructive target inside that body, and one footer.
+		expect(lines[0]).toContain("Resume Session");
+		expect(lines.filter(line => line.includes(theme.boxRound.topLeft))).toHaveLength(1);
+		expect(lines.filter(line => line.includes(theme.boxRound.bottomLeft))).toHaveLength(1);
+		expect(text).toContain("Delete sessi");
+		expect(text.match(/Delete sessi/g)).toHaveLength(1);
+		// Above the single shared row the destructive target stays named.
+		if (height >= 6) expect(text).toContain("Session 8");
+		expect(lines.some(line => line.includes("Yes") && line.includes("›"))).toBe(true);
+		expect(text.match(/Esc back · Enter confirm/g)).toHaveLength(1);
+		expect(text).not.toContain("↑/↓ select · Enter confirm · Esc back");
+	}
+	selector.handleInput("\x1b");
+	selector.handleInput("zzzzzzzz");
+	expect(renderPlain(selector)).toContain("No matching sessions");
 });

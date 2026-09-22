@@ -27,6 +27,7 @@ import { generateWorkerName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { describeDisabledAgent, describeUnknownAgent, resolveSpawnPreflight } from "./spawn-policy";
 import type { AgentDefinition, AgentProgress, SingleResult, StructuredSubagentOutput } from "./types";
+import { recordSubagentRun } from "./usage-rollup";
 import { type NestedRepoPatch, parseIsolationMode } from "./worktree";
 
 export type StructuredSubagentSchemaMode = "permissive" | "strict";
@@ -197,10 +198,11 @@ export async function resolveEffectiveSubagentPolicy(
 		settings: request.session.settings,
 		activeModelPattern: parentActiveModelPattern,
 		fallbackModelPattern: request.session.getModelString?.(),
+		...(request.session.modelRegistry ? { modelRegistry: request.session.modelRegistry } : {}),
 	};
 
-	const { patterns: modelOverride, role: modelRole, bankError } = resolveAgentSpawnModelSelection(modelResolution);
-	if (bankError) throw new StructuredSubagentError("preflight", bankError);
+	const { patterns: modelOverride, role: modelRole, requestError } = resolveAgentSpawnModelSelection(modelResolution);
+	if (requestError) throw new StructuredSubagentError("preflight", requestError);
 	const isolationMode = request.session.settings.get("orchestrator.isolation.mode");
 	const isIsolated = request.isolation?.requested === true;
 	if (isIsolated && isolationMode === "none") {
@@ -481,6 +483,11 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			});
 		}
 		attachStructuredOutputMetadata(result, policy.schema);
+		recordSubagentRun(request.session, result, {
+			agentId: result.id,
+			agent: result.agent,
+			...(request.identity?.label ? { label: request.identity.label } : {}),
+		});
 		requiresRecoveryArtifacts =
 			policy.isIsolated &&
 			(result.exitCode !== 0 || result.error !== undefined || result.aborted === true) &&

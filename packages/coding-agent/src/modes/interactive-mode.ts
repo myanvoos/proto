@@ -36,6 +36,7 @@ import { reset as resetCapabilities } from "../capability";
 import { KeybindingsManager } from "../config/keybindings";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { isSettingsInitialized, Settings, settings } from "../config/settings";
+import { formatConfigIssue } from "../config/settings-normalize";
 import type { TreeFilterMode } from "../config/settings-schema";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
@@ -49,6 +50,7 @@ import type {
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
+import { formatSkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState } from "../goals/state";
@@ -133,7 +135,7 @@ import {
 	SessionObserverRegistry,
 } from "./session-observer-registry";
 import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
-import { runProviderSetupWizard } from "./setup-wizard/lazy";
+import { runSetupWizardScope, type SetupWizardScope } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
 import { clearMermaidCache } from "./theme/mermaid-cache";
 import type { Theme } from "./theme/theme";
@@ -341,7 +343,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#hookStatusRow: HookStatusRow | undefined;
 	readonly #composerShortcuts = new ComposerShortcutsBar();
 
-	attachmentChipsContainer: Container;
+	attachmentChipsBand: AttachmentChipsBand;
 	hookWidgetContainerAbove: Container;
 	hookWidgetContainerBelow: Container;
 	statusLine: StatusLineComponent;
@@ -444,6 +446,8 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#pendingCommandOutputCommands = 0;
 	#pendingSlashCommands: SlashCommand[] = [];
+	#fileSlashCommands: SlashCommand[] = [];
+	#autocompleteBasePath: string | undefined;
 
 	#baseAutocompleteProvider: AutocompleteProvider | undefined;
 
@@ -553,6 +557,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	#mcpPendingServers = new Set<string>();
 	#mcpConnectedServers = new Set<string>();
 	#mcpFailedServers = new Map<string, { error: string; sourcePath?: string }>();
+	// Config errors carry no server name (they name the offending file in their text), so they are
+	// tracked apart from the per-server sets and cleared whenever a connect round starts.
+	#mcpConfigErrors = new Set<string>();
 	readonly #chatHost: ChatBlockHost = { requestRender: () => this.ui.requestRender() };
 
 	constructor(
@@ -662,9 +669,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.hookWidgetContainerAbove = new Container();
 		this.hookWidgetContainerAbove.addChild(new Spacer(1));
 		this.hookWidgetContainerBelow = new Container();
-		this.attachmentChipsContainer = new Container();
-		this.attachmentChipsContainer.addChild(
-			new AttachmentChipsBand(this.editor, this.ui.imageBudget, () => this.ui.requestRender()),
+		this.attachmentChipsBand = new AttachmentChipsBand(this.editor, this.ui.imageBudget, () =>
+			this.ui.requestRender(),
 		);
 
 		this.editor.draftImageLinkMaterializer = images =>
@@ -678,24 +684,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.hideThinkingBlock = settings.get("hideThinkingBlock");
 		this.proseOnlyThinking = settings.get("proseOnlyThinking");
 
-		const hookCommands: SlashCommand[] = (
-			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
-		).map(cmd => ({
-			name: cmd.name,
-			description: cmd.description ?? "(hook command)",
-			getArgumentCompletions: cmd.getArgumentCompletions,
-		}));
-
-		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => ({
-			name: loaded.command.name,
-			description: `${loaded.command.description} (${loaded.source})`,
-		}));
-
-		const skillCommandList = this.#rebuildSkillCommandsFromSession();
-
-		const builtinCommands: SlashCommand[] = [...buildTuiBuiltinSlashCommands({ ctx: this })];
-
-		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
+		this.#rebuildPendingSlashCommands();
 
 		this.#uiHelpers = new UiHelpers(this);
 		this.#sideQuestionController = new SideQuestionController(this);
@@ -713,15 +702,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 		this.session.setPromptDropped?.(prompt => this.#restoreDroppedPrompt(prompt));
 		this.#observerRegistry = new SessionObserverRegistry();
+		// MCP servers connect (and publish their prompt commands) before and after start(); the
+		// subscription resubscribes idempotently, so wiring it here costs nothing and means late
+		// command groups reach slash completion whenever they arrive.
+		this.#subscribeToSessionScopedEvents();
 	}
 
 	#handleMcpConnectionStatusEvent(event: McpConnectionStatusEvent): void {
-		if (this.settings.get("startup.quiet")) return;
+		if (this.settings.get("startup.quiet") && event.type !== "failed" && event.type !== "config-error") return;
 		if (event.type === "connecting") {
 			this.#mcpStatusOrder = [];
 			this.#mcpPendingServers.clear();
 			this.#mcpConnectedServers.clear();
 			this.#mcpFailedServers.clear();
+			this.#mcpConfigErrors.clear();
 			for (const serverName of event.serverNames) {
 				this.#trackMcpStatusServer(serverName);
 				this.#mcpPendingServers.add(serverName);
@@ -731,6 +725,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#mcpPendingServers.delete(event.serverName);
 			this.#mcpFailedServers.delete(event.serverName);
 			this.#mcpConnectedServers.add(event.serverName);
+		} else if (event.type === "config-error") {
+			this.#mcpConfigErrors.add(event.error);
 		} else {
 			this.#trackMcpStatusServer(event.serverName);
 			this.#mcpPendingServers.delete(event.serverName);
@@ -745,6 +741,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			pendingServers: this.#orderedMcpStatusServers(this.#mcpPendingServers),
 			connectedServers: this.#orderedMcpStatusServers(this.#mcpConnectedServers),
 			failedServers: this.#orderedMcpStatusFailures(),
+			configErrors: [...this.#mcpConfigErrors],
 		});
 		if (message) this.showStatus(message);
 	}
@@ -846,7 +843,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.deferredCommandContainer,
 				this.statusContainer,
 				this.#hookStatusRow ?? new Container(),
-				this.attachmentChipsContainer,
+				this.attachmentChipsBand,
 				this.hookWidgetContainerAbove,
 			],
 			[this.#composerShortcuts, this.hookWidgetContainerBelow],
@@ -899,6 +896,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		this.#syncEditorMaxHeight();
+		// stderr is invisible under the TUI, so a rejected or quarantined config has to be announced
+		// here; each issue message already carries its file path and remedy.
+		for (const issue of this.settings.getConfigIssues()) {
+			this.showWarning(formatConfigIssue(issue));
+		}
+		// Same reasoning for skills the loader refused: rejected, shadowed and escaping skills are
+		// invisible otherwise, and the user only notices when the model cannot find them.
+		for (const warning of this.session.skillWarnings) {
+			this.showWarning(formatSkillWarning(warning));
+		}
 		this.isInitialized = true;
 		this.ui.requestRender(true);
 
@@ -994,9 +1001,36 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async refreshSkillState(): Promise<void> {
 		await this.session.refreshSkills();
-		const retainedCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
-		const skillCommands = this.#rebuildSkillCommandsFromSession();
-		this.#pendingSlashCommands = [...retainedCommands, ...skillCommands];
+		this.#rebuildPendingSlashCommands();
+		this.#rebuildAutocompleteProvider();
+	}
+
+	/**
+	 * Recomputes every non-file slash command group. Hook, custom and MCP prompt commands all arrive
+	 * after construction (MCP servers connect asynchronously), so this must be cheap to re-run.
+	 */
+	#rebuildPendingSlashCommands(): void {
+		const hookCommands: SlashCommand[] = (
+			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
+		).map(cmd => ({
+			name: cmd.name,
+			description: cmd.description ?? "(hook command)",
+			getArgumentCompletions: cmd.getArgumentCompletions,
+		}));
+
+		// MCP prompts ride in as custom commands whose `source` is a placeholder ("bundled"), so label
+		// them by where they actually came from — otherwise completion mislabels every MCP prompt.
+		const mcpPromptNames = new Set(this.session.mcpPromptCommands.map(loaded => loaded.command.name));
+		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => ({
+			name: loaded.command.name,
+			description: `${loaded.command.description} (${mcpPromptNames.has(loaded.command.name) ? "mcp" : loaded.source})`,
+		}));
+
+		const skillCommandList = this.#rebuildSkillCommandsFromSession();
+
+		const builtinCommands: SlashCommand[] = [...buildTuiBuiltinSlashCommands({ ctx: this })];
+
+		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
 	}
 
 	async refreshSlashCommandState(cwd?: string, preloaded?: ReadonlyArray<FileSlashCommand>): Promise<void> {
@@ -1004,17 +1038,28 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		const fileCommands = preloaded ? [...preloaded] : await loadSlashCommands({ cwd: basePath });
 		this.fileSlashCommands = new Set(fileCommands.map(cmd => cmd.name));
-		const fileSlashCommands: SlashCommand[] = fileCommands.map(cmd => ({
+		this.#fileSlashCommands = fileCommands.map(cmd => ({
 			name: cmd.name,
 			description: cmd.description,
 		}));
+		this.#autocompleteBasePath = basePath;
+
+		this.#rebuildAutocompleteProvider();
+		this.session.setSlashCommands(fileCommands);
+	}
+
+	/** Rebuilds the completion list from the current command groups; no disk access. */
+	#rebuildAutocompleteProvider(): void {
+		const basePath = this.#autocompleteBasePath;
+		// Before the first refresh there is nothing to rebuild: that refresh builds the provider.
+		if (basePath === undefined) return;
 
 		const reservedNames = new Set<string>();
 		for (const command of this.#pendingSlashCommands) {
 			reservedNames.add(command.name);
 			for (const alias of command.aliases ?? []) reservedNames.add(alias);
 		}
-		for (const command of fileSlashCommands) {
+		for (const command of this.#fileSlashCommands) {
 			reservedNames.add(command.name);
 			for (const alias of command.aliases ?? []) reservedNames.add(alias);
 		}
@@ -1026,11 +1071,10 @@ export class InteractiveMode implements InteractiveModeContext {
 				description: template.description,
 			}));
 		this.#baseAutocompleteProvider = this.#inputController.createAutocompleteProvider(
-			[...this.#pendingSlashCommands, ...fileSlashCommands, ...promptTemplateCommands],
+			[...this.#pendingSlashCommands, ...this.#fileSlashCommands, ...promptTemplateCommands],
 			basePath,
 		);
 		this.#applyAutocompleteProvider();
-		this.session.setSlashCommands(fileCommands);
 	}
 
 	#applyAutocompleteProvider(): void {
@@ -1387,19 +1431,22 @@ export class InteractiveMode implements InteractiveModeContext {
 			const base = this.editor.borderColor;
 			this.editor.borderColor = (str: string) => `\x1b[2m${base(str)}\x1b[22m`;
 		}
+		// Every gutter is four columns wide so switching modes never reflows the draft: bash keeps the
+		// shell's own `$`, python shows the REPL's `>>>` (the same marker the executed block renders
+		// with), and chat keeps the indented `›`.
 		let gutter: string;
 		if (this.isBashMode) {
-			gutter = theme.getBashModeBorderColor()("$");
+			gutter = `  ${theme.getBashModeBorderColor()("$")} `;
 		} else if (this.isPythonMode) {
-			gutter = theme.getPythonModeBorderColor()("›");
+			gutter = `${theme.getPythonModeBorderColor()(">>>")} `;
 		} else {
 			const open = theme.getFgAnsi("borderAccent");
-			gutter = `${open}›\x1b[39m`;
+			gutter = `  ${open}›\x1b[39m `;
 		}
 		if (this.focusedAgentId) {
 			gutter = `\x1b[2m${gutter}\x1b[22m`;
 		}
-		this.editor.setPromptGutter(`  ${gutter} `);
+		this.editor.setPromptGutter(gutter);
 		this.editor.setPromptGutterContinuation(`  ${theme.fg("dim", "┆")} `);
 		this.ui.requestRender();
 	}
@@ -2915,8 +2962,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#selectorController.showResetUsageSelector();
 	}
 
-	showProviderSetup(): Promise<void> {
-		return runProviderSetupWizard(this);
+	showSetupWizard(scope: SetupWizardScope): Promise<void> {
+		return runSetupWizardScope(this, scope);
 	}
 
 	showHookConfirm(title: string, message: string): Promise<boolean> {
@@ -3173,9 +3220,8 @@ export class InteractiveMode implements InteractiveModeContext {
 				void this.#handleGoalSessionEvent(event);
 			}),
 			this.session.subscribeCommandMetadataChanged(() => {
-				const retainedCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
-				const skillCommands = this.#rebuildSkillCommandsFromSession();
-				this.#pendingSlashCommands = [...retainedCommands, ...skillCommands];
+				this.#rebuildPendingSlashCommands();
+				this.#rebuildAutocompleteProvider();
 			}),
 		);
 	}

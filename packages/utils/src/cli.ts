@@ -8,6 +8,64 @@ function startupMarker(text: string): void {
 	} catch {}
 }
 
+/**
+ * `node:util.parseArgs` has no notion of negative numbers: it reads `-42` as a short-option cluster
+ * and `--days -5` as a missing option argument. Every token that can only be a number is swapped for
+ * an opaque placeholder before parsing and restored afterwards, so values and positionals keep the
+ * form the user typed without needing `--`.
+ */
+const NEGATIVE_NUMBER = /^-(?:\d+(?:\.\d+)?|\.\d+)$/;
+const NEGATIVE_PLACEHOLDER = (index: number) => `\u0000neg${index}\u0000`;
+
+function maskNegativeNumbers(
+	argv: string[],
+	shorts: ReadonlySet<string>,
+): { argv: string[]; restore: Map<string, string> } {
+	const restore = new Map<string, string>();
+	let afterDoubleDash = false;
+	const masked = argv.map((token, index) => {
+		if (afterDoubleDash) return token;
+		if (token === "--") {
+			afterDoubleDash = true;
+			return token;
+		}
+		if (!NEGATIVE_NUMBER.test(token)) return token;
+		// A digit declared as a short flag still wins: `-1` stays the flag it was defined as.
+		if (shorts.has(token.slice(1, 2))) return token;
+		const placeholder = NEGATIVE_PLACEHOLDER(index);
+		restore.set(placeholder, token);
+		return placeholder;
+	});
+	return { argv: masked, restore };
+}
+
+function unmaskNegativeNumbers<T>(value: T, restore: Map<string, string>): T {
+	if (restore.size === 0) return value;
+	if (typeof value === "string") return (restore.get(value) ?? value) as T;
+	if (Array.isArray(value)) return value.map(item => unmaskNegativeNumbers(item, restore)) as T;
+	return value;
+}
+
+/** The offending token as the user typed it: Node reports `4` for the cluster `-42`. */
+function findUnknownOptionToken(
+	argv: string[],
+	known: ReadonlySet<string>,
+	shorts: ReadonlySet<string>,
+): string | undefined {
+	for (const token of argv) {
+		if (token === "--") return undefined;
+		if (!token.startsWith("-") || token === "-") continue;
+		if (token.startsWith("--")) {
+			const name = token.slice(2).split("=", 1)[0] ?? "";
+			if (!known.has(name)) return token;
+			continue;
+		}
+		const cluster = token.slice(1);
+		if ([...cluster].some(char => !shorts.has(char))) return token;
+	}
+	return undefined;
+}
+
 export class CliUsageError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -158,18 +216,41 @@ export abstract class Command {
 			options[name] = opt;
 		}
 
+		const shorts = new Set(
+			Object.values(options)
+				.map(option => option.short)
+				.filter((short): short is string => short !== undefined),
+		);
+		const masked = maskNegativeNumbers(this.argv, shorts);
+
 		const { values: rawValues, positionals } = (() => {
 			try {
 				return nodeParseArgs({
-					args: this.argv,
+					args: masked.argv,
 					options,
 					allowPositionals: true,
 					strict,
 				});
 			} catch (error) {
-				throw new CliUsageError(error instanceof Error ? error.message : String(error));
+				const message = error instanceof Error ? error.message : String(error);
+				const unknown =
+					(error as { code?: string }).code === "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+						? findUnknownOptionToken(masked.argv, new Set(Object.keys(options)), shorts)
+						: undefined;
+				if (unknown === undefined) throw new CliUsageError(message);
+				// Node names the cluster character and mis-quotes it in its own suggestion; quote the
+				// token the user actually typed, so following the advice literally does the right thing.
+				const command = [this.config.bin, ...this.config.commands.keys()].join(" ");
+				const rest = this.argv.filter(token => token !== unknown && token !== "--");
+				throw new CliUsageError(
+					`Unknown option '${unknown}'. If it is a value and not a flag, pass it after '--':\n  ${command} ${[...rest, "--", JSON.stringify(unknown)].join(" ")}`,
+				);
 			}
 		})();
+		for (const key of Object.keys(rawValues)) {
+			rawValues[key] = unmaskNegativeNumbers(rawValues[key], masked.restore);
+		}
+		const restoredPositionals = positionals.map(value => unmaskNegativeNumbers(value, masked.restore));
 
 		const flags: Record<string, unknown> = {};
 		for (const [name, desc] of Object.entries(flagDefs)) {
@@ -209,11 +290,11 @@ export abstract class Command {
 		let posIdx = 0;
 		for (const [argName, desc] of Object.entries(argDefs)) {
 			if (desc.multiple) {
-				const val = positionals.slice(posIdx);
+				const val = restoredPositionals.slice(posIdx);
 				args[argName] = val.length > 0 ? val : undefined;
-				posIdx = positionals.length;
+				posIdx = restoredPositionals.length;
 			} else {
-				const val = positionals[posIdx];
+				const val = restoredPositionals[posIdx];
 				args[argName] = val;
 				posIdx++;
 			}
@@ -232,7 +313,17 @@ export abstract class Command {
 			}
 		}
 
-		return { flags, args, argv: positionals } as never;
+		// Positionals past the declared arguments used to vanish, so `models find a b c` searched for
+		// "a" and reported success. A command that wants the tail declares a `multiple` arg or opts
+		// out with `strict = false`.
+		if (strict && posIdx < restoredPositionals.length) {
+			const extra = restoredPositionals.slice(posIdx);
+			throw new CliUsageError(
+				`Unexpected argument${extra.length === 1 ? "" : "s"}: ${extra.map(value => JSON.stringify(value)).join(", ")}`,
+			);
+		}
+
+		return { flags, args, argv: restoredPositionals } as never;
 	}
 }
 
@@ -358,6 +449,31 @@ function findEntry(commands: CommandEntry[], id: string): CommandEntry | undefin
 	return commands.find(e => e.name === id) ?? commands.find(e => e.aliases?.includes(id));
 }
 
+/** Env var that turns the user-facing error report back into a full stack trace. */
+const DEBUG_ERRORS_ENV = "PI_DEBUG_ERRORS";
+
+/**
+ * Render a thrown value the way a CLI user needs it: the message first, the cause chain under it,
+ * and the stack only when `PI_DEBUG_ERRORS` is set.
+ */
+export function formatCliError(error: unknown): string {
+	if (!(error instanceof Error)) return `error: ${String(error)}\n`;
+	const lines = [`error: ${error.message || error.name}`];
+	const seen = new Set<unknown>([error]);
+	let cause: unknown = error.cause;
+	while (cause instanceof Error && !seen.has(cause)) {
+		seen.add(cause);
+		lines.push(`  caused by: ${cause.message || cause.name}`);
+		cause = cause.cause;
+	}
+	if (process.env[DEBUG_ERRORS_ENV] && error.stack) {
+		lines.push(error.stack);
+	} else {
+		lines.push(`Run with ${DEBUG_ERRORS_ENV}=1 for a stack trace.`);
+	}
+	return `${lines.join("\n")}\n`;
+}
+
 export async function run(opts: RunOptions): Promise<void> {
 	const { bin, version, argv } = opts;
 
@@ -424,7 +540,10 @@ export async function run(opts: RunOptions): Promise<void> {
 			process.exitCode = 1;
 			return;
 		}
-		throw error;
+		// Anything else is a failure the user still has to read: report it as a message, never as a
+		// source dump from the default handler.
+		process.stderr.write(formatCliError(error));
+		process.exitCode = 1;
 	}
 }
 

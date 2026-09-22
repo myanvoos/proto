@@ -1,5 +1,68 @@
-import { type Component, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { type Component, Editor, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { theme } from "../theme/theme";
+
+/** Allocate scarce rows to the focused body before optional dialog chrome. */
+export function getDialogViewport(height: number, requestedHeaderRows = 0) {
+	const rows = Number.isFinite(height) ? Math.max(1, Math.trunc(height)) : 40;
+	const titleRows = rows >= 3 ? 1 : 0;
+	const bottomRows = rows >= 3 ? 1 : 0;
+	const footerRows = rows >= 4 ? 1 : 0;
+	const remaining = rows - titleRows - bottomRows - footerRows;
+	const headerRows = remaining - requestedHeaderRows >= 3 ? requestedHeaderRows : 0;
+	const dividerRows = remaining - headerRows >= 4 ? 1 : 0;
+	return {
+		titleRows,
+		headerRows,
+		bodyRows: remaining - headerRows - dividerRows,
+		dividerRows,
+		footerRows,
+		bottomRows,
+	};
+}
+
+/**
+ * Physical rows a wrapping tab strip may take inside a dialog. Tab labels are
+ * text, so a narrow terminal wraps the strip over many rows; the strip scrolls
+ * inside this budget with the active tab visible instead of either eating the
+ * dialog or being dropped whole. The body keeps its three-row floor, and the
+ * strip never claims more than a third of the dialog, which is what makes
+ * mid-height terminals usable rather than a wall of tabs.
+ */
+export function getTabStripRows(viewport: { bodyRows: number; dividerRows: number }, chromeRows = 1): number {
+	const inner = viewport.bodyRows + viewport.dividerRows;
+	return Math.max(1, Math.min(Math.ceil(inner / 3), inner - 3 - chromeRows));
+}
+
+/** Keep a form's focused control visible; descriptions and previews yield first. */
+export function renderDialogContent(
+	children: readonly Component[],
+	active: Component,
+	width: number,
+	height: number,
+): { lines: string[]; activeRow: number } {
+	const budget = Math.max(1, Math.trunc(height));
+	const index = children.indexOf(active);
+	const before = children.slice(0, Math.max(0, index)).flatMap(child => [...child.render(width)]);
+	const after = children.slice(index + 1).flatMap(child => [...child.render(width)]);
+	// Reserve a title when possible, but never displace the input/selected row.
+	const titleRows = before.length > 0 && budget > 1 ? 1 : 0;
+	const hintRows = after.length > 0 && budget > 2 ? 1 : 0;
+	const activeRows = Math.max(1, budget - titleRows - hintRows);
+	if (active instanceof Editor) active.setViewportHeight(activeRows);
+	else active.setMaxHeight?.(activeRows);
+	const activeLines = [...active.render(width)].slice(0, budget - titleRows);
+	const spare = budget - activeLines.length;
+	const beforeCount = Math.min(before.length, Math.max(titleRows, spare - Math.min(after.length, hintRows)));
+	const afterCount = Math.max(0, spare - beforeCount);
+	return {
+		lines: [
+			...before.slice(0, beforeCount),
+			...activeLines,
+			...(afterCount >= after.length ? after : after.filter(line => line.trim() !== "").slice(0, afterCount)),
+		],
+		activeRow: beforeCount,
+	};
+}
 
 export function fit(text: string, width: number): string {
 	if (width <= 0) return "";
@@ -43,7 +106,8 @@ export function bottomBorder(width: number): string {
 	return paint(box.bottomLeft + box.horizontal.repeat(Math.max(0, width - 2)) + box.bottomRight);
 }
 
-export function row(content: string, width: number): string {
+export function row(content: string, width: number, framed = true): string {
+	if (!framed) return fit(content, width);
 	const box = theme.boxRound;
 	if (width <= 0) return "";
 	if (width === 1) return paint(box.vertical);
@@ -125,6 +189,21 @@ export class PanelDivider implements Component {
 
 const NO_LINES: readonly string[] = [];
 
+/** Leading, trailing and repeated blank rows are decoration, never content. */
+export function trimBlankEdges(lines: readonly string[]): string[] {
+	let start = 0;
+	let end = lines.length;
+	while (start < end && (lines[start] ?? "").trim() === "") start++;
+	while (end > start && (lines[end - 1] ?? "").trim() === "") end--;
+	const result: string[] = [];
+	for (const line of lines.slice(start, end)) {
+		const blank = line.trim() === "";
+		if (blank && (result.at(-1) ?? "x").trim() === "") continue;
+		result.push(line);
+	}
+	return result;
+}
+
 interface OverlayPanelMemo {
 	width: number;
 	title: string;
@@ -141,6 +220,27 @@ export class OverlayPanel implements Component {
 	children: Component[] = [];
 	#title: string;
 	#memo: OverlayPanelMemo | undefined;
+	#maxHeight = Number.POSITIVE_INFINITY;
+	#framed = true;
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(1, Math.trunc(rows));
+		this.#memo = undefined;
+	}
+
+	/**
+	 * A panel embedded in an already-framed host draws no rails of its own: the
+	 * host owns the single border and footer while the child keeps its identity.
+	 */
+	setFramed(framed: boolean): void {
+		if (this.#framed === framed) return;
+		this.#framed = framed;
+		this.#memo = undefined;
+	}
+
+	get framed(): boolean {
+		return this.#framed;
+	}
 
 	constructor(title = "") {
 		this.#title = collapseTitle(title);
@@ -198,7 +298,41 @@ export class OverlayPanel implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		const innerWidth = Math.max(1, width - 4);
+		let innerWidth = Math.max(1, width - 4);
+		if (!this.#framed) {
+			innerWidth = Math.max(1, width);
+			const rows = Number.isFinite(this.#maxHeight) ? this.#maxHeight : Number.POSITIVE_INFINITY;
+			// With a single row the focused control outranks the panel's own title.
+			const title = this.#title && rows >= 2 ? [theme.bold(theme.fg("accent", this.#title))] : [];
+			const budget = Math.max(1, (Number.isFinite(rows) ? rows : 0) - title.length);
+			const active = this.children.find(child => child.handleInput !== undefined);
+			const rendered = active
+				? renderDialogContent(this.children, active, innerWidth, budget).lines
+				: this.renderContent(innerWidth);
+			// Decorative spacing is the first thing to go: an embedded panel must
+			// never spend one of a handful of rows on a blank line.
+			const trimmed = trimBlankEdges(rendered);
+			const content = trimmed.length > budget ? trimmed.filter(line => line.trim() !== "") : trimmed;
+			return [...title, ...(Number.isFinite(this.#maxHeight) ? content.slice(0, budget) : content)].map(line =>
+				row(line, width, false),
+			);
+		}
+		if (Number.isFinite(this.#maxHeight)) {
+			const layout = getDialogViewport(this.#maxHeight);
+			innerWidth = Math.max(1, layout.titleRows ? width - 4 : width);
+			const bodyRows = layout.bodyRows + layout.footerRows + layout.dividerRows;
+			const active = this.children.find(child => child.handleInput !== undefined);
+			const content = active
+				? renderDialogContent(this.children, active, innerWidth, bodyRows).lines
+				: this.renderContent(innerWidth)
+						.filter(line => line.trim() !== "")
+						.slice(0, bodyRows);
+			return [
+				...(layout.titleRows ? [topBorder(width, this.#title)] : []),
+				...content.map(line => row(line, width, layout.titleRows > 0)),
+				...(layout.bottomRows ? [bottomBorder(width)] : []),
+			];
+		}
 
 		const childLines = this.children.map(child =>
 			child instanceof PanelDivider ? NO_LINES : child.render(innerWidth),

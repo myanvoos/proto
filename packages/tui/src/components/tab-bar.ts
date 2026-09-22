@@ -34,6 +34,7 @@ export class TabBar implements Component {
 	#hoverTabId: string | null = null;
 
 	#hitZones: { line: number; start: number; end: number; index: number }[] = [];
+	#maxRows = Number.POSITIVE_INFINITY;
 
 	onTabChange?: (tab: Tab, index: number) => void;
 
@@ -60,6 +61,11 @@ export class TabBar implements Component {
 			this.#activeIndex = newIndex;
 			this.onTabChange?.(this.#tabs[this.#activeIndex], this.#activeIndex);
 		}
+	}
+
+	/** Physical-row budget: a taller strip scrolls so the active tab stays visible. */
+	setMaxHeight(rows: number): void {
+		this.#maxRows = Math.max(1, Math.trunc(rows));
 	}
 
 	setTheme(theme: TabBarTheme): void {
@@ -208,6 +214,13 @@ export class TabBar implements Component {
 				currentWidth = 0;
 			}
 
+			// Gaps separate tabs; at the start of a line they read as stray
+			// indentation and push the first tab out of alignment with the rows
+			// above it.
+			if (currentWidth === 0 && chunk.tabIndex === undefined && chunk.text.trim() === "") {
+				continue;
+			}
+
 			if (chunk.tabIndex !== undefined) {
 				this.#hitZones.push({
 					line: lines.length,
@@ -222,6 +235,16 @@ export class TabBar implements Component {
 
 		if (currentLine) {
 			lines.push(currentLine);
+		}
+
+		if (lines.length > this.#maxRows) {
+			const activeLine = this.#hitZones.find(zone => zone.index === this.#activeIndex)?.line ?? 0;
+			const start = Math.max(0, Math.min(activeLine - Math.floor(this.#maxRows / 2), lines.length - this.#maxRows));
+			const end = start + this.#maxRows;
+			this.#hitZones = this.#hitZones
+				.filter(zone => zone.line >= start && zone.line < end)
+				.map(zone => ({ ...zone, line: zone.line - start }));
+			return lines.slice(start, end);
 		}
 
 		return lines.length > 0 ? lines : [""];

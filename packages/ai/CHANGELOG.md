@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The repetition guard no longer discards turns that contain ordinary repeated code. Six identical `expect(...)` lines, a block of duplicate CSV rows, or a long padded token used to trip it; the bar is now a large repeated span rather than a handful of repeats, and legitimate duplication survives while runaway loops are still caught.
+- Repetition detection is stride-independent: the exact-cycle scan runs at fixed stream offsets instead of every 128 characters of whichever delta arrived, so the same response is judged the same way however the provider chunked it. Detection previously depended on network chunking, both missing real loops and flagging innocent text.
+- Leaked-thinking stream filtering now honors authoritative text replacements and terminal metadata instead of retaining stale drafts, while preserving thinking-tag filtering and remapping in-flight tool indices.
+- An OpenAI-compatible endpoint that answers 200 with a body that is not a stream (for example an HTML error page from a wrong `baseUrl`) now fails with the status and content-type instead of being recorded as a successful empty turn.
+
 ## [18.1.23] - 2026-09-20
 
 ### Fixed

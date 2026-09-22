@@ -726,3 +726,28 @@ test("a Python transport write failure cannot be reported as a successful cell",
 		await kernel.shutdown();
 	}
 });
+
+test("a truncated whole-file rewrite from Python reports both sides of the diff", async () => {
+	const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+	if (!availability.ok) return;
+
+	using tempDir = TempDir.createSync("@python-diff-cap-");
+	const target = path.join(tempDir.path(), "rewrite.py");
+	await Bun.write(target, Array.from({ length: 1200 }, (_, index) => `before${index} = ${index}`).join("\n"));
+	const events: { op: string; path?: string; diff?: string; diffTruncated?: boolean }[] = [];
+
+	await executePython(
+		`from pathlib import Path\nPath(${JSON.stringify(target)}).write_text("\\n".join(f"after{i} = {i * 2}" for i in range(1200)))`,
+		{ cwd: tempDir.path(), kernelMode: "per-call", onStatus: event => events.push(event) },
+	);
+
+	const event = events.find(candidate => candidate.path === target && typeof candidate.diff === "string");
+	expect(event?.diffTruncated).toBe(true);
+	const rows = (event?.diff ?? "").split("\n");
+	// The Python prelude keeps its own copy of the cap; it must trim like the
+	// JS tracker, keeping head and tail so a rewrite is never shown as a delete.
+	expect(rows.filter(row => row.startsWith("-")).length).toBeGreaterThan(0);
+	expect(rows.filter(row => row.startsWith("+")).length).toBeGreaterThan(0);
+	expect(rows.filter(row => row.includes("diff lines omitted"))).toHaveLength(1);
+	expect(rows.length).toBeLessThanOrEqual(400);
+}, 30_000);

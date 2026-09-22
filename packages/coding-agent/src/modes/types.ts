@@ -37,6 +37,7 @@ import type { TranscriptContainer } from "./components/transcript-container";
 import type { EventController } from "./controllers/event-controller";
 import type { ScheduledQueueController } from "./controllers/scheduled-queue-controller";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
+import type { SetupWizardScope } from "./setup-wizard/lazy";
 import type { Theme } from "./theme/theme";
 
 export type CompactionQueuedMessage = {
@@ -352,7 +353,7 @@ export interface InteractiveModeContext {
 	handleSessionDeleteCommand(): Promise<void>;
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void>;
 	showResetUsageSelector(): Promise<void>;
-	showProviderSetup(): Promise<void>;
+	showSetupWizard(scope: SetupWizardScope): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showAgentFleet(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
 	resetObserverRegistry(): void;

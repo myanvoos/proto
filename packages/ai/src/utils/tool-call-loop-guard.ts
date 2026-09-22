@@ -8,6 +8,8 @@ const ARGUMENT_SUMMARY_LIMIT = 400;
 export interface ToolCallLoopGuardOptions {
 	readonly threshold: number;
 	readonly exemptTools: readonly string[];
+	/** Repeats after which the run is stopped outright; 0 disables the ceiling. */
+	readonly hardLimit?: number;
 }
 
 export interface ToolCallLoopTurn {
@@ -17,8 +19,11 @@ export interface ToolCallLoopTurn {
 
 export interface RepeatedToolCallDetection {
 	readonly kind: "repeated_tool_call";
+	/** `steer` asks the model to break the loop; `stop` means the run must not continue. */
+	readonly severity: "steer" | "stop";
 	readonly toolName: string;
 	readonly count: number;
+	readonly hardLimit: number;
 	readonly resultSummary: string;
 	readonly argumentsSummary: string;
 }
@@ -63,12 +68,15 @@ function summarizeToolResult(toolResults: readonly ToolResultMessage[], toolCall
 
 export class ToolCallLoopGuard {
 	#threshold: number;
+	#hardLimit: number;
 	#exemptTools: ReadonlySet<string>;
 	#lastHash: string | undefined;
 	#count = 0;
 
 	constructor(options: ToolCallLoopGuardOptions) {
 		this.#threshold = Math.max(1, Math.trunc(options.threshold));
+		const hardLimit = Math.trunc(options.hardLimit ?? 0);
+		this.#hardLimit = hardLimit > 0 ? Math.max(hardLimit, this.#threshold) : 0;
 		this.#exemptTools = new Set(options.exemptTools);
 	}
 
@@ -90,12 +98,16 @@ export class ToolCallLoopGuard {
 			this.#count = 1;
 		}
 
-		if (this.#count !== this.#threshold) return null;
+		// Reporting only at the threshold left every later repeat unguarded, which is
+		// how one bad tool call turned into thousands of provider requests.
+		if (this.#count < this.#threshold) return null;
 		const reportCall = toolCalls.find(toolCall => !this.#exemptTools.has(toolCall.name)) ?? toolCalls[0]!;
 		return {
 			kind: "repeated_tool_call",
+			severity: this.#hardLimit > 0 && this.#count >= this.#hardLimit ? "stop" : "steer",
 			toolName: reportCall.name,
 			count: this.#count,
+			hardLimit: this.#hardLimit,
 			resultSummary: summarizeToolResult(turn.toolResults, reportCall.id),
 			argumentsSummary: summarizeText(
 				JSON.stringify(canonicalizeToolCallValue(reportCall.arguments)),

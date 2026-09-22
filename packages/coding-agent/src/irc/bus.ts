@@ -76,7 +76,7 @@ export class IrcBus {
 			return {
 				to: message.to,
 				outcome: "rejected",
-				error: `Unknown agent "${message.to}" — check \`irc list\` for live peers.`,
+				error: `Unknown agent "${message.to}" — run fleet with op:"list" for live peers.`,
 			};
 		}
 		if (ref.status === "aborted") {

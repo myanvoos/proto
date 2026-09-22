@@ -25,6 +25,8 @@ import type {
 	DoctorOptions,
 	InstalledPlugin,
 	InstallOptions,
+	LinkedPlugin,
+	LinkOptions,
 	PluginManifest,
 	PluginRuntimeConfig,
 	PluginSettingSchema,
@@ -101,6 +103,13 @@ interface RuntimePackageJson {
 	version: string;
 	proto?: PluginManifest;
 	pi?: PluginManifest;
+}
+
+const MANIFEST_ENTRY_KEYS = ["tools", "hooks", "commands", "extensions"] as const;
+type PluginManifestEntryKey = (typeof MANIFEST_ENTRY_KEYS)[number];
+
+function describeMissingEntry(missing: { key: PluginManifestEntryKey; entry: string }): string {
+	return `${missing.key} entry "${missing.entry}" not found`;
 }
 
 export class PluginManager {
@@ -348,10 +357,47 @@ export class PluginManager {
 		await fs.promises.cp(snapshot.backupPath, snapshot.packagePath, { recursive: true, verbatimSymlinks: true });
 	}
 
-	async #validateInstalledExtensions(plugin: InstalledPlugin): Promise<void> {
+	#readManifest(pkg: { version: string; proto?: PluginManifest; pi?: PluginManifest }): PluginManifest {
+		const manifest: PluginManifest = pkg.proto || pkg.pi || { version: pkg.version };
+		manifest.version = pkg.version;
+		return manifest;
+	}
+
+	/**
+	 * Everything `doctor` would flag about a plugin on disk: declared tools/hooks/commands
+	 * entries with no file behind them, plus extensions that are missing, throw, or do not
+	 * parse. Extensions come from the loader so the message matches an npm install's.
+	 */
+	/**
+	 * Declared entries with no file behind them. `doctor` and the installers share this so a
+	 * plugin can never pass one and fail the other, and so a new manifest key is checked by
+	 * both the moment the resolver knows about it.
+	 */
+	#missingManifestEntries(
+		plugin: InstalledPlugin,
+		keys: readonly PluginManifestEntryKey[],
+	): Array<{ key: PluginManifestEntryKey; entry: string }> {
+		const missing: Array<{ key: PluginManifestEntryKey; entry: string }> = [];
+		for (const key of keys) {
+			for (const { entry, resolvedPath } of resolvePluginManifestEntries(plugin, key)) {
+				if (resolvedPath === null) missing.push({ key, entry });
+			}
+		}
+		return missing;
+	}
+
+	async #collectPluginProblems(plugin: InstalledPlugin): Promise<string[]> {
+		// Extensions are covered by the loader below, which also reports entries that exist
+		// but throw or do not parse.
+		const problems = this.#missingManifestEntries(plugin, ["tools", "hooks", "commands"]).map(describeMissingEntry);
+		problems.push(...(await this.#collectExtensionProblems(plugin)));
+		return problems;
+	}
+
+	async #collectExtensionProblems(plugin: InstalledPlugin): Promise<string[]> {
 		const declaredEntries = resolvePluginManifestEntries(plugin, "extensions");
 		if (declaredEntries.length === 0) {
-			return;
+			return [];
 		}
 
 		const errors: string[] = [];
@@ -371,6 +417,11 @@ export class PluginManager {
 			}
 		}
 
+		return errors;
+	}
+
+	async #validateInstalledExtensions(plugin: InstalledPlugin): Promise<void> {
+		const errors = await this.#collectExtensionProblems(plugin);
 		if (errors.length > 0) {
 			throw new Error(`Plugin ${plugin.name} extension validation failed:\n${errors.join("\n")}`);
 		}
@@ -558,6 +609,15 @@ export class PluginManager {
 		validatePackageName(name);
 		await this.#ensurePackageJson();
 
+		// `bun uninstall` exits 0 for a package that was never a dependency, so without this
+		// check an unknown name reported success and quietly removed nothing, while enable
+		// and disable both refuse the same name.
+		const installedConfig = await this.#ensureConfigLoaded();
+		const installedDeps = await this.#readDeps(getPluginsPackageJson());
+		if (!this.#collectInstalledNames(installedDeps, installedConfig).has(name)) {
+			throw new Error(`Plugin ${name} is not installed`);
+		}
+
 		const proc = Bun.spawn(["bun", "uninstall", name], {
 			cwd: getPluginsDir(),
 			stdin: "ignore",
@@ -674,7 +734,7 @@ export class PluginManager {
 		}
 	}
 
-	async link(localPath: string): Promise<InstalledPlugin> {
+	async link(localPath: string, options: LinkOptions = {}): Promise<LinkedPlugin> {
 		const absolutePath = path.resolve(this.#cwd, localPath);
 
 		const pkgFilePath = path.join(absolutePath, "package.json");
@@ -686,6 +746,29 @@ export class PluginManager {
 			throw err;
 		}
 		assertNpmPackageName(pkg.name);
+
+		// Linking runs the same checks an npm install does, before anything is committed:
+		// a plugin whose entries are missing, throw, or do not parse used to link cleanly and
+		// only break at session start.
+		const warnings: string[] = [];
+		const candidate: InstalledPlugin = {
+			name: pkg.name,
+			version: pkg.version,
+			path: absolutePath,
+			manifest: this.#readManifest(pkg),
+			enabledFeatures: null,
+			enabled: true,
+		};
+		if (!pkg.proto && !pkg.pi) {
+			warnings.push(`No proto/pi manifest in ${pkgFilePath} (not a proto plugin)`);
+		}
+		const problems = await this.#collectPluginProblems(candidate);
+		if (problems.length > 0) {
+			if (!options.force) {
+				throw new Error(`Plugin ${pkg.name} validation failed:\n${problems.join("\n")}`);
+			}
+			warnings.push(...problems);
+		}
 
 		await this.#ensurePluginsDir();
 
@@ -723,6 +806,7 @@ export class PluginManager {
 			manifest,
 			enabledFeatures: null,
 			enabled: true,
+			warnings,
 		};
 	}
 
@@ -886,42 +970,25 @@ export class PluginManager {
 					: `v${pluginPkg.version} - No proto/pi manifest (not an proto plugin)`,
 			});
 
-			if (manifest?.tools) {
-				const toolsPath = path.join(pluginPath, manifest.tools);
-				if (!fs.existsSync(toolsPath)) {
-					checks.push({
-						name: `plugin:${name}:tools`,
-						status: "error",
-						message: `Tools entry "${manifest.tools}" not found`,
-					});
-				}
-			}
-
-			if (manifest?.hooks) {
-				const hooksPath = path.join(pluginPath, manifest.hooks);
-				if (!fs.existsSync(hooksPath)) {
-					checks.push({
-						name: `plugin:${name}:hooks`,
-						status: "error",
-						message: `Hooks entry "${manifest.hooks}" not found`,
-					});
-				}
-			}
-
-			if (manifest?.extensions) {
-				for (const extensionPath of manifest.extensions) {
-					const resolvedExtensionPath = path.join(pluginPath, extensionPath);
-					if (!fs.existsSync(resolvedExtensionPath)) {
-						checks.push({
-							name: `plugin:${name}:extension:${extensionPath}`,
-							status: "error",
-							message: `Extension entry "${extensionPath}" not found`,
-						});
-					}
-				}
-			}
-
 			const runtimeState = config.plugins[name];
+			for (const missing of this.#missingManifestEntries(
+				{
+					name,
+					version: pluginPkg.version,
+					path: pluginPath,
+					manifest: manifest ?? { version: pluginPkg.version },
+					enabledFeatures: runtimeState?.enabledFeatures ?? null,
+					enabled: runtimeState?.enabled ?? true,
+				},
+				MANIFEST_ENTRY_KEYS,
+			)) {
+				checks.push({
+					name: `plugin:${name}:${missing.key}:${missing.entry}`,
+					status: "error",
+					message: describeMissingEntry(missing),
+				});
+			}
+
 			if (runtimeState?.enabledFeatures && manifest?.features) {
 				for (const feat of runtimeState.enabledFeatures) {
 					if (!(feat in manifest.features)) {

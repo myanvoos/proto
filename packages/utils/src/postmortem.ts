@@ -245,8 +245,12 @@ if (isMainThread) {
 				logger.warn("Ignoring EPIPE from worker IPC send; optional subsystem will self-recover", { err });
 				return;
 			}
-			if (brokenPipeSource === "stdio-write" && stdioDisconnectRegistrations > 0) {
-				logger.warn("Stdio peer disconnected; shutting down gracefully", { err });
+			if (brokenPipeSource === "stdio-write") {
+				// `proto … | head` closes the pipe mid-write; that is the reader's choice, not a fault.
+				logger.warn("Stdio peer disconnected; shutting down gracefully", {
+					err,
+					registered: stdioDisconnectRegistrations > 0,
+				});
 				await runQuit(0, "native");
 				return;
 			}

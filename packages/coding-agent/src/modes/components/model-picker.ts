@@ -12,7 +12,7 @@ import {
 	sortModelItems,
 } from "./model-browser";
 import type { ScopedModelItem } from "./model-hub";
-import { bottomBorder, row, topBorder } from "./overlay-box";
+import { bottomBorder, getDialogViewport, row, topBorder } from "./overlay-box";
 import { resolveSegmentPalette } from "./segment-track";
 
 interface ModelPickerCallbacks {
@@ -197,24 +197,37 @@ export class ModelPickerComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const termRows = Math.max(16, this.#tui.terminal?.rows || process.stdout.rows || 40);
-		const listBudget = Math.floor(termRows * HEIGHT_FRACTION) - CHROME_ROWS - BROWSER_FRAME_ROWS;
-		this.#browser.setMaxVisible(Math.max(MIN_VISIBLE, listBudget));
+		const termRows = this.#tui.terminal?.rows || process.stdout.rows || 40;
+		const preferredHeight = Math.max(
+			CHROME_ROWS + BROWSER_FRAME_ROWS + MIN_VISIBLE,
+			Math.floor(termRows * HEIGHT_FRACTION),
+		);
+		const viewport = getDialogViewport(Math.min(termRows, preferredHeight), 1);
 
-		const inner = Math.max(1, width - 4);
+		const inner = Math.max(1, viewport.titleRows ? width - 4 : width);
 		const status = this.#configError
 			? theme.fg("error", ` ${this.#configError}`)
 			: theme.fg("muted", ` ${this.#roleMode ? QUICK_ROLE_STATUS_HINT : STATUS_HINT}`);
 
 		const out: string[] = [];
-		out.push(topBorder(width, "Switch Model"));
-		out.push(row(status, width));
+		if (viewport.titleRows) out.push(topBorder(width, "Switch Model"));
+		if (viewport.headerRows) out.push(row(status, width, viewport.titleRows > 0));
 		this.#bodyRowStart = out.length;
-		for (const line of this.#browser.render(inner)) {
-			out.push(row(line, width));
+		for (const line of this.#browser.render(inner, viewport.bodyRows + viewport.dividerRows)) {
+			out.push(row(line, width, viewport.titleRows > 0));
 		}
-		out.push(row(theme.fg("dim", this.#roleMode ? QUICK_ROLE_FOOTER_HINT : FOOTER_HINT), width));
-		out.push(bottomBorder(width));
+		if (viewport.footerRows)
+			out.push(
+				row(
+					theme.fg(
+						"dim",
+						width < 48 ? "Enter use · Esc close" : this.#roleMode ? QUICK_ROLE_FOOTER_HINT : FOOTER_HINT,
+					),
+					width,
+					viewport.titleRows > 0,
+				),
+			);
+		if (viewport.bottomRows) out.push(bottomBorder(width));
 		return out;
 	}
 }

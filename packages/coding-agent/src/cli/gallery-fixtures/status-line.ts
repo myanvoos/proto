@@ -1,6 +1,7 @@
 import { StatusLineComponent } from "../../modes/components/status-line";
 import { theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
+import { emptyUsageStatistics } from "../../session/session-entries";
 import type { GalleryFixture, GalleryFixtureState } from "./types";
 
 const GAUGE_WINDOW = 200_000;
@@ -25,18 +26,7 @@ function fakeGaugeSession(tokens: number): AgentSession {
 		state: { messages, model },
 		settings: undefined,
 		sessionManager: {
-			getUsageStatistics: () => ({
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				orchestrationInput: 0,
-				orchestrationOutput: 0,
-				orchestrationCacheRead: 0,
-				premiumRequests: 0,
-				cost: 0,
-			}),
+			getUsageStatistics: () => emptyUsageStatistics(),
 			getSessionName: () => "gallery",
 		},
 		getAsyncJobSnapshot: () => ({ running: [] }),

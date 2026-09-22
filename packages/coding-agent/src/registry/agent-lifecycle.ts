@@ -16,7 +16,8 @@ export type AgentReviver = (expected: AgentRef) => Promise<AgentSession>;
 
 const AGENT_RELEASE_GRACE_MS = 5000;
 
-async function persistAgentTombstone(sessionFile: string): Promise<void> {
+/** Marks a stopped agent so its row renders as stopped rather than failed after the session ends. */
+export async function persistAgentTombstone(sessionFile: string): Promise<void> {
 	try {
 		await fs.writeFile(getAgentTombstonePath(sessionFile), "", { encoding: "utf8", flag: "wx", mode: 0o600 });
 	} catch (error) {

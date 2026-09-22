@@ -6,7 +6,7 @@ initThemeSync();
 const ANSI = /\u001b\[[0-9;]*m/g;
 
 function plainLines(value: unknown, maxDepth = 4, maxLines = 50): string[] {
-	return renderJsonTreeLines(value, theme, maxDepth, maxLines, 200).lines.map(line => line.replace(ANSI, ""));
+	return renderJsonTreeLines(value, theme, maxDepth, maxLines, 200, 200).lines.map(line => line.replace(ANSI, ""));
 }
 
 test("top-level object keys get branch/last connectors like nested levels", () => {
@@ -31,7 +31,7 @@ test("single-key objects and arrays keep their tree shape", () => {
 test("sanitizes multiline values and keys before tree and inline rendering", () => {
 	const hostileKey = "key\x1b]0;PWN\x07tail";
 	const value = `first\nsecond\x1b]0;VALUE\x07visible\u009b\tend`;
-	const tree = renderJsonTreeLines({ [hostileKey]: value }, theme, 4, 50, 200).lines;
+	const tree = renderJsonTreeLines({ [hostileKey]: value }, theme, 4, 50, 200, 200).lines;
 	const inline = formatArgsInline({ [hostileKey]: value }, 200);
 
 	for (const rendered of [...tree, inline]) {
@@ -42,4 +42,22 @@ test("sanitizes multiline values and keys before tree and inline rendering", () 
 	expect(tree.join("\n")).toContain("visible");
 	expect(inline).toContain("keytail=");
 	expect(inline).toContain("visible");
+});
+
+test("narrow multiline Unicode values retain content and closing quotes across physical rows", () => {
+	const tree = renderJsonTreeLines({ key: "日本語😀\ncontinuation" }, theme, 4, 50, 200, 8);
+	const visible = tree.lines
+		.map(line => line.replace(ANSI, ""))
+		.join("")
+		.replaceAll(" ", "");
+	expect(visible).toContain('"日本語😀continuation"');
+	expect(tree.truncated).toBe(false);
+});
+
+test("a value cut by the row cap ends with an explicit truncation marker", () => {
+	const tree = renderJsonTreeLines({ result: "abcdefghijklmnopqrstuvwxyz" }, theme, 2, 2, 60, 10);
+	expect(tree.truncated).toBe(true);
+	const visible = tree.lines.map(line => line.replace(ANSI, ""));
+	expect(visible.join("")).toContain("abc");
+	expect(visible.at(-1)).toEndWith("…");
 });

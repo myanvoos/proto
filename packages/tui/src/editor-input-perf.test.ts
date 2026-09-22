@@ -7,6 +7,7 @@ import {
 	type EditorWordReplacements,
 } from "./components/editor";
 import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "./keybindings";
+import { CURSOR_MARKER } from "./tui";
 import { getHangulCompatibilityJamoWidth, setHangulCompatibilityJamoWidth, visibleWidth } from "./utils";
 
 const identity = (text: string): string => text;
@@ -419,4 +420,39 @@ test("Enter resolves the current slash text instead of accepting an unnavigated 
 	editor.handleInput("\r");
 
 	expect(submitted).toEqual(["/help"]);
+});
+
+test("host row budget keeps input and selected completion visible while resizing", async () => {
+	const editor = editorWith();
+	editor.focused = true;
+	editor.setUseTerminalCursor(true);
+	const shown = Promise.withResolvers<void>();
+	editor.onAutocompleteUpdate = () => shown.resolve();
+	editor.setAutocompleteProvider({
+		async getSuggestions() {
+			return { items: ["alpha", "beta", "gamma", "delta"].map(value => ({ value, label: value })), prefix: "@" };
+		},
+		applyCompletion(lines, cursorLine, cursorCol) {
+			return { lines, cursorLine, cursorCol };
+		},
+	});
+	try {
+		editor.handleInput("@");
+		await shown.promise;
+		for (const height of [6, 2, 1, 3, 2, 10]) {
+			editor.setViewportHeight(height);
+			const rows = editor.render(20);
+			expect(rows.length).toBeLessThanOrEqual(height);
+			expect(rows.filter(row => row.includes(CURSOR_MARKER))).toHaveLength(1);
+			if (height > 1) expect(rows.some(row => row.includes("❯") && row.includes("alpha"))).toBe(true);
+		}
+		editor.setViewportHeight(2);
+		editor.handleInput("\x1b[B");
+		const rows = editor.render(20);
+		expect(rows).toHaveLength(2);
+		expect(rows[1]).toContain("beta");
+		expect(rows[1]).toContain("❯");
+	} finally {
+		editor.dispose();
+	}
 });

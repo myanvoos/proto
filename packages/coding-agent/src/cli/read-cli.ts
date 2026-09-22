@@ -1,6 +1,10 @@
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { setActiveRules } from "../capability/rule";
+import { collectActiveRules, discoverRules } from "../capability/rule-buckets";
 import { Settings } from "../config/settings";
+import { initializeWithSettings } from "../discovery";
+import { loadSkills, setActiveSkills } from "../extensibility/skills";
 import { extractUriScheme } from "../internal-urls/parse";
 import { InternalUrlRouter } from "../internal-urls/router";
 import { closeDaemonClients } from "../launch/client";
@@ -25,6 +29,29 @@ function shouldDiscoverMcp(path: string): boolean {
 	return InternalUrlRouter.instance().getHandler(scheme) === undefined;
 }
 
+/**
+ * `skill://` and `rule://` resolve against the capabilities a session discovered at startup. The
+ * standalone command has no session, so it runs the same discovery before handing the URL to the
+ * read tool — otherwise every skill and rule reads as "Available: none".
+ */
+async function loadCapabilitiesFor(scheme: string, cwd: string, settings: Settings, session: ToolSession) {
+	if (scheme === "skill") {
+		const { skills } = await loadSkills({
+			...settings.getGroup("skills"),
+			cwd,
+			disabledExtensions: settings.get("disabledExtensions") ?? [],
+		});
+		session.skills = skills;
+		setActiveSkills(skills);
+		return;
+	}
+
+	if (scheme === "rule") {
+		const discovered = await discoverRules({ cwd, ttsrSettings: settings.getGroup("ttsr") });
+		setActiveRules(collectActiveRules(discovered, discovered.ttsrManager));
+	}
+}
+
 export async function runReadCommand(cmd: ReadCommandArgs): Promise<void> {
 	if (!cmd.path) {
 		process.stderr.write(chalk.red("error: path is required\n"));
@@ -33,6 +60,9 @@ export async function runReadCommand(cmd: ReadCommandArgs): Promise<void> {
 
 	const cwd = getProjectDir();
 	const settings = await Settings.init({ cwd });
+	// Capability loads (skills, rules, ssh hosts, MCP servers) honour disabled providers only once
+	// the settings are handed to the registry, exactly as a session does at startup.
+	initializeWithSettings(settings);
 
 	const session: ToolSession = {
 		cwd,
@@ -47,6 +77,8 @@ export async function runReadCommand(cmd: ReadCommandArgs): Promise<void> {
 	let failed = false;
 
 	try {
+		await loadCapabilitiesFor(extractUriScheme(cmd.path) ?? "", cwd, settings, session);
+
 		if (shouldDiscoverMcp(cmd.path)) {
 			authStorage = await discoverAuthStorage();
 			const result = await discoverAndLoadMCPTools(cwd, {

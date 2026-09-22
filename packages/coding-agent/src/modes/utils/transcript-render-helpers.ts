@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
-import type { AsyncJobType } from "../../async";
+import type { AsyncJob, AsyncJobType } from "../../async";
 import type { DaemonSnapshot } from "../../launch/protocol";
 import type { MonitorEvent, MonitorEventKind } from "../../monitor/types";
 import {
@@ -51,7 +51,14 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 			type?: AsyncJobType;
 			label?: string;
 			durationMs?: number;
-			jobs?: Array<{ jobId?: string; type?: AsyncJobType; label?: string; durationMs?: number }>;
+			status?: AsyncJob["status"];
+			jobs?: Array<{
+				jobId?: string;
+				type?: AsyncJobType;
+				label?: string;
+				durationMs?: number;
+				status?: AsyncJob["status"];
+			}>;
 		}>
 	).details;
 	const jobs =
@@ -63,6 +70,7 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 						type: details?.type,
 						label: details?.label,
 						durationMs: details?.durationMs,
+						status: details?.status,
 					},
 				];
 	const block = new TranscriptBlock();
@@ -70,8 +78,11 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 		const jobId = job.jobId ?? "unknown";
 		const typeLabel = job.type ? `[${job.type}]` : "[job]";
 		const duration = typeof job.durationMs === "number" ? formatDuration(job.durationMs) : undefined;
+		const failed = job.status === "failed";
 		const line = [
-			theme.fg("success", `${theme.status.done} Background job completed`),
+			failed
+				? theme.fg("error", `${theme.status.error} Background job failed`)
+				: theme.fg("success", `${theme.status.done} Background job completed`),
 			theme.fg("dim", typeLabel),
 			theme.fg("accent", jobId),
 			duration ? theme.fg("dim", `(${duration})`) : undefined,
@@ -190,7 +201,9 @@ export function buildFileMentionBlock(files: FileMentionMessage["files"], indent
 	const block = new TranscriptBlock();
 	for (const file of files) {
 		let suffix: string;
-		if (file.skippedReason === "tooLarge" || file.skippedReason === "binary") {
+		if (file.skippedReason === "undecodableImage") {
+			suffix = "(skipped: corrupt image)";
+		} else if (file.skippedReason === "tooLarge" || file.skippedReason === "binary") {
 			const size = typeof file.byteSize === "number" ? formatBytes(file.byteSize) : "unknown size";
 			suffix = file.skippedReason === "binary" ? `(skipped: binary, ${size})` : `(skipped: ${size})`;
 		} else {

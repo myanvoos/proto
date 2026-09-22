@@ -20,6 +20,8 @@ export interface LoadMCPConfigsResult {
 	exaApiKeys: string[];
 
 	sources: Record<string, SourceMeta>;
+
+	warnings: string[];
 }
 
 function convertToLegacyConfig(server: MCPServer): MCPServerConfig {
@@ -122,7 +124,7 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 		sources = browserResult.sources;
 	}
 
-	return { configs, exaApiKeys, sources };
+	return { configs, exaApiKeys, sources, warnings: result.warnings };
 }
 
 const EXA_MCP_URL_PATTERN = /mcp\.exa\.ai/i;

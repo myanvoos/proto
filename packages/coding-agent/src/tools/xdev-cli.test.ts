@@ -26,6 +26,11 @@ const richSchema = schemaOf(
 	}),
 );
 
+function shellSplit(command: string): string[] {
+	const tokens = command.match(/'[^']*'|[^\s]+/g) ?? [];
+	return tokens.slice(2).map(token => (token.startsWith("'") ? token.slice(1, -1).replaceAll("'\\''", "'") : token));
+}
+
 function parse(argv: string[], schema = richSchema, stdin?: string) {
 	return parseXdevCliArgs(schema, argv, { deviceName: "probe", stdin });
 }
@@ -57,6 +62,37 @@ describe("parseXdevCliArgs", () => {
 	test("string arrays accept repeated flags and comma splitting", () => {
 		expect(parse(["--value=hi", "--ids", "a", "--ids", "b"]).args).toEqual({ value: "hi", ids: ["a", "b"] });
 		expect(parse(["--value=hi", "--ids", "a,b,c"]).args).toEqual({ value: "hi", ids: ["a", "b", "c"] });
+	});
+
+	test("repeated array flags keep each value literal, including commas", () => {
+		expect(parse(["--value=hi", "--ids", "-c", "--ids", "x,y", "--ids", "plain"]).args).toEqual({
+			value: "hi",
+			ids: ["-c", "x,y", "plain"],
+		});
+	});
+
+	test("a single array value escapes literal commas and takes JSON arrays verbatim", () => {
+		expect(parse(["--value=hi", "--ids", String.raw`x\,y,z`]).args).toEqual({ value: "hi", ids: ["x,y", "z"] });
+		expect(parse(["--value=hi", "--ids", String.raw`back\\slash`]).args).toEqual({
+			value: "hi",
+			ids: ["back\\slash"],
+		});
+		expect(parse(["--value=hi", "--ids", '["-lc","printf X; sleep 1, please"]']).args).toEqual({
+			value: "hi",
+			ids: ["-lc", "printf X; sleep 1, please"],
+		});
+	});
+
+	test("rendered array commands parse back to the same entries", () => {
+		const args = { value: "hi", ids: ["-c", 'printf "%s" "$@"', String.raw`x,y\z`] };
+		const rendered = formatXdevCliCommand("probe", args);
+		const argv = rendered.split(" ").slice(2);
+		expect(parse(shellSplit(rendered)).args).toEqual(args);
+		expect(argv.filter(token => token === "--ids")).toHaveLength(3);
+	});
+
+	test("number arrays reject entries that are not numbers", () => {
+		expect(() => parse(["--value=hi", "--nums", "1,abc"])).toThrow(/--nums expects numbers, got "abc"/);
 	});
 
 	test("number arrays parse entries", () => {

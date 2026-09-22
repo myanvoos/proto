@@ -695,7 +695,7 @@ export const SETTINGS_SCHEMA = {
 
 	"statusLine.leftSegments": {
 		type: "array",
-		default: ["model", "account", "mode", "path", "git", "context_pct"] as StatusLineSegmentId[],
+		default: ["model", "account", "mode", "path", "git", "context_pct", "cost"] as StatusLineSegmentId[],
 	},
 
 	"statusLine.rightSegments": { type: "array", default: ["session_name"] as StatusLineSegmentId[] },
@@ -1139,6 +1139,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"model.toolCallLoopGuard.hardLimit": {
+		type: "number",
+		default: 20,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Tool-Call Loop Hard Limit",
+			description:
+				"Consecutive identical tool calls after which the run is stopped instead of steered, bounding runaway provider spend (0 disables the ceiling)",
+		},
+	},
+
 	"model.toolCallLoopGuard.exemptTools": {
 		type: "array",
 		default: DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS,
@@ -1452,6 +1464,18 @@ export const SETTINGS_SCHEMA = {
 				{ value: "5", label: "5 retries" },
 				{ value: "10", label: "10 retries" },
 			],
+		},
+	},
+
+	"retry.unreachableMaxRetries": {
+		type: "number",
+		default: 2,
+		ui: {
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Retry Attempts — Unreachable Endpoint",
+			description:
+				"Maximum retry attempts when the provider endpoint cannot be reached at all (refused, unresolvable, or unroutable). A wrong base URL is a configuration problem, so the full retry budget only burns time",
 		},
 	},
 
@@ -1857,6 +1881,37 @@ export const SETTINGS_SCHEMA = {
 			group: "Notifications",
 			label: "Completion Notification",
 			description: "Notify when the agent finishes a turn",
+		},
+	},
+
+	"completion.notifyMinSeconds": {
+		type: "number",
+		default: 10,
+		ui: {
+			tab: "interaction",
+			group: "Notifications",
+			label: "Completion Notification Delay",
+			description:
+				"Only notify when the finished turn ran at least this long. A bell after a sub-second turn you watched happen is noise; 0 notifies on every turn.",
+			options: [
+				{ value: "0", label: "Always", description: "Notify on every finished turn." },
+				{ value: "5", label: "5 seconds" },
+				{ value: "10", label: "10 seconds", description: "Default." },
+				{ value: "30", label: "30 seconds" },
+				{ value: "60", label: "1 minute" },
+			],
+		},
+	},
+
+	"completion.notifyWhenFocused": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: "Notifications",
+			label: "Notify While Focused",
+			description:
+				"Notify even when the terminal has keyboard focus. Off means a completion bell only fires when you are looking elsewhere (terminals that do not report focus always notify).",
 		},
 	},
 
@@ -4195,6 +4250,7 @@ interface ContextPromotionSettings {
 export interface RetrySettings {
 	enabled: boolean;
 	maxRetries: number;
+	unreachableMaxRetries: number;
 	baseDelayMs: number;
 	maxDelayMs: number;
 	modelFallback: boolean;

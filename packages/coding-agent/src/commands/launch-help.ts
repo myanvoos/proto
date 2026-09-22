@@ -34,7 +34,7 @@ export const launchHelp = {
 		alias: Flags.string({ description: "Create a shell shortcut for the selected profile and exit" }),
 		cwd: Flags.string({ description: "Directory to start in (overrides the launch cwd)" }),
 		mode: Flags.string({
-			description: "Output mode: text (default), json, rpc, or rpc-ui",
+			description: "Output mode: text (default), json, rpc, rpc-ui, or acp",
 			options: ["text", "json", "rpc", "acp", "rpc-ui"],
 		}),
 		config: Flags.string({
@@ -48,6 +48,8 @@ export const launchHelp = {
 		print: Flags.boolean({ char: "p", description: "Non-interactive mode: process prompt and exit" }),
 		continue: Flags.boolean({ char: "c", description: "Continue previous session" }),
 		resume: Flags.string({ char: "r", description: "Resume a session (by ID prefix, path, or picker if omitted)" }),
+		session: Flags.string({ description: "Alias for --resume" }),
+		fork: Flags.string({ description: "Fork a session (by ID prefix or path) into a new one and continue there" }),
 		"from-claude": Flags.boolean({ description: "Import a Claude Code session into Proto" }),
 		"from-codex": Flags.boolean({ description: "Import a Codex session into Proto" }),
 		"session-dir": Flags.string({ description: "Directory for session storage and lookup" }),
@@ -80,6 +82,11 @@ export const launchHelp = {
 			description: "Load an extension file (can be used multiple times)",
 			multiple: true,
 		}),
+		"trusted-extension": Flags.string({
+			description: "Load an extension from an absolute path with full trust (not combinable with -e or --hook)",
+			multiple: true,
+		}),
+		"plugin-dir": Flags.string({ description: "Additional directory to search for plugins", multiple: true }),
 		"no-extensions": Flags.boolean({
 			description: "Disable extension discovery (explicit -e paths still work)",
 		}),
@@ -89,6 +96,8 @@ export const launchHelp = {
 		"no-title": Flags.boolean({ description: "Disable title auto-generation" }),
 		"print-thoughts": Flags.boolean({ description: "Include thinking blocks in print mode text output" }),
 		"max-time": Flags.string({ description: "Stop the session after this duration (e.g., 600, 10m, 1h)" }),
+		"prompt-cache-key": Flags.string({ description: "Provider prompt-cache key to reuse across runs" }),
+		"provider-session-id": Flags.string({ description: "Provider-side session id to continue (provider specific)" }),
 	},
 	examples: [
 		`# Interactive mode\n  ${BINARY_NAME}`,

@@ -78,6 +78,7 @@ export function formatDefaultToolExecution(
 			JSON_TREE_MAX_DEPTH_EXPANDED,
 			JSON_TREE_MAX_LINES_EXPANDED,
 			JSON_TREE_SCALAR_LEN_EXPANDED,
+			contentWidth,
 		);
 		lines.push(...tree.lines);
 		if (tree.truncated) {
@@ -102,7 +103,7 @@ export function formatDefaultToolExecution(
 			const maxDepth = options.expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
 			const maxLines = options.expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
 			const maxScalarLen = options.expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
-			const tree = renderJsonTreeLines(parsed, uiTheme, maxDepth, maxLines, maxScalarLen);
+			const tree = renderJsonTreeLines(parsed, uiTheme, maxDepth, maxLines, maxScalarLen, contentWidth);
 
 			if (tree.lines.length > 0) {
 				lines.push(...tree.lines);

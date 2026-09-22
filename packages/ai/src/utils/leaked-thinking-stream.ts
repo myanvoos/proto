@@ -55,6 +55,16 @@ export function wrapLeakedThinkingStream(inner: AssistantMessageEventStream): As
 						);
 						break;
 					}
+					case "text_end": {
+						projector ??= new LeakedThinkingProjector(out, event.partial);
+						const block = event.partial.content[event.contentIndex];
+						projector.textEnd(
+							event.contentIndex,
+							event.content,
+							block?.type === "text" ? block.textSignature : undefined,
+						);
+						break;
+					}
 					case "thinking_delta": {
 						projector ??= new LeakedThinkingProjector(out, event.partial);
 						const block = event.partial.content[event.contentIndex];
@@ -121,16 +131,16 @@ export function wrapLeakedThinkingStream(inner: AssistantMessageEventStream): As
 
 type OpenBlock = { index: number } | undefined;
 type ProjectedContent = AssistantMessage["content"][number];
-type AnchoredContent = { block: ProjectedContent; sourceIndex: number; order: number };
 
 class LeakedThinkingProjector {
 	readonly #out: AssistantMessageEventStream;
-	readonly #healer = new StreamMarkupHealing({ pattern: "thinking" });
+	#healer = new StreamMarkupHealing({ pattern: "thinking" });
 	#partial: AssistantMessage;
 	#text: OpenBlock;
 	#thinking: OpenBlock;
 
-	#fedTextLengths = new Map<number, number>();
+	#fedText = new Map<number, string>();
+	#endedTextSources = new Set<number>();
 
 	#activeTextSourceIndex: number | undefined;
 
@@ -158,9 +168,108 @@ class LeakedThinkingProjector {
 			this.#closeThinking();
 		}
 		this.#activeTextSourceIndex = srcIndex;
-		this.#fedTextLengths.set(srcIndex, (this.#fedTextLengths.get(srcIndex) ?? 0) + delta.length);
+		this.#fedText.set(srcIndex, (this.#fedText.get(srcIndex) ?? "") + delta);
 		if (startsSource || signature !== undefined) this.#lastTextSignature = signature;
 		this.#apply(this.#healer.feedEvents(delta), this.#lastTextSignature, srcIndex);
+	}
+
+	textEnd(srcIndex: number, content: string, signature: string | undefined): void {
+		const fed = this.#fedText.get(srcIndex) ?? "";
+		const alreadyEnded = this.#endedTextSources.has(srcIndex);
+		this.#endedTextSources.add(srcIndex);
+		if (!content.startsWith(fed) || (alreadyEnded && content !== fed)) {
+			this.#replaceText(srcIndex, content, signature);
+			return;
+		}
+		if (content.length > fed.length) this.text(srcIndex, content.slice(fed.length), signature);
+		if (this.#activeTextSourceIndex === srcIndex) {
+			this.#lastTextSignature = signature;
+			this.#flushHealer();
+		}
+		for (const block of this.#partial.content) {
+			if (block.type !== "text" || this.#sourceAnchors.get(block) !== srcIndex) continue;
+			if (signature === undefined) delete block.textSignature;
+			else block.textSignature = signature;
+		}
+		if (this.#text && this.#sourceAnchors.get(this.#partial.content[this.#text.index]) === srcIndex)
+			this.#closeText();
+		if (this.#thinking && this.#sourceAnchors.get(this.#partial.content[this.#thinking.index]) === srcIndex)
+			this.#closeThinking();
+	}
+
+	#replaceText(srcIndex: number, content: string, signature: string | undefined): void {
+		// A terminal snapshot can replace, not merely extend, the streamed draft.
+		// Re-run markup healing from a clean state so stale tag/parser state cannot
+		// turn the replacement into thinking or retain removed draft fragments.
+		const healer = new StreamMarkupHealing({ pattern: "thinking" });
+		const replacement: (TextContent | ThinkingContent)[] = [];
+		for (const event of [...healer.feedEvents(content), ...healer.flushEvents()]) {
+			const last = replacement.at(-1);
+			if (event.type === "text") {
+				if (last?.type === "text") last.text += event.text;
+				else
+					replacement.push({
+						type: "text",
+						text: event.text,
+						...(signature !== undefined ? { textSignature: signature } : {}),
+					});
+			} else if (event.type === "thinking") {
+				if (last?.type === "thinking") last.thinking += event.thinking;
+				else replacement.push({ type: "thinking", thinking: event.thinking });
+			}
+		}
+		if (replacement.length === 0)
+			replacement.push({ type: "text", text: "", ...(signature !== undefined ? { textSignature: signature } : {}) });
+		const previous = this.#partial.content;
+		const next: ProjectedContent[] = [];
+		let inserted = false;
+		for (const block of previous) {
+			const source = this.#sourceAnchors.get(block);
+			if (!inserted && source !== undefined && source >= srcIndex) {
+				next.push(...replacement);
+				inserted = true;
+			}
+			if (source === srcIndex) this.#sourceAnchors.delete(block);
+			else next.push(block);
+		}
+		if (!inserted) next.push(...replacement);
+		for (const block of replacement) this.#sourceAnchors.set(block, srcIndex);
+		const indexes = new Map(next.map((block, index) => [block, index]));
+		const remap = (index: number): number | undefined => indexes.get(previous[index]);
+		const textIndex = this.#text ? remap(this.#text.index) : undefined;
+		const thinkingIndex = this.#thinking ? remap(this.#thinking.index) : undefined;
+		this.#text = textIndex === undefined ? undefined : { index: textIndex };
+		this.#thinking = thinkingIndex === undefined ? undefined : { index: thinkingIndex };
+		for (const [source, entry] of this.#toolBlocks) {
+			const index = remap(entry.index);
+			if (index === undefined) this.#toolBlocks.delete(source);
+			else entry.index = index;
+		}
+		for (const [source, previousIndex] of this.#thinkingBlocks) {
+			const index = remap(previousIndex);
+			if (index === undefined) this.#thinkingBlocks.delete(source);
+			else this.#thinkingBlocks.set(source, index);
+		}
+		this.#pendingThinkingEnds = new Set(
+			[...this.#pendingThinkingEnds].flatMap(index => {
+				const mapped = remap(index);
+				return mapped === undefined ? [] : [mapped];
+			}),
+		);
+		if (this.#activeTextSourceIndex === srcIndex) {
+			this.#healer = new StreamMarkupHealing({ pattern: "thinking" });
+			this.#activeTextSourceIndex = undefined;
+		}
+		this.#fedText.set(srcIndex, content);
+		// Keep previous event snapshots and their indices intact; subsequent events
+		// use the remapped current snapshot, including any tool still streaming.
+		this.#partial = { ...this.#partial, content: next };
+		for (const block of replacement) {
+			const contentIndex = indexes.get(block)!;
+			if (block.type === "text")
+				this.#out.push({ type: "text_end", contentIndex, content: block.text, partial: this.#partial });
+			else this.#emitThinkingEnd(contentIndex);
+		}
 	}
 
 	thinking(srcIndex: number, delta: string, signature: string | undefined): void {
@@ -282,21 +391,12 @@ class LeakedThinkingProjector {
 		for (let srcIndex = 0; srcIndex < message.content.length; srcIndex++) {
 			const block = message.content[srcIndex];
 			if (block?.type !== "text") continue;
-			const fedLength = this.#fedTextLengths.get(srcIndex) ?? 0;
-			if (block.text.length <= fedLength) continue;
-			if (this.#activeTextSourceIndex !== undefined && this.#activeTextSourceIndex !== srcIndex) {
-				this.#flushHealer();
-				this.#closeText();
-				this.#closeThinking();
-			}
-			this.#activeTextSourceIndex = srcIndex;
-			this.#lastTextSignature = block.textSignature;
-			this.#apply(this.#healer.feedEvents(block.text.slice(fedLength)), this.#lastTextSignature, srcIndex);
+			this.textEnd(srcIndex, block.text, block.textSignature);
 		}
 		this.#flushHealer();
 		this.#closeText();
 		this.#closeThinking();
-		return this.#mergeServerToolHistory(message);
+		return this.#finalContent(message);
 	}
 
 	#apply(events: readonly StreamMarkupHealingEvent[], signature: string | undefined, srcIndex: number): void {
@@ -356,7 +456,7 @@ class LeakedThinkingProjector {
 		if (block) this.#sourceAnchors.set(block, srcIndex);
 	}
 
-	#mergeServerToolHistory(message: AssistantMessage): AssistantMessage["content"] {
+	#finalContent(message: AssistantMessage): AssistantMessage["content"] {
 		const pendingCalls = new Map<string, number>();
 		const pairedIndexes = new Set<number>();
 		for (let srcIndex = 0; srcIndex < message.content.length; srcIndex++) {
@@ -373,22 +473,33 @@ class LeakedThinkingProjector {
 			pendingCalls.delete(content.block.tool_use_id);
 		}
 
-		const anchored: AnchoredContent[] = this.#partial.content.map((block, order) => ({
-			block,
-			sourceIndex: this.#sourceAnchors.get(block) ?? message.content.length + order,
-			order,
-		}));
-		for (const srcIndex of pairedIndexes) {
-			const content = message.content[srcIndex];
-			if (content?.type !== "anthropicServerTool") continue;
-			const cloned: AnthropicServerToolContent = {
-				type: "anthropicServerTool",
-				block: structuredClone(content.block),
-			};
-			anchored.push({ block: cloned, sourceIndex: srcIndex, order: srcIndex });
+		const textBySource = new Map<number, ProjectedContent[]>();
+		for (const block of this.#partial.content) {
+			const sourceIndex = this.#sourceAnchors.get(block);
+			if (sourceIndex === undefined || message.content[sourceIndex]?.type !== "text") continue;
+			const blocks = textBySource.get(sourceIndex) ?? [];
+			blocks.push(block);
+			textBySource.set(sourceIndex, blocks);
 		}
-		anchored.sort((left, right) => left.sourceIndex - right.sourceIndex || left.order - right.order);
-		return anchored.map(({ block }) => block);
+		const content: AssistantMessage["content"] = [];
+		for (let srcIndex = 0; srcIndex < message.content.length; srcIndex++) {
+			const block = message.content[srcIndex];
+			if (block.type === "text") {
+				content.push(...(textBySource.get(srcIndex) ?? [{ ...block, text: "" }]));
+			} else if (block.type === "toolCall") {
+				content.push(cloneToolCall(block));
+			} else if (block.type === "anthropicServerTool") {
+				if (!pairedIndexes.has(srcIndex)) continue;
+				const cloned: AnthropicServerToolContent = {
+					type: "anthropicServerTool",
+					block: structuredClone(block.block),
+				};
+				content.push(cloned);
+			} else {
+				content.push({ ...block });
+			}
+		}
+		return content;
 	}
 	#closeText(): void {
 		if (!this.#text) return;

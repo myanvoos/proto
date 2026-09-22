@@ -1,5 +1,6 @@
 import type { StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
+import type { UsageStatistics } from "../../../session/session-entries";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
 import type { GitStatusSummary } from "../../../utils/git";
 
@@ -53,17 +54,7 @@ export interface SegmentContext {
 		paused: boolean;
 	} | null;
 
-	usageStats: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-		totalTokens: number;
-		orchestrationInput: number;
-		orchestrationOutput: number;
-		orchestrationCacheRead: number;
-		premiumRequests: number;
-		cost: number;
+	usageStats: UsageStatistics & {
 		tokensPerSecond: number | null;
 	};
 

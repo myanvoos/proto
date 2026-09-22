@@ -6,16 +6,31 @@ import { AssistantMessageEventStream } from "./event-stream";
 
 export const THINKING_LOOP_ERROR_MARKER = "Thinking loop detected";
 
+/**
+ * Recovers the detector's own wording (`repeated an exact 54-character cycle
+ * 5× back-to-back`) from a guarded turn's error message, so surfaces that only
+ * keep the discarded turn's `errorMessage` can still name why it was discarded.
+ */
+export function thinkingLoopDetail(errorMessage: string | undefined): string | undefined {
+	if (!errorMessage?.startsWith(THINKING_LOOP_ERROR_MARKER)) return undefined;
+	const detail = /\(([^()]*)\)\.?\s*$|\(([^()]*)\)/.exec(errorMessage);
+	return (detail?.[1] ?? detail?.[2])?.trim() || undefined;
+}
+
 const EXACT_TAIL_WINDOW = 4096;
 
 const EXACT_MAX_UNIT = 1024;
 
 const EXACT_CHECK_STRIDE = 128;
 
-const EXACT_SHORT_MAX_UNIT = 60;
-const EXACT_SHORT_MIN_REPEATED_CHARS = 180;
+// A degenerate loop keeps emitting the same block until the cap; legitimate
+// repetition (duplicated assertion lines, CSV rows, a banner, a long padded
+// token) is bounded and short. The bar is therefore a large absolute span of
+// repeated text rather than a handful of repeats: six identical 54-char
+// `expect(...)` lines are 324 chars and must survive, a real stall is thousands.
+const EXACT_MIN_REPEATED_CHARS = 1024;
 
-const EXACT_LONG_MIN_REPEATED_CHARS = 1024;
+const EXACT_MIN_COUNT = 3;
 
 const SEGMENT_CHAR_CAP = 700;
 
@@ -53,7 +68,9 @@ export function isLoopGuardedModel(model: Model<Api>, options?: StreamOptions): 
 export class ThinkingLoopDetector {
 	#tail = "";
 
-	#exactScannedAt = 0;
+	#totalPushed = 0;
+
+	#nextExactScanAt = EXACT_CHECK_STRIDE;
 
 	#pending = "";
 
@@ -72,11 +89,18 @@ export class ThinkingLoopDetector {
 	push(delta: string): string | null {
 		if (!delta) return null;
 
-		this.#tail += delta;
-		if (this.#tail.length > EXACT_TAIL_WINDOW) this.#tail = this.#tail.slice(-EXACT_TAIL_WINDOW);
-		this.#exactScannedAt += delta.length;
-		if (this.#exactScannedAt >= EXACT_CHECK_STRIDE || delta.length >= EXACT_CHECK_STRIDE) {
-			this.#exactScannedAt = 0;
+		// Scan at fixed absolute stream offsets, advancing the tail no further
+		// than the next scan point at a time. The detector state at every scan
+		// offset is then identical however the provider split the stream, so the
+		// verdict is a function of the text alone and never of network chunking.
+		for (let offset = 0; offset < delta.length; ) {
+			const take = Math.min(this.#nextExactScanAt - this.#totalPushed, delta.length - offset);
+			this.#tail += delta.slice(offset, offset + take);
+			if (this.#tail.length > EXACT_TAIL_WINDOW) this.#tail = this.#tail.slice(-EXACT_TAIL_WINDOW);
+			this.#totalPushed += take;
+			offset += take;
+			if (this.#totalPushed < this.#nextExactScanAt) break;
+			this.#nextExactScanAt += EXACT_CHECK_STRIDE;
 			const exact = detectExactSuffixCycle(this.#tail);
 			if (exact) {
 				const [unit, times] = exact;
@@ -353,7 +377,7 @@ let exactRevBuf = new Uint16Array(512);
 let exactZBuf = new Uint16Array(512);
 
 function detectExactSuffixCycle(text: string): [unit: string, count: number] | null {
-	if (text.length < EXACT_SHORT_MIN_REPEATED_CHARS) return null;
+	if (text.length < EXACT_MIN_REPEATED_CHARS) return null;
 	const n = text.length;
 	if (exactRevBuf.length < n) {
 		exactRevBuf = new Uint16Array(n * 2);
@@ -374,12 +398,10 @@ function detectExactSuffixCycle(text: string): [unit: string, count: number] | n
 		}
 	}
 
-	const maxUnit = Math.min(EXACT_MAX_UNIT, Math.floor(n / 3));
+	const maxUnit = Math.min(EXACT_MAX_UNIT, Math.floor(n / EXACT_MIN_COUNT));
 	for (let len = 2; len <= maxUnit; len++) {
 		const count = 1 + Math.floor(z[len] / len);
-		const minCount = len <= EXACT_SHORT_MAX_UNIT ? 4 : 3;
-		const minChars = len <= EXACT_SHORT_MAX_UNIT ? EXACT_SHORT_MIN_REPEATED_CHARS : EXACT_LONG_MIN_REPEATED_CHARS;
-		if (count < minCount || len * count < minChars) continue;
+		if (count < EXACT_MIN_COUNT || len * count < EXACT_MIN_REPEATED_CHARS) continue;
 		const unit = text.slice(-len);
 		if (/\p{L}|\p{Extended_Pictographic}/u.test(unit)) return [unit, count];
 	}

@@ -20,6 +20,7 @@ export default class Config extends Command {
 			value,
 			flags: {
 				json: flags.json,
+				config: flags.config,
 			},
 		};
 

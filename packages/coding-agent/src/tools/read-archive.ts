@@ -1,6 +1,7 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { TextContent } from "@oh-my-pi/pi-ai";
 import {
+	type ArchiveFormat,
 	type ArchiveReader,
 	formatArchiveEntryLines,
 	openArchive,
@@ -80,6 +81,20 @@ export async function resolveArchiveReadPath(
 
 	return null;
 }
+const SINGLE_STREAM_FORMATS = new Set<ArchiveFormat>(["gz", "bz2", "xz", "zst", "Z", "lzma"]);
+
+/** Path of the only member of a single-stream compressor (`.gz`, `.xz`, …), else null. */
+function singleStreamMember(archive: ArchiveReader): string | null {
+	if (!SINGLE_STREAM_FORMATS.has(archive.format)) return null;
+	let member: string | null = null;
+	for (const entry of archive.indexEntries()) {
+		if (entry.isDirectory) continue;
+		if (member !== null) return null;
+		member = entry.path;
+	}
+	return member;
+}
+
 async function readArchiveDirectory(
 	archive: ArchiveReader,
 	archivePath: string,
@@ -143,8 +158,10 @@ export async function readArchive(
 	if (!node && archiveSubPath) {
 		const wholeSel = parseSel(archiveSubPath);
 		if (wholeSel.kind !== "none") {
-			node = archive.getNode("");
-			archiveSubPath = "";
+			// `file.gz:1-2` targets the compressed stream itself, not a listing of its sole member.
+			const soleMember = singleStreamMember(archive);
+			archiveSubPath = soleMember ?? "";
+			node = archive.getNode(archiveSubPath);
 			sel = wholeSel;
 		}
 	}

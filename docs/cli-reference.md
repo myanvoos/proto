@@ -64,7 +64,7 @@ Argument handling:
 | `--alias <name>` | Create a shell shortcut for the selected profile and exit. |
 | `--config <file>` | Load an extra `config.yml`-style overlay for this run (repeatable). |
 | `--session-dir <dir>` | Directory for session storage and lookup. |
-| `--no-session` | Don't save the session (ephemeral). |
+| `--no-session` | Don't save the session (ephemeral). Resume/continue may load saved history, but subsequent changes are not written back. |
 
 #### Session history
 
@@ -180,6 +180,24 @@ Related flags for headless runs:
 - `--no-title` — skip title auto-generation (also `PI_NO_TITLE`).
 - `--max-time <duration>` — bound the run.
 
+Concurrency: a session file belongs to one running process. Two headless runs against
+the same session do not interleave — the second is refused with the owner's pid and a
+`proto --fork <file>` hint (exit `1`), while `--continue`/`autoResume` simply start a new
+session instead of overwriting the one in use. Use `--fork` to branch a copy when you
+need parallel headless runs from the same history.
+
+Exit codes: a print run exits `0` only when the turn finished. A failed turn
+(provider error, aborted request, or a response that is not a usable stream) and a
+run cut short by `--max-time` both exit `1` and explain themselves on stderr; any
+partial answer is still written to stdout first. `--mode json` keeps emitting its
+event stream and uses the same exit codes.
+
+Conditions the TUI shows as a notice — a retry in progress, a guard that stopped a
+runaway turn, a checkpoint left open — are written to stderr in text mode as
+`Warning: <message>` / `Error: <message>`, so a headless run never ends silently on a
+condition the interactive UI would have shown. `--mode json` already carries the
+`notice` events.
+
 The [advisor / watchdog](./advisor-watchdog.md#headless-runs) doc describes
 print-mode disposal semantics when the advisor runtime is enabled.
 
@@ -192,6 +210,22 @@ print-mode disposal semantics when the advisor runtime is enabled.
 | `rpc` | JSON-RPC server over stdio. See [RPC](./rpc.md). |
 | `rpc-ui` | RPC transport with UI extension events enabled. |
 | `acp` | Agent Client Protocol server over stdio. Equivalent to the [`acp`](#subcommands) subcommand. |
+
+#### ACP error reporting
+
+The ACP server answers with JSON-RPC errors rather than pretending a request or a turn succeeded:
+
+| Situation | Code |
+| --- | --- |
+| Any request before a successful `initialize` | `-32002` Server not initialized |
+| Missing/ill-typed params, a `cwd` that is not an existing absolute directory, an unknown `sessionId`, model, config option or auth method | `-32602` Invalid params |
+| Unknown method | `-32601` Method not found |
+| A turn that ended in a provider error (bad credentials → `-32000` Authentication required, anything else → `-32603` Internal error) | `-32000` / `-32603` |
+| A line that is not JSON, or JSON that is not a JSON-RPC message | `-32700` Parse error / `-32600` Invalid request — answered on `id: null` without dropping the connection |
+
+`initialize` negotiates: a client asking for a newer protocol version is answered with the newest version the agent speaks, and the downgrade is reported on stderr. Failed turns are never streamed as `agent_message_chunk` text.
+
+While session recovery retries a failing provider, each attempt is sent as an `agent_thought_chunk` reading `Provider error (retry N/M in Xs): …` — the same line print mode writes to stderr — so a retried turn is never silent.
 
 ## Subcommands
 

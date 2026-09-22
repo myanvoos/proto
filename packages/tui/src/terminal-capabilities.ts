@@ -173,6 +173,26 @@ export function isInsideZellij(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	return Boolean(env.ZELLIJ);
 }
 
+/**
+ * DEC 1004 focus reporting. `undefined` until the terminal actually reports a
+ * focus event: hosts that ignore mode 1004 never do, and callers must not read
+ * silence as "the user is watching". Only an observed report is trusted.
+ */
+let terminalFocused: boolean | undefined;
+
+export function setTerminalFocused(focused: boolean): void {
+	terminalFocused = focused;
+}
+
+export function clearTerminalFocusTracking(): void {
+	terminalFocused = undefined;
+}
+
+/** `undefined` = the host never reported focus, so focus is unknown. */
+export function isTerminalFocused(): boolean | undefined {
+	return terminalFocused;
+}
+
 export function isNotificationSuppressed(): boolean {
 	const value = $env.PI_NOTIFICATIONS;
 	if (!value) return false;

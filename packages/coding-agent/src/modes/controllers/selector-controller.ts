@@ -6,7 +6,14 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import type { Component, OverlayHandle } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
-import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison, VERSION } from "@oh-my-pi/pi-utils";
+import {
+	getAgentDbPath,
+	getAgentDir,
+	getProjectDir,
+	logger,
+	normalizePathForComparison,
+	VERSION,
+} from "@oh-my-pi/pi-utils";
 import {
 	type AdvisorConfigScope,
 	discoverAdvisorConfigs,
@@ -42,6 +49,7 @@ import {
 	theme,
 } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
+import { OrchestratorRuntime } from "../../orchestrator/runtime";
 import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { createAgentSession } from "../../sdk";
@@ -339,6 +347,25 @@ export class SelectorController {
 		});
 	}
 
+	/**
+	 * Stops a worker through the orchestrator so its in-flight turn is cancelled, the way
+	 * `orchestrate_kill` does. False when this session owns no worker with that id — a fleet
+	 * agent or a persisted subagent, which the caller tears down through the lifecycle instead.
+	 */
+	async #stopOrchestratedWorker(id: string): Promise<boolean> {
+		const parent = this.ctx.session.orchestratorParent;
+		if (!parent) return false;
+		try {
+			return (await OrchestratorRuntime.global().killIfManaged(parent, id)) !== undefined;
+		} catch (error) {
+			logger.warn("agents view: orchestrator stop failed", {
+				id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return false;
+		}
+	}
+
 	async showExtensionsDashboard(): Promise<void> {
 		const dashboard = await ExtensionDashboard.create(getProjectDir(), this.ctx.settings, this.ctx.ui.terminal.rows);
 
@@ -366,7 +393,10 @@ export class SelectorController {
 		let initialSessions: SessionInfo[] | undefined;
 		if (scope === "current") {
 			if (!currentSessionFile) {
-				this.ctx.showError("No session file to inspect (in-memory session)");
+				// Nothing on disk to scope to, but live subagents still exist in the registry:
+				// the fleet shows them and carries the in-memory empty state when there are none.
+				// An error toast per keypress told the user neither why nor what to do instead.
+				this.ctx.showAgentFleet();
 				return;
 			}
 			const sessions = await SessionManager.listAll();
@@ -418,6 +448,7 @@ export class SelectorController {
 				this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text)).then(() => undefined),
 			showError: message => this.ctx.showError(message),
 			showStatus: message => this.ctx.showStatus(message),
+			stopWorker: id => this.#stopOrchestratedWorker(id),
 			getTool: name => this.ctx.session.getToolByName(name),
 			isBuiltInTool: name => this.ctx.session.hasBuiltInTool(name),
 			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
@@ -530,8 +561,6 @@ export class SelectorController {
 				for (const child of this.ctx.chatContainer.children) {
 					if (!hidden && (child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)) {
 						child.setExpanded(false);
-					} else if (child instanceof AssistantMessageComponent) {
-						child.setToolResultImagesVisible(!hidden);
 					}
 				}
 				this.ctx.chatContainer.setToolActivityVisible(!hidden);

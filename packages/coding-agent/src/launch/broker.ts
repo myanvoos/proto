@@ -6,6 +6,7 @@ import { Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import {
 	isEexist,
 	isEnoent,
+	levenshteinDistance,
 	logger,
 	postmortem,
 	procmgr,
@@ -52,6 +53,7 @@ const LEASE_WAIT_TIMEOUT_MS = 15_000;
 const LEASE_WAIT_POLL_MS = 100;
 
 const MAX_TERMINAL_DAEMONS_LISTED = 10;
+const MAX_DAEMON_NAMES_HINTED = 8;
 const TOKEN_FILE = "broker.token";
 const PID_FILE = "broker.pid";
 const META_FILE = "meta.json";
@@ -118,6 +120,19 @@ interface DaemonLogReadOptions {
 
 function quoteShellArg(value: string): string {
 	return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** Closest known names first, bounded so one unknown-name error stays readable. */
+function availableHint(names: readonly string[], requested: string): string {
+	if (names.length === 0) return "";
+	const ranked = [...names].sort(
+		(a, b) =>
+			levenshteinDistance(requested.toLowerCase(), a.toLowerCase()) -
+				levenshteinDistance(requested.toLowerCase(), b.toLowerCase()) || a.localeCompare(b),
+	);
+	const shown = ranked.slice(0, MAX_DAEMON_NAMES_HINTED);
+	const rest = ranked.length - shown.length;
+	return `. Closest known: ${shown.join(", ")}${rest > 0 ? ` (+${rest} more)` : ""}`;
 }
 
 function terminalState(state: DaemonSnapshot["state"]): boolean {
@@ -1269,8 +1284,7 @@ class DaemonBroker {
 	#record(name: string): ManagedDaemon {
 		const record = this.#records.get(name);
 		if (record) return record;
-		const names = [...this.#records.keys()];
-		throw new Error(`Unknown daemon ${name}${names.length ? `. Available: ${names.join(", ")}` : ""}`);
+		throw new Error(`Unknown daemon ${name}${availableHint([...this.#records.keys()], name)}`);
 	}
 
 	#persist(record: ManagedDaemon): void {

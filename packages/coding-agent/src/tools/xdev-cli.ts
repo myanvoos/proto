@@ -8,7 +8,8 @@
  *
  * Conventions:
  * - `--flag value`, `--flag=value`, bare `--flag` for booleans (`--no-flag` negates).
- * - Repeatable array flags; scalar string arrays also split comma-separated tokens.
+ * - Array flags: repeat the flag for literal entries; a single value splits on unescaped
+ *   commas (`\,` escapes one) and a single JSON array value is taken verbatim.
  * - Positional values fill remaining scalar properties in usage order (device profiles in
  *   XDEV_POSITIONAL_ORDER pin the friendly order; default is schema declaration order).
  * - A single `{...}` positional stays the legacy full-args JSON form; `--json '<json>'` is the
@@ -195,11 +196,68 @@ function parseScalarToken(spec: XdevFlagSpec, token: string, flag: string): unkn
 	return token;
 }
 
+/**
+ * Split one array-flag value on unescaped commas. `\,` is a literal comma and
+ * `\\` a literal backslash, so entries containing commas stay expressible
+ * without JSON.
+ */
 function splitArrayToken(token: string): string[] {
-	return token
-		.split(",")
-		.map(entry => entry.trim())
-		.filter(entry => entry.length > 0);
+	const entries: string[] = [];
+	let current = "";
+	for (let index = 0; index < token.length; index++) {
+		const char = token[index]!;
+		if (char === "\\" && (token[index + 1] === "," || token[index + 1] === "\\")) {
+			current += token[++index]!;
+			continue;
+		}
+		if (char === ",") {
+			entries.push(current);
+			current = "";
+			continue;
+		}
+		current += char;
+	}
+	entries.push(current);
+	return entries.map(entry => entry.trim()).filter(entry => entry.length > 0);
+}
+
+function unescapeArrayToken(token: string): string {
+	return token.replace(/\\([,\\])/g, "$1");
+}
+
+/** A JSON array of scalars is the lossless verbatim form for array flags. */
+function tryParseJsonScalarArray(token: string): string[] | undefined {
+	if (!token.trimStart().startsWith("[")) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(token);
+		if (!Array.isArray(parsed) || parsed.some(entry => entry !== null && typeof entry === "object")) return undefined;
+		return parsed.map(entry => String(entry));
+	} catch {
+		return undefined;
+	}
+}
+
+function coerceArrayEntries(spec: XdevFlagSpec, entries: readonly string[], flag: string): unknown[] {
+	if (spec.items !== "number") return [...entries];
+	return entries.map(entry => {
+		const value = Number(entry);
+		if (!Number.isFinite(value)) throw new XdevUsageError(`xd: --${flag} expects numbers, got "${entry}"`);
+		return value;
+	});
+}
+
+/**
+ * Resolve every occurrence of one array flag.
+ *
+ * - Repeating the flag states entries explicitly: each occurrence is exactly
+ *   one literal entry, so values containing commas survive verbatim.
+ * - A single occurrence is the list form and splits on unescaped commas.
+ * - A single JSON array value is taken verbatim, element for element.
+ */
+function resolveArrayFlag(spec: XdevFlagSpec, tokens: readonly string[], flag: string): unknown[] {
+	if (tokens.length > 1) return coerceArrayEntries(spec, tokens.map(unescapeArrayToken), flag);
+	const token = tokens[0] ?? "";
+	return coerceArrayEntries(spec, tryParseJsonScalarArray(token) ?? splitArrayToken(token), flag);
 }
 
 function looksLikeJson(text: string): boolean {
@@ -251,6 +309,7 @@ export function parseXdevCliArgs(
 	const specByName = new Map(specs.map(spec => [spec.name, spec]));
 	const args: Record<string, unknown> = {};
 	const positionals: string[] = [];
+	const arrayTokens = new Map<string, { flag: string; spec: XdevFlagSpec; tokens: string[] }>();
 	let explicitJson: Record<string, unknown> | undefined;
 	let endOfFlags = false;
 	const needValue = (flag: string): string => {
@@ -353,18 +412,19 @@ export function parseXdevCliArgs(
 				valueToken = options.stdin;
 			}
 			if (spec.type === "array") {
-				const entries =
-					spec.items === "number"
-						? splitArrayToken(valueToken).map(entry => Number(entry))
-						: splitArrayToken(valueToken);
-				const existing = args[spec.name];
-				args[spec.name] = Array.isArray(existing) ? [...existing, ...entries] : entries;
+				const pending = arrayTokens.get(spec.name);
+				if (pending) pending.tokens.push(valueToken);
+				else arrayTokens.set(spec.name, { flag: flagName, spec, tokens: [valueToken] });
 			} else {
 				args[spec.name] = parseScalarToken(spec, valueToken, flagName);
 			}
 			continue;
 		}
 		positionals.push(token);
+	}
+
+	for (const [name, pending] of arrayTokens) {
+		args[name] = resolveArrayFlag(pending.spec, pending.tokens, pending.flag);
 	}
 
 	if (explicitJson !== undefined) {
@@ -433,11 +493,14 @@ export function parseXdevCliArgs(
 			throw new XdevUsageError(`xd ${options.deviceName}: no schema property for positional "${token}"`);
 		}
 		if (spec.type === "array") {
-			const entries = token
-				.split(/\s+/)
-				.flatMap(entry => (entry.includes(",") ? splitArrayToken(entry) : [entry.trim()]))
-				.filter(entry => entry.length > 0)
-				.map(entry => (spec.items === "number" ? Number(entry) : entry));
+			const jsonEntries = tryParseJsonScalarArray(token);
+			const entries = jsonEntries
+				? coerceArrayEntries(spec, jsonEntries, prop)
+				: resolveArrayFlag(
+						spec,
+						token.split(/\s+/).filter(entry => entry.length > 0),
+						prop,
+					);
 			const existing = args[spec.name];
 			args[spec.name] = Array.isArray(existing) ? [...existing, ...entries] : entries;
 		} else if (spec.type === "boolean") {
@@ -494,8 +557,10 @@ export function formatXdevCliCommand(name: string, args: Record<string, unknown>
 			continue;
 		}
 		if (Array.isArray(raw)) {
+			// Repeated flags are the literal-entry form; escape backslashes so a
+			// rendered command parses back to the same entries.
 			for (const entry of raw) {
-				parts.push(`--${key} ${quoteShellValue(displayValue(String(entry)))}`);
+				parts.push(`--${key} ${quoteShellValue(displayValue(String(entry).replaceAll("\\", "\\\\")))}`);
 			}
 			continue;
 		}
@@ -555,8 +620,8 @@ export function formatCliFlagReference(name: string, tool: AiTool): string {
 					? (spec.enumValues?.join("|") ?? "value")
 					: spec.type === "array"
 						? spec.items === "number"
-							? "number[] (repeatable; comma-splits)"
-							: "string[] (repeatable; comma-splits)"
+							? "number[] (repeat for literal entries; single value comma-splits)"
+							: "string[] (repeat for literal entries; single value comma-splits)"
 						: spec.type === "json"
 							? "JSON"
 							: spec.type;

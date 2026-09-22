@@ -127,10 +127,8 @@ export class AssistantMessageComponent extends Container {
 	#lastMessage?: AssistantMessage;
 	#messagePersistenceKey?: string;
 	#staticTextBlocks?: readonly string[];
-	#toolImagesByCallId?: Map<string, ImageContent[]>;
 	#convertedKittyImages?: Map<string, ImageContent>;
 	#showImages = true;
-	#showToolResultImages = true;
 	#kittyConversionsInFlight?: Set<string>;
 	#transcriptBlockFinalized: boolean;
 
@@ -505,7 +503,6 @@ export class AssistantMessageComponent extends Container {
 		this.#clearContent();
 		const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
 		for (const text of blocks) this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(), mdOptions, 2));
-		this.#renderToolImages();
 		super.invalidate();
 	}
 
@@ -550,47 +547,6 @@ export class AssistantMessageComponent extends Container {
 	setImagesVisible(visible: boolean): void {
 		if (this.#showImages === visible) return;
 		this.#showImages = visible;
-		if (this.#lastMessage) {
-			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
-		} else if (this.#staticTextBlocks !== undefined) {
-			this.#rebuildStaticTextContent();
-		}
-	}
-
-	setToolResultImagesVisible(visible: boolean): void {
-		if (this.#showToolResultImages === visible) return;
-		this.#showToolResultImages = visible;
-		if (this.#lastMessage) {
-			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
-		} else if (this.#staticTextBlocks !== undefined) {
-			this.#rebuildStaticTextContent();
-		}
-	}
-
-	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
-		if (!toolCallId) return;
-		const validImages = images.filter(img => img.type === "image" && img.data && img.mimeType);
-		for (const key of Array.from(this.#convertedKittyImages?.keys() ?? [])) {
-			if (key.startsWith(`${toolCallId}:`)) {
-				this.#convertedKittyImages?.delete(key);
-			}
-		}
-		for (const key of Array.from(this.#kittyConversionsInFlight ?? [])) {
-			if (key.startsWith(`${toolCallId}:`)) {
-				this.#kittyConversionsInFlight?.delete(key);
-			}
-		}
-		if (this.#convertedKittyImages?.size === 0) this.#convertedKittyImages = undefined;
-		if (validImages.length === 0) {
-			this.#toolImagesByCallId?.delete(toolCallId);
-		} else {
-			const toolImagesByCallId = this.#toolImagesByCallId ?? new Map<string, ImageContent[]>();
-			this.#toolImagesByCallId = toolImagesByCallId;
-			toolImagesByCallId.set(toolCallId, validImages);
-			this.#convertImagesForKitty(validImages.map((image, index) => ({ image, key: `${toolCallId}:${index}` })));
-		}
-		if (this.#toolImagesByCallId?.size === 0) this.#toolImagesByCallId = undefined;
-		if (this.#kittyConversionsInFlight?.size === 0) this.#kittyConversionsInFlight = undefined;
 		if (this.#lastMessage) {
 			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		} else if (this.#staticTextBlocks !== undefined) {
@@ -652,14 +608,6 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	#renderToolImages(): void {
-		if (!this.#showToolResultImages || !this.#toolImagesByCallId) return;
-		const entries = Array.from(this.#toolImagesByCallId.entries()).flatMap(([toolCallId, images]) =>
-			images.map((image, index) => ({ image, key: `${toolCallId}:${index}` })),
-		);
-		this.#renderImageEntries(entries, true);
-	}
-
 	#appendThinkingExtensions(contentIndex: number, thinkingIndex: number, text: string): void {
 		for (const renderer of this.thinkingRenderers) {
 			try {
@@ -700,7 +648,6 @@ export class AssistantMessageComponent extends Container {
 		for (const content of message.content) {
 			if (content.type === "toolCall" || content.type === "image") return false;
 		}
-		if ((this.#toolImagesByCallId?.size ?? 0) > 0) return false;
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		if (errorPresentation.kind === "compact-recovered" || errorPresentation.kind === "interrupted") return false;
 		if (
@@ -886,7 +833,6 @@ export class AssistantMessageComponent extends Container {
 			this.#stopThinkingAnimation();
 		}
 
-		this.#renderToolImages();
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasToolCalls = message.content.some(c => c.type === "toolCall");
 		if (errorPresentation.kind === "compact-recovered") {

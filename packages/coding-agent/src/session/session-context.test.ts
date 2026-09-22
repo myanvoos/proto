@@ -197,3 +197,37 @@ describe("compaction tool-pair boundaries", () => {
 		expectClosedToolPairs(context.messages);
 	});
 });
+
+describe("thinking level restoration", () => {
+	function thinkingLevelChange(
+		id: string,
+		parentId: string | null,
+		thinkingLevel: string | null,
+		configured: string | null,
+	): SessionEntry {
+		return {
+			id,
+			parentId,
+			type: "thinking_level_change",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			thinkingLevel,
+			configured,
+		} as unknown as SessionEntry;
+	}
+
+	// Regression: a session that never chose a level was restored as an explicit "off", which pinned
+	// a level nobody asked for and changed the model string a revived worker reports.
+	test("a recorded absence of a level restores as no level", () => {
+		const context = buildSessionContext([thinkingLevelChange("t", null, null, null)], "t");
+
+		expect(context.thinkingLevel).toBeUndefined();
+		expect(context.configuredThinkingLevel).toBeUndefined();
+	});
+
+	test("an explicit level is restored as chosen", () => {
+		const context = buildSessionContext([thinkingLevelChange("t", null, "high", "high")], "t");
+
+		expect(context.thinkingLevel).toBe("high");
+		expect(context.configuredThinkingLevel).toBe("high");
+	});
+});

@@ -352,3 +352,15 @@ test("a peer wake receipt reports an unconfirmed wake request rather than claimi
 
 	expect(receipt).toEqual({ to: "recipient", outcome: "delivered", effect: "wake_requested" });
 });
+
+// Contract: a rejection must route the sender to a surface that exists. `irc` is not a tool and
+// not a bash subcommand; the live roster comes from the fleet tool's list op.
+test("an unknown recipient is pointed at the fleet roster, not a non-existent irc command", async () => {
+	const registry = makeRegistryWithPeer("running");
+	const bus = new IrcBus(registry);
+	const receipt = await bus.send({ from: "waiter", to: "ghost", body: "hello" });
+	expect(receipt.outcome).toBe("rejected");
+	expect(receipt.error).toContain("fleet");
+	expect(receipt.error).toContain('op:"list"');
+	expect(receipt.error).not.toContain("irc list");
+});

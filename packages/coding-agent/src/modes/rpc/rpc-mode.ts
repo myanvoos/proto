@@ -26,7 +26,7 @@ import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameEncoder } from "./rpc-frame";
-import { claimRpcInput, readRpcInputFrames } from "./rpc-input";
+import { claimRpcInput, readRpcInputFrames, validateRpcCommand } from "./rpc-input";
 import { pageRpcMessages, RPC_MESSAGES_PAGE_BUSY_ERROR, RpcMessagesPageError } from "./rpc-messages";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
 import type {
@@ -274,6 +274,19 @@ function dispatchRpcControlFrame(parsed: unknown, deps: RpcInputFrameDeps): bool
 export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps): Promise<void> | undefined {
 	if (dispatchRpcControlFrame(parsed, deps)) return undefined;
 
+	const invalid = validateRpcCommand(parsed);
+	if (invalid) {
+		const frame = isRecord(parsed) ? parsed : {};
+		deps.output(
+			deps.errorResponse(
+				typeof frame.id === "string" ? frame.id : undefined,
+				typeof frame.type === "string" ? frame.type : "parse",
+				invalid,
+			),
+		);
+		return undefined;
+	}
+
 	const command = parsed as RpcCommand;
 
 	if (command.type === "bash") {
@@ -310,7 +323,7 @@ export class RpcInputDispatcher {
 			if (dispatchRpcControlFrame(parsed, this.#deps)) return;
 
 			const command = parsed as RpcCommand;
-			if (command.type === "bash") {
+			if (isRecord(parsed) && parsed.type === "bash") {
 				dispatchRpcInputFrame(command, this.#deps);
 				return;
 			}

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- DEC 1004 focus reporting: the terminal enables focus events on attach, tracks focus in/out, and exposes `isTerminalFocused()` (`undefined` until the host actually reports focus, so callers never mistake silence for "focused"). Focus reports are consumed instead of leaking into the input handler as stray keys.
+
 ### Breaking Changes
 
 - Native-scrollback applications now provide explicit history batches through `TerminalFrameProvider`; removed implicit full-document retirement and the `NativeScrollback*` / `RenderStablePrefix` component hooks.
@@ -13,6 +17,10 @@
 ### Fixed
 
 - Committed scrollback survives an empty live viewport, including tiny terminals and overlay transitions.
+- Resizing a terminal no longer leaves a stale duplicate of the input line above the live one, and committed history is never reprinted after a width change.
+- Typing over a selection undoes in one step instead of two, and no longer shows an intermediate state that was never typed.
+- Terminal multiplexers are identified by asking the terminal rather than by environment variables, so scrollback survives resizing inside tmux or screen even when those variables are missing.
+- Wrapped lines inside fenced code blocks keep their code indentation.
 
 ## [18.1.23] - 2026-09-20
 

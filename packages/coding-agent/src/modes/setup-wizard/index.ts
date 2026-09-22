@@ -5,9 +5,10 @@ import { modelSetupScene } from "./scenes/model";
 import { providersSetupScene } from "./scenes/providers";
 import { themeSetupScene } from "./scenes/theme";
 import type { SetupScene } from "./scenes/types";
-import { SetupWizardComponent } from "./wizard-overlay";
+import { SetupWizardComponent, type SetupWizardOutcome } from "./wizard-overlay";
 
 export type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult } from "./scenes/types";
+export type { SetupWizardOutcome } from "./wizard-overlay";
 
 export { CURRENT_SETUP_VERSION };
 
@@ -65,16 +66,25 @@ export async function markSetupWizardComplete(
 	await settings.flush();
 }
 
+/** Shown after ctrl+c so the user knows nothing was saved and how to pick setup back up. */
+export const SETUP_CANCELLED_NOTICE =
+	"Setup cancelled — nothing was saved. Run /setup to finish it, or press Esc inside setup to skip a step.";
+
 interface RunSetupWizardOptions {
 	markComplete?: boolean;
 }
 
+/**
+ * Runs the wizard and reports how it ended. A cancelled run (ctrl+c) never records
+ * a setup version, so the wizard comes back on the next launch instead of stranding
+ * the user with a config that only says setup happened.
+ */
 export async function runSetupWizard(
 	ctx: InteractiveModeContext,
 	scenes: readonly SetupScene[] = ALL_SCENES,
 	options: RunSetupWizardOptions = {},
-): Promise<void> {
-	if (scenes.length === 0) return;
+): Promise<SetupWizardOutcome> {
+	if (scenes.length === 0) return "completed";
 	const component = new SetupWizardComponent(ctx, scenes);
 	const overlay = ctx.ui.showOverlay(component, {
 		width: "100%",
@@ -84,10 +94,11 @@ export async function runSetupWizard(
 		fullscreen: true,
 	});
 	try {
-		await component.run();
-		if (options.markComplete !== false) {
+		const outcome = await component.run();
+		if (outcome === "completed" && options.markComplete !== false) {
 			await markSetupWizardComplete(ctx.settings);
 		}
+		return outcome;
 	} finally {
 		component.dispose();
 		ctx.ui.setFocus(component);

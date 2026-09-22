@@ -39,6 +39,61 @@ describe("orchestrator lifecycle identity", () => {
 		}
 	});
 
+	test("killIfManaged cancels the worker's in-flight turn, and ignores ids it does not own", async () => {
+		AgentRegistry.resetGlobalForTests();
+		OrchestratorRuntime.resetGlobalForTests();
+		const runtime = OrchestratorRuntime.global();
+		runtime.setTeardownGraceForTesting(200);
+		const manager = new AsyncJobManager({ retentionMs: 60_000 });
+		const parent = {
+			getAgentId: () => "Main",
+			getSessionId: () => "test-parent-session",
+			getSessionFile: () => null,
+			asyncJobManager: manager,
+			settings: undefined as never,
+		};
+		let cancelled = false;
+		let requests = 0;
+		try {
+			// A turn that keeps calling its provider until something cancels it — the shape of the
+			// in-flight worker the agents view stop key used to leave running.
+			manager.register(
+				"worker",
+				"stuck worker turn",
+				async ({ signal }) => {
+					while (!signal.aborted) {
+						requests++;
+						await new Promise(resolve => setTimeout(resolve, 5));
+					}
+					cancelled = true;
+					return "aborted";
+				},
+				{ id: "worker-turn-1", ownerId: "test-parent-session" },
+			);
+			runtime.registerRecordForTests({ id: "worker-1", ownerId: "Main", state: "running", jobId: "worker-turn-1" });
+
+			expect(await runtime.killIfManaged(parent, "not-a-worker")).toBeUndefined();
+			const before = requests;
+			const outcome = await runtime.killIfManaged(parent, "worker-1");
+
+			expect(outcome?.id).toBe("worker-1");
+			expect(outcome?.cancelledTurn).toBe(true);
+			expect(before).toBeGreaterThan(0);
+
+			// The turn observes the cancellation and stops issuing work; before the fix the UI had
+			// no way to reach this signal and the worker kept calling its provider.
+			for (let attempt = 0; attempt < 200 && !cancelled; attempt++) {
+				await new Promise(resolve => setTimeout(resolve, 5));
+			}
+			expect(cancelled).toBe(true);
+			const after = requests;
+			await new Promise(resolve => setTimeout(resolve, 50));
+			expect(requests).toBe(after);
+		} finally {
+			await manager.dispose({ timeoutMs: 1_000 });
+		}
+	});
+
 	test("an idle worker without an authoritative registry ref is terminal, never stale idle", () => {
 		AgentRegistry.resetGlobalForTests();
 		OrchestratorRuntime.resetGlobalForTests();

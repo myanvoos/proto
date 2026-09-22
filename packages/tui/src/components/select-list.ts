@@ -121,6 +121,7 @@ interface SelectListLayoutCache {
 
 export class SelectList implements Component, MouseRoutable {
 	#maxVisible: number;
+	#maxHeight = Number.POSITIVE_INFINITY;
 	#filteredItems: ReadonlyArray<SelectItem>;
 	#filterQuery = "";
 	#selectedIndex: number = 0;
@@ -167,6 +168,10 @@ export class SelectList implements Component, MouseRoutable {
 		const index =
 			previousValue === undefined ? -1 : this.#filteredItems.findIndex(item => item.value === previousValue);
 		this.setSelectedIndex(index >= 0 ? index : this.#selectedIndex);
+	}
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(1, Math.trunc(rows));
 	}
 
 	setMaxVisible(rows: number): void {
@@ -219,7 +224,7 @@ export class SelectList implements Component, MouseRoutable {
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
 		this.#hitRows.length = 0;
-		const showSearchStatus = this.#shouldRenderSearchStatus();
+		const showSearchStatus = this.#maxHeight > 1 && this.#shouldRenderSearchStatus();
 
 		if (this.#filteredItems.length === 0) {
 			if (showSearchStatus) {
@@ -232,7 +237,7 @@ export class SelectList implements Component, MouseRoutable {
 		const layoutCache = this.#getLayoutCache();
 		const { primaryColumnWidth, iconColumnWidth, preparedItems } = layoutCache;
 		const { rowCounts, rowOffsets, visualTotal } = this.#getWidthLayoutCache(layoutCache, width);
-		const visualBudget = this.#maxVisible;
+		const visualBudget = Math.min(this.#maxVisible, this.#maxHeight - (showSearchStatus ? 1 : 0));
 		const overflow = visualTotal > visualBudget;
 		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
 
@@ -356,7 +361,7 @@ export class SelectList implements Component, MouseRoutable {
 				return rows;
 			}
 
-			const truncatedDesc = truncateToWidth(descriptionSingleLine, remainingWidth, Ellipsis.Omit);
+			const truncatedDesc = truncateToWidth(descriptionSingleLine, remainingWidth, Ellipsis.Unicode);
 			if (isSelected) {
 				return [this.theme.selectedText(`${prefix}${iconCell}${truncatedValue}${spacing}${truncatedDesc}`)];
 			}
@@ -596,18 +601,20 @@ export class SelectList implements Component, MouseRoutable {
 
 	#renderStatusLine(width: number): string {
 		const query = sanitizeSingleLine(this.#filterQuery);
-		const statusText = query ? `  Search: ${query}` : "  Type to search";
-		return this.theme.scrollInfo(truncateToWidth(statusText, Math.max(1, width - 2), Ellipsis.Omit));
+		const glyph = this.theme.symbols.search ?? "/";
+		const statusText = query ? `${glyph} ${query}` : `${glyph} type to search`;
+		return this.theme.scrollInfo(truncateToWidth(statusText, Math.max(1, width - 2), Ellipsis.Unicode));
 	}
 
 	#shouldRenderSearchStatus(): boolean {
 		return (
-			this.layout.overflowSearch !== false && (this.items.length > this.#maxVisible || this.#filterQuery.length > 0)
+			this.layout.overflowSearch !== false &&
+			(this.items.length > Math.min(this.#maxVisible, this.#maxHeight) || this.#filterQuery.length > 0)
 		);
 	}
 
 	#canEditSearch(): boolean {
-		return this.layout.overflowSearch !== false && this.items.length > this.#maxVisible;
+		return this.layout.overflowSearch !== false && this.items.length > Math.min(this.#maxVisible, this.#maxHeight);
 	}
 
 	#handleSearchInput(keyData: string): boolean {

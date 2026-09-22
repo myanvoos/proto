@@ -4,7 +4,7 @@ import type { MonitorEvent } from "../../monitor/types";
 import type { CustomMessage } from "../../session/messages";
 import { MONITOR_EVENT_MESSAGE_TYPE, type MonitorEventDetails } from "../../session/monitor-event";
 import { initTheme } from "../theme/theme";
-import { buildMonitorEventBlock } from "./transcript-render-helpers";
+import { buildAsyncResultBlock, buildMonitorEventBlock } from "./transcript-render-helpers";
 
 await Settings.init();
 await initTheme(false, false, "proto");
@@ -55,4 +55,33 @@ test("monitor event block renders sanitized, truncated output", () => {
 	expect(rendered).toContain("col   umn");
 	expect(rendered).not.toContain(longTail);
 	expect(rendered).toContain("…");
+});
+
+function asyncResultMessage(jobs: Array<{ jobId: string; status?: string }>): CustomMessage<unknown> {
+	return {
+		role: "custom",
+		customType: "async-result",
+		content: "job finished",
+		display: true,
+		attribution: "agent",
+		details: { jobs: jobs.map(job => ({ ...job, type: "bash", durationMs: 1_100 })) },
+		timestamp: 0,
+	} as CustomMessage<unknown>;
+}
+
+test("async result block distinguishes failed jobs from completed ones", () => {
+	const rendered = buildAsyncResultBlock(asyncResultMessage([{ jobId: "bg_1", status: "failed" }]))
+		.render(120)
+		.join("\n")
+		.replace(ANSI, "");
+	expect(rendered).toContain("Background job failed");
+	expect(rendered).toContain("bg_1");
+	expect(rendered).not.toContain("Background job completed");
+
+	const success = buildAsyncResultBlock(asyncResultMessage([{ jobId: "bg_2", status: "completed" }]))
+		.render(120)
+		.join("\n")
+		.replace(ANSI, "");
+	expect(success).toContain("Background job completed");
+	expect(success).not.toContain("Background job failed");
 });

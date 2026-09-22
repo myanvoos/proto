@@ -169,7 +169,11 @@ export function renderSearchResult(
 				? stripSearchReferenceSections(response.answer)
 				: response.answer.trim()
 			: "";
-	const contentText = answerText || rawText;
+	// `rawText` is the model-facing transcript, which already contains the source listing when the
+	// provider returns structured sources. Feeding it to the Answer section rendered that listing a
+	// second time as markdown: its "## Sources" heading read as a section label and the reflow
+	// destroyed the listing's hanging indent. Fall back to it only when there is no tree to show.
+	const contentText = answerText || (sources.length > 0 ? "" : rawText);
 
 	const providerLabel = provider !== "none" ? getSearchProviderLabel(provider) : "None";
 	const rawQuery = args?.query ?? searchQueries[0];

@@ -94,6 +94,7 @@ export class SettingsList implements Component {
 	#theme: SettingsListTheme;
 	#selectedIndex = 0;
 	#maxVisible: number;
+	#maxHeight = Number.POSITIVE_INFINITY;
 	#onChange: (id: string, newValue: string) => void;
 	#onCancel: () => void;
 	#options: SettingsListOptions;
@@ -169,6 +170,15 @@ export class SettingsList implements Component {
 		if (item?.id === this.#lastNotifiedSelectionId) return;
 		this.#lastNotifiedSelectionId = item?.id;
 		this.onSelectionChange?.(item);
+	}
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(1, Math.trunc(rows));
+	}
+
+	#visibleRows(): number {
+		const detailRows = this.#maxHeight >= 7 ? 4 : 0;
+		return Math.min(this.#maxVisible, Math.max(1, this.#maxHeight - detailRows));
 	}
 
 	setMaxVisible(rows: number): void {
@@ -407,15 +417,15 @@ export class SettingsList implements Component {
 	}
 
 	#stableHeight(): number {
-		let height = this.#maxVisible + 4;
+		let height = this.#visibleRows() + 4;
 		if (this.#options.typeToSearch !== false) height += 1;
 		if (this.#options.hint !== "") height += 2;
 		return height;
 	}
 
 	#padLines(lines: string[]): string[] {
-		while (lines.length < this.#stableHeight()) lines.push("");
-		return lines;
+		while (lines.length < Math.min(this.#maxHeight, this.#stableHeight())) lines.push("");
+		return lines.slice(0, this.#maxHeight);
 	}
 
 	render(width: number): readonly string[] {
@@ -424,6 +434,7 @@ export class SettingsList implements Component {
 		this.#sidebarHitCol = 0;
 
 		if (this.#submenuComponent) {
+			this.#submenuComponent.setMaxHeight?.(this.#maxHeight);
 			return this.#padLines([...this.#submenuComponent.render(width)]);
 		}
 
@@ -503,7 +514,7 @@ export class SettingsList implements Component {
 		if (splitLines) {
 			lines.push(...splitLines);
 		} else {
-			const viewportHeight = Math.min(this.#maxVisible, this.#filteredItems.length);
+			const viewportHeight = Math.min(this.#visibleRows(), this.#filteredItems.length);
 			const startIndex = Math.max(
 				0,
 				Math.min(this.#selectedIndex - Math.floor(viewportHeight / 2), this.#filteredItems.length - viewportHeight),
@@ -543,7 +554,7 @@ export class SettingsList implements Component {
 			scrollView.setScrollOffset(startIndex);
 			lines.push(...scrollView.render(width));
 
-			while (lines.length < this.#maxVisible) lines.push("");
+			while (lines.length < this.#visibleRows()) lines.push("");
 		}
 
 		lines.push("");
@@ -608,7 +619,7 @@ export class SettingsList implements Component {
 		});
 
 		const activeStart = active.name ? active.firstItemIndex - 1 : active.firstItemIndex;
-		const viewportHeight = Math.min(this.#maxVisible, this.#filteredItems.length);
+		const viewportHeight = Math.min(this.#visibleRows(), this.#filteredItems.length);
 		const startRow = Math.max(
 			0,
 			Math.min(this.#selectedIndex - Math.floor(viewportHeight / 2), this.#filteredItems.length - viewportHeight),

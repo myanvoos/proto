@@ -186,6 +186,9 @@ export interface ToolExecutionHandle extends Component {
 	updateResult(result: ToolExecutionResult, isPartial?: boolean, toolCallId?: string): void;
 	setArgsComplete(toolCallId?: string): void;
 	setExecutionStarted(toolCallId?: string): void;
+
+	/** Records the call's declared intent so renderers can keep it on a finished card. */
+	setIntent?(intent: string | undefined): void;
 	setExpanded(expanded: boolean): void;
 	setToolActivityVisible(visible: boolean): void;
 
@@ -273,6 +276,7 @@ export class ToolExecutionComponent extends Container {
 
 	#argsComplete = false;
 	#executionStarted = false;
+	#intent: string | undefined;
 
 	#sealed = false;
 
@@ -284,6 +288,7 @@ export class ToolExecutionComponent extends Container {
 		isPartial: boolean;
 		argsComplete?: boolean;
 		executionStarted?: boolean;
+		intent?: string;
 		renderContext?: Record<string, unknown>;
 	} = {
 		expanded: false,
@@ -339,6 +344,13 @@ export class ToolExecutionComponent extends Container {
 		this.#updateSpinnerAnimation();
 		if (alreadyComplete) return;
 		this.#displayInputVersion++;
+		this.#updateDisplay();
+	}
+
+	setIntent(intent: string | undefined): void {
+		const next = intent?.trim() || undefined;
+		if (this.#intent === next) return;
+		this.#intent = next;
 		this.#updateDisplay();
 	}
 
@@ -578,6 +590,7 @@ export class ToolExecutionComponent extends Container {
 		this.#renderState.isPartial = this.#isPartial;
 		this.#renderState.argsComplete = this.#argsComplete;
 		this.#renderState.executionStarted = this.#executionStarted;
+		this.#renderState.intent = this.#intent;
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
 
 		const benignSkip = this.#isBenignSkip();

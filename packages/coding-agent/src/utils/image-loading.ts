@@ -10,7 +10,7 @@ import type {
 import { formatBytes, isRecord, logger, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { resolveReadPath } from "../tools/path-utils";
-import type { ImageResizeOptions } from "./image-resize";
+import type { ImageResizeOptions, ResizedImage } from "./image-resize";
 
 export const MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024;
 const SUPPORTED_INPUT_IMAGE_MIME_TYPES = SUPPORTED_IMAGE_MIME_TYPES;
@@ -203,6 +203,42 @@ export class ImageInputTooLargeError extends Error {
 	}
 }
 
+export class ImageDecodeError extends Error {
+	readonly source: string;
+
+	constructor(source: string) {
+		super(`Image could not be decoded: ${source} is corrupt or truncated.`);
+		this.name = "ImageDecodeError";
+		this.source = source;
+	}
+}
+
+export interface ImageDimensions {
+	width: number;
+	height: number;
+}
+
+/**
+ * Decodes the image header so corrupt payloads are rejected here instead of being forwarded to
+ * a provider as undecodable base64. Returns the intrinsic dimensions for callers that show them.
+ */
+export async function readDecodedImageDimensions(data: string | Uint8Array): Promise<ImageDimensions | undefined> {
+	const buffer = typeof data === "string" ? Buffer.from(data, "base64") : data;
+	try {
+		const { width, height } = await new Bun.Image(buffer).metadata();
+		return width && height ? { width, height } : undefined;
+	} catch (error) {
+		logger.debug("Image decode probe failed", { error: String(error) });
+		return undefined;
+	}
+}
+
+export async function assertDecodableImage(data: string | Uint8Array, source: string): Promise<ImageDimensions> {
+	const dimensions = await readDecodedImageDimensions(data);
+	if (!dimensions) throw new ImageDecodeError(source);
+	return dimensions;
+}
+
 export class UnsupportedImageConversionError extends Error {
 	readonly mimeType: string;
 
@@ -306,6 +342,27 @@ export async function normalizeProviderContextImagesForModel(context: Context, m
 	return messages === context.messages ? context : { ...context, messages };
 }
 
+/**
+ * Resizing may legitimately fail (for example when no encoding gets under the size budget); in that
+ * case the original bytes are kept. A decode failure is not recoverable and is reported instead.
+ */
+async function resizeImageOrKeepOriginal(
+	image: ImageContent,
+	options: ImageResizeOptions,
+	source: string,
+): Promise<ResizedImage | undefined> {
+	const { resizeImage } = await loadImageResize();
+	try {
+		const resized = await resizeImage(image, options);
+		if (resized.decodeFailed) throw new ImageDecodeError(source);
+		return resized;
+	} catch (error) {
+		if (error instanceof ImageDecodeError) throw error;
+		logger.debug("Image resize failed; keeping the original bytes", { source, error: String(error) });
+		return undefined;
+	}
+}
+
 export async function loadImageInput(options: LoadImageInputOptions): Promise<LoadedImageInput | null> {
 	const maxBytes = options.maxBytes ?? MAX_IMAGE_INPUT_BYTES;
 	const resolvedPath = options.resolvedPath ?? resolveReadPath(options.path, options.cwd);
@@ -325,24 +382,27 @@ export async function loadImageInput(options: LoadImageInputOptions): Promise<Lo
 		throw new ImageInputTooLargeError(inputBuffer.byteLength, maxBytes);
 	}
 
+	await assertDecodableImage(inputBuffer, resolvedPath);
+
 	let outputData = Buffer.from(inputBuffer).toBase64();
 	let outputMimeType = mimeType;
 	let outputBytes = inputBuffer.byteLength;
 	let dimensionNote: string | undefined;
-	const { formatDimensionNote, resizeImage } = await loadImageResize();
+	const { formatDimensionNote } = await loadImageResize();
 
 	const shouldReencodeWebP = options.excludeWebP === true && mimeType === "image/webp";
 	if (options.autoResize || shouldReencodeWebP) {
-		try {
-			const resized = await resizeImage(
-				{ type: "image", data: outputData, mimeType },
-				{ excludeWebP: options.excludeWebP },
-			);
+		const resized = await resizeImageOrKeepOriginal(
+			{ type: "image", data: outputData, mimeType },
+			{ excludeWebP: options.excludeWebP },
+			resolvedPath,
+		);
+		if (resized) {
 			outputData = resized.data;
 			outputMimeType = resized.mimeType;
 			outputBytes = resized.buffer.byteLength;
 			dimensionNote = formatDimensionNote(resized);
-		} catch {}
+		}
 	}
 
 	let textNote = `Read image file [${outputMimeType}]`;
@@ -373,21 +433,27 @@ export async function loadImageAttachmentInput(
 		throw new ImageInputTooLargeError(inputBytes, maxBytes);
 	}
 
+	await assertDecodableImage(options.image.data, options.label);
+
 	let outputData = options.image.data;
 	let outputMimeType = options.image.mimeType;
 	let outputBytes = inputBytes;
 	let dimensionNote: string | undefined;
-	const { formatDimensionNote, resizeImage } = await loadImageResize();
+	const { formatDimensionNote } = await loadImageResize();
 
 	const shouldReencodeWebP = options.excludeWebP === true && options.image.mimeType === "image/webp";
 	if (options.autoResize || shouldReencodeWebP) {
-		try {
-			const resized = await resizeImage(options.image, { excludeWebP: options.excludeWebP });
+		const resized = await resizeImageOrKeepOriginal(
+			options.image,
+			{ excludeWebP: options.excludeWebP },
+			options.label,
+		);
+		if (resized) {
 			outputData = resized.data;
 			outputMimeType = resized.mimeType;
 			outputBytes = resized.buffer.byteLength;
 			dimensionNote = formatDimensionNote(resized);
-		} catch {}
+		}
 	}
 
 	let textNote = `Read image attachment ${options.label} [${outputMimeType}]`;

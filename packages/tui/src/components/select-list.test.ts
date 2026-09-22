@@ -108,3 +108,29 @@ describe("SelectList layout caching", () => {
 		expect(cached.render(61)).toEqual(coldLayout.render(61));
 	});
 });
+
+describe("SelectList physical height budget", () => {
+	it("keeps the selected item and matching mouse row through shrink and grow", () => {
+		const list = new SelectList(
+			Array.from({ length: 30 }, (_, i) => ({ value: `${i}`, label: `Choice ${i}` })),
+			12,
+			{
+				...theme,
+				selectedPrefix: text => text,
+				selectedText: text => text,
+				description: text => text,
+				scrollInfo: text => text,
+				noMatch: text => text,
+			},
+		);
+		list.setSelectedIndex(27);
+		for (const height of [12, 1, 2, 4, 6, 12]) {
+			list.setMaxHeight(height);
+			const lines = list.render(24);
+			expect(lines.length).toBeLessThanOrEqual(height);
+			const selectedRow = lines.findIndex(line => line.includes("Choice 27"));
+			expect(selectedRow).toBeGreaterThanOrEqual(0);
+			expect(list.hitTest(selectedRow)).toBe(27);
+		}
+	});
+});

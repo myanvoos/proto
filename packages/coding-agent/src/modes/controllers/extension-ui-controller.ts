@@ -502,7 +502,10 @@ export class ExtensionUiController {
 				draftEditor.getText().length > 0
 					? {
 							isBlocked: () => draftEditor.getText().length > 0,
-							handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
+							handleInput: (keyData: string) => {
+								draftEditor.handleDraftEdit(keyData);
+								if (draftEditor.getText().length === 0) this.ctx.editorContainer.removeChild(draftEditor);
+							},
 							hint: "Finish or clear the current prompt to answer",
 
 							syncPresentation: () => {
@@ -516,8 +519,9 @@ export class ExtensionUiController {
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(askDialog);
 
-				if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
+				if (inputGuard?.isBlocked()) this.ctx.editorContainer.addChild(this.ctx.editor);
 				this.ctx.ui.setFocus(askDialog);
+				draftEditor.focused = inputGuard?.isBlocked() ?? false;
 				this.ctx.ui.requestRender();
 			};
 
@@ -564,8 +568,9 @@ export class ExtensionUiController {
 			);
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(askDialog);
-			if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
+			if (inputGuard?.isBlocked()) this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.ctx.ui.setFocus(askDialog);
+			draftEditor.focused = inputGuard?.isBlocked() ?? false;
 			this.ctx.ui.requestRender();
 
 			return () => {

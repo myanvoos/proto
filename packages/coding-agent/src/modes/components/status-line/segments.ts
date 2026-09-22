@@ -360,8 +360,16 @@ const tokenOutSegment: StatusLineSegment = {
 const tokenTotalSegment: StatusLineSegment = {
 	id: "token_total",
 	render(ctx) {
-		const { input, output, cacheWrite, orchestrationInput, orchestrationOutput } = ctx.usageStats;
-		const total = input + output + cacheWrite + orchestrationInput + orchestrationOutput;
+		const { input, output, cacheWrite, orchestrationInput, orchestrationOutput, subagent } = ctx.usageStats;
+		const total =
+			input +
+			output +
+			cacheWrite +
+			orchestrationInput +
+			orchestrationOutput +
+			subagent.input +
+			subagent.output +
+			subagent.cacheWrite;
 		if (!total) return { content: "", visible: false };
 
 		const content = withIcon(theme.icon.tokens, formatNumber(total));
@@ -383,8 +391,11 @@ const tokenRateSegment: StatusLineSegment = {
 const costSegment: StatusLineSegment = {
 	id: "cost",
 	render(ctx) {
-		const { cost, premiumRequests } = ctx.usageStats;
-		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests);
+		const { cost: ownCost, premiumRequests, subagent } = ctx.usageStats;
+		// Subagents bill to their own transcripts; a session total that ignores them understates what
+		// the run actually cost.
+		const cost = ownCost + subagent.cost;
+		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests + subagent.premiumRequests);
 		const state = ctx.session.state;
 		const usingSubscription = state.model ? (ctx.session.modelRegistry?.isUsingOAuth(state.model) ?? false) : false;
 

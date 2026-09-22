@@ -2,7 +2,7 @@ import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolLo
 import { type Tool as AiTool, jsonSchemaToTypeScript, toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { Container } from "@oh-my-pi/pi-tui/tui";
-import { parseStreamingJson, truncateHeadBytes } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD, parseStreamingJson, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { extractUriScheme } from "../internal-urls/parse";
 import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
@@ -82,7 +82,7 @@ export function setXdevRendererLookup(lookup: (name: string) => ToolRenderer | u
 function schemaDeclaresIntentField(schema: unknown): boolean {
 	if (!schema || typeof schema !== "object" || !("properties" in schema)) return false;
 	const props = schema.properties;
-	return !!props && typeof props === "object" && !Array.isArray(props) && "i" in props;
+	return !!props && typeof props === "object" && !Array.isArray(props) && INTENT_FIELD in props;
 }
 
 interface RenderedDocs {
@@ -143,11 +143,18 @@ import { suggestKnownKey } from "./xdev-cli";
 
 function validateXdArgs(
 	device: AiTool,
-	args: Record<string, unknown>,
+	rawArgs: Record<string, unknown>,
 	toolCallId: string,
 	schema: Record<string, unknown>,
 	validationDocs: () => string,
 ): Record<string, unknown> {
+	let args = rawArgs;
+	if (INTENT_FIELD in args && !schemaDeclaresIntentField(schema)) {
+		// Published tool schemas carry the intent field; devices that do not
+		// declare it accept and drop it instead of rejecting the whole call.
+		args = { ...args };
+		delete args[INTENT_FIELD];
+	}
 	const unknown = unknownXdKeys(args, schema);
 	if (unknown.length > 0) {
 		const accepted = schemaProperties(schema) ?? [];
@@ -191,7 +198,6 @@ function parseDeviceArgs(device: AiTool, content: string, toolCallId: string): R
 
 	const args: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
 	const schema = toolWireSchema(device);
-	if ("i" in args && !schemaDeclaresIntentField(schema)) delete args.i;
 	return validateXdArgs(device, args, toolCallId, schema, () => renderDocsParts(device as Tool).schema);
 }
 

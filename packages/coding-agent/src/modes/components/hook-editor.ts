@@ -7,6 +7,7 @@ import {
 	matchesAppInterrupt,
 } from "../../modes/utils/keybinding-matchers";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
+import { editorKey } from "./keybinding-hints";
 import { OverlayPanel } from "./overlay-box";
 
 interface HookEditorOptions {
@@ -64,9 +65,10 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 
 		this.addChild(new Spacer(1));
 
-		const hint = this.#promptStyle
-			? "enter or ctrl+q submit  esc cancel  ctrl+g external editor"
-			: "ctrl+q/ctrl+enter submit  esc cancel  ctrl+g external editor";
+		const submitKeys = editorKey("app.message.followUp") || "ctrl+enter/ctrl+q";
+		const cancelKeys = editorKey("app.interrupt") || "esc";
+		const externalEditorKeys = editorKey("app.editor.external") || "ctrl+g";
+		const hint = `${this.#promptStyle ? "enter or " : ""}${submitKeys} submit  ${cancelKeys} cancel  ${externalEditorKeys} external editor`;
 		this.addChild(new Text(theme.fg("dim", hint), 0, 0));
 		this.addChild(new Spacer(1));
 	}

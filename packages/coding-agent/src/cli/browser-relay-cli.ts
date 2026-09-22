@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import { getBrowserRelayDir } from "@oh-my-pi/pi-utils";
+import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { probeRelayServer } from "../tools/browser/relay/daemon";
 import backgroundJs from "../tools/browser/relay/extension-assets/background.js.txt" with { type: "text" };
 import licenseText from "../tools/browser/relay/extension-assets/LICENSE.txt" with { type: "text" };
@@ -36,6 +37,9 @@ export async function runBrowserRelayCommand(args: BrowserRelayCommandArgs): Pro
 	if (args.action === "install") {
 		await runInstall(args.dir);
 		return;
+	}
+	if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535) {
+		throw new CliUsageError(`Invalid --port value: ${args.port}. Expected a port between 1 and 65535.`);
 	}
 	await runServe(args);
 }

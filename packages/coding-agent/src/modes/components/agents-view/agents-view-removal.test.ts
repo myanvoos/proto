@@ -6,6 +6,7 @@ import type { TUI } from "@oh-my-pi/pi-tui";
 import { AgentLifecycleManager } from "../../../registry/agent-lifecycle";
 import { AgentRegistry, getAgentTombstonePath } from "../../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../../registry/persisted-agents";
+import { USER_INTERRUPT_LABEL } from "../../../session/messages";
 import type { SessionInfo } from "../../../session/session-listing";
 import { SessionManager } from "../../../session/session-manager";
 import { initThemeSync } from "../../theme/theme";
@@ -201,6 +202,91 @@ describe("agents view shift-range mass selection", () => {
 	const DOWN = "\x1b[B";
 	const UP = "\x1b[A";
 	const ESC = "\x1b";
+
+	test("stopping a running worker cancels its turn through the orchestrator, not just the session", async () => {
+		const { parentFile, childFile, parentInfo } = writeSessionTree();
+		const registry = AgentRegistry.global();
+		await registerPersistedSubagents(registry, parentFile);
+		listAllSpy = spyOn(SessionManager, "listAll").mockResolvedValue([parentInfo]);
+
+		// A worker mid-turn: the session abort alone left its orchestrator job running.
+		const aborts: string[] = [];
+		const ref = registry.get("worker")!;
+		registry.attachSession(
+			"worker",
+			{
+				abort: async (options?: { reason?: string }) => {
+					aborts.push(options?.reason ?? "");
+				},
+				dispose: async () => {},
+			} as never,
+			childFile,
+			ref,
+		);
+		registry.setStatus("worker", "running", ref);
+
+		const stopped: string[] = [];
+		const view = mountView({
+			currentSessionFile: parentFile,
+			initialScopeIdentity: `file:${path.resolve(parentFile)}`,
+			initialScopeTitle: "parent",
+			stopWorker: async id => {
+				stopped.push(id);
+				return true;
+			},
+		});
+		await waitFor(() => renderPlain(view).includes("· worker-session"), "the worker row");
+
+		view.handleInput(CTRL_X);
+		expect(renderPlain(view)).toContain("again to stop");
+		view.handleInput(CTRL_X);
+
+		await waitFor(() => stopped.length > 0, "the orchestrator stop to run");
+		expect(stopped).toEqual(["worker"]);
+		// The cancelled worker's session is still torn down, so its live marker cannot keep the
+		// row in the running section.
+		expect(aborts).toEqual([USER_INTERRUPT_LABEL]);
+		await waitFor(() => fs.existsSync(getAgentTombstonePath(childFile)), "the worker to be tombstoned");
+		expect(fs.existsSync(childFile)).toBe(true);
+		await waitFor(() => sectionOf(renderPlain(view), "· worker-session") === "Inactive", "the stopped row to move");
+	});
+
+	test("a worker the orchestrator does not own still falls back to aborting its session", async () => {
+		const { parentFile, childFile, parentInfo } = writeSessionTree();
+		const registry = AgentRegistry.global();
+		await registerPersistedSubagents(registry, parentFile);
+		listAllSpy = spyOn(SessionManager, "listAll").mockResolvedValue([parentInfo]);
+
+		const aborts: string[] = [];
+		const ref = registry.get("worker")!;
+		registry.attachSession(
+			"worker",
+			{
+				abort: async (options?: { reason?: string }) => {
+					aborts.push(options?.reason ?? "");
+				},
+				dispose: async () => {},
+			} as never,
+			childFile,
+			ref,
+		);
+		registry.setStatus("worker", "running", ref);
+
+		const view = mountView({
+			currentSessionFile: parentFile,
+			initialScopeIdentity: `file:${path.resolve(parentFile)}`,
+			initialScopeTitle: "parent",
+			stopWorker: async () => false,
+		});
+		await waitFor(() => renderPlain(view).includes("· worker-session"), "the worker row");
+
+		view.handleInput(CTRL_X);
+		view.handleInput(CTRL_X);
+
+		await waitFor(() => aborts.length > 0, "the session abort fallback");
+		await waitFor(() => registry.get("worker")?.status === "aborted", "the worker to be tombstoned");
+		expect(fs.existsSync(getAgentTombstonePath(childFile))).toBe(true);
+	});
 
 	test("shift+down marks a range and ctrl+x twice stops every marked agent, then deletes them", async () => {
 		const { parentFile, childFiles, parentInfo } = writeSessionTreeWithWorkers(["worker-a", "worker-b"]);

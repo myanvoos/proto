@@ -468,3 +468,132 @@ describe("Markdown stable streaming source", () => {
 		}
 	});
 });
+
+describe("Markdown code block wrapping", () => {
+	const codeRows = (rendered: readonly string[]): string[] =>
+		rendered.map(row => row.replace(/\x1b\[[0-9;]*m/g, "").trimEnd()).filter(row => row.trim().length > 0);
+
+	test("wrapped code rows stay indented under the code block", () => {
+		const source = "```ts\nconst answer = compute(alpha, beta) + gamma; // a trailing comment to force wrapping\n```";
+		const rendered = new Markdown(source, 0, 0, theme).render(40);
+		const body = codeRows(rendered).filter(row => !row.includes("```"));
+
+		expect(body.length).toBeGreaterThan(1);
+		for (const row of body) {
+			expect(row.startsWith("  ")).toBe(true);
+			expect(row.trimStart().length).toBeGreaterThan(0);
+		}
+	});
+
+	test("streamed code rows wrap identically to a fresh render", () => {
+		let text = "```ts\nconst answer = compute(alpha, beta) + gamma; // a trailing comment to force wrapping";
+		const markdown = new Markdown(text, 0, 0, theme);
+		markdown.transientRenderCache = true;
+		markdown.render(40);
+
+		text += "\nconst second = compute(delta, epsilon) + zeta; // another trailing comment that wraps";
+		markdown.setText(text);
+		expect(markdown.render(40)).toEqual(new Markdown(text, 0, 0, theme).render(40));
+
+		const body = codeRows(markdown.render(40)).filter(row => !row.includes("```"));
+		expect(body.length).toBeGreaterThan(2);
+		for (const row of body) expect(row.startsWith("  ")).toBe(true);
+	});
+
+	test("code inside a list item keeps the code indent on wrapped rows", () => {
+		const source =
+			"- item text\n\n  ```ts\n  const answer = compute(alpha, beta) + gamma; // a trailing comment forces wrapping\n  ```";
+		const body = codeRows(new Markdown(source, 0, 0, theme).render(40)).filter(
+			row => row.includes("compute") || row.includes("trailing") || row.includes("comment"),
+		);
+
+		expect(body.length).toBeGreaterThan(1);
+		const firstIndent = body[0]!.length - body[0]!.trimStart().length;
+		for (const row of body.slice(1)) {
+			expect(row.length - row.trimStart().length).toBe(firstIndent);
+		}
+	});
+
+	test("code blocks rendered without indent keep their literal rows", () => {
+		const source = "```ts\nconst answer = 1;\n```";
+		const rendered = new Markdown(source, 0, 0, theme, undefined, 0).render(40);
+		expect(codeRows(rendered)).toContain("const answer = 1;");
+	});
+});
+
+describe("Markdown GFM fidelity", () => {
+	const rows = (rendered: readonly string[]): string[] =>
+		rendered.map(row => row.replace(/\x1b\[[0-9;]*m/g, "").trimEnd()).filter(row => row.trim().length > 0);
+
+	test("task list items render their checkbox state", () => {
+		const rendered = rows(
+			new Markdown("- [ ] unchecked task\n- [x] checked task\n- plain bullet", 0, 0, theme).render(40),
+		);
+		expect(rendered).toEqual(["□ unchecked task", "■ checked task", "- plain bullet"]);
+	});
+
+	test("ordered task items keep their number alongside the checkbox", () => {
+		const rendered = rows(new Markdown("1. [ ] pending\n2. [x] done", 0, 0, theme).render(40));
+		expect(rendered).toEqual(["1. □ pending", "2. ■ done"]);
+	});
+
+	test("nested task items keep their own state and indent", () => {
+		const rendered = rows(new Markdown("- [ ] parent\n  - [x] child", 0, 0, theme).render(40));
+		expect(rendered).toEqual(["□ parent", "  ■ child"]);
+	});
+
+	test("task checkbox glyphs come from the symbol theme", () => {
+		const asciiTheme: MarkdownTheme = { ...theme, symbols: { ...symbols, taskChecked: "[x]", taskUnchecked: "[ ]" } };
+		const rendered = rows(new Markdown("- [ ] todo\n- [x] done", 0, 0, asciiTheme).render(40));
+		expect(rendered).toEqual(["[ ] todo", "[x] done"]);
+	});
+
+	test("a streamed task item keeps its checkbox while its text grows", () => {
+		let text = "- [x] a checked item that is long enough to wrap across";
+		const markdown = new Markdown(text, 0, 0, theme);
+		markdown.transientRenderCache = true;
+		markdown.render(24);
+
+		text += " more than one row";
+		markdown.setText(text);
+		const streamed = markdown.render(24);
+		expect(streamed).toEqual(new Markdown(text, 0, 0, theme).render(24));
+		expect(rows(streamed)[0]).toStartWith("■ a checked item");
+	});
+
+	test("wrapped task item rows hang under the checkbox", () => {
+		const rendered = rows(
+			new Markdown("- [ ] first task with enough words to wrap twice over", 0, 0, theme).render(24),
+		);
+		expect(rendered[0]).toStartWith("□ ");
+		expect(rendered.length).toBeGreaterThan(1);
+		for (const row of rendered.slice(1)) expect(row).toStartWith("  ");
+	});
+
+	test("column alignment from the delimiter row places the cell padding", () => {
+		const table = "| left | center | right |\n| :--- | :----: | ----: |\n| a | b | c |";
+		const rendered = rows(new Markdown(table, 0, 0, theme).render(40));
+		expect(rendered).toContain("| a    |   b    |     c |");
+	});
+
+	test("a table without alignment markers stays left aligned", () => {
+		const table = "| left | middle | right |\n| --- | --- | --- |\n| a | b | c |";
+		const rendered = rows(new Markdown(table, 0, 0, theme).render(40));
+		expect(rendered).toContain("| a    | b      | c     |");
+	});
+
+	test("image URLs stay visible like link URLs", () => {
+		const rendered = rows(new Markdown("![alt text](https://img.example.com/x.png)", 0, 0, theme).render(60));
+		expect(rendered).toEqual(["alt text (https://img.example.com/x.png)"]);
+	});
+
+	test("an image without alt text renders its URL", () => {
+		const rendered = rows(new Markdown("![](https://img.example.com/bare.png)", 0, 0, theme).render(60));
+		expect(rendered).toEqual(["(https://img.example.com/bare.png)"]);
+	});
+
+	test("an inline image keeps the surrounding text", () => {
+		const rendered = rows(new Markdown("before ![pic](https://img.example.com/y.png) after", 0, 0, theme).render(60));
+		expect(rendered).toEqual(["before pic (https://img.example.com/y.png) after"]);
+	});
+});

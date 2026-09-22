@@ -81,7 +81,8 @@ interface TranscriptEntry {
 	 * Set when a published stable row drifted (retraction, byte change within a
 	 * width epoch, or no longer a render prefix). Rows already in native
 	 * scrollback cannot be retracted, so the entry keeps its last good stable
-	 * state for emitted-row slicing but never emits another mid-stream row.
+	 * state to recognize still-matching emitted rows, but never emits another
+	 * mid-stream row. An unrelated replacement remains visible in full.
 	 */
 	stableFrozen: boolean;
 }
@@ -97,6 +98,19 @@ const MAX_LIVE_BLOCKS = 256;
 /** Grace before a pressure-blocked frontier is reported; a streaming block may legitimately hold it briefly. */
 const PINNED_FRONTIER_WARN_MS = 30_000;
 const EMPTY_ROWS: readonly string[] = [];
+
+/**
+ * A block's leading and trailing spacer rows are decoration, not content: a
+ * clipped block must spend its allocation on rows that say something, or a
+ * one-row user message renders as its blank spacer and the prompt disappears.
+ */
+function contentRows(rows: readonly string[]): readonly string[] {
+	let end = rows.length;
+	while (end > 0 && Bun.stripANSI(rows[end - 1]!).trim().length === 0) end--;
+	let start = 0;
+	while (start < end && Bun.stripANSI(rows[start]!).trim().length === 0) start++;
+	return start === 0 && end === rows.length ? rows : rows.slice(start, end);
+}
 const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
 
 function isFinalized(component: Component): boolean {
@@ -292,7 +306,7 @@ export class TranscriptContainer extends Container {
 		for (const { entry, index } of this.#liveEntries()) {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const rendered = this.#renderEntry(entry, width);
-			const block = rendered.slice(this.#projectedEmittedRowCount(entry, index, width));
+			const block = rendered.slice(this.#projectedEmittedRowCount(entry, index, width, rendered));
 			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
 		}
 		return total;
@@ -315,7 +329,9 @@ export class TranscriptContainer extends Container {
 		for (const candidate of live) {
 			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, frame);
 			const rendered = this.#renderEntry(candidate.entry, width);
-			const block = rendered.slice(this.#projectedEmittedRowCount(candidate.entry, candidate.index, width));
+			const block = rendered.slice(
+				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width, rendered),
+			);
 			if (block.length === 0) continue;
 			total += block.length + (shown.length > 0 ? 1 : 0);
 			shown.push(candidate);
@@ -362,10 +378,15 @@ export class TranscriptContainer extends Container {
 			const candidate = shown[index]!;
 			const allocated = allocation[index]!;
 			this.#setAllocation(candidate.entry.component, allocated, frame);
-			const rendered = this.#renderEntry(candidate.entry, width).slice(
-				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
-			);
-			const visible = rendered.length <= allocated ? rendered : rendered.slice(rendered.length - allocated);
+			const full = this.#renderEntry(candidate.entry, width);
+			const rendered = full.slice(this.#projectedEmittedRowCount(candidate.entry, candidate.index, width, full));
+			const content = contentRows(rendered);
+			const visible =
+				rendered.length <= allocated
+					? rendered
+					: content.length <= allocated
+						? content
+						: content.slice(content.length - allocated);
 			for (const line of visible) {
 				output.push(line);
 			}
@@ -463,7 +484,7 @@ export class TranscriptContainer extends Container {
 			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const renderedEntry = this.#renderEntry(candidate.entry, width);
 			const rows = renderedEntry.slice(
-				this.#renderStablePrefix(candidate.entry, candidate.entry.emitted, width).length,
+				this.#emittedRowCount(candidate.entry, candidate.entry.emitted, width, renderedEntry),
 			);
 			rendered[index] = rows;
 			heights[index] = rows.length;
@@ -664,10 +685,10 @@ export class TranscriptContainer extends Container {
 
 	/**
 	 * Demote a drifting append-only publication: rows already written to native
-	 * scrollback cannot be retracted, so keep the last good stable state for
-	 * emitted-row slicing and stop mid-stream emission for this block. The block
-	 * still renders and retires whole on finalization; worst case is the old
-	 * finalize-time behavior plus a possible stale-byte seam in scrollback.
+	 * scrollback cannot be retracted, so keep the last good stable state and
+	 * stop mid-stream emission for this block. Only a still-matching emitted
+	 * prefix may be sliced off the current render. A replacement renders and
+	 * retires whole after the old native history, rather than losing its head.
 	 */
 	#freezeStableRows(entry: TranscriptEntry, rendered: readonly string[], reason: string): readonly string[] {
 		entry.stableFrozen = true;
@@ -682,23 +703,39 @@ export class TranscriptContainer extends Container {
 	}
 
 	/**
-	 * Length-only variant of `#renderStablePrefix`: answers the projected
-	 * emitted row count without re-rendering the prefix. The container only
-	 * needs the length for slicing; the render call it replaced existed
-	 * purely to read `.length` off the result.
+	 * Account for an offered history transaction as well as acknowledged rows.
+	 * Valid publications use the cached prefix length; frozen publications
+	 * must first prove that the old prefix still belongs to the current render.
 	 */
-	#projectedEmittedRowCount(entry: TranscriptEntry, index: number, width: number): number {
+	#projectedEmittedRowCount(
+		entry: TranscriptEntry,
+		index: number,
+		width: number,
+		rendered: readonly string[],
+	): number {
 		const offered = this.#offered;
 		const count =
 			(offered?.kind === "append" && offered.entry === index) ||
 			(offered?.kind === "replay" && offered.end === index)
 				? offered.emittedEnd
 				: entry.emitted;
+		return this.#emittedRowCount(entry, count, width, rendered);
+	}
+
+	#emittedRowCount(entry: TranscriptEntry, count: number, width: number, rendered: readonly string[]): number {
 		if (count === 0) return 0;
 		const perCount = entry.stableRowCountByWidth.get(width);
 		const memo = perCount?.get(Math.min(count, entry.stableRows.length));
-		if (memo !== undefined) return memo;
-		return this.#renderStablePrefix(entry, count, width).length;
+		if (!entry.stableFrozen && memo !== undefined) return memo;
+		// A provider may replace streamed text on completion. Native history is
+		// immutable, but its row count cannot be used as an offset into unrelated
+		// final text. Preserve that history and publish the replacement once.
+		const cached = entry.renderedStableByWidth.get(width);
+		const prefix =
+			entry.stableFrozen && cached && memo !== undefined
+				? cached.slice(0, memo)
+				: this.#renderStablePrefix(entry, count, width);
+		return !entry.stableFrozen || isRowPrefix(prefix, rendered) ? prefix.length : 0;
 	}
 	/**
 	 * Record that pressure retirement is blocked behind a not-yet-settled
@@ -736,7 +773,7 @@ export class TranscriptContainer extends Container {
 			// keeps a complete-ledger replay at one render per block.
 			const rendered =
 				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width));
-			const emittedRows = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
+			const emittedRows = index === start ? this.#emittedRowCount(entry, entry.emitted, width, rendered) : 0;
 			const block = rendered.slice(emittedRows);
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
@@ -762,7 +799,7 @@ export class TranscriptContainer extends Container {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const rendered = this.#renderEntry(entry, width);
 			if (entry.emitted !== entry.stableRows.length) return;
-			if (this.#renderStablePrefix(entry, entry.emitted, width).length !== rendered.length) return;
+			if (this.#emittedRowCount(entry, entry.emitted, width, rendered) !== rendered.length) return;
 			entry.state = "committed";
 			entry.emitted = 0;
 			this.#frontier++;
@@ -822,10 +859,9 @@ export class TranscriptContainer extends Container {
 				continue;
 			}
 			this.#setAllocation(candidate.entry.component, 1, frame);
-			const rendered = this.#renderEntry(candidate.entry, width).slice(
-				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
-			);
-			output.push(rendered[0] ?? "");
+			const full = this.#renderEntry(candidate.entry, width);
+			const rendered = full.slice(this.#projectedEmittedRowCount(candidate.entry, candidate.index, width, full));
+			output.push(contentRows(rendered)[0] ?? "");
 		}
 		const visibleOutput = output.slice(0, rows);
 		return visibleOutput;

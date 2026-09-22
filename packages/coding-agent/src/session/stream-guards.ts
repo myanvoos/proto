@@ -10,12 +10,14 @@ import type { StreamedKernelFailure } from "../eval/speculation";
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
 import kernelAssertPreflightTemplate from "../prompts/system/kernel-assert-preflight.md" with { type: "text" };
 import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redirect.md" with { type: "text" };
+import toolCallLoopStopTemplate from "../prompts/system/tool-call-loop-stop.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
 const GEMINI_HEADER_INTERRUPT_REASON = "Interrupted: emit a tool call instead of more planning";
 const GEMINI_TOOL_REMINDER_TYPE = "gemini-tool-call-reminder";
 const TOOL_CALL_LOOP_REDIRECT_TYPE = "tool-call-loop-redirect";
+const TOOL_CALL_LOOP_STOP_TYPE = "tool-call-loop-stop";
 
 export interface StreamGuardsHost {
 	agent: Agent;
@@ -55,6 +57,7 @@ export class LoopGuards {
 	#geminiHeaderDetector: GeminiHeaderRunDetector | undefined;
 	#toolCallLoopGuard: ToolCallLoopGuard | undefined;
 	#toolCallLoopGuardSettingsKey: string | undefined;
+	#toolCallLoopStopGeneration: number | undefined;
 	#streamedTimestamp: number | undefined;
 	#streamedEpoch = 0;
 	#streamedCalls = new Set<string>();
@@ -70,7 +73,9 @@ export class LoopGuards {
 			message: context.message,
 			toolResults: context.toolResults,
 		});
-		if (detection) this.#injectToolCallLoopRedirect(messages, detection);
+		if (!detection) return;
+		if (detection.severity === "stop") this.#stopToolCallLoop(detection);
+		else this.#injectToolCallLoopRedirect(messages, detection);
 	}
 
 	onAssistantEvent(message: AssistantMessage, event: AssistantMessageEvent): void {
@@ -184,19 +189,36 @@ export class LoopGuards {
 			});
 	}
 
+	/**
+	 * True while the current prompt is stopped by the hard limit. Recovery consults
+	 * this: without it the deliberate abort looks like a reasonless one and the run
+	 * is retried straight back into the loop.
+	 */
+	get toolCallLoopStopped(): boolean {
+		return this.#toolCallLoopStopGeneration === this.#host.promptGeneration();
+	}
+
 	#activeToolCallLoopGuard(): ToolCallLoopGuard | undefined {
 		if (this.#host.settings.get("model.toolCallLoopGuard.enabled") !== true) {
 			this.#toolCallLoopGuard = undefined;
 			this.#toolCallLoopGuardSettingsKey = undefined;
 			return undefined;
 		}
+		// A new prompt is the user deciding what happens next, so the counter and the
+		// stop it produced start over.
+		if (this.#toolCallLoopStopGeneration !== undefined && !this.toolCallLoopStopped) {
+			this.#toolCallLoopStopGeneration = undefined;
+			this.#toolCallLoopGuard = undefined;
+			this.#toolCallLoopGuardSettingsKey = undefined;
+		}
 		const threshold = this.#host.settings.get("model.toolCallLoopGuard.threshold");
+		const hardLimit = this.#host.settings.get("model.toolCallLoopGuard.hardLimit");
 		const exemptTools = this.#host.settings
 			.get("model.toolCallLoopGuard.exemptTools")
 			.filter((tool): tool is string => typeof tool === "string" && tool.length > 0);
-		const settingsKey = `${threshold}:${JSON.stringify(exemptTools)}`;
+		const settingsKey = `${threshold}:${hardLimit}:${JSON.stringify(exemptTools)}`;
 		if (!this.#toolCallLoopGuard || this.#toolCallLoopGuardSettingsKey !== settingsKey) {
-			this.#toolCallLoopGuard = new ToolCallLoopGuard({ threshold, exemptTools });
+			this.#toolCallLoopGuard = new ToolCallLoopGuard({ threshold, exemptTools, hardLimit });
 			this.#toolCallLoopGuardSettingsKey = settingsKey;
 		}
 		return this.#toolCallLoopGuard;
@@ -234,6 +256,41 @@ export class LoopGuards {
 			details,
 			"agent",
 		);
+	}
+
+	/**
+	 * The steer alone cannot bound a model that ignores it, so the ceiling stops the
+	 * run: no further provider request is made until the user steers.
+	 */
+	#stopToolCallLoop(detection: RepeatedToolCallDetection): void {
+		if (this.toolCallLoopStopped) return;
+		this.#toolCallLoopStopGeneration = this.#host.promptGeneration();
+		const content = prompt.render(toolCallLoopStopTemplate, {
+			tool_name: detection.toolName,
+			count: detection.count,
+			hard_limit: detection.hardLimit,
+			arguments_summary: detection.argumentsSummary,
+			result_summary: detection.resultSummary || "(no text result)",
+		});
+		const details = {
+			toolName: detection.toolName,
+			count: detection.count,
+			hardLimit: detection.hardLimit,
+			argumentsSummary: detection.argumentsSummary,
+			resultSummary: detection.resultSummary,
+		};
+		logger.warn("tool-call loop hard limit reached; stopping the run", {
+			toolName: detection.toolName,
+			count: detection.count,
+			hardLimit: detection.hardLimit,
+		});
+		this.#host.sessionManager.appendCustomMessageEntry(TOOL_CALL_LOOP_STOP_TYPE, content, false, details, "agent");
+		this.#host.emitNotice(
+			"warning",
+			`Stopped: \`${detection.toolName}\` was called ${detection.count} times in a row with identical arguments.`,
+			TOOL_CALL_LOOP_STOP_TYPE,
+		);
+		this.#host.agent.abort(`Tool-call loop guard: ${detection.toolName} repeated ${detection.count} times`);
 	}
 
 	#geminiHeaderGuardActive(): boolean {

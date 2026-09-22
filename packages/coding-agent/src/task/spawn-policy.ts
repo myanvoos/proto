@@ -84,7 +84,10 @@ export function resolveSpawnPreflight(args: SpawnPreflightArgs): SpawnPreflight 
 	if (!canSpawnAtDepth(args.maxRecursionDepth, args.taskDepth)) {
 		return {
 			agentName,
-			error: `Cannot spawn another agent at task depth ${args.taskDepth}; maximum depth is ${args.maxRecursionDepth}.`,
+			error:
+				`Cannot spawn another agent at task depth ${args.taskDepth}: orchestrator.maxRecursionDepth=${args.maxRecursionDepth} ` +
+				`allows spawning only from task depth ${args.maxRecursionDepth} or shallower, so workers run at most ` +
+				`${args.maxRecursionDepth + 1} levels below the main agent.`,
 		};
 	}
 	if (args.blockedAgent && args.blockedAgent === agentName) {

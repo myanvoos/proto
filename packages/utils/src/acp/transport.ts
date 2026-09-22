@@ -26,6 +26,24 @@ export type AnyResponse = { jsonrpc: "2.0"; id: JsonRpcId } & ({ result: unknown
 
 export type AnyMessage = AnyRequest | AnyNotification | AnyResponse;
 
+/**
+ * Internal notification a transport emits instead of tearing the stream down
+ * when a peer sends a line that is not a JSON-RPC message. The connection
+ * answers it with the standard error frame and keeps reading.
+ */
+export const MALFORMED_MESSAGE_METHOD = "$/malformed_message";
+
+export interface MalformedMessageParams {
+	code: number;
+	message: string;
+	details: string;
+	id?: JsonRpcId;
+}
+
+export function malformedMessage(params: MalformedMessageParams): AnyNotification {
+	return { jsonrpc: "2.0", method: MALFORMED_MESSAGE_METHOD, params };
+}
+
 export class RequestError extends Error {
 	readonly code: number;
 
@@ -172,6 +190,17 @@ export class RpcConnection {
 	}
 
 	async #handle(message: AnyMessage): Promise<void> {
+		if ("method" in message && message.method === MALFORMED_MESSAGE_METHOD && !("id" in message)) {
+			// A garbled line is the peer's problem, not a reason to hang up: answer
+			// with the error JSON-RPC prescribes and keep serving the connection.
+			const params = message.params as MalformedMessageParams;
+			await this.#write({
+				jsonrpc: "2.0",
+				id: params.id ?? null,
+				error: new RequestError(params.code, params.message, { details: params.details }).toErrorResponse(),
+			});
+			return;
+		}
 		if ("id" in message && !("method" in message)) {
 			const pending = this.#pending.get(message.id);
 			if (!pending) return;

@@ -1,10 +1,13 @@
 import * as fsSync from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
+import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { EventLoopKeepalive, type ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import {
 	$env,
+	BINARY_NAME,
 	directoryExists,
 	getAgentDbPath,
 	getLogPath,
@@ -18,6 +21,7 @@ import {
 	VERSION,
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { reset as resetCapabilities } from "./capability";
 import { type Args, reportUnrecognizedFlags, validateToolNames } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
@@ -50,7 +54,7 @@ import {
 	shouldPreloadPluginRoots,
 } from "./discovery/helpers";
 import { injectOmpExtensionCliRoots } from "./discovery/proto-extension-roots";
-import { formatExtensionLoadNotifications } from "./extensibility/extensions/load-errors";
+import { formatExtensionLoadNotifications, formatExtensionLoadWarnings } from "./extensibility/extensions/load-errors";
 import { loadExtensions } from "./extensibility/extensions/loader";
 import { ExtensionRunner } from "./extensibility/extensions/runner";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
@@ -91,7 +95,8 @@ import {
 	persistForeignSession,
 } from "./session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
-import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
+import { findMostRecentSession, resolveResumableSession, type SessionInfo } from "./session/session-listing";
+import { claimSessionOwnership, liveSessionOwnerPid } from "./session/session-liveness";
 import { SessionManager } from "./session/session-manager";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
@@ -459,8 +464,10 @@ async function runInteractiveMode(
 		throw error;
 	}
 
+	let setupCancelledNotice: string | undefined;
 	if (setupWizard && setupScenes.length > 0) {
-		await setupWizard.runSetupWizard(mode, setupScenes);
+		const outcome = await setupWizard.runSetupWizard(mode, setupScenes);
+		if (outcome === "cancelled") setupCancelledNotice = setupWizard.SETUP_CANCELLED_NOTICE;
 	}
 
 	const checkedVersionPromise = versionCheckPromise.catch(() => undefined);
@@ -469,6 +476,9 @@ async function runInteractiveMode(
 		preserveExistingChat: true,
 		clearTerminalHistory: settings.get("startup.clearScrollback"),
 	});
+
+	// Surfaced after the initial render so the notice is not wiped by the scrollback clear.
+	if (setupCancelledNotice) mode.showWarning(setupCancelledNotice);
 
 	checkedVersionPromise.then(newVersion => {
 		if (!settings.get("startup.checkUpdate")) {
@@ -633,18 +643,60 @@ export async function resolveScopedModels(
 	parsed: Args,
 	modelRegistry: Pick<ModelRegistry, "getAvailable" | "getDiscoverableProviders" | "refresh">,
 	activeSettings: Settings,
+	/** Only the startup resolution reports; later re-resolutions would repeat the same warnings. */
+	options?: { reportUnmatched?: boolean; write?: (text: string) => void },
 ): Promise<ScopedModel[]> {
 	const modelPatterns = parsed.models ?? activeSettings.get("enabledModels");
 	if (!modelPatterns || modelPatterns.length === 0) {
 		return [];
 	}
 	const preferences = getModelMatchPreferences(activeSettings);
-	const scopedModels = await resolveModelScope(modelPatterns, modelRegistry, preferences, activeSettings);
+	// A pattern the user typed on the command line deserves an answer; patterns from settings stay
+	// quiet because they would warn on every single start.
+	const report = options?.reportUnmatched === true && parsed.models !== undefined;
+	const write = options?.write ?? ((text: string) => process.stderr.write(text));
+	const unmatched = new Set<string>();
+	const collect = report ? { onUnmatchedPattern: (pattern: string) => unmatched.add(pattern) } : undefined;
+	const warnUnmatched = (): void => {
+		for (const pattern of unmatched) {
+			write(`${chalk.yellow(`Warning: --models pattern "${pattern}" matched no available model; ignoring it.`)}\n`);
+		}
+	};
+	const scopedModels = await resolveModelScope(modelPatterns, modelRegistry, preferences, activeSettings, collect);
 	if (scopedModels.length > 0 || modelRegistry.getDiscoverableProviders().length === 0) {
+		warnUnmatched();
 		return scopedModels;
 	}
+	unmatched.clear();
 	await modelRegistry.refresh("online-if-uncached");
-	return await resolveModelScope(modelPatterns, modelRegistry, preferences, activeSettings);
+	const afterRefresh = await resolveModelScope(modelPatterns, modelRegistry, preferences, activeSettings, collect);
+	warnUnmatched();
+	return afterRefresh;
+}
+
+/**
+ * `--smol` and `--slow` only set role patterns, so a typo used to disappear: the role quietly fell
+ * back and the run continued on a different model than the one that was asked for.
+ */
+export function warnUnresolvableModelRoleFlags(
+	parsed: Args,
+	modelRegistry: ModelRegistry,
+	activeSettings: Settings,
+	write: (text: string) => void = text => process.stderr.write(text),
+): void {
+	const preferences = getModelMatchPreferences(activeSettings);
+	for (const [flag, value] of [
+		["--smol", parsed.smol],
+		["--slow", parsed.slow],
+	] as const) {
+		if (!value) continue;
+		const resolved = resolveCliModel({ cliModel: value, modelRegistry, settings: activeSettings, preferences });
+		if (resolved.model && !resolved.error) continue;
+		const role = flag === "--smol" ? "smol" : "slow";
+		write(
+			`${chalk.yellow(`Warning: ${flag} model "${value}" not found; the ${role} role falls back to its default.`)}\n`,
+		);
+	}
 }
 
 export function toSessionScopedModels(
@@ -754,15 +806,34 @@ export async function createSessionManager(
 		return await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
 	}
 
-	if (parsed.noSession) {
-		return SessionManager.inMemory();
-	}
 	normalizeContinueSessionArgs(parsed);
+	if (parsed.noSession && typeof parsed.resume !== "string" && !parsed.continue) {
+		return SessionManager.inMemory(cwd);
+	}
+	const openSession = async (sessionPath: string): Promise<SessionManager> => {
+		if (!parsed.noSession) {
+			// A session file is owned by one live process: resuming it here would
+			// silently persist nothing. The claim is taken before the file is read so
+			// that two processes starting at the same moment cannot both proceed.
+			if (!claimSessionOwnership(sessionPath)) {
+				const ownerPid = liveSessionOwnerPid(sessionPath);
+				const owner = ownerPid === undefined ? "Another proto process" : `Another proto process (pid ${ownerPid})`;
+				throw new SessionResolutionError(
+					`${owner} is currently using this session — release it there before resuming here.`,
+					`Run \`proto --fork ${sessionPath}\` to continue in a copy, or close the other process first.`,
+				);
+			}
+			return SessionManager.open(sessionPath, parsed.sessionDir);
+		}
+		const manager = SessionManager.inMemory(cwd);
+		await manager.setSessionFile(sessionPath);
+		return manager;
+	};
 
 	if (typeof parsed.resume === "string") {
 		const sessionArg = parsed.resume;
 		if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
-			return await SessionManager.open(sessionArg, parsed.sessionDir);
+			return await openSession(sessionArg);
 		}
 		const match = await resolveResumableSession(sessionArg, cwd, parsed.sessionDir);
 		if (!match) {
@@ -771,7 +842,7 @@ export async function createSessionManager(
 				"Run `proto --resume` without an argument to pick from recent sessions, or `proto` to start a new one.",
 			);
 		}
-		if (match.scope === "local") {
+		if (!parsed.noSession && match.scope === "local") {
 			const moveResult = await moveMissingCwdSessionIfNeeded(
 				sessionArg,
 				match.session,
@@ -786,7 +857,7 @@ export async function createSessionManager(
 				return undefined;
 			}
 		}
-		if (match.scope === "global") {
+		if (!parsed.noSession && match.scope === "global") {
 			const moveResult = await moveMissingCwdSessionIfNeeded(
 				sessionArg,
 				match.session,
@@ -801,14 +872,21 @@ export async function createSessionManager(
 				return undefined;
 			}
 		}
-		return await SessionManager.open(match.session.path, parsed.sessionDir);
+		return await openSession(match.session.path);
 	}
 	if (parsed.continue) {
+		if (parsed.noSession) {
+			const sessionDir = parsed.sessionDir ?? SessionManager.getDefaultSessionDir(cwd);
+			const recent = await findMostRecentSession(sessionDir);
+			return recent ? openSession(recent) : SessionManager.inMemory(cwd);
+		}
 		return await SessionManager.continueRecent(cwd, parsed.sessionDir);
 	}
 
 	if (parsed.sessionDir) {
-		return SessionManager.create(cwd, parsed.sessionDir);
+		const manager = SessionManager.create(cwd, parsed.sessionDir);
+		claimSessionOwnership(manager.getSessionFile());
+		return manager;
 	}
 
 	if (activeSettings.get("autoResume")) {
@@ -1108,6 +1186,59 @@ async function reuseLocalAuthStorage(settingsInstance: Settings): Promise<AuthSt
 
 const DEFAULT_RUN_ROOT_DEPENDENCIES: RunRootCommandDependencies = {};
 
+/**
+ * `--session-dir` is created lazily deep inside session storage; check it up front so a bad path is
+ * a usage error naming the flag instead of a raw mkdir failure much later.
+ */
+async function assertSessionDirUsable(dir: string): Promise<void> {
+	const resolved = path.resolve(getProjectDir(), dir);
+	let current = resolved;
+	for (;;) {
+		try {
+			const stat = await fsPromises.stat(current);
+			if (!stat.isDirectory()) {
+				throw new CliUsageError(
+					`Invalid --session-dir value: ${JSON.stringify(dir)}. ${current} is not a directory.`,
+				);
+			}
+			await fsPromises.access(current, fsSync.constants.W_OK);
+			return;
+		} catch (error) {
+			if (error instanceof CliUsageError) throw error;
+			const code = error instanceof Error && "code" in error ? String(error.code) : undefined;
+			if (code === "ENOENT") {
+				const parent = path.dirname(current);
+				if (parent === current) break;
+				current = parent;
+				continue;
+			}
+			throw new CliUsageError(
+				`Invalid --session-dir value: ${JSON.stringify(dir)}. Cannot use ${current}: ${code ?? (error instanceof Error ? error.message : String(error))}.`,
+			);
+		}
+	}
+	throw new CliUsageError(`Invalid --session-dir value: ${JSON.stringify(dir)}. No existing parent directory.`);
+}
+
+/** Streams the TUI needs as a terminal, named for the error message. */
+function missingInteractiveStreams(): string[] {
+	const missing: string[] = [];
+	if (process.stdin.isTTY !== true) missing.push("stdin");
+	if (process.stdout.isTTY !== true) missing.push("stdout");
+	return missing;
+}
+
+function interactiveTerminalRequiredMessage(missing: readonly string[]): string {
+	const subject =
+		missing.length === 1 ? `${missing[0]} is not a terminal` : `${missing.join(" and ")} are not terminals`;
+	return (
+		`${BINARY_NAME} requires an interactive TTY to start its interface (${subject}).\n` +
+		`Run a one-shot prompt instead: ${BINARY_NAME} -p "your prompt"\n` +
+		`Pipe a prompt in: echo "your prompt" | ${BINARY_NAME} -p\n` +
+		`Machine-readable output: ${BINARY_NAME} --mode json -p "your prompt"\n`
+	);
+}
+
 export async function runRootCommand(
 	parsed: Args,
 	rawArgs: string[],
@@ -1125,6 +1256,7 @@ export async function runRootCommand(
 
 		const parsedArgs = parsed;
 		await logger.time("applyStartupCwd", applyStartupCwd, parsedArgs);
+		if (parsedArgs.sessionDir) await assertSessionDirUsable(parsedArgs.sessionDir);
 
 		const notifs: (InteractiveModeNotify | null)[] = [];
 
@@ -1166,6 +1298,18 @@ export async function runRootCommand(
 		setInteractiveHost(isInteractive);
 		if (!isInteractive) {
 			stopPendingStartupComposer();
+		}
+
+		// The TUI owns the terminal: without one it either dies on the first terminal query or waits
+		// forever for a reply that a pipe can never send. Say so before any startup work happens.
+		if (isInteractive) {
+			const missing = missingInteractiveStreams();
+			if (missing.length > 0) {
+				stopPendingStartupComposer();
+				stopStartupWatchdog();
+				process.stderr.write(interactiveTerminalRequiredMessage(missing));
+				process.exit(1);
+			}
 		}
 
 		const settingsInstance =
@@ -1257,13 +1401,10 @@ export async function runRootCommand(
 			},
 		});
 
-		let scopedModels = await logger.time(
-			"resolveModelScope",
-			resolveScopedModels,
-			parsedArgs,
-			modelRegistry,
-			settingsInstance,
+		let scopedModels = await logger.time("resolveModelScope", () =>
+			resolveScopedModels(parsedArgs, modelRegistry, settingsInstance, { reportUnmatched: true }),
 		);
+		warnUnresolvableModelRoleFlags(parsedArgs, modelRegistry, settingsInstance);
 
 		normalizeContinueSessionArgs(parsedArgs, rawArgs);
 
@@ -1412,7 +1553,23 @@ export async function runRootCommand(
 				parsedArgs.cwd = cwd;
 				scopedModels = await resolveScopedModels(parsedArgs, modelRegistry, settingsInstance);
 			}
-			sessionManager = await SessionManager.open(selected.path);
+			if (parsedArgs.noSession) {
+				sessionManager ??= SessionManager.inMemory(cwd);
+				await sessionManager.setSessionFile(selected.path);
+			} else {
+				if (!claimSessionOwnership(selected.path)) {
+					const ownerPid = liveSessionOwnerPid(selected.path);
+					const owner =
+						ownerPid === undefined ? "another proto process" : `another proto process (pid ${ownerPid})`;
+					process.stderr.write(
+						`${chalk.red(`Error: That session is currently open in ${owner} — release it there before resuming here.`)}\n`,
+					);
+					process.stderr.write(`${chalk.dim(`Run \`proto --fork ${selected.path}\` to continue in a copy.`)}\n`);
+					stopStartupWatchdog();
+					process.exit(1);
+				}
+				sessionManager = await SessionManager.open(selected.path);
+			}
 		}
 
 		if (sessionManager && (parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource)) {
@@ -1517,7 +1674,10 @@ export async function runRootCommand(
 					`Trusted extension failed to load: ${extensionsResult.errors.map(item => item.error).join("; ")}`,
 				);
 			}
-			for (const message of formatExtensionLoadNotifications(extensionsResult.errors)) {
+			for (const message of [
+				...formatExtensionLoadNotifications(extensionsResult.errors, { truncate: isInteractive }),
+				...formatExtensionLoadWarnings(extensionsResult.warnings, { truncate: isInteractive }),
+			]) {
 				if (isInteractive) {
 					notifs.push({ kind: "warn", message });
 				} else {
@@ -1526,7 +1686,7 @@ export async function runRootCommand(
 			}
 
 			if (reportUnrecognizedFlags(initialArgs)) {
-				process.exit(2);
+				process.exit(1);
 			}
 			const processedFiles =
 				initialArgs.fileArgs.length > 0
@@ -1557,6 +1717,12 @@ export async function runRootCommand(
 				eventBus,
 				preloadedExtensions: extensionsResult,
 			});
+
+			// A session started fresh here (no --resume/--continue) is resolved inside
+			// createAgentSession, so this is the first moment its file is known: claim it
+			// before any turn runs, or a concurrent `--continue` could adopt it and
+			// overwrite this run's turns.
+			claimSessionOwnership(session.sessionManager.getSessionFile());
 
 			try {
 				validateToolNames(initialArgs.tools, session.getAllToolNames());

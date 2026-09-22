@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { Component } from "@oh-my-pi/pi-tui";
+import { initThemeSync } from "../theme/theme";
 import { TranscriptContainer, type TranscriptStableRow } from "./transcript-container";
+import { UserMessageComponent } from "./user-message";
 
 class Block implements Component {
 	#rows: string[];
@@ -187,6 +189,27 @@ describe("TranscriptContainer", () => {
 		// Finalization retires exactly the un-emitted suffix.
 		block.finalize(["one", "two"]);
 		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["two", ""]);
+	});
+
+	it("surfaces a replacement final after an emitted prefix and retires it exactly once", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["old prefix", "partial"], ["old prefix"]);
+		transcript.addChild(block);
+		const emitted = transcript.peekFinalizedBatch(40, 1)!;
+		expect(emitted.rows).toEqual(["old prefix"]);
+		transcript.acknowledgeFinalizedBatch(emitted.id);
+
+		block.finalize(["authoritative final"]);
+		expect(transcript.liveRowCount(40)).toBe(1);
+		expect(transcript.renderViewport(40, 1, frame)).toEqual(["authoritative final"]);
+		// The old prefix remains native history; replacement is not permission to remove it.
+		expect(transcript.canRemoveBlock(block)).toBe(false);
+		const final = transcript.peekFlushBatch(40)!;
+		expect(final.rows).toEqual(["authoritative final", ""]);
+		transcript.acknowledgeFinalizedBatch(final.id);
+		expect(transcript.peekFlushBatch(40)).toBeUndefined();
+		expect(transcript.renderViewport(40, 1, frame)).toEqual([]);
+		expect(transcript.render(40)).toEqual(["authoritative final"]);
 	});
 
 	it("emits only the stable current head under row pressure", () => {
@@ -529,5 +552,42 @@ describe("TranscriptContainer", () => {
 		transcript.beginReplay();
 		transcript.cancelReplay();
 		expect(transcript.peekFlushBatch(80)?.rows).toEqual(["tail", ""]);
+	});
+});
+
+describe("TranscriptContainer viewport pressure", () => {
+	const frame = { now: 0, tick: 0 };
+
+	function prompts(count: number): TranscriptContainer {
+		initThemeSync();
+		const transcript = new TranscriptContainer();
+		for (let index = 1; index <= count; index++) {
+			transcript.addChild(new UserMessageComponent(`PROMPT_${index} please do the thing`));
+		}
+		return transcript;
+	}
+
+	it("spends a clipped block's rows on its prompt instead of its spacer", () => {
+		const transcript = prompts(6);
+		for (const rows of [30, 20, 12, 8, 6, 4, 3, 2, 1]) {
+			const viewport = transcript.renderViewport(60, rows, frame).map(row => Bun.stripANSI(row));
+			expect(viewport.length, `${rows} rows`).toBeLessThanOrEqual(rows);
+			const visible = viewport.filter(row => row.includes("PROMPT_")).length;
+			// Every row a squeezed block gets must carry its prompt; the newest
+			// prompts win when there are fewer rows than blocks.
+			expect(visible, `${rows} rows: ${JSON.stringify(viewport)}`).toBe(Math.min(6, rows));
+			expect(
+				viewport.findLast(row => row.trim().length > 0),
+				`${rows} rows`,
+			).toContain("PROMPT_6");
+		}
+	});
+
+	it("keeps whole blocks intact when the viewport can hold them", () => {
+		const viewport = prompts(2)
+			.renderViewport(60, 40, frame)
+			.map(row => Bun.stripANSI(row));
+		expect(viewport.filter(row => row.includes("PROMPT_")).length).toBe(2);
+		expect(viewport.some(row => row.trim().length === 0)).toBe(true);
 	});
 });

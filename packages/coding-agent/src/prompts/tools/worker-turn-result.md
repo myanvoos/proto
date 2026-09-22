@@ -1,5 +1,5 @@
 <worker-turn id="{{id}}" label="{{label}}" agent="{{agent}}" owner="{{owner}}" parent="{{parent}}" turn="{{turn}}" status="{{status}}" duration="{{duration}}"{{#if model}} model="{{model}}"{{/if}}>
-<activity tool-calls="{{toolCount}}" requests="{{requests}}">
+<activity tool-calls="{{toolCount}}" requests="{{requests}}"{{#if tokens}} tokens="{{tokens}}"{{/if}}{{#if cost}} cost="{{cost}}"{{/if}}{{#if totalCost}} worker-total-tokens="{{totalTokens}}" worker-total-cost="{{totalCost}}"{{/if}}>
 {{#each trace}}
 - {{this}}
 {{/each}}

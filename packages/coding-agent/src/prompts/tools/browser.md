@@ -2,6 +2,7 @@ Drives real Chromium tabs; full puppeteer access via JS. Static content → `rea
 
 - MUST `open` before `run`; tabs survive calls and subagents — open once, reuse.
 - `run` scope: `page`, `browser`, `tab`, `display`, `assert`, `wait`; `wait(fn)` polls until truthy — never poll inside `tab.evaluate`. `code` runs with full Node access — not sandboxed. `tab` mirrors puppeteer; drop to raw `page` for anything uncovered.
+- `page.evaluate` defaults to an isolated `window`. App/preload globals → use a leading callback directive: `await page.evaluate(() => { /*!world=main*/ return window.__sentinel; })`.
 - Handles: `tab.ref("e5")`/`tab.id(n)` → call methods directly — `(await tab.id(n)).click()`. Handles are NOT selectors; string-selector helpers take selectors only. Snapshot refs work in any selector slot: `tab.click("e5")` ≡ `tab.click("aria-ref=e5")`.
 - Default `tab.observe()` → accessibility tree; `ariaSnapshot()` → ARIA YAML with `[ref=eN]`; screenshot only for appearance. `tab.screenshot({ selector?, fullPage?, silent? })` saves to `browser.screenshotDir` (else OS temp), returns path; NEVER accepts a path.
 - Gotchas: `tab.fill` NEVER works for `<select>` — use `tab.select`. `waitForNavigation` must start BEFORE the trigger click. Navigation/re-renders invalidate ids/refs — re-observe, act in same cell. Request interception is run-scoped: run end removes handlers, releases held requests.

@@ -25,6 +25,8 @@ While attached you see live session events and can type prompts. Slash commands:
 
 `Escape` aborts the current turn and detaches in one press (mirroring the interactive interrupt chord). `Ctrl-C` aborts; press it again within three seconds to detach. Closing the terminal (stdin EOF) detaches too.
 
+Attach also reads piped input, so `printf '/bash uname -a\n/detach\n' | proto attach <session-id>` scripts a hosted session. If stdin closes before a single line arrives and that attach was what started the host, the host is stopped again and the command exits non-zero — a piped attach never leaves a session host running for nobody.
+
 Reattach at any time — the latest client wins, and the last messages are replayed from session state:
 
 ```sh

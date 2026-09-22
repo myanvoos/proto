@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { ResponseStreamEvent } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
+import {
+	createInitialResponsesAssistantMessage,
+	processResponsesStream,
+} from "@oh-my-pi/pi-ai/providers/openai-shared";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { Component, RenderScheduler, Terminal } from "@oh-my-pi/pi-tui";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
 import type { ChecklistToolDetails } from "../../tools/checklist";
@@ -174,6 +181,86 @@ for (const [columns, rows] of [
 			composer.stop();
 		}
 	});
+
+for (const replacement of [true, false]) {
+	test(`provider final ${replacement ? "replacement" : "append"} survives native history exactly once`, async () => {
+		const { terminal, scheduler, composer, transcript } = setup(40, 24);
+		try {
+			transcript.addChild(new Block(Array.from({ length: 30 }, (_, i) => `retained-history-${i}`)));
+			const reply = new AssistantMessageComponent();
+			transcript.addChild(reply);
+			const delta = `STREAMED-PREFIX\n\n${"Long paragraph 日本語. ".repeat(40)}`;
+			const final = replacement ? "AUTHORITATIVE-FINAL" : `${delta}\n\nAUTHORITATIVE-FINAL`;
+			const output = createInitialResponsesAssistantMessage("openai-responses", "openai-test", "test-model");
+			const model = buildModel({
+				id: "transcript-test",
+				name: "Transcript Test",
+				api: "openai-responses",
+				provider: "openai-test",
+				baseUrl: "https://unused.invalid",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 16_384,
+				maxTokens: 1_024,
+			});
+			const events = [
+				{
+					type: "response.output_item.added",
+					output_index: 0,
+					sequence_number: 1,
+					item: { type: "message", id: "m1", role: "assistant", status: "in_progress", content: [] },
+				},
+				{
+					type: "response.output_text.delta",
+					content_index: 0,
+					delta,
+					item_id: "m1",
+					logprobs: [],
+					output_index: 0,
+					sequence_number: 2,
+				},
+				{
+					type: "response.output_item.done",
+					output_index: 0,
+					sequence_number: 3,
+					item: {
+						type: "message",
+						id: "m1",
+						role: "assistant",
+						status: "completed",
+						content: [{ type: "output_text", text: final, annotations: [] }],
+					},
+				},
+			] as unknown as ResponseStreamEvent[];
+			async function* source(): AsyncGenerator<ResponseStreamEvent> {
+				yield events[0]!;
+				yield events[1]!;
+				reply.updateContent(output, { transient: true });
+				frame(composer, scheduler);
+				expect(transcript.emittedStableRows()[1]).toBeGreaterThan(0);
+				expect(terminal.all().filter(row => row.includes("STREAMED-PREFIX"))).toHaveLength(1);
+				yield events[2]!;
+			}
+			await processResponsesStream(source(), output, new AssistantMessageEventStream(), model);
+			expect(output.content.find(part => part.type === "text")?.text).toBe(final);
+			reply.updateContent(output);
+			reply.markTranscriptBlockFinalized();
+			frame(composer, scheduler);
+			expect(terminal.all().filter(row => row.includes("AUTHORITATIVE-FINAL"))).toHaveLength(1);
+			composer.beginHistoryFlush();
+			frame(composer, scheduler);
+			frame(composer, scheduler);
+			expect(terminal.all().filter(row => row.includes("AUTHORITATIVE-FINAL"))).toHaveLength(1);
+			expect(terminal.all().filter(row => row.includes("STREAMED-PREFIX"))).toHaveLength(1);
+			for (let i = 0; i < 30; i++) {
+				expect(terminal.all().filter(row => row === `retained-history-${i}`)).toHaveLength(1);
+			}
+		} finally {
+			composer.stop();
+		}
+	});
+}
 
 test("rejects post-final updates without a scrollback staircase", () => {
 	const { terminal, scheduler, composer, transcript } = setup(56, 10);

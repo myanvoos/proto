@@ -1,12 +1,10 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import {
 	type Component,
-	Container,
 	extractPrintableText,
 	fuzzyMatch,
 	Input,
 	matchesKey,
-	Spacer,
 	TruncatedText,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
@@ -24,7 +22,7 @@ import type { SessionTreeNode } from "../../session/session-entries";
 import { shortenPath } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
-import { OverlayPanel, PanelDivider } from "./overlay-box";
+import { bottomBorder, getDialogViewport, OverlayPanel, renderDialogContent, row, topBorder } from "./overlay-box";
 import { centeredWindow, contentRowWidth, renderScrollableList } from "./selector-helpers";
 
 function sanitizeTreeText(value: string): string {
@@ -92,7 +90,7 @@ class TreeList implements Component {
 	constructor(
 		tree: SessionTreeNode[],
 		private readonly currentLeafId: string | null,
-		private readonly maxVisibleLines: number,
+		private maxVisibleLines: number,
 		initialFilterMode: FilterMode = "default",
 		initialSelectedId?: string,
 	) {
@@ -396,6 +394,10 @@ class TreeList implements Component {
 		return parts.join(" ");
 	}
 
+	setMaxHeight(rows: number): void {
+		this.maxVisibleLines = Math.max(1, Math.trunc(rows));
+	}
+
 	invalidate(): void {}
 
 	getSearchQuery(): string {
@@ -415,7 +417,7 @@ class TreeList implements Component {
 		}
 	}
 
-	#getFilterLabel(): string {
+	getFilterLabel(): string {
 		switch (this.#filterMode) {
 			case "no-tools":
 				return " [no-tools]";
@@ -436,15 +438,15 @@ class TreeList implements Component {
 		if (this.#filteredNodes.length === 0) {
 			if (this.#flatNodes.length === 0) {
 				lines.push(truncateToWidth(theme.fg("muted", "No entries found"), width));
-				lines.push(truncateToWidth(theme.fg("muted", `(0/0)${this.#getFilterLabel()}`), width));
+				lines.push(truncateToWidth(theme.fg("muted", `(0/0)${this.getFilterLabel()}`), width));
 			} else if (this.#searchQuery.length > 0) {
 				lines.push(truncateToWidth(theme.fg("muted", `No entries match search "${this.#searchQuery}"`), width));
 				lines.push(truncateToWidth(theme.fg("muted", "Press Backspace to clear the search"), width));
 				lines.push(
-					truncateToWidth(theme.fg("muted", `(0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
+					truncateToWidth(theme.fg("muted", `(0/${this.#flatNodes.length})${this.getFilterLabel()}`), width),
 				);
 			} else {
-				const filterLabel = this.#getFilterLabel().trim() || "[default]";
+				const filterLabel = this.getFilterLabel().trim() || "[default]";
 				lines.push(
 					truncateToWidth(
 						theme.fg("muted", `${this.#flatNodes.length} entries hidden by the current filter ${filterLabel}`),
@@ -453,10 +455,10 @@ class TreeList implements Component {
 				);
 				lines.push(truncateToWidth(theme.fg("muted", "Press Alt+A to show all, Alt+D for default"), width));
 				lines.push(
-					truncateToWidth(theme.fg("muted", `(0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
+					truncateToWidth(theme.fg("muted", `(0/${this.#flatNodes.length})${this.getFilterLabel()}`), width),
 				);
 			}
-			return lines;
+			return lines.slice(0, this.maxVisibleLines);
 		}
 
 		const { startIndex, endIndex } = centeredWindow(
@@ -468,7 +470,7 @@ class TreeList implements Component {
 		const MIN_CONTENT_COLS = 24;
 		const OVERHEAD_COLS = 4;
 		const contentReserve = Math.max(MIN_CONTENT_COLS, Math.floor(width / 2));
-		const maxIndentLevels = Math.max(1, Math.floor((width - contentReserve - OVERHEAD_COLS) / 3));
+		const maxIndentLevels = Math.max(0, Math.floor((width - contentReserve - OVERHEAD_COLS) / 3));
 
 		const rowWidth = contentRowWidth(width, this.#filteredNodes.length, this.maxVisibleLines);
 		const rows: string[] = [];
@@ -522,10 +524,10 @@ class TreeList implements Component {
 			const prefix = prefixChars.join("");
 
 			const isOnActivePath = this.#activePathIds.has(entry.id);
-			const pathMarker = isOnActivePath ? theme.fg("accent", `${theme.md.bullet} `) : "";
+			const pathMarker = isOnActivePath && rowWidth >= 24 ? theme.fg("accent", `${theme.md.bullet} `) : "";
 
 			const label = flatNode.node.label ? theme.fg("warning", `[${normalizeTreeText(flatNode.node.label)}] `) : "";
-			const content = this.#getEntryDisplayText(flatNode.node, isSelected);
+			const content = this.#getEntryDisplayText(flatNode.node, isSelected, rowWidth < 32);
 
 			let line = cursor + theme.fg("dim", prefix) + pathMarker + label + content;
 			if (isSelected) {
@@ -542,15 +544,10 @@ class TreeList implements Component {
 			}),
 		);
 
-		const filterLabel = this.#getFilterLabel();
-		if (filterLabel) {
-			lines.push(truncateToWidth(theme.fg("muted", filterLabel.trim()), width));
-		}
-
 		return lines;
 	}
 
-	#getEntryDisplayText(node: SessionTreeNode, isSelected: boolean): string {
+	#getEntryDisplayText(node: SessionTreeNode, isSelected: boolean, compact: boolean): string {
 		const entry = node.entry;
 		let result: string;
 
@@ -563,29 +560,31 @@ class TreeList implements Component {
 				if (role === "user") {
 					const msgWithContent = msg as { content?: unknown };
 					const content = this.#extractContent(msgWithContent.content);
-					result = theme.fg("accent", "user: ") + content;
+					result = theme.fg("accent", compact ? "U: " : "user: ") + content;
 				} else if (role === "developer") {
 					const msgWithContent = msg as { content?: unknown };
 					const content = this.#extractContent(msgWithContent.content);
-					result = theme.fg("dim", "developer: ") + theme.fg("muted", content);
+					result = theme.fg("dim", compact ? "D: " : "developer: ") + theme.fg("muted", content);
 				} else if (role === "assistant") {
 					const presentation = resolveAssistantErrorPresentation(msg);
 					if (presentation.kind === "compact-recovered") {
-						result = theme.fg("success", "assistant: ") + theme.fg("dim", normalize(presentation.text));
+						result =
+							theme.fg("success", compact ? "A: " : "assistant: ") +
+							theme.fg("dim", normalize(presentation.text));
 						break;
 					}
 					const msgWithContent = msg as { content?: unknown; stopReason?: string; errorMessage?: string };
 					const textContent = this.#extractContent(msgWithContent.content);
 					if (textContent) {
-						result = theme.fg("success", "assistant: ") + textContent;
+						result = theme.fg("success", compact ? "A: " : "assistant: ") + textContent;
 					} else if (presentation.kind === "full") {
 						result =
-							theme.fg("success", "assistant: ") +
+							theme.fg("success", compact ? "A: " : "assistant: ") +
 							theme.fg("error", truncateCodePoints(normalize(presentation.text), 80));
 					} else if (msgWithContent.stopReason === "aborted") {
-						result = theme.fg("success", "assistant: ") + theme.fg("muted", "(aborted)");
+						result = theme.fg("success", compact ? "A: " : "assistant: ") + theme.fg("muted", "(aborted)");
 					} else {
-						result = theme.fg("success", "assistant: ") + theme.fg("muted", "(no content)");
+						result = theme.fg("success", compact ? "A: " : "assistant: ") + theme.fg("muted", "(no content)");
 					}
 				} else if (role === "toolResult") {
 					const toolMsg = msg as { toolCallId?: string; toolName?: string };
@@ -830,10 +829,11 @@ class SearchLine implements Component {
 
 	render(width: number): readonly string[] {
 		const query = this.treeList.getSearchQuery();
+		const label = `Search${this.treeList.getFilterLabel()}:`;
 		if (query) {
-			return [truncateToWidth(`${theme.fg("muted", "Search:")} ${theme.fg("accent", query)}`, width)];
+			return [truncateToWidth(`${theme.fg("muted", label)} ${theme.fg("accent", query)}`, width)];
 		}
-		return [truncateToWidth(theme.fg("muted", "Search:"), width)];
+		return [truncateToWidth(theme.fg("muted", label), width)];
 	}
 
 	handleInput(_keyData: string): void {}
@@ -841,6 +841,7 @@ class SearchLine implements Component {
 
 class LabelInput implements Component {
 	#input: Input;
+	#maxHeight = 3;
 	onSubmit?: (entryId: string, label: string | undefined) => void;
 	onCancel?: () => void;
 
@@ -856,12 +857,17 @@ class LabelInput implements Component {
 
 	invalidate(): void {}
 
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(1, Math.trunc(rows));
+	}
+
 	render(width: number): readonly string[] {
-		const lines: string[] = [];
-		lines.push(truncateToWidth(theme.fg("muted", "Label (empty to remove):"), width));
-		lines.push(...this.#input.render(width));
-		lines.push(truncateToWidth(theme.fg("dim", "enter: save  esc: cancel"), width));
-		return lines;
+		return renderDialogContent(
+			[new TruncatedText(theme.fg("muted", "Label (empty to remove):"), 0, 0), this.#input],
+			this.#input,
+			width,
+			this.#maxHeight,
+		).lines;
 	}
 
 	handleInput(keyData: string): void {
@@ -888,8 +894,8 @@ function codePointLength(text: string): number {
 export class TreeSelectorComponent extends OverlayPanel {
 	#treeList: TreeList;
 	#labelInput: LabelInput | null = null;
-	#labelInputContainer: Container;
-	#treeContainer: Container;
+	#height: number;
+	#searchLine: SearchLine;
 
 	constructor(
 		tree: SessionTreeNode[],
@@ -902,39 +908,12 @@ export class TreeSelectorComponent extends OverlayPanel {
 	) {
 		super("Session Tree");
 
-		const PANEL_CHROME_ROWS = 8;
-		const maxVisibleLines = Math.max(
-			1,
-			Math.min(Math.max(5, Math.floor(terminalHeight / 2)), terminalHeight - PANEL_CHROME_ROWS),
-		);
-
-		this.#treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialFilterMode);
+		this.#height = Math.max(1, terminalHeight);
+		this.#treeList = new TreeList(tree, currentLeafId, this.#height, initialFilterMode);
+		this.#searchLine = new SearchLine(this.#treeList);
 		this.#treeList.onSelect = onSelect;
 		this.#treeList.onCancel = onCancel;
 		this.#treeList.onLabelEdit = (entryId, currentLabel) => this.#showLabelInput(entryId, currentLabel);
-
-		this.#treeContainer = new Container();
-		this.#treeContainer.addChild(this.#treeList);
-
-		this.#labelInputContainer = new Container();
-
-		this.addChild(new Spacer(1));
-		this.addChild(
-			new TruncatedText(
-				theme.fg(
-					"muted",
-					"Enter: switch. Alt+↑/↓: previous/next turn. PgUp/PgDn (←/→): page. Home/End: first/last item. Shift+Enter: summarize & switch. Shift+L: label. Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
-				),
-				0,
-				0,
-			),
-		);
-		this.addChild(new SearchLine(this.#treeList));
-		this.addChild(new PanelDivider());
-		this.addChild(new Spacer(1));
-		this.addChild(this.#treeContainer);
-		this.addChild(this.#labelInputContainer);
-		this.addChild(new Spacer(1));
 
 		if (tree.length === 0) {
 			setTimeout(() => onCancel(), 100);
@@ -949,17 +928,40 @@ export class TreeSelectorComponent extends OverlayPanel {
 			this.#hideLabelInput();
 		};
 		this.#labelInput.onCancel = () => this.#hideLabelInput();
-
-		this.#treeContainer.clear();
-		this.#labelInputContainer.clear();
-		this.#labelInputContainer.addChild(this.#labelInput);
 	}
 
 	#hideLabelInput(): void {
 		this.#labelInput = null;
-		this.#labelInputContainer.clear();
-		this.#treeContainer.clear();
-		this.#treeContainer.addChild(this.#treeList);
+	}
+
+	override setMaxHeight(rows: number): void {
+		this.#height = Math.max(1, Math.trunc(rows));
+	}
+
+	override render(width: number): readonly string[] {
+		const layout = getDialogViewport(this.#height, this.#labelInput ? 0 : 1);
+		const innerWidth = Math.max(1, layout.titleRows ? width - 4 : width);
+		const active = this.#labelInput ?? this.#treeList;
+		// The real composer supplies the current slot height on every render/resize.
+		// Give the active editor/list its budget before painting optional chrome.
+		active.setMaxHeight(layout.bodyRows + layout.dividerRows);
+		const search = this.#searchLine.render(innerWidth);
+		const footer = this.#labelInput
+			? innerWidth < 24
+				? "↵ save Esc back"
+				: "Enter:save Esc:cancel"
+			: !layout.headerRows && (this.#treeList.getSearchQuery() || this.#treeList.getFilterLabel())
+				? (search[0] ?? "")
+				: innerWidth < 32
+					? "↵ open Esc back"
+					: "Enter:switch Esc:cancel ↑/↓:move L:label ^O:filter";
+		return [
+			...(layout.titleRows ? [topBorder(width, this.#labelInput ? "Edit label" : this.title)] : []),
+			...(layout.headerRows ? search.map(line => row(line, width, layout.titleRows > 0)) : []),
+			...active.render(innerWidth).map(line => row(line, width, layout.titleRows > 0)),
+			...(layout.footerRows ? [row(footer, width, layout.titleRows > 0)] : []),
+			...(layout.bottomRows ? [bottomBorder(width)] : []),
+		];
 	}
 
 	handleInput(keyData: string): void {

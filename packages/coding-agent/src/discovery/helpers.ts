@@ -303,6 +303,12 @@ interface ScanSkillsFromDirOptions {
 	requireDescription?: boolean;
 
 	includeSelf?: boolean;
+
+	/**
+	 * Real path a skill must stay inside. Project skills arrive with the repository, so a SKILL.md
+	 * that symlinks out of it would read an arbitrary file into the model's context.
+	 */
+	containRoot?: string;
 }
 
 export function compareSkillOrder(aName: string, aPath: string, bName: string, bPath: string): number {
@@ -320,7 +326,7 @@ export async function scanSkillsFromDir(
 ): Promise<LoadResult<Skill>> {
 	const items: Skill[] = [];
 	const warnings: string[] = [];
-	const { dir, level, providerId, requireDescription = false } = options;
+	const { dir, level, providerId, requireDescription = false, containRoot } = options;
 
 	let entries: fs.Dirent[];
 	try {
@@ -331,15 +337,31 @@ export async function scanSkillsFromDir(
 		}
 		return { items, warnings };
 	}
+	// A skill that is rejected is a skill the user wrote and will look for in vain, so every drop
+	// below says which file it was and what was wrong with it. Only `enabled: false` stays quiet:
+	// that one is a deliberate request.
+	const describe = (skillPath: string) => path.basename(path.dirname(skillPath));
 	const loadSkill = async (skillPath: string) => {
 		try {
 			const content = await readFile(skillPath);
-			if (!content) return;
+			if (!content) {
+				warnings.push(`Skipping skill "${describe(skillPath)}": ${skillPath} is empty or unreadable`);
+				return;
+			}
+			if (content.startsWith("---") && content.indexOf("\n---", 3) === -1) {
+				warnings.push(
+					`Skipping skill "${describe(skillPath)}": ${skillPath} opens YAML frontmatter that is never closed by a "---" line`,
+				);
+				return;
+			}
 			const { frontmatter, body } = parseFrontmatter(content, { source: skillPath });
 			if (frontmatter.enabled === false) {
 				return;
 			}
 			if (requireDescription && !frontmatter.description) {
+				warnings.push(
+					`Skipping skill "${describe(skillPath)}": ${skillPath} has no "description" in its frontmatter, which is required for the model to know when to use it`,
+				);
 				return;
 			}
 			const skillDirName = path.basename(path.dirname(skillPath));
@@ -351,17 +373,31 @@ export async function scanSkillsFromDir(
 				content: body,
 				frontmatter: frontmatter as SkillFrontmatter,
 				level,
+				...(containRoot !== undefined && { containRoot }),
 				_source: createSourceMeta(providerId, skillPath, level),
 			});
-		} catch {
-			warnings.push(`Failed to read skill file: ${skillPath}`);
+		} catch (error) {
+			warnings.push(`Skipping skill "${describe(skillPath)}": failed to read ${skillPath} (${String(error)})`);
 		}
+	};
+
+	const realContainRoot = containRoot === undefined ? null : await realpathIfExists(containRoot);
+	const admit = async (skillPath: string): Promise<boolean> => {
+		if (realContainRoot === null) return true;
+		const contained = await resolveContainedPath(realContainRoot, skillPath);
+		if (contained.status === "outside") {
+			warnings.push(
+				`Skipping skill "${describe(skillPath)}": ${skillPath} resolves outside ${realContainRoot} and will not be loaded`,
+			);
+			return false;
+		}
+		return contained.status === "ok";
 	};
 
 	const work: Promise<void>[] = [];
 	if (options.includeSelf) {
 		const selfSkillPath = path.join(dir, "SKILL.md");
-		if (await Bun.file(selfSkillPath).exists()) {
+		if ((await Bun.file(selfSkillPath).exists()) && (await admit(selfSkillPath))) {
 			work.push(loadSkill(selfSkillPath));
 		}
 	}
@@ -369,7 +405,7 @@ export async function scanSkillsFromDir(
 		if (entry.name.startsWith(".")) continue;
 		if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
 		const skillPath = path.join(dir, entry.name, "SKILL.md");
-		if (await Bun.file(skillPath).exists()) {
+		if ((await Bun.file(skillPath).exists()) && (await admit(skillPath))) {
 			work.push(loadSkill(skillPath));
 		}
 	}

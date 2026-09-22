@@ -17,6 +17,7 @@ import {
 	setWorktreesDir,
 	toError,
 } from "@oh-my-pi/pi-utils";
+import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { JSONC, YAML } from "bun";
 import { invalidate as invalidateCapabilityFsCache } from "../capability/fs";
@@ -29,6 +30,7 @@ import type { CompactionMethod } from "../session/compaction-method-config";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
 import { INSPECT_MEDIA_MODES } from "../utils/inspect-media-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
+import { type ConfigIssue, normalizeSettingsLayer } from "./settings-normalize";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -39,6 +41,7 @@ import {
 	type SettingValue,
 } from "./settings-schema";
 
+export type { ConfigIssue } from "./settings-normalize";
 export type * from "./settings-schema";
 export * from "./settings-schema";
 
@@ -135,6 +138,8 @@ export function validateProviderMaxInFlightRequests(value: unknown): Record<stri
 	}
 	return normalized;
 }
+
+const QUARANTINED_CONFIG_PATTERN = /^config\.ya?ml\.broken-/;
 
 const PATH_SCOPED_ARRAY_SETTINGS = new Set<SettingPath>(["enabledModels", "disabledProviders"]);
 type PathScopedStringArrayEntry = {
@@ -295,6 +300,10 @@ export class Settings {
 	#projectFileSettings: RawSettings = {};
 
 	#quarantinedYamlTargets = new Map<string, string>();
+
+	#configIssues: ConfigIssue[] = [];
+
+	#reportedQuarantineBackups = new Set<string>();
 
 	#configOverlay: RawSettings = {};
 
@@ -544,6 +553,8 @@ export class Settings {
 				previousHookValues.set(key, this.get(key));
 			}
 
+			this.#configIssues = [];
+			this.#reportedQuarantineBackups.clear();
 			const [globalResult, projectResult, overlayResult] = await Promise.allSettled([
 				this.#readExistingMainYaml(false),
 				this.#readProjectSettings(false),
@@ -594,6 +605,25 @@ export class Settings {
 
 	getStorage(): AgentStorage | null {
 		return this.#storage;
+	}
+
+	getConfigIssues(): readonly ConfigIssue[] {
+		return this.#configIssues;
+	}
+
+	#recordConfigIssues(issues: readonly ConfigIssue[]): void {
+		for (const issue of issues) {
+			const duplicate = this.#configIssues.some(
+				existing => existing.kind === issue.kind && existing.source === issue.source && existing.key === issue.key,
+			);
+			if (!duplicate) this.#configIssues.push(issue);
+		}
+	}
+
+	#normalizeLayer(raw: RawSettings, source: string, reportUnknown: boolean): RawSettings {
+		const { settings, issues } = normalizeSettingsLayer(raw, { source, reportUnknown });
+		if (reportUnknown) this.#recordConfigIssues(issues);
+		return settings;
 	}
 
 	getCwd(): string {
@@ -952,25 +982,67 @@ export class Settings {
 
 	async #loadYamlIfPresentForStartup(filePath: string): Promise<RawSettings | null> {
 		const result = await this.#loadYamlIfPresent(filePath);
-		if (result.kind !== "invalid" || !this.#persist) {
+		if (result.kind !== "invalid") {
 			return this.#unwrapYamlLoadResult(filePath, result);
 		}
-		return await this.#withYamlWriteLock(filePath, async writePath =>
-			this.#loadYamlIfPresentForWriteLocked(filePath, writePath, true),
-		);
+		if (!this.#persist) {
+			this.#reportInvalidConfig(filePath, result);
+			return null;
+		}
+		return await this.#withYamlWriteLock(filePath, async writePath => {
+			const locked = await this.#loadYamlIfPresent(writePath);
+			if (locked.kind === "missing") {
+				this.#reportInvalidConfig(filePath, result);
+				return null;
+			}
+			if (locked.kind !== "invalid") {
+				return this.#unwrapYamlLoadResult(filePath, locked);
+			}
+			const quarantined = await this.#quarantineInvalidYamlLocked(writePath, locked);
+			this.#quarantinedYamlTargets.set(filePath, writePath);
+			this.#reportInvalidConfig(filePath, quarantined);
+			return null;
+		});
 	}
 
-	async #loadYamlIfPresentForWriteLocked(
-		filePath: string,
-		writePath: string,
-		rejectMissing = false,
-	): Promise<RawSettings | null> {
-		let result = await this.#loadYamlIfPresent(writePath);
-		if (result.kind === "missing" && rejectMissing) {
-			throw new Error(
-				`Settings config was invalid before locking and is now missing: ${filePath}; another process may have moved it aside`,
-			);
+	#reportInvalidConfig(filePath: string, result: Extract<YamlLoadResult, { kind: "invalid" }>): void {
+		const backupPath = result.backupPath;
+		if (backupPath) this.#reportedQuarantineBackups.add(backupPath);
+		const movedAside = backupPath
+			? ` It was moved aside to ${backupPath}; merge anything you still need from it and delete it.`
+			: "";
+		this.#recordConfigIssues([
+			{
+				kind: "quarantined-config",
+				source: filePath,
+				message: `${filePath} is not valid YAML (${String(result.error)}); its settings are not in effect and defaults are being used.${movedAside}`,
+			},
+		]);
+	}
+
+	async #reportQuarantinedLeftovers(dir: string): Promise<void> {
+		let entries: string[];
+		try {
+			entries = await fs.promises.readdir(dir);
+		} catch {
+			return;
 		}
+		for (const entry of entries) {
+			if (!QUARANTINED_CONFIG_PATTERN.test(entry)) continue;
+			const backupPath = path.join(dir, entry);
+			if (this.#reportedQuarantineBackups.has(backupPath)) continue;
+			this.#recordConfigIssues([
+				{
+					kind: "quarantined-config",
+					source: backupPath,
+					message: `${backupPath} holds a config an earlier run could not parse and moved aside; those settings are not in effect — merge what you need back into the config and delete the backup.`,
+				},
+			]);
+		}
+	}
+
+	async #loadYamlIfPresentForWriteLocked(filePath: string, writePath: string): Promise<RawSettings | null> {
+		let result = await this.#loadYamlIfPresent(writePath);
 		if (result.kind === "invalid") {
 			result = await this.#quarantineInvalidYamlLocked(writePath, result);
 			this.#quarantinedYamlTargets.set(filePath, writePath);
@@ -1015,12 +1087,13 @@ export class Settings {
 
 	async #readExistingMainYaml(quarantineInvalid: boolean): Promise<MainYamlReadResult> {
 		if (!this.#configPath) return { settings: null, configPath: null };
+		await this.#reportQuarantinedLeftovers(this.#agentDir);
 		for (const filename of MAIN_CONFIG_FILENAMES) {
 			const configPath = path.join(this.#agentDir, filename);
 			const loaded = quarantineInvalid
 				? await this.#loadYamlIfPresentForStartup(configPath)
 				: this.#unwrapYamlLoadResult(configPath, await this.#loadYamlIfPresent(configPath, false));
-			if (loaded) return { settings: loaded, configPath };
+			if (loaded) return { settings: this.#normalizeLayer(loaded, configPath, true), configPath };
 		}
 		return {
 			settings: null,
@@ -1057,8 +1130,10 @@ export class Settings {
 		if (nativeModelRoles !== undefined) {
 			merged = this.#deepMerge(merged, { modelRoles: nativeModelRoles });
 		}
+		await this.#reportQuarantinedLeftovers(path.dirname(projectConfigPath));
+		this.#normalizeLayer(nativeProject, projectConfigPath, true);
 		return {
-			settings: this.#migrateRawSettings(merged, quarantineInvalid),
+			settings: this.#normalizeLayer(this.#migrateRawSettings(merged, quarantineInvalid), projectConfigPath, false),
 			fileSettings: structuredClone(nativeProject),
 			shellPathSource,
 		};
@@ -1093,7 +1168,7 @@ export class Settings {
 		try {
 			content = await Bun.file(filePath).text();
 		} catch (error) {
-			throw new Error(
+			throw new CliUsageError(
 				isEnoent(error)
 					? `Config overlay not found: ${filePath}`
 					: `Failed to read config overlay ${filePath}: ${String(error)}`,
@@ -1103,13 +1178,17 @@ export class Settings {
 		try {
 			parsed = YAML.parse(content);
 		} catch (error) {
-			throw new Error(`Failed to parse config overlay ${filePath}: ${String(error)}`);
+			throw new CliUsageError(`Failed to parse config overlay ${filePath}: ${String(error)}`);
 		}
 		if (parsed === null || parsed === undefined) return {};
 		if (typeof parsed !== "object" || Array.isArray(parsed)) {
-			throw new Error(`Config overlay must be a YAML mapping: ${filePath}`);
+			throw new CliUsageError(`Config overlay must be a YAML mapping: ${filePath}`);
 		}
-		return this.#migrateRawSettings(parsed as RawSettings, captureLegacyChangelogVersion);
+		return this.#normalizeLayer(
+			this.#migrateRawSettings(parsed as RawSettings, captureLegacyChangelogVersion),
+			filePath,
+			true,
+		);
 	}
 
 	async #migrateFromLegacy(): Promise<void> {
@@ -1119,16 +1198,52 @@ export class Settings {
 		let migrated = false;
 
 		const settingsJsonPath = path.join(this.#agentDir, "settings.json");
+		let legacyContent: string | undefined;
 		try {
-			const parsed: unknown = JSONC.parse(await Bun.file(settingsJsonPath).text());
+			legacyContent = await Bun.file(settingsJsonPath).text();
+		} catch (error) {
+			if (!isEnoent(error)) {
+				this.#recordConfigIssues([
+					{
+						kind: "unmigrated-legacy",
+						source: settingsJsonPath,
+						message: `${settingsJsonPath} could not be read (${String(error)}); its settings were not migrated to config.yml and are not in effect.`,
+					},
+				]);
+			}
+		}
+		if (legacyContent !== undefined) {
+			let parsed: unknown;
+			try {
+				parsed = JSONC.parse(legacyContent);
+			} catch (error) {
+				this.#recordConfigIssues([
+					{
+						kind: "unmigrated-legacy",
+						source: settingsJsonPath,
+						message: `${settingsJsonPath} is not valid JSON (${String(error)}); its settings were not migrated to config.yml and are not in effect.`,
+					},
+				]);
+			}
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				settings = this.#deepMerge(settings, this.#migrateRawSettings(parsed as RawSettings));
+				settings = this.#deepMerge(
+					settings,
+					this.#normalizeLayer(this.#migrateRawSettings(parsed as RawSettings), settingsJsonPath, true),
+				);
 				migrated = true;
 				try {
 					fs.renameSync(settingsJsonPath, `${settingsJsonPath}.bak`);
 				} catch {}
+			} else if (parsed !== undefined) {
+				this.#recordConfigIssues([
+					{
+						kind: "unmigrated-legacy",
+						source: settingsJsonPath,
+						message: `${settingsJsonPath} does not contain a JSON object; its settings were not migrated to config.yml and are not in effect.`,
+					},
+				]);
 			}
-		} catch {}
+		}
 
 		try {
 			const dbSettings = this.#storage?.getSettings();
@@ -1731,8 +1846,8 @@ export class Settings {
 					setByPath(current, ["modelRoles"], mergedRoles);
 				}
 
-				this.#global = current;
-				await this.#writeYamlAtomically(writePath, this.#global);
+				await this.#writeYamlAtomically(writePath, current);
+				this.#global = this.#normalizeLayer(current, configPath, false);
 				this.#quarantinedYamlTargets.delete(configPath);
 
 				const globalRolesAfterWrite = this.#modelRolesFromLayer(this.#global);

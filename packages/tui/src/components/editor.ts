@@ -516,6 +516,7 @@ export class Editor implements Component, Focusable {
 	#layoutScratch: LayoutLine[] = [];
 	#plainRenderCache = new WeakMap<LayoutLine, PlainRenderCacheEntry>();
 	#maxHeight?: number;
+	#viewportHeight?: number;
 	#scrollOffset: number = 0;
 
 	#killRing = new KillRing();
@@ -688,6 +689,11 @@ export class Editor implements Component, Focusable {
 		this.#maxHeight = maxHeight;
 	}
 
+	/** Total rows allocated by the host, including completion suggestions. */
+	setViewportHeight(height: number | undefined): void {
+		this.#viewportHeight = height === undefined ? undefined : Math.max(1, Math.floor(height));
+	}
+
 	setScrollbarVisible(_visible: boolean): void {}
 
 	getAutocompleteMaxVisible(): number {
@@ -833,8 +839,10 @@ export class Editor implements Component, Focusable {
 	}
 
 	#getVisibleContentHeight(contentLines: number): number {
-		if (this.#maxHeight === undefined) return contentLines;
-		return Math.max(1, this.#maxHeight);
+		const preferred = Math.max(1, this.#maxHeight ?? contentLines);
+		if (this.#viewportHeight === undefined) return preferred;
+		const suggestionRows = this.#autocompleteState && this.#autocompleteList && this.#viewportHeight > 1 ? 1 : 0;
+		return Math.min(preferred, this.#viewportHeight - suggestionRows);
 	}
 
 	#decorate(text: string, context: EditorTextDecorationContext): string {
@@ -990,7 +998,9 @@ export class Editor implements Component, Focusable {
 
 	#getPageScrollStep(totalVisualLines: number): number {
 		const visibleHeight =
-			this.#maxHeight === undefined ? DEFAULT_PAGE_SCROLL_LINES : this.#getVisibleContentHeight(totalVisualLines);
+			this.#maxHeight === undefined && this.#viewportHeight === undefined
+				? DEFAULT_PAGE_SCROLL_LINES
+				: this.#getVisibleContentHeight(totalVisualLines);
 		return Math.max(1, visibleHeight - 1);
 	}
 
@@ -1248,11 +1258,15 @@ export class Editor implements Component, Focusable {
 
 		if (this.#autocompleteState && this.#autocompleteList) {
 			const viewportRows = this.viewportRowsProvider?.() || process.stdout.rows || Number(Bun.env.LINES) || 24;
-			this.#autocompleteList.setMaxVisible(
-				Math.max(3, Math.min(this.#autocompleteMaxVisible, viewportRows - result.length - 2)),
-			);
-			const autocompleteResult = this.#autocompleteList.render(width);
-			result.push(...autocompleteResult);
+			const available =
+				this.#viewportHeight === undefined
+					? Math.max(1, viewportRows - result.length - 2)
+					: this.#viewportHeight - result.length;
+			if (available > 0) {
+				this.#autocompleteList.setMaxVisible(Math.min(this.#autocompleteMaxVisible, available));
+				this.#autocompleteList.setMaxHeight(available);
+				result.push(...this.#autocompleteList.render(width));
+			}
 		}
 
 		return result;
@@ -2182,15 +2196,15 @@ export class Editor implements Component, Focusable {
 
 	#insertCharacter(char: string): void {
 		this.#exitHistoryForEditing();
-		if (this.#deleteSelection() !== null) {
-			this.#lastAction = null;
-		}
+		// Replacing a selection already snapshotted the pre-selection text, so the
+		// inserted text joins that entry: one undo restores what the user replaced.
+		const replacedSelection = this.#deleteSelection() !== null;
 
 		const isWordChunk =
 			char.length === 1
 				? getWordNavKind(char) !== "whitespace"
 				: [...segmenter.segment(char)].every(seg => getWordNavKind(seg.segment) !== "whitespace");
-		if (!isWordChunk || this.#lastAction !== "type-word") {
+		if (!replacedSelection && (!isWordChunk || this.#lastAction !== "type-word")) {
 			this.#recordUndoState();
 		}
 

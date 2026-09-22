@@ -675,7 +675,7 @@ test("xd help keeps full docs for the model but renders a compact card in TUI", 
 			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
 		};
 		const rendered = renderBashResult(result, `xd probe ?`, false, resolveXdevMounted);
-		expect(rendered).toContain("xd://probe docs");
+		expect(rendered).toContain("xd://probe · docs");
 		expect(rendered).toContain("Returns the supplied value.");
 		expect(rendered).toContain("1 arg");
 		expect(rendered).toContain("required: value");
@@ -690,7 +690,7 @@ test("xd help card expands to the full docs", async () => {
 		const result = await bash.execute("xd-help-expanded", { command: `xd probe ?` });
 		expect(result.isError).not.toBe(true);
 		const rendered = renderBashResult(result, `xd probe ?`, true);
-		expect(rendered).toContain("xd://probe docs");
+		expect(rendered).toContain("xd://probe · docs");
 		expect(rendered).toContain("type Args");
 		expect(rendered).toContain("usage: xd probe <value>");
 		expect(rendered).toContain("Execute from bash");
@@ -713,8 +713,8 @@ test("chained xd help calls render one status line per device, not a docs dump",
 			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
 		};
 		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
-		expect(rendered).toContain("xd://probe docs");
-		expect(rendered).toContain("xd://probe2 docs");
+		expect(rendered).toContain("xd://probe · docs");
+		expect(rendered).toContain("xd://probe2 · docs");
 		expect(rendered).not.toContain("type Args");
 		expect(rendered).toContain("expand");
 	});
@@ -730,7 +730,7 @@ test("composite output is not swallowed when xd help is chained with other comma
 			return xdev?.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
 		};
 		const rendered = renderBashResult(result, command, false, resolveXdevMounted);
-		expect(rendered).toContain("xd://probe docs");
+		expect(rendered).toContain("xd://probe · docs");
 		expect(rendered).toContain("hi");
 	});
 });

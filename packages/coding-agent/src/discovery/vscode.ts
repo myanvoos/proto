@@ -39,7 +39,6 @@ async function loadMCPConfig(
 
 	const content = await readFile(path);
 	if (!content) {
-		warnings.push(`Failed to read ${path}`);
 		return { items, warnings };
 	}
 

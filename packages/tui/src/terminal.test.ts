@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils/env";
 import { setKittyProtocolActive } from "./keys";
 import { ProcessTerminal } from "./terminal";
-import { NotifyProtocol, TERMINAL } from "./terminal-capabilities";
+import { isTerminalFocused, NotifyProtocol, TERMINAL } from "./terminal-capabilities";
+import { isInsideTerminalMultiplexer } from "./ttyid";
 
 const DA1 = "\x1b[?1;2c";
 
@@ -382,4 +383,115 @@ test("releases ordinary input when an unterminated OSC99 probe reply outgrows th
 		delete Bun.env.PI_TUI_OSC99_PROBE;
 		restoreEnv();
 	}
+});
+
+const SCRUBBED_ENV = { TERM: "xterm-256color" } as unknown as NodeJS.ProcessEnv;
+
+test("a secondary device attributes reply identifies a multiplexer the environment hides", () => {
+	const terminal = startTerminal();
+	try {
+		expect(isInsideTerminalMultiplexer(SCRUBBED_ENV)).toBe(false);
+		// tmux answers DA2 with terminal id 84 ("T") even when it was entered
+		// through `env -i`, so TMUX is unset and only the reply can tell.
+		feed("\x1b[>84;0;0c");
+		expect(isInsideTerminalMultiplexer(SCRUBBED_ENV)).toBe(true);
+	} finally {
+		terminal.stop();
+	}
+	expect(isInsideTerminalMultiplexer(SCRUBBED_ENV)).toBe(false);
+});
+
+test("an XTVERSION reply identifies a multiplexer the environment hides", () => {
+	const terminal = startTerminal();
+	try {
+		feed("\x1bP>|tmux 3.4\x1b\\");
+		expect(isInsideTerminalMultiplexer(SCRUBBED_ENV)).toBe(true);
+	} finally {
+		terminal.stop();
+	}
+	feed("\x1bP>|screen\x1b\\");
+	expect(isInsideTerminalMultiplexer(SCRUBBED_ENV)).toBe(false);
+});
+
+test("a direct terminal identity leaves the direct-terminal resize path in place", () => {
+	const terminal = startTerminal();
+	try {
+		// xterm reports a DEC model number, WezTerm/kitty report their names.
+		feed("\x1b[>41;354;0c");
+		expect(isInsideTerminalMultiplexer(SCRUBBED_ENV)).toBe(false);
+		feed("\x1bP>|WezTerm 20240203\x1b\\");
+		expect(isInsideTerminalMultiplexer(SCRUBBED_ENV)).toBe(false);
+	} finally {
+		terminal.stop();
+	}
+});
+
+test("host identity queries go out on attach and their replies never reach input", () => {
+	const input: string[] = [];
+	const wasTTY = process.stdout.isTTY;
+	// #safeWrite only reaches a tty; fake one so the probe bytes are observable.
+	(process.stdout as unknown as { isTTY: boolean }).isTTY = true;
+	const terminal = startTerminal(data => input.push(data));
+	try {
+		const written = (stdoutWrite as unknown as { mock: { calls: unknown[][] } }).mock.calls
+			.map(call => String(call[0]))
+			.join("");
+		expect(written).toContain("\x1b[>0q");
+		expect(written).toContain("\x1b[>c");
+		feed("\x1bP>|tmux 3.4\x1b\\");
+		feed("\x1b[>84;0;0c");
+		expect(input.join("")).toBe("");
+	} finally {
+		terminal.stop();
+		(process.stdout as unknown as { isTTY: boolean }).isTTY = wasTTY;
+	}
+});
+
+test("DEC 1004 focus reports drive focus state and never reach input", () => {
+	const input: string[] = [];
+	const wasTTY = process.stdout.isTTY;
+	(process.stdout as unknown as { isTTY: boolean }).isTTY = true;
+	const terminal = startTerminal(data => input.push(data));
+	try {
+		const written = (stdoutWrite as unknown as { mock: { calls: unknown[][] } }).mock.calls
+			.map(call => String(call[0]))
+			.join("");
+		expect(written).toContain("\x1b[?1004h");
+
+		// Nothing reported yet: focus is unknown, not "focused".
+		expect(isTerminalFocused()).toBeUndefined();
+
+		feed("\x1b[O");
+		expect(isTerminalFocused()).toBe(false);
+		feed("\x1b[I");
+		expect(isTerminalFocused()).toBe(true);
+
+		// Focus reports are unsolicited CSI; they must not be typed as keys.
+		expect(input.join("")).toBe("");
+
+		feed("hello");
+		expect(input.join("")).toBe("hello");
+	} finally {
+		terminal.stop();
+		(process.stdout as unknown as { isTTY: boolean }).isTTY = wasTTY;
+	}
+});
+
+test("focus reporting is disabled and forgotten when the terminal stops", () => {
+	const wasTTY = process.stdout.isTTY;
+	(process.stdout as unknown as { isTTY: boolean }).isTTY = true;
+	const terminal = startTerminal();
+	try {
+		feed("\x1b[I");
+		expect(isTerminalFocused()).toBe(true);
+	} finally {
+		terminal.stop();
+		(process.stdout as unknown as { isTTY: boolean }).isTTY = wasTTY;
+	}
+	const written = (stdoutWrite as unknown as { mock: { calls: unknown[][] } }).mock.calls
+		.map(call => String(call[0]))
+		.join("");
+	expect(written).toContain("\x1b[?1004l");
+	// A stale "focused" must not survive into the next terminal.
+	expect(isTerminalFocused()).toBeUndefined();
 });

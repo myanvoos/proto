@@ -152,6 +152,18 @@ export interface FetchWithRetryOptions extends RequestInit {
 
 const DEFAULT_MAX_DELAY_MS = 60_000;
 const DEFAULT_MAX_ATTEMPTS = 5;
+// A refused, unresolvable or unroutable endpoint does not become reachable within
+// a backoff window: one extra attempt covers a restarting local server, the full
+// ladder only makes a misconfigured base URL look like a hang.
+const UNREACHABLE_MAX_ATTEMPTS = 2;
+const UNREACHABLE_ERROR_RE =
+	/econnrefused|connection refused|enotfound|getaddrinfo|eai_again|ehostunreach|enetunreach|econnreset while connecting|unable to connect\.\s*is the computer able to access the url\?/i;
+
+function isUnreachableEndpointError(error: Error): boolean {
+	if (UNREACHABLE_ERROR_RE.test(error.message)) return true;
+	const cause = (error as { cause?: unknown }).cause;
+	return cause instanceof Error && UNREACHABLE_ERROR_RE.test(cause.message);
+}
 const RETRY_BODY_PREFIX_MAX_BYTES = 64 * 1024;
 
 export async function fetchWithRetry(
@@ -186,7 +198,10 @@ export async function fetchWithRetry(
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Request was aborted");
 			const wrapped = wrapNetworkError(error);
-			if (attempt + 1 >= maxAttempts) throw wrapped;
+			const attemptCeiling = isUnreachableEndpointError(wrapped)
+				? Math.min(maxAttempts, UNREACHABLE_MAX_ATTEMPTS)
+				: maxAttempts;
+			if (attempt + 1 >= attemptCeiling) throw wrapped;
 			await waitForRetry(resolveDefaultDelay(defaultDelayMs, attempt, maxDelayMs), signal);
 			continue;
 		}

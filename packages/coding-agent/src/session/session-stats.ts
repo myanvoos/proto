@@ -156,6 +156,7 @@ export class SessionStatsTracker {
 			},
 			cost: totalCost,
 			premiumRequests: totalPremiumRequests,
+			subagents: this.#host.sessionManager.getSubagentUsage(),
 			contextUsage: this.getContextUsage(),
 		};
 	}

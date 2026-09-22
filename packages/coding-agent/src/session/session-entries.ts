@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, MessageAttribution, ServiceTierByFamily, TextContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, MessageAttribution, ServiceTierByFamily, TextContent, Usage } from "@oh-my-pi/pi-ai";
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import type { CompactionMethod } from "./compaction-methods";
 
@@ -249,4 +249,132 @@ export interface UsageStatistics {
 	orchestrationCacheRead: number;
 	premiumRequests: number;
 	cost: number;
+
+	/** Spend of the subagents this session owns; excluded from the fields above. */
+	subagent: SubagentUsageTotals;
+}
+
+export interface SubagentUsageTotals {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens: number;
+	premiumRequests: number;
+	cost: number;
+
+	/** Distinct subagents that reported usage. */
+	agents: number;
+
+	/** Settled subagent runs that reported usage. */
+	runs: number;
+}
+
+export function emptySubagentUsageTotals(): SubagentUsageTotals {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		premiumRequests: 0,
+		cost: 0,
+		agents: 0,
+		runs: 0,
+	};
+}
+
+export function emptyUsageStatistics(): UsageStatistics {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		orchestrationInput: 0,
+		orchestrationOutput: 0,
+		orchestrationCacheRead: 0,
+		premiumRequests: 0,
+		cost: 0,
+		subagent: emptySubagentUsageTotals(),
+	};
+}
+
+/**
+ * Subagents keep their own transcripts, so their spend is invisible to an owning session that only
+ * sums its own messages. Each settled subagent run appends one of these entries to the owner, which
+ * makes the rollup durable: reopening the session replays the same totals.
+ */
+export const SUBAGENT_USAGE_CUSTOM_TYPE = "subagent_usage";
+
+const SUBAGENT_USAGE_VERSION = 1;
+
+export interface SubagentUsageEntryData {
+	version: typeof SUBAGENT_USAGE_VERSION;
+
+	/** Immutable agent id the spend is attributed to. */
+	agentId: string;
+
+	agent?: string;
+
+	label?: string;
+
+	/** Worker turn this run settled, when the subagent is a persistent worker. */
+	turn?: number;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens: number;
+	premiumRequests: number;
+	cost: number;
+}
+
+export function buildSubagentUsageEntryData(args: {
+	agentId: string;
+	agent?: string;
+	label?: string;
+	turn?: number;
+	usage: Usage;
+}): SubagentUsageEntryData {
+	const { usage } = args;
+	return {
+		version: SUBAGENT_USAGE_VERSION,
+		agentId: args.agentId,
+		...(args.agent ? { agent: args.agent } : {}),
+		...(args.label ? { label: args.label } : {}),
+		...(args.turn !== undefined ? { turn: args.turn } : {}),
+		input: usage.input,
+		output: usage.output,
+		cacheRead: usage.cacheRead,
+		cacheWrite: usage.cacheWrite,
+		totalTokens: usage.totalTokens,
+		premiumRequests: usage.premiumRequests ?? 0,
+		cost: usage.cost.total,
+	};
+}
+
+function finiteCount(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+export function parseSubagentUsageEntry(data: unknown): SubagentUsageEntryData | undefined {
+	if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+	const record = data as Record<string, unknown>;
+	if (record.version !== SUBAGENT_USAGE_VERSION) return undefined;
+	if (typeof record.agentId !== "string" || !record.agentId) return undefined;
+	return {
+		version: SUBAGENT_USAGE_VERSION,
+		agentId: record.agentId,
+		...(typeof record.agent === "string" && record.agent ? { agent: record.agent } : {}),
+		...(typeof record.label === "string" && record.label ? { label: record.label } : {}),
+		...(typeof record.turn === "number" && Number.isFinite(record.turn) ? { turn: record.turn } : {}),
+		input: finiteCount(record.input),
+		output: finiteCount(record.output),
+		cacheRead: finiteCount(record.cacheRead),
+		cacheWrite: finiteCount(record.cacheWrite),
+		totalTokens: finiteCount(record.totalTokens),
+		premiumRequests: finiteCount(record.premiumRequests),
+		cost: finiteCount(record.cost),
+	};
 }

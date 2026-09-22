@@ -1,6 +1,7 @@
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
+import type { UsageStatistics } from "../../session/session-entries";
 import type { SlashCommandRuntime } from "../types";
 import { reportMatchesActiveAccount } from "./active-oauth-account";
 import { formatDuration, renderAsciiBar } from "./format";
@@ -173,8 +174,14 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 		}
 	}
 
-	const stats = runtime.session.sessionManager.getUsageStatistics();
+	return renderSessionUsageSummary(runtime.session.sessionManager.getUsageStatistics());
+}
+
+/** What this session has spent, including the subagents it owns. Used when the provider reports no quota. */
+export function renderSessionUsageSummary(stats: UsageStatistics): string {
 	const orchestrationTokens = stats.orchestrationInput + stats.orchestrationOutput + stats.orchestrationCacheRead;
+	const subagent = stats.subagent;
+	const hasSubagentSpend = subagent.runs > 0;
 	return [
 		"Usage",
 		`Input tokens: ${stats.input}`,
@@ -185,5 +192,12 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 		...(orchestrationTokens > 0 ? [`Orchestration tokens: ${orchestrationTokens}`] : []),
 		`Premium requests: ${stats.premiumRequests}`,
 		`Cost: $${stats.cost.toFixed(6)}`,
+		...(hasSubagentSpend
+			? [
+					`Subagent tokens: ${subagent.totalTokens} (${subagent.agents} agent${subagent.agents === 1 ? "" : "s"}, ${subagent.runs} run${subagent.runs === 1 ? "" : "s"})`,
+					`Subagent cost: $${subagent.cost.toFixed(6)}`,
+					`Total cost: $${(stats.cost + subagent.cost).toFixed(6)}`,
+				]
+			: []),
 	].join("\n");
 }

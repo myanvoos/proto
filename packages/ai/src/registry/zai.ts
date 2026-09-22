@@ -22,7 +22,7 @@ export const loginZai = createApiKeyLogin({
 
 export const zaiProvider = {
 	id: "zai",
-	name: "Z.AI (GLM Coding Plan)",
+	name: "Z.AI (GLM Coding Plan · API key)",
 	login: (cb: OAuthLoginCallbacks) => loginZai(cb),
 } as const satisfies ProviderDefinition;
 

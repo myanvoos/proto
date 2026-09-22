@@ -13,6 +13,7 @@ import {
 } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { withTimeout } from "@oh-my-pi/pi-utils";
+import { collectWeakRefs } from "../../test/fixtures/worker-lifecycle";
 import { AsyncJobManager } from "../async/job-manager";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
@@ -32,6 +33,7 @@ import type { AgentDefinition } from "../task/types";
 import type { ToolSession } from "../tools";
 import { BashTool } from "../tools/bash";
 import { OrchestratorRuntime } from "./runtime";
+import { claimWakeTurn } from "./wake-turns";
 
 const OWNER_PREFIX = `orchestrator-controlled-${process.pid}`;
 const usage = {
@@ -299,16 +301,6 @@ async function controlledFixture(
 	};
 }
 
-async function collectWeakRefs(refs: WeakRef<object>[]): Promise<number> {
-	let alive = refs.length;
-	for (let attempt = 0; attempt < 20 && alive > 0; attempt++) {
-		Bun.gc(true);
-		await Bun.sleep(25);
-		alive = refs.filter(ref => ref.deref() !== undefined).length;
-	}
-	return alive;
-}
-
 test("parking releases a worker's session from memory while it stays resumable in place", async () => {
 	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
 	const ids = [
@@ -322,7 +314,7 @@ test("parking releases a worker's session from memory while it stays resumable i
 
 	for (const id of ids) await AgentLifecycleManager.global().park(id);
 	expect(ids.map(id => registry.get(id)?.status)).toEqual(["parked", "parked"]);
-	expect(await collectWeakRefs(sessions)).toBe(0);
+	expect(await collectWeakRefs(sessions)).toBe(sessions.length);
 
 	const resumed = await runtime.send(session, { session: ids[0]!, message: "resume after park" });
 	expect(resumed.id).toBe(ids[0]);
@@ -379,6 +371,7 @@ test("parking cancels a worker-owned MCP handshake, collects the session, and pr
 		configs: { slow: { type: "http", url: server.url.href, timeout: 0 } },
 		sources: {},
 		exaApiKeys: [],
+		warnings: [],
 	});
 	const singleton = spyOn(MCPManager, "instance").mockReturnValue(undefined);
 	try {
@@ -395,7 +388,7 @@ test("parking cancels a worker-owned MCP handshake, collects the session, and pr
 		await AgentLifecycleManager.global().park(id);
 		await withTimeout(aborted.promise, 5_000, "Parking did not abort the owned MCP handshake");
 		expect(registry.get(id)).toMatchObject({ status: "parked", session: null });
-		expect(await collectWeakRefs(sessions)).toBe(0);
+		expect(await collectWeakRefs(sessions)).toBe(sessions.length);
 
 		hang = false;
 		const resumed = await runtime.send(session, { session: id, message: "resume after cancelled MCP handshake" });
@@ -854,6 +847,138 @@ test("rehydration honors a child tombstone even when the parent has no terminal 
 	await expect(AgentLifecycleManager.global().ensureLive(worker.id)).rejects.toThrow("cannot be revived");
 }, 30_000);
 
+test("a turn started by an IRC wake is tracked, delivered once, and keeps turn numbering honest", async () => {
+	const { runtime, session, manager, model } = await controlledFixture({ streamFn: yieldingProvider() });
+	const worker = await runtime.spawn(session, { message: "first turn" });
+	await manager.waitForAll();
+	const first = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
+	expect(first.settled).toMatchObject([{ status: "completed", receipt: { turn: 1 } }]);
+
+	// What the executor does when a fleet message wakes this worker.
+	const claim = claimWakeTurn(worker.id, "please do phase two");
+	expect(claim, "the orchestrator claims wake turns for workers it owns").toBeDefined();
+	expect(runtime.screens(session, [worker.id])).toMatchObject([{ turns: 2, turnState: "running" }]);
+
+	claim?.settle({
+		index: 0,
+		id: worker.id,
+		agent: "worker",
+		agentSource: "bundled",
+		task: "please do phase two",
+		exitCode: 0,
+		output: "PHASE-TWO-ANSWER",
+		stderr: "",
+		truncated: false,
+		durationMs: 5,
+		tokens: 0,
+		requests: 1,
+		resolvedModel: `${model.provider}/${model.id}`,
+	});
+	const woken = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
+	expect(woken.settled).toMatchObject([{ status: "completed", receipt: { status: "delivered", turn: 2 } }]);
+	expect(woken.settled[0]?.resultText).toContain("PHASE-TWO-ANSWER");
+
+	// Exactly once: a second wait must not re-deliver the same turn.
+	const again = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 100 });
+	expect(again.settled).toEqual([]);
+
+	// The wake consumed turn 2, so the next orchestrator turn is 3 rather than a repeat of 2.
+	const sent = await runtime.send(session, { session: worker.id, message: "third turn" });
+	expect(sent).toMatchObject({ mode: "turn", receipt: { status: "accepted", turn: 3 } });
+	await manager.waitForAll();
+	const third = await runtime.wait(session, { sessions: [worker.id], timeoutMs: 5_000 });
+	expect(third.settled).toMatchObject([{ status: "completed", receipt: { turn: 3 } }]);
+	expect(runtime.screens(session, [worker.id])).toMatchObject([{ turns: 3, turnState: "idle" }]);
+}, 30_000);
+
+test("a bare wait delivers a turn that settled before the parent got back to waiting", async () => {
+	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
+	const worker = await runtime.spawn(session, { message: "settles before the wait" });
+	await manager.waitForAll();
+	expect(runtime.screens(session, [worker.id])).toMatchObject([{ turnState: "idle", turns: 1 }]);
+
+	const outcome = await runtime.wait(session, { timeoutMs: 5_000 });
+	expect(outcome.settled).toMatchObject([{ id: worker.id, status: "completed", receipt: { turn: 1 } }]);
+	expect(await runtime.wait(session, { timeoutMs: 100 })).toMatchObject({ settled: [] });
+}, 30_000);
+
+test("a woken turn is left untracked when the worker is already running a tracked turn", async () => {
+	const blocked = Promise.withResolvers<void>();
+	const gates = new Map<string, Promise<void>>([["hold-first-turn", blocked.promise]]);
+	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider(gates) });
+	const worker = await runtime.spawn(session, { message: "hold-first-turn" });
+	try {
+		await withTimeout(
+			(async () => {
+				while (runtime.screens(session, [worker.id])[0]?.turnState !== "running") await Bun.sleep(10);
+			})(),
+			5_000,
+			"worker turn never started",
+		);
+		expect(claimWakeTurn(worker.id, "wake while busy")).toBeUndefined();
+		expect(runtime.screens(session, [worker.id])).toMatchObject([{ turns: 1 }]);
+	} finally {
+		blocked.resolve();
+		await manager.waitForAll();
+	}
+}, 30_000);
+
+test("steering a busy worker is bounded, so a parent cannot bury it in unread messages", async () => {
+	const blocked = Promise.withResolvers<void>();
+	const gates = new Map<string, Promise<void>>([["hold-for-steers", blocked.promise]]);
+	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider(gates) });
+	const worker = await runtime.spawn(session, { message: "hold-for-steers" });
+	try {
+		await withTimeout(
+			(async () => {
+				while (AgentRegistry.global().get(worker.id)?.session?.isStreaming !== true) await Bun.sleep(10);
+			})(),
+			5_000,
+			"worker never started streaming",
+		);
+		let accepted = 0;
+		let rejection: Error | undefined;
+		for (let i = 0; i < 40; i++) {
+			try {
+				const sent = await runtime.send(session, { session: worker.id, message: `steer ${i}` });
+				expect(sent.mode).toBe("steered");
+				accepted++;
+			} catch (error) {
+				rejection = error as Error;
+				break;
+			}
+		}
+		expect(accepted).toBe(32);
+		expect(rejection?.message).toContain("32/32 steering messages");
+		// The rejection is a receipt, not a lost worker: the turn is still running and addressable.
+		expect(runtime.screens(session, [worker.id])).toMatchObject([{ turnState: "running", addressable: true }]);
+	} finally {
+		blocked.resolve();
+		await manager.waitForAll();
+	}
+}, 30_000);
+
+test("workers still mid-turn are reported to shutdown paths instead of vanishing", async () => {
+	const blocked = Promise.withResolvers<void>();
+	const gates = new Map<string, Promise<void>>([["hold-at-shutdown", blocked.promise]]);
+	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider(gates) });
+	const worker = await runtime.spawn(session, { message: "hold-at-shutdown" });
+	try {
+		await withTimeout(
+			(async () => {
+				while (runtime.screens(session, [worker.id])[0]?.turnState !== "running") await Bun.sleep(10);
+			})(),
+			5_000,
+			"worker turn never started",
+		);
+		expect(runtime.activeTurns(session)).toMatchObject([{ id: worker.id, turn: 1, queued: 0 }]);
+	} finally {
+		blocked.resolve();
+		await manager.waitForAll();
+	}
+	expect(runtime.activeTurns(session)).toEqual([]);
+}, 30_000);
+
 test("send during a peer-driven turn accepts the next turn instead of declaring the worker terminal", async () => {
 	const blocked = Promise.withResolvers<void>();
 	const gates = new Map<string, Promise<void>>();
@@ -900,7 +1025,7 @@ test("orchestration rejects disabled parent spawning and excessive recursion bef
 		runtime.spawn({ ...session, getSessionSpawns: () => "" }, { message: "must not start" }),
 	).rejects.toThrow("Allowed: none");
 	await expect(runtime.spawn({ ...session, taskDepth: 100 }, { message: "must not recurse" })).rejects.toThrow(
-		"maximum depth",
+		"allows spawning only from task depth 2 or shallower",
 	);
 	expect(runtime.listIds(session)).toEqual([]);
 });

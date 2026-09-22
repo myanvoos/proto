@@ -1,34 +1,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type Component, CURSOR_MARKER, type Focusable, getSegmenter, Key, matchesKey } from "@oh-my-pi/pi-tui";
+import { type Component, type Focusable, Input, Key, matchesKey, visibleWidth } from "@oh-my-pi/pi-tui";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { bottomBorder, row, topBorder } from "./overlay-box";
-
-function graphemeBoundaries(text: string): number[] {
-	const boundaries = [0];
-	for (const segment of getSegmenter().segment(text)) {
-		boundaries.push(segment.index + segment.segment.length);
-	}
-	return boundaries;
-}
-
-function previousGraphemeBoundary(boundaries: number[], index: number): number {
-	let previous = 0;
-	for (const boundary of boundaries) {
-		if (boundary >= index) break;
-		previous = boundary;
-	}
-	return previous;
-}
-
-function nextGraphemeBoundary(boundaries: number[], index: number): number {
-	for (const boundary of boundaries) {
-		if (boundary > index) return boundary;
-	}
-	return boundaries[boundaries.length - 1] ?? 0;
-}
+import { bottomBorder, getDialogViewport, row, topBorder } from "./overlay-box";
 
 export interface MoveOverlayResult {
 	directory: string;
@@ -152,8 +128,8 @@ function searchDirectories(prefix: string, cwd: string, max: number): DirEntry[]
 
 export class MoveOverlay implements Component, Focusable {
 	#focused = false;
-	#input = "";
-	#cursor = 0;
+	#input = new Input();
+	#maxHeight: number | undefined;
 	#selectedIndex = 0;
 	#results: DirEntry[] = [];
 	#cwd: string;
@@ -165,6 +141,14 @@ export class MoveOverlay implements Component, Focusable {
 
 		readDirCached(cwd);
 		this.#updateResults();
+	}
+
+	setMaxHeight(rows: number): void {
+		this.#maxHeight = Math.max(1, Math.trunc(rows));
+	}
+
+	setUseTerminalCursor(value: boolean): void {
+		this.#input.setUseTerminalCursor(value);
 	}
 
 	get focused(): boolean {
@@ -196,86 +180,89 @@ export class MoveOverlay implements Component, Focusable {
 		if (matchesKey(data, Key.tab)) {
 			const selected = this.#results[this.#selectedIndex];
 			if (selected) {
-				this.#input = selected.value;
-				this.#cursor = this.#input.length;
+				this.#input.setValue(selected.value);
 				this.#selectedIndex = 0;
 				this.#updateResults();
 			}
 			return;
 		}
-		if (matchesKey(data, Key.left)) {
-			this.#cursor = previousGraphemeBoundary(graphemeBoundaries(this.#input), this.#cursor);
-			return;
+		const before = this.#input.getValue();
+		if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.backspace)) {
+			this.#input.handleInput(data);
+		} else {
+			const text = printableInput(data);
+			if (text) this.#input.pasteText(text);
 		}
-		if (matchesKey(data, Key.right)) {
-			this.#cursor = nextGraphemeBoundary(graphemeBoundaries(this.#input), this.#cursor);
-			return;
-		}
-		if (matchesKey(data, Key.backspace) && this.#cursor > 0) {
-			const previous = previousGraphemeBoundary(graphemeBoundaries(this.#input), this.#cursor);
-			this.#input = this.#input.slice(0, previous) + this.#input.slice(this.#cursor);
-			this.#cursor = previous;
-			this.#selectedIndex = 0;
-			this.#updateResults();
-			return;
-		}
-		const text = printableInput(data);
-		if (text.length > 0) {
-			this.#input = this.#input.slice(0, this.#cursor) + text + this.#input.slice(this.#cursor);
-			this.#cursor += text.length;
+		if (this.#input.getValue() !== before) {
 			this.#selectedIndex = 0;
 			this.#updateResults();
 		}
 	}
 
+	pasteText(text: string): void {
+		this.handleInput(`\x1b[200~${text}\x1b[201~`);
+	}
+
 	render(width: number): readonly string[] {
-		const w = width;
-		const lines: string[] = [];
+		const viewport = getDialogViewport(this.#maxHeight ?? (process.stdout.rows || 40));
+		// The path and selected result are both active controls. Reclaim
+		// optional chrome before allowing either to fall outside the viewport.
+		viewport.bodyRows += viewport.dividerRows;
+		viewport.dividerRows = 0;
+		const minimumBody = this.#results.length > 0 ? 2 : 1;
+		if (viewport.bodyRows < minimumBody) {
+			viewport.bodyRows += viewport.footerRows;
+			viewport.footerRows = 0;
+		}
+		if (viewport.bodyRows < minimumBody) {
+			viewport.bodyRows += viewport.titleRows + viewport.bottomRows;
+			viewport.titleRows = 0;
+			viewport.bottomRows = 0;
+		}
+		const innerWidth = Math.max(1, viewport.titleRows ? width - 4 : width);
+		this.#input.prompt = theme.fg("dim", innerWidth > 6 ? "Path: " : innerWidth > 2 ? "> " : "");
+		this.#input.focused = this.#focused;
+		const lines = viewport.titleRows ? [topBorder(width, "Move to directory")] : [];
+		lines.push(row(this.#input.render(innerWidth)[0] ?? "", width, viewport.titleRows > 0));
 
-		lines.push(topBorder(w, "Move to directory"));
-		lines.push(row(this.#renderInput(), w));
-		lines.push(row("", w));
-
-		if (this.#results.length === 0 && this.#input.length > 0) {
-			lines.push(row(theme.fg("dim", "No matching directories"), w));
+		const resultRows = Math.max(0, viewport.bodyRows - 1);
+		if (this.#results.length === 0 && this.#input.getValue().length > 0 && resultRows > 0) {
+			const message = resolveExistingDirectory(this.#input.getValue(), this.#cwd)
+				? "No subdirectories"
+				: "No matching directories";
+			lines.push(row(theme.fg("dim", message), width, viewport.titleRows > 0));
 		} else {
-			for (let i = 0; i < Math.min(this.#results.length, MAX_RESULTS); i++) {
+			const start = Math.max(
+				0,
+				Math.min(this.#selectedIndex - Math.floor(resultRows / 2), this.#results.length - resultRows),
+			);
+			for (let i = start; i < Math.min(this.#results.length, start + resultRows); i++) {
 				const item = this.#results[i]!;
 				const selected = i === this.#selectedIndex;
 				const marker = selected ? theme.fg("accent", "▶ ") : "  ";
 				const label = selected ? theme.fg("accent", item.label) : theme.fg("text", item.label);
-				lines.push(row(`${marker}${label}`, w));
+				lines.push(row(`${marker}${label}`, width, viewport.titleRows > 0));
 			}
 		}
-
-		lines.push(row("", w));
-		lines.push(row(theme.fg("dim", "Type to filter · ↑↓ navigate · Tab accept · Enter confirm · Esc cancel"), w));
-		lines.push(bottomBorder(w));
+		if (viewport.footerRows) {
+			const hints = [
+				"Enter confirm · Esc cancel · ↑↓ navigate · Tab accept · Type to filter",
+				"Enter confirm · Esc cancel",
+				"Enter · Esc",
+			];
+			const hint = hints.find(text => visibleWidth(text) <= innerWidth) ?? hints[hints.length - 1]!;
+			lines.push(row(theme.fg("dim", hint), width, viewport.titleRows > 0));
+		}
+		if (viewport.bottomRows) lines.push(bottomBorder(width));
 		return lines;
 	}
 
 	invalidate(): void {}
 
-	#renderInput(): string {
-		const prompt = theme.fg("dim", "Path: ");
-		if (this.#input.length === 0) {
-			const placeholder = theme.fg("dim", "Type a directory path…");
-			const marker = this.#focused ? CURSOR_MARKER : "";
-			return `${prompt}${placeholder}${marker}\x1b[7m \x1b[27m`;
-		}
-		const boundaries = graphemeBoundaries(this.#input);
-		const before = this.#input.slice(0, this.#cursor);
-		const cursorEnd = nextGraphemeBoundary(boundaries, this.#cursor);
-		const cursorChar = this.#cursor < this.#input.length ? this.#input.slice(this.#cursor, cursorEnd) : " ";
-		const after = this.#input.slice(cursorEnd);
-		const marker = this.#focused ? CURSOR_MARKER : "";
-		return `${prompt}${before}${marker}\x1b[7m${cursorChar}\x1b[27m${after}`;
-	}
-
 	#updateResults(): void {
-		// The navigable set must equal the rendered set: request exactly the
-		// rows the list paints so selection can never land on a hidden entry.
-		this.#results = searchDirectories(this.#input, this.#cwd, MAX_RESULTS);
+		// Keep the search cap independent of terminal height; rendering scrolls
+		// this result set to keep the selected entry visible.
+		this.#results = searchDirectories(this.#input.getValue(), this.#cwd, MAX_RESULTS);
 		if (this.#selectedIndex >= this.#results.length) {
 			this.#selectedIndex = Math.max(0, this.#results.length - 1);
 		}
@@ -287,8 +274,8 @@ export class MoveOverlay implements Component, Focusable {
 			this.#done({ directory: selected.value });
 			return;
 		}
-		if (this.#input.trim().length > 0) {
-			this.#done({ directory: this.#input.trim() });
+		if (this.#input.getValue().trim().length > 0) {
+			this.#done({ directory: this.#input.getValue().trim() });
 			return;
 		}
 		this.#done(undefined);

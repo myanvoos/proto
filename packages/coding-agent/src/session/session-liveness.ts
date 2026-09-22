@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
+import { type FileLockHandle, tryAcquireFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
 
 export const SESSION_LIVE_HEARTBEAT_INTERVAL_MS = 5_000;
 
@@ -94,6 +95,65 @@ export function readSessionLiveState(sessionFile: string, now = Date.now()): Ses
 	}
 	if (marker && !processExists(marker.pid)) return NOT_LIVE;
 	return { fresh: true, streaming: marker?.streaming ?? false, pid: marker?.pid };
+}
+
+/** PID of another live proto process that currently owns `sessionFile`, if any. */
+export function liveSessionOwnerPid(sessionFile: string, now = Date.now()): number | undefined {
+	const live = readSessionLiveState(sessionFile, now);
+	if (!live.fresh || live.pid === undefined || live.pid === process.pid) return undefined;
+	return live.pid;
+}
+
+/**
+ * Ownership of a session file is exclusive to one proto process. The heartbeat
+ * marker alone cannot express that: it is advisory and is published after the
+ * session is already open, so two processes starting at once both see an
+ * unowned file and then overwrite each other's turns. The claim below is an OS
+ * level lock taken before the file is read, so the loser is told immediately
+ * instead of losing its turn.
+ */
+let ownedSessionFile: string | undefined;
+let ownershipHandle: FileLockHandle | null = null;
+
+function ownershipLockKey(sessionFile: string): string {
+	return `${path.resolve(sessionFile)}.owner`;
+}
+
+/**
+ * Claims this process as the owner of `sessionFile`, replacing any previous
+ * claim. Returns false when another live process already owns it.
+ */
+export function claimSessionOwnership(sessionFile: string | null | undefined): boolean {
+	if (!sessionFile) return true;
+	const resolved = path.resolve(sessionFile);
+	if (ownedSessionFile === resolved) return true;
+
+	// Both signals matter: the lock settles races between processes starting at the
+	// same moment, the heartbeat marker covers a session another process already
+	// holds open (it may have claimed it before switching to it).
+	if (liveSessionOwnerPid(resolved) !== undefined) return false;
+
+	const handle = tryAcquireFileLockSync(ownershipLockKey(resolved));
+	if (!handle) return false;
+
+	releaseSessionOwnership();
+	ownedSessionFile = resolved;
+	ownershipHandle = handle;
+	// Publishing the marker with the claim means other processes can name the
+	// owner in their refusal from the first moment the session is owned.
+	writeLiveMarker(resolved, false);
+	return true;
+}
+
+export function releaseSessionOwnership(): void {
+	ownershipHandle?.release();
+	ownershipHandle = null;
+	ownedSessionFile = undefined;
+}
+
+/** Session file this process currently owns, if any. */
+export function ownedSessionFilePath(): string | undefined {
+	return ownedSessionFile;
 }
 
 export class SessionLiveHeartbeat {

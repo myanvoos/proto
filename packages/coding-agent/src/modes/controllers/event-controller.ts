@@ -1,7 +1,7 @@
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
+import { type Component, isTerminalFocused, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
 import { INTENT_FIELD, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -34,7 +34,9 @@ import {
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
 } from "../utils/transcript-render-helpers";
+import { appendLatestCompactionSummary } from "../utils/ui-helpers";
 import { isWarpCliAgentProtocolActive } from "../warp-events";
+import { shouldNotifyCompletion } from "./completion-notification";
 import { StreamingRevealController } from "./streaming-reveal";
 import { decodeStreamedToolArgs, streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
@@ -77,7 +79,6 @@ export class EventController {
 
 	#attentionToolCallIds = new Set<string>();
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
-	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#toolTimelineComponents = new Map<string, Component>();
 
 	#streamedToolCallIdByIndex = new Map<number, string>();
@@ -325,15 +326,10 @@ export class EventController {
 		const normalizedArgs =
 			args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 		this.#readToolCallArgs.set(toolCallId, normalizedArgs);
-		const assistantComponent = this.ctx.streamingComponent ?? this.#lastAssistantComponent;
-		if (assistantComponent) {
-			this.#readToolCallAssistantComponents.set(toolCallId, assistantComponent);
-		}
 	}
 
 	#clearReadToolCall(toolCallId: string): void {
 		this.#readToolCallArgs.delete(toolCallId);
-		this.#readToolCallAssistantComponents.delete(toolCallId);
 	}
 
 	#retractToolCardEntry(toolCallId: string, component: ToolExecutionHandle): void {
@@ -398,12 +394,6 @@ export class EventController {
 			this.#readToolCallArgs.delete(oldId);
 			this.#readToolCallArgs.set(newId, readArgs);
 		}
-		const readAssistant = this.#readToolCallAssistantComponents.get(oldId);
-		if (readAssistant !== undefined) {
-			this.#readToolCallAssistantComponents.delete(oldId);
-			this.#readToolCallAssistantComponents.set(newId, readAssistant);
-		}
-
 		if (pending instanceof ReadToolGroupComponent) pending.renameEntry(oldId, newId);
 
 		if (pending) {
@@ -415,21 +405,21 @@ export class EventController {
 		}
 	}
 
-	#inlineReadToolImages(
+	/** Hand a read's images to its own card so they paint under that call. */
+	#attachReadToolImages(
+		component: ToolExecutionHandle,
 		toolCallId: string,
 		result: { content: Array<{ type: string; data?: string; mimeType?: string }> },
-	): boolean {
-		const assistantComponent = this.#readToolCallAssistantComponents.get(toolCallId);
-		if (!assistantComponent) return false;
+	): void {
+		if (!(component instanceof ReadToolGroupComponent)) return;
 		const images: ImageContent[] = result.content
 			.filter(
 				(content): content is ImageContent =>
 					content.type === "image" && typeof content.data === "string" && typeof content.mimeType === "string",
 			)
 			.map(content => ({ type: "image", data: content.data, mimeType: content.mimeType }));
-		if (images.length === 0) return false;
-		assistantComponent.setToolResultImages(toolCallId, images);
-		return settings.get("terminal.showImages");
+		if (images.length === 0) return;
+		component.setToolResultImages(toolCallId, images);
 	}
 
 	#insertAfterTranscriptComponent(anchor: Component | undefined, component: Component): boolean {
@@ -594,7 +584,6 @@ export class EventController {
 		this.#postToolAssistantComponents.clear();
 		this.#attentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
-		this.#readToolCallAssistantComponents.clear();
 		this.#lastAssistantComponent = undefined;
 		this.#pinnedErrorComponent = undefined;
 		this.#pinnedErrorMessage = undefined;
@@ -686,7 +675,6 @@ export class EventController {
 		this.#postToolAssistantComponents.clear();
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
-		this.#readToolCallAssistantComponents.clear();
 		this.#resetReadGroup();
 		this.#resolveDisplaceableChecklist();
 		this.#lastAssistantComponent = undefined;
@@ -1316,6 +1304,7 @@ export class EventController {
 				this.ctx.ui,
 			);
 			component.setArgsComplete(event.toolCallId);
+			component.setIntent(event.intent);
 			component.setExecutionStarted(event.toolCallId);
 			this.#executionStartedCallIds.add(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
@@ -1330,6 +1319,9 @@ export class EventController {
 				component.updateArgs(event.args, event.toolCallId);
 				if (typeof component.setArgsComplete === "function") {
 					component.setArgsComplete(event.toolCallId);
+				}
+				if (typeof component.setIntent === "function") {
+					component.setIntent(event.intent);
 				}
 				if (typeof component.setExecutionStarted === "function") {
 					component.setExecutionStarted(event.toolCallId);
@@ -1395,34 +1387,25 @@ export class EventController {
 			setTerminalTitleState("working");
 		}
 		if (event.toolName === "read") {
-			if (this.#inlineReadToolImages(event.toolCallId, event.result)) {
-				const component = this.ctx.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
-					this.ctx.pendingTools.delete(event.toolCallId);
+			let component = this.ctx.pendingTools.get(event.toolCallId);
+			if (!component) {
+				if (this.#toolTimelineComponents.has(event.toolCallId)) {
+					this.#clearReadToolCall(event.toolCallId);
+					return;
 				}
-				this.#clearReadToolCall(event.toolCallId);
-				this.ctx.ui.requestRender();
-			} else {
-				let component = this.ctx.pendingTools.get(event.toolCallId);
-				if (!component) {
-					if (this.#toolTimelineComponents.has(event.toolCallId)) {
-						this.#clearReadToolCall(event.toolCallId);
-						return;
-					}
-					const group = this.#getReadGroup();
-					const args = this.#readToolCallArgs.get(event.toolCallId);
-					if (args) {
-						group.updateArgs(args, event.toolCallId);
-					}
-					component = group;
-					this.ctx.pendingTools.set(event.toolCallId, group);
+				const group = this.#getReadGroup();
+				const args = this.#readToolCallArgs.get(event.toolCallId);
+				if (args) {
+					group.updateArgs(args, event.toolCallId);
 				}
-				component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
-				this.ctx.pendingTools.delete(event.toolCallId);
-				this.#clearReadToolCall(event.toolCallId);
-				this.ctx.ui.requestRender();
+				component = group;
+				this.ctx.pendingTools.set(event.toolCallId, group);
 			}
+			this.#attachReadToolImages(component, event.toolCallId, event.result);
+			component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
+			this.ctx.pendingTools.delete(event.toolCallId);
+			this.#clearReadToolCall(event.toolCallId);
+			this.ctx.ui.requestRender();
 		} else {
 			const component = this.ctx.pendingTools.get(event.toolCallId);
 			if (component) {
@@ -1503,7 +1486,6 @@ export class EventController {
 		}
 		this.#attentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
-		this.#readToolCallAssistantComponents.clear();
 		this.#toolTimelineComponents.clear();
 		this.#resetStreamingAssistantState();
 		this.#retractedToolCallIds.clear();
@@ -1602,8 +1584,7 @@ export class EventController {
 				isRemoteAction ? "Auto server compaction cancelled" : "Auto context-full maintenance cancelled",
 			);
 		} else if (event.result) {
-			this.ctx.lastAssistantUsage = undefined;
-			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
+			appendLatestCompactionSummary(this.ctx);
 			this.ctx.statusLine.invalidate();
 
 			this.ctx.ui.requestRender();
@@ -1881,6 +1862,19 @@ export class EventController {
 
 		const last = event.messages.findLast((message): message is AssistantMessage => message.role === "assistant");
 		if (last?.stopReason === "aborted" || last?.stopReason === "error") return;
+
+		// markActivityEnd() ran earlier in #finishAgentEnd, so lastRunMs is this
+		// turn's wall time.
+		if (
+			!shouldNotifyCompletion({
+				elapsedMs: this.ctx.statusLine.getRunClock().lastRunMs,
+				minSeconds: settings.get("completion.notifyMinSeconds") ?? 0,
+				focused: isTerminalFocused(),
+				notifyWhenFocused: settings.get("completion.notifyWhenFocused") === true,
+			})
+		) {
+			return;
+		}
 
 		const sessionName = this.ctx.sessionManager.getSessionName();
 		TERMINAL.sendNotification({

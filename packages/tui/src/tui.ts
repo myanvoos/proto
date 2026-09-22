@@ -20,7 +20,7 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { isKeyRelease, matchesKey } from "./keys";
 import { KITTY_PLACEHOLDER } from "./kitty-graphics";
 import { LoopWatchdog } from "./loop-watchdog";
-import { setAltScreenActive, type Terminal } from "./terminal";
+import { refreshTerminalHostIdentity, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
 	encodeKittyPlacementLine,
@@ -244,6 +244,9 @@ export interface Component {
 	 * last time.
 	 */
 	render(width: number): readonly string[];
+
+	/** Optional physical-row budget for a bounded dialog child; keep its focused control visible. */
+	setMaxHeight?(rows: number): void;
 
 	/**
 	 * Optional handler for keyboard input when component has focus
@@ -777,6 +780,7 @@ export class TUI extends Container {
 	// logical line through rewrap, so a DSR round trip against this parked
 	// cursor recovers the reflowed viewport anchor (see #resolveResizeAnchor).
 	#parkedViewportOffset = 0;
+	#savedViewportBottom = false;
 	// In-flight post-resize anchor probe: the stale viewport snapshot and park
 	// offset captured when CSI 6n was written, plus the no-reply fallback timer.
 	#resizeProbe:
@@ -904,6 +908,16 @@ export class TUI extends Container {
 	// The next normal paint settles host-owned resize movement; never scroll
 	// pulled history a second time while expanding the mutable viewport.
 	#settledResizeRepaintPending = false;
+	// Physical rows the stale live window occupies at the settled geometry, from
+	// the anchor probe. Bounds the settled repaint's erase: rows below the stale
+	// window belong to the host, not to the frame.
+	#settledResizeStaleRows = 0;
+	// Whether that transaction blanked the live viewport first. Only then may the
+	// settled repaint scroll: everything above its anchor is committed history or
+	// blanks. Without the erase (multiplexers) the screen still holds live rows
+	// that the drag pushed into scrollback, and scrolling would archive them
+	// twice instead of overwriting them in place.
+	#resizeErasedLiveViewport = false;
 	#hasEverRendered = false;
 	#stopped = false;
 	/** True between a `deferInput` start() and enableInput(). */
@@ -963,6 +977,7 @@ export class TUI extends Container {
 
 	/** Install the product-owned bounded frame provider. */
 	setFrameProvider(provider: TerminalFrameProvider | undefined): void {
+		this.#savedViewportBottom = false;
 		this.#frameProvider = provider;
 		this.#acceptedHistoryBatchId = 0;
 		this.#providerWindow = [];
@@ -1285,6 +1300,7 @@ export class TUI extends Container {
 	}
 
 	#noteAltBufferToggle(): void {
+		this.#savedViewportBottom = false;
 		this.#altToggleColumns = this.terminal.columns;
 		this.#altToggleRows = this.terminal.rows;
 		this.#altToggleEchoPending = true;
@@ -1315,6 +1331,10 @@ export class TUI extends Container {
 	 * in-flight CPR tag so a rewrap-invalidated reply cannot anchor a new geometry.
 	 */
 	#trackResizeBurst(): void {
+		// A resize is the first moment the host's identity actually matters; if
+		// it has not answered yet, ask again so the settled repaint decides
+		// against the real host rather than against a scrubbed environment.
+		refreshTerminalHostIdentity();
 		const burstLastHeight = this.#resizeBurstLastHeight ?? this.#previousHeight;
 		if (this.terminal.rows > burstLastHeight) this.#resizeBurstGrew = true;
 		this.#resizeBurstLastHeight = this.terminal.rows;
@@ -1343,6 +1363,7 @@ export class TUI extends Container {
 			// The erase parked the hardware cursor on the viewport's top row;
 			// snapshot the parked offset so the settled probe anchors there.
 			this.#parkedViewportOffset = 0;
+			this.#resizeErasedLiveViewport = true;
 		}
 		this.#resizeSettleTimer = this.#renderScheduler.scheduleRender(() => {
 			this.#resizeSettleTimer = undefined;
@@ -1386,9 +1407,15 @@ export class TUI extends Container {
 			const top = Math.max(0, Math.min(this.#providerViewportTop, this.terminal.rows - staleRows));
 			this.terminal.write(`\x1b[?25l${this.#eraseBelowRow(top, this.terminal.rows)}`);
 		} else {
-			const up = this.#reflowedRowCount(this.#providerWindow, 0, this.#parkedViewportOffset, this.terminal.columns);
+			// A width change rewraps the viewport: xterm may add rows above the live
+			// cursor without moving its screen row (narrowing), or remove them
+			// (widening). The saved bottom anchor rides its own logical line through
+			// both, and nothing mutable below it can displace it.
+			const restoreBottom = this.#savedViewportBottom && this.terminal.columns !== this.#previousWidth;
+			const offset = restoreBottom ? this.#providerWindow.length - 1 : this.#parkedViewportOffset;
+			const up = this.#reflowedRowCount(this.#providerWindow, 0, offset, this.terminal.columns);
 			const eraseBelow = this.#eraseBelowCursorRow(this.terminal.columns, this.terminal.rows);
-			this.terminal.write(`\x1b[?25l${up > 0 ? `\x1b[${up}A` : ""}${eraseBelow}`);
+			this.terminal.write(`\x1b[?25l${restoreBottom ? "\x1b8" : ""}${up > 0 ? `\x1b[${up}A` : ""}${eraseBelow}`);
 		}
 		return true;
 	}
@@ -1430,6 +1457,7 @@ export class TUI extends Container {
 				// into the probe would anchor the settled repaint above the real
 				// viewport top and overwrite visible committed rows.
 				this.#resizeProbeOffset = 0;
+				this.#resizeErasedLiveViewport = true;
 				this.#providerWindow = [];
 				this.#providerPreparedRows = [];
 				this.#parkedViewportOffset = 0;
@@ -1601,6 +1629,7 @@ export class TUI extends Container {
 			const msg = `[${new Date().toISOString()}] resize anchor: size=${width}x${height} cpr=${reportedRow ?? "timeout"} park=${probe.offset} stale=${staleRows} old=${this.#providerViewportTop} top=${top}\n`;
 			fs.appendFileSync(getDebugLogPath(), msg);
 		}
+		this.#settledResizeStaleRows = staleRows;
 		const settledTop = Math.min(top, Math.max(0, height - 1));
 		const anchorShift = settledTop - this.#providerViewportTop;
 		this.#providerHistoryBottom = Math.max(0, Math.min(settledTop, this.#providerHistoryBottom + anchorShift));
@@ -1901,6 +1930,7 @@ export class TUI extends Container {
 		// the instant the session exits. The terminal enforces its own store quota
 		// (and live-session ghosts are already bounded by the inline-image budget).
 		this.#clearSixelProbeState();
+		this.#savedViewportBottom = false;
 		this.#stopped = true;
 		this.#watchdog.stop();
 		if (this.#renderTimer) {
@@ -1946,6 +1976,7 @@ export class TUI extends Container {
 	 * animation, resize, or finalization.
 	 */
 	resetDisplay(): void {
+		this.#savedViewportBottom = false;
 		if (this.#stopped) return;
 		this.invalidate();
 		this.#prepareForcedRender(true);
@@ -2520,6 +2551,13 @@ export class TUI extends Container {
 	 * viewport top can predate a height shrink.
 	 * Every form leaves the cursor on the clamped row at column zero.
 	 */
+	/** Erase rows `[start, end)` and nothing below them; leaves the cursor on the last erased row. */
+	#eraseRowRange(start: number, end: number): string {
+		let sequence = "";
+		for (let row = Math.max(0, start); row < end; row++) sequence += `\x1b[${row + 1};1H${ERASE_LINE}`;
+		return sequence;
+	}
+
 	#eraseBelowRow(row: number, height: number): string {
 		const top = Math.max(0, Math.min(row, Math.max(0, height - 1)));
 		if (top > 0) return `\x1b[${top + 1};1H\x1b[J`;
@@ -2623,7 +2661,9 @@ export class TUI extends Container {
 				? Math.max(0, height - rows)
 				: Math.max(0, Math.min(oldTop + historyRows.length, height - rows));
 		const scrollUp =
-			viewportAnchor === "bottom" && !destructiveReset && !this.#settledResizeRepaintPending
+			viewportAnchor === "bottom" &&
+			!destructiveReset &&
+			(!this.#settledResizeRepaintPending || this.#resizeErasedLiveViewport)
 				? Math.min(oldHistoryBottom, Math.max(0, oldHistoryBottom + historyRows.length - newTop))
 				: 0;
 		const startTop = viewportAnchor === "bottom" ? Math.max(0, newTop - historyRows.length) : oldTop;
@@ -2682,9 +2722,35 @@ export class TUI extends Container {
 				(historyRows.length > 0 || newTop !== oldTop)
 			) {
 				// Retire or resize only after blanking the old mutable region: scrolling
-				// may push committed history/blanks, never stale live chrome.
-				if (oldTop < height) buffer += this.#eraseBelowRow(oldTop, height);
-				if (scrollUp > 0) buffer += `\x1b[${scrollUp}S`;
+				// may push committed history/blanks, never stale live chrome. Across a
+				// geometry change the frame owns only the stale live window itself:
+				// the rows below it belong to the host, which on a grow either appended
+				// blanks or pulled committed rows back out of scrollback, and erasing to
+				// the screen bottom destroys those retired transcript rows. In steady
+				// state everything below the viewport top is the frame's own region, so
+				// the cheaper erase-to-bottom still applies.
+				const staleExtent =
+					this.#providerWindow.length > 0
+						? this.#reflowedRowCount(this.#providerWindow, 0, this.#providerWindow.length, width)
+						: this.#settledResizeStaleRows;
+				// Until the anchor probe settles, the pre-resize row of the stale live
+				// window is unknown: the host may have pulled committed rows back out
+				// of scrollback into exactly those rows. Painting the frame is safe,
+				// erasing is not, so an unsettled post-resize frame erases nothing and
+				// the settled repaint cleans up at the resolved anchor — bounded to the
+				// stale window, because everything below it belongs to the host.
+				const staleEnd = geometryStable
+					? height
+					: this.#settledResizeRepaintPending && staleExtent > 0
+						? Math.min(height, oldTop + staleExtent)
+						: oldTop;
+				if (oldTop < staleEnd) {
+					buffer +=
+						staleEnd === height ? this.#eraseBelowRow(oldTop, height) : this.#eraseRowRange(oldTop, staleEnd);
+				}
+				// CSI S deletes rows on xterm-compatible terminals; only line feeds
+				// at the bottom margin move these committed rows into scrollback.
+				if (scrollUp > 0) buffer += `\x1b[${height};1H${"\n".repeat(scrollUp)}`;
 			}
 			// This write scrolls when history + viewport overflow the screen; the
 			// terminal pushes the physical top rows into scrollback. Rows above the
@@ -2732,6 +2798,12 @@ export class TUI extends Container {
 				? this.#targetHardwareCursorState({ row: newTop + Math.min(marker.row, rows - 1), col: marker.col }, height)
 				: null;
 		if (target) {
+			// Save after image placements (which borrow DECSC/DECRC), before the
+			// visible editor cursor moves off the viewport bottom. A terminal that
+			// ignores DECSC/DECRC simply leaves the resize erase on the live cursor,
+			// exactly as before this anchor existed.
+			const bottom = Math.max(mutableTop, Math.min(height - 1, mutableTop + mutablePreparedLines.length - 1));
+			buffer += `\x1b[${bottom + 1};1H\x1b7`;
 			buffer += `\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
 			this.#parkedViewportOffset = Math.max(0, target.row - mutableTop);
 		} else {
@@ -2740,7 +2812,9 @@ export class TUI extends Container {
 			// without inserting a blank band, while the post-resize probe can still
 			// recover the viewport top from this recorded offset.
 			const parkRow = Math.max(mutableTop, Math.min(height - 1, mutableTop + mutablePreparedLines.length - 1));
-			buffer += `\x1b[?25l\x1b[${parkRow + 1};1H`;
+			// Save the same row: DECRC re-anchors it to its logical line after a
+			// width reflow, which can otherwise leave the cursor on a stale row.
+			buffer += `\x1b[?25l\x1b[${parkRow + 1};1H\x1b7`;
 			this.#parkedViewportOffset = Math.max(0, parkRow - mutableTop);
 		}
 		buffer += this.#paintEndSequence;
@@ -2753,6 +2827,7 @@ export class TUI extends Container {
 		}
 		if (target) this.#recordHardwareCursorState(target);
 		else this.#recordHardwareCursorHidden();
+		this.#savedViewportBottom = mutablePreparedLines.length > 0;
 		this.#providerWindow = mutablePreparedLines;
 		this.#providerPreparedRows = mutablePreparedRows;
 		this.#providerHistoryBottom =
@@ -2769,6 +2844,8 @@ export class TUI extends Container {
 		this.#clearScrollbackOnNextRender = false;
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#settledResizeRepaintPending = false;
+		this.#settledResizeStaleRows = 0;
+		this.#resizeErasedLiveViewport = false;
 		this.#hasEverRendered = true;
 		// Replay-split rows in `prepared.lines` now occupy the physical viewport;
 		// only `preparedHistory.lines` crossed above it into native scrollback.

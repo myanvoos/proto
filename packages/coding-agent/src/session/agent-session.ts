@@ -136,6 +136,7 @@ import { computeNonMessageTokens } from "../modes/utils/context-usage";
 import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
 import { MonitorManager } from "../monitor";
 import type { MonitorEvent } from "../monitor/types";
+import type { OrchestratorParent } from "../orchestrator/runtime";
 import goalChecklistContextPrompt from "../prompts/goals/goal-checklist-context.md" with { type: "text" };
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
@@ -190,11 +191,10 @@ import type {
 	UsageFallbackConfirmer,
 } from "./agent-session-types";
 import {
-	ASYNC_INLINE_RESULT_MAX_CHARS,
-	ASYNC_PREVIEW_MAX_CHARS,
 	ASYNC_RESULT_MESSAGE_TYPE,
 	type AsyncResultEntry,
 	buildAsyncResultBatchMessage,
+	formatAsyncJobTextForContext,
 } from "./async-job-delivery";
 import { BashRunner, type BashRunnerHost } from "./bash-runner";
 import {
@@ -299,6 +299,9 @@ export * from "./agent-session-types";
 export type { AdvisorStats, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
+// A checkpoint the model refuses to close must not turn into an unbounded continue loop:
+// every reminder costs a full provider request and grows the context by one more warning.
+const REWIND_REMINDER_CAP = 3;
 const CHECKLIST_ERROR_REMINDER_TYPE = "checklist-error-reminder";
 
 import { ChecklistTracker, type ChecklistTrackerHost } from "./checklist-tracker";
@@ -631,6 +634,7 @@ export class AgentSession {
 	#pendingAgentEndEmit: AgentSessionEvent | undefined;
 	#inFlightSettledCallbacks: Array<() => void | Promise<void>> = [];
 	#sessionStopContinuationCount = 0;
+	#rewindReminder: { generation: number; startedAt: string; count: number } | undefined = undefined;
 	#sessionStopHookActive = false;
 	#obfuscator: SecretObfuscator | undefined;
 	#checkpointState: CheckpointState | undefined = undefined;
@@ -963,6 +967,8 @@ export class AgentSession {
 			isStreaming: () => this.isStreaming,
 			isCompacting: () => this.isCompacting,
 			abortInProgress: () => this.#abortInProgress,
+			deadlineExceeded: () => this.deadlineExceeded(),
+			toolCallLoopStopped: () => this.#loopGuards.toolCallLoopStopped,
 			promptGeneration: () => this.#promptGeneration,
 			sessionId: () => this.sessionId,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
@@ -1473,6 +1479,21 @@ export class AgentSession {
 		return this.#toolChoiceQueue.peekInFlightInvoker();
 	}
 
+	#orchestratorParent: (() => OrchestratorParent) | undefined;
+
+	/**
+	 * Lets the UI address this session's orchestrator scope — stopping a worker from the agents
+	 * view has to reach the same scope `orchestrate_kill` does, and only the session factory knows
+	 * the resolved agent id and scoped job manager that identify it.
+	 */
+	setOrchestratorParent(parent: (() => OrchestratorParent) | undefined): void {
+		this.#orchestratorParent = parent;
+	}
+
+	get orchestratorParent(): OrchestratorParent | undefined {
+		return this.#orchestratorParent?.();
+	}
+
 	readonly #sessionBeforeSwitchReconcilers = new Set<() => Promise<void>>();
 
 	setSessionBeforeSwitchReconciler(reconciler: (() => Promise<void>) | null): void {
@@ -1594,31 +1615,14 @@ export class AgentSession {
 		if (manager.isDeliverySuppressed(jobId)) return;
 
 		const epoch = this.#asyncDeliveryEpoch;
-		const formatted = await this.#formatAsyncResultForFollowUp(text);
+		const formatted = await formatAsyncJobTextForContext(text, toolType =>
+			this.sessionManager.allocateArtifactPath(toolType),
+		);
 		if (this.#isDisposed) return;
 		if (epoch !== this.#asyncDeliveryEpoch) return;
 		if (manager.isDeliverySuppressed(jobId)) return;
 		const durationMs = job ? Math.max(0, Date.now() - job.startTime) : undefined;
 		this.yieldQueue.enqueue<AsyncResultEntry>("async-result", { jobId, result: formatted, job, durationMs, epoch });
-	}
-
-	async #formatAsyncResultForFollowUp(result: string): Promise<string> {
-		if (result.length <= ASYNC_INLINE_RESULT_MAX_CHARS) {
-			return result;
-		}
-		const preview = `${result.slice(0, ASYNC_PREVIEW_MAX_CHARS)}\n\n[Output truncated. Showing first ${ASYNC_PREVIEW_MAX_CHARS.toLocaleString()} characters.]`;
-		try {
-			const { path: artifactPath, id: artifactId } = await this.sessionManager.allocateArtifactPath("async");
-			if (artifactPath && artifactId) {
-				await Bun.write(artifactPath, result);
-				return `${preview}\nFull output: artifact://${artifactId}`;
-			}
-		} catch (error) {
-			logger.warn("Failed to persist async follow-up artifact", {
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-		return preview;
 	}
 
 	#emit(event: AgentSessionEvent): void {
@@ -3613,6 +3617,11 @@ export class AgentSession {
 		}
 	}
 
+	deadlineExceeded(): boolean {
+		const deadline = this.agent.deadline;
+		return deadline !== undefined && Date.now() >= deadline;
+	}
+
 	getLastAssistantMessage(): AssistantMessage | undefined {
 		return this.#prunedTerminalRefusal ?? this.#findLastAssistantMessage();
 	}
@@ -4166,6 +4175,8 @@ export class AgentSession {
 
 		if (options?.userInitiated ?? !options?.synthetic) {
 			this.#advisors.autoResumeSuppressed = false;
+			// A fresh user turn re-arms the checkpoint reminder budget; an auto-continue never does.
+			this.#rewindReminder = undefined;
 		}
 
 		if (this.isStreaming) {
@@ -5648,21 +5659,52 @@ export class AgentSession {
 	}
 
 	#enforceRewindBeforeYield(): boolean {
-		if (!this.#checkpointState || this.#pendingRewindReport) {
+		const checkpointState = this.#checkpointState;
+		if (!checkpointState || this.#pendingRewindReport) {
+			this.#rewindReminder = undefined;
 			return false;
 		}
+		const generation = this.#promptGeneration;
+		// A new user turn, or a new checkpoint, earns a fresh budget; an auto-continue does not.
+		const tracked =
+			this.#rewindReminder?.generation === generation && this.#rewindReminder.startedAt === checkpointState.startedAt
+				? this.#rewindReminder
+				: { generation, startedAt: checkpointState.startedAt, count: 0 };
+		this.#rewindReminder = tracked;
+
+		if (tracked.count >= REWIND_REMINDER_CAP) {
+			logger.warn("Checkpoint rewind reminder cap reached", {
+				sessionId: this.sessionId,
+				cap: REWIND_REMINDER_CAP,
+				startedAt: checkpointState.startedAt,
+			});
+			this.emitNotice(
+				"warning",
+				`Checkpoint left open: the agent ignored ${REWIND_REMINDER_CAP} reminders to call rewind, so the turn was stopped instead of continued. The checkpoint is still active — ask the agent to call rewind, or discard it.`,
+				"checkpoint",
+			);
+			return false;
+		}
+
+		tracked.count++;
+		const attempt = tracked.count;
 		const reminder = [
 			"<system-warning>",
-			"You are in an active checkpoint. You MUST call rewind with your investigation findings before yielding. Do NOT yield without completing the checkpoint.",
+			`You are in an active checkpoint. You MUST call rewind with your investigation findings before yielding. Do NOT yield without completing the checkpoint. (Reminder ${attempt} of ${REWIND_REMINDER_CAP}.)`,
+			attempt >= REWIND_REMINDER_CAP
+				? "This is the final reminder: if you do not call rewind now, the turn ends with the checkpoint still open and your findings unreported."
+				: "",
 			"</system-warning>",
-		].join("\n");
+		]
+			.filter(line => line.length > 0)
+			.join("\n");
 		this.agent.appendMessage({
 			role: "developer",
 			content: [{ type: "text", text: reminder }],
 			attribution: "agent",
 			timestamp: Date.now(),
 		});
-		this.#scheduleAgentContinue({ generation: this.#promptGeneration });
+		this.#scheduleAgentContinue({ generation });
 		return true;
 	}
 

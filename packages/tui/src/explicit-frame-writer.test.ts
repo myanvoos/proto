@@ -246,6 +246,48 @@ test("bottom anchored viewport grows and shrinks without archiving stale mutable
 	tui.stop();
 });
 
+test("large retired tool tails and interruption markers survive growing chrome and the next turn", () => {
+	const { terminal, scheduler, provider, tui } = makeTui(10);
+	const chrome = Array.from({ length: 8 }, (_, index) => `chrome-${index}`);
+	const toolRows = [...Array.from({ length: 30 }, (_, index) => `tool-${index}`), "tool final wrapped tail", ""];
+	provider.plan = { history: { id: 1, rows: toolRows }, viewport: chrome, viewportAnchor: "bottom" };
+	tui.start({ deferInput: true });
+	scheduler.flush();
+	try {
+		for (let height = 9; height <= 10; height++) {
+			provider.plan = {
+				viewport: Array.from({ length: height }, (_, index) => `working-${index}`),
+				viewportAnchor: "bottom",
+			};
+			tui.requestRender();
+			scheduler.flush();
+		}
+		expect(countRow(terminal.allNormalRows(), "tool final wrapped tail")).toBe(1);
+		provider.plan = {
+			history: { id: 2, rows: ["cancelled streamed text", "", "∎ Interrupted", ""] },
+			viewport: chrome,
+			viewportAnchor: "bottom",
+		};
+		tui.requestRender();
+		scheduler.flush();
+		provider.plan = {
+			history: { id: 3, rows: ["next user turn", ""] },
+			viewport: ["next answer", ...chrome],
+			viewportAnchor: "bottom",
+		};
+		tui.requestRender();
+		scheduler.flush();
+		const tape = terminal.allNormalRows();
+		for (const row of [...toolRows.filter(Boolean), "cancelled streamed text", "∎ Interrupted", "next user turn"]) {
+			expect(countRow(tape, row)).toBe(1);
+		}
+		expect(provider.acks).toEqual([1, 2, 3]);
+		expect(tape.some(row => row.startsWith("working-"))).toBe(false);
+	} finally {
+		tui.stop();
+	}
+});
+
 test("fullscreen overlays defer provider history and restore the normal buffer", () => {
 	const { terminal, scheduler, provider, tui } = makeTui();
 	provider.plan = { viewport: ["normal"], viewportAnchor: "bottom" };

@@ -24,7 +24,7 @@ import {
 	matchesSelectUp,
 } from "../../modes/utils/keybinding-matchers";
 import { CountdownTimer } from "./countdown-timer";
-import { OverlayPanel } from "./overlay-box";
+import { bottomBorder, divider, getDialogViewport, OverlayPanel, row, topBorder } from "./overlay-box";
 import { renderSegmentTrack } from "./segment-track";
 
 interface HookSelectorSliderSegment {
@@ -64,6 +64,9 @@ export interface HookSelectorOptions {
 	checkedIndices?: readonly number[];
 
 	markableCount?: number;
+
+	/** False when a host panel already draws the border and footer. */
+	framed?: boolean;
 }
 
 interface HookSelectorOption {
@@ -136,6 +139,12 @@ class OutlinedList extends Container {
 type FilteredOption = { option: HookSelectorOption; index: number };
 
 export class HookSelectorComponent extends OverlayPanel {
+	#viewportHeight = Number.POSITIVE_INFINITY;
+
+	override setMaxHeight(rows: number): void {
+		this.#viewportHeight = Math.max(1, Math.trunc(rows));
+	}
+
 	#options: HookSelectorOption[];
 	#filteredOptions: FilteredOption[];
 	#searchQuery = "";
@@ -159,6 +168,8 @@ export class HookSelectorComponent extends OverlayPanel {
 	#sliderIndex: number = 0;
 	#sliderComponent: Text | undefined;
 	#lastRenderWidth: number | undefined;
+	#choiceExposed = true;
+	#detailLines: string[];
 	constructor(
 		title: string,
 		options: HookSelectorOptionInput[],
@@ -169,6 +180,8 @@ export class HookSelectorComponent extends OverlayPanel {
 		const sanitizedTitle = sanitizeText(title);
 		super(sanitizedTitle.split(/\r?\n/, 1)[0] ?? "");
 
+		this.setFramed(opts?.framed !== false);
+		this.#detailLines = sanitizedTitle.split(/\r?\n/).slice(1);
 		this.#options = options.map(normalizeHookSelectorOption);
 		this.#filteredOptions = this.#options.map((option, index) => ({ option, index }));
 		this.#disabledIndices = new Set(
@@ -208,7 +221,7 @@ export class HookSelectorComponent extends OverlayPanel {
 		}
 
 		this.addChild(new Spacer(1));
-		for (const line of sanitizedTitle.split(/\r?\n/).slice(1)) {
+		for (const line of this.#detailLines) {
 			this.addChild(new Text(theme.fg("accent", line), 0, 0));
 		}
 		this.addChild(new Spacer(1));
@@ -245,10 +258,12 @@ export class HookSelectorComponent extends OverlayPanel {
 			this.#listContainer = new Container();
 			this.addChild(this.#listContainer);
 		}
-		this.addChild(new Spacer(1));
-		const controlsHint = opts?.helpText ?? "up/down navigate  enter select  esc cancel";
-		this.addChild(new Text(theme.fg("dim", sanitizeText(controlsHint)), 0, 0));
-		this.addChild(new Spacer(1));
+		if (this.framed) {
+			this.addChild(new Spacer(1));
+			const controlsHint = opts?.helpText ?? "up/down navigate  enter select  esc cancel";
+			this.addChild(new Text(theme.fg("dim", sanitizeText(controlsHint)), 0, 0));
+			this.addChild(new Spacer(1));
+		}
 
 		this.#updateList();
 	}
@@ -608,6 +623,9 @@ export class HookSelectorComponent extends OverlayPanel {
 		} else if (matchesSelectDown(keyData) || (!this.#isSearchEnabled() && matchesKey(keyData, "j"))) {
 			this.#moveSelection(1);
 		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
+			// Never activate a choice the last frame could not show: approving a
+			// dialog the terminal hid would be a blind, possibly destructive, yes.
+			if (!this.#choiceExposed) return;
 			const selected = this.#filteredOptions[this.#selectedIndex];
 			if (selected && !this.#isDisabled(selected.index)) this.#onSelectCallback(selected.option.label);
 		} else if (
@@ -627,12 +645,160 @@ export class HookSelectorComponent extends OverlayPanel {
 		}
 	}
 
+	/** One row that still names the pending choice and proves alternatives exist. */
+	#inlineChoices(
+		renderWidth: number,
+		mdTheme: MarkdownTheme,
+	): { line: string; selectedShown: boolean; alternativesShown: boolean } {
+		const total = this.#filteredOptions.length;
+		if (total === 0) {
+			return { line: theme.fg("muted", "No matching options"), selectedShown: false, alternativesShown: false };
+		}
+		const separator = " · ";
+		const selected = Math.max(0, Math.min(this.#selectedIndex, total - 1));
+		const plain: string[] = [];
+		const painted: string[] = [];
+		const render = (index: number): { plain: string; painted: string } => {
+			const entry = this.#filteredOptions[index]!;
+			const isSelected = index === selected;
+			const label = sanitizeText(entry.option.label);
+			const text = isSelected ? `${theme.nav.cursor} ${label}` : label;
+			const color = this.#isDisabled(entry.index) ? "dim" : isSelected ? "accent" : "text";
+			return {
+				plain: text,
+				painted: renderInlineMarkdown(text, mdTheme, part =>
+					isSelected ? theme.bold(theme.fg(color, part)) : theme.fg(color, part),
+				),
+			};
+		};
+		const fits = (candidate: string[], shown: number): boolean =>
+			visibleWidth(candidate.join(separator)) + (total - shown > 0 ? visibleWidth(` +${total - shown}`) : 0) <=
+			renderWidth;
+		// Grow outward from the selected row but keep the list in its natural
+		// order, so moving the cursor never reshuffles the alternatives.
+		let first = selected;
+		let last = selected;
+		const head = render(selected);
+		plain.push(head.plain);
+		painted.push(head.painted);
+		while (last + 1 < total || first > 0) {
+			const forward = last + 1 < total ? render(last + 1) : undefined;
+			if (forward && fits([...plain, forward.plain], plain.length + 1)) {
+				plain.push(forward.plain);
+				painted.push(forward.painted);
+				last += 1;
+				continue;
+			}
+			const backward = first > 0 ? render(first - 1) : undefined;
+			if (backward && fits([backward.plain, ...plain], plain.length + 1)) {
+				plain.unshift(backward.plain);
+				painted.unshift(backward.painted);
+				first -= 1;
+				continue;
+			}
+			break;
+		}
+		const hidden = total - plain.length;
+		const suffix = hidden > 0 ? ` +${hidden}` : "";
+		const plainLine = plain.join(separator) + suffix;
+		const clipped = visibleWidth(plainLine) > renderWidth;
+		const line = truncateToWidth(
+			painted.join(theme.fg("dim", separator)) + (hidden > 0 ? theme.fg("dim", suffix) : ""),
+			renderWidth,
+			Ellipsis.Unicode,
+		);
+		// Once the row is clipped only the selected label may have survived, so
+		// the alternatives are no longer proven to be on screen.
+		return {
+			line,
+			selectedShown: clipped ? visibleWidth(plain[0] ?? "") + 1 <= renderWidth : plain.length > 0,
+			alternativesShown: !clipped && (total === 1 || plain.length > 1 || hidden > 0),
+		};
+	}
+
 	override render(width: number): readonly string[] {
-		const renderWidth = Math.max(1, width - 4);
+		// Embedded in a host frame: every row belongs to the question and its choices.
+		const layout = this.framed
+			? getDialogViewport(this.#viewportHeight)
+			: {
+					titleRows: 0,
+					bodyRows: Math.max(1, Math.trunc(this.#viewportHeight)),
+					dividerRows: 0,
+					footerRows: 0,
+					bottomRows: 0,
+				};
+		const renderWidth = Math.max(1, layout.titleRows ? width - 4 : width);
+		if (Number.isFinite(this.#viewportHeight)) {
+			this.#lastRenderWidth = renderWidth;
+			this.#updateList(renderWidth);
+			const natural = super.render(width);
+			if (natural.length <= this.#viewportHeight) {
+				this.#choiceExposed = true;
+				return natural;
+			}
+			const framed = layout.titleRows > 0;
+			const mdTheme = getMarkdownTheme();
+			const lines: string[] = [];
+			// A single row must still carry both identity and choice, so the title
+			// shares that row with the collapsed option list.
+			const sharedRow = !framed && layout.bodyRows <= 1;
+			const titleWidth = sharedRow ? Math.max(0, Math.floor(renderWidth / 2) - 1) : renderWidth;
+			const titleText = truncateToWidth(this.title, titleWidth, Ellipsis.Unicode);
+			const titleShown = titleText.trim().length > 0;
+			if (framed) lines.push(topBorder(width, this.title));
+			else if (!sharedRow) lines.push(row(theme.bold(theme.fg("accent", titleText)), width, false));
+			let bodyRows = framed || sharedRow ? layout.bodyRows : layout.bodyRows - 1;
+			// A destructive question must keep naming its target before alternatives
+			// are collapsed, so identity detail outranks the spare option rows.
+			const detail = this.#detailLines
+				.slice(0, Math.max(0, bodyRows - 1))
+				.map(line => truncateToWidth(theme.fg("accent", line), renderWidth, Ellipsis.Unicode));
+			if (!sharedRow) {
+				for (const line of detail) lines.push(row(line, width, framed));
+				bodyRows -= detail.length;
+			}
+			const choiceWidth = sharedRow ? Math.max(1, renderWidth - visibleWidth(titleText) - 1) : renderWidth;
+			let selectedShown = false;
+			let alternativesShown = false;
+			if (bodyRows >= this.#filteredOptions.length && this.#filteredOptions.length > 0) {
+				for (let i = 0; i < this.#filteredOptions.length; i++) {
+					const option = this.#filteredOptions[i]!;
+					const content =
+						this.#renderOptionLines(
+							option.option,
+							i === this.#selectedIndex,
+							this.#isDisabled(option.index),
+							mdTheme,
+							0,
+							renderWidth,
+						)[0] ?? "";
+					lines.push(row(truncateToWidth(content, renderWidth), width, framed));
+				}
+				selectedShown = true;
+				alternativesShown = true;
+			} else if (bodyRows > 0) {
+				// Scarce rows: collapse the list so the pending choice and its
+				// alternatives stay on screen instead of a lone bare option.
+				const inline = this.#inlineChoices(choiceWidth, mdTheme);
+				const content = sharedRow ? `${theme.bold(theme.fg("accent", titleText))} ${inline.line}` : inline.line;
+				lines.push(row(content, width, framed));
+				selectedShown = inline.selectedShown;
+				alternativesShown = inline.alternativesShown;
+			}
+			if (layout.dividerRows) lines.push(divider(width));
+			if (layout.footerRows) {
+				lines.push(row(theme.fg("dim", "↑/↓ select · Enter confirm · Esc back"), width, framed));
+			}
+			if (layout.bottomRows) lines.push(bottomBorder(width));
+			this.#choiceExposed = titleShown && selectedShown && alternativesShown;
+			return lines;
+		}
+
 		if (this.#lastRenderWidth !== renderWidth) {
 			this.#lastRenderWidth = renderWidth;
 			this.#updateList(renderWidth);
 		}
+		this.#choiceExposed = true;
 		return super.render(width);
 	}
 
