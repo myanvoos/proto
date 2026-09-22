@@ -165,7 +165,12 @@ test("attach accepts split CSI/SS3 and Alt keys without detaching, then honors c
 			expect(read()).not.toContain("aborted and detached");
 		}
 		const pasteStart = read().length;
-		pty.write("\x1b[200~/bash printf '%s' 'PASTE_界'\x1b[201~\r");
+		// Bytes trailing the paste terminator in the same burst are payload, never keystrokes:
+		// a pasted file containing ESC[201~ must not be able to press Enter. Submit separately,
+		// the way a real terminal delivers a keystroke that follows a paste.
+		pty.write("\x1b[200~/bash printf '%s' 'PASTE_界'\x1b[201~");
+		await Bun.sleep(50);
+		pty.write("\r");
 		await waitFor("\nPASTE_界", true, pasteStart);
 		pty.write("\x1b[D\x1b");
 		await waitFor("Reattach with:", true);

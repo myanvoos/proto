@@ -66,6 +66,19 @@ const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 4000;
 const EMPTY_STOP_MAX_RETRIES = 3;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
+
+/** Opening of the report a turn carries once its retry budget is spent. */
+export const RETRY_BUDGET_EXHAUSTED_PREFIX = "Retry budget exhausted after";
+
+/**
+ * What the failed turn says once no retry is left. A repetition-guard error ends with "Treating as
+ * a stream stall and retrying" — true while attempts remain, a promise nothing keeps at the end of
+ * the budget. Name the guard and its evidence instead.
+ */
+function terminalRetryError(errorMessage: string, thinkingLoop: boolean): string {
+	if (!thinkingLoop) return errorMessage;
+	return `repetition guard: ${thinkingLoopDetail(errorMessage) ?? "the model repeated near-identical content"}`;
+}
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
 const STREAM_STALL_ERROR_RE = /stream stall/i;
@@ -1683,14 +1696,15 @@ export class TurnRecovery {
 		if (retryBudgetExhausted) {
 			if (!switchedModel && !switchedCredential) {
 				const attempt = this.#retryAttempt - 1;
-				message.errorMessage = `Retry budget exhausted after ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${errorMessage}`;
+				const terminalError = terminalRetryError(errorMessage, thinkingLoop);
+				message.errorMessage = `${RETRY_BUDGET_EXHAUSTED_PREFIX} ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${terminalError}`;
 				await this.persistTerminalEmptyErrorTurn(message);
 				const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
 				await this.#host.emitSessionEvent({
 					type: "auto_retry_end",
 					success: false,
 					attempt,
-					finalError: errorMessage,
+					finalError: terminalError,
 					retryErrors,
 				});
 				this.#clearPendingRetryErrors();

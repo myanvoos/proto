@@ -741,9 +741,18 @@ test("folded paste preview yields a complete summary without hiding input or foo
 			render(composer, scheduler);
 			const screen = terminal.screen();
 			expect(screen.some(row => row.includes("footer"))).toBe(true);
-			if (rows >= 6) expect(screen.some(row => row.includes("30 lines"))).toBe(true);
+			// A full card counts the rows its preview hides; a card that cannot fit falls back to
+			// the compact caption carrying the whole count.
+			// The compact caption carries the whole line count; a full card counts only the rows
+			// its four preview lines hide.
+			const compactCaption = screen.some(row => row.includes("#1 30 lines"));
+			const cardCaption = screen.some(row => row.includes("+26 lines"));
+			if (rows >= 6) expect(compactCaption || cardCaption).toBe(true);
 			const topBorder = screen.some(row => row.includes(theme.boxRound.topLeft));
-			if (topBorder) expect(screen.some(row => row.includes(theme.boxRound.bottomLeft))).toBe(true);
+			if (topBorder) {
+				expect(screen.some(row => row.includes(theme.boxRound.bottomLeft))).toBe(true);
+				expect(cardCaption).toBe(true);
+			}
 			expect(
 				composer.renderFrame({ columns, rows }).viewport.filter(row => row.includes(CURSOR_MARKER)),
 			).toHaveLength(1);

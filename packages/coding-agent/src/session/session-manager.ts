@@ -82,6 +82,8 @@ import {
 	computeDefaultSessionDir,
 	readTerminalBreadcrumbEntry,
 	resolveManagedSessionRoot,
+	type SessionDirectoryError,
+	sessionDirectoryError,
 	writeTerminalBreadcrumb,
 } from "./session-paths";
 import { prepareEntryForPersistence } from "./session-persistence";
@@ -102,6 +104,11 @@ import {
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
 const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
+/** A record loaded from a hand-edited file may carry no id at all; never print "undefined". */
+function describeEntryId(id: unknown): string {
+	return typeof id === "string" && id.length > 0 ? `"${id}"` : "with no id";
+}
+
 const RAW_ENTRY_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 const RAW_ENTRY_CACHE_MAX_COUNT = 64;
 
@@ -507,8 +514,11 @@ export class SessionManager {
 	#suppressBreadcrumb = false;
 
 	#breadcrumbFresh = false;
+	#persistenceUnavailable: SessionDirectoryError | undefined;
 	#sessionNameChangedCallbacks = new Set<() => void>();
 	#persistenceErrorCallbacks = new Set<(error: Error) => void>();
+	#historyDegradedCallbacks = new Set<(message: string) => void>();
+	#historyDegradedReported = false;
 
 	private constructor(cwd: string, sessionDir: string, persist: boolean, storage: SessionStorage) {
 		this.#cwd = cwd;
@@ -517,7 +527,13 @@ export class SessionManager {
 		this.#storage = storage;
 		this.#blobs = new BlobStore(getBlobsDir());
 
-		if (persist && sessionDir) this.#storage.ensureDirSync(sessionDir);
+		if (persist && sessionDir) {
+			try {
+				this.#storage.ensureDirSync(sessionDir);
+			} catch (error) {
+				throw sessionDirectoryError(sessionDir, error);
+			}
+		}
 	}
 
 	#rememberBreadcrumb(cwd: string, sessionFile: string, fresh = false): void {
@@ -814,6 +830,9 @@ export class SessionManager {
 	#retainEntry(entry: SessionEntry): SessionEntry {
 		const retained = prepareEntryForPersistence(entry, this.#retentionBlobStore()) as SessionEntry;
 		if (retained === entry) return retained;
+		// Spill files are keyed by entry id. A record loaded from a hand-edited session file may
+		// have none: keeping it whole in memory is cheaper than a key two such records would share.
+		if (typeof entry.id !== "string" || entry.id.length === 0) return entry;
 
 		const serialized = serialize(entry);
 		const compressed = gzipSync(serialized, { level: 1 });
@@ -823,6 +842,48 @@ export class SessionManager {
 		this.#rawEntryFiles.set(entry.id, { name, bytes: serialized.byteLength });
 		this.#cacheRawEntry(deserialize(serialized) as SessionEntry, serialized.byteLength);
 		return retained;
+	}
+
+	/**
+	 * Oversized entries live in a per-process temp file that the session file on disk does not
+	 * need: it already holds the truncated copy. Losing that cache — a temp cleaner, a corrupt
+	 * file, a released directory — therefore costs fidelity for one entry, never the session.
+	 * Forget the mapping, say so once, and carry on with the retained copy.
+	 */
+	#degradeRawEntry(entry: SessionEntry, file: string | undefined, problem: string, cause?: unknown): SessionEntry {
+		const cached = this.#rawEntryCache.get(entry.id);
+		if (cached) {
+			this.#rawEntryCache.delete(entry.id);
+			this.#rawEntryCacheBytes -= cached.bytes;
+		}
+		this.#rawEntryFiles.delete(entry.id);
+
+		const sessionFile = this.#sessionFile;
+		const where = sessionFile ? ` of session "${sessionFile}"` : "";
+		const located = file ? ` (${file})` : "";
+		const message =
+			`Cannot read back oversized ${entry.type} entry ${describeEntryId(entry.id)}${where}: ${problem}${located}. ` +
+			"The session file was not modified and the session keeps running; that entry is now shown in its " +
+			"truncated form. Full copies of oversized entries live in the system temp directory as " +
+			"proto-session-history-* for the lifetime of the process: exclude that pattern from temp cleanup to " +
+			"keep them.";
+		logger.warn("Oversized session entry cache lost; using the truncated copy", {
+			entryId: entry.id,
+			file,
+			problem,
+			error: cause === undefined ? undefined : toError(cause).message,
+		});
+		if (!this.#historyDegradedReported) {
+			this.#historyDegradedReported = true;
+			for (const callback of this.#historyDegradedCallbacks) {
+				try {
+					callback(message);
+				} catch (callbackError) {
+					logger.warn("Session history degradation observer failed", { error: toError(callbackError).message });
+				}
+			}
+		}
+		return entry;
 	}
 
 	#materializeEntry(entry: SessionEntry, cache = true): SessionEntry {
@@ -839,18 +900,29 @@ export class SessionManager {
 		}
 
 		const directory = this.#rawEntryDirectory;
-		if (!directory) throw new Error(`Raw session entry directory is missing for ${entry.id}`);
+		if (!directory) return this.#degradeRawEntry(entry, undefined, "its temporary copy was already released");
 		const file = path.join(directory, rawFile.name);
 		let compressed: Buffer;
 		try {
 			compressed = fs.readFileSync(file);
 		} catch (error) {
-			throw new Error(`Raw session entry file is missing for ${entry.id}`, { cause: error });
+			return this.#degradeRawEntry(entry, file, "its temporary copy is gone", error);
 		}
-		const serialized = gunzipSync(compressed);
-		const parsed: unknown = deserialize(serialized);
-		if (typeof parsed !== "object" || parsed === null || !("id" in parsed) || parsed.id !== entry.id) {
-			throw new Error(`Raw session entry file is invalid for ${entry.id}`);
+		let parsed: unknown;
+		try {
+			parsed = deserialize(gunzipSync(compressed));
+		} catch (error) {
+			return this.#degradeRawEntry(entry, file, "its temporary copy is corrupt", error);
+		}
+		if (typeof parsed !== "object" || parsed === null || !("id" in parsed)) {
+			return this.#degradeRawEntry(entry, file, "its temporary copy holds no session entry");
+		}
+		if (parsed.id !== entry.id) {
+			return this.#degradeRawEntry(
+				entry,
+				file,
+				`its temporary copy holds a different entry (${describeEntryId(parsed.id)})`,
+			);
 		}
 		const materialized = parsed as SessionEntry;
 		if (cache) this.#cacheRawEntry(materialized, rawFile.bytes);
@@ -2056,6 +2128,19 @@ export class SessionManager {
 		};
 	}
 
+	/** The per-process directory holding full copies of oversized entries, once one has been written. */
+	getRawEntryDirectory(): string | undefined {
+		return this.#rawEntryDirectory;
+	}
+
+	/** Fires once per session when an oversized entry's cached copy was lost and the truncated copy is used. */
+	onHistoryDegraded(cb: (message: string) => void): () => void {
+		this.#historyDegradedCallbacks.add(cb);
+		return () => {
+			this.#historyDegradedCallbacks.delete(cb);
+		};
+	}
+
 	onPersistenceError(cb: (error: Error) => void): () => void {
 		this.#persistenceErrorCallbacks.add(cb);
 		return () => {
@@ -2791,6 +2876,18 @@ export class SessionManager {
 		const manager = new SessionManager(cwd, dir, true, storage);
 		await manager.setSessionFile(chosenSession);
 		return manager;
+	}
+
+	/**
+	 * Set when history could not be persisted and the run continued in memory, so the
+	 * modes can tell the user why nothing is being saved.
+	 */
+	markPersistenceUnavailable(error: SessionDirectoryError): void {
+		this.#persistenceUnavailable = error;
+	}
+
+	getPersistenceUnavailable(): SessionDirectoryError | undefined {
+		return this.#persistenceUnavailable;
 	}
 
 	static inMemory(

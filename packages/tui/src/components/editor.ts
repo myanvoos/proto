@@ -1273,13 +1273,6 @@ export class Editor implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
-		let next: string | undefined = data;
-		while (next !== undefined && next.length > 0) {
-			next = this.#handleInputChunk(next);
-		}
-	}
-
-	#handleInputChunk(data: string): string | undefined {
 		if (this.#autocompleteRequestRunning && this.#autocompleteState === null) {
 			this.#invalidateAutocompleteRequests();
 		}
@@ -1309,12 +1302,7 @@ export class Editor implements Component, Focusable {
 
 		const paste = this.#pasteHandler.process(data);
 		if (paste.handled) {
-			if (paste.pasteContent !== undefined) {
-				this.#handlePaste(paste.pasteContent);
-				if (paste.remaining.length > 0) {
-					return paste.remaining;
-				}
-			}
+			if (paste.pasteContent !== undefined) this.#handlePaste(paste.pasteContent);
 			return;
 		}
 

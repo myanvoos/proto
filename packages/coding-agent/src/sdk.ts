@@ -157,6 +157,7 @@ import {
 } from "./session/retry-fallback-chains";
 import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
+import { SessionDirectoryError } from "./session/session-paths";
 import { collectMountedMCPToolRoutes, projectMountedMCPXdevGuidance } from "./session/session-tools";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
 import { closeAllConnections } from "./ssh/connection-manager";
@@ -932,6 +933,26 @@ export function createAutoLearnCaptureRunner(
 	};
 }
 
+/**
+ * The default session directory is the harness's own choice, not the user's: if it cannot be
+ * created, losing the turn is worse than losing the transcript. The run continues in memory and
+ * the reason is reported by the modes. An explicitly requested session path still fails fast.
+ */
+function createDefaultSessionManager(cwd: string, agentDir: string): SessionManager {
+	try {
+		return SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir));
+	} catch (error) {
+		if (!(error instanceof SessionDirectoryError)) throw error;
+		logger.warn("Session persistence unavailable; continuing in memory", {
+			directory: error.directory,
+			error: error.message,
+		});
+		const manager = SessionManager.inMemory(cwd);
+		manager.markPersistenceUnavailable(error);
+		return manager;
+	}
+}
+
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	const rootMode = options.disableExtensionDiscovery ? "explicit-only" : "merge";
 	return await withOmpExtensionRootScope(options.additionalExtensionPaths ?? [], rootMode, () =>
@@ -1034,10 +1055,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	applyProviderGlobalsFromSettings(settings);
 
 	const sessionManager =
-		options.sessionManager ??
-		logger.time("sessionManager", () =>
-			SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir)),
-		);
+		options.sessionManager ?? logger.time("sessionManager", () => createDefaultSessionManager(cwd, agentDir));
 	const configuredDirs = options.additionalDirectories
 		? options.additionalDirectories
 		: settings.get("workspace.additionalDirectories");

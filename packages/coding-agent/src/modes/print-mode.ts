@@ -34,6 +34,11 @@ function stripProviderPayload<T extends AgentMessage>(message: T): T {
 }
 
 function reportStartupDiagnostics(session: AgentSession): void {
+	const unavailable = session.sessionManager.getPersistenceUnavailable();
+	if (unavailable) {
+		process.stderr.write(`Warning: ${unavailable.message} This run is not being saved.\n`);
+		process.stderr.write(`${unavailable.hint}\n`);
+	}
 	for (const issue of settings.getConfigIssues()) {
 		process.stderr.write(`${formatConfigIssue(issue)}\n`);
 	}

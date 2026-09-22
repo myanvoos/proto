@@ -120,14 +120,58 @@ export const NO_TITLE_SENTINEL = "none";
 const MAX_TITLE_CHARS = 80;
 const MAX_TITLE_WORDS = 12;
 
+// Models routinely answer a title prompt with a markdown heading, a bullet or a
+// bolded phrase. The markers are formatting, not part of the name, and a title
+// is rendered as plain text everywhere it appears (status line, splash resume
+// hint, session picker) and stored verbatim in the session record — so they are
+// stripped once, here, before the title is ever handed out.
+//
+// Every pattern demands the structural whitespace or pairing that markdown
+// itself demands, so names that merely contain these characters survive:
+// "C# refactor", "Fix #123", "1.5 release notes", "snake_case_name",
+// "2**8 bytes" and "a * b * c" all pass through untouched.
+const TITLE_BLOCK_MARKER_RE = /^(?:>|#{1,6}|[-*+]|\d{1,9}[.)])\s+/;
+const TITLE_ATX_CLOSING_RE = /\s+#+$/;
+const TITLE_IMAGE_OR_LINK_RE = /!?\[([^\]]*)\]\((?:[^()]*)\)/g;
+const TITLE_REFERENCE_LINK_RE = /!?\[([^\]]*)\]\[[^\]]*\]/g;
+const TITLE_AUTOLINK_RE = /<((?:https?|mailto):[^>\s]+)>/gi;
+const TITLE_CODE_SPAN_RE = /`+([^`]+)`+/g;
+const TITLE_STRIKETHROUGH_RE = /~~([^~]+)~~/g;
+const TITLE_STRONG_EMPHASIS_RE = /\*{1,3}([^*\s](?:[^*]*[^*\s])?)\*{1,3}/g;
+// Underscore emphasis never applies intra-word in CommonMark, so both
+// delimiters must sit on a word boundary.
+const TITLE_UNDERSCORE_EMPHASIS_RE = /(^|[\s([{])_{1,2}([^_\s](?:[^_]*[^_\s])?)_{1,2}(?=$|[\s)\]}.,;:!?])/g;
+const TITLE_ESCAPED_PUNCTUATION_RE = /\\([\\`*_{}[\]()#+\-.!~>|])/g;
+
+/** Reduce a generated title to plain text by removing markdown markup. */
+export function stripTitleMarkdown(value: string): string {
+	let title = value.trim();
+	// Markers nest: "> - **Fix the parser**" needs every leading block marker gone.
+	while (TITLE_BLOCK_MARKER_RE.test(title)) {
+		const stripped = title.replace(TITLE_BLOCK_MARKER_RE, "").trim();
+		if (stripped === title) break;
+		title = stripped;
+	}
+	title = title.replace(TITLE_ATX_CLOSING_RE, "");
+	// Links before inline styling so "[**label**](url)" keeps only "label".
+	title = title.replace(TITLE_IMAGE_OR_LINK_RE, "$1").replace(TITLE_REFERENCE_LINK_RE, "$1");
+	title = title.replace(TITLE_AUTOLINK_RE, "$1");
+	title = title.replace(TITLE_CODE_SPAN_RE, "$1");
+	title = title.replace(TITLE_STRIKETHROUGH_RE, "$1");
+	title = title.replace(TITLE_STRONG_EMPHASIS_RE, "$1");
+	title = title.replace(TITLE_UNDERSCORE_EMPHASIS_RE, "$1$2");
+	// Last: an escaped marker is literal text and must not be re-read as markup.
+	title = title.replace(TITLE_ESCAPED_PUNCTUATION_RE, "$1");
+	return title.replace(/\s+/g, " ").trim();
+}
+
 export function normalizeGeneratedTitle(value: string | null | undefined, sourceText?: string): string | null {
 	const firstLine = value?.trim().split(/\r?\n/, 1)[0]?.trim();
 	if (!firstLine) return null;
 	const unquoted = firstLine.replace(/^["']|["']$/g, "").trim();
 	if (/^<title\s*\/>$/i.test(unquoted)) return null;
-	const title = unquoted
-		.replace(/^<title>/i, "")
-		.replace(/<\/title>$/i, "")
+	const withoutTags = unquoted.replace(/^<title>/i, "").replace(/<\/title>$/i, "");
+	const title = stripTitleMarkdown(withoutTags)
 		.replace(/^["']|["']$/g, "")
 		.replace(/[.!?]$/, "")
 		.trim();

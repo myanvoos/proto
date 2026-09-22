@@ -126,6 +126,8 @@ const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL)
 
 export class SelectorController {
 	#agentsViewState: AgentsViewPersistentState | undefined;
+	/** A committed palette change owes the already-printed transcript a repaint. */
+	#paletteDirty = false;
 
 	constructor(private ctx: InteractiveModeContext) {}
 
@@ -187,6 +189,14 @@ export class SelectorController {
 			const done = () => {
 				overlayHandle?.hide();
 				this.focusActiveEditorArea();
+				// Deferred to here on purpose: the repaint erases native scrollback and
+				// re-emits the transcript, which must happen once the dialog is down and
+				// the normal buffer owns the screen again.
+				if (this.#paletteDirty) {
+					this.#paletteDirty = false;
+					this.ctx.ui.requestRender(true, { clearScrollback: true });
+					return;
+				}
 				this.ctx.ui.requestRender();
 			};
 			const selector = new SettingsSelectorComponent(
@@ -630,15 +640,29 @@ export class SelectorController {
 			case "theme": {
 				setTheme(value as string, true).then(result => {
 					this.ctx.statusLine.invalidate();
+					this.#paletteDirty = true;
 					this.ctx.ui.requestRender();
-					this.ctx.ui.invalidate();
 					if (!result.success) {
 						this.ctx.showError(`Failed to load theme "${value}": ${result.error}\nFell back to dark theme.`);
 					}
 				});
 				break;
 			}
+			// The settings dialog commits the concrete slot, never the bare "theme" id, so
+			// these fell through and nothing repainted the rows the old palette had already
+			// printed. The live preview has applied the theme by now; the repaint is what
+			// is still owed.
+			case "theme.dark":
+			case "theme.light": {
+				this.#paletteDirty = true;
+				this.ctx.statusLine.invalidate();
+				this.ctx.ui.requestRender();
+				break;
+			}
 			case "colorBlindMode": {
+				// Marked before the await: the dialog can close before the swap resolves,
+				// and a flag set after that would miss the repaint entirely.
+				this.#paletteDirty = true;
 				setColorBlindMode(value === "true" || value === true).then(() => {
 					this.ctx.ui.invalidate();
 				});

@@ -23,6 +23,15 @@ const ESC = "\x1b";
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
+/**
+ * Pasted text can contain the paste markers itself — a terminal escapes nothing — and the bytes
+ * that follow an embedded terminator are payload, not keystrokes. Folding them into the payload is
+ * what stops a pasted file from pressing Enter on the prompt it was pasted into.
+ */
+function foldPasteMarkers(text: string): string {
+	return text.replaceAll(BRACKETED_PASTE_END, "").replaceAll(BRACKETED_PASTE_START, "");
+}
+
 const PASTE_INACTIVITY_TIMEOUT_MS = 1000;
 const PASTE_MAX_BYTES = 64 * 1024 * 1024;
 
@@ -626,9 +635,10 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 					consumed++;
 				}
 				if (base + consumed >= BRACKETED_PASTE_END.length) {
-					// The candidate completed as the real terminator.
+					// The candidate completed as the real terminator. Whatever trails it belongs to
+					// the payload this paste already exceeded its cap with, so it is dropped rather
+					// than replayed as key input.
 					const delivered = this.#pasteChunks.join("");
-					const remaining = chunk.slice(consumed);
 					this.#clearPasteWatchdog();
 					this.#pasteMode = false;
 					this.#pasteOverLimit = false;
@@ -639,7 +649,6 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 					this.#pasteBytes = 0;
 					this.#pendingKittyPrintableCodepoint = undefined;
 					this.emit("paste", delivered);
-					if (remaining.length > 0) this.process(remaining);
 					return;
 				}
 				if (consumed < chunk.length) {
@@ -673,11 +682,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				this.#armPasteWatchdog();
 				return;
 			}
-			// Terminator found: deliver the frozen bounded prefix. The marker
-			// may straddle the overlap, so the post-terminator tail is measured
-			// in probe coordinates, and the dropped gap is never concatenated.
-			const tailStart = Math.max(0, endInProbe + BRACKETED_PASTE_END.length - this.#pasteOverlap.length);
-			const remaining = chunk.slice(tailStart);
+			// Terminator found: deliver the frozen bounded prefix. Everything after it is payload
+			// this paste already exceeded its cap with, so it is dropped with the rest.
 			const delivered = this.#pasteChunks.join("");
 			this.#clearPasteWatchdog();
 			this.#pasteMode = false;
@@ -689,7 +695,6 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			this.#pasteBytes = 0;
 			this.#pendingKittyPrintableCodepoint = undefined;
 			this.emit("paste", delivered);
-			if (remaining.length > 0) this.process(remaining);
 			return;
 		}
 		if (probe.indexOf(BRACKETED_PASTE_END) === -1) {
@@ -732,9 +737,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 
 		const flat = this.#pasteChunks.length > 0 ? `${this.#pasteChunks.join("")}${chunk}` : chunk;
-		const endIndex = flat.indexOf(BRACKETED_PASTE_END);
-		const pastedContent = flat.slice(0, endIndex);
-		const remaining = flat.slice(endIndex + BRACKETED_PASTE_END.length);
+		const pastedContent = foldPasteMarkers(flat);
 
 		// The complete-marker path must honor the same cap as accumulation;
 		// pastedContent already includes the stored chunks, so compare it
@@ -753,10 +756,6 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#pendingKittyPrintableCodepoint = undefined;
 
 		this.emit("paste", delivered);
-
-		if (remaining.length > 0) {
-			this.process(remaining);
-		}
 	}
 
 	#armPasteWatchdog(): void {

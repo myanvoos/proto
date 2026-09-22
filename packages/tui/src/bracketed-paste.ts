@@ -1,7 +1,7 @@
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
-export type PasteResult = { handled: false } | { handled: true; pasteContent?: string; remaining: string };
+export type PasteResult = { handled: false } | { handled: true; pasteContent?: string };
 
 const REENCODED_CTRL_CSI_U = /\x1b\[(\d+);5u/g;
 const REENCODED_CTRL_XTERM = /\x1b\[27;5;(\d+)~/g;
@@ -24,6 +24,10 @@ export type BracketedPasteHandlerOptions = {
 };
 
 const DEFAULT_BYTE_LIMIT = 64 * 1024 * 1024;
+
+function stripPasteMarkers(text: string): string {
+	return text.replaceAll(PASTE_END, "").replaceAll(PASTE_START, "");
+}
 
 export class BracketedPasteHandler {
 	#buffer = "";
@@ -52,22 +56,25 @@ export class BracketedPasteHandler {
 
 		const endIndex = this.#buffer.indexOf(PASTE_END);
 		if (endIndex !== -1) {
-			const pasteContent = this.#buffer.substring(0, endIndex);
-			const remaining = this.#buffer.substring(endIndex + PASTE_END.length);
+			// Nothing stops pasted text from containing the terminator itself, and a terminal that
+			// splits a burst mid-payload looks identical. Everything that arrives with the
+			// terminator therefore stays paste content: replaying the tail as key input is how a
+			// pasted file gets to press Enter.
+			const pasteContent = stripPasteMarkers(this.#buffer);
 
 			this.#buffer = "";
 			this.#active = false;
 
-			return { handled: true, pasteContent, remaining };
+			return { handled: true, pasteContent };
 		}
 
 		if (this.#buffer.length > this.#byteLimit) {
 			const pasteContent = this.#buffer;
 			this.#buffer = "";
 			this.#active = false;
-			return { handled: true, pasteContent, remaining: "" };
+			return { handled: true, pasteContent };
 		}
 
-		return { handled: true, remaining: "" };
+		return { handled: true };
 	}
 }

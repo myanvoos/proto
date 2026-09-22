@@ -147,13 +147,14 @@ if "__proto_prelude_loaded__" not in globals():
     _FS_STATE.setdefault("eager", {})
     # Stale-write guard: abspath -> (st_mtime_ns, st_size) at the agent's
     # last observation of the file. Armed by any read-mode open the audit hook
-    # sees (`open(p).read()`, `Path(p).read_text()`, imports, ...) and by
-    # host-side observations the runner forwards before each cell (shell
-    # builtins and redirects, the read tool); re-armed to the post-write state
-    # by this process's own writes and by host-side writes (shell, edit/write
-    # tools); NEVER cleared between cells — staleness is about what the agent
-    # last saw, which spans cells. Only writers outside all of those paths
-    # leave a mismatched record behind for the raw-write guard to trip on.
+    # sees (`open(p).read()`, `Path(p).read_text()`, imports, ...) and, for
+    # paths the kernel has never read, by the host-side observations the
+    # runner forwards before each cell (shell builtins and redirects, the read
+    # tool); cleared only by this process's own mutations, which know what
+    # they wrote. Host observations never refresh an existing record, so a
+    # shell read or write between two kernel cells cannot disarm the guard —
+    # the kernel is still holding the content it read. NEVER cleared between
+    # cells: staleness is about what the kernel last saw, which spans cells.
     _FS_STATE.setdefault("read_seen", {})
     _FS_READ_SEEN_MAX = 8192
 
@@ -266,21 +267,27 @@ if "__proto_prelude_loaded__" not in globals():
         _fs_remember_seen(ap, (after.st_mtime_ns, after.st_size, sha))
 
     def _fs_note_observed(observations) -> None:
-        """Arm or disarm the stale-write guard from host-side observations
-        (shell builtins, redirects, and host tools) of files the agent read or
-        wrote outside the kernel. A missing stamp means the file is gone."""
+        """Arm the stale-write guard for files the host touched (shell
+        builtins, redirects, the read tool) that the kernel has no record of.
+
+        Strictly additive: a host observation NEVER overwrites or clears a
+        record. Refreshing one would launder an edit the kernel never read
+        into "seen" — the kernel still holds the old content in a variable,
+        so its next write would silently clobber the newer file. The JS
+        kernel arms readSeen from its own reads only (fs-tracker.ts) and
+        therefore never had this hole; host observations only ever extend the
+        guard to paths the kernel itself has not read."""
+        read_seen = _FS_STATE["read_seen"]
         for entry in observations:
             if not isinstance(entry, dict):
                 continue
             ap = _fs_norm_path(entry.get("path"))
-            if ap is None:
+            if ap is None or ap in read_seen:
                 continue
             mtime_ns = entry.get("mtimeNs")
             size = entry.get("size")
             if mtime_ns is None or size is None:
-                with _FS_STATE["lock"]:
-                    _FS_STATE["read_seen"].pop(ap, None)
-                continue
+                continue  # the file is gone; the write itself surfaces that
             sha = entry.get("sha")
             try:
                 _fs_remember_seen(ap, (int(mtime_ns), int(size), str(sha) if sha is not None else None))
@@ -346,18 +353,27 @@ if "__proto_prelude_loaded__" not in globals():
             except Exception:
                 pass
             return
+        # Every destructive path is guarded, not just write-mode opens: the
+        # atomic-write idiom (write tmp, os.replace over the target) and
+        # os.remove/os.truncate destroy content without ever opening the
+        # victim for writing. Mirrors TRACKED_NAMES in
+        # eval/js/shared/fs-tracker.ts, which guards the same set.
+        if event == "os.remove":
+            targets = args[:1]
+        elif event == "os.rename":  # os.replace audits under the same name
+            targets = args[:2]  # the source leaves its path; the destination is clobbered
+        elif event == "os.truncate":
+            targets = args[:1]
+        else:
+            return
+        # The stale-write guard aborts the operation on purpose; everything
+        # else in tracking must never break the mutation it observes.
+        for target in targets:
+            _fs_check_stale_raw(target)
         try:
-            if event == "os.remove":
-                _fs_record(args[0])
-                _fs_forget_read(args[0])
-            elif event == "os.rename":  # os.replace audits under the same name
-                _fs_record(args[0])
-                _fs_record(args[1])
-                _fs_forget_read(args[0])
-                _fs_forget_read(args[1])
-            elif event == "os.truncate":
-                _fs_record(args[0])
-                _fs_forget_read(args[0])
+            for target in targets:
+                _fs_record(target)
+                _fs_forget_read(target)
         except Exception:
             pass  # an audit hook must never break the operation it observes
 

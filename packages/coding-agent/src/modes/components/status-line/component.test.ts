@@ -157,3 +157,62 @@ describe("StatusLineComponent quiet line shedding", () => {
 		}
 	});
 });
+
+// Regression: the run clock reported every finished turn with a success check, so a hard failure
+// and an interrupted turn both read "✓ 0:50" — the status line contradicted the transcript.
+describe("StatusLineComponent run clock outcome", () => {
+	function clockReadout(outcome: "ok" | "error" | "aborted"): string {
+		const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+		const component = new StatusLineComponent(sessionWithMessages({ messages: [], cwd: "/srv/run-clock" }));
+		try {
+			component.updateSettings({ leftSegments: ["path"], rightSegments: [] });
+			component.markActivityStart();
+			now.mockReturnValue(60_000);
+			component.markActivityEnd(outcome);
+			return Bun.stripANSI(component.renderQuietLine(120) ?? "");
+		} finally {
+			component.dispose();
+		}
+	}
+
+	test("a completed turn keeps the success check", () => {
+		const line = clockReadout("ok");
+		expect(line).toContain("✓ 0:50");
+	});
+
+	test("a failed turn is not reported as a success", () => {
+		const line = clockReadout("error");
+		expect(line).toContain("✗ 0:50");
+		expect(line).not.toContain("✓");
+	});
+
+	test("an interrupted turn is marked as interrupted, matching the transcript", () => {
+		const line = clockReadout("aborted");
+		expect(line).toContain("∎ 0:50");
+		expect(line).not.toContain("✓");
+	});
+
+	test("the outcome belongs to the turn that set it, and a reset clears the readout", () => {
+		const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+		const component = new StatusLineComponent(sessionWithMessages({ messages: [], cwd: "/srv/run-clock" }));
+		try {
+			component.updateSettings({ leftSegments: ["path"], rightSegments: [] });
+			component.markActivityStart();
+			now.mockReturnValue(20_000);
+			component.markActivityEnd("error");
+			expect(component.getRunClock().lastRunOutcome).toBe("error");
+
+			component.markActivityStart();
+			now.mockReturnValue(25_000);
+			component.markActivityEnd();
+			expect(component.getRunClock().lastRunOutcome).toBe("ok");
+			expect(Bun.stripANSI(component.renderQuietLine(120) ?? "")).toContain("✓ 0:05");
+
+			component.resetActiveTime();
+			expect(component.getRunClock().lastRunOutcome).toBe("ok");
+			expect(Bun.stripANSI(component.renderQuietLine(120) ?? "")).not.toContain("✓");
+		} finally {
+			component.dispose();
+		}
+	});
+});

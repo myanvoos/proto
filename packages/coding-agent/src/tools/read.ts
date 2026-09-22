@@ -74,6 +74,7 @@ import {
 	splitAddressableFileLines,
 } from "./read-format";
 import {
+	describeUnreadableFileType,
 	findSuffixMatchCached,
 	isNotFoundError,
 	isRemoteMountPath,
@@ -1372,10 +1373,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 		let isDirectory = false;
 		let fileSize = 0;
+		let blockingKind: string | undefined;
 		try {
 			const stat = await Bun.file(absolutePath).stat();
 			fileSize = stat.size;
 			isDirectory = stat.isDirectory();
+			blockingKind = describeUnreadableFileType(stat);
 		} catch (error) {
 			if (isNotFoundError(error)) {
 				if (readPath.includes(";")) {
@@ -1391,6 +1394,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							absolutePath = suffixMatch.absolutePath;
 							fileSize = retryStat.size;
 							isDirectory = retryStat.isDirectory();
+							blockingKind = describeUnreadableFileType(retryStat);
 							suffixResolution = { from: localReadPath, to: suffixMatch.displayPath };
 						} catch {}
 					}
@@ -1404,6 +1408,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			} else {
 				throw error;
 			}
+		}
+
+		if (blockingKind) {
+			throw new ToolError(
+				`Cannot read '${localReadPath}': it is ${blockingKind}. Use the bash tool with a timeout if you need its contents.`,
+			);
 		}
 
 		if (isDirectory) {

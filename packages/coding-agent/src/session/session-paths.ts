@@ -2,8 +2,72 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getTerminalId } from "@oh-my-pi/pi-tui/ttyid";
-import { getSessionsDir, getTerminalSessionsDir, isEnoent, logger, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
+import {
+	getSessionsDir,
+	getTerminalSessionsDir,
+	isEnoent,
+	isFsError,
+	logger,
+	resolveEquivalentPath,
+} from "@oh-my-pi/pi-utils";
 import type { SessionStorage } from "./session-storage";
+
+/** A session directory could not be created. Carries what to do about it, not just the errno. */
+export class SessionDirectoryError extends Error {
+	readonly directory: string;
+	readonly hint: string;
+
+	constructor(directory: string, message: string, hint: string, cause: unknown) {
+		super(message, { cause });
+		this.name = "SessionDirectoryError";
+		this.directory = directory;
+		this.hint = hint;
+	}
+}
+
+/** One sentence for what went wrong and one for how to fix it, shared by every session-directory failure. */
+export function describeDirectoryFailure(
+	directory: string,
+	error: unknown,
+	options: { creating?: boolean } = {},
+): { detail: string; remedy: string } {
+	const code = isFsError(error) ? error.code : undefined;
+	const failedPath = isFsError(error) && error.path ? error.path : directory;
+	// mkdir fails on the first component it could not create, so the thing that must be
+	// writable is that component's parent; a check against an existing directory blames itself.
+	const blockingPath = options.creating ? path.dirname(failedPath) : failedPath;
+	const detail =
+		code === "EACCES" || code === "EPERM"
+			? `permission denied on "${blockingPath}"`
+			: code === "ENOTDIR"
+				? `"${blockingPath}" is a file, not a directory`
+				: code === "EROFS"
+					? `"${blockingPath}" is on a read-only filesystem`
+					: code === "ENOSPC"
+						? "the filesystem is full"
+						: code === "ENAMETOOLONG"
+							? "the path is too long for this filesystem"
+							: `${code ?? "unknown error"} (${error instanceof Error ? error.message : String(error)})`;
+	const remedy =
+		code === "ENOTDIR"
+			? `Remove or rename "${blockingPath}", or set PI_CODING_AGENT_DIR to a writable directory.`
+			: code === "ENOSPC"
+				? "Free some space, or set PI_CODING_AGENT_DIR to a directory on another filesystem."
+				: code === "EROFS"
+					? "Set PI_CODING_AGENT_DIR to a directory on a writable filesystem."
+					: `Fix the permissions on "${blockingPath}" (for example \`chmod u+w\`), or set PI_CODING_AGENT_DIR to a writable directory.`;
+	return { detail, remedy };
+}
+
+export function sessionDirectoryError(directory: string, error: unknown): SessionDirectoryError {
+	const { detail, remedy } = describeDirectoryFailure(directory, error, { creating: true });
+	return new SessionDirectoryError(
+		directory,
+		`Cannot create the session directory "${directory}": ${detail}.`,
+		`${remedy} Use \`proto --no-session\` to run without saved history.`,
+		error,
+	);
+}
 
 const migratedSessionRoots = new Set<string>();
 
@@ -168,7 +232,11 @@ export function computeDefaultSessionDir(
 	const sessionDir = path.join(sessionsRoot, encodedDirName);
 	migrateLegacyAbsoluteSessionDir(resolvedCwd, sessionDir, sessionsRoot);
 	migrateHashedSessionDir(hashedDirName, sessionDir, sessionsRoot);
-	storage.ensureDirSync(sessionDir);
+	try {
+		storage.ensureDirSync(sessionDir);
+	} catch (error) {
+		throw sessionDirectoryError(sessionDir, error);
+	}
 	return sessionDir;
 }
 

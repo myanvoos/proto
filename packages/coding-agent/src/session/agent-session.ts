@@ -489,6 +489,7 @@ export class AgentSession {
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	readonly yieldQueue: YieldQueue;
 
+	#unsubscribeHistoryDegraded: (() => void) | undefined;
 	#powerAssertion: MacOSPowerAssertion | undefined;
 
 	readonly configWarnings: string[] = [];
@@ -846,6 +847,11 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.#liveHeartbeat = createSessionLiveHeartbeat(this.sessionManager.getSessionFile());
+		// Losing the oversized-entry cache is silent degradation otherwise: the user sees an old
+		// entry shrink with no explanation of why, or what to change so it stops happening.
+		this.#unsubscribeHistoryDegraded = this.sessionManager.onHistoryDegraded(message => {
+			this.emitNotice("warning", message, "session");
+		});
 		this.settings = config.settings;
 		this.#modelRegistry = config.modelRegistry;
 		this.#codexResetCoordinator = config.codexResetCoordinator ?? defaultCodexAutoRedeemCoordinator;
@@ -3302,6 +3308,8 @@ export class AgentSession {
 
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
+		this.#unsubscribeHistoryDegraded?.();
+		this.#unsubscribeHistoryDegraded = undefined;
 		this.#messageTokens.dispose();
 		this.#recordSessionExit(options.reason ?? "dispose");
 		this.#cancelExitRecorder?.();

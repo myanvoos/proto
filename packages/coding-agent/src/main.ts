@@ -98,6 +98,7 @@ import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } fr
 import { findMostRecentSession, resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { claimSessionOwnership, liveSessionOwnerPid } from "./session/session-liveness";
 import { SessionManager } from "./session/session-manager";
+import { describeDirectoryFailure, SessionDirectoryError } from "./session/session-paths";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
@@ -890,7 +891,17 @@ export async function createSessionManager(
 	}
 
 	if (activeSettings.get("autoResume")) {
-		const manager = await SessionManager.continueRecent(cwd, parsed.sessionDir);
+		// autoResume is our default, not an explicit request: an unwritable session directory
+		// degrades to an unpersisted run instead of refusing to start.
+		let manager: SessionManager;
+		try {
+			manager = await SessionManager.continueRecent(cwd, parsed.sessionDir);
+		} catch (error) {
+			if (!(error instanceof SessionDirectoryError)) throw error;
+			const unpersisted = SessionManager.inMemory(cwd);
+			unpersisted.markPersistenceUnavailable(error);
+			return unpersisted;
+		}
 		if (manager.getEntries().length > 0) {
 			parsed.continue = true;
 		}
@@ -1212,8 +1223,9 @@ async function assertSessionDirUsable(dir: string): Promise<void> {
 				current = parent;
 				continue;
 			}
+			const { detail, remedy } = describeDirectoryFailure(current, error);
 			throw new CliUsageError(
-				`Invalid --session-dir value: ${JSON.stringify(dir)}. Cannot use ${current}: ${code ?? (error instanceof Error ? error.message : String(error))}.`,
+				`Invalid --session-dir value: ${JSON.stringify(dir)}. Cannot use ${current}: ${detail}. ${remedy}`,
 			);
 		}
 	}
@@ -1483,6 +1495,11 @@ export async function runRootCommand(
 				);
 			}
 		} catch (error: unknown) {
+			if (error instanceof SessionDirectoryError) {
+				process.stderr.write(`${chalk.red(`Error: ${error.message}`)}\n`);
+				process.stderr.write(`${chalk.dim(error.hint)}\n`);
+				process.exit(1);
+			}
 			if (error instanceof SessionResolutionError) {
 				process.stderr.write(`${chalk.red(`Error: ${error.message}`)}\n`);
 				if (error.hint) {

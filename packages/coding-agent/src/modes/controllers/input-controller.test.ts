@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { formatBytes } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../../session/agent-session";
 import * as commandUsage from "../../utils/command-usage";
 import type { InteractiveModeContext } from "../types";
@@ -377,4 +378,73 @@ test("pasting a corrupt image path reports the failure instead of attaching unde
 	} finally {
 		await fs.rm(directory, { recursive: true, force: true });
 	}
+});
+
+function largePasteHarness(choose: (title: string, options: Array<{ label: string }>) => Promise<string | undefined>) {
+	const statuses: string[] = [];
+	const attachments: Array<{ content: string; expansion?: string }> = [];
+	const titles: string[] = [];
+	const helpTexts: Array<string | undefined> = [];
+	const editor = {
+		insertTextAttachment: (content: string, expansion?: string) => attachments.push({ content, expansion }),
+		insertText: () => {},
+	};
+	const context = {
+		editor,
+		settings: { get: () => 5 },
+		showHookSelector: (title: string, options: Array<{ label: string }>, dialogOptions?: { helpText?: string }) => {
+			titles.push(title);
+			helpTexts.push(dialogOptions?.helpText);
+			return choose(title, options);
+		},
+		ui: { requestRender: () => {} },
+		showStatus: (message: string) => statuses.push(message),
+		showError: () => {},
+	} as unknown as InteractiveModeContext;
+	return { controller: new InputController(context), statuses, attachments, titles, helpTexts };
+}
+
+test("cancelling the large-paste menu discards the paste instead of committing it", async () => {
+	const { controller, statuses, attachments, titles, helpTexts } = largePasteHarness(() => Promise.resolve(undefined));
+	const text = Array.from({ length: 221 }, () => "The quick brown fox jumps over the lazy dog").join("\n");
+
+	await controller.presentLargePasteMenu(text, 221);
+
+	expect(attachments).toEqual([]);
+	expect(statuses).toEqual(["Discarded 221 pasted lines"]);
+	expect(helpTexts).toEqual(["Esc to discard the paste"]);
+	// The title carries the payload size, which a line count cannot convey.
+	expect(titles[0]).toBe(`Pasted 221 lines · ${formatBytes(Buffer.byteLength(text))}`);
+	expect(titles[0]).toContain("KB");
+});
+
+test("a large-paste menu that cannot open keeps the pasted text", async () => {
+	const { controller, attachments, statuses } = largePasteHarness(() => Promise.reject(new Error("no dialog")));
+	const text = "line\n".repeat(30);
+
+	await controller.presentLargePasteMenu(text, 30);
+
+	expect(attachments).toEqual([{ content: text, expansion: undefined }]);
+	expect(statuses).toEqual([]);
+});
+
+test("a paste under the menu threshold attaches without a dialog", () => {
+	const { controller, attachments, titles } = largePasteHarness(() => Promise.reject(new Error("unreachable")));
+	const text = "line\nline\nline";
+
+	expect(controller.handleLargePaste(text, 3)).toBe(true);
+
+	expect(titles).toEqual([]);
+	expect(attachments).toEqual([{ content: text, expansion: undefined }]);
+});
+
+test("choosing inline still attaches the paste", async () => {
+	const { controller, attachments } = largePasteHarness((_title, options) =>
+		Promise.resolve(options.find(option => option.label === "Paste inline")?.label),
+	);
+	const text = "line\n".repeat(30);
+
+	await controller.presentLargePasteMenu(text, 30);
+
+	expect(attachments).toEqual([{ content: text, expansion: undefined }]);
 });

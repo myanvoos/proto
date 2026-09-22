@@ -896,6 +896,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		this.#syncEditorMaxHeight();
+		// A run that cannot save its history must say so once, at the top, with the fix.
+		const persistenceUnavailable = this.sessionManager.getPersistenceUnavailable();
+		if (persistenceUnavailable) {
+			this.showWarning(
+				`${persistenceUnavailable.message} This session is not being saved. ${persistenceUnavailable.hint}`,
+			);
+		}
 		// stderr is invisible under the TUI, so a rejected or quarantined config has to be announced
 		// here; each issue message already carries its file path and remedy.
 		for (const issue of this.settings.getConfigIssues()) {

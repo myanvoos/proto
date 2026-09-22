@@ -221,7 +221,10 @@ export class JsRuntime {
 			finalExpressionValue: undefined,
 			completionInvocationCount: 0,
 		};
-		beginFileTracking(context.runId, event => hooks.onDisplay({ type: "status", event }));
+		beginFileTracking(context.runId, event => hooks.onDisplay({ type: "status", event }), {
+			note: text => hooks.onText(text),
+			cwd: context.cwd,
+		});
 		try {
 			return await this.#als.run(context, async () => {
 				const wrapped = await wrapCode(code);

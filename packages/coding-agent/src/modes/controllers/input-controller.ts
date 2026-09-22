@@ -2,7 +2,7 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
-import { formatCount, isEnoent, logger, pluralize, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatBytes, formatCount, isEnoent, logger, pluralize, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -1484,19 +1484,22 @@ export class InputController {
 		const INLINE = "Paste inline";
 
 		let choice: string | undefined;
+		let failed = false;
 		try {
 			choice = await this.ctx.showHookSelector(
-				`Pasted ${lineCount} lines`,
+				// Line count alone says nothing about a megabyte of minified text, so the size the
+				// paste would add to the prompt is on the title too.
+				`Pasted ${lineCount} lines · ${formatBytes(Buffer.byteLength(text))}`,
 				[
 					{ label: WRAPPED_BLOCK, description: "Wrap the text in <attachment> tags, collapsed to a marker" },
 					{ label: LOCAL_FILE, description: "Save the text to a local://paste file" },
 					{ label: INLINE, description: "Collapse the text to an inline paste marker" },
 				],
-				{ helpText: "Esc to paste inline" },
+				{ helpText: "Esc to discard the paste" },
 			);
 		} catch (error) {
 			logger.warn("large-paste menu failed", { error: error instanceof Error ? error.message : String(error) });
-			choice = undefined;
+			failed = true;
 		}
 
 		switch (choice) {
@@ -1510,7 +1513,9 @@ export class InputController {
 				this.ctx.editor.insertTextAttachment(text);
 				break;
 			default:
-				this.ctx.editor.insertTextAttachment(text);
+				// A dialog that cannot open must not swallow the paste, but cancelling means cancelling.
+				if (failed) this.ctx.editor.insertTextAttachment(text);
+				else this.ctx.showStatus(`Discarded ${lineCount} pasted lines`);
 				break;
 		}
 		this.ctx.ui.requestRender();
