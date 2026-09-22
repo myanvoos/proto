@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Claude saved resets can be spent automatically via the new `claudeResets.*` settings (consent is asked once per provider, independently of `codexResets.*`), and `/usage reset` now covers Claude and Codex accounts with live eligibility and expiry
+
 ### Changed
+- Anthropic server-side safety fallback now retries on Claude Opus 5.5 instead of Opus 4.8
 
 - The completion bell now means "your long turn finished while you were away": it stays silent for turns shorter than `completion.notifyMinSeconds` (default 10s) and for turns that end while the terminal has keyboard focus. Terminals that do not report focus still notify. `completion.notifyMinSeconds: 0` and `completion.notifyWhenFocused: true` restore the previous always-ring behaviour.
 - `/setup` now re-runs the whole onboarding walkthrough like `proto setup`; `/setup providers` and `/providers` still open just the sign-in and web-search step, and a single-step run no longer claims to be "step 1 of 1".

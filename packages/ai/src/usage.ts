@@ -52,7 +52,34 @@ export interface UsageLimit {
 	notes?: string[];
 }
 
+/**
+ * Per-credit detail for a saved/banked rate-limit reset.
+ *
+ * Populated when the provider's listing endpoint returns individual credit
+ * metadata (e.g. OpenAI Codex credits or Claude Cedar grants). Callers that
+ * only need the count can ignore this; display layers use `expiresAt` to show
+ * when banked resets expire ([#3339](https://github.com/can1357/oh-my-pi/issues/3339)).
+ */
 export interface UsageResetCreditDetail {
+	/** Opaque provider credit/grant identifier. */
+	id?: string;
+	/** Human-facing name for the reset. */
+	title?: string;
+	/** Provider reset program/family. */
+	program?: string;
+	/** Resets still banked in this credit/grant. */
+	remainingCount?: number;
+	/** Whether the provider says this credit can be redeemed now. */
+	usable?: boolean;
+	/** Whether redemption requires an exhausted covered limit. */
+	requiresLimit?: boolean;
+	/** Normalized {@link UsageLimit.id}s this credit resets. */
+	clears?: string[];
+	/** Normalized limit ids currently preventing redemption. */
+	blocking?: string[];
+	/** Used fractions for covered limits, keyed by normalized limit id. */
+	usedFractions?: Record<string, number>;
+	/** ISO timestamp when the credit was granted. */
 	grantedAt?: string;
 
 	expiresAt?: string;
@@ -60,9 +87,32 @@ export interface UsageResetCreditDetail {
 	status?: string;
 }
 
-export interface UsageResetCredits {
-	availableCount: number;
+/** Reset credit carrying the provider id required by its consume endpoint. */
+export interface UsageResetCredit extends UsageResetCreditDetail {
+	id: string;
+}
 
+/**
+ * Saved/banked rate-limit resets an account can redeem on demand.
+ *
+ * Surfaced by providers that let users defer a usage-window reset and spend it
+ * later (OpenAI Codex and Claude Cedar resets). The redeem itself is a
+ * separate, provider-specific action; this is the read-only state for display.
+ */
+export interface UsageResetCredits {
+	/** Number of banked resets, including grants that are not currently usable. */
+	availableCount: number;
+	/** Number of resets the provider says can be redeemed now. */
+	redeemableCount?: number;
+	/** Provider-selected credit/grant eligible for the next redemption. */
+	nextCreditId?: string;
+	/** Whether this account is eligible for the reset program. */
+	eligible?: boolean;
+	/** Provider reason the program or its credits are unavailable. */
+	reason?: string;
+	/** ISO timestamp until which redemption is cooling down. */
+	cooldownUntil?: string;
+	/** Individual credit details (expiry dates, coverage, etc.) when exposed. */
 	credits?: UsageResetCreditDetail[];
 }
 
@@ -199,6 +249,15 @@ export const usageLimitSchema = type({
 });
 
 export const usageResetCreditDetailSchema = type({
+	"id?": "string",
+	"title?": "string",
+	"program?": "string",
+	"remainingCount?": "number",
+	"usable?": "boolean",
+	"requiresLimit?": "boolean",
+	"clears?": "string[]",
+	"blocking?": "string[]",
+	"usedFractions?": { "[string]": "number" },
 	"grantedAt?": "string",
 	"expiresAt?": "string",
 	"status?": "string",
@@ -206,6 +265,11 @@ export const usageResetCreditDetailSchema = type({
 
 export const usageResetCreditsSchema = type({
 	availableCount: "number",
+	"redeemableCount?": "number",
+	"nextCreditId?": "string",
+	"eligible?": "boolean",
+	"reason?": "string",
+	"cooldownUntil?": "string",
 	"credits?": usageResetCreditDetailSchema.array(),
 });
 
@@ -288,6 +352,16 @@ export interface CredentialRankingStrategy {
 	scopeLimitsForReserve?(report: UsageReport, context?: CredentialRankingContext): UsageLimit[];
 
 	blockScope?(context?: CredentialRankingContext): string | undefined;
+
+	/**
+	 * Backoff scopes a fresh usage report can vouch for, each with the limits
+	 * gating it. {@link AuthStorage} clears a stale block under a returned scope
+	 * once every listed limit is below exhaustion, so a 429 whose retry-after
+	 * overstated the real reset does not sideline a recovered account until the
+	 * clock runs out. Scopes not returned expire by clock only. Codex heals
+	 * through its meter metadata instead and omits this.
+	 */
+	healableBlockScopes?(report: UsageReport): { blockScope: string; limits: UsageLimit[] }[];
 
 	blockScopes?(context?: CredentialRankingContext): string[];
 

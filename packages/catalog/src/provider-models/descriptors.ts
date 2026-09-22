@@ -101,7 +101,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "amazon-bedrock",
-		defaultModel: "us.anthropic.claude-opus-4-8",
+		defaultModel: "us.anthropic.claude-opus-5-5",
 	},
 	{
 		id: "bedrock-mantle",
@@ -112,7 +112,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "anthropic",
-		defaultModel: "claude-opus-4-8",
+		defaultModel: "claude-opus-5-5",
 		envVars: ["ANTHROPIC_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => anthropicModelManagerOptions(config),
 		catalogDiscovery: { label: "Anthropic" },
@@ -131,14 +131,14 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "cloudflare-ai-gateway",
-		defaultModel: "anthropic/claude-opus-4-8",
+		defaultModel: "anthropic/claude-opus-5-5",
 		envVars: ["CLOUDFLARE_AI_GATEWAY_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => cloudflareAiGatewayModelManagerOptions(config),
 		catalogDiscovery: { label: "Cloudflare AI Gateway" },
 	},
 	{
 		id: "cursor",
-		defaultModel: "claude-4.6-opus-high",
+		defaultModel: "claude-opus-5-high",
 		envVars: ["CURSOR_ACCESS_TOKEN"],
 		createModelManagerOptions: (config: ModelManagerConfig) => cursorModelManagerOptions(config),
 		catalogDiscovery: { label: "Cursor", envVars: ["CURSOR_API_KEY"], oauthProvider: "cursor" },
@@ -234,7 +234,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "kilo",
-		defaultModel: "anthropic/claude-opus-4.8",
+		defaultModel: "anthropic/claude-opus-5.5",
 		envVars: ["KILO_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => kiloModelManagerOptions(config),
 		catalogDiscovery: { label: "Kilo Gateway", allowUnauthenticated: true },
@@ -247,7 +247,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "litellm",
-		defaultModel: "claude-opus-4-8",
+		defaultModel: "claude-opus-5-5",
 		envVars: ["LITELLM_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => litellmModelManagerOptions(config),
 		catalogDiscovery: { label: "LiteLLM", allowUnauthenticated: true },
@@ -352,7 +352,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "opencode-zen",
-		defaultModel: "claude-opus-4-8",
+		defaultModel: "claude-opus-5-5",
 		envVars: ["OPENCODE_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => opencodeZenModelManagerOptions(config),
 		dynamicModelsAuthoritative: true,
@@ -435,7 +435,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "vercel-ai-gateway",
-		defaultModel: "anthropic/claude-opus-4.8",
+		defaultModel: "anthropic/claude-opus-5.5",
 		envVars: ["AI_GATEWAY_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => vercelAiGatewayModelManagerOptions(config),
 		catalogDiscovery: {
@@ -522,7 +522,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "zenmux",
-		defaultModel: "anthropic/claude-opus-4.8",
+		defaultModel: "anthropic/claude-opus-5.5",
 		envVars: ["ZENMUX_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => zenmuxModelManagerOptions(config),
 		allowUnauthenticated: true,

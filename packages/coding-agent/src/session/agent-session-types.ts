@@ -141,7 +141,7 @@ export interface AgentSessionConfig {
 	initialAdvisorCosts?: ReadonlyMap<string, number>;
 
 	preferWebsockets?: boolean;
-
+	/** Shared saved-reset coordinator; defaults process-wide so concurrent Codex/Claude sessions cannot double-spend. Inject a fresh one in tests. */
 	codexResetCoordinator?: CodexAutoRedeemCoordinator;
 
 	onPayload?: SimpleStreamOptions["onPayload"];

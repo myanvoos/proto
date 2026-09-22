@@ -493,7 +493,7 @@
 	},
 	"kimi-k2.5": {
 		"id": "kimi-k2.5",
-		"name": "Kimi K2.5",
+		"name": "kimi-k2.5",
 		"api": "openai-completions",
 		"provider": "kimi-code",
 		"baseUrl": "https://api.kimi.com/coding/v1",

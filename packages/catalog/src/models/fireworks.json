@@ -755,7 +755,6 @@
 		},
 		"tokenizer": "glm5",
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -803,7 +802,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": true
 		},
-		"supportsComputerUseConfig": false
+		"supportsComputerUse": false
 	},
 	"gpt-oss-120b": {
 		"id": "gpt-oss-120b",
@@ -1035,7 +1034,7 @@
 	},
 	"kimi-k2.5": {
 		"id": "kimi-k2.5",
-		"name": "Kimi K2.5",
+		"name": "kimi-k2.5",
 		"api": "openai-completions",
 		"provider": "fireworks",
 		"baseUrl": "https://api.fireworks.ai/inference/v1",
@@ -1237,7 +1236,6 @@
 		},
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -1287,7 +1285,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": true
 		},
-		"supportsComputerUseConfig": false
+		"supportsComputerUse": false
 	},
 	"kimi-k2.7-code": {
 		"id": "kimi-k2.7-code",
@@ -1407,7 +1405,6 @@
 		},
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -1456,7 +1453,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"dropThinkingWhenReasoningEffort": true
 		},
-		"supportsComputerUseConfig": false
+		"supportsComputerUse": false
 	},
 	"kimi-k3": {
 		"id": "kimi-k3",

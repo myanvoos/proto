@@ -35,7 +35,7 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			model.provider === "anthropic" &&
 			isAnthropicFableOrMythosModel(model.id);
 		const fallbacks =
-			streamOptions?.fallbacks ?? (serverSideFallbackEnabled ? [{ model: "claude-opus-4-8" }] : undefined);
+			streamOptions?.fallbacks ?? (serverSideFallbackEnabled ? [{ model: "claude-opus-5-5" }] : undefined);
 		const merged: SimpleStreamOptions = {
 			...streamOptions,
 			openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,

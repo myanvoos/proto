@@ -1465,6 +1465,9 @@ export class Settings {
 		}
 		delete raw["providers.parallelFetch"];
 
+		// Saved-reset autoRedeem booleans -> tri-state enums. Existing explicit
+		// false keeps "do not run"; missing config falls through to "unset",
+		// which asks before the first eligible provider-specific spend.
 		const codexResetsObj = raw.codexResets as Record<string, unknown> | undefined;
 		if (codexResetsObj && typeof codexResetsObj.autoRedeem === "boolean") {
 			codexResetsObj.autoRedeem = codexResetsObj.autoRedeem ? "yes" : "no";

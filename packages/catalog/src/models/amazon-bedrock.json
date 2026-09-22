@@ -185,8 +185,8 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
+			"input": 5.5,
+			"output": 27.5,
 			"cacheRead": 0.5,
 			"cacheWrite": 6.25
 		},
@@ -332,6 +332,46 @@
 			"streamIdleTimeoutMs": 900000
 		}
 	},
+	"anthropic.claude-opus-5-5": {
+		"id": "anthropic.claude-opus-5-5",
+		"name": "Claude Opus 5.5",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.2,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 512,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
 	"anthropic.claude-sonnet-5": {
 		"id": "anthropic.claude-sonnet-5",
 		"name": "Claude Sonnet 5",
@@ -372,6 +412,128 @@
 			"streamIdleTimeoutMs": 900000
 		}
 	},
+	"apac.amazon.nova-lite-v1:0": {
+		"id": "apac.amazon.nova-lite-v1:0",
+		"name": "Nova Lite (APAC)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.063,
+			"output": 0.252,
+			"cacheRead": 0.01575,
+			"cacheWrite": 0.063
+		},
+		"contextWindow": 300000,
+		"maxTokens": 10000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
+		}
+	},
+	"apac.amazon.nova-micro-v1:0": {
+		"id": "apac.amazon.nova-micro-v1:0",
+		"name": "Nova Micro (APAC)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.037,
+			"output": 0.148,
+			"cacheRead": 0.00925,
+			"cacheWrite": 0.037
+		},
+		"contextWindow": 128000,
+		"maxTokens": 10000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
+		}
+	},
+	"apac.amazon.nova-pro-v1:0": {
+		"id": "apac.amazon.nova-pro-v1:0",
+		"name": "Nova Pro (APAC)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.84,
+			"output": 3.36,
+			"cacheRead": 0.21,
+			"cacheWrite": 0.84
+		},
+		"contextWindow": 300000,
+		"maxTokens": 10000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
+		}
+	},
+	"apac.anthropic.claude-sonnet-4-20250514-v1:0": {
+		"id": "apac.anthropic.claude-sonnet-4-20250514-v1:0",
+		"name": "Claude Sonnet 4 (APAC)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 3,
+			"output": 15,
+			"cacheRead": 0.3,
+			"cacheWrite": 3.75
+		},
+		"contextWindow": 200000,
+		"maxTokens": 64000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 1024,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
 	"au.anthropic.claude-haiku-4-5-20251001-v1:0": {
 		"id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
 		"name": "Claude Haiku 4.5 (AU)",
@@ -384,10 +546,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 1,
-			"output": 5,
-			"cacheRead": 0.1,
-			"cacheWrite": 1.25
+			"input": 1.1,
+			"output": 5.5,
+			"cacheRead": 0.11,
+			"cacheWrite": 1.375
 		},
 		"contextWindow": 200000,
 		"maxTokens": 64000,
@@ -423,8 +585,8 @@
 			"image"
 		],
 		"cost": {
-			"input": 16.5,
-			"output": 82.5,
+			"input": 5.5,
+			"output": 27.5,
 			"cacheRead": 0.5,
 			"cacheWrite": 6.25
 		},
@@ -450,6 +612,46 @@
 			"streamIdleTimeoutMs": 600000
 		}
 	},
+	"au.anthropic.claude-opus-4-7": {
+		"id": "au.anthropic.claude-opus-4-7",
+		"name": "Claude Opus 4.7 (AU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v47",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 4096,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
 	"au.anthropic.claude-opus-4-8": {
 		"id": "au.anthropic.claude-opus-4-8",
 		"name": "Claude Opus 4.8 (AU)",
@@ -462,10 +664,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
-			"cacheRead": 0.5,
-			"cacheWrite": 6.25
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -502,10 +704,50 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
-			"cacheRead": 0.5,
-			"cacheWrite": 6.25
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 512,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"au.anthropic.claude-opus-5-5": {
+		"id": "au.anthropic.claude-opus-5-5",
+		"name": "Claude Opus 5.5 (AU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4.4,
+			"output": 22,
+			"cacheRead": 0.22,
+			"cacheWrite": 5.5
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -542,10 +784,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
-			"cacheWrite": 3.75
+			"input": 3.3,
+			"output": 16.5,
+			"cacheRead": 0.33,
+			"cacheWrite": 4.125
 		},
 		"contextWindow": 200000,
 		"maxTokens": 64000,
@@ -620,10 +862,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 2,
-			"output": 10,
-			"cacheRead": 0.2,
-			"cacheWrite": 2.5
+			"input": 2.2,
+			"output": 11,
+			"cacheRead": 0.22,
+			"cacheWrite": 2.75
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -646,6 +888,34 @@
 			"promptCacheMinimumTokens": 4096,
 			"promptCacheMaximumCheckpoints": 4,
 			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"ca.amazon.nova-lite-v1:0": {
+		"id": "ca.amazon.nova-lite-v1:0",
+		"name": "Nova Lite (CA)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.064,
+			"output": 0.256,
+			"cacheRead": 0.016,
+			"cacheWrite": 0.064
+		},
+		"contextWindow": 300000,
+		"maxTokens": 10000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
 		}
 	},
 	"cohere.command-r-plus-v1:0": {
@@ -742,7 +1012,7 @@
 	},
 	"deepseek.v3.2": {
 		"id": "deepseek.v3.2",
-		"name": "DeepSeek-V3.2",
+		"name": "DeepSeek V3.2",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -815,6 +1085,127 @@
 			"streamIdleTimeoutMs": 600000
 		},
 		"supportsComputerUse": false
+	},
+	"eu.amazon.nova-2-lite-v1:0": {
+		"id": "eu.amazon.nova-2-lite-v1:0",
+		"name": "Nova 2 Lite (EU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.374,
+			"output": 3.157,
+			"cacheRead": 0.0935,
+			"cacheWrite": 0.374
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 65535,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 1024,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"eu.amazon.nova-lite-v1:0": {
+		"id": "eu.amazon.nova-lite-v1:0",
+		"name": "Nova Lite (EU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.069,
+			"output": 0.276,
+			"cacheRead": 0.01725,
+			"cacheWrite": 0.069
+		},
+		"contextWindow": 300000,
+		"maxTokens": 10000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
+		}
+	},
+	"eu.amazon.nova-micro-v1:0": {
+		"id": "eu.amazon.nova-micro-v1:0",
+		"name": "Nova Micro (EU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.04,
+			"output": 0.16,
+			"cacheRead": 0.01,
+			"cacheWrite": 0.04
+		},
+		"contextWindow": 128000,
+		"maxTokens": 10000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
+		}
+	},
+	"eu.amazon.nova-pro-v1:0": {
+		"id": "eu.amazon.nova-pro-v1:0",
+		"name": "Nova Pro (EU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.92,
+			"output": 3.68,
+			"cacheRead": 0.23,
+			"cacheWrite": 0.92
+		},
+		"contextWindow": 300000,
+		"maxTokens": 10000,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
+		}
 	},
 	"eu.anthropic.claude-3-5-haiku-20241022-v1:0": {
 		"id": "eu.anthropic.claude-3-5-haiku-20241022-v1:0",
@@ -1059,6 +1450,46 @@
 			"streamIdleTimeoutMs": 900000
 		}
 	},
+	"eu.anthropic.claude-fable-5-1": {
+		"id": "eu.anthropic.claude-fable-5-1",
+		"name": "Claude Fable 5.1 (EU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 10,
+			"output": 50,
+			"cacheRead": 0.25,
+			"cacheWrite": 12.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 1024,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
 	"eu.anthropic.claude-haiku-4-5-20251001-v1:0": {
 		"id": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
 		"name": "Claude Haiku 4.5 (EU)",
@@ -1227,8 +1658,8 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
+			"input": 5.5,
+			"output": 27.5,
 			"cacheRead": 0.5,
 			"cacheWrite": 6.25
 		},
@@ -1374,6 +1805,46 @@
 			"streamIdleTimeoutMs": 900000
 		}
 	},
+	"eu.anthropic.claude-opus-5-5": {
+		"id": "eu.anthropic.claude-opus-5-5",
+		"name": "Claude Opus 5.5 (EU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.2,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 512,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
 	"eu.anthropic.claude-sonnet-4-20250514-v1:0": {
 		"id": "eu.anthropic.claude-sonnet-4-20250514-v1:0",
 		"name": "Claude Sonnet 4 (EU)",
@@ -1402,16 +1873,16 @@
 				"high"
 			]
 		},
-		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
 			"streamIdleTimeoutMs": 600000
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"eu.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 		"id": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -1464,13 +1935,13 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
-			"cacheWrite": 3.75
+			"input": 3.3,
+			"output": 16.5,
+			"cacheRead": 0.33,
+			"cacheWrite": 4.125
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 64000,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -1531,6 +2002,34 @@
 			"streamIdleTimeoutMs": 900000
 		}
 	},
+	"eu.mistral.pixtral-large-2502-v1:0": {
+		"id": "eu.mistral.pixtral-large-2502-v1:0",
+		"name": "Pixtral Large (25.02) (EU)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 8192,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
+		}
+	},
 	"global.amazon.nova-2-lite-v1:0": {
 		"id": "global.amazon.nova-2-lite-v1:0",
 		"name": "Nova 2 Lite",
@@ -1545,11 +2044,11 @@
 		"cost": {
 			"input": 0.33,
 			"output": 2.75,
-			"cacheRead": 0,
-			"cacheWrite": 0
+			"cacheRead": 0.0825,
+			"cacheWrite": 0.33
 		},
-		"contextWindow": 128000,
-		"maxTokens": 4096,
+		"contextWindow": 1000000,
+		"maxTokens": 65535,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -1584,6 +2083,46 @@
 			"input": 10,
 			"output": 50,
 			"cacheRead": 1,
+			"cacheWrite": 12.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 1024,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"global.anthropic.claude-fable-5-1": {
+		"id": "global.anthropic.claude-fable-5-1",
+		"name": "Claude Fable 5.1",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 10,
+			"output": 50,
+			"cacheRead": 0.25,
 			"cacheWrite": 12.5
 		},
 		"contextWindow": 1000000,
@@ -1846,6 +2385,46 @@
 			"streamIdleTimeoutMs": 900000
 		}
 	},
+	"global.anthropic.claude-opus-5-5": {
+		"id": "global.anthropic.claude-opus-5-5",
+		"name": "Claude Opus 5.5 (Global)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.2,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 512,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
 	"global.anthropic.claude-sonnet-4-20250514-v1:0": {
 		"id": "global.anthropic.claude-sonnet-4-20250514-v1:0",
 		"name": "Claude Sonnet 4 (Global)",
@@ -1874,16 +2453,16 @@
 				"high"
 			]
 		},
-		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
 			"streamIdleTimeoutMs": 600000
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"global.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 		"id": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -1936,13 +2515,13 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
-			"cacheWrite": 3.75
+			"input": 3.3,
+			"output": 16.5,
+			"cacheRead": 0.33,
+			"cacheWrite": 4.125
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 64000,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -2015,15 +2594,15 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.22,
-			"output": 1.32,
-			"cacheRead": 0.022,
-			"cacheWrite": 0.275
+			"input": 0.2,
+			"output": 1.2,
+			"cacheRead": 0.02,
+			"cacheWrite": 0.25
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"thinking": {
-			"mode": "budget",
+			"mode": "effort",
 			"efforts": [
 				"low",
 				"medium",
@@ -2054,15 +2633,15 @@
 			"image"
 		],
 		"cost": {
-			"input": 5.5,
-			"output": 33,
-			"cacheRead": 0.55,
-			"cacheWrite": 6.875
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.4,
+			"cacheWrite": 5
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"thinking": {
-			"mode": "budget",
+			"mode": "effort",
 			"efforts": [
 				"low",
 				"medium",
@@ -2093,21 +2672,98 @@
 			"image"
 		],
 		"cost": {
-			"input": 2.2,
-			"output": 13.2,
-			"cacheRead": 0.22,
-			"cacheWrite": 2.75
+			"input": 2,
+			"output": 12,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
 		"thinking": {
-			"mode": "budget",
+			"mode": "effort",
 			"efforts": [
 				"low",
 				"medium",
 				"high",
 				"xhigh",
 				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"global.openai.gpt-6-astra": {
+		"id": "global.openai.gpt-6-astra",
+		"name": "GPT-6 Astra (Global)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 10,
+			"output": 50,
+			"cacheRead": 1,
+			"cacheWrite": 12.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"global.xai.grok-4.6": {
+		"id": "global.xai.grok-4.6",
+		"name": "Grok 4.6 (Global)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.5,
+			"cacheWrite": 0
+		},
+		"contextWindow": 500000,
+		"maxTokens": 500000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -2140,13 +2796,13 @@
 		"contextWindow": 202752,
 		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0
-		}
+		},
+		"supportsComputerUse": false
 	},
 	"google.gemma-3-4b-it": {
 		"id": "google.gemma-3-4b-it",
@@ -2168,12 +2824,242 @@
 		"contextWindow": 128000,
 		"maxTokens": 4096,
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0
+		},
+		"supportsComputerUse": false
+	},
+	"google.gemma-4-26b-a4b": {
+		"id": "google.gemma-4-26b-a4b",
+		"name": "Gemma 4 26B A4B IT",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.13,
+			"output": 0.4,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"google.gemma-4-31b": {
+		"id": "google.gemma-4-31b",
+		"name": "Gemma 4 31B IT",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.14,
+			"output": 0.4,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 32768,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"google.gemma-4-e2b": {
+		"id": "google.gemma-4-e2b",
+		"name": "Gemma 4 E2B IT",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.04,
+			"output": 0.08,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 131072,
+		"maxTokens": 8192,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"in.openai.gpt-5.6-luna": {
+		"id": "in.openai.gpt-5.6-luna",
+		"name": "GPT-5.6 Luna (India)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.22,
+			"output": 1.32,
+			"cacheRead": 0.022,
+			"cacheWrite": 0.275
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"in.openai.gpt-5.6-terra": {
+		"id": "in.openai.gpt-5.6-terra",
+		"name": "GPT-5.6 Terra (India)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.2,
+			"output": 13.2,
+			"cacheRead": 0.22,
+			"cacheWrite": 2.75
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"jp.amazon.nova-2-lite-v1:0": {
+		"id": "jp.amazon.nova-2-lite-v1:0",
+		"name": "Nova 2 Lite (JP)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.396,
+			"output": 3.311,
+			"cacheRead": 0.099,
+			"cacheWrite": 0.396
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 65535,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 1024,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 600000
 		}
 	},
 	"jp.anthropic.claude-haiku-4-5-20251001-v1:0": {
@@ -2188,10 +3074,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 1,
-			"output": 5,
-			"cacheRead": 0.1,
-			"cacheWrite": 1.25
+			"input": 1.1,
+			"output": 5.5,
+			"cacheRead": 0.11,
+			"cacheWrite": 1.375
 		},
 		"contextWindow": 200000,
 		"maxTokens": 64000,
@@ -2227,10 +3113,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
-			"cacheRead": 0.5,
-			"cacheWrite": 6.25
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -2267,10 +3153,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
-			"cacheRead": 0.5,
-			"cacheWrite": 6.25
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -2295,6 +3181,46 @@
 			"streamIdleTimeoutMs": 900000
 		}
 	},
+	"jp.anthropic.claude-opus-5-5": {
+		"id": "jp.anthropic.claude-opus-5-5",
+		"name": "Claude Opus 5.5 (JP)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4.4,
+			"output": 22,
+			"cacheRead": 0.22,
+			"cacheWrite": 5.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 512,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
 	"jp.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 		"id": "jp.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		"name": "Claude Sonnet 4.5 (JP)",
@@ -2307,10 +3233,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
-			"cacheWrite": 3.75
+			"input": 3.3,
+			"output": 16.5,
+			"cacheRead": 0.33,
+			"cacheWrite": 4.125
 		},
 		"contextWindow": 200000,
 		"maxTokens": 64000,
@@ -2346,13 +3272,13 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
-			"cacheWrite": 3.75
+			"input": 3.3,
+			"output": 16.5,
+			"cacheRead": 0.33,
+			"cacheWrite": 4.125
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 64000,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -2385,10 +3311,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 2,
-			"output": 10,
-			"cacheRead": 0.2,
-			"cacheWrite": 2.5
+			"input": 2.2,
+			"output": 11,
+			"cacheRead": 0.22,
+			"cacheWrite": 2.75
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -2496,7 +3422,7 @@
 	},
 	"minimax.minimax-m2": {
 		"id": "minimax.minimax-m2",
-		"name": "MiniMax M2",
+		"name": "MiniMax-M2",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2534,7 +3460,7 @@
 	},
 	"minimax.minimax-m2.1": {
 		"id": "minimax.minimax-m2.1",
-		"name": "MiniMax M2.1",
+		"name": "MiniMax-M2.1",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2572,7 +3498,7 @@
 	},
 	"minimax.minimax-m2.5": {
 		"id": "minimax.minimax-m2.5",
-		"name": "MiniMax M2.5",
+		"name": "MiniMax-M2.5",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -2681,7 +3607,8 @@
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
 		"reasoning": false,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0.2,
@@ -2736,7 +3663,8 @@
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
 		"reasoning": false,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0.15,
@@ -2854,7 +3782,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
+		"contextWindow": 32768,
 		"maxTokens": 4096,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -2876,12 +3804,12 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.15,
-			"output": 0.35,
+			"input": 0.1,
+			"output": 0.3,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 32000,
+		"contextWindow": 32768,
 		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -2949,7 +3877,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 262143,
-		"maxTokens": 16000,
+		"maxTokens": 16384,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -2988,7 +3916,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 128000,
-		"maxTokens": 4096,
+		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
@@ -3014,8 +3942,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
-		"maxTokens": 4096,
+		"contextWindow": 262144,
+		"maxTokens": 8192,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -3051,8 +3979,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 128000,
-		"maxTokens": 4096,
+		"contextWindow": 131072,
+		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
@@ -3087,6 +4015,45 @@
 				"low",
 				"medium",
 				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"openai.gpt-6-astra": {
+		"id": "openai.gpt-6-astra",
+		"name": "GPT-6 Astra",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 11,
+			"output": 55,
+			"cacheRead": 1.1,
+			"cacheWrite": 13.75
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -3253,7 +4220,7 @@
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
-		"reasoning": false,
+		"reasoning": true,
 		"input": [
 			"text"
 		],
@@ -3265,13 +4232,23 @@
 		},
 		"contextWindow": 128000,
 		"maxTokens": 16384,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
 		}
 	},
 	"openai.gpt-oss-safeguard-20b": {
@@ -3280,7 +4257,7 @@
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
-		"reasoning": false,
+		"reasoning": true,
 		"input": [
 			"text"
 		],
@@ -3292,18 +4269,28 @@
 		},
 		"contextWindow": 128000,
 		"maxTokens": 16384,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
 		}
 	},
 	"qwen.qwen3-235b-a22b-2507-v1:0": {
 		"id": "qwen.qwen3-235b-a22b-2507-v1:0",
-		"name": "Qwen3 235B A22B 2507",
+		"name": "Qwen3 235B-A22B Instruct 2507",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -3330,7 +4317,7 @@
 	},
 	"qwen.qwen3-32b-v1:0": {
 		"id": "qwen.qwen3-32b-v1:0",
-		"name": "Qwen3 32B (dense)",
+		"name": "Qwen3 32B",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -3344,7 +4331,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 16384,
+		"contextWindow": 32768,
 		"maxTokens": 16384,
 		"thinking": {
 			"mode": "budget",
@@ -3367,7 +4354,7 @@
 	},
 	"qwen.qwen3-coder-30b-a3b-v1:0": {
 		"id": "qwen.qwen3-coder-30b-a3b-v1:0",
-		"name": "Qwen3 Coder 30B A3B Instruct",
+		"name": "Qwen3-Coder 30B-A3B Instruct",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -3394,7 +4381,7 @@
 	},
 	"qwen.qwen3-coder-480b-a35b-v1:0": {
 		"id": "qwen.qwen3-coder-480b-a35b-v1:0",
-		"name": "Qwen3 Coder 480B A35B Instruct",
+		"name": "Qwen3-Coder 480B-A35B Instruct",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -3403,7 +4390,7 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.22,
+			"input": 0.45,
 			"output": 1.8,
 			"cacheRead": 0,
 			"cacheWrite": 0
@@ -3425,40 +4412,30 @@
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
-		"reasoning": true,
+		"reasoning": false,
 		"input": [
 			"text"
 		],
 		"cost": {
-			"input": 0.22,
-			"output": 1.8,
+			"input": 0.5,
+			"output": 1.2,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 131072,
+		"contextWindow": 262144,
 		"maxTokens": 65536,
-		"thinking": {
-			"mode": "budget",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high"
-			]
-		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
-			"promptCacheMaximumCheckpoints": 0,
-			"streamIdleTimeoutMs": 600000
+			"promptCacheMaximumCheckpoints": 0
 		}
 	},
 	"qwen.qwen3-next-80b-a3b": {
 		"id": "qwen.qwen3-next-80b-a3b",
-		"name": "Qwen/Qwen3-Next-80B-A3B-Instruct",
+		"name": "Qwen3-Next 80B-A3B Instruct",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -3467,12 +4444,12 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.14,
-			"output": 1.4,
+			"input": 0.15,
+			"output": 1.2,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 262000,
+		"contextWindow": 262144,
 		"maxTokens": 262000,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -3485,7 +4462,7 @@
 	},
 	"qwen.qwen3-vl-235b-a22b": {
 		"id": "qwen.qwen3-vl-235b-a22b",
-		"name": "Qwen/Qwen3-VL-235B-A22B-Instruct",
+		"name": "Qwen3 VL 235B A22B Instruct",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -3495,12 +4472,12 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.3,
-			"output": 1.5,
+			"input": 0.53,
+			"output": 2.66,
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 262000,
+		"contextWindow": 262144,
 		"maxTokens": 262000,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
@@ -3526,6 +4503,46 @@
 			"input": 10,
 			"output": 50,
 			"cacheRead": 1,
+			"cacheWrite": 12.5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 1024,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"us-gov.anthropic.claude-fable-5-1": {
+		"id": "us-gov.anthropic.claude-fable-5-1",
+		"name": "Claude Fable 5.1 (GovCloud)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 10,
+			"output": 50,
+			"cacheRead": 0.25,
 			"cacheWrite": 12.5
 		},
 		"contextWindow": 1000000,
@@ -3680,8 +4697,8 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
+			"input": 5.5,
+			"output": 27.5,
 			"cacheRead": 0.5,
 			"cacheWrite": 6.25
 		},
@@ -3827,6 +4844,46 @@
 			"streamIdleTimeoutMs": 900000
 		}
 	},
+	"us-gov.anthropic.claude-opus-5-5": {
+		"id": "us-gov.anthropic.claude-opus-5-5",
+		"name": "Claude Opus 5.5 (GovCloud)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.2,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 512,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
 	"us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 		"id": "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		"name": "Claude Sonnet 4.5 (GovCloud)",
@@ -3878,13 +4935,13 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
-			"cacheWrite": 3.75
+			"input": 3.3,
+			"output": 16.5,
+			"cacheRead": 0.33,
+			"cacheWrite": 4.125
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 64000,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -3945,6 +5002,118 @@
 			"streamIdleTimeoutMs": 900000
 		}
 	},
+	"us-gov.openai.gpt-oss-120b-1:0": {
+		"id": "us-gov.openai.gpt-oss-120b-1:0",
+		"name": "gpt-oss-120b (GovCloud)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.18,
+			"output": 0.72,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 16384,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us-gov.openai.gpt-oss-20b-1:0": {
+		"id": "us-gov.openai.gpt-oss-20b-1:0",
+		"name": "gpt-oss-20b (GovCloud)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.084,
+			"output": 0.36,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 16384,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us.amazon.nova-2-lite-v1:0": {
+		"id": "us.amazon.nova-2-lite-v1:0",
+		"name": "Nova 2 Lite (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.33,
+			"output": 2.75,
+			"cacheRead": 0.0825,
+			"cacheWrite": 0.33
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 65535,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 1024,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
 	"us.amazon.nova-lite-v1:0": {
 		"id": "us.amazon.nova-lite-v1:0",
 		"name": "Nova Lite",
@@ -3960,10 +5129,10 @@
 			"input": 0.06,
 			"output": 0.24,
 			"cacheRead": 0.015,
-			"cacheWrite": 0
+			"cacheWrite": 0.06
 		},
 		"contextWindow": 300000,
-		"maxTokens": 8192,
+		"maxTokens": 10000,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
@@ -3987,10 +5156,10 @@
 			"input": 0.035,
 			"output": 0.14,
 			"cacheRead": 0.00875,
-			"cacheWrite": 0
+			"cacheWrite": 0.035
 		},
 		"contextWindow": 128000,
-		"maxTokens": 8192,
+		"maxTokens": 10000,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
@@ -4002,11 +5171,11 @@
 	},
 	"us.amazon.nova-premier-v1:0": {
 		"id": "us.amazon.nova-premier-v1:0",
-		"name": "Nova Premier",
+		"name": "Nova Premier (US)",
 		"api": "bedrock-converse-stream",
 		"provider": "amazon-bedrock",
 		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
-		"reasoning": true,
+		"reasoning": false,
 		"input": [
 			"text",
 			"image"
@@ -4014,29 +5183,19 @@
 		"cost": {
 			"input": 2.5,
 			"output": 12.5,
-			"cacheRead": 0,
-			"cacheWrite": 0
+			"cacheRead": 0.625,
+			"cacheWrite": 2.5
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 16384,
-		"thinking": {
-			"mode": "budget",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high"
-			]
-		},
+		"maxTokens": 10000,
 		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
-			"promptCacheMaximumCheckpoints": 4,
-			"streamIdleTimeoutMs": 600000
-		},
-		"supportsComputerUse": false
+			"promptCacheMaximumCheckpoints": 4
+		}
 	},
 	"us.amazon.nova-pro-v1:0": {
 		"id": "us.amazon.nova-pro-v1:0",
@@ -4053,10 +5212,10 @@
 			"input": 0.8,
 			"output": 3.2,
 			"cacheRead": 0.2,
-			"cacheWrite": 0
+			"cacheWrite": 0.8
 		},
 		"contextWindow": 300000,
-		"maxTokens": 8192,
+		"maxTokens": 10000,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
@@ -4107,10 +5266,50 @@
 			"image"
 		],
 		"cost": {
-			"input": 10,
-			"output": 50,
-			"cacheRead": 1,
-			"cacheWrite": 12.5
+			"input": 11,
+			"output": 55,
+			"cacheRead": 1.1,
+			"cacheWrite": 13.75
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5-sonnet",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 1024,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"us.anthropic.claude-fable-5-1": {
+		"id": "us.anthropic.claude-fable-5-1",
+		"name": "Claude Fable 5.1 (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 11,
+			"output": 55,
+			"cacheRead": 0.275,
+			"cacheWrite": 13.75
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -4147,10 +5346,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 1,
-			"output": 5,
-			"cacheRead": 0.1,
-			"cacheWrite": 1.25
+			"input": 1.1,
+			"output": 5.5,
+			"cacheRead": 0.11,
+			"cacheWrite": 1.375
 		},
 		"contextWindow": 200000,
 		"maxTokens": 64000,
@@ -4264,10 +5463,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
-			"cacheRead": 0.5,
-			"cacheWrite": 6.25
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
 		},
 		"contextWindow": 200000,
 		"maxTokens": 64000,
@@ -4303,8 +5502,8 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
+			"input": 5.5,
+			"output": 27.5,
 			"cacheRead": 0.5,
 			"cacheWrite": 6.25
 		},
@@ -4342,10 +5541,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
-			"cacheRead": 0.5,
-			"cacheWrite": 6.25
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -4382,10 +5581,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
-			"cacheRead": 0.5,
-			"cacheWrite": 6.25
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -4422,10 +5621,50 @@
 			"image"
 		],
 		"cost": {
-			"input": 5,
-			"output": 25,
-			"cacheRead": 0.5,
-			"cacheWrite": 6.25
+			"input": 5.5,
+			"output": 27.5,
+			"cacheRead": 0.55,
+			"cacheWrite": 6.875
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "explicit",
+			"supportsLongPromptCacheRetention": true,
+			"promptCacheMinimumTokens": 512,
+			"promptCacheMaximumCheckpoints": 4,
+			"streamIdleTimeoutMs": 900000
+		}
+	},
+	"us.anthropic.claude-opus-5-5": {
+		"id": "us.anthropic.claude-opus-5-5",
+		"name": "Claude Opus 5.5 (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4.4,
+			"output": 22,
+			"cacheRead": 0.22,
+			"cacheWrite": 5.5
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -4478,16 +5717,16 @@
 				"high"
 			]
 		},
-		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v3",
+		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "explicit",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 1024,
 			"promptCacheMaximumCheckpoints": 4,
 			"streamIdleTimeoutMs": 600000
-		},
-		"supportsComputerUse": false
+		}
 	},
 	"us.anthropic.claude-sonnet-4-5-20250929-v1:0": {
 		"id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -4501,10 +5740,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
-			"cacheWrite": 3.75
+			"input": 3.3,
+			"output": 16.5,
+			"cacheRead": 0.33,
+			"cacheWrite": 4.125
 		},
 		"contextWindow": 200000,
 		"maxTokens": 64000,
@@ -4540,13 +5779,13 @@
 			"image"
 		],
 		"cost": {
-			"input": 3,
-			"output": 15,
-			"cacheRead": 0.3,
-			"cacheWrite": 3.75
+			"input": 3.3,
+			"output": 16.5,
+			"cacheRead": 0.33,
+			"cacheWrite": 4.125
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 64000,
+		"maxTokens": 128000,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -4579,10 +5818,10 @@
 			"image"
 		],
 		"cost": {
-			"input": 2,
-			"output": 10,
-			"cacheRead": 0.2,
-			"cacheWrite": 2.5
+			"input": 2.2,
+			"output": 11,
+			"cacheRead": 0.22,
+			"cacheWrite": 2.75
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
@@ -4636,13 +5875,67 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
-		"supportsComputerUse": false,
 		"compat": {
 			"promptCacheMode": "none",
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0,
 			"streamIdleTimeoutMs": 600000
+		},
+		"supportsComputerUse": false
+	},
+	"us.meta.llama3-1-70b-instruct-v1:0": {
+		"id": "us.meta.llama3-1-70b-instruct-v1:0",
+		"name": "Llama 3.1 70B Instruct (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.72,
+			"output": 0.72,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 4096,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
+		}
+	},
+	"us.meta.llama3-1-8b-instruct-v1:0": {
+		"id": "us.meta.llama3-1-8b-instruct-v1:0",
+		"name": "Llama 3.1 8B Instruct (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.22,
+			"output": 0.22,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 4096,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
 		}
 	},
 	"us.meta.llama3-2-11b-instruct-v1:0": {
@@ -4800,7 +6093,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 16384,
+		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
@@ -4827,8 +6120,8 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 3500000,
-		"maxTokens": 16384,
+		"contextWindow": 10000000,
+		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
 		"compat": {
@@ -4836,6 +6129,302 @@
 			"supportsLongPromptCacheRetention": false,
 			"promptCacheMinimumTokens": 0,
 			"promptCacheMaximumCheckpoints": 0
+		}
+	},
+	"us.mistral.pixtral-large-2502-v1:0": {
+		"id": "us.mistral.pixtral-large-2502-v1:0",
+		"name": "Pixtral Large (25.02) (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": false,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 128000,
+		"maxTokens": 8192,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0
+		}
+	},
+	"us.openai.gpt-5.6-luna": {
+		"id": "us.openai.gpt-5.6-luna",
+		"name": "GPT-5.6 Luna (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.22,
+			"output": 1.32,
+			"cacheRead": 0.022,
+			"cacheWrite": 0.275
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us.openai.gpt-5.6-sol": {
+		"id": "us.openai.gpt-5.6-sol",
+		"name": "GPT-5.6 Sol (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4.4,
+			"output": 22,
+			"cacheRead": 0.44,
+			"cacheWrite": 5.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us.openai.gpt-5.6-terra": {
+		"id": "us.openai.gpt-5.6-terra",
+		"name": "GPT-5.6 Terra (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.2,
+			"output": 13.2,
+			"cacheRead": 0.22,
+			"cacheWrite": 2.75
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us.openai.gpt-6-astra": {
+		"id": "us.openai.gpt-6-astra",
+		"name": "GPT-6 Astra (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 11,
+			"output": 55,
+			"cacheRead": 1.1,
+			"cacheWrite": 13.75
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us.writer.palmyra-x4-v1:0": {
+		"id": "us.writer.palmyra-x4-v1:0",
+		"name": "Palmyra X4 (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 2.5,
+			"output": 10,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 122880,
+		"maxTokens": 8192,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us.writer.palmyra-x5-v1:0": {
+		"id": "us.writer.palmyra-x5-v1:0",
+		"name": "Palmyra X5 (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0.6,
+			"output": 6,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1040000,
+		"maxTokens": 8192,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
+		}
+	},
+	"us.xai.grok-4.6": {
+		"id": "us.xai.grok-4.6",
+		"name": "Grok 4.6 (US)",
+		"api": "bedrock-converse-stream",
+		"provider": "amazon-bedrock",
+		"baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.2,
+			"output": 6.6,
+			"cacheRead": 0.55,
+			"cacheWrite": 0
+		},
+		"contextWindow": 500000,
+		"maxTokens": 500000,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"compat": {
+			"promptCacheMode": "none",
+			"supportsLongPromptCacheRetention": false,
+			"promptCacheMinimumTokens": 0,
+			"promptCacheMaximumCheckpoints": 0,
+			"streamIdleTimeoutMs": 600000
 		}
 	},
 	"writer.palmyra-x4-v1:0": {
@@ -5079,7 +6668,7 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 202752,
-		"maxTokens": 101376,
+		"maxTokens": 131072,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [

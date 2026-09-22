@@ -1,5 +1,5 @@
 import * as AIError from "../../error";
-import { claudeCodeVersion } from "../../providers/claude-code-fingerprint";
+import { getClaudeCodeVersion } from "../../providers/claude-code-fingerprint";
 import type { FetchImpl } from "../../types";
 import { OAuthCallbackFlow } from "./callback-server";
 import { generatePKCE } from "./pkce";
@@ -11,7 +11,6 @@ const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://api.anthropic.com/v1/oauth/token";
 const BOOTSTRAP_URL = "https://api.anthropic.com/api/claude_cli/bootstrap";
 const CLAUDE_CODE_BOOTSTRAP_MODEL = "claude-opus-4-8";
-const CLAUDE_CODE_BOOTSTRAP_USER_AGENT = `claude-code/${claudeCodeVersion}`;
 const CALLBACK_PORT = 54545;
 const CALLBACK_PATH = "/callback";
 
@@ -119,7 +118,7 @@ async function fetchBootstrapIdentity(accessToken: string, fetchImpl: FetchImpl)
 			Accept: "application/json, text/plain, */*",
 			Authorization: `Bearer ${accessToken}`,
 			"Content-Type": "application/json",
-			"User-Agent": CLAUDE_CODE_BOOTSTRAP_USER_AGENT,
+			"User-Agent": `claude-code/${getClaudeCodeVersion()}`,
 			"anthropic-beta": "oauth-2025-04-20",
 		},
 		signal: AbortSignal.timeout(30_000),

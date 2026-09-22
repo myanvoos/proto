@@ -3693,7 +3693,7 @@
 	},
 	"kimi-k2.5": {
 		"id": "kimi-k2.5",
-		"name": "Kimi K2.5",
+		"name": "kimi-k2.5",
 		"api": "cursor-agent",
 		"provider": "cursor",
 		"baseUrl": "https://api2.cursor.sh",
