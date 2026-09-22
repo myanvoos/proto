@@ -12,6 +12,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { expandKeyHint, getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
@@ -19,11 +20,32 @@ import { convertImageToPng } from "../../utils/image-loading";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
+import { isRowPrefix, type TranscriptStableRow, trimBlankEdges } from "./transcript-container";
 
 const MAX_TRANSCRIPT_ERROR_LINES = 8;
+const EMPTY_STABLE_RENDER: readonly string[] = [];
 
 type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
+type StablePart = { kind: "thinking" | "text"; text: string } | { kind: "spacer" };
+
+interface StableSnapshot {
+	readonly partCount: number;
+	readonly lastTextLength: number;
+}
+
+function isSnapshotExtension(previous: readonly StablePart[], current: readonly StablePart[]): boolean {
+	if (previous.length > current.length) return false;
+	for (let index = 0; index < previous.length; index++) {
+		const before = previous[index]!;
+		const after = current[index]!;
+		if (before.kind !== after.kind) return false;
+		if (before.kind === "spacer" || after.kind === "spacer") continue;
+		const isLast = index === previous.length - 1;
+		if (isLast ? !after.text.startsWith(before.text) : after.text !== before.text) return false;
+	}
+	return true;
+}
 
 const EMPTY_THINKING_RENDERERS: readonly AssistantThinkingRenderer[] = [];
 
@@ -100,8 +122,8 @@ function lerpHex(from: string, to: string, t: number): string {
 }
 
 export class AssistantMessageComponent extends Container {
+	readonly transcriptBlockMode = "appendOnly" as const;
 	#cacheInvalidationMarker?: CacheInvalidationMarkerComponent;
-	#widthEpochBoundaries?: WeakMap<object, { childBoundary: unknown; markerRows: number }>;
 	#lastMessage?: AssistantMessage;
 	#messagePersistenceKey?: string;
 	#staticTextBlocks?: readonly string[];
@@ -118,11 +140,7 @@ export class AssistantMessageComponent extends Container {
 
 	#hasTruncatableError = false;
 
-	#blockVersion = 0;
-
 	#lastUpdateTransient = false;
-
-	#lastRenderWidth = 0;
 
 	#fastPathKey: string | undefined;
 	#fastPathItems:
@@ -130,8 +148,7 @@ export class AssistantMessageComponent extends Container {
 		| undefined;
 
 	#thinkingDots: Text | undefined;
-	// The constant "Thinking" heading. Byte-stable for the life of the block, so
-	// it counts toward the settled prefix instead of ending it.
+	// The constant "Thinking" heading is reproduced by semantic stable snapshots.
 	#thinkingLabel: Text | undefined;
 	#thinkingDotsTimer: NodeJS.Timeout | undefined;
 	#thinkingDotsFrame = 0;
@@ -143,19 +160,18 @@ export class AssistantMessageComponent extends Container {
 
 	#thinkingRateLive = false;
 
+	#stableSnapshots: StableSnapshot[] = [];
+	#stableParts: readonly StablePart[] = [];
+	#nextStableRowId = 0;
+	#transcriptStableRows: TranscriptStableRow[] = [];
+	#stableRenderCache = new LRUCache<string, readonly string[]>({ max: 64 });
+
 	#textColorTransform?: (text: string) => string;
-
-	#onTranscriptBlockChange?: () => void;
-
-	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
-		this.#onTranscriptBlockChange = listener;
-	}
 
 	setTextColorTransform(transform?: (text: string) => string): void {
 		if (this.#textColorTransform === transform) return;
 		this.#textColorTransform = transform;
 		if (!this.#lastMessage && this.#staticTextBlocks !== undefined) this.#rebuildStaticTextContent();
-		this.#onTranscriptBlockChange?.();
 	}
 	constructor(
 		message?: AssistantMessage,
@@ -175,8 +191,6 @@ export class AssistantMessageComponent extends Container {
 
 	setCacheInvalidation(info: CacheInvalidation | undefined): void {
 		this.#cacheInvalidationMarker = info ? new CacheInvalidationMarkerComponent(info) : undefined;
-		this.#blockVersion++;
-		this.#onTranscriptBlockChange?.();
 	}
 
 	override invalidate(): void {
@@ -188,11 +202,9 @@ export class AssistantMessageComponent extends Container {
 		if (this.#lastMessage) {
 			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
-		this.#onTranscriptBlockChange?.();
 	}
 
 	override render(width: number): readonly string[] {
-		this.#lastRenderWidth = width;
 		// Finalized messages render through the memoized Container path: the
 		// differential renderer hits per-child render caches, so repeated frames
 		// are O(dirty) instead of re-parsing every block. Memory slimming happens
@@ -200,6 +212,7 @@ export class AssistantMessageComponent extends Container {
 		const contentLines = this.#renderStreamingChildren(width);
 		const marker = this.#cacheInvalidationMarker;
 		const lines = marker ? marker.render(width).concat(contentLines) : contentLines;
+		this.#publishStableSnapshot(lines, width);
 		if (this.#transcriptBlockFinalized) {
 			this.#fastPathKey = undefined;
 			this.#fastPathItems = undefined;
@@ -208,56 +221,124 @@ export class AssistantMessageComponent extends Container {
 		return lines;
 	}
 
-	override setNativeScrollbackCommittedRows(rows: number): void {
-		const markerRows = this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0;
-		super.setNativeScrollbackCommittedRows(Math.max(0, rows - markerRows));
+	/** Width-independent identities for published semantic prefix snapshots. */
+	getTranscriptStableRows(): readonly TranscriptStableRow[] {
+		return this.#transcriptStableRows;
 	}
 
-	override captureNativeScrollbackWidthEpoch(): unknown {
-		if (this.#transcriptBlockFinalized) {
-			super.render(this.#lastRenderWidth);
+	/** Reset publication only alongside a destructive transcript replay. */
+	resetTranscriptStableRows(): void {
+		this.#stableSnapshots = [];
+		this.#stableParts = [];
+		this.#transcriptStableRows = [];
+		this.#stableRenderCache.clear();
+	}
+
+	renderTranscriptStableRows(count: number, width: number): readonly string[] {
+		const requested = Number.isFinite(count) ? Math.trunc(count) : 0;
+		const index = Math.max(0, Math.min(requested, this.#stableSnapshots.length));
+		if (index === 0) return EMPTY_STABLE_RENDER;
+		const key = `${index}:${width}`;
+		const cached = this.#stableRenderCache.get(key);
+		if (cached) return cached;
+
+		const snapshot = this.#stableSnapshots[index - 1]!;
+		const parts = this.#stableParts.slice(0, snapshot.partCount);
+		const last = parts.at(-1);
+		if (last && last.kind !== "spacer") {
+			parts[parts.length - 1] = { kind: last.kind, text: last.text.slice(0, snapshot.lastTextLength) };
 		}
-		const childBoundary = super.captureNativeScrollbackWidthEpoch();
-		if (childBoundary === undefined) return undefined;
-		const marker = {};
-		const boundaries = this.#widthEpochBoundaries ?? new WeakMap();
-		this.#widthEpochBoundaries = boundaries;
-		boundaries.set(marker, {
-			childBoundary,
-			markerRows: this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0,
-		});
-		return marker;
+		const rows = this.#renderStableSnapshot(parts, width);
+		this.#stableRenderCache.set(key, rows);
+		return rows;
 	}
 
-	override resolveNativeScrollbackWidthEpoch(boundary: unknown): number | undefined {
-		if (typeof boundary !== "object" || boundary === null) return undefined;
-		const captured = this.#widthEpochBoundaries?.get(boundary);
-		if (!captured) return undefined;
-		const markerRows = this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0;
-		if (markerRows !== captured.markerRows) return undefined;
-		const rows = super.resolveNativeScrollbackWidthEpoch(captured.childBoundary);
-		return rows === undefined ? undefined : rows + markerRows;
+	#publishStableSnapshot(rendered: readonly string[], width: number): void {
+		const parts = this.#currentStableSnapshot();
+		if (!parts) return;
+		const last = parts.at(-1);
+		if (!last || last.kind === "spacer") return;
+
+		const snapshot = { partCount: parts.length, lastTextLength: last.text.length };
+		const previous = this.#stableSnapshots.at(-1);
+		if (previous && !isSnapshotExtension(this.#stableParts, parts)) return;
+		if (previous?.partCount === snapshot.partCount && previous.lastTextLength === snapshot.lastTextLength) return;
+
+		const currentRows = this.#renderStableSnapshot(parts, width);
+		if (!isRowPrefix(currentRows, trimBlankEdges(rendered))) return;
+		const previousRows = previous
+			? this.renderTranscriptStableRows(this.#stableSnapshots.length, width)
+			: EMPTY_STABLE_RENDER;
+		if (!isRowPrefix(previousRows, currentRows) || currentRows.length === previousRows.length) return;
+
+		this.#stableParts = parts;
+		this.#stableSnapshots.push(snapshot);
+		this.#transcriptStableRows = [...this.#transcriptStableRows, { key: `assistant:${this.#nextStableRowId++}` }];
+		this.#stableRenderCache.set(`${this.#stableSnapshots.length}:${width}`, currentRows);
 	}
 
-	override getNativeScrollbackWidthEpochRows(): number | undefined {
-		if (this.#transcriptBlockFinalized) {
-			const markerRows = this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0;
-			const rows = this.#canRenderFinalWithoutCache()
-				? this.#renderChildren(this.#lastRenderWidth).length
-				: this.#renderStreamingChildren(this.#lastRenderWidth).length;
-			return rows + markerRows;
+	#currentStableSnapshot(): readonly StablePart[] | undefined {
+		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient || this.#cacheInvalidationMarker) {
+			return undefined;
 		}
-		const rows = super.getNativeScrollbackWidthEpochRows();
-		if (rows === undefined) return undefined;
-		return rows + (this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0);
+		const items = this.#fastPathItems;
+		if (!items || items.length === 0) return undefined;
+
+		const parts: StablePart[] = [];
+		let itemIndex = 0;
+		for (const child of this.children) {
+			if (child === this.#thinkingLabel) continue;
+			const item = items[itemIndex];
+			if (item?.md === child) {
+				const source = item.md.getText();
+				if (itemIndex === items.length - 1) {
+					const stableText = item.md.getLastRenderStableText();
+					const frozen = stableText.trim();
+					if (frozen.length > 0 && /\S/.test(source.slice(stableText.length))) {
+						parts.push({ kind: item.blockType, text: frozen });
+					}
+					break;
+				}
+				parts.push({ kind: item.blockType, text: source });
+				itemIndex++;
+				continue;
+			}
+			if (child instanceof Spacer) {
+				parts.push({ kind: "spacer" });
+				continue;
+			}
+			break;
+		}
+		while (parts.at(-1)?.kind === "spacer") parts.pop();
+		return parts.length > 0 ? parts : undefined;
 	}
 
-	override isNativeScrollbackWidthEpochAppendOnly(boundary: unknown): boolean {
-		if (typeof boundary !== "object" || boundary === null) return true;
-		const captured = this.#widthEpochBoundaries?.get(boundary);
-		if (!captured) return super.isNativeScrollbackWidthEpochAppendOnly(boundary);
-		const markerRows = this.#cacheInvalidationMarker?.render(this.#lastRenderWidth).length ?? 0;
-		return markerRows === captured.markerRows && super.isNativeScrollbackWidthEpochAppendOnly(captured.childBoundary);
+	#renderStableSnapshot(parts: readonly StablePart[], width: number): readonly string[] {
+		const rows: string[] = [];
+		let renderedThinkingLabel = false;
+		for (const part of parts) {
+			if (part.kind === "spacer") {
+				rows.push("");
+				continue;
+			}
+			if (part.kind === "thinking" && !renderedThinkingLabel) {
+				rows.push(...new Text(theme.fg("muted", "Thinking"), 2, 0).render(width));
+				renderedThinkingLabel = true;
+			}
+			const markdown =
+				part.kind === "text"
+					? new Markdown(
+							part.text.trim(),
+							2,
+							0,
+							getMarkdownTheme(),
+							this.#textColorTransform ? { color: this.#textColorTransform } : undefined,
+							2,
+						)
+					: new Markdown(part.text.trim(), 2, 0, getMarkdownTheme(), THINKING_MARKDOWN_STYLE, 2);
+			rows.push(...markdown.render(width));
+		}
+		return rows;
 	}
 
 	setHideThinkingBlock(hide: boolean): void {
@@ -283,14 +364,10 @@ export class AssistantMessageComponent extends Container {
 		if (this.#lastMessage) {
 			this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
-		this.#blockVersion++;
-		this.#onTranscriptBlockChange?.();
 	}
 
 	override dispose(): void {
 		this.#stopThinkingAnimation();
-		this.#onTranscriptBlockChange?.();
-		this.#onTranscriptBlockChange = undefined;
 		super.dispose();
 	}
 
@@ -378,37 +455,6 @@ export class AssistantMessageComponent extends Container {
 		return this.#transcriptBlockFinalized;
 	}
 
-	getTranscriptBlockSettledRows(): number {
-		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return 0;
-		if (this.#cacheInvalidationMarker) return 0;
-		const items = this.#fastPathItems;
-		const width = this.#lastRenderWidth;
-		if (!items || items.length === 0 || width <= 0) return 0;
-		const streaming = items[items.length - 1]!.md;
-
-		let itemIndex = 0;
-		let settled = 0;
-		for (const child of this.children) {
-			if (child === streaming) return settled + streaming.getLastRenderSettledRows();
-			if (itemIndex < items.length - 1 && items[itemIndex]!.md === child) {
-				itemIndex++;
-				settled += child.render(width).length;
-				continue;
-			}
-			if (child instanceof Spacer || child === this.#thinkingLabel) {
-				settled += child.render(width).length;
-				continue;
-			}
-
-			return settled;
-		}
-		return settled;
-	}
-
-	getTranscriptBlockVersion(): number {
-		return this.#blockVersion;
-	}
-
 	markTranscriptBlockFinalized(): void {
 		if (this.#transcriptBlockFinalized) return;
 		this.#transcriptBlockFinalized = true;
@@ -419,7 +465,6 @@ export class AssistantMessageComponent extends Container {
 			this.#fastPathItems = undefined;
 			if (this.#lastMessage) this.#applyContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
-		this.#onTranscriptBlockChange?.();
 	}
 
 	applyRetryRecovery(retryRecovery: AssistantMessage["retryRecovery"]): void {
@@ -462,7 +507,6 @@ export class AssistantMessageComponent extends Container {
 		for (const text of blocks) this.addChild(new Markdown(text, 2, 0, getMarkdownTheme(), mdOptions, 2));
 		this.#renderToolImages();
 		super.invalidate();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	#clearContent(): void {
@@ -471,20 +515,6 @@ export class AssistantMessageComponent extends Container {
 
 	#renderStreamingChildren(width: number): readonly string[] {
 		return super.render(width);
-	}
-
-	#canRenderFinalWithoutCache(): boolean {
-		return this.children.every(
-			child => child instanceof Markdown || child instanceof Text || child instanceof Spacer,
-		);
-	}
-
-	#renderChildren(width: number): readonly string[] {
-		const lines: string[] = [];
-		for (const child of this.children) {
-			lines.push(...child.render(width));
-		}
-		return lines;
 	}
 
 	#appendErrorBlock(message: string): void {
@@ -752,8 +782,6 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#applyContent(message: AssistantMessage, opts?: { transient?: boolean }): void {
-		this.#onTranscriptBlockChange?.();
-		this.#blockVersion++;
 		this.#lastMessage = message;
 		this.#messagePersistenceKey = undefined;
 		this.#staticTextBlocks = undefined;

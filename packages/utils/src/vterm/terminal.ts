@@ -82,7 +82,7 @@ export class Terminal {
 	#insertMode = false;
 	#pendingWrap = false;
 	#saved: SavedCursor | undefined;
-	#alternateSaved: SavedCursor | undefined;
+	#alternateSavedAttrs: CellAttributes | undefined;
 	#state: "ground" | "escape" | "csi" | "string" = "ground";
 	#sequence = "";
 	#stringEscape = false;
@@ -655,8 +655,7 @@ export class Terminal {
 
 	#enterAlternate(saveCursor: boolean): void {
 		if (this.#usingAlternate) return;
-		if (saveCursor)
-			this.#alternateSaved = { x: this.#normal.cursorX, y: this.#normal.cursorY, attrs: { ...this.#attrs } };
+		if (saveCursor) this.#alternateSavedAttrs = { ...this.#attrs };
 		this.#alternate = createState(this.cols, this.rows);
 		this.#active = this.#alternate;
 		this.#usingAlternate = true;
@@ -669,11 +668,10 @@ export class Terminal {
 		if (!this.#usingAlternate) return;
 		this.#active = this.#normal;
 		this.#usingAlternate = false;
-		if (restoreCursor && this.#alternateSaved) {
-			this.#normal.cursorX = this.#alternateSaved.x;
-			this.#normal.cursorY = this.#alternateSaved.y;
-			this.#attrs = { ...this.#alternateSaved.attrs };
-		}
+		// The inactive normal buffer retains its cursor and reflows it on resize.
+		// Restoring saved screen coordinates here would move it off its logical
+		// line after a scrollback pull or width change (DECSET/DECRST 1049).
+		if (restoreCursor && this.#alternateSavedAttrs) this.#attrs = { ...this.#alternateSavedAttrs };
 		this.#scrollTop = 0;
 		this.#scrollBottom = this.rows - 1;
 		this.#pendingWrap = false;

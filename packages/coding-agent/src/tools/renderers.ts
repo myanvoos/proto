@@ -24,8 +24,6 @@ import {
 	xdDeviceCallFromBashArgs,
 } from "./xdev";
 
-export type FirstResultViewportRepaint = boolean | ((args: unknown, options: RenderResultOptions) => boolean);
-
 export type ToolRenderer = {
 	renderCall: (args: unknown, options: RenderResultOptions, theme: Theme) => Component;
 	renderResult: (
@@ -41,10 +39,6 @@ export type ToolRenderer = {
 	animatedPendingPreview?: boolean | ((args: unknown) => boolean);
 
 	animatedPartialResult?: boolean | ((args: unknown) => boolean);
-
-	forceFirstResultViewportRepaint?: FirstResultViewportRepaint;
-
-	forceResultViewportRepaintOnSettle?: boolean;
 };
 
 let bashXdRendererInstance: ToolRenderer | undefined;

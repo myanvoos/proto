@@ -479,8 +479,6 @@ export class Editor implements Component, Focusable {
 	#linesRevision = 0;
 	#joinedTextRevision = -1;
 	#joinedText = "";
-	#widthEpochText = "";
-	#widthEpochRevision = 0;
 
 	#focused = false;
 
@@ -618,7 +616,6 @@ export class Editor implements Component, Focusable {
 		this.#linesRevision = 0;
 		this.#joinedTextRevision = -1;
 		this.#joinedText = "";
-		this.#widthEpochText = "";
 		this.#promptGutterCache = undefined;
 		this.onAutocompleteUpdate = undefined;
 		this.onAutocompleteCancel = undefined;
@@ -651,7 +648,6 @@ export class Editor implements Component, Focusable {
 		if (this.#autocompleteState === "assist") {
 			this.#cancelAutocomplete();
 		}
-		this.#widthEpochRevision++;
 	}
 
 	setBorderVisible(_borderVisible: boolean): void {}
@@ -679,7 +675,6 @@ export class Editor implements Component, Focusable {
 	setUseTerminalCursor(useTerminalCursor: boolean): void {
 		if (this.#useTerminalCursor === useTerminalCursor) return;
 		this.#useTerminalCursor = useTerminalCursor;
-		this.#widthEpochRevision++;
 	}
 
 	setImeSafeCursorLayout(_enabled: boolean): void {}
@@ -691,7 +686,6 @@ export class Editor implements Component, Focusable {
 	setMaxHeight(maxHeight: number | undefined): void {
 		if (this.#maxHeight === maxHeight) return;
 		this.#maxHeight = maxHeight;
-		this.#widthEpochRevision++;
 	}
 
 	setScrollbarVisible(_visible: boolean): void {}
@@ -706,7 +700,6 @@ export class Editor implements Component, Focusable {
 			this.#autocompleteMaxVisible = newMaxVisible;
 			if (this.#autocompleteState !== null) {
 				this.#autocompleteList?.setMaxVisible(newMaxVisible);
-				this.#widthEpochRevision++;
 			}
 		}
 	}
@@ -1377,7 +1370,6 @@ export class Editor implements Component, Focusable {
 				) {
 					this.#autocompleteList.handleInput(data);
 					this.#autocompleteNavigated = true;
-					this.#widthEpochRevision++;
 					this.onAutocompleteUpdate?.();
 					return;
 				}
@@ -1854,15 +1846,6 @@ export class Editor implements Component, Focusable {
 			this.#joinedTextRevision = this.#linesRevision;
 		}
 		return this.#joinedText;
-	}
-
-	getNativeScrollbackWidthEpochRevision(): number {
-		const text = this.getText();
-		if (text !== this.#widthEpochText) {
-			this.#widthEpochText = text;
-			this.#widthEpochRevision++;
-		}
-		return this.#widthEpochRevision;
 	}
 
 	textEquals(value: string): boolean {
@@ -3477,7 +3460,6 @@ export class Editor implements Component, Focusable {
 			cursorOffset:
 				replacements.line === this.#state.cursorLine ? Math.max(0, this.#state.cursorCol - replacements.endCol) : 0,
 		};
-		this.#widthEpochRevision++;
 		this.onAutocompleteUpdate?.();
 	}
 
@@ -3527,7 +3509,6 @@ export class Editor implements Component, Focusable {
 		this.#autocompleteNavigated = false;
 		this.#textAssistReplacement = undefined;
 		this.#autocompletePrefix = "";
-		if (wasAutocompleting) this.#widthEpochRevision++;
 		if (notifyCancel && wasAutocompleting) {
 			this.onAutocompleteCancel?.();
 		}
@@ -3616,7 +3597,6 @@ export class Editor implements Component, Focusable {
 			this.#autocompletePrefix = suggestions.prefix;
 			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, suggestions.items);
 			this.#autocompleteState = request.kind === "force" ? "force" : "regular";
-			this.#widthEpochRevision++;
 			this.onAutocompleteUpdate?.();
 			return;
 		}

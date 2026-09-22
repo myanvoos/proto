@@ -99,10 +99,16 @@ class DisposableBlock implements Component {
 	}
 }
 
-function windowingContext(messages: any[]): { ctx: any; renders: any[][] } {
+type RenderRequest = [immediate?: boolean, options?: { clearScrollback?: boolean }];
+
+function windowingContext(messages: any[]): { ctx: any; renders: any[][]; renderRequests: RenderRequest[] } {
 	const renders: any[][] = [];
+	const renderRequests: RenderRequest[] = [];
 	const ctx: any = {
-		ui: { requestRender: noop },
+		ui: {
+			requestRender: (immediate?: boolean, options?: { clearScrollback?: boolean }) =>
+				renderRequests.push([immediate, options]),
+		},
 		chatContainer: new TranscriptContainer(),
 		pendingMessagesContainer: new Container(),
 		pendingTools: new Map(),
@@ -125,17 +131,18 @@ function windowingContext(messages: any[]): { ctx: any; renders: any[][] } {
 		},
 		renderSessionContext: (context: any) => renders.push(context.messages),
 	};
-	return { ctx, renders };
+	return { ctx, renders, renderRequests };
 }
 
 test("navigation disposes pages, preserves queued UI, exits history before streaming, and resets on rebuild", async () => {
 	const messages = Array.from({ length: 600 }, (_, i) => assistant(i));
-	const { ctx, renders } = windowingContext(messages);
+	const { ctx, renders, renderRequests } = windowingContext(messages);
 	const old = new DisposableBlock("old");
 	ctx.chatContainer.addChild(old);
 	const helper = new UiHelpers(ctx);
 	await helper.renderInitialMessages();
 	expect(renders.at(-1)?.[0]).toBe(messages[344]);
+	expect(renderRequests.at(-1)).toEqual([true, { clearScrollback: true }]);
 	expect(old.disposed).toBe(true);
 	const queued = new DisposableBlock("queued");
 	ctx.pendingMessagesContainer.addChild(queued);

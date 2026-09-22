@@ -4,7 +4,8 @@ Minimal terminal UI framework with differential rendering and synchronized outpu
 
 ## Features
 
-- **Differential Rendering**: Three-strategy rendering system that only updates what changed
+- **Explicit History**: Acknowledged append/replay batches, separate from a bounded mutable viewport
+- **Differential Rendering**: Repaints only changed viewport rows during ordinary updates
 - **Synchronized Output**: Uses CSI 2026 for atomic screen updates (no flicker)
 - **Bracketed Paste Mode**: Handles large pastes correctly with markers for >10 line pastes
 - **Component-based**: Simple Component interface with render() method
@@ -51,7 +52,8 @@ tui.removeChild(component);
 tui.start();
 tui.stop();
 tui.requestRender(); // Request a re-render
-tui.requestComponentRender(component); // Re-render only the root subtree containing `component` when safe (falls back to a full render on resize, overlays, images, or concurrent full requests)
+tui.requestComponentRender(component); // Schedule an update without bypassing frame-provider history ownership
+tui.setFrameProvider(provider); // Explicit history + viewport composition for scrollback applications
 
 ```
 
@@ -67,7 +69,7 @@ interface Component {
 
 | Method               | Description                                                                                                                                                        |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `render(width)`      | Returns an array of strings, one per line. Each line **must not exceed `width`** or the TUI will error. Use `truncateToWidth()` or manual wrapping to ensure this. The result is component-owned and immutable to callers; return the same array reference when unchanged (enables renderer memoization) and a new array when content changed. |
+| `render(width)`      | Returns an array of strings, one per line. Each line **must not exceed `width`**; the TUI clamps unsafe rows as a last-resort guard. Use `truncateToWidth()` or manual wrapping to ensure this. The result is component-owned and immutable to callers; return the same array reference when unchanged (enables renderer memoization) and a new array when content changed. |
 | `handleInput?(data)` | Called when the component has focus and receives keyboard input. The `data` string contains raw terminal input (may include ANSI escape sequences).                |
 | `invalidate?()`      | Called to clear any cached render state. Components should re-render from scratch on the next `render()` call.                                                     |
 
@@ -506,11 +508,25 @@ if (isCtrlC(data)) {
 
 ## Differential Rendering
 
-The TUI uses three rendering strategies:
+Component-only applications render a mutable viewport. For native scrollback,
+install a `TerminalFrameProvider` with `setFrameProvider()` and return a
+`TerminalFramePlan` containing:
 
-1. **First Render**: Output all lines without clearing scrollback
-2. **Width Changed or Change Above Viewport**: Repaint, preserving host-reflowed native scrollback where supported
-3. **Normal Update**: Move cursor to first changed line, clear to end, render changed lines
+- `viewport`: bounded rows that may change;
+- optional `history`: an immutable `HistoryBatch` with a monotonic `id`, `rows`,
+  and `kind: "append" | "replay"`;
+- optional `viewportAnchor: "bottom"` for bottom-aligned prompt layouts.
+
+The provider owns content lifecycle and offers a batch until acknowledged. TUI
+writes it with the new viewport and acknowledges only after `terminal.write()`
+returns successfully. Repeated IDs cannot duplicate history. Ordinary frames
+diff only the viewport; there is no full-document committed-prefix audit.
+
+Resizes preserve host-reflowed history and repaint the mutable viewport.
+`resetDisplay()` or `requestRender(true, { clearScrollback: true })` explicitly
+requests an atomic history replay. Overlays defer history retirement and never
+become part of a batch. See [the renderer contract](../../docs/tui-core-renderer.md)
+for provider lifecycle, stable streaming rows, and verification requirements.
 
 All updates are wrapped in **synchronized output** (`\x1b[?2026h` ... `\x1b[?2026l`) for atomic, flicker-free rendering unless `PI_NO_SYNC_OUTPUT=1` is set. The opt-out removes only the DEC 2026 wrapper; paint writes still guard terminal autowrap to avoid pending-wrap cursor artifacts.
 

@@ -27,7 +27,7 @@ function ircRecord(id: string, body: string, timestamp: number) {
 function makeContext(cardLog: unknown[]) {
 	const chatContainer = {
 		children: [] as unknown[],
-		isBlockUncommitted: () => true,
+		canRemoveBlock: () => true,
 		removeChild: (child: unknown) => {
 			const index = chatContainer.children.indexOf(child);
 			if (index >= 0) chatContainer.children.splice(index, 1);

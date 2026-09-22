@@ -1,10 +1,11 @@
 import { expect, test, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { type Component, type RenderScheduler, type Terminal, TUI } from "@oh-my-pi/pi-tui";
+import type { Component, RenderScheduler, Terminal } from "@oh-my-pi/pi-tui";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
 import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { TranscriptContainer } from "../components/transcript-container";
+import { Composer } from "../composer";
 import { initThemeSync } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { EventController } from "./event-controller";
@@ -126,22 +127,20 @@ function assistantMessage(text: string, withToolCall = false): AssistantMessage 
 	} as AssistantMessage;
 }
 
-function stripAnsi(text: string): string {
-	return text.replace(/\x1b\[[0-9;:?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
-}
-
 test("a wrapped pre-tool continuation is not permanently re-appended on every reveal tick", async () => {
 	vi.useFakeTimers();
 	const terminal = new BufferTerminal(56, 8);
-	const tui = new TUI(terminal, false, { renderScheduler: SCHEDULER });
+	const composer = new Composer({
+		terminal,
+		tuiOptions: { renderScheduler: SCHEDULER },
+		preferences: { quiet: true },
+	});
+	const tui = composer.ui;
 	const chatContainer = new TranscriptContainer();
 	chatContainer.addChild(
 		new StaticBlock(Array.from({ length: 8 }, (_value, index) => `earlier-history-row-${index}`)),
 	);
-	tui.addChild(chatContainer);
-	tui.addChild(
-		new StaticBlock(["", "chrome-1", "chrome-2", "chrome-3", "chrome-4", "chrome-5", "> editor", "status"]),
-	);
+	composer.setRuntimeChildren([chatContainer]);
 	const ui = {
 		requestRender: () => tui.requestRender(true),
 		requestComponentRender: (component: Component) => tui.requestComponentRender(component),
@@ -183,7 +182,7 @@ test("a wrapped pre-tool continuation is not permanently re-appended on every re
 		showError: NOOP,
 		showWarning: NOOP,
 		showStatus: NOOP,
-		editor: { setText: NOOP },
+		editor: composer.editor,
 		updatePendingMessagesDisplay: NOOP,
 		clearOptimisticUserMessage: NOOP,
 		replaceOptimisticUserMessage: NOOP,
@@ -198,7 +197,7 @@ test("a wrapped pre-tool continuation is not permanently re-appended on every re
 	};
 	const interactiveContext = context as unknown as InteractiveModeContext;
 	const controller = new EventController(interactiveContext);
-	tui.start({ deferInput: true });
+	composer.start({ deferInput: true });
 	flushScheduledRenders();
 	try {
 		await controller.handleEvent({
@@ -224,6 +223,9 @@ test("a wrapped pre-tool continuation is not permanently re-appended on every re
 		} as unknown as AgentSessionEvent);
 		flushScheduledRenders();
 		expect(interactiveContext.streamingComponent?.isTranscriptBlockFinalized()).toBe(true);
+		composer.editor.setText("draft one\ndraft two\ndraft three\ndraft four");
+		tui.requestRender();
+		flushScheduledRenders();
 		for (let update = 0; update < 10; update++) {
 			await controller.handleEvent({
 				type: "message_update",
@@ -236,14 +238,18 @@ test("a wrapped pre-tool continuation is not permanently re-appended on every re
 			flushScheduledRenders();
 		}
 
-		const tape = terminal.tape().map(line => stripAnsi(line).trim());
+		const tape = terminal.tape().map(line => Bun.stripANSI(line).trim());
 		const continuationRows = tape.filter(line => line.includes("need to"));
 		expect(continuationRows).toEqual(["need to preserve semantics exactly."]);
-		expect(tape.indexOf(continuationRows[0]!)).toBeLessThan(tape.length - terminal.rows);
+		// Retired rows can still occupy the grid above the prompt; history ownership
+		// no longer implies an old full-document viewport index.
+		expect(tape.filter(line => line.startsWith("earlier-history-row-"))).toEqual(
+			Array.from({ length: 8 }, (_, index) => `earlier-history-row-${index}`),
+		);
 	} finally {
 		controller.dispose();
 		chatContainer.dispose();
-		tui.stop();
+		composer.stop();
 		vi.useRealTimers();
 	}
 });

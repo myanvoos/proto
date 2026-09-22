@@ -12,13 +12,12 @@ const NOOP = () => {};
 const UI: ToolExecutionUi = {
 	requestRender: NOOP,
 	requestComponentRender: NOOP,
-	resetDisplay: NOOP,
 };
 
 function renderedEnvLine(args: Record<string, unknown>): string {
 	const component = new ToolExecutionComponent("bash", args, {}, undefined, UI);
 	try {
-		const plainRows = component.render(160).map(row => row.replace(/\x1b\[[0-9;]*m/g, ""));
+		const plainRows = component.render(160).map(Bun.stripANSI);
 		return plainRows.find(row => row.includes("FOO=")) ?? "";
 	} finally {
 		component.dispose();
@@ -65,7 +64,7 @@ test("a shell suffix arriving after a kernel cell stays visible live and after r
 	}
 });
 
-test("bash live and rebuilt previews prefer raw partial env values", () => {
+test("bash live and rebuilt previews wait for complete arguments before showing resolved env values", () => {
 	const reveal = new ToolArgsRevealController({
 		getSmoothStreaming: () => false,
 		requestRender: (_component: Component) => {},
@@ -83,13 +82,14 @@ test("bash live and rebuilt previews prefer raw partial env values", () => {
 	});
 	const rebuiltArgs = decodeStreamedToolArgs(second, {
 		rawInput: false,
-		fullArgs: liveArgs,
+		fullArgs: firstArgs,
 	});
 
 	expect(firstArgs.env).toEqual({ FOO: "o" });
 	expect(liveArgs.env).toEqual({ FOO: "old" });
 	expect(rebuiltArgs.env).toEqual({ FOO: "old" });
-	expect(renderedEnvLine(liveArgs)).toContain('FOO="old"');
-	expect(renderedEnvLine({ ...liveArgs, env: { FOO: "o" } })).toContain('FOO="old"');
-	expect(renderedEnvLine(rebuiltArgs)).toContain('FOO="old"');
+	for (const args of [liveArgs, rebuiltArgs]) {
+		expect(renderedEnvLine(args)).toBe("");
+		expect(renderedEnvLine({ command, env: args.env })).toContain('FOO="old"');
+	}
 });

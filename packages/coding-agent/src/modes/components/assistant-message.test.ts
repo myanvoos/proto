@@ -115,40 +115,138 @@ test("a streamed reply interrupted mid-turn shows the marker after its final upd
 	expect(plain).toContain(`${theme.symbol("status.aborted")} Interrupted`);
 });
 
-// TranscriptContainer turns this count into the live-region boundary: rows below
-// it commit to native scrollback with their final bytes, rows above it are still
-// moving. A reasoning reply renders a constant "Thinking" heading ahead of its
-// markdown, and treating that heading as unsettled reported 0 for the whole
-// stream -- so the entire reply was committed as provisional snapshots that the
-// renderer then had to re-append once it settled.
-test("a streaming reply settles its prefix while a thinking block precedes the text", () => {
-	const body = Array.from(
-		{ length: 8 },
-		(_value, index) => `Paragraph ${index} runs long enough to wrap over several rows in a narrow pane.`,
-	).join("\n\n");
-	const streamed = (thinking: string | undefined): number[] => {
-		const reply = new AssistantMessageComponent(undefined, false);
-		const settled: number[] = [];
-		for (let end = 80; end <= body.length; end += 80) {
-			const content: AssistantMessage["content"] = [];
-			if (thinking !== undefined) content.push({ type: "thinking", thinking });
-			content.push({ type: "text", text: body.slice(0, end) });
-			reply.updateContent({ ...message, content }, { transient: true });
-			reply.render(55);
-			settled.push(reply.getTranscriptBlockSettledRows());
-		}
-		return settled;
-	};
+function expectStablePrefix(reply: AssistantMessageComponent, width: number): string[] {
+	const stable = [...reply.renderTranscriptStableRows(reply.getTranscriptStableRows().length, width)];
+	const full = reply.render(width);
+	let start = 0;
+	let end = full.length;
+	while (start < end && full[start] === "") start++;
+	while (end > start && full[end - 1] === "") end--;
+	expect(full.slice(start, start + stable.length)).toEqual(stable);
+	return stable;
+}
 
-	const withThinking = streamed("reasoning about the answer");
-	const withoutThinking = streamed(undefined);
-	expect(withThinking[withThinking.length - 1]).toBeGreaterThan(0);
-	// Non-decreasing: a settled row that un-settles is already in scrollback.
-	for (let i = 1; i < withThinking.length; i++) {
-		expect(withThinking[i]!).toBeGreaterThanOrEqual(withThinking[i - 1]!);
+test("publishes immutable thinking and answer prefixes through finalization", () => {
+	const reply = new AssistantMessageComponent(undefined, false);
+	const firstThinking = "First complete reasoning paragraph.\n\nSecond reasoning paragraph is still growing";
+	reply.updateContent({ ...message, content: [{ type: "thinking", thinking: firstThinking }] }, { transient: true });
+	reply.render(48);
+
+	const firstRows = reply.getTranscriptStableRows();
+	expect(firstRows.length).toBeGreaterThan(0);
+	const firstKeys = firstRows.map(row => row.key);
+	const firstStable = expectStablePrefix(reply, 48);
+	expect(Bun.stripANSI(firstStable.join("\n"))).toContain("Thinking");
+	expect(Bun.stripANSI(firstStable.join("\n"))).toContain("First complete reasoning paragraph.");
+	expect(Bun.stripANSI(firstStable.join("\n"))).not.toContain("still growing");
+
+	const completedThinking = `${firstThinking} to completion.\n\nThird reasoning paragraph remains open`;
+	reply.updateContent(
+		{
+			...message,
+			content: [
+				{ type: "thinking", thinking: completedThinking },
+				{ type: "text", text: "A complete answer paragraph.\n\nThe answer remains open" },
+			],
+		},
+		{ transient: true },
+	);
+	reply.render(48);
+
+	const extendedRows = reply.getTranscriptStableRows();
+	expect(extendedRows.slice(0, firstKeys.length).map(row => row.key)).toEqual(firstKeys);
+	expect(extendedRows.length).toBeGreaterThan(firstRows.length);
+	const extendedStable = expectStablePrefix(reply, 48);
+	expect(extendedStable.slice(0, firstStable.length)).toEqual(firstStable);
+	const plainExtended = Bun.stripANSI(extendedStable.join("\n"));
+	expect(plainExtended).toContain("Third reasoning paragraph remains open");
+	expect(plainExtended).toContain("A complete answer paragraph.");
+	expect(plainExtended).not.toContain("The answer remains open");
+
+	const identitiesBeforeFinal = reply.getTranscriptStableRows().map(row => row.key);
+	const stableBeforeFinal = reply.renderTranscriptStableRows(identitiesBeforeFinal.length, 48);
+	reply.updateContent({
+		...message,
+		content: [
+			{ type: "thinking", thinking: completedThinking },
+			{ type: "text", text: "A complete answer paragraph.\n\nThe answer is finalized." },
+		],
+	});
+	reply.markTranscriptBlockFinalized();
+	reply.render(48);
+	expect(reply.getTranscriptStableRows().map(row => row.key)).toEqual(identitiesBeforeFinal);
+	expect(reply.renderTranscriptStableRows(identitiesBeforeFinal.length, 48)).toEqual(stableBeforeFinal);
+});
+
+test("renders one semantic snapshot as a full-render prefix at different widths", () => {
+	const reply = new AssistantMessageComponent(undefined, false);
+	const text = `${"A complete paragraph wraps consistently across widths. ".repeat(4)}\n\nMutable tail`;
+	reply.updateContent({ ...message, content: [{ type: "text", text }] }, { transient: true });
+	reply.render(52);
+	expect(reply.getTranscriptStableRows().length).toBeGreaterThan(0);
+
+	const narrow = expectStablePrefix(reply, 27);
+	const wide = expectStablePrefix(reply, 76);
+	expect(narrow.length).toBeGreaterThan(wide.length);
+});
+
+test("publishes completed table, code, and list blocks without layout drift", () => {
+	for (const block of [
+		"| key | value |\n| --- | --- |\n| one | two |",
+		"```ts\nconst value = 1;\n```",
+		"- first item\n- second item",
+	]) {
+		const reply = new AssistantMessageComponent(undefined, false);
+		reply.updateContent(
+			{ ...message, content: [{ type: "text", text: `${block}\n\nmutable suffix` }] },
+			{ transient: true },
+		);
+		reply.render(46);
+		expect(reply.getTranscriptStableRows().length).toBeGreaterThan(0);
+		expectStablePrefix(reply, 31);
+		expectStablePrefix(reply, 67);
 	}
-	// The heading adds rows to the settled prefix; it never truncates it.
-	expect(withThinking[withThinking.length - 1]).toBeGreaterThan(withoutThinking[withoutThinking.length - 1]!);
+});
+
+test("keeps open Markdown suffixes out of history and can reset publication", () => {
+	const reply = new AssistantMessageComponent(undefined, false);
+	const text = "Settled prose.\n\n```ts\nconst unfinished = true;\n\nmore open code";
+	reply.updateContent({ ...message, content: [{ type: "text", text }] }, { transient: true });
+	reply.render(50);
+
+	const stable = expectStablePrefix(reply, 50);
+	const plain = Bun.stripANSI(stable.join("\n"));
+	expect(plain).toContain("Settled prose.");
+	expect(plain).not.toContain("unfinished");
+	expect(plain).not.toContain("open code");
+
+	reply.resetTranscriptStableRows();
+	expect(reply.getTranscriptStableRows()).toEqual([]);
+	expect(reply.renderTranscriptStableRows(10, 50)).toEqual([]);
+	reply.render(50);
+	expect(reply.getTranscriptStableRows().length).toBeGreaterThan(0);
+	expectStablePrefix(reply, 50);
+});
+
+test("stable publication stays monotonic through a large stream", () => {
+	const reply = new AssistantMessageComponent(undefined, false);
+	const body = Array.from(
+		{ length: 80 },
+		(_value, index) => `Paragraph ${index} is complete and long enough to wrap in the streaming transcript.`,
+	).join("\n\n");
+	let previousKeys: string[] = [];
+	let previousRender: string[] = [];
+	for (let end = 180; end < body.length; end += 180) {
+		reply.updateContent({ ...message, content: [{ type: "text", text: body.slice(0, end) }] }, { transient: true });
+		reply.render(42);
+		const keys = reply.getTranscriptStableRows().map(row => row.key);
+		expect(keys.slice(0, previousKeys.length)).toEqual(previousKeys);
+		const rendered = expectStablePrefix(reply, 42);
+		expect(rendered.slice(0, previousRender.length)).toEqual(previousRender);
+		previousKeys = keys;
+		previousRender = rendered;
+	}
+	expect(previousKeys.length).toBeGreaterThan(10);
 });
 
 const thinkingMessage: AssistantMessage = {

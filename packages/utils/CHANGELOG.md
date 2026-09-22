@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Virtual-terminal cursor restoration stays attached to the normal-screen content after resizing an alternate-screen view.
+
 ## [18.4.0] - 2026-09-22
 
 ### Fixed

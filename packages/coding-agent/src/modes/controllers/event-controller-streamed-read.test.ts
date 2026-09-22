@@ -23,7 +23,6 @@ const STALE_PROVIDER_PATH = "arti";
 const UI: ToolExecutionUi & { terminal: { setProgress: (active: boolean) => void } } = {
 	requestRender: NOOP,
 	requestComponentRender: NOOP,
-	resetDisplay: NOOP,
 	terminal: { setProgress: NOOP },
 };
 

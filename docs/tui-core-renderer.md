@@ -1,246 +1,146 @@
-# TUI core renderer — the append-only contract
+# TUI core renderer — explicit history and a mutable viewport
 
-What you are dealing with before you touch the rendering engine. This is the
-companion to [`tui-runtime-internals.md`](./tui-runtime-internals.md): that doc
-maps the _flow_ (input → component tree → render); this doc explains the
-**render contract, why it is shaped this way, and the invariants you must not
-violate**. Scope is the core engine only:
+Companion to [`tui-runtime-internals.md`](./tui-runtime-internals.md). The
+terminal engine owns bytes, cursor placement, overlays, and resize handling;
+the application owns which transcript content is ready for history.
 
-- [`packages/tui/src/tui.ts`](../packages/tui/src/tui.ts) — frame pipeline, commit ledger, window math, emitters, cursor placement.
-- [`packages/tui/src/terminal.ts`](../packages/tui/src/terminal.ts) — `ProcessTerminal`, capability probes, private-CSI reassembly.
-- [`packages/tui/src/terminal-capabilities.ts`](../packages/tui/src/terminal-capabilities.ts) — `TERMINAL` profile, sync-output / DECCARA / image detection.
-- [`packages/tui/src/stdin-buffer.ts`](../packages/tui/src/stdin-buffer.ts) — escape-sequence reassembly.
-- [`packages/tui/src/utils.ts`](../packages/tui/src/utils.ts) — width/slice/wrap (the width model).
-- [`packages/tui/src/kitty-graphics.ts`](../packages/tui/src/kitty-graphics.ts) + [`components/image.ts`](../packages/tui/src/components/image.ts) — inline images.
-- [`packages/tui/src/deccara.ts`](../packages/tui/src/deccara.ts) — rectangular-fill optimizer.
+Core implementation:
 
-Application-layer renderers (transcript, tool calls, session tree, editor,
-widgets) are **out of scope** — they live in `packages/coding-agent`. The one
-app-layer file that is load-bearing for this contract is
-[`transcript-container.ts`](../packages/coding-agent/src/modes/components/transcript-container.ts),
-which implements the commit-boundary seam described below.
+- [`tui.ts`](../packages/tui/src/tui.ts): frame-provider contract, viewport diffing, history transactions, cursor placement.
+- [`terminal.ts`](../packages/tui/src/terminal.ts): terminal lifecycle, capability probes, input reassembly.
+- [`terminal-capabilities.ts`](../packages/tui/src/terminal-capabilities.ts): synchronized output and image capabilities.
+- [`utils.ts`](../packages/tui/src/utils.ts): shared width, slicing, and wrapping.
+- [`kitty-graphics.ts`](../packages/tui/src/kitty-graphics.ts) and [`components/image.ts`](../packages/tui/src/components/image.ts): inline images.
 
----
+Application ownership lives in
+[`Composer`](../packages/coding-agent/src/modes/composer.ts) and
+[`TranscriptContainer`](../packages/coding-agent/src/modes/components/transcript-container.ts).
+The terminal engine does not know about messages, tool lifecycles, or Markdown.
 
-## 1. The one thing to understand first
+## 1. Ownership boundary
 
-> **The renderer cannot observe the terminal's scroll position** (some PTY
-> hosts lie about it; POSIX has no API at all). The previous engine tried to _guess_
-> when it was safe to rewrite native scrollback, and every policy choice over
-> that unobservable variable traded one failure family for another (yank ↔
-> flash ↔ corruption ↔ invisible-until-resize — see the git history of this
-> file for the full war journal). The default engine removes the guess entirely:
-> **native scrollback is append-only.** An opt-in divergence-rebuild mode can
-> instead clear and replay scrollback outside multiplexers when finalized
-> content no longer matches committed history (§2); it does not probe viewport
-> position.
+Native history remains on the **normal screen**: terminal scrollback and native
+selection work, and the transcript remains after exit. The renderer cannot
+observe whether the user is reading older history. It therefore never audits,
+repairs, or automatically replays a committed transcript prefix.
 
-We keep the transcript on the **normal screen** (native scrollback, native
-selection, transcript persists after exit). The engine maintains one ledger:
+A `TerminalFrameProvider`, installed with `TUI.setFrameProvider()`, returns a
+`TerminalFramePlan` for the current `ViewportSize`:
 
-- **`committedRows` (C)** — frame rows `[0, C)` have entered terminal history.
-  Ordinary emitters never rewrite them. An opt-in destructive divergence replay
-  clears the ledger and rebuilds history from the current frame.
-- **`windowTopRow` (W)** — the frame row mapped to grid row 0. The visible
-  window is frame rows `[W, W + height)`, repainted with relative cursor moves.
-- **live-region boundary (B)** — the first row that may still mutate, reported
-  by `NativeScrollbackLiveRegion`. Rows before B are exact and audited.
-  Unpinned mutable rows that leave the window commit as frozen visual
-  snapshots. A pinned live region instead keeps its mutable suffix
-  viewport-local until the boundary advances.
+- **`history`**, when present: an immutable `HistoryBatch` with a monotonic ID,
+  physical rows at the current width, and kind `"append"` or `"replay"`.
+- **`viewport`**: the bounded rows that may still change.
+- **`viewportAnchor: "bottom"`**: used by Composer so the live tail and prompt
+  remain bottom-aligned. The provider returns content, not padding that could
+  accidentally become history.
 
-For an ordinary unpinned frame, `W = max(C, L - height)` and the new commit end
-is `max(C, W)`, clamped to the frame. The only bytes that enter history are the
-chunk between the old and new commit indices. Exact rows remain subject to the
-committed-prefix audit; frozen mutable snapshots are deliberately outside the
-exactness claim. In the default mode, scrollback therefore records every
-committed row once, in order, with its bytes at commit time. The renderer never
-needs to know whether the user has scrolled away from the tail.
+The application keeps an offered transaction immutable until acknowledgement.
+If its width or image-admission policy changes before the write, it withdraws
+that offer and renders the same semantic content under a fresh ID; stale
+acknowledgements cannot retire it. The writer accepts a fresh batch once, writes history and the viewport, and
+only then acknowledges it. A failed write must not retire application content.
+Ordinary viewport updates never inspect historical text or infer new history
+from a diff. A component-only TUI is a mutable viewport; applications needing
+scrollback must supply explicit batches.
 
-### What this costs (the accepted tradeoffs)
+### Transcript lifecycle
 
-- A block that has scrolled past the window top cannot reflow in place. Exact
-  settled rows commit with their final bytes; an unpinned mutable row commits
-  the snapshot visible when it scrolls off, so a later layout change leaves a
-  stale historical row rather than rewriting native scrollback.
-- A component tree that reports **no seam** gets shell semantics: whatever
-  scrolls off is final. Shrinking such a frame into its committed prefix
-  re-anchors the window and leaves the stale copy in history (§3).
-- Inside terminal multiplexers, a width change terminates the physical-row
-  coordinate epoch. The renderer captures an opaque
-  `NativeScrollbackWidthEpoch` marker from the last emitted source state before
-  `SIGWINCH`, then resolves that same logical boundary after the settled-width
-  render. Host-reflowed history stays immutable. Output queued during
-  settlement is emitted only from the resolved old boundary to the current
-  source boundary at the terminal-owned viewport bottom; the settled viewport
-  then repaints in place. No old-width and new-width row counts are compared,
-  and no old viewport row is recommitted. Components without the source
-  contract retain the conservative physical-row fallback. Visible overlays
-  freeze the seam and pinned live regions clip advancement at their final
-  boundary. Height-only resizes retain the existing ledger, but hosts disagree
-  about what a height change does to the physical rows: tmux and alacritty
-  pull history back on growth, while ghostty (Herdr panes) and xterm.js pad
-  the bottom with blank rows unless the cursor sits on the last row, and
-  shrinks differ in whether rows below the cursor are pushed or dropped. The
-  renderer therefore measures the displacement instead of guessing: after the
-  host resized it issues a cursor-position report (`CSI 6 n`, fused with the
-  DA1 sentinel) and compares the reported row with the row it last parked the
-  cursor on. `before - after` is exactly the number of rows the host moved
-  into history (positive) or back out of it (negative); pushed rows commit
-  when they still match the frame, pulled rows leave the ledger, and the
-  window never starts above the host's screen top. A host that answers the
-  sentinel without a report falls back to the pull assumption. Direct HerdR panes
-  use this path because clearing and replaying scrollback flickers in its
-  host-owned pane. A settled in-place resize adopts the host-reflowed history
-  without replaying it. Mutable live rows are different: tmux may trim rows below
-  the cursor on shrink, and old-width separators can occupy several host rows.
-  The cursor report anchors the live boundary; those rows are invalidated and
-  repainted at the new width, preserving the committed transcript. The coding
-  agent declares its composer chrome as live even when the transcript is idle.
+Each transcript block progresses through **active → settled → committed**.
+Settled blocks remain visible while they fit. Under viewport pressure, the
+ledger retires an ordered prefix; a later finalized block cannot jump ahead of
+an active predecessor. The live suffix is bounded independently of the prompt,
+status line, widgets, and overlays.
 
----
+An explicitly **append-only** producer can publish stable semantic rows while
+its block is still active. Row identities are independent of terminal width;
+rows render at the width of the offered transaction. Assistant messages publish
+closed Markdown prefixes and completed content blocks, leaving unfinished or
+asynchronously relayouting content mutable. Final retirement emits only the
+unpublished suffix, not a second copy of the whole message.
 
-## 2. The frame pipeline (what you are editing)
+Mutable tool previews remain viewport-local until finalization. A large active
+block may have a clipped head in the live viewport; clipping is not retirement
+and does not discard its source. Displaceable checklist/fleet snapshots may be
+replaced only while uncommitted. Once retired, changes require an explicit
+replay rather than silently rewriting terminal history.
 
-`#doRender` per frame:
+## 2. Frame pipeline
 
-1. Compose the frame, collecting the first root child's
-   `getNativeScrollbackLiveRegionStart()` and optional pinning policy.
-2. Audit the committed exact prefix (`findCommittedPrefixResync`, skipped on
-   geometry frames). The detector samples the prefix tail (up to 8 non-blank
-   rows in the last 24, SGR-stripped). A single in-place mismatch is accepted
-   as stale history; a structural shift re-anchors at the first changed row,
-   favoring duplication over content loss. An in-place width change does not
-   audit or re-slice the prior epoch's physical coordinates; it resolves the
-   captured logical source marker in the settled-width frame.
-3. Classify the frame as a gesture-driven full paint, an opt-in divergence
-   rebuild, or an ordinary update and calculate the window/commit chunk.
-   Overlays freeze commits. A pinned live region clips its offscreen mutable
-   suffix instead of snapshotting it.
-4. Extract cursor markers, prepare width-safe lines, slice the window, and
-   composite overlays into the screen-coordinate window only.
-5. Emit:
+1. Composer allocates space to prompt chrome, then asks the transcript ledger
+   for an eligible history transaction and the remaining live tail.
+2. The renderer extracts cursor markers, normalizes width-safe rows, and
+   composites overlays in viewport coordinates only.
+3. A history transaction erases the old mutable area before advancing history,
+   preventing old prompt/status rows from being scrolled into it by the writer.
+   It writes the batch and the replacement viewport together.
+4. Without new history, the renderer diffs only the mutable viewport.
+5. After the terminal write succeeds, the provider acknowledges retirement.
 
-| Emitter                      | Bytes                                              | When                                                                |
-| ---------------------------- | -------------------------------------------------- | ------------------------------------------------------------------- |
-| `#emitFullPaint`             | home + committed chunk + window rows; optional ED3 | initial paint, explicit geometry/session/reset gestures, or rebuild |
-| `#emitUpdate` scroll-append  | new bottom rows plus changed-row range             | rows leaving the screen are exactly the commit chunk                |
-| `#emitUpdate` in-window diff | relative move plus changed-row rewrite             | nothing scrolls or commits                                          |
-| `#emitUpdate` seam rewrite   | commit chunk plus full window rewrite              | commit/window re-anchor or hidden-gap backfill                      |
+Overlays defer history retirement; they are never part of a history batch.
+Cursor placement belongs inside the synchronized-output frame, not a second
+write after it. Fullscreen and resize preview surfaces may borrow the alternate
+screen without changing normal-screen history ownership.
 
-**ED3 (`CSI 3 J`) is emitted in exactly one place** —
-`#emitFullPaint({ clearScrollback: true })`. Callers include explicit
-session replace/branch/resume (`requestRender(true, { clearScrollback: true })`),
-full geometry rebuilds outside the in-place path, and `resetDisplay()` (the
-`Alt+L` display-reset chord and `Ctrl+O` tool expansion). It clears native history
-without `ED2` first; the replay overwrites every row from home so terminals
-without synchronized output do not expose a blank viewport.
+### Explicit replay
 
-Explicit resets replay the current transcript inside multiplexers too. tmux
-honors ED3 and replaces its old pane history. Hosts that ignore ED3 still receive
-the updated frame but retain older history above it. A user-requested replay
-pins the view to the tail; ordinary in-place resizes never take this path.
+`resetDisplay()` and `requestRender(true, { clearScrollback: true })` deliberately
+replace history: for example, session replacement, branch navigation, or a user
+expanding already-retired tool output. The provider resets its publication state
+and offers one replay transaction containing the eligible transcript prefix,
+with the mutable suffix in the same frame's viewport. Do not replay one block
+per frame: that exposes intermediate transcripts and repeats the header.
 
-The ordinary update path never emits ED2/ED3 or an absolute cursor home —
-several terminal families snap a scrolled reader to the bottom on those.
+The replay uses ED3 (`CSI 3 J`) and overwrites the display atomically where the
+host supports synchronized output. tmux honors ED3; hosts that ignore it may
+retain older history above the newly painted transcript. An explicit replay can
+move the reader to the tail. Ordinary renders and resizes never request one.
 
-### The commit-boundary seam (the load-bearing app contract)
+### Resize
 
-`NativeScrollbackLiveRegion` has one boundary and one optional policy:
+Resize preserves host-owned native history. Committed text is not rerendered,
+rewrapped by Proto, or compared using old-width physical row counts. The host
+may reflow it according to its own policy. The live viewport is composed at the
+new dimensions; a provider's resize-preview rendering does not acknowledge or
+advance history.
 
-- `getNativeScrollbackLiveRegionStart()` returns the first local row that may
-  still mutate. Rows before it are declared byte-stable at the current width.
-- `isNativeScrollbackLiveRegionPinned()` keeps the mutable suffix
-  viewport-local rather than recording frozen snapshots as it scrolls off.
-  This is for replacing dashboards, not append-shaped transcript content.
-- Reporting no seam gives shell semantics: rows commit as they scroll.
+The terminal's cursor report anchors the repaint after the host has moved rows.
+It describes the engine's cursor, **not the user's scroll position**. The
+in-place resize path waits for the host to settle; the alternate-screen path
+shows a transient preview before returning to the normal buffer and probing its
+anchor. Neither path retires preview rows. Preserving history means historical
+wrapping and blank rows may reflect the host's reflow behavior until an explicit
+reset.
 
-When multiple root children report a seam, the topmost seam wins because
-commits are prefix-only. `NativeScrollbackCommittedRows` lets containers pass
-the committed count down to children, and `NativeScrollbackReplay` lets
-components release layout locks before a destructive replay.
+A severe height shrink can move old **mutable** rows into native scrollback
+before the resize callback runs. Some hosts then pad on growth instead of
+pulling those rows back, especially with a visible cursor above the bottom row.
+Those inaccessible snapshots cannot be removed without clearing history. Proto
+preserves acknowledged history and paints the complete current viewport; it
+does not infer retirement or hide current content to deduplicate host-created
+snapshots. An explicit display reset rebuilds a clean transcript. Exact-once
+history-batch delivery is not a promise that the host never archives a mutable
+screen snapshot during resize.
 
-`NativeScrollbackWidthEpoch` is the cross-width source contract. Capture reads
-only state that produced the last emitted frame. Resolve projects that source
-boundary into the newly rendered width, while the current-boundary method
-identifies the logical suffix queued during settlement. Containers propagate
-the marker through nested sources; Markdown snapshots its last rendered source
-text, so a streaming update received before `SIGWINCH` cannot masquerade as
-already-emitted output.
+## 3. Invariants
 
-`TranscriptContainer` implements the application seam. It scans for the first
-unfinalized transcript block. Finalized blocks before it are exact; that live
-block may extend the exact boundary through
-`getTranscriptBlockSettledRows()`. Assistant messages derive those settled
-rows from completed content blocks and markdown's frozen-token prefix, while
-constructs that can re-layout asynchronously (for example Mermaid) defer
-settling. Pinning is propagated from the first live block; tool execution uses
-it for replacing preview/dashboard states.
-
-Transcript assembly also reports `RenderStablePrefix`: unchanged component
-array references at unchanged offsets let the engine skip work over the
-byte-identical prefix. Components that discard or lock committed material must
-honor the committed-row and replay hooks. Freezing/settling is a correctness
-contract, not a terminal-specific optimization.
-
----
-
-## 3. Invariants — MUST / NEVER
-
-1. **NEVER add a new `CSI 3 J` (ED3) callsite.** ED3 flows only through
-   `#emitFullPaint({ clearScrollback: true })`, for explicit gestures or the
-   guarded opt-in divergence rebuild; inside multiplexers only via the opt-in
-   `rebuild` resize-scrollback mode.
-2. **Ordinary emitters NEVER rewrite a committed row.** They treat frame rows
-   `< C` as immutable. A shrink or structural resync may re-anchor below the old
-   commit point, but in default mode stale history remains and new bytes are
-   appended; it is never silently skipped. The opt-in divergence rebuild is the
-   deliberate exception: it clears and replays the complete current frame.
-3. **Commits are exactly the chunk.** Any byte shape that scrolls the screen
-   must scroll only rows accounted for by the commit advance.
-4. **A multiplexer width resize NEVER advances history from cross-width row
-   arithmetic.** The old committed physical-row coordinate is opaque after
-   reflow; no old-width and new-width row counts are ever compared. In
-   `append` (the coding agent's default setting) and opt-in `rebuild` modes
-   the settled frame hands the
-   whole recomposed current-width frame to the full-paint emitter — commits
-   re-base to exactly the replayed chunk. In `preserve` mode (and while a
-   visible overlay covers the settle) the resize leaves the host-reflowed
-   viewport in place and establishes a complete-frame baseline independent of
-   the native commit count. Subsequent growth writes the exact current-width
-   rows newly crossing the seam—not blank scroll commands—then repaints the
-   bounded viewport; only that slice advances commits. Visible overlays
-   advance neither the baseline nor the seam ledger; overlay exit backfills
-   the exact hidden slice. Pinned live regions advance only through their
-   final boundary; finalization releases the deferred mutable slice. During a
-   height shrink, only occupied old-frame rows actually moved into history by
-   the host are excluded from the append-owned seam; empty viewport rows do
-   not consume content-driven movement. Height-only resizes do not terminate
-   the epoch; they are reconciled from the measured cursor displacement (§1),
-   never from `oldRows - newRows` arithmetic when a report is available.
-5. **NEVER probe the viewport position or fork on platform in the update
-   path.** win32 behaves like POSIX. The probe APIs are gone; do not
-   reintroduce them. The resize cursor-position report is not a viewport
-   probe: it runs only between a resize event and its repaint, measures the
-   cursor row the engine itself parked, and degrades to the pull assumption.
-6. **Only declare rows exact when their bytes are stable.** Mutable transcript
-   content may commit as an unpinned frozen snapshot, but rows before the seam
-   remain under the exact-prefix audit.
-7. **Park the hardware cursor at real content bottom**, not the padded window
-   bottom, or height shrinks scroll live rows into history and duplicate them
-   per resize step.
-8. **Cursor writes live inside the synchronized-output frame**, before ESU —
-   never as a second frame after it.
-9. **NEVER throw in the render hot path.** Clamp over-wide lines
-   (`truncateToWidth`); a width mismatch is cosmetic, not fatal.
-10. **Multiplexers get no destructive clear and no history rewrap on resize** —
-    repaint the window in place; pane history keeps its old wrap.
-11. **Any change to the ledger math, the emitters, or the seam must be
-    validated by the stress harness (§6)** across its full scenario matrix,
-    not by a single-terminal smoke test.
-
----
-
+1. **History ownership is explicit.** Do not reintroduce committed-prefix
+   sampling, live-region seams, physical-row watermarks, or width-epoch repair.
+2. **Retirement is ordered and acknowledged after write.** Duplicate batch IDs
+   cannot append twice; a failed write cannot consume the offered content.
+3. **Only stable content enters history.** A mutable preview is not a frozen
+   historical snapshot merely because it exceeded the viewport height.
+4. **Viewport chrome never enters a history batch.** Erase old mutable rows
+   before writer-controlled scrolling; keep transcript rows above prompt rows.
+5. **Ordinary updates preserve history.** ED3 belongs only to explicit replay,
+   never resize, a changed block, or an inferred structural mismatch.
+6. **Stable identities are semantic.** Reflow cannot rename an already
+   published prefix or cause it to be emitted again.
+7. **Overlays do not retire covered content.** Closing one must expose the
+   current viewport and then deliver any queued history exactly once.
+8. **Width mismatches are nonfatal.** Use shared width helpers and clamp unsafe
+   rows rather than throwing in the render hot path.
+9. **Verify bytes and state transitions.** Provider unit tests alone cannot
+   prove terminal cursor placement, scrollback preservation, or prompt isolation.
 ## 4. Terminal capability detection
 
 `TERMINAL` (`terminal-capabilities.ts`) is resolved once at import from
@@ -292,26 +192,26 @@ rows with marks stripped (`sameLinesAllowingMarkDrift`).
 
 ---
 
-## 6. The fidelity gate (use it)
+## 6. The fidelity gate
 
-`packages/tui/test/render-stress-harness.ts` drives the renderer's **real
-emitted ANSI** into a kitty-vt-wasm (kitty's real screen.c) `VirtualTerminal` across randomized op
-sequences and parameterized terminal shapes, and validates the contract with a
-**shadow commit ledger**: an independent reimplementation of §1's math, fed
-only by observed frames (a `render` wrap) and observed bytes (a `write` wrap).
-Per op it asserts:
+Drive the renderer's real emitted ANSI into a terminal emulator. Check history
+transactions separately from mutable viewport rows instead of reproducing the
+old committed-prefix reconciliation math in a shadow oracle.
 
-- the whole tape (scrollback + grid) equals `shadowTape + window slice`, row
-  for row, including across resizes;
-- scrolled readers stay pinned and visible history rows are never rewritten;
-- multiplexer pane history grows by exactly the committed chunk;
-- sync-output/autowrap bracket discipline, cursor parking, background columns,
-  duplicate accounting.
+Coverage includes `packages/tui/src/tui-frame-sequence.test.ts`, the renderer
+regression/resize/overlay/image suites, and product-level
+`composer.test.ts` / `assistant-streaming-scrollback.test.ts`. Exercise:
 
-Run it — plus `render-regressions.test.ts`,
-`streaming-scrollback-defer.test.ts`, and the `issue-*-repro.test.ts` files —
-before changing ledger math, emitters, or the seam. A change that passes one
-terminal and one seed is not verified.
+- append, duplicate delivery, write failure, acknowledgement, and atomic replay;
+- long thinking/text/tool sequences, including open Markdown and finalization;
+- prompt growth/shrink, HUD updates, overlays, and width/height changes;
+- unique completed content appearing exactly once, with no transcript content
+  below the prompt and no prompt/status rows in writer-generated history;
+- host-reflowed history unchanged by ordinary resize repaints;
+- synchronized-output/autowrap discipline and hardware cursor placement.
+
+Run an actual interactive CLI surface as well as deterministic tests. A
+single happy-path render does not establish long-session correctness.
 
 ---
 
@@ -364,7 +264,7 @@ default-on only for kitty/ghostty (`PI_NO_KITTY_PLACEHOLDERS` /
 | `PI_NO_KITTY_PLACEHOLDERS=1` / `PI_KITTY_PLACEHOLDERS=1` | Force Kitty Unicode placeholders off / on.                                                                                                                                  |
 | `PI_HARDWARE_CURSOR=1`                                   | Show the real hardware cursor instead of a rendered one.                                                                                                                    |
 | `PI_NOTIFICATIONS=off\|0\|false`                         | Suppress terminal notifications.                                                                                                                                            |
-| `PI_DEBUG_REDRAW=1`                                      | Log the chosen render intent + ledger state per frame to the debug log.                                                                                                     |
+| `PI_DEBUG_REDRAW=1`                                      | Log frame-provider history and viewport rendering state to the debug log.                                                                                                     |
 | `PI_TUI_RESIZE_IN_PLACE=1\|0`                            | Force resize to repaint in place (no alt-screen borrow, no ED3 rewrap) on / off. Default-on for terminals that re-report size on alt-screen toggles (Warp).                 |
 
 Removed with the old engine: `PI_TUI_ED3_SAFE` (no ED3-risk lever exists),
@@ -373,20 +273,13 @@ Removed with the old engine: `PI_TUI_ED3_SAFE` (no ED3-risk lever exists),
 
 ---
 
-## 10. Before you touch the render core — checklist
+## 10. Before changing the render core
 
-- [ ] Are you about to emit `CSI 3 J` anywhere other than the existing
-      `clearScrollback` full-paint path for a gesture, guarded divergence
-      rebuild, or the `rebuild` resize-scrollback settle? **Stop.**
-- [ ] Could an ordinary emitter rewrite a row below `committedRows`? **Stop.**
-- [ ] Does your byte shape scroll rows not accounted for by the commit chunk?
-      That breaks the append-only ledger.
-- [ ] Are you adding a viewport probe, a platform fork, or a terminal-brand
-      branch to the update path? The contract exists so none are needed.
-- [ ] New mutable UI above the editor? It must report (or live inside) the
-      live-region seam, or it will freeze at first commit.
-- [ ] Did you run the stress harness and the repro suite across the full
-      scenario matrix — not just one terminal and one seed?
-- [ ] New probe? Typed sentinel owner + split-reply test.
-- [ ] New width path? Routed through the shared native engine, clamped (never
-      thrown) in the hot path.
+- [ ] Does retirement come from a provider transaction rather than a row diff?
+- [ ] Can a duplicate offer, write failure, resize, or overlay lose or repeat content?
+- [ ] Does the writer scroll any mutable prompt/status row into native history?
+- [ ] Is destructive replay limited to explicit application/user requests?
+- [ ] Are stable-row identities unchanged across width changes and finalization?
+- [ ] Did real emitted-byte tests cover long sequences, not just one frame?
+- [ ] New capability probe: typed sentinel owner and split-reply test?
+- [ ] New width path: shared helpers and nonfatal clamping?

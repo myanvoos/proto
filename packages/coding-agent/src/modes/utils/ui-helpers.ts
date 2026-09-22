@@ -546,7 +546,7 @@ export class UiHelpers {
 			if (
 				nextToolName === "fleet" &&
 				previous.isDisplaceableBlock() &&
-				this.ctx.chatContainer.isBlockUncommitted(previous)
+				this.ctx.chatContainer.canRemoveBlock(previous)
 			) {
 				this.ctx.chatContainer.removeChild(previous);
 			}
@@ -563,13 +563,12 @@ export class UiHelpers {
 			}
 			if (previous.canBeDisplacedBy(nextToolName)) {
 				checklistSnapshot = null;
-				if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+				if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 					this.ctx.chatContainer.removeChild(previous);
 				}
 				previous.seal();
 				return;
 			}
-			if (nextToolName !== undefined) return;
 			checklistSnapshot = null;
 			previous.seal();
 		};
@@ -582,6 +581,14 @@ export class UiHelpers {
 
 			if (message.role === "assistant") {
 				const timeline = splitAssistantMessageToolTimeline(message);
+				const firstTool = message.content.find(content => content.type === "toolCall");
+				if (assistantHasVisibleContent(timeline.beforeTools)) {
+					resolveWaitingPoll();
+					resolveChecklistSnapshot();
+				} else if (firstTool?.type === "toolCall") {
+					resolveWaitingPoll(firstTool.name);
+					resolveChecklistSnapshot(firstTool.name);
+				}
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 				const lastChild = this.ctx.chatContainer.children[this.ctx.chatContainer.children.length - 1];
 				const assistantComponent = lastChild instanceof AssistantMessageComponent ? lastChild : undefined;
@@ -625,6 +632,7 @@ export class UiHelpers {
 						continue;
 					}
 					resolveWaitingPoll(content.name);
+					resolveChecklistSnapshot(content.name);
 
 					const partialJson = getStreamingPartialJson(content);
 					const rawInput = content.customWireName !== undefined;
@@ -685,7 +693,6 @@ export class UiHelpers {
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
 							showImages: settings.get("terminal.showImages"),
-							liveRegion: this.ctx.chatContainer,
 						},
 						tool,
 						this.ctx.ui,
@@ -837,7 +844,7 @@ export class UiHelpers {
 		if (index < 0) return false;
 
 		for (let i = index; i < chat.children.length; i++) {
-			if (!chat.isBlockUncommitted(chat.children[i]!)) return false;
+			if (!chat.canRemoveBlock(chat.children[i]!)) return false;
 		}
 
 		const context = this.ctx.viewSession.buildTranscriptSessionContext();
@@ -1002,8 +1009,11 @@ export class UiHelpers {
 				const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 				this.ctx.showStatus(`Session compacted ${times}`);
 			}
-			if (options.clearTerminalHistory) this.ctx.ui.requestRender(true, { clearScrollback: true });
-			else this.ctx.ui.requestRender();
+			if (options.clearTerminalHistory || chatWasAlreadyRendered) {
+				this.ctx.ui.requestRender(true, { clearScrollback: true });
+			} else {
+				this.ctx.ui.requestRender();
+			}
 			return window;
 		} finally {
 			if (!committed) {

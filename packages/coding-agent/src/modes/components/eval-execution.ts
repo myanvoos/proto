@@ -38,8 +38,6 @@ export class EvalExecutionComponent extends Container {
 	#truncation?: TruncationMeta;
 	#expanded = false;
 
-	#blockVersion = 0;
-	#onTranscriptBlockChange?: () => void;
 	#contentContainer: Container;
 	#ui: TUI;
 	#displayBudget = new PythonDisplayBudget();
@@ -85,25 +83,14 @@ export class EvalExecutionComponent extends Container {
 		return this.#status !== "running";
 	}
 
-	getTranscriptBlockVersion(): number {
-		return this.#blockVersion;
-	}
-
-	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
-		this.#onTranscriptBlockChange = listener;
-	}
-
 	setExpanded(expanded: boolean): void {
-		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	override invalidate(): void {
 		super.invalidate();
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	override dispose(): void {
@@ -112,8 +99,6 @@ export class EvalExecutionComponent extends Container {
 			this.#displayFlushTimer = undefined;
 		}
 		this.#complete = true;
-		this.#onTranscriptBlockChange?.();
-		this.#onTranscriptBlockChange = undefined;
 		super.dispose();
 	}
 
@@ -132,7 +117,6 @@ export class EvalExecutionComponent extends Container {
 		}
 
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	setComplete(
@@ -164,7 +148,6 @@ export class EvalExecutionComponent extends Container {
 		this.#flushDisplayBlocks();
 		this.#loader.stop();
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	/**
@@ -199,7 +182,6 @@ export class EvalExecutionComponent extends Container {
 		}
 		this.#convertKittyImages();
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	#convertKittyImages(): void {

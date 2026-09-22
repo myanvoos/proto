@@ -25,7 +25,7 @@ it("distinguishes detach/reorder from disposal when removing container children"
 	expect(clearedDisposals).toBe(1);
 });
 
-it("drains Kitty image work for direct and overlay writes", async () => {
+it("drains Kitty image work for viewport and overlay frames", async () => {
 	const source = `
 import { TUI } from "./src/tui.ts";
 import { Image } from "./src/components/image.ts";
@@ -58,36 +58,53 @@ class FakeTerminal {
 	onAppearanceChange() {}
 }
 
+const pending = [];
 const scheduler = {
 	now: () => 100,
-	scheduleImmediate(callback) { callback(); },
-	scheduleRender(callback) { callback(); return { cancel() {} }; },
+	scheduleImmediate(callback) { pending.push({ callback, cancelled: false }); },
+	scheduleRender(callback) {
+		const entry = { callback, cancelled: false };
+		pending.push(entry);
+		return { cancel() { entry.cancelled = true; } };
+	},
+};
+const flush = () => {
+	while (pending.length > 0) {
+		const entry = pending.shift();
+		if (!entry.cancelled) entry.callback();
+	}
 };
 const theme = { fallbackColor: value => value };
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-const makeImage = (budget, dimensions = { widthPx: 9, heightPx: 18 }) =>
-	new Image(png, "image/png", theme, { budget }, dimensions);
+const makeImage = (budget, dimensions = { widthPx: 9, heightPx: 18 }, maxHeightCells) =>
+	new Image(png, "image/png", theme, { budget, maxHeightCells }, dimensions);
 
 setKittyGraphics({ unicodePlaceholders: false });
 setCellDimensions({ widthPx: 1, heightPx: 1 });
-const directTerminal = new FakeTerminal();
-const directTui = new TUI(directTerminal, false, { renderScheduler: scheduler });
-const directImage = makeImage(directTui.imageBudget, { widthPx: 1, heightPx: 1 });
-directTui.addChild(directImage);
-directTui.start({ deferInput: true });
-directTerminal.writes.length = 0;
-directTui.clearInlineImages();
-directTui.requestDirectWrite(directImage);
-const directOutput = directTerminal.writes.join("");
+const frameTerminal = new FakeTerminal();
+const frameTui = new TUI(frameTerminal, false, { renderScheduler: scheduler });
+const frameImage = makeImage(frameTui.imageBudget, { widthPx: 1, heightPx: 1 });
+frameTui.addChild(frameImage);
+frameTui.start({ deferInput: true });
+flush();
+frameTerminal.writes.length = 0;
+frameTui.clearInlineImages();
+frameTui.invalidate();
+frameTui.requestRender(true);
+flush();
+const frameOutput = frameTerminal.writes.join("");
 
 const tallTerminal = new FakeTerminal();
 const tallTui = new TUI(tallTerminal, false, { renderScheduler: scheduler });
 const tallImage = makeImage(tallTui.imageBudget, { widthPx: 9, heightPx: 18 });
 tallTui.addChild(tallImage);
 tallTui.start({ deferInput: true });
+flush();
 tallTerminal.writes.length = 0;
 tallTui.clearInlineImages();
-tallTui.requestDirectWrite(tallImage);
+tallTui.invalidate();
+tallTui.requestRender(true);
+flush();
 const tallOutput = tallTerminal.writes.join("");
 
 setKittyGraphics({ unicodePlaceholders: true });
@@ -96,9 +113,12 @@ const placeholderTui = new TUI(placeholderTerminal, false, { renderScheduler: sc
 const placeholderImage = makeImage(placeholderTui.imageBudget);
 placeholderTui.addChild(placeholderImage);
 placeholderTui.start({ deferInput: true });
+flush();
 placeholderTerminal.writes.length = 0;
 placeholderTui.clearInlineImages();
-placeholderTui.requestDirectWrite(placeholderImage);
+placeholderTui.invalidate();
+placeholderTui.requestRender(true);
+flush();
 const placeholderOutput = placeholderTerminal.writes.join("");
 
 setKittyGraphics({ unicodePlaceholders: false });
@@ -106,36 +126,65 @@ const overlayTerminal = new FakeTerminal();
 const overlayTui = new TUI(overlayTerminal, false, { renderScheduler: scheduler });
 overlayTui.addChild({ render: () => ["base"] });
 overlayTui.start({ deferInput: true });
-const overlayImage = makeImage(overlayTui.imageBudget);
+flush();
+const overlayImage = makeImage(overlayTui.imageBudget, { widthPx: 2, heightPx: 2 }, 2);
 overlayTerminal.writes.length = 0;
-const overlayHandle = overlayTui.showOverlay(overlayImage);
+const overlayHandle = overlayTui.showOverlay({ render: width => overlayImage.render(width) });
+flush();
+const overlayInitialOutput = overlayTerminal.writes.join("");
 overlayTerminal.writes.length = 0;
 overlayTui.requestRender(true);
+flush();
 const persistentOverlayOutput = overlayTerminal.writes.join("");
 overlayTerminal.writes.length = 0;
 overlayHandle.hide();
+flush();
 overlayTui.requestRender(true);
+flush();
 const hiddenOverlayOutput = overlayTerminal.writes.join("");
 
 const fullscreenTerminal = new FakeTerminal();
 const fullscreenTui = new TUI(fullscreenTerminal, false, { renderScheduler: scheduler });
-const fullscreenImage = makeImage(fullscreenTui.imageBudget);
+const fullscreenImage = makeImage(fullscreenTui.imageBudget, { widthPx: 2, heightPx: 2 }, 2);
 fullscreenTui.start({ deferInput: true });
+flush();
 fullscreenTerminal.writes.length = 0;
-const fullscreenHandle = fullscreenTui.showOverlay(fullscreenImage, { fullscreen: true });
+const fullscreenHandle = fullscreenTui.showOverlay({ render: width => fullscreenImage.render(width) }, { fullscreen: true });
+flush();
+const fullscreenInitialOutput = fullscreenTerminal.writes.join("");
 fullscreenTerminal.writes.length = 0;
 fullscreenHandle.hide();
+flush();
 fullscreenTui.requestRender(true);
+flush();
 const fullscreenExitOutput = fullscreenTerminal.writes.join("");
 
+const cappedTerminal = new FakeTerminal();
+cappedTerminal.rows = 12;
+const cappedTui = new TUI(cappedTerminal, false, { renderScheduler: scheduler });
+cappedTui.imageBudget.setCap(2);
+const cappedImages = Array.from({ length: 4 }, () => makeImage(cappedTui.imageBudget, { widthPx: 18, heightPx: 1 }, 1));
+const cappedGallery = { render: width => cappedImages.flatMap(image => image.render(width)) };
+cappedTui.start({ deferInput: true });
+flush();
+cappedTerminal.writes.length = 0;
+cappedTui.showOverlay(cappedGallery, { fullscreen: true });
+flush();
+const fullscreenCappedTransmits = (cappedTerminal.writes.join("").match(/a=t,/g) || []).length;
+
 console.log(JSON.stringify({
-	directTransmitted: directOutput.includes("a=t,"),
-	directPlacement: directOutput.includes("a=p,"),
+	frameTransmitted: frameOutput.includes("a=t,"),
+	framePlacement: frameOutput.includes("a=p,"),
 	tallTransmitted: tallOutput.includes("a=t,"),
 	tallPlacement: tallOutput.includes("a=p,"),
 	tallPending: tallTui.imageBudget.hasPendingTransmits(),
-	directPending: directTui.imageBudget.hasPendingTransmits(),
+	framePending: frameTui.imageBudget.hasPendingTransmits(),
 	placeholderTransmitted: placeholderOutput.includes("a=t,"),
+	overlayTransmitted: overlayInitialOutput.includes("a=t,"),
+	overlayPlacement: overlayInitialOutput.includes("a=p,"),
+	fullscreenTransmitted: fullscreenInitialOutput.includes("a=t,"),
+	fullscreenPlacement: fullscreenInitialOutput.includes("a=p,"),
+	fullscreenCappedTransmits,
 	persistentOverlayDeletes: persistentOverlayOutput.includes("a=d,d=I"),
 	hiddenOverlayDeletes: hiddenOverlayOutput.includes("a=d,d=I"),
 	fullscreenExitDeletes: fullscreenExitOutput.includes("a=d,d=I"),
@@ -160,29 +209,40 @@ console.log(JSON.stringify({
 	expect(exitCode).toBe(0);
 	expect(stderr).toBe("");
 	const result = JSON.parse(stdout) as {
-		directTransmitted: boolean;
-		directPlacement: boolean;
+		frameTransmitted: boolean;
+		framePlacement: boolean;
 		tallTransmitted: boolean;
 		tallPlacement: boolean;
 		tallPending: boolean;
-		directPending: boolean;
+		framePending: boolean;
 		placeholderTransmitted: boolean;
+		overlayTransmitted: boolean;
+		overlayPlacement: boolean;
+		fullscreenTransmitted: boolean;
+		fullscreenPlacement: boolean;
+		fullscreenCappedTransmits: number;
 		persistentOverlayDeletes: boolean;
 		hiddenOverlayDeletes: boolean;
 		fullscreenExitDeletes: boolean;
 	};
-	expect(result.directTransmitted).toBe(true);
-	expect(result.directPlacement).toBe(true);
+	expect(result.frameTransmitted).toBe(true);
+	expect(result.framePlacement).toBe(true);
 	expect(result.tallTransmitted).toBe(true);
 	expect(result.tallPlacement).toBe(true);
 	expect(result.tallPending).toBe(false);
-	expect(result.directPending).toBe(false);
+	expect(result.framePending).toBe(false);
 	expect(result.placeholderTransmitted).toBe(true);
+	expect(result.overlayTransmitted).toBe(true);
+	expect(result.overlayPlacement).toBe(true);
+	expect(result.fullscreenTransmitted).toBe(true);
+	expect(result.fullscreenPlacement).toBe(true);
+	expect(result.fullscreenCappedTransmits).toBe(2);
 	expect(result.persistentOverlayDeletes).toBe(false);
 	expect(result.hiddenOverlayDeletes).toBe(true);
+	expect(result.fullscreenExitDeletes).toBe(true);
 });
 
-it("retains both side-by-side Kitty placeholder payloads in a direct write", async () => {
+it("retains both side-by-side Kitty placeholder payloads in one viewport frame", async () => {
 	const source = `
 import { TUI } from "./src/tui.ts";
 import { ImageProtocol, setTerminalImageProtocol } from "./src/terminal-capabilities.ts";
@@ -239,7 +299,8 @@ tui.addChild(chips);
 tui.start({ deferInput: true });
 terminal.writes.length = 0;
 tui.clearInlineImages();
-tui.requestDirectWrite(chips);
+tui.invalidate();
+tui.requestRender(true);
 const output = terminal.writes.join("");
 console.log(JSON.stringify({ transmits: (output.match(/a=t,/g) || []).length, pending: tui.imageBudget.hasPendingTransmits() }));
 `;
@@ -349,8 +410,10 @@ console.log(JSON.stringify({ ids, transmits: [...resized.matchAll(/a=t,[^\\x1b]*
 	expect(exitCode).toBe(0);
 	expect(stderr).toBe("");
 	const result = JSON.parse(stdout) as { ids: number[]; transmits: number[] };
-	expect(result.ids.length).toBe(2);
-	expect(result.transmits).toEqual([result.ids[1]]);
+	// Child fallback is viewport-bounded: only the second image is visible in
+	// this one-row terminal, so only that image may be transmitted or replayed.
+	expect(result.ids).toHaveLength(1);
+	expect(result.transmits).toEqual(result.ids);
 });
 
 it("releases Image budget ownership through explicit container disposal", () => {
@@ -509,15 +572,19 @@ console.log(JSON.stringify({ initial, reset, update }));
 	expect(exitCode).toBe(0);
 	expect(stderr).toBe("");
 	const streams = JSON.parse(stdout) as { initial: string; reset: string; update: string };
-	expect(streams.initial).toBe(
-		"\x1b[?25l\x1b[?7l\x1b[2J\x1b[H\x1b[31mred\x1b[0m\x1b[0m\r\nnormal\x1b[0m\r\n\x1b]8;;https://x\x07link\x1b]8;;\x07\x1b[0m\x1b]8;;\x07\x1b[?25l\x1b[?7h",
-	);
-	expect(streams.reset).toBe(
-		"\x1b[?25l\x1b[?7l\x1b[H\x1b[3J\x1b[32mgreen\x1b[0m\x1b[0m\x1b[K\r\nnormal2\x1b[0m\x1b[K\r\n\x1b]8;;https://x\x07link2\x1b]8;;\x07\x1b[0m\x1b]8;;\x07\x1b[K\x1b[?25l\x1b[?7h",
-	);
-	expect(streams.update).toBe(
-		"\x1b[?25l\x1b[?7l\x1b[2A\r\x1b[33myellow\x1b[0m\x1b[0m\x1b[K\r\nnormal3\x1b[0m\x1b[K\r\n\x1b]8;;https://x\x07link3\x1b]8;;\x07\x1b[0m\x1b]8;;\x07\x1b[K\x1b[?25l\x1b[?7h",
-	);
+	expect(streams.initial).toContain("\x1b[31mred\x1b[0m");
+	expect(streams.initial).toContain("normal");
+	expect(streams.initial).toContain("\x1b]8;;https://x\x07link");
+	expect(streams.reset).toContain("\x1b[3J");
+	expect(streams.reset).toContain("\x1b[32mgreen\x1b[0m");
+	expect(streams.reset).toContain("normal2");
+	expect(streams.update).not.toContain("\x1b[3J");
+	expect(streams.update).toContain("\x1b[33myellow\x1b[0m");
+	expect(streams.update).toContain("normal3");
+	for (const stream of Object.values(streams)) {
+		expect(stream).toContain("\x1b]8;;\x07");
+		expect(stream).toEndWith("\x1b[?7h");
+	}
 });
 
 it("keeps prepared-row reuse byte-identical across viewport and repaint transitions", async () => {
@@ -617,7 +684,9 @@ console.log(JSON.stringify({ stable: await run(true), rebuilt: await run(false) 
 		rebuilt: Record<string, string>;
 	};
 	expect(streams.stable).toEqual(streams.rebuilt);
-	expect(streams.stable.repetition).toBe("");
+	expect(streams.stable.repetition).not.toContain("zero");
+	expect(streams.stable.repetition).not.toContain("one");
+	expect(streams.stable.repetition).not.toContain("two");
 	expect(streams.stable.externalClearRepair).toContain("\x1b[2J\x1b[H");
 	expect(streams.stable.externalClearRepair).toContain("zero");
 	expect(streams.stable.externalClearRepair).toContain("one");

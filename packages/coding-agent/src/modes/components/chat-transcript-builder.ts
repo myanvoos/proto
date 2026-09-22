@@ -129,7 +129,7 @@ export class ChatTranscriptBuilder {
 		const previous = this.#waitingPoll;
 		if (!previous) return;
 		this.#waitingPoll = null;
-		if (nextToolName === "fleet" && previous.isDisplaceableBlock() && this.container.isBlockUncommitted(previous)) {
+		if (nextToolName === "fleet" && previous.isDisplaceableBlock() && this.container.canRemoveBlock(previous)) {
 			this.container.disposeAndRemoveChild(previous);
 		}
 		previous.seal();
@@ -144,13 +144,12 @@ export class ChatTranscriptBuilder {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#checklistSnapshot = null;
-			if (this.container.isBlockUncommitted(previous)) {
+			if (this.container.canRemoveBlock(previous)) {
 				this.container.disposeAndRemoveChild(previous);
 			}
 			previous.seal();
 			return;
 		}
-		if (nextToolName !== undefined) return;
 		this.#checklistSnapshot = null;
 		previous.seal();
 	}
@@ -282,6 +281,14 @@ export class ChatTranscriptBuilder {
 		const hideThinkingBlock = this.deps.hideThinkingBlock?.() ?? false;
 		const proseOnlyThinking = this.deps.proseOnlyThinking ? this.deps.proseOnlyThinking() : true;
 		const timeline = splitAssistantMessageToolTimeline(message);
+		const firstTool = message.content.find(content => content.type === "toolCall");
+		if (assistantHasVisibleContent(timeline.beforeTools)) {
+			this.#resolveWaitingPoll();
+			this.#resolveChecklistSnapshot();
+		} else if (firstTool?.type === "toolCall") {
+			this.#resolveWaitingPoll(firstTool.name);
+			this.#resolveChecklistSnapshot(firstTool.name);
+		}
 		const assistantComponent = new AssistantMessageComponent(
 			timeline.beforeTools,
 			hideThinkingBlock,
@@ -331,6 +338,7 @@ export class ChatTranscriptBuilder {
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
 			this.#resolveWaitingPoll(content.name);
+			this.#resolveChecklistSnapshot(content.name);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
 			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
@@ -363,7 +371,6 @@ export class ChatTranscriptBuilder {
 					useBuiltInRenderer: this.deps.isBuiltInTool?.(content.name) ?? true,
 
 					showImages: settings.get("terminal.showImages"),
-					liveRegion: this.container,
 				},
 				this.deps.getTool?.(content.name),
 				this.deps.ui,

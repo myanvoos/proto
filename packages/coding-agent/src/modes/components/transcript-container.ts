@@ -1,326 +1,194 @@
-import {
-	type Component,
-	Container,
-	getWidthConfigEpoch,
-	type NativeScrollbackCommittedRows,
-	type NativeScrollbackLiveRegion,
-	type NativeScrollbackWidthEpoch,
-	type RenderStablePrefix,
-	type ViewportTailProvider,
-} from "@oh-my-pi/pi-tui";
+import { type Component, Container, type HistoryBatch } from "@oh-my-pi/pi-tui";
+import { logger } from "@oh-my-pi/pi-utils";
 import { isToolActivityComponent } from "./tool-activity";
+
+/** Shared animation time supplied by the constrained transcript root. */
+export interface AnimationFrame {
+	readonly tick: number;
+	readonly now: number;
+}
+
+/** Lets an active block adapt its presentation to its allocated viewport rows. */
+export interface TranscriptPresentationTarget {
+	setTranscriptAllocation?(rows: number, frame: AnimationFrame): void;
+}
+
+/** Presentation declaration captured permanently when a block is added. */
+export type TranscriptBlockMode = "mutable" | "appendOnly";
+
+/** Immutable width-independent identity for one stable semantic row. */
+export interface TranscriptStableRow {
+	readonly key: string;
+}
+
+/**
+ * Explicit semantic-row contract for a block whose stable head may enter native
+ * history before finalization. Every later array must extend the prior keys
+ * exactly; each row renderer is deterministic for its width.
+ * A publication that breaks these invariants (e.g. a mid-stream theme change
+ * re-coloring already-emitted bytes) freezes further stable-row emission for
+ * that block instead of failing the render — see {@link TranscriptContainer}.
+ */
+export interface AppendOnlyTranscriptBlock {
+	readonly transcriptBlockMode: "appendOnly";
+	getTranscriptStableRows(): readonly TranscriptStableRow[];
+	/**
+	 * Render the first `count` semantic rows at the requested current width.
+	 * Counts are monotonic identities, not physical row counts; this output must
+	 * prefix the block's full render at the same width.
+	 */
+	renderTranscriptStableRows(count: number, width: number): readonly string[];
+	/**
+	 * Discard every published stable row so the block re-renders its head from
+	 * scratch. Called only alongside a destructive display reset (e.g. a
+	 * thinking-visibility toggle) that clears the native scrollback those rows
+	 * occupied — the sole context in which the append-only "published bytes never
+	 * change" contract may be retracted. Optional: blocks whose stable-row
+	 * presentation never changes may omit it.
+	 */
+	resetTranscriptStableRows?(): void;
+}
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
-
-	getTranscriptBlockVersion?(): number;
-
-	getTranscriptBlockSettledRows?(): number;
-
-	isDisplaceableBlock?(): boolean;
-
-	seal?(): void;
+	/** Render the row that must remain represented under emergency viewport pressure. */
+	renderTranscriptBlockEmergencyRow?(width: number): string | undefined;
 }
 
-interface TranscriptBlockChangeSubscription {
-	setTranscriptBlockChangeListener?(listener: (() => void) | undefined): void;
+/**
+ * Block lifecycle:
+ * - `active`: still mutating; renders live and counts against tool admission.
+ * - `settled`: finalized but retained in the mutable viewport until pressure.
+ * - `committed`: logically retired; replay never rewinds this state.
+ */
+type BlockState = "active" | "settled" | "committed";
+
+interface TranscriptEntry {
+	component: Component;
+	state: BlockState;
+	mode: TranscriptBlockMode;
+	stableRows: readonly TranscriptStableRow[];
+	renderedStableByWidth: Map<number, readonly string[]>;
+	/**
+	 * Rendered row counts per `(width, snapshot count)`: lets the projected
+	 * length skip the re-render when the same prefix was already rendered.
+	 * Keyed on both dimensions because one snapshot commonly renders to
+	 * multiple physical rows (Markdown wrap).
+	 */
+	stableRowCountByWidth: Map<number, Map<number, number>>;
+	emitted: number;
+	/**
+	 * Set when a published stable row drifted (retraction, byte change within a
+	 * width epoch, or no longer a render prefix). Rows already in native
+	 * scrollback cannot be retracted, so the entry keeps its last good stable
+	 * state for emitted-row slicing but never emits another mid-stream row.
+	 */
+	stableFrozen: boolean;
 }
 
-interface ActiveTranscriptBlockListeners {
-	dispatcher: () => void;
-	listeners: Set<() => void>;
+type RetirementPolicy = "pressure" | "flush";
+type Offered = { width: number } & (
+	| { batch: HistoryBatch; kind: "append"; entry: number; emittedEnd: number }
+	| { batch: HistoryBatch; kind: "commit"; end: number }
+	| { batch: HistoryBatch; kind: "replay"; end: number; emittedEnd: number }
+);
+
+const MAX_LIVE_BLOCKS = 256;
+/** Grace before a pressure-blocked frontier is reported; a streaming block may legitimately hold it briefly. */
+const PINNED_FRONTIER_WARN_MS = 30_000;
+const EMPTY_ROWS: readonly string[] = [];
+const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
+
+function isFinalized(component: Component): boolean {
+	const block = component as Component & FinalizableBlock;
+	return block.isTranscriptBlockFinalized?.() ?? true;
 }
 
-const activeTranscriptBlockListeners = new WeakMap<Component, ActiveTranscriptBlockListeners>();
+function blockMode(component: Component): TranscriptBlockMode {
+	return (component as Component & Partial<AppendOnlyTranscriptBlock>).transcriptBlockMode === "appendOnly"
+		? "appendOnly"
+		: "mutable";
+}
 
-function addBlockChangeListener(child: Component, listener: () => void): boolean {
-	const setListener = (child as Component & TranscriptBlockChangeSubscription).setTranscriptBlockChangeListener;
-	if (typeof setListener !== "function") return false;
-	let active = activeTranscriptBlockListeners.get(child);
-	if (!active) {
-		const listeners = new Set<() => void>();
-		const dispatcher = (): void => {
-			for (const callback of listeners) callback();
-		};
-		active = { dispatcher, listeners };
-		activeTranscriptBlockListeners.set(child, active);
-		setListener.call(child, dispatcher);
+function isPlainBlank(line: string): boolean {
+	return !/\S/.test(line);
+}
+
+/** Whether `prefix` matches `rows` byte-for-byte from the top. */
+export function isRowPrefix(prefix: readonly string[], rows: readonly string[]): boolean {
+	if (prefix.length > rows.length) return false;
+	for (let index = 0; index < prefix.length; index++) {
+		if (prefix[index] !== rows[index]) return false;
 	}
-	active.listeners.add(listener);
 	return true;
 }
 
-function removeBlockChangeListener(child: Component, listener: () => void): void {
-	const active = activeTranscriptBlockListeners.get(child);
-	if (!active) return;
-	active.listeners.delete(listener);
-	if (active.listeners.size > 0) return;
-	const setListener = (child as Component & TranscriptBlockChangeSubscription).setTranscriptBlockChangeListener;
-	if (typeof setListener === "function") setListener.call(child, undefined);
-	activeTranscriptBlockListeners.delete(child);
+function isStablePrefix(prefix: readonly TranscriptStableRow[], rows: readonly TranscriptStableRow[]): boolean {
+	if (prefix.length > rows.length) return false;
+	for (let index = 0; index < prefix.length; index++) {
+		if (prefix[index]!.key !== rows[index]!.key) return false;
+	}
+	return true;
 }
 
-function hasBlockChangeListener(child: Component, listener: (() => void) | undefined): boolean {
-	return listener !== undefined && activeTranscriptBlockListeners.get(child)?.listeners.has(listener) === true;
-}
-
-function hasCustomReplay(component: Component): boolean {
-	const replay = (component as Component & Partial<{ prepareNativeScrollbackReplay(): void }>)
-		.prepareNativeScrollbackReplay;
-	if (typeof replay === "function" && replay !== Container.prototype.prepareNativeScrollbackReplay) return true;
-	const children = (component as Component & Partial<{ children: Component[] }>).children;
-	return children?.some(child => hasCustomReplay(child)) === true;
-}
-
-function isBlockFinalized(child: Component): boolean {
-	const fn = (child as Component & FinalizableBlock).isTranscriptBlockFinalized;
-	return fn ? fn.call(child) : true;
-}
-
-function isBlockDisplaceable(child: Component): boolean {
-	return (child as Component & FinalizableBlock).isDisplaceableBlock?.() === true;
-}
-
-function isBlockPinned(child: Component): boolean {
-	return (child as Component & Partial<NativeScrollbackLiveRegion>).isNativeScrollbackLiveRegionPinned?.() === true;
-}
-
-function getBlockVersion(child: Component): number | undefined {
-	const fn = (child as Component & FinalizableBlock).getTranscriptBlockVersion;
-	return fn ? fn.call(child) : undefined;
-}
-
-function getBlockSettledRows(child: Component): number {
-	const fn = (child as Component & FinalizableBlock).getTranscriptBlockSettledRows;
-	if (!fn) return 0;
-	const value = fn.call(child);
-	return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
-}
-
-function sealCommittedSnapshot(child: Component): void {
-	const block = child as Component & FinalizableBlock;
-	if (block.isDisplaceableBlock?.()) block.seal?.();
-}
-
-function setBlockCommittedRows(child: Component, rows: number): void {
-	(child as Component & Partial<NativeScrollbackCommittedRows>).setNativeScrollbackCommittedRows?.(rows);
-}
-
-const NON_WHITESPACE = /\S/;
-function isPlainBlank(line: string): boolean {
-	return !NON_WHITESPACE.test(line);
-}
-
-function stripPlainBlankEdges(lines: readonly string[]): readonly string[] {
+/** Strip leading/trailing all-blank rows; the viewport allocator measures blocks by this trimmed height. */
+export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 	let start = 0;
-	let end = lines.length;
-	while (start < end && isPlainBlank(lines[start]!)) start++;
-	while (end > start && isPlainBlank(lines[end - 1]!)) end--;
-	return start === 0 && end === lines.length ? lines : lines.slice(start, end);
+	let end = rows.length;
+	while (start < end && isPlainBlank(rows[start]!)) start++;
+	while (end > start && isPlainBlank(rows[end - 1]!)) end--;
+	return start === 0 && end === rows.length ? rows : rows.slice(start, end);
 }
 
-interface BlockSegment {
-	component: Component;
-	rawRef: readonly string[];
-	contribution: readonly string[];
-	width: number;
-	generation: number;
-
-	startRow: number;
-
-	rowCount: number;
-	sep: number;
-
-	finalized: boolean;
-
-	version: number | undefined;
-	changeTracked: boolean;
-
-	committedRows: number;
-}
-
-const EMPTY_SEGMENTS: BlockSegment[] = [];
-
-const EMPTY_TAIL: readonly string[] = [];
-
-export class TranscriptContainer
-	extends Container
-	implements
-		NativeScrollbackLiveRegion,
-		NativeScrollbackCommittedRows,
-		NativeScrollbackWidthEpoch,
-		RenderStablePrefix,
-		ViewportTailProvider
-{
+/** Owns transcript order, live capacity, and ordered immutable retirement. */
+export class TranscriptContainer extends Container {
+	#entries: TranscriptEntry[] = [];
+	#frontier = 0;
+	#nextBatchId = 1;
+	#offered: Offered | undefined;
+	#replayPending = false;
 	#toolActivityVisible = true;
-
-	#generation = 0;
-
-	#nativeScrollbackLiveRegionStart: number | undefined;
-	#nativeScrollbackLiveRegionPinned = false;
-
-	#nativeScrollbackLiveRegionPinnedStart: number | undefined;
-
-	#lines: string[] = [];
-	#segments: BlockSegment[] = EMPTY_SEGMENTS;
-	#renderWidth = -1;
-	#renderedWidthEpoch = -1;
+	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
+	// Start rows from the last full render(), keyed by child component (transcript deep-links).
+	#childStartRows = new Map<Component, number>();
+	// Watchdog for the wedge where an unfinalized frontier block pins pressure
+	// retirement: everything behind it stays live and degrades to one-line
+	// allocations. Logs once per pinned episode after a grace period.
+	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
 	#renderRevision = 0;
-
-	#committedRows = 0;
-	#committedRowsDirty = false;
-	// Earliest current-frame row whose committed layout or bytes may differ from
-	// the prior committed prefix. The TUI consumes this after render().
-	#committedDirtyFromRow: number | undefined;
-	#committedDirtySegments = new Set<BlockSegment>();
-	#dirtyComponents = new Set<Component>();
-	#renderDirtyComponents = new Set<Component>();
-	#dirtyFromIndex = Number.POSITIVE_INFINITY;
-	#renderDirtyFromIndex = Number.POSITIVE_INFINITY;
-	#componentIndices = new WeakMap<Component, number>();
-	#trackedComponents = new WeakSet<Component>();
-	#trackedChildren = new Set<Component>();
-	#blockListeners = new WeakMap<Component, () => void>();
-	#widthEpochBoundaries = new WeakMap<
-		object,
-		{
-			segment: {
-				component: Component;
-				finalized: boolean;
-				version: number | undefined;
-				rowCount: number;
-			};
-			segmentIndex: number;
-			childBoundary: unknown;
-			childHasBoundary: boolean;
-			precedingSegments: Array<{
-				component: Component;
-				finalized: boolean;
-				version: number | undefined;
-			}>;
-			trailingSegments: Array<{
-				component: Component;
-				finalized: boolean;
-				version: number | undefined;
-				rowCount: number;
-			}>;
-		}
-	>();
-
-	#stableRowsFloor = 0;
-	#childrenRevision = 0;
-	#childrenExternallyAssigned = false;
-	#childrenListenersDirty = false;
-	#childrenDirtyFromIndex = Number.POSITIVE_INFINITY;
-	#settingChildrenInternally = false;
-	#mutatingChildrenInternally = false;
-	#renderedChildrenRevision = -1;
-	#renderedGeneration = -1;
-	#stablePrefixLength = 0;
-
-	#noteBlockChange(component: Component): void {
-		this.#dirtyComponents.add(component);
-		const index = this.#componentIndices.get(component);
-		if (index !== undefined && index < this.#dirtyFromIndex) this.#dirtyFromIndex = index;
-	}
-
-	#attachBlockListener(component: Component): void {
-		if (this.#blockListeners.has(component)) return;
-		const listener = () => this.#noteBlockChange(component);
-		if (!addBlockChangeListener(component, listener)) return;
-		this.#blockListeners.set(component, listener);
-		this.#trackedComponents.add(component);
-		this.#trackedChildren.add(component);
-	}
-
-	#detachBlockListener(component: Component): void {
-		const listener = this.#blockListeners.get(component);
-		if (listener !== undefined) removeBlockChangeListener(component, listener);
-		this.#blockListeners.delete(component);
-		this.#trackedComponents.delete(component);
-		this.#trackedChildren.delete(component);
-	}
-
-	#reconcileBlockListeners(): void {
-		const currentChildren = new Set(this.children);
-		for (const child of this.#trackedChildren) {
-			if (currentChildren.has(child)) continue;
-			this.#detachBlockListener(child);
-		}
-		for (const child of currentChildren) {
-			if (!this.#trackedChildren.has(child)) this.#attachBlockListener(child);
-		}
-	}
-
-	constructor() {
-		super();
-		let children = this.children;
-		const markChildrenChanged = (property: string | symbol, previous: unknown, value?: unknown): void => {
-			this.#childrenRevision++;
-			let index = 0;
-			if (typeof property === "string") {
-				if (/^(?:0|[1-9]\d*)$/.test(property)) index = Number(property);
-				else if (property === "length" && typeof value === "number" && typeof previous === "number") {
-					index = Math.min(value, previous);
-				}
-			}
-			this.#childrenDirtyFromIndex = Math.min(this.#childrenDirtyFromIndex, index);
-			if (!this.#mutatingChildrenInternally) this.#childrenListenersDirty = true;
-		};
-		const wrapChildren = (target: Component[]): Component[] =>
-			new Proxy(target, {
-				set: (array, property, value, receiver) => {
-					const previous = Reflect.get(array, property, receiver);
-					const changed = Reflect.set(array, property, value, receiver);
-					if (changed && previous !== value) markChildrenChanged(property, previous, value);
-					return changed;
-				},
-				deleteProperty: (array, property) => {
-					const existed = Reflect.has(array, property);
-					const deleted = Reflect.deleteProperty(array, property);
-					if (deleted && existed) markChildrenChanged(property, property, undefined);
-					return deleted;
-				},
-			});
-		children = wrapChildren(children);
-		Object.defineProperty(this, "children", {
-			configurable: true,
-			enumerable: true,
-			get: () => children,
-			set: (next: Component[]) => {
-				if (next === children) return;
-				children = wrapChildren(next);
-				if (!this.#settingChildrenInternally) this.#childrenExternallyAssigned = true;
-				markChildrenChanged("length", 0, children.length);
-			},
+	#renderedRows: readonly string[] = [];
+	override addChild(component: Component): void {
+		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
+		super.addChild(component);
+		this.#entries.push({
+			component,
+			state: "active",
+			mode: blockMode(component),
+			stableRows: EMPTY_STABLE_ROWS,
+			renderedStableByWidth: new Map(),
+			stableRowCountByWidth: new Map(),
+			emitted: 0,
+			stableFrozen: false,
 		});
 	}
 
-	override addChild(component: Component): void {
-		const wasEmpty = this.children.length === 0;
-		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
-		this.#mutatingChildrenInternally = true;
-		try {
-			super.addChild(component);
-		} finally {
-			this.#mutatingChildrenInternally = false;
-		}
-		this.#attachBlockListener(component);
-		if (wasEmpty && this.onFirstContent) this.onFirstContent();
-	}
-
 	override removeChild(component: Component): void {
-		const hadChild = this.children.includes(component);
-		this.#mutatingChildrenInternally = true;
-		try {
-			super.removeChild(component);
-		} finally {
-			this.#mutatingChildrenInternally = false;
-		}
-		if (hadChild && !this.children.includes(component)) this.#detachBlockListener(component);
+		if (this.children.indexOf(component) < 0 || !this.canRemoveBlock(component)) return;
+		super.removeChild(component);
+		this.#entries = this.#entries.filter(candidate => candidate.component !== component);
+		this.#frontier = Math.min(this.#frontier, this.#entries.length);
+		this.#childStartRows.delete(component);
 	}
 
-	onFirstContent?: () => void;
+	override clear(): void {
+		super.clear();
+		this.#entries = [];
+		this.#frontier = 0;
+		this.#offered = undefined;
+		this.#childStartRows.clear();
+		this.#pinnedFrontier = undefined;
+		this.#replayPending = false;
+	}
 
 	setToolActivityVisible(visible: boolean): void {
 		if (this.#toolActivityVisible === visible) return;
@@ -331,627 +199,685 @@ export class TranscriptContainer
 		this.invalidate();
 	}
 
-	override invalidate(): void {
-		this.#generation++;
-		super.invalidate();
-	}
-
-	override clear(): void {
-		this.#generation++;
-		for (const child of this.#trackedChildren) this.#detachBlockListener(child);
-		this.#trackedChildren.clear();
-		this.#trackedComponents = new WeakSet();
-		this.#blockListeners = new WeakMap();
-		this.#dirtyComponents.clear();
-		this.#renderDirtyComponents.clear();
-		this.#dirtyFromIndex = Number.POSITIVE_INFINITY;
-		this.#renderDirtyFromIndex = Number.POSITIVE_INFINITY;
-		this.#componentIndices = new WeakMap();
-		this.#settingChildrenInternally = true;
-		try {
-			super.clear();
-		} finally {
-			this.#settingChildrenInternally = false;
-		}
-		this.#childrenExternallyAssigned = false;
-		this.#childrenListenersDirty = false;
-		this.#childrenDirtyFromIndex = Number.POSITIVE_INFINITY;
-		this.#lines = [];
-		this.#segments = EMPTY_SEGMENTS;
-		this.#renderWidth = -1;
-		this.#stableRowsFloor = 0;
-		this.#widthEpochBoundaries = new WeakMap();
-		this.#nativeScrollbackLiveRegionStart = undefined;
-		this.#nativeScrollbackLiveRegionPinned = false;
-		this.#nativeScrollbackLiveRegionPinnedStart = undefined;
-		this.#committedRows = 0;
-		this.#committedRowsDirty = false;
-		this.#committedDirtyFromRow = undefined;
-		this.#committedDirtySegments.clear();
-		this.#renderedChildrenRevision = -1;
-		this.#renderedGeneration = -1;
-		this.#stablePrefixLength = 0;
-	}
-
-	override dispose(): void {
-		for (const child of this.#trackedChildren) this.#detachBlockListener(child);
-		this.#trackedChildren.clear();
-		this.#trackedComponents = new WeakSet();
-		this.#blockListeners = new WeakMap();
-		this.#generation++;
-		this.#stablePrefixLength = 0;
-		this.#committedDirtyFromRow = undefined;
-		super.dispose();
-	}
-
-	override prepareNativeScrollbackReplay(): void {
-		super.prepareNativeScrollbackReplay();
-		this.#committedRowsDirty = true;
-		for (const child of this.children) {
-			if (hasCustomReplay(child)) this.#noteBlockChange(child);
-		}
-	}
-
-	#publishCommittedRows(segment: BlockSegment): void {
-		const committedContribution = Math.min(
-			segment.contribution.length,
-			Math.max(0, this.#committedRows - segment.startRow - segment.sep),
-		);
-		let committedBlockRows = 0;
-		if (committedContribution > 0) {
-			let leadingTrimmedRows = 0;
-			while (leadingTrimmedRows < segment.rawRef.length && isPlainBlank(segment.rawRef[leadingTrimmedRows]!)) {
-				leadingTrimmedRows++;
-			}
-			committedBlockRows = Math.min(segment.rawRef.length, leadingTrimmedRows + committedContribution);
-		}
-		setBlockCommittedRows(segment.component, committedBlockRows);
-		segment.committedRows = committedBlockRows;
-	}
-
-	override setNativeScrollbackCommittedRows(rows: number): void {
-		const committed = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
-		const previousCommitted = this.#committedRows;
-		this.#committedRows = committed;
-		if (!this.#committedRowsDirty && committed === previousCommitted && this.#committedDirtySegments.size === 0)
-			return;
-
-		const affected = new Set(this.#committedDirtySegments);
-		if (this.#committedRowsDirty) {
-			for (const segment of this.#segments) affected.add(segment);
-		} else if (committed !== previousCommitted) {
-			const low = Math.min(committed, previousCommitted);
-			const high = Math.max(committed, previousCommitted);
-			let left = 0;
-			let right = this.#segments.length;
-			while (left < right) {
-				const middle = (left + right) >>> 1;
-				const segment = this.#segments[middle]!;
-				if (segment.startRow + segment.rowCount <= low) left = middle + 1;
-				else right = middle;
-			}
-			for (let index = left; index < this.#segments.length; index++) {
-				const segment = this.#segments[index]!;
-				if (segment.startRow >= high) break;
-				affected.add(segment);
+	/**
+	 * Forget the append-only emission ledger — emitted counts, published stable
+	 * rows, per-width render cache, and freeze state — for every block, and ask
+	 * each append-only block to drop its own published rows. The next replay then
+	 * re-renders each block from its current {@link Component.render}, applying a
+	 * changed presentation (e.g. a thinking-visibility toggle) to rows that were
+	 * already emitted as stable heads while streaming (#10177).
+	 *
+	 * Callers MUST pair this with a scrollback-clearing {@link resetDisplay}: the
+	 * emitted rows it forgets still sit in native history until that clear
+	 * rewrites them, so unpaired use would duplicate them on the next retirement.
+	 */
+	resetStableEmission(): void {
+		this.#syncEntries();
+		if (this.#offered?.kind === "append") this.#offered = undefined;
+		for (const entry of this.#entries) {
+			entry.emitted = 0;
+			entry.stableRows = EMPTY_STABLE_ROWS;
+			entry.renderedStableByWidth = new Map();
+			entry.stableRowCountByWidth = new Map();
+			entry.stableFrozen = false;
+			if (entry.mode === "appendOnly") {
+				(entry.component as Component & AppendOnlyTranscriptBlock).resetTranscriptStableRows?.();
 			}
 		}
-		for (const segment of affected) this.#publishCommittedRows(segment);
-		this.#committedRowsDirty = false;
-		this.#committedDirtySegments.clear();
 	}
 
-	override captureNativeScrollbackWidthEpoch(): unknown {
-		const segment = this.#segments.find(candidate => !candidate.finalized) ?? this.#segments.at(-1);
-		if (!segment) return undefined;
-		const child = segment.component as Component & Partial<NativeScrollbackWidthEpoch>;
-		const childHasBoundary =
-			typeof child.captureNativeScrollbackWidthEpoch === "function" &&
-			typeof child.resolveNativeScrollbackWidthEpoch === "function" &&
-			typeof child.getNativeScrollbackWidthEpochRows === "function";
-		const segmentIndex = this.#segments.indexOf(segment);
-		const marker = {};
-		this.#widthEpochBoundaries.set(marker, {
-			segment: {
-				component: segment.component,
-				finalized: segment.finalized,
-				version: segment.version,
-				rowCount: segment.rowCount,
-			},
-			segmentIndex,
-			childBoundary: childHasBoundary ? child.captureNativeScrollbackWidthEpoch?.() : undefined,
-			childHasBoundary,
-			precedingSegments: this.#segments.slice(0, segmentIndex).map(candidate => ({
-				component: candidate.component,
-				finalized: candidate.finalized,
-				version: candidate.version,
-			})),
-			trailingSegments: this.#segments.slice(segmentIndex + 1).map(candidate => ({
-				component: candidate.component,
-				finalized: candidate.finalized,
-				version: candidate.version,
-				rowCount: candidate.rowCount,
-			})),
-		});
-		return marker;
+	/** Whether a transient block may be discarded without leaving tape history. */
+	canRemoveBlock(component: Component): boolean {
+		this.#syncEntries();
+		const index = this.#entries.findIndex(entry => entry.component === component);
+		if (index < 0) return false;
+		const entry = this.#entries[index]!;
+		if (entry.state === "committed" || entry.emitted > 0) return false;
+		if ((this.#offered?.kind === "commit" || this.#offered?.kind === "replay") && index < this.#offered.end)
+			return false;
+		if (
+			(this.#offered?.kind === "append" && index === this.#offered.entry) ||
+			(this.#offered?.kind === "replay" && index === this.#offered.end && this.#offered.emittedEnd > 0)
+		)
+			return false;
+		return true;
 	}
 
-	override resolveNativeScrollbackWidthEpoch(boundary: unknown): number | undefined {
-		if (typeof boundary !== "object" || boundary === null) return undefined;
-		const marker = this.#widthEpochBoundaries.get(boundary);
-		if (!marker) return undefined;
-		const currentIndex = marker.segmentIndex;
-		const current = this.#segments[currentIndex];
-		if (!current || current.component !== marker.segment.component) return undefined;
-		if (currentIndex !== marker.precedingSegments.length) return undefined;
-		for (let i = 0; i < marker.precedingSegments.length; i++) {
-			const captured = marker.precedingSegments[i]!;
-			const preceding = this.#segments[i]!;
+	/** Lifecycle state per block in transcript order (diagnostics and tests). */
+	blockStates(): readonly BlockState[] {
+		this.#syncEntries();
+		return this.#entries.map(entry => entry.state);
+	}
 
+	/** Permanently captured presentation mode per block (diagnostics and tests). */
+	blockModes(): readonly TranscriptBlockMode[] {
+		this.#syncEntries();
+		return this.#entries.map(entry => entry.mode);
+	}
+
+	/** Emitted stable semantic-row counts in transcript order. */
+	emittedStableRows(): readonly number[] {
+		this.#syncEntries();
+		return this.#entries.map(entry => entry.emitted);
+	}
+
+	/** Whether visible active capacity and live-block memory permit another admission. */
+	canAdmit(rows: number): boolean {
+		const active = this.#entries.filter(entry => entry.state === "active").length;
+		return Math.max(0, Math.trunc(rows)) > active && this.#liveCount() < MAX_LIVE_BLOCKS;
+	}
+
+	/** Prepares one atomic replay of the committed ledger and an emitted active-head prefix. */
+	beginReplay(): void {
+		this.#syncEntries();
+		this.#offered = undefined;
+		this.resetStableEmission();
+		this.#replayPending = true;
+	}
+
+	/**
+	 * Drop a not-yet-offered replay so a shutdown flush emits only un-retired
+	 * rows. The terminal already holds the committed ledger; re-streaming it at
+	 * quit is pure write volume. An already offered replay batch stays valid.
+	 */
+	cancelReplay(): void {
+		this.#replayPending = false;
+	}
+
+	/** Total rows the live, un-emitted tail occupies at `width`. */
+	liveRowCount(width: number): number {
+		this.#syncEntries();
+		this.#settleFinalized();
+		let total = 0;
+		for (const { entry, index } of this.#liveEntries()) {
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const rendered = this.#renderEntry(entry, width);
+			const block = rendered.slice(this.#projectedEmittedRowCount(entry, index, width));
+			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
+		}
+		return total;
+	}
+
+	/** Render the live tail, constrained to the supplied transcript height. */
+	renderViewport(width: number, rows: number, frame: AnimationFrame): readonly string[] {
+		this.#lastFrame = frame;
+		this.#syncEntries();
+		this.#settleFinalized();
+		const live = this.#liveEntries();
+		const capacity = Math.max(0, Math.trunc(rows));
+		if (live.length === 0 || capacity === 0) {
+			return EMPTY_ROWS;
+		}
+
+		const shown: Array<{ entry: TranscriptEntry; index: number }> = [];
+		const blocks: (readonly string[])[] = [];
+		let total = 0;
+		for (const candidate of live) {
+			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, frame);
+			const rendered = this.#renderEntry(candidate.entry, width);
+			const block = rendered.slice(this.#projectedEmittedRowCount(candidate.entry, candidate.index, width));
+			if (block.length === 0) continue;
+			total += block.length + (shown.length > 0 ? 1 : 0);
+			shown.push(candidate);
+			blocks.push(block);
+		}
+		if (shown.length === 0) {
+			return EMPTY_ROWS;
+		}
+		if (shown.length > capacity) return this.#renderEmergency(shown, width, capacity, frame);
+		if (total <= capacity) {
+			const output: string[] = [];
+			for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+				if (output.length > 0) {
+					output.push("");
+				}
+				for (const line of blocks[blockIndex]!) {
+					output.push(line);
+				}
+			}
+			return output;
+		}
+
+		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
+		const allocation: number[] = new Array(shown.length).fill(1);
+		let surplus = capacity - shown.length;
+		// Surplus rows favor ordinary transcript blocks over dynamic tool-activity
+		// cards (newest-first within each class), so a growing tool card collapses to
+		// its compact form instead of clipping already-visible assistant text (#9718).
+		const order: number[] = [];
+		for (let index = shown.length - 1; index >= 0; index--) {
+			if (!isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
+		}
+		for (let index = shown.length - 1; index >= 0; index--) {
+			if (isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
+		}
+		for (const index of order) {
+			if (surplus <= 0) break;
+			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
+			allocation[index] += extra;
+			surplus -= extra;
+		}
+		const output: string[] = [];
+		for (let index = 0; index < shown.length; index++) {
+			const candidate = shown[index]!;
+			const allocated = allocation[index]!;
+			this.#setAllocation(candidate.entry.component, allocated, frame);
+			const rendered = this.#renderEntry(candidate.entry, width).slice(
+				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
+			);
+			const visible = rendered.length <= allocated ? rendered : rendered.slice(rendered.length - allocated);
+			for (const line of visible) {
+				output.push(line);
+			}
+		}
+		const drop = Math.max(0, output.length - capacity);
+		return drop > 0 ? output.slice(drop) : output;
+	}
+
+	/** Offers stable-head emission or the shortest finalized prefix needed under pressure. */
+	peekFinalizedBatch(width: number, capacity: number): HistoryBatch | undefined {
+		return this.#peekBatch(width, capacity, "pressure");
+	}
+
+	/** Returns only a prepared complete replay, never a normal retirement offer. */
+	peekReplayBatch(width: number): HistoryBatch | undefined {
+		this.#syncEntries();
+		this.#settleFinalized();
+		return this.#peekReplayBatch(width);
+	}
+
+	#peekReplayBatch(width: number): HistoryBatch | undefined {
+		if (this.#offered !== undefined) {
+			return this.#offered.kind === "replay" ? this.rerenderOfferedBatch(width) : undefined;
+		}
+		if (!this.#replayPending) return undefined;
+		this.#replayPending = false;
+		let end = this.#frontier;
+		while (this.#entries[end]?.state === "settled") end++;
+		const head = this.#entries[end];
+		let emittedEnd = 0;
+		if (head?.mode === "appendOnly") {
+			this.#renderEntry(head, width);
+			if (!head.stableFrozen) emittedEnd = head.stableRows.length;
+		}
+		const rows = this.#renderReplay(width, end, emittedEnd);
+		const batch: HistoryBatch = { id: this.#nextBatchId++, rows, kind: "replay" };
+		this.#offered = { batch, width, kind: "replay", end, emittedEnd };
+		return batch;
+	}
+
+	/** Offers the complete currently eligible prefix for graceful shutdown. */
+	peekFlushBatch(width: number): HistoryBatch | undefined {
+		return this.#peekBatch(width, 0, "flush");
+	}
+
+	/** Replace an unacknowledged old-width offer; published batch objects remain immutable. */
+	rerenderOfferedBatch(width: number): HistoryBatch | undefined {
+		const offered = this.#offered;
+		if (offered === undefined) return undefined;
+		let rows: readonly string[];
+		if (offered.kind === "append") {
+			const entry = this.#entries[offered.entry];
+			if (entry === undefined) return undefined;
+			const before = this.#renderStablePrefix(entry, entry.emitted, width);
+			const after = this.#renderStablePrefix(entry, offered.emittedEnd, width);
+			rows = after.slice(before.length);
+		} else if (offered.kind === "commit") {
+			rows = this.#renderRange(this.#frontier, offered.end, width, true);
+		} else {
+			rows = this.#renderReplay(width, offered.end, offered.emittedEnd);
+		}
+		// Rendering participates in image admission even when the offer is unchanged.
+		// A budget retry can replace an unpainted image with its text fallback.
+		if (
+			offered.width === width &&
+			rows.length === offered.batch.rows.length &&
+			isRowPrefix(rows, offered.batch.rows)
+		) {
+			return offered.batch;
+		}
+		offered.width = width;
+		offered.batch = { id: this.#nextBatchId++, rows, kind: offered.batch.kind };
+		return offered.batch;
+	}
+
+	#peekBatch(width: number, capacity: number, policy: RetirementPolicy): HistoryBatch | undefined {
+		this.#syncEntries();
+		this.#settleFinalized();
+		if (this.#offered !== undefined) return this.rerenderOfferedBatch(width);
+		const replay = this.#peekReplayBatch(width);
+		if (replay !== undefined) return replay;
+
+		this.#completeFullyEmittedHeads(width);
+		const room = Math.max(0, Math.trunc(capacity));
+		const live = this.#liveEntries();
+		if (live.length === 0) return undefined;
+		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
+		const rendered: (readonly string[])[] = new Array(live.length);
+		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
+		const heights: number[] = new Array(live.length);
+		let total = 0;
+		let visible = 0;
+		for (let index = 0; index < live.length; index++) {
+			const candidate = live[index]!;
+			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const renderedEntry = this.#renderEntry(candidate.entry, width);
+			const rows = renderedEntry.slice(
+				this.#renderStablePrefix(candidate.entry, candidate.entry.emitted, width).length,
+			);
+			rendered[index] = rows;
+			heights[index] = rows.length;
+			if (rows.length > 0) total += rows.length + (visible++ > 0 ? 1 : 0);
+		}
+		const overflowing = total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
+		if (policy === "pressure" && !overflowing) {
+			this.#pinnedFrontier = undefined;
+			return undefined;
+		}
+
+		const head = this.#entries[this.#frontier];
+		if (
+			policy === "pressure" &&
+			total > room &&
+			head?.mode === "appendOnly" &&
+			!head.stableFrozen &&
+			head.state !== "committed" &&
+			head.emitted < head.stableRows.length
+		) {
+			// Emit as many finished rows as the overflow needs, in one batch. A
+			// fast stream adds finished rows quicker than one per pressure cycle,
+			// and the live region has to fall back under `room` to stay readable:
+			// rows left behind here are rows dropped from the top of the viewport.
+			const overflow = total - room;
+			const before = this.#renderStablePrefix(head, head.emitted, width);
+			let emittedEnd = head.emitted;
+			let rows: readonly string[] = EMPTY_ROWS;
+			while (emittedEnd < head.stableRows.length && rows.length < overflow) {
+				const after = this.#renderStablePrefix(head, emittedEnd + 1, width);
+				if (!isRowPrefix(before, after) || after.length === before.length) {
+					if (emittedEnd === head.emitted) {
+						this.#freezeStableRows(head, EMPTY_ROWS, "semantic row render added no suffix");
+					}
+					break;
+				}
+				rows = after.slice(before.length);
+				emittedEnd += 1;
+			}
+			if (emittedEnd > head.emitted) {
+				const batch: HistoryBatch = {
+					id: this.#nextBatchId++,
+					rows,
+					kind: "append",
+				};
+				this.#offered = { batch, width, kind: "append", entry: this.#frontier, emittedEnd };
+				this.#pinnedFrontier = undefined;
+				return batch;
+			}
+		}
+
+		let end = this.#frontier;
+		let freed = 0;
+		let index = 0;
+		while (end < this.#entries.length && this.#entries[end]!.state === "settled") {
 			if (
-				preceding.component !== captured.component ||
-				!captured.finalized ||
-				!preceding.finalized ||
-				preceding.version !== captured.version
-			) {
-				return undefined;
-			}
-		}
-
-		let rows: number | undefined;
-		if (marker.childHasBoundary && marker.childBoundary !== undefined) {
-			const child = current.component as Component & NativeScrollbackWidthEpoch;
-			const rawRows = child.resolveNativeScrollbackWidthEpoch(marker.childBoundary);
-			if (rawRows !== undefined) rows = this.#mapNativeScrollbackWidthEpochRows(current, rawRows);
-		}
-		if (rows === undefined) {
-			if (marker.segment.rowCount === 0) rows = current.startRow;
-			else if (!marker.segment.finalized || marker.segment.version !== current.version) return undefined;
-			else rows = current.startRow + current.rowCount;
-		}
-		for (let i = 0; i < marker.trailingSegments.length; i++) {
-			const captured = marker.trailingSegments[i]!;
-			const trailing = this.#segments[currentIndex + i + 1];
-			if (
-				!captured.finalized ||
-				!trailing ||
-				trailing.component !== captured.component ||
-				!trailing.finalized ||
-				trailing.version !== captured.version
+				policy === "pressure" &&
+				total - freed <= room &&
+				this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS
 			)
-				return undefined;
-			rows += trailing.rowCount;
+				break;
+			freed += heights[index]! > 0 ? heights[index]! + 1 : 0;
+			end++;
+			index++;
 		}
-		return rows;
-	}
-
-	#mapNativeScrollbackWidthEpochRows(segment: BlockSegment, rawRows: number): number {
-		let leadingTrimmedRows = 0;
-		while (leadingTrimmedRows < segment.rawRef.length && isPlainBlank(segment.rawRef[leadingTrimmedRows]!)) {
-			leadingTrimmedRows++;
+		if (end === this.#frontier) {
+			if (policy === "pressure") this.#notePinnedFrontier();
+			return undefined;
 		}
-		const contributionRows = Math.max(0, Math.min(segment.contribution.length, rawRows - leadingTrimmedRows));
-		return segment.startRow + segment.sep + contributionRows;
+		this.#pinnedFrontier = undefined;
+		const batch: HistoryBatch = {
+			id: this.#nextBatchId++,
+			rows: this.#renderRange(this.#frontier, end, width, true),
+			kind: "append",
+		};
+		this.#offered = { batch, width, end, kind: "commit" };
+		return batch;
 	}
 
-	override getNativeScrollbackWidthEpochRows(): number | undefined {
-		const segment = this.#segments.find(candidate => !candidate.finalized) ?? this.#segments.at(-1);
-		if (!segment) return undefined;
-		const child = segment.component as Component & Partial<NativeScrollbackWidthEpoch>;
-		if (typeof child.getNativeScrollbackWidthEpochRows !== "function") return this.#lines.length;
-		const rawRows = child.getNativeScrollbackWidthEpochRows();
-
-		if (rawRows === undefined) return this.#lines.length;
-		let rows = this.#mapNativeScrollbackWidthEpochRows(segment, rawRows);
-		for (const trailing of this.#segments.slice(this.#segments.indexOf(segment) + 1)) rows += trailing.rowCount;
-		return rows;
+	/** Acknowledges exactly the most recently offered append, commit, or replay transaction. */
+	acknowledgeFinalizedBatch(id: number): void {
+		const offered = this.#offered;
+		if (offered === undefined || offered.batch.id !== id) return;
+		if (offered.kind === "append") {
+			const entry = this.#entries[offered.entry];
+			// The offered end must still extend this entry's emitted prefix: a
+			// stale offer (already-advanced entry) or a retraction (entry reset to
+			// zero with the offer still live) must not move it backwards.
+			if (entry === undefined || offered.entry !== this.#frontier || offered.emittedEnd <= entry.emitted) return;
+			entry.emitted = offered.emittedEnd;
+		} else if (offered.kind === "commit" || offered.kind === "replay") {
+			for (let index = this.#frontier; index < offered.end; index++) {
+				this.#entries[index]!.state = "committed";
+				this.#entries[index]!.emitted = 0;
+			}
+			this.#frontier = offered.end;
+			if (offered.kind === "replay" && this.#entries[offered.end]) {
+				this.#entries[offered.end]!.emitted = offered.emittedEnd;
+			}
+		}
+		this.#offered = undefined;
 	}
 
-	override isNativeScrollbackWidthEpochAppendOnly(boundary: unknown): boolean {
-		if (typeof boundary !== "object" || boundary === null) return true;
-		const marker = this.#widthEpochBoundaries.get(boundary);
-		if (!marker) return true;
-		const child = marker.segment.component as Component & Partial<NativeScrollbackWidthEpoch>;
-		if (child.isNativeScrollbackWidthEpochAppendOnly?.(marker.childBoundary) === false) return false;
-		return !marker.trailingSegments.some(segment => segment.rowCount > 0);
+	/**
+	 * Render only the trailing `maxRows` semantic rows, walking blocks bottom-up.
+	 * Used by the transient resize-buffer repaint, which needs one viewport of
+	 * tail rows per resize event — never the full committed ledger.
+	 */
+	renderTail(width: number, maxRows: number): readonly string[] {
+		this.#syncEntries();
+		const cap = Math.max(0, Math.trunc(maxRows));
+		if (cap === 0) return EMPTY_ROWS;
+		const rows: string[] = [];
+		for (let index = this.#entries.length - 1; index >= 0; index--) {
+			const entry = this.#entries[index]!;
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const block = trimBlankEdges(entry.component.render(width));
+			if (block.length === 0) continue;
+			if (rows.length > 0) rows.unshift("");
+			rows.unshift(...block);
+			if (rows.length >= cap) break;
+		}
+		return rows.length > cap ? rows.slice(rows.length - cap) : rows;
 	}
 
-	getRenderStablePrefixRows(): number {
-		const value = Math.min(this.#stableRowsFloor, this.#lines.length);
-		this.#stableRowsFloor = this.#lines.length;
-		return value;
+	/** Full semantic render used by exports and non-terminal commands. */
+	override render(width: number): readonly string[] {
+		this.#syncEntries();
+		this.#childStartRows.clear();
+		const rows: string[] = [];
+		for (const entry of this.#entries) {
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const block = this.#renderEntry(entry, width);
+			if (block.length === 0) continue;
+			if (rows.length > 0) rows.push("");
+			this.#childStartRows.set(entry.component, rows.length);
+			rows.push(...block);
+		}
+		if (rows.length !== this.#renderedRows.length || !isRowPrefix(this.#renderedRows, rows)) {
+			this.#renderRevision++;
+			this.#renderedRows = rows;
+		}
+		return this.#renderedRows;
 	}
 
 	getRenderRevision(): number {
 		return this.#renderRevision;
 	}
 
-	/**
-	 * Return the earliest current-frame row whose committed layout or bytes may
-	 * differ after the most recent render. This includes a changed finalized
-	 * block and a previously empty block that gained rows after later rows had
-	 * crossed its insertion point. The value resets at render start and remains
-	 * available until the next render; consumers must strict-audit from it.
-	 */
-	getNativeScrollbackCommittedDirtyFromRow(): number | undefined {
-		return this.#committedDirtyFromRow;
+	/** Rendered row where a child's block begins in the last full render() (transcript deep-links). */
+	getChildStartRow(child: Component): number | undefined {
+		return this.#childStartRows.get(child);
 	}
 
-	getNativeScrollbackLiveRegionStart(): number | undefined {
-		return this.#nativeScrollbackLiveRegionStart;
-	}
-
-	isNativeScrollbackLiveRegionPinned(): boolean {
-		return this.#nativeScrollbackLiveRegionPinned;
-	}
-
-	getNativeScrollbackLiveRegionPinnedStart(): number | undefined {
-		return this.#nativeScrollbackLiveRegionPinned ? this.#nativeScrollbackLiveRegionPinnedStart : undefined;
-	}
-
-	clipsNativeScrollbackLiveRegion(): boolean {
-		return true;
-	}
-
-	#notePinnedLiveBlock(pinAt: number): void {
-		if (this.#nativeScrollbackLiveRegionPinned) return;
-		this.#nativeScrollbackLiveRegionPinned = true;
-		this.#nativeScrollbackLiveRegionPinnedStart = pinAt;
-	}
-
-	isBlockUncommitted(component: Component): boolean {
-		for (const segment of this.#segments) {
-			if (segment.component !== component) continue;
-			return segment.rowCount === 0 || segment.startRow + segment.sep >= this.#committedRows;
+	#renderEntry(entry: TranscriptEntry, width: number): readonly string[] {
+		const rendered = trimBlankEdges(entry.component.render(width));
+		if (entry.mode === "mutable" || entry.stableFrozen) return rendered;
+		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
+		const stable = appendOnly.getTranscriptStableRows();
+		if (!isStablePrefix(entry.stableRows, stable)) {
+			return this.#freezeStableRows(entry, rendered, "publication retracted the published prefix");
 		}
-		return true;
-	}
-
-	isBlockInLiveRegion(component: Component): boolean {
-		const children = this.children;
-		const index = children.indexOf(component);
-		if (index < 0) return false;
-		for (let i = 0; i <= index; i++) {
-			if (!isBlockFinalized(children[i]!)) return true;
+		if (entry.emitted > stable.length) {
+			return this.#freezeStableRows(entry, rendered, "publication retracted emitted history");
 		}
-
-		for (let i = index + 1; i < children.length; i++) {
-			if (!isBlockFinalized(children[i]!)) return false;
+		const published =
+			stable.length > entry.stableRows.length
+				? [...entry.stableRows, ...stable.slice(entry.stableRows.length)]
+				: entry.stableRows;
+		const stableRendered = appendOnly.renderTranscriptStableRows(published.length, width);
+		if (!isRowPrefix(stableRendered, rendered)) {
+			return this.#freezeStableRows(entry, rendered, "stable rows no longer render as a prefix of the block");
 		}
-		return index === children.length - 1;
-	}
-
-	renderViewportTail(width: number, maxRows: number): readonly string[] {
-		width = Math.max(1, width);
-		if (!(maxRows > 0)) return EMPTY_TAIL;
+		const priorRender = entry.renderedStableByWidth.get(width);
+		if (priorRender && !isRowPrefix(priorRender, stableRendered)) {
+			return this.#freezeStableRows(entry, rendered, "stable rows changed within a width epoch");
+		}
+		entry.stableRows = published;
+		// Slice only when the rendered rows actually changed: same length
+		// plus prefix-equality in both directions means byte-identical, so
+		// the stored array can be reused (callers only slice/read it).
+		const priorRows = entry.renderedStableByWidth.get(width);
 		if (
-			this.#renderWidth === width &&
-			this.#renderedGeneration === this.#generation &&
-			this.#renderedChildrenRevision === this.#childrenRevision &&
-			this.#segments.length === this.children.length &&
-			this.#dirtyComponents.size === 0
+			priorRows === undefined ||
+			priorRows.length !== stableRendered.length ||
+			!isRowPrefix(priorRows, stableRendered)
 		) {
-			const start = Math.max(0, this.#lines.length - maxRows);
-			return this.#lines.length <= maxRows ? this.#lines : this.#lines.slice(start);
+			entry.renderedStableByWidth.set(width, stableRendered.slice());
 		}
-		const collected: (readonly string[])[] = [];
-		let total = 0;
-		for (let i = this.children.length - 1; i >= 0 && total < maxRows; i--) {
-			const contribution = stripPlainBlankEdges(this.children[i]!.render(width));
-			if (contribution.length === 0) continue;
-
-			if (collected.length > 0) total += 1;
-			collected.push(contribution);
-			total += contribution.length;
+		let perCount = entry.stableRowCountByWidth.get(width);
+		if (perCount === undefined) {
+			perCount = new Map();
+			entry.stableRowCountByWidth.set(width, perCount);
 		}
-		if (collected.length === 0) return EMPTY_TAIL;
-		const rows: string[] = [];
-		for (let k = collected.length - 1; k >= 0; k--) {
-			if (rows.length > 0) rows.push("");
-			const body = collected[k]!;
-			for (let j = 0; j < body.length; j++) rows.push(body[j]!);
-		}
-		return rows.length > maxRows ? rows.slice(rows.length - maxRows) : rows;
+		perCount.set(published.length, stableRendered.length);
+		return rendered;
 	}
 
-	override render(width: number): readonly string[] {
-		width = Math.max(1, width);
-		this.#nativeScrollbackLiveRegionStart = undefined;
-		this.#nativeScrollbackLiveRegionPinned = false;
-		this.#nativeScrollbackLiveRegionPinnedStart = undefined;
-		this.#committedDirtyFromRow = undefined;
+	/**
+	 * Demote a drifting append-only publication: rows already written to native
+	 * scrollback cannot be retracted, so keep the last good stable state for
+	 * emitted-row slicing and stop mid-stream emission for this block. The block
+	 * still renders and retires whole on finalization; worst case is the old
+	 * finalize-time behavior plus a possible stale-byte seam in scrollback.
+	 */
+	#freezeStableRows(entry: TranscriptEntry, rendered: readonly string[], reason: string): readonly string[] {
+		entry.stableFrozen = true;
+		logger.warn("Append-only transcript block frozen", { reason, emitted: entry.emitted });
+		return rendered;
+	}
 
-		const dirtyComponents = this.#dirtyComponents;
-		this.#dirtyComponents = this.#renderDirtyComponents;
-		this.#dirtyComponents.clear();
-		this.#renderDirtyComponents = dirtyComponents;
-		const dirtyFromIndex = this.#dirtyFromIndex;
-		this.#dirtyFromIndex = this.#renderDirtyFromIndex;
-		this.#renderDirtyFromIndex = dirtyFromIndex;
-		this.#dirtyFromIndex = Number.POSITIVE_INFINITY;
+	#renderStablePrefix(entry: TranscriptEntry, count: number, width: number): readonly string[] {
+		if (count === 0) return EMPTY_ROWS;
+		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
+		return appendOnly.renderTranscriptStableRows(Math.min(count, entry.stableRows.length), width);
+	}
 
-		const count = this.children.length;
-		const previousSegments = this.#segments;
-		const previousLineCount = this.#lines.length;
-		const widthChanged = this.#renderWidth !== width;
-		const structureChanged =
-			this.#childrenExternallyAssigned ||
-			this.#renderedChildrenRevision !== this.#childrenRevision ||
-			previousSegments.length !== count;
-		if (this.#childrenExternallyAssigned || this.#childrenListenersDirty) this.#reconcileBlockListeners();
-		const structureStart = structureChanged
-			? this.#childrenExternallyAssigned
-				? 0
-				: Math.min(this.#childrenDirtyFromIndex, count, previousSegments.length)
-			: Number.POSITIVE_INFINITY;
-		const widthEpoch = getWidthConfigEpoch();
-		const canReusePrefix =
-			!widthChanged &&
-			!this.#childrenExternallyAssigned &&
-			this.#renderedGeneration === this.#generation &&
-			this.#renderedWidthEpoch === widthEpoch;
-		const prefixLength = canReusePrefix ? Math.min(this.#stablePrefixLength, count) : 0;
-		const startIndex = canReusePrefix ? Math.min(prefixLength, dirtyFromIndex, structureStart) : 0;
-		const segments: Array<BlockSegment | undefined> = previousSegments.slice(0, count);
-		segments.length = count;
-		this.#segments = EMPTY_SEGMENTS;
-		const stableFloorBefore = this.#stableRowsFloor;
-		this.#stableRowsFloor = 0;
-
-		let chainStable = !widthChanged;
-		this.#renderWidth = width;
-		this.#renderedWidthEpoch = widthEpoch;
-		const lines = this.#lines;
-		if (!chainStable) lines.length = 0;
-
-		let row = 0;
-		let stableRows = 0;
-		let liveStartIndex = -1;
-		let liveRewriteStart: number | undefined;
-		let canSealCommitted = startIndex === 0;
-		let stablePrefixLength = startIndex > 0 ? startIndex : 0;
-		let pinCandidates: { index: number; pinAt: number }[] | undefined;
-		if (startIndex > 0) {
-			const prefix = previousSegments[startIndex - 1]!;
-			row = prefix.startRow + prefix.rowCount;
-			stableRows = row;
+	/**
+	 * Length-only variant of `#renderStablePrefix`: answers the projected
+	 * emitted row count without re-rendering the prefix. The container only
+	 * needs the length for slicing; the render call it replaced existed
+	 * purely to read `.length` off the result.
+	 */
+	#projectedEmittedRowCount(entry: TranscriptEntry, index: number, width: number): number {
+		const offered = this.#offered;
+		const count =
+			(offered?.kind === "append" && offered.entry === index) ||
+			(offered?.kind === "replay" && offered.end === index)
+				? offered.emittedEnd
+				: entry.emitted;
+		if (count === 0) return 0;
+		const perCount = entry.stableRowCountByWidth.get(width);
+		const memo = perCount?.get(Math.min(count, entry.stableRows.length));
+		if (memo !== undefined) return memo;
+		return this.#renderStablePrefix(entry, count, width).length;
+	}
+	/**
+	 * Record that pressure retirement is blocked behind a not-yet-settled
+	 * frontier block, and log its identity once the episode outlives the grace
+	 * period. A block that never finalizes (a dropped terminal event) pins the
+	 * whole live region here with no visible symptom other than degraded
+	 * one-line layout, so the log line is the only forensic trail.
+	 */
+	#notePinnedFrontier(): void {
+		const entry = this.#entries[this.#frontier];
+		if (entry === undefined) return;
+		const now = Date.now();
+		if (this.#pinnedFrontier?.index !== this.#frontier) {
+			this.#pinnedFrontier = { index: this.#frontier, since: now, logged: false };
+			return;
 		}
-		for (let i = startIndex; i < count; i++) {
-			const child = this.children[i]!;
-			const priorIndex = this.#componentIndices.get(child);
-			if (priorIndex === undefined || i < priorIndex) this.#componentIndices.set(child, i);
-			const previous = previousSegments[i];
-			const previousComponent = previous?.component;
-			const previousRaw = previous?.rawRef;
-			const previousContribution = previous?.contribution;
-			const previousWidth = previous?.width;
-			const previousGeneration = previous?.generation;
-			const previousStartRow = previous?.startRow;
-			const previousRowCount = previous?.rowCount;
-			const previousSep = previous?.sep;
-			const previousFinalized = previous?.finalized;
-			const previousVersion = previous?.version;
-			const changeTracked =
-				previous?.component === child
-					? previous.changeTracked && hasBlockChangeListener(child, this.#blockListeners.get(child))
-					: this.#trackedComponents.has(child);
-			const blockChanged = dirtyComponents.has(child);
-			const reuseBlockMetadata =
-				previous !== undefined &&
-				previous.component === child &&
-				changeTracked &&
-				previous.finalized &&
-				previous.generation === this.#generation &&
-				!blockChanged;
+		if (this.#pinnedFrontier.logged || now - this.#pinnedFrontier.since < PINNED_FRONTIER_WARN_MS) return;
+		this.#pinnedFrontier.logged = true;
+		logger.warn("Transcript retirement pinned by unfinalized frontier block", {
+			component: entry.component.constructor.name,
+			state: entry.state,
+			mode: entry.mode,
+			liveBlocks: this.#liveCount(),
+		});
+	}
 
-			if (canSealCommitted && previous !== undefined) {
-				const bodyStart = previous.startRow + previous.sep;
-				if (bodyStart >= this.#committedRows) canSealCommitted = false;
-				else if (previous.component === child) sealCommittedSnapshot(child);
-			}
-
-			const finalized = reuseBlockMetadata ? previous.finalized : isBlockFinalized(child);
-			if (liveStartIndex < 0 && !finalized) liveStartIndex = i;
-			if (stablePrefixLength === i && finalized && changeTracked) stablePrefixLength = i + 1;
-			const version = reuseBlockMetadata ? previous.version : getBlockVersion(child);
-			const previousCommittedRows = previous?.component === child ? previous.committedRows : -1;
-			const versionChanged =
-				previous?.component === child && previous.version !== undefined && version !== previous.version;
-			const previousRowsCrossedCommit = previous?.component === child && previous.startRow < this.#committedRows;
-			if (
-				previous?.component === child &&
-				previousRowsCrossedCommit &&
-				(blockChanged || versionChanged || previous.finalized !== finalized)
-			) {
-				const dirtyRow = Math.min(previous.startRow, row);
-				this.#committedDirtyFromRow =
-					this.#committedDirtyFromRow === undefined ? dirtyRow : Math.min(this.#committedDirtyFromRow, dirtyRow);
-			}
-			const committedReusable =
-				!blockChanged &&
-				previous !== undefined &&
-				previous.component === child &&
-				previous.width === width &&
-				previous.generation === this.#generation &&
-				previous.startRow === row &&
-				previous.startRow + previous.rowCount <= this.#committedRows &&
-				finalized &&
-				previous.finalized &&
-				previous.version === version;
-			const raw = committedReusable ? previous.rawRef : child.render(width);
-			const reusable =
-				committedReusable ||
-				(!blockChanged &&
-					previous !== undefined &&
-					previous.component === child &&
-					previous.rawRef === raw &&
-					previous.width === width &&
-					previous.generation === this.#generation);
-			const contribution = reusable ? previous.contribution : stripPlainBlankEdges(raw);
-			const segment =
-				previous ??
-				({
-					component: child,
-					rawRef: raw,
-					contribution,
-					width,
-					generation: this.#generation,
-					startRow: row,
-					rowCount: 0,
-					sep: 0,
-					finalized,
-					version,
-					changeTracked,
-					committedRows: -1,
-				} satisfies BlockSegment);
-			if (
-				previous === undefined ||
-				previousComponent !== child ||
-				previousRaw !== raw ||
-				previousContribution !== contribution ||
-				previousWidth !== width ||
-				previousGeneration !== this.#generation ||
-				previousFinalized !== finalized ||
-				previousVersion !== version
-			) {
-				this.#committedDirtySegments.add(segment);
-			}
-
-			if (contribution.length === 0) {
-				if (liveStartIndex === i) this.#nativeScrollbackLiveRegionStart = row;
-				if (liveRewriteStart === undefined && !finalized && !isBlockDisplaceable(child)) liveRewriteStart = row;
-				if (!finalized && isBlockPinned(child)) {
-					if (pinCandidates === undefined) pinCandidates = [];
-					pinCandidates.push({ index: i, pinAt: row });
-				}
-				if (chainStable && !(reusable && previous?.rowCount === 0 && previous.startRow === row)) {
-					chainStable = false;
-					lines.length = row;
-				}
-				if (chainStable) stableRows = row;
-				segment.component = child;
-				segment.rawRef = raw;
-				segment.contribution = contribution;
-				segment.width = width;
-				segment.generation = this.#generation;
-				segment.startRow = row;
-				segment.rowCount = 0;
-				segment.sep = 0;
-				segment.finalized = finalized;
-				segment.version = version;
-				segment.changeTracked = changeTracked;
-				segment.committedRows = previousCommittedRows;
-				if (previousStartRow !== row || previousRowCount !== 0 || previousSep !== 0) {
-					this.#committedDirtySegments.add(segment);
-				}
-				segments[i] = segment;
-				continue;
-			}
-
-			const sep = row > 0 && !isPlainBlank(lines[row - 1]!) ? 1 : 0;
-
-			let settled = 0;
-			if (!finalized || liveStartIndex === i) {
-				const settledRaw = getBlockSettledRows(child);
-				if (settledRaw > 0) {
-					let lead = 0;
-					while (lead < raw.length && isPlainBlank(raw[lead]!)) lead++;
-					settled = Math.max(0, Math.min(contribution.length, settledRaw - lead));
-				}
-			}
-			if (liveStartIndex === i) this.#nativeScrollbackLiveRegionStart = row + sep + settled;
-			if (liveRewriteStart === undefined && !finalized && !isBlockDisplaceable(child)) {
-				liveRewriteStart = row + sep + settled;
-			}
-			if (!finalized && isBlockPinned(child)) {
-				if (pinCandidates === undefined) pinCandidates = [];
-				pinCandidates.push({ index: i, pinAt: row + sep + settled });
-			}
-
-			const rowCount = sep + contribution.length;
-			const stable = chainStable && reusable && previous?.startRow === row && previous.sep === sep;
-			if (stable) {
-				stableRows = row + rowCount;
-			} else {
-				if (chainStable) {
-					chainStable = false;
-					lines.length = row;
-				}
-				if (sep) lines.push("");
-				for (let j = 0; j < contribution.length; j++) lines.push(contribution[j]!);
-			}
-
-			segment.component = child;
-			segment.rawRef = raw;
-			segment.contribution = contribution;
-			segment.width = width;
-			segment.generation = this.#generation;
-			segment.startRow = row;
-			segment.rowCount = rowCount;
-			segment.sep = sep;
-			segment.finalized = finalized;
-			segment.version = version;
-			segment.changeTracked = changeTracked;
-			segment.committedRows = previousCommittedRows;
-			if (previousStartRow !== row || previousRowCount !== rowCount || previousSep !== sep) {
-				this.#committedDirtySegments.add(segment);
-			}
-			segments[i] = segment;
-			row += rowCount;
+	#renderRange(start: number, end: number, width: number, trailingBlank: boolean): readonly string[] {
+		const rows: string[] = [];
+		for (let index = start; index < end; index++) {
+			const entry = this.#entries[index]!;
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			// Only the range head is sliced by its emitted stable prefix; every other
+			// entry renders whole, so the append-only verification pass (a second
+			// full render of the block's stable prefix) is skipped for them. This
+			// keeps a complete-ledger replay at one render per block.
+			const rendered =
+				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width));
+			const emittedRows = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
+			const block = rendered.slice(emittedRows);
+			if (block.length === 0) continue;
+			if (rows.length > 0) rows.push("");
+			rows.push(...block);
 		}
+		if (trailingBlank && rows.length > 0) rows.push("");
+		return rows;
+	}
 
-		if (lines.length !== row) lines.length = row;
-		this.#segments = segments as BlockSegment[];
-		this.#stablePrefixLength = stablePrefixLength;
-		this.#renderedChildrenRevision = this.#childrenRevision;
-		this.#childrenExternallyAssigned = false;
-		this.#childrenListenersDirty = false;
-		this.#childrenDirtyFromIndex = Number.POSITIVE_INFINITY;
-		this.#renderedGeneration = this.#generation;
-		if (widthChanged || previousSegments.length !== count || !chainStable || lines.length !== previousLineCount) {
-			this.#renderRevision++;
+	#renderReplay(width: number, end: number, emittedEnd: number): readonly string[] {
+		const rows = Array.from(this.#renderRange(0, end, width, true));
+		const head = this.#entries[end];
+		if (head?.mode === "appendOnly" && emittedEnd > 0) {
+			rows.push(...this.#renderStablePrefix(head, emittedEnd, width));
 		}
+		return rows;
+	}
 
-		if (pinCandidates) {
-			let lastVisible = -1;
-			for (let i = count - 1; i >= 0; i--) {
-				if (segments[i]!.rowCount > 0) {
-					lastVisible = i;
-					break;
-				}
-			}
-			for (const candidate of pinCandidates) {
-				const block = this.children[candidate.index]! as Component & FinalizableBlock;
-				if (candidate.index < lastVisible && block.isDisplaceableBlock?.() === true && !isBlockPinned(block))
-					continue;
-				this.#notePinnedLiveBlock(candidate.pinAt);
+	#completeFullyEmittedHeads(width: number): void {
+		while (this.#frontier < this.#entries.length) {
+			const entry = this.#entries[this.#frontier]!;
+			if (entry.mode !== "appendOnly" || entry.state !== "settled") return;
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const rendered = this.#renderEntry(entry, width);
+			if (entry.emitted !== entry.stableRows.length) return;
+			if (this.#renderStablePrefix(entry, entry.emitted, width).length !== rendered.length) return;
+			entry.state = "committed";
+			entry.emitted = 0;
+			this.#frontier++;
+		}
+	}
+
+	#renderEmergency(
+		shown: readonly { entry: TranscriptEntry; index: number }[],
+		width: number,
+		rows: number,
+		frame: AnimationFrame,
+	): readonly string[] {
+		let visibleRows = rows;
+		let visible: { entry: TranscriptEntry; index: number }[] = [];
+		let emergencyCandidate: { entry: TranscriptEntry; index: number } | undefined;
+		let emergencyRow: string | undefined;
+		let hiddenActive = 0;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
+			emergencyCandidate = undefined;
+			emergencyRow = undefined;
+			const visibleStart = shown.length - visibleRows;
+			for (let index = visibleStart - 1; index >= 0; index--) {
+				const candidate = shown[index]!;
+				const block = candidate.entry.component as Component & FinalizableBlock;
+				const row =
+					candidate.entry.state === "settled" ? block.renderTranscriptBlockEmergencyRow?.(width) : undefined;
+				if (row === undefined) continue;
+				emergencyCandidate = candidate;
+				emergencyRow = row;
+				visible = [candidate, ...visible.slice(1)];
 				break;
 			}
+
+			let activeTotal = 0;
+			for (const candidate of shown) {
+				if (candidate.entry.state === "active") activeTotal++;
+			}
+			hiddenActive = activeTotal;
+			for (const candidate of visible) {
+				if (candidate.entry.state === "active") hiddenActive--;
+			}
+			// The summary row itself represents the newest active block when no
+			// active row fits beside it; report only the additional backlog.
+			if (hiddenActive === activeTotal && hiddenActive > 0) hiddenActive--;
+			if (attempt === 0 && hiddenActive > 0) {
+				visibleRows = Math.max(0, rows - 1);
+				continue;
+			}
+			break;
 		}
 
-		// Pin a live run ending in a non-displaceable block at the first row that
-		// run may still rewrite, overriding a stricter pin an earlier displaceable
-		// block supplied. Once later transcript content exists the earlier block
-		// can no longer be removed without rewriting history, so retaining its
-		// start boundary would hold rows that are never coming back. The boundary
-		// stops at the first rewritable row rather than the run's end because
-		// history cannot repaint what it has taken: a card that still redraws its
-		// own header would leave that header in scrollback with the finished card
-		// appended below it.
-		if (liveStartIndex >= 0) {
-			let lastLiveIndex = liveStartIndex;
-			for (let i = liveStartIndex + 1; i < count; i++) {
-				if (!segments[i]!.finalized) lastLiveIndex = i;
+		const output = hiddenActive > 0 ? [`${hiddenActive} more transcript blocks active`] : [];
+		for (const candidate of visible) {
+			if (candidate === emergencyCandidate) {
+				output.push(emergencyRow ?? "");
+				continue;
 			}
-			const lastLive = segments[lastLiveIndex]!;
-			if (!isBlockDisplaceable(this.children[lastLiveIndex]!)) {
-				this.#nativeScrollbackLiveRegionPinned = true;
-				this.#nativeScrollbackLiveRegionPinnedStart = liveRewriteStart ?? lastLive.startRow + lastLive.rowCount;
-			}
+			this.#setAllocation(candidate.entry.component, 1, frame);
+			const rendered = this.#renderEntry(candidate.entry, width).slice(
+				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
+			);
+			output.push(rendered[0] ?? "");
 		}
-		this.#stableRowsFloor = Math.min(stableFloorBefore, stableRows, row);
-		return lines;
+		const visibleOutput = output.slice(0, rows);
+		return visibleOutput;
+	}
+
+	#setAllocation(component: Component, rows: number, frame: AnimationFrame): void {
+		(component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
+	}
+
+	#settleFinalized(): void {
+		for (let index = this.#frontier; index < this.#entries.length; index++) {
+			const entry = this.#entries[index]!;
+			if (entry.state === "active" && isFinalized(entry.component)) entry.state = "settled";
+		}
+	}
+
+	#liveEntries(): Array<{ entry: TranscriptEntry; index: number }> {
+		const start =
+			this.#offered?.kind === "commit" || this.#offered?.kind === "replay" ? this.#offered.end : this.#frontier;
+		const live: Array<{ entry: TranscriptEntry; index: number }> = [];
+		for (let index = start; index < this.#entries.length; index++) live.push({ entry: this.#entries[index]!, index });
+		return live;
+	}
+
+	#liveCount(): number {
+		return this.#entries.length - this.#frontier;
+	}
+
+	#syncEntries(): void {
+		if (
+			this.#entries.length === this.children.length &&
+			this.#entries.every((entry, index) => entry.component === this.children[index])
+		)
+			return;
+		const existing = new Map(this.#entries.map(entry => [entry.component, entry]));
+		this.#entries = this.children.map(
+			component =>
+				existing.get(component) ?? {
+					component,
+					state: "active",
+					mode: blockMode(component),
+					stableRows: EMPTY_STABLE_ROWS,
+					renderedStableByWidth: new Map(),
+					stableRowCountByWidth: new Map(),
+					emitted: 0,
+					stableFrozen: false,
+				},
+		);
+		this.#frontier = this.#entries.findIndex(entry => entry.state !== "committed");
+		if (this.#frontier < 0) this.#frontier = this.#entries.length;
 	}
 }
 
+/** Groups sibling rows into one conservative mutable semantic transcript block. */
 export class TranscriptBlock extends Container {}

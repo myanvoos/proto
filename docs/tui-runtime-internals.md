@@ -13,7 +13,7 @@ This document maps the non-theme runtime path from terminal input to rendered ou
 - **`packages/tui` engine**: terminal lifecycle, stdin normalization, focus routing, render scheduling, differential painting, overlay composition, hardware cursor placement.
 - **`packages/coding-agent` interactive mode**: builds component tree, binds editor callbacks and keymaps, reacts to agent/session events, and translates domain state (streaming, tool execution, retries) into UI components.
 
-Boundary rule: the TUI engine is message-agnostic. It only knows `Component.render(width)`, `handleInput(data)`, focus, and overlays. Agent semantics stay in interactive controllers.
+Boundary rule: the TUI engine is message-agnostic. It accepts explicit history batches and a mutable viewport from `TerminalFrameProvider`, plus component input, focus, and overlays. Composer and the transcript ledger own message lifecycle and retirement; agent semantics stay in interactive controllers.
 
 ## Implementation files
 
@@ -30,7 +30,7 @@ Boundary rule: the TUI engine is message-agnostic. It only knows `Component.rend
 
 ## Boot and component tree assembly
 
-`InteractiveMode` constructs `TUI(new ProcessTerminal(), settings.get("showHardwareCursor"))`, applies `tui.maxInlineImages` and Kitty text-sizing settings, then creates persistent containers:
+`InteractiveMode` creates a `Composer` backed by `TUI` and `ProcessTerminal`, applies hardware-cursor, inline-image, and Kitty text-sizing preferences, then mounts persistent containers:
 
 - `chatContainer`
 - `pendingMessagesContainer`
@@ -45,7 +45,7 @@ Boundary rule: the TUI engine is message-agnostic. It only knows `Component.rend
 - `editorContainer` (holds `CustomEditor`)
 - `hookWidgetContainerBelow`
 
-`init()` wires the tree in that order after any startup warnings/welcome/changelog, focuses the editor, registers input handlers via `InputController`, starts TUI, pushes terminal title state, updates the editor border, and requests a forced render.
+`init()` mounts header, transcript, and prompt chrome through Composer, which installs itself as the frame provider. It focuses the editor, registers input handlers via `InputController`, starts TUI, pushes terminal title state, updates the editor border, and requests a forced render.
 A forced render (`requestRender(true)`) queues a viewport repaint or explicit session replacement; it does **not** throw away previous-line history by default.
 
 ## Terminal lifecycle and stdin normalization
@@ -115,39 +115,35 @@ Routing details:
 
 This keeps key parsing/editor mechanics in `packages/tui` and mode semantics in coding-agent controllers.
 
-## Render loop and the default append-only contract
+## Render loop and explicit history ownership
 
-`TUI.requestRender()` coalesces render requests and rate-limits ordinary frames:
+`TUI.requestRender()` coalesces requests under a budgeted cadence. Ordinary frames
+wait `max(1000/60, min(200ms, 2 × previous frame cost))`; input-driven frames have
+an 8ms floor. A forced render repaints the viewport; `clearScrollback` requests
+an explicit destructive replay. Component/direct-write requests must preserve
+the provider's history ownership and fall back to a scheduled frame when unsafe.
 
-- forced renders (`requestRender(true, ...)`) schedule an immediate full-window rewrite; `clearScrollback` requests the destructive replay path
-- ordinary renders use a 30fps base cadence plus adaptive backpressure derived from the previous frame's cost
-- repeated requests while a render is pending collapse into the same scheduled frame
-- `requestComponentRender(component)` scopes composition to affected root subtrees when geometry and renderer state are safe; otherwise it downgrades to a full compose
-- `requestDirectWrite(component)` can rewrite one quiet, visible, fixed-height component segment immediately (used by loader-style animation); overlays, images, cursor markers, geometry changes, committed segments, or other unsafe state fall back to `requestComponentRender`
+1. Composer allocates prompt chrome and asks its transcript ledger for an
+   ordered, eligible history batch and a bounded live tail.
+2. TUI prepares width-safe viewport rows, extracts cursor markers, and composites
+   overlays. Visible overlays defer history retirement.
+3. New history is written with the replacement viewport in one transaction;
+   without history, only mutable viewport rows are diffed.
+4. The provider acknowledges the batch after the terminal write succeeds.
 
-`#doRender()` pipeline:
+Transcript blocks progress from active to settled to committed. Completed
+blocks can remain in the viewport until space is needed. Append-only assistant
+blocks publish closed Markdown/content prefixes with semantic identities;
+mutable previews cannot enter history merely because they are tall. Final
+retirement writes only the suffix not previously published.
 
-1. Render the root component tree, collecting the first `NativeScrollbackLiveRegion` boundary and its optional pinned policy.
-2. Audit the already committed raw prefix for structural shifts; an insertion/deletion re-anchors commits at the first changed row so stale history may duplicate but new content is not lost.
-3. Advance the append-only ledger. Rows before the live boundary are exact/final; mutable rows that scroll above the window normally commit as frozen snapshots, while a pinned live region stays viewport-local.
-4. Extract and strip `CURSOR_MARKER`, normalize lines, slice the visible window, and composite overlays into that screen-coordinate window slice (overlays freeze commits).
-5. Emit one of: gesture-driven or geometry-rebuild full paint, scroll-append, in-window row diff, or seam rewrite.
+`resetDisplay()` gestures, including tool expansion of historical output, reset
+publication and replay the eligible transcript prefix with its current viewport
+atomically. Ordinary updates never audit or repair historical text.
 
-By default, native scrollback is append-only: committed frame rows are never rewritten. Exact rows enter history after the component seam declares them final; an unpinned mutable row that scrolls off is recorded as the snapshot that was visible at commit time. Resize cursor reports measure host displacement, not the user’s scroll position; see [`tui-core-renderer.md`](./tui-core-renderer.md).
-
-In-place resizes preserve host-reflowed native history instead of replaying the
-transcript. A cursor-position report anchors the mutable tail: the renderer
-accounts for old-width rows that wrapped above the cursor, then repaints the live
-region, including composer and status rows that the host may have trimmed. The
-composer declares a live boundary even when the transcript is idle.
-
-Explicit `resetDisplay()` gestures, including `Ctrl+O` tool expansion, replay the
-current frame on direct terminals and inside multiplexers. tmux honors ED3 and
-replaces pane history; hosts that ignore ED3 receive the updated frame but keep
-older history above it. This explicit reset is separate from ordinary resize
-handling.
-
-Render writes use synchronized output mode (`CSI ? 2026 h/l`) when enabled; capability detection, DECRQM, or `PI_NO_SYNC_OUTPUT` can disable the wrappers while leaving autowrap discipline on.
+Writes use synchronized output (`CSI ? 2026 h/l`) when enabled. Disabling its
+wrappers leaves autowrap discipline intact. See
+[`tui-core-renderer.md`](./tui-core-renderer.md) for the complete contract.
 
 ## Render safety constraints
 
@@ -167,16 +163,20 @@ clamps instead of throwing — are documented in
 
 ## Resize handling
 
-Resize events are event-driven from `ProcessTerminal` to `TUI.requestRender()`.
+`ProcessTerminal` resize events schedule a render at the new dimensions. Native
+history remains host-owned; Proto neither clears it nor tries to reconcile
+old-width physical row coordinates. The mutable viewport and prompt are
+recomposed at the current width. Resize-preview frames do not retire content.
 
-Effects:
+Multiplexers and direct HerdR panes repaint in place. Terminals whose alternate
+buffer changes reported geometry also use the in-place path; other terminals
+may borrow the alternate screen for drag previews. Cursor reports anchor the
+repaint after host reflow rather than probing the reader's scroll position.
+`PI_TUI_RESIZE_IN_PLACE` controls the preview strategy, not history replay.
 
-- Direct HerdR panes follow the in-place multiplexer path: their host owns the
-  pane, and destructive `ED3` transcript replay produces visible flashes.
-- Inside terminal multiplexers, height-only resize retains the append ledger and repaints the visible window in place after the settle debounce (issue #2088). A width change instead terminates the physical-row epoch: old committed coordinates become opaque, pane history remains immutable at its authored wrap, and the settled render establishes a complete-frame baseline. Subsequent growth writes only current-width rows newly crossing the scrollback seam before repainting the bounded viewport.
-- Nested tmux, screen, Zellij, or cmux sessions inside HerdR use the same path.
-- Terminals that re-report their size when the alternate screen buffer is toggled (Warp reports a height one row different for the alt buffer) take the in-place path too. The non-multiplexer fast path borrows the alternate screen for drag frames, so on these terminals each alt enter/leave emits a fresh resize event, which re-enters the fast path — a self-sustaining loop that floods ED3 full repaints with stable geometry. `resizeRepaintsInPlace()` (covering ED3-unsafe multiplexers and these terminals; overridable via `PI_TUI_RESIZE_IN_PLACE`) routes them through the in-place repaint, which never touches the alt buffer.
-- Overlay visibility can depend on terminal dimensions (`OverlayOptions.visible`); focus is corrected when overlays become non-visible after resize.
+Overlay visibility may depend on dimensions; focus is corrected when an overlay
+becomes non-visible after resize. Explicit display reset is separate from resize
+and is the only way to request a rebuilt historical layout.
 
 ## Streaming and incremental UI updates
 
@@ -245,7 +245,7 @@ Event-driven updates:
 
 Throttled/debounced paths:
 
-- TUI rendering uses a 30fps base cadence, coalescing, and adaptive backpressure from render cost.
+- TUI rendering uses coalescing and budgeted cadence with adaptive backpressure from render cost.
 - Loader animation is interval-driven (80ms spinner advance; ~30fps when the message colorizer is animated), using direct writes when safe and component-scoped renders otherwise.
 - Editor autocomplete updates (inside `Editor`) use debounce timers, reducing recompute churn during typing.
 

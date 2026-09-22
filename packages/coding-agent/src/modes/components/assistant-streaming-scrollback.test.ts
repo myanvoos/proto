@@ -1,148 +1,111 @@
-import { expect, test, vi } from "bun:test";
+import { expect, test } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { type Component, type RenderScheduler, type Terminal, TUI } from "@oh-my-pi/pi-tui";
+import type { Component, RenderScheduler, Terminal } from "@oh-my-pi/pi-tui";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
 import type { ChecklistToolDetails } from "../../tools/checklist";
-import { initThemeSync } from "../theme/theme";
+import { Composer } from "../composer";
+import { initThemeSync, theme } from "../theme/theme";
 import { AssistantMessageComponent } from "./assistant-message";
 import { ToolExecutionComponent, type ToolExecutionUi } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 
 initThemeSync();
-
-class BufferTerminal implements Terminal {
-	columns: number;
-	rows: number;
-	readonly vt: VTermTerminal;
-
-	constructor(columns: number, rows: number) {
-		this.columns = columns;
-		this.rows = rows;
-		this.vt = new VTermTerminal({ cols: columns, rows, scrollback: 5_000 });
+class Queue implements RenderScheduler {
+	jobs: Array<{ fn: () => void; off: boolean }> = [];
+	now = () => 100;
+	scheduleImmediate(fn: () => void): void {
+		this.jobs.push({ fn, off: false });
 	}
-
-	get pendingOutputBytes(): number {
+	scheduleRender(fn: () => void): { cancel(): void } {
+		const job = { fn, off: false };
+		this.jobs.push(job);
+		return { cancel: () => (job.off = true) };
+	}
+	flush(): void {
+		let n = 0;
+		while (this.jobs.length) {
+			if (++n > 20000) throw new Error("scheduler loop");
+			const j = this.jobs.shift()!;
+			if (!j.off) j.fn();
+		}
+	}
+}
+class VTermSink implements Terminal {
+	vt: VTermTerminal;
+	resizeCallback?: () => void;
+	constructor(
+		public columns: number,
+		public rows: number,
+	) {
+		this.vt = new VTermTerminal({ cols: columns, rows, scrollback: 50000 });
+	}
+	get pendingOutputBytes() {
 		return 0;
 	}
-
-	get kittyProtocolActive(): boolean {
+	get kittyProtocolActive() {
 		return false;
 	}
-
-	get kittyEnableSequence(): string | null {
+	get kittyEnableSequence(): null {
 		return null;
 	}
-
 	get appearance(): undefined {
 		return undefined;
 	}
-
-	start(_onInput: (data: string) => void, _onResize: () => void): void {}
-
+	start(_input: (s: string) => void, resize: () => void): void {
+		this.resizeCallback = resize;
+	}
+	enableInput(): void {}
 	stop(): void {}
-
-	drainInput(): Promise<void> {
-		return Promise.resolve();
+	async drainInput(): Promise<void> {}
+	write(s: string): void {
+		this.vt.write(s);
 	}
-
-	write(data: string): void {
-		this.vt.write(data);
-	}
-
-	moveBy(_lines: number): void {}
-
-	hideCursor(_force?: boolean): void {}
-
-	showCursor(_force?: boolean): void {}
-
+	moveBy(): void {}
+	hideCursor(): void {}
+	showCursor(): void {}
 	clearLine(): void {}
-
 	clearFromCursor(): void {}
-
 	clearScreen(): void {}
-
-	setTitle(_title: string): void {}
-
-	setProgress(_active: boolean): void {}
-
-	onAppearanceChange(_callback: (appearance: "dark" | "light", requestToken?: number) => void): void {}
-
-	onPrivateModeReport(_callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void {}
-
-	tape(): string[] {
-		const lines = this.vt.buffer.normal;
-		const rows = Array.from(
-			{ length: lines.length },
-			(_value, index) => lines.getLine(index)?.translateToString(true).trimEnd() ?? "",
-		);
-		while (rows.length > 0 && rows[rows.length - 1] === "") rows.pop();
-		return rows;
+	setTitle(): void {}
+	setProgress(): void {}
+	onAppearanceChange(): void {}
+	resize(columns: number, rows: number): void {
+		this.columns = columns;
+		this.rows = rows;
+		this.vt.resize(columns, rows);
+		this.resizeCallback?.();
+	}
+	all(): string[] {
+		const b = this.vt.buffer.normal;
+		return Array.from({ length: b.length }, (_, i) => clean(b.getLine(i)?.translateToString(true) ?? ""));
+	}
+	screen(): string[] {
+		const b = this.vt.buffer.normal;
+		return Array.from({ length: this.rows }, (_, i) => clean(b.getLine(b.baseY + i)?.translateToString(true) ?? ""));
 	}
 }
-
-const IMMEDIATE_SCHEDULER: RenderScheduler = {
-	now: () => 100,
-	scheduleImmediate(callback): void {
-		callback();
-	},
-	scheduleRender(callback): { cancel(): void } {
-		callback();
-		return { cancel() {} };
-	},
-};
-
-class StaticBlock implements Component {
-	constructor(readonly lines: readonly string[]) {}
-
+class Block implements Component {
+	constructor(readonly rows: readonly string[]) {}
 	render(): readonly string[] {
-		return this.lines;
+		return this.rows;
 	}
-
 	invalidate(): void {}
-
 	isTranscriptBlockFinalized(): boolean {
 		return true;
 	}
 }
-
-const REASONING =
-	"The user wants a long structured answer. I will write several paragraphs, a heading, a list, a numbered list and a code block so that it spans well beyond one screen in a narrow pane.";
-
-const ANSWER = `Here is the summary of what I found while looking through the rendering engine and the transcript container in the coding agent package.
-
-The first paragraph explains the commit ledger. Rows before the committed index have entered terminal history and ordinary emitters never rewrite them, which is the whole point of the append-only contract.
-
-## Findings
-
-- The audit samples the prefix tail and re-anchors on a structural shift.
-- Frozen snapshots of unpinned rows can diverge once the block finalizes.
-- A narrow pane makes wrapping changes far more common during streaming.
-
-1. First numbered item with enough words to wrap in a narrow terminal pane.
-2. Second numbered item that also wraps because the pane is only fifty-five columns wide.
-
-\`\`\`ts
-const value = computeSomething(width, height);
-console.log(value);
-\`\`\`
-
-Another paragraph follows the code block. It contains **bold text**, some \`inline code\`, and a [link](https://example.com) so that inline styling is exercised while streaming.
-
-Finally, a closing paragraph that wraps across several rows and mentions that the editor sits below the transcript with a status line under it.`;
-
-function message(text: string, thinking = REASONING): AssistantMessage {
+function clean(text: string): string {
+	return Bun.stripANSI(text).trimEnd();
+}
+function msg(text: string, thinking: string): AssistantMessage {
 	return {
 		role: "assistant",
-		content:
-			text.length > 0
-				? [
-						{ type: "thinking", thinking },
-						{ type: "text", text },
-					]
-				: [{ type: "thinking", thinking }],
+		content: [...(thinking ? [{ type: "thinking", thinking }] : []), ...(text ? [{ type: "text", text }] : [])],
 		api: "openai-completions",
 		provider: "test",
 		model: "test",
+		stopReason: "stop",
+		timestamp: 0,
 		usage: {
 			input: 0,
 			output: 0,
@@ -151,251 +114,192 @@ function message(text: string, thinking = REASONING): AssistantMessage {
 			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: "stop",
-		timestamp: 0,
 	} as AssistantMessage;
 }
-
-function stripAnsi(text: string): string {
-	return text.replace(/\x1b\[[0-9;:?]*[A-Za-z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+function setup(columns: number, rows: number) {
+	const terminal = new VTermSink(columns, rows),
+		scheduler = new Queue();
+	const composer = new Composer({
+		terminal,
+		tuiOptions: { renderScheduler: scheduler },
+		preferences: { quiet: true },
+	});
+	const transcript = new TranscriptContainer();
+	composer.setRuntimeChildren([transcript]);
+	composer.start({ deferInput: true });
+	scheduler.flush();
+	return { terminal, scheduler, composer, transcript };
 }
-
-for (const [cols, rows] of [
-	[55, 38],
-	[100, 24],
-] as const) {
-	test(`a streamed reply enters native scrollback exactly once (${cols}x${rows})`, () => {
-		const terminal = new BufferTerminal(cols, rows);
-		const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
-		const transcript = new TranscriptContainer();
-		transcript.addChild(
-			new StaticBlock(Array.from({ length: 30 }, (_value, index) => `earlier-history-row-${index}`)),
-		);
-		transcript.addChild(new StaticBlock(["> user asked a question here"]));
-		const reply = new AssistantMessageComponent(undefined, false);
-		transcript.addChild(reply);
-		tui.addChild(transcript);
-		tui.addChild(new StaticBlock(["", "> editor", "", "status line"]));
-		tui.start({ deferInput: true });
+function frame(composer: Composer, scheduler: Queue): void {
+	composer.ui.requestRender();
+	scheduler.flush();
+}
+function boundary(terminal: VTermSink): void {
+	const screen = terminal.screen();
+	const line = screen.findLastIndex(r => r.length > 0 && r === theme.boxSharp.horizontal.repeat(r.length));
+	expect(line, JSON.stringify(screen)).toBeGreaterThanOrEqual(0);
+	expect(
+		screen.slice(line).some(r => /FINAL-TURN-|FINAL-ONE/.test(r)),
+		JSON.stringify(screen),
+	).toBe(false);
+}
+const THINK = "Inspect native history, the mutable head, Markdown boundaries, and the viewport before answering.";
+const ANSWER = `FINAL-ONE survives exactly once.\n\nThe finalized prefix belongs to history while the mutable suffix stays live.\n\n## Findings\n\n- Stable paragraphs retire once.\n- Open Markdown stays mutable.\n\n\`\`\`ts\nconst frame = render(width);\n\`\`\`\n\nClosing prose exercises **bold** and \`code\`.`;
+for (const [columns, rows] of [
+	[55, 18],
+	[100, 14],
+] as const)
+	test(`streams through real Composer ${columns}x${rows}`, () => {
+		const { terminal, scheduler, composer, transcript } = setup(columns, rows);
 		try {
-			for (let end = 3; end < REASONING.length; end += 3) {
-				reply.updateContent(message("", REASONING.slice(0, end)), { transient: true });
-				tui.requestRender(true);
+			transcript.addChild(new Block(Array.from({ length: 20 }, (_, i) => `prior-${i}`)));
+			const reply = new AssistantMessageComponent(undefined, false);
+			transcript.addChild(reply);
+			for (let n = 5; n < THINK.length; n += 5) {
+				reply.updateContent(msg("", THINK.slice(0, n)), { transient: true });
+				frame(composer, scheduler);
 			}
-			// Reveal a few graphemes per frame, like the streaming reveal controller.
-			for (let end = 3; end < ANSWER.length; end += 3) {
-				reply.updateContent(message(ANSWER.slice(0, end)), { transient: true });
-				tui.requestRender(true);
+			for (let n = 8; n < ANSWER.length; n += 8) {
+				reply.updateContent(msg(ANSWER.slice(0, n), THINK), { transient: true });
+				frame(composer, scheduler);
 			}
-			reply.updateContent(message(ANSWER), { transient: true });
-			tui.requestRender(true);
-			reply.updateContent(message(ANSWER));
+			reply.updateContent(msg(ANSWER, THINK));
 			reply.markTranscriptBlockFinalized();
-			tui.requestRender(true);
-
-			const expected = tui.render(cols).map(line => stripAnsi(line).trimEnd());
-			while (expected.length > 0 && expected[expected.length - 1] === "") expected.pop();
-			expect(terminal.tape().map(stripAnsi)).toEqual(expected);
+			frame(composer, scheduler);
+			composer.beginHistoryFlush();
+			frame(composer, scheduler);
+			expect(terminal.all().filter(r => r.includes("FINAL-ONE"))).toHaveLength(1);
+			boundary(terminal);
 		} finally {
-			tui.stop();
+			composer.stop();
 		}
 	});
-}
 
-const WRAPPED_PRE_TOOL_TEXT = "Step 2 is the real fix. Let me check the helpers I need to preserve semantics exactly.";
-
-const DIAGRAM_REPLY = `The renderer keeps a commit ledger so that rows which already entered terminal history are never rewritten by a later frame.
-
-\`\`\`mermaid
-flowchart TD
-  A[stream] --> B[freeze]
-  B --> C[commit]
-  C --> D[history]
-\`\`\`
-
-Each stage above hands rows to the next one, and the last stage is the only one that writes to the terminal at all.
-
-A closing paragraph keeps the block streaming for long enough that the composed frame outgrows the pane several times over.`;
-
-test("a streamed reply containing a diagram settles rows while it streams", () => {
-	const cols = 60;
-	const rows = 14;
-	const terminal = new BufferTerminal(cols, rows);
-	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
-	const transcript = new TranscriptContainer();
-	transcript.addChild(new StaticBlock(["> draw me a diagram"]));
-	const reply = new AssistantMessageComponent(undefined, false);
-	transcript.addChild(reply);
-	tui.addChild(transcript);
-	tui.addChild(new StaticBlock(["", "> editor", "", "status line"]));
-	tui.start({ deferInput: true });
-
+test("rejects post-final updates without a scrollback staircase", () => {
+	const { terminal, scheduler, composer, transcript } = setup(56, 10);
 	try {
-		// Settled rows are what lets the commit ceiling advance past a live block.
-		// A reply that never settles strands every row it has scrolled past: they
-		// reach history in one burst, and a live-source change before that burst
-		// repaints from row zero, rewinding the pane to the title screen.
-		let settledRows: readonly string[] = [];
-		let maxSettled = 0;
-		for (let end = 20; end < DIAGRAM_REPLY.length; end += 20) {
-			reply.updateContent(message(DIAGRAM_REPLY.slice(0, end)), { transient: true });
-			tui.requestRender(true);
-			const rendered = reply.render(cols).map(line => stripAnsi(line).trimEnd());
-			expect(rendered.slice(0, settledRows.length), "settled rows must never be rewritten").toEqual([
-				...settledRows,
-			]);
-			const settled = reply.getTranscriptBlockSettledRows();
-			maxSettled = Math.max(maxSettled, settled);
-			settledRows = rendered.slice(0, settled);
+		transcript.addChild(new Block(Array.from({ length: 10 }, (_, i) => `history-${i}`)));
+		const reply = new AssistantMessageComponent(undefined, false);
+		transcript.addChild(reply);
+		const text = "Preserve FINALIZED-CONTINUATION exactly once after finalization.";
+		for (let n = 3; n < text.length; n += 3) {
+			reply.updateContent(msg(text.slice(0, n), ""), { transient: true });
+			frame(composer, scheduler);
 		}
-		reply.updateContent(message(DIAGRAM_REPLY));
+		reply.updateContent(msg(text, ""));
 		reply.markTranscriptBlockFinalized();
-		tui.requestRender(true);
-
-		const finalRows = reply.render(cols).map(line => stripAnsi(line).trimEnd());
-		expect(finalRows.slice(0, settledRows.length), "finalizing must not rewrite settled rows").toEqual([
-			...settledRows,
-		]);
-		const rowAfterDiagram = finalRows.findIndex(line => line.includes("Each stage above"));
-		expect(rowAfterDiagram, "the fixture must keep prose after the diagram").toBeGreaterThan(0);
-		expect(maxSettled, "rows after the diagram must settle too").toBeGreaterThan(rowAfterDiagram);
-
-		const expected = tui.render(cols).map(line => stripAnsi(line).trimEnd());
-		while (expected.length > 0 && expected[expected.length - 1] === "") expected.pop();
-		expect(terminal.tape().map(stripAnsi)).toEqual(expected);
+		frame(composer, scheduler);
+		for (let n = 10; n <= text.length; n++) {
+			reply.updateContent(msg(text.slice(0, n), ""), { transient: true });
+			frame(composer, scheduler);
+		}
+		composer.beginHistoryFlush();
+		frame(composer, scheduler);
+		expect(terminal.all().filter(r => r.includes("FINALIZED-CONTINUATION"))).toHaveLength(1);
 	} finally {
-		tui.stop();
+		composer.stop();
 	}
 });
-
-test("a finalized wrapped assistant rejects post-final updates instead of creating a scrollback staircase", () => {
-	const scheduledRenders: Array<() => void> = [];
-	const scheduler: RenderScheduler = {
-		now: () => performance.now(),
-		scheduleImmediate(callback): void {
-			scheduledRenders.push(callback);
-		},
-		scheduleRender(callback): { cancel(): void } {
-			let cancelled = false;
-			scheduledRenders.push(() => {
-				if (!cancelled) callback();
-			});
-			return {
-				cancel(): void {
-					cancelled = true;
-				},
-			};
-		},
-	};
-	const flush = (): void => {
-		while (scheduledRenders.length > 0) scheduledRenders.shift()!();
-	};
-	const terminal = new BufferTerminal(56, 8);
-	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
-	const transcript = new TranscriptContainer();
-	transcript.addChild(new StaticBlock(Array.from({ length: 8 }, (_value, index) => `history-${index}`)));
-	const reply = new AssistantMessageComponent(undefined, false);
-	transcript.addChild(reply);
-	tui.addChild(transcript);
-	tui.addChild(
-		new StaticBlock(["", "chrome-1", "chrome-2", "chrome-3", "chrome-4", "chrome-5", "> editor", "status"]),
-	);
-	tui.start({ deferInput: true });
-	flush();
-	try {
-		for (let end = 3; end <= 54; end += 3) {
-			reply.updateContent(message(WRAPPED_PRE_TOOL_TEXT.slice(0, end), ""), { transient: true });
-			tui.requestComponentRender(reply);
-			flush();
-		}
-
-		// EventController drains the reveal before finalizing; updates after this point must be inert.
-		reply.updateContent(message(WRAPPED_PRE_TOOL_TEXT, ""), { transient: true });
-		tui.requestComponentRender(reply);
-		flush();
-		reply.markTranscriptBlockFinalized();
-		for (let end = 55; end <= WRAPPED_PRE_TOOL_TEXT.length; end++) {
-			reply.updateContent(message(WRAPPED_PRE_TOOL_TEXT.slice(0, end), ""), { transient: true });
-			tui.requestComponentRender(reply);
-			flush();
-		}
-
-		const tape = terminal.tape().map(line => stripAnsi(line).trim());
-		const continuationRows = tape.filter(line => line.includes("need to"));
-		expect(continuationRows).toEqual(["need to preserve semantics exactly."]);
-		expect(tape.indexOf(continuationRows[0]!)).toBeLessThan(tape.length - terminal.rows);
-	} finally {
-		tui.stop();
-	}
-});
-
-// A completed-checklist card animates its strike-through reveal for ~900 ms after the
-// block is already finalized. When the reply streaming below it pushes the card
-// into native scrollback mid-reveal, every further tick used to rewrite rows the
-// terminal can no longer repaint: the renderer re-anchored its commit seam to the
-// card and re-appended everything below it once per tick, so scrolling up showed
-// the reply spliced and replayed over and over.
-test("a checklist card that scrolls into history mid-strike leaves the transcript in scrollback once", () => {
-	vi.useFakeTimers();
-	const cols = 55;
-	const rows = 20;
-	const terminal = new BufferTerminal(cols, rows);
-	const tui = new TUI(terminal, false, { renderScheduler: IMMEDIATE_SCHEDULER });
-	const transcript = new TranscriptContainer();
-	transcript.addChild(new StaticBlock(Array.from({ length: 8 }, (_value, index) => `earlier-history-row-${index}`)));
-	const ui: ToolExecutionUi = {
-		requestRender: () => tui.requestRender(true),
-		requestComponentRender: () => tui.requestRender(true),
-		resetDisplay: () => {},
-	};
-	const details: ChecklistToolDetails = {
+function details(turn: number): ChecklistToolDetails {
+	const phase = `Session ${turn}`;
+	const tasks = Array.from({ length: 12 }, (_, index) => ({
+		content: `Checklist row ${index}`,
+		status: (index < 8 ? "completed" : "pending") as "completed" | "pending",
+	}));
+	return {
 		op: "done",
 		storage: "session",
-		phases: [
-			{
-				name: "Playtest",
-				tasks: [
-					{ content: "Play the game end to end", status: "completed" },
-					{ content: "Fix what the playtest finds and re-verify", status: "completed" },
-					{ content: "Write up the findings", status: "pending" },
-				],
-			},
-		],
-		completedTasks: [
-			{ phase: "Playtest", content: "Play the game end to end" },
-			{ phase: "Playtest", content: "Fix what the playtest finds and re-verify" },
-		],
+		phases: [{ name: phase, tasks }],
+		completedTasks: tasks.slice(0, 8).map(task => ({ phase, content: task.content })),
 	};
-	const card = new ToolExecutionComponent("checklist", { op: "done" }, { useBuiltInRenderer: true }, undefined, ui);
-	transcript.addChild(card);
-	const reply = new AssistantMessageComponent(undefined, false);
-	transcript.addChild(reply);
-	tui.addChild(transcript);
-	tui.addChild(new StaticBlock(["", "> editor", "", "status line"]));
-	tui.start({ deferInput: true });
-
+}
+test("long mixed session retains every finalized paragraph exactly once", () => {
+	const { terminal, scheduler, composer, transcript } = setup(62, 17);
+	const markers: string[] = [],
+		cards: ToolExecutionComponent[] = [];
+	let frames = 0;
+	const render = (): void => {
+		frame(composer, scheduler);
+		frames++;
+		boundary(terminal);
+	};
+	const ui: ToolExecutionUi = { requestRender: render, requestComponentRender: render };
 	try {
-		card.updateResult({ content: [{ type: "text", text: "ok" }], details, isError: false }, false);
-		tui.requestRender(true);
-
-		for (let end = 40; end < ANSWER.length; end += 40) {
-			reply.updateContent(message(ANSWER.slice(0, end)), { transient: true });
-			tui.requestRender(true);
-			// One strike frame per streamed chunk, the interval's own 65 ms period.
-			vi.advanceTimersByTime(65);
+		for (let turn = 0; turn < 30; turn++) {
+			transcript.addChild(new Block([`> prompt ${turn}`]));
+			const marker = `FINAL-TURN-${String(turn).padStart(3, "0")}-PARAGRAPH`;
+			markers.push(marker);
+			const thinking = `Thinking for turn ${turn}: inspect the tool, preserve history, and answer.`;
+			const answer = `${marker} survives exactly once.\n\n## Turn ${turn}\n\n- First Markdown block.\n- Second Markdown block.\n\n\`\`\`text\ntag:${String(turn).padStart(3, "0")}\n\`\`\`\n\nClosing prose stays above the prompt.`;
+			const reply = new AssistantMessageComponent(undefined, false);
+			transcript.addChild(reply);
+			for (let n = 7; n < thinking.length; n += 7) {
+				reply.updateContent(msg("", thinking.slice(0, n)), { transient: true });
+				render();
+			}
+			for (let n = 16; n < answer.length; n += 16) {
+				reply.updateContent(msg(answer.slice(0, n), thinking), { transient: true });
+				render();
+			}
+			reply.updateContent(msg(answer, thinking));
+			reply.markTranscriptBlockFinalized();
+			render();
+			if (turn % 6 === 2) {
+				const card = new ToolExecutionComponent(
+					"checklist",
+					{ op: "done" },
+					{ useBuiltInRenderer: true },
+					undefined,
+					ui,
+				);
+				cards.push(card);
+				transcript.addChild(card);
+				render();
+				card.updateResult(
+					{ content: [{ type: "text", text: "ok" }], details: details(turn), isError: false },
+					false,
+				);
+				card.seal();
+				render();
+			}
+			composer.editor.setText(turn % 3 ? `draft ${turn}` : `draft ${turn}\nsecond line\nthird line`);
+			composer.setStatusComponent(new Block([`HUD turn=${turn}`]));
+			render();
+			composer.editor.setText("");
+			render();
+			if (turn % 7 === 3) {
+				const overlay = composer.ui.showOverlay(new Block(["overlay", `turn ${turn}`]), {
+					width: 24,
+					row: 1,
+					col: 2,
+				});
+				frame(composer, scheduler);
+				overlay.hide();
+				render();
+			}
+			if (turn % 5 === 4)
+				for (const [columns, rows] of [
+					[48, 13],
+					[84, 23],
+					[62, 17],
+				] as const) {
+					terminal.resize(columns, rows);
+					scheduler.flush();
+					render();
+				}
 		}
-		reply.updateContent(message(ANSWER));
-		reply.markTranscriptBlockFinalized();
-		tui.requestRender(true);
-
-		const expected = tui.render(cols).map(line => stripAnsi(line).trimEnd());
-		while (expected.length > 0 && expected[expected.length - 1] === "") expected.pop();
-		// The card has to have left the window for the respray to be reachable at all.
-		expect(expected.length).toBeGreaterThan(rows);
-		expect(terminal.tape().map(stripAnsi)).toEqual(expected);
+		expect(frames).toBeGreaterThan(400);
+		composer.beginHistoryFlush();
+		render();
+		const tape = terminal.all();
+		const counts = markers.map(marker => [marker, tape.filter(row => row.includes(marker)).length] as const);
+		expect(
+			counts.filter(([, count]) => count !== 1),
+			JSON.stringify(counts),
+		).toEqual([]);
+		boundary(terminal);
 	} finally {
-		card.dispose();
-		tui.stop();
-		vi.useRealTimers();
+		for (const card of cards) card.dispose();
+		composer.stop();
 	}
 });

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Native-scrollback applications now provide explicit history batches through `TerminalFrameProvider`; removed implicit full-document retirement and the `NativeScrollback*` / `RenderStablePrefix` component hooks.
+
+### Changed
+
+- Native history and mutable viewport updates are separate transactions; ordinary rendering and resizing preserve committed scrollback, while explicit display resets replay it atomically.
+
 ## [18.1.23] - 2026-09-20
 
 ### Added

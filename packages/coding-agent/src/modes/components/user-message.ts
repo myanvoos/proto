@@ -15,35 +15,12 @@ export class UserMessageComponent extends Container {
 	#zoneSource: readonly string[] | undefined;
 	#zoneLines: string[] | undefined;
 	#working = false;
-	#version = 0;
-	#onTranscriptBlockChange?: () => void;
-
-	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
-		this.#onTranscriptBlockChange = listener;
-	}
 
 	setWorking(working: boolean): void {
 		if (this.#working === working) return;
 		this.#working = working;
-		this.#version++;
 		this.#zoneSource = undefined;
 		this.#zoneLines = undefined;
-		this.#onTranscriptBlockChange?.();
-	}
-
-	override invalidate(): void {
-		super.invalidate();
-		this.#onTranscriptBlockChange?.();
-	}
-
-	override dispose(): void {
-		this.#onTranscriptBlockChange?.();
-		this.#onTranscriptBlockChange = undefined;
-		super.dispose();
-	}
-
-	getTranscriptBlockVersion(): number {
-		return this.#version;
 	}
 
 	constructor(text: string, synthetic = false, imageLinks?: readonly (string | undefined)[]) {

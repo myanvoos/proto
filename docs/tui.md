@@ -34,9 +34,9 @@ export interface Component {
 }
 ```
 
-Render results are component-owned and immutable to callers. An unchanged component may (and should) return the **same array reference** it returned last time; it must return a new array whenever content changes. Reference equality enables container memoization and stable-prefix work avoidance. A component that mutates a previously returned array in place must also implement `RenderStablePrefix` and report how many leading rows survived unchanged.
+Render results are component-owned and immutable to callers. An unchanged component may return the **same array reference**; changed content should return a new array. Components render current content, not terminal history watermarks. Composer and the transcript ledger decide when finalized content can retire into an explicit history batch.
 
-Tool-block headers and section labels obey the same width and tab-sanitization rules as body rows. Transcript change notifications invalidate cached row contributions even when a tracked component reuses a mutable array, so changed rows are not reported as an unchanged render prefix.
+Tool-block headers and section labels obey the same width and tab-sanitization rules as body rows. Mutable tool previews remain in the live viewport until their lifecycle permits retirement. Already-retired output changes only through an explicit display replay, such as tool expansion.
 
 `Focusable` is separate:
 

@@ -260,8 +260,13 @@ describe("agents view shift-range mass selection", () => {
 		);
 		expect(fs.existsSync(childFiles[0]!)).toBe(true);
 		expect(fs.existsSync(childFiles[1]!)).toBe(true);
+		// Registry rows move before the asynchronous batch finishes clearing selection.
+		await waitFor(() => renderPlain(view).includes("Removed 2"), "the batch stop to finish");
 		// executing the mass operation collapses the range
 		expect(renderPlain(view)).not.toContain("remove 2");
+
+		// Moving into Inactive can reorder rows by updated time; select the bottom explicitly.
+		for (let pressed = 0; pressed < 6; pressed++) view.handleInput(DOWN);
 
 		// the "Removed 2" status message temporarily replaces the hints line, so assert
 		// on the row checkboxes rather than the hints while it is visible.

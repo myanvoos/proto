@@ -1,13 +1,20 @@
 /**
  * TUI differential-render hot path: full frame compose + emit for
- * streaming-shaped updates, nested Container re-flattening, clipped live
- * regions, and ScrollView setLines/render.
+ * streaming-shaped updates, explicit history transactions, nested Container
+ * re-flattening, bounded viewports, and ScrollView setLines/render.
  *
  * Each `run` is exactly one frame (or one setLines+render), so the reported
  * median is ms/frame and opsPerSec is frames/sec for that case.
  */
 import { ScrollView } from "../packages/tui/src/components/scroll-view";
-import { type Component, Container, TUI } from "../packages/tui/src/tui";
+import {
+	type Component,
+	Container,
+	type HistoryBatch,
+	type TerminalFrameProvider,
+	TUI,
+	type ViewportSize,
+} from "../packages/tui/src/tui";
 import { formatArtifact, labelFromArgv, runSuite } from "./harness";
 
 const WIDTH = 100;
@@ -94,42 +101,38 @@ function buildRows(count: number): string[] {
 	return rows;
 }
 
-/**
- * Transcript-like leaf: every render returns a fresh array whose live tail row
- * is rewritten (the streaming shape — callers rebuild their line array per
- * update while most strings keep identity). With liveRows > 0 the component
- * reports a pinned live region that overflows the viewport, engaging the
- * native-scrollback clip path every frame.
- */
-class StreamingTranscript implements Component {
+/** Streaming provider: stable rows retire once, while the live tail remains viewport-only. */
+class StreamingFrameProvider implements TerminalFrameProvider {
 	#rows: string[];
 	#liveRows: number;
 	#frame = 0;
-	constructor(rows: string[], liveRows: number) {
+	#pending: HistoryBatch | undefined;
+	#extra: Component | undefined;
+
+	constructor(rows: string[], liveRows: number, extra?: Component) {
 		this.#rows = rows;
 		this.#liveRows = liveRows;
+		this.#extra = extra;
+		const stableTo = Math.max(0, rows.length - Math.max(1, liveRows));
+		if (stableTo > 0) this.#pending = { id: 1, rows: rows.slice(0, stableTo) };
 	}
 
-	render(_width: number): readonly string[] {
-		const lines = this.#rows.slice();
-		lines[lines.length - 1] = `live frame ${this.#frame++} ${".".repeat(30)}`;
-		return lines;
+	renderFrame(size: ViewportSize): { history?: HistoryBatch; viewport: readonly string[] } {
+		const transcript = this.#rows.slice();
+		transcript[transcript.length - 1] = `live frame ${this.#frame++} ${".".repeat(30)}`;
+		const extra = this.#extra?.render(size.columns) ?? [];
+		const composed = [
+			...transcript.slice(-Math.max(1, this.#liveRows)),
+			"$",
+			"editor alpha",
+			"editor beta",
+			...extra,
+		];
+		return { history: this.#pending, viewport: composed.slice(-size.rows) };
 	}
 
-	getNativeScrollbackLiveRegionStart(): number | undefined {
-		return this.#liveRows > 0 ? this.#rows.length - this.#liveRows : undefined;
-	}
-
-	isNativeScrollbackLiveRegionPinned(): boolean {
-		return this.#liveRows > 0;
-	}
-
-	getNativeScrollbackLiveRegionPinnedStart(): number | undefined {
-		return this.#liveRows > 0 ? this.#rows.length - this.#liveRows : undefined;
-	}
-
-	clipsNativeScrollbackLiveRegion(): boolean {
-		return this.#liveRows > 0;
+	acknowledgeHistory(id: number): void {
+		if (this.#pending?.id === id) this.#pending = undefined;
 	}
 }
 
@@ -148,12 +151,10 @@ interface TuiFixture {
 	tui: TUI;
 }
 
-function buildTui(rowCount: number, liveRows: number, extra?: (tui: TUI) => void): TuiFixture {
+function buildTui(rowCount: number, liveRows: number, extra?: Component): TuiFixture {
 	const terminal = new BenchTerminal(WIDTH, HEIGHT);
 	const tui = new TUI(terminal, false, { renderScheduler: immediateScheduler });
-	tui.addChild(new StreamingTranscript(buildRows(rowCount), liveRows));
-	tui.addChild(new StaticBlock(["$", "editor alpha", "editor beta"]));
-	extra?.(tui);
+	tui.setFrameProvider(new StreamingFrameProvider(buildRows(rowCount), liveRows, extra));
 	tui.start({ deferInput: true });
 	flushSchedules();
 	terminal.writes.length = 0;
@@ -181,14 +182,12 @@ class MutatingBlock implements Component {
 }
 
 function buildContainerTui(childCount: number): TuiFixture {
-	return buildTui(12, 0, tui => {
-		const container = new Container();
-		const changing = childCount >> 1;
-		for (let i = 0; i < childCount; i++) {
-			container.addChild(i === changing ? new MutatingBlock(12) : new StaticBlock(buildRows(12)));
-		}
-		tui.addChild(container);
-	});
+	const container = new Container();
+	const changing = childCount >> 1;
+	for (let i = 0; i < childCount; i++) {
+		container.addChild(i === changing ? new MutatingBlock(12) : new StaticBlock(buildRows(12)));
+	}
+	return buildTui(12, 0, container);
 }
 
 interface ScrollViewFixture {

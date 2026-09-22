@@ -16,14 +16,12 @@ export class Text implements Component {
 	#paddingY: number;
 	#customBgFn?: (text: string) => string;
 	#styleFn?: (text: string) => string;
-	#widthEpochRevision = 0;
 
 	#ignoreTight = false;
 
 	setIgnoreTight(ignore: boolean): this {
 		if (this.#ignoreTight === ignore) return this;
 		this.#ignoreTight = ignore;
-		this.#widthEpochRevision++;
 		this.invalidate();
 		return this;
 	}
@@ -53,12 +51,7 @@ export class Text implements Component {
 		this.#cachedWidth = undefined;
 		this.#cachedWidthEpoch = undefined;
 		this.#cachedLines = undefined;
-		this.#widthEpochRevision++;
 		return true;
-	}
-
-	getNativeScrollbackWidthEpochRevision(): number {
-		return this.#widthEpochRevision;
 	}
 
 	setCustomBgFn(customBgFn?: (text: string) => string): void {
@@ -67,7 +60,6 @@ export class Text implements Component {
 		this.#cachedWidth = undefined;
 		this.#cachedWidthEpoch = undefined;
 		this.#cachedLines = undefined;
-		this.#widthEpochRevision++;
 	}
 
 	setStyleFn(styleFn?: (text: string) => string): this {
@@ -76,7 +68,6 @@ export class Text implements Component {
 		this.#cachedWidth = undefined;
 		this.#cachedWidthEpoch = undefined;
 		this.#cachedLines = undefined;
-		this.#widthEpochRevision++;
 		return this;
 	}
 

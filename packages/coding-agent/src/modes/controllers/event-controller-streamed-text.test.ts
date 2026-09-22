@@ -1,9 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect, test, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import { CHECKLIST_STRIKE_TOTAL_FRAMES } from "../../tools/checklist";
+import { ToolExecutionComponent } from "../components/tool-execution";
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme, theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
@@ -316,3 +318,204 @@ test.each(["retained", "discarded", "retained-prefix"] as const)(
 		}
 	},
 );
+
+class DisplaceableChecklistSnapshot implements Component {
+	sealed = false;
+	disposed = false;
+	#displaceable: boolean;
+	#finalized: boolean;
+
+	constructor(initiallyFinalized = false) {
+		this.#finalized = initiallyFinalized;
+		this.#displaceable = !initiallyFinalized;
+	}
+
+	render(): readonly string[] {
+		return ["checklist snapshot"];
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.sealed || this.#finalized;
+	}
+
+	isDisplaceableBlock(): boolean {
+		return this.#displaceable && !this.sealed;
+	}
+
+	canBeDisplacedBy(toolName: string | undefined): boolean {
+		return toolName === "checklist" && this.isDisplaceableBlock();
+	}
+
+	activateDisplacement(): void {
+		this.#finalized = false;
+		this.#displaceable = true;
+	}
+
+	seal(): void {
+		this.sealed = true;
+		this.#displaceable = false;
+	}
+
+	dispose(): void {
+		this.disposed = true;
+	}
+}
+
+async function startAfterChecklistSnapshot(initiallyFinalized = false) {
+	const { chatContainer, context } = createContext();
+	const controller = new EventController(context);
+	const snapshotBlock = new DisplaceableChecklistSnapshot(initiallyFinalized);
+	chatContainer.addChild(snapshotBlock);
+	if (initiallyFinalized) {
+		const batch = chatContainer.peekFlushBatch(RENDER_WIDTH);
+		expect(batch).toBeDefined();
+		chatContainer.acknowledgeFinalizedBatch(batch!.id);
+		snapshotBlock.activateDisplacement();
+	}
+	controller.inheritDisplaceableChecklist(snapshotBlock as never);
+	await controller.handleEvent({
+		type: "message_start",
+		message: snapshot([]),
+	} as unknown as AgentSessionEvent);
+	return { chatContainer, context, controller, snapshotBlock };
+}
+
+test("an empty assistant placeholder preserves same-checklist replacement while the old snapshot is removable", async () => {
+	const { chatContainer, controller, snapshotBlock } = await startAfterChecklistSnapshot();
+	try {
+		expect(chatContainer.children).toContain(snapshotBlock);
+		await controller.handleEvent({
+			type: "message_update",
+			message: snapshot([toolCallBlock("next-checklist", "checklist")]),
+		} as unknown as AgentSessionEvent);
+		expect(chatContainer.children).not.toContain(snapshotBlock);
+		expect(snapshotBlock.disposed).toBe(true);
+		expect(snapshotBlock.sealed).toBe(true);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+test.each([
+	["text", { type: "text", text: "actual output" } as Block],
+	["thinking", { type: "thinking", thinking: "actual reasoning" } as Block],
+])("visible assistant %s seals and retains the prior checklist snapshot", async (_kind, visibleBlock) => {
+	const { chatContainer, controller, snapshotBlock } = await startAfterChecklistSnapshot();
+	try {
+		await controller.handleEvent({
+			type: "message_update",
+			message: snapshot([visibleBlock]),
+		} as unknown as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "message_update",
+			message: snapshot([visibleBlock, toolCallBlock("next-checklist", "checklist")]),
+		} as unknown as AgentSessionEvent);
+		expect(chatContainer.children).toContain(snapshotBlock);
+		expect(snapshotBlock.sealed).toBe(true);
+		expect(snapshotBlock.disposed).toBe(false);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+test("an unrelated tool seals and retains the prior checklist snapshot", async () => {
+	const { chatContainer, controller, snapshotBlock } = await startAfterChecklistSnapshot();
+	try {
+		await controller.handleEvent({
+			type: "message_update",
+			message: snapshot([toolCallBlock("next-tool", "bash")]),
+		} as unknown as AgentSessionEvent);
+		expect(chatContainer.children).toContain(snapshotBlock);
+		expect(snapshotBlock.sealed).toBe(true);
+		expect(snapshotBlock.disposed).toBe(false);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+test("a committed checklist snapshot is sealed rather than removed for a same-tool transition", async () => {
+	const { chatContainer, controller, snapshotBlock } = await startAfterChecklistSnapshot(true);
+	try {
+		expect(chatContainer.canRemoveBlock(snapshotBlock)).toBe(false);
+		await controller.handleEvent({
+			type: "message_update",
+			message: snapshot([toolCallBlock("next-checklist", "checklist")]),
+		} as unknown as AgentSessionEvent);
+		expect(chatContainer.children).toContain(snapshotBlock);
+		expect(snapshotBlock.sealed).toBe(true);
+		expect(snapshotBlock.disposed).toBe(false);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+test("checklist reveal remains active until its final frame and retires its timer when sealed", () => {
+	vi.useFakeTimers();
+	let paints = 0;
+	const card = new ToolExecutionComponent("checklist", { op: "done" }, { useBuiltInRenderer: false }, undefined, {
+		requestRender: NOOP,
+		requestComponentRender: () => {
+			paints++;
+		},
+	});
+	try {
+		card.updateResult(
+			{
+				content: [{ type: "text", text: "done" }],
+				details: { completedTasks: [{ content: "finished" }] },
+			},
+			false,
+		);
+		expect(card.isTranscriptBlockFinalized()).toBe(false);
+		vi.advanceTimersByTime(65 * (CHECKLIST_STRIKE_TOTAL_FRAMES + 2));
+		expect(card.isTranscriptBlockFinalized()).toBe(true);
+		const paintsAfterCompletion = paints;
+		vi.advanceTimersByTime(650);
+		expect(paints).toBe(paintsAfterCompletion);
+
+		card.updateResult(
+			{
+				content: [{ type: "text", text: "done again" }],
+				details: { completedTasks: [{ content: "finished again" }] },
+			},
+			false,
+		);
+		expect(card.isTranscriptBlockFinalized()).toBe(false);
+		card.seal();
+		expect(card.isTranscriptBlockFinalized()).toBe(true);
+		const paintsAfterSeal = paints;
+		vi.advanceTimersByTime(650);
+		expect(paints).toBe(paintsAfterSeal);
+	} finally {
+		card.dispose();
+		vi.useRealTimers();
+	}
+});
+
+test("unlocking thinking visibility requests a destructive display reset", async () => {
+	const { chatContainer, context } = createContext();
+	let resets = 0;
+	context.noteDisplayableThinkingContent = () => true;
+	context.ui.resetDisplay = () => {
+		resets++;
+	};
+	const controller = new EventController(context);
+	try {
+		await controller.handleEvent({
+			type: "message_start",
+			message: snapshot([]),
+		} as unknown as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "message_update",
+			message: snapshot([{ type: "thinking", thinking: "now visible" }]),
+		} as unknown as AgentSessionEvent);
+		expect(resets).toBe(1);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});

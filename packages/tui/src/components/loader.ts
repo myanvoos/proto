@@ -170,10 +170,6 @@ export class Loader extends Text {
 			return;
 		}
 
-		if (typeof this.#ui.requestDirectWrite === "function") {
-			this.#ui.requestDirectWrite(this);
-		} else {
-			this.#ui.requestComponentRender(this);
-		}
+		this.#ui.requestComponentRender(this);
 	}
 }

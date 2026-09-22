@@ -1,15 +1,20 @@
 import {
 	type Component,
 	Container,
+	type HistoryBatch,
 	ProcessTerminal,
 	Spacer,
 	type Terminal,
+	type TerminalFramePlan,
+	type TerminalFrameProvider,
 	TUI,
 	type TUIOptions,
+	type ViewportSize,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../config/keybindings";
 import { CustomEditor } from "./components/custom-editor";
+import { isRowPrefix, TranscriptContainer } from "./components/transcript-container";
 import { type RecentSession, WelcomeComponent } from "./components/welcome";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
 
@@ -69,10 +74,6 @@ class StatusHost implements Component {
 		this.#component = component;
 	}
 
-	getNativeScrollbackLiveRegionStart(): number {
-		return 0;
-	}
-
 	render(width: number): readonly string[] {
 		return this.#component?.render(width) ?? [];
 	}
@@ -97,48 +98,12 @@ class CardPadRow implements Component {
 	invalidate(): void {}
 }
 
-/**
- * The welcome scene's top fill measures itself every frame. Startup rows
- * (config warnings, MCP connection notices, the changelog block) appear and
- * disappear after the one-shot anchor sync has already run, and a fill left at
- * a stale height strands the banner above a blank band under the composer.
- * Once conversation content exists the pushed height wins, so rows already
- * committed to native scrollback never shift.
- */
-class HomeFill implements Component {
-	#lines = 0;
-	#cached: string[] | undefined;
-
-	constructor(readonly measure: () => number | undefined) {}
-
-	setLines(lines: number): void {
-		if (lines === this.#lines) return;
-		this.#lines = lines;
-		this.#cached = undefined;
-	}
-
-	invalidate(): void {}
-
-	render(_width: number): readonly string[] {
-		const lines = this.measure() ?? this.#lines;
-		let cached = this.#cached;
-		if (cached === undefined || cached.length !== lines) {
-			cached = new Array(lines).fill("");
-			this.#cached = cached;
-		}
-		return cached;
-	}
-}
-
-export class Composer {
+export class Composer implements TerminalFrameProvider {
 	readonly ui: TUI;
 	#editor: CustomEditor;
 	readonly #header = new Container();
 	readonly #editorSlot = new Container();
 	readonly #statusHost = new StatusHost();
-	readonly #topFill = new HomeFill(() => this.#measureHomeFill());
-	#conversationChildren = 0;
-	readonly #bottomFill = new HomeFill(() => this.#measureBottomFill());
 	readonly #bottomMargin = new Spacer(1);
 	readonly #composerHairline = new ComposerHairline();
 	readonly #padAboveEditor = new CardPadRow();
@@ -156,6 +121,20 @@ export class Composer {
 	#runtimeChildren: readonly Component[] = [];
 	#belowChildren: readonly Component[] = [];
 	#runtimeMounted = false;
+	#nextHistoryId = 1;
+	#headerRetired = false;
+	#historyReplay = false;
+	#historyFlush = false;
+	#retirementChromeFloor: number | undefined;
+	#offeredHistory:
+		| {
+				batch: HistoryBatch;
+				width: number;
+				transcript: TranscriptContainer;
+				transcriptId?: number;
+				header: boolean;
+		  }
+		| undefined;
 	#lastInterruptAt = 0;
 	#started = false;
 	#stopped = false;
@@ -173,6 +152,7 @@ export class Composer {
 			this.#preferences.showHardwareCursor,
 			options.tuiOptions,
 		);
+		this.ui.setFrameProvider(this);
 		this.ui.setMaxInlineImages(this.#preferences.maxInlineImages);
 
 		this.#editor = new CustomEditor(getEditorTheme());
@@ -192,13 +172,11 @@ export class Composer {
 		this.editor.setActionKeys("app.exit", ["ctrl+d"]);
 		this.editor.onClear = () => this.#handleInterrupt();
 		this.editor.onExit = () => this.#requestExit(0);
-		this.editor.setShimmerRepaintHandler(() => this.ui.requestDirectWrite(this.editor));
+		this.editor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(this.editor));
 
 		if (!this.#preferences.quiet) this.#ensureWelcome();
 		this.#rebuildHeader();
-		this.ui.addChild(this.#topFill);
 		this.ui.addChild(this.#header);
-		this.ui.addChild(this.#bottomFill);
 		this.ui.addChild(this.#composerHairline);
 		this.ui.addChild(this.#padAboveEditor);
 		this.ui.addChild(this.#editorSlot);
@@ -208,6 +186,140 @@ export class Composer {
 		this.ui.setFocus(this.editor);
 	}
 
+	/** Plan immutable history independently of the complete mutable viewport. */
+	renderFrame(viewport: ViewportSize): TerminalFramePlan {
+		if (!this.#started || this.#stopped) return { viewport: [] };
+		const width = Math.max(1, viewport.columns);
+		const height = Math.max(0, viewport.rows);
+		const roots = this.ui.children;
+		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
+		if (transcriptIndex < 0) {
+			return {
+				viewport: height > 0 ? this.#renderRoots(roots, width).slice(-height) : [],
+				viewportAnchor: "bottom",
+			};
+		}
+		const transcript = roots[transcriptIndex] as TranscriptContainer;
+		const before = this.#renderRoots(
+			roots.slice(0, transcriptIndex).filter(root => root !== this.#header),
+			width,
+		);
+		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
+		// Expanded drafts/dialogs may temporarily hide transcript rows, but must
+		// not retire them irreversibly. Bill retirement against persistent chrome.
+		this.#retirementChromeFloor = Math.min(this.#retirementChromeFloor ?? after.length, after.length);
+		const capacity = Math.max(0, height - before.length - this.#retirementChromeFloor);
+		const history = this.#offerHistory(transcript, width, capacity);
+		const header = this.#headerRetired || this.#offeredHistory?.header ? [] : this.#header.render(width);
+		const now = performance.now();
+		const live = transcript.renderViewport(width, Math.max(0, capacity - header.length), {
+			now,
+			tick: Math.floor(now / 80),
+		});
+		const rows = [...header, ...before, ...live, ...after];
+		return { history, viewport: height > 0 ? rows.slice(-height) : [], viewportAnchor: "bottom" };
+	}
+
+	acknowledgeHistory(id: number): void {
+		const offered = this.#offeredHistory;
+		if (!offered || offered.batch.id !== id) return;
+		if (offered.transcriptId !== undefined) offered.transcript.acknowledgeFinalizedBatch(offered.transcriptId);
+		if (offered.header) this.#headerRetired = true;
+		this.#offeredHistory = undefined;
+	}
+
+	/** The alternate resize preview is semantic only: it cannot retire history. */
+	renderResizeFrame(viewport: ViewportSize): readonly string[] {
+		const width = Math.max(1, viewport.columns);
+		const height = Math.max(0, viewport.rows);
+		if (height === 0) return [];
+		const roots = this.ui.children;
+		const index = roots.findIndex(root => root instanceof TranscriptContainer);
+		if (index < 0) return this.#renderRoots(roots, width).slice(-height);
+		const after = this.#renderRoots(roots.slice(index + 1), width);
+		const transcript = roots[index] as TranscriptContainer;
+		const tail = transcript.renderTail(width, Math.max(0, height - after.length));
+		const prefix = tail.length + after.length < height ? this.#renderRoots(roots.slice(0, index), width) : [];
+		return [...prefix, ...tail, ...after].slice(-height);
+	}
+
+	/** Called only for an explicit display/session replacement, never a resize. */
+	beginHistoryReplay(): void {
+		this.#offeredHistory = undefined;
+		this.#historyReplay = true;
+		this.#historyFlush = false;
+		const transcript = this.ui.children.find(root => root instanceof TranscriptContainer);
+		if (transcript instanceof TranscriptContainer) transcript.beginReplay();
+	}
+
+	beginHistoryFlush(): void {
+		this.#historyFlush = true;
+		if (!this.#offeredHistory) this.#historyReplay = false;
+		for (const root of this.ui.children) {
+			if (root instanceof TranscriptContainer) root.cancelReplay();
+		}
+	}
+
+	#offerHistory(transcript: TranscriptContainer, width: number, capacity: number): HistoryBatch | undefined {
+		const offered = this.#offeredHistory;
+		if (offered) {
+			// An unwritten old-width offer is withdrawn, never mutated under the
+			// same identity. Reflow its semantic content before the writer clips rows.
+			const batch = offered.transcriptId === undefined ? undefined : offered.transcript.rerenderOfferedBatch(width);
+			const header = offered.header ? this.#historyHeader(width) : [];
+			const rows = [...header, ...(batch?.rows ?? [])];
+			offered.transcriptId = batch?.id;
+			if (
+				offered.width === width &&
+				rows.length === offered.batch.rows.length &&
+				isRowPrefix(rows, offered.batch.rows)
+			) {
+				return offered.batch;
+			}
+			offered.width = width;
+			offered.batch = { id: this.#nextHistoryId++, kind: offered.batch.kind, rows };
+			return offered.batch;
+		}
+		if (this.#historyReplay) {
+			this.#historyReplay = false;
+			const replay = transcript.peekReplayBatch(width);
+			const batch: HistoryBatch = {
+				id: this.#nextHistoryId++,
+				kind: "replay",
+				rows: [...this.#historyHeader(width), ...(replay?.rows ?? [])],
+			};
+			this.#offeredHistory = { batch, width, transcript, transcriptId: replay?.id, header: true };
+			return batch;
+		}
+		let header = false;
+		if (!this.#headerRetired) {
+			const headerRows = this.#historyHeader(width);
+			if (!this.#historyFlush && headerRows.length + transcript.liveRowCount(width) <= capacity) return undefined;
+			header = true;
+		}
+		const retired = this.#historyFlush
+			? transcript.peekFlushBatch(width)
+			: transcript.peekFinalizedBatch(width, capacity);
+		if (!header && !retired) return undefined;
+		const batch: HistoryBatch = {
+			id: this.#nextHistoryId++,
+			rows: [...(header ? this.#historyHeader(width) : []), ...(retired?.rows ?? [])],
+			kind: "append",
+		};
+		this.#offeredHistory = { batch, width, transcript, transcriptId: retired?.id, header };
+		return batch;
+	}
+
+	#historyHeader(width: number): readonly string[] {
+		const rows = this.#header.render(width);
+		return rows.length > 0 ? [...rows, ""] : [];
+	}
+
+	#renderRoots(roots: readonly Component[], width: number): string[] {
+		const rows: string[] = [];
+		for (const root of roots) for (const row of root.render(width)) rows.push(row);
+		return rows;
+	}
 	get editor(): CustomEditor {
 		return this.#editor;
 	}
@@ -301,13 +413,7 @@ export class Composer {
 
 	setRuntimeChildren(children: readonly Component[], below: readonly Component[] = []): void {
 		if (this.#stopped) return;
-		const chrome = [
-			this.#bottomFill,
-			this.#composerHairline,
-			this.#padAboveEditor,
-			this.#editorSlot,
-			this.#padBelowEditor,
-		];
+		const chrome = [this.#composerHairline, this.#padAboveEditor, this.#editorSlot, this.#padBelowEditor];
 		if (this.#runtimeMounted) {
 			for (const child of this.#runtimeChildren) this.ui.removeChild(child);
 			for (const child of chrome) this.ui.removeChild(child);
@@ -337,82 +443,10 @@ export class Composer {
 		this.#transferred = true;
 	}
 
-	/** Rows the frame occupies excluding the two fills. */
-	#contentRows(width: number): number {
-		let content = 0;
-		for (const child of this.ui.children) {
-			if (child === this.#topFill || child === this.#bottomFill) continue;
-			try {
-				content += child.render(width).length;
-			} catch {
-				content += 1;
-			}
-		}
-		return content;
-	}
-
-	/** Live height for the top fill; undefined once committed rows freeze the anchor. */
-	#measureHomeFill(): number | undefined {
-		if (this.#stopped) return undefined;
-		// Freeze only once rows have reached native scrollback: re-measuring then
-		// would shift history that is already physically printed.
-		if (this.#conversationChildren > 0 && this.ui.committedRows > 0) return undefined;
-		const rows = this.ui.terminal.rows;
-		if (!Number.isFinite(rows) || rows <= 0) return undefined;
-		return Math.max(0, rows - this.#contentRows(this.ui.terminal.columns));
-	}
-
-	/**
-	 * Rows to hold below the transcript so the editor and status line stay on
-	 * the bottom edge. Once the top fill freezes it can no longer absorb a
-	 * shrinking frame — a live tool card settling from forty rows to one used to
-	 * drop the composer into the middle of the screen until the reply grew back.
-	 * Measuring every frame is what keeps this from outliving the shrink: the
-	 * moment content returns, the fill collapses to zero again.
-	 */
-	#measureBottomFill(): number | undefined {
-		if (this.#stopped) return undefined;
-		const rows = this.ui.terminal.rows;
-		if (!Number.isFinite(rows) || rows <= 0) return undefined;
-		const width = this.ui.terminal.columns;
-		return Math.max(0, rows - (this.#contentRows(width) + this.#topFill.render(width).length));
-	}
-
-	syncHomeAnchor(conversationChildCount: number): void {
-		if (this.#stopped) return;
-		this.#conversationChildren = conversationChildCount;
-		const width = this.ui.terminal.columns;
-		const rows = this.ui.terminal.rows;
-		if (!Number.isFinite(rows) || rows <= 0) return;
-		const currentTop = this.#topFill.render(width).length;
-		const currentBottom = this.#bottomFill.render(width).length;
-		const content = this.#contentRows(width);
-		const slack = Math.max(0, rows - content);
-
-		// Once transcript rows have entered native scrollback the top fill sits
-		// above them in history; resizing it would shift every committed row and
-		// make the append-only ledger re-emit them.
-		const topFrozen = conversationChildCount > 0 && this.ui.committedRows > 0;
-		// The welcome scene pins to the bottom edge like a conversation does:
-		// splitting the slack to centre the banner left a visible blank band
-		// under the status line, worst on short or narrow screens where the
-		// wrapped banner leaves the most slack to divide.
-		const top = topFrozen ? currentTop : conversationChildCount > 0 || this.#welcome !== undefined ? slack : 0;
-		// Conversation content pins to the bottom edge through the top fill
-		// alone; slack a frozen top cannot absorb stays unallocated. This sync
-		// only runs on resize and on the first transcript child, so a bottom fill
-		// measured against a transient short frame (rebuild in progress,
-		// post-compaction summary) would outlive the growth that follows and sit
-		// as a blank band between the HUD rows and the composer.
-		const bottom = conversationChildCount > 0 ? 0 : slack - top;
-		if (top !== currentTop) this.#topFill.setLines(top);
-		if (bottom !== currentBottom) this.#bottomFill.setLines(bottom);
-	}
-
 	stop(): void {
 		if (!this.#started || this.#stopped || this.#transferred) return;
-		this.#stopped = true;
 		this.ui.stop();
+		this.#stopped = true;
 	}
 
 	#applyWelcomeUpdate(update: ComposerWelcomeUpdate): void {
@@ -449,8 +483,8 @@ export class Composer {
 
 	#requestExit(code: number): void {
 		if (this.#stopped) return;
-		this.#stopped = true;
 		if (this.#started) this.ui.stop();
+		this.#stopped = true;
 		this.#exit(code);
 	}
 }

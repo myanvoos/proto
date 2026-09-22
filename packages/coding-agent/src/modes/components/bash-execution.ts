@@ -42,8 +42,6 @@ export class BashExecutionComponent extends Container {
 	#truncation?: TruncationMeta;
 	#expanded = false;
 
-	#blockVersion = 0;
-	#onTranscriptBlockChange?: () => void;
 	#displayDirty = false;
 	#chunkGate = false;
 	#chunkGateTimer?: NodeJS.Timeout;
@@ -74,26 +72,15 @@ export class BashExecutionComponent extends Container {
 		return this.#status !== "running";
 	}
 
-	getTranscriptBlockVersion(): number {
-		return this.#blockVersion;
-	}
-
-	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
-		this.#onTranscriptBlockChange = listener;
-	}
-
 	setExpanded(expanded: boolean): void {
-		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	override invalidate(): void {
 		super.invalidate();
 		this.#displayDirty = false;
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	override dispose(): void {
@@ -104,8 +91,6 @@ export class BashExecutionComponent extends Container {
 		this.#chunkGate = false;
 		this.#pendingChunk = undefined;
 		this.#sixelHold = "";
-		this.#onTranscriptBlockChange?.();
-		this.#onTranscriptBlockChange = undefined;
 		super.dispose();
 	}
 
@@ -155,7 +140,6 @@ export class BashExecutionComponent extends Container {
 					this.#outputLines = this.#outputLines.slice(-STREAMING_LINE_CAP);
 				}
 				this.#displayDirty = true;
-				this.#onTranscriptBlockChange?.();
 			}
 		}
 	}
@@ -191,7 +175,6 @@ export class BashExecutionComponent extends Container {
 		}
 
 		this.#displayDirty = true;
-		this.#onTranscriptBlockChange?.();
 	}
 
 	setComplete(
@@ -211,7 +194,6 @@ export class BashExecutionComponent extends Container {
 		this.#loader.stop();
 
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	override render(width: number): readonly string[] {

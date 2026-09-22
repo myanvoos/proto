@@ -7,7 +7,6 @@ import {
 	Image,
 	ImageProtocol,
 	imageFallback,
-	type NativeScrollbackLiveRegion,
 	Spacer,
 	TERMINAL,
 	Text,
@@ -22,7 +21,7 @@ import { CHECKLIST_STRIKE_TOTAL_FRAMES, type ChecklistToolDetails } from "../../
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { isWaitingPollDetails } from "../../tools/fleet";
 import { replaceTabs, resolveImageOptions } from "../../tools/render-utils";
-import { type FirstResultViewportRepaint, type ToolRenderer, toolRenderers } from "../../tools/renderers";
+import { type ToolRenderer, toolRenderers } from "../../tools/renderers";
 import type { XdevState } from "../../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, WidthAwareText } from "../../tui";
 import { convertImageToPng } from "../../utils/image-loading";
@@ -86,10 +85,6 @@ function displaceableToolName(
 	if (toolName === "fleet" && isWaitingPollDetails(result.details)) return "fleet";
 	if (toolName === "checklist" && !isPartial && isChecklistToolDetails(result.details)) return "checklist";
 	return undefined;
-}
-
-function isFleetWaitArgs(args: unknown): boolean {
-	return isRecord(args) && args.op === "wait";
 }
 
 function rawTextInputFromPartialJson(partialJson: unknown): string | undefined {
@@ -174,16 +169,9 @@ class SafeToolRendererComponent implements Component {
 	}
 }
 
-interface TranscriptLiveRegionProbe {
-	isBlockInLiveRegion(component: Component): boolean;
-
-	isBlockUncommitted?(component: Component): boolean;
-}
-
 export interface ToolExecutionUi {
 	requestRender(): void;
 	requestComponentRender(component: Component): void;
-	resetDisplay(): void;
 	imageBudget?: TUI["imageBudget"];
 }
 
@@ -191,8 +179,6 @@ interface ToolExecutionOptions {
 	showImages?: boolean;
 
 	useBuiltInRenderer?: boolean;
-
-	liveRegion?: TranscriptLiveRegionProbe;
 }
 
 export interface ToolExecutionHandle extends Component {
@@ -249,7 +235,7 @@ export function stopSharedSpinnerTicker(): void {
 
 let toolExecutionInstanceSeq = 0;
 
-export class ToolExecutionComponent extends Container implements NativeScrollbackLiveRegion {
+export class ToolExecutionComponent extends Container {
 	#contentBox: Box;
 	#contentText: WidthAwareText;
 
@@ -266,8 +252,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#isPartial = true;
 	#resultVersion = 0;
 
-	#blockVersion = 0;
-	#onTranscriptBlockChange?: () => void;
 	#lastDisplayKey: string | undefined;
 
 	#displayInputVersion = 0;
@@ -286,7 +270,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#spinnerActive = false;
 
 	#checklistStrikeInterval?: NodeJS.Timeout;
-	#nativeScrollbackCommittedRows = 0;
 
 	#argsComplete = false;
 	#executionStarted = false;
@@ -295,10 +278,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 	#displaceableByToolName: DisplaceableToolName | undefined;
 
-	#liveRegion?: TranscriptLiveRegionProbe;
-
-	#firstResultViewportRepaintShapePainted = false;
-	#partialResultShapePainted = false;
 	#renderState: {
 		spinnerFrame?: number;
 		expanded: boolean;
@@ -325,7 +304,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#toolLabel = tool?.label ?? toolName;
 		this.#renderer = options.useBuiltInRenderer === false ? undefined : toolRenderers[toolName];
 		this.#showImages = options.showImages ?? true;
-		this.#liveRegion = options.liveRegion;
 		this.#tool = tool;
 		this.#ui = ui;
 		this.#args = args;
@@ -353,7 +331,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#displayInputVersion++;
 		this.#updateSpinnerAnimation();
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	setArgsComplete(_toolCallId?: string): void {
@@ -363,7 +340,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		if (alreadyComplete) return;
 		this.#displayInputVersion++;
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	setExecutionStarted(_toolCallId?: string): void {
@@ -373,19 +349,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#updateSpinnerAnimation();
 		this.#displayInputVersion++;
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	updateResult(result: ToolExecutionResult, isPartial = false, _toolCallId?: string): void {
-		const hadNoResult = this.#result === undefined;
-		const wasPartialResult = this.#result !== undefined && this.#isPartial;
-		const firstResultRepaintShapePainted = this.#firstResultViewportRepaintShapePainted;
-		const partialResultPainted = this.#partialResultShapePainted;
-		this.#firstResultViewportRepaintShapePainted = false;
-		this.#partialResultShapePainted = false;
 		this.#result = result;
 		this.#resultVersion++;
-		this.#blockVersion++;
 		this.#isPartial = isPartial;
 		this.#displaceableByToolName = displaceableToolName(this.#toolName, result, isPartial);
 
@@ -395,14 +363,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#updateSpinnerAnimation();
 		this.#updateChecklistStrikeAnimation();
 		this.#updateDisplay();
-		this.#resetDisplayForResultTopologyChange(
-			hadNoResult && firstResultRepaintShapePainted,
-			wasPartialResult && partialResultPainted,
-			isPartial,
-		);
-
 		this.#maybeConvertImagesForKitty();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	#getAllImageBlocks(): ToolImageBlock[] {
@@ -433,7 +394,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					this.#convertedImages.set(index, converted);
 					this.#displayInputVersion++;
 					this.#updateDisplay();
-					this.#onTranscriptBlockChange?.();
 					this.#ui.requestRender();
 				})
 				.catch(() => {});
@@ -487,7 +447,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	tickSpinner(frame: number): void {
 		this.#spinnerFrame = frame;
 		this.#renderState.spinnerFrame = frame;
-		this.#onTranscriptBlockChange?.();
 		this.#ui.requestComponentRender(this);
 	}
 
@@ -501,9 +460,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.#stopChecklistStrikeAnimation();
 			return;
 		}
-		// A row that has entered native scrollback can never be repainted, so the
-		// reveal must not (re)start over one.
-		if (this.#checklistStrikeInterval || this.#nativeScrollbackCommittedRows > 0) return;
+		if (this.#checklistStrikeInterval) return;
 
 		this.#spinnerFrame = 0;
 		this.#renderState.spinnerFrame = 0;
@@ -516,7 +473,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				this.#renderState.spinnerFrame = nextFrame;
 			}
 
-			this.#onTranscriptBlockChange?.();
 			this.#ui.requestComponentRender(this);
 		}, 65);
 	}
@@ -532,36 +488,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		}
 	}
 
-	override setNativeScrollbackCommittedRows(rows: number): void {
-		this.#nativeScrollbackCommittedRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
-		super.setNativeScrollbackCommittedRows(rows);
-		// Native scrollback is append-only. Once any of this card's rows are in
-		// terminal history, every further strike frame rewrites bytes the terminal
-		// cannot repaint: the renderer's committed-prefix audit then re-anchors the
-		// commit seam to this card and re-appends the whole transcript below it,
-		// once per 65ms tick. Freeze the reveal on the frame history recorded --
-		// clearing #spinnerFrame here would itself be one such rewrite.
-		if (this.#nativeScrollbackCommittedRows > 0 && this.#checklistStrikeInterval) {
-			clearInterval(this.#checklistStrikeInterval);
-			this.#checklistStrikeInterval = undefined;
-		}
-	}
-
-	getNativeScrollbackLiveRegionStart(): number | undefined {
-		return this.isTranscriptBlockFinalized() ? undefined : 0;
-	}
-
-	isNativeScrollbackLiveRegionPinned(): boolean {
-		if (this.isTranscriptBlockFinalized()) return false;
-		if (this.#displaceableByToolName !== undefined) return true;
-
-		return this.#toolName === "fleet" && isFleetWaitArgs(this.#args);
-	}
-
 	isTranscriptBlockFinalized(): boolean {
 		if (!this.#toolActivityVisible) return true;
 		if (this.#sealed) return true;
-		if (this.#result === undefined) return false;
+		if (this.#result === undefined || this.#checklistStrikeInterval) return false;
 
 		if (this.#displaceableByToolName) return false;
 		if (!this.#isPartial) return true;
@@ -569,22 +499,12 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		return (this.#result.details as { async?: { state?: string } } | undefined)?.async?.state === "running";
 	}
 
-	getTranscriptBlockVersion(): number {
-		return this.#blockVersion;
-	}
-
-	setTranscriptBlockChangeListener(listener: (() => void) | undefined): void {
-		this.#onTranscriptBlockChange = listener;
-	}
-
 	seal(): void {
 		if (this.#sealed) return;
 		this.#sealed = true;
-		this.#blockVersion++;
 		this.#displaceableByToolName = undefined;
 		this.stopAnimation();
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 		this.#ui.requestRender();
 	}
 
@@ -604,43 +524,33 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			unregisterSpinnerBlock(this);
 			this.#spinnerFrame = undefined;
 			this.#renderState.spinnerFrame = undefined;
-			this.#onTranscriptBlockChange?.();
 		}
+		this.#stopChecklistStrikeAnimation();
 	}
 
 	override dispose(): void {
 		this.stopAnimation();
-		this.#stopChecklistStrikeAnimation();
-		this.#onTranscriptBlockChange?.();
-		this.#onTranscriptBlockChange = undefined;
 		super.dispose();
 	}
 
 	setExpanded(expanded: boolean): void {
-		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	setToolActivityVisible(visible: boolean): void {
-		const changed = this.#toolActivityVisible !== visible;
 		this.#toolActivityVisible = visible;
 		super.invalidate();
-		if (changed) this.#onTranscriptBlockChange?.();
 	}
 
 	setShowImages(show: boolean): void {
-		const changed = this.#showImages !== show;
 		this.#showImages = show;
 		this.#updateDisplay();
-		if (changed) this.#onTranscriptBlockChange?.();
 	}
 
 	override invalidate(): void {
 		super.invalidate();
 		this.#updateDisplay();
-		this.#onTranscriptBlockChange?.();
 	}
 
 	#updateDisplay(): void {
@@ -652,40 +562,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#displayBuilt = true;
 	}
 
-	#rendererFlag(name: "forceResultViewportRepaintOnSettle"): boolean {
-		const toolValue = (this.#tool as Record<string, unknown> | undefined)?.[name];
-		const rendererValue = this.#renderer?.[name];
-		return toolValue === true || (toolValue === undefined && rendererValue === true);
-	}
-
-	#needsFirstResultViewportRepaintAtRender(): boolean {
-		if (this.#result !== undefined) return false;
-		const toolValue = (this.#tool as { forceFirstResultViewportRepaint?: FirstResultViewportRepaint } | undefined)
-			?.forceFirstResultViewportRepaint;
-		const value = toolValue !== undefined ? toolValue : this.#renderer?.forceFirstResultViewportRepaint;
-		if (typeof value === "function") return value(this.#args, this.#renderState);
-		return value === true;
-	}
-
-	#resetDisplayForResultTopologyChange(
-		firstResultAfterRepaintShapePaint: boolean,
-		partialResultPaintedBeforeSettle: boolean,
-		isPartial: boolean,
-	): void {
-		const provisionalResultSettled =
-			partialResultPaintedBeforeSettle && !isPartial && this.#rendererFlag("forceResultViewportRepaintOnSettle");
-		if (firstResultAfterRepaintShapePaint || provisionalResultSettled) {
-			this.#ui.resetDisplay();
-		}
-	}
-
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
-		const lines = super.render(width);
-
-		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
-		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
-		return lines;
+		return super.render(width);
 	}
 
 	#imageSizeKey(): string {

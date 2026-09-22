@@ -446,7 +446,7 @@ export class EventController {
 		const children = this.ctx.chatContainer.children;
 		const anchorIndex = anchor ? children.indexOf(anchor) : -1;
 		if (anchorIndex < 0) return false;
-		if (children.slice(anchorIndex + 1).some(child => !this.ctx.chatContainer.isBlockUncommitted(child))) {
+		if (children.slice(anchorIndex + 1).some(child => !this.ctx.chatContainer.canRemoveBlock(child))) {
 			return false;
 		}
 		this.ctx.chatContainer.addChild(component);
@@ -859,7 +859,7 @@ export class EventController {
 		if (!components) return;
 		let removed = false;
 		for (const component of components) {
-			if (!this.ctx.chatContainer.isBlockUncommitted(component)) continue;
+			if (!this.ctx.chatContainer.canRemoveBlock(component)) continue;
 			this.ctx.chatContainer.disposeAndRemoveChild(component);
 			removed = true;
 		}
@@ -886,7 +886,7 @@ export class EventController {
 		if (
 			nextToolName === "fleet" &&
 			previous.isDisplaceableBlock() &&
-			this.ctx.chatContainer.isBlockUncommitted(previous)
+			this.ctx.chatContainer.canRemoveBlock(previous)
 		) {
 			this.ctx.chatContainer.disposeAndRemoveChild(previous);
 		}
@@ -904,14 +904,13 @@ export class EventController {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#displaceableChecklistComponent = undefined;
-			if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+			if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 				this.ctx.chatContainer.disposeAndRemoveChild(previous);
 			}
 			previous.seal();
 			this.ctx.ui.requestRender();
 			return;
 		}
-		if (nextToolName !== undefined) return;
 		this.#displaceableChecklistComponent = undefined;
 		previous.seal();
 		this.ctx.ui.requestRender();
@@ -966,6 +965,8 @@ export class EventController {
 			this.#migrateStreamedToolCallId(priorId, content.id);
 		}
 		this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
+		this.#resolveDisplaceablePoll(content.name);
+		this.#resolveDisplaceableChecklist(content.name);
 
 		let renderArgs: Record<string, unknown>;
 		let classificationArgs = content.arguments;
@@ -998,7 +999,6 @@ export class EventController {
 					replacementIndex = this.#detachToolCardForRendererMigration(content.id, component);
 					component = undefined;
 				}
-				if (!component) this.#resolveDisplaceablePoll(content.name);
 				this.#trackReadToolCall(content.id, classificationArgs);
 				if (component) {
 					component.updateArgs(renderArgs, content.id);
@@ -1021,7 +1021,6 @@ export class EventController {
 		}
 
 		if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
-			this.#resolveDisplaceablePoll(content.name);
 			this.#resetReadGroup();
 			const component = new ToolExecutionComponent(
 				content.name,
@@ -1096,7 +1095,11 @@ export class EventController {
 				this.#streamedVisibleBlockCount += this.#updateStreamingVisibleBlock(index, content);
 			}
 		}
-		if (this.#streamedVisibleBlockCount > previousVisibleBlockCount) this.#resetReadGroup();
+		if (this.#streamedVisibleBlockCount > previousVisibleBlockCount) {
+			this.#resetReadGroup();
+			this.#resolveDisplaceablePoll();
+			this.#resolveDisplaceableChecklist();
+		}
 		for (const index of orderedIndices) {
 			const content = message.content[index]!;
 			if (content.type !== "toolCall" || !this.#streamedToolCallChanged(index, content)) continue;
@@ -1129,6 +1132,7 @@ export class EventController {
 			if (unlockedThinkingVisibility) {
 				this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 				this.#streamingReveal.resyncVisibility();
+				this.ctx.ui.resetDisplay();
 			}
 			this.ctx.streamingMessage = event.message;
 			this.#updateWorkingSpinnerFrames(event.message);
@@ -1144,6 +1148,7 @@ export class EventController {
 		if (unlockedThinkingVisibility && this.ctx.streamingComponent) {
 			this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 			this.#streamingReveal.resyncVisibility();
+			this.ctx.ui.resetDisplay();
 		}
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
 			const lastStreamedToolCallId = this.#streamedTimelineLastToolCallId;
@@ -1190,7 +1195,7 @@ export class EventController {
 						) {
 							continue;
 						}
-						if (this.ctx.chatContainer.isBlockUncommitted(component)) {
+						if (this.ctx.chatContainer.canRemoveBlock(component)) {
 							this.#retractToolCardEntry(toolCallId, component);
 							this.#retractedToolCallIds.add(toolCallId);
 						} else {
@@ -1282,6 +1287,7 @@ export class EventController {
 			setTerminalTitleState("attention");
 		}
 		this.#resolveDisplaceablePoll(event.toolName);
+		this.#resolveDisplaceableChecklist(event.toolName);
 		this.#toolArgsReveal.finish(event.toolCallId);
 
 		let replacementIndex: number | undefined;
@@ -1313,7 +1319,6 @@ export class EventController {
 				{
 					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(event.toolName),
 					showImages: settings.get("terminal.showImages"),
-					liveRegion: this.ctx.chatContainer,
 				},
 				tool,
 				this.ctx.ui,
@@ -1370,7 +1375,7 @@ export class EventController {
 			const previous = this.#displaceableChecklistComponent;
 			if (previous && previous !== component && previous.isDisplaceableBlock()) {
 				this.#displaceableChecklistComponent = undefined;
-				if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+				if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 					this.ctx.chatContainer.disposeAndRemoveChild(previous);
 				}
 				previous.seal();
@@ -1438,7 +1443,7 @@ export class EventController {
 						const previous = this.#displaceableChecklistComponent;
 						if (previous && previous !== component && previous.isDisplaceableBlock()) {
 							this.#displaceableChecklistComponent = undefined;
-							if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+							if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 								this.ctx.chatContainer.disposeAndRemoveChild(previous);
 							}
 							previous.seal();
@@ -1628,7 +1633,7 @@ export class EventController {
 		this.#trackRetrySupersededAssistantComponent(this.#lastAssistantComponent);
 
 		for (const [toolCallId, component] of this.#syntheticFailureCards) {
-			if (this.ctx.chatContainer.isBlockUncommitted(component)) {
+			if (this.ctx.chatContainer.canRemoveBlock(component)) {
 				this.#retractToolCardEntry(toolCallId, component);
 			}
 		}
@@ -1727,7 +1732,7 @@ export class EventController {
 		if (
 			previous &&
 			this.ctx.chatContainer.children.at(-1) === previous &&
-			this.ctx.chatContainer.isBlockUncommitted(previous)
+			this.ctx.chatContainer.canRemoveBlock(previous)
 		) {
 			previous.addRules(event.rules);
 			this.ctx.ui.requestRender();

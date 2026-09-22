@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Long streaming conversations retain committed thinking and answer chunks while prompt growth, tool updates, overlays, and resizes stay confined to the live viewport.
+
 ## [18.4.0] - 2026-09-22
 
 ### Added

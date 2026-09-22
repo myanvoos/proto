@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
-import { type Component, CURSOR_MARKER, TUI } from "./tui";
+import { CURSOR_MARKER, type HistoryBatch, type TerminalFrameProvider, TUI, type ViewportSize } from "./tui";
 
 type ResizeCallback = () => void;
 
@@ -144,15 +144,16 @@ function pinRenderEnvironment(): () => void {
 	};
 }
 
-/**
- * Transcript-like block: renders a fresh array per frame (the streaming shape)
- * and reports a pinned live region that overflows the viewport, so the
- * native-scrollback clip path engages on every frame.
- */
-class FixtureTranscript implements Component {
+/** Product-owned frame fixture with an explicit, acknowledged history ledger. */
+class FixtureFrameProvider implements TerminalFrameProvider {
 	#rows: string[] = [];
 	#liveRows: number;
 	#rewrite = 0;
+	#editors: string[][] = [];
+	#committedTo = 0;
+	#pending: { batch: HistoryBatch; committedTo: number } | undefined;
+	#nextId = 1;
+	readonly acknowledgements: number[] = [];
 
 	constructor(liveRows: number) {
 		this.#liveRows = liveRows;
@@ -164,6 +165,10 @@ class FixtureTranscript implements Component {
 		}
 	}
 
+	addEditor(marker = false): void {
+		this.#editors.push(marker ? ["editor:", `input${CURSOR_MARKER}`, "(hints)"] : ["editor:", "input", "(hints)"]);
+	}
+
 	rewriteTail(): void {
 		this.#rewrite++;
 		this.#rows[this.#rows.length - 1] = `live tail rewrite ${this.#rewrite}`;
@@ -173,34 +178,25 @@ class FixtureTranscript implements Component {
 		return this.#rows.length;
 	}
 
-	render(_width: number): readonly string[] {
-		return this.#rows.slice();
+	renderFrame(size: ViewportSize): { history?: HistoryBatch; viewport: readonly string[] } {
+		const finalizedTo = Math.max(0, this.#rows.length - this.#liveRows);
+		if (this.#pending === undefined && finalizedTo > this.#committedTo) {
+			this.#pending = {
+				batch: { id: this.#nextId++, rows: this.#rows.slice(this.#committedTo, finalizedTo) },
+				committedTo: finalizedTo,
+			};
+		}
+		const chrome = this.#editors.flat();
+		const bodyHeight = Math.max(0, size.rows - chrome.length);
+		const body = bodyHeight === 0 ? [] : this.#rows.slice(-bodyHeight);
+		return { history: this.#pending?.batch, viewport: [...body, ...chrome].slice(-size.rows) };
 	}
 
-	getNativeScrollbackLiveRegionStart(): number | undefined {
-		return Math.max(0, this.#rows.length - this.#liveRows);
-	}
-
-	isNativeScrollbackLiveRegionPinned(): boolean {
-		return true;
-	}
-
-	getNativeScrollbackLiveRegionPinnedStart(): number | undefined {
-		return Math.max(0, this.#rows.length - this.#liveRows);
-	}
-
-	clipsNativeScrollbackLiveRegion(): boolean {
-		return true;
-	}
-}
-
-class FixtureEditor implements Component {
-	#rows: readonly string[];
-	constructor(marker = false) {
-		this.#rows = marker ? ["editor:", `input${CURSOR_MARKER}`, "(hints)"] : ["editor:", "input", "(hints)"];
-	}
-	render(_width: number): readonly string[] {
-		return this.#rows;
+	acknowledgeHistory(id: number): void {
+		this.acknowledgements.push(id);
+		if (this.#pending?.batch.id !== id) return;
+		this.#committedTo = this.#pending.committedTo;
+		this.#pending = undefined;
 	}
 }
 
@@ -209,10 +205,10 @@ test("frame sequence emits byte-identical output across appends, child changes, 
 	const terminal = new FakeTerminal(70, 12);
 	const scheduler = new TestScheduler();
 	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
-	const transcript = new FixtureTranscript(14);
+	const transcript = new FixtureFrameProvider(14);
 	transcript.appendRows(26);
-	tui.addChild(transcript);
-	tui.addChild(new FixtureEditor());
+	transcript.addEditor();
+	tui.setFrameProvider(transcript);
 
 	try {
 		tui.start({ deferInput: true });
@@ -227,8 +223,8 @@ test("frame sequence emits byte-identical output across appends, child changes, 
 		expect(afterAppend[afterAppend.length - 1]).toBe("(hints)");
 		expect(afterAppend.some(row => row.includes("history line 31"))).toBe(true);
 
-		// a sibling child changes
-		tui.addChild(new FixtureEditor());
+		// a sibling editor changes the provider-owned viewport
+		transcript.addEditor();
 		tui.requestRender();
 		scheduler.flush();
 
@@ -259,12 +255,10 @@ test("frame sequence emits byte-identical output across appends, child changes, 
 		tui.requestRender();
 		scheduler.flush();
 
-		const emitted = terminal.writes.join("");
-		const hasher = new Bun.CryptoHasher("sha256");
-		hasher.update(emitted);
-		const digest = hasher.digest("hex");
-		expect(digest).toBe("e474a58fc5250b2acfa8775a0e77c4a99fe1c87da1d32fc73c0519265115a213");
-		// semantic anchors: the transcript and editor content all landed on screen
+		// Every finalized append is accepted exactly once; viewport-only rewrites
+		// never manufacture another history transaction.
+		expect(transcript.acknowledgements).toEqual([1, 2, 3]);
+		// Semantic anchors: the transcript and editor content all landed on screen.
 		const screen = terminal.screenRows();
 		expect(screen[screen.length - 1]).toBe("(hints)");
 		const normal = terminal.vt.buffer.normal;
@@ -281,21 +275,19 @@ test("parks the hardware cursor on the editor marker row when the live region is
 	const restore = pinRenderEnvironment();
 	const terminal = new FakeTerminal(80, 10);
 	const scheduler = new TestScheduler();
-	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
-	const transcript = new FixtureTranscript(12);
+	const tui = new TUI(terminal, true, { renderScheduler: scheduler });
+	const transcript = new FixtureFrameProvider(12);
 	transcript.appendRows(22);
-	tui.addChild(transcript);
-	tui.addChild(new FixtureEditor(true));
+	transcript.addEditor(true);
+	tui.setFrameProvider(transcript);
 
 	try {
 		tui.start({ deferInput: true });
 		scheduler.flush();
 		terminal.writes.length = 0;
 
-		// 22 transcript rows + 3 editor rows = 25 logical rows; the pinned live
-		// region starts at row 10 and strands 5 rows above the 10-row viewport,
-		// so the editor marker at logical row 23 lands at clipped row 18 and
-		// screen row 8 (col 5, after "input").
+		// The provider bounds the live transcript to seven rows above the
+		// three-row editor, placing its marker on screen row 8, col 5.
 		transcript.rewriteTail();
 		tui.requestRender();
 		scheduler.flush();

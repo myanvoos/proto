@@ -13,7 +13,6 @@ import type {
 	Component,
 	EditorTheme,
 	LoaderMessageColorFn,
-	NativeScrollbackLiveRegion,
 	SlashCommand,
 } from "@oh-my-pi/pi-tui";
 import {
@@ -235,16 +234,6 @@ export interface InteractiveModeOptions {
 	initialImages?: ImageContent[];
 
 	initialMessages?: string[];
-}
-
-class AnchoredLiveContainer extends Container implements NativeScrollbackLiveRegion {
-	getNativeScrollbackLiveRegionStart(): number | undefined {
-		return this.children.length > 0 ? 0 : undefined;
-	}
-
-	isNativeScrollbackLiveRegionPinned(): boolean {
-		return true;
-	}
 }
 
 class DeferredCommandPreview implements Component {
@@ -635,18 +624,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.supportsTextSizing);
 		this.chatContainer = new TranscriptContainer();
 
-		this.chatContainer.onFirstContent = () => {
-			this.composer.syncHomeAnchor(this.chatContainer.children.length);
-		};
-		this.pendingMessagesContainer = new AnchoredLiveContainer();
-		this.statusContainer = new AnchoredLiveContainer();
-		this.checklistContainer = new AnchoredLiveContainer();
-		this.subagentContainer = new AnchoredLiveContainer();
-		this.sideQuestionContainer = new AnchoredLiveContainer();
-		this.errorBannerContainer = new AnchoredLiveContainer();
-		this.modelCycleContainer = new AnchoredLiveContainer();
-		this.deferredCommandContainer = new AnchoredLiveContainer();
-		this.ui.enableScopedInputRender(this.editor);
+		this.pendingMessagesContainer = new Container();
+		this.statusContainer = new Container();
+		this.checklistContainer = new Container();
+		this.subagentContainer = new Container();
+		this.sideQuestionContainer = new Container();
+		this.errorBannerContainer = new Container();
+		this.modelCycleContainer = new Container();
+		this.deferredCommandContainer = new Container();
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
 		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
@@ -659,12 +644,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.onAutocompleteUpdate = () => {
 			this.ui.requestRender();
 		};
-		this.editor.setShimmerRepaintHandler(() => this.ui.requestDirectWrite(this.editor));
+		this.editor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(this.editor));
 		this.#syncEditorMaxHeight();
 
 		this.#resizeHandler = () => {
 			this.#syncEditorMaxHeight();
-			this.composer.syncHomeAnchor(this.chatContainer.children.length);
 		};
 		process.stdout.on("resize", this.#resizeHandler);
 		try {
@@ -914,7 +898,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		this.#syncEditorMaxHeight();
-		this.composer.syncHomeAnchor(this.chatContainer.children.length);
 		this.isInitialized = true;
 		this.ui.requestRender(true);
 
@@ -2453,7 +2436,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		const nextEditor = factory
 			? factory(this.ui, getEditorTheme(), this.keybindings)
 			: new CustomEditor(getEditorTheme());
-		if (!factory) this.ui.enableScopedInputRender(nextEditor);
 
 		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		nextEditor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
@@ -2473,7 +2455,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.onAutocompleteUpdate = () => {
 			this.ui.requestRender();
 		};
-		nextEditor.setShimmerRepaintHandler(() => this.ui.requestDirectWrite(nextEditor));
+		nextEditor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(nextEditor));
 		this.editor = nextEditor;
 		this.composer.setEditor(nextEditor);
 		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());

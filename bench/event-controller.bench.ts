@@ -20,7 +20,6 @@ const NOOP = () => {};
 const UI: ToolExecutionUi & { terminal: { setProgress: (active: boolean) => void } } = {
 	requestRender: NOOP,
 	requestComponentRender: NOOP,
-	resetDisplay: NOOP,
 	terminal: { setProgress: NOOP },
 };
 

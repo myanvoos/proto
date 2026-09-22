@@ -419,3 +419,52 @@ test("invalidates Markdown wrapping when the terminal width mode changes", () =>
 		setHangulCompatibilityJamoWidth(previousWidth);
 	}
 });
+
+describe("Markdown stable streaming source", () => {
+	test("reports the last rendered parser-frozen source boundary independent of width", () => {
+		const first = "First complete paragraph.\n\n";
+		const second = "Second paragraph is now complete.\n\n";
+		const markdown = new Markdown(`${first}Second paragraph is open`, 0, 0, theme);
+		markdown.transientRenderCache = true;
+
+		markdown.render(24);
+		expect(markdown.getLastRenderStableText()).toBe(first);
+		markdown.render(72);
+		expect(markdown.getLastRenderStableText()).toBe(first);
+
+		markdown.setText(`${first}${second}Third paragraph is open`);
+		markdown.render(37);
+		expect(markdown.getLastRenderStableText()).toBe(first + second);
+
+		markdown.transientRenderCache = false;
+		markdown.render(37);
+		expect(markdown.getLastRenderStableText()).toBe("");
+	});
+
+	test("uses lexer block boundaries for tables, code, and lists", () => {
+		for (const stableBlock of [
+			"| key | value |\n| --- | --- |\n| one | two |\n\n",
+			"```ts\nconst value = 1;\n```\n\n",
+			"- first item\n- second item\n\n",
+		]) {
+			const markdown = new Markdown(`${stableBlock}unfinished tail`, 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(48);
+			expect(markdown.getLastRenderStableText()).toBe(stableBlock);
+		}
+	});
+
+	test("never includes an open or malformed Markdown suffix", () => {
+		const stable = "Settled prose.\n\n";
+		for (const suffix of [
+			"```ts\nconst unfinished = true;\n\nstill open",
+			"[link text without a destination",
+			"| header | partial\n| ---",
+		]) {
+			const markdown = new Markdown(stable + suffix, 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(40);
+			expect(markdown.getLastRenderStableText()).toBe(stable);
+		}
+	});
+});

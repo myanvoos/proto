@@ -12,12 +12,7 @@ import { latexToBlock } from "../latex-block";
 import { inlineMathSpanEnd, isBareMathEnvironment, latexToUnicode } from "../latex-to-unicode";
 import type { SymbolTheme } from "../symbols";
 import { TERMINAL } from "../terminal-capabilities";
-import type {
-	Component,
-	NativeScrollbackCommittedRows,
-	NativeScrollbackReplay,
-	NativeScrollbackWidthEpoch,
-} from "../tui";
+import type { Component } from "../tui";
 import {
 	applyBackgroundToLine,
 	Ellipsis,
@@ -787,7 +782,6 @@ function renderedLine(text: string, literalCode?: boolean): RenderedLine {
 
 interface RenderCacheEntry {
 	lines: readonly string[];
-	tables: readonly RenderedTableLayout[];
 }
 
 // Append renders keep the wrapped rows for each source-offset token. The raw/type checks
@@ -801,12 +795,11 @@ interface IncrementalTokenFragment {
 	nextTokenType: string | undefined;
 	raw: string;
 	wrappedLines: RenderedLine[];
-	tables: readonly TableRenderSpec[];
 	contentLines?: string[];
 	hasSpecialLine: boolean;
 	startsWithEmptyLine: boolean;
 	// Code blocks can extend their final logical line and append rows without rebuilding
-	// the settled body. The row counts map source lines to wrapped terminal rows.
+	// the frozen body. The row counts map source lines to wrapped terminal rows.
 	codeText?: string;
 	codeLang?: string;
 	codeTrailingText?: string;
@@ -815,7 +808,7 @@ interface IncrementalTokenFragment {
 	codeBodyRowCountTotal?: number;
 	codeBodyRowCounts?: number[];
 	codeCacheSize?: number;
-	// Plain paragraphs can be extended without rebuilding their settled wrapped rows.
+	// Plain paragraphs can be extended without rebuilding their frozen wrapped rows.
 	plainText?: string;
 	plainContentLineCount?: number;
 	listItemCount?: number;
@@ -843,9 +836,7 @@ function renderedLinesCacheSize(lines: readonly string[]): number {
 }
 
 function renderCacheEntrySize(entry: RenderCacheEntry): number {
-	let size = renderedLinesCacheSize(entry.lines);
-	for (const table of entry.tables) size += table.key.length + table.columnWidths.length + 4;
-	return size;
+	return renderedLinesCacheSize(entry.lines);
 }
 
 const HAS_REF_DEF = /^ {0,3}\[(?:\\.|[^\]\\])+\]:/m;
@@ -1216,7 +1207,6 @@ interface StreamPrefixLineCache extends RenderSignature {
 	text: string;
 	tokenCount: number;
 	lines: string[];
-	tables: readonly TableRenderSpec[];
 }
 interface StreamingHighlightCache extends RenderSignature {
 	lang: string | undefined;
@@ -1239,27 +1229,7 @@ function splitPushedHighlightLines(pushed: string): string[] {
 	return lines;
 }
 
-interface TableLayoutLock {
-	availableWidth: number;
-	columnWidths: readonly number[];
-}
-
-interface TableRenderSpec extends TableLayoutLock {
-	key: string;
-	lineCount: number;
-	startRow: number;
-	endRow: number;
-}
-
-interface RenderedTableLayout extends TableLayoutLock {
-	key: string;
-	startRow: number;
-	endRow: number;
-}
-
-export class Markdown
-	implements Component, NativeScrollbackCommittedRows, NativeScrollbackReplay, NativeScrollbackWidthEpoch
-{
+export class Markdown implements Component {
 	#text: string;
 	#paddingX: number;
 	#paddingY: number;
@@ -1285,17 +1255,7 @@ export class Markdown
 	#streamPrefixLineCache?: StreamPrefixLineCache;
 	#streamLexedText?: string;
 
-	#lastRenderSettledRows = 0;
-
-	#settledExposedText?: string;
-
-	#lastRenderedText?: string;
-	#lastRenderedTransientRenderCache = false;
-	#lastRenderedHasMutableTrailingRow = false;
-	#widthEpochBoundaries = new WeakMap<
-		object,
-		{ text: string; transientRenderCache: boolean; hasMutableTrailingRow: boolean }
-	>();
+	#lastRenderStableText = "";
 
 	#renderingFrozenPrefix = false;
 	#streamingHighlightCache?: StreamingHighlightCache;
@@ -1303,7 +1263,7 @@ export class Markdown
 	#activeRenderFragmentRevision?: number;
 	#renderFragmentCacheSignature?: string;
 	#renderFragmentCacheRevision = 0;
-	// This is intentionally per Markdown instance: settled-prefix rows remain owned by
+	// This is intentionally per Markdown instance: frozen-prefix rows remain owned by
 	// #streamPrefixLineCache, while this cache covers the mutable suffix only.
 	#incrementalTokenFragments = new Map<number, IncrementalRenderFragment>();
 	#incrementalTokenFragmentsSize = 0;
@@ -1320,20 +1280,9 @@ export class Markdown
 	#lastRenderedListMutableParagraphLineStart = -1;
 	#lastRenderedListMutableParagraphLineCount = 0;
 
-	#tableLayoutWidth?: number;
-	#lockedTableLayouts = new Map<string, TableLayoutLock>();
-	#lastRenderedTableLayouts: RenderedTableLayout[] = [];
-	#activeTableRenderSpecs?: TableRenderSpec[];
-
 	#ignoreTight = false;
 
-	#widthEpochRevision = 0;
-
 	setIgnoreTight(ignore: boolean): this {
-		if (this.#ignoreTight !== ignore) {
-			this.#clearTableLayouts();
-			this.#widthEpochRevision++;
-		}
 		this.#ignoreTight = ignore;
 		this.invalidate();
 		return this;
@@ -1351,7 +1300,7 @@ export class Markdown
 		this.#streamPrefixTokenCount = 0;
 		this.#streamPrefixLineCache = undefined;
 		this.#streamLexedText = undefined;
-		this.#settledExposedText = undefined;
+		this.#lastRenderStableText = "";
 		this.#streamingHighlightCache = undefined;
 		this.#renderFragmentCacheSignature = undefined;
 		this.#activeRenderFragmentRevision = undefined;
@@ -1390,7 +1339,7 @@ export class Markdown
 		const appended = text.startsWith(this.#text);
 		if (!appended) {
 			this.#clearIncrementalTokenFragments();
-			this.#clearTableLayouts();
+			this.#streamPrefixLineCache = undefined;
 			this.#normalizedTextCache = undefined;
 		}
 		this.#appendOnlySinceRender = appended;
@@ -1401,15 +1350,10 @@ export class Markdown
 			this.#streamPrefixTokenCount = 0;
 			this.#streamPrefixLineCache = undefined;
 			this.#streamLexedText = undefined;
-			this.#settledExposedText = undefined;
+			this.#lastRenderStableText = "";
 		}
-		this.#widthEpochRevision++;
 		this.invalidate();
 		return true;
-	}
-
-	getNativeScrollbackWidthEpochRevision(): number {
-		return this.#widthEpochRevision;
 	}
 
 	invalidate(): void {
@@ -1418,6 +1362,7 @@ export class Markdown
 		this.#cachedWidthConfigEpoch = undefined;
 		this.#cachedLines = undefined;
 	}
+
 	get transientRenderCache(): boolean {
 		return this.#transientRenderCache;
 	}
@@ -1426,95 +1371,15 @@ export class Markdown
 		const next = value === true;
 		if (this.#transientRenderCache === next) return;
 		this.#transientRenderCache = next;
-		this.#widthEpochRevision++;
 		this.invalidate();
 	}
 
-	getLastRenderSettledRows(): number {
-		return this.#lastRenderSettledRows;
-	}
-
-	captureNativeScrollbackWidthEpoch(): unknown {
-		if (this.#lastRenderedText === undefined) return undefined;
-		const marker = {};
-		this.#widthEpochBoundaries.set(marker, {
-			text: this.#lastRenderedText,
-			transientRenderCache: this.#lastRenderedTransientRenderCache,
-			hasMutableTrailingRow: this.#lastRenderedHasMutableTrailingRow,
-		});
-		return marker;
-	}
-
-	resolveNativeScrollbackWidthEpoch(boundary: unknown): number | undefined {
-		if (typeof boundary !== "object" || boundary === null || this.#cachedWidth === undefined) return undefined;
-		const captured = this.#widthEpochBoundaries.get(boundary);
-		if (captured === undefined) return undefined;
-		const snapshot = new Markdown(
-			captured.text,
-			this.#paddingX,
-			this.#paddingY,
-			this.#theme,
-			this.#defaultTextStyle,
-			this.#codeBlockIndent,
-			this.#cacheRenderedOutput,
-		);
-		snapshot.#ignoreTight = this.#ignoreTight;
-		snapshot.#transientRenderCache = captured.transientRenderCache;
-		return Math.max(
-			0,
-			snapshot.render(this.#cachedWidth).length - this.#paddingY - (captured.hasMutableTrailingRow ? 1 : 0),
-		);
-	}
-
-	getNativeScrollbackWidthEpochRows(): number | undefined {
-		return this.#cachedLines === undefined ? undefined : this.#widthEpochRows(this.#cachedLines.length);
-	}
-
-	isNativeScrollbackWidthEpochAppendOnly(boundary: unknown): boolean {
-		if (typeof boundary !== "object" || boundary === null) return true;
-		return this.#widthEpochBoundaries.get(boundary)?.hasMutableTrailingRow !== true;
-	}
-
-	#widthEpochRows(renderedRows: number): number {
-		return Math.max(0, renderedRows - this.#paddingY - (this.#transientRenderCache ? 1 : 0));
-	}
-
-	#recordLastRenderedState(hasContentRows: boolean): void {
-		this.#lastRenderedText = this.#text;
-		this.#lastRenderedTransientRenderCache = this.#transientRenderCache;
-		this.#lastRenderedHasMutableTrailingRow = this.#transientRenderCache && hasContentRows;
-	}
-
-	setNativeScrollbackCommittedRows(rows: number): void {
-		const committed = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
-		let changed = false;
-		for (const table of this.#lastRenderedTableLayouts) {
-			if (table.startRow >= committed || this.#lockedTableLayouts.has(table.key)) continue;
-			this.#lockedTableLayouts.set(table.key, {
-				availableWidth: table.availableWidth,
-				columnWidths: table.columnWidths.slice(),
-			});
-			changed = true;
-		}
-		if (changed) {
-			this.#clearIncrementalTokenFragments();
-			this.invalidate();
-		}
-	}
-
-	prepareNativeScrollbackReplay(): void {
-		this.#clearTableLayouts();
-		this.#tableLayoutWidth = undefined;
-		this.invalidate();
-	}
-
-	#clearTableLayouts(): void {
-		this.#lockedTableLayouts.clear();
-		this.#lastRenderedTableLayouts = [];
-		this.#activeTableRenderSpecs = undefined;
-		this.#clearIncrementalTokenFragments();
-
-		this.#streamPrefixLineCache = undefined;
+	/**
+	 * Width-independent source prefix of the last render ending at a frozen
+	 * Markdown block boundary. Empty outside transient streaming renders.
+	 */
+	getLastRenderStableText(): string {
+		return this.#transientRenderCache ? this.#lastRenderStableText : "";
 	}
 
 	#invalidateStreamingState(): void {
@@ -1685,13 +1550,6 @@ export class Markdown
 	}
 
 	render(width: number): readonly string[] {
-		if (this.#tableLayoutWidth !== undefined && this.#tableLayoutWidth !== width) {
-			this.#clearTableLayouts();
-			this.#normalizedTextCache = undefined;
-			this.invalidate();
-		}
-		this.#tableLayoutWidth = width;
-
 		if (
 			this.#cachedLines &&
 			this.#cachedText === this.#text &&
@@ -1699,11 +1557,10 @@ export class Markdown
 			this.#cachedWidthConfigEpoch === getWidthConfigEpoch()
 		) {
 			this.#appendOnlySinceRender = false;
-			this.#recordLastRenderedState(this.#cachedLines.length > 0);
 			return this.#cachedLines;
 		}
 
-		this.#lastRenderSettledRows = 0;
+		this.#lastRenderStableText = "";
 
 		const paddingX = this.#ignoreTight ? this.#paddingX : getPaddingX(this.#paddingX);
 		const contentWidth = Math.max(1, width - paddingX * 2);
@@ -1714,7 +1571,6 @@ export class Markdown
 			this.#cachedWidthConfigEpoch = getWidthConfigEpoch();
 			this.#cachedLines = EMPTY_RENDER_LINES;
 			this.#appendOnlySinceRender = false;
-			this.#recordLastRenderedState(false);
 			return EMPTY_RENDER_LINES;
 		}
 
@@ -1722,34 +1578,21 @@ export class Markdown
 		const signature = this.#renderSignature(width, paddingX);
 
 		let cacheKey: string | undefined;
-		if (
-			this.#cacheRenderedOutput &&
-			!this.transientRenderCache &&
-			!this.#appendOnlySinceRender &&
-			this.#lockedTableLayouts.size === 0
-		) {
+		if (this.#cacheRenderedOutput && !this.transientRenderCache && !this.#appendOnlySinceRender) {
 			cacheKey = this.#renderCacheKey(normalizedText, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
-				this.#lastRenderedTableLayouts = cached.tables.map(table => ({
-					...table,
-					columnWidths: table.columnWidths.slice(),
-				}));
-
 				this.#cachedText = this.#text;
 				this.#cachedWidth = width;
 				this.#cachedWidthConfigEpoch = getWidthConfigEpoch();
 				this.#cachedLines = cached.lines;
 				this.#appendOnlySinceRender = false;
-				this.#recordLastRenderedState(cached.lines.length > 0);
 				return cached.lines;
 			}
 		}
 
 		const tokens = this.#lexTokens(normalizedText);
 		let contentLines: string[];
-		const tableRenderSpecs: TableRenderSpec[] = [];
-		this.#activeTableRenderSpecs = tableRenderSpecs;
 		this.#activeRenderSignature = signature;
 		if (this.#appendOnlySinceRender) {
 			const fragmentSignature = this.#renderFragmentPrefix(signature);
@@ -1764,13 +1607,11 @@ export class Markdown
 			contentLines =
 				this.transientRenderCache || this.#appendOnlySinceRender
 					? this.#renderStreamingContentLines(tokens, normalizedText, signature, contentWidth)
-					: this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature, 0, 0);
+					: this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature, 0);
 		} finally {
 			this.#activeRenderSignature = undefined;
 			this.#activeRenderFragmentRevision = undefined;
-			this.#activeTableRenderSpecs = undefined;
 		}
-		this.#lastRenderedTableLayouts = this.#resolveRenderedTableLayouts(tableRenderSpecs, signature.paddingY);
 		const emptyLines = this.#renderEmptyPaddingLines(signature);
 
 		const rawResult = [...emptyLines, ...contentLines, ...emptyLines];
@@ -1782,16 +1623,9 @@ export class Markdown
 		this.#cachedLines = result;
 
 		if (cacheKey !== undefined && this.#cacheRenderedOutput) {
-			renderCache.set(cacheKey, {
-				lines: result,
-				tables: this.#lastRenderedTableLayouts.map(table => ({
-					...table,
-					columnWidths: table.columnWidths.slice(),
-				})),
-			});
+			renderCache.set(cacheKey, { lines: result });
 		}
 		this.#appendOnlySinceRender = false;
-		this.#recordLastRenderedState(contentLines.length > 0);
 
 		return result;
 	}
@@ -2410,7 +2244,6 @@ export class Markdown
 		let size = String(sourceOffset).length + fragment.type.length + (fragment.nextTokenType?.length ?? 0);
 		size += fragment.raw.length;
 		for (const line of fragment.wrappedLines) size += line.text.length + 1;
-		for (const table of fragment.tables) size += table.key.length + table.columnWidths.length + 4;
 		if (fragment.contentLines !== undefined) {
 			for (const line of fragment.contentLines) size += line.length + 1;
 		}
@@ -2458,7 +2291,7 @@ export class Markdown
 		const frozenText = this.#streamPrefixText;
 		const frozenTokenCount = this.#streamPrefixTokenCount;
 		if (frozenText === undefined || frozenTokenCount === 0 || !normalizedText.startsWith(frozenText)) {
-			return this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature, 0, 0);
+			return this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature, 0);
 		}
 
 		let contentLines: string[] | undefined;
@@ -2467,9 +2300,6 @@ export class Markdown
 		let renderedSourceOffset = 0;
 		if (reusablePrefix && reusablePrefix.tokenCount <= frozenTokenCount) {
 			contentLines = reusablePrefix.lines;
-			if (this.#activeTableRenderSpecs) {
-				for (const table of reusablePrefix.tables) this.#activeTableRenderSpecs.push(table);
-			}
 			renderedUntil = reusablePrefix.tokenCount;
 			renderedSourceOffset = reusablePrefix.text.length;
 		}
@@ -2483,7 +2313,6 @@ export class Markdown
 					frozenTokenCount,
 					contentWidth,
 					signature,
-					contentLines?.length ?? 0,
 					renderedSourceOffset,
 				);
 				contentLines = contentLines === undefined ? renderedPrefix : contentLines.concat(renderedPrefix);
@@ -2494,36 +2323,22 @@ export class Markdown
 		}
 
 		// Keep the frozen prefix array itself. The mutable suffix is appended to a
-		// separate result below, so no copy of every settled row is needed per update.
+		// separate result below, so no copy of every stable row is needed per update.
 		const frozenLines = contentLines ?? [];
 		this.#streamPrefixLineCache = {
 			...signature,
 			text: frozenText,
 			tokenCount: frozenTokenCount,
 			lines: frozenLines,
-			tables: this.#activeTableRenderSpecs?.slice() ?? [],
 		};
 
 		if (this.transientRenderCache && frozenLines.length > 0) {
-			if (this.#settledExposedText === undefined || frozenText.startsWith(this.#settledExposedText)) {
-				this.#settledExposedText = frozenText;
-				this.#lastRenderSettledRows = signature.paddingY + frozenLines.length;
-			} else {
-				this.#settledExposedText = undefined;
-			}
+			this.#lastRenderStableText = frozenText;
 		}
 
 		if (renderedUntil < tokens.length) {
 			contentLines = frozenLines.concat(
-				this.#renderContentLines(
-					tokens,
-					renderedUntil,
-					tokens.length,
-					contentWidth,
-					signature,
-					frozenLines.length,
-					frozenText.length,
-				),
+				this.#renderContentLines(tokens, renderedUntil, tokens.length, contentWidth, signature, frozenText.length),
 			);
 		} else {
 			contentLines = frozenLines;
@@ -2563,7 +2378,6 @@ export class Markdown
 		end: number,
 		contentWidth: number,
 		signature: RenderSignature,
-		rowOffset: number,
 		startingSourceOffset: number,
 	): string[] {
 		const wrappedLines = this.#renderWrappedLinesScratch;
@@ -2578,21 +2392,11 @@ export class Markdown
 		for (let i = start; i < end; i++) {
 			const token = tokens[i];
 			const nextToken = tokens[i + 1];
-			const tableSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
 			const tokenWrappedRowStart = wrappedLines.length;
-			const tokenRowStart = rowOffset + tokenWrappedRowStart;
 			const cachedToken = this.#cachedTokenFragment(token, nextToken?.type, sourceOffset);
 
 			if (cachedToken !== undefined) {
 				for (const line of cachedToken.wrappedLines) wrappedLines.push(line);
-				for (const table of cachedToken.tables) {
-					this.#activeTableRenderSpecs?.push({
-						...table,
-						startRow: tokenRowStart + table.startRow,
-						endRow: tokenRowStart + table.endRow,
-						columnWidths: table.columnWidths.slice(),
-					});
-				}
 				tokenSegments.push({
 					start: tokenWrappedRowStart,
 					end: wrappedLines.length,
@@ -2642,36 +2446,12 @@ export class Markdown
 						}
 						tokenLineOffsets.push(wrappedLines.length - tokenWrappedRowStart);
 					}
-					const tableSpecs = this.#activeTableRenderSpecs;
-					if (tableSpecs !== undefined) {
-						for (let specIndex = tableSpecStart; specIndex < tableSpecs.length; specIndex++) {
-							const spec = tableSpecs[specIndex]!;
-							let relativeStart: number;
-							let relativeEnd: number;
-							if (token.type === "table") {
-								relativeStart = 0;
-								relativeEnd = Math.min(renderedTokenLines.length, spec.lineCount);
-							} else {
-								if (spec.startRow < 0 || spec.endRow <= spec.startRow) continue;
-								relativeStart = Math.min(renderedTokenLines.length, spec.startRow);
-								relativeEnd = Math.min(renderedTokenLines.length, spec.endRow);
-							}
-							spec.startRow = tokenRowStart + tokenLineOffsets[relativeStart]!;
-							spec.endRow = tokenRowStart + tokenLineOffsets[relativeEnd]!;
-						}
-					}
 
 					if (
 						this.#activeRenderFragmentRevision !== undefined &&
 						"raw" in token &&
 						typeof token.raw === "string"
 					) {
-						const tables = (this.#activeTableRenderSpecs?.slice(tableSpecStart) ?? []).map(table => ({
-							...table,
-							startRow: table.startRow - tokenRowStart,
-							endRow: table.endRow - tokenRowStart,
-							columnWidths: table.columnWidths.slice(),
-						}));
 						const fragment: IncrementalTokenFragment = {
 							kind: "token",
 							revision: this.#activeRenderFragmentRevision,
@@ -2681,7 +2461,6 @@ export class Markdown
 							nextTokenType: nextToken?.type,
 							raw: token.raw,
 							wrappedLines: wrappedLines.slice(tokenWrappedRowStart),
-							tables,
 							hasSpecialLine: wrappedLines
 								.slice(tokenWrappedRowStart)
 								.some(line => TERMINAL.isImageLine(line.text) || isOsc66Line(line.text)),
@@ -2823,21 +2602,6 @@ export class Markdown
 		tokenSegments.length = 0;
 		wrappedLines.length = 0;
 		return contentLines;
-	}
-
-	#resolveRenderedTableLayouts(specs: readonly TableRenderSpec[], topPadding: number): RenderedTableLayout[] {
-		const layouts: RenderedTableLayout[] = [];
-		for (const spec of specs) {
-			if (spec.startRow < 0 || spec.endRow <= spec.startRow) continue;
-			layouts.push({
-				key: spec.key,
-				availableWidth: spec.availableWidth,
-				columnWidths: spec.columnWidths.slice(),
-				startRow: topPadding + spec.startRow,
-				endRow: topPadding + spec.endRow,
-			});
-		}
-		return layouts;
 	}
 
 	#codeFenceRow(lang: string | undefined, pos: "open" | "close"): string {
@@ -3183,7 +2947,7 @@ export class Markdown
 			}
 
 			case "table": {
-				const tableLines = this.#renderTable(token as TableToken, width, nextTokenType, styleContext, tokenKey);
+				const tableLines = this.#renderTable(token as TableToken, width, nextTokenType, styleContext);
 				for (const tableLine of tableLines) lines.push(renderedLine(tableLine));
 				break;
 			}
@@ -3199,15 +2963,11 @@ export class Markdown
 				const quoteContentWidth = canFitQuoteBorder ? Math.max(1, width - 2) : width;
 				const quoteTokens = token.tokens || [];
 				const renderedQuoteLines: RenderedLine[] = [];
-				const blockquoteSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
-
 				this.#quoteDepth++;
 				try {
 					for (let i = 0; i < quoteTokens.length; i++) {
 						const quoteToken = quoteTokens[i];
 						const nextQuoteToken = quoteTokens[i + 1];
-						const quoteTokenRowStart = renderedQuoteLines.length;
-						const quoteSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
 						const quoteTokenLines = this.#renderToken(
 							quoteToken,
 							quoteContentWidth,
@@ -3216,20 +2976,6 @@ export class Markdown
 							`${tokenKey}/quote:${i}`,
 						);
 						for (const line of quoteTokenLines) renderedQuoteLines.push(line);
-
-						const tableSpecs = this.#activeTableRenderSpecs;
-						if (tableSpecs !== undefined) {
-							for (let specIndex = quoteSpecStart; specIndex < tableSpecs.length; specIndex++) {
-								const spec = tableSpecs[specIndex]!;
-								if (spec.startRow < 0) {
-									spec.startRow = quoteTokenRowStart;
-									spec.endRow = quoteTokenRowStart + Math.min(quoteTokenLines.length, spec.lineCount);
-								} else {
-									spec.startRow += quoteTokenRowStart;
-									spec.endRow += quoteTokenRowStart;
-								}
-							}
-						}
 					}
 				} finally {
 					this.#quoteDepth--;
@@ -3239,21 +2985,9 @@ export class Markdown
 					renderedQuoteLines.pop();
 				}
 
-				const quoteRowOffsets: number[] = [];
 				const borderedQuoteLines = canFitQuoteBorder
-					? this.#applyQuoteBorder(renderedQuoteLines, width, quoteRowOffsets)
-					: this.#passThroughQuoteLines(renderedQuoteLines, quoteRowOffsets);
-				const tableSpecs = this.#activeTableRenderSpecs;
-				if (tableSpecs !== undefined) {
-					for (let specIndex = blockquoteSpecStart; specIndex < tableSpecs.length; specIndex++) {
-						const spec = tableSpecs[specIndex]!;
-						if (spec.startRow < 0 || spec.endRow <= spec.startRow) continue;
-						const relativeStart = Math.min(renderedQuoteLines.length, spec.startRow);
-						const relativeEnd = Math.min(renderedQuoteLines.length, spec.endRow);
-						spec.startRow = quoteRowOffsets[relativeStart]!;
-						spec.endRow = quoteRowOffsets[relativeEnd]!;
-					}
-				}
+					? this.#applyQuoteBorder(renderedQuoteLines, width)
+					: this.#passThroughQuoteLines(renderedQuoteLines);
 				for (const line of borderedQuoteLines) lines.push(line);
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(renderedLine(""));
@@ -3294,7 +3028,7 @@ export class Markdown
 		return this.#theme.hr(fillChar.repeat(Math.min(width, 80)));
 	}
 
-	#applyQuoteBorder(renderedLines: RenderedLine[], width: number, sourceRowOffsets?: number[]): RenderedLine[] {
+	#applyQuoteBorder(renderedLines: RenderedLine[], width: number): RenderedLine[] {
 		const quoteStyle = (text: string) => this.#theme.quote(this.#theme.italic(text));
 		const quoteStylePrefix = this.#getStylePrefix(quoteStyle);
 		const applyQuoteStyle = (line: string): string => {
@@ -3306,7 +3040,6 @@ export class Markdown
 		};
 		const quoteContentWidth = Math.max(1, width - 2);
 		const lines: RenderedLine[] = [];
-		sourceRowOffsets?.push(0);
 		for (const quoteLine of renderedLines) {
 			if (quoteLine.literalCode) {
 				const wrappedLiteralRows = wrapTextWithAnsi(quoteLine.text, quoteContentWidth);
@@ -3323,14 +3056,11 @@ export class Markdown
 					lines.push(renderedLine(this.#theme.quoteBorder(`${this.#theme.symbols.quoteBorder} `) + wrappedLine));
 				}
 			}
-			sourceRowOffsets?.push(lines.length);
 		}
 		return lines;
 	}
 
-	#passThroughQuoteLines(renderedLines: RenderedLine[], sourceRowOffsets?: number[]): RenderedLine[] {
-		sourceRowOffsets?.push(0);
-		for (let i = 0; i < renderedLines.length; i++) sourceRowOffsets?.push(i + 1);
+	#passThroughQuoteLines(renderedLines: RenderedLine[]): RenderedLine[] {
 		return renderedLines;
 	}
 
@@ -3700,7 +3430,6 @@ export class Markdown
 		availableWidth: number,
 		nextTokenType?: string,
 		styleContext?: InlineStyleContext,
-		tableKey = "table",
 	): string[] {
 		const lines: string[] = [];
 		const numCols = token.header.length;
@@ -3807,17 +3536,6 @@ export class Markdown
 			}
 		}
 
-		const lockedLayout = this.#lockedTableLayouts.get(tableKey);
-		if (
-			lockedLayout !== undefined &&
-			lockedLayout.availableWidth === availableWidth &&
-			lockedLayout.columnWidths.length === numCols &&
-			lockedLayout.columnWidths.every(width => Number.isFinite(width) && width >= 1) &&
-			lockedLayout.columnWidths.reduce((total, width) => total + width, borderOverhead) <= availableWidth
-		) {
-			columnWidths = lockedLayout.columnWidths.slice();
-		}
-
 		const t = this.#theme.symbols.table;
 		const h = t.horizontal;
 		const v = t.vertical;
@@ -3868,14 +3586,6 @@ export class Markdown
 		const bottomBorderCells = columnWidths.map(w => h.repeat(w));
 		const bottomBorder = `${t.bottomLeft}${h}${bottomBorderCells.join(`${h}${t.teeUp}${h}`)}${h}${t.bottomRight}`;
 		lines.push(bottomBorder);
-		this.#activeTableRenderSpecs?.push({
-			key: tableKey,
-			availableWidth,
-			columnWidths: columnWidths.slice(),
-			lineCount: lines.length,
-			startRow: -1,
-			endRow: -1,
-		});
 
 		if (nextTokenType && nextTokenType !== "space") {
 			lines.push("");

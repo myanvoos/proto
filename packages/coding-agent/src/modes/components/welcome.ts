@@ -72,7 +72,6 @@ export function heroMeta(version: string, modelName?: string, providerName?: str
 export class WelcomeComponent implements Component {
 	#cachedWidth = -1;
 	#cachedLines: string[] | undefined;
-	#widthEpochRevision = 0;
 
 	constructor(
 		private version: string,
@@ -84,11 +83,6 @@ export class WelcomeComponent implements Component {
 	invalidate(): void {
 		this.#cachedWidth = -1;
 		this.#cachedLines = undefined;
-		this.#widthEpochRevision++;
-	}
-
-	getNativeScrollbackWidthEpochRevision(): number {
-		return this.#widthEpochRevision;
 	}
 
 	setVersion(version: string): void {
