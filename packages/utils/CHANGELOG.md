@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.4.0] - 2026-09-22
+
 ### Fixed
 
 - Partials now see the helpers and partials of the engine that renders them: a `{{#customHelper}}` block inside a partial silently fell through to its `{{else}}` branch, and a partial nested in another partial could not be found.

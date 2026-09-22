@@ -2,25 +2,25 @@
 
 ## [Unreleased]
 
+## [18.4.0] - 2026-09-22
+
 ### Added
 
 - `/annotate [note]` — bookmark the last agent response; it becomes a label on that point in the session tree, so `/annotate view` browses bookmarks with the usual tree navigation and an empty note clears one.
-
-### Fixed
-
-- Kernel cells that `savefig()` then `plt.close()` a matplotlib figure now still display the figure inline at cell end — previously closed figures were dropped, so the most common plotting pattern produced no image in the TUI.
-
-- Bash preview no longer shows a command's leading `cd` twice when a matching `cwd` parameter was set — the workdir prefix replaces it.
-- Bash preview no longer rewrites its first line through truncated `cd`/env values while the tool arguments stream; the workdir/env prefix appears once when arguments complete.
-
-- `xd` devices take CLI args now: flags are mapped from each tool's schema (`xd <tool> --flag value`, `--flag=value`, booleans, repeatable/comma-split arrays, positional fills, `-` reads a flag from stdin), so device calls no longer need JSON embedded in shell quotes. `xd <tool> ?` prints usage + flag reference; `xd <tool> --json '<json>'` (and lone `'{...}'` / piped-stdin JSON) remains the escape hatch, and MCP devices stay JSON-only.
-- `xd` shell results are scriptable end to end: usage errors exit 2 (unknown flag, missing value, bad JSON) while tool failures keep exit 1, and outputs stay plain newline-terminated text you can pipe, slice, and redirect.
 
 ### Changed
 
 - Sessions whose tools are declared natively no longer carry the `# Tool Inventory` list: the names were already in the tool declarations, so the system prompt drops one line per tool (inband/dialect sessions keep the full `## functions` inventory). Duplicated guidance was also removed from the bash, checklist, and inspect_media docs — about 135 tokens per request on a 7-tool session.
 - Heredoc bodies in a streaming bash command are highlighted in their own language instead of one flat string: a kernel cell's body follows its interpreter (`python`/`node`/`bun`) and a `cat`/`tee` heredoc follows the written file's extension (`.py`, `.md`, `.json`, `.rs`, …), while the shell around it keeps shell coloring.
 - `xd <tool> ?` collapses to a per-device schema card in the TUI — usage line plus flag rows in the Submit-Result tree style, with a family badge (files/web/watch/workers/processes/…) identifying each proto built-in; expanding shows the full docs.
+
+### Fixed
+
+- Kernel cells that `savefig()` then `plt.close()` a matplotlib figure now still display the figure inline at cell end — previously closed figures were dropped, so the most common plotting pattern produced no image in the TUI.
+- Bash preview no longer shows a command's leading `cd` twice when a matching `cwd` parameter was set — the workdir prefix replaces it.
+- Bash preview no longer rewrites its first line through truncated `cd`/env values while the tool arguments stream; the workdir/env prefix appears once when arguments complete.
+- `xd` devices take CLI args now: flags are mapped from each tool's schema (`xd <tool> --flag value`, `--flag=value`, booleans, repeatable/comma-split arrays, positional fills, `-` reads a flag from stdin), so device calls no longer need JSON embedded in shell quotes. `xd <tool> ?` prints usage + flag reference; `xd <tool> --json '<json>'` (and lone `'{...}'` / piped-stdin JSON) remains the escape hatch, and MCP devices stay JSON-only.
+- `xd` shell results are scriptable end to end: usage errors exit 2 (unknown flag, missing value, bad JSON) while tool failures keep exit 1, and outputs stay plain newline-terminated text you can pipe, slice, and redirect.
 
 ## [18.3.0] - 2026-09-21
 
