@@ -905,18 +905,25 @@ export class TUI extends Container {
 	// requestRender(true)) that must rewrite the viewport even when the diff
 	// believes nothing changed.
 	#forceViewportRepaintOnNextRender = false;
-	// The next normal paint settles host-owned resize movement; never scroll
-	// pulled history a second time while expanding the mutable viewport.
+	// The next normal paint settles host-owned resize movement: it erases only
+	// the stale live window (the host owns everything below it) instead of
+	// erasing to the screen bottom.
 	#settledResizeRepaintPending = false;
 	// Physical rows the stale live window occupies at the settled geometry, from
 	// the anchor probe. Bounds the settled repaint's erase: rows below the stale
 	// window belong to the host, not to the frame.
 	#settledResizeStaleRows = 0;
-	// Whether that transaction blanked the live viewport first. Only then may the
-	// settled repaint scroll: everything above its anchor is committed history or
-	// blanks. Without the erase (multiplexers) the screen still holds live rows
-	// that the drag pushed into scrollback, and scrolling would archive them
-	// twice instead of overwriting them in place.
+	// Live rows the host archived into native scrollback when it clipped the
+	// screen, still recoverable: a later grow pulls the most recently archived
+	// rows back first, and those rows belong to the mutable region, not to
+	// committed history.
+	#archivedLiveRows = 0;
+	// Whether the resize transaction blanked the live viewport before the host
+	// moved anything. When it did, only committed history and blanks can have
+	// crossed the top edge, so the anchor shift alone classifies the rows above
+	// the viewport. Multiplexers skip the erase (it races the pane re-layout),
+	// and there the frame's own live rows travel with the rest — only then is
+	// the archived-live ledger consulted.
 	#resizeErasedLiveViewport = false;
 	#hasEverRendered = false;
 	#stopped = false;
@@ -1632,7 +1639,45 @@ export class TUI extends Container {
 		this.#settledResizeStaleRows = staleRows;
 		const settledTop = Math.min(top, Math.max(0, height - 1));
 		const anchorShift = settledTop - this.#providerViewportTop;
-		this.#providerHistoryBottom = Math.max(0, Math.min(settledTop, this.#providerHistoryBottom + anchorShift));
+		if (process.env.W9F3_DEBUG) console.error(`[W9F3] resolve size=${width}x${height} prevH=${this.#previousHeight} cpr=${reportedRow} park=${probe.offset} stale=${staleRows} oldTop=${this.#providerViewportTop} top=${settledTop} shift=${anchorShift} histBottom=${this.#providerHistoryBottom} erased=${this.#resizeErasedLiveViewport} archived=${this.#archivedLiveRows}`);
+		// Host-driven movement re-sorts what sits above the viewport, and the two
+		// kinds of row up there are not interchangeable: committed history must be
+		// kept (scrolled into scrollback when the viewport needs its rows), while
+		// the frame's own live rows must be overwritten in place — repainting them
+		// and archiving them would leave a stale-width duplicate in scrollback.
+		// Committed history always sits above the live window, so a push consumes
+		// it first and only then archives live rows; a pull hands the most recently
+		// archived rows back, i.e. live rows before history.
+		// A push is only partly visible in the anchor: once the viewport top hits
+		// row zero the host keeps taking rows off the top of the live window
+		// itself, and the anchor cannot move any further to report it. The height
+		// shrink bounds that hidden remainder — the frame's viewport is bottom
+		// anchored, so nothing sits below the parked cursor for the host to
+		// discard instead.
+		const visiblePush = Math.max(0, -anchorShift);
+		const hiddenPush = settledTop === 0 ? Math.max(0, Math.max(0, this.#previousHeight - height) - visiblePush) : 0;
+		if (this.#resizeErasedLiveViewport) {
+			// The transaction blanked the live region before the host touched the
+			// screen, so nothing the host moved across the top edge was a live row:
+			// the shift alone re-seats committed history, and no live rows are owed.
+			this.#archivedLiveRows = 0;
+			this.#providerHistoryBottom = Math.max(0, Math.min(settledTop, this.#providerHistoryBottom + anchorShift));
+		} else if (visiblePush + hiddenPush > 0) {
+			const pushed = visiblePush + hiddenPush;
+			const pushedHistory = Math.min(pushed, this.#providerHistoryBottom);
+			this.#archivedLiveRows += pushed - pushedHistory;
+			this.#providerHistoryBottom = Math.min(settledTop, this.#providerHistoryBottom - pushedHistory);
+		} else if (anchorShift > 0) {
+			const returnedLive = Math.min(anchorShift, this.#archivedLiveRows);
+			this.#archivedLiveRows -= returnedLive;
+			this.#providerHistoryBottom = Math.max(
+				0,
+				Math.min(settledTop, this.#providerHistoryBottom + anchorShift - returnedLive),
+			);
+		} else {
+			this.#providerHistoryBottom = Math.max(0, Math.min(settledTop, this.#providerHistoryBottom));
+		}
+		if (process.env.W9F3_DEBUG) console.error(`[W9F3]   -> histBottom=${this.#providerHistoryBottom} archived=${this.#archivedLiveRows}`);
 		this.#providerViewportTop = settledTop;
 		// Resolved geometry invalidates the old mutable anchor; the forced
 		// viewport-only repaint establishes the settled position.
@@ -2660,10 +2705,16 @@ export class TUI extends Container {
 			viewportAnchor === "bottom"
 				? Math.max(0, height - rows)
 				: Math.max(0, Math.min(oldTop + historyRows.length, height - rows));
+		// Rows above `oldHistoryBottom` are committed history. A bottom-anchored
+		// viewport that needs more rows than the band below them can only keep
+		// them by scrolling them into native scrollback. This holds for the
+		// settled post-resize repaint too: it blanks the stale live region at
+		// `oldTop` earlier in this same write, and the bound never reaches past
+		// the committed-history bottom, so the line feeds can only archive
+		// committed rows and blanks — never live chrome, and never a second copy
+		// of a row the frame is about to repaint.
 		const scrollUp =
-			viewportAnchor === "bottom" &&
-			!destructiveReset &&
-			(!this.#settledResizeRepaintPending || this.#resizeErasedLiveViewport)
+			viewportAnchor === "bottom" && !destructiveReset
 				? Math.min(oldHistoryBottom, Math.max(0, oldHistoryBottom + historyRows.length - newTop))
 				: 0;
 		const startTop = viewportAnchor === "bottom" ? Math.max(0, newTop - historyRows.length) : oldTop;
@@ -2834,6 +2885,12 @@ export class TUI extends Container {
 			viewportAnchor !== "bottom" || destructiveReset || historyRows.length > 0 || replayViewportRows > 0
 				? mutableTop
 				: Math.min(mutableTop, Math.max(0, oldHistoryBottom - scrollUp));
+		// Retiring a batch re-emits the finished prefix at the current width and
+		// declares everything above the viewport committed. Live rows the host
+		// archived before that are stale copies which can never be reclaimed;
+		// keeping them on the books would make a later pull overwrite real
+		// committed history instead.
+		if (historyRows.length > 0 || destructiveReset) this.#archivedLiveRows = 0;
 		this.#providerViewportTop = mutableTop;
 		this.#previousWidth = width;
 		this.#previousHeight = height;
