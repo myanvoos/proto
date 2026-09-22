@@ -2240,30 +2240,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 
 					const showingFullOutput = expanded && renderContext?.isFullOutput === true;
 
-					const timeoutDisabled = details?.timeoutDisabled === true || renderContext?.timeout === 0;
-					const timeoutSeconds = timeoutDisabled ? undefined : (details?.timeoutSeconds ?? renderContext?.timeout);
-					const requestedTimeoutSeconds = details?.requestedTimeoutSeconds;
-					const statsParts: string[] = [];
-					if (details?.wallTimeMs !== undefined) {
-						statsParts.push(`Wall: ${formatWallTimeSeconds(details.wallTimeMs)}s`);
-					}
-					if (timeoutDisabled) {
-						statsParts.push("Timeout: disabled");
-					}
-					if (typeof timeoutSeconds === "number") {
-						statsParts.push(
-							requestedTimeoutSeconds !== undefined && requestedTimeoutSeconds !== timeoutSeconds
-								? `Timeout: ${timeoutSeconds}s (requested ${requestedTimeoutSeconds}s clamped)`
-								: `Timeout: ${timeoutSeconds}s`,
-						);
-					}
-					const timeoutLine =
-						statsParts.length > 0
-							? uiTheme.fg(
-									"dim",
-									`${uiTheme.format.bracketLeft}${statsParts.join(" | ")}${uiTheme.format.bracketRight}`,
-								)
-							: undefined;
 					const backgroundJobId = details?.async?.state === "running" ? details.async.jobId : undefined;
 					let warningLine: string | undefined;
 					if (details?.meta?.truncation && !showingFullOutput) {
@@ -2299,7 +2275,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							outputLines.push(...result.visualLines);
 						}
 					}
-					if (timeoutLine) outputLines.push(timeoutLine);
 					if (warningLine) outputLines.push(warningLine);
 					if (backgroundJobId) outputLines.push(uiTheme.fg("dim", `Backgrounded: ${backgroundJobId}`));
 					const artifactId = rawOutputArtifact.artifactId;

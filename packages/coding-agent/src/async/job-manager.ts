@@ -117,6 +117,7 @@ export class AsyncJobManager {
 	#deliveryLoop: Promise<void> | undefined;
 	#deliveryQueueChanged = Promise.withResolvers<void>();
 	#disposed = false;
+	#deliveryClosed = false;
 
 	#filterJobs(jobs: Iterable<AsyncJob>, filter?: AsyncJobFilter): AsyncJob[] {
 		const ownerId = filter?.ownerId;
@@ -213,6 +214,7 @@ export class AsyncJobManager {
 				});
 			}
 		};
+		this.#jobs.set(id, job);
 		job.promise = (async () => {
 			try {
 				const text = await run({
@@ -249,7 +251,6 @@ export class AsyncJobManager {
 			}
 		})();
 
-		this.#jobs.set(id, job);
 		return id;
 	}
 
@@ -493,7 +494,7 @@ export class AsyncJobManager {
 				return false;
 			}
 
-			await Promise.race([loop, Bun.sleep(remainingMs)]);
+			await this.#waitForDeliveryPromise(loop, deadline);
 			if (Date.now() >= deadline && this.hasPendingDeliveries(filter)) {
 				return false;
 			}
@@ -512,6 +513,7 @@ export class AsyncJobManager {
 		const jobsSettled = await this.#waitForAllUntil(deadline);
 		const drained = await this.drainDeliveries({ timeoutMs: Math.max(deadline - Date.now(), 0) });
 		this.#clearEvictionTimers();
+		this.#deliveryClosed = true;
 		this.#jobs.clear();
 		this.#deliveries.length = 0;
 		this.#notifyDeliveryQueueChanged();
@@ -752,6 +754,7 @@ export class AsyncJobManager {
 	}
 
 	#queueDelivery(delivery: AsyncJobDelivery): void {
+		if (this.#deliveryClosed) return;
 		const index = this.#deliveries.findIndex(candidate => candidate.nextAttemptAt > delivery.nextAttemptAt);
 		if (index === -1) this.#deliveries.push(delivery);
 		else this.#deliveries.splice(index, 0, delivery);
@@ -782,14 +785,14 @@ export class AsyncJobManager {
 		}
 		const remainingMs = deadline - Date.now();
 		if (remainingMs <= 0) return false;
-		let timedOut = false;
-		await Promise.race([
-			promise,
-			Bun.sleep(remainingMs).then(() => {
-				timedOut = true;
-			}),
-		]);
-		return !timedOut;
+		const timeout = Promise.withResolvers<false>();
+		const timer = setTimeout(() => timeout.resolve(false), remainingMs);
+		timer.unref();
+		try {
+			return await Promise.race([promise.then(() => true), timeout.promise]);
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	#getRetryDelay(attempt: number): number {

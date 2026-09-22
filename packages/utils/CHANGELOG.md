@@ -2,7 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Line readers can reject oversized lines before accumulating unbounded stream data.
+
 ### Fixed
+
+- Graceful process exit flushes large piped output instead of silently truncating it.
+- Virtual-terminal resizing preserves pending wraps, wide characters, and cursor positions without introducing padding into scrollback.
 
 - Virtual-terminal cursor restoration stays attached to the normal-screen content after resizing an alternate-screen view.
 

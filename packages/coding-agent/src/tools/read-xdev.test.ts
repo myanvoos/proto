@@ -184,6 +184,15 @@ test("mounted read preserves loopback HTTP URLs and scopes filesystem paths to b
 			isActive: () => false,
 		};
 
+		for (const uri of ["xd://", "xd://read"]) {
+			const result = await dispatchXdTarget(session, "read", JSON.stringify({ path: uri }), {
+				toolCallId: "mounted-internal-uri",
+				cwd: branch,
+			});
+			expect(result.isError).not.toBe(true);
+			expect(textOf(result)).toContain("read");
+		}
+
 		const body = "loopback URL body\n";
 		const server = Bun.serve({
 			port: 0,

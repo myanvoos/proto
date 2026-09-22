@@ -4,6 +4,7 @@ import { daemonClientForProject } from "../launch/client";
 import { describeQuietly, stopQuietly, waitReady } from "../launch/ensure";
 import { daemonRuntimeDir } from "../launch/paths";
 import { resolveWorkerSpawnCmd } from "../subprocess/worker-client";
+import { connectSessionRpc, type SessionRpcConnection } from "./client";
 import {
 	SESSION_HOST_READY_PATTERN,
 	SESSION_HOST_SOCKET_ENV,
@@ -36,58 +37,28 @@ interface NegotiateResult {
  * - "refused": no listener (worker dead or not started yet).
  */
 export async function negotiateSessionHost(socket: string, timeoutMs: number): Promise<NegotiateResult> {
-	const { promise, resolve } = Promise.withResolvers<NegotiateResult>();
-	let settled = false;
-	const finish = (result: NegotiateResult) => {
-		if (settled) return;
-		settled = true;
-		clearTimeout(timer);
-		resolve(result);
-	};
-	const timer = setTimeout(() => finish({ socket: "connecting" }), timeoutMs);
-
+	let connection: SessionRpcConnection | undefined;
+	let connected = false;
 	try {
-		const socket_conn = await Bun.connect({
-			unix: socket,
-			socket: {
-				data(_socket, chunk) {
-					const text = new TextDecoder().decode(chunk);
-					for (const line of text.split("\n")) {
-						const trimmed = line.trim();
-						if (!trimmed) continue;
-						try {
-							const parsed: unknown = JSON.parse(trimmed);
-							if (
-								typeof parsed === "object" &&
-								parsed !== null &&
-								"type" in parsed &&
-								parsed.type === "response"
-							) {
-								finish({ socket: "live", response: parsed });
-							}
-						} catch {
-							// non-JSON line: ignore, keep waiting
-						}
-					}
-				},
-				error() {
-					finish({ socket: "refused" });
-				},
-				close() {
-					finish({ socket: "refused" });
-				},
-			},
-		});
-		socket_conn.write(`${JSON.stringify({ type: "negotiate_protocol", protocolVersion: 2, id: "probe" })}\n`);
+		connection = await connectSessionRpc(socket);
+		connected = true;
+		connection.sendCommand({ type: "negotiate_protocol", protocolVersion: 2, id: "probe" });
+		const response = await connection.frames.findResponse("probe", timeoutMs);
+		return response.type === "response" ? { socket: "live", response } : { socket: "refused" };
 	} catch (error) {
 		logger.debug("session host probe failed", {
 			socket,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		finish({ socket: "refused" });
+		return {
+			socket:
+				connected && error instanceof Error && error.message.startsWith("timed out waiting")
+					? "connecting"
+					: "refused",
+		};
+	} finally {
+		connection?.close();
 	}
-
-	return promise;
 }
 
 export async function probeSessionHost(socket: string): Promise<boolean> {

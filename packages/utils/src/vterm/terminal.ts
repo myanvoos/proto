@@ -699,15 +699,31 @@ export class Terminal {
 			const line = state.lines[row]!;
 			if (!line.isWrapped || groups.length === 0) groups.push({ cells: [] });
 			const group = groups.at(-1)!;
-			const used = line.isWrapped || state.lines[row + 1]?.isWrapped ? line.cells.length : this.#usedColumns(line);
-			if (row === absoluteCursor) group.cursorOffset = group.cells.length + state.cursorX;
+			const next = state.lines[row + 1];
+			let used = next?.isWrapped ? line.cells.length : this.#usedColumns(line);
+			// A wide glyph that did not fit leaves an unoccupied final cell, not
+			// a logical space. Do not accumulate that padding across resizes.
+			if (
+				next?.isWrapped &&
+				next.cells[0]?.width === 2 &&
+				line.cells[used - 1]?.width === 1 &&
+				!line.cells[used - 1]?.chars
+			)
+				used--;
+			if (row === absoluteCursor) {
+				group.cursorOffset = group.cells.length + state.cursorX;
+				used = Math.max(used, state.cursorX);
+			}
 			for (let column = 0; column < used; column++) group.cells.push(cloneCell(line.cells[column]!));
 		}
 		const lines: BufferLine[] = [];
 		let cursorAbsolute = 0;
 		let cursorX = 0;
 		for (const group of groups) {
-			const start = lines.length;
+			if (group.cursorOffset !== undefined) {
+				cursorAbsolute = lines.length;
+				cursorX = 0;
+			}
 			if (group.cells.length === 0) lines.push(new BufferLine(columns));
 			else {
 				let source = 0;
@@ -724,17 +740,18 @@ export class Terminal {
 						if (cell.width === 2 && target === columns - 1) break;
 						line.cells[target] = cloneCell(cell);
 						if (cell.width === 2) line.cells[target + 1] = { chars: "", width: 0, attrs: { ...cell.attrs } };
+						if (group.cursorOffset !== undefined && group.cursorOffset >= source) {
+							// Map the cursor through actual packing, including wide-cell
+							// gaps. Division by columns loses those gaps and can overwrite
+							// text after a resize. Keep column == columns for pending wrap.
+							cursorAbsolute = lines.length;
+							cursorX = target + Math.min(cell.width, group.cursorOffset - source);
+						}
 						target += cell.width;
 						source += cell.width;
 					}
 					lines.push(line);
 				}
-			}
-			if (group.cursorOffset !== undefined) {
-				const offset = group.cursorOffset;
-				const onBoundary = offset > 0 && offset % columns === 0;
-				cursorAbsolute = start + Math.floor(offset / columns) - Number(onBoundary);
-				cursorX = onBoundary ? columns - 1 : offset % columns;
 			}
 		}
 		while (

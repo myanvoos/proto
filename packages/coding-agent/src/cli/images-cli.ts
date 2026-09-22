@@ -44,8 +44,8 @@ import {
 import { providerFileCachePath, resolveBlobBrokerConfigs } from "../blob-broker/service";
 import { createConfiguredUploader } from "../blob-broker/uploaders";
 import { Settings } from "../config/settings";
+import type { IMAGES_ACTIONS } from "./command-help";
 
-export const IMAGES_ACTIONS = ["status", "doctor", "probe", "purge"] as const;
 export type ImagesAction = (typeof IMAGES_ACTIONS)[number];
 
 export interface ImagesCommandArgs {

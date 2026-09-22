@@ -99,6 +99,27 @@ test("multi-range reads surface the same truncation boundary as single-range rea
 	});
 });
 
+test("compressed archive routing uses every registered format", async () => {
+	await withReadSession(async (read, root) => {
+		const fixtures = {
+			bz2: "425a68393141592653593817a124000004c180001036e7cc002000314c0000d4da81a7a9a7a8881b4c679026263ce9522d8c6c9f8bb9229c28481c0bd09200",
+			xz: "fd377a585a000004e6d6b4460200210116000000742fe5a301001e616c7068610a626574610a67616d6d610a64656c74610a657073696c6f6e0a0000eabb46832248144f0001371fea18893d1fb6f37d010000000004595a",
+		};
+		for (const [extension, hex] of Object.entries(fixtures)) {
+			await Bun.write(path.join(root, `lines.txt.${extension}`), Buffer.from(hex, "hex"));
+			expect(textOf(await read.execute(`list-${extension}`, { path: `lines.txt.${extension}` }))).toContain(
+				"lines.txt",
+			);
+			const text = textOf(
+				await read.execute(`read-${extension}`, { path: `lines.txt.${extension}:lines.txt:2-3:raw` }),
+			);
+			expect(text).toStartWith("beta\ngamma");
+			expect(text).not.toContain("alpha");
+			expect(text).not.toContain("delta");
+		}
+	});
+});
+
 test("large single-range reads honor an already-aborted signal", async () => {
 	await withReadSession(async (read, root) => {
 		const file = path.join(root, "large.txt");

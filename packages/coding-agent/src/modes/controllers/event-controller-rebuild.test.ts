@@ -280,3 +280,27 @@ test("synthetic developer context the model acted on is invisible in the transcr
 		chatContainer.dispose();
 	}
 });
+
+test("disposed controller drops initializing, queued, and newly arriving events", async () => {
+	const initializing = Promise.withResolvers<void>();
+	let invalidations = 0;
+	const context = {
+		isInitialized: false,
+		init: () => initializing.promise,
+		viewSession: { isRetrying: false },
+		settings: { get: () => false },
+		ui: UI,
+		statusLine: { invalidate: () => invalidations++ },
+	} as unknown as InteractiveModeContext;
+	const controller = new EventController(context);
+	const event = { type: "model_changed" } as AgentSessionEvent;
+	const first = controller.dispatchEvent(event);
+	const queued = controller.dispatchEvent(event);
+	controller.dispose();
+	initializing.resolve();
+	await Promise.all([first, queued]);
+	await controller.dispatchEvent(event);
+	await controller.handleEvent(event);
+	expect(invalidations).toBe(0);
+	controller.dispose();
+});

@@ -176,7 +176,7 @@ function renderAliasBlock(
 	switch (shell) {
 		case "fish":
 			body = [
-				`function ${aliasName} --wraps ${BINARY_NAME} --description 'PROTO profile ${profile}'`,
+				`function ${aliasName} --wraps ${BINARY_NAME} --description 'Proto profile ${profile}'`,
 				`    command ${command.fish} --profile=${profile} $argv`,
 				"end",
 			].join("\n");

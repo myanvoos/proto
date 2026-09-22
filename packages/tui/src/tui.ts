@@ -2613,7 +2613,10 @@ export class TUI extends Container {
 		// scrolls only when history + viewport overflow the physical screen, and
 		// the rows that scroll off the top are exactly the oldest history rows.
 		const geometryStable = this.#hasEverRendered && this.#previousWidth === width && this.#previousHeight === height;
-		const oldTop = destructiveReset ? 0 : Math.min(this.#providerViewportTop, Math.max(0, height - 1));
+		// An empty bottom-anchored viewport starts just below the screen. Keep
+		// that sentinel: clamping it onto the last row makes the next repaint
+		// erase acknowledged history that still occupies that row.
+		const oldTop = destructiveReset ? 0 : Math.min(this.#providerViewportTop, height);
 		const oldHistoryBottom = destructiveReset ? 0 : Math.min(this.#providerHistoryBottom, oldTop);
 		const newTop =
 			viewportAnchor === "bottom"
@@ -2680,7 +2683,7 @@ export class TUI extends Container {
 			) {
 				// Retire or resize only after blanking the old mutable region: scrolling
 				// may push committed history/blanks, never stale live chrome.
-				buffer += this.#eraseBelowRow(oldTop, height);
+				if (oldTop < height) buffer += this.#eraseBelowRow(oldTop, height);
 				if (scrollUp > 0) buffer += `\x1b[${scrollUp}S`;
 			}
 			// This write scrolls when history + viewport overflow the screen; the
@@ -2690,7 +2693,7 @@ export class TUI extends Container {
 			// committed rows and blanks, never an unfinished frame.
 			const pushed = Math.max(0, startTop + preparedHistory.lines.length + rows - height);
 			if (viewportAnchor !== "bottom" && pushed > oldTop && this.#providerWindow.length > 0) {
-				buffer += this.#eraseBelowRow(oldTop, height);
+				if (oldTop < height) buffer += this.#eraseBelowRow(oldTop, height);
 			}
 			buffer += `\x1b[${startTop + 1};1H`;
 			let screenRow = startTop;

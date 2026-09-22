@@ -184,7 +184,7 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		scheduler.drain();
 
 		const replayStart = performance.now();
-		await mode.renderInitialMessages({ clearTerminalHistory: true });
+		await mode.renderInitialMessages({ clearTerminalHistory: true, fullHistory: true });
 		const replayMs = performance.now() - replayStart;
 
 		const paintStart = performance.now();

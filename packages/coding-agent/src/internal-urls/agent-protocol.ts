@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { applyQuery, pathToQuery } from "./json-query";
-import { artifactsDirsFromRegistry } from "./registry-helpers";
+import { artifactsDirsFromRegistry, findSessionFileFromDisk } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, UrlCompletion } from "./types";
 
 export class AgentProtocolHandler implements ProtocolHandler {
@@ -114,7 +114,16 @@ export class AgentProtocolHandler implements ProtocolHandler {
 			}
 		}
 		for (const id of candidateIds) {
-			const foundPath = byId.get(id);
+			let foundPath = byId.get(id);
+			if (!foundPath) {
+				// Registry roots collapse nested worker artifact directories. The
+				// persisted transcript index still locates outputs beside those sessions.
+				const sessionFile = await findSessionFileFromDisk(id);
+				if (sessionFile) {
+					const outputPath = `${sessionFile.slice(0, -".jsonl".length)}.md`;
+					if (await Bun.file(outputPath).exists()) foundPath = outputPath;
+				}
+			}
 			if (foundPath) {
 				return { foundPath, matchedId: id, anyDirExists, availableIds: new Set(byId.keys()) };
 			}

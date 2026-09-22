@@ -348,3 +348,44 @@ test("output backlog defers history and stop flushes the final eligible batch", 
 	expect(terminal.stopped).toBe(true);
 	expect(countRow(terminal.allNormalRows(), "at-shutdown")).toBe(1);
 });
+
+for (const [columns, rows] of [
+	[2, 1],
+	[3, 2],
+	[20, 6],
+	[240, 80],
+]) {
+	test(`stream growth/shrink and overlays preserve history at ${columns}x${rows}`, () => {
+		const { terminal, scheduler, provider, tui } = makeTui(rows);
+		terminal.resize(columns!, rows!);
+		const expected: string[] = [];
+		try {
+			tui.start({ deferInput: true });
+			scheduler.flush();
+			for (let tick = 1; tick <= 80; tick++) {
+				const history = String.fromCharCode(0x4e00 + tick);
+				expected.push(history);
+				const viewport = Array.from({ length: tick % (rows! + 1) }, () => "\x1b[31mL\x1b[0m");
+				provider.plan = { history: { id: tick, rows: [history] }, viewport, viewportAnchor: "bottom" };
+				const overlay = tick % 9 === 0 ? tui.showOverlay({ render: () => ["M"] }, { fullscreen: true }) : undefined;
+				tui.requestRender();
+				scheduler.flush();
+				if (overlay) {
+					expect(provider.acks.length).toBe(tick - 1);
+					overlay.hide();
+					scheduler.flush();
+				}
+				expect(terminal.allNormalRows().filter(row => /[\u4e00-\u4eff]/u.test(row))).toEqual(expected);
+				expect(terminal.allNormalRows().slice(0, terminal.vt.buffer.normal.baseY)).not.toContain("L");
+				if (viewport.length > 0) {
+					expect(terminal.screenRows().slice(-viewport.length)).toEqual(viewport.map(() => "L"));
+				}
+				terminal.writes.length = 0;
+			}
+			expect(provider.acks).toEqual(Array.from({ length: 80 }, (_, index) => index + 1));
+		} finally {
+			tui.stop();
+			terminal.vt.dispose();
+		}
+	});
+}

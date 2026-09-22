@@ -16,6 +16,24 @@ import {
 } from "./launch";
 import { ensureSharedBrowser } from "./shared-daemon";
 
+test("Puppeteer evaluation tolerates a missing caller stack frame", async () => {
+	const { withSourcePuppeteerURLIfNone, getSourcePuppeteerURLIfAvailable } = await import(
+		"puppeteer-core/internal/common/util.js"
+	);
+	const originalLimit = Error.stackTraceLimit;
+	const originalPrepare = Error.prepareStackTrace;
+	try {
+		Error.stackTraceLimit = 0;
+		const callback = () => 42;
+		expect(withSourcePuppeteerURLIfNone("evaluate", callback)).toBe(callback);
+		expect(getSourcePuppeteerURLIfAvailable(callback)?.toString()).toContain("pptr:evaluate;");
+		expect(Error.prepareStackTrace).toBe(originalPrepare);
+	} finally {
+		Error.stackTraceLimit = originalLimit;
+		Error.prepareStackTrace = originalPrepare;
+	}
+});
+
 const SNAP_EXECUTABLE = "/snap/bin/chromium";
 
 function snapCommonDir(): string {

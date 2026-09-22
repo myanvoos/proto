@@ -10,6 +10,10 @@
 
 - Native history and mutable viewport updates are separate transactions; ordinary rendering and resizing preserve committed scrollback, while explicit display resets replay it atomically.
 
+### Fixed
+
+- Committed scrollback survives an empty live viewport, including tiny terminals and overlay transitions.
+
 ## [18.1.23] - 2026-09-20
 
 ### Added

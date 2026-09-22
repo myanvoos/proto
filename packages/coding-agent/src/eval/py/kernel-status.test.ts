@@ -663,3 +663,66 @@ test("cancelling a queued Python cell does not interrupt the active cell", async
 		if (kernel.isAlive()) await kernel.shutdown().catch(() => {});
 	}
 }, 10_000);
+
+test("a failed Python output consumer reports an error without wedging the kernel", async () => {
+	const kernel = await PythonKernel.start({ cwd: process.cwd() });
+	try {
+		const failed = await kernel.execute("consumer_probe = 42\nprint('first')\nprint('second')", {
+			timeoutMs: 500,
+			onChunk: () => {
+				throw new Error("output storage unavailable");
+			},
+		});
+		expect(failed).toMatchObject({
+			status: "error",
+			cancelled: false,
+			timedOut: false,
+			error: { name: "OutputError", value: "output storage unavailable" },
+		});
+		let output = "";
+		expect(
+			await kernel.execute("print(consumer_probe)", {
+				onChunk: text => {
+					output += text;
+				},
+			}),
+		).toMatchObject({ status: "ok" });
+		expect(output.trim()).toBe("42");
+	} finally {
+		await kernel.shutdown();
+	}
+}, 10_000);
+
+test("a rejected async Python display consumer leaves later cells usable", async () => {
+	const kernel = await PythonKernel.start({ cwd: process.cwd() });
+	try {
+		const failed = await kernel.execute("__proto_display({'application/json': {'visible': True}}, raw=True)", {
+			onDisplay: async () => {
+				throw new Error("display consumer unavailable");
+			},
+			timeoutMs: 500,
+		});
+		expect(failed).toMatchObject({
+			status: "error",
+			cancelled: false,
+			timedOut: false,
+			error: { name: "OutputError", value: "display consumer unavailable" },
+		});
+		expect(await kernel.execute("assert 6 * 7 == 42")).toMatchObject({ status: "ok" });
+	} finally {
+		await kernel.shutdown();
+	}
+}, 10_000);
+
+test("a Python transport write failure cannot be reported as a successful cell", async () => {
+	const kernel = new PythonKernel("unstarted-transport");
+	try {
+		expect(await kernel.execute("print('must not run')")).toMatchObject({
+			status: "error",
+			cancelled: true,
+			error: { name: "TransportError" },
+		});
+	} finally {
+		await kernel.shutdown();
+	}
+});

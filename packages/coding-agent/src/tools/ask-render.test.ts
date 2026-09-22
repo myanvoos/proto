@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { initThemeSync, theme } from "../modes/theme/theme";
-import { askToolRenderer } from "./ask";
+import type { ToolSession } from ".";
+import { AskTool, askToolRenderer } from "./ask";
 
 initThemeSync();
 
@@ -87,4 +89,59 @@ test("answered ask card keeps the chosen option and pluralises its header", () =
 	expect(lines[0]).not.toContain("1 questions");
 	expect(lines.join("\n")).toContain("Yes");
 	expect(lines.join("\n")).toContain("No");
+});
+
+test("ask refuses noninteractive execution without opening a dialog", async () => {
+	const tool = new AskTool({ hasUI: false, canPromptUser: false } as ToolSession);
+	let aborted = false;
+	const context = {
+		hasUI: false,
+		abort: () => {
+			aborted = true;
+		},
+	} as AgentToolContext;
+	expect(AskTool.createIf({ hasUI: false, canPromptUser: false } as ToolSession)).toBeNull();
+	await expect(
+		tool.execute(
+			"ask-no-ui",
+			{
+				questions: [{ id: "q", question: "Choose a value", options: [{ label: "One" }] }],
+			},
+			undefined,
+			undefined,
+			context,
+		),
+	).rejects.toThrow("Ask tool requires interactive mode");
+	expect(aborted).toBe(true);
+});
+
+test("ask returns the interactive dialog selection without requesting real user input", async () => {
+	const tool = new AskTool({
+		hasUI: false,
+		settings: { get: () => 0 },
+	} as unknown as ToolSession);
+	let presented = 0;
+	const context = {
+		hasUI: true,
+		abort: () => {
+			throw new Error("Unexpected abort");
+		},
+		ui: {
+			askDialog: async () => {
+				presented++;
+				return { kind: "submit", results: [{ id: "q", selectedOptions: ["One"] }] };
+			},
+		},
+	} as unknown as AgentToolContext;
+	const result = await tool.execute(
+		"ask-dialog",
+		{
+			questions: [{ id: "q", question: "Choose a value", options: [{ label: "One" }] }],
+		},
+		undefined,
+		undefined,
+		context,
+	);
+	expect(presented).toBe(1);
+	expect(result.details?.selectedOptions).toEqual(["One"]);
 });

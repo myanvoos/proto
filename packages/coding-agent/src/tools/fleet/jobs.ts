@@ -183,9 +183,13 @@ export function buildJobResult(
 
 	const lines: string[] = [];
 
-	if (cancelOutcomes.length > 0) {
-		lines.push(`## Cancelled (${cancelOutcomes.length})\n`);
-		for (const o of cancelOutcomes) lines.push(`- ${o.message}`);
+	for (const [heading, outcomes] of [
+		["Cancelled", cancelOutcomes.filter(outcome => outcome.status === "cancelled")],
+		["Not cancelled", cancelOutcomes.filter(outcome => outcome.status !== "cancelled")],
+	] as const) {
+		if (outcomes.length === 0) continue;
+		lines.push(`## ${heading} (${outcomes.length})\n`);
+		for (const outcome of outcomes) lines.push(`- ${outcome.message}`);
 		lines.push("");
 	}
 

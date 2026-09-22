@@ -14,6 +14,27 @@ bun bench/compare.ts <suite> baseline after   # print the delta table
 Artifacts land in `bench/results/<suite>.<label>.json` and are committed alongside the change
 they justify, so a perf claim can always be re-checked against the numbers it was based on.
 
+## Harness lifecycle stress
+
+These offline probes assert behavior and emit resource measurements; they are not provider benchmarks:
+
+```sh
+bun bench/tui-render.bench.ts --stress
+bun bench/runtime-lifecycle.bench.ts
+bun bench/kernel-lifecycle.bench.ts
+bun bench/kernel-lifecycle.bench.ts --output-only
+bun bench/monitor-lifecycle.bench.ts
+```
+
+The kernel probe requires Python, built native bindings, and Linux `/proc` for process/FD checks.
+Runtime and monitor probes alternate small/large/small workloads; terminal stress varies geometry
+and bounds retained scrollback. Kernel stress checks persistent state, concurrency, timeout metadata,
+complete raw artifacts, and process disposal. Monitor stress checks real subprocess output caps and cleanup.
+Post-GC heap and RSS are separate signals: allocator high-water retention is not proof of a leak,
+and finite stable measurements are not proof that all leaks are absent.
+
+See [HARDENING.md](HARDENING.md) for the September hardening sweep, coverage, and measured limitations.
+
 ## Writing a suite
 
 ```ts

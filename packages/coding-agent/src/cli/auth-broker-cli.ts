@@ -52,17 +52,6 @@ export interface AuthBrokerCommandArgs {
 	};
 }
 
-const ACTIONS: readonly AuthBrokerAction[] = [
-	"serve",
-	"token",
-	"login",
-	"logout",
-	"import",
-	"migrate",
-	"status",
-	"list",
-];
-
 const CALLBACK_PORTS: Record<string, number> = Object.fromEntries(
 	getProviderRegistry().flatMap(provider =>
 		provider.callbackPort != null ? [[provider.id, provider.callbackPort] as [string, number]] : [],
@@ -886,7 +875,5 @@ export async function runAuthBrokerCommand(cmd: AuthBrokerCommandArgs): Promise<
 		}
 	}
 }
-
-export { ACTIONS as AUTH_BROKER_ACTIONS };
 
 void $;

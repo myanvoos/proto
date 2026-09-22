@@ -133,6 +133,7 @@ export class EventController {
 	#dispatchTail: Promise<void> = Promise.resolve();
 
 	#dispatchInFlight = false;
+	#disposed = false;
 	#transcriptAnchor = 0;
 	static readonly #MESSAGE_UPDATE_COALESCE_MS = 33;
 
@@ -200,21 +201,10 @@ export class EventController {
 	}
 
 	dispose(): void {
-		if (this.#messageUpdateTimer) {
-			clearTimeout(this.#messageUpdateTimer);
-			this.#messageUpdateTimer = undefined;
-		}
-		this.#pendingMessageUpdate = undefined;
-		this.#streamingReveal.stop();
-		this.#toolArgsReveal.stop();
-		this.#cancelIdleCompaction();
-		this.#cancelIdleRecap();
+		if (this.#disposed) return;
+		this.#disposed = true;
+		this.resetTranscriptAnchors();
 		this.#setTerminalProgress(false);
-		for (const timer of this.#ircExpiryTimers.values()) {
-			clearTimeout(timer);
-		}
-		this.#ircExpiryTimers.clear();
-		this.#liveIrcCards.clear();
 	}
 
 	#resetStreamingAssistantState(): void {
@@ -496,15 +486,15 @@ export class EventController {
 	}
 
 	async dispatchEvent(event: AgentSessionEvent, transcriptAnchor = this.#transcriptAnchor): Promise<void> {
-		if (transcriptAnchor !== this.#transcriptAnchor) return;
+		if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		if (event.type === "message_update") {
 			this.#enqueueMessageUpdate(event, transcriptAnchor);
 			return;
 		}
 		await this.#runSerialized(async () => {
-			if (transcriptAnchor !== this.#transcriptAnchor) return;
+			if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 			await this.#flushPendingMessageUpdate(transcriptAnchor);
-			if (transcriptAnchor !== this.#transcriptAnchor) return;
+			if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 			await this.handleEvent(event, transcriptAnchor);
 		});
 	}
@@ -545,7 +535,7 @@ export class EventController {
 		event: Extract<AgentSessionEvent, { type: "message_update" }>,
 		transcriptAnchor: number,
 	): void {
-		if (transcriptAnchor !== this.#transcriptAnchor) return;
+		if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		this.#pendingMessageUpdate = event;
 		if (this.#messageUpdateTimer) return;
 		const timer = setTimeout(() => {
@@ -553,7 +543,7 @@ export class EventController {
 			this.#messageUpdateTimer = undefined;
 
 			void this.#runSerialized(async () => {
-				if (transcriptAnchor !== this.#transcriptAnchor) return;
+				if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 				await this.#flushPendingMessageUpdate(transcriptAnchor);
 			}).catch(err => {
 				logger.warn("Message update flush rejected", {
@@ -565,7 +555,7 @@ export class EventController {
 	}
 
 	async #flushPendingMessageUpdate(transcriptAnchor: number): Promise<void> {
-		if (transcriptAnchor !== this.#transcriptAnchor) return;
+		if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -609,6 +599,8 @@ export class EventController {
 		this.#pinnedErrorComponent = undefined;
 		this.#pinnedErrorMessage = undefined;
 		this.#restorePinnedErrorInline = true;
+		this.#retrySupersededAssistantComponents.clear();
+		this.#retrySupersededAssistantQueue = [];
 		this.#retryPending = this.ctx.viewSession.isRetrying;
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
@@ -626,10 +618,10 @@ export class EventController {
 	}
 
 	async handleEvent(event: AgentSessionEvent, transcriptAnchor = this.#transcriptAnchor): Promise<void> {
-		if (transcriptAnchor !== this.#transcriptAnchor) return;
+		if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		if (!this.ctx.isInitialized) {
 			await this.ctx.init();
-			if (transcriptAnchor !== this.#transcriptAnchor) return;
+			if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		}
 
 		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;

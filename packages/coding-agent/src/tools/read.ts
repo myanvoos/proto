@@ -14,6 +14,7 @@ import {
 	sanitizeText,
 	truncateHeadBytes,
 } from "@oh-my-pi/pi-utils";
+import { ARCHIVE_EXTENSION_ALTERNATION } from "@oh-my-pi/pi-utils/ar";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
 import type { ResolvedArtifactFile } from "../internal-urls/artifact-protocol";
 import type { InternalUrl } from "../internal-urls/types";
@@ -133,8 +134,10 @@ function isPotentialMarkitExtension(extension: string): boolean {
 	);
 }
 
+const ARCHIVE_PATH_HINT = new RegExp(`\\.(?:${ARCHIVE_EXTENSION_ALTERNATION})(?=[:]|$)`, "i");
+
 function hasArchivePathHint(value: string): boolean {
-	return /\.(?:tar\.gz|tgz|zip|tar|gz)(?=[:]|$)/i.test(value);
+	return ARCHIVE_PATH_HINT.test(value);
 }
 
 function hasSqlitePathHint(value: string): boolean {

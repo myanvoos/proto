@@ -154,6 +154,7 @@ import type {
 	InteractiveModeContext,
 	InteractiveModeInitOptions,
 	InteractiveSelectorDialogOptions,
+	RenderInitialMessagesOptions,
 	RenderSessionContextOptions,
 	SideCommandMode,
 	SubmittedUserInput,
@@ -2696,10 +2697,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#uiHelpers.renderSessionContextIncrementally(sessionContext, options, renderChunk);
 	}
 
-	async renderInitialMessages(options?: {
-		preserveExistingChat?: boolean;
-		clearTerminalHistory?: boolean;
-	}): Promise<void> {
+	async renderInitialMessages(options?: RenderInitialMessagesOptions): Promise<void> {
 		await this.#uiHelpers.renderInitialMessages(options);
 	}
 

@@ -7,10 +7,9 @@ import manifestJson from "../tools/browser/relay/extension-assets/manifest.json.
 import optionsHtml from "../tools/browser/relay/extension-assets/options.html.txt" with { type: "text" };
 import optionsJs from "../tools/browser/relay/extension-assets/options.js.txt" with { type: "text" };
 import thirdPartyNotices from "../tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt" with { type: "text" };
-import { DEFAULT_RELAY_URL } from "../tools/browser/relay/kind";
 import { type RelayServer, startRelayServer } from "../tools/browser/relay/server";
+import { type BROWSER_RELAY_ACTIONS, DEFAULT_RELAY_PORT } from "./command-help";
 
-export const BROWSER_RELAY_ACTIONS = ["serve", "install"] as const;
 export type BrowserRelayAction = (typeof BROWSER_RELAY_ACTIONS)[number];
 
 interface BrowserRelayCommandArgs {
@@ -33,8 +32,6 @@ const EXTENSION_FILES: Record<string, string> = {
 	"THIRD-PARTY-NOTICES.txt": thirdPartyNotices,
 };
 
-export const DEFAULT_RELAY_PORT = Number(new URL(DEFAULT_RELAY_URL).port);
-
 export async function runBrowserRelayCommand(args: BrowserRelayCommandArgs): Promise<void> {
 	if (args.action === "install") {
 		await runInstall(args.dir);
@@ -48,7 +45,7 @@ async function runInstall(dirOverride: string | undefined): Promise<void> {
 	for (const name in EXTENSION_FILES) {
 		await Bun.write(path.join(dir, name), EXTENSION_FILES[name]!);
 	}
-	console.log(`Installed the PROTO Browser Relay extension to ${dir}`);
+	console.log(`Installed the Proto Browser Relay extension to ${dir}`);
 	console.log("");
 	console.log("Finish setup in Chrome:");
 	console.log("  1. Open chrome://extensions and enable Developer mode.");
@@ -75,7 +72,7 @@ async function runServe(args: BrowserRelayCommandArgs): Promise<void> {
 				console.log(`proto browser relay already running on http://127.0.0.1:${args.port}; nothing to do.`);
 				return;
 			}
-			console.error(`Port ${args.port} is in use by something that is not an proto browser relay.`);
+			console.error(`Port ${args.port} is in use by something that is not a Proto browser relay.`);
 			process.exit(1);
 		}
 		throw err;
@@ -90,7 +87,7 @@ async function runServe(args: BrowserRelayCommandArgs): Promise<void> {
 			`  enable with         proto config set browser.relay true && proto config set browser.relayUrl http://127.0.0.1:${args.port}`,
 		);
 	}
-	console.log("Waiting for the PROTO Browser Relay extension to connect (proto browser-relay install)...");
+	console.log("Waiting for the Proto Browser Relay extension to connect (proto browser-relay install)...");
 
 	let announced = false;
 	const readiness = setInterval(() => {

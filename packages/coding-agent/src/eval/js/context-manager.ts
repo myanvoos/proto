@@ -55,6 +55,7 @@ interface PendingRun {
 	aborted: boolean;
 
 	heldResult?: Extract<WorkerOutbound, { type: "result" }>;
+	outputError?: Error;
 	settled: boolean;
 }
 
@@ -144,6 +145,9 @@ export async function executeInVmContext(options: {
 	timeoutMs?: number;
 	runState: VmRunState;
 }): Promise<{ value: unknown }> {
+	if (options.runState.signal?.aborted) {
+		throw reasonToError(options.runState.signal.reason, "Execution aborted");
+	}
 	const sessionKey = resolveOwnerScopedSessionKey({
 		baseKey: options.sessionKey,
 		ownerId: options.ownerId,
@@ -257,6 +261,11 @@ async function runOnce(
 		runState: VmRunState;
 	},
 ): Promise<{ value: unknown }> {
+	// Acquisition can finish after cancellation. Do not dispatch the cell or
+	// kill a shared worker that the cancelled request never started using.
+	if (options.runState.signal?.aborted) {
+		throw reasonToError(options.runState.signal.reason, "Execution aborted");
+	}
 	const runId = `r-${Snowflake.next()}`;
 	const { promise, resolve, reject } = Promise.withResolvers<{ value: unknown }>();
 	const pending: PendingRun = {
@@ -288,11 +297,7 @@ async function runOnce(
 		void killSessionFor(session, abortError, { force: true });
 	};
 
-	if (options.runState.signal?.aborted) {
-		queueMicrotask(onAbort);
-	} else {
-		options.runState.signal?.addEventListener("abort", onAbort, { once: true });
-	}
+	options.runState.signal?.addEventListener("abort", onAbort, { once: true });
 
 	try {
 		session.worker.send({
@@ -307,7 +312,7 @@ async function runOnce(
 	} finally {
 		options.runState.signal?.removeEventListener("abort", onAbort);
 		session.pending.delete(runId);
-		if (!pending.aborted) {
+		if (!pending.aborted && !pending.outputError && session.state === "alive") {
 			session.completedRuns.delete(runId);
 			session.completedRuns.set(runId, options.runState);
 			if (session.completedRuns.size > MAX_COMPLETED_RUN_SINKS) {
@@ -439,14 +444,24 @@ async function initWorker(session: JsSession, snapshot: SessionSnapshot, timeout
 
 function handleSessionMessage(session: JsSession, msg: WorkerOutbound): void {
 	switch (msg.type) {
-		case "text": {
-			const runState = session.pending.get(msg.runId)?.runState ?? session.completedRuns.get(msg.runId);
-			runState?.onText?.(msg.chunk);
-			return;
-		}
+		case "text":
 		case "display": {
-			const runState = session.pending.get(msg.runId)?.runState ?? session.completedRuns.get(msg.runId);
-			runState?.onDisplay?.(msg.output);
+			const pending = session.pending.get(msg.runId);
+			if (pending?.outputError) return;
+			const runState = pending?.runState ?? session.completedRuns.get(msg.runId);
+			try {
+				if (msg.type === "text") runState?.onText?.(msg.chunk);
+				else runState?.onDisplay?.(msg.output);
+			} catch (error) {
+				// Finish draining this cell before rejecting it; output failures must
+				// not escape the IPC listener or destroy persistent user state.
+				if (pending) {
+					pending.outputError = error instanceof Error ? error : new Error(String(error));
+				} else {
+					session.completedRuns.delete(msg.runId);
+					logger.warn("JS background output consumer failed", { error: String(error) });
+				}
+			}
 			return;
 		}
 		case "tool-call":
@@ -526,6 +541,10 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 function finishPending(pending: PendingRun, msg: Extract<WorkerOutbound, { type: "result" }>): void {
 	pending.settled = true;
 	pending.heldResult = undefined;
+	if (pending.outputError) {
+		pending.reject(pending.outputError);
+		return;
+	}
 	if (msg.ok) {
 		pending.resolve({ value: undefined });
 		return;

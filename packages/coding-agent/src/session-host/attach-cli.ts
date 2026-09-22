@@ -88,6 +88,7 @@ export class AttachClient {
 	#pending = new Map<string, (result: RequestResult) => void>();
 	#counter = 0;
 	#pump: Promise<void>;
+	#closedError: string | undefined;
 
 	constructor(connection: SessionRpcConnection) {
 		this.#connection = connection;
@@ -111,8 +112,8 @@ export class AttachClient {
 				renderEvent(frame);
 			}
 		};
-		return pump().catch(() => {
-			// connection closed — pending requests settle via request timeouts
+		return pump().catch(error => {
+			this.#finishPending(error instanceof Error ? error.message : String(error));
 		});
 	}
 
@@ -123,6 +124,7 @@ export class AttachClient {
 	}
 
 	async request(command: Record<string, unknown>, timeoutMs = CONTROL_TIMEOUT_MS): Promise<RequestResult> {
+		if (this.#closedError) return { success: false, error: this.#closedError };
 		const id = this.send(command);
 		const { promise, resolve } = Promise.withResolvers<RequestResult>();
 		this.#pending.set(id, resolve);
@@ -137,7 +139,14 @@ export class AttachClient {
 		}
 	}
 
+	#finishPending(error: string): void {
+		this.#closedError ??= error;
+		for (const resolve of this.#pending.values()) resolve({ success: false, error: this.#closedError });
+		this.#pending.clear();
+	}
+
 	close(): void {
+		this.#finishPending("session RPC connection closed");
 		this.#connection.close();
 		void this.#pump;
 	}

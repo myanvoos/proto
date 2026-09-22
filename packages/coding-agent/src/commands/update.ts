@@ -1,4 +1,4 @@
-import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command } from "@oh-my-pi/pi-utils/cli";
 import { updateHelp as commandHelp } from "../cli/command-help";
 import * as pluginCli from "../cli/plugin-cli";
 import * as updateCli from "../cli/update-cli";
@@ -6,17 +6,9 @@ import { initTheme } from "../modes/theme/theme";
 
 export default class Update extends Command {
 	static description = commandHelp.description;
-	static flags = {
-		force: Flags.boolean({ char: "f", description: "Force update", default: false }),
-		check: Flags.boolean({ char: "c", description: "Check for updates without installing", default: false }),
-		plugins: Flags.boolean({ char: "l", description: "Update installed plugins", default: false }),
-	};
+	static flags = commandHelp.flags;
 
-	static examples = [
-		"proto update",
-		"proto update --check",
-		"# If GitHub rate-limits release metadata, set GITHUB_TOKEN or GH_TOKEN\n  GITHUB_TOKEN=... proto update",
-	];
+	static examples = commandHelp.examples;
 
 	async run(): Promise<void> {
 		const { flags } = await this.parse(Update);

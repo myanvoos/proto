@@ -3,7 +3,7 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { theme } from "./theme/theme";
 
 export function sanitizeStatusText(text: string): string {
-	return sanitizeText(text)
+	return sanitizeText(text.replace(/[\r\n\t]+/g, " "))
 		.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
 		.replace(/ +/g, " ")
 		.trim();

@@ -1,0 +1,182 @@
+{
+  "baselineCommit": "dc49b3fbeb",
+  "branch": "polish/harness-hardening-2026-09-22",
+  "bunVersion": "1.4.2",
+  "platform": "linux-arm64",
+  "repaintsPerCase": 25,
+  "notes": [
+    "Final-state fresh CLI subprocess measurements, not before/after speedups.",
+    "RSS includes full offline transcript rendering and allocator high-water memory.",
+    "Plain output verified all 500 markers in order at widths32,80,240 after fixing stdout drain."
+  ],
+  "cases": [
+    {
+      "entries": 10,
+      "width": 1,
+      "height": 1,
+      "peakRssKiB": 227520,
+      "wallSeconds": 0.82,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-10.jsonl\n         3.9 KiB, 10 entries, 10 messages, 558 transcript rows @ 1x1\nopen     2 ms\nreplay   3 ms  (transcript build + component construction)\npaint    132 ms  (full frame compose + emit: 4.0 KiB, 29 writes)\nrepaint  1 ms avg over 25 (min 0 ms, max 5 ms), 4.0 KiB/frame"
+    },
+    {
+      "entries": 10,
+      "width": 2,
+      "height": 2,
+      "peakRssKiB": 226524,
+      "wallSeconds": 0.6,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-10.jsonl\n         3.9 KiB, 10 entries, 10 messages, 558 transcript rows @ 2x2\nopen     1 ms\nreplay   3 ms  (transcript build + component construction)\npaint    131 ms  (full frame compose + emit: 4.5 KiB, 29 writes)\nrepaint  1 ms avg over 25 (min 0 ms, max 6 ms), 4.5 KiB/frame"
+    },
+    {
+      "entries": 10,
+      "width": 12,
+      "height": 3,
+      "peakRssKiB": 221540,
+      "wallSeconds": 0.56,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-10.jsonl\n         3.9 KiB, 10 entries, 10 messages, 129 transcript rows @ 12x3\nopen     1 ms\nreplay   2 ms  (transcript build + component construction)\npaint    129 ms  (full frame compose + emit: 4.3 KiB, 29 writes)\nrepaint  0 ms avg over 25 (min 0 ms, max 1 ms), 4.3 KiB/frame"
+    },
+    {
+      "entries": 10,
+      "width": 32,
+      "height": 8,
+      "peakRssKiB": 219936,
+      "wallSeconds": 0.59,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-10.jsonl\n         3.9 KiB, 10 entries, 10 messages, 63 transcript rows @ 32x8\nopen     2 ms\nreplay   3 ms  (transcript build + component construction)\npaint    130 ms  (full frame compose + emit: 4.3 KiB, 29 writes)\nrepaint  0 ms avg over 25 (min 0 ms, max 1 ms), 4.3 KiB/frame"
+    },
+    {
+      "entries": 10,
+      "width": 80,
+      "height": 24,
+      "peakRssKiB": 223352,
+      "wallSeconds": 0.54,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-10.jsonl\n         3.9 KiB, 10 entries, 10 messages, 53 transcript rows @ 80x24\nopen     2 ms\nreplay   2 ms  (transcript build + component construction)\npaint    127 ms  (full frame compose + emit: 6.3 KiB, 28 writes)\nrepaint  0 ms avg over 25 (min 0 ms, max 1 ms), 6.3 KiB/frame"
+    },
+    {
+      "entries": 10,
+      "width": 240,
+      "height": 100,
+      "peakRssKiB": 224704,
+      "wallSeconds": 0.51,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-10.jsonl\n         3.9 KiB, 10 entries, 10 messages, 53 transcript rows @ 240x100\nopen     2 ms\nreplay   3 ms  (transcript build + component construction)\npaint    127 ms  (full frame compose + emit: 14.1 KiB, 28 writes)\nrepaint  0 ms avg over 25 (min 0 ms, max 1 ms), 14.1 KiB/frame"
+    },
+    {
+      "entries": 10,
+      "width": 1000,
+      "height": 200,
+      "peakRssKiB": 228872,
+      "wallSeconds": 0.55,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-10.jsonl\n         3.9 KiB, 10 entries, 10 messages, 53 transcript rows @ 1000x200\nopen     2 ms\nreplay   3 ms  (transcript build + component construction)\npaint    129 ms  (full frame compose + emit: 51.6 KiB, 28 writes)\nrepaint  0 ms avg over 25 (min 0 ms, max 1 ms), 51.6 KiB/frame"
+    },
+    {
+      "entries": 500,
+      "width": 1,
+      "height": 1,
+      "peakRssKiB": 423004,
+      "wallSeconds": 0.9,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-500.jsonl\n         191.7 KiB, 500 entries, 500 messages, 27997 transcript rows @ 1x1\nopen     4 ms\nreplay   14 ms  (transcript build + component construction)\npaint    174 ms  (full frame compose + emit: 194.4 KiB, 29 writes)\nrepaint  11 ms avg over 25 (min 9 ms, max 16 ms), 194.4 KiB/frame"
+    },
+    {
+      "entries": 500,
+      "width": 2,
+      "height": 2,
+      "peakRssKiB": 424432,
+      "wallSeconds": 0.91,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-500.jsonl\n         191.7 KiB, 500 entries, 500 messages, 27997 transcript rows @ 2x2\nopen     4 ms\nreplay   10 ms  (transcript build + component construction)\npaint    166 ms  (full frame compose + emit: 221.3 KiB, 29 writes)\nrepaint  11 ms avg over 25 (min 8 ms, max 16 ms), 221.3 KiB/frame"
+    },
+    {
+      "entries": 500,
+      "width": 12,
+      "height": 3,
+      "peakRssKiB": 296516,
+      "wallSeconds": 0.66,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-500.jsonl\n         191.7 KiB, 500 entries, 500 messages, 6499 transcript rows @ 12x3\nopen     4 ms\nreplay   8 ms  (transcript build + component construction)\npaint    156 ms  (full frame compose + emit: 198.7 KiB, 29 writes)\nrepaint  2 ms avg over 25 (min 2 ms, max 6 ms), 198.7 KiB/frame"
+    },
+    {
+      "entries": 500,
+      "width": 32,
+      "height": 8,
+      "peakRssKiB": 278256,
+      "wallSeconds": 0.64,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-500.jsonl\n         191.7 KiB, 500 entries, 500 messages, 3167 transcript rows @ 32x8\nopen     4 ms\nreplay   10 ms  (transcript build + component construction)\npaint    145 ms  (full frame compose + emit: 158.9 KiB, 29 writes)\nrepaint  2 ms avg over 25 (min 1 ms, max 7 ms), 158.9 KiB/frame"
+    },
+    {
+      "entries": 500,
+      "width": 80,
+      "height": 24,
+      "peakRssKiB": 278832,
+      "wallSeconds": 0.64,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-500.jsonl\n         191.7 KiB, 500 entries, 500 messages, 2667 transcript rows @ 80x24\nopen     4 ms\nreplay   9 ms  (transcript build + component construction)\npaint    150 ms  (full frame compose + emit: 234.3 KiB, 28 writes)\nrepaint  2 ms avg over 25 (min 1 ms, max 4 ms), 234.3 KiB/frame"
+    },
+    {
+      "entries": 500,
+      "width": 240,
+      "height": 100,
+      "peakRssKiB": 296596,
+      "wallSeconds": 0.7,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-500.jsonl\n         191.7 KiB, 500 entries, 500 messages, 2667 transcript rows @ 240x100\nopen     4 ms\nreplay   10 ms  (transcript build + component construction)\npaint    149 ms  (full frame compose + emit: 574.1 KiB, 28 writes)\nrepaint  3 ms avg over 25 (min 2 ms, max 9 ms), 574.1 KiB/frame"
+    },
+    {
+      "entries": 500,
+      "width": 1000,
+      "height": 200,
+      "peakRssKiB": 328204,
+      "wallSeconds": 0.8,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-500.jsonl\n         191.7 KiB, 500 entries, 500 messages, 2667 transcript rows @ 1000x200\nopen     4 ms\nreplay   11 ms  (transcript build + component construction)\npaint    160 ms  (full frame compose + emit: 2.1 MiB, 28 writes)\nrepaint  7 ms avg over 25 (min 6 ms, max 15 ms), 2.1 MiB/frame"
+    },
+    {
+      "entries": 5000,
+      "width": 1,
+      "height": 1,
+      "peakRssKiB": 1424372,
+      "wallSeconds": 4.02,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-5000.jsonl\n         1.9 MiB, 5000 entries, 5000 messages, 279997 transcript rows @ 1x1\nopen     16 ms\nreplay   24 ms  (transcript build + component construction)\npaint    428 ms  (full frame compose + emit: 1.9 MiB, 29 writes)\nrepaint  117 ms avg over 25 (min 89 ms, max 179 ms), 1.9 MiB/frame"
+    },
+    {
+      "entries": 5000,
+      "width": 2,
+      "height": 2,
+      "peakRssKiB": 1095976,
+      "wallSeconds": 3.72,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-5000.jsonl\n         1.9 MiB, 5000 entries, 5000 messages, 279997 transcript rows @ 2x2\nopen     14 ms\nreplay   21 ms  (transcript build + component construction)\npaint    385 ms  (full frame compose + emit: 2.2 MiB, 29 writes)\nrepaint  110 ms avg over 25 (min 93 ms, max 137 ms), 2.2 MiB/frame"
+    },
+    {
+      "entries": 5000,
+      "width": 12,
+      "height": 3,
+      "peakRssKiB": 510472,
+      "wallSeconds": 1.35,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-5000.jsonl\n         1.9 MiB, 5000 entries, 5000 messages, 64999 transcript rows @ 12x3\nopen     16 ms\nreplay   22 ms  (transcript build + component construction)\npaint    261 ms  (full frame compose + emit: 1.9 MiB, 29 writes)\nrepaint  22 ms avg over 25 (min 17 ms, max 45 ms), 1.9 MiB/frame"
+    },
+    {
+      "entries": 5000,
+      "width": 32,
+      "height": 8,
+      "peakRssKiB": 433896,
+      "wallSeconds": 1.23,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-5000.jsonl\n         1.9 MiB, 5000 entries, 5000 messages, 31667 transcript rows @ 32x8\nopen     15 ms\nreplay   20 ms  (transcript build + component construction)\npaint    255 ms  (full frame compose + emit: 1.5 MiB, 29 writes)\nrepaint  17 ms avg over 25 (min 15 ms, max 24 ms), 1.5 MiB/frame"
+    },
+    {
+      "entries": 5000,
+      "width": 80,
+      "height": 24,
+      "peakRssKiB": 430100,
+      "wallSeconds": 1.18,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-5000.jsonl\n         1.9 MiB, 5000 entries, 5000 messages, 26667 transcript rows @ 80x24\nopen     15 ms\nreplay   21 ms  (transcript build + component construction)\npaint    245 ms  (full frame compose + emit: 2.3 MiB, 28 writes)\nrepaint  17 ms avg over 25 (min 13 ms, max 24 ms), 2.3 MiB/frame"
+    },
+    {
+      "entries": 5000,
+      "width": 240,
+      "height": 100,
+      "peakRssKiB": 552428,
+      "wallSeconds": 1.38,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-5000.jsonl\n         1.9 MiB, 5000 entries, 5000 messages, 26667 transcript rows @ 240x100\nopen     14 ms\nreplay   20 ms  (transcript build + component construction)\npaint    257 ms  (full frame compose + emit: 5.6 MiB, 28 writes)\nrepaint  25 ms avg over 25 (min 21 ms, max 35 ms), 5.6 MiB/frame"
+    },
+    {
+      "entries": 5000,
+      "width": 1000,
+      "height": 200,
+      "peakRssKiB": 881764,
+      "wallSeconds": 2.77,
+      "report": "session  /tmp/proto-hardening-1m1sa2fe/transcript-5000.jsonl\n         1.9 MiB, 5000 entries, 5000 messages, 26667 transcript rows @ 1000x200\nopen     15 ms\nreplay   24 ms  (transcript build + component construction)\npaint    382 ms  (full frame compose + emit: 21.3 MiB, 28 writes)\nrepaint  72 ms avg over 25 (min 64 ms, max 84 ms), 21.3 MiB/frame"
+    }
+  ]
+}

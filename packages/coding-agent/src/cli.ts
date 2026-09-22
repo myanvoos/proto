@@ -224,7 +224,7 @@ export async function runCli(argv: string[]): Promise<void> {
 			import("./tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt", { with: { type: "text" } }),
 		]);
 		process.stdout.write(
-			`PROTO License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`,
+			`Proto License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`,
 		);
 		return;
 	}

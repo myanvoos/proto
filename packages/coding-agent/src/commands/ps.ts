@@ -1,45 +1,15 @@
-import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command } from "@oh-my-pi/pi-utils/cli";
 import { psHelp as commandHelp } from "../cli/command-help";
 import { type PsAction, type PsCommandArgs, runPsCommand } from "../cli/ps-cli";
-
-const ACTIONS: PsAction[] = ["list", "info", "logs", "stop", "kill", "restart"];
 
 export default class Ps extends Command {
 	static description = commandHelp.description;
 
-	static args = {
-		action: Args.string({
-			description: "list (default), info, logs, stop, kill, or restart",
-			required: false,
-			options: ACTIONS,
-		}),
-		name: Args.string({
-			description: "Process name (required for every action except list)",
-			required: false,
-		}),
-	};
+	static args = commandHelp.args;
 
-	static flags = {
-		all: Flags.boolean({ char: "a", description: "List every project and global service scope (list)" }),
-		json: Flags.boolean({ char: "j", description: "Emit machine-readable JSON" }),
-		plain: Flags.boolean({ description: "Static listing instead of the interactive monitor (list)" }),
-		dir: Flags.string({ description: "Target another project directory instead of the current one" }),
-		global: Flags.string({ description: "Target a machine-global service scope (e.g. browser-relay)" }),
-		follow: Flags.boolean({ char: "f", description: "Keep streaming new output (logs)" }),
-		head: Flags.boolean({ description: "Read from the beginning instead of the tail (logs)" }),
-		lines: Flags.integer({ char: "n", description: "Number of log lines, max 1000 (logs)" }),
-		grep: Flags.string({ description: "Regex filter applied to log lines (logs)" }),
-		timeout: Flags.integer({ description: "Grace period in seconds before hard kill (stop)" }),
-	};
+	static flags = commandHelp.flags;
 
-	static examples = [
-		"proto ps",
-		"proto ps --all",
-		"proto ps logs web --follow",
-		"proto ps stop web",
-		"proto ps kill web",
-		"proto ps info relay --global browser-relay",
-	];
+	static examples = commandHelp.examples;
 
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Ps);

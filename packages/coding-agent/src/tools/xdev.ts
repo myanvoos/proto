@@ -4,6 +4,7 @@ import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { Container } from "@oh-my-pi/pi-tui/tui";
 import { parseStreamingJson, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { extractUriScheme } from "../internal-urls/parse";
 import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
@@ -387,7 +388,7 @@ function resolveRequiredXdevTool(state: XdevState, name: string): Tool {
 
 /** Scope a `read` device args object to the dispatching shell's working directory. */
 function scopeXdevReadArgs(args: Record<string, unknown>, cwd: string): void {
-	if (typeof args.path !== "string") return;
+	if (typeof args.path !== "string" || extractUriScheme(args.path) !== undefined) return;
 	const split = splitPathAndSel(args.path);
 	const resolved = isReadableUrlPath(split.path) ? split.path : resolveToCwd(split.path, cwd);
 	args.path = split.sel ? `${resolved}:${split.sel}` : resolved;

@@ -81,6 +81,13 @@ export interface InteractiveModeInitOptions {
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
 
+export interface RenderInitialMessagesOptions {
+	preserveExistingChat?: boolean;
+	clearTerminalHistory?: boolean;
+	/** Offline rendering bypasses interactive transcript paging. */
+	fullHistory?: boolean;
+}
+
 export interface RenderSessionContextOptions {
 	updateFooter?: boolean;
 	reuseSettledComponents?: boolean;
@@ -279,7 +286,7 @@ export interface InteractiveModeContext {
 		options: RenderSessionContextOptions,
 		renderChunk?: () => void,
 	): Promise<void>;
-	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): Promise<void>;
+	renderInitialMessages(options?: RenderInitialMessagesOptions): Promise<void>;
 	navigateTranscriptHistory(direction: "older" | "newer" | "latest"): Promise<void>;
 	ensureLatestTranscriptWindow(): Promise<void>;
 

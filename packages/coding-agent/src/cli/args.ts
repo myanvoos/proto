@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { $env, BINARY_NAME, logger } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import type { ServiceTierOpenAISettingValue } from "../config/service-tier";
 import { CLI_THINKING_LEVELS, parseCliThinkingLevel, type ThinkingLevel } from "../thinking";
 import { normalizeToolNames } from "../tools/builtin-names";
@@ -13,7 +14,6 @@ import {
 	STRING_VALUE_FLAGS,
 } from "./flag-tables";
 import { getExtraHelpText } from "./help-extra";
-import { CliUsageError } from "./usage-error";
 
 export { getExtraHelpText };
 

@@ -1,7 +1,7 @@
+import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { isServiceTierOpenAISettingValue, SERVICE_TIER_OPENAI_VALUES } from "../config/service-tier";
 import type { ThinkingLevel } from "../thinking";
 import type { Args } from "./args";
-import { CliUsageError } from "./usage-error";
 
 export interface ParseDeps {
 	logger: { warn: (message: string, meta?: Record<string, unknown>) => void };

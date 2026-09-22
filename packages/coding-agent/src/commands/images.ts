@@ -1,32 +1,13 @@
-import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
+import { Command } from "@oh-my-pi/pi-utils/cli";
 import { imagesHelp as commandHelp } from "../cli/command-help";
-import { IMAGES_ACTIONS, type ImagesAction, type ImagesCommandArgs, runImagesCommand } from "../cli/images-cli";
+import { type ImagesAction, type ImagesCommandArgs, runImagesCommand } from "../cli/images-cli";
 
 export default class Images extends Command {
 	static description = commandHelp.description;
 	static aliases = ["img"];
-	static args = {
-		action: Args.string({
-			description: "status (default), doctor, probe, or purge",
-			required: false,
-			options: [...IMAGES_ACTIONS],
-		}),
-	};
-	static flags = {
-		json: Flags.boolean({ description: "Output one JSON document" }),
-		apply: Flags.boolean({ description: "Apply purge deletions (default is dry-run)" }),
-		all: Flags.boolean({ description: "Purge all entries instead of expired entries only" }),
-		dir: Flags.string({ description: "Project directory (default: current directory)" }),
-		timeout: Flags.integer({ description: "External health probe timeout in seconds" }),
-	};
-	static examples = [
-		"proto images",
-		"proto images status --json",
-		"proto images doctor",
-		"proto images probe --timeout 15",
-		"proto images purge",
-		"proto images purge --all --apply",
-	];
+	static args = commandHelp.args;
+	static flags = commandHelp.flags;
+	static examples = commandHelp.examples;
 
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Images);

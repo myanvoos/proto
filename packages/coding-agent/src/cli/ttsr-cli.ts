@@ -20,11 +20,9 @@ import {
 } from "../export/ttsr-matcher";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import { createTtsrJudge } from "../session/ttsr-judge";
+import { TTSR_SOURCES } from "./command-help";
 
 type TtsrAction = "test" | "list" | "scan";
-
-export const TTSR_ACTIONS: TtsrAction[] = ["test", "list", "scan"];
-export const TTSR_SOURCES: TtsrMatchSource[] = ["text", "thinking", "tool"];
 
 export type TtsrMatchSource = "text" | "thinking" | "tool";
 

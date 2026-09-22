@@ -2,7 +2,25 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Large Python kernel outputs use substantially less memory.
+- Monitors stop with an actionable error when a stream line or one poll output stream exceeds 1 MiB, and distinguish output limits from total event counts.
+
 ### Fixed
+
+- Command help lists available arguments, flags, and examples consistently; invalid render dimensions produce usage errors instead of stack traces.
+- `proto render` includes the complete transcript instead of silently dropping messages outside the interactive history window.
+- Python and JavaScript kernels recover after output-consumer failures, and pre-cancelled JavaScript resets preserve existing state.
+- Daemon attachments preserve fragmented Unicode responses, honor idle deadlines, and release pending requests and probe sockets on disconnect.
+- Background jobs retain correct owner routing after immediate failures and cannot revive delivery queues or update disposed views after shutdown.
+- Compressed archive reads recognize all supported formats, and mounted reads preserve internal URI paths.
+- Browser form interactions work with short Bun stack traces.
+- PDF page screenshots render through shared browsers instead of failing on local file paths or returning blank pages.
+- Nested worker outputs remain recoverable through `agent://` after their live registration disappears.
+- Status-line labels cannot inject control sequences or extra rows, and CLI/browser-relay branding consistently uses Proto.
+- Fleet cancellation summaries distinguish cancelled jobs from missing or already-finished jobs.
+- Bash output no longer includes redundant timing footers, and worker-send instructions use the correct `to` field.
 
 - Long streaming conversations retain committed thinking and answer chunks while prompt growth, tool updates, overlays, and resizes stay confined to the live viewport.
 

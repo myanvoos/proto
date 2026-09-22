@@ -1,4 +1,4 @@
-Starts or steers the worker addressed by its canonical `id` passed as `to`; `label` is NEVER an address. Shape: `{"id":"<worker id>","message":"…"}` — NEVER `worker`/`workerId`/`to`/`session`.
+Starts or steers the worker addressed by its canonical `id` passed as `to`; `label` is NEVER an address. Shape: `{"to":"<worker id>","message":"…"}` — NEVER `id`/`worker`/`workerId`/`session`.
 
 `message`: complete follow-up instruction. Shape: `{"to":"<worker id>","message":"…"}`. Running worker → steer accepted into current turn. Idle/parked worker → tracked turn starts. Busy but non-streaming worker → distinct queued turn; receipt reports its turn number. Queue full → explicit rejection with retry guidance.
 

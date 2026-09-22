@@ -1,4 +1,3 @@
-import * as url from "node:url";
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../sdk";
 import type { BrowserHandle } from "./browser/registry";
@@ -15,7 +14,9 @@ await wait(async () => {
 	for (const frame of page.frames()) {
 		try {
 			const loaded = await frame.evaluate(() => {
+				//!world=main
 				const viewer = document.querySelector("pdf-viewer");
+				if (viewer?.loadState_ === "success") return true;
 				const toolbar = viewer?.shadowRoot?.querySelector("viewer-toolbar");
 				const pageLength = toolbar
 					?.shadowRoot?.querySelector("viewer-page-selector")
@@ -23,9 +24,7 @@ await wait(async () => {
 					?.textContent;
 				if (Number(pageLength) > 0 && !toolbar?.hasAttribute("loading_")) return true;
 
-				const plugin = document.querySelector('embed[type="application/x-google-chrome-pdf"]');
-				const sizer = document.querySelector("#sizer");
-				return plugin !== null && sizer !== null && sizer.clientWidth > 0 && sizer.clientHeight > 0;
+				return false;
 			});
 			if (loaded) {
 				viewerFrame = frame;
@@ -45,7 +44,8 @@ await viewerFrame.evaluate(() => {
 	);
 	return promise;
 });
-return await tab.screenshot({ fullPage: true, silent: true });
+// The PDF viewer scrolls internally; full-page capture can blank its plugin surface.
+return await tab.screenshot({ silent: true });
 `;
 
 export interface PdfImageReadTarget {
@@ -68,6 +68,21 @@ export function splitPdfImageReadPath(readPath: string): PdfImageReadTarget | nu
 	return { pdfPath, member, page };
 }
 
+/** Serve only the requested PDF: shared/Snap Chromium cannot read the caller's filesystem. */
+export function servePdfForBrowser(absolutePdfPath: string): { server: Bun.Server<undefined>; url: URL } {
+	const resourcePath = `/${Bun.randomUUIDv7()}.pdf`;
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch(request) {
+			if (new URL(request.url).pathname !== resourcePath) return new Response(null, { status: 404 });
+			if (request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 405 });
+			return new Response(Bun.file(absolutePdfPath), { headers: { "content-type": "application/pdf" } });
+		},
+	});
+	return { server, url: new URL(resourcePath, server.url) };
+}
+
 export async function renderPdfPageScreenshot(
 	session: ToolSession,
 	absolutePdfPath: string,
@@ -81,7 +96,7 @@ export async function renderPdfPageScreenshot(
 	const timeoutSignal = AbortSignal.timeout(PDF_RENDER_TIMEOUT_MS);
 	const renderSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 	const tabName = `read-pdf-${Bun.randomUUIDv7()}`;
-	const pdfUrl = url.pathToFileURL(absolutePdfPath);
+	const { server, url: pdfUrl } = servePdfForBrowser(absolutePdfPath);
 	pdfUrl.hash = `page=${page}&toolbar=0&navpanes=0&view=Fit`;
 
 	let browserLease = false;
@@ -123,7 +138,11 @@ export async function renderPdfPageScreenshot(
 		}
 		throw error;
 	} finally {
-		if (tabOpened) await releaseTab(tabName, { kill: false });
-		if (browserLease && browser) await releaseBrowser(browser, { kill: false });
+		try {
+			if (tabOpened) await releaseTab(tabName, { kill: false });
+			if (browserLease && browser) await releaseBrowser(browser, { kill: false });
+		} finally {
+			server.stop(true);
+		}
 	}
 }
