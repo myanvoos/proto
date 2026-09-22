@@ -85,8 +85,6 @@ Every patch-introduced type, variant, or value crossing a function or module bou
 
 Dispatch point often outside diff. MUST read it before concluding producing side correct. Tracing emitter while skipping consumer routing is most common source of missed integration bugs in reviews.
 </cross-boundary>
-
-
 <findings>
 - **Title**: e.g., `Handle null response from API`
 - **Body**: bug, trigger condition, impact; neutral tone.

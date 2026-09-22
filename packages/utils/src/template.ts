@@ -498,9 +498,12 @@ function renderPartial(node: PartialNode, frame: Frame, evaluation: Evaluation):
 	const hash = evaluateHash(node.expression.hash, frame, evaluation);
 	const merged =
 		hash && context && typeof context === "object" ? { ...(context as Record<string, unknown>), ...hash } : context;
-	return typeof partial === "function"
-		? partial(merged, evaluation.runtime)
-		: compile(partial, evaluation.options)(merged, evaluation.runtime);
+	if (typeof partial === "function") return partial(merged, evaluation.runtime);
+	// Render the body against the caller's evaluation so an engine instance's helpers and
+	// partials stay visible inside it; compiling here would fall back to the module registry.
+	const root = merged ?? {};
+	const partialFrame: Frame = { context: root, parents: [], root, data: { root, ...(evaluation.runtime.data ?? {}) } };
+	return renderNodes(parseTemplate(stripStandalone(partial)), partialFrame, evaluation);
 }
 
 function stringify(value: unknown, shouldEscape: boolean): string {

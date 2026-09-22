@@ -245,7 +245,7 @@ Rejected, with measurements, so nobody re-litigates them: **sccache** (cannot ca
 
 Test the contract the system exposes — not the easiest internal detail to assert.
 
-- Every new test must defend one **concrete, externally observable contract**: behavior, output shape, state transition, error mapping, or a regression-prone parsing boundary. If you cannot name the contract, do not add the test.
+- Every new test must defend one **concrete, externally observable contract**: behavior, output shape, state transition, error mapping, or a regression-prone parsing boundary.
 
 ### Good vs. bad test filter
 
