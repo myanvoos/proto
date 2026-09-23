@@ -9,6 +9,7 @@ import type {
 	UsageLimit,
 	UsageProvider,
 	UsageReport,
+	UsageUnit,
 	UsageWindow,
 } from "../usage";
 import { isRecord } from "../utils";
@@ -19,11 +20,14 @@ const USAGE_PATH = "usages";
 
 interface KimiUsagePayload {
 	usage?: unknown;
+	usages?: unknown;
 	limits?: unknown;
+	totalQuota?: unknown;
 }
 
 type KimiUsageRow = {
 	label: string;
+	unit: UsageUnit;
 	used?: number;
 	limit?: number;
 	remaining?: number;
@@ -128,6 +132,7 @@ function buildUsageRow(data: Record<string, unknown>, defaultLabel: string, nowM
 				: typeof data.title === "string" && data.title
 					? data.title
 					: defaultLabel,
+		unit: "unknown",
 		used,
 		limit,
 		remaining,
@@ -135,8 +140,26 @@ function buildUsageRow(data: Record<string, unknown>, defaultLabel: string, nowM
 	};
 }
 
+function buildAggregateUsageRow(key: string, data: Record<string, unknown>, nowMs: number): KimiUsageRow | null {
+	const usedRatio = toNumber(data.used_ratio);
+	if (usedRatio === undefined) return null;
+
+	const usedFraction = Math.min(Math.max(usedRatio, 0), 1);
+	const label = key === "limit_month_total" ? "Monthly total" : key === "limit_month_code" ? "Monthly code" : key;
+	const resetsAt = parseResetTime(data, nowMs);
+	return {
+		label,
+		unit: "percent",
+		used: usedFraction * 100,
+		limit: 100,
+		remaining: (1 - usedFraction) * 100,
+		resetsAt,
+		window: { id: key, label, resetsAt },
+	};
+}
+
 function buildUsageAmount(row: KimiUsageRow): UsageAmount {
-	const amount: UsageAmount = { unit: "unknown" };
+	const amount: UsageAmount = { unit: row.unit };
 	if (row.limit !== undefined) amount.limit = row.limit;
 	if (row.used !== undefined) amount.used = row.used;
 	if (row.remaining !== undefined) amount.remaining = row.remaining;
@@ -183,10 +206,19 @@ function parseUsagePayload(payload: unknown, nowMs: number): { rows: KimiUsageRo
 	const rows: KimiUsageRow[] = [];
 
 	if (isRecord(data.usage)) {
-		const summary = buildUsageRow(data.usage, "Total quota", nowMs);
+		const summary = buildUsageRow(data.usage, "Weekly limit", nowMs);
 		if (summary) {
 			summary.window = { id: "7d", label: "7 Day", resetsAt: summary.resetsAt };
 			rows.push(summary);
+		}
+	}
+
+	if (isRecord(data.totalQuota)) {
+		const windowData = isRecord(data.totalQuota.window) ? data.totalQuota.window : {};
+		const total = buildUsageRow(data.totalQuota, "Total quota", nowMs);
+		if (total) {
+			total.window = buildWindow(windowData, nowMs);
+			rows.push(total);
 		}
 	}
 
@@ -209,6 +241,16 @@ function parseUsagePayload(payload: unknown, nowMs: number): { rows: KimiUsageRo
 				rows.push(row);
 			}
 		});
+	}
+
+	if (isRecord(data.usages)) {
+		for (const key in data.usages) {
+			const aggregate = data.usages[key];
+			// limit_5h duplicates the 5h burst row already parsed from `limits`.
+			if (key === "limit_5h" || !isRecord(aggregate)) continue;
+			const row = buildAggregateUsageRow(key, aggregate, nowMs);
+			if (row) rows.push(row);
+		}
 	}
 
 	return { rows, raw: data };

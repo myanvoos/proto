@@ -335,7 +335,7 @@ function shouldPreferXAIOAuth(authStorage: AuthStorage): boolean {
 
 	const origin = authStorage.getCredentialOrigin("xai-oauth");
 	if (!origin || origin.kind === "env") return false;
-	if ((origin.kind === "api_key" || origin.kind === "fallback") && $env.XAI_API_KEY) return false;
+	if (origin.kind === "api_key" && $env.XAI_API_KEY) return false;
 	return true;
 }
 
@@ -373,9 +373,11 @@ function resolveXAIWebSearchAuth(params: SearchParams): XAIWebSearchAuth {
 
 export async function searchXAI(params: SearchParams): Promise<SearchResponse> {
 	const auth = resolveXAIWebSearchAuth(params);
-	const transport = params.modelRegistry
-		? resolveXAIHttpTransport(params.modelRegistry, auth.provider, XAI_WEB_SEARCH_MODEL)
-		: { baseURL: XAI_DEFAULT_BASE_URL };
+	const resolveTransport = async () =>
+		params.modelRegistry
+			? await resolveXAIHttpTransport(params.modelRegistry, auth.provider, XAI_WEB_SEARCH_MODEL, params.signal)
+			: { baseURL: XAI_DEFAULT_BASE_URL };
+	const transport = await resolveTransport();
 	const customEndpoint = transport.baseURL.replace(/\/+$/, "") !== XAI_DEFAULT_BASE_URL;
 	const credentialOrigin = params.authStorage.getCredentialOrigin(auth.provider);
 	if (
@@ -393,10 +395,14 @@ export async function searchXAI(params: SearchParams): Promise<SearchResponse> {
 		: auth.keyOrResolver;
 
 	const resultCap = clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
-	const response = await withAuth(keyOrResolver, (key: string) => callXAIResponses(key, params, transport), {
-		signal: params.signal,
-		missingKeyMessage: 'xAI credentials not found. Set XAI_API_KEY or configure an API key for provider "xai".',
-	});
+	const response = await withAuth(
+		keyOrResolver,
+		async (key: string) => callXAIResponses(key, params, await resolveTransport()),
+		{
+			signal: params.signal,
+			missingKeyMessage: 'xAI credentials not found. Set XAI_API_KEY or configure an API key for provider "xai".',
+		},
+	);
 	const parsed = parseResponse(response, resultCap);
 	if (!parsed.answer && parsed.sources.length === 0) {
 		throw new SearchProviderError("xai", "xAI web_search returned no answer or sources", 502);

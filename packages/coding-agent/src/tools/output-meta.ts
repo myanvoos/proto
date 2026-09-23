@@ -51,7 +51,7 @@ export interface LimitsMeta {
 	matchLimit?: { reached: number; suggestion: number };
 	resultLimit?: { reached: number; suggestion: number };
 	headLimit?: { reached: number; suggestion: number };
-	columnTruncated?: { maxColumn: number };
+	columnTruncated?: { maxColumn: number; unit: "bytes" | "chars" };
 }
 
 export interface OutputMeta {
@@ -104,8 +104,8 @@ export class OutputMetaBuilder {
 			const elidedBytes = result.elidedBytes ?? Math.max(0, result.totalBytes - outputBytes);
 
 			const keptLines = Math.max(0, outputLines - 1);
-			const headLines = Math.ceil(keptLines / 2);
-			const tailLines = keptLines - headLines;
+			const headLines = result.headLines ?? Math.ceil(keptLines / 2);
+			const tailLines = result.tailLines ?? keptLines - headLines;
 			this.#meta.truncation = {
 				direction: "middle",
 				truncatedBy: "middle",
@@ -114,9 +114,16 @@ export class OutputMetaBuilder {
 				outputLines,
 				outputBytes,
 				...(maxBytes === undefined ? {} : { maxBytes }),
-				headRange: headLines > 0 ? { start: 1, end: headLines } : undefined,
-				tailRange:
-					tailLines > 0 ? { start: effectiveTotalLines - tailLines + 1, end: effectiveTotalLines } : undefined,
+				// Byte windows of a source line have no whole-line range to report.
+				...(effectiveTotalLines > 1 && !result.partialByteWindows
+					? {
+							headRange: headLines > 0 ? { start: 1, end: headLines } : undefined,
+							tailRange:
+								tailLines > 0
+									? { start: effectiveTotalLines - tailLines + 1, end: effectiveTotalLines }
+									: undefined,
+						}
+					: {}),
 				elidedLines,
 				elidedBytes,
 				artifactId,
@@ -153,7 +160,8 @@ export class OutputMetaBuilder {
 
 	truncationFromSummary(summary: OutputSummary, options: TruncationSummaryOptions): this {
 		if (summary.columnMax != null && summary.columnMax > 0 && (summary.columnTruncatedLines ?? 0) > 0) {
-			this.columnTruncated(summary.columnMax);
+			// The streaming sink enforces the per-line cap in UTF-8 bytes.
+			this.columnTruncated(summary.columnMax, "bytes");
 		}
 		if (!summary.truncated) return this;
 
@@ -264,7 +272,13 @@ export class OutputMetaBuilder {
 		return this;
 	}
 
-	limits(limits: { matchLimit?: number; resultLimit?: number; headLimit?: number; columnMax?: number }): this {
+	limits(limits: {
+		matchLimit?: number;
+		resultLimit?: number;
+		headLimit?: number;
+		columnMax?: number;
+		columnUnit?: "bytes" | "chars";
+	}): this {
 		if (limits.matchLimit !== undefined) {
 			this.matchLimit(limits.matchLimit);
 		}
@@ -275,7 +289,7 @@ export class OutputMetaBuilder {
 			this.headLimit(limits.headLimit);
 		}
 		if (limits.columnMax !== undefined) {
-			this.columnTruncated(limits.columnMax);
+			this.columnTruncated(limits.columnMax, limits.columnUnit);
 		}
 		return this;
 	}
@@ -292,9 +306,10 @@ export class OutputMetaBuilder {
 		return this;
 	}
 
-	columnTruncated(maxColumn: number): this {
+	/** `unit` is the unit the producer enforced the cap in: UTF-8 bytes (streaming sink) or UTF-16 chars (read). */
+	columnTruncated(maxColumn: number, unit: "bytes" | "chars" = "chars"): this {
 		if (maxColumn <= 0) return this;
-		this.#meta.limits = { ...this.#meta.limits, columnTruncated: { maxColumn } };
+		this.#meta.limits = { ...this.#meta.limits, columnTruncated: { maxColumn, unit } };
 		return this;
 	}
 
@@ -368,6 +383,8 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta): string {
 		const tailPart = tail ? `${tail.start}-${tail.end}` : "";
 		if (headPart && tailPart) {
 			notice = `Showing ${headPart} and ${tailPart} of ${totalLines}; ${elidedLines.toLocaleString()} middle line${elidedLines === 1 ? "" : "s"} (${formatBytes(elidedBytes)}) elided`;
+		} else if (elidedBytes > 0) {
+			notice = `Showing head and tail bytes of ${totalLines.toLocaleString()} line${totalLines === 1 ? "" : "s"}; ${formatBytes(elidedBytes)} elided`;
 		} else {
 			notice = `Showing ${truncation.outputLines} of ${totalLines} lines; middle elided`;
 		}
@@ -429,7 +446,8 @@ export function formatOutputNotice(meta: OutputMeta | undefined): string {
 		parts.push(`${l.reached} results limit reached. Use limit=${l.suggestion} for more`);
 	}
 	if (meta.limits?.columnTruncated) {
-		parts.push(`Some lines truncated to ${meta.limits.columnTruncated.maxColumn} chars`);
+		const column = meta.limits.columnTruncated;
+		parts.push(`Some lines truncated to ${column.maxColumn} ${column.unit ?? "chars"}`);
 	}
 
 	const notice = parts.length ? `\n\n[${parts.join(". ")}]` : "";
@@ -577,8 +595,8 @@ async function spillLargeResultToArtifact(
 		const elidedLines = truncated.elidedLines ?? Math.max(0, truncated.totalLines - outputLines);
 		const elidedBytes = truncated.elidedBytes ?? Math.max(0, truncated.totalBytes - outputBytes);
 		const keptLines = Math.max(0, outputLines - 1);
-		const headLines = Math.ceil(keptLines / 2);
-		const tailLineCount = keptLines - headLines;
+		const headLines = truncated.headLines ?? Math.ceil(keptLines / 2);
+		const tailLineCount = truncated.tailLines ?? keptLines - headLines;
 		truncationMeta = {
 			direction: "middle",
 			truncatedBy: "middle",
@@ -587,11 +605,15 @@ async function spillLargeResultToArtifact(
 			outputLines,
 			outputBytes,
 			maxBytes: headBytes + tailBytes,
-			headRange: headLines > 0 ? { start: 1, end: headLines } : undefined,
-			tailRange:
-				tailLineCount > 0
-					? { start: truncated.totalLines - tailLineCount + 1, end: truncated.totalLines }
-					: undefined,
+			...(truncated.totalLines > 1 && !truncated.partialByteWindows
+				? {
+						headRange: headLines > 0 ? { start: 1, end: headLines } : undefined,
+						tailRange:
+							tailLineCount > 0
+								? { start: truncated.totalLines - tailLineCount + 1, end: truncated.totalLines }
+								: undefined,
+					}
+				: {}),
 			elidedLines,
 			elidedBytes,
 			artifactId,

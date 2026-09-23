@@ -42,7 +42,8 @@ import {
 	recoverHarmonyToolCall,
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
-import { INTENT_FIELD, logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { stamp } from "@oh-my-pi/pi-ai/utils/schema/stamps";
+import { INTENT_FIELD, logger, normalizeIntent, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { agentPauseGate } from "./pause";
 import { type AgentRunCoverage, type AgentRunSummary, ToolCallBlockedError } from "./run-collector";
 import {
@@ -336,11 +337,14 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 
 // Streaming providers mutate the block named by each event, while completed blocks stay stable.
 // Reuse a prior snapshot only when the source block is still the same object; otherwise fall back to cloning it.
+// Open (started, not ended) blocks are always re-cloned: providers may patch a live block without an event
+// (Cursor merges edit `path`/`stream_content` into an open block silently).
 function snapshotAssistantMessage(
 	message: AssistantMessage,
 	previousSnapshot?: AssistantMessage,
 	previousMessage?: AssistantMessage,
 	changedContentIndex?: number,
+	openContentIndices?: ReadonlySet<number>,
 ): AssistantMessage {
 	const canSharePreviousBlocks =
 		previousSnapshot !== undefined &&
@@ -353,6 +357,7 @@ function snapshotAssistantMessage(
 		if (
 			canSharePreviousBlocks &&
 			index !== changedContentIndex &&
+			!openContentIndices?.has(index) &&
 			index < previousSnapshot.content.length &&
 			index < previousMessage.content.length &&
 			block === previousMessage.content[index]
@@ -580,10 +585,19 @@ async function emitTurnEnd(
 	runHookOnAbortedMessage = false,
 ): Promise<void> {
 	stream.push({ type: "turn_end", message, toolResults });
+	// A terminal-tool-result abort (e.g. a subagent's final `yield`) is a graceful finish, not an interrupt: the turn
+	// still reaches per-turn bookkeeping such as advisor review, with no signal so downstream waits behave like a
+	// plain final turn instead of short-circuiting on the spent abort.
+	const terminalYield = signal?.reason === TERMINAL_TOOL_RESULT_ABORT_REASON;
 	const isAbortedOrError =
 		message.role === "assistant" && (message.stopReason === "aborted" || message.stopReason === "error");
-	if (signal?.aborted || (isAbortedOrError && !runHookOnAbortedMessage)) return;
-	await config.onTurnEnd?.(currentContext.messages, signal, { message, toolResults, willContinue: false, ...context });
+	if ((signal?.aborted && !terminalYield) || (isAbortedOrError && !runHookOnAbortedMessage)) return;
+	await config.onTurnEnd?.(currentContext.messages, terminalYield ? undefined : signal, {
+		message,
+		toolResults,
+		willContinue: false,
+		...context,
+	});
 }
 
 function createGateStopMessage(model: Model, reason: string | undefined): AssistantMessage {
@@ -704,6 +718,26 @@ export function normalizeMessagesForProvider(
 const INTENT_FIELD_DESCRIPTION = "concise intent";
 const INTENT_SCHEMA_UNION_KEYS = ["anyOf", "oneOf"] as const;
 
+// normalizeTools runs on every model call and injectIntentIntoSchema mints a fresh root each time, which defeats
+// the stamp-keyed schema memos downstream (stripSchemaDescriptions, strict-mode enforcement each deep-clone and
+// re-walk the catalog per request). Memoize per input schema identity; the injected object is shared across
+// requests, the same profile as the intent-off path where parameters IS the shared memoized wire schema.
+// One stamp key per (mode, describeIntent) variant; index 0 = bare, 1 = described.
+const INTENT_STAMPS = {
+	require: [Symbol("intent:require"), Symbol("intent:require:described")],
+	optional: [Symbol("intent:optional"), Symbol("intent:optional:described")],
+} as const;
+
+function memoizedInjectIntentIntoSchema(
+	schema: Record<string, unknown>,
+	mode: "require" | "optional",
+	describeIntent: boolean,
+): unknown {
+	return stamp(schema, INTENT_STAMPS[mode][describeIntent ? 1 : 0], host =>
+		injectIntentIntoSchema(host, mode, describeIntent),
+	);
+}
+
 function injectIntentIntoSchema(
 	schema: unknown,
 	mode: "require" | "optional" = "require",
@@ -768,12 +802,14 @@ export function normalizeTools(tools: AgentContext["tools"], options: NormalizeT
 		const doInjectIntent = injectIntent && intentMode !== "omit";
 
 		if (pruneDescriptions) {
-			let parameters = stripSchemaDescriptions(toolWireSchema(t)) as TSchema;
-			if (doInjectIntent) parameters = injectIntentIntoSchema(parameters, intentMode, false) as TSchema;
+			const stripped = stripSchemaDescriptions(toolWireSchema(t));
+			const parameters = (
+				doInjectIntent ? memoizedInjectIntentIntoSchema(stripped, intentMode, false) : stripped
+			) as TSchema;
 			return { ...t, parameters, description: "" };
 		}
-		let parameters = toolWireSchema(t) as TSchema;
-		if (doInjectIntent) parameters = injectIntentIntoSchema(parameters, intentMode) as TSchema;
+		const wire = toolWireSchema(t);
+		const parameters = (doInjectIntent ? memoizedInjectIntentIntoSchema(wire, intentMode, true) : wire) as TSchema;
 		const description = t.description ?? "";
 		const examplesBlock = renderToolExamples({ ...t, parameters }, doInjectIntent ? INTENT_FIELD : undefined);
 		const finalDescription = examplesBlock ? `${description}\n\n${examplesBlock}` : description;
@@ -792,8 +828,7 @@ function extractIntent(args: Record<string, unknown>): { intent?: string; stripp
 	if (typeof intent !== "string") {
 		return { strippedArgs };
 	}
-	const trimmed = intent.trim();
-	return { intent: trimmed.length > 0 ? trimmed : undefined, strippedArgs };
+	return { intent: normalizeIntent(intent), strippedArgs };
 }
 
 async function runLoop(
@@ -876,7 +911,12 @@ function resolveAsides(entries: AsideMessage[] | undefined): AgentMessage[] {
 
 function discardAsides(messages: readonly AgentMessage[], error: Error): void {
 	for (const message of messages) {
-		(message as CommittableAsideMessage)[ASIDE_MESSAGE_DISCARD]?.(error);
+		// A throwing host hook must neither skip the remaining hooks nor replace the in-flight loop error.
+		try {
+			(message as CommittableAsideMessage)[ASIDE_MESSAGE_DISCARD]?.(error);
+		} catch (discardError) {
+			logger.error("Aside discard hook threw", { error: discardError });
+		}
 	}
 }
 
@@ -1494,6 +1534,7 @@ async function streamAssistantResponse(
 			let partialSnapshot: AssistantMessage | undefined;
 			let addedPartial = false;
 			const completedToolCallIds = new Set<string>();
+			const openContentIndices = new Set<number>();
 
 			const responseIterator = response[Symbol.asyncIterator]();
 			const finishResponse = async (message: AssistantMessage): Promise<AssistantMessage> => {
@@ -1599,6 +1640,7 @@ async function streamAssistantResponse(
 						case "start":
 							partialMessage = event.partial;
 							partialSnapshot = snapshotAssistantMessage(partialMessage);
+							openContentIndices.clear();
 							if (addedPartial) {
 								context.messages[context.messages.length - 1] = partialMessage;
 								completedToolCallIds.clear();
@@ -1633,12 +1675,15 @@ async function streamAssistantResponse(
 								partialMessage = event.partial;
 								context.messages[context.messages.length - 1] = partialMessage;
 								config.onAssistantMessageEvent?.(partialMessage, event);
+								if (event.type.endsWith("_start")) openContentIndices.add(event.contentIndex);
+								else if (event.type.endsWith("_end")) openContentIndices.delete(event.contentIndex);
 
 								partialSnapshot = snapshotAssistantMessage(
 									partialMessage,
 									partialSnapshot,
 									previousMessage,
 									event.contentIndex,
+									openContentIndices,
 								);
 								stream.push({
 									type: "message_update",
@@ -1886,6 +1931,51 @@ function resolveToolForCall(
 	);
 }
 
+/** Shortest suggestable segment; below this a match is noise (`id`, `to`). */
+const MIN_TOOL_NAME_SUGGESTION_SEGMENT = 3;
+/** Names listed for an ambiguous miss, so the error stays readable. */
+const MAX_TOOL_NAME_SUGGESTIONS = 3;
+
+/**
+ * Advertised tool names sharing a trailing `_`-delimited segment with `name`. A model mis-transcribing a long opaque
+ * tool name (`mcp__<id>__<id>_read`) reliably keeps the meaningful trailing verb while garbling the id segments. Both
+ * the last `__` and last `_` boundaries are tried; the `__` tail (never shorter) is matched first, so a distinctive
+ * tail's match outranks tools that merely share a generic suffix. Advisory only: dispatch never consults it.
+ */
+function suggestToolNames(
+	name: string,
+	tools: ReadonlyArray<Pick<AgentTool, "name" | "customWireName">> | undefined,
+): string[] {
+	if (!tools || tools.length === 0) return [];
+	const segments: string[] = [];
+	for (const boundary of ["__", "_"]) {
+		const idx = name.lastIndexOf(boundary);
+		if (idx < 0) continue;
+		const segment = name.slice(idx + boundary.length);
+		if (segment.length >= MIN_TOOL_NAME_SUGGESTION_SEGMENT && !segments.includes(segment)) segments.push(segment);
+	}
+	const matches: string[] = [];
+	for (const segment of segments) {
+		for (const tool of tools) {
+			for (const candidate of [tool.name, tool.customWireName]) {
+				if (candidate === undefined || candidate === name || matches.includes(candidate)) continue;
+				if (candidate === segment || candidate.endsWith(`_${segment}`)) matches.push(candidate);
+			}
+		}
+	}
+	return matches;
+}
+
+function formatToolNotFoundMessage(
+	name: string,
+	tools: ReadonlyArray<Pick<AgentTool, "name" | "customWireName">> | undefined,
+): string {
+	const suggestions = suggestToolNames(name, tools);
+	if (suggestions.length === 0) return `Tool ${name} not found`;
+	if (suggestions.length === 1) return `Tool ${name} not found. Did you mean ${suggestions[0]}?`;
+	return `Tool ${name} not found. Closest available: ${suggestions.slice(0, MAX_TOOL_NAME_SUGGESTIONS).join(", ")}`;
+}
+
 async function prepareToolCallDispatch(
 	assistantMessage: AssistantMessage,
 	context: AgentContext,
@@ -1917,7 +2007,7 @@ async function prepareToolCallDispatch(
 		}
 		const validate = (args: Record<string, unknown>): Record<string, unknown> | undefined => {
 			try {
-				if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
+				if (!tool) throw new Error(formatToolNotFoundMessage(toolCall.name, context.tools));
 				return validateToolArguments(tool, { ...toolCall, arguments: args });
 			} catch (validationError) {
 				if (tool?.lenientArgValidation) {
@@ -2157,7 +2247,11 @@ async function executeToolCalls(
 	let reportSteeringWatchError: ((error: unknown) => void) | undefined;
 
 	const runTool = async (record: (typeof records)[number], index: number): Promise<void> => {
-		if (interruptState.triggered && (record.interruptible || interruptState.source !== "irc")) {
+		// A pending interrupt skips not-yet-started interruptible waits so the message injects promptly. Already-emitted
+		// non-interruptible calls always run, whatever the steering source: generating the call is the expensive part,
+		// and skipping it only makes the model re-emit it after the steer lands. The steer injects at the batch
+		// boundary, and the cooperative soft signal lets long-running tools step aside.
+		if (interruptState.triggered && record.interruptible) {
 			record.skipped = true;
 			return;
 		}
@@ -2216,7 +2310,7 @@ async function executeToolCalls(
 
 		await runInActiveSpan(toolSpan, async () => {
 			try {
-				if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
+				if (!tool) throw new Error(formatToolNotFoundMessage(toolCall.name, tools));
 				if (record.signal.aborted) {
 					result = createToolSignalAbortedResult(record.signal);
 					isError = true;

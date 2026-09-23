@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { truncateHeadBytes } from "@oh-my-pi/pi-utils";
+import { countNewlines, truncateHeadBytes } from "@oh-my-pi/pi-utils";
 import { isMarkdownPath } from "../modes/theme/theme";
 import type { ToolSession } from "../sdk";
 import {
@@ -91,11 +91,7 @@ export function formatMergedBraceLine(
 
 export function countTextLines(text: string): number {
 	if (text.length === 0) return 0;
-
-	let lines = 1;
-	for (let i = 0; i < text.length; i++) {
-		if (text.charCodeAt(i) === 10) lines++;
-	}
+	const lines = countNewlines(text) + 1;
 	return text.charCodeAt(text.length - 1) === 10 ? lines - 1 : lines;
 }
 

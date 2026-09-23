@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `directoryIsEnterable`/`directoryIsEnterableSync`, `directoryIsMissing`, and `getSafeProjectCwd` for adopting and spawning in working directories safely
+- Added `openSqliteDatabase`/`openSqliteDatabaseSync` (bounded busy retries, connection cleanup, errors that name the database path, opt-in corruption recovery that keeps private `.corrupt-*` backups of the database and sidecars) and `withFileLockSync`
+- Added `postmortem.fatal` for terminal-safe top-level failure reporting
+- Added `TerminalQueryResponder` (`@oh-my-pi/pi-utils/vterm`) to answer cursor-position, device-attribute, and OSC color probes on headless PTYs
+- Added `RequestError.sessionBusy` for the ACP `-32003` session-busy error
+- Added `countNewlines` and `getComposerCacheDir`
+- Added `forEachJsonlRecord` to stream parsed JSONL records without materializing the full record array
+
+### Changed
+
+- Stale log retention runs after startup returns to the event loop instead of before the first log line
+
+### Fixed
+
+- `getProjectDir()` and child-shell env filtering no longer throw when the launch directory was deleted or cannot be entered; `setProjectDir()` keeps the previous directory when `chdir` fails
+- Retry hints merge every body signal by longest-wins (account resets, `retry-after-ms` in `=`/`:` forms, legacy `retry-after`/`x-ratelimit-reset` text), keep explicit zero/elapsed counters as retry-now, parse OpenCode Go "Resets in 3 days"/"2hr 15min", and treat timezone-naive reset stamps as a fallback unless a provider offset is supplied
+- Sub-second durations render whole milliseconds instead of floating-point noise
+- Timed `ptree` commands return at their deadline even when a backgrounded descendant keeps stdout/stderr open, hard-kill the tree (including SIGTERM-ignoring descendants and a detached group whose leader already exited) before reporting the timeout, and no longer hold the event loop for the unused remainder of the timeout after a fast command exits
+- `isExecutable` rejects directories and requires effective execute permission, so a directory on the shell path is no longer taken for a shell
+- `$which` no longer serves a cached result across lookups whose `cwd`/`PATH` options differ only in which field carries a value, and `Bun.which` stubs apply on every platform
+- Fatal reports hand the terminal back (registered display cleanup) before writing to stderr
+- `registerStdioDisconnectHandling()` exits cleanly on a closed stdout consumer from stdout's own `error` event; an unrelated write EPIPE (subprocess stdin, socket) stays fatal and a non-EPIPE stdout error is left to the terminal owner
+- Worker IPC send EPIPEs and Bun's internal `node:net` `ERR_SOCKET_CLOSED` surfaced as uncaught exceptions no longer tear the process down, and uncaught non-`Error` values keep their text in the fatal report
+- `exitProcess` terminates through nested extension-load guard stubs instead of throwing back into the caller
+- `XMLParser` no longer hangs on a mismatched or stray end tag or a bare `/` inside a tag
+- SSE streams that end lines with a lone CR dispatch each event as it arrives, and a CRLF split across chunks parses cleanly
+- `Snowflake` bounds for timestamps before the epoch or past the 42-bit range saturate to valid ids
+- A slice kept from an async `peekFile`/`peekFileTail` is no longer overwritten by a later peek
+- `.env` files parse with Bun's dotenv grammar (multiline quoted values, escapes), so child shells recognize dotenv-loaded values
+- Child-shell and worker environments drop inherited `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` and the other repo-location overrides; an explicit value still applies
+- The ACP connection answers requests it already accepted before closing on a clean stdin EOF, so a piped `initialize` + `session/new` gets both responses
+
 ## [18.5.0] - 2026-09-23
 
 ### Added

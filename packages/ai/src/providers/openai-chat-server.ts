@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type } from "@oh-my-pi/omptype";
-import { resolvePromptCacheKey } from "../auth-gateway/http";
+import { coerceNullMessageContentInPlace, resolvePromptCacheKey } from "../auth-gateway/http";
 
 import type { AuthGatewayStreamControl, AuthGatewayParsedRequest as ParsedRequest } from "../auth-gateway/types";
 import * as AIError from "../error";
@@ -26,6 +26,7 @@ import {
 	type OpenAIChatToolChoice,
 	openaiChatRequestSchema,
 } from "./openai-chat-server-schema";
+import { decodeDataUri } from "./openai-data-uri";
 
 export type { ParsedRequest };
 
@@ -77,6 +78,9 @@ function rejectUnsupportedExplicitPromptCacheFields(body: unknown): void {
 
 export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	rejectUnsupportedExplicitPromptCacheFields(body);
+	const request =
+		typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : undefined;
+	coerceNullMessageContentInPlace(request?.messages, message => message.role !== "function");
 	const parsed = openaiChatRequestSchema(body);
 	if (parsed instanceof type.errors) {
 		throw new AIError.ValidationError(`openai-chat: ${parsed.summary}`);
@@ -168,7 +172,9 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	if (data.user !== undefined) options.user = data.user;
 	if (data.response_format !== undefined) options.responseFormat = data.response_format;
 	if (data.parallel_tool_calls !== undefined) options.parallelToolCalls = data.parallel_tool_calls;
-	if (data.reasoning_effort !== undefined && isReasoningEffort(data.reasoning_effort)) {
+	if (data.reasoning_effort === "none") {
+		options.forceReasoningOff = true;
+	} else if (data.reasoning_effort !== undefined && isReasoningEffort(data.reasoning_effort)) {
 		options.reasoning = data.reasoning_effort;
 	}
 	if (data.service_tier !== undefined && isServiceTier(data.service_tier)) {
@@ -219,18 +225,6 @@ function parseUserLikeContent(
 		}
 	}
 	return parts;
-}
-
-function decodeDataUri(url: string): { data: string; mimeType: string } | undefined {
-	if (!url.startsWith("data:")) return undefined;
-	const comma = url.indexOf(",");
-	if (comma < 0) return undefined;
-	const header = url.slice(5, comma);
-	const payload = url.slice(comma + 1);
-	const isBase64 = header.endsWith(";base64");
-	const mimeType = (isBase64 ? header.slice(0, -";base64".length) : header) || "application/octet-stream";
-	const data = isBase64 ? payload : Buffer.from(decodeURIComponent(payload), "utf8").toString("base64");
-	return { data, mimeType };
 }
 
 function buildAssistantMessage(
@@ -520,7 +514,7 @@ export function encodeStream(
 		async start(controller) {
 			const toolIndexByContentIndex = new Map<number, number>();
 
-			const sentToolMeta = new Map<number, { id: string; name: string }>();
+			const sentToolMeta = new Map<number, { id: string; name: string; hasArgumentBytes: boolean }>();
 			let nextToolIndex = 0;
 			let hasToolCalls = false;
 			let finishReason: string = "stop";
@@ -554,7 +548,7 @@ export function encodeStream(
 							toolIndexByContentIndex.set(event.contentIndex, idx);
 							const partial = event.partial.content[event.contentIndex];
 							const call = partial && partial.type === "toolCall" ? partial : undefined;
-							sentToolMeta.set(idx, { id: call?.id ?? "", name: call?.name ?? "" });
+							sentToolMeta.set(idx, { id: call?.id ?? "", name: call?.name ?? "", hasArgumentBytes: false });
 							writeSse(
 								controller,
 								baseChunk(
@@ -577,6 +571,8 @@ export function encodeStream(
 						case "toolcall_delta": {
 							const idx = toolIndexByContentIndex.get(event.contentIndex);
 							if (idx === undefined) break;
+							const sent = sentToolMeta.get(idx);
+							if (sent && event.delta.length > 0) sent.hasArgumentBytes = true;
 							writeSse(
 								controller,
 								baseChunk({ tool_calls: [{ index: idx, function: { arguments: event.delta } }] }, null),
@@ -590,10 +586,17 @@ export function encodeStream(
 							const sent = sentToolMeta.get(idx);
 							if (sent === undefined) break;
 
+							// Providers can settle id, name, or arguments after the start chunk
+							// (Cursor settles MCP args from the announce frame without deltas).
+							// Accumulating clients concatenate each field, so only a field whose
+							// streamed value was empty can be corrected.
 							const correctId = sent.id === "" && event.toolCall.id !== "" ? event.toolCall.id : undefined;
 							const correctName =
 								sent.name === "" && event.toolCall.name !== "" ? event.toolCall.name : undefined;
-							if (correctId !== undefined || correctName !== undefined) {
+							const correctArguments = sent.hasArgumentBytes
+								? undefined
+								: stringifyArgs(event.toolCall.arguments);
+							if (correctId !== undefined || correctName !== undefined || correctArguments !== undefined) {
 								writeSse(
 									controller,
 									baseChunk(
@@ -602,7 +605,16 @@ export function encodeStream(
 												{
 													index: idx,
 													...(correctId !== undefined ? { id: correctId } : {}),
-													...(correctName !== undefined ? { function: { name: correctName } } : {}),
+													...(correctName !== undefined || correctArguments !== undefined
+														? {
+																function: {
+																	...(correctName !== undefined ? { name: correctName } : {}),
+																	...(correctArguments !== undefined
+																		? { arguments: correctArguments }
+																		: {}),
+																},
+															}
+														: {}),
 												},
 											],
 										},

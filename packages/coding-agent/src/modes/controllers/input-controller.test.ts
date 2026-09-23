@@ -3,12 +3,17 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { formatBytes } from "@oh-my-pi/pi-utils";
+import { Settings } from "../../config/settings";
 import type { AgentSession } from "../../session/agent-session";
 import * as commandUsage from "../../utils/command-usage";
+import { initThemeSync } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { InputController } from "./input-controller";
 
 afterEach(() => vi.restoreAllMocks());
+
+await Settings.init({ inMemory: true });
+initThemeSync();
 
 test("Escape surfaces a streaming abort rejection", async () => {
 	const errors: string[] = [];
@@ -510,4 +515,48 @@ test("choosing inline still attaches the paste", async () => {
 	await controller.presentLargePasteMenu(text, 30);
 
 	expect(attachments).toEqual([{ content: text, expansion: undefined }]);
+});
+
+test("focused-agent Shift+Tab cycles the viewed agent's thinking, not the main session's", () => {
+	const invalidated: string[] = [];
+	const statuses: string[] = [];
+	const mainCycle = vi.fn(() => "off");
+	const viewCycle = vi.fn(() => "high");
+	const context = {
+		session: { cycleThinkingLevel: mainCycle },
+		viewSession: { cycleThinkingLevel: viewCycle },
+		focusedAgentId: "Side-1",
+		statusLine: { invalidate: () => invalidated.push("status") },
+		updateEditorBorderColor: () => invalidated.push("border"),
+		showStatus: (message: string) => statuses.push(message),
+	} as unknown as InteractiveModeContext;
+
+	new InputController(context).cycleThinkingLevel();
+
+	expect(viewCycle).toHaveBeenCalledTimes(1);
+	expect(mainCycle).not.toHaveBeenCalled();
+	expect(statuses).toEqual([]);
+	expect(invalidated).toEqual(["status", "border"]);
+});
+
+test("focused-agent Ctrl+P cycles the viewed agent's role models, not the main session's", async () => {
+	const mainCycle = vi.fn();
+	const viewCycle = vi.fn(() => Promise.resolve({ model: { id: "smol-model" }, role: "smol", thinkingLevel: "low" }));
+	const tracks: unknown[] = [];
+	const context = {
+		session: { cycleRoleModels: mainCycle },
+		viewSession: { cycleRoleModels: viewCycle },
+		focusedAgentId: "Side-1",
+		statusLine: { invalidate: () => {} },
+		updateEditorBorderColor: () => {},
+		showModelCycleTrack: (track: unknown) => tracks.push(track),
+		showStatus: () => {},
+		showError: () => {},
+	} as unknown as InteractiveModeContext;
+
+	await new InputController(context).cycleRoleModel("forward");
+
+	expect(viewCycle).toHaveBeenCalledWith(["smol", "default", "slow"], "forward");
+	expect(mainCycle).not.toHaveBeenCalled();
+	expect(tracks).toHaveLength(1);
 });

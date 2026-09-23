@@ -6,6 +6,7 @@ import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import type { SessionContext } from "../../session/session-context";
 import { ReadToolGroupComponent } from "../components/read-tool-group";
+import { ServedModelTracker } from "../components/served-model-marker";
 import { ToolExecutionComponent, type ToolExecutionHandle, type ToolExecutionUi } from "../components/tool-execution";
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme } from "../theme/theme";
@@ -150,6 +151,7 @@ function createContext() {
 		flushPendingCommandOutput: NOOP,
 		setChecklist: NOOP,
 		addMessageToChat: () => [] as Component[],
+		servedModelTracker: new ServedModelTracker(),
 		streamingComponent: undefined,
 		streamingMessage: undefined,
 	};

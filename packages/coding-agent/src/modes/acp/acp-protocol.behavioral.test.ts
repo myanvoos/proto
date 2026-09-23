@@ -58,10 +58,11 @@ const streaming = Bun.serve({
 	},
 });
 
-// Fails once, then serves a normal completion: enough to make recovery run a
-// visible retry without waiting on a real outage.
+// Fails until the transport layers give up once (6 fetch attempts per request, one replay-safe provider
+// retry), then serves a normal completion: enough to make session recovery run a visible retry without
+// waiting on a real outage.
 let flakyAttempts = 0;
-const FLAKY_FAILURES = Number(process.env.W7_FLAKY_FAILURES ?? 6);
+const FLAKY_FAILURES = Number(process.env.W7_FLAKY_FAILURES ?? 12);
 const flaky = Bun.serve({
 	port: 0,
 	fetch: request => {

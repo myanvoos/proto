@@ -12,12 +12,12 @@ export const loginFirepass = createApiKeyLogin({
 		kind: "chat-completions",
 		provider: "Fire Pass",
 		baseUrl: "https://api.fireworks.ai/inference/v1",
-		model: "accounts/fireworks/routers/kimi-k2p6-turbo",
+		model: "accounts/fireworks/routers/glm-5p2-fast",
 	},
 });
 
 export const firepassProvider = {
 	id: "firepass",
-	name: "Fire Pass (Fireworks Kimi K2.6 Turbo subscription)",
+	name: "Fire Pass (Fireworks subscription)",
 	login: (cb: OAuthLoginCallbacks) => loginFirepass(cb),
 } as const satisfies ProviderDefinition;

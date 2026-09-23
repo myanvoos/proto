@@ -2992,7 +2992,15 @@ export class Markdown implements Component {
 
 	#createHighlightStream(lang: string | undefined): HighlightStreamSession | null {
 		const factory = this.#theme.createHighlightStream;
-		if (factory) return factory(lang);
+		if (factory) {
+			try {
+				return factory(lang);
+			} catch {
+				// Render must not throw: a broken theme factory (stale natives
+				// `HighlightStream`, napi error) falls through to the unhighlighted
+				// path / diff-family per-line emulation below.
+			}
+		}
 		const highlightCode = this.#theme.highlightCode;
 		if (!highlightCode) return null;
 		const normalizedLang = lang?.toLowerCase();

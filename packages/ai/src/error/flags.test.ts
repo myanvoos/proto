@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { rewriteCopilotError } from "../utils/http-inspector";
-import { AnthropicStreamEnvelopeError, ProviderHttpError } from "./classes";
-import { classify, Flag, is, isGitHubCopilotPolicyDenial, retriable } from "./flags";
+import { rewriteClinePassError, rewriteCopilotError } from "../utils/http-inspector";
+import { isAuthRetryableError } from "./auth-classify";
+import { AnthropicApiError, AnthropicStreamEnvelopeError, ProviderHttpError } from "./classes";
+import { classify, classifyMessage, create, Flag, is, isGitHubCopilotPolicyDenial, retriable } from "./flags";
+import { matchesUsageLimitText, parseRateLimitReason } from "./rate-limit";
 
 function errorWithStatus(status: number): Error & { status: number } {
 	return Object.assign(new Error(`${status} ${status === 403 ? "Forbidden" : "Unauthorized"}`), { status });
@@ -86,5 +88,96 @@ describe("recoverable provider error classification", () => {
 		expect(retriable(closedSocket)).toBe(true);
 		expect(is(applicationError, Flag.Transient)).toBe(false);
 		expect(retriable(applicationError)).toBe(false);
+	});
+});
+
+describe("HTTP 413 payload rejection classification", () => {
+	it("treats a status-only 413 as a byte/media payload rejection, not a token overflow", () => {
+		const id = classifyMessage({ errorStatus: 413, errorMessage: "413 Request Entity Too Large" });
+
+		expect(is(id, Flag.PayloadRejected)).toBe(true);
+		expect(is(id, Flag.ContextOverflow)).toBe(false);
+	});
+
+	it("keeps a 413 carrying token-context evidence a pure context overflow", () => {
+		const id = classifyMessage({
+			errorStatus: 413,
+			errorMessage: "prompt is too long: 250000 tokens > 200000 maximum",
+		});
+
+		expect(is(id, Flag.ContextOverflow)).toBe(true);
+		expect(is(id, Flag.PayloadRejected)).toBe(false);
+	});
+
+	it("never retries a payload rejection even when a gateway wraps it in transient wording", () => {
+		const id = classifyMessage({ errorStatus: 413, errorMessage: "Provider returned error: 413 Payload Too Large" });
+
+		expect(is(id, Flag.PayloadRejected)).toBe(true);
+		expect(retriable(id)).toBe(false);
+	});
+
+	it("drops a status-inferred payload bit once the final error text proves token overflow", () => {
+		const id = classifyMessage({
+			errorId: create(Flag.PayloadRejected),
+			errorStatus: 413,
+			errorMessage: "This model's maximum context length is 128000 tokens. However, you requested 140000 tokens.",
+		});
+
+		expect(is(id, Flag.ContextOverflow)).toBe(true);
+		expect(is(id, Flag.PayloadRejected)).toBe(false);
+	});
+});
+
+describe("Anthropic organization OAuth denial", () => {
+	const body =
+		'{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization.","details":{"error_code":"oauth_not_allowed_for_organization"}}}';
+
+	it("classifies the parsed response as a rotatable account policy, not blocked content", async () => {
+		const error = await AnthropicApiError.fromResponse(new Response(body, { status: 403 }));
+		const id = classify(error, "anthropic-messages");
+
+		expect(error.code).toBe("oauth_not_allowed_for_organization");
+		expect(is(id, Flag.AccountPolicy)).toBe(true);
+		expect(is(id, Flag.ContentBlocked)).toBe(false);
+		expect(isAuthRetryableError(error)).toBe(true);
+	});
+
+	it("classifies the persisted assistant error the same way", () => {
+		const failed = { provider: "anthropic", errorStatus: 403, errorMessage: `403 ${body}` };
+
+		expect(is(classifyMessage(failed), Flag.AccountPolicy)).toBe(true);
+		expect(isAuthRetryableError(failed)).toBe(true);
+	});
+});
+
+describe("Anthropic credits_required entitlement wall", () => {
+	it("rotates on the documented entitlement error but not on unrelated usage-credit diagnostics", () => {
+		expect(
+			matchesUsageLimitText(
+				'400 {"type":"error","error":{"type":"invalid_request_error","message":"Usage credits are required for this model.","details":{"error_code":"credits_required"}}}',
+			),
+		).toBe(true);
+		expect(matchesUsageLimitText("Failed to fetch usage credits from billing service")).toBe(false);
+	});
+});
+
+describe("ClinePass error handling", () => {
+	it("keeps sibling credentials on a per-model surface-gate 403 but rotates on a plain 403", () => {
+		const gate = Object.assign(new Error("403 This model is only available via Cline product surfaces"), {
+			status: 403,
+		});
+		expect(isAuthRetryableError(gate)).toBe(false);
+		expect(isAuthRetryableError(errorWithStatus(403))).toBe(true);
+	});
+
+	it("treats subscription-window and free-tier caps as quota exhaustion", () => {
+		expect(parseRateLimitReason("ClinePass limit reached for the 5 hour window")).toBe("QUOTA_EXHAUSTED");
+		expect(parseRateLimitReason("Free limit reached on model x, try again in 3h")).toBe("QUOTA_EXHAUSTED");
+	});
+
+	it("rewrites a not-subscribed rejection into the free-tier hint only for ClinePass", () => {
+		const raw = "400 User is not subscribed to required model plan";
+		expect(rewriteClinePassError(raw, "cline-pass")).toContain("requires a ClinePass subscription");
+		expect(rewriteClinePassError(raw, "openrouter")).toBe(raw);
 	});
 });

@@ -169,6 +169,16 @@ long as that extension registration is active. `pi.unregisterProvider(name)` (an
 extension source cleanup) removes only that runtime override, restoring the built-in
 or configured usage resolver.
 
+Provider login callbacks can request masked entry with
+`callbacks.onPrompt({ message: "Consumer key", secret: true })`. Native `/login`
+and first-run setup preserve the exact submitted value while hiding it in the
+input and retained answers. Login prompts do not share undo or kill/yank
+history. Ordinary prompts remain unmasked.
+
+RPC rejects secret prompts instead of forwarding them as ordinary input. SDK
+hosts implementing `onPrompt` must honor `secret` or reject the prompt. Masking
+does not provide encryption, memory erasure, or general log redaction.
+
 In interactive mode, `input` handlers run before the built-in first-message auto-title check. Extensions that call `await pi.setSessionName(...)` from `input` can set the persisted session name and prevent the default auto-generated title from running for that session.
 
 Also exposed:
@@ -188,7 +198,7 @@ Also exposed:
 - `deliverAs: "nextTurn"` — stored and injected on the next user prompt
 - `triggerTurn: true` — starts a turn when idle (also honored with `deliverAs: "nextTurn"`: idle prompts immediately; while streaming the queued message schedules an internal continuation)
 
-`pi.sendUserMessage(content, { deliverAs })` always goes through prompt flow. Omit `deliverAs` to start a normal prompt when idle; while streaming, omitted `deliverAs` queues the message as a steer. Set `deliverAs: "followUp"` to wait until the current run finishes.
+`pi.sendUserMessage(content, { deliverAs })` always goes through prompt flow. Omit `deliverAs` to start a normal prompt when idle; while streaming, omitted `deliverAs` queues the message as a steer. Set `deliverAs: "followUp"` to wait until the current run finishes. The message is recorded with `attribution: "user"` unless you pass `attribution: "agent"`; pass `"agent"` for text the extension generated or relayed from another agent, so consumers can tell it apart from what the user typed.
 
 ## 2) Handler context (`ExtensionContext`)
 
@@ -293,7 +303,7 @@ Cancelable pre-events:
 - `agent_start` / `agent_end` — agent loop lifecycle notification; `agent_end` remains notification-only
 - `session_stop` — main-session stop hook, awaited before settle; may continue with `{ continue: true, additionalContext }` or `{ decision: "block", reason }`; capped at 8 consecutive continuations and never fires for task/subagent sessions
 - `turn_start` / `turn_end`
-- `message_start` / `message_update` / `message_end` — lifecycle notifications; `message_end` receives a detached message snapshot, so use `tool_result` or `context` when an extension needs to change provider context
+- `message_start` / `message_update` / `message_end` — lifecycle notifications; `message_end` receives a detached message snapshot, so use `tool_result` or `context` when an extension needs to change provider context. Session lifecycle notifications reach extensions in order, one at a time; while a handler is still running, queued `message_update`s collapse to the latest. The UI, RPC/SDK subscribers, and transcript persistence never wait for these handlers, so a slow handler delays only later extension notifications
 
 ### Tool lifecycle
 
@@ -325,6 +335,7 @@ pi.on("mcp_notification", (event) => {
   const params = event.params as { from: string; text: string };
   pi.sendUserMessage(`[from ${params.from}] ${params.text}`, {
     deliverAs: "steer",
+    attribution: "agent",
   });
 });
 ```

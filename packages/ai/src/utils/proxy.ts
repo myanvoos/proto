@@ -126,45 +126,38 @@ export function getProxyForUrl(provider: string, url: URL): string | undefined {
 	return getProxyForProvider(provider) || protocolProxy || Bun.env.ALL_PROXY || Bun.env.all_proxy || undefined;
 }
 
-function wrapFetchWithProxyUrl(fetchImpl: FetchImpl, proxyUrl: string | undefined): FetchImpl {
-	if (!proxyUrl) {
-		return fetchImpl;
+export function withProxyInit(
+	input: string | URL | Request,
+	init: RequestInit | undefined,
+	proxyUrl: string,
+): RequestInit | undefined {
+	if ((init as { proxy?: unknown } | undefined)?.proxy) return init;
+	const urlStr = input instanceof Request ? input.url : input.toString();
+	let urlObj: URL;
+	try {
+		urlObj = new URL(urlStr);
+	} catch {
+		return init;
 	}
 
-	const wrapped = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-		if ((init as { proxy?: unknown } | undefined)?.proxy) {
-			return fetchImpl(input, init);
+	if (shouldBypassProxy(urlObj)) {
+		if (!isLocalOrMetadataHost(urlObj.hostname)) {
+			logger.debug("proxy bypassed by NO_PROXY", {
+				host: urlObj.host,
+				noProxy: Bun.env.NO_PROXY || Bun.env.no_proxy,
+			});
 		}
-		const urlStr = input instanceof Request ? input.url : input.toString();
-		let urlObj: URL;
-		try {
-			urlObj = new URL(urlStr);
-		} catch {
-			return fetchImpl(input, init);
-		}
-
-		if (shouldBypassProxy(urlObj)) {
-			if (!isLocalOrMetadataHost(urlObj.hostname)) {
-				logger.debug("proxy bypassed by NO_PROXY", {
-					host: urlObj.host,
-					noProxy: Bun.env.NO_PROXY || Bun.env.no_proxy,
-				});
-			}
-			return fetchImpl(input, init);
-		}
-
-		const mergedInit = { ...(init ?? {}), proxy: proxyUrl };
-		return fetchImpl(input, mergedInit);
-	};
-
-	if (fetchImpl.preconnect) {
-		wrapped.preconnect = fetchImpl.preconnect;
+		return init;
 	}
-	return wrapped;
+
+	const proxied: RequestInit & { proxy: string } = { ...init, proxy: proxyUrl };
+	return proxied;
 }
 
-export function wrapFetchForProxy(fetchImpl: FetchImpl, provider: string): FetchImpl {
-	return wrapFetchWithProxyUrl(fetchImpl, getProxyForProvider(provider));
+function wrapFetchWithProxyUrl(fetchImpl: FetchImpl, proxyUrl: string): FetchImpl {
+	const wrapped: FetchImpl = (input, init) => fetchImpl(input, withProxyInit(input, init, proxyUrl));
+	if (fetchImpl.preconnect) wrapped.preconnect = fetchImpl.preconnect;
+	return wrapped;
 }
 
 let globalProxyFetchInstalled = false;

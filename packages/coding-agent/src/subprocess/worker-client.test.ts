@@ -29,3 +29,17 @@ test("worker subprocesses do not inherit session bridge capabilities", () => {
 	];
 	expect(sessionBridgeNames.filter(name => name in env)).toEqual([]);
 });
+
+test("worker subprocesses drop inherited git repo-location overrides but keep an explicit overlay", () => {
+	const previous = Bun.env.GIT_DIR;
+	Bun.env.GIT_DIR = "/primary/.git";
+	try {
+		const env = workerEnvFromParent({ GIT_WORK_TREE: "/secondary", WORKER_ENV_MARKER: "kept" });
+		expect(env.GIT_DIR).toBeUndefined();
+		expect(env.GIT_WORK_TREE).toBe("/secondary");
+		expect(env.WORKER_ENV_MARKER).toBe("kept");
+	} finally {
+		if (previous === undefined) delete Bun.env.GIT_DIR;
+		else Bun.env.GIT_DIR = previous;
+	}
+});

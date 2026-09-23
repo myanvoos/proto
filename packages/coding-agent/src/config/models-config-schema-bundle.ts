@@ -1,5 +1,20 @@
-import { type } from "@oh-my-pi/omptype";
+import { type NarrowContext, type } from "@oh-my-pi/omptype";
 import { once } from "@oh-my-pi/pi-utils";
+
+function validateMaxContextWindow(
+	value: { maxContextWindow?: number; contextWindow?: number },
+	ctx: NarrowContext,
+): boolean {
+	if (
+		value.maxContextWindow !== undefined &&
+		(!Number.isSafeInteger(value.maxContextWindow) ||
+			value.maxContextWindow <= 0 ||
+			(value.contextWindow !== undefined && value.maxContextWindow < value.contextWindow))
+	) {
+		return ctx.mustBe("maxContextWindow a positive integer no smaller than contextWindow");
+	}
+	return true;
+}
 
 export const getModelsConfigSchemaBundle = once(() => {
 	const OpenRouterRoutingSchema = type({
@@ -41,6 +56,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"supportsForcedToolChoice?": "boolean",
 		"disableReasoningOnForcedToolChoice?": "boolean",
 		"disableReasoningOnToolChoice?": "boolean",
+		"disableReasoningWithTools?": "boolean",
 		"thinkingFormat?": '"openai" | "openrouter" | "zai" | "qwen" | "qwen-chat-template"',
 		"qwenTemplateReasoningEffort?": "boolean",
 		"openRouterRouting?": OpenRouterRoutingSchema,
@@ -53,10 +69,14 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"streamMarkupHealingPattern?": '"kimi" | "dsml" | "qwen" | "thinking"',
 		"supportsLongPromptCacheRetention?": "boolean",
 		"supportsReasoningParams?": "boolean",
+		"supportsReasoningSummary?": "boolean",
 		"alwaysSendMaxTokens?": "boolean",
 		"strictResponsesPairing?": "boolean",
 		"supportsImageDetailOriginal?": "boolean",
+		"supportsConfigurationUpdate?": "boolean",
+		"stripImageInput?": "boolean",
 
+		"supportsContextManagement?": "boolean",
 		"supportsEagerToolInputStreaming?": "boolean",
 		"allowAnthropicHeaderOverrides?": "boolean",
 		"requiresToolResultId?": "boolean",
@@ -97,6 +117,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"defaultLevel?": EffortSchema,
 		"effortMap?": ReasoningEffortMapSchema,
 		"supportsDisplay?": "boolean",
+		"requiresEffort?": "boolean",
 
 		"minLevel?": EffortSchema,
 		"maxLevel?": EffortSchema,
@@ -122,6 +143,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 				...(value.defaultLevel !== undefined && { defaultLevel: value.defaultLevel }),
 				...(value.effortMap !== undefined && { effortMap: value.effortMap }),
 				...(value.supportsDisplay !== undefined && { supportsDisplay: value.supportsDisplay }),
+				...(value.requiresEffort !== undefined && { requiresEffort: value.requiresEffort }),
 			};
 		});
 
@@ -176,8 +198,10 @@ export const getModelsConfigSchemaBundle = once(() => {
 		},
 		"premiumMultiplier?": "number",
 		"contextWindow?": "number",
+		"maxContextWindow?": "number",
 		"maxTokens?": "number",
 		"omitMaxOutputTokens?": "boolean",
+		"preferWebsockets?": "boolean",
 		"headers?": { "[string]": "string" },
 		"compat?": ApiCompatSchema,
 		"contextPromotionTarget?": "string",
@@ -207,7 +231,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		) {
 			return ctx.mustBe("compactionModel a non-empty string");
 		}
-		return true;
+		return validateMaxContextWindow(value, ctx);
 	});
 
 	const ModelOverrideSchema = type({
@@ -226,8 +250,10 @@ export const getModelsConfigSchemaBundle = once(() => {
 		},
 		"premiumMultiplier?": "number",
 		"contextWindow?": "number",
+		"maxContextWindow?": "number",
 		"maxTokens?": "number",
 		"omitMaxOutputTokens?": "boolean",
+		"preferWebsockets?": "boolean",
 		"headers?": { "[string]": "string" },
 		"compat?": ApiCompatSchema,
 		"contextPromotionTarget?": "string",
@@ -251,13 +277,22 @@ export const getModelsConfigSchemaBundle = once(() => {
 		) {
 			return ctx.mustBe("compactionModel a non-empty string");
 		}
-		return true;
+		return validateMaxContextWindow(value, ctx);
 	});
 
 	const ProviderDiscoverySchema = type({
 		type: '"ollama" | "llama.cpp" | "lm-studio" | "openai-models-list" | "proxy" | "litellm"',
 		"timeoutMs?": "number",
+		/**
+		 * Defaults to `true`. Set `false` to fetch `{baseUrl}/models` without injecting `/v1`, for gateways
+		 * rooting their OpenAI-compatible surface at a versioned path (e.g. `https://api.opper.ai/v3/compat`)
+		 * where a forced `/v1/models` returns a different, smaller model list.
+		 */
+		"injectV1?": "boolean",
 	}).narrow((value, ctx) => {
+		if (value.injectV1 !== undefined && value.type !== "openai-models-list") {
+			return ctx.mustBe("injectV1 only on openai-models-list discovery");
+		}
 		if (
 			value.timeoutMs !== undefined &&
 			(typeof value.timeoutMs !== "number" || value.timeoutMs <= 0 || !Number.isFinite(value.timeoutMs))
@@ -282,6 +317,13 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"models?": ModelDefinitionSchema.array(),
 		"modelOverrides?": { "[string]": ModelOverrideSchema },
 		"disableStrictTools?": "boolean",
+		/** Amazon Bedrock Guardrail id or ARN attached to every Converse request under this provider. */
+		"guardrailIdentifier?": "string",
+		/** Bedrock guardrail version (defaults to `"DRAFT"` when a guardrail is set). */
+		"guardrailVersion?": "string",
+		"guardrailTrace?": '"enabled" | "disabled" | "enabled_full"',
+		/** Bedrock invocation-log tags (max 16; keys/values limited to `[a-zA-Z0-9\s:_@$#=/+,-.]`). */
+		"requestMetadata?": { "[string]": "string" },
 
 		"transport?": '"pi-native"',
 	}).narrow((value, ctx) => {

@@ -73,10 +73,15 @@ export interface ExecResult {
 	exitError?: Exception;
 }
 
-interface ChildOutputResult {
-	text: string;
-	overflow: boolean;
-	reason?: OutputLimitError;
+/** The part of a pipe reader collection uses; Bun's and Node's stream reader types both satisfy it. */
+interface ChunkReader {
+	read(): Promise<{ done: boolean; value?: Uint8Array<ArrayBuffer> }>;
+	cancel(reason?: unknown): Promise<void>;
+}
+
+interface CollectedOutput {
+	bytes: Uint8Array<ArrayBuffer>;
+	overflow?: OutputLimitError;
 }
 
 function normalizeOutputLimit(value: number | undefined): number | undefined {
@@ -85,51 +90,14 @@ function normalizeOutputLimit(value: number | undefined): number | undefined {
 	return Math.floor(value);
 }
 
-async function readChildOutput(
-	stream: ReadableStream<Uint8Array>,
-	maxBytes: number | undefined,
-	onOverflow: (reason: OutputLimitError) => void,
-	streamName: "stdout" | "stderr",
-): Promise<ChildOutputResult> {
-	const reader = stream.getReader();
-	const decoder = new TextDecoder();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (!value) continue;
-			if (maxBytes !== undefined && total + value.byteLength > maxBytes) {
-				const accepted = Math.max(0, maxBytes - total);
-				if (accepted > 0) {
-					chunks.push(value.subarray(0, accepted));
-					total += accepted;
-				}
-				const reason = new OutputLimitError(streamName, maxBytes, "");
-				await reader.cancel(reason).catch(() => {});
-				onOverflow(reason);
-				const bytes = new Uint8Array(total);
-				let offset = 0;
-				for (const chunk of chunks) {
-					bytes.set(chunk, offset);
-					offset += chunk.byteLength;
-				}
-				return { text: decoder.decode(bytes), overflow: true, reason };
-			}
-			chunks.push(value);
-			total += value.byteLength;
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	const bytes = new Uint8Array(total);
+function concatChunks(chunks: readonly Uint8Array[], length: number): Uint8Array<ArrayBuffer> {
+	const bytes = new Uint8Array(length);
 	let offset = 0;
 	for (const chunk of chunks) {
 		bytes.set(chunk, offset);
 		offset += chunk.byteLength;
 	}
-	return { text: decoder.decode(bytes), overflow: false };
+	return bytes;
 }
 
 const DEFAULT_STDERR_CAPTURE_BYTES = 1 * 1024 * 1024;
@@ -142,19 +110,31 @@ export class ChildProcess<In extends InMask = InMask> {
 	#exitReasonPending?: Exception;
 	#stderrDone: Promise<void>;
 	#exited: Promise<number>;
+	// The stderr drain counts as one open reader until it ends; stdout readers add themselves.
+	#openPipeReaders = 1;
+	// Pipe reads race this cutoff only when attachTimeout() sets a command deadline. Untimed commands keep complete
+	// EOF-based capture; timed ones stop at the deadline even when an orphaned descendant still holds the pipes.
+	#drainCutoff: Promise<void>;
+	#resolveDrainCutoff: () => void;
+	#timeoutTimer?: NodeJS.Timeout;
 	#stderrStream?: ReadableStream<Uint8Array>;
 	#stderrLimitError?: OutputLimitError;
 	#maxStdoutBytes?: number;
 	#maxStderrBytes = DEFAULT_STDERR_CAPTURE_BYTES;
+	// Termination in flight after kill(); aborted results wait for it before reporting.
+	#terminating?: Promise<boolean | void>;
+	#terminateGroup: boolean;
 
 	constructor(
 		readonly proc: PipedSubprocess<In>,
 		readonly exposeStderr: boolean,
 		retainFullStderr = exposeStderr,
 		outputLimits: OutputLimits = {},
+		terminateGroup = false,
 	) {
 		this.#maxStdoutBytes = normalizeOutputLimit(outputLimits.maxStdoutBytes);
 		this.#maxStderrBytes = normalizeOutputLimit(outputLimits.maxStderrBytes) ?? DEFAULT_STDERR_CAPTURE_BYTES;
+		this.#terminateGroup = terminateGroup;
 		if (retainFullStderr) this.#stderrChunks = [];
 
 		const dec = new TextDecoder();
@@ -168,10 +148,17 @@ export class ChildProcess<In extends InMask = InMask> {
 			this.#stderrStream = teeStream;
 			stderrStream = drainStream;
 		}
+		const drainCutoff = Promise.withResolvers<void>();
+		this.#drainCutoff = drainCutoff.promise;
+		this.#resolveDrainCutoff = drainCutoff.resolve;
+
 		this.#stderrDone = (async () => {
+			const reader = stderrStream.getReader();
 			try {
 				let retainedBytes = 0;
-				for await (const chunk of stderrStream) {
+				for (;;) {
+					const chunk = await this.#nextChunk(reader);
+					if (!chunk) break;
 					const accepted = Math.max(0, Math.min(chunk.byteLength, this.#maxStderrBytes - retainedBytes));
 					if (accepted > 0) {
 						const retained = accepted === chunk.byteLength ? chunk : chunk.subarray(0, accepted);
@@ -183,11 +170,13 @@ export class ChildProcess<In extends InMask = InMask> {
 					if (accepted < chunk.byteLength) {
 						const reason = new OutputLimitError("stderr", this.#maxStderrBytes, this.#stderrTail);
 						this.#stderrLimitError = reason;
+						await reader.cancel(reason).catch(() => {});
 						this.kill(reason);
 						break;
 					}
 				}
 			} catch {}
+			this.#openPipeReaders--;
 			this.#stderrTail += dec.decode();
 			trim();
 		})();
@@ -209,6 +198,11 @@ export class ChildProcess<In extends InMask = InMask> {
 				}
 
 				await this.#stderrDone;
+				if (this.#exitReasonPending) {
+					this.#exitReason = this.#exitReasonPending;
+					reject(this.#exitReasonPending);
+					return;
+				}
 
 				if (exitCode !== null) {
 					this.#exitReason = new NonZeroExitError(exitCode, this.#stderrTail);
@@ -269,44 +263,113 @@ export class ChildProcess<In extends InMask = InMask> {
 	}
 
 	kill(reason?: Exception, gracefulMs?: number) {
-		if (reason && !this.#exitReasonPending) this.#exitReasonPending = reason;
-		if (!this.proc.killed)
-			void Process.fromPid(this.proc.pid)
-				?.terminate(gracefulMs === undefined ? undefined : { gracefulMs })
+		if (reason && !this.#exitReasonPending) {
+			this.#exitReasonPending = reason;
+			// The normalized exit promise may already have resolved from a dead group leader; results still need to
+			// report the later deadline.
+			if (this.proc.exitCode !== null) this.#exitReason = reason;
+		}
+		if (this.proc.exitCode !== null && this.#terminateGroup && this.#openPipeReaders > 0) {
+			// A detached child leads its own process group. Once the leader exits the native handle cannot rediscover
+			// the group id, but a pipe-holding descendant keeps that exact group alive.
+			try {
+				process.kill(-this.proc.pid, "SIGKILL");
+			} catch {}
+			this.#terminating = Promise.resolve();
+			return;
+		}
+		if (!this.proc.killed) {
+			const options =
+				gracefulMs === undefined
+					? this.#terminateGroup
+						? { group: true }
+						: undefined
+					: { gracefulMs, group: this.#terminateGroup };
+			this.#terminating = Process.fromPid(this.proc.pid)
+				?.terminate(options)
 				?.catch(e => void e);
+		}
+	}
+
+	/** Next chunk, or `undefined` at EOF or once the command deadline cuts collection off. */
+	async #nextChunk(reader: ChunkReader): Promise<Uint8Array<ArrayBuffer> | undefined> {
+		const next = await Promise.race([reader.read(), this.#drainCutoff.then(() => undefined)]);
+		if (next === undefined) {
+			await reader.cancel().catch(() => {});
+			return undefined;
+		}
+		return next.done ? undefined : next.value;
+	}
+
+	/** Collect stdout until EOF, the command deadline, or `maxBytes` (which kills the child). */
+	async #collectStdout(maxBytes: number | undefined): Promise<CollectedOutput> {
+		this.#openPipeReaders++;
+		const reader = this.proc.stdout.getReader();
+		const chunks: Uint8Array[] = [];
+		let length = 0;
+		let overflow: OutputLimitError | undefined;
+		try {
+			for (;;) {
+				const chunk = await this.#nextChunk(reader);
+				if (!chunk) break;
+				if (maxBytes !== undefined && length + chunk.byteLength > maxBytes) {
+					const accepted = maxBytes - length;
+					if (accepted > 0) {
+						chunks.push(chunk.subarray(0, accepted));
+						length += accepted;
+					}
+					overflow = new OutputLimitError("stdout", maxBytes, "");
+					await reader.cancel(overflow).catch(() => {});
+					this.kill(overflow);
+					break;
+				}
+				chunks.push(chunk);
+				length += chunk.byteLength;
+			}
+		} catch {
+			// A cancelled or failed read keeps whatever was already collected.
+		} finally {
+			this.#openPipeReaders--;
+			reader.releaseLock();
+		}
+		return { bytes: concatChunks(chunks, length), overflow };
+	}
+
+	async #throwIfAborted(): Promise<void> {
+		const exitReason = this.exitReason;
+		if (!exitReason?.aborted) return;
+		if (this.#terminating) await this.#terminating;
+		throw exitReason;
+	}
+
+	async #readOutputBytes(maxBytes: number | undefined, waitForCleanExit: boolean): Promise<Uint8Array<ArrayBuffer>> {
+		const p = this.#collectStdout(maxBytes);
+		if (this.#nothrow) return (await p).bytes;
+		const { bytes, overflow } = waitForCleanExit ? (await Promise.all([p, this.exitedCleanly]))[0] : await p;
+		if (overflow) throw overflow;
+		await this.#throwIfAborted();
+		return bytes;
 	}
 
 	async text(maxBytes?: number): Promise<string> {
-		const result = await readChildOutput(
-			this.stdout,
-			maxBytes === undefined ? this.#maxStdoutBytes : normalizeOutputLimit(maxBytes),
-			reason => this.kill(reason),
-			"stdout",
-		);
-		if (this.#nothrow) return result.text;
-		await this.exitedCleanly;
-		if (result.overflow) throw result.reason;
-		return result.text;
+		const limit = maxBytes === undefined ? this.#maxStdoutBytes : normalizeOutputLimit(maxBytes);
+		return new TextDecoder().decode(await this.#readOutputBytes(limit, true));
 	}
 
 	async blob(): Promise<Blob> {
-		const p = new Response(this.stdout).blob();
-		if (this.#nothrow) return p;
-		const [blob] = await Promise.all([p, this.exitedCleanly]);
-		return blob;
+		return new Blob([await this.#readOutputBytes(this.#maxStdoutBytes, true)]);
 	}
 
 	async json(): Promise<unknown> {
-		return new Response(this.stdout).json();
+		return JSON.parse(new TextDecoder().decode(await this.#readOutputBytes(this.#maxStdoutBytes, false)));
 	}
 
 	async arrayBuffer(): Promise<ArrayBuffer> {
-		return new Response(this.stdout).arrayBuffer();
+		return (await this.#readOutputBytes(this.#maxStdoutBytes, false)).buffer;
 	}
 
 	async bytes(): Promise<Uint8Array> {
-		const body = (await new Response(this.stdout).bytes()) as Uint8Array | ArrayBuffer;
-		return body instanceof Uint8Array ? body : new Uint8Array(body);
+		return this.#readOutputBytes(this.#maxStdoutBytes, false);
 	}
 
 	async wait(opts?: WaitOptions): Promise<ExecResult> {
@@ -316,11 +379,8 @@ export class ChildProcess<In extends InMask = InMask> {
 			throw new Error('Full stderr capture must be requested when spawning the process (pass stderr: "full")');
 		}
 
-		const stdoutP = readChildOutput(
-			this.stdout,
+		const stdoutP = this.#collectStdout(
 			opts?.maxStdoutBytes === undefined ? this.#maxStdoutBytes : normalizeOutputLimit(opts.maxStdoutBytes),
-			reason => this.kill(reason),
-			"stdout",
 		);
 		const stderrP =
 			stderrMode === "full" && stderrChunks
@@ -328,7 +388,7 @@ export class ChildProcess<In extends InMask = InMask> {
 				: this.#stderrDone.then(() => this.#stderrTail);
 
 		const [stdoutResult, stderr] = await Promise.all([stdoutP, stderrP]);
-		const stdout = stdoutResult.text;
+		const stdout = new TextDecoder().decode(stdoutResult.bytes);
 
 		let exitError: Exception | undefined;
 		try {
@@ -337,12 +397,17 @@ export class ChildProcess<In extends InMask = InMask> {
 			if (err instanceof Exception) exitError = err;
 			else throw err;
 		}
+		this.#clearTimeout();
 
 		if (!exitError) exitError = this.exitReason;
-		if (!exitError) exitError = stdoutResult.reason ?? this.#stderrLimitError;
+		if (!exitError) exitError = stdoutResult.overflow ?? this.#stderrLimitError;
 		if (!exitError && this.exitCode !== null && this.exitCode !== 0) {
 			exitError = new NonZeroExitError(this.exitCode, this.#stderrTail);
 		}
+
+		// Hold an aborted result until the kill completes: reporting while termination is still in flight would leave
+		// timed-out descendants alive past the caller's budget.
+		if (exitError?.aborted && this.#terminating) await this.#terminating;
 
 		const exitCode = exitError?.aborted ? null : (this.exitCode ?? (exitError ? exitError.exitCode : null));
 		const ok = exitCode === 0 && !exitError;
@@ -361,18 +426,28 @@ export class ChildProcess<In extends InMask = InMask> {
 		this.#exited.catch(() => {}).finally(() => signal.removeEventListener("abort", onAbort));
 	}
 
+	#clearTimeout(): void {
+		if (!this.#timeoutTimer) return;
+		clearTimeout(this.#timeoutTimer);
+		this.#timeoutTimer = undefined;
+	}
+
 	attachTimeout(ms: number): void {
 		if (ms <= 0 || this.proc.killed) return;
 		this.#exited.catch(() => {});
-		Promise.race([
-			Bun.sleep(ms).then(() => true),
-			this.proc.exited.then(
-				() => false,
-				() => false,
-			),
-		]).then(timedOut => {
-			if (timedOut) this.kill(new TimeoutError(ms, this.#stderrTail));
-		});
+		// One unref'd deadline controls both termination and pipe collection; wait() clears it, so a fast command
+		// does not hold the event loop for the unused remainder.
+		const timer = setTimeout(() => {
+			// The caller's budget is breached: hard-kill the tree (a graceful phase loses TERM-ignoring descendants once
+			// the root dies). A detached group can outlive its leader; kill it only while an inherited pipe proves the
+			// group still has a live member, which avoids stale group-id reuse.
+			if (this.proc.exitCode === null || (this.#openPipeReaders > 0 && this.#terminateGroup)) {
+				this.kill(new TimeoutError(ms, this.#stderrTail), -1);
+			}
+			this.#resolveDrainCutoff();
+		}, ms);
+		timer.unref?.();
+		this.#timeoutTimer = timer;
 	}
 
 	[Symbol.dispose](): void {
@@ -397,15 +472,22 @@ function spawnInternal<In extends InMask = InMask>(
 	opts: ChildSpawnOptions<In> | undefined,
 	retainFullStderr: boolean,
 ): ChildProcess<In> {
-	const { timeout = -1, signal, stderr, maxStdoutBytes, maxStderrBytes, ...rest } = opts ?? {};
+	const { timeout = -1, signal, stderr, detached, maxStdoutBytes, maxStderrBytes, ...rest } = opts ?? {};
 	const child = Bun.spawn(cmd, {
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 		windowsHide: true,
+		detached,
 		...rest,
 	});
-	const cp = new ChildProcess(child, stderr === "full", retainFullStderr, { maxStdoutBytes, maxStderrBytes });
+	const cp = new ChildProcess(
+		child,
+		stderr === "full",
+		retainFullStderr,
+		{ maxStdoutBytes, maxStderrBytes },
+		detached === true,
+	);
 	if (signal) cp.attachSignal(signal);
 	if (timeout > 0) cp.attachTimeout(timeout);
 	return cp;

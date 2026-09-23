@@ -2,6 +2,97 @@
 
 ## [Unreleased]
 
+### Added
+
+- Anthropic thinking-binding controls: Fable 5.1 opts into dropping prefix-mismatched thinking, and a prefix-binding rejection retries once without the bound blocks
+- Anthropic mid-conversation controls: stable system/tool declarations with tool_addition/tool_removal and per-message effort instead of rewriting the cached prefix
+- Anthropic server-side compaction (`compact-2026-01-12`) request/response/replay support, including through the auth gateway and pi-native transport
+- Amazon Bedrock Guardrails (`guardrailIdentifier`/`guardrailVersion`/`guardrailTrace`) and invocation-log `requestMetadata` on Converse requests, including through the pi-native transport; region is inferred from a guardrail ARN
+- Amazon Bedrock `baseUrl` can override the runtime host (query string preserved)
+- Models carry an optional `resolveHeaders` hook; requests materialize it per attempt so command-backed header credentials re-mint after an auth retry
+- `supportsContextManagement` compat opt-out for Anthropic proxies that reject `context_management`
+- GPT-6 Astra keeps the request-level reasoning effort stable per session and carries mid-conversation effort changes as `configuration_update` items, preserving the prompt cache (Codex and OpenAI Responses)
+- Anthropic signed thinking blocks reveal the model that actually served a turn
+- `/login deepinfra`
+- `/login yolo-auto`
+- `/login abliteration`
+- `/login commandcode`
+- `/login stepfun`
+- `/login cline-pass`, ClinePass inference, and five-hour/weekly/monthly quota reporting in `/usage`
+- `/login charm-hyper` and the prepaid credit balance in `/usage`
+- `/login singularityapi-dev` and `/login singularityapi-tech`
+- `/login muse-code` device sign-in for Meta Muse subscriptions, with inference through the subscription's Model API key and rolling/weekly quota in `/usage`
+- OpenRouter sign-in via OAuth with automatic API key provisioning
+- Provider login prompts can request masked entry with `secret: true`
+- Z.AI GLM Coding Plan credit quotas (CREDIT_LIMIT, 5h + weekly) now show in usage reports in a new `credits` unit, with the plan tier (lite/pro/max) as the plan label
+- Alibaba Token Plan usage reports the monthly credit quota, so monthly-only plans show usage
+- Per-account OAuth routing policies (`auth.accountPolicies`): give an account a priority and its own protected quota reserve; accounts inside their reserve yield to siblings, and misconfigured policies fail with a configuration error
+- Usage reports to the auth broker carry an app label (`PROTO_APP_NAME`, default `proto`), and the auth-gateway attributes each request to its caller (`x-proto-install-id`/`x-proto-hostname`/`x-proto-app`) instead of the gateway host
+
+### Changed
+
+- Anthropic prompt caching anchors breakpoints on the stable request head and tool array, adds historical decimation checkpoints, and keeps the head stable across recall refreshes
+- Anthropic OAuth requests default to 1h prompt-cache retention
+- Codex tool calls run in parallel by default
+- Codex priority service tier bills GPT-6 Astra at 2.5x, like the GPT-5.5 generation
+- GitHub Copilot chat requests default to the `copilot-chat` client identity (Enterprise logins keep the Copilot CLI identity), retry a denied identity once as the other, and remember the working identity per credential; `COPILOT_INTEGRATION_ID` pins it
+- GitHub Copilot device login uses the minimal-grant OAuth app on github.com and the Copilot CLI client on GitHub Enterprise domains
+- Auth discovery reports an unreadable or malformed `config.yml` as a configuration error instead of silently ignoring broker and account-policy settings
+
+### Fixed
+
+- Anthropic requests escalate persistent thinking-signature rejections to dropping replayed thinking instead of failing every turn
+- Anthropic zero-output cache refreshes no longer fail on a replayed forced tool_choice
+- Anthropic sessions that start on the API-default effort now send later explicit effort changes
+- Anthropic subscription OAuth requests advertise the OAuth beta and current SDK version
+- Expired AWS SSO access tokens refresh automatically instead of failing until `aws sso login`
+- Amazon Bedrock hoists tool-result images for OpenAI-backed and opaque inference-profile models and for error tool results
+- Amazon Bedrock stream exceptions map to their service status (throttling, validation, timeouts) so retries classify correctly; empty tool descriptions are omitted
+- SigV4 signing sorts canonical query parameters by their encoded form
+- GitLab Duo OpenAI-routed models honor explicit reasoning-off instead of falling back to the server's default effort
+- GitLab Duo side requests honor reasoning-off
+- Requests that run across a price change are costed at the rate in effect when they started, including peak/off-peak estimates
+- Codex tool-call ids are sanitized and clamped to 64 characters so replayed history is accepted
+- Codex purchased credits keep only the exhausted plan allowance usable; an exhausted Spark allowance stays blocked instead of being retried
+- Codex error-body reads are bounded by the pre-response deadline instead of hanging
+- Codex retries after a partially streamed response keep transcript events balanced
+- Codex OAuth login now succeeds for accounts whose token carries an email but no ChatGPT workspace/account id
+- Official Codex endpoint detection now compares parsed URL origin and path, so equivalent spellings (case, default port, `..` segments) of the ChatGPT backend are recognized consistently
+- GitHub Copilot Business `model_not_supported` rejections retry under the alternate client identity
+- HTTP 413 byte/media rejections are classified separately from token-context overflow and are never retried, even when a gateway wraps them in transient wording
+- Tool-argument repair keeps required nullable fields inside `anyOf`/`oneOf` unions instead of stripping data another branch needs
+- Frozen, sealed, or non-extensible tool schemas and schemas carrying function-valued metadata no longer break request building
+- Persisted HTTP 400 request dumps redact provider-specific auth headers (e.g. `x-goog-api-key`, `x-amz-security-token`) and URL query strings
+- Provider in-flight request locks recover when another process removes a freshly created lock
+- `PI_REQ_DEBUG` writes one dump per request instead of one per retry layer, and inference requests carry a default User-Agent
+- Forced reasoning-off side requests on OpenAI Chat Completions routes no longer send `reasoning_effort`
+- Percent-encoded `data:` image URIs decode binary bytes exactly
+- Cursor conversation rotation recovers retry and resume turns by replaying the last user message on the fresh conversation
+- Cursor tool calls keep their arguments through gateway handoffs and stream flushes, and foreign or orphaned tool-call history replays cleanly
+- Cursor tool schemas with combiners are projected for Claude Fable instead of being dropped
+- Cursor plan refusals block only the refused model instead of the whole account
+- Auth-broker client config, token, and account-pool reads no longer fail silently on Windows
+- Account-pool JSON files saved with a UTF-8 BOM load correctly
+- Gemini reasoning-summary runaway detection allows up to 36 planning headers before interrupting a turn
+- Gemini 3 sessions on Cloud Code Assist/Antigravity no longer fail with `400 INVALID_ARGUMENT` when the first replayed tool call has no thought signature
+- gpt-oss tool calls on Antigravity carry function-call ids so replayed turns are accepted
+- Google transports no longer send `minP`/`repetitionPenalty`, which Gemini rejects
+- Z.AI GLM Coding Plan sign-in uses ZCode's registered `zcode://` redirect (paste the final URL or code); `ZAI_OAUTH_REDIRECT_URI` overrides it
+- Cloudflare AI Gateway login is self-contained and routes OpenAI and Workers AI models through the gateway
+- Qianfan API key validation accepts keys that lack access to the probe model
+- The OAuth success page's close button degrades gracefully when the tab cannot be closed by script
+- An empty paste at LM Studio, vLLM, or llama.cpp's optional-key login no longer reports the provider as authenticated, and no longer shadows a real env key
+- Organization denials and usage limits that arrive after another process refreshed the OAuth token still rotate off the affected account
+- Broker-refreshed MCP OAuth credentials keep their token endpoint, so repeated refreshes keep working
+- Azure GPT-6 Astra Chat Completions requests that advertise function tools send `reasoning_effort: "none"`, and remembered effort fallbacks no longer override it
+- OpenAI Responses "Timed out reading request body" 408s on a full-history request are no longer resent unchanged by transport retries
+- Corrupt credential databases are preserved as private `.corrupt-*` backups and recreated instead of aborting startup (log in again to restore credentials); open failures now name the database file and keep their SQLite error codes
+- Z.AI credential ranking keeps a weekly secondary window when token and credit meters report the same windows
+- Kimi Code usage labels the aggregate quota as the weekly limit and reports purchased total quota and monthly quotas separately
+- Kimi `access_terminated_error` (monthly quota termination) now rotates to a sibling credential instead of failing as an auth error
+- Alibaba Token Plan China quota polling no longer pins one workspace, and rejected gateway requests return no report instead of empty limits
+- Ollama Cloud responses record cached prompt tokens as cacheRead instead of counting them as uncached input
+
 ## [18.5.0] - 2026-09-23
 
 ### Added

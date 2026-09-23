@@ -1,11 +1,4 @@
-import {
-	type AuthStorage,
-	type FetchImpl,
-	type Model,
-	type OAuthAccess,
-	withAuth,
-	withOAuthAccess,
-} from "@oh-my-pi/pi-ai";
+import { type AuthStorage, type FetchImpl, type Model, withAuth, withOAuthAccess } from "@oh-my-pi/pi-ai";
 import { resolveCodexResponsesUrl } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import {
@@ -326,19 +319,12 @@ function extractTextSources(text: string): SearchSource[] {
 	return sources;
 }
 
-async function findCodexAuth(
-	authStorage: AuthStorage,
-	sessionId: string | undefined,
-	signal: AbortSignal | undefined,
-): Promise<{ access: OAuthAccess; accountId: string } | null> {
-	const access = await authStorage.getOAuthAccess("openai-codex", sessionId, { signal });
-	if (!access) return null;
-	const accountId = access.accountId ?? getCodexAccountId(access.accessToken);
-	if (!accountId) return null;
-	return { access, accountId };
-}
-
-function resolveCodexSearchTransport(modelRegistry: ModelRegistry | undefined, modelId: string): CodexSearchTransport {
+// Resolved per request attempt so command-backed header credentials re-mint after an auth-retry invalidation.
+async function resolveCodexSearchTransport(
+	modelRegistry: ModelRegistry | undefined,
+	modelId: string,
+	signal?: AbortSignal,
+): Promise<CodexSearchTransport> {
 	const registryModel = modelRegistry?.find("openai-codex", modelId);
 	const bundledModel = getBundledCodexModels().find(model => model.id === modelId);
 	const providerBaseUrl = modelRegistry?.getProviderBaseUrl("openai-codex");
@@ -348,13 +334,11 @@ function resolveCodexSearchTransport(modelRegistry: ModelRegistry | undefined, m
 	}
 
 	const url = resolveCodexResponsesUrl(baseUrl);
+	const headers = await modelRegistry?.getRequestHeaders("openai-codex", modelId, signal);
 	return {
 		baseUrl,
 		url,
-		headers: {
-			...(modelRegistry?.getProviderHeaders("openai-codex") ?? {}),
-			...(registryModel?.headers ?? {}),
-		},
+		headers: { ...headers },
 		customEndpoint: url !== resolveCodexResponsesUrl(CODEX_BASE_URL),
 	};
 }
@@ -640,7 +624,9 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 	if (!firstCandidate) {
 		throw new SearchProviderError("codex", "No Codex web search model is configured.");
 	}
-	const transport = resolveCodexSearchTransport(params.modelRegistry, firstCandidate.modelId);
+	const transport = await resolveCodexSearchTransport(params.modelRegistry, firstCandidate.modelId, params.signal);
+	const requestTransport = () =>
+		resolveCodexSearchTransport(params.modelRegistry, firstCandidate.modelId, params.signal);
 
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
 	const query = parsed.hasDirectives ? formatQuery(parsed, GOOGLE_QUERY_SYNTAX) : params.query;
@@ -667,14 +653,14 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 			: params.authStorage.resolver("openai-codex", resolverOptions);
 		result = await withAuth(
 			keyOrResolver,
-			accessToken =>
+			async accessToken =>
 				runCodexSearchCandidates({
 					auth: { accessToken },
 					params,
 					query,
 					modelCandidates,
 					modelWasConfigured: configuredModel !== undefined,
-					transport,
+					transport: await requestTransport(),
 				}),
 			{
 				signal: params.signal,
@@ -682,7 +668,9 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 			},
 		);
 	} else {
-		const seed = await findCodexAuth(params.authStorage, params.sessionId, params.signal);
+		const seed = await params.authStorage.getOAuthAccess("openai-codex", params.sessionId, {
+			signal: params.signal,
+		});
 		if (!seed) {
 			throw new Error(
 				"No Codex OAuth credentials found. Login with 'proto /login openai-codex' to enable Codex web search.",
@@ -692,21 +680,18 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 		result = await withOAuthAccess(
 			params.authStorage,
 			"openai-codex",
-			access => {
+			async access => {
 				const accountId = access.accountId ?? getCodexAccountId(access.accessToken);
-				if (!accountId) {
-					throw new Error("Codex OAuth credential is missing a ChatGPT account id");
-				}
 				return runCodexSearchCandidates({
 					auth: { accessToken: access.accessToken, accountId },
 					params,
 					query,
 					modelCandidates,
 					modelWasConfigured: configuredModel !== undefined,
-					transport,
+					transport: await requestTransport(),
 				});
 			},
-			{ sessionId: params.sessionId, signal: params.signal, seed: seed.access },
+			{ sessionId: params.sessionId, signal: params.signal, seed },
 		);
 	}
 

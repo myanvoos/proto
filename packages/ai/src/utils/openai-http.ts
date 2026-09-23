@@ -1,4 +1,4 @@
-import { fetchWithRetry, readSseJson, type SseEventObserver } from "@oh-my-pi/pi-utils";
+import { fetchWithRetry, readSseJsonOrText, type SseEventObserver } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { OpenAIHttpError } from "../error";
 
@@ -30,6 +30,8 @@ export interface OpenAIStreamRequestInit {
 	signal: AbortSignal;
 	fetch?: FetchImpl;
 
+	shouldRetryResponse?: (response: Response, bodyText: string) => boolean | Promise<boolean>;
+
 	onSseEvent?: SseEventObserver;
 }
 
@@ -49,7 +51,9 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 		fetch: init.fetch,
 		maxAttempts: DEFAULT_MAX_ATTEMPTS,
 
-		shouldRetryResponse: (response, bodyText) => !isConcurrencyAdmissionRejection(response, bodyText),
+		shouldRetryResponse: async (response, bodyText) =>
+			!isConcurrencyAdmissionRejection(response, bodyText) &&
+			(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText))),
 
 		timeout: false,
 	});
@@ -62,10 +66,32 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 		});
 	}
 	return {
-		events: readSseJson<TEvent>(response.body, init.signal, init.onSseEvent),
+		events: decodeStream<TEvent>(response.body, init.signal, init.onSseEvent),
 		response,
 		requestId: response.headers.get("x-request-id"),
 	};
+}
+
+/**
+ * A reverse proxy that already committed to HTTP 200 reports throttles as plain
+ * text frames (`data: 429 Too Many Requests`, an HTML page); classify those as
+ * in-band errors. Other non-JSON frames rethrow the strict parse error, and a
+ * JSON-encoded string frame is dropped after classification.
+ */
+async function* decodeStream<TEvent>(
+	body: ReadableStream<Uint8Array>,
+	signal: AbortSignal | undefined,
+	onSseEvent: SseEventObserver | undefined,
+): AsyncGenerator<TEvent> {
+	for await (const frame of readSseJsonOrText<TEvent>(body, signal, onSseEvent)) {
+		if (typeof frame === "string") {
+			const inBand = AIError.createInBandProviderErrorFromText(frame);
+			if (inBand) throw inBand;
+			JSON.parse(frame);
+			continue;
+		}
+		yield frame;
+	}
 }
 
 export async function captureOpenAIHttpError(response: Response): Promise<AIError.OpenAIHttpError> {

@@ -61,4 +61,15 @@ describe("ToolCallLoopGuard", () => {
 			count: 2,
 		});
 	});
+
+	it("treats a reordered parallel batch as the same repeated batch", () => {
+		const guard = new ToolCallLoopGuard({ threshold: 2, exemptTools: [] });
+
+		expect(
+			guard.recordTurn(turn(toolCall("bash", { command: "echo same" }), toolCall("read", { path: "same.ts" }))),
+		).toBeNull();
+		expect(
+			guard.recordTurn(turn(toolCall("read", { path: "same.ts" }), toolCall("bash", { command: "echo same" }))),
+		).toMatchObject({ kind: "repeated_tool_call", count: 2 });
+	});
 });

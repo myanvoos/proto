@@ -1,4 +1,4 @@
-import type { UsageLimit, UsageResetCredits } from "@oh-my-pi/pi-ai";
+import type { UsageLimit, UsageReport, UsageResetCredits } from "@oh-my-pi/pi-ai";
 
 /** Include the usage tier in a limit title unless its label already names it. */
 export function formatLimitTitle(limit: UsageLimit): string {
@@ -80,4 +80,32 @@ export function summarizeUsageResetCredits(
 		soonestExpiry,
 		unavailableReason,
 	};
+}
+
+function collapseSharedLimits(limits: UsageLimit[]): UsageLimit[] {
+	const seenGroups = new Set<string>();
+	let collapsed: UsageLimit[] | undefined;
+	for (let index = 0; index < limits.length; index++) {
+		const limit = limits[index]!;
+		const group = limit.scope.sharedGroup;
+		if (group !== undefined && seenGroups.has(group)) {
+			collapsed ??= limits.slice(0, index);
+			continue;
+		}
+		if (group !== undefined) seenGroups.add(group);
+		collapsed?.push(limit);
+	}
+	return collapsed ?? limits;
+}
+
+/** Collapse routing-specific copies of one shared quota (same `sharedGroup`) for user-facing usage views. */
+export function collapseSharedUsageReports(reports: UsageReport[]): UsageReport[] {
+	let collapsed: UsageReport[] | undefined;
+	for (let index = 0; index < reports.length; index++) {
+		const report = reports[index]!;
+		const limits = collapseSharedLimits(report.limits);
+		if (limits !== report.limits) collapsed ??= reports.slice(0, index);
+		collapsed?.push(limits === report.limits ? report : { ...report, limits });
+	}
+	return collapsed ?? reports;
 }

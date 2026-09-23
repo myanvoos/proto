@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { logger, postmortem } from "@oh-my-pi/pi-utils";
+import { getSafeProjectCwd, logger, postmortem } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import fnEnvHelper from "./shell-snapshot-fn-env.sh" with { type: "text" };
 
@@ -218,6 +218,7 @@ export async function getOrCreateSnapshot(
 			}
 		}
 		const child = Bun.spawn([shell, "-c", script], {
+			cwd: getSafeProjectCwd(),
 			env: spawnEnv,
 			stdin: "ignore",
 			stdout: "ignore",

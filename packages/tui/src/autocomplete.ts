@@ -106,6 +106,16 @@ function parsePathPrefix(prefix: string): { rawPrefix: string; isAtPrefix: boole
 	return { rawPrefix: prefix, isAtPrefix: false, isQuotedPrefix: false };
 }
 
+/**
+ * Whether an autocomplete value names a directory: trailing slash or
+ * backslash, optionally followed by a closing quote for quoted paths. Shared
+ * by the provider suffix logic and the editor chain-on-accept behavior so Tab
+ * and Enter acceptance stay in sync.
+ */
+export function isDirectoryCompletionValue(value: string): boolean {
+	return /[\\/]["']?$/.test(value);
+}
+
 function buildCompletionValue(
 	path: string,
 	options: { isDirectory: boolean; isAtPrefix: boolean; isQuotedPrefix: boolean },
@@ -293,8 +303,18 @@ function buildSlashCommandCompletions(
 			let best: (AutocompleteItem & { score: number; usage: number }) | undefined;
 
 			const isSkillCommand = name.startsWith(SKILL_NAMESPACE);
+			// Skills also match by bare name so a broken-out or mid-prompt skill
+			// ranks at prefix strength (`/batch` → `skill:batch`) instead of a
+			// weak full-name fuzzy hit.
 			const nameScore =
-				lowerPrefix.length === 0 && isSkillCommand ? 950 : scoreCommandTextMatch(lowerPrefix, name.toLowerCase());
+				lowerPrefix.length === 0 && isSkillCommand
+					? 950
+					: isSkillCommand
+						? Math.max(
+								scoreCommandTextMatch(lowerPrefix, name.toLowerCase()),
+								skillBareNameBreakoutTier(lowerPrefix, name.slice(SKILL_NAMESPACE.length).toLowerCase()),
+							)
+						: scoreCommandTextMatch(lowerPrefix, name.toLowerCase());
 			const lowerDesc = staticDesc.toLowerCase();
 			const descScore =
 				lowerDesc && fuzzyMatch(lowerPrefix, lowerDesc) ? fuzzyScore(lowerPrefix, lowerDesc) * 0.5 : 0;
@@ -356,13 +376,76 @@ function hasPromptTextBeforeSlash(
 
 export const SKILL_NAMESPACE = "skill:";
 
+/** Exact/leading-prefix tier for ordinary command names and aliases. */
+function commandBreakoutTier(lowerPrefix: string, lowerTarget: string): number {
+	if (lowerPrefix === lowerTarget) return 1000;
+	if (lowerTarget.startsWith(lowerPrefix)) return 900;
+	return 0;
+}
+
+/**
+ * Match a bare skill name from the beginning of the name or any
+ * hyphen-delimited segment (`/last` → `research-last30days`). Scans segment
+ * boundaries in place without materializing split arrays.
+ */
+function skillBareNameBreakoutTier(lowerPrefix: string, lowerBareName: string): number {
+	if (lowerPrefix.length === 0) return 0;
+	if (lowerPrefix === lowerBareName) return 1000;
+	if (lowerBareName.startsWith(lowerPrefix)) return 900;
+
+	let segmentStart = 0;
+	while (segmentStart < lowerBareName.length) {
+		while (segmentStart < lowerBareName.length && lowerBareName.charCodeAt(segmentStart) !== 45) {
+			segmentStart += 1;
+		}
+		segmentStart += 1;
+		if (segmentStart >= lowerBareName.length) break;
+
+		if (lowerBareName.startsWith(lowerPrefix, segmentStart)) {
+			let segmentEnd = segmentStart;
+			while (segmentEnd < lowerBareName.length && lowerBareName.charCodeAt(segmentEnd) !== 45) {
+				segmentEnd += 1;
+			}
+			return lowerPrefix.length === segmentEnd - segmentStart ? 1000 : 900;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * Collapse `skill:*` commands into a single `/skill:` namespace row while the
+ * typed prefix has not committed to the namespace. A lone group entry (shown
+ * only while the prefix is still a prefix of `skill:`) keeps the `/` popup
+ * readable. A skill breaks out of the group only when its bare name matches
+ * the prefix at the beginning of the name or a hyphen-delimited segment, at a
+ * strictly stronger tier than every non-skill command name and alias: a tie
+ * keeps the popup command-only, and fuzzy-only skill hits never surface.
+ */
 function collapseSkillNamespace(commands: CommandEntry[], lowerPrefix: string): CommandEntry[] {
 	if (lowerPrefix.startsWith(SKILL_NAMESPACE)) return commands;
+	const approachesNamespace = SKILL_NAMESPACE.startsWith(lowerPrefix);
+	let commandTier = 0;
+	if (!approachesNamespace) {
+		for (const cmd of commands) {
+			const name = getCommandName(cmd);
+			if (!name || name.startsWith(SKILL_NAMESPACE)) continue;
+			commandTier = Math.max(commandTier, commandBreakoutTier(lowerPrefix, name.toLowerCase()));
+			for (const alias of getCommandAliases(cmd)) {
+				commandTier = Math.max(commandTier, commandBreakoutTier(lowerPrefix, alias.toLowerCase()));
+			}
+			if (commandTier === 1000) break;
+		}
+	}
 	let skillCount = 0;
 	const rest = commands.filter(cmd => {
-		if (!getCommandName(cmd)?.startsWith(SKILL_NAMESPACE)) return true;
+		const name = getCommandName(cmd);
+		if (!name?.startsWith(SKILL_NAMESPACE)) return true;
 		skillCount += 1;
-		return false;
+		return (
+			!approachesNamespace &&
+			skillBareNameBreakoutTier(lowerPrefix, name.slice(SKILL_NAMESPACE.length).toLowerCase()) > commandTier
+		);
 	});
 	if (skillCount === 0) return commands;
 	if (!SKILL_NAMESPACE.startsWith(lowerPrefix)) return rest;
@@ -380,7 +463,10 @@ export function midPromptSkillTokenMatches(lowerToken: string, name: string, des
 		if (scoreCommandTextMatch(lowerToken, lowerName) > 0) return true;
 		return !!description && scoreCommandTextMatch(lowerToken, description.toLowerCase()) > 0;
 	}
-	return lowerName.startsWith(SKILL_NAMESPACE) && lowerName.slice(SKILL_NAMESPACE.length).startsWith(lowerToken);
+	return (
+		lowerName.startsWith(SKILL_NAMESPACE) &&
+		skillBareNameBreakoutTier(lowerToken, lowerName.slice(SKILL_NAMESPACE.length)) > 0
+	);
 }
 
 function buildMidPromptSkillCompletions(commands: CommandEntry[], lowerPrefix: string): AutocompleteItem[] {
@@ -604,7 +690,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 			// A directory completion ends in "/": keep the token open so child
 			// suggestions can continue instead of terminating it with a space.
-			const separator = item.value.endsWith("/") ? "" : " ";
+			const separator = isDirectoryCompletionValue(item.value) ? "" : " ";
 			const newLine = `${beforePrefix + item.value}${separator}${afterCursor}`;
 			const newLines = [...lines];
 			newLines[cursorLine] = newLine;

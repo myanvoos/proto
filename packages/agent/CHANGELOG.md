@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- Anthropic models on the official endpoint compact through Anthropic's server-side compaction
+- `canReplayRemoteCompaction()` reports whether a model can read stored native history, independently of whether new native compaction is enabled
+
+### Fixed
+
+- Proxy responses keep the cost the server reported instead of recomputing it
+- Remote compaction waits up to 5 minutes (the Codex stream idle timeout) instead of failing long compact streams at 3 minutes
+- A call to a misspelled tool name suggests the advertised tool sharing its trailing segment (e.g. an MCP tool whose id segment was garbled)
+- Queued steering no longer skips tool calls the model already emitted; only not-yet-started interruptible waits are skipped, and the message injects after the batch
+- Compaction summarizes an older oversized step instead of retaining it past the recent-history budget, so long tool loops free enough context
+- Repeated compaction no longer skips messages the previous summary retained, and an oversized custom message or branch summary is no longer pulled back into the kept tail
+- Native compaction carries an existing local summary into its first provider request, and messages appended while a speculative native snapshot ran stay compactable
+- Native replay reuse requires the active model to speak a Responses API, so a Chat Completions model falls back to the local summary instead of dropping the payload
+- `onTurnEnd` runs for a turn stopped by a terminal-tool-result abort (e.g. a subagent's final `yield`), so per-turn bookkeeping observes the yield turn
+- The provider-native compaction summary reports its token count as input the compaction processed, not as tokens retained in the replay payload
+- A native tokenizer encoding the loaded addon does not recognize falls back to the conservative byte bound instead of crashing spawn and compaction
+- Intent-field schema injection is memoized per input schema, so repeated model calls reuse tool parameters by reference instead of re-cloning the catalog and defeating downstream schema caches
+- A throwing aside discard hook no longer skips the remaining hooks or replaces the agent loop's own error
+- Codex remote compaction retries unexpected socket closures and no longer falls back to the unsupported `/responses/compact` endpoint after a V2 failure
+
 ## [18.1.23] - 2026-09-20
 
 ### Breaking Changes

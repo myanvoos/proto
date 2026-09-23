@@ -1,3 +1,4 @@
+import { isCerebrasQwen38Model } from "./compat/openai";
 import { Effort, THINKING_EFFORTS } from "./effort";
 import { modelMatchesHost } from "./hosts";
 import {
@@ -15,6 +16,7 @@ import {
 } from "./identity/classify";
 import {
 	findThinkingVariantToken,
+	hasThinkingPrefixBinding,
 	isDeepseekModelIdOrName,
 	isDeepseekV4FlashModelId,
 	isGlm52ReasoningEffortModelId,
@@ -82,6 +84,39 @@ const DEFAULT_REASONING_EFFORTS_WITH_MAX: readonly Effort[] = [
 ];
 
 const OLLAMA_REASONING_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.Max];
+
+// Exact ids on purpose: namespaced gateway rows (`meta/muse-spark-1.3`) keep their own vocabularies.
+const MUSE_SPARK_MAX_MODEL_ID = "muse-spark-1.3";
+const MUSE_SPARK_XHIGH_MODEL_IDS: Record<string, true> = {
+	"muse-spark-1.1": true,
+	"muse-spark-1.2": true,
+	"muse-spark-1.2-contributor": true,
+	"muse-spark-1.3-contributor": true,
+};
+
+// The bare `deepseek-flash` alias serves DeepSeek-V4.1-Flash and shares its wire contract and ladder.
+const DEEPSEEK_V41_FLASH_CONTRACT_IDS: Record<string, true> = {
+	"deepseek-flash": true,
+	"deepseek-v4-flash": true,
+	"deepseek-v4.1-flash-expires-on-0910": true,
+};
+
+// Providers whose discovery or curated seeds pin reviewed per-model ladders the generic rules cannot reproduce.
+const PROVIDER_AUTHORED_THINKING_PROVIDERS: Record<string, true> = {
+	abliteration: true,
+	"charm-hyper": true,
+	"cline-pass": true,
+	commandcode: true,
+	"singularityapi-dev": true,
+	"singularityapi-tech": true,
+	stepfun: true,
+	"yolo-auto": true,
+};
+
+// Exact rows whose source metadata reports stale `reasoning: false` although the reviewed ladder applies.
+const NEUTRAL_REASONING_UPGRADES: Readonly<Record<string, Readonly<Record<string, true>>>> = {
+	deepseek: DEEPSEEK_V41_FLASH_CONTRACT_IDS,
+};
 type EffortMap = Partial<Record<Effort, string>>;
 
 const GROQ_QWEN3_32B_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
@@ -110,6 +145,7 @@ export function resolveModelThinking<TApi extends Api>(
 	compat: CompatOf<TApi>,
 ): ThinkingConfig | undefined {
 	if (!spec.reasoning) return undefined;
+	if (spec.provider === "cline-pass" && isReasoningEffortUnsupported(compat)) return undefined;
 	if (omitsWireReasoningEffort(spec.api, compat)) return undefined;
 	if (spec.thinking && Array.isArray(spec.thinking.efforts) && spec.thinking.efforts.length > 0) {
 		return fillThinkingWireDefaults(spec, compat, spec.thinking);
@@ -120,13 +156,32 @@ export function resolveModelThinking<TApi extends Api>(
 	return deriveThinking(spec, compat);
 }
 
+export function upgradeNeutralReasoning<TApi extends Api>(spec: ModelSpec<TApi>): ModelSpec<TApi> {
+	if (spec.reasoning) return spec;
+	if (spec.thinking && Array.isArray(spec.thinking.efforts) && spec.thinking.efforts.length > 0) return spec;
+	return NEUTRAL_REASONING_UPGRADES[spec.provider]?.[spec.id] === true ? { ...spec, reasoning: true } : spec;
+}
+
+export function hasProviderAuthoredThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: CompatOf<TApi>): boolean {
+	const thinking = spec.thinking;
+	if (!thinking || !Array.isArray(thinking.efforts) || thinking.efforts.length === 0) return false;
+	if (PROVIDER_AUTHORED_THINKING_PROVIDERS[spec.provider] === true) return true;
+	return thinking.mode === "effort" && isOpenAICompatReasoningApi(spec.api) && isChatTemplateThinkingFormat(compat);
+}
+
+export function hasModelScopedEffortLadder<TApi extends Api>(spec: ModelSpec<TApi>, compat: CompatOf<TApi>): boolean {
+	return getModelDefinedEfforts(spec, compat) !== undefined || parseKnownModel(spec.id).family !== "unknown";
+}
+
 function fillThinkingWireDefaults<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
 	thinking: ThinkingConfig,
 ): ThinkingConfig {
 	const parsed = parseKnownModel(spec.id);
-	const normalizedEfforts = getModelDefinedEfforts(spec, compat) ?? thinking.efforts;
+	const normalizedEfforts = hasProviderAuthoredThinking(spec, compat)
+		? thinking.efforts
+		: (getModelDefinedEfforts(spec, compat) ?? thinking.efforts);
 	const effortsChanged = !sameEffortList(normalizedEfforts, thinking.efforts);
 	const effortMap =
 		thinking.effortMap === undefined || effortsChanged
@@ -137,6 +192,7 @@ function fillThinkingWireDefaults<TApi extends Api>(
 		thinking.supportsDisplay === undefined &&
 		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
 		supportsAdaptiveThinkingDisplay(spec.id);
+	const needsPrefixBinding = thinking.prefixBinding === undefined && hasThinkingPrefixBinding(spec.id);
 	const needsRequiresEffort =
 		thinking.requiresEffort === undefined &&
 		(impliesMandatoryReasoning(parsed, spec.id) ||
@@ -144,7 +200,14 @@ function fillThinkingWireDefaults<TApi extends Api>(
 			isOpenCodeGatewayOxAlphaModel(spec));
 	const needsDefaultLevel =
 		thinking.defaultLevel === undefined && (isKimiK3ModelId(spec.id) || isGlm53ReasoningEffortModelId(spec.id));
-	if (!effortsChanged && !shouldReplaceEffortMap && !needsDisplay && !needsRequiresEffort && !needsDefaultLevel) {
+	if (
+		!effortsChanged &&
+		!shouldReplaceEffortMap &&
+		!needsDisplay &&
+		!needsPrefixBinding &&
+		!needsRequiresEffort &&
+		!needsDefaultLevel
+	) {
 		return thinking;
 	}
 	const filled: ThinkingConfig = { ...thinking };
@@ -160,6 +223,9 @@ function fillThinkingWireDefaults<TApi extends Api>(
 	}
 	if (needsDisplay) {
 		filled.supportsDisplay = true;
+	}
+	if (needsPrefixBinding) {
+		filled.prefixBinding = true;
 	}
 	if (needsDefaultLevel) {
 		filled.defaultLevel = Effort.Max;
@@ -192,6 +258,9 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
 		supportsAdaptiveThinkingDisplay(spec.id)
 	) {
 		config.supportsDisplay = true;
+	}
+	if (hasThinkingPrefixBinding(spec.id)) {
+		config.prefixBinding = true;
 	}
 	if (
 		impliesMandatoryReasoning(parsed, spec.id) ||
@@ -287,8 +356,18 @@ function getModelDefinedEfforts<TApi extends Api>(
 	if (isKimiK3ModelId(spec.id)) {
 		return LOW_HIGH_MAX_REASONING_EFFORTS;
 	}
+	if (isCerebrasQwen38Model(spec)) {
+		return LOW_MEDIUM_HIGH_REASONING_EFFORTS;
+	}
 	if (isOpenCodeGatewayOxAlphaModel(spec)) {
 		return LOW_HIGH_MAX_REASONING_EFFORTS;
+	}
+	const lowerId = spec.id.toLowerCase();
+	if (lowerId === MUSE_SPARK_MAX_MODEL_ID) {
+		return THINKING_EFFORTS;
+	}
+	if (MUSE_SPARK_XHIGH_MODEL_IDS[lowerId] === true) {
+		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 	}
 	if (isSakanaFuguReasoningModel(spec)) {
 		return HIGH_MAX_REASONING_EFFORTS;
@@ -299,10 +378,6 @@ function getModelDefinedEfforts<TApi extends Api>(
 	const anthropicAdaptive = getAnthropicAdaptiveEfforts(spec);
 	if (anthropicAdaptive !== undefined) {
 		return anthropicAdaptive;
-	}
-
-	if (spec.provider === "firepass") {
-		return FIVE_TIER_EFFORTS_LOW_TO_MAX;
 	}
 
 	if (spec.provider === "ollama") {
@@ -318,14 +393,19 @@ function getModelDefinedEfforts<TApi extends Api>(
 			(spec.api === "ollama-chat" && spec.provider === "ollama-cloud")) &&
 		isDeepseekReasoningModel(spec)
 	) {
-		if (isDeepseekV4FlashModelId(spec.id)) {
+		if (
+			isDeepseekV4FlashModelId(spec.id) ||
+			(spec.provider === "deepseek" && DEEPSEEK_V41_FLASH_CONTRACT_IDS[spec.id] === true)
+		) {
 			return LOW_HIGH_MAX_REASONING_EFFORTS;
 		}
-		if (bareModelId(spec.id).toLowerCase().includes("deepseek-v4")) {
+		const bareId = bareModelId(spec.id).toLowerCase();
+		if (bareId.includes("deepseek-v4")) {
 			if (!isOpenRouterThinkingFormat(compat)) {
 				return LOW_HIGH_MAX_REASONING_EFFORTS;
 			}
-			return bareModelId(spec.id).toLowerCase() === "deepseek-v4-pro-0813"
+			// OpenRouter route suffixes (`:nitro`, `:floor`) are not part of the model identity.
+			return bareId.replace(/:[^:]+$/, "") === "deepseek-v4-pro-0813"
 				? LOW_HIGH_MAX_REASONING_EFFORTS
 				: HIGH_ONLY_REASONING_EFFORTS;
 		}
@@ -411,6 +491,14 @@ function isQwenTemplateReasoningEffortCompat(compat: CompatOf<Api>): boolean {
 	);
 }
 
+function isChatTemplateThinkingFormat(compat: CompatOf<Api>): boolean {
+	return compat !== undefined && "thinkingFormat" in compat && compat.thinkingFormat === "chat-template";
+}
+
+function isReasoningEffortUnsupported(compat: CompatOf<Api>): boolean {
+	return compat !== undefined && "supportsReasoningEffort" in compat && compat.supportsReasoningEffort === false;
+}
+
 function inferDetectedEffortMap<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
@@ -444,10 +532,10 @@ function isSakanaFuguReasoningModel<TApi extends Api>(spec: ModelSpec<TApi>): bo
 }
 
 function isOpenCodeGatewayOxAlphaModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
-	return (
-		(spec.provider === "opencode-go" || spec.provider === "opencode-zen") &&
-		/(?:^|\/)ox-alpha(?:-|$)/i.test(bareModelId(spec.id))
-	);
+	if (spec.provider !== "opencode-go" && spec.provider !== "opencode-zen") return false;
+	if (/(?:^|\/)ox-alpha(?:-|$)/i.test(bareModelId(spec.id))) return true;
+	// Zen also serves the SKU under unrelated aliased ids (`x-preview-f-free`); the display name is the stable signal.
+	return /\box[ _-]?alpha\b/i.test(spec.name ?? "");
 }
 
 function isDeepseekReasoningModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
@@ -508,7 +596,7 @@ function inferGeminiSupportedEfforts<TApi extends Api>(model: GeminiModel, spec:
 	}
 	if (
 		semverGte(model.version, "3.7") &&
-		!semverGte(model.version, "3.8") &&
+		!spec.id.includes("flash-lite") &&
 		(spec.provider === "google" || spec.provider === "google-vertex" || spec.provider === "opencode-zen")
 	) {
 		return LOW_MEDIUM_HIGH_REASONING_EFFORTS;
@@ -650,8 +738,14 @@ function isOpenRouterAnthropicAdaptiveReasoningModel<TApi extends Api>(
 }
 
 function anthropicModelHasRealXHighEffort<TApi extends Api>(spec: ModelSpec<TApi>, parsedModel: ParsedModel): boolean {
-	if (spec.api !== "anthropic-messages") return false;
 	if (parsedModel.family !== "anthropic") return false;
+	if (spec.api === "bedrock-converse-stream") {
+		// Bedrock exposes `xhigh` only on Claude Fable 5.1.
+		return (
+			parsedModel.kind === "fable" && semverGte(parsedModel.version, "5.1") && !semverGte(parsedModel.version, "5.2")
+		);
+	}
+	if (spec.api !== "anthropic-messages") return false;
 	return isAnthropicAdaptiveGenAtLeast(parsedModel, "4.7");
 }
 
@@ -735,13 +829,9 @@ export function mapEffortToAnthropicAdaptiveEffort<TApi extends Api>(
 	effort: Effort,
 ): "low" | "medium" | "high" | "xhigh" | "max" | "adaptive" {
 	const supported = requireSupportedEffort(model, effort);
-	return (model.thinking?.effortMap?.[supported] ?? supported) as
-		| "low"
-		| "medium"
-		| "high"
-		| "xhigh"
-		| "max"
-		| "adaptive";
+	const mapped = model.thinking?.effortMap?.[supported] ?? supported;
+	if (mapped === Effort.Minimal) return "low";
+	return mapped as "low" | "medium" | "high" | "xhigh" | "max" | "adaptive";
 }
 
 export function resolveWireModelId<TApi extends Api>(model: ApiModel<TApi>, effort: Effort | undefined): string {
@@ -755,4 +845,23 @@ export function minimumSupportedEffort<TApi extends Api>(model: ApiModel<TApi>):
 		if (efforts.includes(effort)) return effort;
 	}
 	return efforts[0];
+}
+
+/**
+ * Clamp target for effort-less requests on `thinking.requiresEffort` models: the
+ * effort routing to the row's default wire id (`requestModelId`), so a collapsed
+ * row clamps to the tier it advertises as default rather than the numeric floor
+ * (Cursor Grok defaults to `medium`; the Start plan refuses `low`). Falls back to
+ * {@link minimumSupportedEffort}.
+ */
+export function defaultSupportedEffort<TApi extends Api>(model: ApiModel<TApi>): Effort | undefined {
+	const routing = model.thinking?.effortRouting;
+	const defaultWireId = model.requestModelId;
+	if (routing !== undefined && defaultWireId !== undefined) {
+		const efforts = model.thinking?.efforts;
+		for (const effort of THINKING_EFFORTS) {
+			if (efforts?.includes(effort) && routing[effort] === defaultWireId) return effort;
+		}
+	}
+	return minimumSupportedEffort(model);
 }

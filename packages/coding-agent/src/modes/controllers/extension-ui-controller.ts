@@ -230,7 +230,9 @@ export class ExtensionUiController {
 				this.#handleInteractiveCompact(instructionsOrOptions, advisory),
 			switchSession: async sessionPath => {
 				this.clearHookWidgets();
-				const result = await this.ctx.session.switchSession(sessionPath);
+				const result = await this.ctx.session.switchSession(sessionPath, {
+					onCwdChange: newCwd => this.ctx.applyCwdChange(newCwd),
+				});
 				if (!result) {
 					return { cancelled: true };
 				}
@@ -444,7 +446,9 @@ export class ExtensionUiController {
 				this.#handleInteractiveCompact(instructionsOrOptions, advisory),
 			switchSession: async sessionPath => {
 				this.clearHookWidgets();
-				const result = await this.ctx.session.switchSession(sessionPath);
+				const result = await this.ctx.session.switchSession(sessionPath, {
+					onCwdChange: newCwd => this.ctx.applyCwdChange(newCwd),
+				});
 				if (!result) {
 					return { cancelled: true };
 				}

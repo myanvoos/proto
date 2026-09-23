@@ -18,7 +18,7 @@ import type {
 } from "../types";
 import { normalizeSystemPrompts } from "../utils";
 import { clearStreamingPartialJson, kStreamingPartialJson } from "../utils/block-symbols";
-import { withEmptyCompletionRetry } from "../utils/empty-completion-retry";
+import { withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { CapturedHttpErrorResponse, RawHttpRequestDump } from "../utils/http-inspector";
 import {
@@ -85,6 +85,7 @@ type OllamaChatChunk = {
 	done?: boolean;
 	done_reason?: string;
 	prompt_eval_count?: number;
+	prompt_eval_cached_count?: number;
 	eval_count?: number;
 };
 
@@ -725,9 +726,11 @@ const streamOllamaOnce = (
 					if (healedToolCallEmitted && output.stopReason === "stop") {
 						output.stopReason = "toolUse";
 					}
-					output.usage.input = chunk.prompt_eval_count ?? 0;
+					// prompt_eval_count is the total prompt (cached + uncached); local Ollama omits the cached split.
+					output.usage.cacheRead = chunk.prompt_eval_cached_count ?? 0;
+					output.usage.input = (chunk.prompt_eval_count ?? 0) - output.usage.cacheRead;
 					output.usage.output = chunk.eval_count ?? 0;
-					output.usage.totalTokens = output.usage.input + output.usage.output;
+					output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead;
 				}
 			}
 			if (!sawDone) {
@@ -800,4 +803,4 @@ const streamOllamaOnce = (
 };
 
 export const streamOllama: StreamFunction<"ollama-chat"> = (model, context, options) =>
-	withEmptyCompletionRetry(model, context, options, streamOllamaOnce);
+	withReplaySafeStreamRetry(model, context, options, streamOllamaOnce, { retryEmptyCompletion: true });

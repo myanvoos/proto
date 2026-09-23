@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { CompactionCancelledError, type CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import { resolveUsedFraction, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { errorMessage, formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
@@ -23,6 +23,7 @@ import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
+import type { SessionManagerStateSnapshot } from "../../session/session-manager";
 import { BUILTIN_SLASH_COMMAND_DEFS } from "../../slash-commands/builtin-registry";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
 import { renderSessionUsageSummary } from "../../slash-commands/helpers/usage-report";
@@ -31,7 +32,7 @@ import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
 import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
-import { formatLimitTitle, summarizeUsageResetCredits } from "../../utils/usage-display";
+import { collapseSharedUsageReports, formatLimitTitle, summarizeUsageResetCredits } from "../../utils/usage-display";
 
 function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown: string): void {
 	const block = new TranscriptBlock();
@@ -461,13 +462,14 @@ export class CommandController {
 			return;
 		}
 
+		const previousState = this.ctx.sessionManager.captureState();
 		try {
 			await this.ctx.session.moveSession(resolvedPath);
 		} catch (err) {
 			this.ctx.showError(`Move failed: ${err instanceof Error ? err.message : String(err)}`);
 			return;
 		}
-		await this.ctx.applyCwdChange(resolvedPath);
+		if (!(await this.#applyMovedCwd(resolvedPath, previousState))) return;
 
 		this.ctx.updateEditorBorderColor();
 		await this.ctx.reloadChecklist();
@@ -552,10 +554,56 @@ export class CommandController {
 	}
 
 	async #moveInteractiveCwd(resolvedPath: string): Promise<void> {
+		const previousState = this.ctx.sessionManager.captureState();
 		await this.ctx.sessionManager.moveTo(resolvedPath);
-		await this.ctx.applyCwdChange(resolvedPath);
+		if (!(await this.#applyMovedCwd(resolvedPath, previousState))) return;
 		this.ctx.updateEditorBorderColor();
 		await this.ctx.reloadChecklist();
+	}
+
+	/**
+	 * Follow a session move with the process cwd. When that fails, move the session back so transcript, process, and
+	 * cwd-derived state never split across projects; a split that cannot be repaired shuts down.
+	 */
+	async #applyMovedCwd(resolvedPath: string, previousState: SessionManagerStateSnapshot): Promise<boolean> {
+		let applyError: unknown;
+		try {
+			if (await this.ctx.applyCwdChange(resolvedPath)) return true;
+		} catch (error) {
+			// Undoing the half-applied change failed: the process may still be in the target.
+			applyError = error;
+			this.ctx.showError(`Failed to switch workspace: ${errorMessage(error)}`);
+		}
+		try {
+			await this.ctx.session.rollbackMove(previousState);
+		} catch (rollbackError) {
+			// The transcript stayed in the target: follow it so session and process agree.
+			const actual = this.ctx.sessionManager.getCwd();
+			if (await this.#tryApplyCwd(actual)) {
+				this.ctx.showError(
+					`Failed to roll back move: ${errorMessage(rollbackError)} (workspace remains at ${actual})`,
+				);
+				return false;
+			}
+			this.ctx.showError(
+				`Failed to roll back move: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual})`,
+			);
+			await this.ctx.shutdown();
+			return false;
+		}
+		// A `false` from applyCwdChange already restored the process; only a throw can leave it in the target.
+		if (applyError === undefined || (await this.#tryApplyCwd(previousState.cwd))) return false;
+		this.ctx.showError(`Failed to restore the source workspace ${previousState.cwd} after rolling back the move`);
+		await this.ctx.shutdown();
+		return false;
+	}
+
+	async #tryApplyCwd(cwd: string): Promise<boolean> {
+		try {
+			return await this.ctx.applyCwdChange(cwd);
+		} catch {
+			return false;
+		}
 	}
 
 	async #applyBashResultCwd(result: BashResult): Promise<void> {
@@ -846,6 +894,42 @@ function isUsedOnlyAbsoluteAmount(limit: UsageLimit): boolean {
 	);
 }
 
+function isRemainingOnlyAbsoluteAmount(limit: UsageLimit): boolean {
+	const amount = limit.amount;
+	return (
+		amount.unit !== "percent" &&
+		amount.unit !== "unknown" &&
+		amount.remaining !== undefined &&
+		Number.isFinite(amount.remaining) &&
+		amount.limit === undefined &&
+		amount.used === undefined &&
+		resolveUsedFraction(limit) === undefined
+	);
+}
+
+/**
+ * Prepaid headroom across remaining-only limits. A `scope.shared` limit is one account-wide pool seen once
+ * per stored key, so those rows collapse (max) instead of summing; unshared limits are distinct and add up.
+ */
+function formatRemainingOnlyTotal(limits: UsageLimit[]): string | undefined {
+	const first = limits[0];
+	if (first === undefined || !limits.every(isRemainingOnlyAbsoluteAmount)) return undefined;
+	const unit = first.amount.unit;
+	if (!limits.every(limit => limit.amount.unit === unit)) return undefined;
+	let total = 0;
+	let sharedMax: number | undefined;
+	for (const limit of limits) {
+		const remaining = limit.amount.remaining ?? 0;
+		if (limit.scope.shared === true) {
+			sharedMax = sharedMax === undefined ? remaining : Math.max(sharedMax, remaining);
+		} else {
+			total += remaining;
+		}
+	}
+	const value = total + (sharedMax ?? 0);
+	return unit === "usd" ? `$${value.toFixed(2)} left` : `${formatNumber(value, 2)} ${unit} left`;
+}
+
 function resolveAggregateStatus(limits: UsageLimit[]): AggregateDisplayStatus {
 	const hasOk = limits.some(limit => limit.status === "ok");
 	const hasWarning = limits.some(limit => limit.status === "warning");
@@ -881,6 +965,9 @@ function formatAggregateAmount(limits: UsageLimit[]): string {
 	}
 
 	if (limits.length > 0 && limits.every(isUsedOnlyAbsoluteAmount)) return "";
+
+	const remaining = formatRemainingOnlyTotal(limits);
+	if (remaining !== undefined) return remaining;
 
 	const uniqueAccountIds = new Set(
 		limits.map(limit => limit.scope.accountId).filter((id): id is string => typeof id === "string" && id.length > 0),
@@ -1008,11 +1095,12 @@ export function renderUsageReports(
 	usageModelSelectors: readonly string[] = [],
 ): string {
 	const lines: string[] = [];
-	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
+	const displayReports = collapseSharedUsageReports(reports);
+	const latestFetchedAt = Math.max(...displayReports.map(report => report.fetchedAt ?? 0));
 	const headerSuffix = latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : "";
 	lines.push(uiTheme.bold(uiTheme.fg("accent", `Usage${headerSuffix}`)));
 	const grouped = new Map<string, UsageReport[]>();
-	for (const report of reports) {
+	for (const report of displayReports) {
 		const list = grouped.get(report.provider) ?? [];
 		list.push(report);
 		grouped.set(report.provider, list);

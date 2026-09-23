@@ -249,3 +249,31 @@ describe("StdinBuffer deferred flush and UTF-8 mode boundaries", () => {
 		}
 	});
 });
+
+describe("StdinBuffer raw-paste classification toggle", () => {
+	function collectAll(): { keys: string[]; pastes: string[]; buffer: StdinBuffer } {
+		const keys: string[] = [];
+		const pastes: string[] = [];
+		const buffer = new StdinBuffer({ timeout: 5 });
+		buffer.on("data", sequence => keys.push(sequence));
+		buffer.on("paste", content => pastes.push(content));
+		return { keys, pastes, buffer };
+	}
+
+	it("keeps stall-batched Enter keystrokes as submits once bracketed paste is confirmed", () => {
+		const { keys, pastes, buffer } = collectAll();
+		buffer.setRawPasteClassification(false);
+		buffer.process("aaa\rbbb\rccc");
+		expect(pastes).toEqual([]);
+		expect(keys).toEqual(["a", "a", "a", "\r", "b", "b", "b", "\r", "c", "c", "c"]);
+	});
+
+	it("replays a candidate held by the classification window as keys when disabled", () => {
+		const { keys, pastes, buffer } = collectAll();
+		buffer.process("hello\r");
+		expect(keys).toEqual([]);
+		buffer.setRawPasteClassification(false);
+		expect(pastes).toEqual([]);
+		expect(keys).toEqual(["h", "e", "l", "l", "o", "\r"]);
+	});
+});

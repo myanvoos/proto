@@ -561,6 +561,21 @@ describe("Markdown code block wrapping", () => {
 		const rendered = new Markdown(source, 0, 0, theme, undefined, 0).render(40);
 		expect(codeRows(rendered)).toContain("const answer = 1;");
 	});
+
+	test("an open fence stays plain when the highlight stream factory throws", () => {
+		const throwingTheme: MarkdownTheme = {
+			...theme,
+			highlightCode: code => [`F<${code}>`],
+			createHighlightStream: () => {
+				throw new TypeError("undefined is not a constructor");
+			},
+		};
+		const markdown = new Markdown("```lua\nlocal x = 1\nmore", 0, 0, throwingTheme);
+		markdown.transientRenderCache = true;
+		const plain = codeRows(markdown.render(80)).join("\n");
+		expect(plain).toContain("local x = 1");
+		expect(plain).not.toContain("F<");
+	});
 });
 
 describe("Markdown GFM fidelity", () => {

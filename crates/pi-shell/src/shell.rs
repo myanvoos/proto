@@ -837,7 +837,7 @@ fn copy_env_into_shell(
 		let (Some(key), Some(value)) = (key.to_str(), value.to_str()) else {
 			continue;
 		};
-		if should_skip_env_var(key) {
+		if should_skip_env_var(key) || is_git_repo_location_var(key) {
 			continue;
 		}
 		if key == "PATH" {
@@ -923,7 +923,7 @@ async fn create_session_for_run(
 
 	if let Some(env) = config.session_env.as_ref() {
 		for (key, value) in env {
-			if should_skip_env_var(key) {
+			if should_skip_env_var(key) || is_git_repo_location_var(key) {
 				continue;
 			}
 			let mut var = ShellVariable::new(ShellValue::String(value.clone()));
@@ -1684,6 +1684,33 @@ fn is_macos_malloc_stack_logging_var(key: &str) -> bool {
 	matches!(key, "MallocStackLogging" | "MallocStackLoggingNoCompact")
 }
 
+/// Git variables that pin a repository to the agent's launch checkout.
+///
+/// Set by git hooks or `git --git-dir` wrappers; inherited by a shell they make
+/// `git` ignore the command's cwd and mutate the wrong worktree or index. A
+/// per-command value still applies.
+pub const GIT_REPO_LOCATION_ENV_VARS: [&str; 6] = [
+	"GIT_DIR",
+	"GIT_COMMON_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+/// Windows env lookups are case-insensitive, so `git_dir` binds there too.
+#[cfg(windows)]
+fn is_git_repo_location_var(key: &str) -> bool {
+	GIT_REPO_LOCATION_ENV_VARS
+		.iter()
+		.any(|name| key.eq_ignore_ascii_case(name))
+}
+
+#[cfg(not(windows))]
+fn is_git_repo_location_var(key: &str) -> bool {
+	GIT_REPO_LOCATION_ENV_VARS.contains(&key)
+}
+
 fn should_skip_env_var(key: &str) -> bool {
 	if key.starts_with("BASH_FUNC_") && key.ends_with("%%") {
 		return true;
@@ -2238,6 +2265,40 @@ mod tests {
 
 		assert_eq!(result.exit_code, Some(0));
 		assert_eq!(output, "<<\nX\\");
+	}
+
+	#[tokio::test]
+	async fn session_env_git_repo_location_overrides_do_not_reach_commands() {
+		let session_env = [
+			("GIT_DIR", "/primary/.git"),
+			("GIT_WORK_TREE", "/primary"),
+			("GIT_INDEX_FILE", "/primary/.git/index"),
+			("GIT_EDITOR", "true"),
+		]
+		.into_iter()
+		.map(|(key, value)| (key.to_string(), value.to_string()))
+		.collect();
+		let command_env = [("GIT_INDEX_FILE".to_string(), "/explicit/index".to_string())]
+			.into_iter()
+			.collect();
+		let (chunks_tx, chunks_rx) = flume::unbounded();
+		let result = execute_shell(
+			ShellExecuteOptions {
+				command: r#"printf '%s|%s|%s|%s' "${GIT_DIR-unset}" "${GIT_WORK_TREE-unset}" "$GIT_INDEX_FILE" "$GIT_EDITOR""#
+					.to_string(),
+				session_env: Some(session_env),
+				env: Some(command_env),
+				..ShellExecuteOptions::default()
+			},
+			Some(chunks_tx),
+			CancelToken::default(),
+		)
+		.await
+		.expect("command should execute");
+		let output = chunks_rx.into_iter().collect::<String>();
+
+		assert_eq!(result.exit_code, Some(0));
+		assert_eq!(output, "unset|unset|/explicit/index|true");
 	}
 
 	#[test]

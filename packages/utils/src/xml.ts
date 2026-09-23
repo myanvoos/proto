@@ -97,6 +97,11 @@ class XmlReader {
 				this.#readProcessingInstruction(document);
 				continue;
 			}
+			if (this.#xml.startsWith("</", this.#position)) {
+				// A stray end tag parsed as an element has an empty name and never advances past its `/`.
+				this.#skipThrough(">");
+				continue;
+			}
 			if (this.#xml[this.#position] === "<") {
 				const element = this.#readElement("");
 				this.#addValue(document, element.name, element.name, element.value, element.leaf, null);
@@ -131,6 +136,10 @@ class XmlReader {
 				this.#position++;
 				this.#skipWhitespace();
 				value = this.#readAttributeValue();
+			} else if (attributeName === "") {
+				// Markup #readName cannot consume (the stray `/` in `<a / >`): skip it so the loop progresses.
+				this.#position++;
+				continue;
 			}
 			attributes.push([attributeName, value]);
 		}
@@ -144,6 +153,10 @@ class XmlReader {
 					this.#position += name.length + 2;
 					const close = this.#xml.indexOf(">", this.#position);
 					this.#position = close < 0 ? this.#xml.length : close + 1;
+					break;
+				}
+				if (this.#xml.startsWith("</", this.#position)) {
+					// An ancestor's end tag (an unclosed `<br>` inside `<p>`) closes this element implicitly.
 					break;
 				}
 				if (this.#xml.startsWith("<![CDATA[", this.#position)) {

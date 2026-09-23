@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import type { AfterToolCallContext, Agent, AgentEvent, BeforeToolCallContext } from "@oh-my-pi/pi-agent-core";
+import type {
+	AfterToolCallContext,
+	Agent,
+	AgentEvent,
+	AgentMessage,
+	BeforeToolCallContext,
+} from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { Rule } from "../capability/rule";
 import type { Settings } from "../config/settings";
 import { createSourceMeta } from "../discovery/helpers";
@@ -353,4 +360,201 @@ test("the call under evaluation is not counted as something the session already 
 	);
 	expect(await second.coordinator.checkMessageUpdate(toolDelta())).toBe(false);
 	expect(second.events).toEqual([]);
+});
+
+const PROSE_RULE: Rule = {
+	name: "prove-it",
+	path: "rules/prove-it.md",
+	content: "Run the tests before claiming they pass.",
+	interruptMode: "never",
+	scope: ["text"],
+	match: { regex: "all tests pass" },
+	_source: createSourceMeta("native", "rules/prove-it.md", "project"),
+} as Rule;
+
+type ContinueOptions = Parameters<TtsrCoordinatorHost["scheduleAgentContinue"]>[0];
+
+/** A prose rule that only ever lands as a deferred follow-up, with the follow-up queue observable. */
+function deferredHarness() {
+	const manager = new TtsrManager({
+		enabled: true,
+		contextMode: "discard",
+		interruptMode: "never",
+		repeatMode: "after-gap",
+		repeatGap: 6,
+	});
+	expect(manager.addRule(PROSE_RULE)).toBe(true);
+	const followUps: AgentMessage[] = [];
+	const continues: ContinueOptions[] = [];
+	const queue = { hasMessages: true };
+	const agent = {
+		state: { messages: [], tools: [], isStreaming: false },
+		abort: () => {},
+		followUp: (message: AgentMessage) => followUps.push(message),
+		hasQueuedMessages: () => queue.hasMessages,
+	} as unknown as Agent;
+	const host: TtsrCoordinatorHost = {
+		agent,
+		sessionManager: { getCwd: () => "/repo", appendTtsrInjection: () => {} } as unknown as SessionManager,
+		settings: {} as Settings,
+		createJudge: () => async () => true,
+		emitSessionEvent: async () => {},
+		schedulePostPromptTask: () => {},
+		scheduleAgentContinue: options => continues.push(options),
+		promptGeneration: () => 1,
+	};
+	const coordinator = new TtsrCoordinator(host, manager);
+	const turn = async () => {
+		const message = {
+			role: "assistant",
+			timestamp: Date.now(),
+			content: [{ type: "text", text: "all tests pass" }],
+			stopReason: "stop",
+		} as unknown as AssistantMessage;
+		coordinator.onTurnStart();
+		await coordinator.checkMessageUpdate({
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "all tests pass" },
+		} as unknown as AgentEvent);
+		await coordinator.onAssistantMessageEnd(message);
+		coordinator.onTurnEnd();
+	};
+	const details = (index: number): unknown => {
+		const delivery = followUps[index];
+		if (delivery?.role !== "custom") throw new Error("Expected a custom TTSR delivery");
+		return delivery.details;
+	};
+	return { coordinator, followUps, continues, queue, turn, details };
+}
+
+test("a deferred rule is not queued again before its first delivery lands", async () => {
+	const { followUps, continues, turn } = deferredHarness();
+	await turn();
+	await turn();
+	expect(followUps).toHaveLength(1);
+
+	// A streaming agent may already hold the follow-up: its message_end, not the skip, settles it.
+	continues[0]?.onSkip?.("should-continue-false");
+	await turn();
+	expect(followUps).toHaveLength(1);
+});
+
+test("a delivered deferred rule repeats only after its configured gap", async () => {
+	const { coordinator, followUps, turn, details } = deferredHarness();
+	await turn();
+	coordinator.markInjectedFromDetails(details(0));
+
+	// Delivered after the first turn ended; repeatGap 6 frees the rule on the seventh turn after that.
+	for (let index = 0; index < 6; index++) await turn();
+	expect(followUps).toHaveLength(1);
+	await turn();
+	expect(followUps).toHaveLength(2);
+});
+
+test("a cancelled deferred delivery releases only its own reservation", async () => {
+	const { coordinator, followUps, continues, turn, details } = deferredHarness();
+	await turn();
+	continues[0]?.onSkip?.("stale-generation");
+	await turn();
+	expect(followUps).toHaveLength(2);
+
+	// The first delivery landing late must not free the rule the second delivery still holds.
+	coordinator.markInjectedFromDetails(details(0));
+	for (let index = 0; index < 6; index++) coordinator.onTurnEnd();
+	await turn();
+	expect(followUps).toHaveLength(2);
+});
+
+test("a deferred delivery that left the queue undelivered can be queued again", async () => {
+	const { coordinator, followUps, continues, queue, turn, details } = deferredHarness();
+	await turn();
+	queue.hasMessages = false;
+	expect(continues[0]?.shouldContinue?.()).toBe(false);
+	queue.hasMessages = true;
+	await turn();
+	expect(followUps).toHaveLength(2);
+
+	// A queue discard (clear, reset, session switch) releases the same way.
+	coordinator.releaseDeferredReservationFromDetails(details(1));
+	await turn();
+	expect(followUps).toHaveLength(3);
+});
+
+function textDelta(delta: string, timestamp = 1): AgentEvent {
+	return {
+		type: "message_update",
+		message: { role: "assistant", timestamp, content: [{ type: "text", text: delta }] },
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta },
+	} as unknown as AgentEvent;
+}
+
+function restartUpdate(timestamp = 1): AgentEvent {
+	const message = { role: "assistant", timestamp, content: [] };
+	return {
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "start", partial: message },
+	} as unknown as AgentEvent;
+}
+
+// A condition split across two responses must not trip: the buffers are per assistant message, so text from an
+// aborted response never combines with its retry or continuation.
+const SPLIT_RULE = textRule({ regex: "FORBIDDEN" }, "split");
+
+test("buffered text from one assistant message never combines with the next", async () => {
+	const within = harness([SPLIT_RULE]);
+	within.coordinator.onTurnStart();
+	within.coordinator.onAssistantMessageStart();
+	await within.coordinator.checkMessageUpdate(textDelta("FOR"));
+	await within.coordinator.checkMessageUpdate(textDelta("BIDDEN"));
+	expect(within.events).toEqual([["split"]]);
+
+	const across = harness([SPLIT_RULE]);
+	across.coordinator.onTurnStart();
+	across.coordinator.onAssistantMessageStart();
+	await across.coordinator.checkMessageUpdate(textDelta("FOR"));
+	across.coordinator.onAssistantMessageStart();
+	await across.coordinator.checkMessageUpdate(textDelta("BIDDEN", 2));
+	expect(across.events).toEqual([]);
+});
+
+test("a response restarted mid-stream drops the discarded attempt's buffered text", async () => {
+	const { coordinator, events } = harness([SPLIT_RULE]);
+	coordinator.onTurnStart();
+	coordinator.onAssistantMessageStart();
+	await coordinator.checkMessageUpdate(textDelta("FOR"));
+	await coordinator.checkMessageUpdate(restartUpdate());
+	await coordinator.checkMessageUpdate(textDelta("BIDDEN"));
+	expect(events).toEqual([]);
+});
+
+function toolEnd(name: string, args: Record<string, unknown>): AgentEvent {
+	const toolCall = { type: "toolCall", id: "call-1", name, arguments: args };
+	const message = { role: "assistant", timestamp: 1, content: [toolCall] };
+	return {
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "toolcall_end", contentIndex: 0, toolCall, partial: message },
+	} as unknown as AgentEvent;
+}
+
+test("ast conditions run once on the finalized call, never per streamed delta", async () => {
+	const { coordinator, events } = harness([ruleGatedOn({ ast: "$X as any" }, "no-any-ast")]);
+	coordinator.onTurnStart();
+	coordinator.onAssistantMessageStart();
+	await coordinator.checkMessageUpdate(toolDelta());
+	expect(events).toEqual([]);
+
+	await coordinator.checkMessageUpdate(toolEnd("bash", { command: "write" }));
+	expect(events).toEqual([["no-any-ast"]]);
+});
+
+test("a tool call finalized without streamed deltas is still matched on its arguments", async () => {
+	// No matcher hooks on this tool: its buffer only ever sees raw argument deltas, and this provider sent none.
+	const { coordinator, events } = harness([ruleGatedOn({ regex: "rm -rf /" }, "no-wipe")]);
+	coordinator.onTurnStart();
+	coordinator.onAssistantMessageStart();
+	await coordinator.checkMessageUpdate(toolEnd("shell", { command: "rm -rf /" }));
+	expect(events).toEqual([["no-wipe"]]);
 });

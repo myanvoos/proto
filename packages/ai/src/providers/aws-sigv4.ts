@@ -109,18 +109,20 @@ function encodeRfc3986(str: string): string {
 	return encodeURIComponent(str).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-function canonicalQuery(query: string | undefined): string {
+// SigV4 encodes each name/value first and then sorts by the ENCODED form; sorting decoded strings
+// disagrees whenever encoding moves a character (raw `%7B` sorts before `x`, decoded `{` after it).
+export function canonicalQuery(query: string | undefined): string {
 	if (!query) return "";
 	const pairs: Array<[string, string]> = [];
 	for (const part of query.split("&")) {
 		if (!part) continue;
 		const eq = part.indexOf("=");
-		const k = eq === -1 ? part : part.slice(0, eq);
-		const v = eq === -1 ? "" : part.slice(eq + 1);
-		pairs.push([decodeURIComponent(k), decodeURIComponent(v)]);
+		const rawKey = eq === -1 ? part : part.slice(0, eq);
+		const rawValue = eq === -1 ? "" : part.slice(eq + 1);
+		pairs.push([encodeRfc3986(decodeURIComponent(rawKey)), encodeRfc3986(decodeURIComponent(rawValue))]);
 	}
 	pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
-	return pairs.map(([k, v]) => `${encodeRfc3986(k)}=${encodeRfc3986(v)}`).join("&");
+	return pairs.map(([k, v]) => `${k}=${v}`).join("&");
 }
 
 export interface SignedHeaders {

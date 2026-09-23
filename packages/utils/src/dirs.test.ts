@@ -1,8 +1,17 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getWorktreesDir, pathIsWithin, relativePathWithinRoot, setWorktreesDir } from "./dirs";
+import {
+	directoryIsEnterable,
+	directoryIsMissing,
+	getProjectDir,
+	getWorktreesDir,
+	pathIsWithin,
+	relativePathWithinRoot,
+	setProjectDir,
+	setWorktreesDir,
+} from "./dirs";
 
 const tempDirs: string[] = [];
 
@@ -59,5 +68,35 @@ describe("worktree base expansion", () => {
 		setWorktreesDir("~");
 		expect(getWorktreesDir()).toBe(os.homedir());
 		setWorktreesDir(undefined);
+	});
+});
+
+describe("project directory adoption", () => {
+	test("a directory whose own search permission is denied exists but is not enterable", async () => {
+		if (process.getuid?.() === 0) return; // root bypasses permission bits
+		const root = await makeTree("denied");
+		const denied = path.join(root, "denied");
+		await fs.chmod(denied, 0o600);
+		try {
+			expect(await directoryIsMissing(denied)).toBe(false);
+			expect(await directoryIsEnterable(denied)).toBe(false);
+			expect(await directoryIsEnterable(root)).toBe(true);
+			expect(await directoryIsMissing(path.join(root, "absent"))).toBe(true);
+		} finally {
+			await fs.chmod(denied, 0o700);
+		}
+	});
+
+	test("a failed chdir keeps the previous project directory", () => {
+		const before = getProjectDir();
+		const chdir = spyOn(process, "chdir").mockImplementation(() => {
+			throw new Error("operation not permitted");
+		});
+		try {
+			expect(() => setProjectDir("/blocked/project")).toThrow("operation not permitted");
+			expect(getProjectDir()).toBe(before);
+		} finally {
+			chdir.mockRestore();
+		}
 	});
 });

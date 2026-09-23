@@ -1,6 +1,7 @@
 // Generated from src/registry/registry.ts provider list. Static require paths keep
 // every provider definition bundleable while materialization stays lazy per id.
 
+import type { abliterationProvider } from "./abliteration";
 import type { aiandProvider } from "./aiand";
 import type { aimlApiProvider } from "./aimlapi";
 import type { alibabaCodingPlanProvider } from "./alibaba-coding-plan";
@@ -11,9 +12,13 @@ import type { azureProvider } from "./azure";
 import type { basetenProvider } from "./baseten";
 import type { bedrockMantleProvider } from "./bedrock-mantle";
 import type { cerebrasProvider } from "./cerebras";
+import type { charmHyperProvider } from "./charm-hyper";
+import type { clinePassProvider } from "./cline-pass";
 import type { cloudflareAiGatewayProvider } from "./cloudflare-ai-gateway";
+import type { commandCodeProvider } from "./commandcode";
 import type { coreWeaveProvider } from "./coreweave";
 import type { cursorProvider } from "./cursor";
+import type { deepinfraProvider } from "./deepinfra";
 import type { deepseekProvider } from "./deepseek";
 import type { devinProvider } from "./devin";
 import type { exaProvider } from "./exa";
@@ -41,6 +46,7 @@ import type { minimaxCodeProvider } from "./minimax-code";
 import type { minimaxCodeCnProvider } from "./minimax-code-cn";
 import type { mistralProvider } from "./mistral";
 import type { moonshotProvider } from "./moonshot";
+import type { museCodeProvider } from "./muse-code";
 import type { nanogptProvider } from "./nanogpt";
 import type { novitaProvider } from "./novita";
 import type { nvidiaProvider } from "./nvidia";
@@ -59,6 +65,9 @@ import type { qwenPortalProvider } from "./qwen-portal";
 import type { sakanaProvider } from "./sakana";
 import type { siliconflowProvider } from "./siliconflow";
 import type { siliconflowCnProvider } from "./siliconflow-cn";
+import type { singularityApiDevProvider } from "./singularityapi-dev";
+import type { singularityApiTechProvider } from "./singularityapi-tech";
+import type { stepfunProvider } from "./stepfun";
 import type { syntheticProvider } from "./synthetic";
 import type { tavilyProvider } from "./tavily";
 import type { togetherProvider } from "./together";
@@ -73,6 +82,7 @@ import type { xiaomiProvider } from "./xiaomi";
 import type { xiaomiTokenPlanAmsProvider } from "./xiaomi-token-plan-ams";
 import type { xiaomiTokenPlanCnProvider } from "./xiaomi-token-plan-cn";
 import type { xiaomiTokenPlanSgpProvider } from "./xiaomi-token-plan-sgp";
+import type { yoloAutoProvider } from "./yolo-auto";
 import type { zaiCodingPlanProvider, zaiProvider } from "./zai";
 import type { zenmuxProvider } from "./zenmux";
 import type { zhipuCodingPlanProvider } from "./zhipu-coding-plan";
@@ -110,6 +120,8 @@ export type RegistryDefinition = [
 	typeof xiaomiTokenPlanAmsProvider,
 	typeof xiaomiTokenPlanCnProvider,
 	typeof firepassProvider,
+	typeof charmHyperProvider,
+	typeof deepinfraProvider,
 	typeof deepseekProvider,
 	typeof metaProvider,
 	typeof moonshotProvider,
@@ -125,6 +137,8 @@ export type RegistryDefinition = [
 	typeof veniceProvider,
 	typeof siliconflowProvider,
 	typeof siliconflowCnProvider,
+	typeof singularityApiDevProvider,
+	typeof singularityApiTechProvider,
 	typeof syntheticProvider,
 	typeof nanogptProvider,
 	typeof waferServerlessProvider,
@@ -154,6 +168,12 @@ export type RegistryDefinition = [
 	typeof amazonBedrockProvider,
 	typeof bedrockMantleProvider,
 	typeof gmiCloudProvider,
+	typeof yoloAutoProvider,
+	typeof abliterationProvider,
+	typeof commandCodeProvider,
+	typeof stepfunProvider,
+	typeof clinePassProvider,
+	typeof museCodeProvider,
 ][number];
 
 export const REGISTRY_IDS = [
@@ -177,6 +197,7 @@ export const REGISTRY_IDS = [
 	"alibaba-coding-plan",
 	"alibaba-token-plan",
 	"aiand",
+	"abliteration",
 	"aimlapi",
 	"zhipu-coding-plan",
 	"umans",
@@ -189,7 +210,12 @@ export const REGISTRY_IDS = [
 	"xiaomi-token-plan-ams",
 	"xiaomi-token-plan-cn",
 	"firepass",
+	"cline-pass",
+	"charm-hyper",
+	"deepinfra",
+	"commandcode",
 	"deepseek",
+	"muse-code",
 	"meta",
 	"moonshot",
 	"cerebras",
@@ -204,9 +230,13 @@ export const REGISTRY_IDS = [
 	"venice",
 	"siliconflow",
 	"siliconflow-cn",
+	"singularityapi-dev",
+	"singularityapi-tech",
+	"stepfun",
 	"synthetic",
 	"nanogpt",
 	"wafer-serverless",
+	"yolo-auto",
 	"coreweave",
 	"vercel-ai-gateway",
 	"cloudflare-ai-gateway",
@@ -305,6 +335,8 @@ export function loadProviderDefinition(id: string): RegistryDefinition | undefin
 			return require("./xiaomi-token-plan-cn").xiaomiTokenPlanCnProvider;
 		case "firepass":
 			return require("./firepass").firepassProvider;
+		case "charm-hyper":
+			return require("./charm-hyper").charmHyperProvider;
 		case "deepseek":
 			return require("./deepseek").deepseekProvider;
 		case "meta":
@@ -335,6 +367,10 @@ export function loadProviderDefinition(id: string): RegistryDefinition | undefin
 			return require("./siliconflow").siliconflowProvider;
 		case "siliconflow-cn":
 			return require("./siliconflow-cn").siliconflowCnProvider;
+		case "singularityapi-dev":
+			return require("./singularityapi-dev").singularityApiDevProvider;
+		case "singularityapi-tech":
+			return require("./singularityapi-tech").singularityApiTechProvider;
 		case "synthetic":
 			return require("./synthetic").syntheticProvider;
 		case "nanogpt":
@@ -393,6 +429,20 @@ export function loadProviderDefinition(id: string): RegistryDefinition | undefin
 			return require("./bedrock-mantle").bedrockMantleProvider;
 		case "gmi-cloud":
 			return require("./gmi-cloud").gmiCloudProvider;
+		case "deepinfra":
+			return require("./deepinfra").deepinfraProvider;
+		case "abliteration":
+			return require("./abliteration").abliterationProvider;
+		case "commandcode":
+			return require("./commandcode").commandCodeProvider;
+		case "stepfun":
+			return require("./stepfun").stepfunProvider;
+		case "cline-pass":
+			return require("./cline-pass").clinePassProvider;
+		case "muse-code":
+			return require("./muse-code").museCodeProvider;
+		case "yolo-auto":
+			return require("./yolo-auto").yoloAutoProvider;
 		default:
 			return undefined;
 	}

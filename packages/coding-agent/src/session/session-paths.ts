@@ -240,13 +240,71 @@ export function computeDefaultSessionDir(
 	return sessionDir;
 }
 
+/** Prefix for the optional cwd device+inode line in a terminal breadcrumb. */
+const CWDSTAT_PREFIX = "cwdstat ";
+
+export interface CwdIdentity {
+	dev: string;
+	ino: string;
+}
+
+/**
+ * Snapshot the directory identity of `cwd` for later move detection.
+ * A later path with the same device+inode is the same directory after rename.
+ */
+export function readCwdIdentity(cwd: string): CwdIdentity | undefined {
+	try {
+		const st = fs.statSync(path.resolve(cwd), { bigint: true });
+		if (!st.isDirectory()) return undefined;
+		return { dev: st.dev.toString(), ino: st.ino.toString() };
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * True when `targetCwd` is the same directory that `cwdIdentity` was recorded
+ * from — the project was renamed or moved, not merely deleted or unmounted.
+ * Missing identity (legacy breadcrumb, or cwd absent at write time) is not evidence.
+ */
+export function hasPositiveMovedProjectEvidence(cwdIdentity: CwdIdentity | undefined, targetCwd: string): boolean {
+	if (!cwdIdentity) return false;
+	const target = readCwdIdentity(targetCwd);
+	return target !== undefined && target.dev === cwdIdentity.dev && target.ino === cwdIdentity.ino;
+}
+
+function parseBreadcrumbExtras(lines: string[]): { fresh: boolean; cwdIdentity: CwdIdentity | undefined } {
+	let fresh = false;
+	let cwdIdentity: CwdIdentity | undefined;
+	for (const extra of lines.slice(2)) {
+		if (extra === "fresh") {
+			fresh = true;
+			continue;
+		}
+		if (extra.startsWith(CWDSTAT_PREFIX)) {
+			const [dev, ino] = extra.slice(CWDSTAT_PREFIX.length).split(" ");
+			if (dev && ino) cwdIdentity = { dev, ino };
+		}
+	}
+	return { fresh, cwdIdentity };
+}
+
+/**
+ * Link this terminal to its latest session for `--continue`. When `cwd` exists the crumb
+ * also records its device+inode so a later continue can tell a rename/move from a deleted
+ * or unmounted project path.
+ */
 export function writeTerminalBreadcrumb(cwd: string, sessionFile: string, fresh = false): void {
 	const terminalId = getTerminalId();
 	if (!terminalId) return;
 
 	const breadcrumbDir = getTerminalSessionsDir();
 	const breadcrumbFile = path.join(breadcrumbDir, terminalId);
-	const content = fresh ? `${cwd}\n${sessionFile}\nfresh\n` : `${cwd}\n${sessionFile}\n`;
+	const extras: string[] = [];
+	if (fresh) extras.push("fresh");
+	const identity = readCwdIdentity(cwd);
+	if (identity) extras.push(`${CWDSTAT_PREFIX}${identity.dev} ${identity.ino}`);
+	const content = `${cwd}\n${sessionFile}\n${extras.map(extra => `${extra}\n`).join("")}`;
 
 	try {
 		fs.mkdirSync(breadcrumbDir, { recursive: true });
@@ -263,6 +321,8 @@ interface TerminalBreadcrumb {
 	exists: boolean;
 
 	fresh: boolean;
+	/** Device+inode of `cwd` when the breadcrumb was written, if that path existed. */
+	cwdIdentity?: CwdIdentity;
 }
 
 export async function readTerminalBreadcrumbEntry(): Promise<TerminalBreadcrumb | null> {
@@ -277,12 +337,12 @@ export async function readTerminalBreadcrumbEntry(): Promise<TerminalBreadcrumb 
 
 		const breadcrumbCwd = lines[0];
 		const sessionFile = lines[1];
-		const fresh = lines[2] === "fresh";
+		const { fresh, cwdIdentity } = parseBreadcrumbExtras(lines);
 
 		const stat = await fs.promises.stat(sessionFile, { throwIfNoEntry: false });
 		const exists = stat?.isFile() === true;
 
-		if (exists || fresh) return { cwd: breadcrumbCwd, sessionFile, exists, fresh };
+		if (exists || fresh) return { cwd: breadcrumbCwd, sessionFile, exists, fresh, cwdIdentity };
 	} catch (err) {
 		if (!isEnoent(err)) logger.debug("Terminal breadcrumb read failed", { err });
 	}

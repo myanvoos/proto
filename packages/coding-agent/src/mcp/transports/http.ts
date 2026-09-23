@@ -1,5 +1,5 @@
 import * as AIError from "@oh-my-pi/pi-ai/error";
-import { isRecord, logger, readSseEvents, readSseJson } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, readSseEvents, readSseJson, untilAborted } from "@oh-my-pi/pi-utils";
 import type {
 	JsonRpcError,
 	JsonRpcMessage,
@@ -14,7 +14,13 @@ import { toJsonRpcError } from "../../mcp/types";
 import { readBoundedText } from "../../tools/fetch";
 import { sanitizeMCPDiagnostic } from "../errors";
 import { RequestIdAllocator } from "../request-id";
-import { createMCPTimeout, getNeverAbortSignal, isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
+import {
+	createMCPTimeout,
+	getNeverAbortSignal,
+	isMCPTimeoutEnabled,
+	type MCPTimeoutOperation,
+	resolveMCPTimeoutMs,
+} from "../timeout";
 import { type MCPFetchInit, mcpFetch, withoutHeader } from "./header-policy";
 
 const HTTP_SSE_CONNECT_TIMEOUT_MS = 1_000;
@@ -385,9 +391,10 @@ export class HttpTransport implements MCPTransport {
 		const resumeSignal = operation.signal ?? signal;
 		try {
 			let response = await this.#fetch({ method: "GET", signal: resumeSignal }, generated);
-			if (this.onAuthError && (response.status === 401 || response.status === 403)) {
+			const refreshAuth = this.onAuthError;
+			if (refreshAuth && (response.status === 401 || response.status === 403)) {
 				await response.body?.cancel();
-				const newHeaders = await this.onAuthError();
+				const newHeaders = await untilAborted(resumeSignal, () => refreshAuth.call(this));
 				if (!newHeaders) {
 					throw new SSEResumeError(`HTTP ${response.status} resuming MCP SSE stream: auth refresh failed`);
 				}
@@ -478,7 +485,22 @@ export class HttpTransport implements MCPTransport {
 		}
 
 		const timeout = resolveMCPTimeoutMs(this.config.timeout);
-		const operation = createMCPTimeout(timeout, this.#signal(options?.signal));
+		// The caller's cancellation owns this request only until its response arrives; later messages on the same
+		// SSE stream stay under the transport lifetime.
+		let callerSignal: AbortSignal | undefined;
+		let releaseCaller: (() => void) | undefined;
+		const source = options?.signal;
+		if (source) {
+			const controller = new AbortController();
+			const forwardAbort = (): void => controller.abort(source.reason);
+			if (source.aborted) forwardAbort();
+			else {
+				source.addEventListener("abort", forwardAbort, { once: true });
+				releaseCaller = () => source.removeEventListener("abort", forwardAbort);
+			}
+			callerSignal = controller.signal;
+		}
+		const operation = createMCPTimeout(timeout, this.#signal(callerSignal));
 
 		try {
 			const response = await this.#fetch(
@@ -508,7 +530,8 @@ export class HttpTransport implements MCPTransport {
 			const contentType = response.headers.get("Content-Type") ?? "";
 
 			if (contentType.includes("text/event-stream")) {
-				return this.#parseSSEResponse<T>(response, id, this.#signal(options?.signal));
+				// Awaited so the fetch and the stream parser share one deadline.
+				return await this.#parseSSEResponse<T>(response, id, operation, timeout, releaseCaller);
 			}
 
 			const text = await readResponseText(response, MAX_JSON_RESPONSE_BYTES, "MCP JSON response");
@@ -526,22 +549,28 @@ export class HttpTransport implements MCPTransport {
 
 			return result.result as T;
 		} catch (error) {
+			if (error instanceof SSEResumeError) throw error;
 			if (operation.isTimeoutAbort(error) || operation.timedOut()) {
 				throw new Error(`Request timeout after ${timeout}ms`);
 			}
 			throw error;
 		} finally {
 			operation.clear();
+			releaseCaller?.();
 		}
 	}
 
-	#parseSSEResponse<T>(response: Response, expectedId: string | number, signal: AbortSignal): Promise<T> {
+	#parseSSEResponse<T>(
+		response: Response,
+		expectedId: string | number,
+		operation: MCPTimeoutOperation,
+		timeout: number,
+		releaseCaller?: () => void,
+	): Promise<T> {
 		if (!response.body) {
 			throw new Error("No response body");
 		}
 
-		const timeout = resolveMCPTimeoutMs(this.config.timeout);
-		const operation = createMCPTimeout(timeout, signal);
 		const responseSignal = operation.signal ?? getNeverAbortSignal();
 
 		const { promise, resolve, reject } = Promise.withResolvers<T>();
@@ -569,6 +598,8 @@ export class HttpTransport implements MCPTransport {
 									const validated = parseJsonRpcResponse(message, expectedId);
 									captured = true;
 									operation.clear();
+									releaseCaller?.();
+									releaseCaller = undefined;
 									if (validated.error) {
 										reject(
 											new Error(
@@ -605,7 +636,7 @@ export class HttpTransport implements MCPTransport {
 				}
 			} catch (error) {
 				if (captured) return;
-				if (operation.isTimeoutAbort(error)) {
+				if (operation.isTimeoutAbort(error) || operation.timedOut()) {
 					reject(new Error(`SSE response timeout after ${timeout}ms`));
 				} else {
 					reject(error as Error);
@@ -713,20 +744,15 @@ export class HttpTransport implements MCPTransport {
 
 			const contentType = response.headers.get("Content-Type") ?? "";
 			if (contentType.includes("text/event-stream") && response.body) {
-				if (this.#sseConnection) {
-					void this.#readSSEStream(response.body, this.#sseConnection.signal);
-				} else {
-					const readOperation = createMCPTimeout(timeout, this.#signal());
-					const signal = readOperation.signal ?? getNeverAbortSignal();
-					void this.#readSSEStream(response.body, signal)
-						.finally(() => readOperation.clear())
-						.catch(() => {});
-				}
+				// An accepted notification's SSE body is a background server-message stream, not part of the request
+				// deadline: drain it until its connection or the transport closes.
+				const signal = this.#sseConnection ? this.#signal(this.#sseConnection.signal) : this.#signal();
+				void this.#readSSEStream(response.body, signal);
 			} else {
 				await response.body?.cancel();
 			}
 		} catch (error) {
-			if (operation.isTimeoutAbort(error)) {
+			if (operation.isTimeoutAbort(error) || operation.timedOut()) {
 				throw new Error(`Notify timeout after ${timeout}ms`);
 			}
 			throw error;

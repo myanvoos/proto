@@ -1280,6 +1280,12 @@ export async function runRpcMode(
 							uiCtx.notify(message, "info");
 						},
 						onPrompt: async prompt => {
+							if (prompt.secret) {
+								throw new Error(
+									`Provider '${command.providerId}' requires secret input, ` +
+										"which is not supported in RPC mode. Use the terminal UI to log in.",
+								);
+							}
 							if (!authEmitted) {
 								return Promise.reject(
 									new Error(

@@ -9,10 +9,10 @@ import type { Settings } from "../config/settings";
 import type { StreamedKernelFailure } from "../eval/speculation";
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
 import kernelAssertPreflightTemplate from "../prompts/system/kernel-assert-preflight.md" with { type: "text" };
-import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redirect.md" with { type: "text" };
 import toolCallLoopStopTemplate from "../prompts/system/tool-call-loop-stop.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
+import { renderToolCallLoopRedirect } from "./tool-call-loop-redirect";
 
 const GEMINI_HEADER_INTERRUPT_REASON = "Interrupted: emit a tool call instead of more planning";
 const GEMINI_TOOL_REMINDER_TYPE = "gemini-tool-call-reminder";
@@ -225,12 +225,7 @@ export class LoopGuards {
 	}
 
 	#injectToolCallLoopRedirect(messages: AgentMessage[], detection: RepeatedToolCallDetection): void {
-		const content = prompt.render(toolCallLoopRedirectTemplate, {
-			tool_name: detection.toolName,
-			count: detection.count,
-			arguments_summary: detection.argumentsSummary,
-			result_summary: detection.resultSummary || "(no text result)",
-		});
+		const content = renderToolCallLoopRedirect(detection);
 		const details = {
 			toolName: detection.toolName,
 			count: detection.count,

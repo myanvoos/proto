@@ -1,4 +1,5 @@
 import { hostMatchesUrl, modelMatchesHost } from "../hosts";
+import { type AnthropicModel, bareModelId, parseAnthropicModel, semverGte } from "../identity/classify";
 import {
 	hasOpus47ApiRestrictions,
 	isAnthropicFableOrMythosModel,
@@ -56,6 +57,44 @@ export function isAnthropicSigningProxyUrl(baseUrl?: string): boolean {
 	);
 }
 
+const ANTHROPIC_CONTROL_PROVIDERS: Record<string, true> = {
+	anthropic: true,
+	"cloudflare-ai-gateway": true,
+	"google-vertex": true,
+};
+const CONTEXT_MANAGEMENT_UNSUPPORTED_PROVIDERS: Record<string, true> = {
+	"github-copilot": true,
+	"google-vertex": true,
+	"opencode-zen": true,
+};
+
+function claudeRevisionAtLeast(parsed: AnthropicModel | null, opusMin: string, fableMin: string): boolean {
+	if (parsed === null) return false;
+	switch (parsed.kind) {
+		case "opus":
+			return semverGte(parsed.version, opusMin);
+		case "fable":
+		case "mythos":
+			return semverGte(parsed.version, fableMin);
+		default:
+			return false;
+	}
+}
+
+function supportsAnthropicServerCompaction(parsed: AnthropicModel | null): boolean {
+	if (parsed === null) return false;
+	switch (parsed.kind) {
+		case "opus":
+		case "sonnet":
+			return semverGte(parsed.version, "4.6");
+		case "fable":
+		case "mythos":
+			return semverGte(parsed.version, "5");
+		default:
+			return false;
+	}
+}
+
 export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): ResolvedAnthropicCompat {
 	const baseUrl = spec.baseUrl;
 	const official = isOfficialAnthropicApiUrl(baseUrl);
@@ -68,9 +107,15 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 	const requiresThinkingEnabled = modelMatchesHost(spec, "moonshotNative") && matchesKimiMandatoryThinkingModel(spec);
 	const isAzure = isAzureAnthropicRoute(baseUrl);
 	const signingEndpoint = official || isCopilot || isZenmux || isAnthropicSigningProxyUrl(baseUrl);
+	const parsed = parseAnthropicModel(bareModelId(spec.id));
+	const controlProvider = ANTHROPIC_CONTROL_PROVIDERS[spec.provider] === true;
+	const midConversationControls = controlProvider && claudeRevisionAtLeast(parsed, "4.8", "5");
 	const compat: ResolvedAnthropicCompat = {
 		officialEndpoint: official,
 		signingEndpoint,
+		supportsContextManagement: CONTEXT_MANAGEMENT_UNSUPPORTED_PROVIDERS[spec.provider] !== true,
+		supportsServerCompaction: supportsAnthropicServerCompaction(parsed),
+		firstPartyProvider: spec.provider === "anthropic",
 		disableStrictTools: isAzure,
 		disableAdaptiveThinking: false,
 		allowAnthropicHeaderOverrides: false,
@@ -78,7 +123,13 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 
 		supportsLongCacheRetention: official,
 
-		supportsMidConversationSystem: official && supportsMidConversationSystemMessages(spec.id),
+		supportsMidConversationSystem:
+			midConversationControls ||
+			(official && parsed?.kind !== "sonnet" && supportsMidConversationSystemMessages(spec.id)),
+		supportsTurnScopedSystem: midConversationControls,
+		supportsMidConversationToolChanges: midConversationControls,
+		supportsPerMessageEffort: controlProvider && claudeRevisionAtLeast(parsed, "5", "5.1"),
+		supportsThinkingBindingControls: controlProvider && parsed?.kind === "fable" && semverGte(parsed.version, "5.1"),
 		supportsForcedToolChoice: !requiresThinkingEnabled && !isAnthropicFableOrMythosModel(spec.id),
 
 		supportsSamplingParams: !hasOpus47ApiRestrictions(spec.id),

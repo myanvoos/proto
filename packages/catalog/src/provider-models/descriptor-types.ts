@@ -58,4 +58,7 @@ export interface ProviderCatalogEntry {
 	readonly catalogDiscovery?: CatalogDiscoveryConfig;
 
 	readonly specialModelManager?: boolean;
+
+	/** Discovery is the deployment truth: generation must not fill capabilities or limits from same-id rows of other providers. */
+	readonly skipCrossProviderReferenceFills?: boolean;
 }

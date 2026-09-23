@@ -155,7 +155,7 @@ test("reattaching a detached turn restores its main ownership and live fleet", a
 			actions.push("attach");
 		},
 		clearTransientSessionUi: () => actions.push("clear"),
-		applyCwdChange: async () => {},
+		applyCwdChange: async () => true,
 		renderInitialMessages: async () => {},
 		reloadChecklist: async () => {},
 		updateEditorBorderColor: () => {},
@@ -232,7 +232,7 @@ test("switching away keeps an idle main detached while its worker is running", a
 		getToolUIContext: () => undefined,
 		attachSessionView: async () => {},
 		clearTransientSessionUi: () => {},
-		applyCwdChange: async () => {},
+		applyCwdChange: async () => true,
 		renderInitialMessages: async () => {},
 		reloadChecklist: async () => {},
 		updateEditorBorderColor: () => {},

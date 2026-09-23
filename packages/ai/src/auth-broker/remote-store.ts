@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import { scheduler } from "node:timers/promises";
-import { getInstallId, logger } from "@oh-my-pi/pi-utils";
+import { getAppName, getInstallId, logger } from "@oh-my-pi/pi-utils";
 import {
 	type AuthCredential,
 	type AuthCredentialSnapshotEntry,
@@ -14,7 +14,7 @@ import {
 import * as AIError from "../error";
 import type { OAuthCredentials } from "../registry/oauth/types";
 import type { Provider } from "../types";
-import type { ObservedUsageEntry, UsageReport } from "../usage";
+import type { ClientUsageIdentity, ObservedUsageEntry, UsageReport } from "../usage";
 import { raceWithSignal } from "../utils/abort";
 import { type AuthBrokerClient, AuthBrokerError, AuthBrokerStreamUnsupportedError } from "./client";
 import type {
@@ -142,8 +142,8 @@ function usageOverlayKey(
 	const accountId = ids.accountId?.trim().toLowerCase();
 	const email = ids.email?.trim().toLowerCase();
 	const projectId = ids.projectId?.trim().toLowerCase();
-	if (accountId) base = `account:${accountId}`;
-	else if (email) base = `email:${email}`;
+	if (email) base = `email:${email}`;
+	else if (accountId) base = `account:${accountId}`;
 	else if (projectId) base = `project:${projectId}`;
 	const orgId = ids.orgId?.trim().toLowerCase();
 	if (orgId) return base ? `${provider}\0org:${orgId}|${base}` : `${provider}\0org:${orgId}`;
@@ -201,6 +201,12 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	#snapshot: SnapshotResponse = emptySnapshot();
 	#snapshotReceivedAt = Date.now();
 	#generation = 0;
+	// Content fingerprint of the routable credential set. The broker's numeric
+	// generation is an in-memory counter that resets on broker restart, so change
+	// detection for pollExternalChanges() runs off this local revision instead.
+	#credentialFingerprint = "";
+	#credentialRevision = 0;
+	#acknowledgedRevision = 0;
 	#usageOverlays: Map<string, UsageReport> = new Map();
 	#backgroundAbort = new AbortController();
 	#cache: Map<string, CacheEntry> = new Map();
@@ -221,7 +227,8 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 
 	#streamingUnsupported = false;
 
-	#observedUsage = new Map<string, ObservedUsageEntry>();
+	/** Pending observed usage keyed by `installId\0app\0provider\0model`, merged until flush. */
+	#observedUsage = new Map<string, { client: ClientUsageIdentity; entry: ObservedUsageEntry }>();
 	#observedUsageTimer: Timer | undefined;
 	readonly #observedUsageFlushMs: number;
 
@@ -235,6 +242,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			? new Map([...opts.accountPool].map(([provider, identities]) => [provider, new Set(identities)]))
 			: undefined;
 		this.#applySnapshot(opts.initialSnapshot ?? emptySnapshot(), opts.initialSnapshot?.generation ?? 0);
+		this.#acknowledgedRevision = this.#credentialRevision;
 		this.#onSnapshot = opts.onSnapshot;
 		void this.#runBackground();
 	}
@@ -259,6 +267,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#snapshot = { ...snapshot, credentials };
 		this.#generation = generation;
 		this.#snapshotReceivedAt = nowMs;
+		this.#refreshCredentialRevision();
 		const onSnapshot = this.#onSnapshot;
 		if (!onSnapshot) return;
 		try {
@@ -267,6 +276,24 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			logger.debug("auth-broker snapshot callback failed", { error: String(error) });
 		}
 	}
+
+	#refreshCredentialRevision(): void {
+		const fingerprint = this.#computeCredentialFingerprint();
+		if (fingerprint === this.#credentialFingerprint) return;
+		this.#credentialFingerprint = fingerprint;
+		this.#credentialRevision += 1;
+	}
+
+	// Order-independent digest of what listAuthCredentials() exposes: a token
+	// rotation, add or remove changes it; blocks and usage overlays do not.
+	#computeCredentialFingerprint(): string {
+		const parts = this.#snapshot.credentials.map(
+			entry => `${entry.id}\u0000${entry.provider}\u0000${JSON.stringify(entry.credential)}`,
+		);
+		parts.sort();
+		return parts.join("\u0001");
+	}
+
 	#protectNewSnapshotBlocks(previous: readonly SnapshotEntry[], next: readonly SnapshotEntry[], nowMs: number): void {
 		const previousBlocksByKey = new Map<string, string>();
 		for (const entry of previous) {
@@ -350,14 +377,10 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	#applyStreamEvent(event: SnapshotStreamEvent): void {
 		switch (event.kind) {
 			case "snapshot": {
+				// Every SSE connection opens with a full authoritative snapshot; adopt it
+				// as the new baseline even when a restarted broker's counter went lower.
+				// Entry/removal frames stay generation-guarded against it.
 				const { kind: _kind, ...snapshot } = event;
-				if (snapshot.generation < this.#generation) {
-					logger.debug("auth-broker stream snapshot older than local; ignoring", {
-						local: this.#generation,
-						incoming: snapshot.generation,
-					});
-					return;
-				}
 				this.#applySnapshot(snapshot, snapshot.generation);
 				return;
 			}
@@ -398,6 +421,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#snapshot = { ...this.#snapshot, generation, serverNowMs, refresher, credentials };
 		this.#generation = generation;
 		this.#snapshotReceivedAt = Date.now();
+		this.#refreshCredentialRevision();
 	}
 
 	#removeStreamCredential(
@@ -414,12 +438,24 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#snapshot = { ...this.#snapshot, generation, serverNowMs, refresher, credentials };
 		this.#generation = generation;
 		this.#snapshotReceivedAt = Date.now();
+		this.#refreshCredentialRevision();
 	}
 
 	async refreshSnapshot(): Promise<SnapshotResponse> {
 		const result = await this.#client.fetchSnapshot();
 		if (result.status === 200) this.#applySnapshot(result.snapshot, result.generation);
 		return this.#snapshot;
+	}
+
+	/**
+	 * Reports broker-side credential changes (logins/logouts by another process)
+	 * since the last call, so long-lived broker clients such as
+	 * `auth-gateway serve` reload without a restart.
+	 */
+	pollExternalChanges(): boolean {
+		if (this.#credentialRevision === this.#acknowledgedRevision) return false;
+		this.#acknowledgedRevision = this.#credentialRevision;
+		return true;
 	}
 
 	listAuthCredentials(provider?: string): StoredAuthCredential[] {
@@ -1002,21 +1038,23 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		return inflight;
 	}
 
-	recordObservedUsage(entries: ObservedUsageEntry[]): void {
+	/** `client` overrides the reporting identity: the auth-gateway attributes each request to its caller. */
+	recordObservedUsage(entries: ObservedUsageEntry[], client?: ClientUsageIdentity): void {
 		if (this.#closed || this.#observedUsageUnsupported) return;
+		const identity = client ?? { installId: getInstallId(), hostname: os.hostname(), app: getAppName() };
 		for (const entry of entries) {
-			const key = `${entry.provider}\u0000${entry.model}`;
+			const key = `${identity.installId}\u0000${identity.app ?? ""}\u0000${entry.provider}\u0000${entry.model}`;
 			const pending = this.#observedUsage.get(key);
 			if (pending) {
-				pending.at = Math.max(pending.at, entry.at);
-				pending.requests += entry.requests;
-				pending.inputTokens += entry.inputTokens;
-				pending.outputTokens += entry.outputTokens;
-				pending.cacheReadTokens += entry.cacheReadTokens;
-				pending.cacheWriteTokens += entry.cacheWriteTokens;
-				pending.costUsd += entry.costUsd;
+				pending.entry.at = Math.max(pending.entry.at, entry.at);
+				pending.entry.requests += entry.requests;
+				pending.entry.inputTokens += entry.inputTokens;
+				pending.entry.outputTokens += entry.outputTokens;
+				pending.entry.cacheReadTokens += entry.cacheReadTokens;
+				pending.entry.cacheWriteTokens += entry.cacheWriteTokens;
+				pending.entry.costUsd += entry.costUsd;
 			} else {
-				this.#observedUsage.set(key, { ...entry });
+				this.#observedUsage.set(key, { client: identity, entry: { ...entry } });
 			}
 		}
 		if (this.#observedUsage.size > 0 && this.#observedUsageTimer === undefined) {
@@ -1032,22 +1070,34 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		if (this.#observedUsage.size === 0 || this.#observedUsageUnsupported) return;
 		const batch = [...this.#observedUsage.values()];
 		this.#observedUsage.clear();
-		try {
-			await this.#client.reportClientUsage({
-				installId: getInstallId(),
-				hostname: os.hostname(),
-				entries: batch,
-			});
-		} catch (error) {
-			const status = error instanceof AuthBrokerError ? error.status : undefined;
-			if (status === 404 || status === 501) {
-				this.#observedUsageUnsupported = true;
-				logger.debug("auth-broker does not accept observed usage; reporting disabled", { status });
-				return;
+		// One report per client identity: this install, plus one per attributed caller inside the gateway.
+		const groups = new Map<string, { client: ClientUsageIdentity; entries: ObservedUsageEntry[] }>();
+		for (const { client, entry } of batch) {
+			const key = `${client.installId}\u0000${client.app ?? ""}`;
+			const group = groups.get(key);
+			if (group) group.entries.push(entry);
+			else groups.set(key, { client, entries: [entry] });
+		}
+		for (const { client, entries } of groups.values()) {
+			try {
+				await this.#client.reportClientUsage({
+					installId: client.installId,
+					hostname: client.hostname,
+					app: client.app,
+					entries,
+				});
+			} catch (error) {
+				const status = error instanceof AuthBrokerError ? error.status : undefined;
+				// 400: the broker predates the request schema (e.g. `app`); 404/501: no endpoint or no persistence.
+				if (status === 400 || status === 404 || status === 501) {
+					this.#observedUsageUnsupported = true;
+					logger.debug("auth-broker does not accept observed usage; reporting disabled", { status });
+					return;
+				}
+				logger.debug("auth-broker observed usage flush failed; retrying next flush", { error: String(error) });
+				// Merge the failed group back; bounded because entries are keyed per (identity, provider, model).
+				if (!this.#closed) this.recordObservedUsage(entries, client);
 			}
-			logger.debug("auth-broker observed usage flush failed; retrying next flush", { error: String(error) });
-
-			if (!this.#closed) this.recordObservedUsage(batch);
 		}
 	}
 
@@ -1174,16 +1224,16 @@ function reportMatchesIdentity(
 	projectId: string | undefined,
 ): boolean {
 	const metadata = (report.metadata ?? {}) as Record<string, unknown>;
+	// Email identifies the member inside shared Team workspace account/org ids,
+	// so a mismatch is decisive when both sides carry one.
+	const metaEmail = readMetadataString(metadata, "email")?.toLowerCase();
+	if (email && metaEmail) return metaEmail === email;
 	if (accountId) {
 		const metaAccount = readMetadataString(metadata, "accountId") ?? readMetadataString(metadata, "account_id");
 		if (metaAccount && metaAccount.toLowerCase() === accountId) return true;
 		for (const limit of report.limits) {
 			if (limit.scope.accountId?.toLowerCase() === accountId) return true;
 		}
-	}
-	if (email) {
-		const metaEmail = readMetadataString(metadata, "email");
-		if (metaEmail && metaEmail.toLowerCase() === email) return true;
 	}
 	if (projectId) {
 		const metaProject = readMetadataString(metadata, "projectId") ?? readMetadataString(metadata, "project_id");

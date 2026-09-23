@@ -23,7 +23,6 @@ describe("AgentSession manual-compaction barrier", () => {
 	let session: AgentSession;
 	let modelRegistry: ModelRegistry;
 	let authStorage: AuthStorage | undefined;
-	let restoreBarrier: (() => void) | undefined;
 
 	beforeEach(async () => {
 		authStorage = await AuthStorage.create(":memory:");
@@ -32,8 +31,6 @@ describe("AgentSession manual-compaction barrier", () => {
 	});
 
 	afterEach(async () => {
-		restoreBarrier?.();
-		restoreBarrier = undefined;
 		vi.restoreAllMocks();
 		if (session) {
 			await session.dispose();
@@ -65,13 +62,11 @@ describe("AgentSession manual-compaction barrier", () => {
 		});
 	}
 
-	/** Bun's spyOn cannot stub accessors; swap the descriptor and restore it per test. */
-	function stubBarrier(barrier: Promise<void> | undefined): void {
-		const proto = SessionMaintenance.prototype;
-		const original = Object.getOwnPropertyDescriptor(proto, "manualCompactionCleanup");
-		if (!original) throw new Error("Expected SessionMaintenance.manualCompactionCleanup accessor");
-		restoreBarrier = () => Object.defineProperty(proto, "manualCompactionCleanup", original);
-		Object.defineProperty(proto, "manualCompactionCleanup", { ...original, get: () => barrier });
+	function stubBarrier(barrier: Promise<void>): void {
+		vi.spyOn(SessionMaintenance.prototype, "waitForManualCompactionCleanup").mockImplementation(async () => {
+			await barrier;
+			return undefined;
+		});
 	}
 
 	/** Deterministic settle point: drain the microtask queue, never the wall clock. */

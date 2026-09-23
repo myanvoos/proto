@@ -1,4 +1,5 @@
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
+import type { OAuthPrompt } from "@oh-my-pi/pi-ai/oauth/types";
 import { Container, getKeybindings, Input, Spacer, Text, type TUI, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { theme } from "../../modes/theme/theme";
 import { sanitizeDisplayText, sanitizeSingleLine } from "../../tools/render-utils";
@@ -27,17 +28,21 @@ export class LoginDialogComponent extends OverlayPanel {
 		this.#contentContainer = new Container();
 		this.addChild(this.#contentContainer);
 
-		this.#input = new Input();
-		this.#input.onSubmit = () => {
-			if (this.#inputResolver) {
-				this.#inputResolver(this.#input.getValue());
-				this.#inputResolver = undefined;
-				this.#inputRejecter = undefined;
-			}
+		this.#input = this.#createInput();
+	}
+
+	#createInput(): Input {
+		const input = new Input();
+		input.onSubmit = value => {
+			const resolve = this.#inputResolver;
+			if (!resolve) return;
+			this.#clearInputHandlers();
+			resolve(value);
 		};
-		this.#input.onEscape = () => {
+		input.onEscape = () => {
 			this.#cancel();
 		};
+		return input;
 	}
 
 	get signal(): AbortSignal {
@@ -46,11 +51,9 @@ export class LoginDialogComponent extends OverlayPanel {
 
 	#cancel(): void {
 		this.#abortController.abort();
-		if (this.#inputRejecter) {
-			this.#inputRejecter(new Error("Login cancelled"));
-			this.#inputResolver = undefined;
-			this.#inputRejecter = undefined;
-		}
+		const reject = this.#inputRejecter;
+		this.#clearInputHandlers();
+		reject?.(new Error("Login cancelled"));
 		this.onComplete(false, "Login cancelled");
 	}
 
@@ -93,13 +96,17 @@ export class LoginDialogComponent extends OverlayPanel {
 	}
 
 	showManualInput(prompt: string): Promise<string> {
-		if (!this.#contentContainer.children.includes(this.#input)) {
+		// Keep retry chrome in place, but discard prior prompt undo/kill history.
+		const mounted = this.#contentContainer.children.indexOf(this.#input);
+		this.#input = this.#createInput();
+		if (mounted !== -1) {
+			this.#contentContainer.children.splice(mounted, 1, this.#input);
+		} else {
 			this.#contentContainer.addChild(new Spacer(1));
 			this.#contentContainer.addChild(new Text(theme.fg("dim", sanitizeDisplayText(prompt)), 0, 0));
 			this.#contentContainer.addChild(this.#input);
 			this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel)"), 0, 0));
 		}
-		this.#input.setValue("");
 		this.#tui.requestRender();
 
 		const { promise, resolve, reject } = Promise.withResolvers<string>();
@@ -108,24 +115,39 @@ export class LoginDialogComponent extends OverlayPanel {
 		return promise;
 	}
 
-	showPrompt(message: string, placeholder?: string): Promise<string> {
+	showPrompt(prompt: OAuthPrompt): Promise<string> {
+		// Multi-step flows keep prior answers visible above the next prompt, except secrets.
+		const mounted = this.#contentContainer.children.indexOf(this.#input);
+		if (mounted !== -1) {
+			const value = this.#input.mask ? "********" : sanitizeSingleLine(this.#input.getValue());
+			const answer = new Text(theme.fg("dim", `${this.#input.prompt}${value}`), 0, 0);
+			this.#contentContainer.removeChild(this.#input);
+			this.#contentContainer.children.splice(mounted, 0, answer);
+		}
+		// A new prompt must not recover a previous secret through undo or yank.
+		this.#input = this.#createInput();
+		this.#input.mask = prompt.secret === true;
 		this.#contentContainer.addChild(new Spacer(1));
-		this.#contentContainer.addChild(new Text(theme.fg("text", sanitizeDisplayText(message)), 0, 0));
-		if (placeholder) {
-			this.#contentContainer.addChild(new Text(theme.fg("dim", `e.g., ${sanitizeSingleLine(placeholder)}`), 0, 0));
+		this.#contentContainer.addChild(new Text(theme.fg("text", sanitizeDisplayText(prompt.message)), 0, 0));
+		if (prompt.placeholder) {
+			this.#contentContainer.addChild(
+				new Text(theme.fg("dim", `e.g., ${sanitizeSingleLine(prompt.placeholder)}`), 0, 0),
+			);
 		}
-		if (!this.#contentContainer.children.includes(this.#input)) {
-			this.#contentContainer.addChild(this.#input);
-		}
+		this.#contentContainer.addChild(this.#input);
 		this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel, Enter to submit)"), 0, 0));
 
-		this.#input.setValue("");
 		this.#tui.requestRender();
 
 		const { promise, resolve, reject } = Promise.withResolvers<string>();
 		this.#inputResolver = resolve;
 		this.#inputRejecter = reject;
 		return promise;
+	}
+
+	#clearInputHandlers(): void {
+		this.#inputResolver = undefined;
+		this.#inputRejecter = undefined;
 	}
 
 	showWaiting(message: string): void {

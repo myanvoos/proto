@@ -55,6 +55,9 @@ async function runCli(args: string[], env: Record<string, string | undefined> = 
 			XDG_DATA_HOME: path.join(home, ".local", "share"),
 			XDG_STATE_HOME: path.join(home, ".local", "state"),
 			PI_CODING_AGENT_DIR: agentDir,
+			// Keyless shared-catalog discovery probes public provider endpoints on an uncached profile; a dead
+			// proxy fails those fetches immediately so these diagnostics never wait on the network.
+			PI_PROXY: "http://127.0.0.1:9",
 			TERM: "dumb",
 			NO_COLOR: "1",
 			...env,

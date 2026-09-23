@@ -19,6 +19,13 @@ const SERVER_ERROR_BACKOFF_MS = 20 * 1000;
 const ACCOUNT_RATE_LIMIT_PATTERN =
 	/\baccount(?:'s)?\b[^\n]{0,80}\brate.?limit\b|\brate.?limit\b[^\n]{0,80}\baccount\b/i;
 const INSUFFICIENT_BALANCE_PATTERN = /insufficient.?balance/i;
+// Prepaid-credit exhaustion worded around the balance rather than a quota
+// (Anthropic "would exceed your available credits", OpenRouter "Insufficient credits").
+const CREDITS_EXHAUSTED_PATTERN =
+	/\b(?:exceed\w*|insufficient|not enough)\b[^\n]{0,40}\bcredits?\b|\bcredits?\b[^\n]{0,40}\b(?:exhausted|depleted)\b/i;
+// Anthropic subscription entitlement wall ("Usage credits are required for this model",
+// `credits_required`): the account cannot serve the model, so rotate instead of backing off.
+const ANTHROPIC_CREDITS_REQUIRED_PATTERN = /\busage credits are required\b|\bcredits_required\b/i;
 const SPEND_LIMIT_PATTERN = /spend.?limit/i;
 const SUBSCRIPTION_CAP_PATTERN =
 	/\b(?:subscription|plan|membership)\b[^\n]{0,80}\b(?:rate.?limits?|quota|cap)\b|\b(?:rate.?limits?|quota|cap)\b[^\n]{0,80}\b(?:subscription|plan|membership)\b/i;
@@ -28,6 +35,8 @@ function matchesSubscriptionCapText(errorMessage: string): boolean {
 	return SUBSCRIPTION_CAP_PATTERN.test(errorMessage) && !TRANSIENT_INTERVAL_RATE_LIMIT_PATTERN.test(errorMessage);
 }
 const OPENROUTER_DAILY_FREE_LIMIT_PATTERN = /\bfree[-_ ]models[-_ ]per[-_ ]day\b/i;
+// ClinePass subscription-window exhaustion and free-tier model caps are account-local quota, not per-minute limits.
+const CLINE_PASS_QUOTA_PATTERN = /clinepass limit|free limit reached on model/i;
 
 const RESOURCE_EXHAUSTED_PATTERN = /resource.?exhausted/gi;
 const CONCURRENT_LIMIT_PATTERN =
@@ -53,6 +62,7 @@ export function isDashScopeTokenLimitText(errorMessage: string): boolean {
 }
 
 const GOOGLE_RPC_ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo";
+const ANTIGRAVITY_MODEL_QUOTA_PATTERN = /\bexhausted your capacity on this model\b/i;
 const LONG_RATE_LIMIT_DELAY_MS = 5 * 60 * 1000;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -91,6 +101,10 @@ function parseGoogleRpcRateLimitReason(errorMessage: string): RateLimitReason | 
 			case "INSUFFICIENT_G1_CREDITS_BALANCE":
 				return "INSUFFICIENT_G1_CREDITS_BALANCE";
 			case "RATE_LIMIT_EXCEEDED": {
+				// Cloud Code Assist reports an account's per-model quota with this reason even when it resets within seconds.
+				if (typeof error.message === "string" && ANTIGRAVITY_MODEL_QUOTA_PATTERN.test(error.message)) {
+					return "QUOTA_EXHAUSTED";
+				}
 				const retryDelayMs = extractRetryHint(undefined, errorMessage);
 				return retryDelayMs !== undefined && retryDelayMs >= LONG_RATE_LIMIT_DELAY_MS
 					? "QUOTA_EXHAUSTED"
@@ -148,6 +162,14 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 		return "QUOTA_EXHAUSTED";
 	}
 
+	if (CLINE_PASS_QUOTA_PATTERN.test(errorMessage)) {
+		return "QUOTA_EXHAUSTED";
+	}
+
+	if (ANTHROPIC_CREDITS_REQUIRED_PATTERN.test(errorMessage)) {
+		return "QUOTA_EXHAUSTED";
+	}
+
 	if (
 		lower.includes("per minute") ||
 		lower.includes("rate limit") ||
@@ -165,7 +187,9 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 		lower.includes("out of credits") ||
 		lower.includes("spending-limit") ||
 		lower.includes("spending limit") ||
-		INSUFFICIENT_BALANCE_PATTERN.test(errorMessage)
+		lower.includes("access_terminated_error") ||
+		INSUFFICIENT_BALANCE_PATTERN.test(errorMessage) ||
+		CREDITS_EXHAUSTED_PATTERN.test(errorMessage)
 	) {
 		return "QUOTA_EXHAUSTED";
 	}
@@ -200,32 +224,45 @@ export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 }
 
 const USAGE_LIMIT_PATTERN =
-	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?(?:exceeded|reached|insufficient)|额度不足|额度耗尽|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)|balance.?exhausted|run out of credits|out of credits|spending[- _]?limit|personal-team-blocked/i;
+	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?(?:exceeded|reached|insufficient)|额度不足|额度耗尽|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)|balance.?exhausted|run out of credits|out of credits|spending[- _]?limit|personal-team-blocked|clinepass limit|free limit reached on model|access_terminated_error/i;
 
 export function isUsageLimitStatus(status: number | undefined): boolean {
 	return status === 429 || status === 402;
 }
 
+const STATUS_402_QUOTA_PATTERN =
+	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?balance)\b/i;
+
+/**
+ * Whether a 402 body describes an account-billing cap: opaque, payment/deactivation/balance
+ * worded, or quota/concurrency exhausted. Informative non-quota 402s (e.g. "A subscription is
+ * required for this endpoint") stay non-usage-limits so they don't burn sibling credentials.
+ */
+export function is402BillingCapBody(message: string | undefined): boolean {
+	if (message === undefined || isOpaqueStatusBody(message)) return true;
+	if (STATUS_402_QUOTA_PATTERN.test(message)) return true;
+	const reason = parseRateLimitReason(message);
+	return isQuotaExhaustedReason(reason) || reason === "CONCURRENT_LIMIT";
+}
+
 export function isUsageLimitOutcome(status: number | undefined, message: string | undefined): boolean {
 	const structuredReason = message ? parseGoogleRpcRateLimitReason(message) : undefined;
 	if (structuredReason !== undefined) return isQuotaExhaustedReason(structuredReason);
-
-	const isBillingCapStatus = status === 402;
 	if (isConcurrencyCapExclusion(status, message)) return false;
 	if (message && matchesUsageLimitText(message)) return true;
 
 	if ((status === 403 || status === undefined) && message && isAccountScopedCapText(message)) return true;
+	if (status === 402 && is402BillingCapBody(message)) return true;
 	if (!isUsageLimitStatus(status)) return false;
 	if (!message || isOpaqueStatusBody(message)) return true;
-	const reason = parseRateLimitReason(message);
-
-	return isQuotaExhaustedReason(reason) || (isBillingCapStatus && reason === "CONCURRENT_LIMIT");
+	return isQuotaExhaustedReason(parseRateLimitReason(message));
 }
 
 export function isOpaqueStatusBody(message: string): boolean {
 	const cleaned = message
 		.replace(/\b(?:429|402)\b/g, "")
-		.replace(/\b(?:http|https|status|error|code|response|message)\b/gi, "");
+		.replace(/\b(?:http|https|status|error|code|response|message)\b/gi, "")
+		.replace(/\(?\bno body\b\)?/gi, "");
 
 	return (
 		!/[a-z\d]{3,}/i.test(cleaned) &&
@@ -241,6 +278,8 @@ export function matchesUsageLimitText(errorMessage: string): boolean {
 	if (isDashScopeTokenLimitText(errorMessage)) return false;
 	return (
 		USAGE_LIMIT_PATTERN.test(errorMessage) ||
+		ANTHROPIC_CREDITS_REQUIRED_PATTERN.test(errorMessage) ||
+		CREDITS_EXHAUSTED_PATTERN.test(errorMessage) ||
 		(CN_QUOTA_EXHAUSTED_PATTERN.test(errorMessage) && !CN_TRANSIENT_CAP_PATTERN.test(errorMessage)) ||
 		SPEND_LIMIT_PATTERN.test(errorMessage) ||
 		ACCOUNT_RATE_LIMIT_PATTERN.test(errorMessage) ||

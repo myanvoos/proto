@@ -22,6 +22,7 @@ import {
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
 } from "../../modes/components/read-tool-group";
+import { ServedModelTracker } from "../../modes/components/served-model-marker";
 import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { ToolActivityContainer } from "../../modes/components/tool-activity";
@@ -526,6 +527,7 @@ export class UiHelpers {
 		this.ctx.pendingTools.clear();
 
 		this.ctx.lastAssistantUsage = undefined;
+		this.ctx.servedModelTracker = new ServedModelTracker();
 
 		if (options.updateFooter) {
 			this.ctx.statusLine.invalidate();
@@ -630,6 +632,7 @@ export class UiHelpers {
 					if (usage.cacheRead + usage.cacheWrite + usage.input > 0) {
 						this.ctx.lastAssistantUsage = usage;
 					}
+					assistantComponent.setServedModelMismatch(this.ctx.servedModelTracker.check(message));
 				}
 				const hasVisibleAssistantContent = assistantHasVisibleContent(message);
 				if (hasVisibleAssistantContent) {
@@ -890,6 +893,11 @@ export class UiHelpers {
 			}
 		}
 		this.ctx.lastAssistantUsage = baseline;
+		const servedModelTracker = new ServedModelTracker();
+		for (const remaining of context.messages) {
+			if (remaining.role === "assistant") servedModelTracker.check(remaining);
+		}
+		this.ctx.servedModelTracker = servedModelTracker;
 		this.ctx.statusLine.invalidate();
 		this.ctx.updateEditorBorderColor();
 		this.ctx.ui.requestRender();
@@ -949,6 +957,7 @@ export class UiHelpers {
 		const previousPendingBashComponents = this.ctx.pendingBashComponents;
 		const previousPendingPythonComponents = this.ctx.pendingPythonComponents;
 		const previousLastAssistantUsage = this.ctx.lastAssistantUsage;
+		const previousServedModelTracker = this.ctx.servedModelTracker;
 		const chatWasAlreadyRendered = this.ctx.initialChatRendered;
 
 		this.ctx.chatContainer = stagedChatContainer;
@@ -1037,6 +1046,7 @@ export class UiHelpers {
 				this.ctx.pendingBashComponents = previousPendingBashComponents;
 				this.ctx.pendingPythonComponents = previousPendingPythonComponents;
 				this.ctx.lastAssistantUsage = previousLastAssistantUsage;
+				this.ctx.servedModelTracker = previousServedModelTracker;
 				stagedChatContainer.disposeChildren();
 			}
 			this.ctx.initialChatRendered = committed ? true : chatWasAlreadyRendered;

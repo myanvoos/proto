@@ -1,5 +1,12 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { coerceServiceTierByFamily, type ProviderPayload, type ServiceTierByFamily } from "@oh-my-pi/pi-ai";
+import { getAnthropicCompactionPayload, isTurnStartEntry } from "@oh-my-pi/pi-agent-core/compaction";
+import {
+	coerceServiceTierByFamily,
+	type OpenAIResponsesHistoryPayload,
+	type ProviderPayload,
+	type ServiceTierByFamily,
+} from "@oh-my-pi/pi-ai";
+import { isRecord } from "@oh-my-pi/pi-utils";
 import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
@@ -93,18 +100,33 @@ function snapBoundaryToToolCallOwner(path: SessionEntry[], firstKeptIdx: number,
 }
 
 export function getOpenAiRemoteCompactionPayload(
-	compaction: CompactionEntry | null | undefined,
-): ProviderPayload | undefined {
+	compaction: Pick<CompactionEntry, "preserveData"> | null | undefined,
+): OpenAIResponsesHistoryPayload | undefined {
 	const candidate = compaction?.preserveData?.openaiRemoteCompaction;
-	if (!candidate || typeof candidate !== "object") return undefined;
-	const remote = candidate as { provider?: unknown; replacementHistory?: unknown };
-	if (typeof remote.provider !== "string" || remote.provider.length === 0) return undefined;
-	if (!Array.isArray(remote.replacementHistory)) return undefined;
+	if (!isRecord(candidate)) return undefined;
+	if (typeof candidate.provider !== "string" || candidate.provider.length === 0) return undefined;
+	if (!Array.isArray(candidate.replacementHistory) || !candidate.replacementHistory.every(isRecord)) return undefined;
 	return {
 		type: "openaiResponsesHistory",
-		provider: remote.provider,
-		items: remote.replacementHistory as Array<Record<string, unknown>>,
+		provider: candidate.provider,
+		items: candidate.replacementHistory,
 	};
+}
+
+/**
+ * Tool-call ids carried inside an OpenAI Responses replay payload (remote compaction's `replacementHistory`). Those
+ * calls reach the provider through the compaction summary's `providerPayload`, not as local assistant messages, so a
+ * local `toolResult` under `providerReplayThroughEntryId` can pair with a call absent from the message list.
+ */
+function collectReplayToolCallIds(payload: ProviderPayload | undefined, into: Set<string>): void {
+	if (payload?.type !== "openaiResponsesHistory" || !Array.isArray(payload.items)) return;
+	for (const item of payload.items) {
+		if (!isRecord(item)) continue;
+		if (typeof item.call_id === "string") into.add(item.call_id);
+		else if (typeof item.type === "string" && item.type.includes("call") && typeof item.id === "string") {
+			into.add(item.id);
+		}
+	}
 }
 
 export function buildSessionContext(
@@ -246,18 +268,21 @@ export function buildSessionContext(
 		}
 	};
 
+	/** Advances the cache-miss state for one message; returns whether a cache miss there is explained. */
+	const trackMessageCacheState = (msg: AgentMessage): boolean => {
+		if (msg.role !== "assistant") return false;
+		const currentModel = `${msg.provider}/${msg.model}`;
+		const modelChanged = lastAssistantModel !== undefined && lastAssistantModel !== currentModel;
+		lastAssistantModel = currentModel;
+		const explained = pendingReset || modelChanged;
+		pendingReset = false;
+		return explained;
+	};
+
 	const pushMessage = (msg: AgentMessage) => {
 		messages.push(msg);
 		if (!options?.transcript) return;
-		if (msg.role === "assistant") {
-			const currentModel = `${msg.provider}/${msg.model}`;
-			const modelChanged = lastAssistantModel !== undefined && lastAssistantModel !== currentModel;
-			lastAssistantModel = currentModel;
-			cacheMissExplainedAt.push(pendingReset || modelChanged);
-			pendingReset = false;
-		} else {
-			cacheMissExplainedAt.push(false);
-		}
+		cacheMissExplainedAt.push(trackMessageCacheState(msg));
 	};
 
 	const appendMessage = (entry: SessionEntry) => {
@@ -314,12 +339,25 @@ export function buildSessionContext(
 			appendMessage(path[i]);
 		}
 	} else if (compaction) {
-		const providerPayload = getOpenAiRemoteCompactionPayload(compaction);
-		const remoteReplacementHistory = providerPayload?.items;
+		const remotePayload = getOpenAiRemoteCompactionPayload(compaction);
+		const remoteReplacementHistory = remotePayload?.items;
+		const anthropicPayload = getAnthropicCompactionPayload(compaction.preserveData);
+		const providerPayload = remotePayload ?? anthropicPayload;
+		// A natively replayed summary must not invalidate the retained tail's bound thinking: the
+		// entry commit timestamp would surface as a historyRewriteAt newer than the tail. Predate
+		// the marker before the first retained entry instead.
+		let summaryTimestamp = compaction.timestamp;
+		if (anthropicPayload !== undefined) {
+			const firstRetained =
+				(firstKeptIdx >= 0 && firstKeptIdx < compactionIdx ? path[firstKeptIdx] : undefined) ??
+				path[compactionIdx + 1];
+			const retainedAt = firstRetained ? new Date(firstRetained.timestamp).getTime() : Number.NaN;
+			if (Number.isFinite(retainedAt)) summaryTimestamp = new Date(retainedAt - 1).toISOString();
+		}
 		const compactionSummaryMsg = createCompactionSummaryMessage(
 			compaction.summary,
 			compaction.tokensBefore,
-			compaction.timestamp,
+			summaryTimestamp,
 			{
 				shortSummary: compaction.shortSummary,
 				providerPayload,
@@ -338,8 +376,28 @@ export function buildSessionContext(
 			// rewritten history can leave the id stale. Dropping everything is correct for the model
 			// context (the summary replaces it) but would erase display-only scrollback.
 			const keptStartIdx = firstKeptIdx >= 0 ? firstKeptIdx : options?.transcript ? 0 : compactionIdx;
+			// The cut may land on an assistant whose tool results stay kept, so the region can start
+			// mid-turn. The collapsed display starts at the next turn boundary instead of leading with
+			// stale fragments; with no later boundary it keeps the whole suffix, which the summary does
+			// not cover. The wire context keeps the exact region.
+			let displayStartIdx = keptStartIdx;
+			if (options?.transcript) {
+				for (let i = keptStartIdx; i < compactionIdx; i++) {
+					if (isTurnStartEntry(path[i])) {
+						displayStartIdx = i;
+						break;
+					}
+				}
+			}
 			for (let i = keptStartIdx; i < compactionIdx; i++) {
-				appendMessage(path[i]);
+				const entry = path[i];
+				if (i < displayStartIdx) {
+					// Hidden rows still advance cache-miss tracking exactly as the visible walk would.
+					handleEntryResetTracking(entry);
+					if (entry.type === "message") trackMessageCacheState(entry.message);
+					continue;
+				}
+				appendMessage(entry);
 			}
 		} else if (compaction.providerReplayThroughEntryId) {
 			if (replayThroughIdx >= 0 && replayThroughIdx < compactionIdx) {
@@ -373,6 +431,9 @@ export function buildSessionContext(
 			for (const block of message.content) {
 				if (block.type === "toolCall") seenToolCallIds.add(block.id);
 			}
+		} else if (message.role === "compactionSummary") {
+			// Remote compaction replays its kept calls through the payload; their local results are paired.
+			collectReplayToolCallIds(message.providerPayload, seenToolCallIds);
 		} else if (message.role === "toolResult") {
 			if (!seenToolCallIds.has(message.toolCallId)) {
 				messages.splice(i, 1);

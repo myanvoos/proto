@@ -1,18 +1,24 @@
 import {
 	ANTHROPIC_OAUTH_GRANT_TTL_MS,
+	type AuthAccountPolicy,
 	type AuthStorage,
+	type ClientUsageClientSummary,
 	type DisabledCredentialSummary,
+	type OAuthAccountIdentity,
 	resolveUsedFraction,
 	type UsageHistoryEntry,
 	type UsageLimit,
 	type UsageReport,
 	type UsageUnit,
 } from "@oh-my-pi/pi-ai";
+import { AuthBrokerClient } from "@oh-my-pi/pi-ai/auth-broker";
 import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
+import { Settings } from "../config/settings";
 import { discoverAuthStorage } from "../sdk";
-import { summarizeUsageResetCredits } from "../utils/usage-display";
+import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import { collapseSharedUsageReports, summarizeUsageResetCredits } from "../utils/usage-display";
 
 const BAR_WIDTH = 28;
 
@@ -181,6 +187,7 @@ function formatUnitValue(value: number, unit: UsageUnit): string {
 const UNIT_SUFFIX: Record<UsageUnit, string> = {
 	tokens: " tokens",
 	requests: " requests",
+	credits: " credits",
 	minutes: " min",
 	bytes: " bytes",
 	percent: "",
@@ -424,6 +431,8 @@ interface ProviderWindowStat {
 	window: string;
 	durationMs?: number;
 
+	meter?: string;
+
 	accounts: number;
 
 	usedAccounts: number;
@@ -431,16 +440,27 @@ interface ProviderWindowStat {
 	remainingAccounts: number;
 }
 
+// Codex chat and Spark are independent meters that can share a window duration.
+function meterForLimit(report: UsageReport, limit: UsageLimit): string | undefined {
+	if (report.provider !== "openai-codex") return undefined;
+	const tier = limit.scope.tier?.trim().toLowerCase();
+	if (tier) return tier;
+	const slug = limit.id.toLowerCase().split(":")[1];
+	return slug && slug !== "primary" && slug !== "secondary" ? slug : "chat";
+}
+
 export function computeProviderWindowStats(reports: UsageReport[]): ProviderWindowStat[] {
-	const buckets = new Map<string, { window: string; durationMs?: number; fractions: number[] }>();
+	const buckets = new Map<string, { window: string; durationMs?: number; meter?: string; fractions: number[] }>();
 	for (const report of reports) {
 		const accountMax = new Map<string, number>();
 		for (const limit of report.limits) {
 			const fraction = resolveUsedFraction(limit);
 			if (fraction === undefined) continue;
 			const durationMs = limit.window?.durationMs;
-			const key =
+			const windowKey =
 				durationMs !== undefined ? `d:${durationMs}` : (limit.scope.windowId ?? limit.window?.label ?? limit.label);
+			const meter = meterForLimit(report, limit);
+			const key = meter === undefined ? windowKey : `m:${meter}\0${windowKey}`;
 			const previous = accountMax.get(key);
 			if (previous === undefined || fraction > previous) accountMax.set(key, fraction);
 			if (!buckets.has(key)) {
@@ -448,18 +468,22 @@ export function computeProviderWindowStats(reports: UsageReport[]): ProviderWind
 					durationMs !== undefined
 						? formatDuration(durationMs)
 						: (limit.window?.label ?? limit.scope.windowId ?? limit.label);
-				buckets.set(key, { window, durationMs, fractions: [] });
+				buckets.set(key, { window, durationMs, meter, fractions: [] });
 			}
 		}
 		for (const [key, fraction] of accountMax) buckets.get(key)!.fractions.push(fraction);
 	}
 	return [...buckets.values()]
-		.sort((a, b) => (a.durationMs ?? Number.POSITIVE_INFINITY) - (b.durationMs ?? Number.POSITIVE_INFINITY))
+		.sort((a, b) => {
+			const duration = (a.durationMs ?? Number.POSITIVE_INFINITY) - (b.durationMs ?? Number.POSITIVE_INFINITY);
+			return duration !== 0 ? duration : (a.meter ?? "").localeCompare(b.meter ?? "");
+		})
 		.map(bucket => {
 			const usedAccounts = bucket.fractions.reduce((sum, fraction) => sum + fraction, 0);
 			return {
 				window: bucket.window,
 				durationMs: bucket.durationMs,
+				...(bucket.meter === undefined ? {} : { meter: bucket.meter }),
 				accounts: bucket.fractions.length,
 				usedAccounts,
 				remainingAccounts: Math.max(0, bucket.fractions.length - usedAccounts),
@@ -518,6 +542,82 @@ function shortDisableCause(cause: string): string {
 	return clause.length > 80 ? `${clause.slice(0, 77)}…` : clause;
 }
 
+export interface UsagePolicyDiagnosticsOptions {
+	/** Global fallback used when an account has no reserve override. */
+	globalReservePct: number;
+	/** Delegates selector matching to AuthStorage's authoritative policy matcher. */
+	getAccountPolicy: (provider: string, identity: OAuthAccountIdentity) => AuthAccountPolicy | undefined;
+}
+
+function metadataIdentity(report: UsageReport): OAuthAccountIdentity {
+	const metadata = report.metadata ?? {};
+	const read = (key: keyof OAuthAccountIdentity): string | undefined => {
+		const value = metadata[key];
+		return typeof value === "string" && value.length > 0 ? value : undefined;
+	};
+	const firstScoped = (key: "accountId" | "projectId" | "orgId"): string | undefined =>
+		report.limits.find(limit => limit.scope[key])?.scope[key];
+	return {
+		email: read("email"),
+		accountId: read("accountId") ?? firstScoped("accountId"),
+		projectId: read("projectId") ?? firstScoped("projectId"),
+		orgId: read("orgId") ?? firstScoped("orgId"),
+		orgName: read("orgName"),
+	};
+}
+
+function accountOAuthIdentity(account: UsageAccountIdentity): OAuthAccountIdentity {
+	return {
+		email: account.email,
+		accountId: account.accountId,
+		projectId: account.projectId,
+		orgId: account.orgId,
+		orgName: account.orgName,
+	};
+}
+
+function policyEnabledProviders(
+	reports: UsageReport[],
+	accounts: UsageAccountIdentity[],
+	options: UsagePolicyDiagnosticsOptions | undefined,
+): Set<string> {
+	const providers = new Set<string>();
+	if (!options) return providers;
+	for (const account of accounts) {
+		if (account.type === "oauth" && options.getAccountPolicy(account.provider, accountOAuthIdentity(account))) {
+			providers.add(account.provider);
+		}
+	}
+	for (const report of reports) {
+		if (options.getAccountPolicy(report.provider, metadataIdentity(report))) providers.add(report.provider);
+	}
+	return providers;
+}
+
+function formatPolicyLine(
+	provider: string,
+	identity: OAuthAccountIdentity,
+	limits: UsageLimit[] | undefined,
+	options: UsagePolicyDiagnosticsOptions,
+): string {
+	const policy = options.getAccountPolicy(provider, identity);
+	const priority = policy?.priority ?? 0;
+	const configuredReservePct = policy?.reservePct;
+	const reservePct = Math.max(0, Math.min(100, configuredReservePct ?? options.globalReservePct));
+	const reserveLabel = `${reservePct}% ${configuredReservePct === undefined ? "(global)" : "(override)"}`;
+	// `proto usage` has no model/session context, so report the conservative account-wide state from the
+	// most-consumed visible window; routing itself scopes limits per request in AuthStorage.
+	const usedFractions = (limits ?? [])
+		.map(resolveUsedFraction)
+		.filter((fraction): fraction is number => fraction !== undefined && Number.isFinite(fraction));
+	if (usedFractions.length === 0) {
+		return `policy: priority ${priority} · reserve ${reserveLabel} · reserve unknown`;
+	}
+	const remainingPct = Math.max(0, 1 - Math.max(...usedFractions)) * 100;
+	const state = remainingPct <= reservePct ? "inside reserve" : "eligible";
+	return `policy: priority ${priority} · reserve ${reserveLabel} · ${state} · ${remainingPct.toFixed(1)}% left`;
+}
+
 function disabledIdentityLabel(summary: DisabledCredentialSummary, redaction?: Map<string, string>): string {
 	const base = summary.email ?? summary.accountId ?? "OAuth account";
 	const masked = redaction?.get(base) ?? base;
@@ -532,14 +632,17 @@ export function formatUsageBreakdown(
 	nowMs: number,
 	redaction?: Map<string, string>,
 	disabled: DisabledCredentialSummary[] = [],
+	policyOptions?: UsagePolicyDiagnosticsOptions,
 ): string {
+	const displayReports = collapseSharedUsageReports(reports);
 	const reportsByProvider = new Map<string, UsageReport[]>();
-	for (const report of reports) {
+	for (const report of displayReports) {
 		const list = reportsByProvider.get(report.provider) ?? [];
 		list.push(report);
 		reportsByProvider.set(report.provider, list);
 	}
-	const unreported = collectUnreportedAccounts(reports, accounts);
+	const unreported = collectUnreportedAccounts(displayReports, accounts);
+	const policyProviders = policyEnabledProviders(displayReports, accounts, policyOptions);
 	const unreportedByProvider = new Map<string, UsageAccountIdentity[]>();
 	for (const account of unreported) {
 		const list = unreportedByProvider.get(account.provider) ?? [];
@@ -559,7 +662,7 @@ export function formatUsageBreakdown(
 	].sort((a, b) => a.localeCompare(b));
 
 	const lines: string[] = [];
-	const latestFetchedAt = Math.max(0, ...reports.map(report => report.fetchedAt ?? 0));
+	const latestFetchedAt = Math.max(0, ...displayReports.map(report => report.fetchedAt ?? 0));
 	const headerSuffix = latestFetchedAt ? chalk.dim(` · fetched ${formatDuration(nowMs - latestFetchedAt)} ago`) : "";
 	lines.push(`${chalk.bold("Usage")}${headerSuffix}`);
 
@@ -581,6 +684,11 @@ export function formatUsageBreakdown(
 
 		providerReports.forEach((report, index) => {
 			lines.push(`  ${formatAccountHeader(report, index, nowMs, redaction)}`);
+			if (policyOptions && policyProviders.has(provider)) {
+				lines.push(
+					`      ${chalk.dim(formatPolicyLine(provider, metadataIdentity(report), report.limits, policyOptions))}`,
+				);
+			}
 			if (report.limits.length === 0) {
 				lines.push(`      ${chalk.dim("no limits reported")}`);
 				return;
@@ -600,6 +708,11 @@ export function formatUsageBreakdown(
 		for (const account of providerUnreported) {
 			const label = accountIdentityLabel(account, redaction);
 			lines.push(`  ${chalk.dim("○")} ${chalk.dim(`${label} — no usage data`)}`);
+			if (policyOptions && account.type === "oauth" && policyProviders.has(provider)) {
+				lines.push(
+					`      ${chalk.dim(formatPolicyLine(provider, accountOAuthIdentity(account), undefined, policyOptions))}`,
+				);
+			}
 		}
 
 		for (const summary of disabledByProvider.get(provider) ?? []) {
@@ -618,10 +731,10 @@ export function formatUsageBreakdown(
 
 		const stats = computeProviderWindowStats(providerReports);
 		if (stats.length > 0) {
-			const parts = stats.map(
-				stat =>
-					`${stat.window} → ${stat.usedAccounts.toFixed(2)}/${stat.accounts} ${stat.accounts === 1 ? "account" : "accounts"} used (${stat.remainingAccounts.toFixed(2)}× quota left)`,
-			);
+			const parts = stats.map(stat => {
+				const meterLabel = stat.meter ? ` (${stat.meter.charAt(0).toUpperCase()}${stat.meter.slice(1)})` : "";
+				return `${stat.window}${meterLabel} → ${stat.usedAccounts.toFixed(2)}/${stat.accounts} ${stat.accounts === 1 ? "account" : "accounts"} used (${stat.remainingAccounts.toFixed(2)}× quota left)`;
+			});
 			lines.push(`  ${chalk.dim(`capacity: ${parts.join(" · ")}`)}`);
 		}
 	}
@@ -826,8 +939,75 @@ function redactReportForJson(
 	return { ...report, metadata, limits };
 }
 
+/** Compact token count for burn tables: 1234 → "1.2k", 4_500_000_000 → "4.50B". */
+function formatTokenCount(value: number): string {
+	if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+	if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+	if (value >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
+	return String(Math.round(value));
+}
+
+/**
+ * Per-client token burn: one section per install (hostname, short install id, last seen), one row per
+ * (app, provider) aggregate, and a per-client total.
+ */
+export function formatClientUsage(clients: ClientUsageClientSummary[], sinceMs: number, nowMs: number): string {
+	const lines: string[] = [chalk.bold(`Per-client token burn since ${new Date(sinceMs).toISOString().slice(0, 10)}`)];
+	const headers = ["app", "provider", "requests", "input", "output", "cache r", "cache w", "total", "est cost"];
+	for (const client of clients) {
+		const label = sanitizeText(client.hostname ?? client.installId);
+		const idNote = client.hostname ? ` · ${client.installId.slice(0, 8)}` : "";
+		const lastSeen = `last seen ${formatDuration(Math.max(0, nowMs - client.lastSeen))} ago`;
+		lines.push("", `${chalk.cyan(label)}${chalk.dim(idNote)} ${chalk.dim(`· ${lastSeen}`)}`);
+		if (client.providers.length === 0) {
+			lines.push(chalk.dim("  no usage in this window"));
+			continue;
+		}
+		const rows: string[][] = client.providers.map(usage => [
+			sanitizeText(usage.app ?? "—"),
+			usage.provider,
+			formatNumber(usage.requests),
+			formatTokenCount(usage.inputTokens),
+			formatTokenCount(usage.outputTokens),
+			formatTokenCount(usage.cacheReadTokens),
+			formatTokenCount(usage.cacheWriteTokens),
+			formatTokenCount(usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens),
+			`$${usage.costUsd.toFixed(2)}`,
+		]);
+		let totalRequests = 0;
+		let totalTokens = 0;
+		let totalCostUsd = 0;
+		for (const usage of client.providers) {
+			totalRequests += usage.requests;
+			totalTokens += usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+			totalCostUsd += usage.costUsd;
+		}
+		rows.push([
+			"",
+			"total",
+			formatNumber(totalRequests),
+			"",
+			"",
+			"",
+			"",
+			formatTokenCount(totalTokens),
+			`$${totalCostUsd.toFixed(2)}`,
+		]);
+		const widths = headers.map((header, column) => Math.max(header.length, ...rows.map(row => row[column].length)));
+		const renderRow = (cells: string[]): string =>
+			`  ${cells.map((cell, column) => (column < 2 ? cell.padEnd(widths[column]) : cell.padStart(widths[column]))).join("  ")}`;
+		lines.push(chalk.dim(renderRow(headers)));
+		for (const [index, row] of rows.entries()) {
+			const rendered = renderRow(row);
+			lines.push(index === rows.length - 1 ? chalk.bold(rendered) : rendered);
+		}
+	}
+	return lines.join("\n");
+}
+
 export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
-	const authStorage = await discoverAuthStorage();
+	const settings = await Settings.loadReadOnly();
+	const authStorage = await discoverAuthStorage(undefined, { settings });
 	try {
 		if (cmd.action === "invalidate") {
 			const provider = cmd.provider?.toLowerCase();
@@ -837,6 +1017,35 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			} else {
 				process.stdout.write("Invalidated cached usage reports for all providers.\n");
 			}
+			return;
+		}
+		if (cmd.action === "clients") {
+			const days = cmd.days !== undefined && Number.isFinite(cmd.days) && cmd.days > 0 ? cmd.days : 7;
+			const nowMs = Date.now();
+			const sinceMs = nowMs - days * 86_400_000;
+			// Prefer the broker's fleet-wide record; the local store has rows only on the broker host.
+			const brokerConfig = await resolveAuthBrokerConfig();
+			let clients: ClientUsageClientSummary[];
+			if (brokerConfig) {
+				const broker = new AuthBrokerClient({ url: brokerConfig.url, token: brokerConfig.token });
+				clients = (await broker.fetchClientUsageSummary({ sinceMs })).clients;
+			} else {
+				clients = authStorage.getClientUsageSummary(sinceMs).clients;
+			}
+			if (cmd.json) {
+				process.stdout.write(`${JSON.stringify({ generatedAt: nowMs, sinceMs, clients }, null, 2)}\n`);
+				return;
+			}
+			if (clients.length === 0) {
+				process.stderr.write(
+					chalk.yellow(
+						"No per-client usage recorded yet. Broker-connected clients and the auth-gateway report token burn automatically; set PROTO_AUTH_BROKER_URL (or run this on the broker host).\n",
+					),
+				);
+				process.exitCode = 1;
+				return;
+			}
+			process.stdout.write(`${formatClientUsage(clients, sinceMs, nowMs)}\n`);
 			return;
 		}
 		if (cmd.history) {
@@ -962,7 +1171,13 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			return;
 		}
 
-		process.stdout.write(`${formatUsageBreakdown(filteredReports, accounts, Date.now(), redaction, disabled)}\n`);
+		const policyOptions: UsagePolicyDiagnosticsOptions = {
+			globalReservePct: settings.get("retry.usageReservePct"),
+			getAccountPolicy: (provider, identity) => authStorage.getAccountPolicy(provider, identity),
+		};
+		process.stdout.write(
+			`${formatUsageBreakdown(filteredReports, accounts, Date.now(), redaction, disabled, policyOptions)}\n`,
+		);
 	} finally {
 		authStorage.close();
 	}

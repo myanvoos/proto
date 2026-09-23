@@ -1,6 +1,5 @@
-import { Database } from "bun:sqlite";
-import { renameSync } from "node:fs";
-import { getModelDbPath, isEnoent, isSqliteCorruptionError, logger } from "@oh-my-pi/pi-utils";
+import type { Database } from "bun:sqlite";
+import { getModelDbPath, isSqliteCorruptionError, openSqliteDatabaseSync } from "@oh-my-pi/pi-utils";
 import type { Api, Model, ModelSpec } from "./types";
 
 const CACHE_SCHEMA_VERSION = 13;
@@ -40,11 +39,7 @@ interface CacheEntry<TApi extends Api = Api> {
 let sharedDb: Database | null = null;
 let sharedDbPath: string | null = null;
 
-function openDb(resolvedPath: string): Database {
-	const db = new Database(resolvedPath, { create: true });
-
-	db.run("PRAGMA busy_timeout = 3000");
-
+function initializeDb(db: Database): void {
 	db.run("PRAGMA secure_delete = ON");
 	db.run("PRAGMA journal_mode = WAL");
 	db.run(`
@@ -61,75 +56,48 @@ function openDb(resolvedPath: string): Database {
 		)
 	`);
 	migrateCacheSchema(db);
-	return db;
 }
 
-function getSharedDb(resolvedPath: string): Database {
-	if (sharedDb && sharedDbPath === resolvedPath) {
-		return sharedDb;
-	}
-	if (sharedDb) {
-		sharedDb.close();
-		sharedDb = null;
-		sharedDbPath = null;
-	}
-	const db = openDb(resolvedPath);
-	sharedDb = db;
-	sharedDbPath = resolvedPath;
-	return db;
+function closeSharedDb(): void {
+	if (!sharedDb) return;
+	sharedDb.close();
+	sharedDb = null;
+	sharedDbPath = null;
 }
 
 function runModelCacheDb<T>(resolvedPath: string, shared: boolean, useDb: (db: Database) => T): T {
-	if (shared) return useDb(getSharedDb(resolvedPath));
-	const db = openDb(resolvedPath);
-	try {
-		return useDb(db);
-	} finally {
-		db.close();
-	}
-}
-
-const reportedCorruptPaths = new Set<string>();
-
-function quarantineCorruptModelCache(resolvedPath: string): void {
-	const stamp = Date.now();
-	for (const suffix of ["", "-wal", "-shm"]) {
+	if (shared && sharedDb && sharedDbPath !== resolvedPath) closeSharedDb();
+	if (shared && sharedDb) {
 		try {
-			renameSync(`${resolvedPath}${suffix}`, `${resolvedPath}.corrupt-${stamp}${suffix}`);
-		} catch (err) {
-			if (!isEnoent(err)) {
-				logger.debug("model cache: could not quarantine corrupt file", { path: `${resolvedPath}${suffix}` });
-			}
+			return useDb(sharedDb);
+		} catch (error) {
+			if (!isSqliteCorruptionError(error)) throw error;
+			// The opener owns recovery for new handles; drop the stale one so its WAL cannot attach to the replacement.
+			closeSharedDb();
+			return runModelCacheDb(resolvedPath, shared, useDb);
 		}
 	}
-}
 
-function healCorruptModelCache(resolvedPath: string, shared: boolean, err: unknown): void {
-	if (shared && sharedDb) {
-		sharedDb.close();
-		sharedDb = null;
-		sharedDbPath = null;
-	}
-	quarantineCorruptModelCache(resolvedPath);
-	const code = err && typeof err === "object" && "code" in err ? err.code : undefined;
-	if (reportedCorruptPaths.has(resolvedPath)) {
-		logger.debug("model cache: re-healed corrupt database", { path: resolvedPath, code });
-	} else {
-		reportedCorruptPaths.add(resolvedPath);
-		logger.error("model cache corrupt; quarantined and recreated a fresh cache", { path: resolvedPath, code });
-	}
+	return openSqliteDatabaseSync(
+		resolvedPath,
+		db => {
+			initializeDb(db);
+			const result = useDb(db);
+			if (shared) {
+				sharedDb = db;
+				sharedDbPath = resolvedPath;
+			} else {
+				db.close();
+			}
+			return result;
+		},
+		{ recoverCorruption: true },
+	);
 }
 
 function withModelCacheDb<T>(dbPath: string | undefined, useDb: (db: Database) => T): T {
 	const resolvedPath = dbPath ?? getModelDbPath();
-	const shared = dbPath === undefined;
-	try {
-		return runModelCacheDb(resolvedPath, shared, useDb);
-	} catch (err) {
-		if (!isSqliteCorruptionError(err)) throw err;
-		healCorruptModelCache(resolvedPath, shared, err);
-		return runModelCacheDb(resolvedPath, shared, useDb);
-	}
+	return runModelCacheDb(resolvedPath, dbPath === undefined, useDb);
 }
 
 function migrateCacheSchema(db: Database): void {
@@ -200,6 +168,7 @@ export function readModelCache<TApi extends Api>(
 }
 
 function hasModelHeaders(model: Model<Api>): boolean {
+	if (model.resolveHeaders) return true;
 	const headers = model.headers;
 	if (!headers) return false;
 	for (const _key in headers) return true;
@@ -207,7 +176,13 @@ function hasModelHeaders(model: Model<Api>): boolean {
 }
 
 function toCachedModelSpec<TApi extends Api>(model: Model<TApi>): ModelSpec<TApi> {
-	const { headers: _headers, compatConfig, supportsComputerUseConfig, ...rest } = model;
+	const {
+		headers: _headers,
+		resolveHeaders: _resolveHeaders,
+		compatConfig,
+		supportsComputerUseConfig,
+		...rest
+	} = model;
 	return { ...rest, supportsComputerUse: supportsComputerUseConfig, compat: compatConfig };
 }
 
@@ -245,9 +220,12 @@ export function writeModelCache<TApi extends Api>(
 					const staticHeaderSource =
 						staticById.get(model.id) ?? (model.requestModelId ? staticById.get(model.requestModelId) : undefined);
 
-					const matchesStatic = staticHeaderSource
-						? headersEqual(model.headers, staticHeaderSource.headers)
-						: headersEqual(model.headers, restorableHeaderFallback);
+					// A request-time resolver is restorable only when the static source carries the same hook.
+					const matchesStatic = model.resolveHeaders
+						? staticHeaderSource?.resolveHeaders === model.resolveHeaders
+						: staticHeaderSource
+							? headersEqual(model.headers, staticHeaderSource.headers)
+							: headersEqual(model.headers, restorableHeaderFallback);
 					if (!matchesStatic) {
 						unrestorableHeaderModelIds.push(model.id);
 					}

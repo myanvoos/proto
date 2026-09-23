@@ -11,15 +11,16 @@ import {
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { agentLoop } from "./agent-loop";
-import type {
-	AgentContext,
-	AgentEvent,
-	AgentLoopConfig,
-	AgentMessage,
-	AgentTool,
-	AgentToolResult,
-	StreamFn,
+import { agentLoop, TERMINAL_TOOL_RESULT_ABORT_REASON } from "./agent-loop";
+import {
+	type AgentContext,
+	type AgentEvent,
+	type AgentLoopConfig,
+	type AgentMessage,
+	type AgentTool,
+	type AgentToolResult,
+	ASIDE_MESSAGE_DISCARD,
+	type StreamFn,
 } from "./types";
 
 const model = getBundledModel("google", "gemini-2.5-flash-lite-preview-06-17");
@@ -210,6 +211,44 @@ test("event-emitting response keeps one context entry and one boundary pair", as
 	expect(turnMessages.filter(message => message.role === "assistant")).toHaveLength(1);
 	expect(assistantText(turnMessages[1])).toBe("streamed");
 	expect(assistantBoundaryEvents(events).map(event => event.type)).toEqual(["message_start", "message_end"]);
+});
+
+test("streaming snapshots show silent updates to still-open blocks", async () => {
+	const toolCallStarted = deferred<void>();
+	const streamFn: StreamFn = targetModel => {
+		const stream = createAssistantMessageEventStream();
+		const partial: AssistantMessage = { ...assistantMessage(targetModel, ""), content: [] };
+		stream.push({ type: "start", partial });
+		const edit = { type: "toolCall" as const, id: "edit-1", name: "edit", arguments: {} };
+		partial.content.push(edit);
+		stream.push({ type: "toolcall_start", contentIndex: 0, partial });
+		void (async () => {
+			await toolCallStarted.promise;
+			// Cursor merges edit args into an open block without emitting an event for it.
+			edit.arguments = { path: "a.ts" };
+			partial.content.push({ type: "text", text: "" });
+			stream.push({ type: "text_start", contentIndex: 1, partial });
+			stream.push({ type: "done", reason: "stop", message: assistantMessage(targetModel, "done") });
+		})();
+		return stream;
+	};
+
+	const { events } = await runSingleResponse(streamFn, {
+		onAssistantMessageEvent: (_message, event) => {
+			if (event.type === "toolcall_start") toolCallStarted.resolve();
+		},
+	});
+
+	const textStart = events.find(
+		event => event.type === "message_update" && event.assistantMessageEvent.type === "text_start",
+	);
+	if (textStart?.type !== "message_update" || textStart.assistantMessageEvent.type !== "text_start") {
+		throw new Error("missing text_start update");
+	}
+	expect(textStart.assistantMessageEvent.partial.content[0]).toMatchObject({
+		type: "toolCall",
+		arguments: { path: "a.ts" },
+	});
 });
 
 test("steering watcher rejection is surfaced once and stops polling", async () => {
@@ -575,4 +614,194 @@ test("explicit abort reasons retain their text without becoming retryable", asyn
 	expect(assistant?.errorId).toBeDefined();
 	expect(AIError.is(assistant?.errorId, AIError.Flag.Abort)).toBe(true);
 	expect(AIError.retriable(assistant?.errorId)).toBe(false);
+});
+
+test("queued steering runs already-emitted non-interruptible calls, skips interruptible waits, then injects", async () => {
+	const executed: string[] = [];
+	const write = basicTool(
+		"write",
+		async () => {
+			executed.push("write");
+			return okToolResult();
+		},
+		"exclusive",
+	);
+	const wait: AgentTool = {
+		...basicTool(
+			"wait",
+			async () => {
+				executed.push("wait");
+				return okToolResult();
+			},
+			"exclusive",
+		),
+		interruptible: true,
+	};
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [write, wait] };
+	let responses = 0;
+	let delivered = false;
+	const config = loopConfig(context, {
+		interruptMode: "immediate",
+		// Steering is already queued when the batch starts: the user typed while the calls streamed.
+		hasSteeringMessages: () => responses >= 1 && !delivered,
+		getSteeringMessages: async () => {
+			if (responses < 1 || delivered) return [];
+			delivered = true;
+			return [userMessage("interrupt")];
+		},
+	});
+	const stream = agentLoop([userMessage("hello")], context, config, undefined, targetModel => {
+		const response = createAssistantMessageEventStream();
+		response.end(
+			responses++ === 0
+				? toolMessage(targetModel, [
+						{ id: "call-1", name: "write" },
+						{ id: "call-2", name: "wait" },
+						{ id: "call-3", name: "write" },
+					])
+				: assistantMessage(targetModel, "done"),
+		);
+		return response;
+	});
+	const order: string[] = [];
+	const skipped: string[] = [];
+	for await (const event of stream) {
+		if (event.type !== "message_start") continue;
+		if (event.message.role === "toolResult") {
+			order.push(event.message.toolCallId);
+			if (event.message.isError) skipped.push(event.message.toolCallId);
+		}
+		if (
+			event.message.role === "user" &&
+			Array.isArray(event.message.content) &&
+			event.message.content.some(block => block.type === "text" && block.text === "interrupt")
+		) {
+			order.push("interrupt");
+		}
+	}
+
+	expect(executed).toEqual(["write", "write"]);
+	expect(skipped).toEqual(["call-2"]);
+	// Every call settles before the steer lands at the batch boundary.
+	expect(order.slice(0, 3).sort()).toEqual(["call-1", "call-2", "call-3"]);
+	expect(order[3]).toBe("interrupt");
+});
+
+test("a tool-name miss names the advertised tool sharing its most distinctive trailing segment", async () => {
+	const noop = async () => okToolResult();
+	// Three tools share only the generic `_get` tail and are listed first.
+	const tools = ["read", "alpha_get", "beta_get", "gamma_get", "mcp__context_resolve_library_get"].map(name =>
+		basicTool(name, noop),
+	);
+	const context: AgentContext = { systemPrompt: [], messages: [], tools };
+	const misses = [
+		{ id: "lost-id-segment", name: "mcp__abc123__xyz789_read" },
+		{ id: "lost-separator", name: "mcp__context7__resolve_library_get" },
+		{ id: "unrelated", name: "totally_unrelated" },
+	];
+	let responses = 0;
+	const messages = await agentLoop([userMessage("go")], context, loopConfig(context), undefined, targetModel => {
+		const response = createAssistantMessageEventStream();
+		response.end(responses++ === 0 ? toolMessage(targetModel, misses) : assistantMessage(targetModel, "done"));
+		return response;
+	}).result();
+	const errorText = (id: string): string => {
+		const result = messages.find(message => message.role === "toolResult" && message.toolCallId === id);
+		if (result?.role !== "toolResult") throw new Error(`missing result for ${id}`);
+		return result.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n");
+	};
+
+	expect(errorText("lost-id-segment")).toContain("Did you mean read?");
+	// The distinctive tail's match leads the capped list ahead of tools sharing only `_get`.
+	expect(errorText("lost-separator")).toContain("Closest available: mcp__context_resolve_library_get, ");
+	expect(errorText("unrelated")).toContain("Tool totally_unrelated not found");
+	expect(errorText("unrelated")).not.toContain("Did you mean");
+});
+
+test("a throwing aside discard hook neither skips later hooks nor replaces the loop error", async () => {
+	const throwingAside = userMessage("throwing completion");
+	Object.defineProperty(throwingAside, ASIDE_MESSAGE_DISCARD, {
+		value: () => {
+			throw new Error("discard failed");
+		},
+	});
+	const aside = userMessage("completion");
+	let discarded: Error | undefined;
+	Object.defineProperty(aside, ASIDE_MESSAGE_DISCARD, {
+		value: (error: Error) => {
+			discarded = error;
+		},
+	});
+	let delivered = false;
+	const context: AgentContext = { systemPrompt: [], messages: [], tools: [] };
+	const stream = agentLoop(
+		[userMessage("hi")],
+		context,
+		loopConfig(context, {
+			getAsideMessages: async () => {
+				if (delivered) return [];
+				delivered = true;
+				return [
+					() => throwingAside,
+					() => aside,
+					() => {
+						throw new Error("later aside failed");
+					},
+				];
+			},
+		}),
+		undefined,
+		responseFor(targetModel => assistantMessage(targetModel, "done")),
+	);
+
+	const drain = async () => {
+		for await (const _event of stream) {
+			// Drain the loop.
+		}
+		await stream.result();
+	};
+	await expect(drain()).rejects.toThrow("later aside failed");
+	expect(discarded?.message).toBe("later aside failed");
+});
+
+test("a terminal-yield turn still reaches onTurnEnd, without the spent abort signal", async () => {
+	const controller = new AbortController();
+	let calls = 0;
+	const streamFn: StreamFn = targetModel => {
+		calls++;
+		const stream = createAssistantMessageEventStream();
+		stream.end(
+			calls === 1
+				? toolMessage(targetModel, [{ id: "yield-1", name: "yield" }])
+				: assistantMessage(targetModel, "must not be reached"),
+		);
+		return stream;
+	};
+	const context: AgentContext = {
+		systemPrompt: [],
+		messages: [],
+		tools: [basicTool("yield", async () => okToolResult("final answer"))],
+	};
+	const turnEndCalls: Array<{ willContinue: boolean | undefined; signalAborted: boolean }> = [];
+	const stream = agentLoop(
+		[userMessage("go")],
+		context,
+		loopConfig(context, {
+			afterToolCall: async () => {
+				controller.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+			},
+			onTurnEnd: (_messages, signal, ctx) => {
+				turnEndCalls.push({ willContinue: ctx?.willContinue, signalAborted: signal?.aborted === true });
+			},
+		}),
+		controller.signal,
+		streamFn,
+	);
+	for await (const _event of stream) {
+		// Drain the loop.
+	}
+
+	// Per-turn bookkeeping (advisor review of the yield) must see the final turn as a plain completed turn.
+	expect(calls).toBe(1);
+	expect(turnEndCalls).toEqual([{ willContinue: false, signalAborted: false }]);
 });

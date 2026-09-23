@@ -1,4 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { CombinedAutocompleteProvider, type SlashCommand } from "./autocomplete";
 import {
 	Editor,
@@ -455,4 +458,156 @@ test("host row budget keeps input and selected completion visible while resizing
 	} finally {
 		editor.dispose();
 	}
+});
+
+/** Resolve once the popup is open, driven by autocomplete update events. */
+async function untilAutocompleteShown(editor: Editor): Promise<void> {
+	while (!editor.isShowingAutocomplete()) {
+		const update = Promise.withResolvers<void>();
+		editor.onAutocompleteUpdate = () => update.resolve();
+		await update.promise;
+	}
+}
+
+/** Drain queued microtasks so a chained autocomplete re-trigger reaches the provider. */
+async function drainMicrotasks(): Promise<void> {
+	for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+
+test("accepting an @ directory with Enter reopens the popup on its children", async () => {
+	const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "editor-at-directory-enter-"));
+	try {
+		fs.mkdirSync(path.join(baseDir, "packages", "tui"), { recursive: true });
+		fs.mkdirSync(path.join(baseDir, "packages", "utils"), { recursive: true });
+		const editor = editorWith("@pack");
+		editor.setAutocompleteProvider(new CombinedAutocompleteProvider([], baseDir));
+		const submitted: string[] = [];
+		editor.onSubmit = value => {
+			submitted.push(value);
+		};
+
+		editor.handleInput("\t");
+		await untilAutocompleteShown(editor);
+		editor.handleInput("\r");
+		expect(editor.getText()).toBe("@packages/");
+		await untilAutocompleteShown(editor);
+
+		expect(editor.isShowingAutocomplete()).toBe(true);
+		expect(submitted).toEqual([]);
+		editor.dispose();
+	} finally {
+		fs.rmSync(baseDir, { recursive: true, force: true });
+	}
+});
+
+test("Enter on a slash-command directory argument does not chain into its children", async () => {
+	const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "editor-slash-directory-enter-"));
+	try {
+		const target = `${baseDir.replace(/\\/g, "/")}/sibling`;
+		fs.mkdirSync(path.join(target, "child"), { recursive: true });
+		const editor = editorWith(`/move ${target}`);
+		const provider = new CombinedAutocompleteProvider([], baseDir);
+		const suggestionRequests = spyOn(provider, "getSuggestions");
+		editor.setAutocompleteProvider(provider);
+		const submitted: string[] = [];
+		editor.onSubmit = value => {
+			submitted.push(value);
+		};
+
+		editor.handleInput("\t");
+		await untilAutocompleteShown(editor);
+		const requestsBeforeAccept = suggestionRequests.mock.calls.length;
+		editor.handleInput("\r");
+		await drainMicrotasks();
+		// Chaining would reopen the popup on the directory's children, so every
+		// following Enter descends a level instead of running the command.
+		expect(suggestionRequests.mock.calls.length).toBe(requestsBeforeAccept);
+		expect(editor.isShowingAutocomplete()).toBe(false);
+
+		editor.handleInput("\r");
+		expect(submitted).toHaveLength(1);
+		expect(submitted[0]?.startsWith("/move ")).toBe(true);
+		editor.dispose();
+	} finally {
+		fs.rmSync(baseDir, { recursive: true, force: true });
+	}
+});
+
+test("typing an argument separator re-evaluates a closed slash-command popup", async () => {
+	const argumentPrefixes: string[] = [];
+	const editor = editorWith();
+	editor.setAutocompleteProvider(
+		new CombinedAutocompleteProvider(
+			[
+				{
+					name: "probe",
+					getArgumentCompletions(argumentPrefix) {
+						argumentPrefixes.push(argumentPrefix);
+						return /^\S+\s/.test(argumentPrefix) ? [{ value: "scope", label: "scope" }] : null;
+					},
+				},
+			],
+			"/tmp",
+		),
+	);
+
+	editor.handleInput("/");
+	await untilAutocompleteShown(editor);
+	for (const char of "probe a") editor.handleInput(char);
+	while (editor.isShowingAutocomplete()) {
+		const update = Promise.withResolvers<void>();
+		editor.onAutocompleteUpdate = () => update.resolve();
+		await update.promise;
+	}
+	expect(argumentPrefixes.at(-1)).toBe("a");
+
+	editor.handleInput(" ");
+	await untilAutocompleteShown(editor);
+	expect(argumentPrefixes.at(-1)).toBe("a ");
+	editor.dispose();
+});
+
+test("right arrow at end of line accepts the slash popup selection; mid-line it only moves", async () => {
+	const open = async (): Promise<Editor> => {
+		const editor = editorWith();
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([{ name: "skills:fix-bug", description: "Fix a bug" }], "/tmp"),
+		);
+		editor.handleInput("/");
+		await untilAutocompleteShown(editor);
+		for (const char of "ski") editor.handleInput(char);
+		await untilAutocompleteShown(editor);
+		return editor;
+	};
+
+	const atEnd = await open();
+	atEnd.handleInput("\x1b[C");
+	expect(atEnd.getText()).toBe("/skills:fix-bug ");
+	atEnd.dispose();
+
+	const midLine = await open();
+	midLine.handleInput("\x1b[D");
+	midLine.handleInput("\x1b[C");
+	expect(midLine.getText()).toBe("/ski");
+	expect(midLine.getCursor()).toEqual({ line: 0, col: 4 });
+	midLine.dispose();
+});
+
+test("right arrow accepts an inline word completion only at end of line", () => {
+	const completeWeather = {
+		getWordCompletion: (lines: string[], line: number, col: number) =>
+			(lines[line] ?? "").slice(0, col).endsWith("weath") ? "er" : null,
+	};
+	const atEnd = editorWith("The weath");
+	atEnd.setTextAssistProvider(completeWeather);
+	atEnd.handleInput("\x1b[C");
+	expect(atEnd.getText()).toBe("The weather ");
+	expect(atEnd.getCursor()).toEqual({ line: 0, col: 12 });
+
+	const midLine = editorWith("The weath end");
+	midLine.setTextAssistProvider(completeWeather);
+	midLine.handleInput("\x01");
+	for (let i = 0; i < 10; i++) midLine.handleInput("\x1b[C");
+	expect(midLine.getText()).toBe("The weath end");
+	expect(midLine.getCursor()).toEqual({ line: 0, col: 10 });
 });

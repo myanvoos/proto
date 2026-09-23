@@ -148,7 +148,7 @@ async function observesAgentEvent(session: AgentSession): Promise<boolean> {
 	}
 }
 
-test("delivers message start before cumulative updates to subscribers and extensions", async () => {
+test("a stalled extension hook neither blocks nor reorders subscriber delivery", async () => {
 	const startHookEntered = Promise.withResolvers<void>();
 	const releaseStartHook = Promise.withResolvers<void>();
 	const hookEvents: string[] = [];
@@ -210,17 +210,79 @@ test("delivers message start before cumulative updates to subscribers and extens
 		setImmediate(blockedTurn.resolve);
 		await blockedTurn.promise;
 
+		// Subscribers are not held behind the stalled hook; extensions still see start before any update.
 		expect(hookEvents).toEqual(["start"]);
-		expect(subscriberEvents).toEqual([]);
+		expect(subscriberEvents).toEqual(["message_start", "message_update:partial", "message_update:latest"]);
 
 		releaseStartHook.resolve();
 		const deliveredTurn = Promise.withResolvers<void>();
 		setImmediate(deliveredTurn.resolve);
 		await deliveredTurn.promise;
+		// The stalled hook's backlog of updates reaches extensions coalesced to the latest one.
 		expect(hookEvents).toEqual(["start", "start complete", "update"]);
-		expect(subscriberEvents).toEqual(["message_start", "message_update:latest"]);
+		expect(subscriberEvents).toEqual(["message_start", "message_update:partial", "message_update:latest"]);
 	} finally {
 		releaseStartHook.resolve();
+		unsubscribe();
+		await closeHarness(harness);
+	}
+});
+
+test("a stalled message_end hook does not hold back later messages from subscribers or the transcript", async () => {
+	const hookEntered = Promise.withResolvers<void>();
+	const releaseHook = Promise.withResolvers<void>();
+	const extension: ExtensionFactory = api => {
+		api.on("message_end", async event => {
+			if (event.message.role !== "toolResult") return;
+			hookEntered.resolve();
+			await releaseHook.promise;
+		});
+	};
+	const harness = await createHarness(false, [extension]);
+	const delivered: string[] = [];
+	const unsubscribe = harness.session.subscribe(event => {
+		if (event.type === "message_end") delivered.push(event.message.role);
+	});
+	const toolResult: ToolResultMessage = {
+		role: "toolResult",
+		toolCallId: "call-stalled",
+		toolName: "bash",
+		content: [{ type: "text", text: "ok" }],
+		isError: false,
+		timestamp: TEST_TIMESTAMP,
+	};
+	const answer: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: "done" }],
+		api: "openai-completions",
+		provider: "test",
+		model: "test",
+		stopReason: "stop",
+		timestamp: TEST_TIMESTAMP + 1,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	};
+	try {
+		harness.session.agent.emitExternalEvent({ type: "message_end", message: toolResult });
+		await hookEntered.promise;
+		harness.session.agent.emitExternalEvent({ type: "message_end", message: answer });
+		const settled = Promise.withResolvers<void>();
+		setImmediate(settled.resolve);
+		await settled.promise;
+
+		expect(delivered).toEqual(["toolResult", "assistant"]);
+		const persisted = harness.sessionManager
+			.getBranch()
+			.flatMap(entry => (entry.type === "message" ? [entry.message.role] : []));
+		expect(persisted).toEqual(["toolResult", "assistant"]);
+	} finally {
+		releaseHook.resolve();
 		unsubscribe();
 		await closeHarness(harness);
 	}
@@ -851,6 +913,93 @@ test("dropping images preserves rewound and sibling history", async () => {
 
 		await harness.sessionManager.flush();
 		expect(await Bun.file(sessionFile).text()).toBe(persistedBefore);
+	} finally {
+		await closeHarness(harness);
+	}
+});
+
+async function writeForeignProjectSession(agentDir: string): Promise<{ file: string; projectDir: string }> {
+	const projectDir = await fs.mkdtemp(path.join(agentDir, "foreign-project-"));
+	const foreign = SessionManager.create(projectDir, path.join(agentDir, "foreign-sessions"));
+	foreign.appendMessage(userMessage("foreign history"));
+	await foreign.ensureOnDisk();
+	await foreign.flush();
+	const file = foreign.getSessionFile()!;
+	await foreign.close();
+	return { file, projectDir };
+}
+
+test("switching to another project's session is refused when nothing can move the process there", async () => {
+	const harness = await createHarness(true);
+	try {
+		const previousFile = harness.session.sessionFile;
+		const { file } = await writeForeignProjectSession(harness.agentDir);
+
+		expect(await harness.session.switchSession(file)).toBe(false);
+		expect(harness.session.sessionFile).toBe(previousFile);
+		expect(harness.session.sessionManager.getCwd()).toBe(process.cwd());
+	} finally {
+		await closeHarness(harness);
+	}
+});
+
+test("a declined project change keeps the current session", async () => {
+	const harness = await createHarness(true);
+	try {
+		const previousFile = harness.session.sessionFile;
+		const { file, projectDir } = await writeForeignProjectSession(harness.agentDir);
+		const calls: Array<[string, string]> = [];
+
+		const switched = await harness.session.switchSession(file, {
+			onCwdChange: async (newCwd, previousCwd) => {
+				calls.push([newCwd, previousCwd]);
+				return false;
+			},
+		});
+
+		expect(switched).toBe(false);
+		expect(calls).toEqual([[projectDir, process.cwd()]]);
+		expect(harness.session.sessionFile).toBe(previousFile);
+		expect(harness.session.sessionManager.getCwd()).toBe(process.cwd());
+	} finally {
+		await closeHarness(harness);
+	}
+});
+
+test("a switch failing after the project change moves the process back, and disposes when it cannot", async () => {
+	const harness = await createHarness(true);
+	try {
+		const previousFile = harness.session.sessionFile;
+		const { file, projectDir } = await writeForeignProjectSession(harness.agentDir);
+		const calls: Array<[string, string]> = [];
+		let restoreFails = false;
+		const onCwdChange = async (newCwd: string, previousCwd: string) => {
+			calls.push([newCwd, previousCwd]);
+			if (restoreFails && calls.length > 1) throw new Error("cwd restore denied");
+			return true;
+		};
+		const contextSpy = spyOn(harness.session, "buildDisplaySessionContext").mockImplementation(() => {
+			throw new Error("loading history failed");
+		});
+		try {
+			await expect(harness.session.switchSession(file, { onCwdChange })).rejects.toThrow("loading history failed");
+			expect(calls).toEqual([
+				[projectDir, process.cwd()],
+				[process.cwd(), projectDir],
+			]);
+			expect(harness.session.sessionFile).toBe(previousFile);
+			expect(harness.session.isDisposed).toBe(false);
+
+			calls.length = 0;
+			restoreFails = true;
+			await expect(harness.session.switchSession(file, { onCwdChange })).rejects.toThrow(
+				/loading history failed \(cwd rollback failed: cwd restore denied; the process may remain in .*foreign-project-/,
+			);
+			expect(harness.session.sessionManager.getCwd()).toBe(process.cwd());
+			expect(harness.session.isDisposed).toBe(true);
+		} finally {
+			contextSpy.mockRestore();
+		}
 	} finally {
 		await closeHarness(harness);
 	}

@@ -29,40 +29,50 @@ import {
 	type CatalogProviderDescriptor,
 	isCatalogDescriptor,
 } from "../src/provider-models/descriptor-types";
-import { PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
+import { getCatalogProviderEntry, PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
+import { filterModelsDevCatalogRows } from "../src/provider-models/models-dev-policies";
 import {
+	ABLITERATION_STATIC_MODELS,
 	AIAND_STATIC_MODELS,
 	ALIBABA_TOKEN_PLAN_STATIC_MODELS,
 	ANTHROPIC_CURATED_FALLBACK_MODELS,
+	applyXaiCatalogPricing,
 	BEDROCK_MANTLE_STATIC_MODELS,
 	buildFireworksFastSeed,
 	buildXaiOAuthStaticSeed,
 	clampFireworksKimiMaxTokens,
 	clampKimiK27CodeMaxTokens,
+	FIREPASS_STATIC_MODELS,
 	fetchWellKnownModels,
 	GMI_CLOUD_STATIC_MODELS,
 	isFireworksKimiK2ModelId,
 	isKimiK27CodeModelId,
+	kimiCodeCost,
 	kimiCodeMaxTokens,
 	META_MUSE_STATIC_MODELS,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
+	MUSE_CODE_STATIC_MODELS,
 	mapModelsDevToModels,
 	OPENAI_DAYBREAK_CURATED_FALLBACK_MODELS,
 	projectOpenAIProReasoningAliases,
+	routeGitHubCopilotModelSpec,
 	SAKANA_FUGU_STATIC_MODELS,
+	STEPFUN_STATIC_MODELS,
 	stripFireworksDeepSeekThinkingToggle,
+	XIAOMI_TOKEN_PLAN_CN_STATIC_MODELS,
+	YOLO_AUTO_STATIC_MODELS,
 } from "../src/provider-models/openai-compat";
+import { DEVIN_STATIC_MODELS } from "../src/provider-models/special";
 import type { Api, Model, ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
 import { collapseEffortVariantsAcrossProviders } from "../src/variant-collapse";
+import { mergeCopilotApiHeaders } from "../src/wire/github-copilot";
 import {
 	applyAntigravityPricingFallback,
 	applyCanonicalLimitFallback,
 	applyGeneratedModelPolicies,
 	applyOllamaCloudOutputCap,
 	CLOUDFLARE_FALLBACK_MODEL,
-	dropBedrockMantleOpenAIModels,
-	dropUnsupportedBedrockGeoIds,
 	hasBillableCost,
 	linkOpenAIPromotionTargets,
 } from "./generated-policies";
@@ -80,10 +90,38 @@ async function loadPrevModels(): Promise<Record<string, Record<string, Model<Api
 	return out;
 }
 
-const prevModelsJson = await loadPrevModels();
-
 const DISCOVERY_ONLY_PROVIDERS = new Set(["ollama", "vllm", "lm-studio", "litellm"]);
-const RETIRED_PROVIDERS = new Set(["wafer-pass", "wandb"]);
+const RETIRED_PROVIDERS = new Set(["wafer-pass", "wandb", "opencode"]);
+// Credential-scoped rosters (Devin gates Cascade models per account/team): fetching them at
+// generation would bake one account's entitlements into the bundle as rows no later regen could
+// prune. They are never fetched here, their snapshot rows are dropped, and the curated static
+// seed is the whole bundled surface.
+const CREDENTIAL_SCOPED_PROVIDERS = new Set(["devin"]);
+
+export function mergePreviousSnapshotModels(
+	models: readonly ModelSpec[],
+	previousModels: Readonly<Record<string, Readonly<Record<string, Model<Api>>>>>,
+	excludedProviders: ReadonlySet<string>,
+): ModelSpec[] {
+	const merged = [...models];
+	const fetchedKeys = new Set(models.map(model => `${model.provider}/${model.id}`));
+	for (const provider in previousModels) {
+		const providerModels = previousModels[provider];
+		for (const id in providerModels) {
+			const model = toModelSpec(providerModels[id]);
+			if (
+				!fetchedKeys.has(`${model.provider}/${model.id}`) &&
+				!DISCOVERY_ONLY_PROVIDERS.has(model.provider) &&
+				!RETIRED_PROVIDERS.has(model.provider) &&
+				!CREDENTIAL_SCOPED_PROVIDERS.has(model.provider) &&
+				!excludedProviders.has(model.provider)
+			) {
+				merged.push(model);
+			}
+		}
+	}
+	return merged;
+}
 
 async function resolveProviderApiKey(providerId: string, catalog: CatalogDiscoveryConfig): Promise<string | undefined> {
 	for (const envVar of catalog.envVars ?? []) {
@@ -205,7 +243,20 @@ function applyGlobalModelsDevFallback(
 		if (
 			providerScopedKeys.has(`${model.provider}/${model.id}`) ||
 			model.provider === "devin" ||
-			model.provider === "baseten"
+			model.provider === "baseten" ||
+			// Meta's first-party rows come from the reviewed seed; a same-id gateway row would overwrite their names.
+			model.provider === "meta" ||
+			model.provider === "muse-code" ||
+			getCatalogProviderEntry(model.provider)?.skipCrossProviderReferenceFills === true
+		) {
+			return model;
+		}
+		// ClinePass free-tier rows arrive manager-complete (reference-enriched, "(free)"-marked names); a same-id
+		// overlay would drop the tier marker and flip reasoning from unrelated data. The raw wire tag marks them.
+		if (
+			model.provider === "cline-pass" &&
+			model.api === "openai-completions" &&
+			(model as ModelSpec<"openai-completions">).compat?.wireModelIdMode === "raw"
 		) {
 			return model;
 		}
@@ -213,14 +264,21 @@ function applyGlobalModelsDevFallback(
 		if (!reference) {
 			return model;
 		}
+		const contextWindow = model.contextWindow ?? reference.contextWindow;
+		// A same-id reference's output ceiling can exceed this deployment's own window.
+		const referenceMaxTokens =
+			reference.maxTokens !== null && contextWindow !== null
+				? Math.min(reference.maxTokens, contextWindow)
+				: reference.maxTokens;
 		return {
 			...model,
 			name: reference.name,
 			reasoning: reference.reasoning,
 			input: reference.input,
-
-			contextWindow: model.contextWindow ?? reference.contextWindow,
-			maxTokens: model.maxTokens ?? reference.maxTokens,
+			contextWindow,
+			maxTokens: model.maxTokens ?? referenceMaxTokens,
+			int: model.int ?? reference.int,
+			tps: model.tps ?? reference.tps,
 		};
 	});
 }
@@ -303,7 +361,8 @@ function applyKimiMaxTokensCap(models: readonly ModelSpec[]): ModelSpec[] {
 		}
 		if (model.provider === "kimi-code") {
 			const capped = kimiCodeMaxTokens(model.id, model.maxTokens);
-			return capped === model.maxTokens ? model : { ...model, maxTokens: capped };
+			const cost = kimiCodeCost(model.id, model.cost);
+			return capped === model.maxTokens && cost === model.cost ? model : { ...model, maxTokens: capped, cost };
 		}
 		return model;
 	});
@@ -314,27 +373,6 @@ function applyFireworksDeepSeekReasoningShape(models: readonly ModelSpec[]): Mod
 		if (model.provider !== "fireworks" || model.api !== "openai-completions") return model;
 
 		return stripFireworksDeepSeekThinkingToggle(model as ModelSpec<"openai-completions">, model.id);
-	});
-}
-
-function dropUnusableZaiContextTierIds(models: readonly ModelSpec[]): ModelSpec[] {
-	return models.filter(model => !(model.provider === "zai" && model.id.endsWith("[1m]")));
-}
-
-function dropFireworksWireIds(models: readonly ModelSpec[]): ModelSpec[] {
-	return models.filter(
-		model =>
-			!(
-				(model.provider === "fireworks" || model.provider === "firepass") &&
-				model.id.startsWith("accounts/fireworks/")
-			),
-	);
-}
-
-function dropXiaomiAudioOnlyIds(models: readonly ModelSpec[]): ModelSpec[] {
-	return models.filter(model => {
-		const isXiaomiProvider = model.provider === "xiaomi" || model.provider.startsWith("xiaomi-token-plan-");
-		return !isXiaomiProvider || (!model.id.includes("-tts") && !model.id.includes("-asr"));
 	});
 }
 
@@ -414,7 +452,9 @@ async function generateModels() {
 	const modelsDevModels = await loadModelsDevData();
 	const catalogProviderDescriptors = PROVIDER_DESCRIPTORS.filter(
 		(descriptor): descriptor is CatalogProviderDescriptor =>
-			isCatalogDescriptor(descriptor) && !DISCOVERY_ONLY_PROVIDERS.has(descriptor.providerId),
+			isCatalogDescriptor(descriptor) &&
+			!DISCOVERY_ONLY_PROVIDERS.has(descriptor.providerId) &&
+			!CREDENTIAL_SCOPED_PROVIDERS.has(descriptor.providerId),
 	);
 	const catalogProviderModelBatches = await Promise.all(
 		catalogProviderDescriptors.map(async descriptor => ({
@@ -437,8 +477,10 @@ async function generateModels() {
 
 	const gitLabDuoModels = getGitLabDuoModels().map(model => toModelSpec(model));
 
+	// Meta's reviewed first-party seed goes first: it carries the documented Responses capabilities and display
+	// names, and keeps first-run selection independent of credentials or live discovery.
 	let allModels = applyGlobalModelsDevFallback(
-		[...bundledModelsDevModels, ...catalogProviderModels, ...gitLabDuoModels],
+		[...META_MUSE_STATIC_MODELS, ...bundledModelsDevModels, ...catalogProviderModels, ...gitLabDuoModels],
 		modelsDevModels,
 	);
 
@@ -465,12 +507,14 @@ async function generateModels() {
 		maxTokens: 131_072,
 	} as ModelSpec<"anthropic-messages">);
 
-	allModels.push(...META_MUSE_STATIC_MODELS);
-
 	allModels.push(...BEDROCK_MANTLE_STATIC_MODELS);
 
 	if (!authoritativeCatalogProviders.has("sakana")) {
 		allModels.push(...SAKANA_FUGU_STATIC_MODELS);
+	}
+
+	if (!authoritativeCatalogProviders.has("abliteration")) {
+		allModels.push(...ABLITERATION_STATIC_MODELS);
 	}
 
 	if (!authoritativeCatalogProviders.has("aiand")) {
@@ -481,9 +525,29 @@ async function generateModels() {
 		allModels.push(...GMI_CLOUD_STATIC_MODELS);
 	}
 
+	// Seed Fire Pass router models so the provider is usable when generation has
+	// no live key. Dedicated `fpk_...` keys only authorize router endpoints, not
+	// `/v1/models`, so dynamic discovery is never performed.
+	if (!authoritativeCatalogProviders.has("firepass")) {
+		allModels.push(...FIREPASS_STATIC_MODELS);
+	}
+
+	if (!authoritativeCatalogProviders.has("stepfun")) {
+		allModels.push(...STEPFUN_STATIC_MODELS);
+	}
+
+	if (!authoritativeCatalogProviders.has("yolo-auto")) {
+		allModels.push(...YOLO_AUTO_STATIC_MODELS);
+	}
+
 	if (!authoritativeCatalogProviders.has("gitlab-duo-agent")) {
 		allModels.push(buildGitLabDuoWorkflowFallbackModel());
 	}
+
+	allModels.push(...DEVIN_STATIC_MODELS);
+	// Muse Code discovery is scoped to the signed-in subscription. Bundle the documented seed; runtime discovery
+	// replaces it with the account's live roster.
+	allModels.push(...MUSE_CODE_STATIC_MODELS);
 
 	allModels.push(...buildFireworksFastSeed());
 
@@ -517,40 +581,40 @@ async function generateModels() {
 		}
 	}
 
-	const fetchedKeys = new Set(allModels.map(model => `${model.provider}/${model.id}`));
-
-	for (const models of Object.values(prevModelsJson as unknown as Record<string, Record<string, Model<Api>>>)) {
-		for (const bundledModel of Object.values(models)) {
-			const model = toModelSpec(bundledModel);
-			if (
-				!fetchedKeys.has(`${model.provider}/${model.id}`) &&
-				!DISCOVERY_ONLY_PROVIDERS.has(model.provider) &&
-				!RETIRED_PROVIDERS.has(model.provider) &&
-				!authoritativeCatalogProviders.has(model.provider) &&
-				!authoritativeSpecialDiscoveryProviders.has(model.provider) &&
-				!modelsDevSnapshotExcludedProviders.has(model.provider)
-			) {
-				allModels.push(model);
-			}
-		}
-	}
+	allModels = mergePreviousSnapshotModels(
+		allModels,
+		await loadPrevModels(),
+		new Set([
+			...authoritativeCatalogProviders,
+			...authoritativeSpecialDiscoveryProviders,
+			...modelsDevSnapshotExcludedProviders,
+			// Curated seeds are the whole keyless roster for these; retired ids must not resurrect.
+			"firepass",
+			"yolo-auto",
+		]),
+	);
 
 	allModels = applyGlobalModelsDevFallback(allModels, modelsDevModels);
+	// Snapshot fallbacks can retain a retired client fingerprint or a pre-pin route; force
+	// every bundled Copilot model onto the identity and transport live discovery uses.
+	allModels = allModels.map(model =>
+		model.provider === "github-copilot"
+			? routeGitHubCopilotModelSpec({ ...model, headers: mergeCopilotApiHeaders(model.headers) })
+			: model,
+	);
 
 	if (!authoritativeCatalogProviders.has("alibaba-token-plan")) {
 		allModels.unshift(...ALIBABA_TOKEN_PLAN_STATIC_MODELS);
 	}
+	allModels.unshift(...XIAOMI_TOKEN_PLAN_CN_STATIC_MODELS);
 	allModels = applyUmansPricingFallback(allModels, modelsDevModels);
 	allModels = applyPremiumMultiplierOverrides(allModels);
+	allModels = applyXaiCatalogPricing(allModels);
 	allModels = applyCodexPricingFallback(allModels);
 	allModels = applyAntigravityPricingFallback(allModels);
 	allModels = applyKimiMaxTokensCap(allModels);
 	allModels = applyFireworksDeepSeekReasoningShape(allModels);
-	allModels = dropFireworksWireIds(allModels);
-	allModels = dropUnusableZaiContextTierIds(allModels);
-	allModels = dropXiaomiAudioOnlyIds(allModels);
-	allModels = dropUnsupportedBedrockGeoIds(allModels);
-	allModels = dropBedrockMantleOpenAIModels(allModels);
+	allModels = filterModelsDevCatalogRows(allModels);
 	allModels = normalizeAntigravityEndpoint(allModels);
 
 	allModels = allModels.map(model => {
@@ -606,6 +670,11 @@ async function generateModels() {
 	for (const provider of bundledProviders) {
 		await Bun.write(path.join(modelsDir, `${provider}.json`), JSON.stringify(MODELS[provider], null, "	"));
 	}
+	for (const entry of await fs.promises.readdir(modelsDir)) {
+		if (entry.endsWith(".json") && !Object.hasOwn(MODELS, entry.slice(0, -".json".length))) {
+			await fs.promises.rm(path.join(modelsDir, entry), { force: true });
+		}
+	}
 	await Bun.write(
 		path.join(packageRoot, "src/models-providers.ts"),
 		`// Generated by scripts/generate-models.ts. Provider names with bundled model data.\nexport const GENERATED_PROVIDERS = [\n${bundledProviders.map(p => `\t${JSON.stringify(p)},`).join("\n")}\n] as const;\n`,
@@ -644,7 +713,9 @@ function canonicalizeModelCompat(model: ModelSpec<Api>): void {
 	}
 }
 
-generateModels().catch(console.error);
+if (import.meta.main) {
+	generateModels().catch(console.error);
+}
 
 function generateLazyLoader(providers: string[]): string {
 	const cases = providers

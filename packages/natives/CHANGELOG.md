@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Shell sessions and PTY commands drop inherited `GIT_DIR`/`GIT_WORK_TREE` and the other repo-location overrides, so `git` follows the command's working directory
+
 ## [18.1.23] - 2026-09-20
 
 ### Fixed

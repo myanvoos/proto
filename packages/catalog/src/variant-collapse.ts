@@ -13,11 +13,15 @@ export interface EffortVariantFamily {
 
 	members: readonly string[];
 
+	defaultMember?: string;
+
 	retiredMembers?: readonly string[];
 
 	routing: Readonly<Partial<Record<Effort | "off", string>>>;
 
-	thinking: Readonly<Omit<ThinkingConfig, "effortRouting" | "suppressWhenOff">>;
+	// Omitted for single-wire-id renames where effort is encoded in the upstream id (Devin): the
+	// collapsed spec then carries no thinking instead of a ladder whose tiers share one wire id.
+	thinking?: Readonly<Omit<ThinkingConfig, "effortRouting" | "suppressWhenOff">>;
 
 	suppressWhenOff?: boolean;
 
@@ -28,6 +32,10 @@ export interface EffortVariantFamily {
 
 export interface VariantCollapseTable {
 	families: readonly EffortVariantFamily[];
+
+	// Selector aliases only meaningful once the provider is named (`devin/opus`): resolved by
+	// resolveVariantAlias, never by the bare-id lookup or the reverse index.
+	providerAliases?: Readonly<Record<string, string>>;
 }
 
 function thinkingPair(baseId: string, name: string): EffortVariantFamily {
@@ -54,7 +62,13 @@ const DEVIN_FIVE_TIER_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, E
 
 const DEVIN_FOUR_TIER_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
 
-function tierFamily(id: string, name: string, routes: TierRoutes, efforts: readonly Effort[]): EffortVariantFamily {
+function tierFamily(
+	id: string,
+	name: string,
+	routes: TierRoutes,
+	efforts: readonly Effort[],
+	defaultMember?: string,
+): EffortVariantFamily {
 	const routing: Partial<Record<Effort | "off", string>> = {};
 	if (routes.off) routing.off = routes.off;
 	for (const effort of efforts) {
@@ -98,6 +112,25 @@ function tierFamily(id: string, name: string, routes: TierRoutes, efforts: reado
 			efforts,
 			...(routes.off ? undefined : { requiresEffort: true }),
 		},
+		...(defaultMember !== undefined ? { defaultMember } : undefined),
+	};
+}
+
+function devinTierFamily(
+	id: string,
+	name: string,
+	routes: TierRoutes,
+	efforts: readonly Effort[],
+	defaultEffort: Effort,
+): EffortVariantFamily {
+	const family = tierFamily(id, name, routes, efforts);
+	const defaultMember = family.routing[defaultEffort];
+	if (defaultMember === undefined || family.thinking === undefined) return family;
+	return {
+		...family,
+		members: [defaultMember, ...family.members.filter(member => member !== defaultMember)],
+		defaultMember,
+		thinking: { ...family.thinking, defaultLevel: defaultEffort },
 	};
 }
 
@@ -177,7 +210,7 @@ function geminiFlashFamily(mode: "budget" | "google-level"): EffortVariantFamily
 	};
 }
 
-function geminiLevelFlashFamily(version: "3.6" | "3.7", ...additionalMembers: string[]): EffortVariantFamily {
+function geminiLevelFlashFamily(version: "3.6" | "3.7" | "3.8", ...additionalMembers: string[]): EffortVariantFamily {
 	const id = `gemini-${version}-flash`;
 	return {
 		id,
@@ -198,7 +231,8 @@ function geminiLevelFlashFamily(version: "3.6" | "3.7", ...additionalMembers: st
 }
 
 const GEMINI_36_FLASH_FAMILY = geminiLevelFlashFamily("3.6", "gemini-3.6-flash-tiered");
-const GEMINI_37_FLASH_FAMILY = geminiLevelFlashFamily("3.7");
+const GEMINI_37_FLASH_FAMILY = geminiLevelFlashFamily("3.7", "gemini-3.7-flash-tiered");
+const GEMINI_38_FLASH_FAMILY = geminiLevelFlashFamily("3.8", "gemini-3.8-flash-tiered");
 
 function geminiProFamily(mode: "budget" | "google-level"): EffortVariantFamily {
 	const budget = mode === "budget";
@@ -267,6 +301,7 @@ export const ANTIGRAVITY_VARIANT_COLLAPSE_TABLE: VariantCollapseTable = {
 	families: [
 		GEMINI_36_FLASH_FAMILY,
 		GEMINI_37_FLASH_FAMILY,
+		GEMINI_38_FLASH_FAMILY,
 		geminiFlashFamily("budget"),
 		geminiProFamily("budget"),
 		...SHARED_CCA_FAMILIES,
@@ -277,6 +312,7 @@ export const GEMINI_CLI_VARIANT_COLLAPSE_TABLE: VariantCollapseTable = {
 	families: [
 		GEMINI_36_FLASH_FAMILY,
 		GEMINI_37_FLASH_FAMILY,
+		GEMINI_38_FLASH_FAMILY,
 		geminiFlashFamily("google-level"),
 		geminiProFamily("google-level"),
 		...SHARED_CCA_FAMILIES,
@@ -586,7 +622,99 @@ export const DEVIN_VARIANT_COLLAPSE_TABLE: VariantCollapseTable = {
 			},
 			[Effort.High, Effort.XHigh],
 		),
+		devinTierFamily(
+			"gemini-3-7-flash",
+			"Gemini 3.7 Flash",
+			{
+				minimal: "gemini-3-7-flash-minimal",
+				low: "gemini-3-7-flash-low",
+				medium: "gemini-3-7-flash-medium",
+				high: "gemini-3-7-flash-high",
+			},
+			[Effort.Minimal, Effort.Low, Effort.Medium, Effort.High],
+			Effort.Medium,
+		),
+		devinTierFamily(
+			"swe-1-7-lightning",
+			"SWE-1.7 Lightning",
+			{
+				medium: "swe-1-7-lightning-medium",
+				max: "swe-1-7-lightning",
+			},
+			[Effort.Medium, Effort.Max],
+			Effort.Medium,
+		),
+		devinTierFamily(
+			"grok-4-6",
+			"Grok 4.6",
+			{
+				low: "grok-4-6-low",
+				medium: "grok-4-6-medium",
+				high: "grok-4-6-high",
+				xhigh: "grok-4-6-xhigh",
+			},
+			DEVIN_FOUR_TIER_EFFORTS,
+			Effort.Medium,
+		),
+		devinTierFamily(
+			"deepseek-v4-flash",
+			"DeepSeek V4 Flash",
+			{
+				low: "deepseek-v4-flash-low",
+				high: "deepseek-v4-flash-high",
+				max: "deepseek-v4-flash-max",
+			},
+			[Effort.Low, Effort.High, Effort.Max],
+			Effort.High,
+		),
+		devinTierFamily(
+			"deepseek-v4-pro",
+			"DeepSeek V4 Pro",
+			{
+				low: "deepseek-v4-pro-low",
+				high: "deepseek-v4-pro-high",
+				max: "deepseek-v4-pro-max",
+			},
+			[Effort.Low, Effort.High, Effort.Max],
+			Effort.High,
+		),
+		devinTierFamily(
+			"nemotron-3-ultra",
+			"Nemotron 3 Ultra",
+			{
+				off: "nemotron-3-ultra-none",
+				medium: "nemotron-3-ultra-medium",
+				high: "nemotron-3-ultra-high",
+			},
+			[Effort.Medium, Effort.High],
+			Effort.High,
+		),
+		{
+			id: "claude-haiku-4-5",
+			name: "Claude Haiku 4.5",
+			members: ["MODEL_PRIVATE_11"],
+			routing: {},
+		},
 	],
+	providerAliases: {
+		claude: "claude-sonnet-5",
+		codex: "gpt-5-3-codex",
+		gemini: "gemini-3-7-flash",
+		gpt: "gpt-5-6-terra",
+		haiku: "claude-haiku-4-5",
+		opus: "claude-opus-5",
+		sonnet: "claude-sonnet-5",
+		swe: "swe-1-7-lightning",
+		"claude-haiku-4.5": "claude-haiku-4-5",
+		"gemini-3.7-flash": "gemini-3-7-flash",
+		"glm-5.2": "glm-5-2",
+		"gpt-5.6-luna": "gpt-5-6-luna",
+		"gpt-5.6-sol": "gpt-5-6-sol",
+		"gpt-5.6-terra": "gpt-5-6-terra",
+		"grok-4.6": "grok-4-6",
+		"swe-1.7": "swe-1-7",
+		"swe-1.7-lightning": "swe-1-7-lightning",
+	},
 };
 
 const CURSOR_GROK_45_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High];
@@ -601,7 +729,15 @@ function cursorGrokFamilies(version: "4.5" | "4.6", efforts: readonly Effort[]):
 		for (const effort of efforts) {
 			routes[effort] = `cursor-grok-${version}-${effort}${suffix}`;
 		}
-		return tierFamily(`cursor-grok-${version}${suffix}`, `Grok ${version}${fast ? " Fast" : ""}`, routes, efforts);
+		// Cursor's Start plan serves Grok only at the fixed `-medium` tier and
+		// refuses the `-low` floor, so effort-less requests default there.
+		return tierFamily(
+			`cursor-grok-${version}${suffix}`,
+			`Grok ${version}${fast ? " Fast" : ""}`,
+			routes,
+			efforts,
+			`cursor-grok-${version}-${Effort.Medium}${suffix}`,
+		);
 	};
 	return [build(false), build(true)];
 }
@@ -637,7 +773,7 @@ export const CURSOR_VARIANT_COLLAPSE_TABLE: VariantCollapseTable = {
 	],
 };
 
-type CursorTierToken = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type CursorTierToken = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 interface CursorTierMember<TSpec extends VariantSpecLike> {
 	baseId: string;
@@ -659,6 +795,38 @@ const CURSOR_TIER_BY_TOKEN: Readonly<Record<string, CursorTierToken | undefined>
 	xhigh: "xhigh",
 	max: "max",
 };
+
+export interface CursorEffortSuffix {
+	baseId: string;
+	tier: CursorTierToken;
+	/** Parallel `-fast` SKU lane (`-high-fast`); the lane stays in the logical id. */
+	fast: boolean;
+}
+
+/**
+ * Split a Cursor per-effort sibling slug (`gpt-5.6-sol-high-fast`) into its
+ * logical base, effort tier, and SKU lane. Shared with the cursor-agent
+ * transport so the Run request tracks the catalog tier vocabulary.
+ */
+export function splitCursorEffortSuffix(id: string): CursorEffortSuffix | undefined {
+	const match = CURSOR_TIER_ID_PATTERN.exec(id);
+	if (!match) return undefined;
+	const baseId = match[1];
+	const tier = CURSOR_TIER_BY_TOKEN[match[2] ?? ""];
+	if (!baseId || !tier) return undefined;
+	return { baseId, tier, fast: match[3] !== undefined };
+}
+
+/**
+ * Whether a Cursor wire id names an extended (`xhigh`/`extra-high`/`max`) tier
+ * that Cursor serves only in max mode. An inference from the slug, not an
+ * upstream marker: the only per-tier signal for bundled rows and for routes
+ * live discovery never advertised.
+ */
+export function isCursorMaxModeWireId(wireModelId: string): boolean {
+	const tier = splitCursorEffortSuffix(wireModelId)?.tier;
+	return tier === "xhigh" || tier === "max";
+}
 
 function collapsedCursorLogicalMatches<TSpec extends VariantSpecLike>(
 	spec: TSpec,
@@ -687,12 +855,9 @@ function deriveCursorEffortFamilies<TSpec extends VariantSpecLike>(specs: readon
 
 	for (const spec of specs) {
 		if (!byId.has(spec.id)) byId.set(spec.id, spec);
-		const match = CURSOR_TIER_ID_PATTERN.exec(spec.id);
-		if (!match) continue;
-		const baseId = match[1];
-		const tier = CURSOR_TIER_BY_TOKEN[match[2] ?? ""];
-		const fast = match[3] !== undefined;
-		if (!baseId || !tier) continue;
+		const split = splitCursorEffortSuffix(spec.id);
+		if (!split) continue;
+		const { baseId, fast, tier } = split;
 		const member = { baseId, fast, spec, tier };
 		const key = `${baseId}\0${fast ? "fast" : "standard"}`;
 		const group = groups.get(key);
@@ -923,7 +1088,8 @@ function refreshCollapsedThinking<TSpec extends VariantSpecLike>(
 	family: EffortVariantFamily,
 	retired: ReadonlySet<string> | undefined,
 ): TSpec {
-	if (!spec.reasoning || family.thinking.effortBudgets === undefined) return spec;
+	const familyThinking = family.thinking;
+	if (!spec.reasoning || familyThinking?.effortBudgets === undefined) return spec;
 	const routing: Partial<Record<Effort | "off", string>> = {};
 	let hasRouting = false;
 	for (const effortKey in family.routing) {
@@ -933,7 +1099,7 @@ function refreshCollapsedThinking<TSpec extends VariantSpecLike>(
 			hasRouting = true;
 		}
 	}
-	const thinking: ThinkingConfig = { ...family.thinking };
+	const thinking: ThinkingConfig = { ...familyThinking };
 	if (hasRouting) thinking.effortRouting = routing;
 	if (family.suppressWhenOff) thinking.suppressWhenOff = true;
 	const offTarget = family.routing.off;
@@ -943,6 +1109,83 @@ function refreshCollapsedThinking<TSpec extends VariantSpecLike>(
 		return spec;
 	}
 	return { ...spec, thinking, ...(requestModelId !== undefined ? { requestModelId } : {}) };
+}
+
+/**
+ * Re-point a collapsed snapshot's default wire id to the family's declared
+ * `defaultMember` (bundled/cache rows freeze `requestModelId` from before the
+ * family gained one). With `presentMembers`, a default the account does not
+ * advertise falls back to the first advertised member. Only re-points onto a
+ * route in the snapshot's own `effortRouting`; returns `spec` when unchanged.
+ */
+function reconcileDefaultMember<TSpec extends VariantSpecLike>(
+	spec: TSpec,
+	family: EffortVariantFamily,
+	presentMembers?: ReadonlySet<string>,
+): TSpec {
+	const defaultMember = family.defaultMember;
+	if (defaultMember === undefined || defaultMember === spec.id) return spec;
+	const target =
+		presentMembers === undefined || presentMembers.has(defaultMember)
+			? defaultMember
+			: family.members.find(id => presentMembers.has(id));
+	if (target === undefined || spec.requestModelId === target) return spec;
+	const routing = spec.thinking?.effortRouting;
+	if (routing === undefined) return spec;
+	for (const key of VARIANT_ROUTING_KEYS) {
+		if (routing[key] === target) return { ...spec, requestModelId: target };
+	}
+	return spec;
+}
+
+/**
+ * Recover Cursor's max-mode marker for a bundled collapsed row that no live
+ * member refreshes: its effort routing still names the extended-tier wire ids.
+ */
+function reconcileCursorMaxModeFromRouting<TSpec extends VariantSpecLike>(spec: TSpec): TSpec {
+	if (spec.provider !== "cursor" || spec.cursorMaxMode === true) return spec;
+	const routing = spec.thinking?.effortRouting;
+	if (routing === undefined) return spec;
+	for (const key of VARIANT_ROUTING_KEYS) {
+		const target = routing[key];
+		if (target !== undefined && isCursorMaxModeWireId(target)) return { ...spec, cursorMaxMode: true };
+	}
+	return spec;
+}
+
+/**
+ * Index each live Cursor member's discovered `max_mode` marker by its own wire
+ * id. A collapsed row's `cursorMaxMode` is an OR across members and cannot say
+ * which tier needs max mode; the transport looks the routed wire id up here.
+ */
+function cursorMaxModeRoutesOf<TSpec extends VariantSpecLike>(
+	provider: string,
+	memberSpecs: readonly TSpec[],
+): Record<string, boolean> | undefined {
+	if (provider !== "cursor") return undefined;
+	let routes: Record<string, boolean> | undefined;
+	for (const member of memberSpecs) {
+		if (member.cursorMaxMode === undefined) continue;
+		routes ??= {};
+		routes[member.id] = member.cursorMaxMode;
+	}
+	return routes;
+}
+
+/**
+ * Lift live members' max-mode markers onto an already-collapsed snapshot, whose
+ * row-level flag froze from its lowest tier. Only the positive row-level case is
+ * lifted; per-wire-id markers merge over the snapshot's own.
+ */
+function reconcileCursorMaxMode<TSpec extends VariantSpecLike>(spec: TSpec, memberSpecs: readonly TSpec[]): TSpec {
+	const routes = cursorMaxModeRoutesOf(spec.provider, memberSpecs);
+	const lifts = spec.cursorMaxMode !== true && memberSpecs.some(member => member.cursorMaxMode === true);
+	if (routes === undefined && !lifts) return spec;
+	return {
+		...spec,
+		...(lifts ? { cursorMaxMode: true } : {}),
+		...(routes === undefined ? {} : { cursorMaxModeRoutes: { ...spec.cursorMaxModeRoutes, ...routes } }),
+	};
 }
 
 export function collapseEffortVariants<TSpec extends VariantSpecLike>(
@@ -975,7 +1218,9 @@ export function collapseEffortVariants<TSpec extends VariantSpecLike>(
 		if (rawPresent.length === 0) {
 			const refreshed =
 				existing !== undefined && existingCollapsed
-					? refreshCollapsedThinking(reconciled ?? existing, family, retired)
+					? reconcileCursorMaxModeFromRouting(
+							reconcileDefaultMember(refreshCollapsedThinking(reconciled ?? existing, family, retired), family),
+						)
 					: reconciled;
 			if (refreshed !== undefined && refreshed !== existing) {
 				familyIdBySpecId.set(family.id, family.id);
@@ -987,12 +1232,18 @@ export function collapseEffortVariants<TSpec extends VariantSpecLike>(
 		for (const id of rawPresent) familyIdBySpecId.set(id, family.id);
 		if (existing) familyIdBySpecId.set(family.id, family.id);
 
+		const memberSpecs = rawPresent.map(id => byId.get(id) as TSpec);
 		if (existingCollapsed) {
-			replacement.set(family.id, reconciled as TSpec);
+			replacement.set(
+				family.id,
+				reconcileCursorMaxMode(
+					reconcileDefaultMember(reconciled as TSpec, family, new Set(rawPresent)),
+					memberSpecs,
+				),
+			);
 			continue;
 		}
 
-		const memberSpecs = rawPresent.map(id => byId.get(id) as TSpec);
 		const presentSet = new Set(rawPresent);
 		const routing: Partial<Record<Effort | "off", string>> = {};
 		let hasRouting = false;
@@ -1013,14 +1264,21 @@ export function collapseEffortVariants<TSpec extends VariantSpecLike>(
 		}
 
 		const reasoning = memberSpecs.some(spec => spec.reasoning) || hasEffortRoute;
-		const thinking: ThinkingConfig = { ...family.thinking };
-		if (hasRouting) thinking.effortRouting = routing;
-		if (family.suppressWhenOff) thinking.suppressWhenOff = true;
+		const thinking: ThinkingConfig | undefined = family.thinking ? { ...family.thinking } : undefined;
+		if (thinking !== undefined) {
+			if (hasRouting) thinking.effortRouting = routing;
+			if (family.suppressWhenOff) thinking.suppressWhenOff = true;
+		}
 
 		const input: ("text" | "image")[] = [];
 		if (memberSpecs.some(spec => spec.input.includes("text"))) input.push("text");
 		if (memberSpecs.some(spec => spec.input.includes("image"))) input.push("image");
 
+		// `cursorMaxMode` gates Cursor's `max_mode` flag; a family whose max-mode
+		// member is not the first would otherwise inherit `false`. Members' own
+		// markers stay addressable per wire id.
+		const cursorMaxMode = memberSpecs.some(spec => spec.cursorMaxMode === true) ? true : undefined;
+		const cursorMaxModeRoutes = cursorMaxModeRoutesOf((memberSpecs[0] as TSpec).provider, memberSpecs);
 		const collapsed: TSpec = {
 			...(memberSpecs[0] as TSpec),
 			id: family.id,
@@ -1029,9 +1287,17 @@ export function collapseEffortVariants<TSpec extends VariantSpecLike>(
 			input,
 			contextWindow: maxOrNull(memberSpecs.map(spec => spec.contextWindow)),
 			maxTokens: maxOrNull(memberSpecs.map(spec => spec.maxTokens)),
+			...(cursorMaxMode === undefined ? {} : { cursorMaxMode }),
+			...(cursorMaxModeRoutes === undefined ? {} : { cursorMaxModeRoutes }),
 		};
 
-		const defaultWireId = rawPresent.find(id => !retired?.has(id)) ?? rawPresent[0];
+		const preferredDefault =
+			family.defaultMember !== undefined &&
+			presentSet.has(family.defaultMember) &&
+			!retired?.has(family.defaultMember)
+				? family.defaultMember
+				: undefined;
+		const defaultWireId = preferredDefault ?? rawPresent.find(id => !retired?.has(id)) ?? rawPresent[0];
 		if (defaultWireId === family.id) {
 			if (usedAbsentEffortRoute) {
 				collapsed.requestModelId = defaultWireId as string;
@@ -1041,7 +1307,7 @@ export function collapseEffortVariants<TSpec extends VariantSpecLike>(
 		} else {
 			collapsed.requestModelId = defaultWireId as string;
 		}
-		if (reasoning) {
+		if (reasoning && thinking !== undefined) {
 			collapsed.thinking = thinking;
 		} else {
 			delete collapsed.thinking;
@@ -1170,6 +1436,8 @@ export function collapseBuiltModelVariants<TApi extends Api>(models: readonly Mo
 interface VariantAliasIndex {
 	forward: Map<string, string>;
 
+	providerScoped: Map<string, string>;
+
 	reverse: Map<string, string[]>;
 
 	familyIds: Set<string>;
@@ -1189,6 +1457,7 @@ interface TableWithAliasIndex extends VariantCollapseTable {
 function createAliasIndex(): VariantAliasIndex {
 	return {
 		forward: new Map<string, string>(),
+		providerScoped: new Map<string, string>(),
 		reverse: new Map<string, string[]>(),
 		familyIds: new Set<string>(),
 	};
@@ -1247,12 +1516,20 @@ function getAliasIndex(table: VariantCollapseTable): VariantAliasIndex {
 		for (const member of family.members) addVariantAlias(index, member, family.id);
 		for (const alias of family.extraAliases ?? []) addVariantAlias(index, alias, family.id);
 	}
+	for (const alias in table.providerAliases) {
+		const target = table.providerAliases[alias] as string;
+		if (alias !== target) index.providerScoped.set(alias.toLowerCase(), target);
+	}
 	tagged[kAliasIndex] = index;
 	return index;
 }
 
 export function resolveVariantAlias(provider: Provider, modelId: string): string | undefined {
-	return resolveRegisteredVariantAlias(provider, modelId.trim().toLowerCase());
+	const normalized = modelId.trim().toLowerCase();
+	const registered = resolveRegisteredVariantAlias(provider, normalized);
+	if (registered !== undefined) return registered;
+	const table = VARIANT_COLLAPSE_TABLES[provider] ?? VARIANT_COLLAPSE_TABLES[provider.toLowerCase()];
+	return table ? getAliasIndex(table).providerScoped.get(normalized) : undefined;
 }
 
 export interface BareVariantAliasHit {

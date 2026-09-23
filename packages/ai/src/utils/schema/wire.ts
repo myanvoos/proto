@@ -1,4 +1,5 @@
 import type { Type } from "@oh-my-pi/omptype";
+import { structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import type { Tool, TSchema } from "../../types";
 import { upgradeJsonSchemaTo202012 } from "./draft";
 import { stamp } from "./stamps";
@@ -491,7 +492,7 @@ export function toolWireSchema(tool: Tool): Record<string, unknown> {
 	const params: TSchema = tool.parameters;
 	if (isArkSchema(params)) return arkToWireSchema(params);
 	return stamp(params as Record<string, unknown>, kJsonWireSchema, p => {
-		const raw = isArkJsonAst(p) ? arkJsonAstToWire(p) : p;
+		const raw = isArkJsonAst(p) ? arkJsonAstToWire(p) : structuredCloneJSON(p);
 		const upgraded = upgradeJsonSchemaTo202012(raw) as Record<string, unknown>;
 		return postProcessJsonSchema(upgraded);
 	});

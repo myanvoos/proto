@@ -3,8 +3,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { LRUCache } from "./lru";
 
-type CacheKey = string | bigint | number;
-
 const XCODE_BINS = new Set([
 	"clang",
 	"clang++",
@@ -119,7 +117,7 @@ function getMacosToolPaths(): Map<string, string> {
 }
 
 const MAX_TOOL_CACHE_ENTRIES = 2_048;
-const toolCache = new LRUCache<CacheKey, string | null>({ max: MAX_TOOL_CACHE_ENTRIES });
+const toolCache = new LRUCache<string, string | null>({ max: MAX_TOOL_CACHE_ENTRIES });
 
 export const enum WhichCachePolicy {
 	Cached = 0,
@@ -144,22 +142,27 @@ function darwinWhich(command: string, options?: Bun.WhichOptions): string | null
 	return null;
 }
 
-export const whichFresh = os.platform() === "darwin" ? darwinWhich : Bun.which;
+// Look `Bun.which` up per call rather than capturing it at import, so a `Bun.which` stub installed later (the
+// per-test seam) is honoured on every platform.
+export const whichFresh =
+	os.platform() === "darwin"
+		? darwinWhich
+		: (command: string, options?: Bun.WhichOptions): string | null => Bun.which(command, options);
 
-function cacheKey(command: string, options?: Bun.WhichOptions): CacheKey {
+// Length-prefixed (command, cwd, PATH) tuple: exact, and the length prefixes keep `{ cwd: "x" }` and
+// `{ PATH: "x" }` (or `("ab", "c")` and `("a", "bc")`) distinct without a separator cwd/PATH could contain.
+function cacheKey(command: string, options?: Bun.WhichOptions): string {
 	if (!options) return command;
-	if (!options.cwd && !options.PATH) return command;
-	let h = Bun.hash(command);
-	if (options.cwd) h = Bun.hash(options.cwd, h);
-	if (options.PATH) h = Bun.hash(options.PATH, h);
-	return h;
+	const cwd = options.cwd ?? "";
+	const binPath = options.PATH ?? "";
+	return `${command.length}:${command}${cwd.length}:${cwd}${binPath.length}:${binPath}`;
 }
 
 export function $which(command: string, options?: WhichOptions): string | null {
 	const cachePolicy = options?.cache ?? WhichCachePolicy.Cached;
 	const lookupOptions =
 		options?.PATH !== undefined || process.env.PATH === undefined ? options : { ...options, PATH: process.env.PATH };
-	let key: CacheKey | undefined;
+	let key: string | undefined;
 
 	if (cachePolicy !== WhichCachePolicy.Bypass) {
 		key = cacheKey(command, lookupOptions);

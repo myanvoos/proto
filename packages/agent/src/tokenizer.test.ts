@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "bun:test";
 import type {
 	AssistantMessage,
 	DeveloperMessage,
@@ -6,6 +6,7 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "@oh-my-pi/pi-ai";
+import * as natives from "@oh-my-pi/pi-natives";
 import type { CompactionSummaryMessage, CustomMessage } from "./compaction/messages";
 import { Tokenizer } from "./tokenizer";
 import type { AgentMessage } from "./types";
@@ -200,5 +201,29 @@ describe("Tokenizer.countMessage context accounting", () => {
 		expect(shortCount).toBeGreaterThan(0);
 		expect(longCount).toBeGreaterThan(shortCount * 50);
 		expect(tokenizer.countMessage(opaqueUnknown)).toBeGreaterThan(0);
+	});
+});
+
+describe("native tokenizer encoding skew", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test("an encoding the loaded addon does not know falls back to the conservative byte bound", () => {
+		vi.spyOn(natives, "countTokens").mockImplementation(() => {
+			throw new Error('value "DeepSeekV3" does not match any variant of enum Encoding');
+		});
+		const deepseek = new Tokenizer({ tokenizer: "deepseek-v3" });
+		expect(deepseek.countTokens("hello world", "strict")).toBe(11);
+		expect(deepseek.checkTokenBudget("x".repeat(40), 20)).toEqual({ fits: false, tokens: 40, exact: false });
+	});
+
+	test("unrelated native tokenizer errors still surface", () => {
+		vi.spyOn(natives, "countTokens").mockImplementation(() => {
+			throw new Error("native tokenizer exploded");
+		});
+		expect(() => new Tokenizer({ tokenizer: "deepseek-v3" }).countTokens("hello world", "strict")).toThrow(
+			"native tokenizer exploded",
+		);
 	});
 });

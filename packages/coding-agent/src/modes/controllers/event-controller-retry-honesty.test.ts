@@ -4,6 +4,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { RETRY_BUDGET_EXHAUSTED_PREFIX } from "../../session/turn-recovery";
+import { ServedModelTracker } from "../components/served-model-marker";
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
@@ -70,6 +71,7 @@ function createContext(lastAssistantError?: string) {
 		setChecklist: NOOP,
 		addMessageToChat: () => [] as Component[],
 		lastAssistantUsage: undefined,
+		servedModelTracker: new ServedModelTracker(),
 		streamingComponent: undefined,
 		streamingMessage: undefined,
 	};
@@ -104,7 +106,7 @@ test("a repetition-guard retry names the guard and its evidence while it waits",
 		} as unknown as AgentSessionEvent);
 
 		const text = retryLoaderText(context);
-		expect(text).toContain("Retrying (5/10) in 7s…");
+		expect(text).toMatch(/Retrying \(5\/10\) in [67]\.\ds…/);
 		expect(text).toContain("repetition guard");
 		expect(text).toContain(LOOP_DETAIL);
 		// The cancel key stays ahead of the evidence so a narrow terminal drops evidence, not the key.
@@ -128,7 +130,7 @@ test("a plain provider retry still reports only the wait, with no invented cause
 		} as unknown as AgentSessionEvent);
 
 		const text = retryLoaderText(context);
-		expect(text).toContain("Retrying (2/10) in 3s…");
+		expect(text).toMatch(/Retrying \(2\/10\) in [23]\.\ds…/);
 		expect(text).not.toContain("repetition guard");
 	} finally {
 		controller.dispose();

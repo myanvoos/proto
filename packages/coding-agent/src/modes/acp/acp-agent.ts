@@ -1,6 +1,7 @@
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { AgentBusyError } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getBlobsDir, logger, type postmortem, VERSION } from "@oh-my-pi/pi-utils";
 import {
@@ -771,8 +772,16 @@ export class AcpAgent implements Agent {
 				this.#trackPromptEvent(record, event);
 			});
 
+			// Autonomous turns stream without an owning promptTurn, so a client prompt lands on the session's busy
+			// guard; type that for the wire instead of the transport's generic -32603.
 			this.#runPromptOrCommand(record, converted.text, converted.images).catch((error: unknown) => {
-				this.#finishPrompt(record, undefined, error);
+				this.#finishPrompt(
+					record,
+					undefined,
+					error instanceof AgentBusyError
+						? RequestError.sessionBusy(error.message, { reason: "session_busy", hint: "steer|followUp|wait" })
+						: error,
+				);
 			});
 
 			return await pendingPrompt.promise;

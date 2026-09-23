@@ -344,6 +344,9 @@ class InbandStreamProjector {
 				case "thinkingEnd":
 					this.thinkingEnd();
 					break;
+				case "impliedThinkingEnd":
+					// Dialect scanners never emit this; only the leaked-thinking projector does.
+					break;
 				case "toolStart":
 					this.#beginTool(event);
 					break;

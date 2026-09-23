@@ -1,4 +1,5 @@
 import type { Api, Effort, Model } from "@oh-my-pi/pi-ai";
+import { sendsImageInputOnWire } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
@@ -216,7 +217,8 @@ function renderProviderModels(
 			formatLimit(model.contextWindow),
 			formatLimit(model.maxTokens),
 			model.thinking ? getSupportedEfforts(model).join(",") : model.reasoning ? "yes" : "-",
-			model.input.includes("image") ? "yes" : "no",
+			// Wire truth, not the declared `input`: the Chat Completions guard drops images for text-only lines.
+			sendsImageInputOnWire(model) ? "yes" : "no",
 		]);
 		for (const line of boxTable(
 			[
@@ -333,7 +335,10 @@ export async function runModelsCommand(command: ModelsCommandArgs): Promise<void
 		if (action === "refresh" && !json && process.stderr.isTTY) {
 			process.stderr.write("Refreshing models from all providers…\n");
 		}
-		await modelRegistry.refresh(action === "refresh" ? "online" : "online-if-uncached");
+		await modelRegistry.refresh(
+			action === "refresh" ? "online" : "online-if-uncached",
+			action === "refresh" ? { refreshCommandCredentials: true } : undefined,
+		);
 
 		const cliExtensionPaths = command.flags.extensions ?? [];
 		await runModelsListing({

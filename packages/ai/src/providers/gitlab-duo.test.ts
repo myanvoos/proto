@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import type { Context, FetchImpl, Model } from "../types";
 import { clearGitLabDuoDirectAccessCache, getGitLabDuoModels, streamGitLabDuo } from "./gitlab-duo";
 
@@ -40,5 +41,34 @@ describe("GitLab Duo direct access", () => {
 		expect(requestSignal).toBe(caller.signal);
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toMatch(/abort/i);
+	});
+});
+
+describe("GitLab Duo reasoning-off dispatch", () => {
+	it("turns reasoning explicitly off on the Responses route instead of dropping to the server default", async () => {
+		clearGitLabDuoDirectAccessCache();
+		const model = getGitLabDuoModels().find(candidate => candidate.id === "duo-chat-gpt-5-codex");
+		if (!model) throw new Error("GitLab Duo Responses model is missing");
+		let payload: { reasoning?: { effort?: string } } | undefined;
+		const fetchImpl = Object.assign(
+			async (input: string | URL | Request): Promise<Response> => {
+				if (String(input).includes("/direct_access")) return Response.json({ token: "direct-token", headers: {} });
+				throw new Error("the payload hook stops the proxy request before fetch");
+			},
+			{ preconnect: fetch.preconnect },
+		) satisfies FetchImpl;
+
+		await streamGitLabDuo(model, context, {
+			apiKey: "gitlab-token",
+			reasoning: Effort.Medium,
+			forceReasoningOff: true,
+			fetch: fetchImpl,
+			onPayload: body => {
+				payload = body as typeof payload;
+				throw new Error("stop after payload capture");
+			},
+		}).result();
+
+		expect(payload?.reasoning?.effort).toBe("none");
 	});
 });

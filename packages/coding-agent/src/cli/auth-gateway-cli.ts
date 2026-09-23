@@ -21,7 +21,11 @@ import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/m
 import { getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
-import { type AuthBrokerClientConfig, resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import {
+	type AuthBrokerClientConfig,
+	loadEffectiveAuthAccountPolicyConfig,
+	resolveAuthBrokerConfig,
+} from "../session/auth-broker-config";
 
 export type AuthGatewayAction = "serve" | "token" | "status" | "check";
 
@@ -44,7 +48,8 @@ function getTokenFilePath(): string {
 
 async function readToken(): Promise<string | null> {
 	try {
-		const raw = await Bun.file(getTokenFilePath()).text();
+		// node:fs, not Bun.file: on Windows a missing token file made `token` exit silently.
+		const raw = await fs.readFile(getTokenFilePath(), "utf8");
 		const trimmed = raw.trim();
 		return trimmed.length > 0 ? trimmed : null;
 	} catch (err) {
@@ -106,6 +111,10 @@ async function fetchBrokerSnapshot(client: AuthBrokerClient): Promise<SnapshotRe
 
 const CATALOG_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 
+// Poll for broker credential changes made by another process (host `login`/`logout`) so newly
+// credentialed providers become routable and removed ones stop being advertised without a restart.
+const CREDENTIAL_SYNC_INTERVAL_MS = 10 * 1000;
+
 export function indexModelsByRequestId(
 	models: readonly Model<Api>[],
 	providersWithCreds: ReadonlySet<string>,
@@ -119,6 +128,32 @@ export function indexModelsByRequestId(
 	return modelById;
 }
 
+// Serializes catalog rebuilds; non-forced requests coalesce onto an in-flight pass, but a forced request
+// arriving mid-flight gets its own forced pass afterward so a credential change never piggybacks on a cached one.
+export function createSerializedRebuilder(run: (force: boolean) => Promise<void>): (force?: boolean) => Promise<void> {
+	let inFlight: Promise<void> | null = null;
+	let forcedQueued = false;
+	return (force = false): Promise<void> => {
+		if (inFlight) {
+			if (force) forcedQueued = true;
+			return inFlight;
+		}
+		inFlight = (async () => {
+			try {
+				await run(force);
+				while (forcedQueued) {
+					forcedQueued = false;
+					await run(true);
+				}
+			} finally {
+				inFlight = null;
+				forcedQueued = false;
+			}
+		})();
+		return inFlight;
+	};
+}
+
 async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const brokerConfig = await resolveAuthBrokerConfig();
 	if (!brokerConfig) {
@@ -130,6 +165,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const gatewayToken = flags.noAuth ? null : await ensureToken();
 
 	const accountPool = await loadAuthBrokerAccountPool();
+	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig();
 	const client = createBrokerClient(brokerConfig);
 	const initialSnapshot = await fetchBrokerSnapshot(client);
 	const store = new RemoteAuthCredentialStore({
@@ -140,15 +176,25 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 
 	const storage = new AuthStorage(store, {
 		sourceLabel: `broker ${brokerConfig.url}`,
+		accountPolicies,
+		defaultReservePct,
 	});
 	await storage.reload();
 
-	const snapshot = storage.exportSnapshot();
-	const providersWithCreds = new Set<string>();
-	for (const entry of snapshot.credentials) providersWithCreds.add(entry.provider);
 	const registry = new ModelRegistry(storage, undefined, { ignoreLocalModelConfig: true });
-	await registry.refresh();
-	let modelById = indexModelsByRequestId(registry.getAll(), providersWithCreds);
+	const providersWithCreds = (): Set<string> => {
+		const providers = new Set<string>();
+		for (const entry of storage.exportSnapshot().credentials) providers.add(entry.provider);
+		return providers;
+	};
+	let modelById = new Map<string, Model<Api>>();
+	// Credential-triggered rebuilds force online discovery: an account added to or removed from an
+	// already-authenticated provider leaves its model cache fresh, so a cached pass would miss the change.
+	const rebuildCatalog = createSerializedRebuilder(async force => {
+		await registry.refresh(force ? "online" : "online-if-uncached");
+		modelById = indexModelsByRequestId(registry.getAll(), providersWithCreds());
+	});
+	await rebuildCatalog();
 
 	const handle = startAuthGateway({
 		storage,
@@ -167,18 +213,26 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	process.stdout.write(`upstream broker: ${brokerConfig.url}\n`);
 
 	const catalogRefresh = setInterval(() => {
-		void registry
-			.refresh()
-			.then(() => {
-				modelById = indexModelsByRequestId(registry.getAll(), providersWithCreds);
-			})
-			.catch(error => {
-				logger.warn("auth-gateway catalog refresh failed", {
-					error: error instanceof Error ? error.message : String(error),
-				});
+		void rebuildCatalog().catch(error => {
+			logger.warn("auth-gateway catalog refresh failed", {
+				error: error instanceof Error ? error.message : String(error),
 			});
+		});
 	}, CATALOG_REFRESH_INTERVAL_MS);
 	catalogRefresh.unref();
+
+	const credentialSync = setInterval(() => {
+		void (async () => {
+			try {
+				if (await storage.pollExternalChanges()) await rebuildCatalog(true);
+			} catch (error) {
+				logger.warn("auth-gateway credential sync failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		})();
+	}, CREDENTIAL_SYNC_INTERVAL_MS);
+	credentialSync.unref();
 
 	const stopped = Promise.withResolvers<void>();
 	let shutdownStarted = false;
@@ -187,6 +241,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		shutdownStarted = true;
 		process.stdout.write(`\nReceived ${signal}, shutting down...\n`);
 		clearInterval(catalogRefresh);
+		clearInterval(credentialSync);
 		let closeError: unknown;
 		try {
 			await handle.close();
@@ -470,6 +525,7 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	}
 
 	const accountPool = await loadAuthBrokerAccountPool();
+	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig();
 	const client = createBrokerClient(brokerConfig);
 	const initialSnapshot = await fetchBrokerSnapshot(client);
 	const store = new RemoteAuthCredentialStore({
@@ -477,7 +533,11 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		initialSnapshot,
 		accountPool,
 	});
-	const storage = new AuthStorage(store, { sourceLabel: `broker ${brokerConfig.url}` });
+	const storage = new AuthStorage(store, {
+		sourceLabel: `broker ${brokerConfig.url}`,
+		accountPolicies,
+		defaultReservePct,
+	});
 	try {
 		await storage.reload();
 		const results = await storage.checkCredentials(

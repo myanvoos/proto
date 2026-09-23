@@ -23,12 +23,23 @@ describe("extractRetryHint account reset bodies", () => {
 		expect(extractRetryHint(undefined, "request blocked; retry-after-ms=98497000")).toBe(98_497_000);
 	});
 
-	it("prefers an absolute account reset over a shorter retry-after-ms hint", () => {
-		const targetMs = Date.UTC(2099, 8, 1, 9, 44, 51);
-		const expected = targetMs - Date.now();
-		const hint = extractRetryHint(undefined, "Your limit will reset at 2099-09-01 09:44:51; retry-after-ms=5000");
+	it("prefers an offset-bearing account reset over a shorter retry-after-ms hint", () => {
+		const future = new Date(Date.now() + 3_600_000).toISOString();
+		const hint = extractRetryHint(undefined, `Your limit will reset at ${future} retry-after-ms=5000`);
+		expect(hint).toBeGreaterThan(3_500_000);
+		expect(hint).toBeLessThanOrEqual(3_600_000);
+	});
 
-		expect(hint).toBeDefined();
+	it("yields a timezone-naive reset stamp to any relative hint", () => {
+		const naiveWall = new Date(Date.now() + 3_600_000).toISOString().slice(0, 19).replace("T", " ");
+		expect(extractRetryHint(undefined, `Your limit will reset at ${naiveWall} retry-after-ms=5000`)).toBe(5000);
+	});
+
+	it("applies the provider timezone offset to a naive reset stamp", () => {
+		const expected = Date.parse("2099-09-01T09:44:51+08:00") - Date.now();
+		const hint = extractRetryHint(undefined, "您的限额将在 2099-09-01 09:44:51 重置。retry-after-ms=5000", {
+			naiveResetTimezoneOffset: "+08:00",
+		});
 		expect(Math.abs(hint! - expected)).toBeLessThan(100);
 	});
 
@@ -36,6 +47,32 @@ describe("extractRetryHint account reset bodies", () => {
 		expect(extractRetryHint(undefined, "Your limit will reset in 13 minutes. Please retry in 12s.")).toBe(
 			13 * 60_000,
 		);
+	});
+
+	it("keeps the longest of every body signal", () => {
+		expect(extractRetryHint(undefined, "quota exceeded. reset in 5 minutes. retry-after-ms: 3600000")).toBe(
+			3_600_000,
+		);
+		expect(extractRetryHint(undefined, "quota exceeded. reset in 5 minutes; retry-after=3600")).toBe(3_600_000);
+		expect(extractRetryHint(undefined, "quota exceeded. retry-after-ms = 7200000")).toBe(7_200_000);
+	});
+
+	it("parses OpenCode Go day and compound resets", () => {
+		expect(extractRetryHint(undefined, "429 Weekly usage limit reached. Resets in 3 days.")).toBe(3 * 86_400_000);
+		expect(extractRetryHint(undefined, "429 5-hour usage limit reached. Resets in 2hr 15min.")).toBe(135 * 60_000);
+	});
+
+	it("preserves explicit zero and elapsed counters as retry-now", () => {
+		expect(extractRetryHint(undefined, "quota exceeded. retry-after-ms=0")).toBe(0);
+		expect(extractRetryHint(undefined, `rate limited, x-ratelimit-reset=${Math.floor(Date.now() / 1000) - 60}`)).toBe(
+			0,
+		);
+		expect(extractRetryHint(undefined, "quota exceeded. reset in 5 minutes. retry-after-ms=0")).toBe(5 * 60_000);
+	});
+
+	it("returns undefined when only an elapsed account reset is present", () => {
+		const past = new Date(Date.now() - 60_000).toISOString();
+		expect(extractRetryHint(undefined, `Your limit will reset at ${past}`)).toBeUndefined();
 	});
 });
 

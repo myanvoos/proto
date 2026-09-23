@@ -176,7 +176,7 @@ const usageAmountSchema = type({
 	"remaining?": "number",
 	"usedFraction?": "number",
 	"remainingFraction?": "number",
-	unit: "'percent' | 'tokens' | 'requests' | 'usd' | 'minutes' | 'bytes' | 'unknown'",
+	unit: "'percent' | 'tokens' | 'requests' | 'credits' | 'usd' | 'minutes' | 'bytes' | 'unknown'",
 });
 
 const usageScopeSchema = type({
@@ -188,6 +188,7 @@ const usageScopeSchema = type({
 	"tier?": "string",
 	"windowId?": "string",
 	"shared?": "boolean",
+	"sharedGroup?": "string",
 });
 
 const usageLimitSchema = type({
@@ -275,6 +276,7 @@ export const clientUsageReportRequestSchema: FluentType<ClientUsageReportRequest
 	"+": "reject",
 	installId: "string",
 	"hostname?": "string",
+	"app?": "string",
 	entries: observedUsageEntrySchema.array(),
 });
 
@@ -289,6 +291,7 @@ const clientUsageClientSummarySchema = type({
 	firstSeen: "number",
 	lastSeen: "number",
 	providers: type({
+		"app?": "string",
 		provider: "string",
 		requests: "number",
 		inputTokens: "number",

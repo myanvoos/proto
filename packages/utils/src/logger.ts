@@ -256,9 +256,21 @@ function formatLogInfo(info: NormalizedLogInfo): string {
 	return `${line.slice(0, LOG_LINE_MAX_LENGTH)}…${LOG_TRUNCATED_MARKER}`;
 }
 
+const scheduledPruneDirs = new Set<string>();
+
+// Retention scans every log in the directory; run it after startup returns to the event loop, not on the first log.
+function schedulePruneStaleProcessLogs(dir: string): void {
+	if (scheduledPruneDirs.has(dir)) return;
+	scheduledPruneDirs.add(dir);
+	setImmediate(() => {
+		scheduledPruneDirs.delete(dir);
+		pruneStaleProcessLogs(dir);
+	}).unref();
+}
+
 function makeFileTransport(dir?: string): RotatingFileSink {
 	const logsDir = ensureDir(dir ?? getLogsDir());
-	pruneStaleProcessLogs(logsDir);
+	schedulePruneStaleProcessLogs(logsDir);
 	return new RotatingFileSink({
 		directory: logsDir,
 		filenamePrefix: "proto",
@@ -566,7 +578,8 @@ function printSpan(span: Span, depth: number, lines: string[]): void {
 	const tag = parallel ? " [parallel]" : "";
 	const self = selfTimeOf(span);
 	const selfStr = span.children.length > 0 && self > LOGGED_TIMING_THRESHOLD_MS ? ` (self ${fmtMs(self)})` : "";
-	lines.push(`${indent}${span.op}: ${fmtMs(dur)}${selfStr}${tag}`);
+	// The start offset locates gaps between siblings (the parent's own unspanned work), which duration alone cannot.
+	lines.push(`${indent}${span.op}: ${fmtMs(dur)}${selfStr}${tag} @${span.start.toFixed(0)}ms`);
 
 	const work: Span[] = [];
 	const loads: Span[] = [];

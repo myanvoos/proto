@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import type { Tool as AiTool } from "@oh-my-pi/pi-ai";
 import type { ToolSession } from ".";
-import { dispatchXdevTool, dispatchXdTarget, type XdevState } from "./xdev";
+import { dispatchXdevTool, dispatchXdTarget, resolveMountedXdevExecutable, type XdevState } from "./xdev";
 
 test("xd resolution forwards cancellation before a pending action applies", async () => {
 	const started = Promise.withResolvers<void>();
@@ -84,4 +84,12 @@ test("device validation states the constraint and the offending value", async ()
 	await expect(
 		dispatchXdevTool(probeState({}), "probe", JSON.stringify({ target: "" }), "xd-invalid"),
 	).rejects.toThrow(/target must be at least length 1 \(was ""\)/);
+});
+
+test("a direct device call resolves whether the name is bare or carries the advertised xd:// prefix", () => {
+	const state = probeState({});
+	const probe = state.tools.get("probe");
+	expect(resolveMountedXdevExecutable(state, "probe")).toBe(probe);
+	expect(resolveMountedXdevExecutable(state, "xd://probe")).toBe(probe);
+	expect(resolveMountedXdevExecutable(state, "xd://missing")).toBeUndefined();
 });

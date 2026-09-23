@@ -5,6 +5,9 @@ import { Text } from "./text";
 const RENDER_INTERVAL_MS = 1000 / 30;
 const SPINNER_ADVANCE_MS = 80;
 const RENDER_BACKPRESSURE_MULTIPLIER = 9;
+// One pathological frame (a multi-second stall) must not freeze the spinner
+// for nine times as long; bound the cost that feeds the duty-cycle multiplier.
+const MAX_BACKPRESSURE_FRAME_COST_MS = 200;
 
 type ColorFn = (str: string) => string;
 
@@ -27,7 +30,7 @@ export class Loader extends Text {
 		ui: TUI,
 		private spinnerColorFn: ColorFn,
 		private messageColorFn: LoaderMessageColorFn,
-		private message: string = "Loading...",
+		private message: string | (() => string) = "Loading...",
 		spinnerFrames?: string[],
 	) {
 		super("", 1, 0);
@@ -147,11 +150,18 @@ export class Loader extends Text {
 				this.#requestPaint();
 			}
 
-			const frameCostMs = performance.now() - startedAt;
+			// requestComponentRender() only enqueues: the compose/write cost lands on
+			// the TUI's completed frame, so pace on whichever is larger.
+			const completedFrameCostMs = this.#ui?.lastFrameCostMs ?? 0;
+			const requestCostMs = performance.now() - startedAt;
 			if (this.#intervalId !== timer) return;
-			const cadenceDelayMs = Math.max(0, intervalMs - frameCostMs);
-
-			const backpressureDelayMs = frameCostMs * RENDER_BACKPRESSURE_MULTIPLIER;
+			const cadenceDelayMs = Math.max(0, intervalMs - requestCostMs);
+			// Idle for nine times the frame cost to keep animation at or below 10% CPU.
+			const boundedFrameCostMs = Math.min(
+				MAX_BACKPRESSURE_FRAME_COST_MS,
+				Math.max(completedFrameCostMs, requestCostMs),
+			);
+			const backpressureDelayMs = boundedFrameCostMs * RENDER_BACKPRESSURE_MULTIPLIER;
 			this.#scheduleTick(intervalMs, Math.max(cadenceDelayMs, backpressureDelayMs));
 		}, delayMs);
 		// A spinner tick must never keep the process alive on its own.
@@ -159,10 +169,17 @@ export class Loader extends Text {
 		this.#intervalId = timer;
 	}
 
+	#resolveMessage(): string {
+		return typeof this.message === "function" ? this.message() : this.message;
+	}
+
+	/** Re-wrap the underlying Text only when its message or frame width changes.
+	 * A function message is re-evaluated on every spinner tick, so a dynamic
+	 * label (a live countdown) advances with the glyph instead of freezing. */
 	#syncText(): boolean {
 		const layoutFrame = this.#layoutFrames[this.#currentFrame];
 		this.#layoutFrame = layoutFrame;
-		return this.setText(`${layoutFrame} ${this.message}`);
+		return this.setText(`${layoutFrame} ${this.#resolveMessage()}`);
 	}
 
 	#requestPaint() {

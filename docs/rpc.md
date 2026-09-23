@@ -146,18 +146,18 @@ Important edge behavior from runtime:
 
 ### Queue modes
 
-- `{ id?, type: "set_steering_mode", mode: "all" | "one-at-a-time" }`
-- `{ id?, type: "set_follow_up_mode", mode: "all" | "one-at-a-time" }`
-- `{ id?, type: "set_interrupt_mode", mode: "immediate" | "wait" }`
+- `{ id?, type: "set_steering_mode", mode: "all" | "one-at-a-time" }` — applies to this session only; it never writes the global `config.yml`
+- `{ id?, type: "set_follow_up_mode", mode: "all" | "one-at-a-time" }` — session-only, like `set_steering_mode`
+- `{ id?, type: "set_interrupt_mode", mode: "immediate" | "wait" }` — session-only, like `set_steering_mode`
 
 ### Compaction
 
 - `{ id?, type: "compact", customInstructions?: string }`
-- `{ id?, type: "set_auto_compaction", enabled: boolean }`
+- `{ id?, type: "set_auto_compaction", enabled: boolean }` — applies to this session only; it never writes the global `config.yml`
 
 ### Retry
 
-- `{ id?, type: "set_auto_retry", enabled: boolean }`
+- `{ id?, type: "set_auto_retry", enabled: boolean }` — applies to this session only; it never writes the global `config.yml`
 - `{ id?, type: "abort_retry" }`
 
 ### Bash
@@ -194,6 +194,11 @@ The bundled TypeScript `RpcClient.getMessages()` and Python `RpcClient.get_messa
 
 - `{ id?, type: "get_login_providers" }`
 - `{ id?, type: "login", providerId: string }`
+
+Login forwards ordinary OAuth input prompts only after the provider emits an
+authorization URL. Prompts marked `secret: true` are always rejected with a
+failed `login` response directing the user to the terminal UI; no ordinary
+`input` request is emitted. RPC does not negotiate secret-input support.
 
 ## Response Schema
 

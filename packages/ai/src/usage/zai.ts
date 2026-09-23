@@ -51,6 +51,7 @@ interface ZaiQuotaPayload {
 	msg?: string;
 	data?: {
 		limits?: ZaiUsageLimitItem[];
+		level?: string;
 	};
 }
 
@@ -193,17 +194,32 @@ function buildModelUsageUrl(baseUrl: string, now: Date): string {
 }
 
 function getZaiCredentialLimits(report: UsageReport): UsageLimit[] {
-	const limits = report.limits.filter(
-		limit => limit.id.startsWith("zai:requests:") || limit.id.startsWith("zai:tokens:"),
+	return report.limits.filter(
+		limit =>
+			limit.id.startsWith("zai:requests:") ||
+			limit.id.startsWith("zai:tokens:") ||
+			limit.id.startsWith("zai:credits:"),
 	);
-	return limits;
+}
+
+function zaiLimitPressure(limit: UsageLimit): number {
+	const fraction = limit.amount.usedFraction;
+	return typeof fraction === "number" && Number.isFinite(fraction) ? fraction : -1;
 }
 
 function rankZaiRequestLimits(report: UsageReport): UsageLimit[] {
 	const requestLimits = report.limits.filter(limit => limit.id.startsWith("zai:requests:"));
 	const credentialLimits = getZaiCredentialLimits(report);
 	const limits = requestLimits.length > 0 ? requestLimits : credentialLimits;
-	const ranked = [...limits];
+	// Mixed-meter plans (tokens + credits) repeat a window; keep the most-binding
+	// row per window so a second 5h row never displaces the weekly one positionally.
+	const byWindow = new Map<number, UsageLimit>();
+	for (const limit of limits) {
+		const durationMs = limit.window?.durationMs ?? Number.POSITIVE_INFINITY;
+		const current = byWindow.get(durationMs);
+		if (!current || zaiLimitPressure(limit) > zaiLimitPressure(current)) byWindow.set(durationMs, limit);
+	}
+	const ranked = [...byWindow.values()];
 	ranked.sort((left, right) => {
 		const leftDuration = left.window?.durationMs ?? Number.POSITIVE_INFINITY;
 		const rightDuration = right.window?.durationMs ?? Number.POSITIVE_INFINITY;
@@ -304,6 +320,30 @@ async function fetchZaiUsage(params: UsageFetchParams, ctx: UsageFetchContext): 
 				status: getUsageStatus(amount.usedFraction),
 			});
 		}
+		if (parsed.type === "CREDIT_LIMIT") {
+			const window = buildZaiWindow(parsed);
+			// `percentage` is server-rounded; prefer the exact used/limit ratio when absolutes exist.
+			const hasAbsoluteMeter = parsed.currentValue !== undefined && parsed.usage !== undefined && parsed.usage > 0;
+			const amount = buildUsageAmount({
+				used: parsed.currentValue,
+				limit: parsed.usage,
+				remaining: parsed.remaining,
+				percentage: hasAbsoluteMeter ? undefined : parsed.percentage,
+				unit: "credits",
+			});
+			limits.push({
+				id: `zai:credits:${window.id}`,
+				label: `ZAI ${window.label} Credit Quota`,
+				scope: {
+					provider: params.provider,
+					windowId: window.id,
+					shared: true,
+				},
+				window,
+				amount,
+				status: getUsageStatus(amount.usedFraction),
+			});
+		}
 	}
 
 	if (limits.length === 0) return null;
@@ -316,6 +356,7 @@ async function fetchZaiUsage(params: UsageFetchParams, ctx: UsageFetchContext): 
 			endpoint: url,
 			accountId: credential.accountId,
 			email: credential.email,
+			...(typeof payload.data?.level === "string" && payload.data.level ? { planType: payload.data.level } : {}),
 		},
 		raw: payload,
 	};

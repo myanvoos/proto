@@ -33,6 +33,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": true,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": true,
@@ -63,6 +64,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -73,6 +75,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": false,
 			"streamIdleTimeoutMs": 0
@@ -112,6 +115,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": true,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": true,
@@ -142,6 +146,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -152,6 +157,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": false,
 			"streamIdleTimeoutMs": 0
@@ -191,6 +197,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": true,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": true,
@@ -221,6 +228,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -231,6 +239,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": false,
 			"streamIdleTimeoutMs": 0

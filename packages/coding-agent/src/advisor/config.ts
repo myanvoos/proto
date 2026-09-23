@@ -21,6 +21,8 @@ export type AdvisorRuntimeStatus = "running" | "paused" | "quota_exhausted" | "e
 interface DiscoveredAdvisors {
 	advisors: AdvisorConfig[];
 	sharedInstructions: string | undefined;
+	/** Unparseable files and dropped entries, surfaced as one aggregated warning so a broken entry never fails silently. */
+	warnings: string[];
 }
 
 const advisorEntrySchema = type({
@@ -31,10 +33,41 @@ const advisorEntrySchema = type({
 	"enabled?": "boolean",
 });
 
-const watchdogYamlSchema = type({
-	"instructions?": "string",
-	"advisors?": advisorEntrySchema.array(),
-});
+type AdvisorYamlEntry = typeof advisorEntrySchema.infer;
+
+/**
+ * Validates one parsed `WATCHDOG.yml` document per entry: a malformed advisor drops out with a warning naming it while
+ * the healthy entries still load (whole-document validation disabled every advisor in the file and blanked the editor,
+ * whose next save then wiped them).
+ */
+function parseWatchdogDoc(
+	doc: Record<string, unknown>,
+	filePath: string,
+): { instructions: string | undefined; entries: AdvisorYamlEntry[]; warnings: string[] } {
+	const warnings: string[] = [];
+	const rawInstructions = doc.instructions;
+	const instructions = typeof rawInstructions === "string" ? rawInstructions : undefined;
+	if (rawInstructions !== undefined && instructions === undefined) {
+		warnings.push(`${filePath}: instructions must be a string — ignored`);
+	}
+	const rawAdvisors = doc.advisors;
+	if (rawAdvisors !== undefined && !Array.isArray(rawAdvisors)) {
+		warnings.push(`${filePath}: advisors must be a list — ignored`);
+	}
+	const entries: AdvisorYamlEntry[] = [];
+	for (const [index, rawEntry] of (Array.isArray(rawAdvisors) ? rawAdvisors : []).entries()) {
+		const result = advisorEntrySchema(rawEntry);
+		if (result instanceof type.errors) {
+			const rawName =
+				rawEntry && typeof rawEntry === "object" ? (rawEntry as Record<string, unknown>).name : undefined;
+			const label = typeof rawName === "string" && rawName.trim() ? `"${rawName}"` : `#${index + 1}`;
+			warnings.push(`${filePath}: advisor ${label} dropped — ${result.summary}`);
+			continue;
+		}
+		entries.push(result);
+	}
+	return { instructions, entries, warnings };
+}
 
 export function slugifyAdvisorName(name: string): string {
 	const slug = name
@@ -83,31 +116,33 @@ export async function discoverAdvisorConfigs(cwd: string, agentDir?: string): Pr
 	const items = await collectConfigCandidates(cwd, agentDir, ["WATCHDOG.yml", "WATCHDOG.yaml"]);
 	const advisors = new Map<string, AdvisorConfig>();
 	const sharedParts: string[] = [];
+	const warnings: string[] = [];
+	const warn = (message: string, filePath: string): void => {
+		warnings.push(message);
+		logger.warn("Advisor config", { path: filePath, error: message });
+	};
 
 	for (const item of items) {
 		let parsed: unknown;
 		try {
 			parsed = YAML.parse(item.content);
 		} catch (err) {
-			logger.warn("Advisor config: failed to parse YAML", { path: item.path, error: String(err) });
+			warn(`${item.path}: failed to parse YAML (${String(err)}) — file skipped`, item.path);
 			continue;
 		}
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			logger.warn("Advisor config: expected a YAML mapping", { path: item.path });
+			warn(`${item.path}: expected a YAML mapping — file skipped`, item.path);
 			continue;
 		}
-		const result = watchdogYamlSchema(parsed);
-		if (result instanceof type.errors) {
-			logger.warn("Advisor config: invalid schema", { path: item.path, error: result.summary });
-			continue;
-		}
+		const doc = parseWatchdogDoc(parsed as Record<string, unknown>, item.path);
+		for (const message of doc.warnings) warn(message, item.path);
 
-		if (result.instructions?.trim()) {
-			const expanded = (await expandAtImports(result.instructions, item.path)).trim();
+		if (doc.instructions?.trim()) {
+			const expanded = (await expandAtImports(doc.instructions, item.path)).trim();
 			if (expanded) sharedParts.push(expanded);
 		}
 
-		for (const entry of result.advisors ?? []) {
+		for (const entry of doc.entries) {
 			const slug = slugifyAdvisorName(entry.name);
 			const instructions = entry.instructions?.trim()
 				? (await expandAtImports(entry.instructions, item.path)).trim() || undefined
@@ -125,6 +160,7 @@ export async function discoverAdvisorConfigs(cwd: string, agentDir?: string): Pr
 	return {
 		advisors: [...advisors.values()],
 		sharedInstructions: sharedParts.length > 0 ? sharedParts.join("\n\n") : undefined,
+		warnings,
 	};
 }
 
@@ -133,6 +169,8 @@ export type AdvisorConfigScope = "project" | "user";
 export interface WatchdogConfigDoc {
 	instructions?: string;
 	advisors: AdvisorConfig[];
+	/** Problems found while loading (unparseable file, dropped entries); shown while the file is active in the editor. */
+	warnings?: string[];
 }
 
 export function advisorConfigFilePath(
@@ -167,15 +205,16 @@ export async function loadWatchdogConfigFile(filePath: string): Promise<Watchdog
 		parsed = YAML.parse(text);
 	} catch (err) {
 		logger.warn("Advisor config: failed to parse for edit", { path: filePath, error: String(err) });
-		return { advisors: [] };
+		return { advisors: [], warnings: [`${filePath}: failed to parse YAML (${String(err)})`] };
 	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { advisors: [] };
-	const result = watchdogYamlSchema(parsed);
-	if (result instanceof type.errors) {
-		logger.warn("Advisor config: invalid schema for edit", { path: filePath, error: result.summary });
-		return { advisors: [] };
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		const message = `${filePath}: expected a YAML mapping — file skipped`;
+		logger.warn("Advisor config", { path: filePath, error: message });
+		return { advisors: [], warnings: [message] };
 	}
-	const advisors = (result.advisors ?? []).map(a => {
+	const { instructions, entries, warnings } = parseWatchdogDoc(parsed as Record<string, unknown>, filePath);
+	for (const message of warnings) logger.warn("Advisor config", { path: filePath, error: message });
+	const advisors = entries.map(a => {
 		const advisor: AdvisorConfig = { name: a.name };
 		if (a.model?.trim()) advisor.model = a.model;
 		if (a.tools !== undefined) advisor.tools = [...a.tools];
@@ -184,7 +223,8 @@ export async function loadWatchdogConfigFile(filePath: string): Promise<Watchdog
 		return advisor;
 	});
 	const doc: WatchdogConfigDoc = { advisors };
-	if (result.instructions?.trim()) doc.instructions = result.instructions;
+	if (instructions?.trim()) doc.instructions = instructions;
+	if (warnings.length > 0) doc.warnings = warnings;
 	return doc;
 }
 

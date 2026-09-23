@@ -1,5 +1,6 @@
 import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import { type Tool as AiTool, jsonSchemaToTypeScript, toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
+import { schemaDefinesProperty } from "@oh-my-pi/pi-ai/utils/schema";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
 import { Container } from "@oh-my-pi/pi-tui/tui";
 import { INTENT_FIELD, parseStreamingJson, truncateHeadBytes } from "@oh-my-pi/pi-utils";
@@ -79,12 +80,6 @@ export function setXdevRendererLookup(lookup: (name: string) => ToolRenderer | u
 	rendererLookup = lookup;
 }
 
-function schemaDeclaresIntentField(schema: unknown): boolean {
-	if (!schema || typeof schema !== "object" || !("properties" in schema)) return false;
-	const props = schema.properties;
-	return !!props && typeof props === "object" && !Array.isArray(props) && INTENT_FIELD in props;
-}
-
 interface RenderedDocs {
 	prose: string;
 	schema: string;
@@ -149,7 +144,7 @@ function validateXdArgs(
 	validationDocs: () => string,
 ): Record<string, unknown> {
 	let args = rawArgs;
-	if (INTENT_FIELD in args && !schemaDeclaresIntentField(schema)) {
+	if (INTENT_FIELD in args && !schemaDefinesProperty(schema, INTENT_FIELD)) {
 		// Published tool schemas carry the intent field; devices that do not
 		// declare it accept and drop it instead of rejecting the whole call.
 		args = { ...args };
@@ -271,8 +266,10 @@ function resolveXdevTool(state: XdevState, name: string): Tool | undefined {
 	return state.tools.get(name);
 }
 
+/** Resolve a mounted device by bare name or by the `xd://name` spelling its docs advertise. */
 export function resolveMountedXdevTool(state: XdevState, name: string): Tool | undefined {
-	return state.mountedNames.has(name) ? state.tools.get(name) : undefined;
+	const bare = name.startsWith(XD_URL_PREFIX) ? name.slice(XD_URL_PREFIX.length) : name;
+	return state.mountedNames.has(bare) ? state.tools.get(bare) : undefined;
 }
 
 export function resolveMountedXdevExecutable(state: XdevState, name: string): Tool | undefined {

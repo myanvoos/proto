@@ -1370,6 +1370,7 @@ export type ResponseInputItem =
 	| ResponseCustomToolCallOutput
 	| ResponseCustomToolCall
 	| ResponseInputItem.CompactionTrigger
+	| ResponseInputItem.ConfigurationUpdate
 	| ResponseInputItem.ItemReference;
 export declare namespace ResponseInputItem {
 	interface Message {
@@ -1641,6 +1642,13 @@ export declare namespace ResponseInputItem {
 
 	interface CompactionTrigger {
 		type: "compaction_trigger";
+	}
+
+	interface ConfigurationUpdate {
+		type: "configuration_update";
+		reasoning: {
+			effort: string;
+		};
 	}
 
 	interface ItemReference {

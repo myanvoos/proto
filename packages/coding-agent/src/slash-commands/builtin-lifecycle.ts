@@ -3,9 +3,11 @@ import * as path from "node:path";
 import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import { setProjectDir } from "@oh-my-pi/pi-utils";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
+import type { AgentSession } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
-import { USER_INTERRUPT_LABEL } from "../session/messages";
+import { buildReplanTitleContext, USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
+import type { SessionManagerStateSnapshot } from "../session/session-manager";
 import { resolveToCwd } from "../tools/path-utils";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSshAcp } from "./helpers/ssh";
@@ -26,11 +28,61 @@ export const shutdownHandlerTui = (
 	return commandConsumed();
 };
 
+/** Point the process, settings, provider globals, and plugin-derived state at `cwd` (the session's cwd). */
+async function rescopeHeadlessToCwd(runtime: SlashCommandRuntime, cwd: string): Promise<void> {
+	setProjectDir(cwd);
+	await runtime.settings.reloadForCwd(cwd);
+	applyProviderGlobalsFromSettings(runtime.settings);
+	await runtime.reloadPlugins();
+}
+
+/**
+ * Undo a session move whose workspace could not follow it. When the transcript cannot be moved back, the workspace
+ * follows the transcript instead; a session whose workspace cannot be aligned either way is closed.
+ */
+async function rollbackHeadlessMove(
+	runtime: SlashCommandRuntime,
+	previousState: SessionManagerStateSnapshot,
+	moveError: unknown,
+): Promise<SlashCommandResult> {
+	try {
+		await runtime.session.rollbackMove(previousState);
+		await rescopeHeadlessToCwd(runtime, previousState.cwd);
+		return usage(`Move failed: ${errorMessage(moveError)}`, runtime);
+	} catch (rollbackError) {
+		const actual = runtime.sessionManager.getCwd();
+		try {
+			await rescopeHeadlessToCwd(runtime, actual);
+		} catch {
+			await runtime.output(
+				`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; closing the session)`,
+			);
+			await runtime.session.dispose();
+			return commandConsumed();
+		}
+		return usage(
+			`Move failed and rollback failed: ${errorMessage(rollbackError)} (workspace remains at ${actual})`,
+			runtime,
+		);
+	}
+}
+
 function formatWorkspaceDirectories(runtime: SlashCommandRuntime, note?: string): string {
 	const cwd = runtime.sessionManager.getCwd();
 	const additional = runtime.sessionManager.getAdditionalDirectories();
 	const lines = ["Workspace directories:", `  ${cwd} (working directory)`, ...additional.map(d => `  ${d}`)];
 	return note ? `${note}\n${lines.join("\n")}` : lines.join("\n");
+}
+
+/** Generates a title from the conversation; null when there is no context or the session/title moved on meanwhile. */
+async function generateRenameTitle(session: AgentSession): Promise<string | null> {
+	const context = buildReplanTitleContext(session.messages);
+	if (!context) return null;
+	const { sessionManager } = session;
+	const sessionId = sessionManager.getSessionId();
+	const revision = sessionManager.titleRevision;
+	const title = await session.generateTitle(context);
+	return sessionManager.getSessionId() === sessionId && sessionManager.titleRevision === revision ? title : null;
 }
 
 export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -182,28 +234,44 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "rename",
-		description: "Rename the current session",
-		inlineHint: "<title>",
+		description: "Rename the current session (omit title to generate)",
+		inlineHint: "[title]",
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			if (!command.args) return usage("Usage: /rename <title>", runtime);
-			const ok = await runtime.sessionManager.setSessionName(command.args, "user");
-			if (!ok) {
-				await runtime.output("Session name not changed (a user-set name takes precedence).");
+			const session = runtime.session;
+			const runRename = async (): Promise<void> => {
+				const title = command.args || (await generateRenameTitle(session));
+				if (runtime.session !== session) return;
+				if (!title) {
+					await runtime.output("Could not generate a session title. Use /rename <title> to set one.");
+					return;
+				}
+				const ok = await runtime.sessionManager.setSessionName(title, "user");
+				if (!ok) {
+					await runtime.output("Session name not changed (a user-set name takes precedence).");
+					return;
+				}
+				await runtime.notifyTitleChanged?.();
+				await runtime.output(`Session renamed to ${title}.`);
+			};
+			if (!command.args && runtime.runCommandInBackground) {
+				runtime.runCommandInBackground(() =>
+					runRename().catch(err => runtime.output(`Rename failed: ${errorMessage(err)}`)),
+				);
 				return commandConsumed();
 			}
-			await runtime.notifyTitleChanged?.();
-			await runtime.output(`Session renamed to ${command.args}.`);
+			await runRename();
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			const title = command.args.trim();
+			runtime.ctx.editor.setText("");
+			const session = runtime.ctx.session;
+			const title = command.args.trim() || (await generateRenameTitle(session));
+			if (runtime.ctx.session !== session) return;
 			if (!title) {
-				runtime.ctx.showError("Usage: /rename <title>");
-				runtime.ctx.editor.setText("");
+				runtime.ctx.showError("Could not generate a session title. Use /rename <title> to set one.");
 				return;
 			}
-			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleRenameCommand(title);
 		},
 	},
@@ -230,16 +298,17 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			} catch (err) {
 				return usage(`Failed to save pending settings: ${errorMessage(err)}`, runtime);
 			}
+			const previousState = runtime.sessionManager.captureState();
 			try {
 				await runtime.session.moveSession(resolvedPath);
 			} catch (err) {
 				return usage(`Move failed: ${errorMessage(err)}`, runtime);
 			}
-			setProjectDir(resolvedPath);
-			await runtime.settings.reloadForCwd(resolvedPath);
-			applyProviderGlobalsFromSettings(runtime.settings);
-
-			await runtime.reloadPlugins();
+			try {
+				await rescopeHeadlessToCwd(runtime, resolvedPath);
+			} catch (err) {
+				return rollbackHeadlessMove(runtime, previousState, err);
+			}
 			await runtime.notifyConfigChanged?.();
 			await runtime.notifyTitleChanged?.();
 			await runtime.output(`Moved to ${runtime.sessionManager.getCwd()}.`);

@@ -1,8 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import type { Context, FetchImpl } from "../types";
+import { registerCustomApi, unregisterCustomApis } from "../api-registry";
+import { streamSimple } from "../stream";
+import type { Api, Context, FetchImpl, Model } from "../types";
 import { getStreamingPartialJson } from "../utils/block-symbols";
-import { streamOpenAICompletions } from "./openai-completions";
+import { type OpenAICompletionsOptions, streamOpenAICompletions } from "./openai-completions";
 
 const model = buildModel({
 	id: "done-sentinel-test",
@@ -63,6 +65,22 @@ describe("OpenAI Completions stream termination", () => {
 		expect(result.errorMessage).toContain("OpenAI completions response was not a stream");
 		expect(result.errorMessage).toContain("content-type text/html");
 		expect(result.content).toEqual([]);
+	});
+
+	it("maps uppercase Gemini-style finish reasons instead of failing the turn", async () => {
+		const stopped = await runStream([
+			{ choices: [{ delta: { content: "Hel" } }] },
+			{ choices: [{ delta: {}, finish_reason: "STOP" }] },
+			"[DONE]",
+		]);
+		const truncated = await runStream([
+			{ choices: [{ delta: { content: "Hel" } }] },
+			{ choices: [{ delta: {}, finish_reason: "MAX_TOKENS" }] },
+			"[DONE]",
+		]);
+
+		expect(stopped).toEqual({ stopReason: "stop", errorMessage: undefined, text: "Hel" });
+		expect(truncated).toEqual({ stopReason: "length", errorMessage: undefined, text: "Hel" });
 	});
 
 	it("still reports a genuine EOF without [DONE] or finish_reason as incomplete", async () => {
@@ -223,5 +241,118 @@ describe("OpenAI Completions tool-call TTFT", () => {
 		expect(result.ttft).toBeDefined();
 		expect(result.ttft).toBeGreaterThanOrEqual(0);
 		expect(result.ttft).toBeLessThanOrEqual(result.duration ?? Number.POSITIVE_INFINITY);
+	});
+});
+
+describe("OpenAI Completions behind a custom API", () => {
+	const CUSTOM_API = "openai-completions-wrapper-test";
+	const CUSTOM_API_SOURCE = "openai-completions-stream-test";
+	afterEach(() => unregisterCustomApis(CUSTOM_API_SOURCE));
+
+	it("resolves the OpenAI wire policy and honors declared compat overrides", async () => {
+		const customModel = buildModel({
+			id: "hy4-preview",
+			name: "HY4 Preview",
+			api: CUSTOM_API,
+			provider: "custom-wrapper",
+			baseUrl: "https://completions.example.test/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 131_072,
+			maxTokens: 8_192,
+			compat: { maxTokensField: "max_tokens", supportsSamplingParams: false },
+		} as Parameters<typeof buildModel<Api>>[0]);
+		registerCustomApi(
+			CUSTOM_API,
+			(delegated, messages, options) =>
+				streamOpenAICompletions(
+					delegated as Model<"openai-completions">,
+					messages,
+					(options ?? {}) as OpenAICompletionsOptions,
+				),
+			CUSTOM_API_SOURCE,
+		);
+		let request: Record<string, unknown> | undefined;
+		const frames = fetchFor([
+			{ choices: [{ delta: { content: "ok" } }] },
+			{ choices: [{ delta: {}, finish_reason: "stop" }] },
+			"[DONE]",
+		]);
+		const capturingFetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+				if (typeof init?.body === "string") request = JSON.parse(init.body) as Record<string, unknown>;
+				return frames(input, init);
+			},
+			{ preconnect: fetch.preconnect },
+		);
+
+		const result = await streamSimple(customModel, context, {
+			apiKey: "test-key",
+			fetch: capturingFetch,
+			temperature: 0.7,
+			maxTokens: 321,
+		}).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+		expect(request?.max_tokens).toBe(321);
+		expect(request?.max_completion_tokens).toBeUndefined();
+		expect(request?.temperature).toBeUndefined();
+	});
+});
+
+describe("OpenAI Completions scheduled pricing", () => {
+	it("prices usage at the request-start tariff when the stream ends after a UTC boundary", async () => {
+		const scheduled = buildModel({
+			id: "scheduled-flash",
+			name: "Scheduled Flash",
+			api: "openai-completions",
+			provider: "custom",
+			baseUrl: "https://completions.example.test/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: {
+				input: 0.3,
+				output: 1.2,
+				cacheRead: 0,
+				cacheWrite: 0,
+				timeBased: {
+					offPeakMultiplier: 0.5,
+					peakWindows: [{ weekdays: [1, 2, 3, 4, 5], startMinute: 60, endMinute: 240 }],
+				},
+			},
+			contextWindow: 32_000,
+			maxTokens: 4_096,
+		});
+		const peakStart = Date.parse("2026-09-10T03:59:59Z");
+		let now = peakStart;
+		const clock = spyOn(Date, "now").mockImplementation(() => now);
+		const frames = fetchFor([
+			{ choices: [{ delta: { content: "ok" } }] },
+			{
+				choices: [{ delta: {}, finish_reason: "stop" }],
+				usage: { prompt_tokens: 1_000_000, completion_tokens: 200_000 },
+			},
+			"[DONE]",
+		]);
+		// The response arrives once the off-peak tariff has begun.
+		const lateFetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+				now = Date.parse("2026-09-10T04:00:00Z");
+				return frames(input, init);
+			},
+			{ preconnect: fetch.preconnect },
+		);
+		try {
+			const result = await streamOpenAICompletions(scheduled, context, {
+				apiKey: "test-key",
+				fetch: lateFetch,
+			}).result();
+			expect(result.timestamp).toBe(peakStart);
+			expect(result.usage.cost.total).toBeCloseTo(0.54, 12);
+		} finally {
+			clock.mockRestore();
+		}
 	});
 });

@@ -103,6 +103,8 @@ export interface ToolSession {
 	customTools?: CustomTool[];
 
 	getApiKey?: AgentOptions["getApiKey"];
+	/** Session whose stored credential affinities seed spawned child sessions. */
+	getCredentialSourceSessionId?: () => string | undefined;
 
 	contextFiles?: ContextFileEntry[];
 

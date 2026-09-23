@@ -5,7 +5,7 @@ import { buildDevinCompat } from "./compat/devin";
 import { buildOpenAICompat, buildOpenAIResponsesCompat, buildOpenRouterCompat } from "./compat/openai";
 import { bareModelId, parseOpenAIModel, semverGte } from "./identity/classify";
 import { isClaudeModelId } from "./identity/family";
-import { resolveModelThinking } from "./model-thinking";
+import { resolveModelThinking, upgradeNeutralReasoning } from "./model-thinking";
 import { resolveModelTokenizer } from "./model-tokenizer";
 import type { Api, CompatOf, Model, ModelSpec, ThinkingConfig } from "./types";
 import { cleanModelName } from "./utils";
@@ -49,7 +49,8 @@ function supportsOpenAIGAComputerUse(spec: ModelSpec<Api>, explicitSupport: bool
 	return parsed !== null && semverGte(parsed.version, "5.4");
 }
 
-export function buildModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi> {
+export function buildModel<TApi extends Api>(sourceSpec: ModelSpec<TApi>): Model<TApi> {
+	const spec = upgradeNeutralReasoning(sourceSpec);
 	const builtCompat = buildCompat(spec) as CompatOf<TApi>;
 	const compatKey = JSON.stringify(builtCompat);
 	const internedCompat = compatInternCache.get(compatKey);
@@ -70,6 +71,7 @@ export function buildModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi>
 		thinking,
 		supportsComputerUse: supportsOpenAIGAComputerUse(spec, supportsComputerUseConfig),
 		supportsComputerUseConfig,
+		supportsAssistantPrefill: spec.provider === "ollama" || spec.provider === "ollama-cloud",
 		compat,
 		compatConfig: spec.compat,
 	} as Model<TApi>;

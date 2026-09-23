@@ -37,6 +37,9 @@
 		"requestModelId": "claude-opus-4-5-thinking",
 		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"int": 23.7,
+		"tps": 45.7,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"claude-opus-4-6": {
@@ -70,6 +73,9 @@
 		},
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
+		"int": 26.4,
+		"tps": 38.7,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"claude-sonnet-4-5": {
@@ -110,6 +116,7 @@
 		"requestModelId": "claude-sonnet-4-5",
 		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"claude-sonnet-4-6": {
@@ -142,6 +149,9 @@
 		},
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
+		"int": 24.7,
+		"tps": 42,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-2.5-flash": {
@@ -180,6 +190,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 9.9,
+		"tps": 188.6,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-2.5-flash-lite": {
@@ -211,6 +224,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 6.7,
+		"tps": 265.8,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-2.5-pro": {
@@ -243,6 +259,9 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"int": 16.1,
+		"tps": 125.8,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3-flash": {
@@ -290,6 +309,9 @@
 		},
 		"requestModelId": "gemini-3.5-flash-extra-low",
 		"requiresGlyphTokenization": false,
+		"int": 17.9,
+		"tps": 211.8,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3-pro": {
@@ -327,6 +349,7 @@
 		},
 		"requestModelId": "gemini-3-pro-low",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3.1-flash-image": {
@@ -348,6 +371,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3.1-flash-lite": {
@@ -380,6 +404,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3.1-pro": {
@@ -421,6 +446,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3.5-flash": {
@@ -468,6 +494,9 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"int": 32.6,
+		"tps": 207.7,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3.6-flash": {
@@ -507,6 +536,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 34,
+		"tps": 180.2,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3.7-flash": {
@@ -546,38 +578,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
-	},
-	"gemini-3.7-flash-tiered": {
-		"id": "gemini-3.7-flash-tiered",
-		"name": "gemini-3.7-flash-tiered",
-		"api": "google-gemini-cli",
-		"provider": "google-antigravity",
-		"baseUrl": "https://daily-cloudcode-pa.googleapis.com",
-		"reasoning": true,
-		"input": [
-			"text",
-			"image"
-		],
-		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
-		},
-		"contextWindow": 1048576,
-		"maxTokens": 65536,
-		"thinking": {
-			"mode": "google-level",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high"
-			],
-			"requiresEffort": true
-		},
-		"requiresGlyphTokenization": false,
+		"int": 39.1,
+		"tps": 278.3,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gpt-oss-120b": {
@@ -609,6 +612,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 11.6,
+		"tps": 196.3,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"tab_flash_lite_preview": {
@@ -630,6 +636,7 @@
 		"contextWindow": 16384,
 		"maxTokens": 4096,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"tab_jump_flash_lite_preview": {
@@ -651,6 +658,7 @@
 		"contextWindow": 16384,
 		"maxTokens": 4096,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	}
 }

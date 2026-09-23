@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, test, vi } from "bun:test";
 import { INTENT_FIELD } from "@oh-my-pi/pi-utils";
 import { AsyncJobManager } from "../../async";
 import type { ToolSession } from "../../tools";
+import { CheckpointTool, RewindTool } from "../../tools/checkpoint";
 import { FleetTool } from "../../tools/fleet";
 import { callSessionTool } from "./tool-bridge";
 
@@ -61,4 +62,23 @@ test("tools that declare an intent parameter still receive one", async () => {
 	const value = await callSessionTool("declares-intent", { value: "x" }, { session });
 	expect(value).toBe("ok");
 	expect(seen?.[INTENT_FIELD]).toBe("js prelude");
+});
+
+test("kernel checkpoint and rewind calls are rejected instead of silently succeeding", async () => {
+	const session = { getCheckpointState: () => ({ goal: "g" }) } as unknown as ToolSession;
+	const checkpoint = new CheckpointTool({ getCheckpointState: () => undefined } as unknown as ToolSession);
+	const rewind = new RewindTool(session);
+	const checkpointExecute = vi.spyOn(checkpoint, "execute");
+	const rewindExecute = vi.spyOn(rewind, "execute");
+	(session as { getToolByName?: (name: string) => unknown }).getToolByName = name =>
+		name === "checkpoint" ? checkpoint : name === "rewind" ? rewind : undefined;
+
+	await expect(callSessionTool("checkpoint", { goal: "g" }, { session })).rejects.toThrow(
+		"cannot run through the eval bridge",
+	);
+	await expect(callSessionTool("rewind", { report: "r" }, { session })).rejects.toThrow(
+		"cannot run through the eval bridge",
+	);
+	expect(checkpointExecute).not.toHaveBeenCalled();
+	expect(rewindExecute).not.toHaveBeenCalled();
 });

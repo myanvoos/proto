@@ -40,7 +40,7 @@ export function seedCredentialPins(authStorage: AuthStorage, sessionManager: Ses
 		const match = accounts.find(account => credentialPinHash(provider, account) === pin.hash);
 		if (!match) continue;
 		authStorage.pinSessionOAuthAccount(provider, sessionId, match.credentialId, {
-			lastUsedAtMs: pin.lastUsedAt,
+			restoredAtMs: pin.lastUsedAt,
 		});
 	}
 }

@@ -1,5 +1,5 @@
 import { type } from "@oh-my-pi/omptype";
-import type { ModelSpec } from "../types";
+import type { FetchImpl, ModelSpec } from "../types";
 import { discoveryFetch, toPositiveNumber } from "../utils";
 import {
 	ANTIGRAVITY_VARIANT_COLLAPSE_TABLE,
@@ -43,6 +43,7 @@ export interface AntigravityDiscoveryAgentModelSort {
 export interface AntigravityDiscoveryApiResponse {
 	models?: Record<string, AntigravityDiscoveryApiModel>;
 	agentModelSorts?: AntigravityDiscoveryAgentModelSort[];
+	imageGenerationModelIds?: string[];
 }
 const AntigravityDiscoveryApiModelSchema = type({
 	"displayName?": type("unknown").pipe(value => (typeof value === "string" ? value : undefined)),
@@ -115,6 +116,9 @@ const AntigravityDiscoveryApiResponseSchema = type({
 		}
 		return result;
 	}),
+	"imageGenerationModelIds?": type("unknown").pipe(value =>
+		Array.isArray(value) ? value.filter((modelId): modelId is string => typeof modelId === "string") : undefined,
+	),
 });
 
 export interface FetchAntigravityDiscoveryModelsOptions {
@@ -128,7 +132,7 @@ export interface FetchAntigravityDiscoveryModelsOptions {
 
 	signal?: AbortSignal;
 
-	fetcher?: typeof fetch;
+	fetcher?: FetchImpl;
 
 	collapseTable?: VariantCollapseTable;
 }
@@ -136,6 +140,62 @@ export interface FetchAntigravityDiscoveryModelsOptions {
 export async function fetchAntigravityDiscoveryModels(
 	options: FetchAntigravityDiscoveryModelsOptions,
 ): Promise<ModelSpec<"google-gemini-cli">[] | null> {
+	const discovered = await fetchAntigravityDiscoveryResponse(options);
+	if (!discovered) {
+		return null;
+	}
+
+	const models: ModelSpec<"google-gemini-cli">[] = [];
+	for (const [modelId, model] of Object.entries(discovered.payload.models ?? {})) {
+		if (ANTIGRAVITY_DISCOVERY_DENYLIST.has(modelId)) {
+			continue;
+		}
+		if (model.isInternal === true) {
+			continue;
+		}
+
+		const supportsImages = model.supportsImages === true;
+		models.push({
+			id: modelId,
+			name: model.displayName || modelId,
+			api: "google-gemini-cli",
+			provider: "google-antigravity",
+			baseUrl: discovered.endpoint,
+			reasoning: model.supportsThinking === true,
+			input: supportsImages ? ["text", "image"] : ["text"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: toPositiveNumber(model.maxTokens, DEFAULT_CONTEXT_WINDOW),
+			maxTokens: toPositiveNumber(model.maxOutputTokens, DEFAULT_MAX_TOKENS),
+		});
+	}
+
+	const collapsed = collapseEffortVariants(models, options.collapseTable ?? ANTIGRAVITY_VARIANT_COLLAPSE_TABLE);
+	collapsed.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+	return collapsed;
+}
+
+export interface AntigravityImageModel {
+	id: string;
+	endpoint: string;
+}
+
+/** First image-generation model the account advertises, with the endpoint that advertised it. */
+export async function fetchAntigravityImageModel(
+	options: FetchAntigravityDiscoveryModelsOptions,
+): Promise<AntigravityImageModel | null> {
+	const discovered = await fetchAntigravityDiscoveryResponse(options);
+	const id = discovered?.payload.imageGenerationModelIds?.find(modelId => modelId.length > 0);
+	return id && discovered ? { id, endpoint: discovered.endpoint } : null;
+}
+
+async function fetchAntigravityDiscoveryResponse(
+	options: FetchAntigravityDiscoveryModelsOptions,
+): Promise<{ payload: AntigravityDiscoveryApiResponse; endpoint: string } | null> {
 	if (options.userAgent === undefined) {
 		await ensureAntigravityVersion(options.fetcher ?? fetch, options.signal);
 	}
@@ -174,43 +234,9 @@ export async function fetchAntigravityDiscoveryModels(
 		}
 
 		const parsed = parseAntigravityDiscoveryResponse(payload);
-		if (!parsed) {
-			continue;
+		if (parsed) {
+			return { payload: parsed, endpoint };
 		}
-
-		const models: ModelSpec<"google-gemini-cli">[] = [];
-
-		for (const [modelId, model] of Object.entries(parsed.models ?? {})) {
-			if (ANTIGRAVITY_DISCOVERY_DENYLIST.has(modelId)) {
-				continue;
-			}
-			if (model.isInternal === true) {
-				continue;
-			}
-
-			const supportsImages = model.supportsImages === true;
-			models.push({
-				id: modelId,
-				name: model.displayName || modelId,
-				api: "google-gemini-cli",
-				provider: "google-antigravity",
-				baseUrl: endpoint,
-				reasoning: model.supportsThinking === true,
-				input: supportsImages ? ["text", "image"] : ["text"],
-				cost: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-				},
-				contextWindow: toPositiveNumber(model.maxTokens, DEFAULT_CONTEXT_WINDOW),
-				maxTokens: toPositiveNumber(model.maxOutputTokens, DEFAULT_MAX_TOKENS),
-			});
-		}
-
-		const collapsed = collapseEffortVariants(models, options.collapseTable ?? ANTIGRAVITY_VARIANT_COLLAPSE_TABLE);
-		collapsed.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
-		return collapsed;
 	}
 
 	return null;

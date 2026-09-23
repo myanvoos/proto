@@ -476,7 +476,12 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		return { uri, mimeType: blobMimeType, blob: Buffer.from(blob, "base64") };
 	}
 
-	todoSync(snapshot: CursorTodoSnapshot | null, toolCallId: string, error: string | null = null): ToolResultMessage {
+	todoSync(
+		snapshot: CursorTodoSnapshot | null,
+		toolCallId: string,
+		error: string | null = null,
+		origin: "read" | "update" = "update",
+	): ToolResultMessage {
 		const setPhases = this.options.setChecklistPhases;
 		const existing = this.options.getChecklistPhases?.() ?? [];
 
@@ -506,9 +511,12 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 				grouped.delete(phase.name);
 			}
 			for (const [name, tasks] of grouped) next.push({ name, tasks });
-			setPhases(next);
-			this.options.persistChecklistPhases?.(next);
-			phases = next;
+			// A read that changed nothing must not re-publish the list: it would revive a dismissed HUD.
+			if (origin !== "read" || JSON.stringify(next) !== JSON.stringify(existing)) {
+				setPhases(next);
+				this.options.persistChecklistPhases?.(next);
+				phases = next;
+			}
 		}
 
 		const result = buildChecklistSyncResult(toolCallId, phases, error);

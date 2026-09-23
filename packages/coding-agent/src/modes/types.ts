@@ -31,6 +31,7 @@ import type { EvalExecutionComponent } from "./components/eval-execution";
 import type { HookEditorComponent } from "./components/hook-editor";
 import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent, HookSelectorOptions } from "./components/hook-selector";
+import type { ServedModelTracker } from "./components/served-model-marker";
 import type { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import type { TranscriptContainer } from "./components/transcript-container";
@@ -170,6 +171,8 @@ export interface InteractiveModeContext {
 	streamingMessage: AssistantMessage | undefined;
 
 	lastAssistantUsage: Usage | undefined;
+
+	servedModelTracker: ServedModelTracker;
 	loadingAnimation: Loader | undefined;
 	autoCompactionLoader: Loader | undefined;
 	retryLoader: Loader | undefined;
@@ -329,7 +332,8 @@ export interface InteractiveModeContext {
 	refreshSlashCommandState(cwd?: string): Promise<void>;
 
 	refreshSkillState(): Promise<void>;
-	applyCwdChange(newCwd: string): Promise<void>;
+	/** Move the process and cwd-derived caches to `newCwd`; `false` means nothing was committed. */
+	applyCwdChange(newCwd: string): Promise<boolean>;
 
 	showSettingsSelector(): void;
 	showAdvisorConfigure(): void;

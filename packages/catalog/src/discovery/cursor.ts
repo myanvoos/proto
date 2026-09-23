@@ -1,7 +1,14 @@
 import * as http2 from "node:http2";
 import { type } from "@oh-my-pi/omptype";
 import { isKimiK3ModelId } from "../identity";
-import { bareModelId, parseGlmModel, semverGte } from "../identity/classify";
+import {
+	bareModelId,
+	parseAnthropicModel,
+	parseGlmModel,
+	parseOpenAIModel,
+	parseSemVer,
+	semverGte,
+} from "../identity/classify";
 import { getBundledModels } from "../models";
 import { toModelSpec } from "../provider-models/bundled-references";
 import type { Model, ModelSpec } from "../types";
@@ -24,6 +31,20 @@ const CURSOR_KIMI_K3_BARE_ID_PATTERN = /(^|\/)k3$/i;
 const CURSOR_GROK_REASONING_ID_PATTERN = /^cursor-grok-\d/i;
 
 const CURSOR_MULTIMODAL_ID_PATTERN = /claude|gemini|gpt-|codex/;
+
+// Cursor-only families verified to accept `selectedImages` although
+// `GetUsableModels` advertises no input modalities.
+const CURSOR_GROK_4_MULTIMODAL_ID_PATTERN = /^cursor-grok-4(?:[.:_-]|$)/i;
+const CURSOR_COMPOSER_25_MULTIMODAL_ID_PATTERN = /^composer-2\.5(?:[.:_-]|$)/i;
+
+// Context windows Cursor documents above the discovery default.
+const CURSOR_AUTO_CONTEXT_WINDOW = 256_000;
+const CURSOR_GROK_CONTEXT_WINDOW = 256_000;
+const CURSOR_KIMI_K27_CODE_CONTEXT_WINDOW = 262_000;
+const CURSOR_GPT_56_CONTEXT_WINDOW = 272_000;
+const CURSOR_CLAUDE_5_CONTEXT_WINDOW = 300_000;
+const CURSOR_KIMI_K27_CODE_ID_PATTERN = /(^|\/)kimi-k2\.7-code(?:[-.:_]|$)/i;
+const CURSOR_GROK_VERSION_PATTERN = /(?:^|-)grok-(\d+(?:\.\d+)?)(?:[-.:_]|$)/i;
 
 const OptionalDisplayNameSchema = type("unknown").pipe(raw => (typeof raw === "string" ? raw : undefined));
 const CursorAliasesSchema = type("unknown").pipe(raw => {
@@ -289,6 +310,7 @@ function normalizeCursorModel(
 			name,
 			baseUrl: baseUrlOverride ?? reference.baseUrl,
 			reasoning,
+			input: resolveCursorInput(id, reference.input),
 			contextWindow: resolveCursorContextWindow(details, id, reference.contextWindow),
 			cursorMaxMode: details.maxMode,
 		};
@@ -300,7 +322,7 @@ function normalizeCursorModel(
 		provider: "cursor",
 		baseUrl: baseUrlOverride ?? CURSOR_DEFAULT_BASE_URL,
 		reasoning,
-		input: inferInputFromCursorId(id),
+		input: resolveCursorInput(id),
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: resolveCursorContextWindow(details, id, DEFAULT_CONTEXT_WINDOW),
 		maxTokens: DEFAULT_MAX_TOKENS,
@@ -321,7 +343,34 @@ function resolveCursorContextWindow(
 	if (labeled1M || isCursorNative1MModelId(id) || (model.maxMode && CURSOR_MAX_MODE_1M_ID_PATTERN.test(id))) {
 		return Math.max(fallback ?? 0, CURSOR_1M_CONTEXT_WINDOW);
 	}
-	return fallback;
+	const floor = resolveCursorContextWindowFloor(id);
+	return floor === undefined ? fallback : Math.max(fallback ?? 0, floor);
+}
+
+/**
+ * Context window Cursor documents for a model whose roster row carries none
+ * (Auto, Grok 4.5/4.6, Kimi K2.7 Code, GPT-5.6, Claude Opus 5 and Fable). A
+ * floor: larger labeled or max-mode windows are kept.
+ */
+export function resolveCursorContextWindowFloor(id: string): number | undefined {
+	if (id === "default") return CURSOR_AUTO_CONTEXT_WINDOW;
+	const bare = bareModelId(id);
+	const anthropic = parseAnthropicModel(bare);
+	if (anthropic) {
+		const claude5 = anthropic.kind === "fable" || (anthropic.kind === "opus" && anthropic.version.major === 5);
+		return claude5 ? CURSOR_CLAUDE_5_CONTEXT_WINDOW : undefined;
+	}
+	if (CURSOR_KIMI_K27_CODE_ID_PATTERN.test(id)) return CURSOR_KIMI_K27_CODE_CONTEXT_WINDOW;
+	const grokVersion = CURSOR_GROK_VERSION_PATTERN.exec(bare)?.[1];
+	if (grokVersion !== undefined) {
+		const version = parseSemVer(grokVersion);
+		return version && semverGte(version, "4.5") && !semverGte(version, "4.7")
+			? CURSOR_GROK_CONTEXT_WINDOW
+			: undefined;
+	}
+	const openai = parseOpenAIModel(bare);
+	if (openai && openai.version.major === 5 && openai.version.minor === 6) return CURSOR_GPT_56_CONTEXT_WINDOW;
+	return undefined;
 }
 
 function isCursorNative1MModelId(id: string): boolean {
@@ -352,7 +401,22 @@ function pickModelDisplayName(model: CursorModelDetailsValue, fallbackId: string
 	return fallbackId;
 }
 
-function inferInputFromCursorId(id: string): ("text" | "image")[] {
+/**
+ * Input modalities for a Cursor row. `GetUsableModels` carries no modality
+ * metadata: verified Cursor-only families accept images outright, a bundled
+ * reference is otherwise authoritative, and reference-less ids fall back to
+ * families whose native catalogs are multimodal.
+ */
+export function resolveCursorInput(id: string, referenceInput?: ModelSpec["input"]): ModelSpec["input"] {
+	if (
+		isKimiK3ModelId(id) ||
+		CURSOR_KIMI_K3_BARE_ID_PATTERN.test(id) ||
+		CURSOR_GROK_4_MULTIMODAL_ID_PATTERN.test(id) ||
+		CURSOR_COMPOSER_25_MULTIMODAL_ID_PATTERN.test(id)
+	) {
+		return ["text", "image"];
+	}
+	if (referenceInput) return referenceInput;
 	if (CURSOR_MULTIMODAL_ID_PATTERN.test(id.toLowerCase())) {
 		return ["text", "image"];
 	}

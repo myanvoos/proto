@@ -88,9 +88,10 @@ export class ToolCallLoopGuard {
 			return null;
 		}
 
-		const turnHash = toolCalls
-			.map(toolCall => `${toolCall.name}:${JSON.stringify(canonicalizeToolCallValue(toolCall.arguments))}`)
-			.join("|");
+		const canonicalCalls = toolCalls
+			.map(toolCall => JSON.stringify([toolCall.name, canonicalizeToolCallValue(toolCall.arguments)]))
+			.sort();
+		const turnHash = JSON.stringify(canonicalCalls);
 		if (turnHash === this.#lastHash) {
 			this.#count++;
 		} else {

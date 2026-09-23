@@ -1,3 +1,4 @@
+import { bareModelId, parseKnownModel } from "../identity/classify";
 import { supportsAdaptiveThinkingDisplay } from "../identity/family";
 import type { ModelSpec, ResolvedBedrockCompat } from "../types";
 import { applyCompatOverrides } from "./apply";
@@ -108,12 +109,37 @@ function detectedBedrockCompat(modelId: string): ResolvedBedrockCompat {
 	return NO_EXPLICIT_CHECKPOINTS;
 }
 
+// Vendors whose Converse models accept image blocks nested in `toolResult` content. OpenAI-schema
+// models reject them; hoisting into sibling user blocks is accepted by every Converse model measured,
+// so it is the default for everything else, including opaque application-inference-profile ARNs.
+const NESTED_TOOL_RESULT_IMAGE_VENDORS: Record<string, true> = {
+	amazon: true,
+	anthropic: true,
+	deepseek: true,
+	minimax: true,
+	mistral: true,
+	qwen: true,
+};
+
+function requiresToolResultImageHoisting(modelId: string): boolean {
+	const family = parseKnownModel(modelId).family;
+	if (family !== "unknown") return family === "openai";
+	const bare = bareModelId(modelId).toLowerCase();
+	const segments = bare.split(".");
+	if (segments.length < 2) return true;
+	// `[geo.]vendor.model`: the vendor is the first segment, or the second behind a geo prefix.
+	const vendors = segments.length > 2 ? segments.slice(0, 2) : segments.slice(0, 1);
+	if (vendors.includes("openai")) return !bare.includes("gpt-oss");
+	return !vendors.some(vendor => NESTED_TOOL_RESULT_IMAGE_VENDORS[vendor] === true);
+}
+
 const BEDROCK_REASONING_STREAM_IDLE_TIMEOUT_MS = 600_000;
 
 const BEDROCK_ADAPTIVE_THINKING_STREAM_IDLE_TIMEOUT_MS = 900_000;
 
 export function buildBedrockCompat(spec: ModelSpec<"bedrock-converse-stream">): ResolvedBedrockCompat {
 	const compat = { ...detectedBedrockCompat(spec.id) };
+	if (requiresToolResultImageHoisting(spec.id)) compat.requiresToolResultImageHoisting = true;
 	compat.streamIdleTimeoutMs = spec.reasoning
 		? supportsAdaptiveThinkingDisplay(spec.id)
 			? BEDROCK_ADAPTIVE_THINKING_STREAM_IDLE_TIMEOUT_MS

@@ -13,6 +13,7 @@ import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
 import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
+import toolRosterNoticePrompt from "../prompts/system/tool-roster-notice.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import { usesCodexTaskPrompt } from "../task/prompt-policy";
 import { DISABLED_TOOL_NAMES } from "../tools";
@@ -52,6 +53,8 @@ interface SessionToolsOptions {
 	createThinkTool?: () => Promise<AgentTool | null>;
 
 	createInspectMediaTool?: () => Promise<AgentTool | null>;
+	/** Creates the hidden `goal` tool when goal mode is enabled after session creation. */
+	createGoalTool?: () => Promise<AgentTool | null>;
 	builtInToolNames?: Iterable<string>;
 	presentationPinnedToolNames?: ReadonlySet<string>;
 	requiredToolNames?: ReadonlySet<string>;
@@ -140,6 +143,7 @@ export function projectMountedMCPXdevGuidance(routes: Iterable<MountedMCPToolRou
 	return { mappings, hasOmittedMappings };
 }
 
+const TOOL_ROSTER_NOTICE_MESSAGE_TYPE = "tool-roster-notice";
 const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
 
 interface XdevMountNoticeDetails {
@@ -153,12 +157,19 @@ export class SessionTools {
 	#createComputerTool: SessionToolsOptions["createComputerTool"];
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
 	#createInspectMediaTool: SessionToolsOptions["createInspectMediaTool"];
+	#createGoalTool: SessionToolsOptions["createGoalTool"];
+	/**
+	 * Model (`formatModelString`) last named by an inspect_media notice; a switch that keeps the
+	 * tool hidden but changes the model refreshes the hint instead of leaving the old name.
+	 */
+	#lastInspectMediaNoticeModel: string | undefined;
 	#builtInToolNames: Set<string>;
 	#restrictToolNames: boolean;
 	#rpcHostToolNames = new Set<string>();
 	#mcpManagerToolNames = new Set<string>();
 	#extensionMcpTools = new Map<string, AgentTool>();
 	#xdev: XdevState | undefined;
+	#pendingToolRosterDelta: { added: Set<string>; removed: Set<string> } | undefined;
 	#pendingXdevMountDelta: { added: Set<string>; removed: Set<string> } | undefined;
 
 	#announcedMounts = new Set<string>();
@@ -193,6 +204,7 @@ export class SessionTools {
 		this.#createComputerTool = options.createComputerTool;
 		this.#createThinkTool = options.createThinkTool;
 		this.#createInspectMediaTool = options.createInspectMediaTool;
+		this.#createGoalTool = options.createGoalTool;
 		this.#builtInToolNames = new Set(options.builtInToolNames ?? []);
 		this.#restrictToolNames = options.restrictToolNames === true;
 		this.#mcpManagerToolNames = new Set(options.mcpManagerToolNames ?? []);
@@ -492,11 +504,20 @@ export class SessionTools {
 
 		let rebuiltSystemPrompt: string[] | undefined;
 		let rebuiltSignature: string | undefined;
+		let frozenSignature: string | undefined;
 		let rebuiltXdevCatalogNames: readonly string[] | undefined;
 		try {
 			if (this.#rebuildSystemPrompt) {
 				const signature = this.#computeAppliedToolSignature(appliedNames, appliedTools);
-				if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
+				const freezeImplicitPromptRefresh =
+					!forcePromptRefresh &&
+					signature !== this.#lastAppliedToolSignature &&
+					this.#lastAppliedToolSignature !== undefined &&
+					this.#host.model()?.thinking?.prefixBinding === true &&
+					this.#host.agent.state.messages.some(message => message.role === "assistant");
+				if (freezeImplicitPromptRefresh) {
+					frozenSignature = signature;
+				} else if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
 					const built = await untilAborted(signal, this.#rebuildSystemPrompt(appliedNames, this.#toolRegistry));
 					rebuiltSystemPrompt = built.systemPrompt;
 					rebuiltSignature = signature;
@@ -529,7 +550,26 @@ export class SessionTools {
 			this.#lastAppliedToolSignature = rebuiltSignature;
 			this.#promptModelKey = this.#currentPromptModelKey();
 			this.#basePromptXdevNames = new Set(rebuiltXdevCatalogNames);
+		} else if (frozenSignature) {
+			this.#notifyToolRosterDelta(previousActiveToolNames, appliedNames);
+			this.#lastAppliedToolSignature = frozenSignature;
 		}
+	}
+
+	#notifyToolRosterDelta(previousActiveToolNames: readonly string[], appliedNames: readonly string[]): void {
+		const previous = new Set(previousActiveToolNames);
+		const current = new Set(appliedNames);
+		const addedNames = appliedNames.filter(name => !previous.has(name));
+		const removedNames = previousActiveToolNames.filter(name => !current.has(name));
+		if (addedNames.length === 0 && removedNames.length === 0) return;
+		const pending = this.#pendingToolRosterDelta ?? { added: new Set<string>(), removed: new Set<string>() };
+		for (const name of addedNames) {
+			if (!pending.removed.delete(name)) pending.added.add(name);
+		}
+		for (const name of removedNames) {
+			if (!pending.added.delete(name)) pending.removed.add(name);
+		}
+		this.#pendingToolRosterDelta = pending.added.size > 0 || pending.removed.size > 0 ? pending : undefined;
 	}
 
 	#setMountedNames(names: Iterable<string>): void {
@@ -608,6 +648,26 @@ export class SessionTools {
 				else this.#announcedMounts.delete(name);
 			}
 		}
+	}
+
+	takePendingToolRosterNotice(): CustomMessage<{ added: string[]; removed: string[] }> | undefined {
+		const pending = this.#pendingToolRosterDelta;
+		if (!pending) return undefined;
+		this.#pendingToolRosterDelta = undefined;
+		const added = [...pending.added];
+		const removed = [...pending.removed];
+		return {
+			role: "custom",
+			customType: TOOL_ROSTER_NOTICE_MESSAGE_TYPE,
+			content: prompt.render(toolRosterNoticePrompt, {
+				added: added.length > 0 ? added.join(", ") : undefined,
+				removed: removed.length > 0 ? removed.join(", ") : undefined,
+			}),
+			details: { added, removed },
+			attribution: "agent",
+			display: false,
+			timestamp: Date.now(),
+		};
 	}
 
 	takePendingXdevMountNotice(baseCatalogDelivered: boolean): CustomMessage<XdevMountNoticeDetails> | undefined {
@@ -777,6 +837,26 @@ export class SessionTools {
 		});
 	}
 
+	/**
+	 * Registers and activates the hidden `goal` tool for goal mode. The session only registers it at creation when
+	 * `goal.enabled` was already on; enabling goal mode later otherwise told the model to use a tool it did not have.
+	 */
+	ensureGoalToolActive(): Promise<boolean> {
+		return this.runToolRegistryMutation(async () => {
+			if (this.#restrictToolNames || !this.#host.settings.get("goal.enabled")) return false;
+			if (!this.#toolRegistry.has("goal")) {
+				const tool = await this.#createGoalTool?.();
+				if (tool?.name !== "goal") return false;
+				const wrapped = this.#wrapRuntimeTool(tool);
+				this.#toolRegistry.set(wrapped.name, wrapped);
+				this.#builtInToolNames.add(wrapped.name);
+			}
+			const active = this.getEnabledToolNames();
+			if (!active.includes("goal")) await this.#applyActiveToolsByName([...active, "goal"]);
+			return true;
+		});
+	}
+
 	inspectMediaState(): { mode: InspectMediaMode; active: boolean; model: string | undefined } {
 		const model = this.#host.model();
 		return {
@@ -834,15 +914,20 @@ export class SessionTools {
 		return this.runToolRegistryMutation(async () => {
 			const before = this.getEnabledToolNames().includes("inspect_media");
 			const reconciled = await this.reconcileInspectMediaTool();
+			if (!reconciled) return;
 			const after = this.getEnabledToolNames().includes("inspect_media");
-			if (!reconciled || before === after) return;
 			const model = this.#host.model();
 			const modelName = model ? formatModelString(model) : "the current model";
+			const flipped = before !== after;
+			// The hidden-state hint names the model; refresh it when the model changed while the tool stays hidden.
+			const staleHiddenModel = !after && !flipped && modelName !== this.#lastInspectMediaNoticeModel;
+			if (!flipped && !staleHiddenModel) return;
+			this.#lastInspectMediaNoticeModel = modelName;
 			this.#host.emitNotice(
 				"info",
 				after
 					? `inspect_media is now available: ${modelName} has no native image input.`
-					: `inspect_media is now hidden: ${modelName} supports image input natively. Override with /vision on.`,
+					: `inspect_media ${flipped ? "is now hidden" : "stays hidden"}: ${modelName} supports image input natively. Override with /vision on.`,
 				"vision",
 			);
 		});

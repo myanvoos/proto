@@ -2,6 +2,8 @@
 // embeddable by bundlers while materialization stays lazy per provider.
 export function loadProviderModels(provider: string): Record<string, unknown> | undefined {
 	switch (provider) {
+		case "abliteration":
+			return require("./models/abliteration.json") as Record<string, unknown>;
 		case "aiand":
 			return require("./models/aiand.json") as Record<string, unknown>;
 		case "aimlapi":
@@ -22,12 +24,18 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/bedrock-mantle.json") as Record<string, unknown>;
 		case "cerebras":
 			return require("./models/cerebras.json") as Record<string, unknown>;
+		case "cline-pass":
+			return require("./models/cline-pass.json") as Record<string, unknown>;
 		case "cloudflare-ai-gateway":
 			return require("./models/cloudflare-ai-gateway.json") as Record<string, unknown>;
+		case "commandcode":
+			return require("./models/commandcode.json") as Record<string, unknown>;
 		case "coreweave":
 			return require("./models/coreweave.json") as Record<string, unknown>;
 		case "cursor":
 			return require("./models/cursor.json") as Record<string, unknown>;
+		case "deepinfra":
+			return require("./models/deepinfra.json") as Record<string, unknown>;
 		case "deepseek":
 			return require("./models/deepseek.json") as Record<string, unknown>;
 		case "devin":
@@ -74,6 +82,8 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/mistral.json") as Record<string, unknown>;
 		case "moonshot":
 			return require("./models/moonshot.json") as Record<string, unknown>;
+		case "muse-code":
+			return require("./models/muse-code.json") as Record<string, unknown>;
 		case "nanogpt":
 			return require("./models/nanogpt.json") as Record<string, unknown>;
 		case "novita":
@@ -86,8 +96,6 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/openai.json") as Record<string, unknown>;
 		case "openai-codex":
 			return require("./models/openai-codex.json") as Record<string, unknown>;
-		case "opencode":
-			return require("./models/opencode.json") as Record<string, unknown>;
 		case "opencode-go":
 			return require("./models/opencode-go.json") as Record<string, unknown>;
 		case "opencode-zen":
@@ -100,6 +108,8 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/qwen-portal.json") as Record<string, unknown>;
 		case "sakana":
 			return require("./models/sakana.json") as Record<string, unknown>;
+		case "stepfun":
+			return require("./models/stepfun.json") as Record<string, unknown>;
 		case "synthetic":
 			return require("./models/synthetic.json") as Record<string, unknown>;
 		case "together":
@@ -124,6 +134,8 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/xiaomi-token-plan-cn.json") as Record<string, unknown>;
 		case "xiaomi-token-plan-sgp":
 			return require("./models/xiaomi-token-plan-sgp.json") as Record<string, unknown>;
+		case "yolo-auto":
+			return require("./models/yolo-auto.json") as Record<string, unknown>;
 		case "zai":
 			return require("./models/zai.json") as Record<string, unknown>;
 		case "zenmux":

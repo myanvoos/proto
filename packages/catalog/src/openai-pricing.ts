@@ -24,3 +24,15 @@ export function resolveOpenAIDaybreakStandardCost(modelId: string): TokenCost | 
 			return undefined;
 	}
 }
+
+// Codex subscription credit-equivalent rates: no cache-write charge and no API long-context multiplier. Discovery
+// reports API list prices (with the >272K tier) for these SKUs, so the curated rates win for the plain and `-wm` ids.
+const CODEX_SUBSCRIPTION_COST: Readonly<Record<string, TokenCost>> = {
+	"gpt-6-astra": { input: 10, output: 50, cacheRead: 1, cacheWrite: 0 },
+	"gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 0 },
+	"gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0 },
+};
+
+export function resolveCodexSubscriptionCost(canonicalModelId: string): TokenCost | undefined {
+	return CODEX_SUBSCRIPTION_COST[canonicalModelId];
+}

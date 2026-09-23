@@ -27,14 +27,35 @@ function isKnownProvider(provider: string): provider is KnownProvider {
 	return provider in DEFAULT_MODEL_PER_PROVIDER;
 }
 
-export function pickDefaultAvailableModel(availableModels: Model<Api>[]): Model<Api> | undefined {
-	const firstDefault = availableModels.find(
+/**
+ * With `hasConcreteCredential`, candidates narrow to concretely-authed providers when any exist, so an
+ * ambient Bedrock/Vertex credential source never wins the startup default over the provider the user
+ * signed into; a provider that is the only credentialed option is still picked.
+ */
+export function pickDefaultAvailableModel(
+	availableModels: Model<Api>[],
+	hasConcreteCredential?: (provider: string) => boolean,
+): Model<Api> | undefined {
+	let models = availableModels;
+	if (hasConcreteCredential) {
+		const concreteByProvider = new Map<string, boolean>();
+		const concrete = availableModels.filter(model => {
+			let isConcrete = concreteByProvider.get(model.provider);
+			if (isConcrete === undefined) {
+				isConcrete = hasConcreteCredential(model.provider);
+				concreteByProvider.set(model.provider, isConcrete);
+			}
+			return isConcrete;
+		});
+		if (concrete.length > 0) models = concrete;
+	}
+	const firstDefault = models.find(
 		model => isKnownProvider(model.provider) && DEFAULT_MODEL_PER_PROVIDER[model.provider] === model.id,
 	);
-	if (!firstDefault) return availableModels[0];
+	if (!firstDefault) return models[0];
 
 	const providerPriority = buildModelProviderPriorityRank();
-	const sharedDefaultMatches = availableModels.filter(
+	const sharedDefaultMatches = models.filter(
 		model =>
 			model.id === firstDefault.id &&
 			isKnownProvider(model.provider) &&
@@ -44,7 +65,7 @@ export function pickDefaultAvailableModel(availableModels: Model<Api>[]): Model<
 		const aRank = providerPriority.get(a.provider.toLowerCase()) ?? Number.POSITIVE_INFINITY;
 		const bRank = providerPriority.get(b.provider.toLowerCase()) ?? Number.POSITIVE_INFINITY;
 		if (aRank !== bRank) return aRank - bRank;
-		return availableModels.indexOf(a) - availableModels.indexOf(b);
+		return models.indexOf(a) - models.indexOf(b);
 	})[0];
 }
 
@@ -267,6 +288,13 @@ function resolveBedrockInferenceProfileModelId(
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: null,
 		maxTokens: null,
+		...(template.headers ? { headers: template.headers } : {}),
+		...(template.resolveHeaders ? { resolveHeaders: template.resolveHeaders } : {}),
+		...(template.transport !== undefined ? { transport: template.transport } : {}),
+		...(template.guardrailIdentifier !== undefined ? { guardrailIdentifier: template.guardrailIdentifier } : {}),
+		...(template.guardrailVersion !== undefined ? { guardrailVersion: template.guardrailVersion } : {}),
+		...(template.guardrailTrace !== undefined ? { guardrailTrace: template.guardrailTrace } : {}),
+		...(template.requestMetadata !== undefined ? { requestMetadata: template.requestMetadata } : {}),
 	});
 }
 
@@ -279,9 +307,10 @@ function resolveBedrockInferenceProfileReference(
 	return resolveBedrockInferenceProfileModelId(modelId, availableModels);
 }
 
-const UPSTREAM_ROUTING_SLUG = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
+// Bare slug (`cerebras`) or tiered/regional slug (`google-ai-studio/priority`, `google-vertex/global/flex`).
+const UPSTREAM_ROUTING_SLUG = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/i;
 
-function splitUpstreamRouting(pattern: string): { base: string; upstream: string } | undefined {
+export function splitUpstreamRouting(pattern: string): { base: string; upstream: string } | undefined {
 	const at = pattern.lastIndexOf("@");
 	if (at <= 0) return undefined;
 	const rest = pattern.slice(at + 1);
@@ -308,24 +337,79 @@ function applyUpstreamRouting(model: Model<Api>, upstream: string): Model<Api> {
 }
 
 const kProviderModelIndex = Symbol("model-resolver.providerIndex");
+const kProviderSpellingIndex = Symbol("model-resolver.providerSpellingIndex");
+const kProviderWireRouteIndex = Symbol("model-resolver.wireRouteIndex");
 type ModelsWithProviderIndex = readonly Model<Api>[] & {
 	[kProviderModelIndex]?: Map<string, Model<Api> | null>;
+	[kProviderSpellingIndex]?: Map<string, Model<Api> | null>;
+	[kProviderWireRouteIndex]?: Map<string, Model<Api> | null>;
 };
 
-function getProviderModelIndex(availableModels: readonly Model<Api>[]): Map<string, Model<Api> | null> {
-	const tagged = availableModels as ModelsWithProviderIndex;
-	const cached = tagged[kProviderModelIndex];
-	if (cached) return cached;
+/**
+ * Folds the dotted revision spelling aggregators use (`claude-fable-5.1`) onto the dashed first-party
+ * spelling (`claude-fable-5-1`). Only digit-bounded dots are separators.
+ */
+function revisionSpellingKey(id: string): string {
+	return id.toLowerCase().replace(/(?<=\d)\.(?=\d)/g, "-");
+}
+
+function buildProviderIndex(
+	availableModels: readonly Model<Api>[],
+	idKey: (id: string) => string,
+): Map<string, Model<Api> | null> {
 	const index = new Map<string, Model<Api> | null>();
 	for (const m of availableModels) {
-		const key = `${m.provider.toLowerCase()}\u0000${m.id.toLowerCase()}`;
+		const key = `${m.provider.toLowerCase()}\u0000${idKey(m.id)}`;
 		if (index.has(key)) {
 			index.set(key, null);
 		} else {
 			index.set(key, m);
 		}
 	}
+	return index;
+}
+
+function getProviderModelIndex(availableModels: readonly Model<Api>[]): Map<string, Model<Api> | null> {
+	const tagged = availableModels as ModelsWithProviderIndex;
+	const cached = tagged[kProviderModelIndex];
+	if (cached) return cached;
+	const index = buildProviderIndex(availableModels, id => id.toLowerCase());
 	tagged[kProviderModelIndex] = index;
+	return index;
+}
+
+function getProviderSpellingIndex(availableModels: readonly Model<Api>[]): Map<string, Model<Api> | null> {
+	const tagged = availableModels as ModelsWithProviderIndex;
+	const cached = tagged[kProviderSpellingIndex];
+	if (cached) return cached;
+	const index = buildProviderIndex(availableModels, revisionSpellingKey);
+	tagged[kProviderSpellingIndex] = index;
+	return index;
+}
+
+/**
+ * `provider\0wireId` → the logical model whose `thinking.effortRouting` targets it. Families collapsed at
+ * discovery time (Devin) have no alias table, so their raw upstream uids stay selectable through this.
+ * A wire id routed by two logical models maps to `null` and resolves to nothing.
+ */
+function getProviderWireRouteIndex(availableModels: readonly Model<Api>[]): Map<string, Model<Api> | null> {
+	const tagged = availableModels as ModelsWithProviderIndex;
+	const cached = tagged[kProviderWireRouteIndex];
+	if (cached) return cached;
+	const index = new Map<string, Model<Api> | null>();
+	for (const m of availableModels) {
+		const routing = m.thinking?.effortRouting;
+		if (routing === undefined) continue;
+		const providerKey = m.provider.toLowerCase();
+		for (const wireId of Object.values(routing)) {
+			if (wireId === undefined) continue;
+			const key = `${providerKey}\u0000${wireId.toLowerCase()}`;
+			const existing = index.get(key);
+			if (existing === undefined) index.set(key, m);
+			else if (existing !== null && existing !== m) index.set(key, null);
+		}
+	}
+	tagged[kProviderWireRouteIndex] = index;
 	return index;
 }
 
@@ -358,9 +442,24 @@ export function resolveProviderModelReference(
 		}
 	}
 
+	// The exact lookup above keeps a live raw model winning over the collapsed carrier.
+	const routed = getProviderWireRouteIndex(availableModels).get(`${normalizedProvider}\u0000${normalizedModelId}`);
+	if (routed) {
+		return routed;
+	}
+
 	const bedrockInferenceProfile = resolveBedrockInferenceProfileReference(provider, modelId, availableModels);
 	if (bedrockInferenceProfile) {
 		return bedrockInferenceProfile;
+	}
+
+	// Resolve `anthropic/claude-fable-5.1` inside the named provider; falling through to the bare-id phase
+	// would bind the verbatim aggregator id (OpenRouter's `anthropic/claude-fable-5.1`) instead.
+	const spelled = getProviderSpellingIndex(availableModels).get(
+		`${normalizedProvider}\u0000${revisionSpellingKey(normalizedModelId)}`,
+	);
+	if (spelled) {
+		return spelled;
 	}
 
 	if (normalizedProvider !== "openrouter") {
@@ -516,12 +615,17 @@ function isProviderLockedCrossMatch(pattern: string, matchedModel: Model<Api>): 
 		return false;
 	}
 	const provider = pattern.slice(0, slashIdx).toLowerCase();
-	const modelId = pattern.slice(slashIdx + 1).toLowerCase();
+	const modelId = revisionSpellingKey(pattern.slice(slashIdx + 1));
 	if (matchedModel.provider.toLowerCase() === provider) {
 		return false;
 	}
+	// A match on a provider with no bundled catalog is a user-configured custom provider: the literal id
+	// is stated intent, not an aggregator shadow.
+	if (getBundledModels(matchedModel.provider.toLowerCase() as GeneratedProvider).length === 0) {
+		return false;
+	}
 
-	return getBundledModels(provider as GeneratedProvider).some(m => m.id.toLowerCase() === modelId);
+	return getBundledModels(provider as GeneratedProvider).some(m => revisionSpellingKey(m.id) === modelId);
 }
 
 function findExactModelReferenceMatch(modelReference: string, availableModels: Model<Api>[]): Model<Api> | undefined {
@@ -821,9 +925,55 @@ const ROLE_PRIORITY_ALIAS: Partial<Record<ModelRole, keyof typeof MODEL_PRIO>> =
 	tiny: "smol",
 };
 
+interface ConfiguredRoleFallback {
+	role: ModelRole;
+	/** Skip the target role's own default inheritance when it has no explicit configuration. */
+	configuredOnly: boolean;
+}
+
+// An unset role resolves through another role before its built-in chain: tiny follows smol (configured, inherited,
+// or built-in), while advisor follows only an explicitly configured slow so it never inherits the primary's model.
+const ROLE_CONFIGURED_FALLBACK: Partial<Record<ModelRole, ConfiguredRoleFallback>> = {
+	advisor: { role: "slow", configuredOnly: true },
+	tiny: { role: "smol", configuredOnly: false },
+};
+
 function rolePriorityDefaults(role: ModelRole): string[] {
 	const key = ROLE_PRIORITY_ALIAS[role] ?? (role as keyof typeof MODEL_PRIO);
 	return normalizeModelPatternList(MODEL_PRIO[key]);
+}
+
+/** Expands role aliases inside a pattern list; an alias cycle falls back to the role's built-in chain. */
+function resolveNestedRolePatterns(
+	value: string,
+	roleDefaults: string[],
+	settings: ModelRoleLookup | undefined,
+	visited: Set<string>,
+): string[] {
+	const resolved: string[] = [];
+	for (const pattern of normalizeModelPatternList(value)) {
+		const { base: aliasCandidate, level: thinkingLevel } = splitThinkingSuffix(
+			pattern,
+			modelRoleAliasPrefixLength(pattern) ?? LEGACY_MODEL_ROLE_ALIAS_PREFIX.length,
+			MAX_THINKING_SUFFIX_OPTIONS,
+		);
+		const aliasRole = getModelRoleAlias(aliasCandidate, settings);
+		if (!aliasRole) {
+			resolved.push(pattern);
+			continue;
+		}
+		if (visited.has(aliasRole)) {
+			resolved.push(
+				...(thinkingLevel
+					? roleDefaults.map(defaultPattern => `${defaultPattern}:${thinkingLevel}`)
+					: roleDefaults),
+			);
+			continue;
+		}
+		const recursed = resolveConfiguredRolePattern(pattern, settings, new Set(visited));
+		if (recursed) resolved.push(...recursed);
+	}
+	return resolved;
 }
 
 function resolveDefaultInheritedPatterns(
@@ -834,33 +984,7 @@ function resolveDefaultInheritedPatterns(
 	visited: Set<string>,
 ): string[] {
 	if (!shouldInheritDefaultBeforePriority(role) || !configuredDefault) return [];
-
-	const resolved: string[] = [];
-	for (const pattern of normalizeModelPatternList(configuredDefault)) {
-		const { base: aliasCandidate, level: thinkingLevel } = splitThinkingSuffix(
-			pattern,
-			modelRoleAliasPrefixLength(pattern) ?? LEGACY_MODEL_ROLE_ALIAS_PREFIX.length,
-			MAX_THINKING_SUFFIX_OPTIONS,
-		);
-		const aliasRole = getModelRoleAlias(aliasCandidate, settings);
-		if (aliasRole === role) {
-			resolved.push(
-				...(thinkingLevel
-					? roleDefaults.map(defaultPattern => `${defaultPattern}:${thinkingLevel}`)
-					: roleDefaults),
-			);
-			continue;
-		}
-		if (aliasRole && !visited.has(aliasRole)) {
-			const recursed = resolveConfiguredRolePattern(pattern, settings, new Set(visited));
-			if (recursed && recursed.length > 0) {
-				resolved.push(...recursed);
-				continue;
-			}
-		}
-		resolved.push(pattern);
-	}
-	return resolved;
+	return resolveNestedRolePatterns(configuredDefault, roleDefaults, settings, visited);
 }
 
 function resolveConfiguredRolePattern(
@@ -884,11 +1008,20 @@ function resolveConfiguredRolePattern(
 	const configured = settings?.getModelRole(role)?.trim();
 	const configuredDefault = settings?.getModelRole(DEFAULT_MODEL_ROLE)?.trim();
 	const roleDefaults = isModelRole(role) ? rolePriorityDefaults(role) : [];
+	const configuredFallback = isModelRole(role) ? ROLE_CONFIGURED_FALLBACK[role] : undefined;
+	const fallbackPatterns =
+		configured ||
+		!configuredFallback ||
+		(configuredFallback.configuredOnly && !settings?.getModelRole(configuredFallback.role)?.trim())
+			? undefined
+			: resolveConfiguredRolePattern(formatModelRoleAlias(configuredFallback.role), settings, new Set(visited));
 	const resolved = configured
-		? normalizeModelPatternList(configured)
-		: isModelRole(role)
-			? resolveDefaultInheritedPatterns(role, configuredDefault, roleDefaults, settings, visited)
-			: roleDefaults;
+		? resolveNestedRolePatterns(configured, roleDefaults, settings, visited)
+		: fallbackPatterns
+			? fallbackPatterns
+			: isModelRole(role)
+				? resolveDefaultInheritedPatterns(role, configuredDefault, roleDefaults, settings, visited)
+				: roleDefaults;
 	if (resolved.length === 0) {
 		resolved.push(...roleDefaults);
 	}
@@ -1313,7 +1446,13 @@ export async function resolveModelOverrideWithAuthFallback(
 	authFallbackUsed: boolean;
 	warning?: string;
 }> {
-	const primary = resolveModelOverride(modelPatterns, modelRegistry, settings);
+	const disabledProviders = new Set(settings?.get("disabledProviders"));
+	let lookupRegistry: ModelLookupRegistry = modelRegistry;
+	if (disabledProviders.size > 0) {
+		const enabledModels = modelRegistry.getAvailable().filter(model => !disabledProviders.has(model.provider));
+		lookupRegistry = { getAvailable: () => enabledModels };
+	}
+	const primary = resolveModelOverride(modelPatterns, lookupRegistry, settings);
 	if (!primary.model || !parentActiveModelPattern) {
 		return { ...primary, authFallbackUsed: false };
 	}
@@ -1323,7 +1462,7 @@ export async function resolveModelOverrideWithAuthFallback(
 		return { ...primary, authFallbackUsed: false };
 	}
 
-	const fallback = resolveModelOverride([parentActiveModelPattern], modelRegistry, settings);
+	const fallback = resolveModelOverride([parentActiveModelPattern], lookupRegistry, settings);
 	if (!fallback.model) {
 		return { ...primary, authFallbackUsed: false };
 	}
@@ -1519,7 +1658,7 @@ function findExactCliModel(
 		: allModels.find(m => isFlatMatch(m) && !isProviderLockedCrossMatch(selector, m));
 }
 
-interface ResolveCliModelResult {
+export interface ResolveCliModelResult {
 	model: Model<Api> | undefined;
 
 	configuredPatterns?: string[];
@@ -1694,7 +1833,9 @@ export function resolveCliModel(options: {
 	}
 
 	const candidates = provider ? allModels.filter(model => model.provider === provider) : availableModels;
-	let parsed = parseModelPattern(pattern, candidates, preferences, {
+	// Keep the explicit provider on the pattern: the raw-id phase provider-locks `google/gemini-x` to the bundled
+	// `google` provider unless the selector names the aggregator carrying it (`openrouter/google/gemini-x@upstream`).
+	let parsed = parseModelPattern(provider ? `${provider}/${pattern}` : pattern, candidates, preferences, {
 		allowInvalidThinkingSelectorFallback: false,
 	});
 	if (!parsed.model && !provider) {

@@ -31,7 +31,7 @@ type ExtraCaFetch = FetchImpl & { [EXTRA_CA_FETCH_MARKER]?: true };
 let cacheKey: string | undefined;
 let cacheValue: string | undefined;
 
-function resolveExtraCa(): string | undefined {
+export function resolveExtraCa(): string | undefined {
 	const raw = $env.NODE_EXTRA_CA_CERTS?.trim();
 	if (!raw) return undefined;
 
@@ -63,7 +63,7 @@ function resolveExtraCa(): string | undefined {
 	return cacheValue;
 }
 
-function withExtraCaInit(init: RequestInit | undefined, extraCa: string): RequestInit {
+export function withExtraCaInit(init: RequestInit | undefined, extraCa: string): RequestInit {
 	const existingTls = (init as BunTlsRequestInit | undefined)?.tls;
 	const existingCa = existingTls?.ca;
 	let mergedCa: string[];
@@ -92,12 +92,4 @@ export function wrapFetchForExtraCa(fetchImpl: FetchImpl): FetchImpl {
 		{ [EXTRA_CA_FETCH_MARKER]: true as const },
 	);
 	return wrapped;
-}
-
-export function withExtraCaFetch<T extends { fetch?: FetchImpl } | undefined>(options: T): T {
-	if (!$env.NODE_EXTRA_CA_CERTS?.trim()) return options;
-	const fetchImpl = options?.fetch ?? (globalThis.fetch as FetchImpl);
-	const wrapped = wrapFetchForExtraCa(fetchImpl);
-	if (wrapped === fetchImpl && options?.fetch !== undefined) return options;
-	return { ...(options ?? {}), fetch: wrapped } as T;
 }

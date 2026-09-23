@@ -1,5 +1,7 @@
 import { gunzipSync, gzipSync } from "node:zlib";
 import {
+	AssignModelRequestSchema,
+	AssignModelResponseSchema,
 	CacheControlType,
 	type ChatMessagePrompt,
 	ChatMessagePromptSchema,
@@ -15,19 +17,25 @@ import {
 	GetChatMessageResponseSchema,
 	GetUserJwtRequestSchema,
 	GetUserJwtResponseSchema,
+	type ImageData,
 	ImageDataSchema,
 	MetadataSchema,
+	type ModelAssignment,
 	PromptCacheOptionsSchema,
 	StopReason,
 } from "@oh-my-pi/pi-catalog/discovery/devin-proto";
 import { create, fromBinary, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
+import { isGeminiModelId } from "@oh-my-pi/pi-catalog/identity/family";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
-import { logger, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
+import { DEVIN_DEFAULT_BASE_URL, devinCliMetadata } from "@oh-my-pi/pi-catalog/wire/devin";
+import { decodeDevinUnaryMessage } from "@oh-my-pi/pi-catalog/wire/devin-proto";
+import { isRecord, logger, parseStreamingJson, parseStreamingJsonThrottled, sanitizeText } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import type {
 	Api,
 	AssistantMessage,
 	Context,
+	DeveloperMessage,
 	Message,
 	Model,
 	StreamFunction,
@@ -36,16 +44,17 @@ import type {
 	ThinkingContent,
 	Tool,
 	ToolCall,
+	UserMessage,
 } from "../types";
 import { normalizeSystemPrompts } from "../utils";
 import { isDemotedThinking } from "../utils/block-symbols";
 import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
-import { toolWireSchema } from "../utils/schema/wire";
+import { normalizeSchemaForGoogle, toolWireSchema } from "../utils/schema";
 import { transformMessages } from "./transform-messages";
 import { mediaOmissionNote } from "./vision-guard";
 
-export const DEVIN_API_URL = "https://server.codeium.com";
+export const DEVIN_API_URL = DEVIN_DEFAULT_BASE_URL;
 
 export interface DevinOptions extends StreamOptions {
 	conversationId?: string;
@@ -56,9 +65,7 @@ export interface DevinOptions extends StreamOptions {
 }
 
 const CHAT_MESSAGE_PATH = "/exa.api_server_pb.ApiServerService/GetChatMessage";
-const DEVIN_IDE_VERSION = "3.2.23";
-const DEVIN_EXTENSION_VERSION = "1.48.2";
-const DEVIN_SESSION_TOKEN_PREFIX = "devin-session-token$";
+const DEVIN_ASSIGN_MODEL_PATH = "/exa.api_server_pb.ApiServerService/AssignModel";
 const DEVIN_AUTH_PATH = "/exa.auth_pb.AuthService/GetUserJwt";
 const DEVIN_DEFAULT_STOP_PATTERNS = ["<|user|>", "<|bot|>", "<|context_request|>", "<|endoftext|>", "<|end_of_turn|>"];
 
@@ -68,6 +75,56 @@ const CONNECT_END_STREAM_FLAG = 0x02;
 const MAX_CONNECT_FRAME_PAYLOAD = 16 * 1024 * 1024;
 
 const LARGE_HISTORY_RECOVERY_BYTES = 512 * 1024;
+
+const MAX_DEVIN_ERROR_DETAIL_CHARS = 4096;
+const HTML_ERROR_BODY_PATTERN = /^\s*(?:<!doctype\s+html\b|<html\b)/i;
+
+// Bounded human error detail that never leaks proxy HTML or binary protobuf into the transcript.
+function devinErrorDetail(response: Response, payload: Uint8Array): string | undefined {
+	let text: string;
+	try {
+		text = new TextDecoder("utf-8", { fatal: true }).decode(payload).trim();
+	} catch {
+		return undefined;
+	}
+	if (response.headers.get("content-type")?.toLowerCase().includes("text/html")) return undefined;
+	try {
+		const decoded: unknown = JSON.parse(text);
+		if (isRecord(decoded)) {
+			const error = decoded.error;
+			if (isRecord(error) && typeof error.message === "string") text = error.message.trim();
+			else if (typeof error === "string") text = error.trim();
+			else if (typeof decoded.message === "string") text = decoded.message.trim();
+		}
+	} catch {}
+	// Validate after envelope extraction: JSON escapes materialize bytes a raw scan cannot see.
+	// Whitespace collapses first so CRLF passes; anything sanitizeText would alter (C0/C1
+	// controls, DEL, malformed Unicode) suppresses the detail to status-only.
+	const normalized = text.replace(/\s+/g, " ").trim();
+	if (normalized.length === 0 || HTML_ERROR_BODY_PATTERN.test(normalized) || sanitizeText(normalized) !== normalized) {
+		return undefined;
+	}
+	if (normalized.length <= MAX_DEVIN_ERROR_DETAIL_CHARS) return normalized;
+	// Cut on a code-point boundary so truncation never splits a surrogate pair.
+	const boundaryUnit = normalized.charCodeAt(MAX_DEVIN_ERROR_DETAIL_CHARS - 1);
+	const cut =
+		boundaryUnit >= 0xd800 && boundaryUnit <= 0xdbff
+			? MAX_DEVIN_ERROR_DETAIL_CHARS - 1
+			: MAX_DEVIN_ERROR_DETAIL_CHARS;
+	return normalized.slice(0, cut);
+}
+
+function createDevinHttpError(operation: string, response: Response, payload: Uint8Array): AIError.DevinApiError {
+	const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+	const detail = devinErrorDetail(response, payload);
+	return new AIError.DevinApiError(
+		`Devin ${operation} error ${status}${detail ? `: ${detail}` : ""}`,
+		response.status,
+		{
+			headers: response.headers,
+		},
+	);
+}
 
 const EMPTY_BUFFER = Buffer.alloc(0);
 
@@ -234,10 +291,22 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 		try {
 			const fetchImpl = options?.fetch ?? fetch;
 			const baseUrl = (model.baseUrl || DEVIN_API_URL).replace(/\/+$/, "");
-			const apiKey = normalizeDevinSessionToken(options?.apiKey);
-			const auth = await fetchDevinAuthMetadata(apiKey, baseUrl, fetchImpl, options?.signal);
+			const auth = await fetchDevinAuthMetadata(options?.apiKey, baseUrl, fetchImpl, options?.signal);
 			const chatBaseUrl = auth.baseUrl ?? baseUrl;
-			const request = buildDevinChatRequest(model, context, options, apiKey, auth.userJwt);
+			const turn: DevinTurn = {
+				apiKey: options?.apiKey,
+				userJwt: auth.userJwt,
+				cascadeId: options?.conversationId ?? options?.sessionId ?? crypto.randomUUID(),
+				messages: transformMessages(context.messages, model),
+			};
+			// Router models (`adaptive`) are not valid chat uids: AssignModel resolves them and the
+			// chat request sharing the cascade id must carry the returned uid plus assignment JWT.
+			let assignment: ModelAssignment | undefined;
+			if (model.compat.modelRouter) {
+				assignment = await assignDevinModel(model, turn, chatBaseUrl, fetchImpl, options?.signal);
+				output.upstreamModel = assignment.modelUid;
+			}
+			const request = buildDevinChatRequest(model, context, options, turn, assignment);
 			const reqBytes = toBinary(GetChatMessageRequestSchema, request);
 			const gz = gzipSync(reqBytes);
 			logger.debug("devin: sending chat request", {
@@ -267,11 +336,7 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 			});
 
 			if (!response.ok) {
-				const text = await response.text();
-				throw new AIError.DevinApiError(
-					`Devin API error ${response.status} ${response.statusText}: ${text}`,
-					response.status,
-				);
+				throw createDevinHttpError("API", response, new Uint8Array(await response.arrayBuffer()));
 			}
 			if (!response.body) {
 				throw new AIError.ProviderResponseError("Devin API error: response body is empty", {
@@ -378,6 +443,9 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 					const raw = flag & CONNECT_COMPRESSED_FLAG ? gunzipSync(payload) : payload;
 					const msg = fromBinary(GetChatMessageResponseSchema, raw);
 					if (msg.messageId && !output.responseId) output.responseId = msg.messageId;
+					// The router reports the concrete model it landed on, which can differ from the
+					// assigned uid (fallbacks, capacity routing).
+					if (msg.actualModelUid) output.upstreamModel = msg.actualModelUid;
 
 					if (msg.deltaThinking) {
 						markFirstToken();
@@ -473,6 +541,13 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 						output.usage.totalTokens =
 							output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					}
+					if (msg.creditCost || msg.committedCreditCost || msg.committedAcuCost) {
+						output.usage.credits ??= {};
+						const credits = output.usage.credits;
+						if (msg.creditCost) credits.cost = msg.creditCost;
+						if (msg.committedCreditCost) credits.committedCost = msg.committedCreditCost;
+						if (msg.committedAcuCost) credits.acuCost = msg.committedAcuCost;
+					}
 				}
 
 				if (done) break;
@@ -506,7 +581,7 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 				});
 			}
 
-			calculateCost(model, output.usage);
+			calculateCost(model, output.usage, output.timestamp);
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 
@@ -529,27 +604,21 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 	return stream;
 };
 
-function normalizeDevinSessionToken(apiKey: string | undefined): string {
-	if (!apiKey) return "";
-	return apiKey.startsWith(DEVIN_SESSION_TOKEN_PREFIX) ? apiKey : `${DEVIN_SESSION_TOKEN_PREFIX}${apiKey}`;
+interface DevinTurn {
+	apiKey: string | undefined;
+	userJwt: string;
+	// Assignment and chat must agree on the cascade id or the assignment JWT is rejected.
+	cascadeId: string;
+	messages: Message[];
 }
 
 async function fetchDevinAuthMetadata(
-	apiKey: string,
+	apiKey: string | undefined,
 	baseUrl: string,
 	fetchImpl: NonNullable<StreamOptions["fetch"]>,
 	signal: AbortSignal | undefined,
 ): Promise<{ userJwt: string; baseUrl?: string }> {
-	const request = create(GetUserJwtRequestSchema, {
-		metadata: create(MetadataSchema, {
-			apiKey,
-			ideName: "windsurf",
-			ideVersion: DEVIN_IDE_VERSION,
-			extensionName: "windsurf",
-			extensionVersion: DEVIN_EXTENSION_VERSION,
-			locale: "en",
-		}),
-	});
+	const request = create(GetUserJwtRequestSchema, { metadata: create(MetadataSchema, devinCliMetadata(apiKey)) });
 	const response = await fetchImpl(`${baseUrl}${DEVIN_AUTH_PATH}`, {
 		method: "POST",
 		headers: {
@@ -561,14 +630,9 @@ async function fetchDevinAuthMetadata(
 		signal,
 	});
 	const payload = new Uint8Array(await response.arrayBuffer());
-	if (!response.ok) {
-		throw new AIError.DevinApiError(
-			`Devin auth error ${response.status} ${response.statusText}: ${new TextDecoder().decode(payload)}`,
-			response.status,
-		);
-	}
-	const decoded = decodeDevinUserJwtResponse(payload);
-	if (!decoded.userJwt) {
+	if (!response.ok) throw createDevinHttpError("auth", response, payload);
+	const decoded = decodeDevinUnaryMessage(GetUserJwtResponseSchema, payload);
+	if (!decoded?.userJwt) {
 		throw new AIError.ProviderResponseError("Devin auth error: GetUserJwt returned an empty user JWT", {
 			provider: "devin",
 			kind: "runtime",
@@ -578,46 +642,86 @@ async function fetchDevinAuthMetadata(
 	return { userJwt: decoded.userJwt, ...(customBaseUrl ? { baseUrl: customBaseUrl.replace(/\/+$/, "") } : undefined) };
 }
 
-function decodeDevinUserJwtResponse(payload: Uint8Array) {
-	try {
-		return fromBinary(GetUserJwtResponseSchema, payload);
-	} catch {
-		return fromBinary(GetUserJwtResponseSchema, gunzipSync(payload));
+// The router uid is never a legal `chatModelUid`, so a failed assignment fails the turn instead of
+// falling back to sending the router id to GetChatMessage.
+async function assignDevinModel(
+	model: Model<"devin-agent">,
+	turn: DevinTurn,
+	baseUrl: string,
+	fetchImpl: NonNullable<StreamOptions["fetch"]>,
+	signal: AbortSignal | undefined,
+): Promise<ModelAssignment> {
+	const request = create(AssignModelRequestSchema, {
+		metadata: create(MetadataSchema, devinCliMetadata(turn.apiKey)),
+		modelRouterUid: model.requestModelId ?? model.id,
+		cascadeId: turn.cascadeId,
+		chatMessagePrompt: buildRouterPrompt(turn.messages),
+	});
+	const response = await fetchImpl(`${baseUrl}${DEVIN_ASSIGN_MODEL_PATH}`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/proto",
+			"connect-protocol-version": "1",
+			accept: "*/*",
+		},
+		body: toBinary(AssignModelRequestSchema, request),
+		signal,
+	});
+	const payload = new Uint8Array(await response.arrayBuffer());
+	if (!response.ok) throw createDevinHttpError("AssignModel", response, payload);
+	const assignment = decodeDevinUnaryMessage(AssignModelResponseSchema, payload)?.assignment;
+	if (!assignment?.assignmentJwt || !assignment.modelUid) {
+		throw new AIError.ProviderResponseError(
+			"Devin AssignModel error: response carried no assignment JWT and model uid",
+			{ provider: model.provider, kind: "runtime" },
+		);
 	}
+	logger.debug("devin: router assigned a model", {
+		router: model.requestModelId ?? model.id,
+		assigned: assignment.modelUid,
+	});
+	return assignment;
+}
+
+// The router scores the current user/developer turn alone; native leaves its `messageId` empty
+// because the chat request that follows mints the turn's id.
+function buildRouterPrompt(messages: Message[]): ChatMessagePrompt | undefined {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const msg = messages[index];
+		if (msg.role === "user" || msg.role === "developer") return buildUserPrompt(msg, "");
+	}
+	return undefined;
 }
 
 function buildDevinChatRequest(
 	model: Model<"devin-agent">,
 	context: Context,
 	options: DevinOptions | undefined,
-	apiKey: string,
-	userJwt: string,
+	turn: DevinTurn,
+	assignment: ModelAssignment | undefined,
 ) {
-	const cascadeId = options?.conversationId ?? options?.sessionId ?? crypto.randomUUID();
 	const stopPatterns =
 		options?.stopSequences && options.stopSequences.length > 0
 			? [...DEVIN_DEFAULT_STOP_PATTERNS, ...options.stopSequences]
 			: DEVIN_DEFAULT_STOP_PATTERNS;
-	const messages = transformMessages(context.messages, model);
+	const chatModelUid = assignment?.modelUid ?? options?.chatModelUid ?? model.requestModelId ?? model.id;
+	// Devin's Gemini backend enforces Google's schema dialect and rejects JSON Schema type arrays
+	// (`["number", "null"]`) as an opaque `invalid_argument`. Router assignments use the server's
+	// enum namespace (`MODEL_GOOGLE_GEMINI_*`), which id classification cannot parse.
+	const googleToolSchema =
+		isGeminiModelId(model.id) || isGeminiModelId(chatModelUid) || chatModelUid.startsWith("MODEL_GOOGLE_GEMINI_");
 	return create(GetChatMessageRequestSchema, {
-		metadata: create(MetadataSchema, {
-			apiKey,
-			userJwt,
-			ideName: "windsurf",
-			ideVersion: DEVIN_IDE_VERSION,
-			extensionName: "windsurf",
-			extensionVersion: DEVIN_EXTENSION_VERSION,
-			locale: "en",
-		}),
+		metadata: create(MetadataSchema, devinCliMetadata(turn.apiKey, turn.userJwt)),
 		prompt: normalizeSystemPrompts(context.systemPrompt).join("\n\n"),
-		chatMessagePrompts: buildChatMessagePrompts(messages, cascadeId, model),
-		chatModelUid: options?.chatModelUid ?? model.requestModelId ?? model.id,
+		chatMessagePrompts: buildChatMessagePrompts(turn.messages, turn.cascadeId, model),
+		chatModelUid,
+		...(assignment ? { modelAssignmentJwt: assignment.assignmentJwt } : undefined),
 		requestType: ChatMessageRequestType.CASCADE,
 		plannerMode: ConversationalPlannerMode.DEFAULT,
 		toolChoice: create(ChatToolChoiceSchema, { choice: { case: "optionName", value: "auto" } }),
 		systemPromptCacheOptions: create(PromptCacheOptionsSchema, { type: CacheControlType.EPHEMERAL }),
-		disableParallelToolCalls: true,
-		cascadeId,
+		disableParallelToolCalls: !model.compat.supportsParallelToolCalls,
+		cascadeId: turn.cascadeId,
 		executionId: crypto.randomUUID(),
 		configuration: create(CompletionConfigurationSchema, {
 			numCompletions: 1n,
@@ -630,15 +734,35 @@ function buildDevinChatRequest(
 			stopPatterns,
 			fimEotProbThreshold: 1,
 		}),
-		tools: (context.tools ?? []).map((tool: Tool) =>
-			create(ChatToolDefinitionSchema, {
+		tools: (context.tools ?? []).map((tool: Tool) => {
+			const schema = toolWireSchema(tool);
+			return create(ChatToolDefinitionSchema, {
 				name: tool.name,
 				description: tool.description,
-				jsonSchemaString: JSON.stringify(toolWireSchema(tool)),
+				jsonSchemaString: JSON.stringify(googleToolSchema ? normalizeSchemaForGoogle(schema) : schema),
 				strict: tool.strict ?? false,
-			}),
-		),
+			});
+		}),
 	});
+}
+
+function buildUserPrompt(msg: UserMessage | DeveloperMessage, messageId: string): ChatMessagePrompt {
+	let prompt = "";
+	const images: ImageData[] = [];
+	if (typeof msg.content === "string") {
+		prompt = msg.content;
+	} else {
+		for (const part of msg.content) {
+			if (part.type === "text") {
+				prompt += part.text;
+			} else if (part.type === "image") {
+				images.push(create(ImageDataSchema, { base64Data: part.data, mimeType: part.mimeType }));
+			} else {
+				prompt += mediaOmissionNote(part.type);
+			}
+		}
+	}
+	return create(ChatMessagePromptSchema, { messageId, source: ChatMessageSource.USER, prompt, images });
 }
 
 function buildChatMessagePrompts(
@@ -650,29 +774,7 @@ function buildChatMessagePrompts(
 
 	for (const [index, msg] of messages.entries()) {
 		if (msg.role === "user" || msg.role === "developer") {
-			let promptText = "";
-			const images = [];
-			if (typeof msg.content === "string") {
-				promptText = msg.content;
-			} else {
-				for (const part of msg.content) {
-					if (part.type === "text") {
-						promptText += part.text;
-					} else if (part.type === "image") {
-						images.push(create(ImageDataSchema, { base64Data: part.data, mimeType: part.mimeType }));
-					} else {
-						promptText += mediaOmissionNote(part.type);
-					}
-				}
-			}
-			prompts.push(
-				create(ChatMessagePromptSchema, {
-					messageId: deterministicUuid(`${cascadeId}\0${index}\0${msg.role}`),
-					source: ChatMessageSource.USER,
-					prompt: promptText,
-					images,
-				}),
-			);
+			prompts.push(buildUserPrompt(msg, deterministicUuid(`${cascadeId}\0${index}\0${msg.role}`)));
 		} else if (msg.role === "assistant") {
 			const isNativeDevinMessage =
 				msg.api === model.api && msg.provider === model.provider && msg.model === model.id;

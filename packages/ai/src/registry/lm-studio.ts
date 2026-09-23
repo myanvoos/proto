@@ -16,5 +16,6 @@ export const loginLmStudio = createApiKeyLogin({
 export const lmStudioProvider = {
 	id: "lm-studio",
 	name: "LM Studio (Local OpenAI-compatible)",
+	emptyKeyFallback: DEFAULT_LOCAL_TOKEN,
 	login: (cb: OAuthLoginCallbacks) => loginLmStudio(cb),
 } as const satisfies ProviderDefinition;

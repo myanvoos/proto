@@ -352,3 +352,72 @@ test("HTTP connects, lists tools, and calls a tool with valid JSON-RPC envelopes
 	expect(result.content).toEqual([{ type: "text", text: "[object Object]" }]);
 	expect(methods).toEqual(["initialize", "notifications/initialized", "tools/list", "tools/call"]);
 });
+
+function delayedSSE(events: Array<{ afterMs: number; message: unknown }>): ReadableStream<Uint8Array> {
+	const encoder = new TextEncoder();
+	return new ReadableStream<Uint8Array>({
+		async start(controller) {
+			for (const event of events) {
+				await Bun.sleep(event.afterMs);
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(event.message)}\n\n`));
+			}
+			controller.close();
+		},
+	});
+}
+
+const progress = { jsonrpc: "2.0", method: "notifications/progress", params: { progress: 1 } };
+
+test("an SSE request shares one deadline between the response headers and the streamed reply", async () => {
+	mockGlobalFetch(async (_input, init) => {
+		const request = JSON.parse(String(init?.body)) as { id: string | number };
+		await Bun.sleep(130);
+		return new Response(delayedSSE([{ afterMs: 130, message: { jsonrpc: "2.0", id: request.id, result: {} } }]), {
+			headers: { "Content-Type": "text/event-stream" },
+		});
+	});
+	const transport = new HttpTransport({ type: "http", url: URL, timeout: 200 });
+	await transport.connect();
+
+	await expect(transport.request("tools/list")).rejects.toThrow("timeout after 200ms");
+});
+
+test("caller cancellation after the reply leaves the SSE stream delivering server messages", async () => {
+	mockGlobalFetch(async (_input, init) => {
+		const request = JSON.parse(String(init?.body)) as { id: string | number };
+		return new Response(
+			delayedSSE([
+				{ afterMs: 0, message: { jsonrpc: "2.0", id: request.id, result: { ok: true } } },
+				{ afterMs: 50, message: progress },
+			]),
+			{ headers: { "Content-Type": "text/event-stream" } },
+		);
+	});
+	const transport = new HttpTransport({ type: "http", url: URL, timeout: 1_000 });
+	const notified = Promise.withResolvers<string>();
+	transport.onNotification = method => notified.resolve(method);
+	await transport.connect();
+	const caller = new AbortController();
+
+	expect(await transport.request<{ ok: boolean }>("tools/call", {}, { signal: caller.signal })).toEqual({ ok: true });
+	caller.abort();
+
+	expect(await Promise.race([notified.promise, Bun.sleep(500).then(() => "lost")])).toBe("notifications/progress");
+});
+
+test("an accepted notification's SSE body keeps draining past the request timeout", async () => {
+	mockGlobalFetch(
+		async () =>
+			new Response(delayedSSE([{ afterMs: 180, message: progress }]), {
+				headers: { "Content-Type": "text/event-stream" },
+			}),
+	);
+	const transport = new HttpTransport({ type: "http", url: URL, timeout: 100 });
+	const notified = Promise.withResolvers<string>();
+	transport.onNotification = method => notified.resolve(method);
+	await transport.connect();
+
+	await transport.notify("notifications/initialized");
+
+	expect(await Promise.race([notified.promise, Bun.sleep(600).then(() => "lost")])).toBe("notifications/progress");
+});

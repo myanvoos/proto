@@ -3,7 +3,8 @@ import { type CodexModelDiscoveryResult, fetchCodexModels } from "../discovery/c
 import type { DevinModelDiscoveryOptions } from "../discovery/devin";
 import { buildGitLabDuoWorkflowFallbackModel, fetchGitLabDuoWorkflowModels } from "../discovery/gitlab-duo-workflow";
 import type { ModelManagerOptions } from "../model-manager";
-import type { FetchImpl } from "../types";
+import type { FetchImpl, ModelSpec } from "../types";
+import { DEVIN_DEFAULT_BASE_URL } from "../wire/devin";
 import { resolveModelCacheProviderId } from "./cache-provider-id";
 
 export interface OpenAICodexAccount {
@@ -24,6 +25,7 @@ export function openaiCodexModelManagerOptions(
 	const { resolveAccounts, catalogUrl, fetch } = config;
 	return {
 		providerId: "openai-codex",
+		cacheProviderId: resolveModelCacheProviderId("openai-codex"),
 		dynamicModelsAuthoritative: true,
 		...(resolveAccounts
 			? {
@@ -116,10 +118,48 @@ export interface DevinModelManagerConfig {
 	fetch?: DevinModelDiscoveryOptions["fetch"];
 }
 
+// The Cascade roster is credential-scoped, so generation never fetches it and this seed is the whole
+// bundled surface; the descriptor default (`swe-1-6`) must resolve before runtime discovery runs.
+// SWE-1.6 lanes are text-only despite `supports_images` (see DEVIN_IMAGE_BLIND_UIDS).
+export const DEVIN_STATIC_MODELS: readonly ModelSpec<"devin-agent">[] = [
+	{
+		id: "swe-1-6-fast",
+		name: "SWE-1.6 Fast",
+		api: "devin-agent",
+		provider: "devin",
+		baseUrl: DEVIN_DEFAULT_BASE_URL,
+		reasoning: true,
+		input: ["text"],
+		supportsTools: true,
+		cost: { input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0 },
+		contextWindow: 200_000,
+		maxTokens: 128_000,
+		compat: { supportsParallelToolCalls: true },
+	},
+	{
+		id: "swe-1-6",
+		name: "SWE-1.6",
+		api: "devin-agent",
+		provider: "devin",
+		baseUrl: DEVIN_DEFAULT_BASE_URL,
+		reasoning: true,
+		input: ["text"],
+		supportsTools: true,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200_000,
+		maxTokens: 128_000,
+		compat: { supportsParallelToolCalls: true },
+	},
+];
+
 export function devinModelManagerOptions(config: DevinModelManagerConfig = {}): ModelManagerOptions<"devin-agent"> {
 	const { apiKey, baseUrl, fetch } = config;
 	return {
 		providerId: "devin",
+		staticModels:
+			baseUrl === undefined || baseUrl === DEVIN_DEFAULT_BASE_URL
+				? DEVIN_STATIC_MODELS
+				: DEVIN_STATIC_MODELS.map(model => ({ ...model, baseUrl })),
 		...(apiKey ? { dynamicModelsAuthoritative: true } : undefined),
 		...(apiKey
 			? {
@@ -136,6 +176,9 @@ const devinDiscovery = once(() => import("../discovery/devin"));
 
 export interface ZaiModelManagerConfig {}
 
-export function zaiModelManagerOptions(_config: ZaiModelManagerConfig = {}): ModelManagerOptions<"anthropic-messages"> {
+/** Z.AI mixes the Anthropic coding endpoint with native completions for GLM-5.3-Flash. */
+export function zaiModelManagerOptions(
+	_config: ZaiModelManagerConfig = {},
+): ModelManagerOptions<"anthropic-messages" | "openai-completions"> {
 	return { providerId: "zai" };
 }

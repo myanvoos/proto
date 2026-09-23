@@ -75,7 +75,8 @@ function stripReferenceTrailingMarker(candidate: string): string | undefined {
 	return match ? candidate.slice(0, match.index) : undefined;
 }
 
-function getReferenceCandidateIds(modelId: string): string[] {
+/** Reference lookup candidates for `modelId`: the id itself, then affix-, namespace-, and marker-stripped spellings. */
+export function getReferenceCandidateIds(modelId: string): string[] {
 	const candidates = new Set<string>();
 	const queue = [modelId];
 	for (let index = 0; index < queue.length; index += 1) {

@@ -1627,12 +1627,9 @@ export class InputController {
 		}
 	}
 
+	// Shift+Tab / Ctrl+P follow the picker's rule: model and thinking changes land on the session in view.
 	cycleThinkingLevel(): void {
-		if (this.ctx.focusedAgentId) {
-			this.ctx.showStatus("Model/thinking apply to the main session — press Esc to return first");
-			return;
-		}
-		const newLevel = this.ctx.session.cycleThinkingLevel();
+		const newLevel = this.ctx.viewSession.cycleThinkingLevel();
 		if (newLevel === undefined) {
 			this.ctx.showStatus("Current model does not support thinking");
 		} else {
@@ -1642,13 +1639,9 @@ export class InputController {
 	}
 
 	async cycleRoleModel(direction: "forward" | "backward" = "forward"): Promise<void> {
-		if (this.ctx.focusedAgentId) {
-			this.ctx.showStatus("Model/thinking apply to the main session — press Esc to return first");
-			return;
-		}
 		try {
 			const cycleOrder = settings.get("cycleOrder");
-			const result = await this.ctx.session.cycleRoleModels(cycleOrder, direction);
+			const result = await this.ctx.viewSession.cycleRoleModels(cycleOrder, direction);
 			if (!result) {
 				this.ctx.showStatus("Only one role model available");
 				return;

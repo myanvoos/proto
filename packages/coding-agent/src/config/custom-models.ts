@@ -7,10 +7,10 @@ import {
 } from "@oh-my-pi/pi-catalog/identity";
 import { getVariantAliasSources, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { logger } from "@oh-my-pi/pi-utils";
-import { createLiveConfigHeaders, type HeaderSource } from "./model-config-values";
 import { type ModelPatch, mergeCompat, mergeRemoteCompactionConfig } from "./model-patch";
 import { parseModelString } from "./model-resolver";
 import type { ModelOverride, ProviderAuthMode } from "./models-config-schema";
+import { type ConfigHeaderResolver, type ConfigHeaderSource, createConfigHeaderResolver } from "./resolve-config-value";
 export interface CustomModelDefinitionLike extends ModelPatch {
 	id: string;
 	api?: Api;
@@ -36,16 +36,16 @@ function mergeCustomModelHeaders(
 	modelHeaders: Record<string, string> | undefined,
 	authHeader: boolean | undefined,
 	apiKeyConfig: string | undefined,
-): Record<string, string> | undefined {
-	return createLiveConfigHeaders([providerHeaders, modelHeaders], { authHeader, apiKeyConfig });
+): ConfigHeaderResolver | undefined {
+	return createConfigHeaderResolver([providerHeaders, modelHeaders], { authHeader, apiKeyConfig });
 }
 
 export function mergeAuthHeaderSources(
-	sources: readonly HeaderSource[],
+	sources: readonly ConfigHeaderSource[],
 	authHeader: boolean | undefined,
 	apiKeyConfig: string | undefined,
-): Record<string, string> | undefined {
-	return createLiveConfigHeaders(sources, { authHeader, apiKeyConfig });
+): ConfigHeaderResolver | undefined {
+	return createConfigHeaderResolver(sources, { authHeader, apiKeyConfig });
 }
 
 function resolveCustomModelIsOAuth(api: Api, providerAuth: ProviderAuthMode | undefined): boolean | undefined {
@@ -83,9 +83,11 @@ export function buildCustomModelOverlay(
 		supportsTools: modelDef.supportsTools,
 		cost: modelDef.cost,
 		contextWindow: modelDef.contextWindow,
+		maxContextWindow: modelDef.maxContextWindow,
 		maxTokens: modelDef.maxTokens,
 		omitMaxOutputTokens: modelDef.omitMaxOutputTokens,
-		headers: mergeCustomModelHeaders(providerHeaders, modelDef.headers, authHeader, providerApiKey),
+		preferWebsockets: modelDef.preferWebsockets,
+		resolveHeaders: mergeCustomModelHeaders(providerHeaders, modelDef.headers, authHeader, providerApiKey),
 		compat: mergeCompat(providerCompat, modelDef.compat),
 		contextPromotionTarget: modelDef.contextPromotionTarget,
 		compactionModel: modelDef.compactionModel,
@@ -102,15 +104,21 @@ function applyStandaloneCustomModelPolicies(model: CustomModelOverlay): CustomMo
 	return { ...model, contextWindow: 1_000_000 };
 }
 
+function withoutTimeBasedCost(cost: Model<Api>["cost"]): Model<Api>["cost"] {
+	if (cost.timeBased === undefined) return cost;
+	const { timeBased: _schedule, ...flat } = cost;
+	return flat;
+}
+
 export function finalizeCustomModel(model: CustomModelOverlay, options: CustomModelBuildOptions): Model<Api> {
 	const resolvedModel = options.useDefaults ? applyStandaloneCustomModelPolicies(model) : model;
 	const reference = options.useDefaults
 		? resolveModelReference(resolvedModel.id, getBundledModelReferenceIndex())
 		: undefined;
-	const cost =
-		resolvedModel.cost ??
-		reference?.cost ??
-		(options.useDefaults ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : undefined);
+	// Explicit custom prices are flat: they outrank the catalog's rate card and its schedule.
+	const cost = resolvedModel.cost
+		? withoutTimeBasedCost(resolvedModel.cost)
+		: (reference?.cost ?? (options.useDefaults ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : undefined));
 	const input = resolvedModel.input ?? reference?.input ?? (options.useDefaults ? ["text"] : undefined);
 	const supportsTools = resolvedModel.supportsTools ?? reference?.supportsTools;
 	return buildModel({
@@ -128,7 +136,9 @@ export function finalizeCustomModel(model: CustomModelOverlay, options: CustomMo
 		contextWindow: resolvedModel.contextWindow ?? reference?.contextWindow ?? (options.useDefaults ? 128000 : null),
 		maxTokens: resolvedModel.maxTokens ?? reference?.maxTokens ?? (options.useDefaults ? 16384 : null),
 		headers: resolvedModel.headers,
+		resolveHeaders: resolvedModel.resolveHeaders,
 		omitMaxOutputTokens: resolvedModel.omitMaxOutputTokens ?? reference?.omitMaxOutputTokens,
+		preferWebsockets: resolvedModel.preferWebsockets,
 		compat: mergeCompat(reference?.compatConfig, resolvedModel.compat),
 		tokenizer: resolvedModel.tokenizer,
 		contextPromotionTarget: resolvedModel.contextPromotionTarget,

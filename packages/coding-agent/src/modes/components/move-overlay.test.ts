@@ -116,7 +116,7 @@ test("move creation confirmation keeps destination identity visible and only cre
 				moved = target;
 			},
 		},
-		sessionManager: { getCwd: () => root },
+		sessionManager: { getCwd: () => root, captureState: () => ({ cwd: root }) },
 		showHookConfirm: async (title: string, description: string) => {
 			expect(title).toContain("moved-new");
 			const selector = new HookSelectorComponent(
@@ -136,7 +136,7 @@ test("move creation confirmation keeps destination identity visible and only cre
 			return accept;
 		},
 		settings: { flush: async () => {} },
-		applyCwdChange: async () => {},
+		applyCwdChange: async () => true,
 		updateEditorBorderColor: () => {},
 		reloadChecklist: async () => {},
 		ui: { requestRender: () => {} },

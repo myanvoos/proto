@@ -37,6 +37,8 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	shortSummary?: string;
 	firstKeptEntryId: string;
 	tokensBefore: number;
+	/** Last entry covered by native replay; later entries may precede the compaction record. */
+	providerReplayThroughEntryId?: string;
 
 	details?: T;
 

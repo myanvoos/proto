@@ -1,5 +1,10 @@
 import type { Api, Model } from "@oh-my-pi/pi-ai/types";
-import { type OpenAICodexAccount, PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models";
+import type { ModelResolutionSource } from "@oh-my-pi/pi-catalog/model-manager";
+import {
+	MODELS_DEV_CATALOG_PROVIDER_IDS,
+	type OpenAICodexAccount,
+	PROVIDER_DESCRIPTORS,
+} from "@oh-my-pi/pi-catalog/provider-models";
 import type { AuthStorage, OAuthCredential } from "../session/auth-storage";
 
 const SPECIAL_MODEL_MANAGER_PROVIDER_IDS: readonly string[] = [
@@ -8,9 +13,13 @@ const SPECIAL_MODEL_MANAGER_PROVIDER_IDS: readonly string[] = [
 	"openai-codex",
 ];
 
+// Shared-catalog providers persist additive models.dev rows, so their caches load at startup too.
 export const STARTUP_MODEL_CACHE_PROVIDER_IDS: readonly string[] = [
-	...PROVIDER_DESCRIPTORS.map(descriptor => descriptor.providerId),
-	...SPECIAL_MODEL_MANAGER_PROVIDER_IDS,
+	...new Set([
+		...PROVIDER_DESCRIPTORS.map(descriptor => descriptor.providerId),
+		...SPECIAL_MODEL_MANAGER_PROVIDER_IDS,
+		...MODELS_DEV_CATALOG_PROVIDER_IDS,
+	]),
 ];
 
 const LOCAL_PROVIDER_PLACEHOLDERS = new Set<string>(["llama-cpp-local", "lm-studio-local", "vllm-local"]);
@@ -29,10 +38,11 @@ export function isDiscoveryBearerApiKey(apiKey: string | undefined | null): apiK
 	return isAuthenticated(apiKey) && !LOCAL_PROVIDER_PLACEHOLDERS.has(apiKey);
 }
 
-export async function withRuntimeDynamicModelsTimeout<T>(timeoutMs: number, run: () => Promise<T>): Promise<T> {
+/** Bounds a model-discovery operation; the inner operation gets no signal because not every discovery contract accepts one. */
+export async function withModelDiscoveryTimeout<T>(timeoutMs: number, run: () => Promise<T>): Promise<T> {
 	const { promise: timeoutPromise, reject: timeoutReject } = Promise.withResolvers<never>();
 	const timer = setTimeout(() => {
-		timeoutReject(new Error(`fetchDynamicModels timed out after ${timeoutMs}ms`));
+		timeoutReject(new Error(`model discovery timed out after ${timeoutMs}ms`));
 	}, timeoutMs);
 	try {
 		return await Promise.race([run(), timeoutPromise]);
@@ -44,6 +54,8 @@ export async function withRuntimeDynamicModelsTimeout<T>(timeoutMs: number, run:
 export interface BuiltInDiscoveryResult {
 	models: Model<Api>[];
 	authoritativeProviders: Set<string>;
+	/** Providers whose successful endpoint refresh replaces their prior discovered slice. */
+	replaceRuntimeProviders: Set<string>;
 }
 
 export type ProviderDiscoveryStatus = "idle" | "ok" | "empty" | "cached" | "unavailable" | "unauthenticated";
@@ -54,6 +66,7 @@ export interface ProviderDiscoveryState {
 	optional: boolean;
 	stale: boolean;
 	fetchedAt?: number;
+	source?: ModelResolutionSource;
 	models: string[];
 	error?: string;
 }

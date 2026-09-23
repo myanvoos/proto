@@ -42,6 +42,60 @@ afterEach(async () => {
 });
 
 describe("filterChildShellEnv", () => {
+	test("recognizes quoted multiline and escaped project values as dotenv-loaded", async () => {
+		const cwd = await makeEnvDir({
+			".env": ['MULTILINE="first', 'second"', 'ESCAPED_NEWLINE="first\\nsecond"', "BACKTICK=`first", "second`"].join(
+				"\n",
+			),
+		});
+		const script = [
+			`import { filterChildShellEnv, parseEnvFile } from ${JSON.stringify(envModulePath)};`,
+			`const parsed = parseEnvFile(${JSON.stringify(path.join(cwd, ".env"))});`,
+			"const child = filterChildShellEnv({",
+			'  MULTILINE: "first\\nsecond",',
+			'  ESCAPED_NEWLINE: "first\\nsecond",',
+			'  UNCHANGED: "parent-value",',
+			`}, ${JSON.stringify(cwd)});`,
+			"process.stdout.write(JSON.stringify({ parsed, child }));",
+		].join("\n");
+
+		const observed = await runProbe(script, {}, { noEnvFile: true });
+
+		expect(observed).toEqual({
+			parsed: { MULTILINE: "first\nsecond", ESCAPED_NEWLINE: "first\nsecond", BACKTICK: "first\nsecond" },
+			child: { UNCHANGED: "parent-value" },
+		});
+	});
+
+	test("drops inherited git repo-location overrides and keeps unrelated git variables", async () => {
+		const cwd = await makeEnvDir({ ".env": "" });
+		const script = [
+			`import { filterChildShellEnv, stripGitRepoLocationEnv } from ${JSON.stringify(envModulePath)};`,
+			"const child = filterChildShellEnv({",
+			'  GIT_DIR: "/primary/.git",',
+			'  GIT_COMMON_DIR: "/primary/.git",',
+			'  GIT_WORK_TREE: "/primary",',
+			'  GIT_INDEX_FILE: "/primary/.git/index",',
+			'  GIT_OBJECT_DIRECTORY: "/primary/.git/objects",',
+			'  GIT_ALTERNATE_OBJECT_DIRECTORIES: "/primary/.git/objects",',
+			'  GIT_EDITOR: "true",',
+			`}, ${JSON.stringify(cwd)});`,
+			'const windows = { git_dir: "/primary/.git", Git_Work_Tree: "/primary", GIT_EDITOR: "true" };',
+			'stripGitRepoLocationEnv(windows, "win32");',
+			'const posix = { git_dir: "/primary/.git" };',
+			'stripGitRepoLocationEnv(posix, "linux");',
+			"process.stdout.write(JSON.stringify({ child, windows, posix }));",
+		].join("\n");
+
+		const observed = await runProbe(script, {}, { noEnvFile: true });
+
+		expect(observed).toEqual({
+			child: { GIT_EDITOR: "true" },
+			windows: { GIT_EDITOR: "true" },
+			posix: { git_dir: "/primary/.git" },
+		});
+	});
+
 	test("uses an explicit environment's mode instead of the proto launch mode", async () => {
 		const cwd = await makeEnvDir({
 			".env": "",
@@ -113,4 +167,24 @@ describe("filterChildShellEnv", () => {
 			nodeEnv: "production",
 		});
 	});
+
+	test.skipIf(process.platform === "win32")(
+		"keeps filtering after the process working directory is deleted",
+		async () => {
+			const cwd = await makeEnvDir({ ".env": "" });
+			const script = [
+				'import * as fs from "node:fs";',
+				`import { filterChildShellEnv } from ${JSON.stringify(envModulePath)};`,
+				`import { getProjectDir } from ${JSON.stringify(path.join(import.meta.dir, "dirs.ts"))};`,
+				"getProjectDir();",
+				"fs.rmSync(process.cwd(), { recursive: true });",
+				'const child = filterChildShellEnv({ UNCHANGED: "parent-value" });',
+				"process.stdout.write(JSON.stringify(child));",
+			].join("\n");
+
+			const child = await runProbe(script, {}, { cwd, noEnvFile: true });
+
+			expect(child).toEqual({ UNCHANGED: "parent-value" });
+		},
+	);
 });

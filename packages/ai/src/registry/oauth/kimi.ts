@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
-import { $env, getAgentDir } from "@oh-my-pi/pi-utils";
+import { $env, getAgentDir, once } from "@oh-my-pi/pi-utils";
 import packageJson from "../../../package.json" with { type: "json" };
 import * as AIError from "../../error";
 import { isRecord } from "../../utils";
@@ -77,8 +77,9 @@ function sanitizeHeaderValue(value: string, fallback = ""): string {
 	return sanitized || fallback;
 }
 
-export let getKimiCommonHeaders = () => {
-	const headers = Object.freeze({
+/** Lazily resolve the process-stable device headers used by Kimi requests. */
+export const getKimiCommonHeaders = once(() =>
+	Object.freeze({
 		"User-Agent": `KimiCLI/${packageJson.version}`,
 		"X-Msh-Platform": "kimi_cli",
 		"X-Msh-Version": packageJson.version,
@@ -86,10 +87,8 @@ export let getKimiCommonHeaders = () => {
 		"X-Msh-Device-Model": sanitizeHeaderValue(getDeviceModel(), "unknown"),
 		"X-Msh-Os-Version": sanitizeHeaderValue(os.version(), "unknown"),
 		"X-Msh-Device-Id": sanitizeHeaderValue(getDeviceId(), "unknown"),
-	});
-	getKimiCommonHeaders = () => headers;
-	return headers;
-};
+	}),
+);
 
 async function requestDeviceAuthorization(): Promise<{
 	userCode: string;

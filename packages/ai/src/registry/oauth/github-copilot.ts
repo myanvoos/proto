@@ -2,26 +2,48 @@ import { scheduler } from "node:timers/promises";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import {
 	COPILOT_API_HEADERS,
+	COPILOT_CHAT_INTEGRATION_ID,
 	discoverGitHubCopilotApiEndpoint,
 	getGitHubCopilotBaseUrl,
 	isPublicGitHubHost,
+	normalizeCopilotIntegrationId,
 	normalizeDomain,
 	normalizeGitHubCopilotEnterpriseDomain,
-	OPENCODE_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 import * as AIError from "../../error";
+import {
+	resolveCopilotIntegrationIdOverride,
+	wrapFetchForCopilotFallback,
+} from "../../providers/github-copilot-headers";
 import type { FetchImpl } from "../../types";
-import type { OAuthCredentials } from "./types";
+import type { OAuthCredentials, OAuthPrompt } from "./types";
 
-const CLIENT_ID = "Ov23li8tweQw6odWQebz";
+const OPENCODE_CLIENT_ID = "Ov23li8tweQw6odWQebz";
+const COPILOT_CLI_CLIENT_ID = "Ov23ctDVkRmgkPke0Mmm";
+
+// github.com uses the minimal-grant OpenCode app: GitHub's consent page shows each app's
+// existing per-user grant, and orgs restricting OAuth apps block the Copilot CLI app's broad
+// historic grant regardless of the requested scope. Private GitHub Enterprise instances run
+// their own OAuth registry, which only knows the GitHub-owned Copilot CLI client. Tokens from
+// either app work against the Copilot API.
+function resolveOAuthClientId(domain: string): string {
+	return isPublicGitHubHost(domain) ? OPENCODE_CLIENT_ID : COPILOT_CLI_CLIENT_ID;
+}
+const OAUTH_SCOPE = "read:user";
+const OAUTH_HEADERS = {
+	Accept: "application/json",
+	"Content-Type": "application/x-www-form-urlencoded",
+	"User-Agent": "copilot-developer-action/0.0.1",
+} as const;
 
 const INITIAL_POLL_INTERVAL_MULTIPLIER = 1.2;
 const SLOW_DOWN_POLL_INTERVAL_MULTIPLIER = 1.4;
 
 type GitHubCopilotLoginOptions = {
 	onAuth: (url: string, instructions?: string) => void;
-	onPrompt: (prompt: { message: string; placeholder?: string; allowEmpty?: boolean }) => Promise<string>;
+	onPrompt: (prompt: OAuthPrompt) => Promise<string>;
 	onProgress?: (message: string) => void;
+	copilotIntegrationId?: unknown;
 	signal?: AbortSignal;
 	pollIntervalFloorMs?: number;
 	pollIntervalScaleMs?: number;
@@ -72,14 +94,10 @@ async function startDeviceFlow(domain: string, fetchImpl: FetchImpl): Promise<De
 		urls.deviceCodeUrl,
 		{
 			method: "POST",
-			headers: {
-				Accept: "application/json",
-				"Content-Type": "application/json",
-				...OPENCODE_HEADERS,
-			},
-			body: JSON.stringify({
-				client_id: CLIENT_ID,
-				scope: "read:user",
+			headers: OAUTH_HEADERS,
+			body: new URLSearchParams({
+				client_id: resolveOAuthClientId(domain),
+				scope: OAUTH_SCOPE,
 			}),
 		},
 		fetchImpl,
@@ -150,13 +168,9 @@ async function pollForGitHubAccessToken(
 			urls.accessTokenUrl,
 			{
 				method: "POST",
-				headers: {
-					Accept: "application/json",
-					"Content-Type": "application/json",
-					...OPENCODE_HEADERS,
-				},
-				body: JSON.stringify({
-					client_id: CLIENT_ID,
+				headers: OAUTH_HEADERS,
+				body: new URLSearchParams({
+					client_id: resolveOAuthClientId(domain),
 					device_code: deviceCode,
 					grant_type: "urn:ietf:params:oauth:grant-type:device_code",
 				}),
@@ -224,6 +238,7 @@ async function enableGitHubCopilotModel(
 	fetchImpl: FetchImpl,
 	enterpriseDomain: string | undefined,
 	apiEndpoint: string | undefined,
+	integrationId: string | undefined,
 ): Promise<boolean> {
 	const baseUrl = apiEndpoint ?? getGitHubCopilotBaseUrl(enterpriseDomain);
 	const url = `${baseUrl}/models/${modelId}/policy`;
@@ -235,8 +250,10 @@ async function enableGitHubCopilotModel(
 				"Content-Type": "application/json",
 				Authorization: `Bearer ${token}`,
 				...COPILOT_API_HEADERS,
-				"openai-intent": "chat-policy",
-				"x-interaction-type": "chat-policy",
+				"Copilot-Integration-Id": integrationId ?? COPILOT_CHAT_INTEGRATION_ID,
+				"Openai-Intent": "chat-policy",
+				"X-Initiator": "user",
+				"X-Interaction-Type": "chat-policy",
 			},
 			body: JSON.stringify({ state: "enabled" }),
 		});
@@ -252,14 +269,24 @@ async function enableAllGitHubCopilotModels(
 	apiEndpoint: string | undefined,
 	fetchImpl: FetchImpl,
 	onProgress?: (model: string, success: boolean) => void,
+	integrationId?: unknown,
 ): Promise<void> {
 	const wireModelIds = [...new Set(getBundledModels("github-copilot").map(model => model.requestModelId ?? model.id))];
+	const resolvedId = normalizeCopilotIntegrationId(integrationId) ?? resolveCopilotIntegrationIdOverride();
+	const copilotFetch = wrapFetchForCopilotFallback(fetchImpl, true, resolvedId);
 	const BATCH_SIZE = 5;
 	for (let i = 0; i < wireModelIds.length; i += BATCH_SIZE) {
 		const batch = wireModelIds.slice(i, i + BATCH_SIZE);
 		await Promise.all(
 			batch.map(async modelId => {
-				const success = await enableGitHubCopilotModel(token, modelId, fetchImpl, enterpriseDomain, apiEndpoint);
+				const success = await enableGitHubCopilotModel(
+					token,
+					modelId,
+					copilotFetch,
+					enterpriseDomain,
+					apiEndpoint,
+					resolvedId,
+				);
 				onProgress?.(modelId, success);
 			}),
 		);
@@ -315,6 +342,13 @@ export async function loginGitHubCopilot(options: GitHubCopilotLoginOptions): Pr
 	};
 
 	options.onProgress?.("Enabling models...");
-	await enableAllGitHubCopilotModels(githubAccessToken, enterpriseDomain ?? undefined, apiEndpoint, fetchImpl);
+	await enableAllGitHubCopilotModels(
+		githubAccessToken,
+		enterpriseDomain ?? undefined,
+		apiEndpoint,
+		fetchImpl,
+		undefined,
+		options.copilotIntegrationId,
+	);
 	return credentials;
 }

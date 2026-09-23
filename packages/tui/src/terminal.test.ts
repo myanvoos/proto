@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test, vi } from "bun:test";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils/env";
 import { setKittyProtocolActive } from "./keys";
-import { ProcessTerminal } from "./terminal";
+import { ProcessTerminal, StdoutStallWatchdog } from "./terminal";
 import { isTerminalFocused, NotifyProtocol, TERMINAL } from "./terminal-capabilities";
 import { isInsideTerminalMultiplexer } from "./ttyid";
 
@@ -494,4 +494,58 @@ test("focus reporting is disabled and forgotten when the terminal stops", () => 
 	expect(written).toContain("\x1b[?1004l");
 	// A stale "focused" must not survive into the next terminal.
 	expect(isTerminalFocused()).toBeUndefined();
+});
+
+describe("StdoutStallWatchdog", () => {
+	const ARM = 1000;
+	const CLEAR = 100;
+	const STALL_MS = 2000;
+	const make = () => new StdoutStallWatchdog(ARM, CLEAR, STALL_MS);
+
+	test("declares a stall once an armed backlog goes stallMs without draining", () => {
+		const watchdog = make();
+		expect(watchdog.sample(ARM + 1, 0)).toBe(false);
+		expect(watchdog.sample(ARM + 1, STALL_MS - 1)).toBe(false);
+		expect(watchdog.sample(ARM + 1, STALL_MS)).toBe(true);
+	});
+
+	test("never trips while an oversized backlog keeps draining past stallMs", () => {
+		const watchdog = make();
+		let pending = 5000;
+		let now = 0;
+		while (pending > CLEAR) {
+			expect(watchdog.sample(pending, now)).toBe(false);
+			pending -= 100;
+			now += 300;
+		}
+		expect(watchdog.sample(pending, now)).toBe(false);
+		expect(watchdog.armed).toBe(false);
+	});
+
+	test("stays armed after dipping below the arm cap and trips if the consumer then wedges", () => {
+		const watchdog = make();
+		expect(watchdog.sample(ARM + 500, 0)).toBe(false);
+		expect(watchdog.sample(ARM - 100, 200)).toBe(false);
+		expect(watchdog.armed).toBe(true);
+		expect(watchdog.sample(ARM - 100, 200 + STALL_MS - 1)).toBe(false);
+		expect(watchdog.sample(ARM - 100, 200 + STALL_MS)).toBe(true);
+	});
+});
+
+test("confirmed bracketed paste keeps a stall-batched multiline read as typed keys", () => {
+	const deliver = (confirm2004: boolean): string[] => {
+		const input: string[] = [];
+		const terminal = startTerminal(data => input.push(data));
+		try {
+			if (confirm2004) feed("\x1b[?2004;2$y");
+			input.length = 0;
+			feed("aaa\rbbb\rccc");
+			return input;
+		} finally {
+			terminal.stop();
+		}
+	};
+	// Without confirmation the unbracketed heuristic still coalesces the burst.
+	expect(deliver(false).filter(data => data === "\r")).toEqual([]);
+	expect(deliver(true).filter(data => data === "\r")).toEqual(["\r", "\r"]);
 });

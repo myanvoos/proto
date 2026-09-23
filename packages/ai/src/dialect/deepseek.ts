@@ -34,6 +34,10 @@ const DSML_TOOL_CALLS_OPEN_FULLWIDTH = "<｜DSML｜tool_calls>";
 const DSML_TOOL_CALLS_CLOSE_FULLWIDTH = "</｜DSML｜tool_calls>";
 const DSML_TOOL_CALLS_OPEN_ASCII = "<|DSML|tool_calls>";
 const DSML_TOOL_CALLS_CLOSE_ASCII = "</|DSML|tool_calls>";
+const DSML_INVOKE_CLOSE_FULLWIDTH = "</｜DSML｜invoke>";
+const DSML_INVOKE_CLOSE_ASCII = "</|DSML|invoke>";
+const DSML_PARAMETER_CLOSE_FULLWIDTH = "</｜DSML｜parameter>";
+const DSML_PARAMETER_CLOSE_ASCII = "</|DSML|parameter>";
 
 const CONTROL_TOKENS = [
 	DEEPSEEK_BOS,
@@ -53,6 +57,16 @@ const CONTROL_TOKENS = [
 	DEEPSEEK_TOOL_OUTPUT_END,
 ] as const;
 
+// Bare invoke/parameter closers with no open leak into visible text once a long
+// session's history is poisoned; stripping them keeps replay from reinforcing the
+// model's DSML mimicry. Well-formed envelopes consume them in dsmlInvoke/dsmlParam.
+const DSML_ORPHAN_CLOSE_TOKENS = [
+	DSML_INVOKE_CLOSE_FULLWIDTH,
+	DSML_INVOKE_CLOSE_ASCII,
+	DSML_PARAMETER_CLOSE_FULLWIDTH,
+	DSML_PARAMETER_CLOSE_ASCII,
+] as const;
+
 const OUTSIDE_TOKENS = [
 	DEEPSEEK_TOOL_CALLS_BEGIN,
 	DEEPSEEK_TOOL_CALLS_END,
@@ -63,6 +77,7 @@ const OUTSIDE_TOKENS = [
 	DSML_TOOL_CALLS_OPEN_ASCII,
 	DSML_TOOL_CALLS_CLOSE_FULLWIDTH,
 	DSML_TOOL_CALLS_CLOSE_ASCII,
+	...DSML_ORPHAN_CLOSE_TOKENS,
 	...CONTROL_TOKENS,
 ] as const;
 
@@ -73,8 +88,13 @@ const DSML_SECTION_TOKENS = [
 	"<｜DSML｜invoke",
 	"<|DSML|invoke",
 ] as const;
-const DSML_INVOKE_TOKENS = ["</｜DSML｜invoke>", "</|DSML|invoke>", "<｜DSML｜parameter", "<|DSML|parameter"] as const;
-const DSML_PARAMETER_CLOSE_TOKENS = ["</｜DSML｜parameter>", "</|DSML|parameter>"] as const;
+const DSML_INVOKE_TOKENS = [
+	DSML_INVOKE_CLOSE_FULLWIDTH,
+	DSML_INVOKE_CLOSE_ASCII,
+	"<｜DSML｜parameter",
+	"<|DSML|parameter",
+] as const;
+const DSML_PARAMETER_CLOSE_TOKENS = [DSML_PARAMETER_CLOSE_FULLWIDTH, DSML_PARAMETER_CLOSE_ASCII] as const;
 
 type State =
 	| "outside"
@@ -212,6 +232,12 @@ export class DeepSeekInbandScanner implements InbandScanner {
 				this.#buffer = this.#buffer.slice(openToken.length);
 				this.#state = "dsmlSection";
 				return;
+			}
+			// Unlike control tokens, orphan closers keep following whitespace: it was visible text.
+			const orphanClose = DSML_ORPHAN_CLOSE_TOKENS.find(token => this.#buffer.startsWith(token));
+			if (orphanClose) {
+				this.#buffer = this.#buffer.slice(orphanClose.length);
+				continue;
 			}
 			const control = this.#matchingControlToken();
 			if (control) {

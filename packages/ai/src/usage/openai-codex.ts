@@ -42,10 +42,23 @@ interface CodexUsageAdditionalRateLimitPayload {
 	rate_limit?: CodexUsageRateLimitPayload | null;
 }
 
+interface CodexUsageCreditsPayload {
+	has_credits?: boolean;
+	unlimited?: boolean;
+	overage_limit_reached?: boolean;
+	balance?: string | number;
+}
+
+interface CodexUsageSpendControlPayload {
+	reached?: boolean;
+}
+
 interface CodexUsagePayload {
 	plan_type?: string;
 	rate_limit?: CodexUsageRateLimitPayload | null;
 	additional_rate_limits?: CodexUsageAdditionalRateLimitPayload[] | null;
+	credits?: CodexUsageCreditsPayload | null;
+	spend_control?: CodexUsageSpendControlPayload | null;
 }
 
 interface ParsedUsageWindow {
@@ -71,6 +84,8 @@ interface ParsedUsage {
 	primary?: ParsedUsageWindow;
 	secondary?: ParsedUsageWindow;
 	additional: ParsedAdditionalUsage[];
+	/** Plan windows are spent, but credits still fund overage (`/wham/usage` only reports the plan allowance). */
+	creditOverage: boolean;
 	raw: CodexUsagePayload;
 }
 
@@ -160,6 +175,19 @@ function parseAdditionalRateLimit(payload: unknown): ParsedAdditionalUsage | nul
 	return { limitName, meteredFeature, allowed, limitReached, primary, secondary };
 }
 
+// Credits fund overage of a spent plan allowance only: nothing in the payload says
+// a balance covers a separate metered feature (Spark), and a refusal that is not
+// plan exhaustion is not something a balance can pay for.
+function hasPlanCreditOverage(payload: Record<string, unknown>, planLimitReached: boolean | undefined): boolean {
+	if (planLimitReached !== true) return false;
+	const credits = isRecord(payload.credits) ? payload.credits : undefined;
+	if (!credits) return false;
+	if (credits.unlimited !== true && credits.has_credits !== true) return false;
+	if (credits.overage_limit_reached === true) return false;
+	const spendControl = isRecord(payload.spend_control) ? payload.spend_control : undefined;
+	return spendControl?.reached !== true;
+}
+
 function parseUsagePayload(payload: unknown): ParsedUsage | null {
 	if (!isRecord(payload)) return null;
 	const planType = typeof payload.plan_type === "string" ? payload.plan_type : undefined;
@@ -169,13 +197,15 @@ function parseUsagePayload(payload: unknown): ParsedUsage | null {
 		.map(parseAdditionalRateLimit)
 		.filter((value): value is ParsedAdditionalUsage => value !== null);
 	if (!rateLimit && additional.length === 0) return null;
+	const planLimitReached = rateLimit ? toBoolean(rateLimit.limit_reached) : undefined;
 	const parsed: ParsedUsage = {
 		planType,
 		allowed: rateLimit ? toBoolean(rateLimit.allowed) : undefined,
-		limitReached: rateLimit ? toBoolean(rateLimit.limit_reached) : undefined,
+		limitReached: planLimitReached,
 		primary: rateLimit ? parseUsageWindow(rateLimit.primary_window) : undefined,
 		secondary: rateLimit ? parseUsageWindow(rateLimit.secondary_window) : undefined,
 		additional,
+		creditOverage: hasPlanCreditOverage(payload, planLimitReached),
 		raw: payload as CodexUsagePayload,
 	};
 	if (
@@ -267,6 +297,11 @@ function buildUsageStatus(args: { usedFraction?: number; explicitlyAllowed: bool
 	return "ok";
 }
 
+function isCodexRequestAllowed(args: { allowed?: boolean; limitReached?: boolean; creditOverage?: boolean }): boolean {
+	if (args.creditOverage === true && args.limitReached === true) return true;
+	return args.allowed === true && args.limitReached === false;
+}
+
 function buildUsageLimit(args: {
 	key: "primary" | "secondary";
 	window: ParsedUsageWindow;
@@ -274,6 +309,7 @@ function buildUsageLimit(args: {
 	planType?: string;
 	allowed?: boolean;
 	limitReached?: boolean;
+	creditOverage?: boolean;
 	nowMs: number;
 }): UsageLimit {
 	const usageWindow = buildUsageWindow(args.window, args.key, args.nowMs);
@@ -291,7 +327,7 @@ function buildUsageLimit(args: {
 
 		status: buildUsageStatus({
 			usedFraction: amount.usedFraction,
-			explicitlyAllowed: args.allowed === true && args.limitReached === false,
+			explicitlyAllowed: isCodexRequestAllowed(args),
 		}),
 	};
 }
@@ -346,12 +382,16 @@ function buildAdditionalUsageLimit(args: {
 
 		status: buildUsageStatus({
 			usedFraction: amount.usedFraction,
-			explicitlyAllowed: args.allowed === true && args.limitReached === false,
+			explicitlyAllowed: isCodexRequestAllowed(args),
 		}),
 	};
 }
 
-export function parseCodexRateLimitHeaders(headers: Record<string, string>, now = Date.now()): UsageReport | null {
+export function parseCodexRateLimitHeaders(
+	headers: Record<string, string>,
+	now = Date.now(),
+	context?: { responseStatus?: number },
+): UsageReport | null {
 	const parseWindow = (key: "primary" | "secondary"): ParsedUsageWindow | undefined => {
 		const usedPercent = toNumber(headers[`x-codex-${key}-used-percent`]);
 		if (usedPercent === undefined) return undefined;
@@ -367,14 +407,28 @@ export function parseCodexRateLimitHeaders(headers: Record<string, string>, now 
 	const secondary = parseWindow("secondary");
 	if (!primary && !secondary) return null;
 	const limits: UsageLimit[] = [];
-	if (primary) limits.push(buildUsageLimit({ key: "primary", window: primary, nowMs: now }));
-	if (secondary) limits.push(buildUsageLimit({ key: "secondary", window: secondary, nowMs: now }));
+	// A 2xx response is a live serving verdict: a 100% window on it means credits
+	// fund overage, so it must not read as exhausted and block the account.
+	const requestSucceeded =
+		context?.responseStatus !== undefined && context.responseStatus >= 200 && context.responseStatus < 300;
+	const verdict = requestSucceeded ? { allowed: true, limitReached: false } : {};
+	if (primary) limits.push(buildUsageLimit({ key: "primary", window: primary, ...verdict, nowMs: now }));
+	if (secondary) limits.push(buildUsageLimit({ key: "secondary", window: secondary, ...verdict, nowMs: now }));
 	return {
 		provider: "openai-codex",
 		fetchedAt: now,
 		limits,
 		metadata: { source: "ratelimit-headers" },
 	};
+}
+
+function buildPlanMeterState(
+	allowed: boolean | undefined,
+	limitReached: boolean | undefined,
+	creditOverage: boolean,
+): { allowed?: boolean; limitReached?: boolean } {
+	if (!creditOverage) return { allowed, limitReached };
+	return { allowed: true, limitReached: false };
 }
 
 export const openaiCodexUsageProvider: UsageProvider = {
@@ -428,9 +482,10 @@ export const openaiCodexUsageProvider: UsageProvider = {
 			parsed?.planType ??
 			(isRecord(payload) && typeof payload.plan_type === "string" ? payload.plan_type : undefined);
 
+		const creditOverage = parsed?.creditOverage === true;
 		const limits: UsageLimit[] = [];
 		const meterStates: Record<string, { allowed?: boolean; limitReached?: boolean }> = {
-			chat: { allowed: parsed?.allowed, limitReached: parsed?.limitReached },
+			chat: buildPlanMeterState(parsed?.allowed, parsed?.limitReached, creditOverage),
 		};
 		if (parsed?.primary) {
 			limits.push(
@@ -441,6 +496,7 @@ export const openaiCodexUsageProvider: UsageProvider = {
 					planType,
 					allowed: parsed.allowed,
 					limitReached: parsed.limitReached,
+					creditOverage,
 					nowMs,
 				}),
 			);
@@ -454,6 +510,7 @@ export const openaiCodexUsageProvider: UsageProvider = {
 					planType,
 					allowed: parsed.allowed,
 					limitReached: parsed.limitReached,
+					creditOverage,
 					nowMs,
 				}),
 			);
@@ -530,8 +587,7 @@ export const openaiCodexUsageProvider: UsageProvider = {
 			...(resetCredits ? { resetCredits } : {}),
 			metadata: {
 				planType,
-				allowed: parsed?.allowed,
-				limitReached: parsed?.limitReached,
+				...buildPlanMeterState(parsed?.allowed, parsed?.limitReached, creditOverage),
 				email,
 				accountId,
 				meterStates,
@@ -583,8 +639,10 @@ export const codexRankingStrategy: CredentialRankingStrategy = {
 		return { primary: findLimit("primary"), secondary: findLimit("secondary") };
 	},
 	windowDefaults: { primaryMs: 60 * 60 * 1000, secondaryMs: 7 * 24 * 60 * 60 * 1000 },
-	hasPriorityBoost(primary) {
-		if (!primary) return false;
+	hasPriorityBoost(primary, primaryUncapped = false, context) {
+		// Chat plans can omit an uncapped primary window while keeping the weekly one;
+		// Spark always has a capped primary meter, so a missing one is incomplete data.
+		if (!primary) return primaryUncapped && !isCodexSparkRequest(context);
 		const windowId = primary.scope.windowId?.toLowerCase();
 		const durationMs = primary.window?.durationMs;
 		const isFiveHourWindow =

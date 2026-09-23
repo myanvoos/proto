@@ -1,8 +1,6 @@
 import { fetchWithRetry } from "@oh-my-pi/pi-utils";
-import { Effort } from "../effort";
-import { isGlm52ReasoningEffortModelId } from "../identity/family";
 import type { ModelManagerOptions } from "../model-manager";
-import type { FetchImpl, ModelSpec, ThinkingConfig } from "../types";
+import type { FetchImpl, ModelSpec } from "../types";
 import { discoveryFetch } from "../utils";
 import { createBundledReferenceMap, createReferenceResolver } from "./bundled-references";
 
@@ -36,11 +34,6 @@ export function isOllamaCloudOutputCapped(id: string): boolean {
 	const baseId = separator > 0 ? id.slice(0, separator) : id;
 	return OLLAMA_CLOUD_OUTPUT_CAPPED_BASE_IDS[baseId] === true;
 }
-
-const OLLAMA_CLOUD_GLM_52_THINKING: ThinkingConfig = {
-	mode: "effort",
-	efforts: [Effort.High, Effort.Max],
-};
 
 function trimTrailingSlash(value: string): string {
 	return value.endsWith("/") ? value.slice(0, -1) : value;
@@ -76,15 +69,6 @@ function getContextWindow(modelInfo: Record<string, unknown> | undefined): numbe
 	}
 }
 
-function getThinkingConfig(modelId: string, capabilities: string[] | undefined): ThinkingConfig | undefined {
-	if (!capabilities?.includes("thinking")) {
-		return undefined;
-	}
-	if (isGlm52ReasoningEffortModelId(modelId)) {
-		return OLLAMA_CLOUD_GLM_52_THINKING;
-	}
-	return { mode: "effort", efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High] };
-}
 async function fetchShowMetadata(
 	baseUrl: string,
 	apiKey: string,
@@ -150,7 +134,9 @@ export function ollamaCloudModelManagerOptions(
 
 					const contextWindow = discoveredContextWindow ?? 128000;
 					const reasoning = capabilities ? capabilities.includes("thinking") : (reference?.reasoning ?? false);
-					const thinking = capabilities ? getThinkingConfig(id, capabilities) : reference?.thinking;
+					// `/api/show` reports only a boolean thinking capability, never a tier vocabulary: leave the ladder to
+					// model-thinking derivation (a synthesized minimal..high ladder clamped DeepSeek V4 `max` to `high`).
+					const thinking = capabilities ? undefined : reference?.thinking;
 					const input = capabilities
 						? capabilities.includes("vision")
 							? (["text", "image"] as Array<"text" | "image">)

@@ -2,15 +2,165 @@
 
 ## [Unreleased]
 
-### Changed
+### Added
 
+- `/rename` without a title now generates a session name from recent conversation using the configured tiny model
+- `steer()`, `followUp()`, and `sendUserMessage()` (SDK and extension API) accept `attribution: "agent"` for text an extension or another agent generated
+- A hidden notice tells prefix-bound models about tool availability changes instead of rewriting the system prompt
+- Provider-level Bedrock guardrail and request-metadata overrides in `models.yml` also apply to runtime-registered models
+- Fallback-chain entries can pin their own thinking level (`provider/model:low`); press `t` on a fallback row in `/model` to set it, inherit stores the bare selector
+- Model fallback warnings explain why the switch happened (usage preflight state with time to the earliest reset, or the provider error); `retry_fallback_applied` carries the reason to extensions and RPC
+- `maxContextWindow` on custom models and `modelOverrides` lets `/extended-context` switch a custom model between its normal and larger window
+- `@upstream` routing selectors accept tiered OpenRouter slugs (`openrouter/google/gemini-2.5-pro@google-ai-studio/priority`), and `proto bench` labels each routed model with its upstream
+- The DeepSeek cost display shows peak `↑` / off-peak `↓` indicators, refreshed automatically when the tariff changes
+- The model picker shows each model's catalog intelligence score and an estimated `~t/s` speed until a measured speed is available; custom and proxy providers inherit scores from matching catalog models
+- The transcript warns once per pair when a gateway serves a different model than the one requested
+- Raw per-effort Devin model ids (e.g. `devin/claude-mythos-9-high`) select their collapsed model
+- Model browser shows provider `new`/`beta`/`recommended` badges and the provider's model description
+- `retry.waitForUsageReset` sleeps through a provider-stated usage-limit reset (5-hour or weekly windows) instead of failing fast past `retry.maxDelayMs`; off by default
+- `proto login [provider]` logs in to a model provider from the terminal and refreshes its models
+- Perplexity browser SSO sign-in in `/login` and the setup wizard, using an isolated Chromium window
+- `models.yml` accepts `compat.disableReasoningWithTools`
+- The status-line usage segment shows the monthly quota for monthly-subscription providers (Alibaba Token Plan, Cursor, OpenCode Go) and labels untiered windows with the plan tier (e.g. Z.AI `pro`)
+- `proto usage` labels credit-based quotas with a `credits` unit
+- `proto usage clients` shows per-machine, per-app token burn recorded by the auth broker (`--days`, `--json`)
+- `proto usage` shows each policy-routed account's priority, reserve, and whether it sits inside its reserve
+
+### Changed
+- Session selector starts loading the all-projects list as soon as it opens, so switching scope no longer waits on a full cross-project scan
+- Session scans cap the remembered search text per session (16k chars) and fold transcripts incrementally, cutting the global session list's memory use and scan time on large histories
+
+
+- Read-only session transcripts (`history://`, subagent views) load only the images they display, skipping blobs behind a compaction or reset
 - While viewing an agent (side agent or subagent), `Esc` returns straight to the main session and `←←` hops to its parent agent instead of both reopening the agents view; `→→` opens that agent's own subagents
+- Date/cwd reminders stay append-only across day changes so earlier messages keep their cached bytes
+- `!command` values in `models.yml` `apiKey`/`headers` run asynchronously when a request or discovery needs them instead of blocking catalog reads; failures back off for 30s
+- `features.unexpectedStopDetection` is now `none` / `mechanical` / `smart`; `mechanical` retries on structural signals only, `smart` adds the small-model classification. Legacy `true` becomes `smart`, `false` becomes `none`
+- Built-in `smol`/`slow` priority chains refreshed: `slow` prefers GPT-5.6 Sol, Claude Fable 5.1/5, Kimi K3, GLM-5.3, Opus 5.5/5; `smol` prefers the newest Gemini Flash, GPT-5.3 Codex Spark, GLM-5.3 Flash, gpt-oss-120b, Cerebras GLM, Haiku 4.5, GPT-5.6 Luna
+- Opening `/model` refreshes provider catalogs online in the background (local endpoints that came up reappear) instead of reloading only cached data
+- `extendedContext` now defaults to off; `/extended-context on` opts in to larger windows (Codex GPT-6 Astra: 272K by default, 922K with extended context)
+- `/login` keeps earlier answers visible in multi-step logins and masks secret prompts; RPC login rejects secret prompts
+- `proto auth-broker login` shares the terminal login flow and accepts piped input
+- RPC, ACP, and non-interactive extension session switches refuse a session recorded in another project instead of running it against the current folder's settings
+- `/session pin` is now an explicit pin that usage ranking and reserves never move; resumed sessions restore their account as automatic affinity, so a stale resume re-ranks
 
 ### Fixed
 
+- A direct tool call named with a device's advertised `xd://` URL (e.g. `xd://github`) runs that device instead of failing with `Tool xd://github not found`
+- Directory reads no longer append an unactionable `[1 results limit reached. Use limit=2 for more]` notice; capped child directories show only their inline `… N more` marker
+- Enabling goal mode in settings after a session started now makes the `goal` tool available when `/goal` runs or a goal session resumes, instead of starting goal mode without it
+- Advisors that keep repeating the same failing tool call now get one loop corrective and are stopped if they ignore it, instead of looping until the update is abandoned; the stop is not retried as a provider failure
+- After an OpenAI remote compaction, tool results whose calls live only in the replayed provider history are kept instead of being dropped as orphans
+- A turn end that is immediately followed by a queued follow-up or late IRC message is no longer reported as a final stop, so the terminal title and completion notifications wait for that turn
+- Continuation requests that land together (for example two ask re-answers) now share one agent turn instead of the second failing against the busy agent
+- Retry fallbacks after a transport error that kept an unexecuted tool call no longer pick a model whose context window cannot hold that turn, or move signed Anthropic thinking to a different Claude model
+- `inspect_media` now matches the refreshed model when startup model discovery updates its metadata, and its hidden-state hint names the current model after switching between image-capable models
+- An armed prewalk that will switch models no longer receives the eager "create a checklist first" prelude alongside its "plan first, then checklist" nudge; same-model prewalks keep eager enforcement
+- Gemini `MALFORMED_FUNCTION_CALL` turns where the model wrote the call as text (`call:default_api:read{…}`) no longer stop on a pinned error: the session keeps the turn, tells the model the call was rejected, and continues (up to three attempts per prompt)
+- Idle compaction waits while the agent's own background job is still running, so the turn its result resumes keeps its history
+- A background compaction summary prepared before a large turn landed is discarded instead of applied, so auto-compaction no longer stalls or overflows the context with the stale summary
+- The compaction divider's after-token count includes kept custom-message context and, for OpenAI remote compaction, the native history the provider replays
+- A session opened in two places no longer erases the other copy's saved turns when it rewrites the file; the stale rewrite is refused and reported as a disk error instead (file, SQL, and Redis storage)
+- A manual `/compact` that interrupts a running turn resumes that turn afterwards instead of leaving the agent idle mid-task; a prompt you send while compaction runs takes precedence
+- Advisors replay their own compaction summary on later requests instead of silently dropping everything they had compacted
+- Advisor maintenance keeps native replay history without duplicating its retained messages, and fallback, cooldown restore, or context promotion no longer switch to a model that cannot replay it
+- Secret obfuscation covers native Responses replay plaintext (message, tool, and search items) and its preserved compaction history, including values found only in search items
+- The session transcript keeps the terminal "Retry budget exhausted" error when it lands in the same millisecond as the failed attempt it supersedes
+- `proto --fork` with a missing session path fails with `Session "<path>" not found.` instead of opening an empty parentless session
+- TTSR rules no longer trip on text stitched together from an aborted response and its retry or continuation
+- TTSR checks the finalized tool-call arguments, so a rule is no longer missed when streamed deltas trail the final arguments or a provider sends none
+- Streaming large edits no longer stalls the UI on TTSR AST rules: they run once on the finalized tool call instead of per streamed delta
+- A malformed `WATCHDOG.yml` entry no longer disables every advisor in the file or blanks `/advisor configure` (whose next save wiped them); the bad entry is skipped with a startup/editor warning
+- The `set_steering_mode`, `set_follow_up_mode`, and `set_interrupt_mode` RPC commands apply to the calling session only instead of writing the global `config.yml`
+- `AgentSession.waitForIdle()` no longer returns before a successful retry's recovery events and persistence have settled
+- Session `close()`/`flush()` on Redis/SQL storage now report a failed background publish through the persistence-error diagnostics instead of an unattributed rejection
+- Ctrl+D deletes the character under the cursor while the prompt has text and exits only from an empty prompt
+- `tui.hyperlinks: off`/`always` now also governs Markdown links and status-line PR links, not just file and resource links
+- macOS spelling marks misspellings with a plain underline on terminals without styled underlines (Apple Terminal, iTerm2 < 3.5, multiplexers) instead of a black bar
+- The auto-retry banner counts down the remaining wait instead of freezing on the initial delay
+- Subagent advisors review the final `yield`: the yield turn reaches the advisor and its review drains before the subagent session is disposed
+- Resuming a session whose project folder cannot be entered (e.g. macOS privacy-protected, or deleted) no longer crashes: startup and `/resume` stay in the current folder and say so, and workspace edits stay out of the old transcript until `/move`
+- `/move` and a persisted `!cd` put the session back in its project when the new folder cannot be entered or its settings fail to load, instead of leaving session and workspace in different projects
+- A failed cross-project `/resume` restores the previous session and working directory
+- Typing while the model streams an `edit`/`write` (or a parent steering a subagent mid-`yield`) no longer discards the finished call and forces the model to regenerate it
+- Advisors wait out a transient rate-limit block (within `retry.maxDelayMs` and `retry.maxRetries`) and retry instead of pausing as quota-exhausted until the session resets; a spend cap with no reset timing still pauses immediately
+- `--cwd` into a folder that exists but cannot be entered explains the macOS Files & Folders / Full Disk Access permission
+- Image-URL upload commands, `!command` config values, shell snapshots, and tunnels no longer run in (or crash on) a working directory that was deleted or denied mid-session
 - After making the terminal narrower, scrollback no longer shows words split at the old edge or tool-card gutters broken onto bare rows: a width change now redraws the transcript at the new width (like Ctrl+O, this clears terminal scrollback)
 - A status message that follows one already scrolled into terminal history now shows up instead of silently rewriting the old row (e.g. "No subagents in this session" or "Commands run in the main session" while viewing an agent)
 - No more blank bands between blocks while the agent works: when a tool card or reply gets shorter (a command settling into its outline, a card taller than the screen finishing), the input box moves up instead of leaving empty rows between the transcript and the live output, and those rows no longer end up in scrollback
+- Messages injected by extension context hooks no longer anchor Anthropic prompt-cache breakpoints
+- Cached rows from a `models.yml` discovery provider with `authHeader: true` keep their bearer header when an online refresh fails
+- `generate_image` sends configured provider/model headers on xAI and OpenRouter requests
+- An unset `tiny` role uses your configured `smol` model, and an unset `advisor` uses `slow` only when `slow` is explicitly configured
+- `modelOverrides`/extension model hooks keep sparse compat overrides and command-backed headers when they rename or rebuild models
+- `preferWebsockets` on custom and extension-registered models survives model overlays and merges
+- Resuming a session restores its model from a discovery-backed provider instead of falling back to the default role
+- Startup default prefers the provider you signed into over an ambient AWS/GCP credential source
+- Subagents retry transient provider stream errors after partial output instead of failing, and a failed structured run no longer reports its partial prose as schema data
+- Subagent model selection never picks a model from a disabled provider
+- `proto models refresh` and model hub F5 re-run `!command` credential helpers; F5 pressed while a provider refresh is pending or in flight is no longer dropped
+- Forcing a tool on OpenRouter models sends a named tool choice, and a forced choice the transport would drop is no longer reported as applied
+- `openrouter/<vendor>/<model>@upstream` resolves when the first-party provider bundles the same id instead of failing with "model not found"
+- Model picker search for `free` finds every zero-cost model, not only ids that contain the word
+- Model picker prices show sub-cent rates as decimals and mark invalid (negative or non-finite) rates as `?` instead of `free`
+- `/model` waits for a default-model switch to finish before opening its thinking controls, holds input while it applies, and confirming the preselected thinking level no longer re-applies the model
+- `/model` sidebar keeps its focus and scroll position when a background provider refresh rebuilds it; a provider that disappears hands focus to its neighbour
+- `/model` role rows separate the quick-cycle icon from its ordinal so wide Nerd Font glyphs no longer overlap the number
+- `retry.fallbackChains` no longer warns about unknown models from a `models.yml` discovery provider whose catalog has not loaded yet; the check reruns once discovery settles and the startup header updates
+- Online session titles walk `retry.fallbackChains` (tiny/commit/smol, then the session model's own chain) when the first title model errors, and stop once the session is cancelled
+- Explicit per-model prices in `models.yml` stay flat instead of inheriting time-based pricing
+- LiteLLM discovery no longer lists embedding, rerank, audio, or image-generation models when falling back to `/models`, and a metadata listing with only such models no longer falls back to the unfiltered list
+- Local llama.cpp PrismML Bonsai 2 27B GGUFs now get Qwen 3.8 thinking controls
+- Codex web search accepts email-only Codex OAuth credentials instead of failing on a missing ChatGPT account id
+- `generate_image` uses opaque `openai-codex` keys for custom Codex-compatible endpoints even when the active chat model is not OpenAI, while still requiring a ChatGPT subscription token for the official backend
+- `checkpoint` and `rewind` called from eval/kernel code (`tool.checkpoint()`) now fail with a clear error instead of reporting success without starting or rewinding a checkpoint
+- Explicit `openai-codex` context-window overrides clamp to the server-honored maximum instead of widening past it
+- GitHub Copilot model-policy 403s no longer wipe stored credentials, so the provider stays available in `/model`
+- HTTP 413 byte/media rejections no longer trigger futile token compaction; the session explains the limit and stops automatic continuation
+- MCP tools and `xd` devices keep an `i` argument whenever their schema owns it through composed, conditional, dependency, or `propertyNames` constraints
+- The `proto models` images column reports whether images are actually sent to the model
+- Cursor checklist reads that change nothing no longer bring back a dismissed checklist HUD
+- `proto auth-broker token` and `proto auth-gateway token` create a token on Windows instead of exiting silently
+- Antigravity image generation resolves the advertised image model per account when rotating credentials
+- Status-line usage for Antigravity shows the quota of the active model's family instead of the most-exhausted counter
+- Usage views show a shared Antigravity Claude/GPT quota once per account instead of as two accounts
+- Oversized Anthropic server-side compaction state is persisted verbatim so resumed sessions replay it
+- Discovery 401/403 responses show the provider as needing sign-in instead of silently emptying its models
+- An OpenAI Responses request-body-read timeout elides large old tool results into a recoverable artifact and retries once, instead of repeatedly resubmitting the same oversized request
+- Corrupt agent and prompt-history databases no longer prevent startup: damaged files are preserved as private `.corrupt-*` backups before fresh stores are created, and database startup errors name the failing file
+- The status-line usage segment recognizes 5h/weekly windows by duration, so Z.AI's weekly quota appears
+- Reviewer usage-limit retries read Z.AI/Zhipu reset stamps in the provider's timezone and keep provider-stated block deadlines authoritative
+- Double Ctrl-C while extensions are still loading exits instead of throwing `ExtensionExitError`
+- `bash` and managed terminals launched from a git hook or `git --git-dir` wrapper no longer run `git` against the launching checkout instead of the command's working directory
+- Programs run under a supervised PTY no longer stall probing the terminal for cursor position or device attributes
+- An ACP `session/prompt` that lands while an autonomous turn is streaming fails with a typed `session_busy` error (`-32003`) instead of a generic internal error
+- The composer startup cache follows `XDG_CACHE_HOME` in XDG layouts
+- When the agent keeps stopping with empty replies, the capped final stop no longer gets rewind or checklist reminders appended
+- Automatic title refresh after a replan respects `PI_NO_TITLE`, and title requests reuse the session's signed-in account
+- Imported Claude Code sessions keep API-error turns as errors, show the working folder even for very large transcripts, and keep user text around tool results in order
+- Truncated command output keeps as much of a single giant line as fits, and truncation notices report exact line ranges and mark partial lines
+- The retry-limit message rounds the provider's requested wait up instead of down
+- `--continue` follows a session into a renamed folder only when the folder is provably the same directory, and stays inside an explicit `--session-dir`
+- `--resume`, `/resume`, `--continue`, and recent-session lists skip sessions that never got an assistant reply
+- Listing sessions across all projects reads the same sessions directory new sessions are written to
+- Falling back to another model during retries refreshes model-specific system-prompt parts (model identity, Codex task policy, computer-tool notice)
+- SQL session storage: renaming a session onto its own path no longer deletes it, moves are atomic, and MySQL upserts no longer use deprecated `VALUES()`
+- `/move` to a folder on another filesystem moves the session file and its artifacts instead of failing, without overwriting existing artifacts
+- Closing a session no longer deletes a draft session file that another process has written to since
+- Deleting a session also removes its rewrite backups, so it no longer reappears on the next start
+- Column-cap truncation notices name the enforced unit (bytes or characters)
+- Custom messages keep the timestamp of the message that created them
+- A `blocker` raised by the advisor during a terminal `yield` is kept as a visible advisor card instead of being lost with the aborted turn
+- Late advisor `nit`/`concern` notes arriving while the final turn winds down stay visible as advisor cards instead of being stranded until the next prompt
+- Advisor notes withheld during a multi-step turn are delivered when the turn finishes, even if the advisor is paused by a usage limit
+- A TTSR rule that matches again before its queued reminder is delivered no longer queues a duplicate reminder, and a discarded reminder no longer silences the rule
+- A slow or stuck extension event handler no longer freezes the transcript, delays saving messages, or holds up steering: the UI and session file update immediately while extensions catch up
+- Sessions with the same modification time are listed in a stable order (newest created first)
+- After compaction, the collapsed transcript no longer opens with stale fragments of a turn that started before the kept history (e.g. an old subagent prompt)
+- RPC `set_auto_compaction`/`set_auto_retry` change only the calling session instead of rewriting your global `config.yml`; the settings panel still saves them, and its choice wins over an earlier session change (#11431)
+- A mid-run compaction that keeps the history length and last message the same no longer sends the pre-compaction messages on the next request
+- A subagent's soft-budget notice, synthetic prompts queued mid-run, and a `/side` branch question are recorded with the right initiator instead of all as your words; subagent session files record their parent session (#12077)
 
 ## [18.5.0] - 2026-09-23
 

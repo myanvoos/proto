@@ -16,9 +16,11 @@ export interface ShellConfigOptions {
 }
 let cachedShellConfig: ShellConfig | null = null;
 
-export function isExecutable(path: string): boolean {
+/** Whether a path is a regular file with effective execute permission (a directory passes `X_OK` too). */
+export function isExecutable(filePath: string): boolean {
 	try {
-		fs.accessSync(path, fs.constants.X_OK);
+		if (!fs.statSync(filePath).isFile()) return false;
+		fs.accessSync(filePath, fs.constants.X_OK);
 		return true;
 	} catch {
 		return false;

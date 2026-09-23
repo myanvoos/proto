@@ -16,9 +16,9 @@ describe("fetchCodexModels", () => {
 				requests.push({ url: String(input), init });
 				return response(
 					{
-						"gpt-6-astra": {
-							id: "gpt-6-astra",
-							name: "GPT-6 Astra",
+						"gpt-6-nova": {
+							id: "gpt-6-nova",
+							name: "GPT-6 Nova",
 							api: "openai-codex-responses",
 							provider: "openai-codex",
 							baseUrl: "https://chatgpt.com/backend-api",
@@ -36,7 +36,7 @@ describe("fetchCodexModels", () => {
 							thinkingLevelMap: { off: null, low: "low", max: "max" },
 						},
 					},
-					{ status: 200, headers: { etag: 'W/"astra"' } },
+					{ status: 200, headers: { etag: 'W/"nova"' } },
 				);
 			},
 		});
@@ -44,11 +44,11 @@ describe("fetchCodexModels", () => {
 		expect(requests).toHaveLength(1);
 		expect(requests[0]?.url).toBe(PI_CODEX_CATALOG_URL);
 		expect(new Headers(requests[0]?.init?.headers).get("authorization")).toBeNull();
-		expect(result?.etag).toBe('W/"astra"');
+		expect(result?.etag).toBe('W/"nova"');
 		expect(result?.models).toEqual([
 			{
-				id: "gpt-6-astra",
-				name: "GPT-6 Astra",
+				id: "gpt-6-nova",
+				name: "GPT-6 Nova",
 				api: "openai-codex-responses",
 				provider: "openai-codex",
 				baseUrl: "https://chatgpt.com/backend-api",
@@ -67,6 +67,36 @@ describe("fetchCodexModels", () => {
 				preferWebsockets: true,
 			},
 		]);
+	});
+
+	test("prices GPT-6 subscription SKUs at credit-equivalent rates without the API long-context tier", async () => {
+		const apiPriced = {
+			api: "openai-codex-responses",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			cost: {
+				input: 10,
+				output: 50,
+				cacheRead: 1,
+				cacheWrite: 12.5,
+				tiers: [{ inputTokensAbove: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 }],
+			},
+			contextWindow: 272_000,
+			maxTokens: 128_000,
+		};
+		const result = await fetchCodexModels({
+			fetchFn: async () =>
+				response({
+					"gpt-6-astra": { ...apiPriced, id: "gpt-6-astra" },
+					"gpt-6-astra-wm": { ...apiPriced, id: "gpt-6-astra-wm" },
+					"gpt-6-luna": { ...apiPriced, id: "gpt-6-luna" },
+				}),
+		});
+		const costs = Object.fromEntries((result?.models ?? []).map(model => [model.id, model.cost]));
+
+		expect(costs["gpt-6-astra"]).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 0 });
+		expect(costs["gpt-6-astra-wm"]).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 0 });
+		expect(costs["gpt-6-luna"]).toEqual({ input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0 });
 	});
 
 	test("keeps the one-million-token floor for GPT-5.6 Codex models", async () => {

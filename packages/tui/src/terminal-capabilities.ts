@@ -10,7 +10,13 @@ import {
 	renderKittyPlaceholderLines,
 	setKittyGraphics,
 } from "./kitty-graphics";
-import { isInsideTmux, unwrapTmuxPassthrough, wrapTmuxPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
+import {
+	isInsideTmux,
+	resolveTmuxClientTerminalName,
+	unwrapTmuxPassthrough,
+	wrapTmuxPassthrough,
+	wrapTmuxPassthroughIfNeeded,
+} from "./tmux";
 import { isInsideHerdr, isInsideTerminalMultiplexer } from "./ttyid";
 import type { HangulCompatibilityJamoWidth } from "./utils";
 
@@ -53,22 +59,72 @@ export type TerminalId =
 	| "vscode"
 	| "alacritty"
 	| "warp"
+	| "orca"
+	| "otty"
+	| "rio"
 	| "base"
 	| "trueColor";
 
 const CMUX_NOTIFICATION_TITLE = "Proto";
 const CMUX_SURFACE_ID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu;
 
+/** Title and body for an out-of-band multiplexer notification (cmux, Herdr). */
+function notificationTitleAndBody(message: string | TerminalNotification): { title: string; body: string } {
+	if (typeof message === "string") return { title: CMUX_NOTIFICATION_TITLE, body: message };
+	return { title: message.title?.trim() || CMUX_NOTIFICATION_TITLE, body: message.body ?? "" };
+}
+
 function sendCmuxNotification(message: string | TerminalNotification, env: NodeJS.ProcessEnv = Bun.env): boolean {
 	const surfaceId = env.CMUX_SURFACE_ID?.trim();
 	if (!surfaceId || !CMUX_SURFACE_ID_PATTERN.test(surfaceId)) return false;
 
-	const title =
-		typeof message === "string" ? CMUX_NOTIFICATION_TITLE : message.title?.trim() || CMUX_NOTIFICATION_TITLE;
-	const body = typeof message === "string" ? message : (message.body ?? "");
+	const { title, body } = notificationTitleAndBody(message);
 	try {
 		const child = Bun.spawn({
 			cmd: ["cmux", "notify", "--surface", surfaceId, "--title", title, "--body", body],
+			stdin: "ignore",
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		child.unref();
+	} catch {
+		return false;
+	}
+	return true;
+}
+
+const HERDR_PANE_ID_PATTERN = /^[0-9A-Za-z:_-]{1,64}$/u;
+/**
+ * `herdr notification show` takes the title as its first positional and reads
+ * exactly these values there as a help request; it has no `--` terminator.
+ */
+const HERDR_USAGE_TOKENS = new Set(["help", "--help", "-h"]);
+
+/**
+ * Route a notification through Herdr when the process runs inside one of its
+ * panes. Herdr swallows bare OSC 9 / OSC 99, has no DCS passthrough envelope,
+ * and its bell relay does not flag a backgrounded tab, so without this branch a
+ * backgrounded pane gets no signal that the agent finished or is waiting.
+ *
+ * A question or an error needs the human and rings `request`, a settled turn
+ * rings `done`, anything else stays silent. Returns whether Herdr owns delivery,
+ * so the terminal fallbacks still run when the pane id or the binary is missing.
+ */
+function sendHerdrNotification(message: string | TerminalNotification, env: NodeJS.ProcessEnv = Bun.env): boolean {
+	// Pane-only detection, like `isInsideHerdr`: an env-sanitizing launcher can
+	// drop HERDR_ENV and keep the pane identity, which the CLI needs anyway.
+	if (!isInsideHerdr(env)) return false;
+	const paneId = env.HERDR_PANE_ID?.trim();
+	if (!paneId || !HERDR_PANE_ID_PATTERN.test(paneId)) return false;
+
+	const parsed = notificationTitleAndBody(message);
+	const title = HERDR_USAGE_TOKENS.has(parsed.title) ? CMUX_NOTIFICATION_TITLE : parsed.title;
+	const kinds = typeof message === "string" ? [] : [message.type ?? []].flat();
+	const sound =
+		kinds.includes("ask") || kinds.includes("error") ? "request" : kinds.includes("completion") ? "done" : "none";
+	try {
+		const child = Bun.spawn({
+			cmd: ["herdr", "notification", "show", title, "--body", parsed.body, "--sound", sound],
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "ignore",
@@ -149,6 +205,10 @@ export class TerminalInfo {
 
 	sendNotification(message: string | TerminalNotification): void {
 		if (isNotificationSuppressed() || isTerminalHeadless()) return;
+		// Innermost surface first: a Herdr pane launched inside a cmux surface
+		// inherits both identities, and flagging the outer cmux surface would
+		// leave the backgrounded Herdr pane that is actually waiting unmarked.
+		if (sendHerdrNotification(message)) return;
 		if (sendCmuxNotification(message)) return;
 		const formatted = this.formatNotification(message);
 
@@ -270,6 +330,32 @@ export function detectRectangularSgrSupport(terminalId: TerminalId, env: NodeJS.
 	return true;
 }
 
+/**
+ * Whether the terminal implements colon-subparameter SGR styled underlines —
+ * `CSI 4 : 3 m` (curly) plus `CSI 58` / `CSI 59` underline color — rather than
+ * only the legacy `CSI 4 m` / `CSI 24 m`. Keyed on the detected terminal, never
+ * on `TERM`/`COLORTERM`: Apple Terminal renders `CSI 4 : 0 m` as a solid black
+ * bar to end of line and ignores SGR 58/59. Disabled under any multiplexer,
+ * which may drop colon-form SGR while leaking the outer terminal's identity.
+ */
+export function detectStyledUnderlineSupport(terminalId: TerminalId, env: NodeJS.ProcessEnv = Bun.env): boolean {
+	if (isInsideTerminalMultiplexer(env)) return false;
+	switch (terminalId) {
+		case "kitty":
+		case "ghostty":
+		case "wezterm":
+			return true;
+		case "iterm2": {
+			// Curly underline plus SGR 58/59 color shipped together in iTerm2 3.5;
+			// an absent or unparseable version keeps the flat fallback.
+			const version = parseMajorMinorVersion(env.TERM_PROGRAM_VERSION);
+			return version !== null && (version.major > 3 || (version.major === 3 && version.minor >= 5));
+		}
+		default:
+			return false;
+	}
+}
+
 export function hyperlinksUserOverride(env: NodeJS.ProcessEnv = Bun.env): boolean | null {
 	if (env.PI_NO_HYPERLINKS === "1") return false;
 	if (env.PI_FORCE_HYPERLINKS === "1") return true;
@@ -349,11 +435,39 @@ const KNOWN_TERMINALS = Object.freeze({
 	alacritty: new TerminalInfo("alacritty", null, true, true, NotifyProtocol.Bell),
 
 	warp: new TerminalInfo("warp", ImageProtocol.Kitty, true, false, NotifyProtocol.Osc9, false, false, false, 1),
+	// Orca renders Hangul Compatibility Jamo at two cells (UAX#11); everything
+	// else stays on conservative true-color defaults.
+	orca: new TerminalInfo("orca", null, true, false, NotifyProtocol.Bell, false, false, false, 2),
+	// Otty (TERM_PROGRAM=otty) documents Kitty direct and virtual (U+10EEEE
+	// placeholder) placement, OSC 8 hyperlinks and OSC 99 notifications. DECCARA
+	// and OSC 66 text sizing are unverified, so those stay conservative;
+	// synchronized output is left to the runtime DECRQM probe.
+	otty: new TerminalInfo("otty", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc99),
+	// rio ships Kitty graphics (direct placement plus U=1 placeholders) and opens
+	// OSC 8 hyperlinks through its hints system. Notifications stay on BEL: its
+	// Windows OSC 9 path raises a toast Windows silently drops. DECCARA,
+	// screen-to-scrollback, OSC 99 and OSC 66 are outside rio's supported set.
+	rio: new TerminalInfo("rio", ImageProtocol.Kitty, true, true),
 });
 
 export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 	function caseEq(a: string, b: string): boolean {
 		return a.toLowerCase() === b.toLowerCase();
+	}
+
+	function fromProgram(program: string | undefined): TerminalId | null {
+		if (!program) return null;
+		if (caseEq(program, "kitty")) return "kitty";
+		if (caseEq(program, "ghostty")) return "ghostty";
+		if (caseEq(program, "wezterm")) return "wezterm";
+		if (caseEq(program, "iterm.app") || caseEq(program, "iterm2")) return "iterm2";
+		if (caseEq(program, "vscode")) return "vscode";
+		if (caseEq(program, "alacritty")) return "alacritty";
+		if (caseEq(program, "warpterminal")) return "warp";
+		if (caseEq(program, "orca")) return "orca";
+		if (caseEq(program, "otty")) return "otty";
+		if (caseEq(program, "rio")) return "rio";
+		return null;
 	}
 
 	const {
@@ -375,15 +489,13 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 	if (VSCODE_PID) return "vscode";
 	if (ALACRITTY_WINDOW_ID) return "alacritty";
 
-	if (TERM_PROGRAM) {
-		if (caseEq(TERM_PROGRAM, "kitty")) return "kitty";
-		if (caseEq(TERM_PROGRAM, "ghostty")) return "ghostty";
-		if (caseEq(TERM_PROGRAM, "wezterm")) return "wezterm";
-		if (caseEq(TERM_PROGRAM, "iterm.app")) return "iterm2";
-		if (caseEq(TERM_PROGRAM, "vscode")) return "vscode";
-		if (caseEq(TERM_PROGRAM, "alacritty")) return "alacritty";
-		if (caseEq(TERM_PROGRAM, "warpterminal")) return "warp";
-	}
+	const programId = fromProgram(TERM_PROGRAM);
+	if (programId) return programId;
+
+	// tmux >= 3.2 replaces the pane's identity with `TERM_PROGRAM=tmux`; its
+	// server still holds the attached client's terminal-type reply.
+	const clientProgramId = fromProgram(resolveTmuxClientTerminalName(env) ?? undefined);
+	if (clientProgramId) return clientProgramId;
 
 	if (TERM?.toLowerCase().includes("ghostty")) return "ghostty";
 
@@ -418,6 +530,8 @@ export interface RuntimeTerminal extends TerminalInfo {
 	supportsScreenToScrollback: boolean;
 
 	textSizing: boolean;
+	/** Colon-form styled underlines (curly + SGR 58/59 color) render correctly. */
+	styledUnderlines: boolean;
 }
 
 export const TERMINAL: RuntimeTerminal = (() => {
@@ -435,10 +549,35 @@ export const TERMINAL: RuntimeTerminal = (() => {
 	resolved.hyperlinks = shouldEnableHyperlinksByDefault(Bun.env, resolved.id);
 
 	resolved.deccara = detectRectangularSgrSupport(resolved.id, Bun.env) && !isBunTestRuntime();
+	resolved.styledUnderlines = detectStyledUnderlineSupport(resolved.id, Bun.env);
 	return resolved;
 })();
 
 setKittyGraphics({ unicodePlaceholders: detectKittyUnicodePlaceholdersSupport(TERMINAL.id, Bun.env) });
+
+/** Detected OSC 8 support. `TERMINAL.hyperlinks` is the effective flag a host policy may override. */
+export const DETECTED_TERMINAL_HYPERLINKS: boolean = TERMINAL.hyperlinks;
+
+/**
+ * Resolve a hyperlink policy (`off`/`auto`/`always`). `auto` — and any unknown
+ * value — needs a TTY stdout, no `NO_COLOR`, and detected terminal support.
+ */
+export function resolveHyperlinkPolicy(mode: unknown): boolean {
+	if (mode === "off") return false;
+	if (mode === "always") return true;
+	if (Bun.env.NO_COLOR) return false;
+	if (!process.stdout.isTTY) return false;
+	return DETECTED_TERMINAL_HYPERLINKS;
+}
+
+/**
+ * Override the effective OSC 8 capability. Hosts push their resolved hyperlink
+ * policy here so renderers gating on `TERMINAL.hyperlinks` (Markdown links, bare
+ * URLs) honor it; detection stays in {@link DETECTED_TERMINAL_HYPERLINKS}.
+ */
+export function setTerminalHyperlinks(enabled: boolean): void {
+	TERMINAL.hyperlinks = enabled;
+}
 
 export function setTerminalImageProtocol(imageProtocol: ImageProtocol | null): void {
 	TERMINAL.imageProtocol = imageProtocol;

@@ -931,10 +931,10 @@ function styleChar(ch: string, style: ParseStyle): string {
 	const isAlnum = (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 48 && code <= 57);
 	return isAlnum ? styleAlnum(ch, style.font) : ch;
 }
+// Synthetic delimiters take the enclosing style, never a styled edge glyph's:
+// `\color{red}{x}` wrapped in parens must not paint the parens red.
 function surroundRendered(text: Rendered, left: string, right: string, fallback: RenderStyle): Rendered {
-	const first = text[0]?.style ?? fallback;
-	const last = text[text.length - 1]?.style ?? first;
-	return concatRendered(styledText(left, first), text, styledText(right, last));
+	return concatRendered(styledText(left, fallback), text, styledText(right, fallback));
 }
 function trimRendered(text: Rendered): Rendered {
 	const out = text.map(chunk => ({ ...chunk }));
@@ -1295,22 +1295,18 @@ export function latexColorScope(model: string | null, spec: string): ((text: str
 	return text => foreground + text.replaceAll(ANSI_FG_RESET, foreground) + ANSI_FG_RESET;
 }
 
-function toSuperscript(text: Rendered, group: boolean): Rendered {
+function toSuperscript(text: Rendered, group: boolean, fallback: RenderStyle): Rendered {
 	if (text.length === 0) return [];
 	const mapped = mapAll(text, SUPERSCRIPT);
 	if (mapped !== null) return mapped;
-	const first = text[0]?.style ?? DEFAULT_RENDER_STYLE;
-	const last = text[text.length - 1]?.style ?? first;
-	return concatRendered(styledText(group ? "^(" : "^", first), text, styledText(group ? ")" : "", last));
+	return concatRendered(styledText(group ? "^(" : "^", fallback), text, styledText(group ? ")" : "", fallback));
 }
 
-function toSubscript(text: Rendered, group: boolean): Rendered {
+function toSubscript(text: Rendered, group: boolean, fallback: RenderStyle): Rendered {
 	if (text.length === 0) return [];
 	const mapped = mapAll(text, SUBSCRIPT);
 	if (mapped !== null) return mapped;
-	const first = text[0]?.style ?? DEFAULT_RENDER_STYLE;
-	const last = text[text.length - 1]?.style ?? first;
-	return concatRendered(styledText(group ? "_(" : "_", first), text, styledText(group ? ")" : "", last));
+	return concatRendered(styledText(group ? "_(" : "_", fallback), text, styledText(group ? ")" : "", fallback));
 }
 
 interface Argument {
@@ -1733,8 +1729,9 @@ class LatexParser {
 	}
 
 	#script(style: ParseStyle, sup: boolean): Rendered {
+		const current = this.#renderStyle(style);
 		const arg = this.#argument(style);
-		return sup ? toSuperscript(arg.text, arg.group) : toSubscript(arg.text, arg.group);
+		return sup ? toSuperscript(arg.text, arg.group, current) : toSubscript(arg.text, arg.group, current);
 	}
 
 	#wrapFrac(arg: Argument, fallback: RenderStyle): Rendered {
@@ -1753,31 +1750,35 @@ class LatexParser {
 	}
 
 	#scriptedAbove(style: ParseStyle): Rendered {
+		const current = this.#renderStyle(style);
 		const above = this.#argument(style);
 		const base = this.#argument(style);
-		return concatRendered(base.text, toSuperscript(above.text, true));
+		return concatRendered(base.text, toSuperscript(above.text, true, current));
 	}
 
 	#scriptedBelow(style: ParseStyle): Rendered {
+		const current = this.#renderStyle(style);
 		const below = this.#argument(style);
 		const base = this.#argument(style);
-		return concatRendered(base.text, toSubscript(below.text, true));
+		return concatRendered(base.text, toSubscript(below.text, true, current));
 	}
 
 	#prescript(style: ParseStyle): Rendered {
+		const current = this.#renderStyle(style);
 		const sup = this.#argument(style);
 		const sub = this.#argument(style);
 		const base = this.#argument(style);
-		return concatRendered(toSuperscript(sup.text, true), toSubscript(sub.text, true), base.text);
+		return concatRendered(toSuperscript(sup.text, true, current), toSubscript(sub.text, true, current), base.text);
 	}
 
 	#extensibleArrow(style: ParseStyle, arrow: string): Rendered {
+		const current = this.#renderStyle(style);
 		const below = this.#optionalArgument(style);
 		const above = this.#argument(style);
 		return concatRendered(
-			styledText(arrow, this.#renderStyle(style)),
-			toSuperscript(above.text, true),
-			below === null ? [] : toSubscript(below.text, true),
+			styledText(arrow, current),
+			toSuperscript(above.text, true, current),
+			below === null ? [] : toSubscript(below.text, true, current),
 		);
 	}
 
@@ -1870,7 +1871,7 @@ class LatexParser {
 						? styledText("∛", current)
 						: indexText === "4"
 							? styledText("∜", current)
-							: concatRendered(toSuperscript(index.text, true), styledText("√", current));
+							: concatRendered(toSuperscript(index.text, true, current), styledText("√", current));
 		}
 		const radicand = this.#argument(style).text;
 		return concatRendered(

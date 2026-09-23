@@ -448,9 +448,12 @@ async function withResolvedOrganization(
 }
 
 /**
- * Reuse program blocks when a normal usage response actually includes them.
- * A lone non-redeemable Cedar block is inconclusive because Juniper requires
- * the separate at-wall read, so callers must still perform discovery.
+ * Reuse program blocks when a normal usage response actually evaluated them.
+ * The plain `/usage` body lists every promo program with a `null` value until
+ * the matching probe query asks for an evaluation, so only an object block is
+ * an answer; anything else returns `null` and the caller runs discovery. A lone
+ * non-redeemable Cedar block is inconclusive too, because Juniper requires the
+ * separate at-wall read.
  *
  * @internal
  */
@@ -459,26 +462,24 @@ export function parseClaudeResetCreditsFromUsagePayload(
 	orgId?: string,
 	baseUrl?: string,
 ): ClaudeResetCreditList | null {
-	if (!isRecord(payload) || !Object.hasOwn(payload, CEDAR_PROGRAM)) return null;
-	const parsedCedar = parseCedarStatus(payload[CEDAR_PROGRAM]);
-	if (!parsedCedar.ok) return null;
+	if (!isRecord(payload)) return null;
+	const cedarBlock = payload[CEDAR_PROGRAM];
+	const juniperBlock = payload[JUNIPER_PROGRAM];
 	const normalizedOrgId = orgId?.trim();
 	const safeOrgId = normalizedOrgId && ORGANIZATION_ID.test(normalizedOrgId) ? normalizedOrgId : undefined;
-	const cedarList = parsedCedar.status ? normalizeCedarList(parsedCedar.status, safeOrgId, baseUrl) : undefined;
-	if (cedarList && (cedarList.availableCount > 0 || cedarList.nextCreditId)) return cedarList;
-	if (!Object.hasOwn(payload, JUNIPER_PROGRAM)) return null;
-	const parsedJuniper = parseJuniperStatus(payload[JUNIPER_PROGRAM]);
-	if (!parsedJuniper.ok) return null;
-	if (parsedJuniper.status) return normalizeJuniperList(parsedJuniper.status, safeOrgId, baseUrl);
-	if (cedarList) return cedarList;
-	return {
-		availableCount: 0,
-		redeemableCount: 0,
-		eligible: false,
-		credits: [],
-		...(safeOrgId ? { orgId: safeOrgId } : {}),
-		...(baseUrl ? { baseUrl } : {}),
-	};
+	let cedarList: ClaudeResetCreditList | undefined;
+	if (isRecord(cedarBlock)) {
+		const parsedCedar = parseCedarStatus(cedarBlock);
+		if (!parsedCedar.ok || !parsedCedar.status) return null;
+		cedarList = normalizeCedarList(parsedCedar.status, safeOrgId, baseUrl);
+		if (cedarList.availableCount > 0 || cedarList.nextCreditId) return cedarList;
+	}
+	if (isRecord(juniperBlock)) {
+		const parsedJuniper = parseJuniperStatus(juniperBlock);
+		if (!parsedJuniper.ok || !parsedJuniper.status) return null;
+		return normalizeJuniperList(parsedJuniper.status, safeOrgId, baseUrl);
+	}
+	return cedarList ?? null;
 }
 
 /**

@@ -1,57 +1,15 @@
 import * as fs from "node:fs";
 
-const POOLED_BUFFER_SIZE = 512;
-const ASYNC_POOL_SIZE = 10;
-
-const MAX_ASYNC_WAITERS = 4;
 const INITIAL_SYNC_BUFFER_SIZE = 1024;
-const EMPTY_BUFFER = Buffer.alloc(0);
+const EMPTY_BUFFER = new Uint8Array(0);
 
-const asyncPool = Array.from({ length: ASYNC_POOL_SIZE }, () => Buffer.allocUnsafe(POOLED_BUFFER_SIZE));
-const availableAsyncPoolIndexes = Array.from({ length: ASYNC_POOL_SIZE }, (_, index) => index);
-const asyncPoolWaiters: Array<(index: number) => void> = [];
 let syncPool = new Uint8Array(INITIAL_SYNC_BUFFER_SIZE);
 
-function acquireAsyncPoolIndex(): Promise<number> | number {
-	const index = availableAsyncPoolIndexes.pop();
-	if (index !== undefined) {
-		return index;
-	}
-	if (asyncPoolWaiters.length >= MAX_ASYNC_WAITERS) {
-		return -1;
-	}
-	const { promise, resolve } = Promise.withResolvers<number>();
-	asyncPoolWaiters.push(resolve);
-	return promise;
-}
-
-function releaseAsyncPoolIndex(index: number): void {
-	if (index < 0) {
-		return;
-	}
-	const waiter = asyncPoolWaiters.shift();
-	if (waiter) {
-		waiter(index);
-		return;
-	}
-	availableAsyncPoolIndexes.push(index);
-}
-
-async function withAsyncPoolBuffer<T>(maxBytes: number, op: (buffer: Buffer) => Promise<T>): Promise<T> {
-	if (maxBytes <= 0) {
-		return op(EMPTY_BUFFER);
-	}
-	if (maxBytes > POOLED_BUFFER_SIZE) {
-		return op(Buffer.allocUnsafe(maxBytes));
-	}
-
-	const poolIndex = await acquireAsyncPoolIndex();
-	const buffer = poolIndex >= 0 ? asyncPool[poolIndex] : Buffer.allocUnsafe(maxBytes);
-	try {
-		return await op(buffer.subarray(0, maxBytes));
-	} finally {
-		releaseAsyncPoolIndex(poolIndex);
-	}
+// Async peeks get a fresh window so a slice the callback retains cannot be overwritten by a later read. A plain view
+// keeps Uint8Array.slice copy semantics (Buffer.slice would alias) without zeroing bytes the read replaces.
+function allocateWindow(length: number): Uint8Array {
+	const buffer = Buffer.allocUnsafe(length);
+	return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 }
 
 function withSyncPoolBuffer<T>(maxBytes: number, op: (buffer: Uint8Array) => T): T {
@@ -87,10 +45,9 @@ export async function peekFile<T>(filePath: string, maxBytes: number, op: (heade
 
 	const fileHandle = await fs.promises.open(filePath, "r");
 	try {
-		return await withAsyncPoolBuffer(maxBytes, async buffer => {
-			const { bytesRead } = await fileHandle.read(buffer, 0, buffer.byteLength, 0);
-			return op(buffer.subarray(0, bytesRead));
-		});
+		const buffer = allocateWindow(maxBytes);
+		const { bytesRead } = await fileHandle.read(buffer, 0, buffer.byteLength, 0);
+		return op(buffer.subarray(0, bytesRead));
 	} finally {
 		await fileHandle.close();
 	}
@@ -108,10 +65,9 @@ export async function peekFileTail<T>(filePath: string, maxBytes: number, op: (t
 		if (len <= 0) {
 			return op(EMPTY_BUFFER);
 		}
-		return await withAsyncPoolBuffer(len, async buffer => {
-			const { bytesRead } = await fileHandle.read(buffer, 0, buffer.byteLength, size - len);
-			return op(buffer.subarray(0, bytesRead));
-		});
+		const buffer = allocateWindow(len);
+		const { bytesRead } = await fileHandle.read(buffer, 0, buffer.byteLength, size - len);
+		return op(buffer.subarray(0, bytesRead));
 	} finally {
 		await fileHandle.close();
 	}
@@ -133,7 +89,7 @@ export async function peekFileEnds<T>(
 		const headLen = prefixBytes > 0 ? Math.min(prefixBytes, size) : 0;
 		const tailLen = suffixBytes > 0 ? Math.min(suffixBytes, size) : 0;
 
-		const head = headLen > 0 ? Buffer.allocUnsafe(headLen) : EMPTY_BUFFER;
+		const head = headLen > 0 ? allocateWindow(headLen) : EMPTY_BUFFER;
 		const headBytesRead = headLen > 0 ? (await fileHandle.read(head, 0, head.byteLength, 0)).bytesRead : 0;
 		const headSlice = head.subarray(0, headBytesRead);
 
@@ -144,7 +100,7 @@ export async function peekFileEnds<T>(
 			return op(headSlice, headSlice.subarray(Math.max(0, headBytesRead - tailLen)));
 		}
 
-		const tail = Buffer.allocUnsafe(tailLen);
+		const tail = allocateWindow(tailLen);
 		const { bytesRead: tailBytesRead } = await fileHandle.read(tail, 0, tail.byteLength, size - tailLen);
 		return op(headSlice, tail.subarray(0, tailBytesRead));
 	} finally {

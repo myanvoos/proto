@@ -159,14 +159,13 @@ function collectMessageParts(error: unknown, captured: CapturedHttpErrorResponse
 	return parts.join("\n");
 }
 
-const REASONING_EFFORT_FIELD_PATTERN = /reasoning[_. ]effort|reasoning value|(?:valid|supported|allowed) levels?/i;
-const REASONING_EFFORT_SUPPORTED_VALUES_PATTERN = /(?:valid|supported|allowed) values?/i;
+// Gateways reject the value alone (`level "none" not supported, valid levels: …`)
+// and Copilot lists `Supported values are: …`, so allowed-value lists count as
+// a mention; `ReasoningEffort` arrives in CamelCase from some hosts.
+const REASONING_EFFORT_FIELD_PATTERN =
+	/reasoning[_. ]?effort|reasoning value|(?:valid|supported|allowed) (?:levels?|values?)/i;
 
-function mentionsReasoningEffort(
-	error: unknown,
-	captured: CapturedHttpErrorResponse | undefined,
-	currentEffort: string,
-): boolean {
+function mentionsReasoningEffort(error: unknown, captured: CapturedHttpErrorResponse | undefined): boolean {
 	const param = capturedStringField(captured, "param");
 	const code = capturedStringField(captured, "code");
 	const type = capturedStringField(captured, "type");
@@ -175,12 +174,60 @@ function mentionsReasoningEffort(
 		REASONING_EFFORT_FIELD_PATTERN.test(param ?? "") ||
 		REASONING_EFFORT_FIELD_PATTERN.test(code ?? "") ||
 		REASONING_EFFORT_FIELD_PATTERN.test(type ?? "") ||
-		REASONING_EFFORT_FIELD_PATTERN.test(message) ||
-		// Bare "Supported values" lists are ambiguous for enabled tiers (for
-		// example, text verbosity uses the same words). Copilot's fieldless
-		// rejection is safe to attribute when it rejects the off value.
-		(currentEffort.toLowerCase() === "none" && REASONING_EFFORT_SUPPORTED_VALUES_PATTERN.test(message))
+		REASONING_EFFORT_FIELD_PATTERN.test(message)
 	);
+}
+
+/** Parsed once per rejection; {@link isInvalidReasoningEffortError} decides from a fixed precedence table. */
+interface EffortRejectionSignal {
+	/** Explicit `param` attribution, else message content, else unknown. */
+	field: "reasoning-effort" | "other" | "unknown";
+	namesFieldInMessage: boolean;
+	/** A fielded rejection verdict in any word order. */
+	messageVerdict: boolean;
+	/** Allowed tiers listed in gateway levels vocabulary. */
+	listsLevels: boolean;
+	/** The rejected effort is quoted next to a rejection verdict. */
+	rejectedMatches: boolean;
+}
+
+const EFFORT_FIELD_PATTERN = /reasoning[_. ]?effort|reasoning value/i;
+const ALLOWED_LEVELS_PATTERN = /(?:valid|supported|allowed) levels?/i;
+
+function messageCarriesEffortVerdict(message: string): boolean {
+	return (
+		/invalid[^\n]*(?:reasoning[_. ]?effort|reasoning value)/i.test(message) ||
+		/(?:reasoning[_. ]?effort|reasoning value)[^\n]*(?:invalid|unsupported|not supported|not permitted|must be|expected|unknown|unexpected|unrecognized)/i.test(
+			message,
+		) ||
+		/(?:unsupported|not supported|not permitted|unknown|unexpected|unrecognized|extra)[^\n]*(?:reasoning[_. ]?effort|reasoning value)/i.test(
+			message,
+		)
+	);
+}
+
+function parseEffortRejectionSignal(
+	message: string,
+	captured: CapturedHttpErrorResponse | undefined,
+	currentEffort: string,
+): EffortRejectionSignal {
+	const namesFieldInMessage = EFFORT_FIELD_PATTERN.test(message);
+	const param = capturedStringField(captured, "param") ?? "";
+	const quoted = `["'\`]${escapeRegExp(currentEffort)}["'\`]`;
+	return {
+		field:
+			namesFieldInMessage || EFFORT_FIELD_PATTERN.test(param)
+				? "reasoning-effort"
+				: param.trim() !== ""
+					? "other"
+					: "unknown",
+		namesFieldInMessage,
+		messageVerdict: messageCarriesEffortVerdict(message),
+		listsLevels: ALLOWED_LEVELS_PATTERN.test(message),
+		rejectedMatches:
+			new RegExp(`(?:invalid|unsupported|not supported)[^\\n]*${quoted}`, "i").test(message) ||
+			new RegExp(`${quoted}[^\\n]*(?:invalid|unsupported|not supported)`, "i").test(message),
+	};
 }
 
 function isInvalidReasoningEffortError(
@@ -190,30 +237,19 @@ function isInvalidReasoningEffortError(
 ): boolean {
 	const status = extractHttpStatusFromError(error) ?? captured?.status;
 	if (status !== 400 && status !== 422) return false;
-	if (!mentionsReasoningEffort(error, captured, currentEffort)) return false;
+	if (!mentionsReasoningEffort(error, captured)) return false;
 	const message = collectMessageParts(error, captured);
 	if (/reasoning[_ ]content/i.test(message) && !REASONING_EFFORT_FIELD_PATTERN.test(message)) return false;
-	if (/invalid[^\n]*(?:reasoning[_. ]effort|reasoning value)/i.test(message)) return true;
-	if (
-		/(?:reasoning[_. ]effort|reasoning value)[^\n]*(?:invalid|unsupported|not supported|not permitted|must be|expected|unknown|unexpected|unrecognized)/i.test(
-			message,
-		)
-	) {
-		return true;
-	}
-	if (
-		/(?:unsupported|not supported|not permitted|unknown|unexpected|unrecognized|extra)[^\n]*(?:reasoning[_. ]effort|reasoning value)/i.test(
-			message,
-		)
-	) {
-		return true;
-	}
-
-	const quoted = `["'\`]${escapeRegExp(currentEffort)}["'\`]`;
-	return (
-		new RegExp(`(?:invalid|unsupported|not supported)[^\\n]*${quoted}`, "i").test(message) ||
-		new RegExp(`${quoted}[^\\n]*(?:invalid|unsupported|not supported)`, "i").test(message)
-	);
+	const signal = parseEffortRejectionSignal(message, captured, currentEffort);
+	// An explicit foreign `param` (e.g. `tool_choice: "none"` with its own values
+	// list) defeats the heuristic; a fielded verdict always qualifies; fieldless
+	// values-lists are shared with sibling tier fields (text verbosity), so they
+	// are trusted only for the reasoning-off value, while levels vocabulary is
+	// gateway-effort dialect and stays trusted for every tier.
+	if (signal.field === "other" && !signal.namesFieldInMessage) return false;
+	if (signal.messageVerdict) return true;
+	if (currentEffort.toLowerCase() !== "none" && !signal.namesFieldInMessage && !signal.listsLevels) return false;
+	return signal.rejectedMatches;
 }
 
 function escapeRegExp(value: string): string {
@@ -292,7 +328,7 @@ function nearestEnabledReasoningFallback(currentEffort: string, allowed: Set<str
 }
 
 const TEMPLATE_KWARG_EFFORT_PATTERN =
-	/chat_template_kwargs[^\n]{0,120}reasoning[_. ]effort|reasoning[_. ]effort[^\n]{0,120}chat_template_kwargs/i;
+	/chat_template_kwargs[^\n]{0,120}reasoning[_. ]?effort|reasoning[_. ]?effort[^\n]{0,120}chat_template_kwargs/i;
 const FIELD_REJECTION_PATTERN =
 	/invalid|unsupported|not supported|not permitted|unknown|unexpected|unrecognized|rejected|extra input/i;
 

@@ -133,6 +133,11 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	if (name === EVAL_AST_BRIDGE_NAME) {
 		return runEvalAst(args, options);
 	}
+	if (name === "checkpoint" || name === "rewind") {
+		// The session recognizes checkpoint/rewind only as direct toolResult messages
+		// (session/checkpoint-entries.ts); a bridged call would report success without taking effect.
+		throw new ToolError(`\`${name}\` cannot run through the eval bridge; call the direct \`${name}\` tool.`);
+	}
 	const tool = getTool(options.session, name);
 	const normalizedArgs = normalizeArgs(tool, args);
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;

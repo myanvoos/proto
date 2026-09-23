@@ -20,6 +20,7 @@ import { convertImageToPng } from "../../utils/image-loading";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
+import { ServedModelMarkerComponent, type ServedModelMismatch } from "./served-model-marker";
 import { isRowPrefix, type TranscriptStableRow, trimBlankEdges } from "./transcript-container";
 
 const MAX_TRANSCRIPT_ERROR_LINES = 8;
@@ -126,6 +127,7 @@ function lerpHex(from: string, to: string, t: number): string {
 export class AssistantMessageComponent extends Container {
 	readonly transcriptBlockMode = "appendOnly" as const;
 	#cacheInvalidationMarker?: CacheInvalidationMarkerComponent;
+	#servedModelMarker?: ServedModelMarkerComponent;
 	#lastMessage?: AssistantMessage;
 	#messagePersistenceKey?: string;
 	#staticTextBlocks?: readonly string[];
@@ -196,9 +198,16 @@ export class AssistantMessageComponent extends Container {
 		this.#cacheInvalidationMarker = info ? new CacheInvalidationMarkerComponent(info) : undefined;
 	}
 
+	// Trailing, unlike the cache-miss divider: the served model is only known once the turn
+	// ends, and appending keeps rows already emitted to native history a prefix of this block.
+	setServedModelMismatch(info: ServedModelMismatch | undefined): void {
+		this.#servedModelMarker = info ? new ServedModelMarkerComponent(info) : undefined;
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.#cacheInvalidationMarker?.invalidate();
+		this.#servedModelMarker?.invalidate();
 
 		this.#fastPathKey = undefined;
 		this.#fastPathItems = undefined;
@@ -214,7 +223,8 @@ export class AssistantMessageComponent extends Container {
 		// once at finalize (#compactFinalMessage), never per render.
 		const contentLines = this.#renderStreamingChildren(width);
 		const marker = this.#cacheInvalidationMarker;
-		const lines = marker ? marker.render(width).concat(contentLines) : contentLines;
+		let lines = marker ? marker.render(width).concat(contentLines) : contentLines;
+		if (this.#servedModelMarker) lines = lines.concat(this.#servedModelMarker.render(width));
 		this.#publishStableSnapshot(lines, width);
 		if (this.#transcriptBlockFinalized) {
 			this.#fastPathKey = undefined;

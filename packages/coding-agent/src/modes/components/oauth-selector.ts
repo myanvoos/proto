@@ -33,7 +33,6 @@ const ORIGIN_LABELS: Record<CredentialOriginKind, string> = {
 	oauth: "login",
 	api_key: "api key",
 	env: "env",
-	fallback: "custom provider",
 };
 
 export class OAuthSelectorComponent extends OverlayPanel {

@@ -1,5 +1,5 @@
 import * as url from "node:url";
-import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import { resolveHyperlinkPolicy } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { LocalProtocolHandler, resolveLocalUrlToPath } from "../internal-urls";
 
@@ -24,13 +24,7 @@ function buildFileUri(filePath: string, opts?: { line?: number; col?: number }):
 
 export function isHyperlinkEnabled(): boolean {
 	if (!isSettingsInitialized()) return false;
-	const mode = settings.get("tui.hyperlinks");
-	if (mode === "off") return false;
-	if (mode === "always") return true;
-
-	if (Bun.env.NO_COLOR) return false;
-	if (!process.stdout.isTTY) return false;
-	return TERMINAL.hyperlinks;
+	return resolveHyperlinkPolicy(settings.get("tui.hyperlinks"));
 }
 
 export function safeHyperlinkUri(uri: string): string | undefined {

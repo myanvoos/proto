@@ -123,6 +123,7 @@ interface SessionAdvisorsOptions {
 	sharedInstructions?: string;
 	contextPrompt?: string;
 	configs?: AdvisorConfig[];
+	configWarnings?: string[];
 	streamFn?: StreamFn;
 	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 
@@ -205,6 +206,7 @@ export class SessionAdvisors {
 	#transformProviderContext: ((context: Context, model: Model) => Context | Promise<Context>) | undefined;
 	#advisors: ActiveAdvisor[] = [];
 	#advisorConfigs: AdvisorConfig[] | undefined;
+	#advisorConfigWarnings: string[];
 	#advisorStatuses = new Map<string, { name: string; status: AdvisorRuntimeStatus }>();
 	#advisorProviderSessionIds = new Map<string, string>();
 	#advisorProviderSessionPrimaryId: string | undefined;
@@ -212,6 +214,9 @@ export class SessionAdvisors {
 	#advisorRecorderClosed: Promise<void> = Promise.resolve();
 	#advisorAutoResumeSuppressed = false;
 	#preserveAdvisorAdvice = false;
+	#preserveTerminalYieldAdvice = false;
+	/** Keeps terminal non-blocker advice on the visible card route while the terminal turn unwinds. */
+	#terminalUnwindActive = false;
 	#advisorPrimaryTurnsCompleted = 0;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#pendingAdvisorCardEvents = new Set<Promise<void>>();
@@ -227,6 +232,7 @@ export class SessionAdvisors {
 		this.#advisorSharedInstructions = options.sharedInstructions;
 		this.#advisorContextPrompt = options.contextPrompt;
 		this.#advisorConfigs = options.configs;
+		this.#advisorConfigWarnings = options.configWarnings ?? [];
 		this.#advisorStreamFn = options.streamFn;
 		this.#transformProviderContext = options.transformProviderContext;
 		if (options.initialCosts) this.#advisorCosts = new Map(options.initialCosts);
@@ -238,12 +244,25 @@ export class SessionAdvisors {
 		willContinue: boolean | undefined,
 		signal?: AbortSignal,
 	): Promise<void> {
-		this.#advisorPrimaryTurnsCompleted++;
-		for (const advisor of this.#advisors) advisor.instance.pushTurn(messages, willContinue);
-		const syncBacklog = this.#host.settings.get("advisor.syncBacklog");
-		if (this.#advisors.length === 0 || syncBacklog === "off") return;
-		const threshold = Number.parseInt(syncBacklog, 10);
-		await this.#awaitCatchup(threshold, 30_000, signal);
+		const terminalBoundary = willContinue !== true;
+		if (terminalBoundary) this.#terminalUnwindActive = true;
+		try {
+			this.#advisorPrimaryTurnsCompleted++;
+			for (const advisor of this.#advisors) {
+				// Only the terminal primary boundary owns the deferred flush: the advisor may be quota-paused or
+				// halted before its next dispatch, and continuing tool turns keep partial-work critiques withheld.
+				if (terminalBoundary && !advisor.instance.runtime.disposed) advisor.adviseTool.beginUpdate(false);
+				advisor.instance.pushTurn(messages, willContinue);
+			}
+			const syncBacklog = this.#host.settings.get("advisor.syncBacklog");
+			if (this.#advisors.length === 0 || syncBacklog === "off") return;
+			const threshold = Number.parseInt(syncBacklog, 10);
+			await this.#awaitCatchup(threshold, 30_000, signal);
+		} finally {
+			// With advisor.syncBacklog=off the review can emit after this callback returns; keep the
+			// terminal guard until the next real agent start instead of reopening the steer path.
+			if (!terminalBoundary) this.#terminalUnwindActive = false;
+		}
 	}
 
 	#awaitCatchup(threshold: number, capMs: number, signal?: AbortSignal): Promise<boolean[]> {
@@ -591,6 +610,7 @@ export class SessionAdvisors {
 						onTurnError: (error, failedMessages, signal) =>
 							advisorRef.instance.recoverTurn(error, failedMessages, signal),
 						onTurnSuccess: async () => {
+							advisorRef.instance.noteTurnSucceeded();
 							const fallback = advisorRef.instance.retryFallback;
 							if (!advisorRef.instance.retryFallbackPendingSuccess || !fallback) return;
 							advisorRef.instance.retryFallbackPendingSuccess = false;
@@ -674,14 +694,18 @@ export class SessionAdvisors {
 
 		const source = advisor.slug ? advisor.name : undefined;
 		const interrupting = isInterruptingSeverity(severity);
+		const terminalAnswerNoQueuedWork = this.#hasTerminalTextAnswerWithoutQueuedWork();
+		// The terminal turn's loop is unwinding: a steer would sit unconsumed until the next run.
+		const terminalUnwindPreserve = this.#terminalUnwindActive && severity !== "blocker" && terminalAnswerNoQueuedWork;
 		const channel = resolveAdvisorDeliveryChannel({
 			severity,
 			autoResumeSuppressed: this.#advisorAutoResumeSuppressed,
-			preserveOnly: this.#preserveAdvisorAdvice,
+			preserveOnly: this.#preserveAdvisorAdvice || terminalUnwindPreserve,
 
-			streaming: this.#host.agent.state.isStreaming,
+			// A terminal yield aborts the loop, so a steer queued during its unwind would never be consumed.
+			streaming: this.#host.agent.state.isStreaming && !this.#preserveTerminalYieldAdvice && !terminalUnwindPreserve,
 			aborting: this.#host.abortInProgress(),
-			terminalAnswerNoQueuedWork: this.#hasTerminalTextAnswerWithoutQueuedWork(),
+			terminalAnswerNoQueuedWork,
 			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
 		});
 		if (channel === "aside") {
@@ -731,7 +755,7 @@ export class SessionAdvisors {
 	}
 
 	#resetAllAdvisorRuntimes(reason?: string): void {
-		for (const a of this.#advisors) a.instance.runtime.reset(reason);
+		for (const a of this.#advisors) a.instance.resetRuntime(reason);
 	}
 
 	#stopAdvisorRuntime(): void {
@@ -768,6 +792,24 @@ export class SessionAdvisors {
 
 	prepareForHeadlessAdvisorDrain(): void {
 		this.#preserveAdvisorAdvice = true;
+	}
+
+	/** Preserve advisor output for a terminal yield whose loop is unwinding. */
+	prepareForTerminalYieldAdvisorDrain(): void {
+		this.#preserveAdvisorAdvice = true;
+		this.#preserveTerminalYieldAdvice = true;
+	}
+
+	/** Clear terminal-unwind delivery only when a real primary run starts. */
+	onPrimaryAgentStart(): void {
+		this.#terminalUnwindActive = false;
+	}
+
+	/** Restore normal advisor routing when a kept-alive subagent starts new work after its yield. */
+	onPrimaryTurnStart(): void {
+		if (!this.#preserveTerminalYieldAdvice) return;
+		this.#preserveTerminalYieldAdvice = false;
+		this.#preserveAdvisorAdvice = false;
 	}
 
 	async #waitForPendingAdvisorCardEvents(timeoutMs: number): Promise<boolean> {
@@ -817,6 +859,14 @@ export class SessionAdvisors {
 
 	toggleAdvisorEnabled(): boolean {
 		return this.setAdvisorEnabled(!this.#advisorEnabled);
+	}
+
+	/**
+	 * WATCHDOG.yml problems from startup discovery. Pulled by interactive mode after the UI subscribes: a
+	 * constructor-time notice would fire before any listener exists and be lost.
+	 */
+	get configWarnings(): readonly string[] {
+		return this.#advisorConfigWarnings;
 	}
 
 	applyAdvisorConfigs(advisors: AdvisorConfig[], sharedInstructions: string | undefined): number {

@@ -37,6 +37,7 @@
 		},
 		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -78,6 +79,7 @@
 		"cursorMaxMode": false,
 		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -119,6 +121,7 @@
 		"cursorMaxMode": false,
 		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -159,6 +162,7 @@
 		"cursorMaxMode": false,
 		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -200,6 +204,7 @@
 		},
 		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -240,6 +245,7 @@
 		"cursorMaxMode": false,
 		"tokenizer": "claude-v3",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -281,6 +287,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -322,6 +329,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -363,6 +371,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -404,6 +413,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -445,6 +455,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -486,6 +497,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -527,6 +539,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -568,6 +581,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -609,6 +623,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -650,6 +665,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -691,6 +707,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -732,6 +749,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -773,6 +791,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -814,6 +833,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -855,6 +875,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -896,6 +917,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -937,6 +959,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -978,6 +1001,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1019,6 +1043,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1060,6 +1085,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1101,6 +1127,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1142,6 +1169,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1183,6 +1211,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1224,6 +1253,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1265,6 +1295,7 @@
 		},
 		"tokenizer": "claude-v47",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1306,6 +1337,7 @@
 		},
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1347,6 +1379,7 @@
 		},
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1388,6 +1421,7 @@
 		},
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1429,6 +1463,7 @@
 		},
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1470,6 +1505,7 @@
 		},
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1511,6 +1547,7 @@
 		},
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1536,6 +1573,7 @@
 		"cursorMaxMode": false,
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1561,6 +1599,7 @@
 		"cursorMaxMode": true,
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1586,6 +1625,7 @@
 		"cursorMaxMode": false,
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1611,6 +1651,7 @@
 		"cursorMaxMode": true,
 		"tokenizer": "claude-v5",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1652,6 +1693,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1693,6 +1735,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1734,6 +1777,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1775,6 +1819,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1816,6 +1861,7 @@
 		},
 		"tokenizer": "claude-v5-sonnet",
 		"requiresGlyphTokenization": true,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1838,6 +1884,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1860,6 +1907,7 @@
 		"contextWindow": 200000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1871,7 +1919,8 @@
 		"baseUrl": "https://api2.cursor.sh",
 		"reasoning": false,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -1883,6 +1932,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1894,7 +1944,8 @@
 		"baseUrl": "https://api2.cursor.sh",
 		"reasoning": false,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -1906,6 +1957,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1917,7 +1969,8 @@
 		"baseUrl": "https://api2.cursor.sh",
 		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -1925,7 +1978,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 256000,
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"thinking": {
@@ -1942,8 +1995,9 @@
 				"high": "cursor-grok-4.5-high"
 			}
 		},
-		"requestModelId": "cursor-grok-4.5-low",
+		"requestModelId": "cursor-grok-4.5-medium",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1955,7 +2009,8 @@
 		"baseUrl": "https://api2.cursor.sh",
 		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -1963,7 +2018,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 256000,
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"thinking": {
@@ -1980,8 +2035,9 @@
 				"high": "cursor-grok-4.5-high-fast"
 			}
 		},
-		"requestModelId": "cursor-grok-4.5-low-fast",
+		"requestModelId": "cursor-grok-4.5-medium-fast",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1993,7 +2049,8 @@
 		"baseUrl": "https://api2.cursor.sh",
 		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -2001,9 +2058,9 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 256000,
 		"maxTokens": 64000,
-		"cursorMaxMode": false,
+		"cursorMaxMode": true,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2020,8 +2077,9 @@
 				"xhigh": "cursor-grok-4.6-xhigh"
 			}
 		},
-		"requestModelId": "cursor-grok-4.6-low",
+		"requestModelId": "cursor-grok-4.6-medium",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2033,7 +2091,8 @@
 		"baseUrl": "https://api2.cursor.sh",
 		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -2041,9 +2100,9 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 256000,
 		"maxTokens": 64000,
-		"cursorMaxMode": false,
+		"cursorMaxMode": true,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -2060,8 +2119,9 @@
 				"xhigh": "cursor-grok-4.6-xhigh-fast"
 			}
 		},
-		"requestModelId": "cursor-grok-4.6-low-fast",
+		"requestModelId": "cursor-grok-4.6-medium-fast",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2082,10 +2142,11 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 256000,
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2120,6 +2181,9 @@
 		},
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"int": 17.9,
+		"tps": 211.8,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2151,6 +2215,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2183,6 +2248,7 @@
 		},
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2217,6 +2283,9 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"int": 32.6,
+		"tps": 207.7,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2258,6 +2327,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 34,
+		"tps": 180.2,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2297,6 +2369,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 39.1,
+		"tps": 278.3,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2334,6 +2409,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 33.7,
+		"tps": 69.1,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2367,6 +2445,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 16.8,
+		"tps": 107.6,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2400,6 +2481,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 24.7,
+		"tps": 112.6,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2432,6 +2516,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2464,6 +2549,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2494,6 +2580,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 20.4,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2517,6 +2605,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2541,6 +2630,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2574,6 +2664,9 @@
 		},
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"int": 30.4,
+		"tps": 79.5,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2606,6 +2699,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 28.5,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2628,6 +2723,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2650,6 +2746,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2672,6 +2769,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2694,6 +2792,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2716,6 +2815,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2738,6 +2838,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2760,6 +2861,7 @@
 		"contextWindow": 272000,
 		"maxTokens": 64000,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2784,6 +2886,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2817,6 +2920,7 @@
 		},
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2841,6 +2945,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2865,6 +2970,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2889,6 +2995,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2913,6 +3020,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2937,6 +3045,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2970,6 +3079,9 @@
 		},
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"int": 32.5,
+		"tps": 146.4,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -2993,6 +3105,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3016,6 +3129,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3039,6 +3153,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3062,6 +3177,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3085,6 +3201,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3108,6 +3225,7 @@
 		"maxTokens": 64000,
 		"contextPromotionTarget": "cursor/gpt-5.5",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3131,6 +3249,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3154,6 +3273,7 @@
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3195,6 +3315,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 39,
+		"tps": 135.8,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3233,6 +3356,7 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3274,6 +3398,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 24.1,
+		"tps": 224.5,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3315,6 +3442,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 20.7,
+		"tps": 173.6,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3357,6 +3487,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 38.4,
+		"tps": 94.4,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3399,6 +3532,7 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3421,7 +3555,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
-		"cursorMaxMode": false,
+		"cursorMaxMode": true,
 		"requestModelId": "gpt-5.6-luna-none",
 		"thinking": {
 			"mode": "effort",
@@ -3442,6 +3576,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 37.3,
+		"tps": 142.3,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3462,9 +3599,9 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 272000,
 		"maxTokens": 64000,
-		"cursorMaxMode": false,
+		"cursorMaxMode": true,
 		"requestModelId": "gpt-5.6-luna-none-fast",
 		"thinking": {
 			"mode": "effort",
@@ -3485,6 +3622,7 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3507,7 +3645,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
-		"cursorMaxMode": false,
+		"cursorMaxMode": true,
 		"requestModelId": "gpt-5.6-sol-none",
 		"thinking": {
 			"mode": "effort",
@@ -3528,6 +3666,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 47,
+		"tps": 80.3,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3548,9 +3689,9 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 272000,
 		"maxTokens": 64000,
-		"cursorMaxMode": false,
+		"cursorMaxMode": true,
 		"requestModelId": "gpt-5.6-sol-none-fast",
 		"thinking": {
 			"mode": "effort",
@@ -3571,6 +3712,7 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3593,7 +3735,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
-		"cursorMaxMode": false,
+		"cursorMaxMode": true,
 		"requestModelId": "gpt-5.6-terra-none",
 		"thinking": {
 			"mode": "effort",
@@ -3614,6 +3756,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 42.1,
+		"tps": 82.4,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3634,9 +3779,9 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 272000,
 		"maxTokens": 64000,
-		"cursorMaxMode": false,
+		"cursorMaxMode": true,
 		"requestModelId": "gpt-5.6-terra-none-fast",
 		"thinking": {
 			"mode": "effort",
@@ -3657,6 +3802,7 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3688,6 +3834,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3721,6 +3868,8 @@
 		},
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
+		"int": 23.5,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3741,7 +3890,7 @@
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 200000,
+		"contextWindow": 262000,
 		"maxTokens": 64000,
 		"cursorMaxMode": false,
 		"thinking": {
@@ -3755,6 +3904,9 @@
 		},
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
+		"int": 25.8,
+		"tps": 59.9,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3766,7 +3918,8 @@
 		"baseUrl": "https://api2.cursor.sh",
 		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -3789,6 +3942,7 @@
 		},
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3800,7 +3954,8 @@
 		"baseUrl": "https://api2.cursor.sh",
 		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -3823,6 +3978,7 @@
 		},
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -3834,7 +3990,8 @@
 		"baseUrl": "https://api2.cursor.sh",
 		"reasoning": true,
 		"input": [
-			"text"
+			"text",
+			"image"
 		],
 		"cost": {
 			"input": 0,
@@ -3857,6 +4014,7 @@
 		},
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	}

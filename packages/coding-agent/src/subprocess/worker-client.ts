@@ -8,6 +8,7 @@ import {
 	isSessionBridgeEnvName,
 	logger,
 	postmortem,
+	stripGitRepoLocationEnv,
 	workerHostEntry,
 } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
@@ -74,6 +75,8 @@ export function workerEnvFromParent(overlay?: Record<string, string>): Record<st
 		const value = base[key];
 		if (typeof value === "string" && !isSessionBridgeEnvName(key)) merged[key] = value;
 	}
+	// Workers host the PTY daemons, whose env is applied after the native PTY strip; an explicit overlay still wins.
+	stripGitRepoLocationEnv(merged);
 	if (overlay) {
 		for (const key in overlay) {
 			if (!isSessionBridgeEnvName(key)) merged[key] = overlay[key];

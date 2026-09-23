@@ -1,8 +1,10 @@
+import { buildOpenAICompat } from "@oh-my-pi/pi-catalog/compat/openai";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isKimiModelId } from "@oh-my-pi/pi-catalog/identity";
 import { resolveWireModelId } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type { ResolvedOpenAICompat } from "@oh-my-pi/pi-catalog/types";
+import { clinePassClientHeaders } from "@oh-my-pi/pi-catalog/wire/cline-pass";
 import { $env, classifyJsonPrefix, logger, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
@@ -14,6 +16,7 @@ import type {
 	Message,
 	MessageAttribution,
 	Model,
+	ModelSpec,
 	ProviderSessionState,
 	RawSseEvent,
 	ServiceTier,
@@ -35,7 +38,7 @@ import {
 	kStreamingLastParseLen,
 	setStreamingPartialJson,
 } from "../utils/block-symbols";
-import { hasVisibleAssistantContent, withEmptyCompletionRetry } from "../utils/empty-completion-retry";
+import { hasVisibleAssistantContent, withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
 import {
@@ -46,7 +49,6 @@ import {
 } from "../utils/idle-iterator";
 import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
 import { notifyProviderResponse } from "../utils/provider-response";
-import { callWithCopilotModelRetry } from "../utils/retry";
 import {
 	adaptSchemaForStrict,
 	findStrictToolSchemaViolation,
@@ -62,6 +64,8 @@ import {
 	type StreamMarkupHealingEvent,
 } from "../utils/stream-markup-healing";
 import { isForcedToolChoice, mapToOpenAICompletionsToolChoice } from "../utils/tool-choice";
+import { servedModelFromOpenRouterReasoning } from "./anthropic-signature";
+import { resolveCopilotRequestIdentity, wrapFetchForCopilotFallback } from "./github-copilot-headers";
 import type {
 	ChatCompletionAssistantMessageParam,
 	ChatCompletionChunk,
@@ -70,6 +74,7 @@ import type {
 	ChatCompletionContentPartInputAudio,
 	ChatCompletionContentPartText,
 	ChatCompletionContentPartVideo,
+	ChatCompletionMessageFunctionToolCall,
 	ChatCompletionMessageParam,
 	ChatCompletionTool,
 	ChatCompletionToolMessageParam,
@@ -88,10 +93,11 @@ import {
 import {
 	applyChatCompletionsCompatPolicy,
 	applyChatCompletionsToolStream,
+	applyClinePassReasoningBudget,
 	applyOpenAIExtraBody,
 	applyOpenAIGatewayRouting,
 	applyOpenAIServiceTier,
-	applyOpenRouterReportedCost,
+	applyProviderReportedCost,
 	applyWireModelIdTransform,
 	calculateOpenAIUsageAccounting,
 	clearOpenAIStrictToolsState,
@@ -140,8 +146,95 @@ type OpenAICompletionsDeltaWithReasoningDetails = ChatCompletionChunk.Choice["de
 	reasoning_details?: unknown;
 };
 
+type GeminiMessageThoughtSignatureField = "thinking_signature" | "thought_signature";
+
+type GeminiMessageThoughtSignature = {
+	field: GeminiMessageThoughtSignatureField;
+	signature: string;
+};
+
+type GeminiThoughtSignatureNamespace = "google" | "vertex";
+
+type GeminiThoughtSignatureExtraContent = Partial<
+	Record<GeminiThoughtSignatureNamespace, { thought_signature: string }>
+>;
+
+type OpenAICompletionsFunctionToolCall = ChatCompletionMessageFunctionToolCall & {
+	extra_content?: GeminiThoughtSignatureExtraContent;
+};
+
+const GEMINI_THOUGHT_SIGNATURE_NAMESPACES: readonly GeminiThoughtSignatureNamespace[] = ["google", "vertex"];
+
+const GEMINI_MESSAGE_THOUGHT_SIGNATURE_FIELDS: readonly GeminiMessageThoughtSignatureField[] = [
+	"thinking_signature",
+	"thought_signature",
+];
+
+function getGeminiThoughtSignatureExtraContent(value: unknown): GeminiThoughtSignatureExtraContent | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	for (const namespace of GEMINI_THOUGHT_SIGNATURE_NAMESPACES) {
+		const providerContent = Reflect.get(value, namespace);
+		if (typeof providerContent !== "object" || providerContent === null) continue;
+		const thoughtSignature = Reflect.get(providerContent, "thought_signature");
+		if (typeof thoughtSignature !== "string" || thoughtSignature.length === 0) continue;
+		return namespace === "google"
+			? { google: { thought_signature: thoughtSignature } }
+			: { vertex: { thought_signature: thoughtSignature } };
+	}
+	return undefined;
+}
+
+function getGeminiMessageThoughtSignature(value: unknown): GeminiMessageThoughtSignature | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	for (const field of GEMINI_MESSAGE_THOUGHT_SIGNATURE_FIELDS) {
+		const signature = Reflect.get(value, field);
+		if (typeof signature === "string" && signature.length > 0) return { field, signature };
+	}
+	return undefined;
+}
+
+function parseStoredThoughtSignature(thoughtSignature: string | undefined): unknown {
+	if (!thoughtSignature) return undefined;
+	try {
+		return JSON.parse(thoughtSignature);
+	} catch {
+		return undefined;
+	}
+}
+
+// A Gemini tool-call turn on an OpenAI-compatible wire can carry a per-call signature (`extra_content.google|vertex`
+// or an encrypted `reasoning_details` entry) and a message-level `thinking_signature`/`thought_signature`. Both are
+// stashed together on the originating tool call's `thoughtSignature` so replay restores each field.
+type StoredGeminiSignature = {
+	perCall?: unknown;
+	message?: Partial<Record<GeminiMessageThoughtSignatureField, string>>;
+};
+
+// Also accepts the pre-envelope raw shapes (bare extra_content, reasoning detail, or message-level signature).
+function normalizeStoredGeminiSignature(value: unknown): StoredGeminiSignature | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const perCall = Reflect.get(value, "perCall");
+	const envelopeMessage = getGeminiMessageThoughtSignature(Reflect.get(value, "message"));
+	if (perCall !== undefined || envelopeMessage) {
+		const normalized: StoredGeminiSignature = {};
+		if (perCall !== undefined) normalized.perCall = perCall;
+		if (envelopeMessage) normalized.message = { [envelopeMessage.field]: envelopeMessage.signature };
+		return normalized;
+	}
+	const legacyMessage = getGeminiMessageThoughtSignature(value);
+	if (legacyMessage) return { message: { [legacyMessage.field]: legacyMessage.signature } };
+	return { perCall: value };
+}
+
+function mergeStoredGeminiSignature(existing: string | undefined, update: StoredGeminiSignature): string {
+	const merged = normalizeStoredGeminiSignature(parseStoredThoughtSignature(existing)) ?? {};
+	if (update.perCall !== undefined) merged.perCall = update.perCall;
+	if (update.message) merged.message = update.message;
+	return JSON.stringify(merged);
+}
+
 type OpenAICompletionsAssistantMessageParam = ChatCompletionAssistantMessageParam &
-	Partial<Record<OpenAICompletionsReasoningField, string>> & {
+	Partial<Record<OpenAICompletionsReasoningField | GeminiMessageThoughtSignatureField, string>> & {
 		reasoning_details?: unknown[];
 	};
 
@@ -157,6 +250,8 @@ type OpenAICompletionsUsageLike = {
 	prompt_cache_miss_tokens?: unknown;
 	prompt_tokens_details?: unknown;
 	completion_tokens_details?: unknown;
+	// Vertex/Gemini behind an OpenAI-compatible gateway reports cache hits here instead.
+	cachedContentTokenCount?: unknown;
 };
 
 type OpenAICompletionsPromptTokenDetails = {
@@ -179,6 +274,7 @@ function hasPositiveCacheReadTokenField(rawUsage: object): boolean {
 	const usageLike = rawUsage as OpenAICompletionsUsageLike;
 	if (typeof usageLike.cached_tokens === "number" && usageLike.cached_tokens > 0) return true;
 	if (typeof usageLike.prompt_cache_hit_tokens === "number" && usageLike.prompt_cache_hit_tokens > 0) return true;
+	if (typeof usageLike.cachedContentTokenCount === "number" && usageLike.cachedContentTokenCount > 0) return true;
 
 	const rawPromptTokenDetails = usageLike.prompt_tokens_details;
 	if (typeof rawPromptTokenDetails !== "object" || rawPromptTokenDetails === null) return false;
@@ -527,6 +623,50 @@ const OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE =
 
 const OPENAI_COMPLETIONS_POST_FINISH_GRACE_MS = 2_500;
 
+const OPENAI_COMPLETIONS_ERROR_STATUS_BY_TYPE: Readonly<Record<string, number>> = {
+	SERVICE_UNAVAILABLE: 503,
+	TOO_MANY_REQUESTS: 429,
+	REQUEST_TIMEOUT: 408,
+};
+
+function parseOpenAICompletionsErrorStatus(value: unknown): number | undefined {
+	const status =
+		typeof value === "number"
+			? value
+			: typeof value === "string" && /^\d{3}$/.test(value.trim())
+				? Number(value)
+				: undefined;
+	return status !== undefined && Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined;
+}
+
+/**
+ * Error envelopes streamed inside an HTTP 200 SSE body (`{ error: {...} }`,
+ * `{ error: "..." }`, `{ message: "..." }`) would otherwise read as an empty
+ * successful completion; keep their status so retry and model fallback apply.
+ */
+function createOpenAICompletionsStreamError(chunk: object, provider: string): Error | undefined {
+	const error = Reflect.get(chunk, "error");
+	const flatMessage = Reflect.get(chunk, "message");
+	const structuredError = error !== null && typeof error === "object";
+	if (!structuredError && typeof error !== "string" && typeof flatMessage !== "string") return undefined;
+
+	const parsed = AIError.OpenAIHttpError.parseEnvelope(chunk, undefined);
+	const detail = parsed.detail ?? "Provider returned an in-band OpenAI completions stream error";
+	if (!structuredError) {
+		return new AIError.ProviderResponseError(detail, { provider, kind: "runtime" });
+	}
+
+	const typeValue = Reflect.get(error, "type");
+	const type = typeof typeValue === "string" ? typeValue.trim() : undefined;
+	const status =
+		parseOpenAICompletionsErrorStatus(Reflect.get(error, "code")) ??
+		(type ? OPENAI_COMPLETIONS_ERROR_STATUS_BY_TYPE[type.toUpperCase()] : undefined);
+	if (status === undefined) {
+		return new AIError.ProviderResponseError(detail, { provider, kind: "runtime" });
+	}
+	return new AIError.ProviderHttpError(`${status} ${detail}`, status, { code: parsed.code });
+}
+
 const streamOpenAICompletionsOnce = (
 	model: Model<"openai-completions">,
 	context: Context,
@@ -537,7 +677,7 @@ const streamOpenAICompletionsOnce = (
 	(async () => {
 		const startTime = performance.now();
 		let firstTokenTime: number | undefined;
-		const policy = resolveOpenAICompatForRequest(model, options);
+		const policy = resolveOpenAICompatForRequest(model, options, Boolean(context.tools?.length));
 
 		const output: AssistantMessage = createInitialResponsesAssistantMessage(model.api, model.provider, model.id);
 		let rawRequestDump: RawHttpRequestDump | undefined;
@@ -588,13 +728,22 @@ const streamOpenAICompletionsOnce = (
 				getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs, model.compat.streamFirstEventTimeoutMs);
 			const requestTimeoutMs =
 				firstEventTimeoutMs !== undefined && firstEventTimeoutMs > 0 ? firstEventTimeoutMs : undefined;
-			const { copilotPremiumRequests, baseUrl, headers, query, requestHeaders } = createRequestSetup(
+			const {
+				copilotPremiumRequests,
+				baseUrl,
+				headers,
+				query,
+				requestHeaders,
+				copilotCacheKey,
+				copilotCacheSnapshot,
+			} = createRequestSetup(
 				model,
 				context,
 				apiKey,
 				options?.headers,
 				options?.initiatorOverride,
 				getOpenAIPromptCacheKey(options),
+				options?.sessionId,
 			);
 			const premiumRequestsTotal = copilotPremiumRequests;
 			let appliedStrictTools = false;
@@ -615,16 +764,20 @@ const streamOpenAICompletionsOnce = (
 				: `${trimmedBaseUrl}/chat/completions`;
 			const createCompletionsStream = async (toolStrictModeOverride?: ToolStrictModeOverride) => {
 				const effectiveToolStrictModeOverride = disableStrictTools ? "none" : toolStrictModeOverride;
-				let { params, strictToolsApplied } = buildParams(model, context, options, effectiveToolStrictModeOverride);
-				appliedStrictTools = strictToolsApplied;
-				const reasoningEffortFallbackKey = createOpenAIReasoningEffortFallbackKey(
-					"chat-completions",
-					trimmedBaseUrl,
-					params.model,
-				);
-				const requestReasoningEffortFallback = requestReasoningEffortFallbacks.has(reasoningEffortFallbackKey)
-					? requestReasoningEffortFallbacks.get(reasoningEffortFallbackKey)
-					: getOpenAIReasoningEffortFallback(providerSessionState, reasoningEffortFallbackKey);
+				const built = buildParams(model, context, options, effectiveToolStrictModeOverride);
+				appliedStrictTools = built.strictToolsApplied;
+				let params = built.params;
+				// Tool-triggered suppression is a hard wire constraint; cached
+				// enabled-effort negotiation must not overwrite its `none`.
+				const reasoningEffortFallbackKey = built.reasoningEffortFallbackAllowed
+					? createOpenAIReasoningEffortFallbackKey("chat-completions", trimmedBaseUrl, params.model)
+					: undefined;
+				const requestReasoningEffortFallback =
+					reasoningEffortFallbackKey === undefined
+						? undefined
+						: requestReasoningEffortFallbacks.has(reasoningEffortFallbackKey)
+							? requestReasoningEffortFallbacks.get(reasoningEffortFallbackKey)
+							: getOpenAIReasoningEffortFallback(providerSessionState, reasoningEffortFallbackKey);
 				if (requestReasoningEffortFallback !== undefined) {
 					applyOpenAIReasoningEffortFallback(params, requestReasoningEffortFallback);
 				}
@@ -658,12 +811,20 @@ const streamOpenAICompletionsOnce = (
 						headers: headersWithTimeout,
 						body: params,
 						signal: requestSignal,
-						fetch: options?.fetch,
+						fetch: wrapFetchForCopilotFallback(
+							options?.fetch,
+							model.provider === "github-copilot",
+							resolveCopilotRequestIdentity(options?.headers),
+							copilotCacheKey,
+							copilotCacheSnapshot,
+						),
 
 						onSseEvent: rawSseObserver,
 					});
 					const responseContentType = response.headers.get("content-type");
 					streamResponseDescription = `HTTP ${response.status}${responseContentType ? `, content-type ${responseContentType}` : ", no content-type"}`;
+					// Headers arrived: a slow onResponse callback must not trip the first-event watchdog.
+					if (requestTimeout !== undefined) clearTimeout(requestTimeout);
 					await notifyProviderResponse(options, response, model, requestId);
 					return events;
 				} finally {
@@ -672,10 +833,7 @@ const streamOpenAICompletionsOnce = (
 			};
 			let openaiStream: AsyncIterable<ChatCompletionChunk>;
 			try {
-				openaiStream = await callWithCopilotModelRetry(() => createCompletionsStream(), {
-					provider: model.provider,
-					signal: requestSignal,
-				});
+				openaiStream = await createCompletionsStream();
 			} catch (error) {
 				const capturedErrorResponse = error instanceof OpenAIHttpError ? error.captured : undefined;
 				// A retained effort preference does not make a caller-requested disable
@@ -748,6 +906,7 @@ const streamOpenAICompletionsOnce = (
 				}
 			};
 			let currentBlock: OpenAIStreamBlock | undefined;
+			let messageThoughtSignature: GeminiMessageThoughtSignature | undefined;
 			const blockIndex = (block: OpenAIStreamBlock | undefined): number => {
 				if (!block) return Math.max(0, output.content.length - 1);
 				return output.content.indexOf(block);
@@ -951,7 +1110,7 @@ const streamOpenAICompletionsOnce = (
 			let sawUsagePayload = false;
 			let awaitTrailingUsageDetails = false;
 			const applyUsagePayload = (rawUsage: object): void => {
-				output.usage = parseChunkUsage(rawUsage, model, premiumRequestsTotal);
+				output.usage = parseChunkUsage(rawUsage, model, premiumRequestsTotal, output.timestamp);
 				sawUsagePayload = true;
 				awaitTrailingUsageDetails = !hasPositiveCacheReadTokenField(rawUsage);
 			};
@@ -974,6 +1133,11 @@ const streamOpenAICompletionsOnce = (
 			for await (const chunk of terminalAwareStream) {
 				if (!chunk || typeof chunk !== "object") continue;
 				sawStreamChunk = true;
+				// The throttle probe runs first: the envelope guard below turns any
+				// object `error` member into a statusless error.
+				const inBandError =
+					AIError.createInBandProviderError(chunk) ?? createOpenAICompletionsStreamError(chunk, model.provider);
+				if (inBandError) throw inBandError;
 
 				output.responseId ||= chunk.id;
 
@@ -1111,6 +1275,12 @@ const streamOpenAICompletionsOnce = (
 
 							if (toolCall.id) block.id = toolCall.id;
 							if (incomingName) block.name = incomingName;
+							const extraContent = getGeminiThoughtSignatureExtraContent(Reflect.get(toolCall, "extra_content"));
+							if (extraContent) {
+								block.thoughtSignature = mergeStoredGeminiSignature(block.thoughtSignature, {
+									perCall: extraContent,
+								});
+							}
 							let delta = "";
 
 							const rawArgs = toolCall.function?.arguments as string | Record<string, unknown> | undefined;
@@ -1154,15 +1324,32 @@ const streamOpenAICompletionsOnce = (
 					if (Array.isArray(reasoningDetails)) {
 						for (const detail of reasoningDetails) {
 							if (!detail || typeof detail !== "object") continue;
+							if (!output.upstreamModel) output.upstreamModel = servedModelFromOpenRouterReasoning(detail);
 							const detailObject = detail as { type?: unknown; id?: unknown; data?: unknown };
 							if (detailObject.type === "reasoning.encrypted" && detailObject.id && detailObject.data) {
 								const matchingToolCall = output.content.find(
 									b => b.type === "toolCall" && b.id === detailObject.id,
 								) as ToolCall | undefined;
 								if (matchingToolCall) {
-									matchingToolCall.thoughtSignature = JSON.stringify(detailObject);
+									matchingToolCall.thoughtSignature = mergeStoredGeminiSignature(
+										matchingToolCall.thoughtSignature,
+										{ perCall: detailObject },
+									);
 								}
 							}
+						}
+					}
+
+					const incomingMessageThoughtSignature = getGeminiMessageThoughtSignature(choice.delta);
+					if (incomingMessageThoughtSignature) messageThoughtSignature = incomingMessageThoughtSignature;
+					if (messageThoughtSignature) {
+						for (const block of output.content) {
+							if (block.type !== "toolCall") continue;
+							block.thoughtSignature = mergeStoredGeminiSignature(block.thoughtSignature, {
+								message: { [messageThoughtSignature.field]: messageThoughtSignature.signature },
+							});
+							messageThoughtSignature = undefined;
+							break;
 						}
 					}
 				}
@@ -1277,8 +1464,28 @@ const streamOpenAICompletionsOnce = (
 	return stream;
 };
 
+/**
+ * Custom APIs carry no catalog compat; an extension that delegates to this
+ * streamer gets the OpenAI wire policy (with its declared overrides) resolved on
+ * a request-local clone that keeps the custom API id.
+ */
+function resolveOpenAICompletionsCompat(model: Model<"openai-completions">): Model<"openai-completions"> {
+	if (model.compat !== undefined) return model;
+	const compat = buildOpenAICompat({
+		...model,
+		api: "openai-completions",
+		compat: model.compatConfig,
+	} as ModelSpec<"openai-completions">);
+	return { ...model, compat };
+}
+
+/** Retries benign empty completions and transient provider failures until assistant output commits the attempt. */
 export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (model, context, options) =>
-	withEmptyCompletionRetry(model, context, options, streamOpenAICompletionsOnce);
+	withReplaySafeStreamRetry(resolveOpenAICompletionsCompat(model), context, options, streamOpenAICompletionsOnce, {
+		retryEmptyCompletion: true,
+		retryProviderErrors: true,
+		maxProviderErrorRetries: 1,
+	});
 
 function createRequestSetup(
 	model: Model<"openai-completions">,
@@ -1287,6 +1494,7 @@ function createRequestSetup(
 	extraHeaders?: Record<string, string>,
 	initiatorOverride?: MessageAttribution,
 	promptCacheSessionId?: string,
+	sessionId?: string,
 ): OpenAIRequestSetup & { baseUrl: string } {
 	const apiVersion = $env.AZURE_OPENAI_API_VERSION || "2024-10-21";
 	const deploymentName = parseAzureDeploymentNameMap($env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP).get(model.id) ?? model.id;
@@ -1295,10 +1503,16 @@ function createRequestSetup(
 		extraHeaders,
 		initiatorOverride,
 		promptCacheSessionId,
+		sessionId,
 		messages: context.messages,
 		defaultBaseUrl: "https://api.openai.com/v1",
 
-		prependHeaders: model.provider === "kimi-code" ? getKimiCommonHeaders : undefined,
+		prependHeaders:
+			model.provider === "kimi-code"
+				? getKimiCommonHeaders
+				: model.provider === "cline-pass"
+					? () => clinePassClientHeaders(promptCacheSessionId)
+					: undefined,
 		alibabaCodingPlanAuth: true,
 		azureChatCompletions: { apiVersion, deploymentName },
 	});
@@ -1311,12 +1525,14 @@ function createRequestSetup(
 function resolveOpenAICompatForRequest(
 	model: Model<"openai-completions">,
 	options: OpenAICompletionsOptions | undefined,
+	hasTools: boolean,
 ): OpenAICompatPolicy {
 	return resolveOpenAICompatPolicy(model, {
 		endpoint: "chat-completions",
 		reasoning: options?.reasoning,
 		disableReasoning: options?.disableReasoning,
 		toolChoice: mapToOpenAICompletionsToolChoice(options?.toolChoice),
+		hasTools,
 	});
 }
 
@@ -1426,8 +1642,9 @@ function buildParams(
 	params: OpenAICompletionsParams;
 	toolStrictMode: AppliedToolStrictMode;
 	strictToolsApplied: boolean;
+	reasoningEffortFallbackAllowed: boolean;
 } {
-	const initialPolicy = resolveOpenAICompatForRequest(model, options);
+	const initialPolicy = resolveOpenAICompatForRequest(model, options, Boolean(context.tools?.length));
 	const initialCompat = initialPolicy.compat as ResolvedOpenAICompat;
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention);
 
@@ -1545,6 +1762,7 @@ function buildParams(
 		reasoning: options?.reasoning,
 		disableReasoning: options?.disableReasoning,
 		toolChoice: params.tool_choice,
+		hasTools: Array.isArray(params.tools) && params.tools.length > 0,
 	});
 	const compat = finalPolicy.compat as ResolvedOpenAICompat;
 	const messages = convertMessages(model, context, compat);
@@ -1570,6 +1788,7 @@ function buildParams(
 	applyChatCompletionsToolStream(params, model, compat);
 
 	applyChatCompletionsCompatPolicy(params, finalPolicy);
+	applyClinePassReasoningBudget(params, model, finalPolicy, options);
 	dropOpenRouterKimiForcedToolReasoning(params, model, finalPolicy);
 
 	applyOpenAIGatewayRouting(params, compat, cacheRetention !== "none");
@@ -1579,13 +1798,19 @@ function buildParams(
 	});
 	applyOpenAIChatCompletionsPromptCachePolicy(params, model, options);
 
-	return { params, toolStrictMode, strictToolsApplied };
+	return {
+		params,
+		toolStrictMode,
+		strictToolsApplied,
+		reasoningEffortFallbackAllowed: finalPolicy.reasoning.disableReason !== "tools",
+	};
 }
 
 export function parseChunkUsage(
 	rawUsage: object,
 	model: Model<"openai-completions">,
 	premiumRequests: number | undefined,
+	timestamp?: number,
 ): AssistantMessage["usage"] {
 	const usageLike = rawUsage as OpenAICompletionsUsageLike;
 	const rawPromptTokenDetails = usageLike.prompt_tokens_details;
@@ -1604,13 +1829,19 @@ export function parseChunkUsage(
 	const promptCacheHitTokens = usageLike.prompt_cache_hit_tokens;
 	const promptCacheMissTokens = usageLike.prompt_cache_miss_tokens;
 	const promptTokenCachedTokens = promptTokenDetails?.cached_tokens;
+	const cachedContentTokenCount = usageLike.cachedContentTokenCount;
 	const completionReasoningTokens = completionTokenDetails?.reasoning_tokens;
 	const cacheWriteTokens = promptTokenDetails?.cache_write_tokens;
 	const outputTokens = typeof completionTokens === "number" ? completionTokens : 0;
 	const accounting = calculateOpenAIUsageAccounting({
 		promptTokens: typeof promptTokens === "number" ? promptTokens : 0,
 		outputTokens,
-		cachedTokens: firstPositiveNumber(cachedTokens, promptCacheHitTokens, promptTokenCachedTokens),
+		cachedTokens: firstPositiveNumber(
+			cachedTokens,
+			promptCacheHitTokens,
+			promptTokenCachedTokens,
+			cachedContentTokenCount,
+		),
 		reasoningTokens: typeof completionReasoningTokens === "number" ? completionReasoningTokens : 0,
 		cacheWriteOpenRouter: typeof cacheWriteTokens === "number" ? cacheWriteTokens : undefined,
 		cacheWriteDeepSeek: typeof promptCacheMissTokens === "number" ? promptCacheMissTokens : undefined,
@@ -1621,8 +1852,8 @@ export function parseChunkUsage(
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		...(premiumRequests !== undefined ? { premiumRequests } : {}),
 	};
-	calculateCost(model, usage);
-	applyOpenRouterReportedCost(model, usage, rawUsage);
+	calculateCost(model, usage, timestamp);
+	applyProviderReportedCost(model, usage, rawUsage);
 	return usage;
 }
 
@@ -1968,29 +2199,35 @@ export function convertMessages(
 				hasReasoningField = true;
 			}
 			if (toolCalls.length > 0) {
+				const storedSignatures = toolCalls.map(tc =>
+					normalizeStoredGeminiSignature(parseStoredThoughtSignature(tc.thoughtSignature)),
+				);
 				assistantMsg.tool_calls = toolCalls.map((tc, toolCallIndex) => {
 					const toolCallId = ensureToolCallId(tc.id, `${i}:${toolCallIndex}:${tc.name}`, msg);
 					rememberToolCallId(tc.id, toolCallId);
-					return {
+					const replayedToolCall: OpenAICompletionsFunctionToolCall = {
 						id: normalizeMistralToolId(toolCallId, compat.requiresMistralToolIds),
-						type: "function" as const,
+						type: "function",
 						function: {
 							name: tc.name,
 							arguments: serializeToolArguments(tc.arguments),
 						},
 					};
+					const extraContent = getGeminiThoughtSignatureExtraContent(storedSignatures[toolCallIndex]?.perCall);
+					if (extraContent) replayedToolCall.extra_content = extraContent;
+					return replayedToolCall;
 				});
-				const reasoningDetails = toolCalls
-					.filter(tc => tc.thoughtSignature)
-					.map(tc => {
-						try {
-							const parsed: unknown = JSON.parse(tc.thoughtSignature!);
-							return parsed;
-						} catch {
-							return null;
-						}
-					})
-					.filter(Boolean);
+				for (const stored of storedSignatures) {
+					const messageSignature = getGeminiMessageThoughtSignature(stored?.message);
+					if (!messageSignature) continue;
+					assistantMsg[messageSignature.field] = messageSignature.signature;
+					break;
+				}
+				const reasoningDetails = storedSignatures.flatMap(stored => {
+					const perCall = stored?.perCall;
+					if (perCall === undefined || getGeminiThoughtSignatureExtraContent(perCall)) return [];
+					return [perCall];
+				});
 				if (reasoningDetails.length > 0) {
 					assistantMsg.reasoning_details = reasoningDetails;
 				}
@@ -2181,11 +2418,13 @@ function mapStopReason(reason: ChatCompletionChunk.Choice["finish_reason"] | str
 	errorMessage?: string;
 } {
 	if (reason === null) return { stopReason: "stop" };
-	switch (reason) {
+	// Gemini-backed gateways emit native uppercase reasons (`STOP`, `MAX_TOKENS`).
+	switch (typeof reason === "string" ? reason.toLowerCase() : reason) {
 		case "stop":
 		case "end":
 			return { stopReason: "stop" };
 		case "length":
+		case "max_tokens":
 			return { stopReason: "length" };
 		case "function_call":
 		case "tool_calls":

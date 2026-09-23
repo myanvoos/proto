@@ -434,7 +434,8 @@ it("releases Image budget ownership through explicit container disposal", () => 
 	budget.releaseImageKey(imageKey, replacement);
 });
 
-it("keeps Herdr frame writes bracketed by DECSET 2026 after an unsupported DECRQM reply", async () => {
+/** Frame writes a Herdr pane emits after DECRQM answers mode 2026 with `status`. */
+async function herdrFrameAfterDecrpm(status: number): Promise<string> {
 	const source = `
 import { TUI } from "./src/tui.ts";
 class MockTerminal {
@@ -473,7 +474,7 @@ const tui = new TUI(terminal, false, { renderScheduler: scheduler });
 tui.addChild({ render: () => [value] });
 tui.start({ deferInput: true });
 terminal.writes.length = 0;
-terminal.callback?.(2026, false, true);
+terminal.callback?.(2026, false, true, ${status});
 value = "second";
 tui.invalidate();
 tui.requestRender(true);
@@ -499,10 +500,18 @@ console.log(JSON.stringify(writes));
 	]);
 	expect(exitCode).toBe(0);
 	expect(stderr).toBe("");
-	const writes = JSON.parse(stdout) as string[];
-	const stream = writes.join("");
+	return (JSON.parse(stdout) as string[]).join("");
+}
+
+it("keeps Herdr frame writes bracketed by DECSET 2026 after an unrecognized DECRQM reply", async () => {
+	const stream = await herdrFrameAfterDecrpm(0);
 	expect(stream).toStartWith("\x1b[?25l\x1b[?2026h\x1b[?7l");
 	expect(stream).toEndWith("\x1b[?7h\x1b[?2026l");
+});
+
+it("drops DECSET 2026 in Herdr when DECRQM reports the mode permanently reset", async () => {
+	const stream = await herdrFrameAfterDecrpm(4);
+	expect(stream).not.toContain("\x1b[?2026h");
 });
 
 it("keeps full-paint and differential frame streams byte-identical for styled rows", async () => {

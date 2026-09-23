@@ -1,5 +1,5 @@
 import * as AIError from "../../error";
-import { getClaudeCodeVersion } from "../../providers/claude-code-fingerprint";
+import { claudeCodeSdkVersion, getClaudeCodeVersion } from "../../providers/claude-code-fingerprint";
 import type { FetchImpl } from "../../types";
 import { OAuthCallbackFlow } from "./callback-server";
 import { generatePKCE } from "./pkce";
@@ -274,7 +274,7 @@ export async function refreshAnthropicToken(
 			fetchImpl,
 			{
 				"anthropic-beta": "oauth-2025-04-20",
-				"User-Agent": "anthropic-sdk-typescript/0.94.0 userOAuthProvider",
+				"User-Agent": `anthropic-sdk-typescript/${claudeCodeSdkVersion} userOAuthProvider`,
 			},
 		);
 	} catch (error) {

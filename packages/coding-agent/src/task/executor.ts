@@ -47,7 +47,7 @@ import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import type { SubagentUsageTotals } from "../session/session-entries";
-import { SessionManager } from "../session/session-manager";
+import { hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { TailAccumulator, truncateTail } from "../session/streaming-output";
 import { prewalkWouldBeNoop, resolveWorkerEffortLevel, type WorkerEffort } from "../thinking";
 import type { ContextFileEntry } from "../tools";
@@ -303,6 +303,8 @@ export interface ExecutorOptions {
 	additionalDirectories?: string[];
 
 	getApiKey?: CreateAgentSessionOptions["getApiKey"];
+	/** Parent session whose stored credential affinities seed the child session. */
+	credentialSourceSessionId?: string;
 	streamFn?: CreateAgentSessionOptions["streamFn"];
 	customTools?: CreateAgentSessionOptions["customTools"];
 	worktree?: string;
@@ -1374,7 +1376,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 							if (steerSession) {
 								const notice = buildBudgetNotice(progress.requests, softRequestBudget);
 								void Promise.resolve()
-									.then(() => steerSession.sendUserMessage(notice, { deliverAs: "steer" }))
+									.then(() =>
+										steerSession.sendUserMessage(notice, { deliverAs: "steer", attribution: "agent" }),
+									)
 									.catch(err => {
 										logger.warn("Subagent budget steer failed", {
 											error: err instanceof Error ? err.message : String(err),
@@ -1861,19 +1865,27 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	let outputMeta: { lineCount: number; charCount: number } | undefined;
 	let outputPath: string | undefined;
 	if (args.artifactsDir) {
-		outputPath = path.join(args.artifactsDir, `${id}.md`);
+		const candidatePath = path.join(args.artifactsDir, `${id}.md`);
 		const droppedBytes = monitor.droppedOutputBytes();
 		const artifactContent =
 			droppedBytes > 0
 				? `[${droppedBytes} earlier bytes of output dropped; only the most recent output was retained]\n${rawOutput}`
 				: rawOutput;
 		try {
-			await Bun.write(outputPath, artifactContent);
+			await Bun.write(candidatePath, artifactContent);
+			// Publish the path only once the artifact exists; a failed write must not leave an unreadable link.
+			outputPath = candidatePath;
 			outputMeta = {
 				lineCount: artifactContent.split("\n").length,
 				charCount: artifactContent.length,
 			};
-		} catch {}
+		} catch (error) {
+			logger.warn("Failed to persist subagent output artifact", {
+				agentId: id,
+				path: candidatePath,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	const runtimeLimitExceeded = monitor.runtimeLimitExceeded();
@@ -2098,6 +2110,12 @@ export async function finalizeSubagentLifecycle(args: {
 	const ownsRef = Boolean(ref && ref.session === args.session);
 	const cleanupDeadlineAt = args.cleanupDeadlineAt ?? Date.now() + 5000;
 	const disposeSession = async (): Promise<void> => {
+		// A graceful finish (e.g. `yield`) enqueued the advisor's review of the final turn at turn end; let it land
+		// before teardown, as print mode's headless drain does, bounded by the cleanup deadline. Hard aborts skip it.
+		if (!args.aborted) {
+			args.session.prepareForHeadlessAdvisorDrain();
+			await args.session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now()));
+		}
 		const disposal = args.session.dispose();
 		const remainingMs = Math.max(0, cleanupDeadlineAt - Date.now());
 		try {
@@ -2346,7 +2364,17 @@ function createRunLocalReviver(args: {
 	return async expectedAgentRef => {
 		const reopened = await SessionManager.open(args.sessionFile, undefined, undefined, {
 			suppressBreadcrumb: true,
+			// Park promised the transcript holds this run's history; a vanished one must not mint a fresh session.
+			throwIfMissing: true,
 		});
+		// A transcript that lost its messages must not be replayed as the agent's memory: a zero-history agent would
+		// answer peers and write work attributed to the original run.
+		if (!hasConversationalHistory(reopened.getEntries())) {
+			await reopened.close();
+			throw new Error(
+				`Cannot revive subagent "${args.id}": session file "${args.sessionFile}" has no message history (truncated to header/session_init). The agent was not revived.`,
+			);
+		}
 		if (args.parentArtifactManager) {
 			reopened.adoptArtifactManager(args.parentArtifactManager);
 		}
@@ -2681,6 +2709,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const sessionManagerPromise = sessionFile
 				? SessionManager.open(sessionFile, undefined, undefined, {
 						initialCwd: effectiveCwd,
+						parentSession: options.sessionFile ?? undefined,
 						suppressBreadcrumb: true,
 					})
 				: Promise.resolve(SessionManager.inMemory(effectiveCwd));
@@ -2754,6 +2783,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					authStorage,
 					modelRegistry,
 					getApiKey: options.getApiKey,
+					credentialSourceSessionId: options.credentialSourceSessionId,
 					streamFn: options.streamFn,
 					settings: subagentSettings,
 					model,

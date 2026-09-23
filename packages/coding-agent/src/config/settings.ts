@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { configureCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { configureProviderMaxInFlightRequests } from "@oh-my-pi/pi-ai/stream";
+import { resolveHyperlinkPolicy, setTerminalHyperlinks } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
 	getAgentDbPath,
 	getAgentDir,
@@ -376,6 +377,11 @@ export class Settings {
 				throw error;
 			},
 		);
+	}
+
+	/** The initialized or in-flight global settings, without starting a writable load. */
+	static get current(): Promise<Settings> | null {
+		return globalInstancePromise;
 	}
 
 	static loadReadOnly(options: SettingsOptions = {}): Promise<Settings> {
@@ -1345,6 +1351,30 @@ export class Settings {
 			delete raw["inspect_image.mode"];
 		}
 
+		// features.unexpectedStopDetection: boolean -> none|mechanical|smart. `true` was the classified behavior
+		// ("smart"); `false` drops the key so the "none" default applies.
+		const featuresObj = isRecord(raw.features) ? (raw.features as Record<string, unknown>) : undefined;
+		const legacyUnexpectedStop =
+			typeof featuresObj?.unexpectedStopDetection === "boolean"
+				? featuresObj.unexpectedStopDetection
+				: typeof raw["features.unexpectedStopDetection"] === "boolean"
+					? (raw["features.unexpectedStopDetection"] as boolean)
+					: undefined;
+		if (legacyUnexpectedStop !== undefined) {
+			if (!featuresObj) {
+				raw.features = {};
+			}
+			const target = raw.features as Record<string, unknown>;
+			const current = target.unexpectedStopDetection;
+			if (!legacyUnexpectedStop) {
+				delete target.unexpectedStopDetection;
+			} else if (!(typeof current === "string" && ["none", "mechanical", "smart"].includes(current))) {
+				// A quoted-dotted legacy `true` must not clobber an enum already written under `features`.
+				target.unexpectedStopDetection = "smart";
+			}
+			delete raw["features.unexpectedStopDetection"];
+		}
+
 		const taskObj = raw.task as Record<string, unknown> | undefined;
 		const isolationObj = taskObj?.isolation as Record<string, unknown> | undefined;
 		if (isolationObj && "enabled" in isolationObj) {
@@ -2041,6 +2071,10 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"secrets.enabled": value => {
 		configureCredentialRedaction(value === true);
 	},
+	// Push the resolved policy into TERMINAL.hyperlinks so renderers gating on the
+	// raw flag (Markdown `[text](url)`/bare-URL links, status-line PR links) honor
+	// `off`/`always` like the path/resource links that consult the setting.
+	"tui.hyperlinks": value => setTerminalHyperlinks(resolveHyperlinkPolicy(value)),
 	extendedContext: () => extendedContextSignal.fire(),
 	"worktree.base": value => {
 		const dir = typeof value === "string" && value.trim() ? value : undefined;

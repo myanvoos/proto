@@ -1,6 +1,6 @@
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import { isPasteCodeLoginProvider } from "@oh-my-pi/pi-ai";
-import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
+import type { OAuthPrompt, OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import {
 	type Component,
 	type Focusable,
@@ -10,6 +10,7 @@ import {
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
 import { getAgentDbPath } from "@oh-my-pi/pi-utils";
+import { captureBrowserSession } from "../../../utils/browser-session";
 import { copyToClipboard } from "../../../utils/clipboard";
 import { OAuthSelectorComponent } from "../../components/oauth-selector";
 import { theme } from "../../theme/theme";
@@ -198,6 +199,7 @@ export class SignInTab implements SetupTab {
 		try {
 			await this.#authStorage.login(providerId as OAuthProvider, {
 				signal: this.#loginAbort.signal,
+				onBrowserSession: captureBrowserSession,
 				onAuth: info => {
 					this.#authUrl = info.url;
 					this.#authLaunchUrl = info.launchUrl && info.launchUrl !== info.url ? info.launchUrl : undefined;
@@ -266,9 +268,10 @@ export class SignInTab implements SetupTab {
 		this.host.requestRender();
 	}
 
-	#showPrompt(prompt: { message: string; placeholder?: string }): Promise<string> {
+	#showPrompt(prompt: OAuthPrompt): Promise<string> {
 		this.#resolvePrompt("");
 		const input = new Input();
+		input.mask = prompt.secret === true;
 		const focusInput = new CopyablePromptInput(input, () => {
 			void this.#copyAuthUrl();
 		});

@@ -25,7 +25,8 @@ export interface ReviewerFeedHost {
 export interface ReviewerFeedOwner {
 	includeThinking(): boolean;
 
-	scrubHistory(obfuscator: SecretObfuscator, sharedRegexSecretValues: ReadonlySet<string>): void;
+	/** Scrubs committed advisor history; returns whether it collected new regex secret values into the set. */
+	scrubHistory(obfuscator: SecretObfuscator, sharedRegexSecretValues: Set<string>): boolean;
 
 	stripPendingPlaceholderPrefixes(obfuscator: SecretObfuscator, sharedRegexSecretValues: ReadonlySet<string>): void;
 
@@ -52,6 +53,8 @@ export interface ReviewerFeed {
 	clearSeenContext(): void;
 
 	clearSecrets(): void;
+
+	scrubCommittedHistory(text: string): string;
 }
 
 interface DeliveredMessage {
@@ -134,6 +137,19 @@ export class DeltaCursorFeed implements ReviewerFeed {
 
 	clearSecrets(): void {
 		this.#advisorRegexSecretValues.clear();
+	}
+
+	/**
+	 * Rescrubs history committed outside a render (context maintenance can install native replay plaintext, or a
+	 * snapshot predating collisions a concurrent render found) and strips unsafe placeholder prefixes from `text`.
+	 */
+	scrubCommittedHistory(text: string): string {
+		const obfuscator = this.host.obfuscator;
+		if (!obfuscator?.hasSecrets()) return text;
+		if (this.owner.scrubHistory(obfuscator, this.#advisorRegexSecretValues)) {
+			this.owner.stripPendingPlaceholderPrefixes(obfuscator, this.#advisorRegexSecretValues);
+		}
+		return obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(text, this.#advisorRegexSecretValues);
 	}
 
 	render(messages: AgentMessage[], wip = false): RenderedFeedItem | null {
@@ -260,7 +276,7 @@ export class DeltaCursorFeed implements ReviewerFeed {
 			}
 		};
 		addRegexValues(renderedMd);
-		this.owner.scrubHistory(obfuscator, this.#advisorRegexSecretValues);
+		if (this.owner.scrubHistory(obfuscator, this.#advisorRegexSecretValues)) discoveredNewRegexSecretValue = true;
 		if (discoveredNewRegexSecretValue) {
 			this.owner.stripPendingPlaceholderPrefixes(obfuscator, this.#advisorRegexSecretValues);
 		}

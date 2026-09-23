@@ -28,6 +28,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -59,6 +60,7 @@
 		},
 		"tokenizer": "deepseek-v3",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -90,6 +92,8 @@
 		},
 		"tokenizer": "deepseek-v3",
 		"requiresGlyphTokenization": false,
+		"int": 16,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -111,6 +115,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 34.3,
+		"tps": 221.1,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -122,7 +128,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"deepseek-v4-flash:0731": {
 		"id": "deepseek-v4-flash:0731",
@@ -153,7 +160,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"deepseek-v4-flash:preview": {
 		"id": "deepseek-v4-flash:preview",
@@ -184,6 +192,7 @@
 		"omitMaxOutputTokens": true,
 		"tokenizer": "deepseek-v3",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false
 	},
 	"deepseek-v4-pro": {
@@ -204,6 +213,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 36,
+		"tps": 67.1,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -215,7 +226,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"deepseek-v4-pro:0813": {
 		"id": "deepseek-v4-pro:0813",
@@ -246,7 +258,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"deepseek-v4-pro:preview": {
 		"id": "deepseek-v4-pro:preview",
@@ -277,6 +290,7 @@
 		"omitMaxOutputTokens": true,
 		"tokenizer": "deepseek-v3",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false
 	},
 	"deepseek-v4.1-flash": {
@@ -298,6 +312,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 384000,
+		"int": 39.5,
+		"tps": 226.6,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -309,7 +325,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"devstral-2:123b": {
 		"id": "devstral-2:123b",
@@ -331,6 +348,7 @@
 		"maxTokens": 262144,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -355,6 +373,7 @@
 		"maxTokens": 262144,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -389,6 +408,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -413,6 +433,7 @@
 		"maxTokens": 8192,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -437,6 +458,7 @@
 		"maxTokens": 8192,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -461,6 +483,7 @@
 		"maxTokens": 8192,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -494,7 +517,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"glm-4.6": {
 		"id": "glm-4.6",
@@ -525,6 +549,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 14.9,
+		"tps": 34.2,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -557,6 +584,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 22.2,
+		"tps": 102.1,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -590,6 +620,9 @@
 		},
 		"tokenizer": "glm5",
 		"requiresGlyphTokenization": false,
+		"int": 27.9,
+		"tps": 67.1,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -611,6 +644,8 @@
 		},
 		"contextWindow": 202752,
 		"maxTokens": 131072,
+		"int": 26.1,
+		"tps": 35.3,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -623,7 +658,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"glm-5.2": {
 		"id": "glm-5.2",
@@ -643,6 +679,8 @@
 		},
 		"contextWindow": 976000,
 		"maxTokens": 131072,
+		"int": 33.7,
+		"tps": 69.1,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -653,7 +691,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"glm-5.3": {
 		"id": "glm-5.3",
@@ -673,6 +712,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
+		"int": 44.8,
+		"tps": 58.8,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -686,7 +727,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"glm-5.3-flash": {
 		"id": "glm-5.3-flash",
@@ -707,6 +749,8 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 131072,
+		"int": 41.8,
+		"tps": 58.9,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -720,7 +764,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"gpt-oss:120b": {
 		"id": "gpt-oss:120b",
@@ -751,7 +796,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"gpt-oss:20b": {
 		"id": "gpt-oss:20b",
@@ -782,7 +828,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"kimi-k2-thinking": {
 		"id": "kimi-k2-thinking",
@@ -815,6 +862,7 @@
 		},
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -839,6 +887,7 @@
 		"omitMaxOutputTokens": true,
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -861,6 +910,7 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
+		"int": 23.5,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -873,7 +923,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"kimi-k2.6": {
 		"id": "kimi-k2.6",
@@ -894,6 +945,8 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
+		"int": 27,
+		"tps": 35.7,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -906,7 +959,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"kimi-k2.7-code": {
 		"id": "kimi-k2.7-code",
@@ -927,6 +981,8 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
+		"int": 25.8,
+		"tps": 59.9,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -939,7 +995,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"kimi-k3": {
 		"id": "kimi-k3",
@@ -960,6 +1017,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
+		"int": 43.6,
+		"tps": 36.7,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -973,7 +1032,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"minimax-m2": {
 		"id": "minimax-m2",
@@ -1005,6 +1065,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1038,6 +1099,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1059,6 +1121,8 @@
 		},
 		"contextWindow": 204800,
 		"maxTokens": 131072,
+		"int": 22.8,
+		"tps": 82.5,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1071,7 +1135,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"minimax-m2.7": {
 		"id": "minimax-m2.7",
@@ -1091,6 +1156,8 @@
 		},
 		"contextWindow": 196608,
 		"maxTokens": 196608,
+		"int": 22.8,
+		"tps": 63.1,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1103,7 +1170,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"minimax-m3": {
 		"id": "minimax-m3",
@@ -1124,6 +1192,8 @@
 		},
 		"contextWindow": 512000,
 		"maxTokens": 131072,
+		"int": 29.2,
+		"tps": 101.6,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1135,7 +1205,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"ministral-3:14b": {
 		"id": "ministral-3:14b",
@@ -1158,6 +1229,7 @@
 		"maxTokens": 128000,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1182,6 +1254,7 @@
 		"maxTokens": 128000,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1206,6 +1279,7 @@
 		"maxTokens": 128000,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1230,7 +1304,8 @@
 		"maxTokens": 262144,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"nemotron-3-nano:30b": {
 		"id": "nemotron-3-nano:30b",
@@ -1261,7 +1336,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"nemotron-3-super": {
 		"id": "nemotron-3-super",
@@ -1292,7 +1368,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"nemotron-3-ultra": {
 		"id": "nemotron-3-ultra",
@@ -1323,7 +1400,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"qwen3-coder-next": {
 		"id": "qwen3-coder-next",
@@ -1345,6 +1423,9 @@
 		"maxTokens": 65536,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"int": 9.2,
+		"tps": 93.2,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1368,6 +1449,7 @@
 		"maxTokens": 65536,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1400,6 +1482,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1433,6 +1516,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1457,6 +1541,7 @@
 		"maxTokens": 131072,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	},
@@ -1491,7 +1576,8 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "qwen3",
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
 	},
 	"rnj-1:8b": {
 		"id": "rnj-1:8b",
@@ -1513,6 +1599,7 @@
 		"maxTokens": 4096,
 		"omitMaxOutputTokens": true,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": true,
 		"supportsComputerUse": false,
 		"supportsComputerUseConfig": false
 	}

@@ -8,15 +8,37 @@ const RETRY_DELAY_FIELD_PATTERN = /"retryDelay":\s*"([0-9.]+)(ms|s)"/i;
 
 const TRY_AGAIN_PATTERN = /try again in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
 
-const WILL_RESET_IN_PATTERN = /(?:will\s+)?reset in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
+// OpenCode Go quota errors say "Resets in 3 days" / "Resets in 2hr 15min".
+const WILL_RESET_IN_PATTERN =
+	/(?:will\s+)?resets?\s+in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\b/i;
+const RESET_IN_HR_MIN_PATTERN = /resets?\s+in\s+~?\s*(\d+(?:\.\d+)?)\s*hr\s*(\d+(?:\.\d+)?)\s*min\b/i;
 // "Your limit will reset at 2026-09-01 09:44:51" / "reset at 2026-09-01T09:44:51Z"
 const WILL_RESET_AT_PATTERN =
 	/(?:will\s+)?reset at\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)/i;
 const CN_RESET_AT_PATTERN = /将在\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*重置/;
-// "retry-after-ms=98497000"
-const RETRY_AFTER_MS_BODY_PATTERN = /\bretry-after-ms=([0-9]+)\b/i;
+const RESET_AT_PATTERNS: readonly RegExp[] = [WILL_RESET_AT_PATTERN, CN_RESET_AT_PATTERN];
+// "retry-after-ms=98497000" / "retry-after-ms: 7200000" / "retry-after-ms = 7200000"
+const RETRY_AFTER_MS_BODY_PATTERN = /\bretry-after-ms\s*[:=]\s*([0-9]+)\b/i;
 
-export function extractRetryHint(source: Response | Headers | null | undefined, body?: string): number | undefined {
+export interface RetryHintOptions {
+	/** UTC offset (e.g. `+08:00`) for absolute reset stamps that omit their timezone. */
+	naiveResetTimezoneOffset?: string;
+}
+
+/**
+ * Server-suggested retry delay. Body signals merge by longest-wins: retrying
+ * before any stated window clears re-hits a still-blocked credential.
+ *
+ * Returns `undefined` when no signal is found and `0` when the provider
+ * explicitly asks for an immediate retry (`retry-after…=0`, an elapsed reset
+ * epoch). A timezone-naive `reset at` stamp resolves only when no other signal
+ * is present, unless `naiveResetTimezoneOffset` makes it unambiguous.
+ */
+export function extractRetryHint(
+	source: Response | Headers | null | undefined,
+	body?: string,
+	options?: RetryHintOptions,
+): number | undefined {
 	const headers = source instanceof Headers ? source : (source?.headers ?? undefined);
 	if (headers) {
 		const retryAfterMs = headers.get("retry-after-ms");
@@ -58,43 +80,65 @@ export function extractRetryHint(source: Response | Headers | null | undefined, 
 
 	if (!body) return undefined;
 
+	let longestMs: number | undefined;
+	let longestNaiveMs: number | undefined;
+	// A parsed non-positive signal is a provider "retry now" and must survive as
+	// 0: callers substitute a heuristic wait (30-minute quota guess) for undefined.
+	let retryNow = false;
+	const consider = (ms: number | undefined): void => {
+		if (ms !== undefined && ms > 0 && (longestMs === undefined || ms > longestMs)) longestMs = ms;
+	};
+	const considerNaive = (ms: number): void => {
+		if (ms > 0 && (longestNaiveMs === undefined || ms > longestNaiveMs)) longestNaiveMs = ms;
+	};
+	const considerClamped = (ms: number): void => {
+		if (ms > 0) consider(ms);
+		else retryNow = true;
+	};
+
 	const quotaMatch = QUOTA_RESET_PATTERN.exec(body);
 	if (quotaMatch) {
 		const hours = quotaMatch[1] ? Number.parseInt(quotaMatch[1], 10) : 0;
 		const minutes = quotaMatch[2] ? Number.parseInt(quotaMatch[2], 10) : 0;
 		const seconds = Number.parseFloat(quotaMatch[3]!);
-		if (!Number.isNaN(seconds)) {
-			const totalMs = ((hours * 60 + minutes) * 60 + seconds) * 1000;
-			if (totalMs > 0) return totalMs;
+		if (!Number.isNaN(seconds)) consider(((hours * 60 + minutes) * 60 + seconds) * 1000);
+	}
+
+	for (const pattern of RESET_AT_PATTERNS) {
+		const match = pattern.exec(body);
+		if (!match?.[1]) continue;
+		const normalized = match[1].replace(" ", "T");
+		const hasOffset = /(?:Z|[+-][0-9]{2}:?[0-9]{2})$/i.test(normalized);
+		const configuredOffset = options?.naiveResetTimezoneOffset;
+		const parsed = Date.parse(hasOffset ? normalized : `${normalized}${configuredOffset ?? "Z"}`);
+		if (Number.isNaN(parsed) || parsed <= Date.now()) continue;
+		if (hasOffset || configuredOffset !== undefined) consider(parsed - Date.now());
+		else considerNaive(parsed - Date.now());
+	}
+
+	// The generic reset-in pattern only captures the leading "2hr" of "Resets in 2hr 15min".
+	const compoundResetMatch = RESET_IN_HR_MIN_PATTERN.exec(body);
+	if (compoundResetMatch?.[1] && compoundResetMatch[2]) {
+		const hours = Number.parseFloat(compoundResetMatch[1]);
+		const minutes = Number.parseFloat(compoundResetMatch[2]);
+		if (Number.isFinite(hours) && Number.isFinite(minutes) && hours >= 0 && minutes > 0) {
+			consider(hours * 60 * 60_000 + minutes * 60_000);
 		}
 	}
 
-	for (const pattern of [WILL_RESET_AT_PATTERN, CN_RESET_AT_PATTERN]) {
-		const match = pattern.exec(body);
-		if (match?.[1]) {
-			// Provider timestamps without an explicit offset are interpreted as UTC.
-			const normalized = match[1].replace(" ", "T");
-			const hasOffset = /(?:Z|[+-][0-9]{2}:?[0-9]{2})$/i.test(normalized);
-			const parsed = Date.parse(hasOffset ? normalized : `${normalized}Z`);
-			if (!Number.isNaN(parsed) && parsed > Date.now()) {
-				return parsed - Date.now();
-			}
-		}
-	}
-	// Account-reset hints take precedence over shorter generic retry hints.
 	const accountResetMatch = WILL_RESET_IN_PATTERN.exec(body);
 	if (accountResetMatch?.[1]) {
 		const value = Number.parseFloat(accountResetMatch[1]);
 		if (Number.isFinite(value) && value > 0) {
 			const unitMs = unitToMs(accountResetMatch[2]!);
-			if (unitMs !== undefined) return value * unitMs;
+			if (unitMs !== undefined) consider(value * unitMs);
 		}
 	}
 
 	const retryAfterMsMatch = RETRY_AFTER_MS_BODY_PATTERN.exec(body);
 	if (retryAfterMsMatch?.[1]) {
 		const ms = Number(retryAfterMsMatch[1]);
-		if (Number.isFinite(ms) && ms > 0) return ms;
+		if (Number.isFinite(ms)) considerClamped(ms);
 	}
 
 	for (const pattern of [PLEASE_RETRY_PATTERN, RETRY_DELAY_FIELD_PATTERN, TRY_AGAIN_PATTERN]) {
@@ -103,11 +147,39 @@ export function extractRetryHint(source: Response | Headers | null | undefined, 
 			const value = Number.parseFloat(match[1]);
 			if (Number.isFinite(value) && value > 0) {
 				const unitMs = unitToMs(match[2]!);
-				if (unitMs !== undefined) return value * unitMs;
+				if (unitMs !== undefined) consider(value * unitMs);
 			}
 		}
 	}
-	return undefined;
+
+	// Legacy text forms: `retry-after` seconds or HTTP date, `x-ratelimit-reset[-ms]` counters.
+	const retryAfterMatch = /retry-after\s*[:=]\s*([^\s,;]+)/i.exec(body);
+	if (retryAfterMatch) {
+		const value = retryAfterMatch[1]!;
+		const seconds = Number(value);
+		if (Number.isFinite(seconds)) {
+			considerClamped(seconds * 1000);
+		} else {
+			const dateMs = Date.parse(value);
+			if (!Number.isNaN(dateMs)) considerClamped(dateMs - Date.now());
+		}
+	}
+
+	const resetMsMatch = /x-ratelimit-reset-ms\s*[:=]\s*(\d+)/i.exec(body);
+	if (resetMsMatch) {
+		const resetMs = Number(resetMsMatch[1]);
+		if (!Number.isNaN(resetMs)) considerClamped(resetMs > 1_000_000_000_000 ? resetMs - Date.now() : resetMs);
+	}
+
+	const resetMatch = /x-ratelimit-reset\s*[:=]\s*(\d+)/i.exec(body);
+	if (resetMatch) {
+		const resetSeconds = Number(resetMatch[1]);
+		if (!Number.isNaN(resetSeconds)) {
+			considerClamped(resetSeconds > 1_000_000_000 ? resetSeconds * 1000 - Date.now() : resetSeconds * 1000);
+		}
+	}
+
+	return longestMs ?? longestNaiveMs ?? (retryNow ? 0 : undefined);
 }
 
 function unitToMs(unit: string): number | undefined {
@@ -129,6 +201,10 @@ function unitToMs(unit: string): number | undefined {
 		case "hour":
 		case "hours":
 			return 60 * 60_000;
+		case "d":
+		case "day":
+		case "days":
+			return 24 * 60 * 60_000;
 		default:
 			return undefined;
 	}

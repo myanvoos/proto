@@ -11,6 +11,7 @@ export interface PreparedProviderRequest {
 }
 
 export type ProviderRequestPreparer = (model: Model<Api>, options: StreamOptions) => PreparedProviderRequest;
+export type ProviderModelPreparer = (model: Model<Api>) => Model<Api>;
 export type ProviderSimpleOptionsMapper = (options: SimpleStreamOptions) => Readonly<Record<string, unknown>>;
 
 export interface ProviderModelDiscoveryConfig {
@@ -34,6 +35,9 @@ export interface ProviderDefinition {
 
 	readonly allowsMissingApiKey?: boolean;
 
+	// Runs before API-specific option mapping, so it may re-route the model's API.
+	readonly prepareModel?: ProviderModelPreparer;
+
 	readonly prepareRequest?: ProviderRequestPreparer;
 
 	readonly mapSimpleOptions?: ProviderSimpleOptionsMapper;
@@ -42,7 +46,12 @@ export interface ProviderDefinition {
 
 	readonly login?: (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials | string>;
 
+	/** Key an optional-key login stores on empty input; marks keyless mode, never counts as auth. */
+	readonly emptyKeyFallback?: string;
+
 	readonly refreshToken?: (credentials: OAuthCredentials, signal?: AbortSignal) => Promise<OAuthCredentials>;
+	/** `jwt-or-never`: the credential expires only by its JWT `exp` claim, if any; stored timestamps are ignored. */
+	readonly credentialExpiry?: "jwt-or-never";
 	readonly getApiKey?: (credentials: OAuthCredentials) => string;
 
 	readonly storeCredentialsAs?: string;

@@ -1,3 +1,5 @@
+import { ThinkingInbandScanner } from "../dialect/thinking";
+import type { InbandScanEvent } from "../dialect/types";
 import { isAnthropicServerToolHistoryBlock } from "../providers/anthropic-wire";
 import type {
 	AnthropicServerToolContent,
@@ -15,7 +17,6 @@ import {
 	setStreamingPartialJson,
 } from "./block-symbols";
 import { AssistantMessageEventStream } from "./event-stream";
-import { StreamMarkupHealing, type StreamMarkupHealingEvent } from "./stream-markup-healing";
 
 type StreamingToolCall = ToolCall & StreamingPartialJsonCarrier;
 
@@ -134,7 +135,7 @@ type ProjectedContent = AssistantMessage["content"][number];
 
 class LeakedThinkingProjector {
 	readonly #out: AssistantMessageEventStream;
-	#healer = new StreamMarkupHealing({ pattern: "thinking" });
+	#healer = new ThinkingInbandScanner({ impliedOpen: true });
 	#partial: AssistantMessage;
 	#text: OpenBlock;
 	#thinking: OpenBlock;
@@ -170,7 +171,7 @@ class LeakedThinkingProjector {
 		this.#activeTextSourceIndex = srcIndex;
 		this.#fedText.set(srcIndex, (this.#fedText.get(srcIndex) ?? "") + delta);
 		if (startsSource || signature !== undefined) this.#lastTextSignature = signature;
-		this.#apply(this.#healer.feedEvents(delta), this.#lastTextSignature, srcIndex);
+		this.#apply(this.#healer.feed(delta), this.#lastTextSignature, srcIndex);
 	}
 
 	textEnd(srcIndex: number, content: string, signature: string | undefined): void {
@@ -201,11 +202,19 @@ class LeakedThinkingProjector {
 		// A terminal snapshot can replace, not merely extend, the streamed draft.
 		// Re-run markup healing from a clean state so stale tag/parser state cannot
 		// turn the replacement into thinking or retain removed draft fragments.
-		const healer = new StreamMarkupHealing({ pattern: "thinking" });
+		const healer = new ThinkingInbandScanner({ impliedOpen: true });
 		const replacement: (TextContent | ThinkingContent)[] = [];
-		for (const event of [...healer.feedEvents(content), ...healer.flushEvents()]) {
+		const leadsMessage = !this.#partial.content.some(block => {
+			const source = this.#sourceAnchors.get(block);
+			return source !== undefined && source < srcIndex;
+		});
+		for (const event of [...healer.feed(content), ...healer.flush()]) {
 			const last = replacement.at(-1);
-			if (event.type === "text") {
+			if (event.type === "impliedThinkingEnd") {
+				// Same rule as #closeImpliedThinking: only a lone leading text block was reasoning.
+				if (leadsMessage && replacement.length === 1 && last?.type === "text" && last.text.trim().length > 0)
+					replacement[0] = { type: "thinking", thinking: last.text };
+			} else if (event.type === "text") {
 				if (last?.type === "text") last.text += event.text;
 				else
 					replacement.push({
@@ -213,9 +222,9 @@ class LeakedThinkingProjector {
 						text: event.text,
 						...(signature !== undefined ? { textSignature: signature } : {}),
 					});
-			} else if (event.type === "thinking") {
-				if (last?.type === "thinking") last.thinking += event.thinking;
-				else replacement.push({ type: "thinking", thinking: event.thinking });
+			} else if (event.type === "thinkingDelta") {
+				if (last?.type === "thinking") last.thinking += event.delta;
+				else replacement.push({ type: "thinking", thinking: event.delta });
 			}
 		}
 		if (replacement.length === 0)
@@ -257,7 +266,7 @@ class LeakedThinkingProjector {
 			}),
 		);
 		if (this.#activeTextSourceIndex === srcIndex) {
-			this.#healer = new StreamMarkupHealing({ pattern: "thinking" });
+			this.#healer = new ThinkingInbandScanner({ impliedOpen: true });
 			this.#activeTextSourceIndex = undefined;
 		}
 		this.#fedText.set(srcIndex, content);
@@ -399,11 +408,32 @@ class LeakedThinkingProjector {
 		return this.#finalContent(message);
 	}
 
-	#apply(events: readonly StreamMarkupHealingEvent[], signature: string | undefined, srcIndex: number): void {
+	#apply(events: readonly InbandScanEvent[], signature: string | undefined, srcIndex: number): void {
 		for (const event of events) {
 			if (event.type === "text") this.#emitText(event.text, signature, srcIndex);
-			else if (event.type === "thinking") this.#emitHealedThinking(event.thinking, srcIndex);
+			else if (event.type === "thinkingDelta") this.#emitHealedThinking(event.delta, srcIndex);
+			else if (event.type === "impliedThinkingEnd") this.#closeImpliedThinking(srcIndex);
 		}
+	}
+
+	/**
+	 * A bare reasoning close with no open: when the open text block is the message's
+	 * only content, it was reasoning behind a template-prefilled opener, so re-project
+	 * it as a closed thinking block at the same index (`thinking_start` at an index
+	 * replaces the block for event-replaying consumers). Anywhere else the tag is a
+	 * stray and is dropped so it never reaches the stored turn.
+	 */
+	#closeImpliedThinking(srcIndex: number): void {
+		if (this.#text?.index !== 0 || this.#partial.content.length !== 1) return;
+		const text = (this.#partial.content[0] as TextContent).text;
+		if (text.trim().length === 0) return;
+		this.#closeText();
+		const block: ThinkingContent = { type: "thinking", thinking: text };
+		this.#partial.content[0] = block;
+		this.#anchor(0, srcIndex);
+		this.#out.push({ type: "thinking_start", contentIndex: 0, partial: this.#partial });
+		this.#out.push({ type: "thinking_delta", contentIndex: 0, delta: text, partial: this.#partial });
+		this.#emitThinkingEnd(0);
 	}
 
 	#emitText(text: string, signature: string | undefined, srcIndex: number): void {
@@ -446,7 +476,7 @@ class LeakedThinkingProjector {
 	#flushHealer(): void {
 		const srcIndex = this.#activeTextSourceIndex;
 		if (srcIndex !== undefined) {
-			this.#apply(this.#healer.flushEvents(), this.#lastTextSignature, srcIndex);
+			this.#apply(this.#healer.flush(), this.#lastTextSignature, srcIndex);
 		}
 		this.#activeTextSourceIndex = undefined;
 	}

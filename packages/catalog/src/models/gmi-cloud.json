@@ -25,9 +25,12 @@
 				"max"
 			]
 		},
+		"int": 34.3,
+		"tps": 221.1,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -39,8 +42,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": true,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,

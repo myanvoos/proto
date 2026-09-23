@@ -49,16 +49,18 @@ export async function generateSummary({
 		stat,
 	});
 
-	const response = await retryTransientCompletion(() =>
-		completeSimple(
-			model,
-			{
-				systemPrompt: [systemPrompt],
-				messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }],
-				tools: [SummaryTool],
-			},
-			{ apiKey, maxTokens: 200, reasoning: toReasoningEffort(thinkingLevel) },
-		),
+	const response = await retryTransientCompletion(
+		() =>
+			completeSimple(
+				model,
+				{
+					systemPrompt: [systemPrompt],
+					messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }],
+					tools: [SummaryTool],
+				},
+				{ apiKey, maxTokens: 200, reasoning: toReasoningEffort(thinkingLevel) },
+			),
+		{ provider: model.provider },
 	);
 
 	if (response.stopReason === "error") {

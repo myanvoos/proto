@@ -34,6 +34,7 @@ Compaction and branch summaries are first-class session entries, not plain assis
   - `firstKeptEntryId` (compaction boundary)
   - `tokensBefore`
   - optional `details`, `preserveData`, `fromExtension`
+  - optional `providerReplayThroughEntryId` (last entry covered by a native replay snapshot)
 - `BranchSummaryEntry`
   - `type: "branch_summary"`
   - `fromId`, `summary`
@@ -53,6 +54,10 @@ Those custom roles are then transformed into LLM-facing messages in `convertToLl
 - `packages/agent/src/compaction/prompts/branch-summary-context.md`
 
 while `custom` messages pass through as developer messages with their raw content (no template).
+
+Native replay also requires a matching provider and a Responses-family API on the active model. A separate native compaction endpoint does not give a Chat Completions or Anthropic encoder the ability to consume its output.
+
+Disabling future native compaction does not disable normal replay of an existing payload. Compaction preparation has a separate, stricter reuse policy: local summarization must re-expand the original messages rather than treat an opaque placeholder as a readable summary.
 
 ## Compaction pipeline
 
@@ -165,12 +170,18 @@ The flag never reaches provider wire formats, and flagged pairs are never remove
 
 ### Boundary and cut-point logic
 
-`prepareCompaction()` only considers entries since the last compaction entry (if any).
+`prepareCompaction()` builds one effective message sequence for estimation, cut-point selection, and the history-summary, turn-prefix, and retained-message regions.
 
-1. Find previous compaction index.
-2. Compute `boundaryStart = prevCompactionIndex + 1`.
-3. Adapt `keepRecentTokens` using measured usage ratio when available.
-4. Run `findCutPoint()` over the boundary window.
+1. Find the latest compaction whose summary or provider-native history is reusable by the active model.
+2. Honor the latest `/clear` `reset_boundary`: a newer reset discards the previous summary, and an older reset remains the lower bound for recovering retained messages.
+3. For a local summary, recover the original entries from `firstKeptEntryId` up to the previous compaction record, then append entries after that record.
+4. For reusable provider-native history, start after `providerReplayThroughEntryId` when it identifies an older snapshot, without crossing the latest reset boundary. This recovers the uncovered snapshot-to-commit interval, not the original messages already covered by native replay. A trailing native compaction record does not make that interval already compacted.
+5. Exclude compaction records and other non-message metadata. Pass the previous summary separately through `previousSummary`; retain message-bearing `custom_message` and `branch_summary` entries.
+6. Adapt `keepRecentTokens` using the measured usage ratio, then run `findCutPoint()` and partition that same sequence into `messagesToSummarize`, `turnPrefixMessages`, and `recentMessages`.
+
+When updating a local summary, every effective original message belongs to exactly one of those three regions: after `summary(A) + B` grows to `summary(A) + B + C`, the next preparation distributes both B and C, not just C. The new `firstKeptEntryId` refers to an original entry; preparation does not move, duplicate, or rewrite journal entries.
+
+`findCutPoint()` keeps the oldest suffix that fits `keepRecentTokens`, judged only at valid cut points after counting every message behind them (an assistant's tool results included). The newest group is kept even when it alone overflows the budget; an older group that would push a fitting suffix over it is summarized instead.
 
 Valid cut points include:
 
@@ -180,7 +191,7 @@ Valid cut points include:
 
 Hard rule: never cut at `toolResult`.
 
-If there are non-message metadata entries immediately before the cut point (`model_change`, `thinking_level_change`, labels, etc.), they are pulled into the kept region by moving cut index backward until a message or compaction boundary is hit.
+Preparation filters out pure metadata (`model_change`, `thinking_level_change`, labels, etc.) before selecting the retained-message boundary. Those records remain in the journal but are not conversation input.
 
 ### Split-turn handling
 
@@ -240,7 +251,15 @@ One Blackhole knob is a Proto-local addition, in the same config file:
 
 Observational memory runs background Observer, Reflector, and Dropper model calls. Structural compaction itself is deterministic and model-free; memory is not. Configure explicit inexpensive worker models and set `sessionFallback: false` to prevent workers from falling back to the active session model.
 
+When native compaction starts from an ordinary local summary, that summary is included as a context message alongside the prepared conversation. Later native passes reuse the provider payload instead of re-injecting its placeholder summary.
+
+For speculative native compaction, `providerReplayThroughEntryId` records the snapshot's last entry, not the later commit position. Context rebuilding and the next compaction preparation both include messages appended between those positions, followed by post-commit messages.
+
+Advisor runtimes retain native `preserveData` for subsequent maintenance and attach its provider payload to the in-memory compaction summary for the next model request. Native replay already contains the retained tail, so advisors do not also append that tail as raw messages; local summaries still keep recent messages separately. Advisor requests use the shared message converter, so both textual compaction summaries and native payloads reach the provider.
+
 The previous local structured summarizer was removed; the fallback serializes the prepared conversation, treats it as untrusted data, and uses provider-native compaction or a configured remote endpoint (`compaction.remoteEndpoint`) only.
+
+Provider-native compaction also covers Anthropic's server-side compaction beta (`compact-2026-01-12`) for model lines the catalog marks `compat.supportsServerCompaction` (Opus/Sonnet 4.6+, Fable/Mythos 5) whose requests reach the official endpoint; other Anthropic-compatible routes opt in with `remoteCompaction.enabled`. When no OpenAI lane applies and the context is at least 55k tokens, compaction re-issues the live turn's own request (system prompt, tools, history — so it reads the warm prompt cache) plus a `compact_20260112` edit with `pause_after_compaction`, using the summary prompt as `instructions` scoped to exclude the retained tail. The returned summary becomes the entry `summary` (plus the file-operation list) and `preserveData.anthropicCompaction`; later Anthropic requests replay it as a native `compaction` block while every other provider reads the summary text. A response without a summary is a native failure.
 
 ### File-operation context in summaries
 
@@ -385,7 +404,7 @@ Post-navigation event exposing new/old leaf and optional summary entry.
 
 ## Runtime behavior and failure semantics
 
-- Manual compaction aborts current agent operation first.
+- Manual compaction aborts current agent operation first. If that abort cut a turn in flight, a committed compaction — or a no-op rejection (`Nothing to compact`, `Already compacted`) — resumes it (queued steer/follow-up first, otherwise the auto-continue prompt) unless `compaction.autoContinue` is `false`. A hook cancel or summarizer failure does not resume. A prompt parked on the compaction barrier (`prompt()`, `promptCustomMessage()`) takes the session instead of the resume; if it turns out to be a locally handled command that starts no turn, the resume is handed back. A manual compaction issued while idle never starts a turn.
 - `abortCompaction()` cancels manual compaction and auto-compaction controllers.
 - Auto compaction emits start/end session events for UI/state updates.
 - Auto compaction can try multiple model candidates and retry transient failures; long retry delays prefer the next candidate when one is available.
@@ -401,7 +420,7 @@ Post-navigation event exposing new/old leaf and optional summary entry.
 From `settings-schema.ts`:
 
 - `compaction.enabled` = `true`
-- `compaction.methodOrder` = `["remote"]`. `remote` uses provider-native OpenAI-compatible server compaction or the configured remote endpoint when available. Legacy configured orders containing the removed `handoff`/`shake`/`soft` methods are filtered down to their surviving `remote` entries.
+- `compaction.methodOrder` = `["remote"]`. `remote` uses provider-native server compaction (OpenAI Responses compact, Anthropic compaction beta) or the configured remote endpoint when available. Legacy configured orders containing the removed `handoff`/`shake`/`soft` methods are filtered down to their surviving `remote` entries.
 - `compaction.asyncEnabled` = `true`. Async (speculative) compaction: when context enters the pre-threshold band `[threshold − lead, threshold)` (lead = `clamp(threshold × 0.125, 8192, 32000)`), maintenance starts a background remote compaction off a branch snapshot, isolated from the live turn by a side session id. The armed result is committed instantly when the threshold is actually crossed, hiding summarization latency; post-snapshot turns are appended after the summary unchanged. Armed results are discarded when the branch prefix changes (new compaction, reset boundary, `/tree` navigation), when a provider-native replay payload is no longer readable by the active model, or when context drifts too far.
 - `compaction.reserveTokens` is unset by default. The compaction layer normally applies a `16384`-token floor and at least 15% of the context window; on small windows where that default would be impractical, budget checks use the 15% proportional reserve. An explicit configured reserve is honored.
 - `compaction.keepRecentTokens` = `20000`

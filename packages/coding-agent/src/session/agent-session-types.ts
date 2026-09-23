@@ -38,6 +38,16 @@ import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SubagentUsageTotals } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
+/** Why a scheduled post-prompt task never ran. */
+export type PostPromptSkipReason = "aborted" | "stale-generation";
+
+/** Why a scheduled `agent.continue()` never ran. */
+export type AgentContinueSkipReason =
+	| PostPromptSkipReason
+	| "session-unavailable"
+	| "should-continue-false"
+	| "post-restore-unavailable";
+
 export interface AgentSessionDisposeOptions {
 	drainTimeoutMs?: number;
 
@@ -118,7 +128,13 @@ export interface AgentSessionConfig {
 
 	createInspectMediaTool?: () => Promise<AgentTool | null>;
 
+	/** Creates the hidden `goal` tool when goal mode is enabled after session creation. */
+	createGoalTool?: () => Promise<AgentTool | null>;
+
 	modelRegistry: ModelRegistry;
+
+	/** Whether the startup model may be replaced by refreshed same-selector registry metadata. */
+	rebindModelAfterDiscovery?: boolean;
 
 	toolRegistry?: Map<string, AgentTool>;
 
@@ -205,6 +221,9 @@ export interface AgentSessionConfig {
 
 	advisorConfigs?: AdvisorConfig[];
 
+	/** WATCHDOG.yml problems found during discovery, shown once the UI is ready. */
+	advisorConfigWarnings?: string[];
+
 	disconnectOwnedMcpManager?: () => Promise<void>;
 
 	titleSystemPrompt?: string;
@@ -239,6 +258,19 @@ export interface FollowUpOptions {
 
 	expandPromptTemplates?: boolean;
 
+	attribution?: MessageAttribution;
+}
+
+/** Options for AgentSession.steer(). */
+export interface SteerOptions {
+	/** Who initiated the steer; defaults to "user". Host and parent-agent steers pass "agent". */
+	attribution?: MessageAttribution;
+}
+
+/** Options for AgentSession.sendUserMessage() and the extension `sendUserMessage` API. */
+export interface SendUserMessageOptions {
+	deliverAs?: "steer" | "followUp";
+	/** Who initiated the message; defaults to "user". */
 	attribution?: MessageAttribution;
 }
 

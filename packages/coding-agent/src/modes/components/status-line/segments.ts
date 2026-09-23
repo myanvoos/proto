@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { getTimeBasedPricingPeriod } from "@oh-my-pi/pi-catalog/models";
 import { TERMINAL, truncateStartToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { PRIORITY_TIER_LABEL } from "../../../config/service-tier";
@@ -398,13 +399,16 @@ const costSegment: StatusLineSegment = {
 		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests + subagent.premiumRequests);
 		const state = ctx.session.state;
 		const usingSubscription = state.model ? (ctx.session.modelRegistry?.isUsingOAuth(state.model) ?? false) : false;
+		// The active model's current tariff, not a label for the accumulated total.
+		const pricingPeriod = state.model?.cost ? getTimeBasedPricingPeriod(state.model.cost) : undefined;
 
-		if (!cost && !usingSubscription && !normalizedPremiumRequests) {
+		if (!cost && !usingSubscription && !normalizedPremiumRequests && !pricingPeriod) {
 			return { content: "", visible: false };
 		}
 
 		const billingParts: string[] = [];
-		if (cost) billingParts.push(`$${cost.toFixed(2)}`);
+		if (cost || pricingPeriod) billingParts.push(`$${cost.toFixed(2)}`);
+		if (pricingPeriod) billingParts.push(pricingPeriod === "peak" ? "↑" : "↓");
 		if (normalizedPremiumRequests) billingParts.push(`* ${formatNumber(normalizedPremiumRequests)}`);
 		if (usingSubscription) billingParts.push("(sub)");
 
@@ -603,7 +607,7 @@ const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
 		const u = ctx.usage;
-		if (!u || (!u.fiveHour && !u.sevenDay)) {
+		if (!u || (!u.fiveHour && !u.sevenDay && !u.monthly)) {
 			return { content: "", visible: false };
 		}
 		const parts: string[] = [];
@@ -628,6 +632,16 @@ const usageSegment: StatusLineSegment = {
 					? theme.fg("muted", ` (${formatUsageReset(u.sevenDay.resetHours, "h")})`)
 					: "";
 			parts.push(`7d ${pctText}${reset}`);
+		}
+		if (u.monthly) {
+			// Floor like the providers' dashboards (Cursor shows 1.88% used as 1%).
+			const pct = u.monthly.percent;
+			const pctText = theme.fg(pickUsageColor(pct), `${Math.floor(pct)}%`);
+			const reset =
+				u.monthly.resetHours !== undefined
+					? theme.fg("muted", ` (${formatUsageReset(u.monthly.resetHours, "h")})`)
+					: "";
+			parts.push(`mo ${pctText}${reset}`);
 		}
 		const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
 		return { content, visible: true };

@@ -1,4 +1,5 @@
-import { readSseJson } from "@oh-my-pi/pi-utils";
+import * as os from "node:os";
+import { getAppName, getInstallId, readSseJson } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import type {
 	Api,
@@ -87,6 +88,11 @@ function buildHeaders(model: Model<Api>, apiKey: string | undefined): Record<str
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		Accept: "text/event-stream",
+		// Usage attribution: the gateway reports this request's burn under the originating client, never
+		// forwarding x-proto-* upstream. Header values must stay ISO-8859-1-safe, hence the hostname scrub.
+		"x-proto-install-id": getInstallId(),
+		"x-proto-hostname": os.hostname().replace(/[^\x20-\x7e]/g, "?"),
+		"x-proto-app": getAppName(),
 		...(model.headers ?? {}),
 	};
 	if (apiKey && !headers.Authorization) {

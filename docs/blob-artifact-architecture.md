@@ -87,7 +87,7 @@ Before a session entry is written — incremental append (`#appendToSessionFile`
 
 Key behaviors:
 
-1. **Large string truncation**: oversized strings are cut and suffixed with `"[Session persistence truncated large content]"`; signature fields (`thinkingSignature`, `thoughtSignature`, `textSignature`) are cleared instead of truncated.
+1. **Large string truncation**: oversized strings are cut and suffixed with `"[Session persistence truncated large content]"`; signature fields (`thinkingSignature`, `thoughtSignature`, `textSignature`) and opaque provider replay state (signed/redacted thinking, encrypted reasoning, Anthropic server-tool blocks, Anthropic server-side compaction payloads) are kept verbatim, since providers validate them byte-for-byte on replay.
 2. **Transient field stripping**: `partialJson` and `jsonlEvents` are removed from persisted entries.
 3. **Image externalization to blobs**:
    - image blocks in `content` arrays are externalized when `data` is not already a blob ref and base64 length is at least threshold (`BLOB_EXTERNALIZE_THRESHOLD = 1024`),

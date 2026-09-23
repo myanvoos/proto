@@ -397,3 +397,38 @@ function fsyncDirEntrySync(dir: string): void {
 	}
 	if (syncError !== undefined) throw syncError;
 }
+
+/**
+ * Move a live file across devices (where rename(2) fails with EXDEV) without exposing a
+ * partial destination. The source stays authoritative while the copy is staged; the copy is
+ * retried until the source is stable across it. Publication (link) and source removal are
+ * synchronous so in-process writers cannot land between them, and link(2) never replaces an
+ * existing destination.
+ */
+export async function moveFileAcrossDevices(source: string, destination: string): Promise<void> {
+	const staging = `${destination}.${process.pid}.${crypto.randomUUID()}.move`;
+	try {
+		for (;;) {
+			const before = fs.statSync(source, { bigint: true });
+			await fs.promises.copyFile(source, staging);
+			const after = fs.statSync(source, { bigint: true });
+			if (before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs) continue;
+			const fd = fs.openSync(staging, "r+");
+			try {
+				fs.fsyncSync(fd);
+			} finally {
+				fs.closeSync(fd);
+			}
+			fs.linkSync(staging, destination);
+			try {
+				fs.unlinkSync(source);
+			} catch (error) {
+				fs.unlinkSync(destination);
+				throw error;
+			}
+			return;
+		}
+	} finally {
+		await fs.promises.rm(staging, { force: true });
+	}
+}

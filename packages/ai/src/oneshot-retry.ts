@@ -1,7 +1,11 @@
-import { extractRetryHint } from "@oh-my-pi/pi-utils";
 import * as AIError from "./error";
 import type { AssistantMessage } from "./types";
-import { getHeadersFromError, getRetryAfterMsFromHeaders, type HeadersLike } from "./utils/retry-after";
+import {
+	extractProviderRetryHint,
+	getHeadersFromError,
+	getRetryAfterMsFromHeaders,
+	type HeadersLike,
+} from "./utils/retry-after";
 
 export interface OneshotRetryOptions {
 	maxAttempts?: number;
@@ -13,6 +17,9 @@ export interface OneshotRetryOptions {
 	signal?: AbortSignal;
 
 	getResponseHeaders?: () => HeadersLike;
+
+	// Provider of the retried model: selects its timezone for naive absolute reset stamps (Z.AI/Zhipu use Beijing time).
+	provider?: string;
 
 	onRetry?: (info: OneshotRetryInfo) => void;
 }
@@ -46,6 +53,7 @@ function isRetryableOneshotFailure(errorId: number, errorStatus: number | undefi
 	if (AIError.is(errorId, AIError.Flag.ContentBlocked)) return false;
 
 	if (AIError.is(errorId, AIError.Flag.ContextOverflow)) return false;
+	if (AIError.is(errorId, AIError.Flag.PayloadRejected)) return false;
 	return (
 		AIError.isTransientStatus(errorStatus) ||
 		AIError.is(errorId, AIError.Flag.Transient) ||
@@ -120,7 +128,7 @@ export async function retryTransientCompletion(
 
 		const headers: HeadersLike = thrown !== undefined ? getHeadersFromError(thrown) : options?.getResponseHeaders?.();
 		const headerHintMs = getRetryAfterMsFromHeaders(headers);
-		const extractedTextHintMs = extractRetryHint(undefined, errorMessage);
+		const extractedTextHintMs = extractProviderRetryHint(options?.provider, errorMessage);
 		const suffixValue = RETRY_AFTER_MS_SUFFIX.exec(errorMessage)?.[1];
 		const parsedSuffixMs = suffixValue === undefined ? undefined : Number(suffixValue);
 		const suffixHintMs =

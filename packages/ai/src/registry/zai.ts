@@ -32,7 +32,6 @@ export const zaiCodingPlanProvider = {
 
 	storeCredentialsAs: "zai",
 
-	callbackPort: 54548,
 	pasteCodeFlow: true,
 	login: (cb: OAuthLoginCallbacks) => import("./oauth/zai").then(m => m.loginZaiOAuth(cb)),
 } as const satisfies ProviderDefinition;

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { CombinedAutocompleteProvider, type SlashCommand } from "./autocomplete";
 
 const COMMANDS: SlashCommand[] = [
@@ -55,4 +55,35 @@ test("weak matches sort after every strong match even when their raw score is hi
 	expect(items.map(item => item.value)).toEqual(["xcxl", "zzz"]);
 	expect(items[0]?.weakMatch).toBeUndefined();
 	expect(items[1]?.weakMatch).toBe(true);
+});
+
+describe("leading-slash skill breakout", () => {
+	const SKILL_COMMANDS: SlashCommand[] = [
+		...COMMANDS,
+		{ name: "skill:humanizer", description: "Rewrite text to sound natural" },
+		{ name: "skill:research-last30days", description: "Summarize recent research" },
+		{ name: "skill:model-tools", description: "Model utilities" },
+	];
+	const values = (text: string) => suggestionsFor(text, SKILL_COMMANDS).map(item => item.value);
+
+	test("a bare-name prefix surfaces the matching skill ahead of the namespace group", () => {
+		expect(values("/hum")[0]).toBe("skill:humanizer");
+	});
+
+	test("a prefix of a hyphen-delimited segment surfaces the skill", () => {
+		expect(values("/last")).toContain("skill:research-last30days");
+	});
+
+	test("a skill tied with a command's prefix tier stays collapsed", () => {
+		const items = values("/mod");
+		expect(items).toContain("model");
+		expect(items).not.toContain("skill:model-tools");
+	});
+
+	test("a namespace prefix keeps skills collapsed into the group row", async () => {
+		const provider = new CombinedAutocompleteProvider(SKILL_COMMANDS, "/tmp");
+		const items = (await provider.getSuggestions(["/sk"], 0, 3))?.items.map(item => item.value) ?? [];
+		expect(items).toContain("skill:");
+		expect(items).not.toContain("skill:humanizer");
+	});
 });

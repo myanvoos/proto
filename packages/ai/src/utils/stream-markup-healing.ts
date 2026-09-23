@@ -168,6 +168,7 @@ export class StreamMarkupHealing {
 					break;
 				case "thinkingStart":
 				case "thinkingEnd":
+				case "impliedThinkingEnd": // never emitted: the thinking scanner runs without `impliedOpen`
 				case "toolStart":
 				case "toolArgDelta":
 					break;

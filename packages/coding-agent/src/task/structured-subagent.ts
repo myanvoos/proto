@@ -26,7 +26,7 @@ import {
 import { generateWorkerName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { describeDisabledAgent, describeUnknownAgent, resolveSpawnPreflight } from "./spawn-policy";
-import type { AgentDefinition, AgentProgress, SingleResult, StructuredSubagentOutput } from "./types";
+import type { AgentDefinition, AgentProgress, SingleResult } from "./types";
 import { recordSubagentRun } from "./usage-rollup";
 import { type NestedRepoPatch, parseIsolationMode } from "./worktree";
 
@@ -293,6 +293,7 @@ function buildExecutorOptions(
 		cwd: session.cwd,
 		additionalDirectories: session.additionalDirectories,
 		getApiKey: session.getApiKey,
+		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		agent: policy.effectiveAgent,
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),
@@ -416,18 +417,28 @@ function attachStructuredOutputMetadata(result: SingleResult, schema: Structured
 		return;
 	}
 	if (result.structuredOutput) return;
+	// The executor attaches metadata for every payload it validated, so a failed run here never submitted one (stream
+	// error, cancel, missing yield): its output is partial prose, not a payload, and must not read as a schema verdict.
+	if (result.exitCode !== 0) {
+		result.structuredOutput = {
+			source: schema.source,
+			mode: schema.mode,
+			status: "unavailable",
+			...(result.error ? { error: result.error } : {}),
+		};
+		return;
+	}
 	let fallbackData: unknown = result.output;
 	try {
 		fallbackData = JSON.parse(result.output);
 	} catch {}
-	const output: StructuredSubagentOutput = {
+	result.structuredOutput = {
 		source: schema.source,
 		mode: schema.mode,
-		status: result.exitCode === 0 ? "valid" : "invalid",
+		status: "valid",
 		data: fallbackData,
 		...(result.error ? { error: result.error } : {}),
 	};
-	result.structuredOutput = output;
 }
 
 export async function runStructuredSubagent(request: StructuredSubagentRequest): Promise<StructuredSubagentResult> {

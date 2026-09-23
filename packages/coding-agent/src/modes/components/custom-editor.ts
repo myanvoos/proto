@@ -6,6 +6,7 @@ import {
 	Editor,
 	type EditorTextDecorationContext,
 	type EditorTheme,
+	getKeybindings,
 	type KeyId,
 	parseKey,
 	parseKittySequence,
@@ -710,7 +711,21 @@ export class CustomEditor extends Editor {
 				return;
 			}
 
+			// When the exit key doubles as forward-delete (readline ^D: the default
+			// app.exit binding overlaps tui.editor.deleteCharForward) and the buffer
+			// is non-empty, delete the character at the cursor instead of quitting.
+			// Invoking the operation directly keeps the exit chord's precedence slot:
+			// neither a later handler bound to the same chord nor an earlier
+			// base-editor action can steal it. Only an empty buffer exits. Draft
+			// presence is read off the buffer alone: pending image/text records are
+			// retained after their chips are deleted so numbering is not recycled.
 			if (this.#matchesAction(canonical, "app.exit")) {
+				const doublesAsForwardDelete =
+					canonical !== undefined && getKeybindings().matchesCanonical(canonical, "tui.editor.deleteCharForward");
+				if (doublesAsForwardDelete && !this.textEquals("")) {
+					this.deleteCharForward();
+					return;
+				}
 				this.onExit?.();
 				return;
 			}

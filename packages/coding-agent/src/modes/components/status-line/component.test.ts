@@ -216,3 +216,73 @@ describe("StatusLineComponent run clock outcome", () => {
 		}
 	});
 });
+
+describe("StatusLineComponent usage segment", () => {
+	async function renderUsage(provider: string, reports: unknown[], modelId?: string): Promise<string> {
+		const session = sessionWithMessages({ messages: [] });
+		const model = { ...session.model, provider, ...(modelId ? { id: modelId } : {}) };
+		Object.assign(session, { model, fetchUsageReports: async () => reports });
+		Object.assign(session.state, { model });
+		const component = new StatusLineComponent(session);
+		try {
+			component.updateSettings({ leftSegments: [], rightSegments: ["usage"] });
+			vi.useFakeTimers();
+			try {
+				component.refreshUsageInBackground();
+				vi.advanceTimersByTime(0);
+			} finally {
+				vi.useRealTimers();
+			}
+			// setImmediate runs once the refresh's promise chain has drained.
+			const drained = Promise.withResolvers<void>();
+			setImmediate(drained.resolve);
+			await drained.promise;
+			return Bun.stripANSI(component.renderQuietLine(200) ?? "");
+		} finally {
+			component.dispose();
+		}
+	}
+
+	test("labels untiered windows with the plan tier and classifies weekly windows by duration", async () => {
+		const content = await renderUsage("zai", [
+			{
+				provider: "zai",
+				metadata: { planType: "pro" },
+				limits: [
+					{ scope: { windowId: "5h" }, window: { durationMs: 5 * 3_600_000 }, amount: { usedFraction: 0.21 } },
+					{ scope: { windowId: "1w" }, window: { durationMs: 7 * 86_400_000 }, amount: { usedFraction: 0.05 } },
+				],
+			},
+		]);
+
+		expect(content).toContain("pro");
+		expect(content).toContain("5h 21%");
+		expect(content).toContain("7d 5%");
+	});
+
+	test("shows the monthly bucket only for monthly-subscription providers", async () => {
+		const monthlyOnly = (provider: string) => [
+			{
+				provider,
+				limits: [{ id: "credits:monthly", scope: { windowId: "monthly" }, amount: { usedFraction: 0.429 } }],
+			},
+		];
+
+		expect(await renderUsage("alibaba-token-plan", monthlyOnly("alibaba-token-plan"))).toContain("mo 42%");
+		expect(await renderUsage("github-copilot", monthlyOnly("github-copilot"))).not.toContain("mo");
+	});
+
+	test("scopes Antigravity windows to the active model's backend counter", async () => {
+		const counter = (counterKey: string, usedFraction: number) => ({
+			id: `google-antigravity:${counterKey}:default:5h`,
+			scope: { windowId: "5h" },
+			window: { durationMs: 5 * 3_600_000 },
+			amount: { usedFraction },
+		});
+		// Limits arrive sorted by pressure, so the exhausted Gemini counter comes first.
+		const reports = [{ provider: "google-antigravity", limits: [counter("google", 0.9), counter("anthropic", 0.1)] }];
+
+		expect(await renderUsage("google-antigravity", reports, "claude-opus-4-6")).toContain("5h 10%");
+		expect(await renderUsage("google-antigravity", reports, "gemini-3-pro")).toContain("5h 90%");
+	});
+});

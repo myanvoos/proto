@@ -1,3 +1,23 @@
+import { scheduler } from "node:timers/promises";
+
+/** Largest delay a single timer accepts; longer `setTimeout` delays overflow and fire immediately. */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * Abortable sleep for arbitrarily long delays (day-scale quota resets). Chunks the wait into
+ * timer-sized pieces against a monotonic deadline; an abort rejects like `scheduler.wait`.
+ */
+export async function sleepLong(delayMs: number, signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
+	const deadline = performance.now() + delayMs;
+	while (true) {
+		const remaining = deadline - performance.now();
+		if (!(remaining > 0)) return;
+		await scheduler.wait(Math.min(remaining, MAX_TIMER_DELAY_MS), { signal });
+		signal?.throwIfAborted();
+	}
+}
+
 export function withTimeout<T>(promise: Promise<T>, ms: number, message: string, signal?: AbortSignal): Promise<T> {
 	if (signal?.aborted) {
 		const reason = signal.reason instanceof Error ? signal.reason : new Error("Aborted");

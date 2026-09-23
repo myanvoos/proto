@@ -7,6 +7,19 @@ type OpenAIResponsesReplayItem = ResponseInput[number];
 const NON_WHITESPACE_RE = /\S/;
 
 export { isRecord } from "@oh-my-pi/pi-utils";
+
+export function getHeaderCaseInsensitive(
+	headers: Record<string, string> | undefined,
+	headerName: string,
+): string | undefined {
+	if (!headers) return undefined;
+	const normalizedName = headerName.toLowerCase();
+	for (const [key, value] of Object.entries(headers)) {
+		if (key.toLowerCase() === normalizedName) return value;
+	}
+	return undefined;
+}
+
 export function normalizeSystemPrompts(systemPrompt: readonly string[] | string | undefined | null): string[] {
 	if (systemPrompt === undefined || systemPrompt === null) return [];
 	const prompts = Array.isArray(systemPrompt) ? systemPrompt : typeof systemPrompt === "string" ? [systemPrompt] : [];
@@ -27,8 +40,10 @@ export function normalizeResponsesToolCallId(
 	id: string,
 	itemPrefix: ResponsesToolItemIdPrefix = "fc",
 ): { callId: string; itemId: string } {
-	const [callId, itemId] = id.split("|");
-	if (callId && itemId) {
+	const sep = id.search(/[\n|]/);
+	if (sep > 0) {
+		const callId = id.slice(0, sep);
+		const itemId = id.slice(sep + 1);
 		return { callId, itemId: normalizeResponsesItemId(itemId, itemPrefix) };
 	}
 	const hash = Bun.hash(id).toString(36);
@@ -288,34 +303,66 @@ export function sanitizeOpenAIResponsesAssistantHistoryItemsForReplay(
 ): ResponseInput | undefined {
 	const sanitized = sanitizeOpenAIResponsesHistoryItemsForReplay(items, options);
 	let hasReplayableAssistantOutput = false;
+	let hasEmptyAssistantMessage = false;
 
 	for (const item of sanitized) {
 		if (item.type === "reasoning") continue;
-		if (item.type !== "message" || item.role !== "assistant") {
-			hasReplayableAssistantOutput = true;
-			break;
-		}
-		if (typeof item.content === "string") {
-			if (NON_WHITESPACE_RE.test(item.content)) {
-				hasReplayableAssistantOutput = true;
-				break;
-			}
+		if (isEmptyAssistantMessage(item)) {
+			hasEmptyAssistantMessage = true;
 			continue;
 		}
-		for (const part of item.content) {
-			if (part.type === "output_text" && NON_WHITESPACE_RE.test(part.text)) {
-				hasReplayableAssistantOutput = true;
-				break;
-			}
-			if (part.type === "refusal" && NON_WHITESPACE_RE.test(part.refusal)) {
-				hasReplayableAssistantOutput = true;
-				break;
-			}
-		}
-		if (hasReplayableAssistantOutput) break;
+		hasReplayableAssistantOutput = true;
 	}
 
-	return hasReplayableAssistantOutput ? sanitized : undefined;
+	if (!hasReplayableAssistantOutput) return undefined;
+	if (!hasEmptyAssistantMessage) return sanitized;
+	// gpt-5.6 Codex closes a commentary-only turn with an empty `final_answer` message; replaying it seeds an
+	// empty slot the model fills with compounding drift, so whitespace-only assistant messages never replay.
+	return dropEmptyAssistantMessagesForReplay(sanitized);
+}
+
+function isEmptyAssistantMessage(item: OpenAIResponsesReplayItem): boolean {
+	if (item.type !== "message" || item.role !== "assistant") return false;
+	if (typeof item.content === "string") return !NON_WHITESPACE_RE.test(item.content);
+	for (const part of item.content) {
+		if (part.type === "output_text" && NON_WHITESPACE_RE.test(part.text)) return false;
+		if (part.type === "refusal" && NON_WHITESPACE_RE.test(part.refusal)) return false;
+	}
+	return true;
+}
+
+// A reasoning item only means something ahead of the output it produced; a dangling one with an id is rejected
+// by the Responses API, so reasoning that introduced a dropped empty message goes with it.
+function dropEmptyAssistantMessagesForReplay(items: ResponseInput): ResponseInput {
+	const kept: ResponseInput = [];
+	let pendingReasoning: ResponseInput = [];
+	let removedAssistantMessage = false;
+	const flushReasoning = (): void => {
+		kept.push(...pendingReasoning);
+		pendingReasoning = [];
+	};
+	for (const item of items) {
+		if (isOpenAIResponsesClientInputBoundary(item as unknown as Record<string, unknown>)) {
+			pendingReasoning = [];
+			removedAssistantMessage = false;
+			kept.push(item);
+			continue;
+		}
+		if (item.type === "reasoning") {
+			if (removedAssistantMessage) pendingReasoning = [];
+			removedAssistantMessage = false;
+			pendingReasoning.push(item);
+			continue;
+		}
+		if (isEmptyAssistantMessage(item)) {
+			removedAssistantMessage = true;
+			continue;
+		}
+		flushReasoning();
+		removedAssistantMessage = false;
+		kept.push(item);
+	}
+	return kept;
 }
 
 export function sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(items: ResponseInput): ResponseInput {

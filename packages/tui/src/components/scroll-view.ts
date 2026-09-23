@@ -1,6 +1,6 @@
 import { matchesKey } from "../keys";
 import type { Component } from "../tui";
-import { Ellipsis, replaceTabs, truncateToWidth, visibleWidth } from "../utils";
+import { Ellipsis, padding, replaceTabs, truncateToWidth, visibleWidth } from "../utils";
 
 const DEFAULT_TRACK = "│";
 const DEFAULT_THUMB = "█";
@@ -185,7 +185,7 @@ export class ScrollView implements Component {
 				lines.push(truncated);
 				continue;
 			}
-			const content = `${truncated}${" ".repeat(Math.max(0, contentWidth - visibleWidth(truncated)))}`;
+			const content = `${truncated}${padding(Math.max(0, contentWidth - visibleWidth(truncated)))}`;
 			const barGlyph = thumb && row >= thumb.start && row < thumb.end ? this.#thumbChar : this.#trackChar;
 			const styledBar =
 				thumb && row >= thumb.start && row < thumb.end ? this.#theme.thumb(barGlyph) : this.#theme.track(barGlyph);

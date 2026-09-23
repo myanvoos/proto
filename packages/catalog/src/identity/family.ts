@@ -43,11 +43,18 @@ export const isAnthropicNamespacedModelId = memo((modelId: string): boolean => {
 	return /(^|\/)anthropic\//i.test(modelId);
 });
 
+// PrismML Bonsai 27B GGUFs carry no Qwen lineage in their ids: Bonsai and Ternary-Bonsai 27B are
+// Qwen3.6-27B derivatives and Bonsai 2 27B is Qwen3.8-27B; the basename may carry a prefix or a
+// GGUF quantization suffix.
+const BONSAI_QWEN_PATTERN = /bonsai-(?:2-)?27b/i;
+const BONSAI_QWEN_3_8_PATTERN = /bonsai-2-27b/i;
+
 export const isQwenModelId = memo((modelId: string): boolean => {
-	return modelId.toLowerCase().includes("qwen");
+	return modelId.toLowerCase().includes("qwen") || BONSAI_QWEN_PATTERN.test(modelId);
 });
 
 export const isQwen38PlusTemplateEffortModelId = memo((modelId: string): boolean => {
+	if (BONSAI_QWEN_3_8_PATTERN.test(modelId)) return true;
 	const match = /qwen[-_ ]?(\d+)\.(\d+)(?![\dbB])/i.exec(modelId);
 	if (!match) return false;
 	const major = Number.parseInt(match[1], 10);
@@ -86,6 +93,7 @@ const GROK_EFFORT_CAPABLE_PREFIXES = [
 	"grok-4.3",
 	"grok-4.5",
 	"grok-4.6",
+	"grok-4.7",
 ] as const;
 
 export const isGrokReasoningEffortCapable = memo((modelId: string): boolean => {
@@ -100,7 +108,8 @@ export const isGrokMultiAgentModelId = memo((modelId: string): boolean => {
 
 export const isGrokXHighEffortCapable = memo((modelId: string): boolean => {
 	if (isGrokMultiAgentModelId(modelId)) return true;
-	return bareModelId(modelId).trim().toLowerCase().startsWith("grok-4.6");
+	const bare = bareModelId(modelId).trim().toLowerCase();
+	return bare.startsWith("grok-4.6") || bare.startsWith("grok-4.7");
 });
 
 export const isMinimaxM2FamilyModelId = memo((modelId: string): boolean => {
@@ -191,8 +200,11 @@ export const isGlm53ReasoningEffortModelId = memo((modelId: string): boolean => 
 	return semverGte(glm.version, "5.3");
 });
 
+// GLM-5.3-Flash is natively multimodal although its id carries no `v` marker.
 export const isGlmVisionModelId = memo((modelId: string): boolean => {
-	return parseGlmModel(bareModelId(modelId))?.vision === true;
+	const glm = parseGlmModel(bareModelId(modelId));
+	if (!glm) return false;
+	return glm.vision || (glm.variant === "flash" && semverGte(glm.version, "5.3"));
 });
 
 export const modelFamilyToken = memo((modelId: string): string => {
@@ -222,6 +234,11 @@ export const anthropicModelSupportsThinking = memo((modelId: string): boolean =>
 export const supportsAdaptiveThinkingDisplay = memo((modelId: string): boolean => {
 	const parsed = parseAnthropicModel(bareModelId(modelId));
 	return parsed !== null && isAnthropicAdaptiveGenAtLeast(parsed, "4.7");
+});
+
+export const hasThinkingPrefixBinding = memo((modelId: string): boolean => {
+	const parsed = parseAnthropicModel(bareModelId(modelId));
+	return parsed !== null && parsed.kind === "fable" && semverGte(parsed.version, "5.1");
 });
 
 export const hasOpus47ApiRestrictions = memo((modelId: string): boolean => {

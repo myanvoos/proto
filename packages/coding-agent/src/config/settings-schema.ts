@@ -1,3 +1,4 @@
+import { type AuthAccountPolicies, DEFAULT_USAGE_RESERVE_PCT } from "@oh-my-pi/pi-ai/auth/account-policy";
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import {
 	type BlobDestinationId,
@@ -294,12 +295,15 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 ];
 
 const DEFAULT_AGENT_MODEL_OVERRIDES: Record<string, string | string[]> = {};
+const EMPTY_AUTH_ACCOUNT_POLICIES: AuthAccountPolicies = [];
 
 export const SETTINGS_SCHEMA = {
 	setupVersion: { type: "number", default: 0 },
 
 	"auth.broker.url": { type: "string", default: undefined },
 	"auth.broker.token": { type: "string", default: undefined, credential: true },
+	// Per-account OAuth routing (priority, protected reserve); validated strictly at auth discovery.
+	"auth.accountPolicies": { type: "array", default: EMPTY_AUTH_ACCOUNT_POLICIES },
 
 	autoResume: {
 		type: "boolean",
@@ -1491,6 +1495,17 @@ export const SETTINGS_SCHEMA = {
 				"Maximum wait between retries, in ms. When the provider asks us to wait longer than this and no credential or model fallback succeeds, the request fails fast instead of sleeping (e.g. 3-hour Anthropic rate-limit windows).",
 		},
 	},
+	"retry.waitForUsageReset": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Wait For Usage Reset",
+			description:
+				"When a provider reports usage-limit exhaustion with a reset time (5-hour or weekly quota windows on any provider), sleep until the reset instead of failing fast past retry.maxDelayMs. Waits are abortable (Esc) but also hold subagents, so leave off for unattended runs.",
+		},
+	},
 	"retry.modelFallback": {
 		type: "boolean",
 		default: true,
@@ -1514,7 +1529,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"retry.usageReservePct": {
 		type: "number",
-		default: 10,
+		default: DEFAULT_USAGE_RESERVE_PCT,
 		ui: {
 			tab: "model",
 			group: "Retry & Fallback",
@@ -1568,7 +1583,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Retry & Fallback",
 			label: "Retry Fallback Chains",
 			description:
-				'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix.',
+				'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix. A fallback entry may carry an explicit thinking suffix ("provider/model:low", ":high", ":max", ":off"); a bare entry inherits the failing turn\'s effort, and "provider/*" entries always inherit.',
 		},
 	},
 	"retry.fallbackRevertPolicy": {
@@ -1999,13 +2014,13 @@ export const SETTINGS_SCHEMA = {
 
 	extendedContext: {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "context",
 			group: "General",
 			label: "Extended Context",
 			description:
-				"Use premium long-context windows on models that bill extra past a threshold (e.g. GPT-5.6 1M charges 2x input above 272K); off caps them at the standard-pricing window",
+				"Use larger context windows where supported; may incur premium pricing. Off keeps default or standard-pricing windows",
 		},
 	},
 
@@ -3749,14 +3764,24 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 	"features.unexpectedStopDetection": {
-		type: "boolean",
-		default: false,
+		type: "enum",
+		values: ["none", "mechanical", "smart"] as const,
+		default: "none",
 		ui: {
 			tab: "interaction",
 			group: "Agent",
-			label: "Detect unexpected stops",
+			label: "Unexpected Stops",
 			description:
-				"Use a small model to detect when the assistant says it will continue but stops without tool calls; automatically prompt it to continue.",
+				"Detect when the assistant ends its turn without acting and automatically prompt it to continue. Mechanical uses structural signals only; Smart adds a small-model classification of the stop text.",
+			options: [
+				{ value: "none", label: "None", description: "Disabled" },
+				{
+					value: "mechanical",
+					label: "Mechanical",
+					description: "Retry on structural unexpected-stop signals (no tool call, turn ends mid-task)",
+				},
+				{ value: "smart", label: "Smart", description: "Mechanical + small-model classification of the stop text" },
+			],
 		},
 	},
 	"providers.unexpectedStopModel": {
@@ -3823,7 +3848,7 @@ export const SETTINGS_SCHEMA = {
 					value: "auto",
 					label: "Auto",
 					description:
-						"Provider default — Anthropic uses 5m entries kept warm by idle keep-alive refreshes; PI_CACHE_RETENTION still applies",
+						"Provider default — Anthropic OAuth subscriber sessions default to 1h, API keys use 5m kept warm by idle keep-alive refreshes; PI_CACHE_RETENTION still applies",
 				},
 				{
 					value: "short",
@@ -4308,6 +4333,7 @@ export interface RetrySettings {
 	unreachableMaxRetries: number;
 	baseDelayMs: number;
 	maxDelayMs: number;
+	waitForUsageReset: boolean;
 	modelFallback: boolean;
 	usageAwareFallback: boolean;
 	usageReservePct: number;

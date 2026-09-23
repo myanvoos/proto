@@ -30,7 +30,16 @@ import {
 } from "@oh-my-pi/pi-tui";
 import type { TerminalAppearanceRequestToken } from "@oh-my-pi/pi-tui/terminal";
 import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilities";
-import { $env, getProjectDir, logger, postmortem, prompt, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	errorMessage,
+	getProjectDir,
+	logger,
+	postmortem,
+	prompt,
+	sanitizeText,
+	setProjectDir,
+} from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "../capability";
 import { KeybindingsManager } from "../config/keybindings";
@@ -109,6 +118,7 @@ import type { EvalExecutionComponent } from "./components/eval-execution";
 import type { HookEditorComponent } from "./components/hook-editor";
 import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent, HookSelectorSlider } from "./components/hook-selector";
+import { ServedModelTracker } from "./components/served-model-marker";
 import { StatusLineComponent } from "./components/status-line";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
@@ -391,6 +401,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	streamingComponent: AssistantMessageComponent | undefined = undefined;
 	streamingMessage: AssistantMessage | undefined = undefined;
 	lastAssistantUsage: Usage | undefined = undefined;
+	servedModelTracker = new ServedModelTracker();
 	loadingAnimation: Loader | undefined = undefined;
 	autoCompactionLoader: Loader | undefined = undefined;
 	retryLoader: Loader | undefined = undefined;
@@ -455,6 +466,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#signalTeardown?: SessionTeardown;
 	readonly #version: string;
 	readonly #startupChangelog: StartupChangelogSelection | undefined;
+	// Header rows below the config warnings, kept so a live config-warning change can rebuild the header.
+	#headerAfter: readonly Component[] = [];
 	#goalContinuationTimer: NodeJS.Timeout | undefined;
 	#goalTurnHadToolCalls = false;
 	#goalContinuationTurnInFlight = false;
@@ -537,6 +550,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.lastAssistantUsage = undefined;
+		this.servedModelTracker = new ServedModelTracker();
 		this.pendingTools.clear();
 	}
 	readonly #uiHelpers: UiHelpers;
@@ -804,10 +818,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			recentSessions,
 		});
 		this.#persistComposerWelcome(modelName, providerName);
-		const headerBefore: Component[] = [];
-		for (const warning of this.session.configWarnings) {
-			headerBefore.push(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0), new Spacer(1));
-		}
+		const headerBefore = this.#buildConfigWarningComponents();
 		const headerAfter: Component[] = [];
 		if (!startupQuiet && this.#startupChangelog && settings.get("startup.changelogMode") !== "hidden") {
 			headerAfter.push(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0), new Spacer(1));
@@ -818,6 +829,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				headerAfter.push(new Markdown(this.#startupChangelog.markdown?.trim() ?? "", 1, 0, getMarkdownTheme()));
 			}
 		}
+		this.#headerAfter = headerAfter;
 		this.composer.setHeaderExtras(headerBefore, headerAfter);
 		this.statusLine.watchBranch(() => {
 			this.ui.requestRender();
@@ -1120,22 +1132,48 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#applyAutocompleteProvider();
 	}
 
-	async applyCwdChange(newCwd: string): Promise<void> {
-		setProjectDir(newCwd);
-
-		if (isSettingsInitialized()) {
-			await settings.reloadForCwd(newCwd);
-
-			applyProviderGlobalsFromSettings(settings);
+	/**
+	 * Move the process and every cwd-derived cache (settings, provider globals, plugin roots, capabilities, skills,
+	 * slash commands) to `newCwd`. Transactional: `false` means nothing was committed, and callers roll back their own
+	 * session state. Throws only when undoing a half-applied change fails, leaving the process in `newCwd`.
+	 */
+	async applyCwdChange(newCwd: string): Promise<boolean> {
+		const previousCwd = getProjectDir();
+		try {
+			setProjectDir(newCwd);
+		} catch (error) {
+			this.showError(`Cannot change working directory to ${newCwd}: ${errorMessage(error)}`);
+			return false;
 		}
-
-		clearClaudePluginRootsCache();
-		await this.refreshTitleSystemPrompt(newCwd);
-		resetCapabilities();
-		await this.refreshSkillState();
-		await this.refreshSlashCommandState(newCwd);
+		try {
+			await this.#rescopeToCwd(newCwd);
+		} catch (error) {
+			try {
+				setProjectDir(previousCwd);
+				await this.#rescopeToCwd(previousCwd);
+			} catch (restoreError) {
+				throw new Error(
+					`Failed to switch to ${newCwd} (${errorMessage(error)}), and restoring ${previousCwd} failed: ${errorMessage(restoreError)}`,
+				);
+			}
+			this.showError(`Cannot change working directory to ${newCwd}: ${errorMessage(error)}`);
+			return false;
+		}
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.statusLine.applyCwdChange();
+		return true;
+	}
+
+	async #rescopeToCwd(cwd: string): Promise<void> {
+		if (isSettingsInitialized()) {
+			await settings.reloadForCwd(cwd);
+			applyProviderGlobalsFromSettings(settings);
+		}
+		clearClaudePluginRootsCache();
+		await this.refreshTitleSystemPrompt(cwd);
+		resetCapabilities();
+		await this.refreshSkillState();
+		await this.refreshSlashCommandState(cwd);
 	}
 
 	async getUserInput(): Promise<SubmittedUserInput> {
@@ -1439,7 +1477,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else if (this.isPythonMode) {
 			this.editor.borderColor = theme.getPythonModeBorderColor();
 		} else {
-			const level = this.session.thinkingLevel ?? ThinkingLevel.Off;
+			const level = this.viewSession.thinkingLevel ?? ThinkingLevel.Off;
 			this.editor.borderColor = theme.getThinkingBorderColor(level);
 		}
 		if (this.focusedAgentId) {
@@ -1959,6 +1997,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.sessionManager.appendModeChange("none");
 				return;
 			}
+			await this.session.ensureGoalToolActive();
 			this.session.setGoalModeState({
 				enabled: sessionContext.mode === "goal",
 				mode: "active",
@@ -2072,6 +2111,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Goal mode is disabled. Enable it in settings (goal.enabled).");
 			return false;
 		}
+		// goal.enabled may have been switched on after this session was created, before its goal tool existed.
+		await this.session.ensureGoalToolActive();
 		const { sub, rest: subRest } = parseGoalSubcommand(rest ?? "");
 		if (sub) return await this.#dispatchGoalSubcommand(sub, subRest, input);
 		if (this.goalModeEnabled) {
@@ -2638,6 +2679,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		const providerName = this.session.model?.provider ?? "Unknown";
 		this.composer.updateWelcome({ modelName, providerName });
 		this.#persistComposerWelcome(modelName, providerName);
+	}
+
+	#buildConfigWarningComponents(): Component[] {
+		const components: Component[] = [];
+		for (const warning of this.session.configWarnings) {
+			components.push(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0), new Spacer(1));
+		}
+		return components;
 	}
 
 	#persistComposerWelcome(modelName: string, providerName: string): void {
@@ -3231,6 +3280,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.session.subscribe(event => {
 				if (event.type === "model_changed") {
 					this.#updateWelcomeModel();
+				}
+				if (event.type === "config_warnings_changed") {
+					this.composer.setHeaderExtras(this.#buildConfigWarningComponents(), this.#headerAfter);
 				}
 				void this.#handleGoalSessionEvent(event);
 			}),

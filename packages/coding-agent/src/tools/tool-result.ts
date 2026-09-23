@@ -44,7 +44,13 @@ export class ToolResultBuilder<TDetails extends DetailsWithMeta> {
 		return this;
 	}
 
-	limits(limits: { matchLimit?: number; resultLimit?: number; headLimit?: number; columnMax?: number }): this {
+	limits(limits: {
+		matchLimit?: number;
+		resultLimit?: number;
+		headLimit?: number;
+		columnMax?: number;
+		columnUnit?: "bytes" | "chars";
+	}): this {
 		this.#meta.limits(limits);
 		return this;
 	}

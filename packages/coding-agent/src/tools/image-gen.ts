@@ -1,8 +1,18 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import { type ApiKey, type FetchImpl, getEnvApiKey, getOpenRouterHeaders, type Model, withAuth } from "@oh-my-pi/pi-ai";
+import {
+	type ApiKey,
+	type FetchImpl,
+	getEnvApiKey,
+	getOpenRouterHeaders,
+	isOfficialCodexApiUrl,
+	type Model,
+	withAuth,
+} from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { materializeModelHeaders } from "@oh-my-pi/pi-ai/utils/model-headers";
+import { fetchAntigravityImageModel } from "@oh-my-pi/pi-catalog/discovery/antigravity";
 import {
 	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
@@ -452,9 +462,7 @@ async function findAntigravityCredentials(
 	modelRegistry: ModelRegistry,
 	sessionId?: string,
 ): Promise<ImageApiKey | null> {
-	const apiKey = await modelRegistry.getApiKeyForProvider("google-antigravity", sessionId, {
-		modelId: DEFAULT_ANTIGRAVITY_MODEL,
-	});
+	const apiKey = await modelRegistry.getApiKeyForProvider("google-antigravity", sessionId);
 	if (!apiKey) return null;
 
 	const parsed = parseAntigravityCredentials(apiKey);
@@ -465,6 +473,49 @@ async function findAntigravityCredentials(
 		apiKey: parsed.accessToken,
 		projectId: parsed.projectId,
 	};
+}
+
+function resolveAntigravityEndpoints(): string[] {
+	try {
+		const mode = settings.get("providers.antigravityEndpoint");
+		if (mode === "production") return [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD];
+		if (mode === "sandbox") return [DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
+	} catch {}
+	return [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD, DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
+}
+
+interface AntigravityImageTarget {
+	model: string;
+	endpoints: string[];
+}
+
+/**
+ * Image model and serving endpoint advertised for the account behind `bearer`, memoized per bearer.
+ * `withAuth` can rotate to a sibling account whose roster differs, so resolve per credential in hand.
+ */
+async function resolveAntigravityImageTarget(
+	bearer: string,
+	cache: Map<string, AntigravityImageTarget>,
+	fetchImpl: FetchImpl,
+	signal?: AbortSignal,
+): Promise<AntigravityImageTarget> {
+	const cached = cache.get(bearer);
+	if (cached) return cached;
+
+	const endpoints = resolveAntigravityEndpoints();
+	const advertised = await fetchAntigravityImageModel({
+		token: bearer,
+		endpoint: endpoints.length === 1 ? endpoints[0] : undefined,
+		userAgent: getAntigravityUserAgent(),
+		signal,
+		fetcher: fetchImpl,
+	});
+	const target: AntigravityImageTarget = {
+		model: advertised?.id ?? DEFAULT_ANTIGRAVITY_MODEL,
+		endpoints: advertised ? [advertised.endpoint] : endpoints,
+	};
+	cache.set(bearer, target);
+	return target;
 }
 
 async function findXAIImageCredentials(modelRegistry?: ModelRegistry): Promise<ImageApiKey | null> {
@@ -544,11 +595,15 @@ async function findCodexSubscriptionImageCredentials(
 	}
 
 	const token = await modelRegistry.getApiKeyForProvider("openai-codex", sessionId);
-	if (!token || !getCodexAccountId(token)) return null;
+	if (!token) return null;
 	const model = resolveDefaultCodexImageModel(modelRegistry);
 	if (!model) return null;
+	// The official ChatGPT backend needs a subscription JWT with an account claim; custom
+	// Codex-compatible endpoints accept opaque proxy keys.
+	const acceptsOpaqueCredentials = !isOfficialCodexApiUrl(getOpenAIResponsesUrl(model));
+	if (!acceptsOpaqueCredentials && !getCodexAccountId(token)) return null;
 	const apiKey = await modelRegistry.getApiKey(model, sessionId);
-	if (!isAuthenticated(apiKey) || !getCodexAccountId(apiKey)) return null;
+	if (!isAuthenticated(apiKey) || (!acceptsOpaqueCredentials && !getCodexAccountId(apiKey))) return null;
 	return { provider: "openai-codex", apiKey, model };
 }
 
@@ -1101,10 +1156,11 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 
 						const parsed = await withAuth(
 							hostedKey,
-							key =>
+							async key =>
 								generateOpenAIHostedImage(
 									key,
-									hostedModel,
+									// Per attempt: command-backed header credentials re-mint after an auth retry.
+									await materializeModelHeaders(hostedModel, requestSignal),
 									params,
 									resolvedImages,
 									fetchImpl,
@@ -1158,8 +1214,10 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 						const prompt = assemblePrompt(params);
 						const antigravityKey: ApiKey = ctx.modelRegistry.resolver("google-antigravity", {
 							sessionId,
-							modelId: DEFAULT_ANTIGRAVITY_MODEL,
+							modelId: model,
 						});
+						const imageTargetCache = new Map<string, AntigravityImageTarget>();
+						let usedModel = model;
 
 						const response = await withAuth(
 							antigravityKey,
@@ -1167,24 +1225,23 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								const rotated = parseAntigravityCredentials(key);
 								const bearer = rotated?.accessToken ?? key;
 								const projectId = rotated?.projectId ?? apiKey.projectId!;
+								const target = await resolveAntigravityImageTarget(
+									bearer,
+									imageTargetCache,
+									fetchImpl,
+									requestSignal,
+								);
+								usedModel = target.model;
 								const requestBody = buildAntigravityRequest(
 									prompt,
-									model,
+									target.model,
 									projectId,
 									params.aspect_ratio,
 									params.image_size,
 									resolvedImages,
 								);
 
-								let endpoints = [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD, DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
-								try {
-									const mode = settings.get("providers.antigravityEndpoint");
-									if (mode === "production") {
-										endpoints = [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD];
-									} else if (mode === "sandbox") {
-										endpoints = [DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
-									}
-								} catch {}
+								const endpoints = target.endpoints;
 
 								let resp: Response | undefined;
 								let lastError: Error | undefined;
@@ -1254,7 +1311,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								content: [{ type: "text", text: `No image data returned.${messageText}` }],
 								details: {
 									provider,
-									model,
+									model: usedModel,
 									imageCount: 0,
 									imagePaths: [],
 									images: [],
@@ -1267,10 +1324,12 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 						const imagePaths = await saveImagesToTemp(parsed.images);
 
 						return {
-							content: [{ type: "text", text: buildResponseSummary(provider, model, imagePaths, responseText) }],
+							content: [
+								{ type: "text", text: buildResponseSummary(provider, usedModel, imagePaths, responseText) },
+							],
 							details: {
 								provider,
-								model,
+								model: usedModel,
 								imageCount: parsed.images.length,
 								imagePaths,
 								images: parsed.images,
@@ -1320,12 +1379,14 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 							baseUrl: xaiCreds.baseURL,
 						});
 
+						const xaiRegistry = ctx.modelRegistry;
 						const xaiRawText = await withAuth(
 							xaiKey,
 							async key => {
 								const resp = await fetchImpl(`${xaiCreds.baseURL}${xaiEndpoint}`, {
 									method: "POST",
 									headers: {
+										...(await xaiRegistry.getRequestHeaders(xaiCreds.provider, resolvedModel, requestSignal)),
 										Authorization: `Bearer ${key}`,
 										"Content-Type": "application/json",
 										"User-Agent": USER_AGENT,
@@ -1414,9 +1475,14 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								const resp = await fetchImpl("https://openrouter.ai/api/v1/chat/completions", {
 									method: "POST",
 									headers: {
+										...(await ctx.modelRegistry?.getRequestHeaders(
+											"openrouter",
+											resolvedModel,
+											requestSignal,
+										)),
+										...getOpenRouterHeaders(),
 										"Content-Type": "application/json",
 										Authorization: `Bearer ${key}`,
-										...getOpenRouterHeaders(),
 									},
 									body: JSON.stringify(requestBody),
 									signal: requestSignal,

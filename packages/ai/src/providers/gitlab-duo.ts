@@ -269,7 +269,13 @@ export function streamGitLabDuo(
 				...options.headers,
 			};
 
+			// Dispatches straight to the routed provider (bypassing mapOptionsForApi), so honor the reasoning
+			// contracts here too. The Anthropic route derives thinking from the effort, so explicit off clears it
+			// (capped side turns must not raise max_tokens for a thinking budget); the OpenAI routes take the flags
+			// themselves and keep the requested effort for their own off/fallback handling.
 			const reasoningEffort = options.reasoning;
+			const anthropicReasoningEffort =
+				options.disableReasoning || options.forceReasoningOff ? undefined : options.reasoning;
 
 			const inner =
 				mapping.provider === "anthropic"
@@ -304,11 +310,12 @@ export function streamGitLabDuo(
 								onResponse: options.onResponse,
 								onSseEvent: options.onSseEvent,
 								fetch: options.fetch,
-								thinkingEnabled: Boolean(reasoningEffort) && model.reasoning,
-								thinkingBudgetTokens: reasoningEffort
-									? (options.thinkingBudgets?.[reasoningEffort] ?? ANTHROPIC_THINKING[reasoningEffort])
+								thinkingEnabled: Boolean(anthropicReasoningEffort) && model.reasoning,
+								thinkingBudgetTokens: anthropicReasoningEffort
+									? (options.thinkingBudgets?.[anthropicReasoningEffort] ??
+										ANTHROPIC_THINKING[anthropicReasoningEffort])
 									: undefined,
-								reasoning: reasoningEffort,
+								reasoning: anthropicReasoningEffort,
 								toolChoice: mapAnthropicToolChoice(options.toolChoice),
 							},
 						)
@@ -345,6 +352,8 @@ export function streamGitLabDuo(
 									onSseEvent: options.onSseEvent,
 									fetch: options.fetch,
 									reasoning: reasoningEffort,
+									disableReasoning: options.disableReasoning,
+									forceReasoningOff: options.forceReasoningOff,
 									toolChoice: options.toolChoice,
 								} satisfies OpenAIResponsesOptions,
 							)
@@ -379,6 +388,8 @@ export function streamGitLabDuo(
 									onSseEvent: options.onSseEvent,
 									fetch: options.fetch,
 									reasoning: reasoningEffort,
+									// OpenAICompletionsOptions carries no forceReasoningOff; fold it like azure-openai-responses.
+									disableReasoning: options.disableReasoning || options.forceReasoningOff,
 									toolChoice: options.toolChoice,
 								} satisfies OpenAICompletionsOptions,
 							);

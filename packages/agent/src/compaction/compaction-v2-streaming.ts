@@ -14,21 +14,24 @@ import {
 	parseAzureDeploymentNameMap,
 	resolveOpenAIRequestSetup,
 } from "@oh-my-pi/pi-ai/providers/openai-shared";
+import { materializeModelHeaders } from "@oh-my-pi/pi-ai/utils/model-headers";
 import { captureOpenAIHttpError } from "@oh-my-pi/pi-ai/utils/openai-http";
 import {
 	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
+	codexRoutingHint,
 	getCodexAccountId,
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
-import { $env, logger, stringifyJson } from "@oh-my-pi/pi-utils";
+import { $env, isUnexpectedSocketCloseMessage, logger, stringifyJson } from "@oh-my-pi/pi-utils";
 
 export const V2_RETAINED_MESSAGE_TOKEN_BUDGET = 64_000;
 
 export const V2_COMPACTION_MAX_RETRIES = 2;
 
-export const V2_COMPACTION_TIMEOUT_MS = 180_000;
+/** Matches the Codex stream idle timeout: long compact streams must not die at a shorter local ceiling. */
+export const V2_COMPACTION_TIMEOUT_MS = 300_000;
 
 const DEFAULT_AZURE_API_VERSION = "v1";
 const OPENAI_REMOTE_COMPACTION_PRESERVE_KEY = "openaiRemoteCompaction";
@@ -53,13 +56,9 @@ export interface CompactionV2Usage {
 }
 
 export interface CompactionV2Request {
-	model: string;
+	body: OpenAICodexCompactionBody;
 	input: unknown[];
-	instructions: string;
 	retainedMessageBudget: number;
-	tools?: unknown[];
-
-	reasoning?: { effort: string; summary: string };
 	sessionId?: string;
 	promptCacheKey?: string;
 }
@@ -172,13 +171,44 @@ export function buildCompactionV2Request(
 		retainedMessageBudget?: number;
 	},
 ): CompactionV2Request {
-	return {
+	const cacheOptions = { sessionId: options?.sessionId, promptCacheKey: options?.promptCacheKey };
+	const promptCacheKey = getOpenAIPromptCacheKey(cacheOptions);
+	const body: OpenAICodexCompactionBody = {
 		model: resolveCompactionV2Model(model),
 		input,
 		instructions,
+		stream: true,
+		store: false,
+		...(options?.reasoning || model.useResponsesLite
+			? {
+					reasoning: model.useResponsesLite ? { ...options?.reasoning, context: "all_turns" } : options?.reasoning,
+					include: ["reasoning.encrypted_content"],
+				}
+			: {}),
+		...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
+		...(options?.tools && options.tools.length > 0 ? { tools: options.tools, tool_choice: "auto" } : {}),
+	};
+	if (model.useResponsesLite) {
+		applyCodexResponsesLiteShape(body);
+	}
+	return buildCompactionV2RequestFromBody(model, body, options);
+}
+
+// Wraps a body built by the normal Codex serializer so compaction keeps the live turn's cacheable prefix.
+export function buildCompactionV2RequestFromBody(
+	model: Model,
+	body: OpenAICodexCompactionBody,
+	options?: {
+		sessionId?: string;
+		promptCacheKey?: string;
+		retainedMessageBudget?: number;
+	},
+): CompactionV2Request {
+	const input = Array.isArray(body.input) ? body.input : [];
+	return {
+		body: { ...body, model: resolveCompactionV2Model(model), input },
+		input,
 		retainedMessageBudget: resolveCompactionV2RetainedMessageBudget(options?.retainedMessageBudget),
-		reasoning: options?.reasoning,
-		tools: options?.tools,
 		sessionId: options?.sessionId,
 		promptCacheKey: options?.promptCacheKey,
 	};
@@ -191,7 +221,7 @@ function withRequestTimeout(signal: AbortSignal | undefined, timeoutMs: number):
 }
 
 export async function requestCompactionV2Streaming(
-	model: Model,
+	configuredModel: Model,
 	apiKey: string,
 	request: CompactionV2Request,
 	signal?: AbortSignal,
@@ -204,6 +234,7 @@ export async function requestCompactionV2Streaming(
 		preferWebsockets?: boolean;
 	},
 ): Promise<CompactionV2Response> {
+	const model = await materializeModelHeaders(configuredModel, signal);
 	const endpoint = getCompactionV2Endpoint(model);
 	if (!endpoint) {
 		throw new Error(`Model ${model.id} does not support V2 streaming compaction`);
@@ -272,31 +303,14 @@ async function attemptCompactionV2Streaming(
 		preferWebsockets?: boolean;
 	},
 ): Promise<CompactionV2Response> {
-	const cacheOptions = { sessionId: request.sessionId, promptCacheKey: request.promptCacheKey };
-	const promptCacheKey = getOpenAIPromptCacheKey(cacheOptions);
 	const body: OpenAICodexCompactionBody = {
-		model: request.model,
+		...request.body,
 		input: [...request.input, COMPACTION_TRIGGER_ITEM],
-		instructions: request.instructions,
-		stream: true,
 		store: false,
-		...(request.reasoning || model.useResponsesLite
-			? {
-					reasoning: model.useResponsesLite
-						? { ...(request.reasoning ?? {}), context: "all_turns" }
-						: request.reasoning,
-					include: ["reasoning.encrypted_content"],
-				}
-			: {}),
-		...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
-		...(request.tools && request.tools.length > 0 ? { tools: request.tools, tool_choice: "auto" } : {}),
+		stream: true,
 	};
 	if (options.codexMetadata) {
 		body.client_metadata = options.codexMetadata.clientMetadata;
-	}
-
-	if (model.useResponsesLite) {
-		applyCodexResponsesLiteShape(body);
 	}
 
 	if (shouldUseCodexProviderTransport(model)) {
@@ -365,7 +379,7 @@ function buildCompactionV2Headers(
 					"content-type": "application/json",
 					...resolveOpenAIRequestSetup(
 						{ provider: model.provider, id: model.id, baseUrl: model.baseUrl, headers: model.headers },
-						{ apiKey, messages: [], openAISessionId: routingSessionId, promptCacheSessionId },
+						{ apiKey, messages: [], sessionId: request.sessionId ?? routingSessionId, promptCacheSessionId },
 					).headers,
 				};
 	if (api === "openai-codex-responses" || model.provider === "openai-codex") {
@@ -382,6 +396,7 @@ function buildCompactionV2Headers(
 		headers[OPENAI_HEADERS.BETA] = OPENAI_HEADER_VALUES.BETA_RESPONSES;
 		headers[OPENAI_HEADERS.ORIGINATOR] = OPENAI_HEADER_VALUES.ORIGINATOR_CODEX;
 		headers[OPENAI_HEADERS.CODEX_BETA_FEATURES] = OPENAI_HEADER_VALUES.REMOTE_COMPACTION_V2;
+		headers[OPENAI_HEADERS.ROUTING_HINT] = codexRoutingHint(request.body.model, undefined);
 		if (model.useResponsesLite) {
 			headers[OPENAI_HEADERS.RESPONSES_LITE] = "true";
 		}
@@ -595,6 +610,7 @@ function isRetryableCompactionError(error: Error): boolean {
 	}
 	const message = error.message.toLowerCase();
 	return (
+		isUnexpectedSocketCloseMessage(message) ||
 		message.includes("stream closed before response.completed") ||
 		message.includes("stream parse failed") ||
 		message.includes("server_error") ||

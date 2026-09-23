@@ -1516,6 +1516,7 @@ export async function instrumentedCompleteSimple<TApi extends Api>(
 			const message = span.retry
 				? await retryTransientCompletion(runOnce, {
 						...span.retry,
+						provider: model.provider,
 
 						signal: options.signal,
 						getResponseHeaders: () => capturedHeaders,

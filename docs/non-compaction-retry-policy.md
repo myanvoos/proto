@@ -27,6 +27,12 @@ Retry and compaction are checked from the same `agent_end` path, but they are in
 
 So: overload/rate/server/network-style failures use this retry policy; context-window overflow uses compaction recovery.
 
+### Responses request-body-read timeout exception
+
+An OpenAI Responses HTTP 408 whose error text says `Timed out reading request body` is special only when the submitted request was a full replay, not a `previous_response_id` delta (`AssistantMessage.requestBodyReadTimeoutFullReplay`). The transport does not resend that unchanged full replay; delta requests keep ordinary transport retries. The session then keeps the normal replay-safety veto and retry budget, requires `compaction.enabled`, and elides eligible old tool-result text once per prompt into a recoverable `artifact://` (the same placeholders dead-end compaction rescue uses) before retrying on the same model. No eligible savings, a failed artifact save, cancellation, an exhausted retry budget, or a second matching error on the same prompt ends the turn instead of submitting the unchanged request again.
+
+This is not context-overflow or payload-rejection handling, never runs remote compaction, and leaves ordinary 408/429/5xx retries unchanged.
+
 ## Retry classification
 
 `TurnRecovery.isRetryableError(...)` requires all of the following:
@@ -153,12 +159,18 @@ On `auto_retry_end` (`#handleAutoRetryEnd`), it stops and clears the `retryLoade
 
 `prompt()` ultimately waits on `#waitForPostPromptRecovery()` after `agent.prompt(...)` returns; that loop awaits the retry lifecycle promise alongside TTSR resume and deferred post-prompt tasks.
 
-Effect:
+The retry lifecycle promise belongs to the logical prompt execution, but its resolution is not a persistence or event-delivery barrier: session event handlers run asynchronously, and successful retry recovery can still be rewriting persisted error annotations before it emits `auto_retry_end`.
 
-- a prompt call does not fully resolve until any started retry chain finishes (success/failure/cancel)
-- retry lifecycle is part of one logical prompt execution boundary
+Headless callers that detach listeners or dispose the session after a prompt should wait for settlement first:
 
-This prevents callers from treating a retrying turn as complete too early.
+```ts
+await session.prompt(input);
+await session.waitForIdle();
+unsubscribe();
+await session.dispose();
+```
+
+`AgentSession.waitForIdle()` drains core streaming, pending advisor card events, in-flight session event handlers, and deferred recovery, rechecking for streaming and handlers started during settlement. It does not await arbitrary async work started by public subscribers, and it has no timeout of its own. Call it outside callbacks whose completion the session awaits, or it waits on itself.
 
 ## Controls: settings and RPC
 
@@ -180,7 +192,7 @@ Defined in settings schema under retry group:
 
 Programmatic toggles in session:
 
-- `setAutoRetryEnabled(enabled)` writes `retry.enabled`
+- `setAutoRetryEnabled(enabled)` applies a session-scoped `retry.enabled` override; pass `persist: true` to write the global setting (replacing any override)
 - `autoRetryEnabled` reads `retry.enabled`
 - `isRetrying` reports whether retry lifecycle promise is active
 
@@ -202,8 +214,15 @@ Session-level retry events:
 
 - `auto_retry_start { attempt, maxAttempts, delayMs, errorMessage, errorId? }`
 - `auto_retry_end { success, attempt, finalError?, recoveredErrors? }`
-- `retry_fallback_applied { from, to, role }`
+- `retry_fallback_applied { from, to, role, reason? }`
 - `retry_fallback_succeeded { model, role }`
+
+The optional `reason` explains the switch from the triggering usage-health snapshot or provider error. The TUI shows a
+sanitized, bounded preview below the `Fallback: from -> to` warning; extensions and RPC receive the full text. Usage
+preflight reasons distinguish plan-ineligible accounts, exhausted or blocked accounts, and the configured reserve
+threshold, include the time until the earliest reported reset when known, and state that no request was sent to the
+source model. Startup quota skips carry the same explanation in `modelFallbackMessage`; request-failure reasons quote
+the provider error.
 
 Propagation:
 

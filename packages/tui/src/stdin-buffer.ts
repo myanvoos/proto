@@ -326,6 +326,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	#rawPasteEndsWithCR = false;
 	#rawPasteBurst = false;
 	#rawPasteTimer?: NodeJS.Timeout;
+	// Unbracketed raw-paste classification is a fallback for terminals that do
+	// not wrap pastes in DECSET 2004 markers. Once the terminal confirms mode
+	// 2004, a genuine paste always arrives bracketed, so the heuristic can only
+	// misfire on keystrokes an event-loop stall batched into one read.
+	#rawPasteClassificationEnabled = true;
 	#stringDiscardActive = false;
 	#stringDiscardKind: StringSequenceKind = "osc";
 	#stringDiscardBytes = 0;
@@ -405,6 +410,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 
 		if (
+			this.#rawPasteClassificationEnabled &&
 			this.#buffer.length === 0 &&
 			str.indexOf(ESC) === -1 &&
 			(str.indexOf("\r") !== -1 || str.indexOf("\n") !== -1)
@@ -790,6 +796,20 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#pasteBytes = 0;
 		this.#utf8Held = Buffer.alloc(0);
 		this.emit("paste", content);
+	}
+
+	/**
+	 * Enable or disable unbracketed raw-paste classification. The terminal
+	 * disables it once DECRQM confirms bracketed paste (mode 2004): stall-batched
+	 * keystrokes must then never be misread as a paste, which would turn every
+	 * typed Enter into a literal newline. Disabling flushes any candidate already
+	 * held by the classification window as ordinary key events.
+	 */
+	setRawPasteClassification(enabled: boolean): void {
+		this.#rawPasteClassificationEnabled = enabled;
+		if (!enabled && this.#rawPasteCandidate.length > 0) {
+			this.#flushRawPasteCandidate();
+		}
 	}
 
 	#armRawPasteTimer(): void {

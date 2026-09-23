@@ -94,6 +94,13 @@ const CONDITIONS: Record<string, () => boolean> = {
 			return false;
 		}
 	},
+	unexpectedStopDetection: () => {
+		try {
+			return Settings.instance.get("features.unexpectedStopDetection") !== "none";
+		} catch {
+			return false;
+		}
+	},
 };
 
 function resolveOptions(ui: AnyUiMetadata): OptionList | "runtime" | undefined {

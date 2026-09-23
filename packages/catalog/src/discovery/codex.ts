@@ -1,7 +1,7 @@
 import { USER_AGENT } from "@oh-my-pi/pi-utils";
 import { parseKnownModel, semverEqual } from "../identity/classify";
 import { getBundledModels } from "../models";
-import { resolveOpenAIDaybreakStandardCost } from "../openai-pricing";
+import { resolveCodexSubscriptionCost, resolveOpenAIDaybreakStandardCost } from "../openai-pricing";
 import type { FetchImpl, LongContextTokenCost, Model, ModelCost, ModelSpec } from "../types";
 import { discoveryFetch, isRecord, toNumber, toPositiveNumberOrNull } from "../utils";
 import { CODEX_BASE_URL } from "../wire/codex";
@@ -159,6 +159,7 @@ interface ParsedCodexModelEntry {
 	name: string;
 	baseUrl: string;
 	contextWindow: number | null;
+	maxContextWindow: number | null;
 	maxTokens: number | null;
 	reasoning: boolean;
 	input: ("text" | "image" | "audio" | "video")[];
@@ -194,6 +195,7 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 		name: toNonEmptyString(entry.name) ?? slug,
 		baseUrl: toNonEmptyString(entry.baseUrl) ?? CODEX_BASE_URL,
 		contextWindow: toPositiveNumberOrNull(entry.contextWindow),
+		maxContextWindow: toPositiveNumberOrNull(entry.maxContextWindow ?? entry.max_context_window),
 		maxTokens: toPositiveNumberOrNull(entry.maxTokens),
 		reasoning: entry.reasoning === true || hasThinkingLevels(entry.thinkingLevelMap),
 		input: normalizeInputModalities(entry.input),
@@ -223,8 +225,13 @@ function buildNormalizedCodexModel(
 		? Math.max(reportedContextWindow, GPT_5_6_1M_CONTEXT_WINDOW)
 		: reportedContextWindow;
 	const maxTokens = Math.min(DEFAULT_MAX_TOKENS, parsed.maxTokens ?? contextWindow);
+	const subscriptionCost = resolveCodexSubscriptionCost(canonicalSlug);
 	const daybreakCost = resolveOpenAIDaybreakStandardCost(canonicalSlug);
-	const cost = hasBillableCost(parsed.cost) ? parsed.cost : (daybreakCost ?? parsed.cost);
+	const cost = subscriptionCost
+		? { ...subscriptionCost }
+		: hasBillableCost(parsed.cost)
+			? parsed.cost
+			: (daybreakCost ?? parsed.cost);
 
 	return {
 		priority: parsed.priority,
@@ -239,6 +246,9 @@ function buildNormalizedCodexModel(
 			cost,
 			remoteCompaction: CODEX_REMOTE_COMPACTION,
 			contextWindow,
+			...(parsed.maxContextWindow !== null && parsed.maxContextWindow > contextWindow
+				? { maxContextWindow: parsed.maxContextWindow }
+				: {}),
 			maxTokens,
 			preferWebsockets: parsed.preferWebsockets,
 			...(parsed.useResponsesLite || bundledModel?.useResponsesLite ? { useResponsesLite: true } : {}),

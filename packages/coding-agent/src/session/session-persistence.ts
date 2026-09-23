@@ -1,4 +1,5 @@
 import { isAnthropicServerToolHistoryBlock } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
+import { countNewlines } from "@oh-my-pi/pi-utils";
 import {
 	type BlobStore,
 	externalizeImageDataSync,
@@ -129,6 +130,15 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 			if (isAnthropicServerToolHistoryBlock(validationView)) return obj;
 		}
 	}
+	// Anthropic server-side compaction state is validated byte-for-byte on replay; persist it whole, both as
+	// a `providerPayload` and under its preserveData slot (whose object carries no `type` marker).
+	if (
+		typeof obj === "object" &&
+		(("type" in obj && obj.type === "anthropicCompaction") ||
+			(key === "anthropicCompaction" && "content" in obj && typeof obj.content === "string"))
+	) {
+		return obj;
+	}
 	if (typeof obj === "object" && "type" in obj) {
 		const signed =
 			(obj.type === "thinking" && "thinkingSignature" in obj && isNonEmptyString(obj.thinkingSignature)) ||
@@ -189,9 +199,9 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 			lineCountEntry &&
 			typeof lineCountEntry[1] === "number"
 		) {
-			const content = contentEntry[1];
+			const lineCount = countNewlines(contentEntry[1]) + 1;
 			const updatedEntries = entries.map(([childKey, value]) =>
-				childKey === "lineCount" ? ([childKey, content.split("\n").length] as const) : ([childKey, value] as const),
+				childKey === "lineCount" ? ([childKey, lineCount] as const) : ([childKey, value] as const),
 			);
 			return Object.fromEntries(updatedEntries);
 		}

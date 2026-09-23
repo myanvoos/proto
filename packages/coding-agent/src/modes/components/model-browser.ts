@@ -7,17 +7,19 @@ import {
 	fuzzyRank,
 	Input,
 	matchesKey,
+	replaceTabs,
 	ScrollView,
 	type SgrMouseEvent,
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { formatNumber } from "@oh-my-pi/pi-utils";
+import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import { getModelMatchPreferences, resolveModelRoleValue } from "../../config/model-resolver";
 import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
 import type { ModelPerfStats } from "../../session/agent-storage";
 import { parseThinkingLevel } from "../../thinking";
+import { withIcon } from "../theme/icon-label";
 import { type ThemeColor, theme } from "../theme/theme";
 import {
 	matchesSelectCancel,
@@ -221,15 +223,35 @@ function formatRoleChip(role: string, assignment: RoleAssignment, settings: Sett
 	return theme.fg(info.color ?? "muted", `${theme.status.enabled} ${label}`) + suffix;
 }
 
-function formatCostPair(model: Model): string {
+function formatDescription(description: string): string {
+	return replaceTabs(sanitizeText(description))
+		.replace(/[\r\n]+/g, " ")
+		.trim();
+}
+
+// Both token legs at zero cost: the condition `formatCostPair` renders as `free`. Negative rates are invalid, not free.
+function isFreeModel(model: Model): boolean {
 	const cost = model.cost;
-	if (!cost || (cost.input <= 0 && cost.output <= 0)) return "free";
+	return !cost || (cost.input === 0 && cost.output === 0);
+}
+
+function formatCostPair(model: Model): string {
+	if (isFreeModel(model)) return "free";
+	const cost = model.cost;
 	const fmt = (n: number): string => {
-		if (n <= 0) return "0";
+		if (!Number.isFinite(n) || n < 0) return "?";
+		if (n > 0 && n < 0.01) return n.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: 20 });
 		const s = n >= 100 ? String(Math.round(n)) : n >= 10 ? n.toFixed(1) : n.toFixed(2);
-		return s.replace(/\.?0+$/, "");
+		return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 	};
 	return `$${fmt(cost.input)}/${fmt(cost.output)}`;
+}
+
+// Fuzzy haystack for a model row: the displayed `provider/id`, plus `free` for zero-cost models so the cost column's word
+// is searchable when the id never says it. Must depend only on the item: `fuzzyRank` caches match indices by this string.
+export function modelSearchText({ provider, id, model }: ModelBrowserItem): string {
+	const base = `${provider}/${id}`;
+	return isFreeModel(model) ? `${base} free` : base;
 }
 
 function formatContext(model: Model): string {
@@ -241,6 +263,12 @@ function formatContext(model: Model): string {
 function formatTps(tps: number): string {
 	const value = tps >= 10 ? String(Math.round(tps)) : tps.toFixed(1);
 	return `${value}t/s`;
+}
+
+/** Catalog-delivered intelligence score, e.g. `IQ 66`; empty when the catalog has none. */
+function formatIntelligence(model: Model): string {
+	if (model.int == null || !Number.isFinite(model.int)) return "";
+	return withIcon(theme.icon.intelligence, String(Math.round(model.int)));
 }
 
 function formatTtft(ms: number): string {
@@ -492,7 +520,7 @@ export class ModelBrowser implements Component {
 		const query = this.#searchInput.getValue();
 		let items: ModelBrowserItem[];
 		if (query.trim()) {
-			const ranked = fuzzyRank(this.#baseItems, query, ({ provider, id }) => `${provider}/${id}`);
+			const ranked = fuzzyRank(this.#baseItems, query, modelSearchText);
 			const matches = ranked.map(result => result.item);
 			if (this.#preserveQueryOrder) {
 				items = matches;
@@ -602,13 +630,17 @@ export class ModelBrowser implements Component {
 		return index;
 	}
 
+	/** Measured TPS/TTFT, falling back to the catalog TPS as an estimated `~118t/s`. */
 	#perfCell(item: ModelBrowserItem, mode: PerfMode): string {
 		if (mode === "off") return "";
 		const perf = this.#perf.get(item.selector);
-		if (!perf) return "";
-		const tps = formatTps(perf.tps);
-		if (mode === "full" && perf.ttftMs !== null) return `${formatTtft(perf.ttftMs)} ${tps}`;
-		return tps;
+		if (perf) {
+			const tps = formatTps(perf.tps);
+			if (mode === "full" && perf.ttftMs !== null) return `${formatTtft(perf.ttftMs)} ${tps}`;
+			return tps;
+		}
+		const tps = item.model.tps;
+		return tps != null && Number.isFinite(tps) && tps > 0 ? `~${formatTps(tps)}` : "";
 	}
 
 	#renderRow(
@@ -618,6 +650,7 @@ export class ModelBrowser implements Component {
 		hovered: boolean,
 		ctxWidth: number,
 		costWidth: number,
+		intelligenceWidth: number,
 		perfWidth: number,
 		perfMode: PerfMode,
 	): string {
@@ -641,10 +674,20 @@ export class ModelBrowser implements Component {
 			: "";
 		let left = `${prefix}${providerPrefix}${name}${currentMark}${overLimit}`;
 
+		// Metric columns collapse independently when no visible row has data.
+		const intelligenceCol =
+			intelligenceWidth > 0
+				? `${theme.fg("dim", padLeftVisible(formatIntelligence(item.model), intelligenceWidth))}  `
+				: "";
 		const perfCol =
 			perfWidth > 0 ? `${theme.fg("dim", padLeftVisible(this.#perfCell(item, perfMode), perfWidth))}  ` : "";
-		const meta = `${perfCol}${theme.fg("dim", padLeftVisible(formatContext(item.model), ctxWidth))}  ${theme.fg("dim", padLeftVisible(formatCostPair(item.model), costWidth))}`;
-		const metaWidth = ctxWidth + costWidth + 2 + (perfWidth > 0 ? perfWidth + 2 : 0);
+		const meta = `${intelligenceCol}${perfCol}${theme.fg("dim", padLeftVisible(formatContext(item.model), ctxWidth))}  ${theme.fg("dim", padLeftVisible(formatCostPair(item.model), costWidth))}`;
+		const metaWidth =
+			ctxWidth +
+			costWidth +
+			2 +
+			(intelligenceWidth > 0 ? intelligenceWidth + 2 : 0) +
+			(perfWidth > 0 ? perfWidth + 2 : 0);
 		// Identification wins over aligned metadata in a narrow pane.
 		const showMeta = width >= 48 && width - metaWidth - 1 >= 24;
 		const available = Math.max(1, showMeta ? width - metaWidth - 1 : width);
@@ -669,15 +712,25 @@ export class ModelBrowser implements Component {
 		const model = selected.model;
 
 		const facts: string[] = [model.name];
+		// Badges sit by the name; the provider blurb goes last so truncation eats prose before facts.
+		if (model.isNew) facts.push("new");
+		if (model.isBeta) facts.push("beta");
+		if (model.isRecommended) facts.push("recommended");
 		if (model.contextWindow) facts.push(`${formatNumber(model.contextWindow).toLowerCase()} ctx`);
 		if (model.maxTokens) facts.push(`${formatNumber(model.maxTokens).toLowerCase()} out`);
 		facts.push(`${formatCostPair(model)} per M`);
 		if (model.reasoning) facts.push("reasoning");
 		if (model.input.includes("image")) facts.push("vision");
+		const intelligence = formatIntelligence(model);
+		if (intelligence) facts.push(intelligence);
 		const perf = this.#perf.get(selected.selector);
 		if (perf) {
 			facts.push(`~${formatTps(perf.tps)}`);
 			if (perf.ttftMs !== null) facts.push(`${formatTtft(perf.ttftMs)} ttft`);
+		}
+		if (model.description) {
+			const description = formatDescription(model.description);
+			if (description) facts.push(description);
 		}
 		const line1 = truncateToWidth(theme.fg("muted", `  ${facts.join(" · ")}`), width);
 
@@ -741,12 +794,16 @@ export class ModelBrowser implements Component {
 			let costWidth = 0;
 			const perfMode: PerfMode = width >= PERF_FULL_MIN_WIDTH ? "full" : width >= PERF_TPS_MIN_WIDTH ? "tps" : "off";
 			let perfWidth = 0;
+			let intelligenceWidth = 0;
 			for (let i = startIndex; i < endIndex; i++) {
 				const item = this.#visibleItems[i];
 				if (!item) continue;
 				ctxWidth = Math.max(ctxWidth, visibleWidth(formatContext(item.model)));
 				costWidth = Math.max(costWidth, visibleWidth(formatCostPair(item.model)));
 				perfWidth = Math.max(perfWidth, visibleWidth(this.#perfCell(item, perfMode)));
+				if (perfMode !== "off") {
+					intelligenceWidth = Math.max(intelligenceWidth, visibleWidth(formatIntelligence(item.model)));
+				}
 			}
 
 			const rows: string[] = [];
@@ -761,6 +818,7 @@ export class ModelBrowser implements Component {
 						i === this.#hoveredIndex,
 						ctxWidth,
 						costWidth,
+						intelligenceWidth,
 						perfWidth,
 						perfMode,
 					),

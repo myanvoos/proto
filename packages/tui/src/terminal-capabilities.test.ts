@@ -1,11 +1,19 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { setTerminalHeadless } from "@oh-my-pi/pi-utils/env";
+import { detectKittyUnicodePlaceholdersSupport } from "./kitty-graphics";
 import {
+	detectStyledUnderlineSupport,
 	detectTerminalId,
+	getTerminalInfo,
 	ImageProtocol,
 	parseKittyDirectPlacementLine,
 	renderImage,
 	resolveImageProtocol,
 	setTerminalImageProtocol,
+	shouldEnableHyperlinksByDefault,
 	shouldEnableSynchronizedOutputByDefault,
 	TERMINAL,
 } from "./terminal-capabilities";
@@ -108,6 +116,25 @@ describe("image protocol fallback", () => {
 	});
 });
 
+describe("TERM_PROGRAM-only terminal identities", () => {
+	it("routes rio and otty images through Kitty placeholders with hyperlinks", () => {
+		for (const program of ["rio", "otty"] as const) {
+			const env = { TERM_PROGRAM: program };
+			const id = detectTerminalId(env);
+			expect(id).toBe(program);
+			expect(resolveImageProtocol(id, env, true)).toBe(ImageProtocol.Kitty);
+			expect(detectKittyUnicodePlaceholdersSupport(id, env)).toBe(true);
+			expect(shouldEnableHyperlinksByDefault(env, id)).toBe(true);
+		}
+	});
+
+	it("measures Hangul Compatibility Jamo at two cells in Orca", () => {
+		const id = detectTerminalId({ TERM_PROGRAM: "Orca", TERM: "xterm-256color", COLORTERM: "truecolor" });
+		expect(id).toBe("orca");
+		expect(getTerminalInfo(id).hangulJamoWidth).toBe(2);
+	});
+});
+
 describe("kitty placement parsing", () => {
 	it("parses tmux-wrapped placements for viewport clipping", () => {
 		const inner = "\x1b7\x1b[4A\x1b_Ga=p,q=2,C=1,i=7,p=9,c=10,r=3\x1b\\\x1b8";
@@ -142,6 +169,112 @@ describe("renderImage dimension validation", () => {
 			expect(renderImage("aGk=", { widthPx: 8, heightPx: 8 })).not.toBeNull();
 		} finally {
 			setTerminalImageProtocol(previous);
+		}
+	});
+});
+
+describe("Herdr pane notifications", () => {
+	const keys = ["HERDR_PANE_ID", "HERDR_ENV", "CMUX_SURFACE_ID", "PI_NOTIFICATIONS"] as const;
+	const saved = new Map(keys.map(key => [key, Bun.env[key]]));
+	afterEach(() => {
+		vi.restoreAllMocks();
+		for (const [key, value] of saved) {
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+	});
+
+	function deliver(message: Parameters<ReturnType<typeof getTerminalInfo>["sendNotification"]>[0]): string[][] {
+		const spawned: string[][] = [];
+		vi.spyOn(Bun, "spawn").mockImplementation(((options: { cmd: string[] }) => {
+			spawned.push(options.cmd);
+			return { unref() {} };
+		}) as unknown as typeof Bun.spawn);
+		const previousHeadless = setTerminalHeadless(false);
+		try {
+			getTerminalInfo("base").sendNotification(message);
+		} finally {
+			setTerminalHeadless(previousHeadless);
+		}
+		return spawned;
+	}
+
+	it("routes through herdr before an outer cmux surface, ringing request for errors", () => {
+		delete Bun.env.PI_NOTIFICATIONS;
+		Bun.env.HERDR_PANE_ID = "pane-1";
+		Bun.env.CMUX_SURFACE_ID = "01234567-89ab-cdef-0123-456789abcdef";
+		expect(deliver({ title: "Build", body: "failed", type: "error" })).toEqual([
+			["herdr", "notification", "show", "Build", "--body", "failed", "--sound", "request"],
+		]);
+		expect(deliver({ title: "Done", body: "ok", type: "completion" })[0]?.at(-1)).toBe("done");
+	});
+
+	it("never passes a usage token as the herdr title", () => {
+		delete Bun.env.PI_NOTIFICATIONS;
+		Bun.env.HERDR_PANE_ID = "pane-1";
+		// herdr reads a bare usage token in the title slot as a help request.
+		expect(deliver({ title: "--help", body: "b" })[0]?.[3]).toBe("Proto");
+	});
+});
+
+describe("styled underline capability", () => {
+	it("enables the colon form only for proven terminals outside multiplexers", () => {
+		expect(detectStyledUnderlineSupport("kitty", {})).toBe(true);
+		expect(detectStyledUnderlineSupport("kitty", { TMUX: "/tmp/tmux-1/default,1,0" })).toBe(false);
+		// Apple Terminal detects as base/trueColor.
+		expect(detectStyledUnderlineSupport("trueColor", { TERM_PROGRAM: "Apple_Terminal" })).toBe(false);
+	});
+
+	it("requires a confirmed iTerm2 3.5 or newer", () => {
+		expect(detectStyledUnderlineSupport("iterm2", { TERM_PROGRAM_VERSION: "3.4.23" })).toBe(false);
+		expect(detectStyledUnderlineSupport("iterm2", { TERM_PROGRAM_VERSION: "3.5.0" })).toBe(true);
+		expect(detectStyledUnderlineSupport("iterm2", {})).toBe(false);
+	});
+});
+
+describe("tmux client terminal resolution", () => {
+	it.skipIf(process.platform === "win32")("adopts the attached client's terminal profile inside tmux", async () => {
+		const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-tmux-client-"));
+		try {
+			const tmux = path.join(binDir, "tmux");
+			await Bun.write(
+				tmux,
+				`#!/bin/sh
+[ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = '#{client_termtype}' ] || exit 64
+printf "%s\\n" "WezTerm 20260905-175422-0f4b5596"
+`,
+			);
+			await fs.chmod(tmux, 0o755);
+			const env = subprocessEnv({
+				TERM: "tmux-256color",
+				TERM_PROGRAM: "tmux",
+				TERM_PROGRAM_VERSION: "3.6b",
+				COLORTERM: "truecolor",
+				TMUX: "/tmp/tmux-1000/default,4242,0",
+				PATH: `${binDir}${path.delimiter}${Bun.env.PATH ?? ""}`,
+			});
+			for (const key of ["PI_TEST_RUNTIME", "BUN_ENV", "NODE_ENV"]) delete env[key];
+			const proc = Bun.spawn({
+				cmd: [
+					process.execPath,
+					"--eval",
+					`import { TERMINAL_ID } from "./src/terminal-capabilities.ts";\nconsole.log(TERMINAL_ID);`,
+				],
+				cwd: import.meta.dir.replace(/\/src$/u, ""),
+				env,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [stdout, stderr, exitCode] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+			expect(stderr).toBe("");
+			expect(exitCode).toBe(0);
+			expect(stdout.trim()).toBe("wezterm");
+		} finally {
+			await fs.rm(binDir, { force: true, recursive: true });
 		}
 	});
 });

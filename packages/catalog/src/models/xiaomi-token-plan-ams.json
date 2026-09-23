@@ -28,6 +28,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 23.9,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -39,8 +41,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -96,6 +100,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
+		"int": 28.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -107,6 +112,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -118,8 +124,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -186,6 +194,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -197,8 +206,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -253,6 +264,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
+		"int": 26,
+		"tps": 47.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -264,6 +277,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -275,8 +289,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -343,6 +359,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -354,8 +371,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -411,6 +430,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
+		"int": 46.3,
+		"tps": 54.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -422,6 +443,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -433,8 +455,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,

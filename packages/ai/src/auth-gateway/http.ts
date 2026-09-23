@@ -1,5 +1,8 @@
 import { timingSafeEqual as nodeTimingSafeEqual } from "node:crypto";
+import * as os from "node:os";
+import { getInstallId } from "@oh-my-pi/pi-utils";
 import type { Api, AssistantMessage, Model } from "../types";
+import type { ClientUsageIdentity } from "../usage";
 
 const JSON_HEADERS = {
 	"Content-Type": "application/json",
@@ -99,6 +102,24 @@ export function captureRequestHeaders(headers: Headers): Record<string, string> 
 	return out;
 }
 
+/**
+ * Usage-attribution identity for an inbound gateway request. pi-native proto clients send
+ * `x-proto-install-id` / `x-proto-hostname` / `x-proto-app`; any client may set them. Requests without an
+ * install id fall back to the gateway host under the `gateway` app, so foreign-SDK traffic still lands in
+ * per-client burn tracking. These headers are attribution-only: {@link captureRequestHeaders} never passes
+ * them upstream.
+ */
+export function resolveClientIdentity(headers: Headers): ClientUsageIdentity {
+	const read = (name: string): string | undefined => {
+		const value = headers.get(name)?.trim();
+		return value ? value : undefined;
+	};
+	const installId = read("x-proto-install-id");
+	const app = read("x-proto-app") ?? "gateway";
+	if (!installId) return { installId: getInstallId(), hostname: os.hostname(), app };
+	return { installId, hostname: read("x-proto-hostname"), app };
+}
+
 const CACHE_KEY_HEADERS: readonly string[] = [
 	"x-prompt-cache-key",
 	"session_id",
@@ -133,6 +154,25 @@ export function resolvePromptCacheKey(body: unknown, headers?: Headers): string 
 		if (v && v.length > 0) return v;
 	}
 	return undefined;
+}
+
+/**
+ * Normalizes `content: null` to `[]` in place on inbound wire message items
+ * before schema validation. Codex and other OpenAI clients send it on empty
+ * turns and OpenAI tolerates it, so the item takes the explicit-empty-array
+ * path instead of a 400. `isEligible` skips items whose content is not
+ * array-typed (the chat `function` role is `string | null`).
+ */
+export function coerceNullMessageContentInPlace(
+	items: unknown,
+	isEligible?: (item: Record<string, unknown>) => boolean,
+): void {
+	if (!Array.isArray(items)) return;
+	for (const item of items) {
+		if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+		const record = item as Record<string, unknown>;
+		if (record.content === null && (isEligible?.(record) ?? true)) record.content = [];
+	}
 }
 
 const CORS_HEADERS: Record<string, string> = {

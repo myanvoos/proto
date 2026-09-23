@@ -433,3 +433,60 @@ test("getTree keeps sibling branches in the order the index sorted them", () => 
 	expect(root?.entry.id).toBe(rootId);
 	expect(root?.children.map(child => child.entry.id)).toEqual([firstId, secondId]);
 });
+
+test("oversized native compaction state survives persistence byte-for-byte", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "proto-anthropic-compaction-persistence-"));
+	tempDirs.push(cwd);
+	const manager = SessionManager.create(cwd, cwd);
+	// Past the persistence truncation cap: the provider rejects replayed state that is not byte-identical.
+	const encryptedContent = `ENCRYPTED_COMPACTION_STATE_${"E".repeat(600_000)}`;
+	const preserveData = {
+		anthropicCompaction: { provider: "anthropic", content: "## Goal\nAudit the handlers.", encryptedContent },
+	};
+	const keptId = manager.appendMessage({ role: "user", content: "before", timestamp: 1 });
+	manager.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text: "ack" }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-fable-5",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 2,
+	});
+	manager.appendCompaction("## Goal\nAudit the handlers.", "Remote compaction", keptId, 81_066, { preserveData });
+	await manager.ensureOnDisk();
+	await manager.flush();
+	const sessionFile = manager.getSessionFile();
+	if (!sessionFile) throw new Error("Expected a persisted session file");
+	await manager.close();
+
+	const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
+		initialCwd: cwd,
+		suppressBreadcrumb: true,
+	});
+	try {
+		const entry = reopened.getEntries().find(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.preserveData : undefined).toEqual(preserveData);
+	} finally {
+		await reopened.close();
+	}
+});
+
+test("custom message entries keep the initiating message's timestamp across a rebuild", () => {
+	const manager = SessionManager.inMemory();
+	const submittedAt = Date.parse("2026-01-02T03:04:05.000Z");
+	manager.appendCustomMessageEntry("skill-prompt", "run the skill", true, undefined, "user", submittedAt);
+	manager.appendCustomMessageEntry("skill-prompt", "no stamp", true, undefined, "user", Number.NaN);
+
+	const [stamped, unstamped] = manager.buildSessionContext().messages;
+	expect(stamped?.timestamp).toBe(submittedAt);
+	expect(Number.isFinite(unstamped?.timestamp)).toBe(true);
+});

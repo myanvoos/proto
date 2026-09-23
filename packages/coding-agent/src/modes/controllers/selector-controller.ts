@@ -23,6 +23,7 @@ import {
 	saveWatchdogConfigFile,
 } from "../../advisor";
 import { reset as resetCapabilities } from "../../capability";
+import { formatLoginIdentity } from "../../cli/oauth-terminal";
 import {
 	formatModelSelectorValue,
 	resolveAdvisorRoleSelection,
@@ -87,6 +88,7 @@ import {
 import { AskTool, type AskToolDetails, type AskToolInput } from "../../tools/ask";
 import { shortenPath } from "../../tools/render-utils";
 import { ToolAbortError } from "../../tools/tool-errors";
+import { captureBrowserSession } from "../../utils/browser-session";
 import { copyToClipboard } from "../../utils/clipboard";
 import { repo } from "../../utils/git";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
@@ -278,6 +280,7 @@ export class SelectorController {
 			}
 			const dirs = { projectDir, agentDir };
 			const initialDoc = await loadWatchdogConfigFile(await resolveAdvisorConfigEditPath(initialScope, dirs));
+			if (initialDoc.warnings?.length) this.ctx.showWarning(`WATCHDOG.yml: ${initialDoc.warnings.join("; ")}`);
 
 			let overlayHandle: OverlayHandle | undefined;
 			const done = () => {
@@ -308,6 +311,9 @@ export class SelectorController {
 					const discovered = await discoverAdvisorConfigs(cwd, agentDir);
 					const count = this.ctx.session.applyAdvisorConfigs(discovered.advisors, discovered.sharedInstructions);
 					this.ctx.statusLine.invalidate();
+					if (discovered.warnings.length > 0) {
+						this.ctx.showWarning(`WATCHDOG.yml: ${discovered.warnings.join("; ")}`);
+					}
 					this.ctx.showStatus(
 						count > 0
 							? `Saved ${scope} WATCHDOG.yml — ${count} advisor${count === 1 ? "" : "s"} active.`
@@ -318,6 +324,8 @@ export class SelectorController {
 				close: done,
 				requestRender: () => this.ctx.ui.requestRender(),
 				notify: message => this.ctx.showStatus(message),
+				// The initial file's warnings were shown above; only files activated by a scope switch arrive here.
+				warn: message => this.ctx.showWarning(message),
 				getAdvisorStats: () => this.ctx.session.getAdvisorStats().advisors,
 				getUsageReports: async () => this.ctx.session.fetchUsageReports?.() ?? null,
 				resolveActiveAccount: (provider, sessionId) =>
@@ -517,7 +525,7 @@ export class SelectorController {
 
 		switch (id) {
 			case "autoCompact":
-				this.ctx.session.setAutoCompactionEnabled(value as boolean);
+				this.ctx.session.setAutoCompactionEnabled(value as boolean, true);
 				this.ctx.statusLine.setAutoCompactEnabled(value as boolean);
 				break;
 			case "advisor.enabled":
@@ -526,13 +534,13 @@ export class SelectorController {
 				this.ctx.ui.requestRender();
 				break;
 			case "steeringMode":
-				this.ctx.session.setSteeringMode(value as "all" | "one-at-a-time");
+				this.ctx.session.setSteeringMode(value as "all" | "one-at-a-time", true);
 				break;
 			case "followUpMode":
-				this.ctx.session.setFollowUpMode(value as "all" | "one-at-a-time");
+				this.ctx.session.setFollowUpMode(value as "all" | "one-at-a-time", true);
 				break;
 			case "interruptMode":
-				this.ctx.session.setInterruptMode(value as "immediate" | "wait");
+				this.ctx.session.setInterruptMode(value as "immediate" | "wait", true);
 				break;
 			case "thinkingLevel":
 			case "defaultThinkingLevel":
@@ -920,7 +928,7 @@ export class SelectorController {
 									thinkingLevel: concreteThinking ?? ThinkingLevel.Inherit,
 									persist: targetScope === "global",
 								});
-								if (!switched) return;
+								if (!switched) return false;
 								if (targetScope === "project") {
 									this.ctx.settings.setProjectModelRole(
 										"default",
@@ -946,8 +954,10 @@ export class SelectorController {
 								`${scopeLabel}${roleInfo?.tag ?? roleInfo?.name ?? role} model: ${selector ?? model.id}`,
 							);
 						}
+						return true;
 					} catch (error) {
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
+						return false;
 					} finally {
 						releaseDefaultMutation?.();
 						hub?.refreshAfterExternalMutation();
@@ -1488,7 +1498,11 @@ export class SelectorController {
 				showCwd: true,
 			};
 		} else {
-			const loadedSessions = await SessionManager.list(
+			// Start the cross-project scan before the folder listing so both overlap; the
+			// scope toggle then reuses this promise instead of paying the scan after the fact.
+			const allSessionsPromise = SessionManager.listAllForPicker();
+			allSessionsPromise.catch(() => {});
+			const loadedSessions = await SessionManager.listForPicker(
 				this.ctx.sessionManager.getCwd(),
 				this.ctx.sessionManager.getSessionDir(),
 			);
@@ -1515,7 +1529,7 @@ export class SelectorController {
 					}
 				},
 				historyMatcher,
-				loadAllSessions: () => SessionManager.listAll(),
+				loadAllSessions: () => allSessionsPromise,
 			};
 		}
 
@@ -1652,7 +1666,11 @@ export class SelectorController {
 			await this.ctx.attachSessionView(parkedTarget.session);
 			swappedIn = true;
 		} else if (!parkedOurs) {
-			await this.ctx.session.switchSession(sessionPath);
+			// AgentSession owns the transaction: a declined or failed cwd change restores the source session.
+			const switched = await this.ctx.session.switchSession(sessionPath, {
+				onCwdChange: newCwd => this.ctx.applyCwdChange(newCwd),
+			});
+			if (!switched) return false;
 		} else if (previousFile) {
 			let created: AgentSession;
 			try {
@@ -1668,11 +1686,22 @@ export class SelectorController {
 			swappedIn = true;
 		}
 		if (!swappedIn) this.ctx.clearTransientSessionUi();
+		// A swapped-in session cannot be un-swapped: when its project cannot be applied it stays in the current
+		// project, runtime-only, like a resume whose project cannot be entered.
+		if (
+			swappedIn &&
+			normalizePathForComparison(this.ctx.sessionManager.getCwd()) !== normalizePathForComparison(previousCwd) &&
+			!(await this.ctx.applyCwdChange(this.ctx.sessionManager.getCwd()))
+		) {
+			this.ctx.sessionManager.setCwdWithoutRelocation(previousCwd);
+		}
 		const newCwd = this.ctx.sessionManager.getCwd();
 		const movedProject = normalizePathForComparison(newCwd) !== normalizePathForComparison(previousCwd);
-		if (movedProject) {
-			await this.ctx.applyCwdChange(newCwd);
-		}
+		const recordedCwd = this.ctx.sessionManager.getRecordedCwd();
+		const inaccessibleProject =
+			recordedCwd && normalizePathForComparison(recordedCwd) !== normalizePathForComparison(newCwd)
+				? recordedCwd
+				: undefined;
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();
 
@@ -1693,6 +1722,9 @@ export class SelectorController {
 			status = `Interrupted ${shortenPath(previousFile)} — it was still thinking`;
 		} else {
 			status = movedProject ? `Resumed session in ${shortenPath(newCwd)}` : "Resumed session";
+		}
+		if (inaccessibleProject) {
+			status += ` · cannot enter ${shortenPath(inaccessibleProject)}, staying in ${shortenPath(newCwd)}`;
 		}
 		this.ctx.showStatus(`${status}${evictionNote}`);
 		return true;
@@ -1786,11 +1818,11 @@ export class SelectorController {
 		try {
 			const identity = await this.ctx.session.modelRegistry.authStorage.login(providerId as OAuthProvider, {
 				signal: dialog.signal,
+				onBrowserSession: captureBrowserSession,
 				onAuth: (info: { url: string; launchUrl?: string; instructions?: string }) => {
 					dialog.showAuth(info.url, info.instructions, info.launchUrl);
 				},
-				onPrompt: (prompt: { message: string; placeholder?: string }) =>
-					dialog.showPrompt(prompt.message, prompt.placeholder),
+				onPrompt: prompt => dialog.showPrompt(prompt),
 				onProgress: (message: string) => {
 					dialog.showProgress(message);
 				},
@@ -1801,12 +1833,13 @@ export class SelectorController {
 			await this.ctx.session.modelRegistry.refreshProvider(providerId, "online");
 			const block = new TranscriptBlock();
 
-			const whoBase = identity?.type === "oauth" ? (identity.email ?? identity.accountId) : undefined;
-			const whoOrg = identity?.type === "oauth" ? (identity.orgName ?? identity.orgId) : undefined;
-			const who = whoBase ? ` as ${whoBase}${whoOrg ? ` (${whoOrg})` : ""}` : whoOrg ? ` as ${whoOrg}` : "";
+			const who = formatLoginIdentity(identity);
 			block.addChild(
 				new Text(
-					theme.fg("success", `${theme.status.success} Successfully logged in to ${providerId}${who}`),
+					theme.fg(
+						"success",
+						`${theme.status.success} Successfully logged in to ${providerId}${who ? ` as ${who}` : ""}`,
+					),
 					1,
 					0,
 				),

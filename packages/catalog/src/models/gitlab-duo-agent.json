@@ -19,6 +19,7 @@
 		"maxTokens": null,
 		"supportsTools": true,
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	}
 }

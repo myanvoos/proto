@@ -18,9 +18,15 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
+		"int": 49.6,
+		"tps": 66.7,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "anthropic-adaptive",
@@ -36,15 +42,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v5-sonnet",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -72,9 +86,15 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
+		"int": 53.4,
+		"tps": 64.7,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "anthropic-adaptive",
@@ -85,20 +105,29 @@
 				"xhigh",
 				"max"
 			],
-			"supportsDisplay": true
+			"supportsDisplay": true,
+			"prefixBinding": true
 		},
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v5-sonnet",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -127,8 +156,12 @@
 		"contextWindow": 200000,
 		"maxTokens": 64000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"premiumMultiplier": 0.33,
 		"thinking": {
@@ -144,15 +177,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -181,8 +222,12 @@
 		"contextWindow": 200000,
 		"maxTokens": 32000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "anthropic-budget-effort",
@@ -196,15 +241,23 @@
 		},
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -234,8 +287,12 @@
 		"contextWindow": 168000,
 		"maxTokens": 32000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"premiumMultiplier": 3,
 		"thinking": {
@@ -249,15 +306,23 @@
 		},
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -286,9 +351,15 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 32000,
+		"int": 40.7,
+		"tps": 48.1,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "anthropic-adaptive",
@@ -304,15 +375,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v47",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -340,9 +419,15 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 64000,
+		"int": 41.8,
+		"tps": 57.8,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "anthropic-adaptive",
@@ -358,15 +443,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v47",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -394,9 +487,15 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
+		"int": 50.8,
+		"tps": 53.6,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "anthropic-adaptive",
@@ -412,15 +511,90 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v5",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": false,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"replayUnsignedThinking": false,
+			"escapeBuiltinToolNames": false
+		}
+	},
+	"claude-opus-5.5": {
+		"id": "claude-opus-5.5",
+		"name": "Claude Opus 5.5",
+		"api": "anthropic-messages",
+		"provider": "github-copilot",
+		"baseUrl": "https://api.githubcopilot.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 4,
+			"output": 20,
+			"cacheRead": 0.2,
+			"cacheWrite": 5
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"int": 57.6,
+		"headers": {
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
+		},
+		"thinking": {
+			"mode": "anthropic-adaptive",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			],
+			"supportsDisplay": true
+		},
+		"requiresGlyphTokenization": true,
+		"tokenizer": "claude-v5",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"officialEndpoint": false,
+			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -449,8 +623,12 @@
 		"contextWindow": 216000,
 		"maxTokens": 16000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "budget",
@@ -464,15 +642,23 @@
 		},
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -502,8 +688,12 @@
 		"contextWindow": 200000,
 		"maxTokens": 32000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "budget",
@@ -517,15 +707,23 @@
 		},
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -554,9 +752,15 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 32000,
+		"int": 24.7,
+		"tps": 42,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "anthropic-adaptive",
@@ -569,15 +773,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -605,9 +817,15 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
+		"int": 38.2,
+		"tps": 78.1,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "anthropic-adaptive",
@@ -623,15 +841,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v5-sonnet",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -660,8 +886,12 @@
 		"contextWindow": 128000,
 		"maxTokens": 64000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -674,6 +904,9 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"int": 16.1,
+		"tps": 125.8,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -685,8 +918,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -743,8 +978,12 @@
 		"contextWindow": 128000,
 		"maxTokens": 64000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -757,6 +996,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -768,8 +1008,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -826,7 +1068,12 @@
 		"contextWindow": 128000,
 		"maxTokens": 64000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -837,6 +1084,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -848,8 +1096,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -906,8 +1156,12 @@
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -918,6 +1172,9 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"int": 29.7,
+		"tps": 118.4,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -929,8 +1186,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -991,9 +1250,15 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 64000,
+		"int": 32.6,
+		"tps": 207.7,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"compat": {
 			"supportsStore": false,
@@ -1006,8 +1271,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1054,6 +1321,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -1079,9 +1347,15 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
+		"int": 34,
+		"tps": 180.2,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"compat": {
 			"supportsStore": false,
@@ -1094,8 +1368,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1142,6 +1418,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -1167,9 +1444,15 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
+		"int": 39.1,
+		"tps": 278.3,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"compat": {
 			"supportsStore": false,
@@ -1182,8 +1465,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1230,6 +1515,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -1255,9 +1541,15 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
+		"int": 40.9,
+		"tps": 275.9,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"compat": {
 			"supportsStore": false,
@@ -1270,8 +1562,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1318,6 +1612,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -1344,10 +1639,17 @@
 		"contextWindow": 128000,
 		"maxTokens": 16384,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"requiresGlyphTokenization": false,
+		"int": 12.7,
+		"tps": 144.4,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -1359,8 +1661,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1422,10 +1726,18 @@
 		"contextWindow": 128000,
 		"maxTokens": 4096,
 		"headers": {
-			"User-Agent": "opencode/1.3.15"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"premiumMultiplier": 0,
 		"requiresGlyphTokenization": false,
+		"int": 8.4,
+		"tps": 137.5,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -1437,8 +1749,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1495,7 +1809,12 @@
 		"contextWindow": 128000,
 		"maxTokens": 128000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -1507,6 +1826,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 23,
+		"tps": 98.4,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -1516,6 +1838,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -1546,6 +1869,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -1574,9 +1898,15 @@
 		},
 		"contextWindow": 264000,
 		"maxTokens": 64000,
+		"int": 16.8,
+		"tps": 107.6,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -1589,6 +1919,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -1598,6 +1929,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -1628,6 +1960,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -1656,7 +1989,12 @@
 		"contextWindow": 264000,
 		"maxTokens": 64000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -1668,6 +2006,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 24.7,
+		"tps": 112.6,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -1677,6 +2018,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -1707,6 +2049,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -1736,7 +2079,12 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -1748,6 +2096,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 23.7,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -1757,6 +2107,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -1787,6 +2138,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -1816,7 +2168,12 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -1828,6 +2185,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -1837,6 +2195,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -1867,6 +2226,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -1896,7 +2256,12 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -1906,6 +2271,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 20.4,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -1915,6 +2282,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -1945,6 +2313,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -1974,8 +2343,12 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -1987,6 +2360,9 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 30.4,
+		"tps": 79.5,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -1996,6 +2372,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2026,6 +2403,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2055,8 +2433,12 @@
 		"contextWindow": 272000,
 		"maxTokens": 128000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2068,6 +2450,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"int": 28.5,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2077,6 +2461,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2107,6 +2492,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2135,9 +2521,15 @@
 		},
 		"contextWindow": 272000,
 		"maxTokens": 128000,
+		"int": 32.5,
+		"tps": 146.4,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2150,6 +2542,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2159,6 +2552,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2189,6 +2583,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2216,9 +2611,15 @@
 		},
 		"contextWindow": 272000,
 		"maxTokens": 128000,
+		"int": 39,
+		"tps": 135.8,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2231,6 +2632,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2240,6 +2642,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2270,6 +2673,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2297,9 +2701,15 @@
 		},
 		"contextWindow": 272000,
 		"maxTokens": 128000,
+		"int": 24.1,
+		"tps": 224.5,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"premiumMultiplier": 0.33,
 		"thinking": {
@@ -2313,6 +2723,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2322,6 +2733,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2352,6 +2764,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2379,9 +2792,15 @@
 		},
 		"contextWindow": 400000,
 		"maxTokens": 128000,
+		"int": 20.7,
+		"tps": 173.6,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2394,6 +2813,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2403,6 +2823,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2433,6 +2854,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2460,9 +2882,15 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 38.4,
+		"tps": 94.4,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2476,6 +2904,7 @@
 		"contextPromotionTarget": "github-copilot/gpt-5.4",
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2485,6 +2914,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2515,6 +2945,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2542,9 +2973,15 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 37.3,
+		"tps": 142.3,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2558,6 +2995,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2567,6 +3005,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2597,6 +3036,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2624,9 +3064,15 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 47,
+		"tps": 80.3,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2640,6 +3086,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2649,6 +3096,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2679,6 +3127,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2706,9 +3155,15 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 42.1,
+		"tps": 82.4,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2722,6 +3177,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2731,6 +3187,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": false,
@@ -2761,6 +3218,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2772,7 +3230,7 @@
 	"gpt-6-astra": {
 		"id": "gpt-6-astra",
 		"name": "GPT-6 Astra",
-		"api": "openai-completions",
+		"api": "openai-responses",
 		"provider": "github-copilot",
 		"baseUrl": "https://api.githubcopilot.com",
 		"reasoning": true,
@@ -2788,56 +3246,15 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 52.7,
+		"tps": 52.7,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
-		},
-		"compat": {
-			"supportsStore": false,
-			"supportsDeveloperRole": false,
-			"supportsMultipleSystemMessages": true,
-			"supportsReasoningEffort": false,
-			"supportsReasoningParams": false,
-			"supportsSamplingParams": false,
-			"supportsPenaltyAndStopParams": true,
-			"reasoningEffortMap": {},
-			"supportsUsageInStreaming": true,
-			"alwaysSendMaxTokens": false,
-			"disableReasoningOnForcedToolChoice": false,
-			"disableReasoningOnToolChoice": false,
-			"supportsToolChoice": true,
-			"supportsForcedToolChoice": true,
-			"supportsNamedToolChoice": true,
-			"maxTokensField": "max_completion_tokens",
-			"requiresToolResultName": false,
-			"requiresAssistantAfterToolResult": false,
-			"requiresThinkingAsText": false,
-			"requiresMistralToolIds": false,
-			"thinkingFormat": "openai",
-			"reasoningDisableMode": "lowest-effort",
-			"omitReasoningEffort": true,
-			"includeEncryptedReasoning": true,
-			"filterReasoningHistory": false,
-			"reasoningContentField": "reasoning_content",
-			"requiresReasoningContentForToolCalls": false,
-			"requiresReasoningContentForAllAssistantTurns": false,
-			"allowsSyntheticReasoningContentForToolCalls": true,
-			"replayReasoningContent": false,
-			"qwenPreserveThinking": false,
-			"qwenTemplateReasoningEffort": false,
-			"requiresAssistantContentForToolCalls": false,
-			"supportsPromptCacheBreakpoints": false,
-			"isOpenRouterHost": false,
-			"wireModelIdMode": "raw",
-			"isVercelGatewayHost": false,
-			"supportsStrictMode": true,
-			"toolStrictMode": "mixed",
-			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
-			"reasoningDeltasMayBeCumulative": false,
-			"emptyLengthFinishIsContextError": false,
-			"usesOpenAIToolCallIdLimit": false,
-			"dropThinkingWhenReasoningEffort": false
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2851,10 +3268,236 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
-		"compatConfig": {
-			"supportsStore": false,
-			"supportsDeveloperRole": false,
-			"supportsReasoningEffort": false
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsDeveloperRole": true,
+			"supportsStrictMode": true,
+			"supportsReasoningEffort": true,
+			"supportsLongPromptCacheRetention": false,
+			"supportsPromptCacheBreakpoints": false,
+			"strictResponsesPairing": true,
+			"supportsImageDetailOriginal": false,
+			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": true,
+			"reasoningEffortMap": {},
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": false,
+			"supportsPenaltyAndStopParams": true,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresAssistantContentForToolCalls": false,
+			"isOpenRouterHost": false,
+			"isVercelGatewayHost": false,
+			"wireModelIdMode": "raw",
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"supportsObfuscationOptOut": false,
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false
+		}
+	},
+	"gpt-6-luna": {
+		"id": "gpt-6-luna",
+		"name": "GPT-6 Luna",
+		"api": "openai-responses",
+		"provider": "github-copilot",
+		"baseUrl": "https://api.githubcopilot.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.1,
+			"output": 0.5,
+			"cacheRead": 0.01,
+			"cacheWrite": 0.125
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"int": 37.3,
+		"tps": 153.9,
+		"headers": {
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
+		},
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsDeveloperRole": true,
+			"supportsStrictMode": true,
+			"supportsReasoningEffort": true,
+			"supportsLongPromptCacheRetention": false,
+			"supportsPromptCacheBreakpoints": false,
+			"strictResponsesPairing": true,
+			"supportsImageDetailOriginal": false,
+			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
+			"reasoningEffortMap": {},
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": false,
+			"supportsPenaltyAndStopParams": true,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresAssistantContentForToolCalls": false,
+			"isOpenRouterHost": false,
+			"isVercelGatewayHost": false,
+			"wireModelIdMode": "raw",
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"supportsObfuscationOptOut": false,
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false
+		}
+	},
+	"gpt-6-sol": {
+		"id": "gpt-6-sol",
+		"name": "GPT-6 Sol",
+		"api": "openai-responses",
+		"provider": "github-copilot",
+		"baseUrl": "https://api.githubcopilot.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 2.5
+		},
+		"contextWindow": 1050000,
+		"maxTokens": 128000,
+		"int": 47.5,
+		"tps": 125.5,
+		"headers": {
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
+		},
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsDeveloperRole": true,
+			"supportsStrictMode": true,
+			"supportsReasoningEffort": true,
+			"supportsLongPromptCacheRetention": false,
+			"supportsPromptCacheBreakpoints": false,
+			"strictResponsesPairing": true,
+			"supportsImageDetailOriginal": false,
+			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
+			"reasoningEffortMap": {},
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": false,
+			"supportsPenaltyAndStopParams": true,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresAssistantContentForToolCalls": false,
+			"isOpenRouterHost": false,
+			"isVercelGatewayHost": false,
+			"wireModelIdMode": "raw",
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"supportsObfuscationOptOut": false,
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false
 		}
 	},
 	"grok-4.5": {
@@ -2876,9 +3519,15 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 128000,
+		"int": 38.8,
+		"tps": 55.1,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2892,6 +3541,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2901,6 +3551,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": true,
@@ -2931,6 +3582,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -2958,9 +3610,15 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 128000,
+		"int": 44.3,
+		"tps": 59.1,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -2974,6 +3632,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -2983,6 +3642,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": true,
@@ -3013,6 +3673,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -3024,7 +3685,7 @@
 	"grok-4.7": {
 		"id": "grok-4.7",
 		"name": "Grok 4.7",
-		"api": "openai-completions",
+		"api": "openai-responses",
 		"provider": "github-copilot",
 		"baseUrl": "https://api.githubcopilot.com",
 		"reasoning": true,
@@ -3040,56 +3701,15 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 128000,
+		"int": 46.4,
+		"tps": 39.3,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
-		},
-		"compat": {
-			"supportsStore": false,
-			"supportsDeveloperRole": false,
-			"supportsMultipleSystemMessages": true,
-			"supportsReasoningEffort": false,
-			"supportsReasoningParams": false,
-			"supportsSamplingParams": true,
-			"supportsPenaltyAndStopParams": true,
-			"reasoningEffortMap": {},
-			"supportsUsageInStreaming": true,
-			"alwaysSendMaxTokens": false,
-			"disableReasoningOnForcedToolChoice": false,
-			"disableReasoningOnToolChoice": false,
-			"supportsToolChoice": true,
-			"supportsForcedToolChoice": true,
-			"supportsNamedToolChoice": true,
-			"maxTokensField": "max_completion_tokens",
-			"requiresToolResultName": false,
-			"requiresAssistantAfterToolResult": false,
-			"requiresThinkingAsText": false,
-			"requiresMistralToolIds": false,
-			"thinkingFormat": "openai",
-			"reasoningDisableMode": "lowest-effort",
-			"omitReasoningEffort": true,
-			"includeEncryptedReasoning": true,
-			"filterReasoningHistory": false,
-			"reasoningContentField": "reasoning_content",
-			"requiresReasoningContentForToolCalls": false,
-			"requiresReasoningContentForAllAssistantTurns": false,
-			"allowsSyntheticReasoningContentForToolCalls": true,
-			"replayReasoningContent": false,
-			"qwenPreserveThinking": false,
-			"qwenTemplateReasoningEffort": false,
-			"requiresAssistantContentForToolCalls": false,
-			"supportsPromptCacheBreakpoints": false,
-			"isOpenRouterHost": false,
-			"wireModelIdMode": "raw",
-			"isVercelGatewayHost": false,
-			"supportsStrictMode": true,
-			"toolStrictMode": "mixed",
-			"stripDeepseekSpecialTokens": false,
-			"streamMarkupHealingPattern": "thinking",
-			"reasoningDeltasMayBeCumulative": false,
-			"emptyLengthFinishIsContextError": false,
-			"usesOpenAIToolCallIdLimit": false,
-			"dropThinkingWhenReasoningEffort": false
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -3097,15 +3717,60 @@
 				"minimal",
 				"low",
 				"medium",
-				"high"
+				"high",
+				"xhigh"
 			]
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
-		"compatConfig": {
-			"supportsStore": false,
-			"supportsDeveloperRole": false,
-			"supportsReasoningEffort": false
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"supportsDeveloperRole": true,
+			"supportsStrictMode": true,
+			"supportsReasoningEffort": true,
+			"supportsLongPromptCacheRetention": false,
+			"supportsPromptCacheBreakpoints": false,
+			"strictResponsesPairing": true,
+			"supportsImageDetailOriginal": false,
+			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
+			"reasoningEffortMap": {},
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresAssistantContentForToolCalls": false,
+			"isOpenRouterHost": false,
+			"isVercelGatewayHost": false,
+			"wireModelIdMode": "raw",
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"supportsObfuscationOptOut": false,
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false
 		}
 	},
 	"grok-code-fast-1": {
@@ -3127,7 +3792,12 @@
 		"contextWindow": 192000,
 		"maxTokens": 64000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"premiumMultiplier": 0.25,
 		"thinking": {
@@ -3141,6 +3811,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -3152,8 +3823,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -3209,9 +3882,15 @@
 		},
 		"contextWindow": 256000,
 		"maxTokens": 32000,
+		"int": 25.8,
+		"tps": 59.9,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"compat": {
 			"supportsStore": false,
@@ -3224,8 +3903,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": true,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": true,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -3273,6 +3954,7 @@
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -3298,9 +3980,15 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
+		"int": 43.6,
+		"tps": 36.7,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"compat": {
 			"supportsStore": false,
@@ -3318,8 +4006,10 @@
 			},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": true,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": true,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -3371,6 +4061,7 @@
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -3396,8 +4087,12 @@
 		"contextWindow": 256000,
 		"maxTokens": 128000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -3411,6 +4106,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -3420,6 +4116,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": true,
@@ -3450,6 +4147,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -3478,8 +4176,12 @@
 		"contextWindow": 256000,
 		"maxTokens": 128000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -3493,6 +4195,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsDeveloperRole": true,
 			"supportsStrictMode": true,
@@ -3502,6 +4205,7 @@
 			"strictResponsesPairing": true,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": true,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {},
 			"supportsReasoningParams": true,
 			"supportsSamplingParams": true,
@@ -3532,6 +4236,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -3560,8 +4265,12 @@
 		"contextWindow": 400000,
 		"maxTokens": 128000,
 		"headers": {
-			"User-Agent": "opencode/1.3.15",
-			"X-GitHub-Api-Version": "2026-06-01"
+			"User-Agent": "copilot/1.0.82",
+			"Editor-Version": "copilot/1.0.82",
+			"Copilot-Integration-Id": "copilot-developer-cli",
+			"Copilot-Harness-Id": "copilot-sdk",
+			"Openai-Intent": "conversation-agent",
+			"X-GitHub-Api-Version": "2026-08-01"
 		},
 		"thinking": {
 			"mode": "effort",
@@ -3574,6 +4283,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -3585,8 +4295,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,

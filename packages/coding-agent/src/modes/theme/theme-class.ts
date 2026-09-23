@@ -435,6 +435,7 @@ export class Theme {
 			input: this.#symbols["icon.input"],
 			output: this.#symbols["icon.output"],
 			throughput: this.#symbols["icon.throughput"],
+			intelligence: this.#symbols["icon.intelligence"],
 			host: this.#symbols["icon.host"],
 			session: this.#symbols["icon.session"],
 			package: this.#symbols["icon.package"],

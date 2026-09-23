@@ -53,7 +53,18 @@ describe("Ollama stream termination", () => {
 
 		expect(result.stopReason).toBe("stop");
 		expect(result.content).toEqual([{ type: "text", text: "Hello" }]);
-		expect(result.usage).toMatchObject({ input: 3, output: 2, totalTokens: 5 });
+		expect(result.usage).toMatchObject({ input: 3, output: 2, cacheRead: 0, totalTokens: 5 });
+	});
+});
+
+describe("Ollama usage accounting", () => {
+	it("splits Ollama Cloud's cached prompt tokens out of input into cacheRead", async () => {
+		const result = await runChunks([
+			{ message: { content: "391" } },
+			{ done: true, done_reason: "stop", prompt_eval_count: 1000, prompt_eval_cached_count: 800, eval_count: 50 },
+		]);
+
+		expect(result.usage).toMatchObject({ input: 200, cacheRead: 800, output: 50, totalTokens: 1050 });
 	});
 });
 

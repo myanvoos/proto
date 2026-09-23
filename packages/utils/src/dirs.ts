@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { engines, version } from "../package.json" with { type: "json" };
+import { isEnoent, isEnotdir } from "./fs-error";
 
 export const APP_NAME: string = "proto";
 
@@ -113,15 +114,44 @@ export function relativePathWithinRoot(root: string, candidate: string): string 
 	return relative || null;
 }
 
-let projectDir = standardizeMacOSPath(process.cwd());
+let projectDir: string | undefined;
 
+/** The project directory; a launch cwd that was deleted or denied falls back to `$PWD`, home, then tmp. */
 export function getProjectDir(): string {
+	if (projectDir === undefined) {
+		try {
+			projectDir = standardizeMacOSPath(process.cwd());
+		} catch {
+			for (const candidate of [process.env.PWD, os.homedir(), os.tmpdir()]) {
+				if (!candidate || !path.isAbsolute(candidate)) continue;
+				try {
+					process.chdir(candidate);
+					projectDir = standardizeMacOSPath(candidate);
+					break;
+				} catch {}
+			}
+			if (projectDir === undefined) {
+				throw new Error("Unable to determine an accessible working directory");
+			}
+		}
+	}
 	return projectDir;
 }
 
+/** Enter `dir` and adopt it as the project directory; a failed `chdir` leaves the previous directory in place. */
 export function setProjectDir(dir: string): void {
-	projectDir = standardizeMacOSPath(path.resolve(dir));
-	process.chdir(projectDir);
+	const resolved = standardizeMacOSPath(path.resolve(dir));
+	process.chdir(resolved);
+	projectDir = resolved;
+}
+
+/** Whether a path is absent or not a directory. Other stat failures (e.g. permission) return false. */
+export async function directoryIsMissing(dir: string): Promise<boolean> {
+	try {
+		return !(await fs.promises.stat(dir)).isDirectory();
+	} catch (error) {
+		return isEnoent(error) || isEnotdir(error);
+	}
 }
 
 export async function directoryExists(dir: string): Promise<boolean> {
@@ -130,6 +160,38 @@ export async function directoryExists(dir: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Whether `dir` exists and can be entered. `stat` succeeds on a directory whose own search permission is denied
+ * (it only needs +x on the parent chain), so adopting a directory as a working directory must check this instead.
+ */
+export async function directoryIsEnterable(dir: string): Promise<boolean> {
+	try {
+		const [stats] = await Promise.all([fs.promises.stat(dir), fs.promises.access(dir, fs.constants.X_OK)]);
+		return stats.isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/** Synchronous {@link directoryIsEnterable}. */
+export function directoryIsEnterableSync(dir: string): boolean {
+	try {
+		fs.accessSync(dir, fs.constants.X_OK);
+		return fs.statSync(dir).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/** The project directory when it is enterable, else home: for spawns that must not inherit a denied cwd. */
+export function getSafeProjectCwd(): string {
+	try {
+		const dir = getProjectDir();
+		if (directoryIsEnterableSync(dir)) return dir;
+	} catch {}
+	return os.homedir();
 }
 
 export function getConfigDirName(): string {
@@ -519,6 +581,10 @@ export function getDocumentConversionCacheDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, path.join("cache", "document-conversions"), "cache");
 }
 
+export function getComposerCacheDir(agentDir?: string): string {
+	return dirs.agentSubdir(agentDir, path.join("cache", "composer"), "cache");
+}
+
 export function getSessionsDir(agentDir?: string): string {
 	return dirs.agentSubdir(agentDir, "sessions", "data");
 }
@@ -616,6 +682,15 @@ export function getSSHConfigPath(scope: "user" | "project", cwd: string = getPro
 		return path.join(getAgentDir(), "ssh.json");
 	}
 	return path.join(getProjectAgentDir(cwd), "ssh.json");
+}
+
+/**
+ * Application label for usage attribution (`PROTO_APP_NAME`, default `proto`). Embedders that drive proto
+ * programmatically (bots, CI) set it so broker-side per-client burn tracking can split usage per app.
+ */
+export function getAppName(): string {
+	const value = process.env.PROTO_APP_NAME?.trim();
+	return value ? value : "proto";
 }
 
 let cachedInstallId: string | null = null;

@@ -435,9 +435,7 @@ interface CloudCodeAssistRequest {
 			temperature?: number;
 			topP?: number;
 			topK?: number;
-			minP?: number;
 			presencePenalty?: number;
-			repetitionPenalty?: number;
 			thinkingConfig?: ThinkingConfig;
 		};
 		tools?: { functionDeclarations: Record<string, unknown>[] }[] | undefined;
@@ -895,7 +893,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 								total: 0,
 							},
 						};
-						calculateCost(model, output.usage);
+						calculateCost(model, output.usage, output.timestamp);
 					}
 				}
 
@@ -1255,14 +1253,8 @@ export function buildRequest(
 	if (options.topK !== undefined) {
 		generationConfig.topK = options.topK;
 	}
-	if (options.minP !== undefined) {
-		generationConfig.minP = options.minP;
-	}
 	if (options.presencePenalty !== undefined) {
 		generationConfig.presencePenalty = options.presencePenalty;
-	}
-	if (options.repetitionPenalty !== undefined) {
-		generationConfig.repetitionPenalty = options.repetitionPenalty;
 	}
 
 	if (options.thinking?.enabled && model.reasoning) {

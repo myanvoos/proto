@@ -26,6 +26,8 @@ export type OAuthPrompt = {
 	message: string;
 	placeholder?: string;
 	allowEmpty?: boolean;
+	// Masked entry; hosts that cannot hide input must reject the prompt.
+	secret?: boolean;
 };
 
 export type OAuthAuthInfo = {
@@ -43,11 +45,20 @@ export interface OAuthProviderInfo {
 	storeCredentialsAs?: string;
 }
 
+export type OAuthBrowserSessionRequest = {
+	url: string;
+	// Preference order; the host returns the first non-empty matching cookie value.
+	cookieNames: readonly string[];
+};
+
 export interface OAuthController {
 	onAuth?(info: OAuthAuthInfo): void;
 	onProgress?(message: string): void;
-	onManualCodeInput?(): Promise<string>;
+	// Hosts must stop the visible prompt when `signal` aborts (e.g. a native callback won the race).
+	onManualCodeInput?(signal?: AbortSignal): Promise<string>;
 	onPrompt?(prompt: OAuthPrompt): Promise<string>;
+	// Completes sign-in in an isolated host-owned browser and returns one cookie value privately.
+	onBrowserSession?(request: OAuthBrowserSessionRequest, signal?: AbortSignal): Promise<string>;
 	signal?: AbortSignal;
 	fetch?: FetchImpl;
 }

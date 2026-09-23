@@ -36,6 +36,7 @@ import { BranchSummaryMessageComponent, CompactionSummaryMessageComponent } from
 import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
+import { ServedModelTracker } from "./served-model-marker";
 import { SkillMessageComponent } from "./skill-message";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
@@ -64,6 +65,7 @@ export class ChatTranscriptBuilder {
 	#pendingUsageTimestamp: number | undefined;
 	#pendingReadUsageCallIds: string[] | undefined;
 	#lastAssistantUsage: Usage | undefined;
+	#servedModelTracker = new ServedModelTracker();
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#checklistSnapshot: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
@@ -109,6 +111,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageTimestamp = undefined;
 		this.#pendingReadUsageCallIds = undefined;
 		this.#lastAssistantUsage = undefined;
+		this.#servedModelTracker = new ServedModelTracker();
 		this.#waitingPoll = null;
 		this.#checklistSnapshot = null;
 		this.#expandables = [];
@@ -308,6 +311,7 @@ export class ChatTranscriptBuilder {
 		if (message.usage.cacheRead + message.usage.cacheWrite + message.usage.input > 0) {
 			this.#lastAssistantUsage = message.usage;
 		}
+		assistantComponent.setServedModelMismatch(this.#servedModelTracker.check(message));
 
 		const hasVisibleAssistantContent = assistantHasVisibleContent(message);
 		if (hasVisibleAssistantContent) {

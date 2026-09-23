@@ -19,6 +19,12 @@ describe("latexToUnicode text styles", () => {
 		expect(latexToUnicode(String.raw`\frac{\textbf{a}}{b}`)).toBe("\x1b[1ma\x1b[22m/b");
 	});
 
+	test("keeps synthetic wrapper and fallback script glyphs at the caller style", () => {
+		expect(latexToUnicode(String.raw`\pmod{\textbf{x}}`)).toBe("(mod \x1b[1mx\x1b[22m)");
+		expect(latexToUnicode(String.raw`x_{\textit{word}}`)).toBe("x_(\x1b[3mword\x1b[23m)");
+		expect(latexToUnicode(String.raw`x^{\textbf{foo!}}`)).toBe("x^(\x1b[1mfoo!\x1b[22m)");
+	});
+
 	test("leaves unsupported terminal font fallbacks as plain text", () => {
 		expect(latexToUnicode(String.raw`\texttt{x}\textsf{y}`)).toBe("xy");
 	});

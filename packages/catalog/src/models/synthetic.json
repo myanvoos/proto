@@ -18,6 +18,8 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 65536,
+		"int": 39.5,
+		"tps": 226.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -29,6 +31,7 @@
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -40,8 +43,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": true,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -96,6 +101,8 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 65536,
+		"int": 29.2,
+		"tps": 101.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -108,6 +115,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -119,8 +127,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -175,6 +185,8 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
+		"int": 25.8,
+		"tps": 59.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -188,6 +200,7 @@
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -199,8 +212,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": true,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": true,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -256,6 +271,8 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 65536,
+		"int": 43.6,
+		"tps": 36.7,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -272,6 +289,7 @@
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -288,8 +306,10 @@
 			},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": true,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": true,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -356,6 +376,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -367,8 +388,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -422,6 +445,8 @@
 		},
 		"contextWindow": 131072,
 		"maxTokens": 32768,
+		"int": 11.6,
+		"tps": 196.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -432,6 +457,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -443,8 +469,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -499,6 +527,8 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 65536,
+		"int": 21.4,
+		"tps": 57.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -511,6 +541,7 @@
 		"requiresGlyphTokenization": false,
 		"tokenizer": "qwen3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -522,8 +553,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -589,6 +622,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "qwen3",
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": false,
 			"supportsDeveloperRole": false,
@@ -600,8 +634,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -656,6 +692,8 @@
 		},
 		"contextWindow": 196608,
 		"maxTokens": 65536,
+		"int": 14.9,
+		"tps": 82.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -668,6 +706,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -679,8 +718,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -734,6 +775,8 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 65536,
+		"int": 33.7,
+		"tps": 69.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -747,6 +790,7 @@
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -758,8 +802,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -814,6 +860,8 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 65536,
+		"int": 41.8,
+		"tps": 58.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -827,6 +875,7 @@
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -838,8 +887,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -904,6 +955,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": true,
@@ -916,8 +968,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -984,6 +1038,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": true,
@@ -996,8 +1051,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1063,6 +1120,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": true,
@@ -1075,8 +1133,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1143,6 +1203,7 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false,
 		"compat": {
 			"supportsStore": true,
@@ -1155,8 +1216,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,

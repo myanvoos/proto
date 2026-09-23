@@ -106,7 +106,7 @@ The `advise` tool accepts one note and an optional severity:
 
 | Severity        | Delivery                                                                                                                                                             | Intended use                                                                 |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| omitted / `nit` | Non-interrupting aside, batched into the primary transcript at the next step boundary.                                                                               | Cleanup, simplification, low-risk edge cases.                                |
+| omitted / `nit` | Non-interrupting aside, batched into the primary transcript at the next step boundary. A late terminal-answer `nit` is preserved as a visible card instead.         | Cleanup, simplification, low-risk edge cases.                                |
 | `concern`       | Interrupting steering message when the delivery constraints below permit it. A late terminal-answer `concern` is preserved as a visible card instead.                | Material risk, likely wrong direction, missing constraint, hallucinated API. |
 | `blocker`       | Interrupting steering message when the delivery constraints below permit it. Unlike a `concern`, a terminal answer alone does not prevent it from triggering a turn. | Continuing would clearly waste work or produce broken output.                |
 
@@ -123,8 +123,9 @@ When you deliberately interrupt the agent (Esc, or a cancel from ACP, RPC, the S
 A normal yield the agent drove itself is treated differently from a deliberate interrupt, but it is not a blanket "always steers and resumes". The loop state and completed turn first determine the normal delivery path:
 
 - **While the loop is still streaming** (the raise arrived before the yield, or during a resume you already drove), the note normally steers into the live turn.
+- **While the final turn is unwinding** (the primary's last turn ended with a terminal text answer and no queued work, but the loop has not settled yet), a `nit` or `concern` is preserved as a visible card: the unwinding loop would never consume a steer. The guard lasts until the next real agent start. A terminal `yield` tool call likewise preserves every severity, including a `blocker`, because the yield aborts the loop.
 - **Once the loop has yielded and gone idle**, delivery keys on how the turn ended:
-  - If the primary's tail is a **terminal text answer with no queued work**, a late `concern` is preserved as a visible card rather than waking the agent to restate a completed turn (#4840) — it re-enters context on the next resume (a new message, `.`/`c`, or a steer/follow-up), exactly like the interrupt case. A `blocker` is the exception: it normally steers a triggered turn, because it means the agent handed off broken or unexercised work that must be acknowledged before the turn is considered done (#5628).
+  - If the primary's tail is a **terminal text answer with no queued work**, a late `nit` or `concern` is preserved as a visible card rather than waking the agent to restate a completed turn (#4840) — it re-enters context on the next resume (a new message, `.`/`c`, or a steer/follow-up), exactly like the interrupt case. A `blocker` is the exception: it normally steers a triggered turn, because it means the agent handed off broken or unexercised work that must be acknowledged before the turn is considered done (#5628).
   - Otherwise (the agent yielded mid-work, no terminal answer), an idle `concern`/`blocker` normally triggers a fresh turn so the advice is acted on immediately.
 
 Two session/client constraints can still preserve a note whose normal delivery path is steering:
@@ -135,7 +136,7 @@ So the advisor can steer and resume a run the agent ended on its own **while it 
 
 `advisor.immuneTurns` limits interruption frequency. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns/blockers are routed as non-interrupting asides until the configured number of primary turns has completed. The default is `3`. `nit` notes are unchanged, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
 
-While an advisor update is reviewing work still in progress, `AdviseTool` withholds `nit` and `concern` calls; only a `blocker` may interrupt partial work. The tool also suppresses the same whitespace-normalized note at an equal or lower severity while allowing a real escalation (`nit` → `concern` → `blocker`).
+While an advisor update is reviewing work still in progress, `AdviseTool` withholds `nit` and `concern` calls; only a `blocker` may interrupt partial work. The primary's terminal turn boundary flushes the withheld notes, even when the advisor is quota-paused or halted before its next update; continuing tool turns keep them withheld. The tool also suppresses the same whitespace-normalized note at an equal or lower severity while allowing a real escalation (`nit` → `concern` → `blocker`).
 
 ### Emission guard
 
@@ -255,7 +256,9 @@ Later project files sit closer to the end of the advisor prompt, so narrower dir
 
 ## WATCHDOG.yml
 
-`WATCHDOG.yml` (or `WATCHDOG.yaml`) is the advisor roster. Where `WATCHDOG.md` supplies review priorities, `WATCHDOG.yml` declares the advisors themselves — one entry per name, each with its own enable flag, model, tool grant, and specialization prompt. The interactive `/advisor configure` overlay edits this file in place. Files that fail to parse or fail schema validation are logged and skipped so one bad project config cannot kill the session.
+`WATCHDOG.yml` (or `WATCHDOG.yaml`) is the advisor roster. Where `WATCHDOG.md` supplies review priorities, `WATCHDOG.yml` declares the advisors themselves — one entry per name, each with its own enable flag, model, tool grant, and specialization prompt. The interactive `/advisor configure` overlay edits this file in place.
+
+Discovery and `/advisor configure` validate each entry independently: a malformed entry is skipped with a warning naming it (or its position) while the healthy advisors in the same file stay usable. Invalid YAML or a non-mapping document is skipped with a file-level warning. Problems appear as one aggregated warning at startup and when the editor opens, stay pinned inside the editor (including after a project/user scope switch), and saving writes only the valid entries.
 
 Example:
 
@@ -311,7 +314,9 @@ The advisor has its own append-only context. Before each advisor prompt, `AgentS
 
 1. try model-level context promotion when enabled and a larger compatible model is available
 2. if promotion cannot fit enough context, compact the advisor's own message history
-3. if compaction has no candidates or still cannot fit, re-prime from the current bounded primary transcript
+3. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
+
+Native compaction replaces advisor history only when the active model can replay its provider and Responses API format; a foreign native-enabled summarizer produces a portable text summary instead. Once the advisor holds native history, incompatible summarizers, retry fallbacks, cooldown restorations, and context promotions are skipped, and a maintenance failure preserves that history rather than re-priming it away. Replay compatibility does not require new native compaction to be enabled: same-provider Responses models can receive existing native history even when their own compaction endpoint is disabled, while creating a new native result still requires `remote` in `compaction.methodOrder` and an eligible writer.
 
 The advisor's live context is in-memory and append-only; it is retained while the session runs, and is independently promoted/compacted/re-primed (above). It is not a replacement for the primary persisted transcript.
 

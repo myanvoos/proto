@@ -152,6 +152,17 @@ routing, model ids, or usage accounting.
 - The OpenAI-compatible path needs common Kimi headers.
 - It also participates in the OpenAI/Anthropic dual-surface shim.
 
+### ClinePass
+
+- Requests carry the official Cline CLI client identity (`X-CLIENT-TYPE`, `X-CLIENT-VERSION`, `X-PLATFORM`, `X-CORE-VERSION`, `User-Agent`, and related headers); inference also carries proto's stable session key as `X-Task-ID`. This is the supported identification contract for Cline-gated roster entries.
+- Public catalog ids omit the gateway's `cline-pass/` namespace; Chat Completions adds it on the wire. Free-tier ids keep their full OpenRouter-style namespace because the gateway already receives them in wire form.
+- The public `recommended-models` endpoint is authoritative for membership (required `clinePass` bucket, optional `free` bucket); malformed subscription data is rejected so the bundled fallback survives.
+- Known ids use a Cline-authored metadata snapshot for limits, subscription pricing, modalities, and per-model reasoning controls; unknown ids stay usable with conservative limits and no invented reasoning controls.
+- Subscription models display API-equivalent list prices, but streamed `usage.cost` is the authoritative charge. Free-tier models are $0.
+- Reasoning is model-specific: effort models send their advertised tiers, Qwen3.7 Plus maps efforts to `reasoning.max_tokens` budgets, and thinking-off sends `reasoning: { enabled: false }`.
+- Login validates the key against `/users/me`. Subscription-window exhaustion (`clinepass limit`) and free-tier caps (`free limit reached on model ...`) classify as usage limits; the surface-gate 403 never rotates sibling keys.
+- `/users/me/plan/usage-limits` accepts the inference key and reports five-hour, weekly, and monthly utilization.
+
 ### Fireworks and Firepass
 
 - Wire model ids need provider-specific mapping.
@@ -163,8 +174,8 @@ routing, model ids, or usage accounting.
 Check these before adding or forwarding a field:
 
 - **Model id.** Some models resolve a wire id from reasoning effort.
-  Firepass/Fireworks transform ids. OpenRouter suffix handling is path-segment
-  aware.
+  ClinePass, Firepass, and Fireworks transform ids. OpenRouter suffix handling
+  is path-segment aware.
 - **Max output tokens.** Kimi-family models may require a max-token field even
   when the caller did not set one. OpenRouter should omit catalog defaults unless
   explicit. Codex drops caller caps. Responses uses `max_output_tokens`; Chat

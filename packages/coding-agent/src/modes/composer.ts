@@ -13,6 +13,7 @@ import {
 	type ViewportSize,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import { exitProcess } from "@oh-my-pi/pi-utils/postmortem";
 import type { AppKeybinding, KeybindingsManager } from "../config/keybindings";
 import { CustomEditor } from "./components/custom-editor";
 import { isRowPrefix, TranscriptContainer } from "./components/transcript-container";
@@ -164,7 +165,8 @@ export class Composer implements TerminalFrameProvider {
 
 	constructor(options: ComposerOptions = {}) {
 		if (typeof theme === "undefined") initThemeSync();
-		this.#exit = options.exit ?? (code => process.exit(code));
+		// Double Ctrl-C can land inside an extension-load guard window, where `process.exit` is a throwing stub.
+		this.#exit = options.exit ?? exitProcess;
 		this.#now = options.now ?? Date.now;
 		this.#preferences = { ...COMPOSER_DEFAULTS, ...options.preferences };
 		this.#applyWelcomeUpdate(options.welcome ?? {});

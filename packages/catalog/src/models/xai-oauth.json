@@ -11,10 +11,18 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
+			"input": 1.25,
+			"output": 2.5,
+			"cacheRead": 0.2,
+			"cacheWrite": 0,
+			"longContext": {
+				"inputThreshold": 200000,
+				"inputThresholdInclusive": true,
+				"input": 2.5,
+				"output": 5,
+				"cacheRead": 0.4,
+				"cacheWrite": 0
+			}
 		},
 		"contextWindow": 2000000,
 		"maxTokens": 2000000,
@@ -27,6 +35,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {
 				"minimal": "low",
 				"xhigh": "high",
@@ -61,6 +70,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -69,8 +79,10 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
+		"int": 25.2,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
@@ -91,10 +103,18 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
+			"input": 1.25,
+			"output": 2.5,
+			"cacheRead": 0.2,
+			"cacheWrite": 0,
+			"longContext": {
+				"inputThreshold": 200000,
+				"inputThresholdInclusive": true,
+				"input": 2.5,
+				"output": 5,
+				"cacheRead": 0.4,
+				"cacheWrite": 0
+			}
 		},
 		"contextWindow": 2000000,
 		"maxTokens": 2000000,
@@ -107,6 +127,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {
 				"minimal": "low",
 				"xhigh": "high",
@@ -141,6 +162,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -149,8 +171,10 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
+		"int": 25.2,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
@@ -170,10 +194,18 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.2,
+			"cacheWrite": 0,
+			"longContext": {
+				"inputThreshold": 200000,
+				"inputThresholdInclusive": true,
+				"input": 4,
+				"output": 12,
+				"cacheRead": 0.4,
+				"cacheWrite": 0
+			}
 		},
 		"contextWindow": 2000000,
 		"maxTokens": 2000000,
@@ -186,6 +218,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {
 				"minimal": "low"
 			},
@@ -218,6 +251,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -241,6 +275,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"reasoningEffortMap": {
 				"minimal": "low"
@@ -264,10 +299,18 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
+			"input": 1.25,
+			"output": 2.5,
+			"cacheRead": 0.2,
+			"cacheWrite": 0,
+			"longContext": {
+				"inputThreshold": 200000,
+				"inputThresholdInclusive": true,
+				"input": 2.5,
+				"output": 5,
+				"cacheRead": 0.4,
+				"cacheWrite": 0
+			}
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 1000000,
@@ -280,6 +323,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {
 				"minimal": "low",
 				"xhigh": "high",
@@ -314,6 +358,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -322,6 +367,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
+		"int": 24.9,
+		"tps": 104.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -336,6 +383,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"reasoningEffortMap": {
 				"minimal": "low",
@@ -361,10 +409,18 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.3,
+			"cacheWrite": 0,
+			"longContext": {
+				"inputThreshold": 200000,
+				"inputThresholdInclusive": true,
+				"input": 4,
+				"output": 12,
+				"cacheRead": 0.6,
+				"cacheWrite": 0
+			}
 		},
 		"contextWindow": 500000,
 		"maxTokens": 500000,
@@ -377,6 +433,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {
 				"minimal": "low",
 				"xhigh": "high",
@@ -411,6 +468,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -419,6 +477,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
+		"int": 38.8,
+		"tps": 55.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -433,6 +493,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"reasoningEffortMap": {
 				"minimal": "low",
@@ -458,10 +519,18 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.5,
+			"cacheWrite": 0,
+			"longContext": {
+				"inputThreshold": 200000,
+				"inputThresholdInclusive": true,
+				"input": 4,
+				"output": 12,
+				"cacheRead": 1,
+				"cacheWrite": 0
+			}
 		},
 		"contextWindow": 500000,
 		"maxTokens": 500000,
@@ -474,6 +543,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {
 				"minimal": "low"
 			},
@@ -506,6 +576,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -514,6 +585,8 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
+		"int": 44.3,
+		"tps": 59.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -529,6 +602,114 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compatConfig": {
+			"reasoningEffortMap": {
+				"minimal": "low"
+			},
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"supportsImageDetailOriginal": false,
+			"omitReasoningEffort": false,
+			"supportsReasoningEffort": true
+		}
+	},
+	"grok-4.7": {
+		"id": "grok-4.7",
+		"name": "Grok 4.7",
+		"api": "openai-responses",
+		"provider": "xai-oauth",
+		"baseUrl": "https://api.x.ai/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 6,
+			"cacheRead": 0.5,
+			"cacheWrite": 0,
+			"longContext": {
+				"inputThreshold": 200000,
+				"inputThresholdInclusive": true,
+				"input": 4,
+				"output": 12,
+				"cacheRead": 1,
+				"cacheWrite": 0
+			}
+		},
+		"contextWindow": 500000,
+		"maxTokens": 500000,
+		"compat": {
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": false,
+			"supportsReasoningEffort": true,
+			"supportsLongPromptCacheRetention": false,
+			"supportsPromptCacheBreakpoints": false,
+			"strictResponsesPairing": false,
+			"supportsImageDetailOriginal": false,
+			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
+			"reasoningEffortMap": {
+				"minimal": "low"
+			},
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"disableReasoningOnForcedToolChoice": false,
+			"disableReasoningOnToolChoice": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": false,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresAssistantContentForToolCalls": false,
+			"isOpenRouterHost": false,
+			"isVercelGatewayHost": false,
+			"wireModelIdMode": "raw",
+			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
+			"supportsObfuscationOptOut": false,
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"promptCacheSessionHeader": "x-grok-conv-id"
+		},
+		"int": 46.4,
+		"tps": 39.3,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"effortMap": {
+				"minimal": "low"
+			}
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"reasoningEffortMap": {
 				"minimal": "low"
@@ -568,6 +749,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {
 				"minimal": "low",
 				"xhigh": "high",
@@ -602,6 +784,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -612,6 +795,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
@@ -632,10 +816,18 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
+			"input": 1,
+			"output": 2,
+			"cacheRead": 0.2,
+			"cacheWrite": 0,
+			"longContext": {
+				"inputThreshold": 200000,
+				"inputThresholdInclusive": true,
+				"input": 2,
+				"output": 4,
+				"cacheRead": 0.4,
+				"cacheWrite": 0
+			}
 		},
 		"contextWindow": 256000,
 		"maxTokens": 256000,
@@ -648,6 +840,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {
 				"minimal": "low",
 				"xhigh": "high",
@@ -682,6 +875,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -692,6 +886,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,
@@ -727,6 +922,7 @@
 			"strictResponsesPairing": false,
 			"supportsImageDetailOriginal": false,
 			"supportsReasoningSummary": false,
+			"supportsConfigurationUpdate": false,
 			"reasoningEffortMap": {
 				"minimal": "low",
 				"xhigh": "high",
@@ -761,6 +957,7 @@
 			"isVercelGatewayHost": false,
 			"wireModelIdMode": "raw",
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"supportsObfuscationOptOut": false,
 			"stripDeepseekSpecialTokens": false,
 			"streamMarkupHealingPattern": "thinking",
@@ -771,6 +968,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compatConfig": {
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,

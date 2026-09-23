@@ -122,7 +122,7 @@ test("sanitizes every OAuth dialog display field while retaining URL validation"
 test("sanitizes OAuth prompts, placeholders, waiting, and progress messages", () => {
 	const tui = { requestRender: () => {} } as never;
 	const dialog = new LoginDialogComponent(tui, "provider", () => {});
-	void dialog.showPrompt("message\x1b]0;MESSAGE\x07tail", "placeholder\x1b]0;PLACE\x07tail");
+	void dialog.showPrompt({ message: "message\x1b]0;MESSAGE\x07tail", placeholder: "placeholder\x1b]0;PLACE\x07tail" });
 	dialog.showWaiting("waiting\x1b]0;WAIT\x07tail");
 	dialog.showProgress("progress\x1b]0;PROGRESS\x07tail");
 	const rendered = plain(dialog.render(100));

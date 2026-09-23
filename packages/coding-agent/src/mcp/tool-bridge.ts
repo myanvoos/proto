@@ -1,6 +1,6 @@
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent, TSchema } from "@oh-my-pi/pi-ai";
-import { normalizeSchemaForMCP } from "@oh-my-pi/pi-ai/utils/schema";
+import { normalizeSchemaForMCP, schemaDefinesProperty } from "@oh-my-pi/pi-ai/utils/schema";
 import { INTENT_FIELD, logger, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../capability/types";
 import type {
@@ -85,7 +85,7 @@ function omitUnusedOptionalArgs(args: MCPToolArgs, inputSchema: MCPToolDefinitio
 
 function stripHarnessIntent(args: MCPToolArgs, inputSchema: MCPToolDefinition["inputSchema"]): MCPToolArgs {
 	if (!Object.hasOwn(args, INTENT_FIELD)) return args;
-	if (inputSchema.properties && Object.hasOwn(inputSchema.properties, INTENT_FIELD)) return args;
+	if (schemaDefinesProperty(inputSchema, INTENT_FIELD)) return args;
 	const { [INTENT_FIELD]: _intent, ...rest } = args;
 	return rest;
 }

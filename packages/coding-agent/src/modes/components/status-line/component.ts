@@ -3,6 +3,12 @@ import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type CompactionSettings, resolveThresholdTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
+import {
+	getAntigravityCounterKeyForModel,
+	scopeAntigravityLimitsForModel,
+} from "@oh-my-pi/pi-ai/usage/google-antigravity";
+import { getNextTimeBasedPricingTransition } from "@oh-my-pi/pi-catalog/models";
+import type { ModelCost } from "@oh-my-pi/pi-catalog/types";
 import { type Component, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
@@ -37,6 +43,17 @@ const RIGHT_PART_SHED_RANK: Record<string, number> = {
 	mode: 2,
 	subagents: 3,
 };
+
+// Providers whose subscription quota is a single monthly bucket; monthly side-counters
+// (e.g. Copilot premium requests) are not the session quota and stay hidden.
+const MONTHLY_SUBSCRIPTION_PROVIDERS = new Set(["alibaba-token-plan", "cursor", "opencode-go"]);
+
+function monthlyLimitPriority(limitId: unknown): number {
+	if (limitId === "cursor:usd:individual-auto") return 0;
+	if (limitId === "cursor:usd:individual-plan" || limitId === "cursor:usd:individual-overall") return 1;
+	if (typeof limitId === "string" && limitId.startsWith("cursor:usd:individual-")) return 2;
+	return 3;
+}
 
 interface QuietSegmentBounds {
 	id: string;
@@ -316,11 +333,16 @@ export class StatusLineComponent implements Component {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
+		monthly?: { percent: number; resetHours?: number };
 	} | null = null;
 	#cachedUsageContextKey: string | null = null;
 	#usageFetchedAt = 0;
 	#usageInFlight = false;
 	#usageStartTimer: Timer | null = null;
+	/** One wall-clock wakeup for the active model's next tariff change, including while idle. */
+	#pricingTimer: Timer | undefined;
+	#pricingTimerCost: ModelCost | undefined;
+	#pricingTransition: number | undefined;
 
 	#cachedServingAccount: {
 		key: string;
@@ -387,6 +409,7 @@ export class StatusLineComponent implements Component {
 		this.#settings = settingsUpdate;
 		this.#effectiveSettings = undefined;
 		if (this.#onBranchChange) this.#setupGitWatcher();
+		this.#syncPricingTimer();
 	}
 
 	getEffectiveSettingsForTest(): EffectiveStatusLineSettings {
@@ -478,6 +501,7 @@ export class StatusLineComponent implements Component {
 	watchBranch(onBranchChange: () => void): void {
 		this.#onBranchChange = onBranchChange;
 		this.#setupGitWatcher();
+		this.#syncPricingTimer();
 	}
 
 	#setupGitWatcher(): void {
@@ -516,10 +540,45 @@ export class StatusLineComponent implements Component {
 		this.#disposed = true;
 		this.#onBranchChange = null;
 		this.#clearUsageStartTimer();
+		this.#stopPricingTimer();
 		if (this.#gitWatcher) {
 			this.#gitWatcher.close();
 			this.#gitWatcher = null;
 		}
+	}
+
+	#stopPricingTimer(): void {
+		clearTimeout(this.#pricingTimer);
+		this.#pricingTimer = undefined;
+		this.#pricingTimerCost = undefined;
+		this.#pricingTransition = undefined;
+	}
+
+	/** Repaint the cost segment's peak/off-peak arrow when the active model's tariff flips. */
+	#syncPricingTimer(): void {
+		const cost = this.session.state.model?.cost;
+		const { leftSegments, rightSegments } = this.#resolveSettings();
+		const costVisible = leftSegments.includes("cost") || rightSegments.includes("cost");
+		if (this.#disposed || !this.#onBranchChange || !cost?.timeBased || !costVisible) {
+			this.#stopPricingTimer();
+			return;
+		}
+		const now = Date.now();
+		if (this.#pricingTimerCost === cost && this.#pricingTransition !== undefined && this.#pricingTransition > now) {
+			return;
+		}
+		this.#stopPricingTimer();
+		const transition = getNextTimeBasedPricingTransition(cost, now);
+		if (transition === undefined) return;
+		this.#pricingTimerCost = cost;
+		this.#pricingTransition = transition;
+		const timer = setTimeout(() => {
+			if (this.#disposed || this.#pricingTimer !== timer) return;
+			this.#stopPricingTimer();
+			this.#onBranchChange?.();
+		}, transition - now);
+		timer.unref();
+		this.#pricingTimer = timer;
 	}
 
 	#clearUsageStartTimer(): void {
@@ -753,6 +812,8 @@ export class StatusLineComponent implements Component {
 			identity?.email ?? "",
 			identity?.projectId ?? "",
 			identity?.orgId ?? "",
+			// Antigravity rows are scoped to the active model's backend counter.
+			activeProvider === "google-antigravity" ? (session.state.model?.id ?? session.model?.id ?? "") : "",
 		].join("\0");
 	}
 
@@ -823,7 +884,8 @@ export class StatusLineComponent implements Component {
 			activeProvider && session.modelRegistry?.authStorage
 				? session.modelRegistry.authStorage.getOAuthAccountIdentity(activeProvider, session.sessionId)
 				: undefined;
-		this.#cachedUsage = this.#normalizeUsageReports(reports, activeProvider, activeIdentity);
+		const activeModelId = session.state.model?.id ?? session.model?.id;
+		this.#cachedUsage = this.#normalizeUsageReports(reports, activeProvider, activeIdentity, activeModelId);
 		this.#usageFetchedAt = Date.now();
 	}
 
@@ -854,23 +916,38 @@ export class StatusLineComponent implements Component {
 		reports: unknown,
 		activeProvider?: string,
 		activeIdentity?: OAuthAccountIdentity,
+		activeModelId?: string,
 	): {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
+		monthly?: { percent: number; resetHours?: number };
 	} | null {
 		if (!Array.isArray(reports)) return null;
 		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
 		let sevenDay: { percent: number; resetHours?: number } | undefined;
+		let monthly: { percent: number; resetHours?: number } | undefined;
 		let fiveHourTier: string | undefined;
 		let sevenDayTier: string | undefined;
+		let fiveHourLabel: string | undefined;
+		let sevenDayLabel: string | undefined;
+		let monthlyLabel: string | undefined;
+		let monthlyPriority = Number.POSITIVE_INFINITY;
 		const now = Date.now();
 		for (const report of reports) {
 			if (!report || typeof report !== "object") continue;
 			const provider = (report as { provider?: unknown }).provider;
 			if (activeProvider && provider !== activeProvider) continue;
-			const limits = (report as { limits?: unknown }).limits;
-			if (!Array.isArray(limits)) continue;
+			const reportLimits = (report as { limits?: unknown }).limits;
+			if (!Array.isArray(reportLimits)) continue;
+			// Antigravity keeps separate Gemini/Claude/GPT counters sorted by pressure; show the active model's.
+			const limits =
+				provider === "google-antigravity" && getAntigravityCounterKeyForModel(activeModelId)
+					? scopeAntigravityLimitsForModel(report as UsageReport, { modelId: activeModelId })
+					: reportLimits;
+			const monthlyProvider = typeof provider === "string" && MONTHLY_SUBSCRIPTION_PROVIDERS.has(provider);
+			const rawPlanType = (report as { metadata?: { planType?: unknown } }).metadata?.planType;
+			const planType = typeof rawPlanType === "string" && rawPlanType.trim() ? rawPlanType.trim() : undefined;
 			for (const limit of limits) {
 				if (!limit || typeof limit !== "object") continue;
 				if (
@@ -880,37 +957,67 @@ export class StatusLineComponent implements Component {
 					continue;
 				}
 				const l = limit as {
+					id?: unknown;
 					scope?: { windowId?: string; tier?: string };
-					window?: { resetsAt?: number };
+					window?: { resetsAt?: number; durationMs?: number };
 					amount?: { usedFraction?: number };
 				};
 				const fraction = l.amount?.usedFraction;
 				if (typeof fraction !== "number") continue;
 				const windowId = l.scope?.windowId;
+				const durationMs = l.window?.durationMs;
+				const windowClass =
+					windowId === "5h" || windowId === "7d"
+						? windowId
+						: typeof durationMs === "number" && Math.abs(durationMs - 5 * 3_600_000) <= 60_000
+							? "5h"
+							: typeof durationMs === "number" && Math.abs(durationMs - 7 * 86_400_000) <= 60_000
+								? "7d"
+								: monthlyProvider && (windowId === "monthly" || windowId === "30d")
+									? "monthly"
+									: undefined;
 				const tier = l.scope?.tier;
+				// Scoped tiers win; the plan-wide tier labels otherwise-untiered windows.
+				const label = tier || planType;
 				const resetsAt = l.window?.resetsAt;
 
-				if (windowId === "5h" && (!fiveHour || (fiveHourTier !== undefined && !tier))) {
+				if (windowClass === "5h" && (!fiveHour || (fiveHourTier !== undefined && !tier))) {
 					fiveHour = {
 						percent: fraction * 100,
 						resetMinutes:
 							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 60_000)) : undefined,
 					};
 					fiveHourTier = tier || undefined;
+					fiveHourLabel = label;
 				}
-				if (windowId === "7d" && (!sevenDay || (sevenDayTier !== undefined && !tier))) {
+				if (windowClass === "7d" && (!sevenDay || (sevenDayTier !== undefined && !tier))) {
 					sevenDay = {
 						percent: fraction * 100,
 						resetHours:
 							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 3_600_000)) : undefined,
 					};
 					sevenDayTier = tier || undefined;
+					sevenDayLabel = label;
+				}
+				if (windowClass === "monthly") {
+					const priority = monthlyLimitPriority(l.id);
+					if (priority < monthlyPriority) {
+						monthly = {
+							percent: fraction * 100,
+							resetHours:
+								typeof resetsAt === "number"
+									? Math.max(0, Math.round((resetsAt - now) / 3_600_000))
+									: undefined,
+						};
+						monthlyPriority = priority;
+						monthlyLabel = label;
+					}
 				}
 			}
 		}
-		if (!fiveHour && !sevenDay) return null;
-		const effectiveTier = fiveHourTier ?? sevenDayTier;
-		return { tier: effectiveTier, fiveHour, sevenDay };
+		if (!fiveHour && !sevenDay && !monthly) return null;
+		const effectiveTier = fiveHourLabel ?? sevenDayLabel ?? monthlyLabel;
+		return { tier: effectiveTier, fiveHour, sevenDay, monthly };
 	}
 
 	getCachedContextBreakdown(): { usedTokens: number | null; contextWindow: number } {
@@ -1076,6 +1183,7 @@ export class StatusLineComponent implements Component {
 
 	#gatherQuietSegments(width: number): { location: QuietPart[]; capLeft: QuietPart[]; capRight: QuietPart[] } {
 		const effectiveSettings = this.#resolveSettings();
+		this.#syncPricingTimer();
 		const gitEnabled = this.#gitEnabled();
 		const leftCfg = effectiveSettings.leftSegments;
 		const rightCfg = effectiveSettings.rightSegments;

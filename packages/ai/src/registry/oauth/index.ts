@@ -69,7 +69,11 @@ export async function refreshOAuthToken(
 
 	return def.refreshToken ? def.refreshToken(credentials, signal) : credentials;
 }
-function getPerplexityJwtExpiryMs(token: string): number | undefined {
+
+const NEVER_EXPIRES = 8.64e15;
+const JWT_EXPIRY_SKEW_MS = 5 * 60_000;
+
+function jwtExpiryMs(token: string): number | undefined {
 	const parts = token.split(".");
 	if (parts.length !== 3) return undefined;
 	const payload = parts[1];
@@ -77,40 +81,37 @@ function getPerplexityJwtExpiryMs(token: string): number | undefined {
 	try {
 		const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { exp?: unknown };
 		if (typeof decoded.exp !== "number" || !Number.isFinite(decoded.exp)) return undefined;
-		return decoded.exp * 1000 - 5 * 60_000;
+		return decoded.exp * 1000 - JWT_EXPIRY_SKEW_MS;
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Applies a provider's declared credential expiry. `jwt-or-never` providers trust a JWT `exp` claim when present and
+ * otherwise treat the credential as non-expiring, ignoring stale stored timestamps older logins wrote.
+ */
+export function normalizeOAuthCredentialExpiry<T extends OAuthCredentials>(provider: string, credentials: T): T {
+	if (getProviderDefinition(provider)?.credentialExpiry !== "jwt-or-never") return credentials;
+	const normalizedExpires =
+		credentials.expires > 0 && credentials.expires < 10_000_000_000
+			? credentials.expires * 1000
+			: credentials.expires;
+	const expires = jwtExpiryMs(credentials.access) ?? Math.max(normalizedExpires, NEVER_EXPIRES);
+	return expires === credentials.expires ? credentials : { ...credentials, expires };
 }
 
 export async function getOAuthApiKey(
 	provider: OAuthProvider,
 	credentials: Record<string, OAuthCredentials>,
 ): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
-	let creds = credentials[provider];
-	if (!creds) {
+	const stored = credentials[provider];
+	if (!stored) {
 		return null;
 	}
-
-	if (provider === "perplexity") {
-		const NEVER_EXPIRES = 8.64e15;
-		const normalizedExpires =
-			creds.expires > 0 && creds.expires < 10_000_000_000 ? creds.expires * 1000 : creds.expires;
-		const jwtExpiry = getPerplexityJwtExpiryMs(creds.access);
-		const expires = jwtExpiry ?? Math.max(normalizedExpires, NEVER_EXPIRES);
-		if (expires !== creds.expires) {
-			creds = { ...creds, expires };
-		}
-	}
+	const creds = normalizeOAuthCredentialExpiry(provider, stored);
 
 	if (Date.now() >= creds.expires) {
-		if (provider === "perplexity") {
-			const jwtExpiry = getPerplexityJwtExpiryMs(creds.access);
-			if (jwtExpiry && Date.now() < jwtExpiry) {
-				const fallbackCredentials = { ...creds, expires: jwtExpiry };
-				return { newCredentials: fallbackCredentials, apiKey: fallbackCredentials.access };
-			}
-		}
 		throw new AIError.OAuthError(
 			`OAuth credential for ${provider} is expired and must be refreshed via AuthStorage before getOAuthApiKey is called`,
 			{ kind: "validation", provider },

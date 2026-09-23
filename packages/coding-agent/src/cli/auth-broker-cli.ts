@@ -10,11 +10,9 @@ import {
 	getEnvApiKey,
 	getOAuthProviders,
 	getProviderRegistry,
-	isPasteCodeLoginProvider,
 	listProvidersWithEnvKey,
 	type OAuthCredential,
 	type OAuthProvider,
-	type OAuthProviderInfo,
 	SqliteAuthCredentialStore,
 } from "@oh-my-pi/pi-ai";
 import { AuthBrokerClient, DEFAULT_AUTH_BROKER_BIND, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
@@ -27,6 +25,7 @@ import { $ } from "bun";
 import { refreshManagedMcpOAuthCredential } from "../mcp/oauth-credentials";
 import { isManagedMCPOAuthCredentialId, mcpOAuthServerUrlFromCredentialId } from "../mcp/oauth-flow";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import { pickIndex, pickOAuthProvider, runTerminalOAuthLogin } from "./oauth-terminal";
 
 export type AuthBrokerAction = "serve" | "token" | "login" | "logout" | "status" | "import" | "migrate" | "list";
 
@@ -64,7 +63,8 @@ function getTokenFilePath(): string {
 
 async function readToken(): Promise<string | null> {
 	try {
-		const raw = await Bun.file(getTokenFilePath()).text();
+		// node:fs, not Bun.file: on Windows a missing token file made `token` exit silently.
+		const raw = await fs.readFile(getTokenFilePath(), "utf8");
 		const trimmed = raw.trim();
 		return trimmed.length > 0 ? trimmed : null;
 	} catch (err) {
@@ -76,7 +76,7 @@ async function readToken(): Promise<string | null> {
 async function writeToken(token: string): Promise<void> {
 	const file = getTokenFilePath();
 	await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-	await Bun.write(file, token);
+	await fs.writeFile(file, token, { mode: 0o600 });
 	try {
 		await fs.chmod(file, 0o600);
 	} catch {}
@@ -168,140 +168,38 @@ async function runToken(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 
 async function runLogin(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	const providers = getOAuthProviders();
-	let providerArg = flags.provider;
-	if (!providerArg) {
-		if (flags.via) {
+	const via = flags.via;
+	if (via && !flags.provider) {
+		throw new Error("Usage: proto auth-broker login <provider> --via=user@host (provider required for remote login)");
+	}
+	// Open local storage before readline exists: piped lines emitted while no question is pending are dropped.
+	let storage: AuthStorage | undefined;
+	if (!via) {
+		storage = new AuthStorage(await SqliteAuthCredentialStore.open(getAgentDbPath()));
+		await storage.reload();
+	}
+	// One interface for picker + login prompts; closed before `--via` hands stdin to ssh.
+	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+	let providerArg: string;
+	try {
+		providerArg = flags.provider ?? (await pickOAuthProvider(rl, providers));
+		if (!providers.some(p => p.id === providerArg)) {
 			throw new Error(
-				"Usage: proto auth-broker login <provider> --via=user@host (provider required for remote login)",
+				`Unknown OAuth provider '${providerArg}'. Known: ${providers
+					.map(p => p.id)
+					.sort()
+					.join(", ")}`,
 			);
 		}
-		providerArg = await pickProviderInteractively(providers);
-	}
-	if (!providers.some(p => p.id === providerArg)) {
-		throw new Error(
-			`Unknown OAuth provider '${providerArg}'. Known: ${providers
-				.map(p => p.id)
-				.sort()
-				.join(", ")}`,
-		);
-	}
-	if (flags.via) {
-		await runRemoteLogin(providerArg, flags.via, flags.dryRun ?? false);
-		return;
-	}
-	await runLocalLogin(providerArg as OAuthProvider);
-}
-
-async function runLocalLogin(provider: OAuthProvider): Promise<void> {
-	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-	const ask = (msg: string) => promptLine(rl, `${msg} `);
-	const store = await SqliteAuthCredentialStore.open(getAgentDbPath());
-	const storage = new AuthStorage(store);
-	await storage.reload();
-	try {
-		const usesManualInput = isPasteCodeLoginProvider(provider);
-		await storage.login(provider, {
-			onAuth({ url, launchUrl, instructions }) {
-				process.stdout.write("\nOpen this URL in your browser:\n");
-
-				process.stdout.write(`${url}\n`);
-				if (launchUrl && launchUrl !== url) {
-					process.stdout.write(`Local shortcut (this machine only): ${launchUrl}\n`);
-				}
-				if (instructions) process.stdout.write(`${instructions}\n`);
-				process.stdout.write("\n");
-			},
-			onProgress(message) {
-				process.stdout.write(`${message}\n`);
-			},
-			onPrompt(p) {
-				return ask(`${p.message}${p.placeholder ? ` (${p.placeholder})` : ""}:`);
-			},
-			...(usesManualInput
-				? {
-						onManualCodeInput() {
-							return ask("Paste the authorization code (or full redirect URL):");
-						},
-					}
-				: undefined),
-		});
-		process.stdout.write(`\nCredentials saved to ${getAgentDbPath()}\n`);
-	} finally {
-		store.close();
-		rl.close();
-	}
-}
-
-function promptLine(rl: readline.Interface, question: string): Promise<string> {
-	const { promise, resolve, reject } = Promise.withResolvers<string>();
-	const input = process.stdin as NodeJS.ReadStream;
-	const supportsRawMode = input.isTTY && typeof input.setRawMode === "function";
-	const wasRaw = supportsRawMode ? input.isRaw : false;
-	let settled = false;
-
-	const cleanup = () => {
-		rl.off("SIGINT", onSigint);
-		if (supportsRawMode) {
-			input.off("keypress", onKeypress);
-			input.setRawMode?.(wasRaw);
+		if (storage) {
+			await runTerminalOAuthLogin(rl, storage, providerArg);
+			process.stdout.write(`\nCredentials saved to ${getAgentDbPath()}\n`);
 		}
-	};
-
-	const finish = (result: () => void) => {
-		if (settled) return;
-		settled = true;
-		cleanup();
-		result();
-	};
-
-	const cancel = () => {
-		finish(() => reject(new Error("Login cancelled")));
-	};
-
-	const onSigint = () => {
-		cancel();
-	};
-
-	const onKeypress = (_str: string, key: readline.Key) => {
-		if (key.name === "escape" || (key.ctrl && key.name === "c")) {
-			cancel();
-			rl.close();
-		}
-	};
-
-	if (supportsRawMode) {
-		readline.emitKeypressEvents(input, rl);
-		input.setRawMode(true);
-		input.on("keypress", onKeypress);
-	}
-
-	rl.once("SIGINT", onSigint);
-	rl.question(question, answer => {
-		finish(() => resolve(answer));
-	});
-	return promise;
-}
-
-async function pickProviderInteractively(providers: readonly OAuthProviderInfo[]): Promise<string> {
-	if (providers.length === 0) {
-		throw new Error("No OAuth providers registered");
-	}
-	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-	try {
-		process.stdout.write("Select a provider:\n\n");
-		for (let i = 0; i < providers.length; i++) {
-			process.stdout.write(`  ${i + 1}. ${providers[i].name}\n`);
-		}
-		process.stdout.write("\n");
-		const choice = await promptLine(rl, `Enter number (1-${providers.length}): `);
-		const index = Number.parseInt(choice, 10) - 1;
-		if (Number.isNaN(index) || index < 0 || index >= providers.length) {
-			throw new Error(`Invalid selection: ${choice}`);
-		}
-		return providers[index].id;
 	} finally {
 		rl.close();
+		storage?.close();
 	}
+	if (via) await runRemoteLogin(providerArg, via, flags.dryRun ?? false);
 }
 
 async function runRemoteLogin(provider: string, via: string, dryRun: boolean): Promise<void> {
@@ -349,31 +247,17 @@ async function runLogout(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 				process.stdout.write("No credentials stored.\n");
 				return;
 			}
-			providerArg = await pickStoredProviderInteractively(stored);
+			const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+			try {
+				providerArg = stored[await pickIndex(rl, "Select a provider to logout:", stored)];
+			} finally {
+				rl.close();
+			}
 		}
 		store.deleteAuthCredentialsForProvider(providerArg, "logged out by user");
 		process.stdout.write(`Logged out of ${providerArg}\n`);
 	} finally {
 		store.close();
-	}
-}
-
-async function pickStoredProviderInteractively(providers: string[]): Promise<string> {
-	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-	try {
-		process.stdout.write("Select a provider to logout:\n\n");
-		for (let i = 0; i < providers.length; i++) {
-			process.stdout.write(`  ${i + 1}. ${providers[i]}\n`);
-		}
-		process.stdout.write("\n");
-		const choice = await promptLine(rl, `Enter number (1-${providers.length}): `);
-		const index = Number.parseInt(choice, 10) - 1;
-		if (Number.isNaN(index) || index < 0 || index >= providers.length) {
-			throw new Error(`Invalid selection: ${choice}`);
-		}
-		return providers[index];
-	} finally {
-		rl.close();
 	}
 }
 
@@ -468,7 +352,7 @@ async function loadImportPlan(
 	for (const file of files) {
 		let json: CliProxyCredentialJson;
 		try {
-			json = (await Bun.file(file).json()) as CliProxyCredentialJson;
+			json = JSON.parse(await fs.readFile(file, "utf8")) as CliProxyCredentialJson;
 		} catch (err) {
 			skipped.push({ file, reason: `unreadable JSON: ${String(err)}` });
 			continue;

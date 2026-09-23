@@ -166,7 +166,7 @@ Then `init()` calls `refreshSlashCommandState(...)` to load file-based commands 
 Slash command state is refreshed:
 
 - during interactive init
-- after `/move` changes working directory (`applyCwdChange` resets capabilities and refreshes against the new cwd)
+- after `/move` changes working directory (`applyCwdChange` resets capabilities and refreshes against the new cwd; when that fails, the session is moved back and the source project is re-applied)
 - when the editor component is swapped
 - by explicit plugin reload flows such as `/reload-plugins`
 

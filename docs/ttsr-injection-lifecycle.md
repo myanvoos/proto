@@ -120,10 +120,10 @@ On `turn_start`, the stream buffer is reset:
 
 When assistant updates arrive and rules exist:
 
-- monitor `text_delta`, `thinking_delta`, and `toolcall_delta`
-- isolate buffers by source or tool-call stream key
-- for a tool with per-file `matcherEntries`, treat each `{ path, digest }` as its own source snapshot, call synchronous `checkSnapshot` for that digest, and retain the entry path for language, lexical, and path matching; otherwise, use one `matcherDigest` snapshot when available, falling back to appending the raw delta via `checkDelta`
-- when async rules exist on a tool stream, run asynchronous `checkAsyncSnapshot` against the same reconstructed per-file or single snapshot; during streaming this pass resolves AST leaves only, and identical consecutive AST snapshots for a stream key are skipped
+- monitor `text_delta`, `thinking_delta`, `toolcall_delta`, and the finalized `toolcall_end` (streamed partial arguments can trail the authoritative ones, and some providers emit a call with no deltas at all)
+- isolate buffers by source or tool-call stream key; buffers reset at every turn start, every assistant `message_start`, and a restarted response's `start`, so they never span two assistant messages
+- for a tool with per-file `matcherEntries`, treat each `{ path, digest }` as its own source snapshot, call synchronous `checkSnapshot` for that digest, and retain the entry path for language, lexical, and path matching; otherwise, use one `matcherDigest` snapshot when available, falling back to appending the raw delta via `checkDelta` (on `toolcall_end`, the finalized arguments seed that snapshot instead)
+- when async rules exist on a tool stream, run asynchronous `checkAsyncSnapshot` once on `toolcall_end` against the finalized per-file or single snapshot; this pass resolves AST leaves only. Per-delta snapshots are partial source and each pass costs a native `astMatch`, so AST matching never runs per streamed delta
 
 `checkDelta()` and `checkSnapshot()` are synchronous and evaluate every registered program, including programs with AST or judge leaves. An unresolved async leaf evaluates to `unknown` and cannot decide a match; synchronous streaming checks therefore cannot read either leaf as satisfied or absent. `checkAsyncSnapshot()` is asynchronous and applies the same scope/path/repeat gates. For a streaming tool update it requires a tool source and inferred language, prepares AST leaves, and evaluates only candidates whose program has `needsAst`; judge leaves remain deferred. On settled buffers it also resolves `llm:` leaves: complete tool-call arguments immediately before execution and finished assistant prose when the message ends. Judges are never run per streaming delta. `deriveLang()` chooses the first candidate file path with an extension; that language drives AST grammar selection and `in:` lexical classification. Both paths return all matching rules with `MatchEvidence`; the results enter the same trigger-decision handler.
 
@@ -270,7 +270,7 @@ Interactive mode uses `session.isTtsrAbortPending` to suppress showing the abort
 Current runtime wiring:
 
 - interrupted injections append a hidden `custom_message` with `customType: "ttsr-injection"` and append a `ttsr_injection` entry
-- deferred non-interrupting prose-source injections are marked/persisted when their queued custom message reaches `message_end`
+- deferred non-interrupting prose-source injections are marked/persisted when their queued custom message reaches `message_end`. From queueing until then, the rules stay reserved to that delivery (`details.deliveryId`): a later match of the same rule does not interrupt, notify, or queue another copy. The reservation is released when the delivery lands, when its scheduled continuation is skipped or fails (a skip because the agent is already streaming keeps it, since that run may hold the message), when the message is no longer queued, and when the session discards the queue (`clearQueue`, context reset, `/new`, `/side`, a committed session switch)
 - non-interrupting tool-source matches are marked in memory when bucketed, then persisted from `afterToolCall` only when the matched tool's result is produced
 - `createAgentSession()` restores `existingSession.injectedTtsrRules` into the manager
 

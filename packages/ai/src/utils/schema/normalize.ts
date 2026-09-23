@@ -69,7 +69,8 @@ const SNAKE_TO_CAMEL_RENAMES = new Map<string, string>([
 ]);
 
 const JSON_SCHEMA_COMBINERS = ["anyOf", "oneOf"] as const;
-const CCA_FORBIDDEN_COMBINERS = new Set(["anyOf", "oneOf", "allOf"]);
+const SCHEMA_COMPOSITION_COMBINERS = ["allOf", "anyOf", "oneOf"] as const;
+type SchemaCombiner = (typeof SCHEMA_COMPOSITION_COMBINERS)[number];
 
 const SUBSCHEMA_VALUE_KEYS: Record<string, true> = {
 	items: true,
@@ -527,7 +528,7 @@ export function copySchemaWithout(schema: JsonObject, combiner: string): JsonObj
 	return rest;
 }
 
-function mergeObjectCombinerVariants(schema: JsonObject, combiner: "anyOf" | "oneOf"): JsonObject {
+function mergeObjectCombinerVariants(schema: JsonObject, combiner: SchemaCombiner): JsonObject {
 	const variantsRaw = schema[combiner];
 	if (!Array.isArray(variantsRaw) || variantsRaw.length === 0) {
 		return schema;
@@ -579,23 +580,35 @@ function mergeObjectCombinerVariants(schema: JsonObject, combiner: "anyOf" | "on
 	nextSchema.type = "object";
 	nextSchema.properties = mergedProperties;
 
-	let requiredIntersection: string[] | undefined;
-	for (const variant of variants) {
-		const variantRequired = Array.isArray(variant.required)
-			? variant.required.filter((r): r is string => typeof r === "string")
-			: [];
-		if (requiredIntersection === undefined) {
-			requiredIntersection = [...variantRequired];
-		} else {
-			const reqSet = new Set(variantRequired);
-			requiredIntersection = requiredIntersection.filter(r => reqSet.has(r));
+	const branchRequired = variants.map(variant =>
+		Array.isArray(variant.required) ? variant.required.filter((r): r is string => typeof r === "string") : [],
+	);
+	let combinedRequired: string[];
+	if (combiner === "allOf") {
+		// allOf demands every branch, so the union of branch requirements does not narrow acceptance.
+		const union = new Set<string>();
+		for (const required of branchRequired) {
+			for (const name of required) union.add(name);
 		}
+		combinedRequired = [...union];
+	} else {
+		// anyOf/oneOf accept any single branch: only fields every branch requires stay required.
+		let intersection: string[] | undefined;
+		for (const required of branchRequired) {
+			if (intersection === undefined) {
+				intersection = [...required];
+			} else {
+				const reqSet = new Set(required);
+				intersection = intersection.filter(r => reqSet.has(r));
+			}
+		}
+		combinedRequired = intersection ?? [];
 	}
 	const parentRequired = Array.isArray(schema.required)
 		? schema.required.filter((r): r is string => typeof r === "string")
 		: [];
 	const safeRequired = new Set<string>();
-	for (const name of requiredIntersection ?? []) {
+	for (const name of combinedRequired) {
 		if (Object.hasOwn(mergedProperties, name)) safeRequired.add(name);
 	}
 	for (const name of parentRequired) {
@@ -979,7 +992,7 @@ function hasResidualSchemaIncompatibilities(
 		if (checks.nullable && Object.hasOwn(value, "nullable")) return true;
 		if (checks.not && Object.hasOwn(value, "not")) return true;
 		if (checks.combiners) {
-			for (const combiner of CCA_FORBIDDEN_COMBINERS) {
+			for (const combiner of SCHEMA_COMPOSITION_COMBINERS) {
 				if (Array.isArray(value[combiner])) return true;
 			}
 		}
@@ -993,6 +1006,140 @@ function hasResidualSchemaIncompatibilities(
 		}
 	}
 	return false;
+}
+
+/**
+ * True when a subtree carries a composition keyword (`anyOf`/`oneOf`/`allOf`) in
+ * a schema position; property names that equal a keyword do not count.
+ */
+function containsSchemaCombiner(value: unknown, insideSchemaMap: boolean, epoch: number): boolean {
+	if (Array.isArray(value)) {
+		if (!once(value, epoch)) return false;
+		return value.some(entry => containsSchemaCombiner(entry, false, epoch));
+	}
+	if (!isJsonObject(value)) return false;
+	if (!once(value, epoch)) return false;
+	if (!insideSchemaMap) {
+		for (const combiner of SCHEMA_COMPOSITION_COMBINERS) {
+			if (Array.isArray(value[combiner])) return true;
+		}
+	}
+	for (const key in value) {
+		if (!Object.hasOwn(value, key)) continue;
+		const childKind = classifySchemaChild(key, value[key], insideSchemaMap);
+		if (childKind && containsSchemaCombiner(value[key], childKind === "map", epoch)) return true;
+	}
+	return false;
+}
+
+/**
+ * Fold every composition keyword out of one already child-projected node while
+ * only ever widening acceptance. Object-shaped branches merge into the node's
+ * `properties` (combiner-appropriate `required`); for `anyOf`/`oneOf` each merged
+ * property widens to accept what any branch allows (a branch that omits it and
+ * stays open accepts anything). Non-object branches, scalar unions especially,
+ * are dropped so the node accepts all. Merging can synthesize a fresh `anyOf`
+ * inside a shared property, so property values are re-projected until the node
+ * is combiner-free.
+ */
+function projectNodeCombinersForCursor(node: JsonObject): JsonObject {
+	let current = node;
+	let changed = true;
+	while (changed) {
+		changed = false;
+		for (const combiner of SCHEMA_COMPOSITION_COMBINERS) {
+			if (!Array.isArray(current[combiner])) continue;
+			const source = current;
+			const merged = mergeObjectCombinerVariants(current, combiner);
+			if (merged !== current) {
+				current = merged;
+				const properties = current.properties;
+				if (isJsonObject(properties)) {
+					if (combiner !== "allOf") {
+						const sourceProperties = isJsonObject(source.properties) ? source.properties : {};
+						const sourceVariants = source[combiner] as JsonObject[];
+						for (const name in properties) {
+							if (!Object.hasOwn(properties, name)) continue;
+							if (Object.hasOwn(sourceProperties, name)) {
+								properties[name] = sourceProperties[name];
+								continue;
+							}
+							let widenedProperty: unknown;
+							for (const variant of sourceVariants) {
+								const variantProperties = isJsonObject(variant.properties) ? variant.properties : {};
+								let constraint: unknown;
+								if (Object.hasOwn(variantProperties, name)) {
+									constraint = variantProperties[name];
+								} else if (variant.additionalProperties === false) {
+									continue;
+								} else if (isJsonObject(variant.additionalProperties)) {
+									constraint = variant.additionalProperties;
+								} else {
+									constraint = {};
+								}
+								widenedProperty =
+									widenedProperty === undefined
+										? constraint
+										: mergePropertySchemas(widenedProperty, constraint);
+							}
+							properties[name] = widenedProperty ?? {};
+						}
+					}
+					for (const name in properties) {
+						if (Object.hasOwn(properties, name)) {
+							properties[name] = projectSchemaForCursor(properties[name], false);
+						}
+					}
+				}
+			} else {
+				current = copySchemaWithout(current, combiner);
+			}
+			changed = true;
+		}
+	}
+	return current;
+}
+
+function projectSchemaForCursor(value: unknown, insideSchemaMap: boolean): unknown {
+	if (Array.isArray(value)) {
+		if (!enter(value)) return [];
+		try {
+			return value.map(entry => projectSchemaForCursor(entry, false));
+		} finally {
+			exit(value);
+		}
+	}
+	if (!isJsonObject(value)) return value;
+	if (!enter(value)) return {};
+	try {
+		const result: JsonObject = {};
+		for (const key in value) {
+			if (!Object.hasOwn(value, key)) continue;
+			const entry = value[key];
+			// Widening a negated combiner would make `not` reject a superset of the
+			// canonical schema, and none can be carried, so the whole negation goes:
+			// dropping a restriction only broadens acceptance.
+			if (!insideSchemaMap && key === "not" && containsSchemaCombiner(entry, false, epochNext())) {
+				continue;
+			}
+			const childKind = classifySchemaChild(key, entry, insideSchemaMap);
+			result[key] = childKind ? projectSchemaForCursor(entry, childKind === "map") : entry;
+		}
+		return insideSchemaMap ? result : projectNodeCombinersForCursor(result);
+	} finally {
+		exit(value);
+	}
+}
+
+/**
+ * Project a tool's wire schema onto what Cursor's MCP tool catalog accepts for
+ * models that reject composition keywords (the whole request fails otherwise):
+ * `anyOf`/`oneOf`/`allOf` are removed everywhere while representable guidance is
+ * kept and acceptance only ever widens. The canonical schema, which validates
+ * arguments locally, is never mutated.
+ */
+export function sanitizeSchemaForCursor(schema: JsonObject): JsonObject {
+	return projectSchemaForCursor(dereferenceJsonSchema(schema), false) as JsonObject;
 }
 
 export function normalizeSchema(value: unknown, options: NormalizeSchemaOptions): unknown {

@@ -7,15 +7,15 @@ import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl, resolveVertexEndpointHost } from "@oh-my-pi/pi-catalog/hosts";
 import {
+	defaultSupportedEffort,
 	mapEffortToAnthropicAdaptiveEffort,
 	mapEffortToGoogleThinkingLevel,
-	minimumSupportedEffort,
 	requireSupportedEffort,
 	resolveWireModelId,
 } from "@oh-my-pi/pi-catalog/model-thinking";
 import { CATALOG_PROVIDERS, type ProviderCatalogEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import { CODEX_BASE_URL } from "@oh-my-pi/pi-catalog/wire/codex";
-import { $env, $pickenv, getProviderInFlightRoot, isEnoent, logger, withExtraCaFetch } from "@oh-my-pi/pi-utils";
+import { $env, $pickenv, getProviderInFlightRoot, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { getCustomApi } from "./api-registry";
 import { createAuthRetryKeyState, isApiKeyResolver, resolveNextAuthRetryKey } from "./auth-retry";
 import * as AIError from "./error";
@@ -24,7 +24,6 @@ import { isConcurrencyCapExclusion, isUsageLimitOutcome } from "./error/rate-lim
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
 import type { MessageCreateParamsStreaming } from "./providers/anthropic-wire";
-import { coworkFetch } from "./providers/cowork-fetch";
 import type { CursorOptions } from "./providers/cursor";
 import type { DevinOptions } from "./providers/devin";
 import { isGitLabDuoModel, streamGitLabDuo } from "./providers/gitlab-duo";
@@ -68,19 +67,14 @@ import type {
 	ThinkingBudgets,
 	ToolChoice,
 } from "./types";
-import { resolveCacheRetention } from "./utils";
+import { getHeaderCaseInsensitive, resolveCacheRetention } from "./utils";
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { isFoundryEnabled } from "./utils/foundry";
 import { applyGlyphCodec } from "./utils/glyph-codec";
 import { wrapLeakedThinkingStream } from "./utils/leaked-thinking-stream";
-import { wrapFetchForProxy } from "./utils/proxy";
-import { withRequestDebugFetch } from "./utils/request-debug";
+import { materializeModelHeaders } from "./utils/model-headers";
 import { withThinkingLoopGuard } from "./utils/thinking-loop";
-
-function defaultFetchForModel(model: Model<Api>): FetchImpl {
-	if (model.provider === "anthropic" && model.api === "anthropic-messages") return coworkFetch;
-	return globalThis.fetch;
-}
+import { withTransportFetch } from "./utils/transport-fetch";
 
 function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
 	return (
@@ -118,10 +112,20 @@ function isOfficialOpenAIApiUrl(baseUrl: string | undefined): boolean {
 	}
 }
 
+const OFFICIAL_CODEX_URL = new URL(CODEX_BASE_URL);
+
 export function isOfficialCodexApiUrl(baseUrl: string | undefined): boolean {
 	if (!baseUrl) return true;
-	const lower = baseUrl.toLowerCase().replace(/\/+$/, "");
-	return lower === CODEX_BASE_URL || lower.startsWith(`${CODEX_BASE_URL}/`);
+	try {
+		const candidate = new URL(baseUrl);
+		const candidatePath = candidate.pathname.replace(/\/+$/, "");
+		return (
+			candidate.origin === OFFICIAL_CODEX_URL.origin &&
+			(candidatePath === OFFICIAL_CODEX_URL.pathname || candidatePath.startsWith(`${OFFICIAL_CODEX_URL.pathname}/`))
+		);
+	} catch {
+		return false;
+	}
 }
 
 function healLeakedThinking(model: Model<Api>, inner: AssistantMessageEventStream): AssistantMessageEventStream {
@@ -322,12 +326,20 @@ async function acquireProviderInFlightLock(provider: string, signal?: AbortSigna
 		if (signal?.aborted) throw signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 		try {
 			await fs.mkdir(lockDir);
-			const lockIdentity = await readProviderInFlightLockIdentity(lockDir);
+			// A peer's stale-lock sweep can remove the fresh dir before we identify or stamp it: contend again.
+			let lockIdentity: ProviderInFlightLockIdentity;
+			try {
+				lockIdentity = await readProviderInFlightLockIdentity(lockDir);
+			} catch (error) {
+				if (isEnoent(error)) continue;
+				throw error;
+			}
 			const token = crypto.randomUUID();
 			try {
 				await writeProviderInFlightInfo(lockDir, token);
 			} catch (error) {
 				await releaseProviderInFlightLockDirIfSame(lockDir, lockIdentity);
+				if (isEnoent(error)) continue;
 				throw error;
 			}
 			return async () => {
@@ -742,11 +754,38 @@ export function listProvidersWithEnvKey(): string[] {
 	return Object.keys(serviceProviderMap);
 }
 
+// Materializes `model.resolveHeaders` once per request attempt, then runs the transport on a plain-header clone.
+function withResolvedModelHeaders<TApi extends Api>(
+	model: Model<TApi>,
+	signal: AbortSignal | undefined,
+	run: (resolvedModel: Model<TApi>) => AssistantMessageEventStream,
+): AssistantMessageEventStream {
+	if (!model.resolveHeaders) return run(model);
+
+	const outer = new AssistantMessageEventStream();
+	void (async () => {
+		try {
+			const inner = run(await materializeModelHeaders(model, signal));
+			for await (const event of inner) {
+				outer.push(event);
+				if (outer.done) return;
+			}
+			if (!outer.done) outer.end(await inner.result());
+		} catch (error) {
+			outer.fail(error);
+		}
+	})();
+	return outer;
+}
+
 export function stream<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
+	if (model.resolveHeaders) {
+		return withResolvedModelHeaders(model, options?.signal, resolvedModel => stream(resolvedModel, context, options));
+	}
 	if (!model.requiresGlyphTokenization) {
 		return withThinkingLoopGuard(model, options, opts =>
 			withProviderInFlightLimit(model, opts, () => streamDispatch(model, context, opts)),
@@ -768,13 +807,7 @@ function streamDispatch<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	const inputOptions = (options || {}) as StreamOptions;
-	const baseOptions = { ...inputOptions, fetch: inputOptions.fetch ?? defaultFetchForModel(model) };
-	const debugOptions = withExtraCaFetch(withRequestDebugFetch(baseOptions));
-	const requestOptions = {
-		...debugOptions,
-		fetch: wrapFetchForProxy(debugOptions.fetch, model.provider),
-	} as OptionsForApi<TApi>;
+	const requestOptions = withTransportFetch(model, (options || {}) as StreamOptions) as OptionsForApi<TApi>;
 	assertExplicitOpenAIResponsesPromptCacheSupport(model, requestOptions);
 
 	const customApiProvider = getCustomApi(model.api);
@@ -811,9 +844,10 @@ function streamDispatch<TApi extends Api>(
 		return streamBedrock(model as Model<"bedrock-converse-stream">, context, requestOptions as BedrockOptions);
 	}
 
-	const prepareRequest = getProviderDefinition(model.provider)?.prepareRequest;
-	const prepared = prepareRequest?.(model as Model<Api>, requestOptions as StreamOptions);
-	const providerModel = prepared?.model ?? (model as Model<Api>);
+	const providerDefinition = getProviderDefinition(model.provider);
+	const requestModel = providerDefinition?.prepareModel?.(model as Model<Api>) ?? (model as Model<Api>);
+	const prepared = providerDefinition?.prepareRequest?.(requestModel, requestOptions as StreamOptions);
+	const providerModel = prepared?.model ?? requestModel;
 	const preparedOptions = prepared?.options ?? (requestOptions as StreamOptions);
 	const apiKey = preparedOptions.apiKey || getEnvApiKey(providerModel.provider);
 	if (!apiKey) {
@@ -1294,18 +1328,22 @@ export function streamSimple<TApi extends Api>(
 	return codec.wrap(streamSimpleWithAnthropicCacheRefresh(model, codec.context, wireOptions));
 }
 
+// Forwards only a model-configured `User-Agent`, and only when the caller set none of their own.
+function forwardBedrockUserAgent(
+	modelHeaders: Record<string, string> | undefined,
+	callerHeaders: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+	if (getHeaderCaseInsensitive(callerHeaders, "user-agent") !== undefined) return callerHeaders;
+	const modelUserAgent = getHeaderCaseInsensitive(modelHeaders, "user-agent");
+	return modelUserAgent === undefined ? callerHeaders : { ...callerHeaders, "User-Agent": modelUserAgent };
+}
+
 function streamSimpleRequest<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-	const inputOptions = (options || {}) as SimpleStreamOptions;
-	const baseOptions = { ...inputOptions, fetch: inputOptions.fetch ?? defaultFetchForModel(model) };
-	const debugOptions = withExtraCaFetch(withRequestDebugFetch(baseOptions));
-	const requestOptions = {
-		...debugOptions,
-		fetch: wrapFetchForProxy(debugOptions.fetch, model.provider),
-	} as SimpleStreamOptions;
+	const requestOptions = withTransportFetch(model, (options || {}) as SimpleStreamOptions);
 
 	const apiKeyResolver = isApiKeyResolver(requestOptions?.apiKey) ? requestOptions.apiKey : undefined;
 	if (apiKeyResolver) {
@@ -1415,9 +1453,34 @@ function streamSimpleRequest<TApi extends Api>(
 		return outer;
 	}
 
+	// Resolved after the API key so an auth retry (which invalidates command caches) re-mints header credentials too.
+	if (model.resolveHeaders) {
+		return withResolvedModelHeaders(model, requestOptions.signal, resolvedModel =>
+			streamSimpleRequest(resolvedModel, context, requestOptions),
+		);
+	}
+
 	if (model.transport === "pi-native") {
 		return withThinkingLoopGuard(model, requestOptions, opts =>
-			withProviderInFlightLimit(model, opts, () => streamPiNative(model, context, opts)),
+			withProviderInFlightLimit(model, opts, () => {
+				// Only `modelId` crosses the wire and the gateway resolves its own model, so the local
+				// model's Bedrock guardrail, invocation tags, and User-Agent override ride in the options.
+				const nativeOptions =
+					model.api === "bedrock-converse-stream"
+						? {
+								...opts,
+								guardrailIdentifier: model.guardrailIdentifier ?? opts?.guardrailIdentifier,
+								guardrailVersion: model.guardrailVersion ?? opts?.guardrailVersion,
+								guardrailTrace: model.guardrailTrace ?? opts?.guardrailTrace,
+								requestMetadata:
+									model.requestMetadata || opts?.requestMetadata
+										? { ...model.requestMetadata, ...opts?.requestMetadata }
+										: undefined,
+								headers: forwardBedrockUserAgent(model.headers, opts?.headers),
+							}
+						: opts;
+				return streamPiNative(model, context, nativeOptions);
+			}),
 		);
 	}
 
@@ -1496,8 +1559,9 @@ function streamSimpleRequest<TApi extends Api>(
 			),
 		);
 	}
-	const providerOptions = mapOptionsForApi(model, requestOptions, apiKey);
-	return stream(model, context, providerOptions);
+	const providerModel = getProviderDefinition(model.provider)?.prepareModel?.(model as Model<Api>) ?? model;
+	const providerOptions = mapOptionsForApi(providerModel, requestOptions, apiKey);
+	return stream(providerModel, context, providerOptions);
 }
 
 export async function completeSimple<TApi extends Api>(
@@ -1553,7 +1617,7 @@ function resolveBedrockThinkingBudget(
 	model: Model<"bedrock-converse-stream">,
 	options?: SimpleStreamOptions,
 ): { budget: number; level: Effort } | null {
-	if (!options?.reasoning || !model.reasoning) return null;
+	if (!options?.reasoning || !model.reasoning || options.disableReasoning || options.forceReasoningOff) return null;
 	const level = requireSupportedEffort(model, options.reasoning);
 	const budget = options.thinkingBudgets?.[level] ?? BEDROCK_CLAUDE_THINKING[level];
 	return { budget, level };
@@ -1678,7 +1742,7 @@ function normalizeMandatoryReasoningOptions<TApi extends Api>(
 	) {
 		return options;
 	}
-	const floor = minimumSupportedEffort(model);
+	const floor = defaultSupportedEffort(model);
 	if (floor === undefined) return options;
 	return { ...options, reasoning: floor, disableReasoning: undefined, forceReasoningOff: undefined };
 }
@@ -1757,6 +1821,8 @@ function mapOptionsForApi<TApi extends Api>(
 		fallbacks: options?.fallbacks,
 		acceptEmptyResponse: options?.acceptEmptyResponse,
 		anthropicCacheRefreshRequest: options?.anthropicCacheRefreshRequest,
+		anthropicPrefixMismatchBehavior: options?.anthropicPrefixMismatchBehavior,
+		anthropicCompaction: options?.anthropicCompaction,
 		...simpleProviderOptions,
 	};
 
@@ -1850,13 +1916,19 @@ function mapOptionsForApi<TApi extends Api>(
 		case "bedrock-converse-stream": {
 			const bedrockBase: BedrockOptions = {
 				...base,
-				reasoning: options?.reasoning,
+				// The provider gates thinking only on `reasoning`, so explicit reasoning-off folds here.
+				reasoning: options?.disableReasoning || options?.forceReasoningOff ? undefined : options?.reasoning,
 				thinkingBudgets: options?.thinkingBudgets,
 				toolChoice: mapAnthropicToolChoice(options?.toolChoice),
 				thinkingDisplay: options?.hideThinkingSummary ? "omitted" : undefined,
+				guardrailIdentifier: model.guardrailIdentifier ?? options?.guardrailIdentifier,
+				guardrailVersion: model.guardrailVersion ?? options?.guardrailVersion,
+				guardrailTrace: model.guardrailTrace ?? options?.guardrailTrace,
+				requestMetadata: options?.requestMetadata,
 			};
 
-			if (model.thinking?.mode === "anthropic-adaptive") {
+			// Effort modes send the effort directly (no budget_tokens), so skip budget inflation.
+			if (model.thinking?.mode === "effort" || model.thinking?.mode === "anthropic-adaptive") {
 				return castApi<"bedrock-converse-stream">(bedrockBase);
 			}
 			const budgetInfo = resolveBedrockThinkingBudget(model as Model<"bedrock-converse-stream">, options);
@@ -1912,7 +1984,8 @@ function mapOptionsForApi<TApi extends Api>(
 			return castApi<"openai-completions">({
 				...base,
 				reasoning: resolveOpenAiReasoningEffort(model, options),
-				disableReasoning: options?.disableReasoning,
+				// `OpenAICompletionsOptions` has no forceReasoningOff; fold it so a forced-off turn sends no effort.
+				disableReasoning: options?.disableReasoning || options?.forceReasoningOff,
 				toolChoice: mapOpenAiToolChoice(options?.toolChoice),
 				serviceTier: options?.serviceTier,
 				openrouterVariant: options?.openrouterVariant,
@@ -2121,6 +2194,7 @@ function mapOptionsForApi<TApi extends Api>(
 				...base,
 				execHandlers,
 				onToolResult,
+				externalToolExecutor: options?.cursorExternalToolExecutor,
 				wireModelId: resolveWireModelId(cursorModel, effort),
 			});
 		}

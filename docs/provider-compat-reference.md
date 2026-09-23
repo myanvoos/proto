@@ -79,6 +79,7 @@ Types: `OpenAICompat` / `ResolvedOpenAISharedCompat` in `packages/catalog/src/ty
 | `supportsNamedToolChoice` | `false` for string-only hosts (llama.cpp, LM Studio) | When `false`, a named choice becomes: filter `tools` to that one function + `tool_choice: "required"` |
 | `disableReasoningOnForcedToolChoice` | Chat: Kimi (except native K3) or Anthropic model ids. Responses: all Kimi | Drops reasoning fields when tool choice is forced |
 | `disableReasoningOnToolChoice` | DeepSeek reasoning (except via OpenRouter) | Drops reasoning fields when **any** `tool_choice` is present |
+| `disableReasoningWithTools` | Azure `gpt-6-astra*` (Chat Completions) | Disables reasoning (with `reasoningDisableMode: "none-effort"`, sends `reasoning_effort: "none"`) whenever function tools are advertised; cached effort fallbacks never override it |
 | `supportsStrictMode` | `true` for OpenAI, OpenRouter, Cerebras, Together, Copilot, Zenmux, Azure, DeepSeek | When `false`, `strict: true` is never set on tool definitions |
 | `toolSchemaFlavor` | `"moonshot-mfjs"` for Kimi/Moonshot, `"grammar"` for local backends | Extra schema normalization: `normalizeSchemaForMoonshot` or `sanitizeSchemaForGrammar` (`utils/schema/normalize.ts`) |
 
@@ -129,6 +130,7 @@ Types: `OpenAICompat` / `ResolvedOpenAISharedCompat` in `packages/catalog/src/ty
 | `strictResponsesPairing` | Azure OpenAI, Copilot Responses | Enforces strict 1:1 tool-call/tool-result pairing when building Responses input items |
 | `supportsImageDetailOriginal` | `false` for Copilot, xai-oauth | `detail: "original"` vs `detail: "auto"` on input images (hosts that 400 on `original` get `auto`) |
 | `supportsObfuscationOptOut` | Official OpenAI | Allows `stream_options: { include_obfuscation: false }` |
+| `supportsConfigurationUpdate` | `gpt-6-astra` (any Responses/Codex host) | Pins request-level `reasoning.effort` to the session baseline; later effort changes ride `configuration_update` input items replayed in position |
 
 ## 2. Reasoning levels
 
@@ -161,7 +163,7 @@ Runtime helpers: `clampThinkingLevelForModel` (clamps a requested effort to what
 
 `resolveOpenAICompatPolicy` (`providers/openai-shared.ts`) decides per request:
 
-1. **Enabled/disabled** — requested effort vs model reasoning support, minus suppression rules (`disableReasoningOnForcedToolChoice`, `disableReasoningOnToolChoice`, `none`-effort handling).
+1. **Enabled/disabled** — requested effort vs model reasoning support, minus suppression rules (`disableReasoningOnForcedToolChoice`, `disableReasoningOnToolChoice`, `disableReasoningWithTools`, `none`-effort handling).
 2. **`whenThinking` swap** — enabled + variant present → active compat becomes the pre-built variant.
 3. **Wire effort** — requested `Effort` mapped through `compat.reasoningEffortMap` / `model.thinking.effortMap`; `omitReasoningEffort` suppresses the field while keeping the thinking toggle.
 4. **Disable encoding** — when reasoning is off but the wire needs an explicit off-signal, `encodeChatCompletionsDisabledReasoning` emits the format from `reasoningDisableMode`.
@@ -202,7 +204,7 @@ All providers start from the same neutral wire schema — `toolWireSchema(tool)`
 
 - **Schemas**: `sanitizeSchemaForOpenAIResponses` + `adaptSchemaForStrict`. Supports function tools, freeform **custom tools**, and native **computer tools** (`model.supportsComputerUse`). Wire: flat `{ type: "function", name, description, parameters, strict? }`.
 - **Streaming**: `response.output_item.added` → `response.function_call_arguments.delta` / `response.custom_tool_call_input.delta` → `response.output_item.done`. Tool call ids are composite `callId|itemId` (`normalizeResponsesToolCallId`).
-- **Results**: input items of `type: "function_call_output"` with `call_id` (the `callId` half of the composite). Stateful `previous_response_id` chaining across turns.
+- **Results**: `function_call_output` and `custom_tool_call_output` items pair with calls by `call_id` (the `callId` half of the composite). Their `output` is either a string or an array of canonical `input_text`, `input_image`, and `input_file` blocks. Vision-capable models keep tool-result images inside that array instead of creating synthetic user messages; models without image input receive a text placeholder. Auth-gateway parsing also accepts legacy `output_text`, `text`, and `refusal` blocks. Stateful `previous_response_id` chaining works across turns.
 
 ### Google Gemini / Vertex (`providers/google-shared.ts`, `google.ts`)
 
@@ -225,8 +227,8 @@ All providers start from the same neutral wire schema — `toolWireSchema(tool)`
 | Schema normalizer | strict allowlist + budgets | `adaptSchemaForStrict` | `sanitizeSchemaForOpenAIResponses` | `normalizeSchemaForGoogle` / CCA | raw JSON schema |
 | Args streaming | JSON string fragments | JSON string fragments (MiniMax: objects) | JSON string fragments | complete object, no fragments | JSON string fragments |
 | Call ids | native | native (+Mistral 9-char, OpenAI 40-char rules) | composite `callId\|itemId` | synthesized; Vertex strips | native |
-| Result encoding | `user` + `tool_result` blocks | `role: "tool"` messages | `function_call_output` items | `user` + `functionResponse` parts, single message | `user` + grouped `toolResult` array |
-| Images in results | embedded; hoisted on error | placeholder partition | embedded or partitioned | Gemini 3+ embedded, else trailing user turn | embedded |
+| Result encoding | `user` + `tool_result` blocks | `role: "tool"` messages | function/custom output items | `user` + `functionResponse` parts, single message | `user` + grouped `toolResult` array |
+| Images in results | embedded; hoisted on error | placeholder partition | inside output arrays; placeholder without image input | Gemini 3+ embedded, else trailing user turn | embedded |
 | Parallel calls | native | native | native | native | native |
 
 ### Strict tools lifecycle

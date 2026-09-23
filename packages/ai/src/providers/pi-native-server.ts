@@ -33,16 +33,22 @@ const ALLOWED_OPTION_KEYS: ReadonlySet<keyof SimpleStreamOptions> = new Set([
 	"streamIdleTimeoutMs",
 	"reasoning",
 	"disableReasoning",
+	"forceReasoningOff",
 	"hideThinkingSummary",
 	"thinkingBudgets",
 	"toolChoice",
 	"serviceTier",
+	"guardrailIdentifier",
+	"guardrailVersion",
+	"guardrailTrace",
+	"requestMetadata",
 	"kimiApiFormat",
 	"syntheticApiFormat",
 	"preferWebsockets",
 	"openrouterVariant",
 	"loopGuard",
 	"acceptEmptyResponse",
+	"anthropicCompaction",
 ] as const satisfies readonly (keyof SimpleStreamOptions)[]);
 
 export function parseRequest(body: unknown, _headers?: Headers): PiNativeParsedRequest {

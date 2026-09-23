@@ -62,10 +62,16 @@ Selected providers (the registry wires many more lazily, including Azure, Cursor
 - **NVIDIA** (requires `NVIDIA_API_KEY`)
 - **NanoGPT** (requires `NANO_GPT_API_KEY`)
 - **Novita** (requires `NOVITA_API_KEY`)
+- **DeepInfra** (requires `DEEPINFRA_API_KEY`)
+- **Abliteration** (requires `ABLITERATION_API_KEY` or `ABLIT_KEY`)
+- **ClinePass** (requires `CLINE_API_KEY`; subscription and free-tier models)
+- **Command Code** (requires `COMMAND_CODE_API_KEY`; Claude models use its Anthropic-compatible endpoint)
+- **StepFun** (requires `STEPFUN_API_KEY`)
 - **Hugging Face Inference**
 - **xAI**
 - **Venice** (requires `VENICE_API_KEY`)
 - **Wafer Serverless** (requires `WAFER_SERVERLESS_API_KEY`; pay-as-you-go)
+- **Yolo-Auto** (requires `YOLO_AUTO_API_KEY`; flat-rate)
 - **OpenRouter**
 - **Kilo Gateway** (supports OAuth `/login kilo` or `KILO_API_KEY`)
 - **LiteLLM** (requires `LITELLM_API_KEY`)
@@ -77,7 +83,7 @@ Selected providers (the registry wires many more lazily, including Azure, Cursor
 - **Qwen Portal** (supports `QWEN_OAUTH_TOKEN` or `QWEN_PORTAL_API_KEY`)
 - **QwenCloud Token Plan** (supports `/login alibaba-token-plan`, `ALIBABA_TOKEN_PLAN_API_KEY`, or `BAILIAN_TOKEN_PLAN_API_KEY`; interactive login first selects a region — International (Singapore, default), China (Beijing) for 百炼 Token Plan keys, or a custom base URL — since region keys are non-interchangeable, then optionally stores a `home.qwencloud.com` Cookie request header for best-effort 5-hour and 7-day quota reporting)
   To enable quota reporting, sign in to the Token Plan dashboard, copy the `Cookie` request-header value from a `home.qwencloud.com` request in browser developer tools, and paste it at the second login prompt. Press Enter to skip; the Cookie is sensitive and session-lived, so rerun login when it expires.
-- **Cloudflare AI Gateway** (requires `CLOUDFLARE_AI_GATEWAY_API_KEY` and provider-specific gateway base URL)
+- **Cloudflare AI Gateway** (supports `/login cloudflare-ai-gateway`, or `CLOUDFLARE_AI_GATEWAY_API_KEY` with `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_GATEWAY_ID`)
 - **Ollama** (local OpenAI-compatible runtime; optional `OLLAMA_API_KEY`)
 - **Ollama Cloud** (hosted native Ollama API; requires `OLLAMA_CLOUD_API_KEY`)
 - **llama.cpp** (local OpenAI and Anthropic compatible inference server)
@@ -85,6 +91,7 @@ Selected providers (the registry wires many more lazily, including Azure, Cursor
 - **GitHub Copilot** (requires OAuth, see below)
 - **Google Gemini CLI** (requires OAuth, see below)
 - **Antigravity** (requires OAuth, see below)
+- **Muse Code** (Meta Muse subscription; requires OAuth, see below)
 - **Any OpenAI-compatible API**: LM Studio, custom proxies, etc.
 
 ## Installation
@@ -945,6 +952,11 @@ In Node.js environments, you can set environment variables to avoid passing API 
 | NVIDIA         | `NVIDIA_API_KEY`                                                             |
 | NanoGPT        | `NANO_GPT_API_KEY`                                                          |
 | Novita         | `NOVITA_API_KEY`                                                           |
+| DeepInfra      | `DEEPINFRA_API_KEY`                                                        |
+| Abliteration   | `ABLITERATION_API_KEY` or `ABLIT_KEY`                                        |
+| ClinePass      | `CLINE_API_KEY`                                                              |
+| Command Code   | `COMMAND_CODE_API_KEY` or `COMMANDCODE_API_KEY`                              |
+| StepFun        | `STEPFUN_API_KEY`                                                            |
 | Venice         | `VENICE_API_KEY`                                                             |
 | Moonshot       | `MOONSHOT_API_KEY`                                                           |
 | xAI            | `XAI_API_KEY`                                                                |
@@ -959,12 +971,12 @@ In Node.js environments, you can set environment variables to avoid passing API 
 | MiniMax Code   | `MINIMAX_CODE_API_KEY` (international) or `MINIMAX_CODE_CN_API_KEY` (China) |
 | Xiaomi MiMo    | `XIAOMI_API_KEY`                                                             |
 | ZenMux         | `ZENMUX_API_KEY`                                                             |
+| Yolo-Auto      | `YOLO_AUTO_API_KEY`                                                          |
 | vLLM           | `VLLM_API_KEY`                                                               |
-| Cloudflare AI Gateway | `CLOUDFLARE_AI_GATEWAY_API_KEY`                                      |
+| Cloudflare AI Gateway | `CLOUDFLARE_AI_GATEWAY_API_KEY` + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_GATEWAY_ID` |
 | GitHub Copilot | `COPILOT_GITHUB_TOKEN` or `GH_TOKEN` or `GITHUB_TOKEN`                      |
 
-For Cloudflare AI Gateway models, use provider base URL format
-`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic`.
+`/login cloudflare-ai-gateway` collects and stores the gateway token, account ID, and gateway ID. For environment configuration, set all three Cloudflare values above. `proto` derives provider endpoints from the account and gateway IDs.
 
 For Anthropic Foundry routing, set `CLAUDE_CODE_USE_FOUNDRY=true` plus:
 `FOUNDRY_BASE_URL`, `ANTHROPIC_FOUNDRY_API_KEY`, optional `ANTHROPIC_CUSTOM_HEADERS`,
@@ -985,6 +997,7 @@ Provider endpoint defaults for the current OpenAI-compatible integrations:
 - NVIDIA: `https://integrate.api.nvidia.com/v1`
 - NanoGPT: `https://nano-gpt.com/api/v1`
 - Novita: `https://api.novita.ai/openai/v1`
+- DeepInfra: `https://api.deepinfra.com/v1/openai`
 - Hugging Face Inference: `https://router.huggingface.co/v1`
 - Venice: `https://api.venice.ai/api/v1`
 - Xiaomi MiMo: `https://api.xiaomimimo.com/anthropic`
@@ -995,7 +1008,7 @@ Provider endpoint defaults for the current OpenAI-compatible integrations:
 - Ollama: local OpenAI-compatible runtime (`http://127.0.0.1:11434/v1`)
 - Ollama Cloud: native Ollama API host (`https://ollama.com/api`, configured here as base URL `https://ollama.com`)
 - LiteLLM: `http://localhost:4000/v1`
-- Cloudflare AI Gateway: `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic`
+- Cloudflare AI Gateway: native Anthropic, OpenAI, and Workers AI routes under `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>`
 - Qwen Portal: `https://portal.qwen.ai/v1`
 When set, the library automatically uses these keys:
 
@@ -1029,6 +1042,7 @@ Several providers support OAuth authentication (some also support static API key
 - **Google Gemini CLI** (Gemini 2.0/2.5 via Google Cloud Code Assist; free tier or paid subscription)
 - **Antigravity** (Free Gemini 3, Claude, GPT-OSS via Google Cloud)
 - **Qwen Portal** (Qwen OAuth token or API key)
+- **Muse Code** (Meta Muse subscription; device-code login mints the subscription's Meta Model API key)
 
 For paid Cloud Code Assist subscriptions, set `GOOGLE_CLOUD_PROJECT` or `GOOGLE_CLOUD_PROJECT_ID` to your project ID.
 
@@ -1084,9 +1098,11 @@ proto auth-broker logout             # interactive — pick a stored credential 
 
 Credentials are saved to `agent.db` in the agent directory. `/login qianfan` opens the Qianfan console and stores the pasted API key.
 
+If SQLite reports corruption during startup, the damaged database and remaining journal sidecars are preserved beside it as private `agent.db.corrupt-<timestamp>-<id>*` backups before a fresh database is created. The log records the backup path. This restores startup, not unreadable credentials: log in again; retain the backups for manual data recovery. Lock contention and other non-corruption errors never reset the database.
+
 `login` supports OAuth providers (Anthropic, OpenAI Codex, GitHub Copilot, Gemini CLI, Antigravity) and API-key onboarding flows.
 
-For the current API-key onboarding flows, the library covers Together, Moonshot, Qianfan, NVIDIA, NanoGPT, Novita, Hugging Face, Venice, Xiaomi, vLLM, LiteLLM, Cloudflare AI Gateway, Qwen Portal, and Ollama Cloud. Ollama remains the local runtime integration; set `OLLAMA_API_KEY` only when your local or self-hosted deployment enforces bearer auth.
+For the current API-key onboarding flows, the library covers Together, Moonshot, Qianfan, NVIDIA, NanoGPT, Novita, DeepInfra, Hugging Face, Venice, Xiaomi, vLLM, LiteLLM, Cloudflare AI Gateway, Qwen Portal, and Ollama Cloud. Ollama remains the local runtime integration; set `OLLAMA_API_KEY` only when your local or self-hosted deployment enforces bearer auth.
 
 ### Programmatic OAuth
 

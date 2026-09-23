@@ -8,6 +8,12 @@ export type InbandScanEvent =
 	| { type: "thinkingStart" }
 	| { type: "thinkingDelta"; delta: string }
 	| { type: "thinkingEnd"; thinking: string }
+	/**
+	 * A reasoning close with no open in this stream: the template prefilled the
+	 * opener (DeepSeek-R1, Qwen3-Thinking), so all `text` before it was reasoning.
+	 * Only {@link ThinkingInbandScanner} with `impliedOpen` emits it.
+	 */
+	| { type: "impliedThinkingEnd" }
 	| { type: "toolStart"; id: string; name: string }
 	| { type: "toolArgDelta"; id: string; name: string; key: string; delta: string }
 	| { type: "toolEnd"; id: string; name: string; arguments: Record<string, unknown>; rawBlock?: string };

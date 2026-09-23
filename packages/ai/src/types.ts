@@ -276,6 +276,14 @@ export interface CodexCompactionRequestContext extends CodexCompactionMetadata {
 	operationId: string;
 }
 
+export interface AnthropicCompactionRequest {
+	triggerInputTokens?: number;
+
+	pauseAfterCompaction?: boolean;
+
+	instructions?: string;
+}
+
 export interface OpenAIPromptCacheOptions {
 	mode: "implicit" | "explicit";
 
@@ -311,7 +319,11 @@ export interface StreamOptions {
 
 	anthropicCacheRefresh?: boolean;
 
+	anthropicPrefixMismatchBehavior?: "drop_block" | "error";
+
 	anthropicCacheRefreshRequest?: boolean;
+
+	anthropicCompaction?: AnthropicCompactionRequest;
 
 	headers?: Record<string, string>;
 
@@ -388,6 +400,19 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	cursorExecHandlers?: CursorExecHandlers;
 
 	cursorOnToolResult?: CursorToolResultHandler;
+
+	/** Cursor hands unhandled MCP calls to an external executor instead of reporting them missing. */
+	cursorExternalToolExecutor?: boolean;
+
+	/** Amazon Bedrock Guardrail settings for transports that bypass the Bedrock provider; model values win. */
+	guardrailIdentifier?: string;
+
+	guardrailVersion?: string;
+
+	guardrailTrace?: "enabled" | "disabled" | "enabled_full";
+
+	/** Amazon Bedrock invocation-log tags, merged per key over `model.requestMetadata` (these win). */
+	requestMetadata?: Record<string, string>;
 
 	toolChoice?: ToolChoice;
 
@@ -562,7 +587,32 @@ export interface OpenAIResponsesHistoryPayload {
 	items: Array<Record<string, unknown>>;
 }
 
-export type ProviderPayload = OpenAIResponsesHistoryPayload;
+export interface AnthropicMessagePayload {
+	type: "anthropicMessage";
+	clearAt?: "never" | "next_user_message";
+	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+	toolChanges?: Array<{ type: "tool_addition" | "tool_removal"; name: string }>;
+}
+
+export interface AnthropicCompactionPayload {
+	type: "anthropicCompaction";
+
+	provider: string;
+	content: string;
+
+	encryptedContent?: string;
+
+	filesText?: string;
+}
+
+export type ProviderPayload = OpenAIResponsesHistoryPayload | AnthropicMessagePayload | AnthropicCompactionPayload;
+
+export interface ProviderInputTransformation {
+	type: string;
+	path?: string;
+	reason?: string;
+	[key: string]: unknown;
+}
 
 export type UserContent = TextContent | ImageContent | AudioContent | VideoContent;
 
@@ -573,6 +623,8 @@ export interface UserMessage {
 	synthetic?: boolean;
 
 	steering?: boolean;
+
+	historyRewriteAt?: number;
 
 	attribution?: MessageAttribution;
 
@@ -644,12 +696,17 @@ export interface AssistantMessage {
 	responseId?: string;
 
 	upstreamProvider?: string;
+
+	upstreamModel?: string;
 	usage: Usage;
 	stopReason: StopReason;
 	stopDetails?: StopDetails | null;
 	errorMessage?: string;
 
 	errorClassificationMessage?: string;
+
+	/** Set only when an exact request-body-read timeout failed a full Responses replay (not a `previous_response_id` delta). */
+	requestBodyReadTimeoutFullReplay?: boolean;
 
 	toolCallAbortMessages?: Record<string, string>;
 
@@ -658,6 +715,8 @@ export interface AssistantMessage {
 	errorId?: number;
 
 	disabledFeatures?: string[];
+
+	inputTransformations?: ProviderInputTransformation[];
 
 	providerPayload?: ProviderPayload;
 	timestamp: number;
@@ -722,6 +781,7 @@ export type CursorTodoSyncHandler = (
 	snapshot: CursorTodoSnapshot | null,
 	toolCallId: string,
 	error: string | null,
+	origin?: "read" | "update",
 ) => ToolResultMessage;
 
 export interface CursorShellStreamCallbacks {
@@ -820,6 +880,8 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	parameters: TParameters;
 
 	strict?: boolean;
+
+	deferLoading?: boolean;
 
 	customFormat?: { syntax: "lark" | "regex"; definition: string };
 

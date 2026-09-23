@@ -1,4 +1,24 @@
+import { extractRetryHint } from "@oh-my-pi/pi-utils";
+
 export type HeadersLike = Headers | Record<string, string | undefined> | undefined | null;
+
+// Z.AI and Zhipu emit timezone-naive account-reset wall clocks in Beijing time.
+const NAIVE_RESET_TIMEZONE_OFFSETS: Record<string, string> = {
+	zai: "+08:00",
+	"zhipu-coding-plan": "+08:00",
+};
+
+/** Extracts retry timing from an error message, reading naive reset stamps in the provider's timezone. */
+export function extractProviderRetryHint(
+	provider: string | undefined,
+	message: string | undefined,
+): number | undefined {
+	const naiveResetTimezoneOffset =
+		provider !== undefined && Object.hasOwn(NAIVE_RESET_TIMEZONE_OFFSETS, provider)
+			? NAIVE_RESET_TIMEZONE_OFFSETS[provider]
+			: undefined;
+	return extractRetryHint(undefined, message, { naiveResetTimezoneOffset });
+}
 
 const RETRY_AFTER_HINT = "retry-after-ms=";
 

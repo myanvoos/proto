@@ -2,6 +2,64 @@
 
 ## [Unreleased]
 
+### Added
+
+- DeepSeek Flash (`deepseek-flash`) on DeepSeek, with image input on OpenCode Go
+- DeepSeek cost estimates that follow published peak/off-peak rates, including DeepSeek V4 Pro moving to Flash rates on 2026-09-14 04:00 UTC
+- `calculateUsageCost()`, `getTimeBasedPricingPeriod()`, and `getNextTimeBasedPricingTransition()` pricing helpers; cost helpers accept a request timestamp
+- Models carry catalog intelligence (`int`) and output-speed (`tps`) scores, resolved across provider id spellings (e.g. `openai/gpt-5.5`, `global.anthropic.claude-…`)
+- Discovered reasoning models whose effort tiers were unknown now use the tiers the shared model catalog publishes for them
+- `supportsConfigurationUpdate` compat override so custom Responses/Codex endpoints that reject `configuration_update` items can opt out
+- DeepInfra provider with live model discovery (`DEEPINFRA_API_KEY`), including promotional discount pricing
+- Yolo-Auto provider (`YOLO_AUTO_API_KEY`) with Qwen3.8 Flash, Yolo, and DeepSeek Flash V4 flat-rate models
+- Abliteration provider (`ABLITERATION_API_KEY`) with abliterated GLM models and documented effort aliases
+- Command Code provider (`COMMAND_CODE_API_KEY`) with live model discovery, official pricing, and per-model effort levels; Claude models use its Anthropic-compatible endpoint
+- StepFun provider (`STEPFUN_API_KEY`) with Step 5 Preview and Step 3.x Flash models and live discovery
+- ClinePass provider (`CLINE_API_KEY`) with live roster discovery, Cline-authored limits and pricing, and `(free)`-marked free-tier models
+- Charm Hyper provider (`CHARM_HYPER_API_KEY` or `HYPER_API_KEY`) with keyless live discovery of limits, effort levels, and tariffs
+- SingularityAPI providers: `singularityapi-dev` (pay-as-you-go universal gateway, `SINGULARITYAPI_DEV_API_KEY`) and `singularityapi-tech` (reserved DeepSeek lanes, `SINGULARITYAPI_TECH_API_KEY`) with live, key-scoped discovery
+- Muse Code provider with Muse Spark models and account-scoped live discovery
+- Muse Spark 1.3 and 1.3 (C) on the Meta Model API; 1.3 standard exposes the `max` effort tier
+- `disableReasoningWithTools` OpenAI compat flag (auto-enabled for Azure `gpt-6-astra*`)
+
+### Changed
+
+- xAI and SuperGrok (`xai-oauth`) models bill the 200K+ long-context tier at 2x, and SuperGrok mirrors API pricing including the multi-agent alias
+- Synthetic defaults to GLM-5.2
+- Fire Pass bundles GLM-5.2 Fast and Kimi K3 Fast and defaults to GLM-5.2 Fast
+- Cloudflare AI Gateway lists Workers AI models as `workers-ai/*` routed through the gateway's compat endpoint
+- GPT-6 models use the freeform `apply_patch` tool on OpenAI and Codex
+- Meta contributor SKUs are named `Muse Spark 1.x (C)`, and Meta's image/voice SKUs are no longer listed as chat models
+
+### Fixed
+
+- OpenRouter models whose reasoning is mandatory no longer offer reasoning off
+- Cached GLM-5.3 Flash, OpenCode Zen Gemini 3.7/3.8, and Baseten GLM/DeepSeek rows are refreshed so corrected effort ladders apply without clearing the cache
+- Baseten GLM 5.2+ and DeepSeek V4-generation models keep their thinking controls
+- Alibaba Token Plan Qwen 3.8 Max and Flash send `reasoning_effort` with thinking enabled and replay reasoning; Qwen 3.8 Max Preview stays on the on/off thinking toggle
+- Ollama Cloud models use their model family's effort levels instead of a synthesized ladder
+- Z.AI and Zhipu GLM-5.3 Flash accept image input
+- MiniMax-M3 output is capped at 128K, and Synthetic models follow the input modalities the provider advertises
+- Reference-derived output limits never exceed a model's context window
+- Cerebras Qwen models use OpenAI-style thinking controls; Qwen 3.8 27B offers low/medium/high and `none` disables thinking
+- OpenCode Go and Zen route Union Alpha through the Anthropic Messages endpoint
+- Xiaomi Token Plan China lists its curated models before discovery runs
+- OpenRouter models that only generate images are no longer marked as accepting image input
+- Codex GPT-6 Astra, Sol, and Luna show subscription credit-equivalent pricing (no cache-write charge or long-context multiplier), while first-party API Astra bills its >272K long-context tier
+- OpenCode Zen routes GPT-6 Astra through the Responses endpoint
+- Cursor models report documented context windows (Auto 256K, GPT-5.6 272K, Claude 5 and Fable 300K) and image input for image-capable families
+- Cursor max mode and default effort tiers survive variant collapsing and follow the routed wire id
+- Kimi Code models are priced at the public Moonshot list rate when discovery reports no cost, so usage stats no longer record $0
+- Cached Gemini 3.7/3.8 Flash rows on Google and Vertex are refreshed so the rejected `minimal` effort disappears
+- Antigravity image generation uses the image model the connected account advertises
+- Muse Spark revisions Meta ships before the bundled catalog knows them keep the 1M window, pricing tier, and effort levels instead of appearing as text-only models
+- Meta Model API and Muse Code requests no longer fail with 400 when a tool choice is forced; `api.meta.ai` accepts only `auto`, so the field is omitted
+- Muse Spark on OpenRouter no longer wedges every turn with `Referenced reasoning item ... was not found or has expired`
+- OpenCode Zen/Go Muse Spark models no longer fail tool-call turns with "reasoning encrypted_content was not issued to this caller"
+- OpenCode Muse Spark 1.3 models use the Responses endpoint the gateways require
+- Model-cache corruption recovery now copies the database and its sidecars to private backups (instead of renaming them) and no longer replaces a cache another process has already recovered
+- OpenCode Go/Zen live model discovery sends proto's User-Agent and the x-opencode-session header the gateway requires
+
 ## [18.5.0] - 2026-09-23
 
 ### Changed

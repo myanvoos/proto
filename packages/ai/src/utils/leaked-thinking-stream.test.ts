@@ -184,3 +184,50 @@ test("the final snapshot drops removed draft blocks and preserves unsigned think
 	]);
 	expect(result).toEqual(finished);
 });
+
+function streamText(chunks: readonly string[], final = chunks.join("")): AssistantMessageEvent[] {
+	let raw = "";
+	const events: AssistantMessageEvent[] = chunks.map(delta => {
+		raw += delta;
+		return { type: "text_delta", contentIndex: 0, delta, partial: message([{ type: "text", text: raw }]) };
+	});
+	events.push({ type: "done", reason: "stop", message: message([{ type: "text", text: final }]) });
+	return events;
+}
+
+test("a template-prefilled <think> (only the close streamed) reclassifies the leading text as thinking", async () => {
+	const projected = await collect(streamText(["Let me ", "reason</th", "ink>\n\nAnswer."]));
+	expect(projected.result.content).toEqual([
+		{ type: "thinking", thinking: "Let me reason" },
+		{ type: "text", text: "\n\nAnswer." },
+	]);
+	// Event replayers see the streamed text block at index 0 replaced by a closed thinking block.
+	const replaced = projected.events.findIndex(event => event.type === "thinking_start" && event.contentIndex === 0);
+	expect(projected.events.slice(replaced).map(event => event.type)).toEqual([
+		"thinking_start",
+		"thinking_delta",
+		"thinking_end",
+		"text_start",
+		"text_delta",
+		"text_end",
+		"done",
+	]);
+});
+
+test("a stray </think> after other content or blank text is dropped, never shown", async () => {
+	const afterThinking = await collect(streamText(["<think>r</think>visible</think> tail"]));
+	expect(afterThinking.result.content).toEqual([
+		{ type: "thinking", thinking: "r" },
+		{ type: "text", text: "visible tail" },
+	]);
+	const blank = await collect(streamText(["\n</think>Hi"]));
+	expect(blank.result.content).toEqual([{ type: "text", text: "\nHi" }]);
+});
+
+test("an authoritative replacement with only </think> reclassifies its leading text as thinking", async () => {
+	const { result } = await collect(streamText(["draft"], "reasoning</think>answer"));
+	expect(result.content).toEqual([
+		{ type: "thinking", thinking: "reasoning" },
+		{ type: "text", text: "answer" },
+	]);
+});

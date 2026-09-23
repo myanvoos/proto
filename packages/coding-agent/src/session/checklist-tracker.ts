@@ -65,6 +65,8 @@ export interface ChecklistTrackerHost {
 	getActiveToolNames(): string[];
 	getEnabledToolNames(): string[];
 	toolRegistry(): Map<string, AgentTool>;
+	/** Whether an armed prewalk will hand off; its plan nudge then owns checklist creation. */
+	prewalkWillHandoff(): boolean;
 }
 
 export class ChecklistTracker {
@@ -133,6 +135,9 @@ export class ChecklistTracker {
 		const mode = this.#host.settings.get("checklist.eager");
 		if (mode === "default" || !this.#host.settings.get("checklist.enabled")) return undefined;
 		if (this.#phases.length > 0) return undefined;
+		// An actionable prewalk drives checklist creation plan-first; the forced
+		// eager prelude's "call checklist first this turn" would contradict it.
+		if (this.#host.prewalkWillHandoff()) return undefined;
 		if (promptText !== undefined) {
 			if (this.#host.agent.state.messages.some(message => message.role === "user")) return undefined;
 			const trimmedPromptText = promptText.trimEnd();

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import type { AssistantMessage, Model } from "../types";
+import type { AssistantMessage, AssistantMessageEvent, Model } from "../types";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { ResponseStreamEvent } from "./openai-responses-wire";
 import { createInitialResponsesAssistantMessage, processResponsesStream } from "./openai-shared";
@@ -225,5 +225,107 @@ describe("OpenAI Responses incomplete streamed tool calls", () => {
 
 		expect(output.stopReason).toBe("length");
 		expect(output.content.filter(block => block.type === "toolCall").map(block => block.arguments)).toEqual([{}]);
+	});
+});
+
+class RecordingStream extends AssistantMessageEventStream {
+	readonly deltas: string[] = [];
+
+	override push(event: AssistantMessageEvent): void {
+		if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta") {
+			this.deltas.push(event.delta);
+		}
+		super.push(event);
+	}
+}
+
+async function runRecorded(
+	events: readonly ResponseStreamEvent[],
+): Promise<{ output: AssistantMessage; deltas: string[] }> {
+	const output = createInitialResponsesAssistantMessage("openai-responses", "openai-test", "test-model");
+	const stream = new RecordingStream();
+	async function* source(): AsyncGenerator<ResponseStreamEvent> {
+		yield* events;
+	}
+	await processResponsesStream(source(), output, stream, responsesModel());
+	return { output, deltas: stream.deltas };
+}
+
+const completed = event({ type: "response.completed", response: { status: "completed" } });
+
+describe("OpenAI Responses payloadless proxy frames", () => {
+	it("recovers text delivered only in output_text.done without duplicate deltas", async () => {
+		const { output, deltas } = await runRecorded([
+			event({ type: "response.output_item.added", item: { type: "message", id: "m1", content: [] } }),
+			event({ type: "response.content_part.added" }),
+			event({ type: "response.output_text.delta" }),
+			event({ type: "response.output_text.done" }),
+			event({ type: "response.output_text.done", text: "Recovered answer" }),
+			event({ type: "response.output_text.done", text: "Recovered answer" }),
+			event({ type: "response.output_item.done", item: { type: "message", id: "m1", content: [] } }),
+			completed,
+		]);
+
+		expect(deltas).toEqual(["Recovered answer"]);
+		expect(output.content).toEqual([expect.objectContaining({ type: "text", text: "Recovered answer" })]);
+	});
+
+	it("routes summary text with omitted summary_index into the active section", async () => {
+		const { output, deltas } = await runRecorded([
+			event({ type: "response.output_item.added", item: { type: "reasoning", id: "rs_1", summary: [] } }),
+			event({ type: "response.reasoning_summary_part.added" }),
+			event({ type: "response.reasoning_summary_text.delta" }),
+			event({ type: "response.reasoning_summary_text.done", text: "First" }),
+			event({ type: "response.reasoning_summary_part.done" }),
+			event({ type: "response.reasoning_summary_part.added", part: { type: "summary_text" } }),
+			event({ type: "response.reasoning_summary_text.delta", delta: "Sec" }),
+			event({ type: "response.reasoning_summary_text.done", text: "Second" }),
+			event({ type: "response.output_item.done", item: { type: "reasoning", id: "rs_1", summary: [] } }),
+			completed,
+		]);
+
+		expect(deltas).toEqual(["First", "\n\n", "Sec", "ond"]);
+		expect(output.content).toEqual([expect.objectContaining({ type: "thinking", thinking: "First\n\nSecond" })]);
+	});
+
+	it("keeps completed tool snapshots authoritative after payloadless delta and done frames", async () => {
+		const functionItem = { type: "function_call", id: "fc_1", call_id: "call_fn", name: "read" };
+		const customItem = { type: "custom_tool_call", id: "ctc_1", call_id: "call_custom", name: "patch" };
+		const { output, deltas } = await runRecorded([
+			event({ type: "response.output_item.added", output_index: 0, item: { ...functionItem, arguments: "" } }),
+			event({ type: "response.function_call_arguments.delta", output_index: 0 }),
+			event({ type: "response.function_call_arguments.done", output_index: 0 }),
+			event({
+				type: "response.output_item.done",
+				output_index: 0,
+				item: { ...functionItem, arguments: '{"path":"answer.txt"}' },
+			}),
+			event({ type: "response.output_item.added", output_index: 1, item: { ...customItem, input: "" } }),
+			event({ type: "response.custom_tool_call_input.delta", output_index: 1, delta: "partial" }),
+			event({ type: "response.custom_tool_call_input.delta", output_index: 1 }),
+			event({ type: "response.custom_tool_call_input.done", output_index: 1 }),
+			event({
+				type: "response.output_item.done",
+				output_index: 1,
+				item: { ...customItem, input: "complete patch" },
+			}),
+			completed,
+		]);
+
+		expect(deltas).toEqual(["partial"]);
+		expect(output.content).toEqual([
+			expect.objectContaining({ type: "toolCall", name: "read", arguments: { path: "answer.txt" } }),
+			expect.objectContaining({ type: "toolCall", name: "patch", arguments: { input: "complete patch" } }),
+		]);
+		expect(output.stopReason).toBe("toolUse");
+	});
+
+	it("rejects a supplied non-string delta instead of streaming it as text", async () => {
+		await expect(
+			runRecorded([
+				event({ type: "response.output_item.added", item: { type: "message", id: "m1", content: [] } }),
+				event({ type: "response.output_text.delta", delta: null }),
+			]),
+		).rejects.toBeInstanceOf(TypeError);
 	});
 });

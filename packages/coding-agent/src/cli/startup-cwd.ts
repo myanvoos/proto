@@ -49,7 +49,19 @@ export async function applyStartupCwd(parsed: Args): Promise<void> {
 	for (const dir of parsed.addDir ?? []) await assertUsableDirectory(dir, "--add-dir");
 	if (parsed.cwd) {
 		await assertUsableDirectory(parsed.cwd, "--cwd");
-		setProjectDir(parsed.cwd);
+		try {
+			setProjectDir(parsed.cwd);
+		} catch (error) {
+			// A directory can exist yet refuse entry (macOS TCC-protected folders); only that case gets the hint.
+			const code = error instanceof Error && "code" in error ? String(error.code) : undefined;
+			const hint =
+				code === "EACCES" || code === "EPERM"
+					? " On macOS, grant proto Files & Folders or Full Disk Access permission for the directory."
+					: "";
+			throw new CliUsageError(
+				`Invalid --cwd value: ${JSON.stringify(parsed.cwd)}. Cannot enter it (${code ?? formatError(error)}).${hint}`,
+			);
+		}
 
 		parsed.cwd = getProjectDir();
 		return;

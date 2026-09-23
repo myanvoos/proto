@@ -436,3 +436,104 @@ describe("the context a compaction fires at", () => {
 		expect(resolveThresholdTokens(1_000_000, byPercent)).toBe(200_000);
 	});
 });
+
+function nativeOpenAiModel(): Model {
+	return {
+		id: "gpt-5",
+		name: "GPT-5",
+		api: "openai-responses",
+		provider: "openai",
+		baseUrl: "https://api.openai.com/v1",
+		reasoning: true,
+		input: ["text"],
+		contextWindow: 200_000,
+		maxTokens: 16_384,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		compat: {},
+	} as Model;
+}
+
+describe("entering native replay from a local summary", () => {
+	test("the first native request carries the local summary once and later requests replay only native history", async () => {
+		const requests: string[] = [];
+		const fetchMock: FetchImpl = async (_url, init) => {
+			requests.push(String(init?.body));
+			const item = { type: "compaction", encrypted_content: `history-${requests.length}` };
+			return new Response(JSON.stringify({ output: [item] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		};
+		const model = nativeOpenAiModel();
+		const preparation = {
+			firstKeptEntryId: "kept",
+			messagesToSummarize: [user("long history", 0)],
+			turnPrefixMessages: [],
+			recentMessages: [user("recent", 0)],
+			isSplitTurn: false,
+			tokensBefore: 0,
+			previousSummary: "Archived decision: use port 4242.",
+			previousPreserveData: undefined,
+			fileOps: createFileOps(),
+			settings: { ...DEFAULT_COMPACTION_SETTINGS, remoteEnabled: true, remoteStreamingV2Enabled: false },
+		};
+
+		const first = await compact(preparation, model, "test-key", undefined, undefined, { fetch: fetchMock });
+		expect(requests[0].match(/Archived decision: use port 4242\./g)).toHaveLength(1);
+		expect(requests[0]).toContain("long history");
+
+		await compact(
+			{ ...preparation, previousSummary: first.summary, previousPreserveData: first.preserveData },
+			model,
+			"test-key",
+			undefined,
+			undefined,
+			{ fetch: fetchMock },
+		);
+		expect(requests[1].match(/history-1/g)).toHaveLength(1);
+		expect(requests[1]).not.toContain(first.summary);
+		expect(requests[1]).not.toContain("Archived decision");
+	});
+});
+
+describe("V2 native compaction summary", () => {
+	test("reports the provider-reported usage as processed input, not as retained history", async () => {
+		const model = {
+			...nativeOpenAiModel(),
+			remoteCompaction: {
+				enabled: true,
+				v2StreamingEnabled: true,
+				v2Endpoint: "https://compact.example/v1/responses",
+			},
+		} as Model;
+		const compactionItem = { type: "compaction", encrypted_content: "enc_v2" };
+		const events = [
+			{ type: "response.output_item.done", output_index: 0, item: compactionItem },
+			{ type: "response.completed", response: { usage: { input_tokens: 55, output_tokens: 1, total_tokens: 56 } } },
+		];
+		const fetchMock: FetchImpl = async () =>
+			new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		const result = await compact(
+			{
+				firstKeptEntryId: "kept",
+				messagesToSummarize: [user("long history", 0)],
+				turnPrefixMessages: [],
+				recentMessages: [user("recent", 0)],
+				isSplitTurn: false,
+				tokensBefore: 0,
+				fileOps: createFileOps(),
+				settings: { ...DEFAULT_COMPACTION_SETTINGS, remoteEnabled: true },
+			},
+			model,
+			"test-key",
+			undefined,
+			undefined,
+			{ fetch: fetchMock },
+		);
+		expect(result.summary).toContain("Compaction processed 55 input tokens");
+		expect(result.summary).not.toContain("Retained");
+	});
+});

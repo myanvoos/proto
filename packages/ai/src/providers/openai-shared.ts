@@ -1,3 +1,4 @@
+import { toClinePassWireModelId } from "@oh-my-pi/pi-catalog/cline-pass-model-id";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { toFirepassWireModelId, toFireworksWireModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { isGlm52ReasoningEffortModelId, isKimiK3ModelId } from "@oh-my-pi/pi-catalog/identity";
@@ -11,6 +12,7 @@ import type {
 	ResolvedOpenAICompat,
 	ResolvedOpenAIResponsesCompat,
 	ResolvedOpenAISharedCompat,
+	ThinkingBudgets,
 	VercelGatewayRouting,
 } from "@oh-my-pi/pi-catalog/types";
 import { parseAlibabaTokenPlanCredential } from "@oh-my-pi/pi-catalog/wire/alibaba-token-plan";
@@ -34,6 +36,7 @@ import {
 	structuredCloneJSON,
 	USER_AGENT,
 } from "@oh-my-pi/pi-utils";
+import { NO_AUTH_SENTINEL } from "../auth-retry";
 import * as AIError from "../error";
 import {
 	type Api,
@@ -91,13 +94,18 @@ import {
 import type { CapturedHttpErrorResponse } from "../utils/http-inspector";
 import { getOpenRouterHeaders } from "../utils/openrouter-headers";
 import { isForcedToolChoice } from "../utils/tool-choice";
+import { servedModelFromOpenRouterReasoning } from "./anthropic-signature";
 import {
 	buildCopilotDynamicHeaders,
+	getCachedCopilotIntegrationId,
+	getCopilotIntegrationCacheKey,
 	hasCopilotVisionInput,
+	resolveCopilotRequestIdentity,
 	resolveGitHubCopilotBaseUrl,
 } from "./github-copilot-headers";
+import { applyInferenceHeaders, setHeaderIfAbsent } from "./inference-headers";
 import type { ChatCompletionCreateParamsStreaming } from "./openai-chat-wire";
-import type { InputItem } from "./openai-codex/request-transformer";
+import { type InputItem, sanitizeCodexCallId } from "./openai-codex/request-transformer";
 import type {
 	Response as OpenAIResponse,
 	ResponseComputerToolCall,
@@ -118,8 +126,6 @@ import type {
 } from "./openai-responses-wire";
 import { transformMessages } from "./transform-messages";
 import { joinTextWithImagePlaceholder, joinTextWithOmissions, partitionUserMediaContent } from "./vision-guard";
-
-export const NO_AUTH_SENTINEL = "N/A";
 
 export interface OpenAIModelIdentity {
 	provider: string;
@@ -163,7 +169,7 @@ export interface OpenAIRequestSetupOptions {
 		apiVersion: string;
 		deploymentName: string;
 	};
-	openAISessionId?: string;
+	sessionId?: string;
 	promptCacheSessionId?: string;
 }
 
@@ -173,6 +179,10 @@ export interface OpenAIRequestSetup {
 	headers: Record<string, string>;
 	query: Record<string, string> | undefined;
 	requestHeaders: Record<string, string>;
+	/** Working-identity cache key for this Copilot credential+host; undefined off the Copilot path. */
+	copilotCacheKey: string | undefined;
+	/** Cached identity the Copilot headers were built from (`null` = empty at build); undefined off the Copilot path. */
+	copilotCacheSnapshot: string | null | undefined;
 }
 
 function normalizeSakanaRequestBaseUrl(baseUrl: string | undefined): string | undefined {
@@ -195,14 +205,6 @@ function applyCoreWeaveProjectHeader(headers: Record<string, string>): void {
 	if (projectHeaders) {
 		headers[COREWEAVE_PROJECT_HEADER] = projectHeaders[COREWEAVE_PROJECT_HEADER];
 	}
-}
-
-function setHeaderIfAbsent(headers: Record<string, string>, name: string, value: string): void {
-	const normalizedName = name.toLowerCase();
-	for (const existingName in headers) {
-		if (existingName.toLowerCase() === normalizedName) return;
-	}
-	headers[name] = value;
 }
 
 export function resolveOpenAIRequestSetup(
@@ -233,6 +235,8 @@ export function resolveOpenAIRequestSetup(
 	}
 
 	let copilotPremiumRequests: number | undefined;
+	let copilotCacheKey: string | undefined;
+	let copilotCacheSnapshot: string | null | undefined;
 	let baseUrl = model.baseUrl;
 	if (model.provider === "moonshot") {
 		const moonshotBaseUrl = $env.MOONSHOT_BASE_URL?.trim();
@@ -247,17 +251,31 @@ export function resolveOpenAIRequestSetup(
 		}
 	}
 	if (model.provider === "github-copilot") {
-		apiKey = parseGitHubCopilotApiKey(rawApiKey).accessToken;
+		const copilotApiKey = parseGitHubCopilotApiKey(rawApiKey);
+		apiKey = copilotApiKey.accessToken;
+		const copilotBaseUrl = resolveGitHubCopilotBaseUrl(model.baseUrl, rawApiKey) ?? model.baseUrl;
+		copilotCacheKey = getCopilotIntegrationCacheKey(rawApiKey, copilotBaseUrl);
+		const copilotCached = getCachedCopilotIntegrationId(copilotCacheKey);
 		const copilot = buildCopilotDynamicHeaders({
 			messages: options.messages,
 			hasImages: hasCopilotVisionInput(options.messages),
 			premiumMultiplier: model.premiumMultiplier,
 			headers,
 			initiatorOverride: options.initiatorOverride,
+			enterpriseUrl: copilotApiKey.enterpriseUrl,
+			integrationId: resolveCopilotRequestIdentity(options.extraHeaders),
+			cachedIntegrationId: copilotCached,
 		});
+		// Caller layers may spell these in any case; replace rather than duplicate them
+		// (the dynamic values already honor an explicit identity or initiator).
+		const dynamicHeaderNames = new Set(Object.keys(copilot.headers).map(name => name.toLowerCase()));
+		for (const name of Object.keys(headers)) {
+			if (dynamicHeaderNames.has(name.toLowerCase())) delete headers[name];
+		}
 		Object.assign(headers, copilot.headers);
 		copilotPremiumRequests = copilot.premiumRequests;
-		baseUrl = resolveGitHubCopilotBaseUrl(model.baseUrl, rawApiKey) ?? model.baseUrl;
+		baseUrl = copilotBaseUrl;
+		copilotCacheSnapshot = copilotCached ?? null;
 	}
 
 	if (model.provider === "alibaba-token-plan") {
@@ -290,10 +308,11 @@ export function resolveOpenAIRequestSetup(
 		query = { "api-version": options.azureChatCompletions.apiVersion };
 	}
 
-	if (options.openAISessionId && model.provider === "openai") {
-		setHeaderIfAbsent(headers, "session_id", options.openAISessionId);
-		setHeaderIfAbsent(headers, "x-client-request-id", options.openAISessionId);
-	}
+	applyInferenceHeaders(headers, {
+		provider: model.provider,
+		protocol: "openai",
+		sessionId: options.sessionId ?? options.promptCacheSessionId,
+	});
 	if (options.promptCacheSessionId && model.compat?.promptCacheSessionHeader) {
 		setHeaderIfAbsent(headers, model.compat.promptCacheSessionHeader, options.promptCacheSessionId);
 	}
@@ -310,7 +329,7 @@ export function resolveOpenAIRequestSetup(
 	if (apiKey !== NO_AUTH_SENTINEL) {
 		headers.Authorization ??= `Bearer ${apiKey}`;
 	}
-	return { copilotPremiumRequests, baseUrl, headers, query, requestHeaders };
+	return { copilotPremiumRequests, baseUrl, headers, query, requestHeaders, copilotCacheKey, copilotCacheSnapshot };
 }
 
 export function applyOpenAIServiceTier(
@@ -351,8 +370,14 @@ export function applyOpenAIResponsesServiceTierCost(
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
 }
 
-export function applyOpenRouterReportedCost(model: Pick<Model, "provider">, usage: Usage, rawUsage: unknown): void {
-	if (model.provider !== "openrouter" || typeof rawUsage !== "object" || rawUsage === null) return;
+/** Reconcile token-price estimates with a gateway's authoritative account charge. */
+export function applyProviderReportedCost(model: Pick<Model, "provider">, usage: Usage, rawUsage: unknown): void {
+	if (
+		(model.provider !== "openrouter" && model.provider !== "cline-pass") ||
+		typeof rawUsage !== "object" ||
+		rawUsage === null
+	)
+		return;
 	const reportedCost = Reflect.get(rawUsage, "cost");
 	if (typeof reportedCost !== "number" || !Number.isFinite(reportedCost) || reportedCost < 0) return;
 
@@ -511,6 +536,8 @@ export function applyWireModelIdTransform(
 	openrouterVariant?: string,
 ): string {
 	switch (mode) {
+		case "cline-pass":
+			return toClinePassWireModelId(baseId);
 		case "firepass":
 			return toFirepassWireModelId(baseId);
 		case "fireworks":
@@ -665,7 +692,12 @@ export type OpenAICompletionsParams = Omit<ChatCompletionCreateParamsStreaming, 
 	thinking?: { type: "enabled" | "disabled"; effort?: string; keep?: "all" };
 	enable_thinking?: boolean;
 	preserve_thinking?: boolean;
-	chat_template_kwargs?: { enable_thinking?: boolean; preserve_thinking?: boolean; reasoning_effort?: string };
+	chat_template_kwargs?: {
+		enable_thinking?: boolean;
+		thinking?: boolean;
+		preserve_thinking?: boolean;
+		reasoning_effort?: string;
+	};
 	reasoning?: { effort?: string } | { enabled: false };
 	venice_parameters?: { disable_thinking?: boolean; [key: string]: unknown };
 	reasoning_effort?: string | null;
@@ -682,7 +714,7 @@ export interface ChatCompletionsReasoningOptions {
 
 export type OpenAICompatEndpoint = "chat-completions" | "responses";
 
-export type OpenAIReasoningDisableReason = "caller" | "forced-tool-choice" | "tool-choice" | "not-requested";
+export type OpenAIReasoningDisableReason = "caller" | "forced-tool-choice" | "tool-choice" | "tools" | "not-requested";
 
 export type OpenAICompatPolicyCompat = ResolvedOpenAISharedCompat &
 	Partial<ResolvedOpenAICompat> &
@@ -694,6 +726,7 @@ export interface ResolveOpenAICompatPolicyOptions {
 	reasoning?: string;
 	disableReasoning?: boolean;
 	toolChoice?: unknown;
+	hasTools?: boolean;
 	strictResponsesPairing?: boolean;
 	includeEncryptedReasoning?: boolean;
 	filterReasoningHistory?: boolean;
@@ -752,7 +785,8 @@ function isImplicitDisableWhenNotRequested(disableMode: OpenAIReasoningDisableMo
 	return (
 		disableMode === "zai-thinking-disabled" ||
 		disableMode === "qwen-enable-thinking-false" ||
-		disableMode === "qwen-template-false"
+		disableMode === "qwen-template-false" ||
+		disableMode === "chat-template-thinking-false"
 	);
 }
 
@@ -786,12 +820,19 @@ export function resolveOpenAICompatPolicy<TApi extends Api>(
 		!forcedToolChoiceSuppressesReasoning &&
 		baseCompat.disableReasoningOnToolChoice &&
 		options.toolChoice !== undefined;
+	const toolsSuppressReasoning =
+		!forcedToolChoiceSuppressesReasoning &&
+		!anyToolChoiceSuppressesReasoning &&
+		baseCompat.disableReasoningWithTools === true &&
+		options.hasTools === true;
 	const requestedAndAllowed = requestedEffort !== undefined && !options.disableReasoning && modelSupported;
 	const conflictDisableReason: OpenAIReasoningDisableReason | undefined = forcedToolChoiceSuppressesReasoning
 		? "forced-tool-choice"
 		: anyToolChoiceSuppressesReasoning
 			? "tool-choice"
-			: undefined;
+			: toolsSuppressReasoning
+				? "tools"
+				: undefined;
 	const disableReason: OpenAIReasoningDisableReason | undefined = options.disableReasoning
 		? "caller"
 		: conflictDisableReason;
@@ -898,7 +939,11 @@ function encodeChatCompletionsDisabledReasoning(
 		case "qwen-template-false":
 			params.chat_template_kwargs = { ...params.chat_template_kwargs, enable_thinking: false };
 			break;
+		case "chat-template-thinking-false":
+			params.chat_template_kwargs = { ...params.chat_template_kwargs, thinking: false };
+			break;
 		case "openrouter-enabled-false":
+		case "cline-enabled-false":
 			(params as typeof params & { reasoning?: { effort?: string } | { enabled: false } }).reasoning = {
 				enabled: false,
 			};
@@ -960,6 +1005,13 @@ export function applyChatCompletionsCompatPolicy(params: OpenAICompletionsParams
 						: {}),
 				};
 				break;
+			case "chat-template-thinking-false":
+				params.chat_template_kwargs = {
+					...params.chat_template_kwargs,
+					thinking: true,
+					...(reasoning.wireEffort !== undefined ? { reasoning_effort: reasoning.wireEffort } : {}),
+				};
+				break;
 			case "openrouter-enabled-false":
 				if (reasoning.wireEffort !== undefined) {
 					(params as typeof params & { reasoning?: { effort?: string } }).reasoning = {
@@ -992,7 +1044,7 @@ export function applyChatCompletionsReasoningParams(
 	params: OpenAICompletionsParams,
 	model: Model<"openai-completions">,
 	compat: ResolvedOpenAICompat,
-	options: (ChatCompletionsReasoningOptions & { toolChoice?: unknown }) | undefined,
+	options: (ChatCompletionsReasoningOptions & { toolChoice?: unknown; hasTools?: boolean }) | undefined,
 ): void {
 	applyChatCompletionsCompatPolicy(
 		params,
@@ -1002,8 +1054,33 @@ export function applyChatCompletionsReasoningParams(
 			reasoning: options?.reasoning,
 			disableReasoning: options?.disableReasoning,
 			toolChoice: options?.toolChoice,
+			hasTools: options?.hasTools,
 		}),
 	);
+}
+
+/** ClinePass budget-mode models (Qwen 3.7) take a `reasoning.max_tokens` budget instead of an effort label. */
+export function applyClinePassReasoningBudget(
+	params: OpenAICompletionsParams,
+	model: Model<"openai-completions">,
+	policy: OpenAICompatPolicy,
+	options: (ChatCompletionsReasoningOptions & { thinkingBudgets?: ThinkingBudgets }) | undefined,
+): void {
+	if (
+		model.provider !== "cline-pass" ||
+		!policy.reasoning.enabled ||
+		model.thinking?.mode !== "budget" ||
+		options?.reasoning === undefined
+	) {
+		return;
+	}
+	const budget = options.thinkingBudgets?.[options.reasoning] ?? model.thinking.effortBudgets?.[options.reasoning];
+	if (budget === undefined) return;
+	delete params.reasoning_effort;
+	(params as typeof params & { reasoning?: Record<string, unknown> }).reasoning = {
+		...(params as typeof params & { reasoning?: Record<string, unknown> }).reasoning,
+		max_tokens: budget,
+	};
 }
 
 export function disableChatCompletionsReasoningForDialect(
@@ -1021,17 +1098,25 @@ export function resolveOpenAICompletionsOutputClamp(
 	model: Model<"openai-completions">,
 	compat: ResolvedOpenAICompat,
 ): number | undefined {
+	if (model.provider === "cline-pass") {
+		return model.maxTokens ?? OPENAI_MAX_OUTPUT_TOKENS;
+	}
 	if (isZaiReasoningEffortDialect(model, compat)) {
 		return model.maxTokens ?? OPENAI_MAX_OUTPUT_TOKENS;
 	}
 	if (model.provider === "moonshot" && isKimiK3ModelId(model.id)) {
 		return model.maxTokens ?? OPENAI_MAX_OUTPUT_TOKENS;
 	}
+	if (compat.clampOutputToModelMax) {
+		return model.maxTokens ?? OPENAI_MAX_OUTPUT_TOKENS;
+	}
 	return undefined;
 }
 
-export function resolveOpenAIResponsesOutputClamp(model: Pick<Model, "provider" | "maxTokens">): number | undefined {
-	if (model.provider === "meta") {
+export function resolveOpenAIResponsesOutputClamp(
+	model: Pick<Model, "maxTokens"> & { compat: Pick<ResolvedOpenAISharedCompat, "clampOutputToModelMax"> },
+): number | undefined {
+	if (model.compat.clampOutputToModelMax) {
 		return model.maxTokens ?? OPENAI_MAX_OUTPUT_TOKENS;
 	}
 	return undefined;
@@ -1178,18 +1263,14 @@ export function normalizeResponsesToolCallIdForTransform(
 	model?: Model<Api>,
 	source?: AssistantMessage,
 ): string {
-	if (!id.includes("|")) return id;
+	const sep = id.search(/[\n|]/);
+	if (sep < 0 && id.length <= 64 && /^[a-zA-Z0-9_-]+$/.test(id)) return id;
 	const isForeignToolCall =
 		source != null && model != null && (source.provider !== model.provider || source.api !== model.api);
-	if (isForeignToolCall) {
-		const [callId, itemId] = id.split("|");
-		const normalizeIdPart = (part: string): string => {
-			const sanitized = part.replace(/[^a-zA-Z0-9_-]/g, "_");
-			const truncated = sanitized.length > 64 ? sanitized.slice(0, 64) : sanitized;
-			return truncated.replace(/_+$/, "");
-		};
-		const normalizedCallId = normalizeIdPart(callId);
-		let normalizedItemId = `fc_${Bun.hash(itemId).toString(36)}`;
+	if (isForeignToolCall || sep >= 0 || id.length > 64) {
+		const [callId, itemId] = sep > 0 ? [id.slice(0, sep), id.slice(sep + 1)] : [id, undefined];
+		const normalizedCallId = sanitizeCodexCallId(callId);
+		let normalizedItemId = itemId ? `fc_${Bun.hash(itemId).toString(36)}` : `fc_${Bun.hash(id).toString(36)}`;
 		if (normalizedItemId.length > 64) normalizedItemId = normalizedItemId.slice(0, 64);
 		return `${normalizedCallId}|${normalizedItemId}`;
 	}
@@ -1535,8 +1616,25 @@ export interface BuildResponsesInputOptions<TApi extends Api> {
 
 export function escapeReplayedControlTokens(items: ResponseInput): ResponseInput {
 	return items.map(item => {
-		if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
-			return typeof item.output === "string" ? { ...item, output: escapeHarmonyControlTokens(item.output) } : item;
+		if (item.type === "function_call_output") {
+			return typeof item.output === "string"
+				? { ...item, output: escapeHarmonyControlTokens(item.output) }
+				: {
+						...item,
+						output: item.output.map(part =>
+							part.type === "input_text" ? { ...part, text: escapeHarmonyControlTokens(part.text) } : part,
+						),
+					};
+		}
+		if (item.type === "custom_tool_call_output") {
+			return typeof item.output === "string"
+				? { ...item, output: escapeHarmonyControlTokens(item.output) }
+				: {
+						...item,
+						output: item.output.map(part =>
+							part.type === "input_text" ? { ...part, text: escapeHarmonyControlTokens(part.text) } : part,
+						),
+					};
 		}
 		if (item.type === "function_call") {
 			return typeof item.arguments === "string"
@@ -1745,10 +1843,11 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 		msgIndex++;
 	}
 
-	const hoisted = hoistInterleavedResponsesToolBatchMessages(messages);
-	const withRepairedOutputs = options.repairOrphanOutputs ? repairOrphanResponsesToolOutputs(hoisted) : hoisted;
+	// Repairs can inject assistant notes between another call's function_call and output; hoist last so strict validators see intact call→output batches.
+	const withRepairedOutputs = options.repairOrphanOutputs ? repairOrphanResponsesToolOutputs(messages) : messages;
 	const withRepairedCalls = repairOrphanResponsesToolCalls(withRepairedOutputs);
-	return stripUnpairedOpenAIResponsesComputerReasoningIdsForReplay(withRepairedCalls);
+	const hoisted = hoistInterleavedResponsesToolBatchMessages(withRepairedCalls);
+	return stripUnpairedOpenAIResponsesComputerReasoningIdsForReplay(hoisted);
 }
 
 type ResponsesReplayAssistantMessage = Omit<ResponseOutputMessage, "id"> & { id?: string };
@@ -1765,6 +1864,9 @@ function parseResponseReasoningReplayItem(signature: string | undefined): Respon
 		return undefined;
 	}
 }
+
+/** DeepSeek-family Responses targets reject an empty synthesized `reasoning_text` like a missing item; not `"."`, which DeepSeek rejects on chat completions. */
+export const SYNTHETIC_REASONING_REPLAY_PLACEHOLDER = "reasoning unavailable";
 
 export function convertResponsesAssistantMessage<TApi extends Api>(
 	assistantMsg: AssistantMessage,
@@ -1908,33 +2010,63 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 	}
 
 	if (requiresReasoningItem && !reasoningItemEmitted && outputItems.length > 0) {
-		const reasoningText = carriedReasoningTexts.join("\n");
-		const reasoningId =
-			synthesizedReasoningItemId ?? `rs_${Bun.hash(`${model.id}:${msgIndex}:${reasoningText}`).toString(36)}`;
-		const reasoningItem: ResponseReasoningItem = {
+		const carriedReasoningText = carriedReasoningTexts.join("\n");
+		const reasoningText =
+			carriedReasoningText.length > 0 ? carriedReasoningText : SYNTHETIC_REASONING_REPLAY_PLACEHOLDER;
+		// Only a surviving upstream id is sent: hosts validating reasoning ids (Meta via OpenRouter) reject a fabricated `rs_…`.
+		const reasoningItem = {
 			type: "reasoning",
-			id: reasoningId,
+			...(synthesizedReasoningItemId ? { id: synthesizedReasoningItemId } : {}),
 			summary: [],
 			content: [{ type: "reasoning_text", text: reasoningText }],
-		};
-		outputItems.unshift(reasoningItem);
+		} satisfies Omit<ResponseReasoningItem, "id"> & Partial<Pick<ResponseReasoningItem, "id">>;
+		outputItems.unshift(reasoningItem as ResponseReasoningItem);
 	}
 
 	return outputItems;
 }
 
-const syntheticToolImageMessages = new WeakSet<object>();
+/**
+ * `output` keeps image blocks inline for paired function/custom outputs; `outputText` feeds the
+ * assistant-note fallbacks, which cannot carry a content array.
+ */
+export interface ResponsesToolResultOutputEncoding {
+	output: string | ResponseInputContent[];
+	outputText: string;
+}
 
-function insertResponsesToolOutput(messages: ResponseInput, output: ResponseInput[number]): void {
-	let index = messages.length;
-	while (index > 0) {
-		const previous = messages[index - 1];
-		if (typeof previous !== "object" || previous === null || !syntheticToolImageMessages.has(previous)) {
-			break;
-		}
-		index -= 1;
-	}
-	messages.splice(index, 0, output);
+export function encodeResponsesToolResultOutput<TApi extends Api>(
+	toolResult: ToolResultMessage,
+	model: Model<TApi>,
+	supportsImageDetailOriginal: boolean,
+): ResponsesToolResultOutputEncoding {
+	const supportsImages = model.input.includes("image");
+	const textResult = toolResult.content
+		.filter((block): block is TextContent => block.type === "text")
+		.map(block => block.text)
+		.join("\n");
+	const hasImages = toolResult.content.some((block): block is ImageContent => block.type === "image");
+	const omittedImages = hasImages && !supportsImages;
+	const rawOutput = (
+		omittedImages
+			? joinTextWithImagePlaceholder(textResult, true)
+			: textResult.length > 0
+				? textResult
+				: hasImages
+					? "(see attached image)"
+					: ""
+	).toWellFormed();
+	const escapeControlTokens = isHarmonyDialectModel(model);
+	const outputText = escapeControlTokens ? escapeHarmonyControlTokens(rawOutput) : rawOutput;
+	const output: string | ResponseInputContent[] =
+		hasImages && supportsImages
+			? toolResult.content.map((block): ResponseInputContent => {
+					if (block.type === "image") return convertResponsesInputImage(block, supportsImageDetailOriginal);
+					const text = block.text.toWellFormed();
+					return { type: "input_text", text: escapeControlTokens ? escapeHarmonyControlTokens(text) : text };
+				})
+			: outputText;
+	return { output, outputText };
 }
 
 export function appendResponsesToolResultMessages<TApi extends Api>(
@@ -1948,26 +2080,8 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 	supportsCustomToolCalls = true,
 	computerCallIds?: ReadonlySet<string>,
 ): void {
-	const supportsImages = model.input.includes("image");
-	const textResult = toolResult.content
-		.filter((block): block is TextContent => block.type === "text")
-		.map(block => block.text)
-		.join("\n");
-	const hasImages = toolResult.content.some((block): block is ImageContent => block.type === "image");
-	const omittedImages = hasImages && !supportsImages;
+	const { output, outputText } = encodeResponsesToolResultOutput(toolResult, model, supportsImageDetailOriginal);
 	const normalized = normalizeResponsesToolCallId(toolResult.toolCallId);
-
-	const rawOutput = (
-		omittedImages
-			? joinTextWithImagePlaceholder(textResult, true)
-			: textResult.length > 0
-				? textResult
-				: hasImages
-					? "(see attached image)"
-					: ""
-	).toWellFormed();
-
-	const output = isHarmonyDialectModel(model) ? escapeHarmonyControlTokens(rawOutput) : rawOutput;
 	if (toolResult.providerMetadata?.type === "computer" && model.supportsComputerUse !== true) {
 		messages.push({
 			type: "message",
@@ -1979,7 +2093,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 	if (computerCallIds?.has(normalized.callId)) {
 		if (toolResult.providerMetadata?.type !== "computer") {
 			const limit = 16_000;
-			const noteText = output.length > limit ? `${output.slice(0, limit)}\n...[truncated]` : output;
+			const noteText = outputText.length > limit ? `${outputText.slice(0, limit)}\n...[truncated]` : outputText;
 			messages.push({
 				type: "message",
 				role: "assistant",
@@ -1995,7 +2109,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 			} as ResponseInput[number]);
 			return;
 		}
-		insertResponsesToolOutput(messages, {
+		messages.push({
 			type: "computer_call_output",
 			call_id: normalized.callId,
 			output: structuredCloneJSON(toolResult.providerMetadata.screenshot),
@@ -2005,7 +2119,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 	}
 	if (strictResponsesPairing && !knownCallIds.has(normalized.callId)) {
 		const limit = 16_000;
-		const noteText = output.length > limit ? `${output.slice(0, limit)}\n...[truncated]` : output;
+		const noteText = outputText.length > limit ? `${outputText.slice(0, limit)}\n...[truncated]` : outputText;
 		messages.push({
 			type: "message",
 			role: "assistant",
@@ -2014,34 +2128,18 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 		return;
 	}
 	if (supportsCustomToolCalls && customCallIds?.has(normalized.callId)) {
-		insertResponsesToolOutput(messages, {
+		messages.push({
 			type: "custom_tool_call_output",
 			call_id: normalized.callId,
 			output,
 		} as ResponseInput[number]);
 	} else {
-		insertResponsesToolOutput(messages, {
+		messages.push({
 			type: "function_call_output",
 			call_id: normalized.callId,
 			output,
 		});
 	}
-
-	if (!hasImages || !supportsImages) {
-		return;
-	}
-
-	const contentParts: ResponseInputContent[] = [
-		{ type: "input_text", text: "Attached image(s) from tool result:" } satisfies ResponseInputText,
-	];
-	for (const block of toolResult.content) {
-		if (block.type === "image") {
-			contentParts.push(convertResponsesInputImage(block, supportsImageDetailOriginal));
-		}
-	}
-	const imageMessage = { role: "user", content: contentParts } satisfies ResponseInput[number];
-	syntheticToolImageMessages.add(imageMessage);
-	messages.push(imageMessage);
 }
 
 type ResponsesToolCallBlock = ToolCall & {
@@ -2050,21 +2148,37 @@ type ResponsesToolCallBlock = ToolCall & {
 	[kStreamingArgumentsDone]?: boolean;
 };
 
+// Proxies send payloadless progress frames (omitted = no text); a supplied non-string payload is malformed output.
+function optionalResponsesText(value: unknown, field: string): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") throw new TypeError(`Invalid Responses ${field}: expected a string`);
+	return value;
+}
+
 function ensureReasoningSummaryPart(
 	item: ResponseReasoningItem,
-	summaryIndex: number,
+	summaryIndex: number | undefined,
 ): ResponseReasoningItem["summary"][number] {
 	item.summary = item.summary || [];
+	if (summaryIndex === undefined) summaryIndex = Math.max(0, item.summary.length - 1);
+	if (!Number.isSafeInteger(summaryIndex) || summaryIndex < 0) {
+		throw new TypeError("Invalid Responses summary_index: expected a non-negative integer");
+	}
 	while (item.summary.length <= summaryIndex) {
 		item.summary.push({ type: "summary_text", text: "" });
 	}
-	return item.summary[summaryIndex]!;
+	const part = item.summary[summaryIndex]!;
+	part.text = optionalResponsesText(part.text, "summary text") ?? "";
+	return part;
 }
 
 export function appendReasoningSummaryPart(
 	item: ResponseReasoningItem,
-	part: ResponseReasoningItem["summary"][number],
+	part: ResponseReasoningItem["summary"][number] | undefined,
 ): void {
+	if (part === undefined) return;
+	if (part?.type !== "summary_text") throw new TypeError("Invalid Responses reasoning summary part");
+	part.text = optionalResponsesText(part.text, "summary text") ?? "";
 	item.summary = item.summary || [];
 	item.summary.push(part);
 }
@@ -2132,8 +2246,10 @@ export function appendReasoningSummaryTextDelta(
 	stream: AssistantMessageEventStream,
 	output: AssistantMessage,
 	contentIndex: number,
-	summaryIndex = 0,
+	summaryIndex?: number,
 ): void {
+	delta = optionalResponsesText(delta, "reasoning summary delta") ?? "";
+	if (!delta) return;
 	const part = ensureReasoningSummaryPart(item, summaryIndex);
 	block.thinking += delta;
 	part.text += delta;
@@ -2149,6 +2265,9 @@ export function applyReasoningSummaryTextDone(
 	output: AssistantMessage,
 	contentIndex: number,
 ): void {
+	const snapshot = optionalResponsesText(text, "reasoning summary text");
+	if (snapshot === undefined) return;
+	text = snapshot;
 	const part = ensureReasoningSummaryPart(item, summaryIndex);
 	const previous = part.text;
 	part.text = text;
@@ -2158,8 +2277,8 @@ export function applyReasoningSummaryTextDone(
 		stream.push({ type: "thinking_delta", contentIndex, delta: text, partial: output });
 		return;
 	}
-	if (text.startsWith(block.thinking)) {
-		const delta = text.slice(block.thinking.length);
+	if (text.startsWith(previous) && block.thinking.endsWith(previous)) {
+		const delta = text.slice(previous.length);
 		if (!delta) return;
 		block.thinking += delta;
 		stream.push({ type: "thinking_delta", contentIndex, delta, partial: output });
@@ -2225,6 +2344,8 @@ export function appendMessageTextDelta(
 	contentIndex: number,
 	partType: "output_text" | "refusal",
 ): void {
+	delta = optionalResponsesText(delta, "message delta") ?? "";
+	if (!delta) return;
 	item.content = item.content || [];
 	let lastPart = item.content[item.content.length - 1];
 	if (lastPart?.type !== partType) {
@@ -2236,11 +2357,39 @@ export function appendMessageTextDelta(
 	}
 	block.text += delta;
 	if (lastPart.type === "output_text") {
-		lastPart.text += delta;
+		lastPart.text = (optionalResponsesText(lastPart.text, "output text") ?? "") + delta;
 	} else {
-		lastPart.refusal += delta;
+		lastPart.refusal = (optionalResponsesText(lastPart.refusal, "refusal") ?? "") + delta;
 	}
 	stream.push({ type: "text_delta", contentIndex, delta, partial: output });
+}
+
+/** Recovers text omitted from delta frames without replaying an already streamed prefix. */
+function applyMessageTextDone(
+	item: ResponseOutputMessage,
+	block: TextContent,
+	text: string,
+	stream: AssistantMessageEventStream,
+	output: AssistantMessage,
+	contentIndex: number,
+	partType: "output_text" | "refusal",
+): void {
+	const snapshot = optionalResponsesText(text, "message text");
+	if (snapshot === undefined) return;
+	const lastPart = item.content?.[item.content.length - 1];
+	const previous =
+		lastPart?.type === partType
+			? (optionalResponsesText(lastPart.type === "output_text" ? lastPart.text : lastPart.refusal, "message text") ??
+				"")
+			: "";
+	if (snapshot.startsWith(previous)) {
+		appendMessageTextDelta(item, block, snapshot.slice(previous.length), stream, output, contentIndex, partType);
+	} else if (lastPart?.type === partType) {
+		// A correction is not an append-only delta; keep it for the completed block instead of appending contradictory text.
+		if (lastPart.type === "output_text") lastPart.text = snapshot;
+		else lastPart.refusal = snapshot;
+		block.text = finalizeMessageText(item, block.text);
+	}
 }
 
 export function finalizeMessageText(item: ResponseOutputMessage, streamedText: string): string {
@@ -2269,6 +2418,8 @@ export function accumulateToolCallArgumentsDelta(
 	output: AssistantMessage,
 	contentIndex: number,
 ): void {
+	delta = optionalResponsesText(delta, "function call arguments delta") ?? "";
+	if (!delta) return;
 	block[kStreamingPartialJson] += delta;
 	const throttled = parseStreamingJsonThrottled(block[kStreamingPartialJson], block[kStreamingLastParseLen] ?? 0);
 	if (throttled) {
@@ -2297,6 +2448,8 @@ export function accumulateCustomToolCallInputDelta(
 	output: AssistantMessage,
 	contentIndex: number,
 ): void {
+	delta = optionalResponsesText(delta, "custom tool input delta") ?? "";
+	if (!delta) return;
 	block[kStreamingPartialJson] += delta;
 	block.arguments = { input: block[kStreamingPartialJson] };
 	stream.push({ type: "toolcall_delta", contentIndex, delta, partial: output });
@@ -2579,8 +2732,14 @@ export async function processResponsesStream<TApi extends Api>(
 			lastOpenItem = openItemsInOrder[openItemsInOrder.length - 1] ?? null;
 		}
 	};
+	// output.content is append-only while streaming; indexing blocks keeps per-delta lookups O(1) on long turns.
+	const contentIndexByBlock = new Map<object, number>();
+	const pushContentBlock = (block: ThinkingContent | TextContent | StreamingToolCallBlock | ToolCall): void => {
+		contentIndexByBlock.set(block, output.content.length);
+		output.content.push(block);
+	};
 	const contentIndexOf = (block: ThinkingContent | TextContent | StreamingToolCallBlock): number =>
-		output.content.indexOf(block);
+		contentIndexByBlock.get(block) ?? output.content.indexOf(block);
 
 	let sawFirstToken = false;
 
@@ -2598,7 +2757,7 @@ export async function processResponsesStream<TApi extends Api>(
 			const item = event.item;
 			if (item.type === "reasoning") {
 				const block: ThinkingContent = { type: "thinking", thinking: "", itemId: item.id };
-				output.content.push(block);
+				pushContentBlock(block);
 				registerOpenItem(event.output_index, item.id, { item, block });
 				stream.push({ type: "thinking_start", contentIndex: contentIndexOf(block), partial: output });
 			} else if (item.type === "message") {
@@ -2607,7 +2766,7 @@ export async function processResponsesStream<TApi extends Api>(
 					text: "",
 					textSignature: encodeTextSignatureV1(item.id, item.phase ?? undefined),
 				};
-				output.content.push(block);
+				pushContentBlock(block);
 				registerOpenItem(event.output_index, item.id, { item, block });
 				stream.push({ type: "text_start", contentIndex: contentIndexOf(block), partial: output });
 			} else if (item.type === "function_call") {
@@ -2618,7 +2777,7 @@ export async function processResponsesStream<TApi extends Api>(
 					arguments: {},
 					[kStreamingPartialJson]: item.arguments || "",
 				};
-				output.content.push(block);
+				pushContentBlock(block);
 				registerOpenItem(
 					event.output_index,
 					item.id,
@@ -2636,7 +2795,7 @@ export async function processResponsesStream<TApi extends Api>(
 					providerMetadata: computerCallMetadata(item),
 					[kStreamingPartialJson]: "",
 				};
-				output.content.push(block);
+				pushContentBlock(block);
 				registerOpenItem(event.output_index, item.id, { item, block }, item.call_id);
 				stream.push({ type: "toolcall_start", contentIndex: contentIndexOf(block), partial: output });
 			} else if (item.type === "custom_tool_call") {
@@ -2650,7 +2809,7 @@ export async function processResponsesStream<TApi extends Api>(
 
 					[kStreamingPartialJson]: item.input ?? "",
 				};
-				output.content.push(block);
+				pushContentBlock(block);
 				registerOpenItem(
 					event.output_index,
 					item.id,
@@ -2696,12 +2855,13 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 		} else if (event.type === "response.reasoning_text.delta") {
 			const entry = lookupOpenItem(event);
-			if (entry?.item.type === "reasoning" && entry.block.type === "thinking") {
-				entry.block.thinking += event.delta;
+			const delta = optionalResponsesText(event.delta, "reasoning delta");
+			if (entry?.item.type === "reasoning" && entry.block.type === "thinking" && delta) {
+				entry.block.thinking += delta;
 				stream.push({
 					type: "thinking_delta",
 					contentIndex: contentIndexOf(entry.block),
-					delta: event.delta,
+					delta,
 					partial: output,
 				});
 			}
@@ -2734,6 +2894,19 @@ export async function processResponsesStream<TApi extends Api>(
 					"refusal",
 				);
 			}
+		} else if (event.type === "response.output_text.done" || event.type === "response.refusal.done") {
+			const entry = lookupOpenItem(event);
+			if (entry?.item.type === "message" && entry.block.type === "text") {
+				applyMessageTextDone(
+					entry.item,
+					entry.block,
+					event.type === "response.output_text.done" ? event.text : event.refusal,
+					stream,
+					output,
+					contentIndexOf(entry.block),
+					event.type === "response.output_text.done" ? "output_text" : "refusal",
+				);
+			}
 		} else if (event.type === "response.function_call_arguments.delta") {
 			const entry = lookupOpenFunctionCallItem(event);
 			if (entry?.item.type === "function_call" && entry.block.type === "toolCall") {
@@ -2741,8 +2914,9 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 		} else if (event.type === "response.function_call_arguments.done") {
 			const entry = lookupOpenFunctionCallItem(event);
-			if (entry?.item.type === "function_call" && entry.block.type === "toolCall") {
-				finalizeToolCallArgumentsDone(entry.block, event.arguments);
+			const args = optionalResponsesText(event.arguments, "function call arguments");
+			if (entry?.item.type === "function_call" && entry.block.type === "toolCall" && args !== undefined) {
+				finalizeToolCallArgumentsDone(entry.block, args);
 			}
 		} else if (event.type === "response.custom_tool_call_input.delta") {
 			const entry = lookupOpenToolCallAlias(event, "custom_tool_call");
@@ -2755,12 +2929,14 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 		} else if (event.type === "response.custom_tool_call_input.done") {
 			const entry = lookupOpenToolCallAlias(event, "custom_tool_call");
+			const input = optionalResponsesText(event.input, "custom tool input");
 			if (
 				entry?.item.type === "custom_tool_call" &&
 				entry.block.type === "toolCall" &&
-				entry.block[kStreamingArgumentsDone] === undefined
+				entry.block[kStreamingArgumentsDone] === undefined &&
+				input !== undefined
 			) {
-				finalizeCustomToolCallInputDone(entry.block, event.input);
+				finalizeCustomToolCallInputDone(entry.block, input);
 				entry.block[kStreamingArgumentsDone] = true;
 			}
 		} else if (event.type === "response.output_item.done") {
@@ -2780,6 +2956,7 @@ export async function processResponsesStream<TApi extends Api>(
 				if (reasoningBlock) {
 					reasoningBlock.thinking = finalizeReasoningThinking(item, reasoningBlock.thinking);
 					reasoningBlock.thinkingSignature = JSON.stringify(item);
+					if (!output.upstreamModel) output.upstreamModel = servedModelFromOpenRouterReasoning(item);
 					stream.push({
 						type: "thinking_end",
 						contentIndex: contentIndexOf(reasoningBlock),
@@ -2799,7 +2976,7 @@ export async function processResponsesStream<TApi extends Api>(
 					contentIndex = contentIndexOf(block);
 				} else {
 					const synthesized: TextContent = { type: "text", text, textSignature };
-					output.content.push(synthesized);
+					pushContentBlock(synthesized);
 					contentIndex = output.content.length - 1;
 				}
 				stream.push({ type: "text_end", contentIndex, content: text, partial: output });
@@ -2831,7 +3008,7 @@ export async function processResponsesStream<TApi extends Api>(
 					clearStreamingPartialJson(block);
 					contentIndex = contentIndexOf(block);
 				} else if (executable) {
-					output.content.push(toolCall);
+					pushContentBlock(toolCall);
 					contentIndex = output.content.length - 1;
 				} else {
 					contentIndex = -1;
@@ -2855,14 +3032,19 @@ export async function processResponsesStream<TApi extends Api>(
 					clearStreamingPartialJson(block);
 					contentIndex = contentIndexOf(block);
 				} else {
-					output.content.push(toolCall);
+					pushContentBlock(toolCall);
 					contentIndex = output.content.length - 1;
 				}
 				closeOpenItem(event.output_index, item.id, entry, item.call_id);
 				stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
 			} else if (item.type === "custom_tool_call") {
 				const block = entry?.block.type === "toolCall" ? entry.block : undefined;
-				const rawInput = block?.[kStreamingPartialJson] ? block[kStreamingPartialJson] : (item.input ?? "");
+				const rawInput =
+					optionalResponsesText(item.input, "custom tool input") ??
+					(block?.[kStreamingArgumentsDone]
+						? optionalResponsesText(block.arguments.input, "custom tool input")
+						: block?.[kStreamingPartialJson]) ??
+					"";
 				const toolCall: ToolCall = {
 					type: "toolCall",
 					id: encodeResponsesToolCallId(item.call_id, item.id),
@@ -2877,7 +3059,7 @@ export async function processResponsesStream<TApi extends Api>(
 					clearStreamingPartialJson(block);
 					contentIndex = contentIndexOf(block);
 				} else {
-					output.content.push(toolCall);
+					pushContentBlock(toolCall);
 					contentIndex = output.content.length - 1;
 				}
 				closeOpenItem(event.output_index, item.id, entry, item.call_id, prefixedFunctionCallItemKey(item.call_id));
@@ -2898,8 +3080,8 @@ export async function processResponsesStream<TApi extends Api>(
 				output.responseId = response.id;
 			}
 			populateResponsesUsageFromResponse(output, response?.usage);
-			calculateCost(model, output.usage);
-			applyOpenRouterReportedCost(model, output.usage, response?.usage);
+			calculateCost(model, output.usage, output.timestamp);
+			applyProviderReportedCost(model, output.usage, response?.usage);
 			applyOpenAIResponsesServiceTierCost(
 				model,
 				output.usage,
@@ -2911,6 +3093,9 @@ export async function processResponsesStream<TApi extends Api>(
 				const error = response?.error ?? (response as any)?.status_details?.error;
 				const details = response?.incomplete_details;
 				const statusDetailsReason = (response as any)?.status_details?.reason;
+				// In-band throttles must advance retry/fallback like an HTTP 429/5xx.
+				const inBand = details ? undefined : AIError.createInBandProviderError({ ...response, error });
+				if (inBand) throw inBand;
 				const message = error
 					? `${error.code || "unknown"}: ${error.message || "no message"}`
 					: details?.reason
@@ -2940,6 +3125,8 @@ export async function processResponsesStream<TApi extends Api>(
 			break;
 		} else if (event.type === "error") {
 			const err = (event as any).error ?? event;
+			const inBand = AIError.createInBandProviderError(event);
+			if (inBand) throw inBand;
 			const code = err.code ?? "unknown";
 			const message = err.message ?? "no message";
 			throw new AIError.ProviderResponseError(`Error Code ${code}: ${message}`, {
@@ -2950,6 +3137,8 @@ export async function processResponsesStream<TApi extends Api>(
 			populateResponsesUsageFromResponse(output, event.response?.usage);
 			const error = event.response?.error ?? (event.response as any)?.status_details?.error;
 			const details = event.response?.incomplete_details;
+			const inBand = details ? undefined : AIError.createInBandProviderError({ ...event.response, error });
+			if (inBand) throw inBand;
 			const message = error
 				? `${error.code || "unknown"}: ${error.message || "no message"}`
 				: details?.reason
@@ -3095,7 +3284,10 @@ export function applyCommonResponsesSamplingParams<P extends CommonResponsesPara
 	params: P,
 	options: CommonSamplingOptions | undefined,
 	model: Pick<Model, "provider" | "api" | "id" | "omitMaxOutputTokens" | "maxTokens"> & {
-		compat: Pick<ResolvedOpenAISharedCompat, "supportsSamplingParams" | "supportsPenaltyAndStopParams">;
+		compat: Pick<
+			ResolvedOpenAISharedCompat,
+			"supportsSamplingParams" | "supportsPenaltyAndStopParams" | "clampOutputToModelMax"
+		>;
 	},
 ): void {
 	if (options?.maxTokens && !model.omitMaxOutputTokens) {
@@ -3125,6 +3317,15 @@ type ReasoningOptions = {
 	disableReasoning?: boolean;
 	toolChoice?: unknown;
 };
+
+/** Hosts rejecting `reasoning.summary` get an explicit `null` whenever reasoning is engaged, so the policy never fills the `"auto"` default. */
+export function resolveReasoningSummaryOption(
+	model: Model<"openai-responses" | "azure-openai-responses" | "openai-codex-responses">,
+	options: Pick<ReasoningOptions, "reasoning" | "reasoningSummary"> | undefined,
+): "auto" | "detailed" | "concise" | null | undefined {
+	if (model.compat.supportsReasoningSummary) return options?.reasoningSummary;
+	return options?.reasoning === undefined ? undefined : null;
+}
 
 export interface ApplyResponsesCompatPolicyOptions {
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
@@ -3209,7 +3410,7 @@ export function applyResponsesReasoningParams<P extends ResponseCreateParamsStre
 			includeEncryptedReasoning,
 			omitReasoningEffort,
 		}),
-		{ reasoningSummary: options?.reasoningSummary, mapEffort },
+		{ reasoningSummary: resolveReasoningSummaryOption(model, options), mapEffort },
 	);
 }
 
@@ -3286,18 +3487,23 @@ export function populateResponsesUsageFromResponse(
 	}
 }
 
-function deepEqualsWithout(a: unknown, b: unknown, omitKeys?: Record<string, boolean>): boolean {
+function deepEqualsWithout(
+	a: unknown,
+	b: unknown,
+	omitKeys?: Readonly<Record<string, boolean>>,
+	additionalOmitKeys?: Readonly<Record<string, boolean>>,
+): boolean {
 	if (!a || !b || typeof a !== "object" || typeof b !== "object") return Bun.deepEquals(a, b);
 	const ao = a as Record<string, unknown>;
 	const bo = b as Record<string, unknown>;
 	for (const key in ao) {
-		if (omitKeys?.[key]) continue;
+		if (omitKeys?.[key] || additionalOmitKeys?.[key]) continue;
 		const av = ao[key];
 		const bv = bo[key];
 		if (av !== bv && !Bun.deepEquals(av, bv)) return false;
 	}
 	for (const key in bo) {
-		if (omitKeys?.[key]) continue;
+		if (omitKeys?.[key] || additionalOmitKeys?.[key]) continue;
 		if (bo[key] !== undefined && !(key in ao)) return false;
 	}
 	return true;
@@ -3321,10 +3527,11 @@ export function buildResponsesDeltaInput<TItem extends ResponseInputItem | Input
 	previous: { input?: TItem[] } | undefined,
 	previousResponseItems: readonly TItem[] | undefined,
 	current: { input?: TItem[] },
+	additionalTopLevelExcludeMap?: Readonly<Record<string, boolean>>,
 ): TItem[] | null {
 	if (!previous) return null;
 	if (!Array.isArray(previous.input) || !Array.isArray(current.input)) return null;
-	if (!deepEqualsWithout(previous, current, TOP_LEVEL_EXCLUDE_MAP)) {
+	if (!deepEqualsWithout(previous, current, TOP_LEVEL_EXCLUDE_MAP, additionalTopLevelExcludeMap)) {
 		return null;
 	}
 

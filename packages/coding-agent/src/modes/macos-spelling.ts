@@ -4,11 +4,18 @@ import type {
 	EditorTextAssistProvider,
 	EditorWordReplacements,
 } from "@oh-my-pi/pi-tui/components/editor";
+import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { logger } from "@oh-my-pi/pi-utils";
 import { maskNonProse } from "./markdown-prose";
 
-const TYPO_START = "\x1b[4:3m\x1b[58:2::255:95:95m";
-const TYPO_END = "\x1b[4:0m\x1b[59m";
+/** Styled underline: red curly undercurl via colon-subparameter SGR (4:3 + SGR 58 color). */
+const STYLED_TYPO_MARKS = { start: "\x1b[4:3m\x1b[58:2::255:95:95m", end: "\x1b[4:0m\x1b[59m" } as const;
+/**
+ * Flat underline: legacy CSI 4 m / CSI 24 m only, no SGR 58/59. Used where the
+ * terminal lacks styled underlines — Apple Terminal paints CSI 4 : 0 m (the
+ * styled reset) as a solid black bar to end of line.
+ */
+const FLAT_TYPO_MARKS = { start: "\x1b[4m", end: "\x1b[24m" } as const;
 const WORD_SUFFIX = /[\p{L}\p{M}']+$/u;
 const COMPLETED_WORD = /([\p{L}\p{M}']+)([\s.,;:!?"\])}])$/u;
 const CODEISH_CHARACTERS = "\\/@_=:{}[]<>";
@@ -88,10 +95,17 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 	#sourceMask = "";
 	#sourceLineOffsets: number[] = [];
 
+	/** Underline open/close pair, chosen once from the terminal's styled-underline capability. */
+	readonly #marks: { start: string; end: string };
+
 	onUpdate: (() => void) | undefined;
 
-	constructor(private readonly backend: SpellingBackend = NATIVE_BACKEND) {
+	constructor(
+		private readonly backend: SpellingBackend = NATIVE_BACKEND,
+		styledUnderlines: boolean = TERMINAL.styledUnderlines,
+	) {
 		this.#available = false;
+		this.#marks = styledUnderlines ? STYLED_TYPO_MARKS : FLAT_TYPO_MARKS;
 	}
 
 	setFeatures(features: SpellingFeatures): void {
@@ -134,7 +148,7 @@ export class MacOSSpellingProvider implements EditorTextAssistProvider {
 				continue;
 			}
 			rendered += decorate(text.slice(cursor, range.start));
-			rendered += TYPO_START + decorate(text.slice(range.start, end)) + TYPO_END;
+			rendered += this.#marks.start + decorate(text.slice(range.start, end)) + this.#marks.end;
 			cursor = end;
 		}
 		return rendered + decorate(text.slice(cursor));

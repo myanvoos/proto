@@ -131,6 +131,90 @@ test("listSessions counts and searches messages beyond the prefix window", async
 	}
 });
 
+test("listSessions orders equal-mtime sessions by creation time, then path", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-order-"));
+	const writeAt = (name: string, id: string, created: string) => {
+		const file = path.join(dir, name);
+		fs.writeFileSync(file, `${JSON.stringify({ type: "session", id, cwd: dir, timestamp: created })}\n`);
+		return file;
+	};
+	const files = [
+		writeAt("a_old.jsonl", "old", "2026-01-01T00:00:00.000Z"),
+		writeAt("b_new.jsonl", "new", "2026-01-02T00:00:00.000Z"),
+		writeAt("c_tie.jsonl", "tie-c", "2026-01-01T00:00:00.000Z"),
+	];
+	const mtime = new Date("2026-02-01T00:00:00.000Z");
+	for (const file of files) fs.utimesSync(file, mtime, mtime);
+
+	const sessions = await listSessions(dir, new FileSessionStorage());
+	expect(sessions.map(session => path.basename(session.path))).toEqual(["b_new.jsonl", "c_tie.jsonl", "a_old.jsonl"]);
+});
+
+test("listSessions bounds allMessagesText but keeps counts and early search hits", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-search-cap-"));
+	try {
+		const records: unknown[] = [
+			{ type: "session", id: "capped-search", cwd: dir, timestamp: "2026-09-19T00:00:00.000Z" },
+		];
+		records.push({
+			type: "message",
+			id: "m0",
+			parentId: null,
+			timestamp: "2026-09-19T00:00:01.000Z",
+			message: { role: "user", content: "early-searchable-prompt", timestamp: 0 },
+		});
+		for (let i = 1; i < 200; i++) {
+			records.push({
+				type: "message",
+				id: `m${i}`,
+				parentId: `m${i - 1}`,
+				timestamp: "2026-09-19T00:01:00.000Z",
+				message: { role: i % 2 ? "assistant" : "user", content: `tail-${i} ${"y".repeat(2000)}`, timestamp: i },
+			});
+		}
+		await Bun.write(path.join(dir, "capped.jsonl"), `${records.map(r => JSON.stringify(r)).join("\n")}\n`);
+
+		const [session] = await listSessions(dir, new FileSessionStorage());
+		expect(session?.messageCount).toBe(200);
+		expect(session?.assistantTurns).toBe(100);
+		expect(session?.allMessagesText).toContain("early-searchable-prompt");
+		expect(session?.allMessagesText.length).toBeLessThanOrEqual(16_384);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("listSessions skips a corrupt mid-file record without losing later messages", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-listing-malformed-"));
+	try {
+		const lines = [
+			JSON.stringify({ type: "session", id: "corrupt-mid", cwd: dir, timestamp: "2026-09-19T00:00:00.000Z" }),
+			JSON.stringify({
+				type: "message",
+				id: "m0",
+				parentId: null,
+				timestamp: "2026-09-19T00:00:01.000Z",
+				message: { role: "user", content: "before-corruption", timestamp: 0 },
+			}),
+			"{broken json without closing brace",
+			JSON.stringify({
+				type: "message",
+				id: "m1",
+				parentId: "m0",
+				timestamp: "2026-09-19T00:00:02.000Z",
+				message: { role: "assistant", content: "after-corruption", timestamp: 1 },
+			}),
+		];
+		await Bun.write(path.join(dir, "corrupt.jsonl"), `${lines.join("\n")}\n`);
+
+		const [session] = await listSessions(dir, new FileSessionStorage());
+		expect(session?.messageCount).toBe(2);
+		expect(session?.allMessagesText).toContain("after-corruption");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 describe("session listing incremental rescan", () => {
 	function messageLine(text: string): string {
 		const message = { role: "user", content: text, timestamp: new Date().toISOString() };

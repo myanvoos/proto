@@ -9,7 +9,7 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "../types";
-import { isDemotedThinking, kDemotedThinking } from "../utils/block-symbols";
+import { isDemotedThinking, kDemotedThinking, kSyntheticUser, type SyntheticUserCarrier } from "../utils/block-symbols";
 
 const enum ToolCallStatus {
 	Resolved = 1,
@@ -18,6 +18,46 @@ const enum ToolCallStatus {
 }
 
 const MAX_TOOL_CALL_ID_LENGTH = 64;
+
+function isResponsesFamilyApi(api: Api | undefined): boolean {
+	return api === "openai-responses" || api === "openai-codex-responses" || api === "azure-openai-responses";
+}
+
+function responsesCallComponent(id: string): string {
+	const pipe = id.indexOf("|");
+	return pipe <= 0 ? id : id.slice(0, pipe);
+}
+
+interface ToolCallOriginScope {
+	responsesComponents: ReadonlySet<string>;
+	opaqueCompositeCallIds: ReadonlySet<string>;
+}
+
+function collectToolCallOriginScope(messages: readonly Message[]): ToolCallOriginScope {
+	const responsesComponents = new Set<string>();
+	const opaqueCompositeCallIds = new Set<string>();
+	for (const msg of messages) {
+		if (msg.role !== "assistant") continue;
+		const responsesOrigin = isResponsesFamilyApi(msg.api);
+		for (const block of msg.content) {
+			if (block.type !== "toolCall") continue;
+			if (responsesOrigin) responsesComponents.add(responsesCallComponent(block.id));
+			else if (block.id.includes("|")) opaqueCompositeCallIds.add(block.id);
+		}
+	}
+	return { responsesComponents, opaqueCompositeCallIds };
+}
+
+// Responses results carry `call_id|item_id` while their call may carry a bare `call_id` or a different
+// item half, so both sides pair on the call component. Only ids minted by a Responses-family turn are
+// split: opaque Chat Completions ids may contain a literal `|` and must pair by raw equality.
+function toolCallPairingKey(id: string, originScope: ToolCallOriginScope): string {
+	const pipe = id.indexOf("|");
+	if (pipe <= 0) return id;
+	if (originScope.opaqueCompositeCallIds.has(id)) return id;
+	const prefix = id.slice(0, pipe);
+	return originScope.responsesComponents.has(prefix) ? prefix : id;
+}
 
 function appendDuplicateSuffix(originalId: string, suffix: string, maxLength: number): string {
 	if (originalId.includes("|")) {
@@ -39,6 +79,7 @@ type PendingToolResultRewrite = { replacementId: string } | undefined;
 
 function deduplicateToolCallIds(
 	messages: Message[],
+	originScope: ToolCallOriginScope,
 	maxToolCallIdLength = MAX_TOOL_CALL_ID_LENGTH,
 	duplicateSuffixPrefix = "_dup",
 ): Message[] {
@@ -47,11 +88,12 @@ function deduplicateToolCallIds(
 
 	return messages.map(msg => {
 		if (msg.role === "toolResult") {
-			const rewrites = pendingToolResultRewrites.get(msg.toolCallId);
+			const key = toolCallPairingKey(msg.toolCallId, originScope);
+			const rewrites = pendingToolResultRewrites.get(key);
 			if (!rewrites || rewrites.length === 0) return msg;
 
 			const rewrite = rewrites.shift();
-			if (rewrites.length === 0) pendingToolResultRewrites.delete(msg.toolCallId);
+			if (rewrites.length === 0) pendingToolResultRewrites.delete(key);
 			if (rewrite) return { ...msg, toolCallId: rewrite.replacementId };
 			return msg;
 		}
@@ -72,15 +114,16 @@ function deduplicateToolCallIds(
 		const content = msg.content.map(block => {
 			if (block.type !== "toolCall") return block;
 
-			if (!idsTouchedInTurn.has(block.id)) {
-				pendingToolResultRewrites.delete(block.id);
-				idsTouchedInTurn.add(block.id);
+			const blockKey = toolCallPairingKey(block.id, originScope);
+			if (!idsTouchedInTurn.has(blockKey)) {
+				pendingToolResultRewrites.delete(blockKey);
+				idsTouchedInTurn.add(blockKey);
 			}
 
-			const previousCount = seenToolCallIds.get(block.id) ?? 0;
+			const previousCount = seenToolCallIds.get(blockKey) ?? 0;
 			if (previousCount === 0) {
-				seenToolCallIds.set(block.id, 1);
-				enqueueToolResultRewrite(block.id, undefined);
+				seenToolCallIds.set(blockKey, 1);
+				enqueueToolResultRewrite(blockKey, undefined);
 				return block;
 			}
 
@@ -90,7 +133,7 @@ function deduplicateToolCallIds(
 				`${duplicateSuffixPrefix}${duplicateIndex}`,
 				maxToolCallIdLength,
 			);
-			while (seenToolCallIds.has(replacementId)) {
+			while (seenToolCallIds.has(toolCallPairingKey(replacementId, originScope))) {
 				duplicateIndex += 1;
 				replacementId = appendDuplicateSuffix(
 					block.id,
@@ -98,9 +141,9 @@ function deduplicateToolCallIds(
 					maxToolCallIdLength,
 				);
 			}
-			seenToolCallIds.set(block.id, duplicateIndex + 1);
-			seenToolCallIds.set(replacementId, 1);
-			enqueueToolResultRewrite(block.id, { replacementId });
+			seenToolCallIds.set(blockKey, duplicateIndex + 1);
+			seenToolCallIds.set(toolCallPairingKey(replacementId, originScope), 1);
+			enqueueToolResultRewrite(blockKey, { replacementId });
 			contentChanged = true;
 			return { ...block, id: replacementId };
 		});
@@ -396,8 +439,31 @@ export function transformMessages<TApi extends Api>(
 	messages = sanitizeMalformedToolCalls(messages);
 
 	const toolCallIdMap = new Map<string, string>();
+	const responsesCompositeIdMap = new Map<string, string>();
 
 	const latestSurvivingAssistantIndex = getLatestSurvivingAssistantIndex(messages);
+	const invalidBoundThinkingAssistantIndexes = new Set<number>();
+	if (model.thinking?.prefixBinding) {
+		let latestRewriteAt: number | undefined;
+		for (let index = 0; index < messages.length; index++) {
+			const message = messages[index]!;
+			if (message.role === "user" && message.historyRewriteAt !== undefined) {
+				latestRewriteAt =
+					latestRewriteAt === undefined
+						? message.historyRewriteAt
+						: Math.max(latestRewriteAt, message.historyRewriteAt);
+			} else if (message.role === "toolResult" && message.prunedAt !== undefined) {
+				latestRewriteAt =
+					latestRewriteAt === undefined ? message.prunedAt : Math.max(latestRewriteAt, message.prunedAt);
+			} else if (
+				message.role === "assistant" &&
+				latestRewriteAt !== undefined &&
+				message.timestamp <= latestRewriteAt
+			) {
+				invalidBoundThinkingAssistantIndexes.add(index);
+			}
+		}
+	}
 
 	const normalizedMessages = messages.map((msg, index) => {
 		if (msg.role === "user" || msg.role === "developer") {
@@ -405,7 +471,11 @@ export function transformMessages<TApi extends Api>(
 		}
 
 		if (msg.role === "toolResult") {
-			const normalizedId = toolCallIdMap.get(msg.toolCallId);
+			const normalizedId =
+				toolCallIdMap.get(msg.toolCallId) ??
+				(msg.toolCallId.includes("|")
+					? responsesCompositeIdMap.get(responsesCallComponent(msg.toolCallId))
+					: undefined);
 			if (normalizedId && normalizedId !== msg.toolCallId) {
 				return { ...msg, toolCallId: normalizedId };
 			}
@@ -422,6 +492,10 @@ export function transformMessages<TApi extends Api>(
 			const isAnthropicTarget = isAnthropicMessagesModel(model);
 
 			const isAnthropicReplay = isAnthropicTarget && assistantMsg.api === "anthropic-messages";
+			const sameAnthropicDeployment =
+				isAnthropicReplay &&
+				assistantMsg.provider === model.provider &&
+				(model.compat.officialEndpoint || model.thinking?.prefixBinding === true);
 			const isLatestSurvivingAssistant = index === latestSurvivingAssistantIndex;
 
 			const isOfficialAnthropicSource = isAnthropicReplay && assistantMsg.provider === "anthropic";
@@ -463,6 +537,12 @@ export function transformMessages<TApi extends Api>(
 				!assistantMsg.content.some(anthropicVisibleThinkingSurvivesReplay);
 
 			const transformedContent = assistantMsg.content.flatMap((block, blockIndex) => {
+				if (
+					invalidBoundThinkingAssistantIndexes.has(index) &&
+					(block.type === "thinking" || block.type === "redactedThinking")
+				) {
+					return [];
+				}
 				if (block.type === "thinking") {
 					const signatureUntrustworthy = abandonedToolUse || (invalidStopReason && blockIndex === lastBlockIndex);
 					let sanitized: typeof block =
@@ -474,7 +554,8 @@ export function transformMessages<TApi extends Api>(
 
 						if (isLatestSurvivingAssistant && abandonedToolUse && !crossProviderSource) return block;
 
-						const staleSignature = isLatestSurvivingAssistant ? crossProviderSource : !isSameModel;
+						const staleSignature =
+							!sameAnthropicDeployment && (isLatestSurvivingAssistant ? crossProviderSource : !isSameModel);
 						if (staleSignature && signingAnthropicInvolved && sanitized.thinkingSignature) {
 							sanitized = { ...sanitized, thinkingSignature: undefined };
 						}
@@ -514,6 +595,7 @@ export function transformMessages<TApi extends Api>(
 						if (dropsAllSameModelVisibleThinking) return [];
 						if (
 							isSameModel ||
+							sameAnthropicDeployment ||
 							(isLatestSurvivingAssistant && assistantMsg.provider === model.provider) ||
 							replaysUnsignedAnthropicThinking
 						) {
@@ -555,26 +637,32 @@ export function transformMessages<TApi extends Api>(
 						normalizedToolCall = { ...toolCall, thoughtSignature: undefined };
 					}
 
+					let normalizedId: string | undefined;
 					if (isAnthropicTarget) {
 						// Custom same-model endpoints own opaque correlation IDs; official
 						// endpoints and cross-model replays require Anthropic-valid IDs.
 						if (!isSameModel || model.compat.officialEndpoint) {
-							const normalizedId = normalizeAnthropicTargetToolCallId(
+							normalizedId = normalizeAnthropicTargetToolCallId(
 								toolCall.id,
 								model,
 								assistantMsg,
 								normalizeToolCallId,
 							);
-							if (normalizedId !== toolCall.id) {
-								toolCallIdMap.set(toolCall.id, normalizedId);
-								normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
-							}
 						}
 					} else if (!isSameModel && normalizeToolCallId) {
-						const normalizedId = normalizeToolCallId(toolCall.id, model, assistantMsg);
+						normalizedId = normalizeToolCallId(toolCall.id, model, assistantMsg);
+					}
+
+					if (normalizedId !== undefined) {
 						if (normalizedId !== toolCall.id) {
 							toolCallIdMap.set(toolCall.id, normalizedId);
 							normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
+						}
+						// Recorded even for identity normalization: a composite result
+						// (`call_A|fc_R`) for a bare Responses call `call_A` must resolve to
+						// the emitted id instead of staying composite on the target wire.
+						if (isResponsesFamilyApi(assistantMsg.api)) {
+							responsesCompositeIdMap.set(responsesCallComponent(toolCall.id), normalizedId);
 						}
 					}
 
@@ -596,8 +684,10 @@ export function transformMessages<TApi extends Api>(
 		}
 		return msg;
 	});
+	const originScope = collectToolCallOriginScope(normalizedMessages);
 	const transformed = deduplicateToolCallIds(
 		normalizedMessages,
+		originScope,
 		maxNormalizedToolCallIdLength,
 		duplicateToolCallIdSuffixPrefix,
 	);
@@ -608,13 +698,14 @@ export function transformMessages<TApi extends Api>(
 		const msg = transformed[index];
 		if (msg.role === "toolResult") {
 			const entry: IndexedToolResult = { index, msg, consumed: false };
-			const entries = realToolResultsById.get(msg.toolCallId);
+			const key = toolCallPairingKey(msg.toolCallId, originScope);
+			const entries = realToolResultsById.get(key);
 			if (entries) entries.push(entry);
-			else realToolResultsById.set(msg.toolCallId, [entry]);
+			else realToolResultsById.set(key, [entry]);
 		}
 	}
 	const takeRealToolResult = (id: string, afterIndex: number): ToolResultMessage | undefined => {
-		const entries = realToolResultsById.get(id);
+		const entries = realToolResultsById.get(toolCallPairingKey(id, originScope));
 		if (!entries) return undefined;
 		for (const entry of entries) {
 			if (entry.consumed || entry.index <= afterIndex) continue;
@@ -628,7 +719,7 @@ export function transformMessages<TApi extends Api>(
 	for (const msg of transformed) {
 		if (msg.role !== "assistant") continue;
 		for (const block of msg.content) {
-			if (block.type === "toolCall") validToolUseIds.add(block.id);
+			if (block.type === "toolCall") validToolUseIds.add(toolCallPairingKey(block.id, originScope));
 		}
 	}
 
@@ -645,11 +736,12 @@ export function transformMessages<TApi extends Api>(
 	const flushPendingToolCalls = (timestamp: number): void => {
 		if (pendingToolCalls.length === 0) return;
 		for (const tc of pendingToolCalls) {
-			if (toolCallStatus.has(tc.id)) continue;
+			const statusKey = toolCallPairingKey(tc.id, originScope);
+			if (toolCallStatus.has(statusKey)) continue;
 			const realToolResult = takeRealToolResult(tc.id, pendingToolCallsStartIndex);
 			if (realToolResult) {
 				result.push(realToolResult);
-				toolCallStatus.set(tc.id, ToolCallStatus.Resolved);
+				toolCallStatus.set(statusKey, ToolCallStatus.Resolved);
 				continue;
 			}
 			result.push({
@@ -660,7 +752,7 @@ export function transformMessages<TApi extends Api>(
 				isError: true,
 				timestamp,
 			} as ToolResultMessage);
-			toolCallStatus.set(tc.id, ToolCallStatus.Resolved);
+			toolCallStatus.set(statusKey, ToolCallStatus.Resolved);
 		}
 		pendingToolCalls = [];
 	};
@@ -668,11 +760,12 @@ export function transformMessages<TApi extends Api>(
 	const flushPendingAbortedToolCalls = (): void => {
 		if (pendingAbortedTimestamp === undefined) return;
 		for (const tc of pendingAbortedToolCalls.values()) {
-			if (toolCallStatus.has(tc.id)) continue;
+			const statusKey = toolCallPairingKey(tc.id, originScope);
+			if (toolCallStatus.has(statusKey)) continue;
 			const realToolResult = takeRealToolResult(tc.id, pendingAbortedStartIndex);
 			if (realToolResult) {
 				result.push(realToolResult);
-				toolCallStatus.set(tc.id, ToolCallStatus.Resolved);
+				toolCallStatus.set(statusKey, ToolCallStatus.Resolved);
 				continue;
 			}
 			result.push({
@@ -683,7 +776,7 @@ export function transformMessages<TApi extends Api>(
 				isError: true,
 				timestamp: pendingAbortedTimestamp,
 			} as ToolResultMessage);
-			toolCallStatus.set(tc.id, ToolCallStatus.Aborted);
+			toolCallStatus.set(statusKey, ToolCallStatus.Aborted);
 		}
 		pendingAbortedToolCalls = new Map();
 		pendingAbortedTimestamp = undefined;
@@ -708,7 +801,9 @@ export function transformMessages<TApi extends Api>(
 
 			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
 				result.push(msg);
-				pendingAbortedToolCalls = new Map(toolCalls.map(toolCall => [toolCall.id, toolCall] as const));
+				pendingAbortedToolCalls = new Map(
+					toolCalls.map(toolCall => [toolCallPairingKey(toolCall.id, originScope), toolCall] as const),
+				);
 				pendingAbortedTimestamp = assistantMsg.timestamp;
 				pendingAbortedStartIndex = i;
 				continue;
@@ -721,23 +816,27 @@ export function transformMessages<TApi extends Api>(
 
 			result.push(msg);
 		} else if (msg.role === "toolResult") {
-			if (toolCallStatus.has(msg.toolCallId)) continue;
+			const resultKey = toolCallPairingKey(msg.toolCallId, originScope);
+			if (toolCallStatus.has(resultKey)) continue;
 
-			if (pendingAbortedToolCalls.has(msg.toolCallId)) {
-				pendingAbortedToolCalls.delete(msg.toolCallId);
-				toolCallStatus.set(msg.toolCallId, ToolCallStatus.Resolved);
+			if (pendingAbortedToolCalls.has(resultKey)) {
+				pendingAbortedToolCalls.delete(resultKey);
+				toolCallStatus.set(resultKey, ToolCallStatus.Resolved);
 				result.push(msg);
 				continue;
 			}
 
-			if (pendingToolCalls.some(tc => tc.id === msg.toolCallId)) {
-				toolCallStatus.set(msg.toolCallId, ToolCallStatus.Resolved);
+			if (pendingToolCalls.some(tc => toolCallPairingKey(tc.id, originScope) === resultKey)) {
+				toolCallStatus.set(resultKey, ToolCallStatus.Resolved);
 				result.push(msg);
 				continue;
 			}
 
-			if (!validToolUseIds.has(msg.toolCallId)) {
-				if (pendingToolCalls.some(tc => !toolCallStatus.has(tc.id)) || pendingAbortedToolCalls.size > 0) {
+			if (!validToolUseIds.has(resultKey)) {
+				if (
+					pendingToolCalls.some(tc => !toolCallStatus.has(toolCallPairingKey(tc.id, originScope))) ||
+					pendingAbortedToolCalls.size > 0
+				) {
 					continue;
 				}
 
@@ -747,11 +846,13 @@ export function transformMessages<TApi extends Api>(
 				}
 				if (textParts.length > 0) {
 					const errorAttr = msg.isError ? ' is-error="true"' : "";
-					result.push({
+					const note: UserMessage & SyntheticUserCarrier = {
 						role: "user",
 						content: `<stale-tool-result tool="${msg.toolName}" id="${msg.toolCallId}"${errorAttr}>\n${textParts.join("\n")}\n</stale-tool-result>`,
 						timestamp: messageTimestamp,
-					} as UserMessage);
+					};
+					note[kSyntheticUser] = true;
+					result.push(note);
 				}
 			}
 		} else if (msg.role === "user" || msg.role === "developer") {

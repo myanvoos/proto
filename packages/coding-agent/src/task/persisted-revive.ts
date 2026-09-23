@@ -10,7 +10,7 @@ import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
-import { SessionManager } from "../session/session-manager";
+import { extractSessionInit, hasConversationalHistory, SessionManager } from "../session/session-manager";
 import type { EventBus } from "../utils/event-bus";
 import { attachIrcWakeTurnMonitor, createMCPProxyTools, createSubagentSettings } from "./executor";
 import type { AgentDefinition } from "./types";
@@ -39,8 +39,6 @@ export function createPersistedSubagentReviverFactory(
 		} catch {
 			return undefined;
 		}
-		const init = peek.init;
-
 		let taskDepth = 1;
 		let parentId = ref.parentId;
 		const seen = new Set<string>();
@@ -50,34 +48,51 @@ export function createPersistedSubagentReviverFactory(
 			parentId = registry.get(parentId)?.parentId;
 		}
 
-		const subagentSettings = createSubagentSettings(ctx.settings, {
-			...(init.readSummarize === false ? { "read.summarize.enabled": false } : undefined),
-			...(init.advisor
-				? {
-						"advisor.enabled": true,
-						...(init.advisor !== "on"
-							? { modelRoles: { ...ctx.settings.getModelRoles(), advisor: init.advisor } }
-							: undefined),
-					}
-				: undefined),
-		});
-		const explicitOverride =
-			typeof init.modelOverride === "string"
-				? init.modelOverride
-						.split(",")
-						.map(entry => entry.trim())
-						.filter(Boolean)
-				: undefined;
-		const persistedModelPattern =
-			explicitOverride && explicitOverride.length > 0
-				? explicitOverride
-				: init.modelRole && init.modelRole !== "default"
-					? [formatModelRoleAlias(init.modelRole), ...(init.resolvedModel ? [init.resolvedModel] : [])]
-					: init.resolvedModel;
 		return async expectedRef => {
+			// Re-open fresh on every revive; the lock-free peek above is only an advisory prefilter, so the contract and
+			// history come from the file actually opened, and a vanished or truncated transcript fails closed.
 			const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
 				suppressBreadcrumb: true,
+				throwIfMissing: true,
 			});
+			const entries = reopened.getEntries();
+			const init = extractSessionInit(entries);
+			if (!init) {
+				await reopened.close();
+				throw new Error(
+					`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no persisted session contract. The agent was not revived.`,
+				);
+			}
+			if (!hasConversationalHistory(entries)) {
+				await reopened.close();
+				throw new Error(
+					`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no message history (truncated to header/session_init). The agent was not revived.`,
+				);
+			}
+			const subagentSettings = createSubagentSettings(ctx.settings, {
+				...(init.readSummarize === false ? { "read.summarize.enabled": false } : undefined),
+				...(init.advisor
+					? {
+							"advisor.enabled": true,
+							...(init.advisor !== "on"
+								? { modelRoles: { ...ctx.settings.getModelRoles(), advisor: init.advisor } }
+								: undefined),
+						}
+					: undefined),
+			});
+			const explicitOverride =
+				typeof init.modelOverride === "string"
+					? init.modelOverride
+							.split(",")
+							.map(entry => entry.trim())
+							.filter(Boolean)
+					: undefined;
+			const persistedModelPattern =
+				explicitOverride && explicitOverride.length > 0
+					? explicitOverride
+					: init.modelRole && init.modelRole !== "default"
+						? [formatModelRoleAlias(init.modelRole), ...(init.resolvedModel ? [init.resolvedModel] : [])]
+						: init.resolvedModel;
 			const artifactManager = ctx.session.sessionManager.getArtifactManager();
 			if (artifactManager) reopened.adoptArtifactManager(artifactManager);
 

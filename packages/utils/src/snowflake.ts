@@ -4,6 +4,7 @@ function randu32() {
 
 const EPOCH = 1420070400000;
 const MAX_SEQ = 0x3fffff;
+const MAX_DT = 2 ** 42 - 1;
 
 type Snowflake = string & { readonly __brand: unique symbol };
 
@@ -14,8 +15,11 @@ namespace Snowflake {
 
 	export const MAX_SEQUENCE = MAX_SEQ;
 
+	// dt saturates into the 42-bit field: a pre-epoch delta would render a leading "-" and one past ~2154 would widen
+	// the string beyond 16 chars, both failing valid().
 	export function formatParts(dt: number, seq: number): Snowflake {
-		return ((BigInt(dt) << 22n) | BigInt(seq)).toString(16).padStart(16, "0") as Snowflake;
+		const clamped = Math.min(Math.max(dt, 0), MAX_DT);
+		return ((BigInt(clamped) << 22n) | BigInt(seq)).toString(16).padStart(16, "0") as Snowflake;
 	}
 
 	export class Source {

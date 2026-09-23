@@ -20,5 +20,6 @@ export const loginVllm = createApiKeyLogin({
 export const vllmProvider = {
 	id: "vllm",
 	name: "vLLM (Local OpenAI-compatible)",
+	emptyKeyFallback: DEFAULT_LOCAL_TOKEN,
 	login: (cb: OAuthLoginCallbacks) => loginVllm(cb),
 } as const satisfies ProviderDefinition;

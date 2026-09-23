@@ -1,10 +1,9 @@
-import { Database, type Statement } from "bun:sqlite";
+import type { Database, Statement } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
 	type AuthCredential,
 	type AuthCredentialStore,
-	isSqliteBusyError,
 	SqliteAuthCredentialStore,
 	type StoredAuthCredential,
 } from "@oh-my-pi/pi-ai";
@@ -15,6 +14,7 @@ import {
 	getDbBusyTimeoutMs,
 	isRecord,
 	logger,
+	openSqliteDatabase,
 	postmortem,
 } from "@oh-my-pi/pi-utils";
 import type { RawSettings as Settings } from "../config/settings";
@@ -131,28 +131,8 @@ export class AgentStorage {
 
 	#perfDrain = new AsyncDrain<ModelPerfInsert>(MODEL_PERF_FLUSH_DELAY_MS);
 
-	private constructor(dbPath: string) {
-		this.#ensureDir(dbPath);
-		try {
-			this.#db = new Database(dbPath);
-		} catch (err) {
-			const dir = path.dirname(dbPath);
-			const errMsg = err instanceof Error ? err.message : String(err);
-			// Report what the path actually is: `existsSync` is true for a file too, which sent people
-			// hunting for a corrupt database when the parent was never a directory.
-			let dirState: string;
-			try {
-				const stat = fs.statSync(dir);
-				dirState = stat.isDirectory() ? "exists" : "exists but is not a directory";
-			} catch {
-				dirState = "does not exist";
-			}
-			throw new Error(
-				`Failed to open agent database at '${dbPath}': ${errMsg}\n` +
-					`Directory '${dir}' ${dirState}\n` +
-					`Ensure the directory is writable and not corrupted.`,
-			);
-		}
+	private constructor(db: Database, dbPath: string) {
+		this.#db = db;
 		this.#cleanup = { db: this.#db, closed: false };
 
 		this.#initializeSchema();
@@ -352,32 +332,18 @@ FROM model_usage_legacy
 			closeDatabase(existing.cleanup);
 		}
 
-		const maxRetries = 4;
-		const baseDelayMs = 100;
-		let lastError: Error | undefined;
-
-		for (let attempt = 0; attempt < maxRetries; attempt++) {
-			try {
-				const storage = new AgentStorage(dbPath);
+		AgentStorage.#ensureDir(dbPath);
+		return openSqliteDatabase(
+			dbPath,
+			db => {
+				const storage = new AgentStorage(db, dbPath);
 				const token = {};
 				cancelExitCleanup ??= postmortem.register("agent-storage", () => AgentStorage.close());
 				instances.set(dbPath, { ref: new WeakRef(storage), token, cleanup: storage.#cleanup });
 				instanceFinalizer.register(storage, { dbPath, token, cleanup: storage.#cleanup }, token);
 				return storage;
-			} catch (err) {
-				if (!isSqliteBusyError(err)) {
-					throw err;
-				}
-				lastError = err instanceof Error ? err : new Error(String(err));
-				if (attempt < maxRetries - 1) {
-					await Bun.sleep(baseDelayMs * 2 ** attempt);
-				}
-			}
-		}
-
-		throw new Error(
-			`Failed to open agent database at '${dbPath}' after ${maxRetries} attempts: ${lastError?.message}`,
-			{ cause: lastError },
+			},
+			{ recoverCorruption: true },
 		);
 	}
 
@@ -581,7 +547,7 @@ FROM model_usage_legacy
 		this.#authStore.cleanExpiredCache();
 	}
 
-	#ensureDir(dbPath: string): void {
+	static #ensureDir(dbPath: string): void {
 		const dir = path.dirname(dbPath);
 		try {
 			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -593,9 +559,13 @@ FROM model_usage_legacy
 			}
 		}
 
-		if (!fs.existsSync(dir)) {
+		let isDirectory: boolean;
+		try {
+			isDirectory = fs.statSync(dir).isDirectory();
+		} catch {
 			throw new Error(`Agent storage directory '${dir}' does not exist after creation attempt`);
 		}
+		if (!isDirectory) throw new Error(`Agent storage directory '${dir}' exists but is not a directory`);
 	}
 
 	#hardenPermissions(dbPath: string): void {

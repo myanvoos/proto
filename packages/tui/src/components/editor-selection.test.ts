@@ -275,3 +275,42 @@ test("selection survives text width that equals the wrapped layout boundary", ()
 	expect(rows[0]).toBe("abcd");
 	expect(rows[1]).toBe(`ef${CURSOR_MARKER}\x1b[7mgh\x1b[27m`);
 });
+
+test("a single-row history entry opens at its end for both arrows", () => {
+	const editor = editorWith("");
+	editor.addToHistory("older prompt");
+	editor.addToHistory("recent prompt");
+
+	editor.handleInput("\x1b[A");
+	expect(editor.getCursor()).toEqual({ line: 0, col: "recent prompt".length });
+	editor.handleInput("\x1b[A");
+	expect(editor.getCursor()).toEqual({ line: 0, col: "older prompt".length });
+	editor.handleInput("\x1b[B");
+	expect(editor.getText()).toBe("recent prompt");
+	expect(editor.getCursor()).toEqual({ line: 0, col: "recent prompt".length });
+	editor.handleInput("\x1b[B");
+	expect(editor.getText()).toBe("");
+});
+
+test("a history entry that wraps past the layout width keeps its top anchor on Up", () => {
+	const editor = editorWith("");
+	const wrapped = "word ".repeat(40).trim();
+	editor.addToHistory("older");
+	editor.addToHistory(wrapped);
+
+	editor.handleInput("\x1b[A");
+	expect(editor.getCursor()).toEqual({ line: 0, col: 0 });
+	editor.handleInput("\x1b[A");
+	expect(editor.getText()).toBe("older");
+});
+
+test("end-of-line and on-last-character cursors render differently on a full row", () => {
+	const atEnd = editorWith("abc");
+	const onLast = editorWith("abc");
+	onLast.handleInput("\x1b[D");
+
+	const [endRow] = atEnd.render(3);
+	const [onRow] = onLast.render(3);
+	expect(endRow).not.toBe(onRow);
+	expect(endRow).toBe(`ab\x1b[4mc\x1b[0m${CURSOR_MARKER}`);
+});

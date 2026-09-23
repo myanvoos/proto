@@ -34,6 +34,8 @@ function createMockSession(onPrompt: (emit: (event: AgentSessionEvent) => void) 
 		waitForIdle: async () => {},
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
+		prepareForHeadlessAdvisorDrain: () => {},
+		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
 		setIrcWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,
@@ -106,5 +108,42 @@ describe("subagent progress event projection", () => {
 		expect(result.extractedToolData?.yield).toEqual([{ data: { complete: true }, status: "success" }]);
 		expect(progressPayloads.length).toBeGreaterThan(0);
 		expect(progressPayloads.every(payload => !Object.hasOwn(payload.progress, "extractedToolData"))).toBe(true);
+	});
+});
+
+describe("subagent teardown", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("drains the advisor's review of a graceful final turn before disposing the session", async () => {
+		const order: string[] = [];
+		const session = Object.assign(yieldEmittingSession(), {
+			prepareForHeadlessAdvisorDrain: () => {
+				order.push("prepare");
+			},
+			waitForAdvisorCatchup: async () => {
+				order.push("catchup");
+				return true;
+			},
+			dispose: async () => {
+				order.push("dispose");
+			},
+		});
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			cwd: "/tmp",
+			agent: baseAgent,
+			task: "do work",
+			index: 0,
+			id: "advisor-drain",
+			settings: Settings.isolated(),
+			modelRegistry: { refresh: async () => {} } as never,
+			eventBus: new EventBus(),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(order).toEqual(["prepare", "catchup", "dispose"]);
 	});
 });

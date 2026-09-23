@@ -3,6 +3,8 @@
  * Bumped to the latest npm release by `bun scripts/check-spoofed-versions.ts --update`.
  */
 export const DEFAULT_CLAUDE_CODE_VERSION = "2.1.280";
+/** `@anthropic-ai/sdk` version bundled with the pinned Claude runtime. */
+export const claudeCodeSdkVersion = "0.112.1";
 
 const SEMVER_PATTERN = /^(\d+)\.(\d+)\.(\d+)$/;
 const VERSION_TOO_OLD_CODE = "claude_code_version_too_old";

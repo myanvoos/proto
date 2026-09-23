@@ -206,7 +206,7 @@ export class ThinkingLoopDetector {
 	}
 }
 
-export const GEMINI_HEADER_RUNAWAY_THRESHOLD = 24;
+export const GEMINI_HEADER_RUNAWAY_THRESHOLD = 36;
 
 export function isReasoningSummaryHeader(line: string): boolean {
 	return /^#{1,6}[ \t]+\S/.test(line) || /^\*{2,3}.+\*{2,3}$/.test(line);

@@ -27,20 +27,29 @@
 				"xhigh",
 				"max"
 			],
-			"supportsDisplay": true
+			"supportsDisplay": true,
+			"prefixBinding": true
 		},
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v5-sonnet",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
-			"supportsMidConversationSystem": false,
+			"supportsMidConversationSystem": true,
+			"supportsTurnScopedSystem": true,
+			"supportsMidConversationToolChanges": true,
+			"supportsPerMessageEffort": true,
+			"supportsThinkingBindingControls": true,
 			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -82,15 +91,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v5-sonnet",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
-			"supportsMidConversationSystem": false,
+			"supportsMidConversationSystem": true,
+			"supportsTurnScopedSystem": true,
+			"supportsMidConversationToolChanges": true,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": false,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -131,15 +148,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -180,15 +205,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -228,15 +261,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -278,15 +319,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v47",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -328,15 +377,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v47",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
-			"supportsMidConversationSystem": false,
+			"supportsMidConversationSystem": true,
+			"supportsTurnScopedSystem": true,
+			"supportsMidConversationToolChanges": true,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -378,15 +435,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v5",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
-			"supportsMidConversationSystem": false,
+			"supportsMidConversationSystem": true,
+			"supportsTurnScopedSystem": true,
+			"supportsMidConversationToolChanges": true,
+			"supportsPerMessageEffort": true,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -428,15 +493,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v5",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
-			"supportsMidConversationSystem": false,
+			"supportsMidConversationSystem": true,
+			"supportsTurnScopedSystem": true,
+			"supportsMidConversationToolChanges": true,
+			"supportsPerMessageEffort": true,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -477,15 +550,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -524,15 +605,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v3",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": true,
 			"requiresToolResultId": false,
@@ -574,15 +663,23 @@
 		"requiresGlyphTokenization": true,
 		"tokenizer": "claude-v5-sonnet",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"officialEndpoint": false,
 			"signingEndpoint": true,
+			"supportsContextManagement": false,
+			"supportsServerCompaction": true,
+			"firstPartyProvider": false,
 			"disableStrictTools": false,
 			"disableAdaptiveThinking": false,
 			"allowAnthropicHeaderOverrides": false,
 			"supportsEagerToolInputStreaming": false,
 			"supportsLongCacheRetention": false,
 			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
 			"supportsForcedToolChoice": true,
 			"supportsSamplingParams": false,
 			"requiresToolResultId": false,
@@ -610,6 +707,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 9.9,
+		"tps": 188.6,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -620,7 +719,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-2.5-flash-lite": {
 		"id": "gemini-2.5-flash-lite",
@@ -640,7 +740,9 @@
 			"cacheWrite": 0
 		},
 		"contextWindow": 1048576,
-		"maxTokens": 65536,
+		"maxTokens": 65535,
+		"int": 6.7,
+		"tps": 265.8,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -651,7 +753,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-2.5-pro": {
 		"id": "gemini-2.5-pro",
@@ -672,6 +775,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 16.1,
+		"tps": 125.8,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -683,7 +788,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-3-flash-preview": {
 		"id": "gemini-3-flash-preview",
@@ -715,7 +821,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-3.1-flash-lite": {
 		"id": "gemini-3.1-flash-lite",
@@ -747,7 +854,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-3.1-pro-preview": {
 		"id": "gemini-3.1-pro-preview",
@@ -768,6 +876,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 29.7,
+		"tps": 118.4,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -777,7 +887,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-3.1-pro-preview-customtools": {
 		"id": "gemini-3.1-pro-preview-customtools",
@@ -807,7 +918,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-3.5-flash": {
 		"id": "gemini-3.5-flash",
@@ -828,6 +940,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 32.6,
+		"tps": 207.7,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -839,7 +953,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-3.5-flash-lite": {
 		"id": "gemini-3.5-flash-lite",
@@ -860,6 +975,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 22.2,
+		"tps": 357.4,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -871,7 +988,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-3.6-flash": {
 		"id": "gemini-3.6-flash",
@@ -892,6 +1010,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 34,
+		"tps": 180.2,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -903,7 +1023,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-3.7-flash": {
 		"id": "gemini-3.7-flash",
@@ -924,6 +1045,8 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 39.1,
+		"tps": 278.3,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -934,7 +1057,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-3.8-flash": {
 		"id": "gemini-3.8-flash",
@@ -955,10 +1079,11 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 40.9,
+		"tps": 275.9,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
-				"minimal",
 				"low",
 				"medium",
 				"high"
@@ -966,7 +1091,8 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-flash-latest": {
 		"id": "gemini-flash-latest",
@@ -997,7 +1123,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"gemini-flash-lite-latest": {
 		"id": "gemini-flash-lite-latest",
@@ -1028,7 +1155,8 @@
 			]
 		},
 		"requiresGlyphTokenization": false,
-		"supportsComputerUse": false
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
 	},
 	"meta/llama-4-maverick-17b-128e-instruct-maas": {
 		"id": "meta/llama-4-maverick-17b-128e-instruct-maas",
@@ -1051,6 +1179,7 @@
 		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -1062,8 +1191,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1127,6 +1258,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -1138,8 +1270,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1194,8 +1328,11 @@
 		},
 		"contextWindow": 2000000,
 		"maxTokens": 30000,
+		"int": 25.7,
+		"tps": 106.2,
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -1207,8 +1344,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1263,6 +1402,8 @@
 		},
 		"contextWindow": 2000000,
 		"maxTokens": 30000,
+		"int": 25.7,
+		"tps": 106.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1276,6 +1417,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -1287,8 +1429,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1343,6 +1487,8 @@
 		},
 		"contextWindow": 200000,
 		"maxTokens": 30000,
+		"int": 24.9,
+		"tps": 104.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1355,6 +1501,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -1366,8 +1513,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1422,6 +1571,8 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 500000,
+		"int": 44.3,
+		"tps": 59.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1434,6 +1585,7 @@
 		},
 		"requiresGlyphTokenization": false,
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -1445,8 +1597,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,
@@ -1513,6 +1667,7 @@
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
 		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
 		"compat": {
 			"supportsStore": true,
 			"supportsDeveloperRole": false,
@@ -1524,8 +1679,10 @@
 			"reasoningEffortMap": {},
 			"supportsUsageInStreaming": true,
 			"alwaysSendMaxTokens": false,
+			"clampOutputToModelMax": false,
 			"disableReasoningOnForcedToolChoice": false,
 			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
 			"supportsToolChoice": true,
 			"supportsForcedToolChoice": true,
 			"supportsNamedToolChoice": true,

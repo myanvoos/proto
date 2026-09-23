@@ -217,6 +217,8 @@ export interface RetryFallbackAppliedEvent {
 	from: string;
 	to: string;
 	role: string;
+	/** Decision-time cause, including whether the source request was skipped. */
+	reason?: string;
 }
 
 export interface RetryFallbackSucceededEvent {

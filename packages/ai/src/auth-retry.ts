@@ -19,6 +19,9 @@ export type ApiKeyResolver = (ctx: ApiKeyResolveContext) => Promise<string | und
 
 export type ApiKey = string | ApiKeyResolver;
 
+// Keyless-provider credential marker; transports must not send it in authentication headers.
+export const NO_AUTH_SENTINEL = "N/A";
+
 export function isApiKeyResolver(key: ApiKey | undefined): key is ApiKeyResolver {
 	return typeof key === "function";
 }

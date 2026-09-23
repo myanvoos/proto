@@ -96,7 +96,7 @@ Breadcrumb writes are best-effort and non-fatal.
 
 If a matched session's recorded cwd no longer exists, CLI prompts `Move (re-root) it into the current directory? [Y/n]`. Acceptance opens it and `moveTo(cwd)` relocates it; decline exits cleanly. A non-TTY cannot answer and raises `SessionResolutionError`.
 
-Otherwise the session is opened in its recorded project, including global matches; startup switches process cwd, reloads project-scoped settings/plugins, and re-resolves enabled models before constructing the agent. It does **not** fork merely because the match is cross-project.
+Otherwise the session is opened in its recorded project, including global matches; startup switches process cwd, reloads project-scoped settings/plugins, and re-resolves enabled models before constructing the agent. It does **not** fork merely because the match is cross-project. A recorded project that exists but cannot be entered, or whose rescope fails, keeps startup in the launch directory with a `Could not switch to resumed project` notice; the session tracks the launch directory runtime-only.
 
 No match throws `Session "..." not found.`.
 
@@ -170,7 +170,7 @@ Lifecycle/state transition:
 2. disconnect agent listeners, abort active work, run the pre-switch reconciler, and flush pending bash/session writes
 3. snapshot rollback state (manager, queues, messages, model/thinking/tier, tools/prompts, provider-cache identity, and checkpoint/rewind state), then clear message queues
 4. for a different session, drain/detach advisor recorders
-5. `sessionManager.setSessionFile(sessionPath)`: update breadcrumb, load/migrate/blob-resolve/index entries, and adopt an existing recorded cwd
+5. `sessionManager.setSessionFile(sessionPath)`: update breadcrumb, load/migrate/blob-resolve/index entries, and adopt the recorded cwd only when it can be entered; otherwise keep the current cwd and track the recorded project runtime-only (workspace edits are not persisted, and the next new/fork transcript lands in the current cwd's bucket). Adopting another project requires the caller's `onCwdChange` to move the process there; without it, or when it returns `false`, the switch is refused and returns `false`
 6. sync session id, memory key, inherited provider-cache key, display context, and checkpoint/rewind state
 7. emit `session_switch`, replace messages, reset advisor session state, and sync checklist items
 8. close provider sessions for a different session, or for a same-session reload whose replay changed
@@ -180,21 +180,19 @@ Lifecycle/state transition:
 12. reset memory/tool session state as required, reconnect listeners, run mode reconciliation, and refresh the workspace-aware base system prompt
 13. restore advisor cost for a different session, finish the bash transition, notify session-change callbacks, and return `true`
 
-Any failure after the snapshot restores the previous manager and runtime state, reconnects/reconciles it, marks the bash transition failed, then rethrows.
+Any failure after the snapshot restores the previous manager and runtime state, reconnects/reconciles it, marks the bash transition failed, then rethrows. An applied project change is first undone through `onCwdChange(previousCwd, targetCwd)`; when that fails the session is disposed.
 
 ## UI state rebuild after interactive switch
 
-`SelectorController.handleResumeSession` performs UI reset around `switchSession`:
+`SelectorController.handleResumeSession` calls `session.switchSession(sessionPath, { onCwdChange })`, where `onCwdChange` is `applyCwdChange`: it moves the process cwd, settings, provider globals, plugin roots, capabilities, skills, and slash commands transactionally, returning `false` (after undoing its own work) when any step fails. A `false` switch stops before any UI change. After a successful switch it:
 
 - stop loading animation
 - clear status container
 - clear pending-message UI and pending tool map
 - reset streaming component/message references
-- call `session.switchSession(...)`
-- if the resumed session's cwd differs from the previous one, re-point the process and cwd-derived caches at it (`applyCwdChange`)
 - clear chat container and rerender from session context (`renderInitialMessages`)
 - reload checklist items from new session artifacts
-- show `Resumed session` (or `Resumed session in <dir>` for a cross-project resume)
+- show `Resumed session` (or `Resumed session in <dir>` for a cross-project resume), noting when the recorded project could not be entered
 
 Visible conversation/checklist state is rebuilt from the new session file. Transcript component hydration starts with the newest window (soft limits: 256 messages and 2 MiB of estimated message data). An assistant and its associated tool results stay together; one oversized message or tool group may exceed those limits. Long autonomous turns can span multiple windows without waiting for another user message.
 
@@ -224,8 +222,7 @@ Visible conversation/checklist state is rebuilt from the new session file. Trans
 
 - CLI picker cancel -> returns `null`, caller prints `No session selected`, process exits.
 - Interactive picker cancel -> closes the overlay with no session change.
-- Core hook cancellation (`session_before_switch`) -> `switchSession()` returns `false`.
-- **Current interactive caveat:** `handleResumeSession` does not inspect that boolean and proceeds with its UI refresh/status path. A hook-cancelled interactive switch therefore keeps the old session but can display a misleading resumed status.
+- Core hook cancellation (`session_before_switch`) or a refused project change -> `switchSession()` returns `false`; the interactive selector keeps the old session and UI.
 
 ### Empty list paths
 

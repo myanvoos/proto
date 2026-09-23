@@ -5,7 +5,7 @@ const DAY = 24 * HOUR;
 
 export function formatDuration(ms: number): string {
 	if (!Number.isFinite(ms) || ms <= 0) return "0ms";
-	if (ms < SEC) return `${ms}ms`;
+	if (ms < SEC) return `${Math.floor(ms)}ms`;
 	if (ms < MIN) return `${(ms / SEC).toFixed(1)}s`;
 	if (ms < HOUR) {
 		const mins = Math.floor(ms / MIN);
@@ -51,6 +51,17 @@ export function formatBytes(bytes: number, options: { style?: FormatBytesStyle }
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
 	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+}
+
+/** Count `\n` code units with native `indexOf`: no split array, far cheaper than a per-code-unit loop on multi-MiB text. */
+export function countNewlines(text: string): number {
+	let count = 0;
+	let pos = text.indexOf("\n");
+	while (pos !== -1) {
+		count++;
+		pos = text.indexOf("\n", pos + 1);
+	}
+	return count;
 }
 
 export function truncate(str: string, maxLen: number, ellipsis = "…"): string {

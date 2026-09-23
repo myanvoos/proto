@@ -19,6 +19,7 @@
 		"contextWindow": 1048576,
 		"maxTokens": 8192,
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-2.5-flash": {
@@ -57,6 +58,9 @@
 			}
 		},
 		"requiresGlyphTokenization": false,
+		"int": 9.9,
+		"tps": 188.6,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-2.5-pro": {
@@ -89,6 +93,9 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"int": 16.1,
+		"tps": 125.8,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3-flash-preview": {
@@ -121,6 +128,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3-pro-preview": {
@@ -151,6 +159,7 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3.1-flash-lite-preview": {
@@ -183,6 +192,9 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"int": 15.6,
+		"tps": 292.5,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	},
 	"gemini-3.1-pro-preview": {
@@ -213,6 +225,9 @@
 			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
+		"int": 29.7,
+		"tps": 118.4,
+		"supportsAssistantPrefill": false,
 		"supportsComputerUse": false
 	}
 }

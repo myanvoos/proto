@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantMessage, Message, Model } from "@oh-my-pi/pi-ai";
-import { buildOpenAiNativeHistory } from "./openai";
+import { buildOpenAiNativeHistory, shouldUseOpenAiRemoteCompaction } from "./openai";
 
 const USAGE = {
 	input: 0,
@@ -92,5 +92,20 @@ describe("OpenAI native compaction history", () => {
 			{ type: "input_image", detail: "auto", file_id: "file-123" },
 			{ type: "input_image", detail: "auto", image_url: "https://images.example.test/capture.jpg" },
 		]);
+	});
+});
+
+describe("OpenAI V1 compact endpoint selection", () => {
+	test("Codex takes the V1 /responses/compact path only with an explicitly configured endpoint", () => {
+		const codex = { ...model(), provider: "openai-codex", api: "openai-codex-responses" } as Model;
+		expect(
+			shouldUseOpenAiRemoteCompaction({ ...codex, remoteCompaction: { enabled: true, v2StreamingEnabled: true } }),
+		).toBe(false);
+		expect(
+			shouldUseOpenAiRemoteCompaction({
+				...codex,
+				remoteCompaction: { endpoint: "https://compact.example/v1/responses/compact" },
+			}),
+		).toBe(true);
 	});
 });

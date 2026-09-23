@@ -1,6 +1,8 @@
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 
-export const CODEX_CLIENT_VERSION = "0.153.3";
+// The backend version-gates model availability on both `/models?client_version=` and `/responses`;
+// 0.155.1 exposes GPT-6 Sol and Luna, and an older pin silently hides newer SKUs from discovery.
+export const CODEX_CLIENT_VERSION = "0.155.1";
 
 export const OPENAI_HEADERS = {
 	BETA: "OpenAI-Beta",
@@ -24,6 +26,8 @@ export const OPENAI_HEADERS = {
 	ATTESTATION: "x-oai-attestation",
 
 	RESIDENCY: "x-openai-internal-codex-residency",
+
+	ROUTING_HINT: "x-codex-routing-hint",
 } as const;
 
 export const OPENAI_HEADER_VALUES = {
@@ -39,6 +43,12 @@ export const URL_PATHS = {
 } as const;
 
 export const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
+
+// codex-rs `build_routing_hint_header`: sent on every ChatGPT-OAuth Responses, compaction, and WebSocket
+// handshake request; API-key OpenAI traffic never carries it.
+export function codexRoutingHint(model: string, serviceTier: string | null | undefined): string {
+	return serviceTier ? `model=${model};tier=${serviceTier}` : `model=${model}`;
+}
 
 export function getCodexAccountId(accessToken: string): string | undefined {
 	try {

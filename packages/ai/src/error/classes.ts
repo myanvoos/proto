@@ -67,8 +67,8 @@ export class AnthropicApiError extends ProviderHttpError {
 	declare readonly headers: Headers;
 	readonly requestId: string | null;
 
-	constructor(status: number, message: string, headers: Headers) {
-		super(message, status, { headers });
+	constructor(status: number, message: string, headers: Headers, options?: { code?: string; cause?: unknown }) {
+		super(message, status, { headers, code: options?.code, cause: options?.cause });
 		this.name = "AnthropicApiError";
 		this.requestId = headers.get("request-id");
 	}
@@ -153,8 +153,33 @@ export class AnthropicApiError extends ProviderHttpError {
 		}
 
 		const detail = bodyChunks.join("").trim() || "status code (no body)";
-		return new AnthropicApiError(response.status, `${response.status} ${detail}`, response.headers);
+		return new AnthropicApiError(response.status, `${response.status} ${detail}`, response.headers, {
+			code: parseAnthropicErrorCode(detail),
+		});
 	}
+}
+
+/** `error.details.error_code` (policy denials), else `error.type`, from an Anthropic JSON error body. */
+function parseAnthropicErrorCode(detail: string): string | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(detail);
+	} catch {
+		return undefined;
+	}
+	if (!parsed || typeof parsed !== "object" || !("error" in parsed)) return undefined;
+	const err = parsed.error;
+	if (!err || typeof err !== "object") return undefined;
+	if (
+		"details" in err &&
+		err.details &&
+		typeof err.details === "object" &&
+		"error_code" in err.details &&
+		typeof err.details.error_code === "string"
+	) {
+		return err.details.error_code;
+	}
+	return "type" in err && typeof err.type === "string" ? err.type : undefined;
 }
 
 export class AnthropicConnectionError extends Error {

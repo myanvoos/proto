@@ -20,7 +20,7 @@ function createReasoningModel<TApi extends Api>(id: string, api: TApi, provider:
 }
 
 describe("model thinking derivation", () => {
-	it("drops minimal for Gemini 3.7 Flash only on direct google-level hosts", () => {
+	it("drops minimal for Gemini 3.7+ Flash only on direct google-level hosts", () => {
 		const directHosts = [
 			{ api: "google-generative-ai", provider: "google" },
 			{ api: "google-vertex", provider: "google-vertex" },
@@ -37,12 +37,23 @@ describe("model thinking derivation", () => {
 		expect(getSupportedEfforts(budgetReseller)).toEqual([Effort.Minimal, Effort.Low, Effort.Medium, Effort.High]);
 
 		const nextRevision = createReasoningModel("gemini-3.8-flash", "google-vertex", "google-vertex");
-		expect(getSupportedEfforts(nextRevision)).toContain(Effort.Minimal);
+		expect(getSupportedEfforts(nextRevision)).toEqual([Effort.Low, Effort.Medium, Effort.High]);
+
+		const lite = createReasoningModel("gemini-3.8-flash-lite", "google-vertex", "google-vertex");
+		expect(getSupportedEfforts(lite)).toContain(Effort.Minimal);
 	});
 
 	it("uses effort control for OpenAI-family models served by Bedrock Converse", () => {
 		const model = createReasoningModel("global.openai.gpt-5.6-luna", "bedrock-converse-stream", "amazon-bedrock");
 
 		expect(model.thinking?.mode).toBe("effort");
+	});
+
+	it("drives Cerebras Qwen 3.8 through OpenAI reasoning_effort instead of DashScope thinking toggles", () => {
+		const model = createReasoningModel("qwen-3.8-27b", "openai-completions", "cerebras");
+
+		expect(model.compat.thinkingFormat).toBe("openai");
+		expect(model.compat.reasoningDisableMode).toBe("none-effort");
+		expect(getSupportedEfforts(model)).toEqual([Effort.Low, Effort.Medium, Effort.High]);
 	});
 });

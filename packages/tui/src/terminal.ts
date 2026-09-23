@@ -37,7 +37,32 @@ function shouldEnableModifyOtherKeysFallback(env: NodeJS.ProcessEnv = Bun.env): 
 	return TERMINAL.id !== "base" && TERMINAL.id !== "trueColor";
 }
 
+/**
+ * Backlog ceiling that arms the stall watchdog. A live terminal keeps this near
+ * zero; crossing it means either a wedged PTY reader or a single legitimately
+ * huge frame (a resumed transcript repainting many inline images). The two are
+ * told apart by {@link StdoutStallWatchdog} drain progress, not this number.
+ */
 const MAX_STDOUT_BACKLOG_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Backlog at or below which stdout is healthy again: the TUI resumes composing
+ * frames and a {@link StdoutStallWatchdog} episode ends. The TUI render gate uses
+ * this same value, so the watchdog stays armed across the entire range where
+ * frames are deferred — a consumer that wedges between this level and the arm
+ * cap is still re-sampled instead of freezing the session.
+ */
+export const STDOUT_BACKLOG_CLEAR_BYTES = 256 * 1024;
+
+/**
+ * How long an armed backlog may go without drain progress before the consumer
+ * is declared gone. A slow-but-alive terminal keeps reaching new low-water
+ * marks; a wedged one that flushes nothing is torn down within this window.
+ */
+const STDOUT_STALL_TIMEOUT_MS = 2_000;
+
+/** Cadence at which {@link ProcessTerminal} re-samples the backlog while an episode is armed. */
+const STDOUT_STALL_POLL_MS = 250;
 
 /** A capability reply (OSC 11/OSC 99) that has not terminated within this
  * window is abandoned: a torn reply must not swallow ordinary input. */
@@ -45,29 +70,65 @@ const OSC_REPLY_TIMEOUT_MS = 1000;
 const OSC11_REPLY_MAX_LENGTH = 128;
 const OSC99_REPLY_MAX_LENGTH = 4096;
 
-export class OutputBacklogGuard {
-	#bytes = 0;
-	#tracking = false;
+/**
+ * Bounds a never-draining stdout backlog without killing a single large but
+ * actively draining frame.
+ *
+ * A stalled-but-alive PTY reader never throws, so the pending byte count is the
+ * only signal that output is going nowhere — but tripping on the instantaneous
+ * count kills a legitimate oversized frame that would drain. An episode starts
+ * when the backlog first exceeds `armBytes` and lasts until it drains back to
+ * `clearBytes`; during it the terminal is declared disconnected only when the
+ * backlog reaches no new low-water mark for `stallMs`.
+ *
+ * Exported for unit testing; `ProcessTerminal` is the sole production user.
+ */
+export class StdoutStallWatchdog {
+	#lowWater = Number.POSITIVE_INFINITY;
+	#stalledSinceMs = 0;
+	#armed = false;
 
-	constructor(private readonly capBytes: number = MAX_STDOUT_BACKLOG_BYTES) {}
+	constructor(
+		private readonly armBytes: number = MAX_STDOUT_BACKLOG_BYTES,
+		private readonly clearBytes: number = STDOUT_BACKLOG_CLEAR_BYTES,
+		private readonly stallMs: number = STDOUT_STALL_TIMEOUT_MS,
+	) {}
 
-	get tracking(): boolean {
-		return this.#tracking;
+	/** True while an episode is active and the backlog must be polled to completion. */
+	get armed(): boolean {
+		return this.#armed;
 	}
 
-	record(accepted: boolean, bytes: number): boolean {
-		if (!this.#tracking) {
-			if (accepted) return false;
-
-			this.#tracking = true;
+	/**
+	 * Feed the current pending-byte count and clock reading. Returns true once an
+	 * armed episode has gone `stallMs` with no drain progress.
+	 */
+	sample(pending: number, nowMs: number): boolean {
+		if (!this.#armed) {
+			if (pending <= this.armBytes) return false;
+			this.#armed = true;
+			this.#lowWater = pending;
+			this.#stalledSinceMs = nowMs;
+			return false;
 		}
-		this.#bytes += bytes;
-		return this.#bytes > this.capBytes;
+		if (pending <= this.clearBytes) {
+			this.reset();
+			return false;
+		}
+		if (pending < this.#lowWater) {
+			// Drain progress: a new low-water mark restarts the stall clock.
+			this.#lowWater = pending;
+			this.#stalledSinceMs = nowMs;
+			return false;
+		}
+		return nowMs - this.#stalledSinceMs >= this.stallMs;
 	}
 
+	/** Episode ended (drained) or terminal torn down: stop watching. */
 	reset(): void {
-		this.#bytes = 0;
-		this.#tracking = false;
+		this.#armed = false;
+		this.#lowWater = Number.POSITIVE_INFINITY;
+		this.#stalledSinceMs = 0;
 	}
 }
 
@@ -179,6 +240,14 @@ export interface TerminalStartOptions {
 }
 
 export type TerminalAppearanceRequestToken = number;
+/**
+ * Fired once per DEC private mode when DECRQM support resolves. `confirmed` is
+ * false when only the DA1 sentinel arrived. `status` is the DECRPM value
+ * (0 unrecognized, 1/2 set/reset, 3 permanently set, 4 permanently reset) when
+ * the terminal answered DECRQM.
+ */
+export type PrivateModeReportHandler = (mode: number, supported: boolean, confirmed?: boolean, status?: number) => void;
+
 export interface Terminal {
 	start(
 		onInput: (data: string) => void,
@@ -240,7 +309,7 @@ export interface Terminal {
 
 	get appearance(): TerminalAppearance | undefined;
 
-	onPrivateModeReport?(callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void;
+	onPrivateModeReport?(callback: PrivateModeReportHandler): void;
 
 	/**
 	 * Ask the terminal where its cursor is (CPR, `CSI 6 n`). Resolves with the
@@ -325,14 +394,12 @@ export class ProcessTerminal implements Terminal {
 		this.#markTerminalDisconnected("stdout failed", err);
 	};
 
-	#stdoutBacklog = new OutputBacklogGuard();
+	// Bounds the stdout backlog against a stalled PTY consumer without killing a
+	// single large-but-draining frame. See StdoutStallWatchdog.
+	#stdoutStall = new StdoutStallWatchdog();
+	#stdoutStallTimer?: Timer;
 
 	#outputPump?: TtyWriter;
-	#stdoutDrainArmed = false;
-	#stdoutDrainHandler = () => {
-		this.#stdoutDrainArmed = false;
-		this.#stdoutBacklog.reset();
-	};
 
 	#xtermScrollToBottomRestoreModes = new Set<number>();
 	#appearanceCallbacks: Array<
@@ -358,7 +425,7 @@ export class ProcessTerminal implements Terminal {
 	#da1SentinelOwners: Da1SentinelOwner[] = [];
 
 	#privateModeSupport = new Map<number, boolean>();
-	#privateModeCallbacks: Array<(mode: number, supported: boolean, confirmed: boolean) => void> = [];
+	#privateModeCallbacks: PrivateModeReportHandler[] = [];
 
 	#inBandResizeActive = false;
 	#inBandResizeWatchdog?: Timer;
@@ -425,7 +492,7 @@ export class ProcessTerminal implements Terminal {
 		return token;
 	}
 
-	onPrivateModeReport(callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void {
+	onPrivateModeReport(callback: PrivateModeReportHandler): void {
 		this.#privateModeCallbacks.push(callback);
 	}
 
@@ -524,6 +591,9 @@ export class ProcessTerminal implements Terminal {
 		this.#queryPrivateMode(2026);
 		this.#queryPrivateMode(2048);
 		this.#queryPrivateMode(2031);
+		// Bracketed paste is queried only to confirm the terminal brackets pastes;
+		// once confirmed, StdinBuffer's unbracketed raw-paste heuristic is off.
+		this.#queryPrivateMode(2004);
 		for (const mode of XTERM_SCROLL_TO_BOTTOM_MODES) {
 			this.#queryPrivateMode(mode);
 		}
@@ -1120,21 +1190,25 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	#handlePrivateModeReport(mode: number, status: string): void {
-		this.#resolvePrivateMode(mode, isPrivateModeSupported(status), true);
+		this.#resolvePrivateMode(mode, isPrivateModeSupported(status), true, Number.parseInt(status, 10));
 		if (isXtermScrollToBottomMode(mode) && isPrivateModeSet(status)) {
 			this.#disableXtermScrollToBottomMode(mode);
 		}
 	}
 
-	#resolvePrivateMode(mode: number, supported: boolean, confirmed: boolean): void {
+	#resolvePrivateMode(mode: number, supported: boolean, confirmed: boolean, status?: number): void {
 		if (this.#privateModeSupport.has(mode)) return;
 		this.#privateModeSupport.set(mode, supported);
 		for (const cb of this.#privateModeCallbacks) {
 			try {
-				cb(mode, supported, confirmed);
+				cb(mode, supported, confirmed, status);
 			} catch {}
 		}
 		if (mode === 2048 && supported) this.#enableInBandResize();
+		// `supported` is true only after an explicit DECRPM reply (the DA1 sentinel
+		// fallback resolves unsupported), so terminals ignoring DECRQM keep the
+		// raw-paste heuristic.
+		if (mode === 2004 && supported) this.#stdinBuffer?.setRawPasteClassification(false);
 	}
 
 	#disableXtermScrollToBottomMode(mode: number): void {
@@ -1358,11 +1432,7 @@ export class ProcessTerminal implements Terminal {
 			process.stdout.removeListener("resize", this.#stdoutResizeListener);
 			this.#stdoutResizeListener = undefined;
 		}
-		if (this.#stdoutDrainArmed) {
-			process.stdout.removeListener("drain", this.#stdoutDrainHandler);
-			this.#stdoutDrainArmed = false;
-		}
-		this.#stdoutBacklog.reset();
+		this.#disarmStdoutStallWatchdog();
 		this.#resizeHandler = undefined;
 
 		if (this.#outputPump) {
@@ -1382,6 +1452,7 @@ export class ProcessTerminal implements Terminal {
 	#markTerminalDisconnected(reason: string, err?: unknown): void {
 		if (this.#dead) return;
 		this.#dead = true;
+		this.#disarmStdoutStallWatchdog();
 		logger.warn("terminal disconnected; stopping interactive rendering", { reason, err });
 
 		const disconnectHandler = this.#disconnectHandler;
@@ -1425,24 +1496,17 @@ export class ProcessTerminal implements Terminal {
 				return;
 			}
 			try {
-				if (pump.write(data) > MAX_STDOUT_BACKLOG_BYTES) {
-					this.#markTerminalDisconnected("stdout backlog exceeded cap; PTY consumer stalled");
-				}
+				this.#trackStdoutBacklog(pump.write(data));
 			} catch (err) {
 				this.#markTerminalDisconnected("stdout failed", err);
 			}
 			return;
 		}
 		try {
-			const bytes = Buffer.byteLength(data, "utf8");
-			const accepted = process.stdout.write(data);
-
-			if (this.#stdoutBacklog.record(accepted, bytes)) {
-				this.#markTerminalDisconnected("stdout backlog exceeded cap; PTY consumer stalled");
-			} else if (this.#stdoutBacklog.tracking && !this.#stdoutDrainArmed) {
-				this.#stdoutDrainArmed = true;
-				process.stdout.once("drain", this.#stdoutDrainHandler);
-			}
+			process.stdout.write(data);
+			// A stalled-but-alive consumer never throws: refused writes just queue
+			// and writableLength grows. Feed that backlog to the stall watchdog.
+			this.#trackStdoutBacklog(process.stdout.writableLength ?? 0);
 		} catch (err) {
 			this.#markTerminalDisconnected("stdout failed", err);
 		}
@@ -1456,6 +1520,44 @@ export class ProcessTerminal implements Terminal {
 		if (this.#outputPump) return this.#outputPump.pending();
 
 		return process.stdout.writableLength ?? 0;
+	}
+
+	/**
+	 * Reconcile the stdout backlog after a write or a poll. While an episode is
+	 * armed a poll keeps running: once the render gate defers frames, no write is
+	 * guaranteed to re-sample the backlog, so a consumer that wedges anywhere
+	 * above the healthy level would otherwise freeze the session.
+	 */
+	#trackStdoutBacklog(pending: number): void {
+		if (this.#stdoutStall.sample(pending, Date.now())) {
+			this.#disarmStdoutStallWatchdog();
+			this.#markTerminalDisconnected("stdout backlog stalled without draining; PTY consumer stalled");
+			return;
+		}
+		if (!this.#stdoutStall.armed) {
+			this.#disarmStdoutStallWatchdog();
+			return;
+		}
+		if (!this.#stdoutStallTimer) {
+			this.#stdoutStallTimer = setInterval(() => this.#pollStdoutStall(), STDOUT_STALL_POLL_MS);
+			this.#stdoutStallTimer.unref?.();
+		}
+	}
+
+	#pollStdoutStall(): void {
+		if (this.#dead) {
+			this.#disarmStdoutStallWatchdog();
+			return;
+		}
+		this.#trackStdoutBacklog(this.pendingOutputBytes);
+	}
+
+	#disarmStdoutStallWatchdog(): void {
+		this.#stdoutStall.reset();
+		if (this.#stdoutStallTimer) {
+			clearInterval(this.#stdoutStallTimer);
+			this.#stdoutStallTimer = undefined;
+		}
 	}
 
 	get rows(): number {

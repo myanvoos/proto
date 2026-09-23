@@ -1,3 +1,4 @@
+import { scheduler } from "node:timers/promises";
 import {
 	Agent,
 	type AgentMessage,
@@ -12,10 +13,12 @@ import {
 } from "@oh-my-pi/pi-agent-core";
 import {
 	type CompactionResult,
+	canReplayRemoteCompaction,
 	compact,
 	compactionContextTokens,
 	createCompactionSummaryMessage,
 	estimateTranscriptTokens,
+	isOpenAiRemoteCompactionApi,
 	NativeCompactionError,
 	prepareCompaction,
 	type SessionMessageEntry,
@@ -34,11 +37,13 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import { isUsageLimitOutcome, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, logger } from "@oh-my-pi/pi-utils";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	type AdvisorAgent,
+	AdvisorLoopGuard,
 	AdvisorOutputQuarantinedError,
 	AdvisorTranscriptRecorder,
 	buildAdvisorQuarantineSourceText,
@@ -55,18 +60,82 @@ import { resolveThinkingLevelForModel, shouldDisableReasoning, toReasoningEffort
 import type { AgentSessionEvent } from "./agent-session-events";
 import { resolveCompactionMethodOrder } from "./compaction-methods";
 import {
+	calculateRetryBackoffDelayMs,
 	formatRetryFallbackSelector,
 	getRetryFallbackRevertPolicy,
 	parseRetryFallbackSelector,
 	type RetryFallbackSelector,
 } from "./retry-fallback-chains";
 import type { PerAdvisorStat } from "./session-advisors";
+import { getOpenAiRemoteCompactionPayload } from "./session-context";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
 import { formatSessionHistoryMarkdown } from "./session-history-format";
 import type { SessionManager } from "./session-manager";
 import { buildSessionMetadata } from "./session-metadata";
 
 const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
+
+/** Past a sibling credential's unblock deadline, so the retry's `getApiKey` re-rank already sees it free. */
+const ADVISOR_SIBLING_UNBLOCK_BUFFER_MS = 1_000;
+
+export interface AdvisorUsageLimitTiming {
+	/** A sibling credential's unblock time (`markUsageLimitReached` `retryAtMs`). */
+	retryAtMs?: number;
+	/** The failed credential's merged block deadline. */
+	blockedUntilMs?: number;
+	/** This mark call's own deadline, before report correction and longest-wins merging. */
+	requestedBlockedUntilMs?: number;
+	/** Provider-stated retry hint from the error. */
+	retryAfterMs?: number;
+	/** Reset time from a complete usage report. */
+	reportResetAtMs?: number;
+	priorBlockedUntilMs?: number;
+	priorBlockedUntilTimed?: boolean;
+}
+
+/**
+ * How long an advisor should wait out a usage-limit block before retrying its turn, or `undefined` to let the
+ * runtime latch its quota-exhausted pause. Mirrors the primary turn recovery: a provider hint, a complete usage
+ * report, or a sibling that frees soon authorizes a wait floored by the configured backoff; a wait past
+ * `retry.maxDelayMs`, a spent `retry.maxRetries` budget, or a bare heuristic block (e.g. a permanent 402 spend cap)
+ * latches. Decides on the block window, not the error class, so a burst limit misread as quota exhaustion recovers.
+ */
+export function planAdvisorUsageLimitWait(
+	timing: AdvisorUsageLimitTiming,
+	retry: { enabled: boolean; baseDelayMs: number; maxDelayMs: number; maxRetries: number },
+	attempt: number,
+	nowMs: number,
+): number | undefined {
+	if (!retry.enabled || attempt >= retry.maxRetries) return undefined;
+	let credentialUnblockAtMs: number | undefined;
+	if (timing.retryAfterMs !== undefined) {
+		// Provider-stated hint, merged with any longer persisted/shared block.
+		credentialUnblockAtMs = timing.blockedUntilMs ?? nowMs + timing.retryAfterMs;
+	} else if (timing.reportResetAtMs !== undefined) {
+		// A complete report replaces this call's heuristic block in either direction, but a prior provider-timed
+		// block and a merged block beyond this call's own deadline are still enforced by credential selection.
+		credentialUnblockAtMs = timing.reportResetAtMs;
+		if (timing.priorBlockedUntilTimed === true && timing.priorBlockedUntilMs !== undefined) {
+			credentialUnblockAtMs = Math.max(credentialUnblockAtMs, timing.priorBlockedUntilMs);
+		}
+		if (
+			timing.blockedUntilMs !== undefined &&
+			timing.requestedBlockedUntilMs !== undefined &&
+			timing.blockedUntilMs > timing.requestedBlockedUntilMs
+		) {
+			credentialUnblockAtMs = Math.max(credentialUnblockAtMs, timing.blockedUntilMs);
+		}
+	}
+	const candidates: number[] = [];
+	if (credentialUnblockAtMs !== undefined) candidates.push(Math.max(0, credentialUnblockAtMs - nowMs));
+	if (timing.retryAtMs !== undefined) {
+		candidates.push(Math.max(0, timing.retryAtMs - nowMs) + ADVISOR_SIBLING_UNBLOCK_BUFFER_MS);
+	}
+	if (candidates.length === 0) return undefined;
+	const waitMs = Math.max(Math.min(...candidates), calculateRetryBackoffDelayMs(retry.baseDelayMs, attempt + 1));
+	if (retry.maxDelayMs > 0 && waitMs > retry.maxDelayMs) return undefined;
+	return waitMs;
+}
 
 export interface AdvisorRetryFallbackState {
 	role: string;
@@ -147,6 +216,8 @@ export interface ReviewerTransportHost {
 interface AdvisorCompactionSummaryMessage extends CompactionSummaryMessage {
 	firstKeptEntryId?: string;
 	advisorUsageAnchorStartIndex?: number;
+	/** Native replay metadata retained for the next maintenance pass. */
+	preserveData?: CompactionEntry["preserveData"];
 }
 
 export interface ReviewerTransportOptions {
@@ -201,6 +272,8 @@ export class ReviewerTransport implements ReviewerInstance {
 
 	#quarantinedAdvisorOutput: string | undefined;
 	#currentAdvisorInput = "";
+	/** Usage-limit waits in the current episode, bounded by `retry.maxRetries`; a successful turn or reset clears it. */
+	#usageLimitRetries = 0;
 
 	constructor(host: ReviewerTransportHost, options: ReviewerTransportOptions) {
 		const identity = options.identity;
@@ -303,6 +376,9 @@ export class ReviewerTransport implements ReviewerInstance {
 			preferWebsockets: this.#host.preferWebsockets,
 			getApiKey: requestModel => this.#host.modelRegistry.resolver(requestModel, advisorProviderSessionId),
 			streamFn: advisorStreamFn,
+			// Maintenance installs compactionSummary messages; the core Agent's default converter drops custom roles
+			// and would discard the summary and its native replay.
+			convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
 			onPayload: this.#host.onPayload,
 			onResponse: this.#host.onResponse,
 			onSseEvent: this.#host.onSseEvent,
@@ -323,6 +399,23 @@ export class ReviewerTransport implements ReviewerInstance {
 		});
 		advisorAgent.setDisableReasoning(shouldDisableReasoning(advisorThinkingLevel));
 		this.agent = advisorAgent;
+		// The advisor's own loop needs the repeated-tool-call bound the primary gets from its stream guards; nothing
+		// else stops it reissuing one failing call until the update is abandoned.
+		let advisorLoopGuardStopped = false;
+		const advisorLoopGuard = new AdvisorLoopGuard({
+			settings: this.#host.settings,
+			name: advisorName,
+			liveMessages: () => advisorAgent.state.messages,
+			appendMessage: message => advisorAgent.appendMessage(message),
+			abort: reason => {
+				advisorLoopGuardStopped = true;
+				advisorAgent.abort(reason.message);
+			},
+		});
+		advisorAgent.setOnTurnEnd((messages, signal, context) => {
+			if (signal?.aborted) return;
+			advisorLoopGuard.recordTurn(messages, context);
+		});
 
 		const advisorAgentFacade: AdvisorAgent = {
 			prompt: async input => {
@@ -332,6 +425,8 @@ export class ReviewerTransport implements ReviewerInstance {
 					throw new Error("Session transition in progress; the reviewer turn cannot start.");
 				}
 				let quarantined: string | undefined;
+				advisorLoopGuard.reset();
+				advisorLoopGuardStopped = false;
 				try {
 					this.#quarantinedAdvisorOutput = undefined;
 
@@ -341,8 +436,11 @@ export class ReviewerTransport implements ReviewerInstance {
 
 					if (Array.isArray(input)) await advisorAgent.prompt(input);
 					else await advisorAgent.prompt(input);
+					// A loop-guard stop is a deliberate, bounded silent review, not a provider failure to retry.
+					if (advisorLoopGuardStopped) advisorAgent.state.error = undefined;
 					quarantined = this.#quarantinedAdvisorOutput;
 				} finally {
+					advisorLoopGuardStopped = false;
 					this.#quarantinedAdvisorOutput = undefined;
 					this.#currentAdvisorInput = "";
 				}
@@ -351,6 +449,7 @@ export class ReviewerTransport implements ReviewerInstance {
 			abort: reason => advisorAgent.abort(reason),
 			waitForIdle: () => advisorAgent.waitForIdle(),
 			reset: () => {
+				advisorLoopGuard.reset();
 				try {
 					advisorAgent.reset();
 				} catch {
@@ -417,7 +516,18 @@ export class ReviewerTransport implements ReviewerInstance {
 	resetForConversationBoundary(): void {
 		this.agentUnsubscribe?.();
 		this.agentUnsubscribe = undefined;
-		this.runtime.reset("conversation-boundary");
+		this.resetRuntime("conversation-boundary");
+	}
+
+	/** Re-prime the runtime; an aborted usage-limit wait must not carry its spent budget into the reset view. */
+	resetRuntime(reason?: string): void {
+		this.runtime.reset(reason);
+		this.#usageLimitRetries = 0;
+	}
+
+	/** A completed turn ends the usage-limit episode. */
+	noteTurnSucceeded(): void {
+		this.#usageLimitRetries = 0;
 	}
 
 	async #maybeRestoreRetryFallbackPrimary(signal: AbortSignal): Promise<void> {
@@ -447,7 +557,7 @@ export class ReviewerTransport implements ReviewerInstance {
 		);
 		const primaryModel =
 			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
-		if (!primaryModel) return;
+		if (!primaryModel || !this.#canReplayHistory(primaryModel)) return;
 		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, this.providerSessionId, {
 			signal,
 		});
@@ -482,10 +592,14 @@ export class ReviewerTransport implements ReviewerInstance {
 				})
 			: AIError.classify(error, currentModel.api);
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
-		if (
-			AIError.is(errorId, AIError.Flag.ContextOverflow) ||
-			(assistantFailure && AIError.isContextOverflow(assistantFailure, currentModel.contextWindow ?? 0))
-		) {
+		// A payload co-flagged overflow without reported token excess may fit another provider's larger byte/media
+		// budget, so it reaches the fallback walk; pure and usage-backed overflows keep the veto.
+		const contextWindow = currentModel.contextWindow ?? 0;
+		const overflowVeto =
+			(AIError.is(errorId, AIError.Flag.ContextOverflow) ||
+				(assistantFailure !== undefined && AIError.isContextOverflow(assistantFailure, contextWindow))) &&
+			!AIError.isTextAmbiguousContextOverflow(errorId, assistantFailure, contextWindow);
+		if (overflowVeto) {
 			return false;
 		}
 
@@ -499,29 +613,36 @@ export class ReviewerTransport implements ReviewerInstance {
 			if (switched) return true;
 		}
 
-		const retryAfterMs = extractRetryHint(undefined, message);
+		const retryAfterMs = extractProviderRetryHint(currentModel.provider, message);
 		const usageLimit =
 			AIError.is(errorId, AIError.Flag.UsageLimit) ||
 			isUsageLimitOutcome(extractHttpStatusFromError(error), message);
+		let usageTiming: AdvisorUsageLimitTiming | undefined;
 		if (usageLimit) {
 			const outcome = await this.#host.modelRegistry.authStorage.markUsageLimitReached(
 				currentModel.provider,
 				this.providerSessionId,
 				{
 					retryAfterMs,
+					providerTimed: retryAfterMs !== undefined,
 					baseUrl: currentModel.baseUrl,
 					modelId: currentModel.id,
 					signal,
 				},
 			);
 			if (outcome.switched) return true;
+			usageTiming = { ...outcome, retryAfterMs };
 		}
 		if (!assistantFailure && !accountPolicyDenial && !usageLimit) return false;
 
 		const currentSelector = formatRetryFallbackSelector(currentModel, this.thinkingLevel);
 
 		const retrySettings = this.#host.settings.getGroup("retry");
-		if (!retrySettings.enabled || !retrySettings.modelFallback) return false;
+		// With no sibling credential and no usable fallback model, a usage limit still is not fatal: a transient
+		// block is waited out before the runtime latches its quota pause.
+		const decline = (): Promise<boolean> =>
+			usageTiming ? this.#waitOutUsageLimit(usageTiming, retrySettings, signal) : Promise.resolve(false);
+		if (!retrySettings.enabled || !retrySettings.modelFallback) return decline();
 
 		const chainKeys = this.#host.retryFallbackChainKeys(currentSelector, currentModel, {
 			pinnedRole: this.retryFallback?.role,
@@ -530,7 +651,7 @@ export class ReviewerTransport implements ReviewerInstance {
 		if (
 			!chainKeys.some(role => this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel).length > 0)
 		) {
-			return false;
+			return decline();
 		}
 
 		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
@@ -540,6 +661,7 @@ export class ReviewerTransport implements ReviewerInstance {
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
+				if (!this.#canReplayHistory(candidate)) continue;
 				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.providerSessionId, {
 					signal,
 				});
@@ -566,11 +688,40 @@ export class ReviewerTransport implements ReviewerInstance {
 					from: currentSelector,
 					to: selector.raw,
 					role,
+					reason: `Advisor request failed: ${message}`,
 				});
 				return true;
 			}
 		}
-		return false;
+		return decline();
+	}
+
+	async #waitOutUsageLimit(
+		timing: AdvisorUsageLimitTiming,
+		retry: { enabled: boolean; baseDelayMs: number; maxDelayMs: number; maxRetries: number },
+		signal: AbortSignal,
+	): Promise<boolean> {
+		const waitMs = planAdvisorUsageLimitWait(timing, retry, this.#usageLimitRetries, Date.now());
+		if (waitMs === undefined) {
+			// The runtime latches now; the next episode after its reset starts with a fresh budget.
+			this.#usageLimitRetries = 0;
+			return false;
+		}
+		const attempt = this.#usageLimitRetries + 1;
+		logger.debug("advisor waiting out usage-limit block", { advisor: this.#identity.name, waitMs, attempt });
+		await scheduler.wait(waitMs, { signal });
+		// Counted only once the wait completes: an aborted pause/reset never reached a provider retry.
+		this.#usageLimitRetries = attempt;
+		return true;
+	}
+
+	/** Whether `model` can read every native compaction replay in this advisor's history. */
+	#canReplayHistory(model: Model): boolean {
+		return this.agent.state.messages.every(
+			message =>
+				message.role !== "compactionSummary" ||
+				canReplayRemoteCompaction((message as AdvisorCompactionSummaryMessage).preserveData, model),
+		);
 	}
 
 	async #promoteContextModel(currentModel: Model, signal: AbortSignal): Promise<boolean> {
@@ -579,7 +730,7 @@ export class ReviewerTransport implements ReviewerInstance {
 		const contextWindow = currentModel.contextWindow ?? 0;
 		if (contextWindow <= 0) return false;
 		const targetModel = await this.#host.resolveContextPromotionTarget(currentModel, contextWindow, signal);
-		if (!targetModel) return false;
+		if (!targetModel || !this.#canReplayHistory(targetModel)) return false;
 		signal.throwIfAborted();
 
 		const advisorThinkingLevel = this.thinkingLevel;
@@ -612,7 +763,7 @@ export class ReviewerTransport implements ReviewerInstance {
 			return false;
 		}
 
-		const advisorModel = agent.state.model;
+		let advisorModel = agent.state.model;
 		const contextWindow = advisorModel.contextWindow ?? 0;
 		if (contextWindow <= 0) return false;
 
@@ -639,6 +790,16 @@ export class ReviewerTransport implements ReviewerInstance {
 				if (!stillNeedsCompaction) return false;
 			}
 		}
+		advisorModel = agent.state.model;
+		const previousSummary = messages.findLast(
+			(message): message is AdvisorCompactionSummaryMessage => message.role === "compactionSummary",
+		);
+		// Native replacement history is the only copy of what it compacted: the originals are gone, so re-priming or a
+		// local summary would silently drop it.
+		const hasNativeHistory = previousSummary?.providerPayload?.type === "openaiResponsesHistory";
+		if (!this.#canReplayHistory(advisorModel)) {
+			throw new NativeCompactionError(new Error("Advisor model cannot replay its native compaction history"));
+		}
 
 		const pathEntries: SessionEntry[] = messages.map((message, i) => {
 			const id = `msg-${i}`;
@@ -656,6 +817,7 @@ export class ReviewerTransport implements ReviewerInstance {
 					shortSummary: message.shortSummary,
 					firstKeptEntryId: advisorSummary.firstKeptEntryId || `msg-${i + 1}`,
 					tokensBefore: message.tokensBefore,
+					preserveData: advisorSummary.preserveData,
 				} satisfies CompactionEntry;
 			}
 
@@ -669,8 +831,17 @@ export class ReviewerTransport implements ReviewerInstance {
 		});
 
 		const availableModels = this.#host.modelRegistry.getAvailable();
-		const candidates = this.#host.resolveCompactionModelCandidates(advisorModel, availableModels);
+		let candidates = this.#host.resolveCompactionModelCandidates(advisorModel, availableModels);
+		if (hasNativeHistory) {
+			candidates = candidates.filter(
+				candidate =>
+					this.#canReplayHistory(candidate) && shouldUseProviderNativeCompaction(candidate, compactionSettings),
+			);
+		}
 		if (candidates.length === 0) {
+			if (hasNativeHistory) {
+				throw new NativeCompactionError(new Error("No compaction model can preserve advisor native history"));
+			}
 			return true;
 		}
 		const advisorProviderSessionId = this.#resolveProviderSessionId(
@@ -678,8 +849,18 @@ export class ReviewerTransport implements ReviewerInstance {
 			this.#host.sessionId(),
 			this.#identity.slug,
 		);
-		const preparation = prepareCompaction(pathEntries, compactionSettings, advisorModel, agent.tokenizer);
+		// Prepare opaque history only for an eligible native writer, independently of whether the advisor's own model
+		// could create a new compaction.
+		const preparation = prepareCompaction(
+			pathEntries,
+			compactionSettings,
+			hasNativeHistory ? candidates[0] : advisorModel,
+			agent.tokenizer,
+		);
 		if (!preparation) {
+			if (hasNativeHistory) {
+				throw new NativeCompactionError(new Error("Cannot prepare advisor native history for compaction"));
+			}
 			return true;
 		}
 
@@ -709,13 +890,19 @@ export class ReviewerTransport implements ReviewerInstance {
 			) {
 				throw nativeCompactionFailure.error;
 			}
+			// A foreign native target can summarize readable history, but its opaque output cannot replace history
+			// consumed by this advisor's active model.
+			const candidatePreparation =
+				candidate.provider === advisorModel.provider && isOpenAiRemoteCompactionApi(advisorModel.api)
+					? preparation
+					: { ...preparation, settings: { ...compactionSettings, remoteEnabled: false } };
 
 			const advisorMetadata = advisorProviderSessionId
 				? buildSessionMetadata(advisorProviderSessionId, candidate.provider, this.#host.modelRegistry.authStorage)
 				: undefined;
 			try {
 				compactResult = await compact(
-					preparation,
+					candidatePreparation,
 					candidate,
 					this.#host.modelRegistry.resolver(candidate, advisorProviderSessionId),
 					undefined,
@@ -749,6 +936,11 @@ export class ReviewerTransport implements ReviewerInstance {
 		if (!compactResult && nativeCompactionFailure) throw nativeCompactionFailure.error;
 
 		if (!compactResult) {
+			if (hasNativeHistory) {
+				throw new NativeCompactionError(
+					lastError ?? new Error("No compaction model can preserve advisor native history"),
+				);
+			}
 			logger.warn("Advisor compaction failed, falling back to re-prime", { error: String(lastError) });
 			return true;
 		}
@@ -757,15 +949,29 @@ export class ReviewerTransport implements ReviewerInstance {
 		const shortSummary = compactResult.shortSummary;
 		const firstKeptEntryId = compactResult.firstKeptEntryId;
 		const tokensBefore = compactResult.tokensBefore;
+		const providerPayload = getOpenAiRemoteCompactionPayload(compactResult);
+		if (hasNativeHistory && !providerPayload) {
+			throw new NativeCompactionError(new Error("Compaction result did not preserve advisor native history"));
+		}
+		if (!canReplayRemoteCompaction(compactResult.preserveData, advisorModel)) {
+			throw new NativeCompactionError(new Error("Compaction result cannot be replayed by the advisor model"));
+		}
+		// Native replacement history already contains the retained tail; replaying it again as raw messages would
+		// duplicate turns and tool-call ids.
+		const recentMessages = providerPayload ? [] : preparation.recentMessages;
 
-		const advisorUsageAnchorStartIndex = preparation.recentMessages.length + 1;
+		const advisorUsageAnchorStartIndex = recentMessages.length + 1;
 		const summaryMessage = {
-			...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), { shortSummary }),
+			...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), {
+				shortSummary,
+				providerPayload,
+			}),
 			firstKeptEntryId,
 			advisorUsageAnchorStartIndex,
+			preserveData: compactResult.preserveData,
 		} satisfies AdvisorCompactionSummaryMessage;
 
-		agent.replaceMessages([summaryMessage, ...preparation.recentMessages]);
+		agent.replaceMessages([summaryMessage, ...recentMessages]);
 		return false;
 	}
 	stats(name: string, cost: number): PerAdvisorStat {

@@ -155,8 +155,9 @@ import {
 	toBinary,
 } from "@oh-my-pi/pi-catalog/discovery/protobuf";
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
-import { isKimiK3ModelId, parseOpenAIModel } from "@oh-my-pi/pi-catalog/identity";
+import { bareModelId, isKimiK3ModelId, parseAnthropicModel, parseOpenAIModel } from "@oh-my-pi/pi-catalog/identity";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
+import { isCursorMaxModeWireId, splitCursorEffortSuffix } from "@oh-my-pi/pi-catalog/variant-collapse";
 import {
 	$env,
 	isRecord,
@@ -193,7 +194,7 @@ import type {
 	ToolResultMessage,
 	VideoContent,
 } from "../types";
-import { normalizeSystemPrompts } from "../utils";
+import { normalizeSystemPrompts, normalizeToolCallId } from "../utils";
 import {
 	type CursorExecResolvedCarrier,
 	clearStreamingPartialJson,
@@ -208,7 +209,7 @@ import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { connectProxiedSocket, getProxyForUrl } from "../utils/proxy";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
-import { toolWireSchema } from "../utils/schema/wire";
+import { sanitizeSchemaForCursor, toolWireSchema } from "../utils/schema";
 import { formatConnectEndStreamError } from "./connect-error-detail";
 import {
 	buildMcpStateResult,
@@ -241,6 +242,7 @@ import {
 	piTimeout,
 } from "./cursor/exec-modern";
 import { handleInteractionQuery } from "./cursor/interaction-query";
+import mcpExternalHandoffMessage from "./cursor-external-tool-handoff.md" with { type: "text" };
 import { mediaOmissionNote } from "./vision-guard";
 
 export const CURSOR_API_URL = "https://api2.cursor.sh";
@@ -298,7 +300,13 @@ const conversationStateCache = new Map<string, ConversationStateStructure>();
 const conversationBlobStores = new Map<string, Map<string, Uint8Array>>();
 const warnedCursorKimiK3ReplayMessages = new Set<string>();
 
+// Base conversation id -> rotated wire id. Cursor can pin a bare zero-token
+// `resource_exhausted` to one conversationId; the next attempt then rebuilds a
+// fresh conversation from context under a new id. A rotated id may rotate again
+// only after it completed a turn, so real account exhaustion is not hidden.
 const rotatedConversationIds = new Map<string, string>();
+const successfulRotatedConversationIds = new Set<string>();
+const freshRotatedConversationIds = new Set<string>();
 const conversationLru = new Map<string, string>();
 
 function touchConversationCache(baseConversationId: string, conversationId: string): void {
@@ -312,6 +320,8 @@ function touchConversationCache(baseConversationId: string, conversationId: stri
 		conversationLru.delete(evictedBaseConversationId);
 		conversationStateCache.delete(evictedConversationId);
 		conversationBlobStores.delete(evictedConversationId);
+		successfulRotatedConversationIds.delete(evictedConversationId);
+		freshRotatedConversationIds.delete(evictedConversationId);
 		if (rotatedConversationIds.get(evictedBaseConversationId) === evictedConversationId) {
 			rotatedConversationIds.delete(evictedBaseConversationId);
 		}
@@ -333,6 +343,8 @@ export interface CursorOptions extends StreamOptions {
 	conversationId?: string;
 	execHandlers?: CursorExecHandlers;
 	onToolResult?: CursorToolResultHandler;
+	/** Treat unhandled MCP calls as accepted handoffs to an external executor. */
+	externalToolExecutor?: boolean;
 
 	wireModelId?: string;
 }
@@ -348,6 +360,7 @@ interface CursorRequestState {
 	conversationId: string;
 	blobStore: Map<string, Uint8Array>;
 	conversationState?: ConversationStateStructure;
+	rotatedFresh?: boolean;
 }
 
 interface CursorGrpcRequest {
@@ -656,10 +669,11 @@ function streamCursorWithWireMode(
 
 			baseConversationId = options?.conversationId ?? options?.sessionId ?? crypto.randomUUID();
 			conversationId = rotatedConversationIds.get(baseConversationId) ?? baseConversationId;
+			const rotatedFresh = freshRotatedConversationIds.has(conversationId);
 			const blobStore = conversationBlobStores.get(conversationId) ?? new Map<string, Uint8Array>();
 			conversationBlobStores.set(conversationId, blobStore);
 			touchConversationCache(baseConversationId, conversationId);
-			const cachedState = conversationStateCache.get(conversationId);
+			const cachedState = rotatedFresh ? undefined : conversationStateCache.get(conversationId);
 			const builtRequest = await buildGrpcRequestForWireMode(
 				model,
 				context,
@@ -668,6 +682,7 @@ function streamCursorWithWireMode(
 					conversationId,
 					blobStore,
 					conversationState: cachedState,
+					rotatedFresh,
 				},
 				wireMode,
 			);
@@ -676,7 +691,10 @@ function streamCursorWithWireMode(
 			conversationBlobStores.set(conversationId, blobStore);
 			conversationStateCache.set(conversationId, conversationState);
 			touchConversationCache(baseConversationId, conversationId);
-			const requestContextTools = buildMcpToolDefinitions(context.tools);
+			const requestContextTools = buildMcpToolDefinitions(
+				context.tools,
+				requiresCursorToolSchemaProjection(model, options?.wireModelId),
+			);
 			const requestContextRules = buildCursorRequestContextRules(context.systemPrompt);
 
 			const baseUrl = model.baseUrl || CURSOR_API_URL;
@@ -825,6 +843,7 @@ function streamCursorWithWireMode(
 							requestContextTools,
 							requestContextRules,
 							onConversationCheckpoint,
+							options?.externalToolExecutor,
 						).catch(error => {
 							failFrameProcessing("process", error);
 						});
@@ -892,6 +911,10 @@ function streamCursorWithWireMode(
 			h2Request.write(frameConnectMessage(requestBytes));
 			heartbeatTimer = setInterval(sendHeartbeat, 5000);
 			await h2Completion.promise;
+			if (conversationId !== baseConversationId) {
+				successfulRotatedConversationIds.add(conversationId);
+				freshRotatedConversationIds.delete(conversationId);
+			}
 
 			await drainInFlightDispatches();
 			if (frameProcessingError) throw frameProcessingError;
@@ -900,7 +923,7 @@ function streamCursorWithWireMode(
 			endCurrentThinkingBlock(output, stream, state);
 			flushOpenToolCalls(output, stream, state);
 
-			calculateCost(model, output.usage);
+			calculateCost(model, output.usage, output.timestamp);
 
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
@@ -955,23 +978,34 @@ function streamCursorWithWireMode(
 			}
 			const result = await AIError.finalize(error, { api: model.api, signal: options?.signal });
 
+			// A bare zero-token resource_exhausted poisons the conversation, not the
+			// account. Rotate the wire id and rebuild from `context` on the next
+			// attempt: migrating cached state would carry a mid-turn checkpoint's
+			// pendingToolCalls into the new id and re-poison it. One rotation per
+			// failure streak; the rotated id may rotate again once it completed a turn.
+			const currentRotated =
+				baseConversationId === undefined ? undefined : rotatedConversationIds.get(baseConversationId);
+			const canRotate = currentRotated === undefined || successfulRotatedConversationIds.has(currentRotated);
 			if (
 				conversationId !== undefined &&
 				baseConversationId !== undefined &&
 				usageState !== undefined &&
 				!usageState.sawTokenDelta &&
 				RESOURCE_EXHAUSTED_PATTERN.test(result.message) &&
-				!rotatedConversationIds.has(baseConversationId)
+				canRotate
 			) {
 				const rotated = crypto.randomUUID();
-				const state = conversationStateCache.get(conversationId);
-				const blobs = conversationBlobStores.get(conversationId);
+				if (currentRotated) successfulRotatedConversationIds.delete(currentRotated);
 				conversationStateCache.delete(conversationId);
 				conversationBlobStores.delete(conversationId);
-				if (state) conversationStateCache.set(rotated, state);
-				if (blobs) conversationBlobStores.set(rotated, blobs);
 				rotatedConversationIds.set(baseConversationId, rotated);
+				freshRotatedConversationIds.add(rotated);
 				touchConversationCache(baseConversationId, rotated);
+				logger.debug("cursor conversation rotated", {
+					base: baseConversationId,
+					from: conversationId,
+					to: rotated,
+				});
 			}
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
@@ -1059,6 +1093,7 @@ export async function handleServerMessage(
 	requestContextTools: McpToolDefinition[],
 	requestContextRules: CursorRule[] = [],
 	onConversationCheckpoint?: (checkpoint: ConversationStateStructure) => void,
+	externalToolExecutor = false,
 ): Promise<void> {
 	const msgCase = msg.message.case;
 
@@ -1080,6 +1115,7 @@ export async function handleServerMessage(
 				output,
 				stream,
 				state,
+				externalToolExecutor,
 			),
 		);
 	} else if (msgCase === "interactionQuery") {
@@ -1485,6 +1521,7 @@ async function handleExecServerMessage(
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
 	state: BlockState,
+	externalToolExecutor: boolean,
 ): Promise<void> {
 	const execCase = execMsg.message.case;
 	log("exec", "dispatch", { execCase, execId: execMsg.execId, hasHandlers: !!execHandlers });
@@ -1789,7 +1826,10 @@ async function handleExecServerMessage(
 				execHandlers?.mcp?.bind(execHandlers),
 				onToolResult,
 				toolResult => buildMcpResultFromToolResult(mcpCall, toolResult),
-				_reason => buildMcpToolNotFoundResult(mcpCall),
+				_reason =>
+					externalToolExecutor && !execHandlers?.mcp
+						? buildMcpExternalHandoffResult()
+						: buildMcpToolNotFoundResult(mcpCall),
 				error => buildMcpErrorResult(error),
 				execHandlers?.mcp ? { toolCallId: mcpCall.toolCallId, toolName: mcpCall.toolName } : null,
 			);
@@ -3436,6 +3476,27 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
 	});
 }
 
+const MCP_EXTERNAL_HANDOFF_MESSAGE = mcpExternalHandoffMessage.trim();
+
+function buildMcpExternalHandoffResult() {
+	return create(McpResultSchema, {
+		result: {
+			case: "success",
+			value: create(McpSuccessSchema, {
+				content: [
+					create(McpToolResultContentItemSchema, {
+						content: {
+							case: "text",
+							value: create(McpTextContentSchema, { text: MCP_EXTERNAL_HANDOFF_MESSAGE }),
+						},
+					}),
+				],
+				isError: false,
+			}),
+		},
+	});
+}
+
 function buildMcpToolNotFoundResult(mcpCall: CursorMcpCall) {
 	return create(McpResultSchema, {
 		result: {
@@ -3730,7 +3791,7 @@ export function processInteractionUpdate(
 			const toolCall = update.message.value.toolCall;
 			if (settled[kStreamingBlockKind] === "mcp") {
 				const partial = settled[kStreamingPartialJson];
-				if (partial !== undefined) {
+				if (partial) {
 					settled.arguments = parseStreamingJson(partial);
 				}
 				const decodedArgs = decodeMcpArgsMap(selectMcpCall(toolCall)?.args?.args);
@@ -3776,7 +3837,13 @@ export function processInteractionUpdate(
 				let persisted: ToolResultMessage | undefined;
 				let hostError: string | null = null;
 				try {
-					persisted = state.onTodoSnapshot?.(snapshot, settled.id, error) ?? undefined;
+					persisted =
+						state.onTodoSnapshot?.(
+							snapshot,
+							settled.id,
+							error,
+							toolCall && selectTodoCalls(toolCall).read ? "read" : "update",
+						) ?? undefined;
 				} catch (callbackError) {
 					hostError = callbackError instanceof Error ? callbackError.message : String(callbackError);
 					log("error", "onTodoSnapshot", { error: hostError });
@@ -3885,7 +3952,21 @@ function isJsonValue(value: unknown): value is JsonValue {
 	return true;
 }
 
-export function buildMcpToolDefinitions(tools: Tool[] | undefined): McpToolDefinition[] {
+/**
+ * Cursor rejects a Claude Fable request outright when any advertised tool
+ * schema carries `anyOf`/`oneOf`/`allOf`; other models keep the wire schema.
+ */
+function requiresCursorToolSchemaProjection(model: Model<"cursor-agent">, wireModelId: string | undefined): boolean {
+	for (const id of [model.id, wireModelId ?? model.requestModelId]) {
+		if (id !== undefined && parseAnthropicModel(bareModelId(id))?.kind === "fable") return true;
+	}
+	return false;
+}
+
+export function buildMcpToolDefinitions(
+	tools: Tool[] | undefined,
+	requiresSchemaProjection = false,
+): McpToolDefinition[] {
 	if (!tools || tools.length === 0) {
 		return [];
 	}
@@ -3899,7 +3980,8 @@ export function buildMcpToolDefinitions(tools: Tool[] | undefined): McpToolDefin
 	const forwarded = writeTool ? [...advertisedTools, writeTool] : advertisedTools;
 
 	return forwarded.map(tool => {
-		const jsonSchema = toolWireSchema(tool);
+		const wireSchema = toolWireSchema(tool);
+		const jsonSchema = requiresSchemaProjection ? sanitizeSchemaForCursor(wireSchema) : wireSchema;
 		const schemaValue: JsonValue =
 			jsonSchema !== null && !Array.isArray(jsonSchema) && isJsonValue(jsonSchema)
 				? jsonSchema
@@ -4015,9 +4097,12 @@ function buildCursorAssistantContent(
 				});
 			}
 		} else if (item.type === "toolCall") {
+			// Foreign Responses-family history carries composite `{callId}|{itemId}`
+			// ids; Cursor rejects the `|` (charset `^[a-zA-Z0-9_-]+$`) as an opaque
+			// resource_exhausted. Results normalize the same id, so pairing holds.
 			content.push({
 				type: "tool-call",
-				toolCallId: item.id,
+				toolCallId: normalizeToolCallId(item.id),
 				toolName: item.name,
 				args: normalizeCursorMcpArguments(item.arguments),
 			});
@@ -4079,6 +4164,27 @@ export function buildCursorSystemPromptJsons(systemPrompt: readonly string[] | u
 	return systemPrompts.map(content => JSON.stringify({ role: "system", content }));
 }
 
+function collectCursorToolHistory(messages: Message[], historyEnd: number) {
+	const toolResults = new Map<string, ToolResultMessage>();
+	const pairedToolCallIds = new Set<string>();
+	for (let index = 0; index < historyEnd; index++) {
+		const message = messages[index];
+		if (message.role === "toolResult") {
+			toolResults.set(message.toolCallId, message);
+		} else if (message.role === "assistant") {
+			for (const item of message.content) {
+				if (item.type === "toolCall") pairedToolCallIds.add(item.id);
+			}
+		}
+	}
+	return { toolResults, pairedToolCallIds };
+}
+
+function cursorOrphanToolResultText(result: ToolResultMessage): string {
+	const prefix = result.isError ? "[Tool Error]" : "[Tool Result]";
+	return `${prefix}\n${toolResultToText(result) || "(empty result)"}`;
+}
+
 function buildRootPromptMessagesJson(
 	messages: Message[],
 	systemPromptIds: Uint8Array[],
@@ -4087,6 +4193,8 @@ function buildRootPromptMessagesJson(
 	targetModelId?: string,
 ): Uint8Array[] {
 	assertCursorKimiK3HistoryReplayable(messages, activeUserMessageIndex, targetModelId);
+	const historyEnd = activeUserMessageIndex >= 0 ? activeUserMessageIndex : messages.length;
+	const { pairedToolCallIds } = collectCursorToolHistory(messages, historyEnd);
 	const entries: Uint8Array[] = [...systemPromptIds];
 	const pushJson = (obj: unknown) => {
 		const bytes = new TextEncoder().encode(JSON.stringify(obj));
@@ -4105,14 +4213,21 @@ function buildRootPromptMessagesJson(
 			if (content.length === 0) continue;
 			pushJson({ role: "assistant", content });
 		} else if (msg.role === "toolResult") {
+			// An unpaired result would replay as an orphan the Run rejects; fold it
+			// into assistant text like the conversation turns do.
+			if (!pairedToolCallIds.has(msg.toolCallId)) {
+				pushJson({ role: "assistant", content: [{ type: "text", text: cursorOrphanToolResultText(msg) }] });
+				continue;
+			}
+			const toolCallId = normalizeToolCallId(msg.toolCallId);
 			pushJson({
 				role: "tool",
-				id: msg.toolCallId,
+				id: toolCallId,
 				content: [
 					{
 						type: "tool-result",
 						toolName: msg.toolName,
-						toolCallId: msg.toolCallId,
+						toolCallId,
 						result: toolResultToText(msg),
 						...(msg.isError ? { isError: true } : {}),
 					},
@@ -4202,11 +4317,12 @@ function createCursorMcpResult(result: ToolResultMessage) {
 }
 
 function createCursorToolCallStep(toolCall: ToolCall, result: ToolResultMessage | undefined) {
+	const toolCallId = normalizeToolCallId(toolCall.id);
 	const mcpCall = create(McpToolCallSchema, {
 		args: create(McpArgsSchema, {
 			name: toolCall.name,
 			args: encodeCursorMcpArguments(toolCall),
-			toolCallId: toolCall.id,
+			toolCallId,
 			providerIdentifier: "pi-agent",
 			toolName: toolCall.name,
 		}),
@@ -4217,7 +4333,7 @@ function createCursorToolCallStep(toolCall: ToolCall, result: ToolResultMessage 
 			case: "toolCall",
 			value: create(ToolCallSchema, {
 				tool: { case: "mcpToolCall", value: mcpCall },
-				toolCallId: toolCall.id,
+				toolCallId,
 			}),
 		},
 	});
@@ -4231,18 +4347,7 @@ function buildConversationTurns(
 ): Uint8Array[] {
 	const turns: Uint8Array[] = [];
 	const historyEnd = activeUserMessageIndex >= 0 ? activeUserMessageIndex : messages.length;
-	const toolResults = new Map<string, ToolResultMessage>();
-	const pairedToolCallIds = new Set<string>();
-	for (let index = 0; index < historyEnd; index++) {
-		const message = messages[index];
-		if (message.role === "toolResult") {
-			toolResults.set(message.toolCallId, message);
-		} else if (message.role === "assistant") {
-			for (const item of message.content) {
-				if (item.type === "toolCall") pairedToolCallIds.add(item.id);
-			}
-		}
-	}
+	const { toolResults, pairedToolCallIds } = collectCursorToolHistory(messages, historyEnd);
 
 	let i = 0;
 	while (i < messages.length) {
@@ -4297,17 +4402,13 @@ function buildConversationTurns(
 					stepBlobIds.push(storeCursorBlob(blobStore, toBinary(ConversationStepSchema, step)));
 				}
 			} else if (stepMsg.role === "toolResult" && !pairedToolCallIds.has(stepMsg.toolCallId)) {
-				const text = toolResultToText(stepMsg);
-				if (text) {
-					const prefix = stepMsg.isError ? "[Tool Error]" : "[Tool Result]";
-					const step = create(ConversationStepSchema, {
-						message: {
-							case: "assistantMessage",
-							value: create(AssistantMessageSchema, { text: `${prefix}\n${text}` }),
-						},
-					});
-					stepBlobIds.push(storeCursorBlob(blobStore, toBinary(ConversationStepSchema, step)));
-				}
+				const step = create(ConversationStepSchema, {
+					message: {
+						case: "assistantMessage",
+						value: create(AssistantMessageSchema, { text: cursorOrphanToolResultText(stepMsg) }),
+					},
+				});
+				stepBlobIds.push(storeCursorBlob(blobStore, toBinary(ConversationStepSchema, step)));
 			}
 			i++;
 		}
@@ -4362,6 +4463,36 @@ function extractImages(content: readonly (AudioContent | ImageContent | TextCont
 		);
 }
 
+/**
+ * `max_mode` for the wire id a request actually routes to. Discovery copies each
+ * raw row's `GetUsableModels` marker onto `cursorMaxMode`, so a row that puts its
+ * own id on the wire owns the answer (Cursor serves the whole Opus `-fast` lane in
+ * max mode and leaves `-max` reasoning tiers out of it, which no slug can tell).
+ * A collapsed row's flag is an OR across members, so routed ids are looked up in
+ * the members' own `cursorMaxModeRoutes` first; logical-only bundled rows and
+ * routes discovery never advertised fall back to the `-xhigh`/`-max` suffix. A
+ * collapsed `true` that no route's suffix explains came from a member the suffix
+ * cannot see and holds for every route.
+ */
+function resolveCursorMaxMode(model: Model<"cursor-agent">, wireModelId: string): boolean {
+	const discovered = model.cursorMaxModeRoutes?.[wireModelId];
+	if (discovered !== undefined) return discovered;
+	const routing = model.thinking?.effortRouting;
+	if (routing === undefined || wireModelId === model.id) {
+		return model.cursorMaxMode ?? isCursorMaxModeWireId(wireModelId);
+	}
+	let routesOwnId = routing.off === model.id;
+	let hasInferredMaxRoute = typeof routing.off === "string" && isCursorMaxModeWireId(routing.off);
+	for (const effort of THINKING_EFFORTS) {
+		const target = routing[effort];
+		if (target === model.id) routesOwnId = true;
+		if (typeof target === "string" && isCursorMaxModeWireId(target)) hasInferredMaxRoute = true;
+	}
+	if (routesOwnId) return model.cursorMaxMode ?? isCursorMaxModeWireId(wireModelId);
+	if (model.cursorMaxMode === true && !hasInferredMaxRoute) return true;
+	return isCursorMaxModeWireId(wireModelId);
+}
+
 function resolveCursorWireModel(
 	model: Model<"cursor-agent">,
 	requestModelId: string | undefined,
@@ -4369,29 +4500,38 @@ function resolveCursorWireModel(
 ): {
 	modelId: string;
 	parameters: RequestedModel_ModelParameterbytes[];
+	maxMode: boolean;
 } {
 	const wireModelId = requestModelId ?? model.requestModelId ?? model.id;
-	if (wireMode === "discovered") return { modelId: wireModelId, parameters: [] };
+	const maxMode = resolveCursorMaxMode(model, wireModelId);
+	if (wireMode === "discovered") return { modelId: wireModelId, parameters: [], maxMode };
 
-	// The base is non-greedy so the two-token `extra-high` tier is not
-	// misread as a `high` tier on a model whose base ends in `-extra`.
-	const match = /^(.+?)-(none|extra-high|minimal|low|medium|high|xhigh|max)(-fast)?$/.exec(wireModelId);
-	const base = match?.[1];
-	const tier = match?.[2];
-	const lane = match?.[3] ?? "";
-	if (base && tier && parseOpenAIModel(base) !== null) {
-		if (tier === "none") {
-			return { modelId: `${base}${lane}`, parameters: [] };
+	// The catalog's tier vocabulary splits the slug; the `-fast` lane stays in
+	// the base id (`-high-fast` -> `-fast`).
+	const split = splitCursorEffortSuffix(wireModelId);
+	if (split && parseOpenAIModel(split.baseId) !== null) {
+		const base = `${split.baseId}${split.fast ? "-fast" : ""}`;
+		if (split.tier === "none") {
+			return { modelId: base, parameters: [], maxMode };
 		}
-		const effort = tier === "extra-high" ? "xhigh" : tier;
-		if ((THINKING_EFFORTS as readonly string[]).includes(effort)) {
+		if ((THINKING_EFFORTS as readonly string[]).includes(split.tier)) {
 			return {
-				modelId: `${base}${lane}`,
-				parameters: [create(RequestedModel_ModelParameterbytesSchema, { id: "reasoning", value: effort })],
+				modelId: base,
+				parameters: [create(RequestedModel_ModelParameterbytesSchema, { id: "reasoning", value: split.tier })],
+				maxMode,
 			};
 		}
 	}
-	return { modelId: wireModelId, parameters: [] };
+	// A bare `composer-2.5` resolves to the Fast variant server-side; pin the
+	// Standard tier explicitly (`-fast` selections keep the Fast lane).
+	if (wireModelId === "composer-2.5") {
+		return {
+			modelId: wireModelId,
+			parameters: [create(RequestedModel_ModelParameterbytesSchema, { id: "fast", value: "false" })],
+			maxMode,
+		};
+	}
+	return { modelId: wireModelId, parameters: [], maxMode };
 }
 
 async function buildGrpcRequestForWireMode(
@@ -4407,10 +4547,20 @@ async function buildGrpcRequestForWireMode(
 		storeCursorBlob(blobStore, new TextEncoder().encode(json)),
 	);
 
-	const activeUserMessageIndex = context.messages.length - 1;
+	let activeUserMessageIndex = context.messages.length - 1;
 	const activeMessage = context.messages[activeUserMessageIndex];
-	const activeUserMessage =
+	let activeUserMessage =
 		activeMessage?.role === "user" || activeMessage?.role === "developer" ? activeMessage : undefined;
+	// A rotated conversation id is unknown to the server, so a resume turn
+	// (trailing tool results) replays the last user message as a fresh action.
+	if (state.rotatedFresh && !activeUserMessage) {
+		const lastUserMessageIndex = findLastUserMessageIndex(context.messages);
+		const lastUser = context.messages[lastUserMessageIndex];
+		if (lastUser?.role === "user" || lastUser?.role === "developer") {
+			activeUserMessageIndex = lastUserMessageIndex;
+			activeUserMessage = lastUser;
+		}
+	}
 	let userContent: string | (AudioContent | ImageContent | TextContent | VideoContent)[] | undefined;
 	let userText = "";
 	let hasUserImages = false;
@@ -4482,12 +4632,11 @@ async function buildGrpcRequestForWireMode(
 		turns,
 	});
 
-	const { modelId: wireModelId, parameters: wireParameters } = resolveCursorWireModel(
-		model,
-		options?.wireModelId,
-		wireMode,
-	);
-	const cursorMaxMode = model.cursorMaxMode === true;
+	const {
+		modelId: wireModelId,
+		parameters: wireParameters,
+		maxMode: cursorMaxMode,
+	} = resolveCursorWireModel(model, options?.wireModelId, wireMode);
 	const modelDetails = create(ModelDetailsSchema, {
 		modelId: wireModelId,
 		displayModelId: model.id,

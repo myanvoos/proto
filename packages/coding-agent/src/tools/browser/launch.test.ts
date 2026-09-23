@@ -207,3 +207,34 @@ describe("Snap Chromium launch", () => {
 		}
 	}, 90_000);
 });
+
+test("loading Puppeteer never moves the process out of the project directory", async () => {
+	const project = await fs.mkdtemp(path.join(os.tmpdir(), "proto-puppeteer-cwd-"));
+	try {
+		await Bun.write(path.join(project, "marker"), "");
+		const script = [
+			'import * as fs from "node:fs";',
+			`import { loadPuppeteer } from ${JSON.stringify(path.join(import.meta.dir, "launch.ts"))};`,
+			"let moved = false;",
+			'const probe = setInterval(() => { if (!fs.existsSync("marker")) moved = true; }, 0);',
+			"await loadPuppeteer();",
+			"clearInterval(probe);",
+			"process.stdout.write(JSON.stringify({ moved, cwd: process.cwd() }));",
+		].join("\n");
+		const child = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd: project,
+			env: { ...process.env, PI_CODING_AGENT_DIR: path.join(project, "agent") },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toEqual({ moved: false, cwd: fsSync.realpathSync(project) });
+	} finally {
+		await fs.rm(project, { recursive: true, force: true });
+	}
+});

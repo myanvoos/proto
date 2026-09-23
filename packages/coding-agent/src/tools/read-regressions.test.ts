@@ -222,3 +222,24 @@ test("spilling oversized results keeps text and image blocks interleaved", async
 	expect(trailingText?.type).toBe("text");
 	if (trailingText?.type === "text") expect(trailingText.text).toContain("Showing");
 });
+
+test("capped child directories show only their inline marker, not an unactionable limit= notice", async () => {
+	await withReadSession(async (read, root) => {
+		const child = path.join(root, "child");
+		await fs.mkdir(child);
+		for (let i = 1; i <= 40; i++) await Bun.write(path.join(child, `c-${i}.txt`), "");
+
+		const result = await wrapToolWithMetaNotice(read).execute("dir-capped", { path: "." });
+		const text = textOf(result);
+		expect(text).toContain("… 28 more");
+		expect(text).not.toContain("limit reached");
+		expect(result.details?.meta?.limits).toBeUndefined();
+
+		const sliced = textOf(await wrapToolWithMetaNotice(read).execute("dir-capped-slice", { path: ".:1-3" }));
+		expect(sliced).not.toContain("limit reached");
+
+		const expanded = textOf(await read.execute("dir-child", { path: "child" }));
+		expect(expanded).toContain("c-40.txt");
+		expect(expanded).not.toContain("more");
+	});
+});

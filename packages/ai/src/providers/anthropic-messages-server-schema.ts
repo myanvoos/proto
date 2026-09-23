@@ -93,6 +93,23 @@ const systemBlockSchema = type({
 	"cache_control?": cacheControlSchema,
 });
 
+const toolReferenceSchema = type({
+	type: "'tool_reference'",
+	name: "string >= 1",
+});
+
+const toolAdditionBlockSchema = type({
+	type: "'tool_addition'",
+	tool: toolReferenceSchema,
+});
+
+const toolRemovalBlockSchema = type({
+	type: "'tool_removal'",
+	tool: toolReferenceSchema,
+});
+
+const systemMessageBlockSchema = systemBlockSchema.or(toolAdditionBlockSchema).or(toolRemovalBlockSchema);
+
 export const systemSchema = type("string").or(systemBlockSchema.array()).or("undefined");
 
 const userContentBlockSchema = textBlockSchema
@@ -113,7 +130,11 @@ export const userMessageSchema = type({
 
 export const systemMessageSchema = type({
 	role: "'system'",
-	content: type("string").or(systemBlockSchema.array()),
+	content: type("string").or(systemMessageBlockSchema.array()),
+	"clear_at?": "'never' | 'next_user_message'",
+	"output_config?": {
+		"effort?": "'low' | 'medium' | 'high' | 'xhigh' | 'max'",
+	},
 });
 
 export const assistantMessageSchema = type({
@@ -128,6 +149,7 @@ export const toolSchema = type({
 	"description?": "string",
 	input_schema: { "[string]": "unknown" },
 	"cache_control?": cacheControlSchema,
+	"defer_loading?": "boolean",
 });
 
 export const toolChoiceSchema = type({
@@ -148,10 +170,15 @@ export const toolChoiceSchema = type({
 		"disable_parallel_tool_use?": "boolean",
 	});
 
+const blockBindingSchema = type({
+	prefix_mismatch_behavior: "'drop_block' | 'error'",
+});
+
 export const thinkingConfigSchema = type({
 	type: "'enabled'",
 	budget_tokens: "number",
 	"display?": "unknown",
+	"block_binding?": blockBindingSchema,
 })
 	.or({
 		type: "'disabled'",
@@ -161,6 +188,7 @@ export const thinkingConfigSchema = type({
 		type: "'adaptive'",
 		"budget_tokens?": "number",
 		"display?": "unknown",
+		"block_binding?": blockBindingSchema,
 	});
 
 const taskBudgetSchema = type({

@@ -60,31 +60,53 @@ const USER_AGENT_TARGET_TYPES = new Set(["page", "webview", "background_page"]);
 const PUPPETEER_SOURCE_URL_SUFFIX = "//# sourceURL=__puppeteer_evaluation_script__";
 
 let puppeteerModule: typeof Puppeteer | undefined;
+/**
+ * Import puppeteer-core with `process.cwd()` reporting `safeDir`: it probes the cwd (cosmiconfig) at module load and
+ * chokes on malformed package.json files in the user's tree. The real cwd is never changed — the import is awaited
+ * while other main-thread work keeps running and must still see the project directory.
+ */
+async function importPuppeteerWithSafeCwd(safeDir: string): Promise<typeof Puppeteer> {
+	const cwdDescriptor = Object.getOwnPropertyDescriptor(process, "cwd");
+	if (!cwdDescriptor || typeof cwdDescriptor.value !== "function") {
+		throw new Error("Unable to safely override process.cwd for the Puppeteer import");
+	}
+	Object.defineProperty(process, "cwd", { ...cwdDescriptor, value: () => safeDir });
+	try {
+		return (await import("puppeteer-core")).default;
+	} finally {
+		Object.defineProperty(process, "cwd", cwdDescriptor);
+	}
+}
+
+// One import in flight at a time: concurrent overrides would restore each other's fake cwd.
+let puppeteerLoadPromise: Promise<typeof Puppeteer> | undefined;
+async function loadPuppeteerImport(safeDir: string, prepareSafeDir: boolean): Promise<typeof Puppeteer> {
+	let loading = puppeteerLoadPromise;
+	if (!loading) {
+		loading = (async () => {
+			if (prepareSafeDir) await Bun.write(path.join(safeDir, "package.json"), "{}");
+			return importPuppeteerWithSafeCwd(safeDir);
+		})();
+		puppeteerLoadPromise = loading;
+	}
+	try {
+		return await loading;
+	} finally {
+		if (puppeteerLoadPromise === loading) puppeteerLoadPromise = undefined;
+	}
+}
+
 export async function loadPuppeteer(): Promise<typeof Puppeteer> {
 	if (puppeteerModule) return puppeteerModule;
-	const prev = process.cwd();
-	const safeDir = getPuppeteerDir();
-	await Bun.write(path.join(safeDir, "package.json"), "{}");
-	try {
-		process.chdir(safeDir);
-		puppeteerModule = (await import("puppeteer-core")).default;
-		return puppeteerModule;
-	} finally {
-		process.chdir(prev);
-	}
+	puppeteerModule = await loadPuppeteerImport(getPuppeteerDir(), true);
+	return puppeteerModule;
 }
 
 let puppeteerModuleWorker: typeof Puppeteer | undefined;
 export async function loadPuppeteerInWorker(safeDir: string): Promise<typeof Puppeteer> {
 	if (puppeteerModuleWorker) return puppeteerModuleWorker;
-	const orig = process.cwd;
-	Object.defineProperty(process, "cwd", { value: () => safeDir, configurable: true });
-	try {
-		puppeteerModuleWorker = (await import("puppeteer-core")).default;
-		return puppeteerModuleWorker;
-	} finally {
-		Object.defineProperty(process, "cwd", { value: orig, configurable: true });
-	}
+	puppeteerModuleWorker = await loadPuppeteerImport(safeDir, false);
+	return puppeteerModuleWorker;
 }
 
 let browsersModule: typeof BrowsersNs | undefined;
@@ -138,7 +160,7 @@ export function resolveChromiumUserDataDir(executablePath: string | undefined, r
 	return path.join(commonDir, "proto-browser-profiles", profileKey, path.basename(resolvedRequestedDir));
 }
 
-async function createChromiumUserDataDir(executablePath: string | undefined): Promise<string> {
+export async function createChromiumUserDataDir(executablePath: string | undefined): Promise<string> {
 	const parentDir = isSnapChromiumExecutable(executablePath) ? snapChromiumCommonDir() : os.tmpdir();
 	await fs.promises.mkdir(parentDir, { recursive: true });
 	return await fs.promises.mkdtemp(path.join(parentDir, "proto-chrome-profile-"));

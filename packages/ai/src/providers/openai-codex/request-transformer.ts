@@ -81,15 +81,12 @@ export interface RequestBody {
 	[key: string]: unknown;
 }
 
-export function resolveCodexResponsesLite(
-	model: Model<"openai-codex-responses">,
-	requested: boolean | undefined,
-): boolean {
+// Normal inference defaults to full Responses so independent tool calls can run in parallel; provider-native
+// compaction opts in explicitly with the model's `useResponsesLite` flag.
+export function resolveCodexResponsesLite(requested: boolean | undefined): boolean {
 	if (requested !== undefined) return requested;
 	const env = $env.PI_CODEX_RESPONSES_LITE?.trim().toLowerCase();
-	if (env === "1" || env === "true") return true;
-	if (env === "0" || env === "false") return false;
-	return model.useResponsesLite === true;
+	return env === "1" || env === "true";
 }
 
 function concurrentSummariesEnabled(): boolean {
@@ -189,6 +186,31 @@ function toolOutputKind(type: unknown): ToolCallKind | undefined {
 	return undefined;
 }
 
+// Codex rejects any `call_id` over 64 chars or outside `[a-zA-Z0-9_-]` (e.g. newline-joined Cursor composites).
+// The item half of a composite is dropped and the hash anchors on the base part, so an assistant call and its
+// result stay paired; lossy rewrites carry a hash suffix to keep distinct ids distinct.
+export function sanitizeCodexCallId(rawCallId: string): string {
+	if (!rawCallId) return `call_${Bun.hash("empty").toString(36)}`;
+	const sep = rawCallId.search(/[\n|]/);
+	const base = sep > 0 ? rawCallId.slice(0, sep) : sep === 0 ? rawCallId.slice(1) : rawCallId;
+	const sanitized = base.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+$/, "");
+	if (sanitized.length > 0 && sanitized.length <= 64 && sanitized === base) {
+		return sanitized;
+	}
+	const hash = Bun.hash(base || rawCallId).toString(36);
+	const effectiveBase = sanitized.length > 0 ? sanitized : "call";
+	const prefixLen = Math.max(0, 63 - hash.length);
+	return `${effectiveBase.slice(0, prefixLen)}_${hash}`.slice(0, 64);
+}
+
+export function sanitizeInputCallIds(input: InputItem[]): void {
+	for (const item of input) {
+		if (typeof item.call_id === "string") {
+			item.call_id = sanitizeCodexCallId(item.call_id);
+		}
+	}
+}
+
 function repairToolCallPairs(input: InputItem[]): InputItem[] {
 	const callKinds = new Map<string, ToolCallKind>();
 	const outputKinds = new Map<string, ToolCallKind>();
@@ -259,6 +281,7 @@ export interface CodexLiteShapedBody {
 export function applyCodexResponsesLiteShape(body: CodexLiteShapedBody): void {
 	const input = Array.isArray(body.input) ? body.input : [];
 	stripImageDetails(input);
+	sanitizeInputCallIds(input as InputItem[]);
 	body.parallel_tool_calls = false;
 	const declaredTools = Array.isArray(body.tools) ? body.tools : [];
 	let additionalTools = declaredTools;
@@ -309,6 +332,7 @@ export async function transformRequestBody(
 	if (body.input && Array.isArray(body.input)) {
 		body.input = filterInput(body.input);
 		if (body.input) {
+			sanitizeInputCallIds(body.input);
 			body.input = repairToolCallPairs(body.input);
 		}
 	}
@@ -370,7 +394,7 @@ export async function transformRequestBody(
 		}
 	}
 
-	const responsesLite = resolveCodexResponsesLite(model, options.responsesLite);
+	const responsesLite = resolveCodexResponsesLite(options.responsesLite);
 	if (responsesLite) {
 		applyCodexResponsesLiteShape(body);
 	}
@@ -397,6 +421,9 @@ export async function transformRequestBody(
 		}
 	} else {
 		delete body.reasoning;
+	}
+	if (!model.compat.supportsReasoningSummary && body.reasoning) {
+		delete body.reasoning.summary;
 	}
 
 	if (model.reasoningMode && !options.reasoningOff) {

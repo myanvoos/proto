@@ -1,4 +1,4 @@
-import type { Context, Message } from "@oh-my-pi/pi-ai";
+import type { Context, Message, UserMessage } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import dateCwdReminderTemplate from "../prompts/system/date-cwd-reminder.md" with { type: "text" };
 
@@ -6,38 +6,85 @@ export function renderDateCwdReminder(date: string, cwd: string): string {
 	return prompt.render(dateCwdReminderTemplate, { date, cwd }).trim();
 }
 
-const injectCache = new WeakMap<Message, { reminder: string; injected: Message }>();
-
-export function injectDateCwdReminder(messages: Message[], reminder: string): Message[] {
-	const index = messages.findIndex(message => message.role === "user");
-	if (index < 0) return messages;
-	const first = messages[index]!;
-	if (typeof first.content === "string") {
-		if (first.content.startsWith(reminder)) return messages;
-	} else if (first.content[0]?.type === "text" && first.content[0].text === reminder) {
-		return messages;
-	}
-	const cached = injectCache.get(first);
-	if (cached !== undefined && cached.reminder === reminder) {
-		const out = messages.slice();
-		out[index] = cached.injected;
-		return out;
-	}
-	const content =
-		typeof first.content === "string"
-			? `${reminder}\n\n${first.content}`
-			: ([{ type: "text", text: reminder }, ...first.content] as Message["content"]);
-	const injected = { ...first, content } as Message;
-	injectCache.set(first, { reminder, injected });
-	const out = messages.slice();
-	out[index] = injected;
-	return out;
+function messageStartsWithReminder(message: UserMessage, reminder: string): boolean {
+	if (typeof message.content === "string") return message.content.startsWith(reminder);
+	return message.content[0]?.type === "text" && message.content[0].text === reminder;
 }
 
-export function withDateCwdReminder(context: Context, date: string, cwd: string): Context {
-	if (!context.systemPrompt || context.systemPrompt.length === 0) return context;
-	if (context.messages.length === 0) return context;
-	const reminder = renderDateCwdReminder(date, cwd);
-	const messages = injectDateCwdReminder(context.messages, reminder);
-	return messages === context.messages ? context : { ...context, messages };
+function injectReminder(message: UserMessage, reminder: string): UserMessage {
+	const content: UserMessage["content"] =
+		typeof message.content === "string"
+			? `${reminder}\n\n${message.content}`
+			: [{ type: "text", text: reminder }, ...message.content];
+	return { ...message, content };
+}
+
+export class DateCwdReminderInjector {
+	#root: UserMessage | undefined;
+	#currentReminder: string | undefined;
+	#injections = new Map<Message, Message>();
+	#controls: Array<{ anchor: Message; message: Message }> = [];
+	#seen = new WeakSet<object>();
+
+	transform(context: Context, date: string, cwd: string): Context {
+		if (!context.systemPrompt || context.systemPrompt.length === 0 || context.messages.length === 0) return context;
+		const reminder = renderDateCwdReminder(date, cwd);
+		const messages = this.#inject(context.messages, reminder);
+		return messages === context.messages ? context : { ...context, messages };
+	}
+
+	#inject(messages: Message[], reminder: string): Message[] {
+		const firstUser = messages.find((message): message is UserMessage => message.role === "user");
+		if (!firstUser) return messages;
+		if (this.#root !== firstUser) {
+			this.#root = firstUser;
+			this.#currentReminder = reminder;
+			this.#injections.clear();
+			this.#controls = [];
+			this.#seen = new WeakSet();
+			if (!messageStartsWithReminder(firstUser, reminder)) {
+				this.#injections.set(firstUser, injectReminder(firstUser, reminder));
+			}
+		} else if (this.#currentReminder !== reminder) {
+			let newUser: UserMessage | undefined;
+			for (let index = messages.length - 1; index >= 0; index--) {
+				const candidate = messages[index]!;
+				if (candidate.role === "user" && !this.#seen.has(candidate)) {
+					newUser = candidate;
+					break;
+				}
+			}
+			if (newUser) {
+				this.#injections.set(newUser, injectReminder(newUser, reminder));
+			} else {
+				this.#controls.push({
+					anchor: messages.at(-1)!,
+					message: { role: "developer", content: reminder, timestamp: Date.now() },
+				});
+			}
+			this.#currentReminder = reminder;
+		}
+
+		const controlsByAnchor = new Map<Message, Message[]>();
+		for (const control of this.#controls) {
+			const controls = controlsByAnchor.get(control.anchor);
+			if (controls) controls.push(control.message);
+			else controlsByAnchor.set(control.anchor, [control.message]);
+		}
+
+		let changed = false;
+		const out: Message[] = [];
+		for (const message of messages) {
+			const injected = this.#injections.get(message);
+			out.push(injected ?? message);
+			if (injected) changed = true;
+			const controls = controlsByAnchor.get(message);
+			if (controls) {
+				out.push(...controls);
+				changed = true;
+			}
+			this.#seen.add(message);
+		}
+		return changed ? out : messages;
+	}
 }

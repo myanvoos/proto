@@ -11,6 +11,7 @@ import {
 import {
 	fetchLiteLLMRichModels,
 	fetchLmStudioNativeModelMetadata,
+	isSelectableLiteLLMModelMode,
 	OPENAI_COMPAT_DISCOVERY_DEFAULT_CONTEXT_WINDOW,
 	OPENAI_COMPAT_DISCOVERY_DEFAULT_MAX_TOKENS,
 	resolveLiteLLMApi,
@@ -21,6 +22,22 @@ import type { ProviderDiscovery } from "./models-config-schema";
 
 const DISCOVERY_DEFAULT_CONTEXT_WINDOW = OPENAI_COMPAT_DISCOVERY_DEFAULT_CONTEXT_WINDOW;
 export const DISCOVERY_DEFAULT_MAX_TOKENS = OPENAI_COMPAT_DISCOVERY_DEFAULT_MAX_TOKENS;
+
+/** Discovery HTTP failure with a structured status. The `HTTP <status> from <url>` message is matched by the model hub. */
+export class DiscoveryHttpError extends Error {
+	readonly status: number;
+
+	constructor(status: number, url: string) {
+		super(`HTTP ${status} from ${url}`);
+		this.name = "DiscoveryHttpError";
+		this.status = status;
+	}
+}
+
+/** 401/403: the endpoint is reachable but refused the credentials (or the keyless assumption). */
+export function isDiscoveryAuthRejection(error: unknown): boolean {
+	return error instanceof DiscoveryHttpError && (error.status === 401 || error.status === 403);
+}
 
 async function withTimeoutSignal<T>(timeoutMs: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
 	const controller = new AbortController();
@@ -409,7 +426,7 @@ export async function discoverOllamaModels(
 			signal,
 		});
 		if (!response.ok) {
-			throw new Error(`HTTP ${response.status} from ${tagsUrl}`);
+			throw new DiscoveryHttpError(response.status, tagsUrl);
 		}
 		return (await response.json()) as { models?: Array<{ name?: string; model?: string }> };
 	});
@@ -478,12 +495,8 @@ async function discoverLlamaCppServerMetadata(
 	}
 }
 
-function isBonsaiQwenGguf(id: string): boolean {
-	return /(?:ternary-)?bonsai-27b/i.test(id);
-}
-
 export function applyLlamaCppQwenThinking(model: Model<Api>): Model<Api> {
-	if (!isQwenModelId(model.id) && !isBonsaiQwenGguf(model.id)) return model;
+	if (!isQwenModelId(model.id)) return model;
 	return buildModel({
 		...model,
 		api: "openai-completions",
@@ -517,7 +530,7 @@ export async function discoverLlamaCppModels(
 					signal,
 				});
 				if (!response.ok) {
-					throw new Error(`HTTP ${response.status} from ${modelsUrl}`);
+					throw new DiscoveryHttpError(response.status, modelsUrl);
 				}
 				headers = h;
 				return (await response.json()) as unknown;
@@ -684,7 +697,12 @@ async function discoverOpenAIModelsList(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
 ): Promise<Model<Api>[]> {
-	const baseUrl = normalizeOpenAIModelsListBaseUrl(providerConfig.baseUrl);
+	// `injectV1: false` resolves `/models` against the configured base URL verbatim so discovery matches
+	// the chat base on gateways rooted at a versioned path.
+	const baseUrl =
+		providerConfig.discovery.injectV1 === false
+			? normalizeBareDiscoveryBaseUrl(providerConfig.baseUrl)
+			: normalizeOpenAIModelsListBaseUrl(providerConfig.baseUrl);
 	const modelsUrl = `${baseUrl}/models`;
 
 	const baseHeaders: Record<string, string> = { ...(providerConfig.headers ?? {}) };
@@ -704,7 +722,7 @@ async function discoverOpenAIModelsList(
 					signal,
 				});
 				if (!res.ok) {
-					throw new Error(`HTTP ${res.status} from ${modelsUrl}`);
+					throw new DiscoveryHttpError(res.status, modelsUrl);
 				}
 				headers = h;
 				return (await res.json()) as {
@@ -715,6 +733,7 @@ async function discoverOpenAIModelsList(
 						input?: unknown;
 						input_modalities?: unknown;
 						architecture?: unknown;
+						mode?: unknown;
 					}>;
 				};
 			}),
@@ -732,6 +751,7 @@ async function discoverOpenAIModelsList(
 	for (const item of models) {
 		const id = item.id;
 		if (!id) continue;
+		if (providerConfig.discovery.type === "litellm" && !isSelectableLiteLLMModelMode(item.mode)) continue;
 		const nativeMetadataForModel = nativeMetadata?.get(id);
 
 		const reference = resolveModelReference(id, references) as ModelSpec<Api> | undefined;
@@ -794,12 +814,11 @@ export async function discoverLiteLLMModels(
 	const timeoutMs = providerConfig.discovery.timeoutMs ?? 10_000;
 	const attempt = async (h: Record<string, string>) => {
 		headers = h;
-		let authError: (Error & { status: number }) | undefined;
+		let authError: DiscoveryHttpError | undefined;
 		const authAwareFetch: FetchImpl = async (input, init) => {
 			const response = await ctx.fetch(input, init);
 			if (response.status === 401) {
-				authError = new Error(`HTTP ${response.status} from ${String(input)}`) as Error & { status: number };
-				authError.status = response.status;
+				authError = new DiscoveryHttpError(response.status, String(input));
 			}
 			return response;
 		};
@@ -826,14 +845,12 @@ export async function discoverLiteLLMModels(
 		richModels = apiKey
 			? await withAuth(apiKey, key => attempt({ ...baseHeaders, Authorization: `Bearer ${key}` }))
 			: await attempt(baseHeaders);
-	} catch (error) {
-		const status = typeof error === "object" && error !== null && "status" in error ? error.status : undefined;
-		if (status !== 401) {
-			throw error;
-		}
+	} catch {
+		// Rich-metadata probes failed (auth, timeout, network). The cheap `/v1/models` fallback runs under
+		// its own budget and usually still resolves the catalog; if it also fails, its error propagates.
 		richModels = null;
 	}
-	if (!richModels || richModels.length === 0) {
+	if (richModels === null) {
 		return discoverOpenAIModelsList({ ...providerConfig, baseUrl }, ctx);
 	}
 	return richModels.map(spec => buildModel({ ...spec, headers }));
@@ -856,7 +873,7 @@ async function discoverProxyModels(
 				signal,
 			});
 			if (!res.ok) {
-				throw new Error(`HTTP ${res.status} from ${modelsUrl}`);
+				throw new DiscoveryHttpError(res.status, modelsUrl);
 			}
 			headers = h;
 			return (await res.json()) as {
@@ -962,6 +979,17 @@ function normalizeOpenAIModelsListBaseUrl(baseUrl?: string): string {
 		return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
 	} catch {
 		return raw;
+	}
+}
+
+/** Configured base URL with trailing slashes, query, and hash dropped; never appends `/v1`. */
+export function normalizeBareDiscoveryBaseUrl(baseUrl: string | undefined): string {
+	const raw = baseUrl || "http://127.0.0.1:1234";
+	try {
+		const parsed = new URL(raw);
+		return `${parsed.protocol}//${parsed.host}${parsed.pathname.replace(/\/+$/g, "")}`;
+	} catch {
+		return raw.replace(/\/+$/g, "");
 	}
 }
 

@@ -6,12 +6,14 @@ import {
 	isClaudeModelId,
 	isDeepseekModelIdOrName,
 	isGlm52ReasoningEffortModelId,
+	isGlm53ReasoningEffortModelId,
 	isGrokReasoningEffortCapable,
 	isGrokXHighEffortCapable,
 	isKimiK3ModelId,
 	isKimiK26ModelId,
 	isKimiModelId,
 	isMimoModelIdOrName,
+	isMuseSparkModelId,
 	isOpenAISamplingRestrictedModelId,
 	isQwen38PlusTemplateEffortModelId,
 	isQwenModelId,
@@ -56,7 +58,20 @@ const DSML_HEALING_PROVIDERS = new Set([
 	"nanogpt",
 	"opencode-go",
 	"openrouter",
+	"litellm",
+	"nous",
 ]);
+
+// Cerebras serves Qwen 3.8 on OpenAI `reasoning_effort` (low/medium/high); `none` is its wire-only off value.
+export function isCerebrasQwen38Model(spec: { provider: string; id: string }): boolean {
+	return spec.provider === "cerebras" && spec.id === "qwen-3.8-27b";
+}
+
+const DEEPSEEK_FLASH_OUTPUT_CLAMP_IDS: Record<string, true> = {
+	"deepseek-flash": true,
+	"deepseek-v4-flash": true,
+	"deepseek-v4-flash-vision-exp": true,
+};
 
 function resolveReasoningDisableMode(
 	thinkingFormat: ResolvedOpenAISharedCompat["thinkingFormat"],
@@ -71,6 +86,8 @@ function resolveReasoningDisableMode(
 			return "qwen-enable-thinking-false";
 		case "qwen-chat-template":
 			return "qwen-template-false";
+		case "chat-template":
+			return "chat-template-thinking-false";
 		default:
 			return "lowest-effort";
 	}
@@ -213,11 +230,13 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 	const provider = spec.provider;
 	const baseUrl = spec.baseUrl;
 	const hostModel = { provider, baseUrl };
+	const isClinePass = provider === "cline-pass";
 
 	const isCerebras = modelMatchesHost(hostModel, "cerebras");
 	const isZai = modelMatchesHost(hostModel, "zai");
 	const isZhipu = modelMatchesHost(hostModel, "zhipu");
-	const supportsZaiReasoningEffort = (isZai || isZhipu) && isGlm52ReasoningEffortModelId(spec.id);
+	const supportsZaiReasoningEffort =
+		(isZai || isZhipu) && (isGlm52ReasoningEffortModelId(spec.id) || isGlm53ReasoningEffortModelId(spec.id));
 	const isKilo = modelMatchesHost(hostModel, "kilo");
 	const isKimiModel = isKimiModelId(spec.id);
 	const isMoonshotNative = modelMatchesHost(hostModel, "moonshotNative");
@@ -292,7 +311,13 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 
 	const isOpenAIHost = modelMatchesHost(hostModel, "openai");
 	const isAzureHost = modelMatchesHost(hostModel, "azureOpenAI");
+	// Azure Chat Completions rejects Astra reasoning whenever function tools are
+	// present; the documented escape hatch is an explicit `none` effort.
+	const isAzureAstra = provider === "azure" && spec.id.startsWith("gpt-6-astra");
 	const isOpenRouter = modelMatchesHost(hostModel, "openrouter");
+	// Meta validates echoed reasoning-item ids server-side and 400s expired ones, and rejects synthetic stand-ins,
+	// so Muse Spark history replays through OpenRouter without reasoning items.
+	const isOpenRouterMuseSpark = isOpenRouter && isMuseSparkModelId(spec.id);
 	const isVercelGateway = modelMatchesHost(hostModel, "vercelAIGateway");
 	const isTogether = modelMatchesHost(hostModel, "together");
 	const isFireworks = hostMatchesUrl(baseUrl, "fireworks");
@@ -346,17 +371,20 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 			? "firepass"
 			: provider === "fireworks"
 				? "fireworks"
-				: isOpenRouter
-					? "openrouter"
-					: "raw";
-	const thinkingFormat: ResolvedOpenAISharedCompat["thinkingFormat"] =
-		(isMoonshotKimi && !isMoonshotKimiK3) || isZai || isZhipu || isXiaomiMimo
+				: isClinePass
+					? "cline-pass"
+					: isOpenRouter
+						? "openrouter"
+						: "raw";
+	const thinkingFormat: ResolvedOpenAISharedCompat["thinkingFormat"] = isClinePass
+		? "openai"
+		: (isMoonshotKimi && !isMoonshotKimiK3) || isZai || isZhipu || isXiaomiMimo
 			? "zai"
 			: isOpenRouter
 				? "openrouter"
 				: isQwen && (isNvidiaNim || provider === "vllm")
 					? "qwen-chat-template"
-					: isQwen && (isFireworks || isVenice)
+					: isQwen && (isFireworks || isVenice || isCerebras)
 						? "openai"
 						: isAlibaba || isQwen
 							? "qwen"
@@ -378,12 +406,19 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		supportsUsageInStreaming: !isCerebras,
 
 		alwaysSendMaxTokens: isKimiModel,
+		clampOutputToModelMax:
+			isLocalOpenAICompatBackend ||
+			(provider === "zai" && spec.id === "glm-5.3-flash") ||
+			(provider === "deepseek" && DEEPSEEK_FLASH_OUTPUT_CLAMP_IDS[spec.id] === true),
+		stripImageInput: undefined,
 
-		disableReasoningOnForcedToolChoice: (isKimiModel && !isMoonshotKimiK3) || isAnthropicModel,
-		disableReasoningOnToolChoice: isDeepseekFamily && Boolean(spec.reasoning) && !isOpenRouter,
-		supportsToolChoice: !isDirectDeepseekReasoning,
+		disableReasoningOnForcedToolChoice: !isClinePass && ((isKimiModel && !isMoonshotKimiK3) || isAnthropicModel),
+		disableReasoningOnToolChoice: !isClinePass && isDeepseekFamily && Boolean(spec.reasoning) && !isOpenRouter,
+		disableReasoningWithTools: isAzureAstra,
+		supportsToolChoice: isClinePass || !isDirectDeepseekReasoning,
 
-		supportsForcedToolChoice: !requiresEnabledThinking && !(isOpenCodeHost && isDeepseekReasoning),
+		supportsForcedToolChoice:
+			!requiresEnabledThinking && !(isOpenCodeHost && isDeepseekReasoning) && !(isClinePass && isQwen),
 		supportsNamedToolChoice: STRING_ONLY_NAMED_TOOL_CHOICE_PROVIDERS[provider] !== true,
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: isMistral,
@@ -393,12 +428,16 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 
 		thinkingFormat,
 		kimiApiFormat: undefined,
-		reasoningDisableMode: isVenice ? "venice-disable-thinking" : resolveReasoningDisableMode(thinkingFormat),
+		reasoningDisableMode: isClinePass
+			? "cline-enabled-false"
+			: isVenice
+				? "venice-disable-thinking"
+				: resolveReasoningDisableMode(thinkingFormat),
 		omitReasoningEffort: false,
 		includeEncryptedReasoning: true,
-		filterReasoningHistory: isOpenRouter && isAnthropicModel,
+		filterReasoningHistory: isOpenRouter && (isAnthropicModel || isOpenRouterMuseSpark),
 		thinkingKeep: usesMoonshotKimiPreservedThinking ? "all" : undefined,
-		reasoningContentField: "reasoning_content",
+		reasoningContentField: isClinePass ? "reasoning" : "reasoning_content",
 
 		requiresReasoningContentForToolCalls:
 			(isKimiModel && !isOpenCodeProvider) ||
@@ -408,7 +447,8 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		requiresReasoningContentForAllAssistantTurns:
 			((isDeepseekFamily && Boolean(spec.reasoning)) || isXiaomiMimo) && !isOpenRouter,
 
-		allowsSyntheticReasoningContentForToolCalls: (!isDeepseekFamily || !spec.reasoning) && !isXiaomiMimo,
+		allowsSyntheticReasoningContentForToolCalls:
+			(!isDeepseekFamily || !spec.reasoning) && !isXiaomiMimo && !isOpenRouterMuseSpark,
 
 		replayReasoningContent: isLocalOpenAICompatBackend,
 
@@ -421,7 +461,10 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 			provider !== "ollama" &&
 			isQwen38PlusTemplateEffortModelId(spec.id),
 		requiresAssistantContentForToolCalls: isKimiModel || isDirectDeepseekReasoning,
-		cacheControlFormat: isOpenRouter && spec.id.startsWith("anthropic/") ? "anthropic" : undefined,
+		cacheControlFormat:
+			(isClinePass && (isQwen || isAnthropicModel)) || (isOpenRouter && spec.id.startsWith("anthropic/"))
+				? "anthropic"
+				: undefined,
 		supportsPromptCacheBreakpoints,
 		promptCacheBreakpointTtl: supportsPromptCacheBreakpoints ? "30m" : undefined,
 		openRouterRouting: undefined,
@@ -462,13 +505,17 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		compat.extraBody = Object.keys(extraBody).length > 0 ? extraBody : undefined;
 	}
 	if (spec.compat?.reasoningDisableMode === undefined) {
-		compat.reasoningDisableMode = requiresEnabledThinking
-			? "omit"
-			: isDirectDeepseekReasoning
-				? "zai-thinking-disabled"
-				: isVenice
-					? "venice-disable-thinking"
-					: resolveReasoningDisableMode(compat.thinkingFormat);
+		compat.reasoningDisableMode = isClinePass
+			? "cline-enabled-false"
+			: isCerebrasQwen38Model(spec) || isAzureAstra
+				? "none-effort"
+				: requiresEnabledThinking
+					? "omit"
+					: isDirectDeepseekReasoning
+						? "zai-thinking-disabled"
+						: isVenice
+							? "venice-disable-thinking"
+							: resolveReasoningDisableMode(compat.thinkingFormat);
 	}
 	if (spec.compat?.omitReasoningEffort === undefined && !compat.supportsReasoningEffort) {
 		compat.omitReasoningEffort = true;
@@ -522,6 +569,14 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 	const isAnthropicModel = id ? isClaudeModelId(id) || isAnthropicNamespacedModelId(id) : false;
 	const isDeepseekFamily = id ? isDeepseekModelIdOrName(id) || isDeepseekModelIdOrName(spec.name) : false;
 	const reasoningCapable = Boolean(spec.reasoning);
+	const isMuseSpark = id ? isMuseSparkModelId(id) : false;
+	// Meta validates echoed reasoning-item ids server-side and 400s expired ones, and rejects synthetic stand-ins.
+	const isOpenRouterMuseSpark = isOpenRouter && isMuseSpark;
+	// OpenCode's gateways proxy Muse Spark's Responses lane to Meta but cannot round-trip encrypted reasoning: Meta
+	// binds `encrypted_content` to the gateway's own caller, so a replay 400s (#11928).
+	const isOpenCodeMuseSpark = (spec.provider === "opencode-go" || spec.provider === "opencode-zen") && isMuseSpark;
+	// api.meta.ai/v1 accepts only tool_choice "auto"; "none", "required" and named choices 400.
+	const isMetaModelApi = spec.provider === "meta" || spec.provider === "muse-code";
 
 	const isLocalServingBackend =
 		(!PROXY_OPENAI_COMPAT_PROVIDERS.has(spec.provider) && LOCAL_OPENAI_COMPAT_PROVIDERS.has(spec.provider)) ||
@@ -543,6 +598,7 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 			!isXaiHost && !modelMatchesHost({ provider: spec.provider, baseUrl }, "githubCopilot"),
 
 		supportsReasoningSummary: !isXaiHost,
+		supportsConfigurationUpdate: id === "gpt-6-astra",
 		reasoningEffortMap: isXaiHost ? { ...xaiResponsesReasoningEffortMap(id) } : {},
 		supportsReasoningParams: true,
 
@@ -553,11 +609,11 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		reasoningDisableMode: resolveReasoningDisableMode(thinkingFormat),
 		omitReasoningEffort: false,
 
-		includeEncryptedReasoning: true,
-		filterReasoningHistory: isOpenRouter && isAnthropicModel,
+		includeEncryptedReasoning: !isOpenCodeMuseSpark,
+		filterReasoningHistory: (isOpenRouter && isAnthropicModel) || isOpenRouterMuseSpark || isOpenCodeMuseSpark,
 		disableReasoningOnForcedToolChoice: isKimiModel,
 		disableReasoningOnToolChoice: isDeepseekFamily && reasoningCapable && !isOpenRouter,
-		supportsToolChoice: true,
+		supportsToolChoice: !isMetaModelApi,
 		supportsForcedToolChoice: spec.provider !== "opencode-go" && spec.provider !== "opencode-zen",
 		supportsNamedToolChoice: STRING_ONLY_NAMED_TOOL_CHOICE_PROVIDERS[spec.provider] !== true,
 		reasoningContentField: "reasoning_content",
@@ -565,7 +621,7 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 			(isKimiModel || (isDeepseekFamily && reasoningCapable) || (isOpenRouter && reasoningCapable)) &&
 			reasoningCapable,
 		requiresReasoningContentForAllAssistantTurns: isDeepseekFamily && reasoningCapable && !isOpenRouter,
-		allowsSyntheticReasoningContentForToolCalls: !isDeepseekFamily || !reasoningCapable,
+		allowsSyntheticReasoningContentForToolCalls: (!isDeepseekFamily || !reasoningCapable) && !isOpenRouterMuseSpark,
 
 		replayReasoningContent: false,
 
@@ -584,6 +640,10 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 
 		toolSchemaFlavor: isKimiModel ? "moonshot-mfjs" : undefined,
 		alwaysSendMaxTokens: spec.id ? isKimiModelId(spec.id) : false,
+		clampOutputToModelMax:
+			isMetaModelApi ||
+			(!PROXY_OPENAI_COMPAT_PROVIDERS.has(spec.provider) &&
+				(LOCAL_OPENAI_COMPAT_PROVIDERS.has(spec.provider) || hasLocalLoopbackBaseUrl(baseUrl))),
 		supportsObfuscationOptOut: isOpenAIUrl || spec.provider === "openai",
 		stripDeepseekSpecialTokens:
 			Boolean(id) && isDeepseekModelIdOrName(id) && (spec.provider === "nvidia" || spec.provider === "deepseek"),
@@ -636,6 +696,7 @@ function pickResponsesOnly(compat: ResolvedOpenAIResponsesCompat): ResponsesOnly
 		supportsImageDetailOriginal: compat.supportsImageDetailOriginal,
 		supportsObfuscationOptOut: compat.supportsObfuscationOptOut,
 		supportsReasoningSummary: compat.supportsReasoningSummary,
+		supportsConfigurationUpdate: compat.supportsConfigurationUpdate,
 		isVercelGatewayHost: compat.isVercelGatewayHost,
 	} satisfies ResponsesOnlyCompat;
 }

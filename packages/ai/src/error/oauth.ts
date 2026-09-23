@@ -10,6 +10,7 @@ export type OAuthErrorKind =
 	| "device-auth"
 	| "configuration"
 	| "provisioning"
+	| "entitlement"
 	| "discovery";
 
 export interface OAuthErrorOptions {

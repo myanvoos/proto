@@ -5,28 +5,85 @@ import { PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models";
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ModelOverride } from "./models-config-schema";
+import { createConfigHeaderResolver } from "./resolve-config-value";
 
 export interface ProviderOverride {
 	baseUrl?: string;
+	/** APIs the provider `baseUrl` applies to (custom models inheriting it, or a provider-level `api`); undefined = provider-wide. */
+	baseUrlApis?: readonly Api[];
 	headers?: Record<string, string>;
 	apiKey?: string;
 	authHeader?: boolean;
 	compat?: ModelSpec<Api>["compat"];
 	remoteCompaction?: RemoteCompactionConfig<Api>;
 	transport?: Model<Api>["transport"];
+	guardrailIdentifier?: Model<Api>["guardrailIdentifier"];
+	guardrailVersion?: Model<Api>["guardrailVersion"];
+	guardrailTrace?: Model<Api>["guardrailTrace"];
+	requestMetadata?: Model<Api>["requestMetadata"];
 }
 
+/** Bedrock guardrail/metadata fields a provider override sets; undefined when it sets none. */
+export function bedrockProviderFields(override: ProviderOverride): Partial<ModelSpec<Api>> | undefined {
+	const fields: Partial<ModelSpec<Api>> = {};
+	let hasField = false;
+	if (override.guardrailIdentifier !== undefined) {
+		fields.guardrailIdentifier = override.guardrailIdentifier;
+		hasField = true;
+	}
+	if (override.guardrailVersion !== undefined) {
+		fields.guardrailVersion = override.guardrailVersion;
+		hasField = true;
+	}
+	if (override.guardrailTrace !== undefined) {
+		fields.guardrailTrace = override.guardrailTrace;
+		hasField = true;
+	}
+	if (override.requestMetadata !== undefined) {
+		fields.requestMetadata = override.requestMetadata;
+		hasField = true;
+	}
+	return hasField ? fields : undefined;
+}
+
+// `transport: "pi-native"` routes every model of the provider through the auth gateway, so its baseUrl stays
+// provider-wide regardless of `baseUrlApis`.
+export function resolveProviderBaseUrl<TApi extends Api>(
+	modelApi: TApi,
+	modelBaseUrl: string | undefined,
+	override: Pick<ProviderOverride, "baseUrl" | "baseUrlApis" | "transport"> | undefined,
+): string | undefined {
+	if (override?.baseUrl === undefined) return modelBaseUrl;
+	if (override.transport === "pi-native") return override.baseUrl;
+	if (override.baseUrlApis !== undefined && !override.baseUrlApis.includes(modelApi)) return modelBaseUrl;
+	return override.baseUrl;
+}
+
+// Merged config headers stay behind an async request-boundary resolver, so discovery and catalog composition never run
+// `!command` values. Provider headers come last, and `authHeader` resolves through the same hook: a 401 invalidation
+// re-mints both the API key and header credentials before the retry.
 export function mergeDiscoveredModel<TApi extends Api>(
 	model: Model<TApi>,
 	existing: Model<Api> | undefined,
-	providerOverride?: Pick<ProviderOverride, "baseUrl" | "compat" | "headers" | "remoteCompaction" | "transport">,
+	providerOverride?: Pick<
+		ProviderOverride,
+		"baseUrl" | "baseUrlApis" | "compat" | "headers" | "remoteCompaction" | "transport" | "authHeader" | "apiKey"
+	>,
 ): Model<TApi> {
 	if (existing) {
 		const supportsTools = model.supportsTools ?? existing.supportsTools;
 		return buildModel({
 			...toModelSpec(model),
-			baseUrl: providerOverride?.baseUrl ?? model.baseUrl ?? existing.baseUrl,
-			headers: existing.headers ? { ...existing.headers, ...model.headers } : model.headers,
+			baseUrl: resolveProviderBaseUrl(model.api, model.baseUrl ?? existing.baseUrl, providerOverride),
+			headers: undefined,
+			resolveHeaders: createConfigHeaderResolver(
+				[
+					existing.resolveHeaders ?? existing.headers,
+					model.resolveHeaders ?? model.headers,
+					providerOverride?.headers,
+				],
+				{ authHeader: providerOverride?.authHeader, apiKeyConfig: providerOverride?.apiKey },
+			),
 			transport: providerOverride?.transport ?? existing.transport ?? model.transport,
 			remoteCompaction: mergeProviderRemoteCompactionConfig(
 				mergeRemoteCompactionConfig(existing.remoteCompaction, model.remoteCompaction),
@@ -39,8 +96,12 @@ export function mergeDiscoveredModel<TApi extends Api>(
 	if (providerOverride) {
 		return buildModel({
 			...toModelSpec(model),
-			baseUrl: providerOverride.baseUrl ?? model.baseUrl,
-			headers: providerOverride.headers ? { ...model.headers, ...providerOverride.headers } : model.headers,
+			baseUrl: resolveProviderBaseUrl(model.api, model.baseUrl, providerOverride),
+			headers: undefined,
+			resolveHeaders: createConfigHeaderResolver([model.resolveHeaders ?? model.headers, providerOverride.headers], {
+				authHeader: providerOverride.authHeader,
+				apiKeyConfig: providerOverride.apiKey,
+			}),
 			...(providerOverride.transport !== undefined ? { transport: providerOverride.transport } : {}),
 			remoteCompaction: mergeProviderRemoteCompactionConfig(
 				model.remoteCompaction,
@@ -144,9 +205,14 @@ export interface ModelPatch {
 	supportsTools?: boolean;
 	cost?: Partial<Model<Api>["cost"]>;
 	contextWindow?: number;
+	/** Registry-only extended-context window, selected when `extendedContext` is on; never patched onto the model. */
+	maxContextWindow?: number;
 	maxTokens?: number;
 	omitMaxOutputTokens?: boolean;
+	/** Whether Codex requests should prefer the WebSocket transport. */
+	preferWebsockets?: boolean;
 	headers?: Record<string, string>;
+	resolveHeaders?: Model<Api>["resolveHeaders"];
 	compat?: ModelSpec<Api>["compat"];
 	contextPromotionTarget?: string;
 	compactionModel?: string;
@@ -167,6 +233,7 @@ export function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport: 
 	if (patch.contextWindow !== undefined) result.contextWindow = patch.contextWindow;
 	if (patch.maxTokens !== undefined) result.maxTokens = patch.maxTokens;
 	if (patch.omitMaxOutputTokens !== undefined) result.omitMaxOutputTokens = patch.omitMaxOutputTokens;
+	if (patch.preferWebsockets !== undefined) result.preferWebsockets = patch.preferWebsockets;
 	if (patch.contextPromotionTarget !== undefined) result.contextPromotionTarget = patch.contextPromotionTarget;
 	if (patch.compactionModel !== undefined) result.compactionModel = patch.compactionModel;
 	if (patch.remoteCompaction !== undefined) {
@@ -185,12 +252,17 @@ export function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport: 
 	}
 	let compat: ModelSpec<Api>["compat"];
 	if (transport === "merge") {
-		if (patch.headers) {
-			result.headers = { ...base.headers, ...patch.headers };
+		if (patch.headers || patch.resolveHeaders) {
+			result.headers = undefined;
+			result.resolveHeaders = createConfigHeaderResolver([
+				base.resolveHeaders ?? base.headers,
+				patch.resolveHeaders ?? patch.headers,
+			]);
 		}
 		compat = mergeCompat(base.compatConfig, patch.compat);
 	} else {
 		result.headers = patch.headers;
+		result.resolveHeaders = patch.resolveHeaders;
 		compat = patch.compat;
 	}
 	const built = buildModel({ ...toModelSpec(result), compat } as ModelSpec<Api>);

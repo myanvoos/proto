@@ -15,20 +15,62 @@ export enum Reason {
 	MANUAL = "manual",
 }
 
-const callbackList: ((reason: Reason) => Promise<void> | void)[] = [];
+interface CleanupRegistration {
+	id: string;
+	callback: (reason: Reason) => Promise<void> | void;
+	cancelled: boolean;
+	lastPass: number;
+}
+
+// Registration order; registrations survive keep-alive passes and `lastPass` keeps each to one call per pass.
+const callbackList: CleanupRegistration[] = [];
 
 let cleanupStage: "idle" | "running" | "complete" = "idle";
+let cleanupPass = 0;
+let activeCleanupReason: Reason | undefined;
+let activeCleanupKeepAlive = false;
+// Callbacks invoked late (registered while a pass runs), joined by that pass before it settles so `cleanup()` and
+// signal exits await them.
+let activeLatePromises: Promise<void>[] | undefined;
 const CLEANUP_DEADLINE_MS = 10_000;
 
 export const NATIVE_PROCESS_EXIT = Symbol.for("proto.postmortem.nativeProcessExit");
 
 type HardExitFn = (code?: number) => never;
 
+// Nested guard windows stack throwing stubs, so one unwrap can land on another stub: follow the stamps until native.
+function nativeHardExit(fn: HardExitFn | undefined): HardExitFn | undefined {
+	let current = fn;
+	const seen = new Set<HardExitFn>();
+	while (typeof current === "function" && !seen.has(current)) {
+		seen.add(current);
+		const behind = Reflect.get(current, NATIVE_PROCESS_EXIT);
+		if (typeof behind !== "function") return current;
+		current = behind as HardExitFn;
+	}
+	return typeof current === "function" ? current : undefined;
+}
+
+/**
+ * Hard-exit through the native primitive, even inside an extension-load guard window. Both globals are reinstalled
+ * first: Bun's `process.exit` re-reads `process.reallyExit` at call time, so exiting through one while its sibling
+ * still holds a throwing stub re-enters the guard. `SIGKILL` is the last resort so a poisoned chain never survives.
+ */
 export function exitProcess(code: number): never {
-	const current: HardExitFn = typeof process.reallyExit === "function" ? process.reallyExit : process.exit;
-	const behind = Reflect.get(current, NATIVE_PROCESS_EXIT);
-	const nativeExit = typeof behind === "function" ? (behind as HardExitFn) : current;
-	return nativeExit.call(process, code) as never;
+	const reallyExit = nativeHardExit(typeof process.reallyExit === "function" ? process.reallyExit : undefined);
+	const exit = nativeHardExit(process.exit as HardExitFn);
+	if (reallyExit) process.reallyExit = reallyExit as typeof process.reallyExit;
+	if (exit) process.exit = exit as typeof process.exit;
+	try {
+		reallyExit?.call(process, code);
+	} catch {}
+	try {
+		exit?.call(process, code);
+	} catch {}
+	try {
+		process.kill(process.pid, "SIGKILL");
+	} catch {}
+	throw new Error(`exitProcess(${code}) failed to terminate the process`);
 }
 let cleanupPromise: Promise<void> | undefined;
 let stdioDisconnectRegistrations = 0;
@@ -42,6 +84,16 @@ export interface FatalRecoveryHint {
 type FatalRecoveryHintProvider = () => FatalRecoveryHint | undefined;
 const fatalRecoveryHintProviders = new Set<FatalRecoveryHintProvider>();
 
+function invokeCleanup(registration: CleanupRegistration, reason: Reason, pass: number): Promise<void> | void {
+	if (registration.cancelled || registration.lastPass === pass) return;
+	registration.lastPass = pass;
+	return registration.callback(reason);
+}
+
+/**
+ * Run every registration once for this pass. A keep-alive pass ({@link cleanup}) returns to `idle` with registrations
+ * still armed for the eventual real exit; an exit pass settles to `complete`.
+ */
 function runCleanup(reason: Reason, keepAlive = false): Promise<void> {
 	switch (cleanupStage) {
 		case "idle":
@@ -53,21 +105,35 @@ function runCleanup(reason: Reason, keepAlive = false): Promise<void> {
 			return Promise.resolve();
 	}
 
+	const pass = ++cleanupPass;
+	activeCleanupReason = reason;
+	activeCleanupKeepAlive = keepAlive;
+	const late: Promise<void>[] = [];
+	activeLatePromises = late;
 	const settle = (): void => {
+		if (activeLatePromises === late) activeLatePromises = undefined;
+		if (cleanupPass !== pass) return;
 		cleanupStage = keepAlive ? "idle" : "complete";
+		if (keepAlive) {
+			activeCleanupReason = undefined;
+			activeCleanupKeepAlive = false;
+		}
 	};
 
-	const promises = callbackList.toReversed().map(callback => {
-		return Promise.try(() => callback(reason));
+	const promises = callbackList.toReversed().map(registration => {
+		return Promise.try(() => invokeCleanup(registration, reason, pass));
 	});
 
-	const cleanupSettled = Promise.allSettled(promises).then(results => {
+	const cleanupSettled = Promise.allSettled(promises).then(async results => {
 		for (const result of results) {
 			if (result.status === "rejected") {
 				const err = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
 				logger.error("Cleanup callback failed", { err, stack: err.stack });
 			}
 		}
+		// Join callbacks registered while this pass ran (already error-caught); each batch may register more. The
+		// deadline race still bounds the pass.
+		while (late.length > 0) await Promise.allSettled(late.splice(0));
 		settle();
 	});
 	const deadline = Promise.withResolvers<void>();
@@ -76,10 +142,12 @@ function runCleanup(reason: Reason, keepAlive = false): Promise<void> {
 		settle();
 		deadline.resolve();
 	}, CLEANUP_DEADLINE_MS);
-	cleanupPromise = Promise.race([cleanupSettled, deadline.promise]).finally(() => {
+	const passPromise = Promise.race([cleanupSettled, deadline.promise]).finally(() => {
 		clearTimeout(deadlineTimer);
-		if (keepAlive) cleanupPromise = undefined;
+		// Drop only this pass's promise: an older deadline-limited pass may finish after a newer one started.
+		if (keepAlive && cleanupPass === pass && cleanupPromise === passPromise) cleanupPromise = undefined;
 	});
+	cleanupPromise = passPromise;
 	return cleanupPromise;
 }
 
@@ -96,6 +164,27 @@ export function classifyBrokenPipe(err: Error): BrokenPipeSource | undefined {
 
 export function isIpcSendEpipe(err: Error): boolean {
 	return classifyBrokenPipe(err) === "ipc-send";
+}
+
+/**
+ * Bun can fire the close callback of an already-closed `node:net` socket on a fresh stack, surfacing
+ * `ERR_SOCKET_CLOSED` as an uncaught exception past every callsite try/catch. The socket owner's own `error`/`close`
+ * handlers still recover, so only frameless `node:` stacks with a `node:net` frame qualify; an application frame keeps
+ * the fatal path.
+ */
+export function isInternalSocketClosedError(err: unknown): boolean {
+	if (!(err instanceof Error) || !("code" in err) || err.code !== "ERR_SOCKET_CLOSED") return false;
+	const frames = (err.stack ?? "").split("\n").slice(1);
+	if (frames.length === 0) return false;
+	let hasNetFrame = false;
+	const internal = frames.every(frame => {
+		const trimmed = frame.trim();
+		if (trimmed === "" || trimmed === "at unknown" || trimmed === "at native") return true;
+		if (!/\(node:[^)]*\)$/.test(trimmed) && !trimmed.startsWith("at node:")) return false;
+		hasNetFrame ||= trimmed.includes("node:net:");
+		return true;
+	});
+	return internal && hasNetFrame;
 }
 
 export function isWorkerIpcDeserializeError(err: unknown): boolean {
@@ -125,13 +214,29 @@ function faultWorkerIpcChannels(err: Error): void {
 	}
 }
 
+// Driven by stdout's own `error` event, so the broken pipe is attributable to stdout by construction; a process-wide
+// `syscall: "write"` match would also swallow a closed subprocess stdin or socket. Only EPIPE is claimed: a revoked
+// PTY's `EIO` is left to the TUI's stdout listener (SIGHUP/exit-129), which this listener would otherwise preempt.
+function onStdoutDisconnect(err: Error): void {
+	if (classifyBrokenPipe(err) !== "stdio-write") return;
+	logger.warn("Stdout peer disconnected; shutting down gracefully", { err });
+	void runQuit(0, "native", { drainStdout: false });
+}
+
+/**
+ * Treat a closed stdout consumer (`proto --help | head`, an ACP client dropping the pipe) as a graceful exit 0 for
+ * the caller's lifetime. Ref-counted: the shared listener detaches when the last registrant unregisters.
+ */
 export function registerStdioDisconnectHandling(): () => void {
 	let registered = true;
+	if (isMainThread && stdioDisconnectRegistrations === 0) process.stdout.on("error", onStdoutDisconnect);
 	stdioDisconnectRegistrations++;
 	return () => {
 		if (!registered) return;
 		registered = false;
 		stdioDisconnectRegistrations--;
+		if (isMainThread && stdioDisconnectRegistrations === 0)
+			process.stdout.removeListener("error", onStdoutDisconnect);
 	};
 }
 
@@ -195,20 +300,43 @@ function formatFatalError(label: string, err: Error): string {
 	return `\n[${label}] ${name}: ${message}${formattedStack}\n`;
 }
 
-async function exitAfterFatal(label: string, logMessage: string, err: Error, reason: Reason): Promise<void> {
+async function exitAfterFatal(output: string, logMessage: string, err: Error, reason: Reason): Promise<never> {
 	const forcedExit = setTimeout(() => exitProcess(1), CLEANUP_DEADLINE_MS);
 	try {
+		// runCleanup invokes callbacks synchronously, so terminal owners hand the display back before the report is
+		// written; slower resource cleanup finishes afterwards.
+		const cleanup = runCleanup(reason);
 		restoreTerminalStderr();
-
+		// A revoked terminal can make stream writes raise another fatal error; the raw descriptor keeps failure contained.
 		try {
-			fs.writeSync(2, `${formatFatalError(label, err)}${formatFatalRecoveryHints()}`);
+			fs.writeSync(2, output);
 		} catch {}
 		logger.error(logMessage, { err });
-		await runCleanup(reason);
+		await cleanup;
 	} finally {
 		clearTimeout(forcedExit);
 		exitProcess(1);
 	}
+}
+
+function handleWorkerSendEpipe(err: Error): boolean {
+	if (!isIpcSendEpipe(err)) return false;
+	logger.warn("Ignoring EPIPE from worker IPC send; optional subsystem will self-recover", { err });
+	return true;
+}
+
+/**
+ * Report a caught top-level failure after terminal owners restore their display, then exit 1. `report` defaults to
+ * the inspected error.
+ */
+export async function fatal(error: unknown, report?: string): Promise<never> {
+	const err = error instanceof Error ? error : new Error(String(error));
+	const output = `${report ?? `${Bun.inspect(error, { colors: process.stderr.isTTY === true })}\n`}${formatFatalRecoveryHints()}`;
+	if (!isMainThread) {
+		process.stderr.write(output);
+		process.exit(1);
+	}
+	return exitAfterFatal(output, "Fatal error", err, Reason.UNHANDLED_REJECTION);
 }
 
 if (isMainThread) {
@@ -224,36 +352,36 @@ if (isMainThread) {
 			const url = inspector.url();
 			process.stderr.write(`Inspector opened: ${url}\n`);
 		})
-		.on("uncaughtException", async err => {
-			if (isExpectedCleanupError(err)) {
-				logger.warn("Ignoring expected cleanup exception", { err });
+		.on("uncaughtException", async thrown => {
+			if (isExpectedCleanupError(thrown)) {
+				logger.warn("Ignoring expected cleanup exception", { err: thrown });
 				return;
 			}
-
+			const err = thrown instanceof Error ? thrown : new Error(String(thrown));
+			// A worker IPC `send()` race surfaces through either global error event. Stdout write disconnects are
+			// attributed by registerStdioDisconnectHandling's stdout `error` listener, never classified here.
+			if (handleWorkerSendEpipe(err)) return;
 			if (isWorkerIpcDeserializeError(err)) {
 				logger.warn("Malformed worker IPC frame; faulting active worker subsystems", { err });
 				faultWorkerIpcChannels(err);
 				return;
 			}
-			await exitAfterFatal("Uncaught Exception", "Uncaught exception", err, Reason.UNCAUGHT_EXCEPTION);
+			if (isInternalSocketClosedError(err)) {
+				logger.warn("Ignoring async ERR_SOCKET_CLOSED from node:net internals; socket owner recovers itself", {
+					err,
+				});
+				return;
+			}
+			await exitAfterFatal(
+				`${formatFatalError("Uncaught Exception", err)}${formatFatalRecoveryHints()}`,
+				"Uncaught exception",
+				err,
+				Reason.UNCAUGHT_EXCEPTION,
+			);
 		})
 		.on("unhandledRejection", async reason => {
 			const err = reason instanceof Error ? reason : new Error(String(reason));
-			const brokenPipeSource = classifyBrokenPipe(err);
-
-			if (brokenPipeSource === "ipc-send") {
-				logger.warn("Ignoring EPIPE from worker IPC send; optional subsystem will self-recover", { err });
-				return;
-			}
-			if (brokenPipeSource === "stdio-write") {
-				// `proto … | head` closes the pipe mid-write; that is the reader's choice, not a fault.
-				logger.warn("Stdio peer disconnected; shutting down gracefully", {
-					err,
-					registered: stdioDisconnectRegistrations > 0,
-				});
-				await runQuit(0, "native");
-				return;
-			}
+			if (handleWorkerSendEpipe(err)) return;
 			if (isExpectedCleanupError(reason)) {
 				logger.warn("Ignoring expected cleanup rejection", { err });
 				return;
@@ -267,7 +395,12 @@ if (isMainThread) {
 					});
 				}
 			}
-			await exitAfterFatal("Unhandled Rejection", "Unhandled rejection", err, Reason.UNHANDLED_REJECTION);
+			await exitAfterFatal(
+				`${formatFatalError("Unhandled Rejection", err)}${formatFatalRecoveryHints()}`,
+				"Unhandled rejection",
+				err,
+				Reason.UNHANDLED_REJECTION,
+			);
 		})
 		.on("exit", async () => {
 			void runCleanup(Reason.EXIT);
@@ -286,39 +419,37 @@ if (isMainThread) {
 	});
 }
 
+/**
+ * Register a cleanup callback, run once per cleanup pass. Registered while a keep-alive pass runs, it joins that pass
+ * and stays armed; registered during or after a real exit, it runs immediately and the exit awaits it.
+ */
 export function register(id: string, callback: (reason: Reason) => void | Promise<void>): () => void {
-	let done = false;
-	const exec = (reason: Reason) => {
-		if (done) return;
-		done = true;
-		try {
-			return callback(reason);
-		} catch (e) {
-			const err = e instanceof Error ? e : new Error(String(e));
-			logger.error("Cleanup callback failed", { err, id, stack: err.stack });
-		}
+	const registration: CleanupRegistration = { id, callback, cancelled: false, lastPass: 0 };
+	const cancel = (): void => {
+		registration.cancelled = true;
+		const index = callbackList.indexOf(registration);
+		if (index >= 0) callbackList.splice(index, 1);
+	};
+	const logFailure = (error: unknown): void => {
+		const err = error instanceof Error ? error : new Error(String(error));
+		logger.error("Cleanup callback failed", { err, id, stack: err.stack });
 	};
 
-	const cancel = () => {
-		const index = callbackList.indexOf(exec);
-		if (index >= 0) {
-			callbackList.splice(index, 1);
-		}
-		done = true;
-	};
-
-	if (cleanupStage !== "idle") {
-		logger.debug("Cleanup already started; running late callback once", { id });
-		try {
-			callback(Reason.MANUAL);
-		} catch (e) {
-			const err = e instanceof Error ? e : new Error(String(e));
-			logger.error("Cleanup callback failed", { err, id, stack: err.stack });
-		}
-		return () => {};
+	if (cleanupStage === "idle") {
+		callbackList.push(registration);
+		return cancel;
 	}
 
-	callbackList.push(exec);
+	// A keep-alive pass stays armed for later passes; a real exit has no later pass to arm for.
+	if (cleanupStage === "running" && activeCleanupKeepAlive) callbackList.push(registration);
+	else logger.debug("Cleanup already started; running late callback once", { id });
+	try {
+		const pending = invokeCleanup(registration, activeCleanupReason ?? Reason.MANUAL, cleanupPass);
+		// Join the active pass so cleanup() and signal exits await it; after a completed exit nothing is left to join.
+		if (pending) activeLatePromises?.push(pending.catch(logFailure));
+	} catch (error) {
+		logFailure(error);
+	}
 	return cancel;
 }
 

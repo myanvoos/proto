@@ -4,6 +4,7 @@ import type { Component, RenderScheduler, Terminal } from "@oh-my-pi/pi-tui";
 import { Terminal as VTermTerminal } from "@oh-my-pi/pi-utils/vterm";
 import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
+import { ServedModelTracker } from "../components/served-model-marker";
 import { TranscriptContainer } from "../components/transcript-container";
 import { Composer } from "../composer";
 import { initThemeSync } from "../theme/theme";
@@ -208,6 +209,7 @@ function startHarness(
 		flushPendingCommandOutput: NOOP,
 		setChecklist: NOOP,
 		addMessageToChat: () => [] as Component[],
+		servedModelTracker: new ServedModelTracker(),
 		streamingComponent: undefined,
 		streamingMessage: undefined,
 	};

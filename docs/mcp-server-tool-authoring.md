@@ -158,6 +158,14 @@ cannot change ownership.
 
 `tool-bridge.ts` passes each MCP `inputSchema` through `normalizeSchemaForMCP()` before registering it as a `CustomTool` schema.
 
+Before dispatch, shared tool-argument validation prefers an already matching
+`anyOf`/`oneOf` branch when normalizing null placeholders, so required nullable
+properties in that branch keep explicit `null` values and a nonmatching closed
+branch cannot remove them as unknown fields. Other repairs run against one
+branch-local candidate at a time; a candidate that no branch accepts is
+discarded, and the complete schema (required fields, non-nullable properties,
+`oneOf` exclusivity) is still validated.
+
 ### Outbound argument normalization
 
 Before either live or deferred tools send `tools/call`, the bridge normalizes
@@ -166,7 +174,12 @@ the call's arguments in this order:
 1. Non-object values, `null`, and arrays at the top level become an empty
    argument object.
 2. The harness-injected intent field `i` is removed unless the MCP tool's own
-   `inputSchema.properties` declares `i`.
+   input schema owns `i`: a same-instance declaration or constraint in
+   `properties`, `required`, composed or conditional branches, dependencies,
+   `propertyNames`, `patternProperties`, schema-valued `additionalProperties` /
+   `unevaluatedProperties`, object `const`/`enum` values, or a local `$ref`.
+   `properties: { i: false }` and a bare `not: { required: ["i"] }` forbid the
+   name instead of owning it, so the harness value is still removed.
 3. For a property declared by the MCP schema but not listed in `required`, a
    value of `undefined`, an empty string, or an empty non-array object is
    omitted. Required properties, undeclared properties, `0`, `false`, `null`,

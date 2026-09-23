@@ -74,7 +74,7 @@ export async function runMapPhase({
 					reasoning: toReasoningEffort(thinkingLevel),
 					signal: AbortSignal.timeout(timeoutMs),
 				}),
-			{ maxAttempts: maxRetries, baseDelayMs: retryBackoffMs },
+			{ maxAttempts: maxRetries, baseDelayMs: retryBackoffMs, provider: model.provider },
 		);
 
 		const observations = parseObservations(response);

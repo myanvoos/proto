@@ -1,18 +1,21 @@
-function define<T extends object>(target: T, key: symbol, value: unknown): void {
-	if (Object.isFrozen(target)) return;
-	Object.defineProperty(target, key, { value, writable: true, configurable: true });
-}
+// Traversal state lives in weak side tables, never on the schema: caller-owned schemas may be
+// sealed, frozen, or deep-frozen (via Reflect.ownKeys, which reaches symbol slots) after a first visit.
+const memos = new WeakMap<object, Map<symbol, unknown>>();
 
 export function stamp<T extends object, V>(target: T, key: symbol, compute: (target: T) => V): V {
-	const slot = target as Record<symbol, V | undefined>;
-	const existing = slot[key];
+	let slots = memos.get(target);
+	if (!slots) {
+		slots = new Map();
+		memos.set(target, slots);
+	}
+	const existing = slots.get(key) as V | undefined;
 	if (existing !== undefined) return existing;
 	const value = compute(target);
-	define(target, key, value);
+	slots.set(key, value);
 	return value;
 }
 
-const kEpoch = Symbol("pi.schema.epoch");
+const epochs = new WeakMap<object, number>();
 let __epoch = 0;
 
 export function epochNext(): number {
@@ -20,32 +23,23 @@ export function epochNext(): number {
 }
 
 export function once<T extends object>(target: T, epoch: number): boolean {
-	const slot = target as Record<symbol, number | undefined>;
-	const cur = slot[kEpoch];
+	const cur = epochs.get(target);
 	if (cur !== undefined && cur >= epoch) return false;
-	if (cur === undefined) define(target, kEpoch, epoch);
-	else slot[kEpoch] = epoch;
+	epochs.set(target, epoch);
 	return true;
 }
 
-const kDepth = Symbol("pi.schema.depth");
+const depths = new WeakMap<object, number>();
 
 export function enter<T extends object>(target: T): boolean {
-	const slot = target as Record<symbol, number | undefined>;
-	const cur = slot[kDepth];
-	if (cur === undefined) {
-		define(target, kDepth, 1);
-		return true;
-	}
-	if (cur !== 0) return false;
-	slot[kDepth] = 1;
+	const cur = depths.get(target);
+	if (cur !== undefined && cur !== 0) return false;
+	depths.set(target, 1);
 	return true;
 }
 
 export function exit<T extends object>(target: T): void {
-	const slot = target as Record<symbol, number | undefined>;
-	const cur = slot[kDepth];
-
+	const cur = depths.get(target);
 	if (cur === undefined) return;
-	slot[kDepth] = cur - 1;
+	depths.set(target, cur - 1);
 }

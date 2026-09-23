@@ -1,7 +1,7 @@
-import { Database, type Statement } from "bun:sqlite";
+import type { Database, Statement } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { checkpointWal, getDbBusyTimeoutMs, getHistoryDbPath, logger, postmortem } from "@oh-my-pi/pi-utils";
+import { checkpointWal, getHistoryDbPath, logger, openSqliteDatabaseSync, postmortem } from "@oh-my-pi/pi-utils";
 
 export interface HistoryEntry {
 	id: number;
@@ -62,12 +62,8 @@ export class HistoryStorage {
 
 	#substringStmts = new Map<number, Statement>();
 
-	private constructor(dbPath: string) {
-		this.#ensureDir(dbPath);
-
-		this.#db = new Database(dbPath);
-
-		this.#db.run(`PRAGMA busy_timeout = ${getDbBusyTimeoutMs()}`);
+	private constructor(db: Database) {
+		this.#db = db;
 
 		const hadFts = this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_fts'").get();
 		this.#db.run(`
@@ -117,10 +113,17 @@ ON CONFLICT(prompt) DO UPDATE SET
 		const existing = HistoryStorage.#instance;
 		if (existing) return existing;
 
-		const instance = new HistoryStorage(dbPath);
-		cancelExitCleanup = postmortem.register("history-storage", () => HistoryStorage.close());
-		HistoryStorage.#instance = instance;
-		return instance;
+		fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+		return openSqliteDatabaseSync(
+			dbPath,
+			db => {
+				const instance = new HistoryStorage(db);
+				cancelExitCleanup = postmortem.register("history-storage", () => HistoryStorage.close());
+				HistoryStorage.#instance = instance;
+				return instance;
+			},
+			{ recoverCorruption: true },
+		);
 	}
 
 	/** Checkpoints and closes the process-wide database, and permits reopening it. */
@@ -230,11 +233,6 @@ ON CONFLICT(prompt) DO UPDATE SET
 			ids.push(id);
 		}
 		return ids;
-	}
-
-	#ensureDir(dbPath: string): void {
-		const dir = path.dirname(dbPath);
-		fs.mkdirSync(dir, { recursive: true });
 	}
 
 	#historySchemaHasColumn(column: string): boolean {

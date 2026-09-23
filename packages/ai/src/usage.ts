@@ -1,6 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { FetchImpl, Provider } from "./types";
-export type UsageUnit = "percent" | "tokens" | "requests" | "usd" | "minutes" | "bytes" | "unknown";
+export type UsageUnit = "percent" | "tokens" | "requests" | "credits" | "usd" | "minutes" | "bytes" | "unknown";
 
 export type UsageStatus = "ok" | "warning" | "exhausted" | "unknown";
 
@@ -39,6 +39,7 @@ export interface UsageScope {
 	tier?: string;
 	windowId?: string;
 	shared?: boolean;
+	sharedGroup?: string;
 }
 
 export interface UsageLimit {
@@ -182,10 +183,24 @@ export interface ClientUsageReport {
 	installId: string;
 
 	hostname?: string;
+	/** Application label for the process that burned the tokens (e.g. `proto`, a bot). */
+	app?: string;
 	entries: ObservedUsageEntry[];
 }
 
+/**
+ * Identity a client presents for usage attribution. Defaults to this process's install id / hostname / app;
+ * the auth-gateway overrides it with its caller's identity so token burn lands on the originating client.
+ */
+export interface ClientUsageIdentity {
+	installId: string;
+	hostname?: string;
+	app?: string;
+}
+
 export interface ClientProviderUsage {
+	/** Application label the usage was reported under; absent for legacy rows. */
+	app?: string;
 	provider: string;
 	requests: number;
 	inputTokens: number;
@@ -207,7 +222,9 @@ export interface ClientUsageSummary {
 	clients: ClientUsageClientSummary[];
 }
 
-export const usageUnitSchema = type("'percent' | 'tokens' | 'requests' | 'usd' | 'minutes' | 'bytes' | 'unknown'");
+export const usageUnitSchema = type(
+	"'percent' | 'tokens' | 'requests' | 'credits' | 'usd' | 'minutes' | 'bytes' | 'unknown'",
+);
 export const usageStatusSchema = type("'ok' | 'warning' | 'exhausted' | 'unknown'");
 
 export const usageWindowSchema = type({
@@ -236,6 +253,7 @@ export const usageScopeSchema = type({
 	"tier?": "string",
 	"windowId?": "string",
 	"shared?": "boolean",
+	"sharedGroup?": "string",
 });
 
 export const usageLimitSchema = type({
@@ -326,12 +344,18 @@ export interface UsageProvider {
 	id: Provider;
 	fetchUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null>;
 
-	parseRateLimitHeaders?(headers: Record<string, string>, now?: number): UsageReport | null;
+	parseRateLimitHeaders?(
+		headers: Record<string, string>,
+		now?: number,
+		context?: { responseStatus?: number },
+	): UsageReport | null;
 	supports?(params: UsageFetchParams): boolean;
 
 	validatesCredentials?: boolean;
 
 	retainLastGoodOnFailure?: boolean;
+
+	failureBackoffMs?: number;
 }
 
 export interface CredentialRankingContext {
@@ -360,8 +384,12 @@ export interface CredentialRankingStrategy {
 	 * overstated the real reset does not sideline a recovered account until the
 	 * clock runs out. Scopes not returned expire by clock only. Codex heals
 	 * through its meter metadata instead and omits this.
+	 *
+	 * `healthy` is the provider's own verdict for the scope (e.g. meter metadata):
+	 * false never heals; true heals even with empty limits; absent requires
+	 * non-empty limits with none exhausted.
 	 */
-	healableBlockScopes?(report: UsageReport): { blockScope: string; limits: UsageLimit[] }[];
+	healableBlockScopes?(report: UsageReport): { blockScope: string; limits: UsageLimit[]; healthy?: boolean }[];
 
 	blockScopes?(context?: CredentialRankingContext): string[];
 
@@ -370,5 +398,9 @@ export interface CredentialRankingStrategy {
 		secondaryMs: number;
 	};
 
-	hasPriorityBoost?(primary: UsageLimit | undefined): boolean;
+	hasPriorityBoost?(
+		primary: UsageLimit | undefined,
+		primaryUncapped?: boolean,
+		context?: CredentialRankingContext,
+	): boolean;
 }

@@ -41,9 +41,10 @@ export type AgentSessionEvent =
 			finalError?: string;
 			retryErrors?: RetryErrorUpdate[];
 	  }
-	| { type: "retry_fallback_applied"; from: string; to: string; role: string }
+	| { type: "retry_fallback_applied"; from: string; to: string; role: string; reason?: string }
 	| { type: "retry_fallback_succeeded"; model: string; role: string }
 	| { type: "model_changed" }
+	| { type: "config_warnings_changed" }
 	| { type: "ttsr_triggered"; rules: Rule[] }
 	| { type: "checklist_reminder"; items: ChecklistItem[]; attempt: number; maxAttempts: number }
 	| { type: "checklist_auto_clear" }

@@ -150,13 +150,23 @@ screen snapshot during resize.
 - `shouldEnableSynchronizedOutputByDefault(env, id)` → DEC 2026 default.
   Precedence: user opt-out (`PI_NO_SYNC_OUTPUT`/`PI_TUI_SYNC_OUTPUT=0`) → user
   force-on (`PI_FORCE_SYNC_OUTPUT=1`/`PI_TUI_SYNC_OUTPUT=1`) → `TERM_FEATURES`
-  advertises `Sy` → `WT_SESSION` → known direct terminals → off for risky
-  multiplexers and unknowns. Reconciled at runtime by the DECRQM mode-2026
-  report; a user override still wins.
+  advertises `Sy` → Herdr pane → off for other multiplexers → known direct
+  terminals → off for unknowns. Reconciled at runtime by the DECRQM mode-2026
+  report; a user override still wins, and inside Herdr only an unrecognized
+  (status 0) report keeps it on.
 - `detectRectangularSgrSupport(id, env)` → DECCARA fills: kitty only, off in
   multiplexers and under `PI_NO_DECCARA`.
 - `supportsScreenToScrollback` → kitty's ED22 (used once, on the initial
   paint, to preserve the pre-existing shell screen).
+- `detectStyledUnderlineSupport(id, env)` → colon-form curly underline plus
+  SGR 58/59 color: kitty, Ghostty, WezTerm, iTerm2 ≥ 3.5; never under a
+  multiplexer. Others get plain `CSI 4 m`/`CSI 24 m`.
+
+Inside tmux the pane environment identifies tmux rather than the attached
+emulator. When `TERM_PROGRAM` is not a recognized terminal, detection asks the
+local tmux server once for `#{client_termtype}` (500 ms cap) and maps the
+client name through the same table; a missing `tmux` binary or reply keeps the
+environment fallback.
 
 The old ED3-risk classifier (`eagerEraseScrollbackRisk`, `PI_TUI_ED3_SAFE`,
 `submitPinsViewportToTail`) is gone: behavior no longer depends on which

@@ -1,4 +1,5 @@
 import { buildCompat } from "../src/build";
+import { resolveCursorContextWindowFloor, resolveCursorInput } from "../src/discovery/cursor";
 import {
 	type AnthropicModel,
 	bareModelId,
@@ -12,7 +13,8 @@ import {
 import { isMimoModelIdOrName } from "../src/identity/family";
 import { getLongestModelLikeIdSegment } from "../src/identity/id";
 import { buildModelReferenceIndex, resolveModelReference } from "../src/identity/reference";
-import { resolveModelThinking } from "../src/model-thinking";
+import { hasProviderAuthoredThinking, resolveModelThinking, upgradeNeutralReasoning } from "../src/model-thinking";
+import { getCatalogProviderEntry } from "../src/provider-models/descriptors";
 import { isOllamaCloudOutputCapped, OLLAMA_CLOUD_MAX_OUTPUT_TOKENS } from "../src/provider-models/ollama";
 import {
 	ALIBABA_TOKEN_PLAN_STATIC_MODELS,
@@ -20,7 +22,7 @@ import {
 	OPENAI_GPT_56_LONG_CONTEXT_COSTS,
 	resolveWaferServerlessThinkingFormat,
 } from "../src/provider-models/openai-compat";
-import type { Api, LongContextTokenCost, Model, ModelSpec } from "../src/types";
+import type { Api, LongContextTokenCost, Model, ModelCost, ModelSpec, TimeBasedCost, TokenCost } from "../src/types";
 import { isVariantCollapsedSpec } from "../src/variant-collapse";
 import { buildCanonicalModelIndex, buildCanonicalReferenceData } from "./equivalence";
 
@@ -43,22 +45,6 @@ export const CLOUDFLARE_FALLBACK_MODEL: ModelSpec<"anthropic-messages"> = {
 	contextWindow: 200000,
 	maxTokens: 64000,
 };
-
-export function dropUnsupportedBedrockGeoIds(models: readonly ModelSpec[]): ModelSpec[] {
-	return models.filter(model => !(model.provider === "amazon-bedrock" && model.id === "jp.anthropic.claude-opus-5"));
-}
-
-const BEDROCK_MANTLE_OPENAI_MODEL_IDS: Record<string, true> = {
-	"openai.gpt-5.4": true,
-	"openai.gpt-5.5": true,
-	"openai.gpt-5.6-luna": true,
-	"openai.gpt-5.6-sol": true,
-	"openai.gpt-5.6-terra": true,
-};
-
-export function dropBedrockMantleOpenAIModels(models: readonly ModelSpec[]): ModelSpec[] {
-	return models.filter(model => !(model.provider === "amazon-bedrock" && BEDROCK_MANTLE_OPENAI_MODEL_IDS[model.id]));
-}
 
 export function hasBillableCost(cost: ModelSpec["cost"]): boolean {
 	return cost.input !== 0 || cost.output !== 0 || cost.cacheRead !== 0 || cost.cacheWrite !== 0;
@@ -115,6 +101,16 @@ const OPENAI_GPT_5_6_LONG_CONTEXT_COST_BY_MODEL_ID: Readonly<Record<string, Long
 	"gpt-5.6-terra": OPENAI_GPT_56_LONG_CONTEXT_COSTS.terra,
 };
 
+// First-party API Astra bills the whole request at the long-context tier past 272K input; the Codex
+// subscription route stays exempt (credit-equivalent pricing in discovery/codex.ts).
+const OPENAI_GPT_6_ASTRA_LONG_CONTEXT_COST: LongContextTokenCost = {
+	inputThreshold: 272000,
+	input: 20,
+	output: 75,
+	cacheRead: 2,
+	cacheWrite: 25,
+};
+
 const OPENAI_NONE_EFFORT_MODEL_IDS: Record<string, true> = {
 	"daybreak-blue-latest": true,
 	"daybreak-red-latest": true,
@@ -142,6 +138,42 @@ const COPILOT_GENERATED_LIMITS: Record<string, { contextWindow: number; maxToken
 	"grok-code-fast-1": { contextWindow: 192000, maxTokens: 64000 },
 };
 
+// models.dev copies the context window into maxTokens for these rows, which Bedrock rejects with a 400;
+// the caps are the model cards' documented output limits.
+const BEDROCK_GENERATED_MAX_TOKENS: Record<string, number> = {
+	"qwen.qwen3-next-80b-a3b": 8000,
+	"qwen.qwen3-vl-235b-a22b": 8000,
+	"qwen.qwen3-coder-next": 16000,
+};
+
+// First-party peak USD / 1M tokens; all other UTC hours receive 50% off.
+// Source: https://api-docs.deepseek.com/quick_start/pricing (2026-09-10).
+const DEEPSEEK_PEAK_SCHEDULE: TimeBasedCost = {
+	offPeakMultiplier: 0.5,
+	peakWindows: [
+		{ weekdays: [1, 2, 3, 4, 5], startMinute: 60, endMinute: 240 },
+		{ weekdays: [1, 2, 3, 4, 5], startMinute: 360, endMinute: 600 },
+	],
+};
+const DEEPSEEK_FLASH_PEAK_COST: TokenCost = { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 };
+// The pricing page's Flash-priced names (retired `v4-flash`/`-vision-exp` ids still bill at the
+// Flash card); the dated Pro transition applies to the documented exact SKU only.
+const DEEPSEEK_TIME_BASED_COSTS: Readonly<Record<string, ModelCost>> = {
+	"deepseek-flash": { ...DEEPSEEK_FLASH_PEAK_COST, timeBased: DEEPSEEK_PEAK_SCHEDULE },
+	"deepseek-v4-flash": { ...DEEPSEEK_FLASH_PEAK_COST, timeBased: DEEPSEEK_PEAK_SCHEDULE },
+	"deepseek-v4-flash-vision-exp": { ...DEEPSEEK_FLASH_PEAK_COST, timeBased: DEEPSEEK_PEAK_SCHEDULE },
+	"deepseek-v4-pro": {
+		input: 1.32,
+		output: 3.96,
+		cacheRead: 0.044,
+		cacheWrite: 0,
+		timeBased: {
+			...DEEPSEEK_PEAK_SCHEDULE,
+			effectiveRates: [{ effectiveFrom: Date.UTC(2026, 8, 14, 4), ...DEEPSEEK_FLASH_PEAK_COST }],
+		},
+	},
+};
+
 export function applyGeneratedModelPolicies(models: ModelSpec<Api>[]): void {
 	for (const model of models) {
 		applyGeneratedModelPolicy(model);
@@ -153,16 +185,20 @@ function rebakeModelThinking(model: ModelSpec<Api>): void {
 	if (isVariantCollapsedSpec(model)) return;
 	if (
 		model.provider === "alibaba-token-plan" &&
-		(model.id === "qwen3.8-max-preview" || model.id === "qwen3.8-max") &&
+		(model.id === "qwen3.8-max-preview" || model.id === "qwen3.8-max" || model.id === "qwen3.8-flash") &&
 		model.thinking
 	) {
 		return;
 	}
+	if (model.provider === "openrouter" && model.thinking?.requiresEffort === true) return;
+	if (hasProviderAuthoredThinking(model, buildCompat(model))) return;
 	const requiresProviderAuthoredEffort =
 		model.provider === "umans" && (model.thinking?.requiresEffort === true || model.id === "umans-kimi-k2.7");
-	const thinking = resolveModelThinking({ ...model, thinking: undefined }, buildCompat(model));
+	const spec = upgradeNeutralReasoning({ ...model, thinking: undefined });
+	const thinking = resolveModelThinking(spec, buildCompat(spec));
 	if (thinking) {
 		model.thinking = requiresProviderAuthoredEffort ? { ...thinking, requiresEffort: true } : thinking;
+		model.reasoning = true;
 	} else {
 		delete model.thinking;
 	}
@@ -210,6 +246,8 @@ export function applyCanonicalLimitFallback(models: ModelSpec<Api>[]): void {
 	const referenceIndex = buildModelReferenceIndex(catalog);
 
 	for (const model of models) {
+		// An omitted limit from a discovery-truth provider stays unknown rather than borrowing another host's.
+		if (getCatalogProviderEntry(model.provider)?.skipCrossProviderReferenceFills === true) continue;
 		if (model.contextWindow !== null && model.maxTokens !== null) {
 			continue;
 		}
@@ -227,7 +265,9 @@ export function applyCanonicalLimitFallback(models: ModelSpec<Api>[]): void {
 				model.contextWindow = reference.contextWindow;
 			}
 			if (model.maxTokens === null && reference.maxTokens !== null) {
-				model.maxTokens = reference.maxTokens;
+				// A canonical reference's output ceiling can exceed this deployment's own window.
+				model.maxTokens =
+					model.contextWindow !== null ? Math.min(model.contextWindow, reference.maxTokens) : reference.maxTokens;
 			}
 			if (model.contextWindow !== null && model.maxTokens !== null) {
 				break;
@@ -245,6 +285,13 @@ export function applyOllamaCloudOutputCap(models: ModelSpec<Api>[]): void {
 }
 
 function applyGeneratedModelPolicy(model: ModelSpec<Api>): void {
+	if (model.provider === "cursor") {
+		model.input = resolveCursorInput(model.id, model.input);
+		const contextWindowFloor = resolveCursorContextWindowFloor(model.id);
+		if (contextWindowFloor !== undefined) {
+			model.contextWindow = Math.max(model.contextWindow ?? 0, contextWindowFloor);
+		}
+	}
 	if ((model.provider === "xai" || model.provider === "xai-oauth") && model.api === "openai-responses") {
 		const updated = applyXaiResponsesThinkingPolicy(model as ModelSpec<"openai-responses">);
 		model.compat = updated.compat;
@@ -254,6 +301,8 @@ function applyGeneratedModelPolicy(model: ModelSpec<Api>): void {
 		model.contextWindow = copilotLimits.contextWindow;
 		model.maxTokens = copilotLimits.maxTokens;
 	}
+	const bedrockMaxTokens = model.provider === "amazon-bedrock" ? BEDROCK_GENERATED_MAX_TOKENS[model.id] : undefined;
+	if (bedrockMaxTokens !== undefined) model.maxTokens = bedrockMaxTokens;
 	if (model.provider === "alibaba-token-plan") {
 		const reference = ALIBABA_TOKEN_PLAN_STATIC_MODELS.find(candidate => candidate.id === model.id);
 		if (reference) model.name = reference.name;
@@ -262,6 +311,9 @@ function applyGeneratedModelPolicy(model: ModelSpec<Api>): void {
 	if (model.provider === "ollama-cloud") {
 		model.omitMaxOutputTokens = true;
 	}
+
+	const deepseekCost = model.provider === "deepseek" ? DEEPSEEK_TIME_BASED_COSTS[model.id] : undefined;
+	if (deepseekCost) model.cost = { ...deepseekCost };
 
 	if (
 		(model.provider === "zai" || model.provider === "zhipu-coding-plan") &&
@@ -279,6 +331,17 @@ function applyGeneratedModelPolicy(model: ModelSpec<Api>): void {
 			model.provider === "minimax-code-cn")
 	) {
 		model.contextWindow = 1_000_000;
+		// Upstream also leaks the 512K pricing-tier boundary into
+		// `max_output_tokens`; the documented output cap is 128K.
+		model.maxTokens = 128_000;
+	}
+
+	// Stencil.so lists glm-5.3-flash at the 50%-off launch promotion and its row
+	// can win dedup over the models.dev seed. Keep the permanent catalog on the
+	// documented list price (https://docs.z.ai/guides/overview/pricing);
+	// coding-plan providers stay on their subscription (zero-cost) rows.
+	if (model.provider === "zai" && model.id === "glm-5.3-flash") {
+		model.cost = { input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0 };
 	}
 
 	if (
@@ -363,7 +426,7 @@ function applyAnthropicCatalogPolicy(model: ModelSpec<Api>, parsedModel: Anthrop
 		model.maxTokens = 128_000;
 		model.cost.input = 10;
 		model.cost.output = 50;
-		model.cost.cacheRead = 1;
+		model.cost.cacheRead = semverEqual(parsedModel.version, "5.1") ? 0.25 : 1;
 		model.cost.cacheWrite = 12.5;
 	}
 }
@@ -372,7 +435,7 @@ function inferGeneratedApplyPatchToolType(
 	model: ModelSpec<Api>,
 	parsedModel: ParsedModel,
 ): ModelSpec<Api>["applyPatchToolType"] {
-	if (parsedModel.family !== "openai" || parsedModel.version.major !== 5) {
+	if (parsedModel.family !== "openai" || parsedModel.version.major < 5 || parsedModel.version.major > 6) {
 		return undefined;
 	}
 	if (model.provider === "openai" && model.api === "openai-responses") {
@@ -392,9 +455,11 @@ function applyOpenAICatalogPolicy(model: ModelSpec<Api>, parsedModel: OpenAIMode
 		model.compat = { ...(model.compat ?? {}), reasoningDisableMode: "none-effort" };
 	}
 	const longContextCost =
-		isFirstPartyResponses || isFirstPartyCodex
-			? modelOrRequestIdValue(model, OPENAI_GPT_5_6_LONG_CONTEXT_COST_BY_MODEL_ID)
-			: undefined;
+		isFirstPartyResponses && bareModelId(model.id).toLowerCase().startsWith("gpt-6-astra")
+			? OPENAI_GPT_6_ASTRA_LONG_CONTEXT_COST
+			: isFirstPartyResponses || isFirstPartyCodex
+				? modelOrRequestIdValue(model, OPENAI_GPT_5_6_LONG_CONTEXT_COST_BY_MODEL_ID)
+				: undefined;
 	if (longContextCost) {
 		model.cost = { ...model.cost, longContext: longContextCost };
 	}

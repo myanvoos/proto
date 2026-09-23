@@ -68,7 +68,8 @@ export async function selectSession(
 								return true;
 							},
 				historyMatcher,
-				loadAllSessions: options.allowGlobalScope === false ? undefined : () => SessionManager.listAll(storage),
+				loadAllSessions:
+					options.allowGlobalScope === false ? undefined : () => SessionManager.listAllForPicker(storage),
 				allSessions: options.allSessions,
 				getTerminalRows: () => ui.terminal.rows,
 				fillHeight: true,

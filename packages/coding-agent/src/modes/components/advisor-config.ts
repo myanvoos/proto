@@ -49,6 +49,8 @@ interface AdvisorConfigCallbacks {
 	requestRender: () => void;
 
 	notify: (message: string) => void;
+	/** Sticky warning, e.g. malformed entries in the file a scope switch just activated; falls back to `notify`. */
+	warn?: (message: string) => void;
 
 	getAdvisorStats?: () => PerAdvisorStat[];
 	getUsageReports?: () => Promise<UsageReport[] | null>;
@@ -240,15 +242,26 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#previewContent(bodyWidth: number): string[] {
+		// The fullscreen overlay hides the host's warning toasts, so the active file's load problems stay pinned at the
+		// top of the preview until a save rewrites the file without them.
+		const warnings = this.#doc.warnings?.length
+			? [
+					theme.fg("warning", "⚠ Config problems — dropped while loading:"),
+					...this.#doc.warnings.flatMap(warning =>
+						wrap(warning, bodyWidth).map(line => theme.fg("warning", line)),
+					),
+					"",
+				].map(line => truncateToWidth(line, bodyWidth))
+			: [];
 		const list = this.#active;
 		const value = list instanceof SelectList ? (list.getSelectedItem()?.value ?? "") : "";
 		const match = /^advisor:(\d+)$/.exec(value);
 		if (match) {
 			const advisor = this.#doc.advisors[Number(match[1])];
-			if (advisor) return this.#advisorPreview(advisor, bodyWidth);
+			if (advisor) return [...warnings, ...this.#advisorPreview(advisor, bodyWidth)];
 		}
 		if (value === "shared") {
-			const lines = [theme.bold("Shared instructions"), ""];
+			const lines = [...warnings, theme.bold("Shared instructions"), ""];
 			const text = this.#doc.instructions?.trim();
 			lines.push(...(text ? wrap(text, bodyWidth) : [theme.fg("muted", "(none)")]));
 			return lines.map(line => truncateToWidth(line, bodyWidth));
@@ -263,7 +276,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 						: value === "close"
 							? "Close the editor. Unsaved changes are discarded."
 							: "";
-		return wrap(help, bodyWidth).map(line => truncateToWidth(theme.fg("muted", line), bodyWidth));
+		return [...warnings, ...wrap(help, bodyWidth).map(line => truncateToWidth(theme.fg("muted", line), bodyWidth))];
 	}
 
 	#advisorPreview(advisor: AdvisorConfig, bodyWidth: number): string[] {
@@ -391,14 +404,19 @@ export class AdvisorConfigOverlayComponent implements Component {
 				return;
 			}
 			const next = this.#otherScope();
-			this.#doc = await this.#cb.loadDoc(next);
-			this.#ensureRosterVisible();
+			const doc = await this.#cb.loadDoc(next);
+			this.#doc = doc;
 			this.#scope = next;
+			// The host reported the opening file's problems; only files activated by a switch report here.
+			if (doc.warnings?.length) (this.#cb.warn ?? this.#cb.notify)(`WATCHDOG.yml: ${doc.warnings.join("; ")}`);
+			this.#ensureRosterVisible();
 			this.#showList();
 			return;
 		}
 		if (value === "save") {
 			await this.#cb.save(this.#scope, this.#isBareDefaultDoc(this.#doc) ? { advisors: [] } : this.#doc);
+			// The saved file holds only the valid entries, so its load-time warnings no longer apply.
+			this.#doc.warnings = undefined;
 			this.#dirty = false;
 			this.#showList();
 			return;

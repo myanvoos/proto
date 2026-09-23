@@ -5,9 +5,11 @@ import { captureRequestHeaders, resolvePromptCacheKey } from "../auth-gateway/ht
 import type { AuthGatewayStreamControl, AuthGatewayParsedRequest as ParsedRequest } from "../auth-gateway/types";
 import * as AIError from "../error";
 import type {
+	AnthropicMessagePayload,
 	AnthropicServerToolContent,
 	AssistantMessage,
 	AssistantMessageEventStream,
+	DeveloperMessage,
 	Message,
 	RedactedThinkingContent,
 	StopReason,
@@ -18,6 +20,7 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "../types";
+import { isCursorExecResolved } from "../utils/block-symbols";
 import {
 	type AnthropicAssistantContentBlock,
 	type AnthropicMessage,
@@ -28,7 +31,7 @@ import {
 	type AnthropicUserContentBlock,
 	anthropicMessagesRequestSchema,
 } from "./anthropic-messages-server-schema";
-import { isAnthropicServerToolHistoryBlock } from "./anthropic-wire";
+import { isAnthropicServerToolHistoryBlock, THINKING_BINDING_CONTROLS_BETA } from "./anthropic-wire";
 
 export type { ParsedRequest };
 
@@ -212,6 +215,7 @@ function walkTools(tools: AnthropicTool[] | undefined): Tool[] | undefined {
 		name: tool.name,
 		description: tool.description ?? "",
 		parameters: tool.input_schema as Record<string, unknown>,
+		deferLoading: tool.defer_loading,
 	}));
 }
 
@@ -265,6 +269,34 @@ function deriveCacheRetention(data: {
 	return strongest;
 }
 
+function walkSystemMessage(message: AnthropicMessage, timestamp: number): DeveloperMessage {
+	const text: TextContent[] = [];
+	const toolChanges: NonNullable<AnthropicMessagePayload["toolChanges"]> = [];
+	if (typeof message.content === "string") {
+		if (message.content.length > 0) text.push({ type: "text", text: message.content });
+	} else {
+		for (const block of message.content) {
+			if (block.type === "text") {
+				if (block.text.length > 0) text.push({ type: "text", text: block.text });
+			} else if (block.type === "tool_addition" || block.type === "tool_removal") {
+				toolChanges.push({ type: block.type, name: block.tool.name });
+			}
+		}
+	}
+	const payload: AnthropicMessagePayload = {
+		type: "anthropicMessage",
+		clearAt: message.clear_at,
+		effort: message.output_config?.effort ?? undefined,
+		toolChanges: toolChanges.length > 0 ? toolChanges : undefined,
+	};
+	return {
+		role: "developer",
+		content: text,
+		providerPayload: payload,
+		timestamp,
+	};
+}
+
 const REASONING_EFFORT_BY_WIRE: Partial<Record<string, Effort>> = {
 	low: Effort.Low,
 	medium: Effort.Medium,
@@ -272,6 +304,15 @@ const REASONING_EFFORT_BY_WIRE: Partial<Record<string, Effort>> = {
 	xhigh: Effort.XHigh,
 	max: Effort.Max,
 };
+
+// `/v1/models` advertises `<provider>/<id>`, but the resolved catalog model's id
+// is the bare half; labelling replayed turns with the full wire id would make
+// transform-messages treat them as written by another model. A prefix naming a
+// different provider describes a different route and stays.
+function stampedAssistantModelId(wireModelId: string, provider: string): string {
+	const prefix = `${provider}/`;
+	return wireModelId.startsWith(prefix) ? wireModelId.slice(prefix.length) : wireModelId;
+}
 
 export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	const data = anthropicMessagesRequestSchema(body);
@@ -284,15 +325,21 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	for (const message of data.messages as AnthropicMessage[]) {
 		if (message.role === "user") {
 			for (const m of walkUserContent(message.content, now)) messages.push(m);
+		} else if (message.role === "system") {
+			messages.push(walkSystemMessage(message, now));
 		} else {
+			const content = walkAssistantContent(message.content);
 			const assistant: AssistantMessage = {
 				role: "assistant",
-				content: walkAssistantContent(message.content),
+				content,
 				api: "anthropic-messages",
 				provider: "anthropic",
-				model: data.model,
+				model: stampedAssistantModelId(data.model, "anthropic"),
 				usage: emptyUsage(),
-				stopReason: "stop",
+				// The wire carries no stop reason, but tool calls answered by later
+				// `tool_result` blocks did request execution; a constant "stop" reads
+				// as an abandoned tool-use turn and strips the turn's signatures.
+				stopReason: content.some(block => block.type === "toolCall") ? "toolUse" : "stop",
 				timestamp: now,
 			};
 			messages.push(assistant);
@@ -313,6 +360,9 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 		options.parallelToolCalls = false;
 	}
 	if (data.thinking) {
+		if (data.thinking.type !== "disabled" && data.thinking.block_binding) {
+			options.anthropicPrefixMismatchBehavior = data.thinking.block_binding.prefix_mismatch_behavior;
+		}
 		switch (data.thinking.type) {
 			case "enabled":
 				options.explicitThinkingBudgetTokens = data.thinking.budget_tokens;
@@ -383,14 +433,24 @@ function randomFallback(): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function mapStopReasonOut(reason: StopReason): "end_turn" | "max_tokens" | "tool_use" {
+// Cursor stamps calls its own exec channel already ran server-side; those are
+// not handoffs — the client never declared the tool and repeating one would
+// reapply a committed side effect.
+function isClientToolUse(content: AssistantMessage["content"][number]): content is ToolCall {
+	return content.type === "toolCall" && !isCursorExecResolved(content);
+}
+
+function mapStopReasonOut(reason: StopReason, hasToolUse: boolean): "end_turn" | "max_tokens" | "tool_use" {
 	switch (reason) {
 		case "length":
 			return "max_tokens";
 		case "toolUse":
 			return "tool_use";
 		default:
-			return "end_turn";
+			// Providers without a separate tool-use stop (Cursor ends the turn with
+			// `stop` when handing a client tool back) still owe the client
+			// `tool_use`, or the canonical Anthropic tool loop never runs the call.
+			return hasToolUse ? "tool_use" : "end_turn";
 	}
 }
 
@@ -414,6 +474,7 @@ function encodeContentBlocks(message: AssistantMessage): Record<string, unknown>
 				blocks.push(c.block);
 				break;
 			case "toolCall":
+				if (!isClientToolUse(c)) break;
 				blocks.push({ type: "tool_use", id: c.id, name: c.name, input: c.arguments ?? {} });
 				break;
 		}
@@ -446,9 +507,10 @@ export function encodeResponse(message: AssistantMessage, requestedModelId: stri
 		role: "assistant",
 		model: requestedModelId,
 		content: encodeContentBlocks(message),
-		stop_reason: mapStopReasonOut(message.stopReason),
+		stop_reason: mapStopReasonOut(message.stopReason, message.content.some(isClientToolUse)),
 
 		stop_sequence: null,
+		...(message.inputTransformations ? { input_transformations: message.inputTransformations } : {}),
 		usage: encodeUsage(message),
 	};
 }
@@ -478,10 +540,13 @@ const ZERO_WIRE_USAGE: Record<string, unknown> = {
 export function encodeStream(
 	events: AssistantMessageEventStream,
 	requestedModelId: string,
-	_options?: ParsedRequest["options"],
+	options?: ParsedRequest["options"],
 	control?: AuthGatewayStreamControl,
 ): ReadableStream<Uint8Array> {
 	let pingTimer: NodeJS.Timeout | undefined;
+	const bindingControlsRequested =
+		options?.headers?.["anthropic-beta"]?.split(",").some(beta => beta.trim() === THINKING_BINDING_CONTROLS_BETA) ??
+		false;
 	let cancelled = control?.signal?.aborted === true;
 	const markCancelled = () => {
 		cancelled = true;
@@ -497,8 +562,18 @@ export function encodeStream(
 		async start(controller) {
 			const messageId = newMessageId();
 			let started = false;
-			let lastPartial: AssistantMessage | undefined;
 			const open = new Map<number, OpenBlock>();
+			// Resolved Cursor calls are dropped from the wire. Anthropic clients address
+			// deltas by snapshot index, so later blocks shift down by the number of
+			// suppressed blocks before them (identity while nothing is suppressed).
+			const suppressed = new Set<number>();
+			const wireIndex = (contentIndex: number): number => {
+				let shift = 0;
+				for (const index of suppressed) {
+					if (index < contentIndex) shift++;
+				}
+				return contentIndex - shift;
+			};
 
 			const ensureStart = (partial: AssistantMessage | undefined) => {
 				if (started) return;
@@ -515,6 +590,9 @@ export function encodeStream(
 							stop_reason: null,
 
 							stop_sequence: null,
+							...(bindingControlsRequested
+								? { input_transformations: partial?.inputTransformations ?? [] }
+								: {}),
 							usage: partial ? encodeUsage(partial) : ZERO_WIRE_USAGE,
 						},
 					}),
@@ -525,10 +603,11 @@ export function encodeStream(
 			const emitServerToolBlocksBefore = (message: AssistantMessage, beforeIndex: number) => {
 				const limit = Math.min(beforeIndex, message.content.length);
 				while (nextContentIndexToInspect < limit) {
-					const index = nextContentIndexToInspect++;
-					const content = message.content[index];
+					const contentIndex = nextContentIndexToInspect++;
+					const content = message.content[contentIndex];
 					if (content?.type !== "anthropicServerTool") continue;
 					ensureStart(message);
+					const index = wireIndex(contentIndex);
 					controller.enqueue(
 						sseFrame("content_block_start", {
 							type: "content_block_start",
@@ -540,10 +619,11 @@ export function encodeStream(
 				}
 			};
 
-			const closeBlock = (index: number) => {
-				if (!open.has(index)) return;
-				controller.enqueue(sseFrame("content_block_stop", { type: "content_block_stop", index }));
-				open.delete(index);
+			const closeBlock = (contentIndex: number) => {
+				const block = open.get(contentIndex);
+				if (!block) return;
+				controller.enqueue(sseFrame("content_block_stop", { type: "content_block_stop", index: block.index }));
+				open.delete(contentIndex);
 			};
 
 			pingTimer = setInterval(() => {
@@ -572,11 +652,12 @@ export function encodeStream(
 						case "text_start": {
 							emitServerToolBlocksBefore(ev.partial, ev.contentIndex);
 							ensureStart(ev.partial);
-							open.set(ev.contentIndex, { index: ev.contentIndex, kind: "text" });
+							const index = wireIndex(ev.contentIndex);
+							open.set(ev.contentIndex, { index, kind: "text" });
 							controller.enqueue(
 								sseFrame("content_block_start", {
 									type: "content_block_start",
-									index: ev.contentIndex,
+									index,
 									content_block: { type: "text", text: "" },
 								}),
 							);
@@ -586,7 +667,7 @@ export function encodeStream(
 							controller.enqueue(
 								sseFrame("content_block_delta", {
 									type: "content_block_delta",
-									index: ev.contentIndex,
+									index: wireIndex(ev.contentIndex),
 									delta: { type: "text_delta", text: ev.delta },
 								}),
 							);
@@ -597,11 +678,12 @@ export function encodeStream(
 						case "thinking_start": {
 							emitServerToolBlocksBefore(ev.partial, ev.contentIndex);
 							ensureStart(ev.partial);
-							open.set(ev.contentIndex, { index: ev.contentIndex, kind: "thinking" });
+							const index = wireIndex(ev.contentIndex);
+							open.set(ev.contentIndex, { index, kind: "thinking" });
 							controller.enqueue(
 								sseFrame("content_block_start", {
 									type: "content_block_start",
-									index: ev.contentIndex,
+									index,
 									content_block: { type: "thinking", thinking: "" },
 								}),
 							);
@@ -611,7 +693,7 @@ export function encodeStream(
 							controller.enqueue(
 								sseFrame("content_block_delta", {
 									type: "content_block_delta",
-									index: ev.contentIndex,
+									index: wireIndex(ev.contentIndex),
 									delta: { type: "thinking_delta", thinking: ev.delta },
 								}),
 							);
@@ -622,7 +704,7 @@ export function encodeStream(
 								controller.enqueue(
 									sseFrame("content_block_delta", {
 										type: "content_block_delta",
-										index: ev.contentIndex,
+										index: wireIndex(ev.contentIndex),
 										delta: { type: "signature_delta", signature: c.thinkingSignature },
 									}),
 								);
@@ -634,11 +716,17 @@ export function encodeStream(
 							emitServerToolBlocksBefore(ev.partial, ev.contentIndex);
 							ensureStart(ev.partial);
 							const tc = ev.partial.content[ev.contentIndex] as ToolCall | undefined;
-							open.set(ev.contentIndex, { index: ev.contentIndex, kind: "tool_use" });
+							if (tc && !isClientToolUse(tc)) {
+								// Already executed by Cursor: drop start, deltas and stop.
+								suppressed.add(ev.contentIndex);
+								break;
+							}
+							const index = wireIndex(ev.contentIndex);
+							open.set(ev.contentIndex, { index, kind: "tool_use" });
 							controller.enqueue(
 								sseFrame("content_block_start", {
 									type: "content_block_start",
-									index: ev.contentIndex,
+									index,
 									content_block: {
 										type: "tool_use",
 										id: tc?.id ?? "",
@@ -650,10 +738,11 @@ export function encodeStream(
 							break;
 						}
 						case "toolcall_delta":
+							if (suppressed.has(ev.contentIndex)) break;
 							controller.enqueue(
 								sseFrame("content_block_delta", {
 									type: "content_block_delta",
-									index: ev.contentIndex,
+									index: wireIndex(ev.contentIndex),
 									delta: { type: "input_json_delta", partial_json: ev.delta },
 								}),
 							);
@@ -668,7 +757,13 @@ export function encodeStream(
 								sseFrame("message_delta", {
 									type: "message_delta",
 
-									delta: { stop_reason: mapStopReasonOut(ev.reason), stop_sequence: null },
+									delta: {
+										stop_reason: mapStopReasonOut(ev.reason, ev.message.content.some(isClientToolUse)),
+										stop_sequence: null,
+									},
+									...(bindingControlsRequested
+										? { input_transformations: ev.message.inputTransformations ?? [] }
+										: {}),
 									usage: encodeUsage(ev.message),
 								}),
 							);
@@ -687,13 +782,13 @@ export function encodeStream(
 					}
 				}
 
-				ensureStart(lastPartial);
+				ensureStart(undefined);
 				for (const idx of [...open.keys()]) closeBlock(idx);
 				controller.enqueue(
 					sseFrame("message_delta", {
 						type: "message_delta",
 						delta: { stop_reason: "end_turn", stop_sequence: null },
-						usage: lastPartial ? encodeUsage(lastPartial) : ZERO_WIRE_USAGE,
+						usage: ZERO_WIRE_USAGE,
 					}),
 				);
 				controller.enqueue(sseFrame("message_stop", { type: "message_stop" }));

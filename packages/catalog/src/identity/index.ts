@@ -4,5 +4,6 @@ export * from "./dialect";
 export * from "./family";
 export * from "./id";
 export * from "./markers";
+export * from "./metrics";
 export * from "./priority";
 export * from "./reference";

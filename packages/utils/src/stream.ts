@@ -4,6 +4,7 @@ import { abortableSource } from "./abortable";
 import { parseStreamingJson } from "./json-parse";
 
 const LF = 0x0a;
+const CR = 0x0d;
 
 /** Reject lines beyond maxLineBytes before accumulating more stream data. */
 export async function* readLines(
@@ -98,6 +99,7 @@ export async function readBytesWithLimit(
 class ConcatSink {
 	#space?: Buffer;
 	#length = 0;
+	#skipLeadingLf = false;
 
 	#ensureCapacity(size: number): Buffer {
 		const space = this.#space;
@@ -178,20 +180,29 @@ class ConcatSink {
 		}
 	}
 
+	// Flushes through the last LF, CRLF, or lone CR. A chunk ending on CR defers the LF that may start the next chunk.
 	appendAndFlushText(chunk: Uint8Array, decoder: TextDecoder): string | undefined {
-		const lastNewline = chunk.lastIndexOf(LF);
-		if (lastNewline === -1) {
-			this.append(chunk);
+		let start = 0;
+		if (this.#skipLeadingLf) {
+			if (chunk.length === 0) return undefined;
+			this.#skipLeadingLf = false;
+			if (chunk[0] === LF) start = 1;
+		}
+
+		const lastLineEnd = Math.max(chunk.lastIndexOf(LF), chunk.lastIndexOf(CR));
+		if (lastLineEnd < start) {
+			if (start < chunk.length) this.append(chunk.subarray(start));
 			return undefined;
 		}
 
-		const completeEnd = lastNewline + 1;
+		const completeEnd = lastLineEnd + 1;
+		this.#skipLeadingLf = chunk[lastLineEnd] === CR && completeEnd === chunk.length;
 		let text: string;
 		if (this.isEmpty) {
-			const complete = completeEnd === chunk.length ? chunk : chunk.subarray(0, completeEnd);
+			const complete = start === 0 && completeEnd === chunk.length ? chunk : chunk.subarray(start, completeEnd);
 			text = decoder.decode(complete);
 		} else {
-			this.append(completeEnd === chunk.length ? chunk : chunk.subarray(0, completeEnd));
+			this.append(chunk.subarray(start, completeEnd));
 			text = decoder.decode(this.flush());
 			this.clear();
 		}
@@ -264,12 +275,13 @@ export interface ReadSseJsonOptions {
 	malformed?: "skip" | "throw";
 }
 
-export async function* readSseJson<T>(
+type SseFrame<T> = { ok: true; value: T } | { ok: false; raw: string; error: SyntaxError };
+
+async function* readSseFrames<T>(
 	stream: ReadableStream<Uint8Array>,
 	signal?: AbortSignal,
 	onEvent?: SseEventObserver,
-	options?: ReadSseJsonOptions,
-): AsyncGenerator<T> {
+): AsyncGenerator<SseFrame<T>> {
 	for await (const sse of readSseEvents(stream, signal)) {
 		const isTrailing = trailingEvents.has(sse);
 		notifySseEventObserver(onEvent, sse);
@@ -278,17 +290,44 @@ export async function* readSseJson<T>(
 			if (data === "[DONE]") return;
 			continue;
 		}
+		let value: T;
 		try {
-			yield JSON.parse(data) as T;
+			value = JSON.parse(data) as T;
 		} catch (err) {
-			if (err instanceof SyntaxError && isTrailing && isRecoverableTrailingJson(data)) {
-				return;
-			}
-			if (err instanceof SyntaxError && options?.malformed === "skip") {
-				continue;
-			}
-			throw err;
+			if (!(err instanceof SyntaxError)) throw err;
+			if (isTrailing && isRecoverableTrailingJson(data)) return;
+			yield { ok: false, raw: data, error: err };
+			continue;
 		}
+		yield { ok: true, value };
+	}
+}
+
+export async function* readSseJson<T>(
+	stream: ReadableStream<Uint8Array>,
+	signal?: AbortSignal,
+	onEvent?: SseEventObserver,
+	options?: ReadSseJsonOptions,
+): AsyncGenerator<T> {
+	for await (const frame of readSseFrames<T>(stream, signal, onEvent)) {
+		if (frame.ok) yield frame.value;
+		else if (options?.malformed !== "skip") throw frame.error;
+	}
+}
+
+/**
+ * Like {@link readSseJson}, but a non-JSON `data:` frame is yielded as its raw
+ * text (e.g. a proxy's `429 Too Many Requests` after the stream committed to
+ * HTTP 200). A JSON-encoded string frame is also yielded as a string, so
+ * consumers must treat every string as untrusted text.
+ */
+export async function* readSseJsonOrText<T>(
+	stream: ReadableStream<Uint8Array>,
+	signal?: AbortSignal,
+	onEvent?: SseEventObserver,
+): AsyncGenerator<T | string> {
+	for await (const frame of readSseFrames<T>(stream, signal, onEvent)) {
+		yield frame.ok ? frame.value : frame.raw;
 	}
 }
 
@@ -332,9 +371,6 @@ function flushSseEvent(state: SseEventState): ServerSentEvent | null {
 }
 
 function pushSseLine(line: string, state: SseEventState): ServerSentEvent | null {
-	if (line.charCodeAt(line.length - 1) === 0x0d) {
-		line = line.slice(0, -1);
-	}
 	if (line.length === 0) return flushSseEvent(state);
 
 	if (line.charCodeAt(0) === 0x3a) {
@@ -390,10 +426,16 @@ export async function* readSseEvents(
 			if (text === undefined) continue;
 			let start = 0;
 			while (start < text.length) {
-				const newline = text.indexOf("\n", start);
-				const event = pushSseLine(text.slice(start, newline), state);
+				let lineEnd = start;
+				while (lineEnd < text.length) {
+					const code = text.charCodeAt(lineEnd);
+					if (code === LF || code === CR) break;
+					lineEnd++;
+				}
+				const event = pushSseLine(text.slice(start, lineEnd), state);
 				if (event) yield event;
-				start = newline + 1;
+				if (text.charCodeAt(lineEnd) === CR && text.charCodeAt(lineEnd + 1) === LF) lineEnd++;
+				start = lineEnd + 1;
 			}
 		}
 
@@ -420,33 +462,65 @@ export async function* readSseEvents(
 	}
 }
 
-export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecord?: () => void } = {}): T[] {
-	let entries: T[] | undefined;
-
-	while (buffer.length > 0) {
-		const { values, error, read, done } = Bun.JSONL.parseChunk(buffer);
-		if (values.length > 0) {
-			const ext = values as T[];
-			if (!entries) {
-				entries = ext;
-			} else {
-				entries.push(...ext);
-			}
-		}
-		if (error) {
-			const nextNewline = buffer.indexOf("\n", read);
-			const malformedEnd = nextNewline === -1 ? buffer.length : nextNewline;
-			if (buffer.substring(read, malformedEnd).trim().length > 0) options.onMalformedRecord?.();
-			if (nextNewline === -1) break;
-			buffer = buffer.substring(nextNewline + 1);
-			continue;
-		}
-		if (read === 0) {
-			if (buffer.trim().length > 0) options.onMalformedRecord?.();
-			break;
-		}
-		buffer = buffer.substring(read);
-		if (done) break;
+function advanceJsonlChunk<T>(
+	buffer: string,
+	onValues: (values: T[]) => void,
+	options: { onMalformedRecord?: () => void },
+): string {
+	const { values, error, read, done } = Bun.JSONL.parseChunk(buffer);
+	if (values.length > 0) onValues(values as T[]);
+	if (error) {
+		const nextNewline = buffer.indexOf("\n", read);
+		const malformedEnd = nextNewline === -1 ? buffer.length : nextNewline;
+		if (buffer.substring(read, malformedEnd).trim().length > 0) options.onMalformedRecord?.();
+		if (nextNewline === -1) return "";
+		return buffer.substring(nextNewline + 1);
 	}
-	return entries ?? [];
+	if (read === 0) {
+		if (buffer.trim().length > 0) options.onMalformedRecord?.();
+		return "";
+	}
+	if (done) return "";
+	return buffer.substring(read);
+}
+
+/** Parsed-records sink for {@link forEachJsonlRecord}; keeps per-record handling allocation-free. */
+export type JsonlRecordSink<T> = (record: T) => void;
+
+/**
+ * Stream JSONL records to `onRecord` as they parse, skipping malformed lines exactly like
+ * {@link parseJsonlLenient}. Unlike `parseJsonlLenient` it never materializes the full record
+ * array, so scanning a transcript-sized buffer costs O(largest single record) memory instead of
+ * O(buffer).
+ */
+export function forEachJsonlRecord<T>(
+	buffer: string,
+	onRecord: JsonlRecordSink<T>,
+	options: { onMalformedRecord?: () => void } = {},
+): void {
+	let rest = buffer;
+	while (rest.length > 0) {
+		rest = advanceJsonlChunk<T>(
+			rest,
+			values => {
+				for (const value of values) onRecord(value);
+			},
+			options,
+		);
+	}
+}
+
+export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecord?: () => void } = {}): T[] {
+	const entries: T[] = [];
+	let rest = buffer;
+	while (rest.length > 0) {
+		rest = advanceJsonlChunk<T>(
+			rest,
+			values => {
+				for (const value of values) entries.push(value);
+			},
+			options,
+		);
+	}
+	return entries;
 }

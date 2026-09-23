@@ -2304,6 +2304,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		return resultBuilder.done();
 	}
 
+	/**
+	 * The root level is uncapped and pages through line selectors; child directories cap at
+	 * `READ_DIRECTORY_CHILD_LIMIT` entries behind an inline `… N more` marker that reading the
+	 * sub-path expands, so no trailing limit notice is emitted.
+	 */
 	async #readDirectory(
 		absolutePath: string,
 		offset: number | undefined,
@@ -2357,18 +2362,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				const remaining = allLines.length - end;
 				text += `\n\n[${remaining} more lines in listing. Use :${end + 1} to continue]`;
 			}
-			resultBuilder.text(text);
-			if (tree.truncated) {
-				resultBuilder.limits({ resultLimit: 1 });
-			}
-			return resultBuilder.done();
+			return resultBuilder.text(text).done();
 		}
 
 		const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
 		const resultBuilder = toolResult(details).text(truncation.content).sourcePath(tree.rootPath);
-		if (tree.truncated) {
-			resultBuilder.limits({ resultLimit: 1 });
-		}
 		if (truncation.truncated) {
 			resultBuilder.truncation(truncation, { direction: "head" });
 			details.truncation = truncation;

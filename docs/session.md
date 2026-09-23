@@ -326,6 +326,8 @@ Extension-provided message that does participate in LLM context. `content` can b
 
 Append-only audit entry for a session rename. It records `title`, `source` (`auto` or `user`), and optionally `previousTitle` and `trigger`. The current title is also updated in the fixed-width title slot so listing does not require a full-file rewrite.
 
+`/rename <title>` sets an explicit title. `/rename` without a title generates one from recent conversation using the configured tiny title model. Both are user-requested renames (`source: "user"`), so later automatic titling cannot replace them. Empty conversation or failed generation leaves the current title unchanged. A session switch or newer rename while generation runs discards the stale result. Local tiny-model failures never fall back to an online provider.
+
 ### `ttsr_injection`
 
 ```json
@@ -472,6 +474,7 @@ Completed entries update memory and are handed to file/memory storage synchronou
 
 - `flush()` drains async disk/storage queues and the open writer (no `fsync`); `flushSync()` performs synchronous draining/full rewrite where supported.
 - Atomic full rewrites use storage `writeTextAtomic` with a commit guard; file storage stages then renames over the target, including an EPERM-safe move-aside fallback.
+- Every full rewrite (sync or atomic) carries a freshness precondition: the byte length the manager last loaded or durably wrote (`null` when the path was absent). Storage rejects the publish with `SessionWriteConflictError` when the target changed since — file storage checks under the same file lock appenders hold, `IndexedSessionStorage` checks its index, and the SQL/Redis backends repeat the check atomically (`length(content)` / `STRLEN`) for peers sharing the store. A rejected rewrite leaves the other writer's turns on disk and latches the disk failure; the stale manager's unsaved entries stay in memory.
 - Rewrites serve renames, entry rewrites, migrations/sanitization, move/fork, and recovery. Session-title changes normally update the fixed-width title slot and append a `title_change` audit entry instead of rewriting the body.
 
 ### Error behavior

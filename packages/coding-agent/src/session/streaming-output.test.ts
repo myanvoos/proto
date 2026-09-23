@@ -1,10 +1,10 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { formatBytes, truncateHeadBytes, truncateTailBytes } from "@oh-my-pi/pi-utils";
-import { formatTruncationMetaNotice, outputMeta } from "../tools/output-meta";
-import { OutputSink } from "./streaming-output";
+import { formatOutputNotice, formatTruncationMetaNotice, outputMeta } from "../tools/output-meta";
+import { formatTailTruncationNotice, OutputSink, truncateMiddle, truncateTail } from "./streaming-output";
 
 interface ReferenceCappedBuffers {
 	output: string;
@@ -478,4 +478,78 @@ test("a stream without a trailing newline still counts its final partial line", 
 	const terminated = new OutputSink({ spillThreshold: 1 });
 	terminated.push("alpha\nbeta\ngamma\n");
 	expect((await terminated.dump()).totalLines).toBe(3);
+});
+
+describe("tail and middle truncation windows", () => {
+	test("a giant line fills the remaining tail budget before the smaller lines after it", () => {
+		const result = truncateTail("abcdefghijk\n}\n```", { maxLines: 10, maxBytes: 10 });
+
+		expect(result.content).toBe("hijk\n}\n```");
+		expect(result.outputLines).toBe(3);
+		expect(result.outputBytes).toBe(10);
+		expect(result.partialByteWindows).toBe(true);
+		expect(result.lastLinePartial).toBe(false);
+		expect(formatTailTruncationNotice(result)).toBe(
+			"\n\n[Showing last 10B across lines 1-3 of 3; line 1 is partial]",
+		);
+	});
+
+	test("a giant first line keeps a byte head and the line-capped tail", () => {
+		const result = truncateMiddle(`${"x".repeat(200)}\nshort-2\nshort-3`, {
+			maxBytes: 40,
+			maxLines: 10,
+			maxHeadBytes: 8,
+			maxHeadLines: 1,
+		});
+
+		expect(result.truncatedBy).toBe("middle");
+		expect(result.content.startsWith("xxxxxxxx\n")).toBe(true);
+		expect(result.content.endsWith("short-3")).toBe(true);
+		expect(result.elidedBytes).toBeGreaterThan(0);
+		expect(result.headLines).toBe(1);
+		expect(result.tailLines).toBe(3);
+		expect(result.partialByteWindows).toBe(true);
+	});
+
+	test("a giant trailing line stays within the middle budget", () => {
+		const result = truncateMiddle(`label\n${"x".repeat(20_000)}`, { maxBytes: 8192, maxLines: 80 });
+
+		expect(result.truncatedBy).toBe("middle");
+		expect(result.content.startsWith("label\n")).toBe(true);
+		expect(result.content).toContain("elided");
+		expect(result.outputBytes).toBeLessThanOrEqual(8192 + 64);
+	});
+
+	test("partial byte windows report bytes instead of line ranges", () => {
+		const result = truncateMiddle(`${"x".repeat(20_000)}\n${"y".repeat(20_000)}`, { maxBytes: 8192, maxLines: 80 });
+		expect(result.partialByteWindows).toBe(true);
+
+		const meta = outputMeta().truncation(result, { direction: "middle" }).get();
+		if (!meta?.truncation) throw new Error("expected truncation meta");
+		expect(meta.truncation.headRange).toBeUndefined();
+		expect(meta.truncation.tailRange).toBeUndefined();
+		expect(formatTruncationMetaNotice(meta.truncation)).toStartWith("Showing head and tail bytes of 2 lines;");
+	});
+
+	test("line windows report the exact retained source ranges", () => {
+		const content = Array.from({ length: 200 }, (_, i) => `line-${i + 1}`).join("\n");
+		const result = truncateMiddle(content, { maxBytes: 100_000, maxLines: 10, maxHeadLines: 3 });
+		expect(result.headLines).toBe(3);
+		expect(result.tailLines).toBe(7);
+
+		const meta = outputMeta().truncation(result, { direction: "middle" }).get();
+		expect(meta?.truncation?.headRange).toEqual({ start: 1, end: 3 });
+		expect(meta?.truncation?.tailRange).toEqual({ start: 194, end: 200 });
+	});
+});
+
+test("column-cap notices name the unit the cap was enforced in", async () => {
+	const sink = new OutputSink({ maxColumns: 8 });
+	await sink.push(`${"é".repeat(20)}\nshort\n`);
+	const summary = await sink.dump();
+	expect(formatOutputNotice(outputMeta().truncationFromSummary(summary, { direction: "tail" }).get())).toContain(
+		"Some lines truncated to 8 bytes",
+	);
+	// read caps lines by UTF-16 code units.
+	expect(formatOutputNotice(outputMeta().limits({ columnMax: 8 }).get())).toContain("Some lines truncated to 8 chars");
 });

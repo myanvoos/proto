@@ -38,6 +38,18 @@ async function acquireLock(filePath: string, options: FileLockOptions = {}): Pro
 	throw new Error(`Failed to acquire lock for ${filePath} after ${opts.retries} attempts`);
 }
 
+function acquireLockSync(filePath: string, options: FileLockOptions = {}): FileLockHandle {
+	const opts = { ...DEFAULT_OPTIONS, ...options };
+
+	for (let attempt = 0; attempt < opts.retries; attempt++) {
+		const lock = tryAcquireFileLockSync(filePath);
+		if (lock) return lock;
+		if (attempt + 1 < opts.retries && opts.retryDelayMs > 0) Bun.sleepSync(opts.retryDelayMs);
+	}
+
+	throw new Error(`Failed to acquire lock for ${filePath} after ${opts.retries} attempts`);
+}
+
 export async function withFileLock<T>(
 	filePath: string,
 	fn: () => Promise<T>,
@@ -46,6 +58,15 @@ export async function withFileLock<T>(
 	const lock = await acquireLock(filePath, options);
 	try {
 		return await fn();
+	} finally {
+		lock.release();
+	}
+}
+
+export function withFileLockSync<T>(filePath: string, fn: () => T, options: FileLockOptions = {}): T {
+	const lock = acquireLockSync(filePath, options);
+	try {
+		return fn();
 	} finally {
 		lock.release();
 	}

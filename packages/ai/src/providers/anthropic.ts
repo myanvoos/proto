@@ -23,7 +23,9 @@ import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
 import type {
+	AnthropicCompactionPayload,
 	AnthropicFallbackContent,
+	AnthropicMessagePayload,
 	AnthropicServerToolContent,
 	Api,
 	AssistantMessage,
@@ -34,6 +36,8 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	ProviderInputTransformation,
+	ProviderPayload,
 	ProviderSessionState,
 	RawSseEvent,
 	RedactedThinkingContent,
@@ -50,15 +54,27 @@ import type {
 	Usage,
 	VideoContent,
 } from "../types";
-import { isRecord, normalizeSystemPrompts, normalizeToolCallId, resolveCacheRetention } from "../utils";
+import {
+	getHeaderCaseInsensitive,
+	isRecord,
+	normalizeSystemPrompts,
+	normalizeToolCallId,
+	resolveCacheRetention,
+} from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import {
+	type ConversationalUserCarrier,
 	clearStreamingPartialJson,
+	copyPerCallContextMessage,
+	isConversationalUser,
+	isPerCallContextMessage,
+	isSyntheticUser,
+	kConversationalUser,
 	kStreamingBlockIndex,
 	kStreamingLastParseLen,
 	kStreamingPartialJson,
 } from "../utils/block-symbols";
-import { withEmptyCompletionRetry } from "../utils/empty-completion-retry";
+import { withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { isFoundryEnabled } from "../utils/foundry";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
@@ -76,22 +92,29 @@ import {
 	type AnthropicMessagesClientLike,
 	calculateAnthropicRetryDelayMs,
 } from "./anthropic-client";
+import { servedModelFromAnthropicSignature } from "./anthropic-signature";
 import {
 	type ToolInputSchema as AnthropicToolInputSchema,
 	type Tool as AnthropicWireTool,
 	type Usage as AnthropicWireUsage,
+	COMPACTION_BETA,
+	type CompactionBlockParam,
+	type CompactionEdit,
 	type ContentBlockParam,
 	type FallbackParam,
 	isAnthropicServerToolHistoryBlock,
 	type MessageCreateParams,
 	type MessageCreateParamsStreaming,
 	type MessageParam,
+	parseAnthropicInputTransformations,
 	type RawMessageStreamEvent,
 	type TextBlockParam,
+	THINKING_BINDING_CONTROLS_BETA,
 } from "./anthropic-wire";
 import {
 	adoptRequiredClaudeCodeVersion,
 	CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+	claudeCodeSdkVersion,
 	claudeCodeSystemInstruction,
 	claudeToolPrefix,
 	getClaudeCodeVersion,
@@ -99,11 +122,16 @@ import {
 } from "./claude-code-fingerprint";
 import {
 	buildCopilotDynamicHeaders,
+	getCachedCopilotIntegrationId,
+	getCopilotIntegrationCacheKey,
 	hasCopilotVisionInput,
+	resolveCopilotRequestIdentity,
 	resolveGitHubCopilotBaseUrl,
+	wrapFetchForCopilotFallback,
 } from "./github-copilot-headers";
+import { applyInferenceHeaders } from "./inference-headers";
 import { getOpenAIPromptCacheKey } from "./openai-shared";
-import { transformMessages } from "./transform-messages";
+import { redactSensitiveCredentials, transformMessages } from "./transform-messages";
 import { mediaOmissionNote, NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
 
 export type AnthropicHeaderOptions = {
@@ -150,13 +178,17 @@ function mergeAnthropicBetaHeader(callerHeaders: Record<string, string>, beta: s
 	}
 	return { "anthropic-beta": beta };
 }
-
+const oauthAuthBeta = "oauth-2025-04-20";
 const midConversationSystemBeta = "mid-conversation-system-2026-04-07";
+const midConversationSystemClearAtBeta = "mid-conversation-system-clear-at-2026-08-21";
+const midConversationToolChangesBeta = "mid-conversation-tool-changes-2026-07-01";
+const midConversationOutputConfigBeta = "mid-conversation-output-config-2026-07-01";
 const contextManagementBeta = "context-management-2025-06-27";
 const structuredOutputsBeta = "structured-outputs-2025-12-15";
 const thinkingTokenCountBeta = "thinking-token-count-2026-05-13";
 const fallbackCreditBeta = "fallback-credit-2026-06-01";
 const coworkUtilityBetaDefaults = [
+	oauthAuthBeta,
 	"interleaved-thinking-2025-05-14",
 	thinkingTokenCountBeta,
 	contextManagementBeta,
@@ -165,6 +197,7 @@ const coworkUtilityBetaDefaults = [
 ] as const;
 const coworkAgentBetaDefaults = [
 	"claude-code-20250219",
+	oauthAuthBeta,
 	"interleaved-thinking-2025-05-14",
 	thinkingTokenCountBeta,
 	contextManagementBeta,
@@ -180,30 +213,35 @@ const taskBudgetBeta = "task-budgets-2026-03-13";
 const effortBeta = "effort-2025-11-24";
 const serverSideFallbackBeta = "server-side-fallback-2026-06-01";
 
+function resolveAnthropicControlBetas(
+	model: Model<"anthropic-messages">,
+	prefixMismatchBehavior: "drop_block" | "error" | undefined,
+): string[] {
+	const betas: string[] = [];
+	if (prefixMismatchBehavior) betas.push(THINKING_BINDING_CONTROLS_BETA);
+	if (model.compat.supportsTurnScopedSystem) betas.push(midConversationSystemClearAtBeta);
+	if (model.compat.supportsMidConversationToolChanges) betas.push(midConversationToolChangesBeta);
+	if (model.compat.supportsPerMessageEffort) betas.push(midConversationOutputConfigBeta);
+	return betas;
+}
+
 function buildCoworkBetas(
 	agentRequest: boolean,
 	thinkingRequest: boolean,
 	disableStrictTools = false,
+	supportsContextManagement = true,
 ): readonly string[] {
-	if (!agentRequest && !disableStrictTools) return coworkUtilityBetaDefaults;
+	if (!agentRequest && !disableStrictTools && supportsContextManagement) return coworkUtilityBetaDefaults;
 	const betas: string[] = [];
 	for (const beta of agentRequest ? coworkAgentBetaDefaults : coworkUtilityBetaDefaults) {
 		if (disableStrictTools && beta === structuredOutputsBeta) continue;
+		if (!supportsContextManagement && beta === contextManagementBeta) continue;
 		betas.push(beta);
 	}
 	if (!agentRequest) return betas;
 	if (thinkingRequest) betas.push(effortBeta);
 	betas.push(fallbackCreditBeta);
 	return betas;
-}
-
-function getHeaderCaseInsensitive(headers: Record<string, string> | undefined, headerName: string): string | undefined {
-	if (!headers) return undefined;
-	const normalizedName = headerName.toLowerCase();
-	for (const [key, value] of Object.entries(headers)) {
-		if (key.toLowerCase() === normalizedName) return value;
-	}
-	return undefined;
 }
 
 function isClaudeCodeClientUserAgent(userAgent: string | undefined): userAgent is string {
@@ -353,22 +391,62 @@ let warnedStopSequencesTrim = false;
 
 const ANTHROPIC_PROVIDER_SESSION_STATE_KEY = "anthropic-messages";
 
+type AnthropicControlTransition = {
+	messageCount: number;
+	anchor: string;
+	content: ContentBlockParam[];
+	effort?: AnthropicOutputEffort;
+};
+
+type AnthropicControlState = {
+	declaredTools: AnthropicWireTool[] | undefined;
+	activeToolNames: Set<string>;
+	stableSystemBlocks: AnthropicSystemBlock[] | undefined;
+	systemFingerprint: string | undefined;
+	controlTransitions: AnthropicControlTransition[];
+	effortBaselined: boolean;
+	baseEffortWire: AnthropicOutputEffort | undefined;
+	currentEffort: AnthropicOutputEffort | undefined;
+};
+
 type AnthropicProviderSessionState = ProviderSessionState & {
 	strictToolsDisabled: boolean;
 	fastModeDisabled: boolean;
 
 	replayUnsignedThinkingDisabled: boolean;
+	thinkingReplayDisabled: boolean;
+	prefixDroppedThinkingBlocks: Set<string>;
+	controlStates: Map<string, AnthropicControlState>;
 };
+
+function createAnthropicControlState(): AnthropicControlState {
+	return {
+		declaredTools: undefined,
+		activeToolNames: new Set(),
+		stableSystemBlocks: undefined,
+		systemFingerprint: undefined,
+		controlTransitions: [],
+		effortBaselined: false,
+		baseEffortWire: undefined,
+		currentEffort: undefined,
+	};
+}
 
 function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 	const state: AnthropicProviderSessionState = {
 		strictToolsDisabled: false,
 		fastModeDisabled: false,
 		replayUnsignedThinkingDisabled: false,
+		thinkingReplayDisabled: false,
+		prefixDroppedThinkingBlocks: new Set(),
+		controlStates: new Map(),
 		close: () => {
 			state.strictToolsDisabled = false;
 			state.fastModeDisabled = false;
 			state.replayUnsignedThinkingDisabled = false;
+			state.thinkingReplayDisabled = false;
+			state.prefixDroppedThinkingBlocks.clear();
+			state.controlStates.clear();
 		},
 	};
 	return state;
@@ -386,7 +464,11 @@ function getAnthropicProviderSessionState(
 	if (!providerSessionState) return undefined;
 	const key = anthropicProviderSessionStateKey(baseUrl, modelId);
 	const existing = providerSessionState.get(key) as AnthropicProviderSessionState | undefined;
-	if (existing) return existing;
+	if (existing) {
+		existing.prefixDroppedThinkingBlocks ??= new Set();
+		existing.controlStates ??= new Map();
+		return existing;
+	}
 	const created = createAnthropicProviderSessionState();
 	providerSessionState.set(key, created);
 	return created;
@@ -432,8 +514,10 @@ function dropAnthropicStrictTools(params: MessageCreateParamsStreaming): void {
 function getCacheControl(
 	model: Model<"anthropic-messages">,
 	cacheRetention: CacheRetention | undefined,
+	isOAuthToken = false,
 ): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
-	const retention = resolveCacheRetention(cacheRetention, "short");
+	const defaultRetention = isOAuthToken && model.compat.supportsLongCacheRetention ? "long" : "short";
+	const retention = resolveCacheRetention(cacheRetention, defaultRetention);
 	if (retention === "none") {
 		return { retention };
 	}
@@ -467,7 +551,7 @@ export const coworkHeaders = {
 	"X-Stainless-Arch": mapStainlessArch(process.arch),
 	"X-Stainless-Lang": "js",
 	"X-Stainless-OS": "Linux",
-	"X-Stainless-Package-Version": "0.94.0",
+	"X-Stainless-Package-Version": claudeCodeSdkVersion,
 	"X-Stainless-Retry-Count": "0",
 	"X-Stainless-Runtime": "node",
 	"X-Stainless-Runtime-Version": "v26.3.0",
@@ -969,7 +1053,11 @@ export type AnthropicClientOptionsArgs = {
 	disableStrictTools?: boolean;
 	fetch?: FetchImpl;
 	maxRetryDelayMs?: number;
-	claudeCodeSessionId?: string;
+	sessionId?: string;
+	/** Working-identity cache key for this Copilot credential+host. */
+	copilotCacheKey?: string;
+	/** Cached identity the Copilot headers were built from (`null` = empty at build); `undefined` rereads at dispatch. */
+	copilotCacheSnapshot?: string | null;
 };
 
 export type AnthropicClientOptionsResult = {
@@ -1161,7 +1249,7 @@ function buildCoworkTlsFetchOptions(
 			rejectUnauthorized: true,
 			serverName,
 			...(COWORK_TLS_CIPHERS ? { ciphers: COWORK_TLS_CIPHERS } : {}),
-			...(foundryTlsOptions ?? {}),
+			...foundryTlsOptions,
 		},
 	};
 }
@@ -1329,8 +1417,6 @@ async function* observeDecodedAnthropicSdkEvents(
 
 const PROVIDER_MAX_RETRIES = 10;
 
-const COPILOT_MODEL_FLAP_RETRY_DELAY_MS = 400;
-
 const PING_PROGRESS_MAX_IDLE_MULTIPLIER = 3;
 
 function reportAnthropicEnvelopeAnomaly(detail: string): void {
@@ -1341,14 +1427,6 @@ function shouldIgnoreAnthropicPreambleEvent(eventType: unknown): boolean {
 	if (typeof eventType !== "string") return false;
 	if (eventType === "ping") return true;
 	return !ANTHROPIC_MESSAGE_EVENTS.has(eventType);
-}
-
-export function isProviderRetryableError(error: unknown, provider?: string): boolean {
-	return AIError.isProviderRetryableError(error, {
-		provider,
-		isProviderTransient:
-			provider === "github-copilot" ? (err): boolean => AIError.isCopilotTransientModelError(err) : undefined,
-	});
 }
 
 const THINKING_ENVELOPE_OPEN = "<thinking>";
@@ -1443,6 +1521,131 @@ function parseAnthropicFallbackWireBlock(value: unknown): AnthropicFallbackConte
 	return { type: "fallback", from: { model: from }, to: { model: to } };
 }
 
+const ANTHROPIC_COMPACTION_MIN_TRIGGER_TOKENS = 50_000;
+
+export function resolvesToOfficialAnthropicEndpoint(model: Model<"anthropic-messages">): boolean {
+	return isOfficialAnthropicApiUrl(resolveAnthropicBaseUrl(model));
+}
+
+export function supportsAnthropicCompaction(model: Model<"anthropic-messages">, effectiveBaseUrl?: string): boolean {
+	if (!isCompactionCapableModel(model)) return false;
+	if (model.remoteCompaction?.enabled === true) return true;
+	if (
+		model.transport === "pi-native" &&
+		model.compat.firstPartyProvider === true &&
+		(effectiveBaseUrl === undefined || effectiveBaseUrl === normalizeAnthropicBaseUrl(model.baseUrl))
+	) {
+		return true;
+	}
+	return (
+		model.compat.firstPartyProvider === true &&
+		(effectiveBaseUrl === undefined
+			? resolvesToOfficialAnthropicEndpoint(model)
+			: isOfficialAnthropicApiUrl(effectiveBaseUrl))
+	);
+}
+
+export function supportsAnthropicCompactionOnClient(
+	model: Model<"anthropic-messages">,
+	client: AnthropicMessagesClientLike,
+): boolean {
+	const baseURL = injectedClientBaseUrl(client);
+	if (baseURL !== undefined) return supportsAnthropicCompaction(model, baseURL);
+	return isCompactionCapableModel(model) && model.remoteCompaction?.enabled === true;
+}
+
+function injectedClientBaseUrl(client: AnthropicMessagesClientLike): string | undefined {
+	const baseURL = (client as { baseURL?: unknown }).baseURL;
+	return typeof baseURL === "string" && baseURL.length > 0 ? baseURL : undefined;
+}
+
+function isCompactionCapableModel(model: Model<"anthropic-messages">): boolean {
+	return (
+		model.compat.supportsServerCompaction === true &&
+		model.compat.supportsContextManagement !== false &&
+		model.remoteCompaction?.enabled !== false
+	);
+}
+
+function isReplayableAnthropicCompaction(
+	payload: ProviderPayload | undefined,
+	model: Model<"anthropic-messages">,
+): payload is AnthropicCompactionPayload {
+	return payload?.type === "anthropicCompaction" && payload.provider === model.provider && payload.content.length > 0;
+}
+
+function compactionBlockParam(payload: AnthropicCompactionPayload): CompactionBlockParam {
+	const { content, encryptedContent } = payload;
+	return { type: "compaction", content, ...(encryptedContent ? { encrypted_content: encryptedContent } : {}) };
+}
+
+function contextReplaysAnthropicCompaction(messages: readonly Message[], model: Model<"anthropic-messages">): boolean {
+	return messages.some(
+		message =>
+			(message.role === "user" || message.role === "developer" || message.role === "assistant") &&
+			isReplayableAnthropicCompaction(message.providerPayload, model),
+	);
+}
+
+function buildAnthropicCompactionEdit(options: AnthropicOptions | undefined): CompactionEdit | undefined {
+	const request = options?.anthropicCompaction;
+	if (!request) return undefined;
+	const edit: CompactionEdit = { type: "compact_20260112" };
+	if (request.triggerInputTokens !== undefined && Number.isFinite(request.triggerInputTokens)) {
+		edit.trigger = {
+			type: "input_tokens",
+			value: Math.max(ANTHROPIC_COMPACTION_MIN_TRIGGER_TOKENS, Math.floor(request.triggerInputTokens)),
+		};
+	}
+	if (request.pauseAfterCompaction !== undefined) edit.pause_after_compaction = request.pauseAfterCompaction;
+	if (request.instructions) edit.instructions = request.instructions;
+	return edit;
+}
+
+function buildAnthropicCompactionReplayEdit(model: Model<"anthropic-messages">): CompactionEdit {
+	return {
+		type: "compact_20260112",
+		trigger: {
+			type: "input_tokens",
+			value: Math.max(ANTHROPIC_COMPACTION_MIN_TRIGGER_TOKENS, model.contextWindow ?? 0),
+		},
+	};
+}
+
+function carriesCompactionEdit(params: MessageCreateParams): boolean {
+	return params.context_management?.edits.some(edit => edit.type === "compact_20260112") ?? false;
+}
+
+function applyCompactionIterationUsage(usage: Usage, source: AnthropicWireUsage): boolean {
+	const iterations = source.iterations;
+	if (!iterations?.some(iteration => iteration?.type === "compaction")) return false;
+	let input = 0;
+	let output = 0;
+	let cacheRead = 0;
+	let cacheWrite = 0;
+	for (const iteration of iterations) {
+		if (!iteration) continue;
+		input += iteration.input_tokens ?? 0;
+		output += iteration.output_tokens ?? 0;
+		cacheRead += iteration.cache_read_input_tokens ?? 0;
+		cacheWrite += iteration.cache_creation_input_tokens ?? 0;
+	}
+	usage.input = input;
+	usage.output = output;
+	usage.cacheRead = cacheRead;
+	usage.cacheWrite = cacheWrite;
+	for (let index = iterations.length - 1; index >= 0; index -= 1) {
+		const resumed = iterations[index];
+		if (resumed?.type !== "message" && resumed?.type !== "fallback_message") continue;
+		usage.contextTokens =
+			(resumed.input_tokens ?? 0) +
+			(resumed.cache_read_input_tokens ?? 0) +
+			(resumed.cache_creation_input_tokens ?? 0);
+		break;
+	}
+	return true;
+}
+
 function fallbackServedModelFromUsage(source: AnthropicWireUsage): string | undefined {
 	const iterations = source.iterations ?? [];
 	for (let index = iterations.length - 1; index >= 0; index -= 1) {
@@ -1466,10 +1669,11 @@ function resolveIterationModel(
 	return requestModel;
 }
 
-function calculateFallbackTurnCost(
+function calculateIterationTurnCost(
 	requestModel: Model<"anthropic-messages">,
 	usage: Usage,
 	source: AnthropicWireUsage,
+	timestamp: number,
 ): boolean {
 	const iterations = source.iterations ?? [];
 	if (iterations.length === 0) return false;
@@ -1495,7 +1699,7 @@ function calculateFallbackTurnCost(
 		iterationUsage.cacheWrite = cacheWriteTokens;
 		iterationUsage.totalTokens =
 			iterationUsage.input + iterationUsage.output + iterationUsage.cacheRead + iterationUsage.cacheWrite;
-		calculateCost(resolveIterationModel(requestModel, iteration.model), iterationUsage);
+		calculateCost(resolveIterationModel(requestModel, iteration.model), iterationUsage, timestamp);
 		cost.input += iterationUsage.cost.input;
 		cost.output += iterationUsage.cost.output;
 		cost.cacheRead += iterationUsage.cost.cacheRead;
@@ -1510,12 +1714,120 @@ function calculateFallbackTurnCost(
 
 const INVALID_THINKING_SIGNATURE_PATTERN = /invalid\s+`?signature`?\s+in\s+`?thinking`?(?:\s+block)?/i;
 const MISSING_THINKING_SIGNATURE_PATTERN = /thinking\.signature\b[^"\n]{0,32}\brequired\b/i;
+const THINKING_PREFIX_BINDING_PATTERN =
+	/(?:bound to a different conversation|block_binding\.prefix_mismatch_behavior|prefix_mismatch_behavior)/i;
+
+export function isThinkingPrefixBindingError(message: string): boolean {
+	return INVALID_THINKING_SIGNATURE_PATTERN.test(message) && THINKING_PREFIX_BINDING_PATTERN.test(message);
+}
+
 export function isInvalidThinkingSignatureError(message: string): boolean {
 	return INVALID_THINKING_SIGNATURE_PATTERN.test(message) || MISSING_THINKING_SIGNATURE_PATTERN.test(message);
 }
 
+const INPUT_TRANSFORMATION_PATH_PATTERN = /^messages\.(\d+)\.content\.(\d+)$/;
+const PREFIX_BINDING_ERROR_PATH_PATTERN = /messages\.(\d+)\.content\.(\d+)/;
+
+function thinkingReplayKey(block: ContentBlockParam): string | undefined {
+	if (block.type === "thinking") return block.signature ? `thinking:${block.signature}` : undefined;
+	if (block.type === "redacted_thinking") return block.data ? `redacted:${block.data}` : undefined;
+	return undefined;
+}
+
+function rememberPrefixDroppedThinking(
+	params: MessageCreateParamsStreaming,
+	transformations: readonly ProviderInputTransformation[],
+	state: AnthropicProviderSessionState | undefined,
+): void {
+	if (!state) return;
+	let firstMessageIndex: number | undefined;
+	let firstBlockIndex: number | undefined;
+	for (const transformation of transformations) {
+		if (transformation.reason !== "prefix_binding_mismatch" || typeof transformation.path !== "string") continue;
+		const match = INPUT_TRANSFORMATION_PATH_PATTERN.exec(transformation.path);
+		if (!match) continue;
+		const messageIndex = Number(match[1]);
+		const blockIndex = Number(match[2]);
+		if (
+			firstMessageIndex === undefined ||
+			messageIndex < firstMessageIndex ||
+			(messageIndex === firstMessageIndex && blockIndex < (firstBlockIndex ?? Number.POSITIVE_INFINITY))
+		) {
+			firstMessageIndex = messageIndex;
+			firstBlockIndex = blockIndex;
+		}
+	}
+	if (firstMessageIndex === undefined || firstBlockIndex === undefined) return;
+	for (let messageIndex = firstMessageIndex; messageIndex < params.messages.length; messageIndex++) {
+		const message = params.messages[messageIndex];
+		if (!message || !Array.isArray(message.content)) continue;
+		const blockStart = messageIndex === firstMessageIndex ? firstBlockIndex : 0;
+		for (let blockIndex = blockStart; blockIndex < message.content.length; blockIndex++) {
+			const key = thinkingReplayKey(message.content[blockIndex]!);
+			if (key) state.prefixDroppedThinkingBlocks.add(key);
+		}
+	}
+}
+
+function rememberPrefixBindingFailure(
+	params: MessageCreateParamsStreaming,
+	message: string,
+	state: AnthropicProviderSessionState | undefined,
+): boolean {
+	if (!state) return false;
+	const match = PREFIX_BINDING_ERROR_PATH_PATTERN.exec(message);
+	let path = match ? `messages.${match[1]}.content.${match[2]}` : undefined;
+	if (!path) {
+		for (let messageIndex = 0; messageIndex < params.messages.length && !path; messageIndex++) {
+			const candidate = params.messages[messageIndex];
+			if (!candidate || !Array.isArray(candidate.content)) continue;
+			const blockIndex = candidate.content.findIndex(block => thinkingReplayKey(block) !== undefined);
+			if (blockIndex >= 0) path = `messages.${messageIndex}.content.${blockIndex}`;
+		}
+	}
+	if (!path) return false;
+	rememberPrefixDroppedThinking(
+		params,
+		[{ type: "thinking_dropped", reason: "prefix_binding_mismatch", path }],
+		state,
+	);
+	return true;
+}
+
+function applyReportedInputTransformations(
+	output: AssistantMessage,
+	params: MessageCreateParamsStreaming,
+	state: AnthropicProviderSessionState | undefined,
+	value: unknown,
+	seen: Set<string>,
+	replace = false,
+): void {
+	if (value === undefined || value === null) return;
+	if (replace) {
+		seen.clear();
+		output.inputTransformations = [];
+	}
+	const fresh: ProviderInputTransformation[] = [];
+	for (const transformation of parseAnthropicInputTransformations(value)) {
+		const key = JSON.stringify(transformation);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		fresh.push(transformation);
+	}
+	if (fresh.length === 0) return;
+	output.inputTransformations = [...(output.inputTransformations ?? []), ...fresh];
+	rememberPrefixDroppedThinking(params, fresh, state);
+	for (const transformation of fresh) {
+		if (transformation.reason !== "prefix_binding_mismatch") continue;
+		logger.warn("anthropic: dropped thinking block after conversation prefix changed", {
+			model: output.model,
+			path: transformation.path,
+		});
+	}
+}
+
 export function maybeAddReplayUnsignedThinkingHint(model: Model<"anthropic-messages">, message: string): string {
-	if (!isInvalidThinkingSignatureError(message)) return message;
+	if (!isInvalidThinkingSignatureError(message) || isThinkingPrefixBindingError(message)) return message;
 	if (model.compat.officialEndpoint) return message;
 	if (model.compatConfig?.replayUnsignedThinking !== undefined) return message;
 	const hint = `Provider "${model.provider}" looks like an Anthropic-compatible signing proxy: it rejected a replayed unsigned thinking block. Set \`compat.replayUnsignedThinking: false\` under \`providers.${model.provider}\` in your models.yml and retry. See https://github.com/myanvoos/proto`;
@@ -1560,22 +1872,33 @@ const streamAnthropicOnce = (
 		const rawSseObserver = onSseEvent ? (event: RawSseEvent) => onSseEvent(event, model) : undefined;
 
 		try {
-			const copilotDynamicHeaders =
-				model.provider === "github-copilot"
-					? buildCopilotDynamicHeaders({
-							messages: context.messages,
-							hasImages: hasCopilotVisionInput(context.messages),
-							premiumMultiplier: model.premiumMultiplier,
-							headers: { ...(model.headers ?? {}), ...(options?.headers ?? {}) },
-							initiatorOverride: options?.initiatorOverride,
-						})
-					: undefined;
+			const apiKey = options?.apiKey ?? getEnvApiKey(model.provider) ?? "";
+			const copilotApiKey = model.provider === "github-copilot" ? parseGitHubCopilotApiKey(apiKey) : undefined;
+			const copilotBaseUrl = copilotApiKey
+				? (resolveAnthropicBaseUrl(model, apiKey) ?? "https://api.anthropic.com")
+				: undefined;
+			const copilotCacheKey = copilotApiKey ? getCopilotIntegrationCacheKey(apiKey, copilotBaseUrl) : undefined;
+			const copilotCached = copilotApiKey ? getCachedCopilotIntegrationId(copilotCacheKey) : undefined;
+			const copilotDynamicHeaders = copilotApiKey
+				? buildCopilotDynamicHeaders({
+						messages: context.messages,
+						hasImages: hasCopilotVisionInput(context.messages),
+						premiumMultiplier: model.premiumMultiplier,
+						headers: { ...(model.headers ?? {}), ...(options?.headers ?? {}) },
+						initiatorOverride: options?.initiatorOverride,
+						enterpriseUrl: copilotApiKey.enterpriseUrl,
+						integrationId: resolveCopilotRequestIdentity(options?.headers),
+						cachedIntegrationId: copilotCached,
+					})
+				: undefined;
 			if (copilotDynamicHeaders?.premiumRequests !== undefined) {
 				output.usage.premiumRequests = copilotDynamicHeaders.premiumRequests;
 			}
-			const apiKey = options?.apiKey ?? getEnvApiKey(model.provider) ?? "";
-			const baseUrl = resolveAnthropicBaseUrl(model, apiKey) ?? "https://api.anthropic.com";
+			const baseUrl = copilotBaseUrl ?? resolveAnthropicBaseUrl(model, apiKey) ?? "https://api.anthropic.com";
 			const supportsEagerToolInputStreaming = resolveEagerToolInputStreamingSupport(model, baseUrl);
+			const compactionSupported = options?.client
+				? supportsAnthropicCompactionOnClient(model, options.client)
+				: supportsAnthropicCompaction(model, baseUrl);
 			const providerSessionState = getAnthropicProviderSessionState(
 				options?.providerSessionState,
 				baseUrl,
@@ -1585,6 +1908,14 @@ const streamAnthropicOnce = (
 				(providerSessionState?.strictToolsDisabled ?? false) || (model.compat?.disableStrictTools ?? false);
 			let dropFastMode = providerSessionState?.fastModeDisabled ?? false;
 			let forceDemoteUnsignedThinking = providerSessionState?.replayUnsignedThinkingDisabled ?? false;
+			let droppedAllThinkingForSignature = providerSessionState?.thinkingReplayDisabled ?? false;
+			let dropAllThinking = droppedAllThinkingForSignature;
+			let prefixBindingRetryAttempted = false;
+			let prefixMismatchBehavior =
+				model.thinking?.prefixBinding && model.compat.supportsThinkingBindingControls
+					? (options?.anthropicPrefixMismatchBehavior ?? "drop_block")
+					: undefined;
+			const controlBetas = resolveAnthropicControlBetas(model, prefixMismatchBehavior);
 			const mergedCallerHeaders = mergeHeaders(model.headers, options?.headers);
 			const umansGatewayWebSearchHeader = getUmansWebSearchHeader(model, mergedCallerHeaders);
 
@@ -1636,24 +1967,34 @@ const streamAnthropicOnce = (
 				) {
 					extraBetas.push(effortBeta);
 				}
-				if (model.compat.supportsMidConversationSystem && !extraBetas.includes(midConversationSystemBeta)) {
-					extraBetas.push(midConversationSystemBeta);
+				if (!isVertexRawPredictUrl(baseUrl)) {
+					for (const beta of controlBetas) {
+						if (!extraBetas.includes(beta)) extraBetas.push(beta);
+					}
 				}
 
 				if (
 					model.reasoning &&
 					options?.thinkingEnabled &&
-					model.provider !== "github-copilot" &&
-					model.provider !== "google-vertex" &&
-					model.provider !== "opencode-zen" &&
+					model.compat.supportsContextManagement &&
 					!extraBetas.includes(contextManagementBeta)
 				) {
 					extraBetas.push(contextManagementBeta);
 				}
 
 				if (
-					!(options?.isOAuth ?? isAnthropicOAuthToken(apiKey)) &&
-					getCacheControl(model, options?.cacheRetention).cacheControl?.ttl === "1h" &&
+					compactionSupported &&
+					(options?.anthropicCompaction !== undefined ||
+						contextReplaysAnthropicCompaction(context.messages, model)) &&
+					!isVertexRawPredictUrl(baseUrl) &&
+					!extraBetas.includes(COMPACTION_BETA)
+				) {
+					extraBetas.push(COMPACTION_BETA);
+				}
+				const isOAuth = options?.isOAuth ?? isAnthropicOAuthToken(apiKey);
+				if (
+					!isOAuth &&
+					getCacheControl(model, options?.cacheRetention, isOAuth).cacheControl?.ttl === "1h" &&
 					!extraBetas.includes(extendedCacheTtlBeta)
 				) {
 					extraBetas.push(extendedCacheTtlBeta);
@@ -1690,8 +2031,13 @@ const streamAnthropicOnce = (
 					thinkingDisplay: options?.thinkingDisplay,
 					fetch: options?.fetch,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
-					claudeCodeSessionId: options?.sessionId ?? extractClaudeMetadataSessionId(options?.metadata?.user_id),
+					sessionId:
+						options?.sessionId ??
+						extractClaudeMetadataSessionId(options?.metadata?.user_id) ??
+						options?.promptCacheKey,
 					disableStrictTools,
+					copilotCacheKey,
+					copilotCacheSnapshot: copilotApiKey ? (copilotCached ?? null) : undefined,
 				};
 				const created = createClient(model, clientArgs);
 				client = created.client;
@@ -1700,11 +2046,17 @@ const streamAnthropicOnce = (
 			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
 				let nextParams = buildParams(model, preparedContext, isOAuthToken, options, {
+					compactionSupported,
 					disableStrictTools,
 					useUmansGatewayWebSearch: umansGatewayWebSearchHeader !== undefined,
 					forceDemoteUnsignedThinking,
 					supportsEagerToolInputStreaming,
+					prefixMismatchBehavior,
+					dropAllThinking,
+					droppedThinkingBlocks: providerSessionState?.prefixDroppedThinkingBlocks,
+					providerSessionState,
 					fallbacks,
+					effectiveBaseUrl: baseUrl,
 				});
 				if (disableStrictTools) {
 					dropAnthropicStrictTools(nextParams);
@@ -1728,6 +2080,7 @@ const streamAnthropicOnce = (
 				return nextParams;
 			};
 			let params = await prepareParams();
+			const seenInputTransformations = new Set<string>();
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
 			const firstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
 			const requestTimeoutMs =
@@ -1735,6 +2088,12 @@ const streamAnthropicOnce = (
 
 			if (zeroOutputCacheRefresh) {
 				const refreshParams: MessageCreateParams = { ...params, max_tokens: 0, stream: false };
+				// Anthropic rejects a forced `tool_choice` with `max_tokens: 0`; a zero-output keep-alive
+				// produces no tokens, so the replayed forced selector is meaningless here.
+				const refreshChoiceType = refreshParams.tool_choice?.type;
+				if (refreshChoiceType === "tool" || refreshChoiceType === "any") {
+					delete refreshParams.tool_choice;
+				}
 				rawRequestDump = {
 					provider: model.provider,
 					api: output.api,
@@ -1744,9 +2103,18 @@ const streamAnthropicOnce = (
 					body: refreshParams,
 				};
 				const { requestSignal } = activeAbortTracker;
+				const refreshBetaRouteUrl =
+					options?.client !== undefined ? (injectedClientBaseUrl(options.client) ?? baseUrl) : baseUrl;
+				const refreshHeaders =
+					options?.client !== undefined &&
+					!isVertexRawPredictUrl(refreshBetaRouteUrl) &&
+					carriesCompactionEdit(refreshParams)
+						? mergeAnthropicBetaHeader(mergedCallerHeaders, COMPACTION_BETA)
+						: undefined;
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
 					maxRetries: 0,
+					...(refreshHeaders ? { headers: refreshHeaders } : {}),
 				};
 				const request: unknown =
 					isOAuthToken && client.beta
@@ -1768,6 +2136,13 @@ const streamAnthropicOnce = (
 					throw new AIError.AnthropicStreamEnvelopeError("Anthropic cache refresh response omitted usage");
 				}
 				if (typeof body.id === "string") output.responseId = body.id;
+				applyReportedInputTransformations(
+					output,
+					params,
+					providerSessionState,
+					body.input_transformations,
+					seenInputTransformations,
+				);
 				output.usage.input = wireUsage.input_tokens ?? 0;
 				output.usage.output = wireUsage.output_tokens ?? 0;
 				output.usage.cacheRead = wireUsage.cache_read_input_tokens ?? 0;
@@ -1775,7 +2150,7 @@ const streamAnthropicOnce = (
 				applyAnthropicUsageExtras(output.usage, wireUsage);
 				output.usage.totalTokens =
 					output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-				calculateCost(model, output.usage);
+				calculateCost(model, output.usage, output.timestamp);
 				output.duration = performance.now() - startTime;
 				stream.push({ type: "start", partial: output });
 				stream.push({ type: "done", reason: "stop", message: output });
@@ -1802,6 +2177,10 @@ const streamAnthropicOnce = (
 					if (unwrappedThinking !== undefined) {
 						block.thinking = unwrappedThinking;
 						block.thinkingSignature = undefined;
+					} else if (!output.upstreamModel && block.thinkingSignature) {
+						// The signature names the model that produced the block; a gateway serving a different
+						// model than requested cannot mint one that says otherwise.
+						output.upstreamModel = servedModelFromAnthropicSignature(block.thinkingSignature);
 					}
 					stream.push({ type: "thinking_end", contentIndex, content: block.thinking, partial: output });
 					return true;
@@ -1869,15 +2248,32 @@ const streamAnthropicOnce = (
 			while (true) {
 				activeAbortTracker = createAbortSourceTracker(options?.signal);
 				const { requestSignal } = activeAbortTracker;
-
-				const injectedClientEffortHeaders =
-					options?.client !== undefined &&
-					(params.output_config as AnthropicOutputConfig | undefined)?.effort !== undefined
-						? mergeAnthropicBetaHeader(mergedCallerHeaders, effortBeta)
-						: undefined;
+				let injectedClientBetaHeaders: Record<string, string> | undefined;
+				const injectedBetaRouteUrl =
+					options?.client !== undefined ? (injectedClientBaseUrl(options.client) ?? baseUrl) : baseUrl;
+				if (options?.client !== undefined && !isVertexRawPredictUrl(injectedBetaRouteUrl)) {
+					for (const beta of controlBetas) {
+						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
+							injectedClientBetaHeaders ?? mergedCallerHeaders,
+							beta,
+						);
+					}
+					if ((params.output_config as AnthropicOutputConfig | undefined)?.effort !== undefined) {
+						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
+							injectedClientBetaHeaders ?? mergedCallerHeaders,
+							effortBeta,
+						);
+					}
+					if (carriesCompactionEdit(params)) {
+						injectedClientBetaHeaders = mergeAnthropicBetaHeader(
+							injectedClientBetaHeaders ?? mergedCallerHeaders,
+							COMPACTION_BETA,
+						);
+					}
+				}
 				const perRequestHeaders =
-					umansGatewayWebSearchHeader || injectedClientEffortHeaders
-						? { ...umansGatewayWebSearchHeader, ...injectedClientEffortHeaders }
+					umansGatewayWebSearchHeader || injectedClientBetaHeaders
+						? { ...umansGatewayWebSearchHeader, ...injectedClientBetaHeaders }
 						: undefined;
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
@@ -1937,9 +2333,12 @@ const streamAnthropicOnce = (
 								| "fallback"
 								| "anthropicServerTool"
 								| "toolCall"
+								| "compaction"
 								| "ignored";
 						}
 					>();
+					let compactionContent: string | null | undefined;
+					let compactionEncryptedContent: string | undefined;
 
 					let sawNonPingEvent = false;
 					let lastNonPingProgressAtMs = 0;
@@ -1982,6 +2381,13 @@ const streamAnthropicOnce = (
 							sawMessageStart = true;
 							const startMessage = event.message;
 							if (startMessage?.id) output.responseId = startMessage.id;
+							applyReportedInputTransformations(
+								output,
+								params,
+								providerSessionState,
+								startMessage?.input_transformations,
+								seenInputTransformations,
+							);
 							const startUsage = startMessage?.usage;
 							if (startUsage) {
 								applyAnthropicUsageExtras(output.usage, startUsage);
@@ -1989,16 +2395,18 @@ const streamAnthropicOnce = (
 								output.usage.output = startUsage.output_tokens || 0;
 								output.usage.cacheRead = startUsage.cache_read_input_tokens || 0;
 								output.usage.cacheWrite = startUsage.cache_creation_input_tokens || 0;
+								const compacted = applyCompactionIterationUsage(output.usage, startUsage);
 								output.usage.totalTokens =
 									output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 								if (serverSideFallback) {
 									const served = fallbackServedModelFromUsage(startUsage);
 									if (served) output.model = served;
-									if (!calculateFallbackTurnCost(model, output.usage, startUsage)) {
-										calculateCost(model, output.usage);
-									}
-								} else {
-									calculateCost(model, output.usage);
+								}
+								if (
+									!(serverSideFallback || compacted) ||
+									!calculateIterationTurnCost(model, output.usage, startUsage, output.timestamp)
+								) {
+									calculateCost(model, output.usage, output.timestamp);
 								}
 							} else {
 								reportAnthropicEnvelopeAnomaly("message_start missing usage");
@@ -2145,6 +2553,11 @@ const streamAnthropicOnce = (
 									contentIndex,
 									partial: output,
 								});
+							} else if (event.content_block.type === "compaction") {
+								const started = event.content_block.content;
+								compactionContent = typeof started === "string" && started.length > 0 ? started : undefined;
+								compactionEncryptedContent = event.content_block.encrypted_content ?? undefined;
+								openBlocks.set(event.index, { contentIndex: -1, kind: "compaction" });
 							} else {
 								openBlocks.set(event.index, { contentIndex: -1, kind: "ignored" });
 							}
@@ -2230,6 +2643,13 @@ const streamAnthropicOnce = (
 								streamedReplayUnsafeContent = true;
 								block.thinkingSignature = block.thinkingSignature || "";
 								block.thinkingSignature += event.delta.signature;
+							} else if (event.delta.type === "compaction_delta") {
+								if (openBlock.kind !== "compaction") {
+									reportAnthropicEnvelopeAnomaly(`received compaction_delta for ${openBlock.kind} block`);
+									continue;
+								}
+								compactionContent = event.delta.content ?? null;
+								if (event.delta.encrypted_content) compactionEncryptedContent = event.delta.encrypted_content;
 							}
 						} else if (event.type === "content_block_stop") {
 							if (sawTerminalEnvelope) {
@@ -2243,6 +2663,26 @@ const streamAnthropicOnce = (
 							}
 							if (openBlock.kind === "ignored") {
 								openBlocks.delete(event.index);
+								continue;
+							}
+							if (openBlock.kind === "compaction") {
+								openBlocks.delete(event.index);
+								closedBlockIndexes.add(event.index);
+								if (typeof compactionContent === "string" && compactionContent.length > 0) {
+									output.providerPayload = {
+										type: "anthropicCompaction",
+										provider: model.provider,
+										content: compactionContent,
+										...(compactionEncryptedContent ? { encryptedContent: compactionEncryptedContent } : {}),
+									};
+								} else {
+									logger.warn("anthropic: server-side compaction produced no summary", {
+										model: model.id,
+										reason: compactionContent === null ? "tool_call_during_summarization" : "empty",
+									});
+								}
+								compactionContent = undefined;
+								compactionEncryptedContent = undefined;
 								continue;
 							}
 							const block = blocks[openBlock.contentIndex];
@@ -2262,10 +2702,19 @@ const streamAnthropicOnce = (
 								continue;
 							}
 							const delta = event.delta;
+							applyReportedInputTransformations(
+								output,
+								params,
+								providerSessionState,
+								event.input_transformations,
+								seenInputTransformations,
+								true,
+							);
 							const rawStopReason = delta?.stop_reason;
 							if (rawStopReason) {
 								output.stopReason = mapStopReason(rawStopReason);
 								sawTerminalEnvelope = true;
+								if (rawStopReason === "compaction") output.stopDetails = { type: "compaction" };
 							}
 							if (output.stopReason === "error") {
 								const stopDetails = delta?.stop_details;
@@ -2299,16 +2748,18 @@ const streamAnthropicOnce = (
 									output.usage.cacheWrite = deltaUsage.cache_creation_input_tokens;
 								}
 								applyAnthropicUsageExtras(output.usage, deltaUsage);
+								const compacted = applyCompactionIterationUsage(output.usage, deltaUsage);
 								output.usage.totalTokens =
 									output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 								if (serverSideFallback) {
 									const served = fallbackServedModelFromUsage(deltaUsage);
 									if (served) output.model = served;
-									if (!calculateFallbackTurnCost(model, output.usage, deltaUsage)) {
-										calculateCost(model, output.usage);
-									}
-								} else {
-									calculateCost(model, output.usage);
+								}
+								if (
+									!(serverSideFallback || compacted) ||
+									!calculateIterationTurnCost(model, output.usage, deltaUsage, output.timestamp)
+								) {
+									calculateCost(model, output.usage, output.timestamp);
 								}
 							}
 						} else if (event.type === "message_stop") {
@@ -2378,6 +2829,7 @@ const streamAnthropicOnce = (
 						output.content.length = 0;
 						output.model = model.id;
 						output.responseId = undefined;
+						output.upstreamModel = undefined;
 						output.errorMessage = undefined;
 						output.providerPayload = undefined;
 						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
@@ -2404,7 +2856,39 @@ const streamAnthropicOnce = (
 						output.content.length = 0;
 						output.model = model.id;
 						output.responseId = undefined;
+						output.upstreamModel = undefined;
 						output.errorMessage = undefined;
+						output.providerPayload = undefined;
+						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+						output.stopReason = "stop";
+						firstTokenTime = undefined;
+						continue;
+					}
+					const streamFailureMessage =
+						streamFailure instanceof Error ? streamFailure.message : String(streamFailure);
+					if (
+						!prefixBindingRetryAttempted &&
+						options?.anthropicPrefixMismatchBehavior !== "error" &&
+						firstTokenTime === undefined &&
+						!streamedReplayUnsafeContent &&
+						isThinkingPrefixBindingError(streamFailureMessage)
+					) {
+						logger.warn("anthropic: thinking prefix changed, stripping bound thinking and retrying", {
+							provider: model.provider,
+							model: model.id,
+							baseUrl,
+						});
+						prefixBindingRetryAttempted = true;
+						prefixMismatchBehavior = undefined;
+						dropAllThinking = !rememberPrefixBindingFailure(params, streamFailureMessage, providerSessionState);
+						params = await prepareParams();
+						providerRetryAttempt = 0;
+						output.content.length = 0;
+						output.model = model.id;
+						output.responseId = undefined;
+						output.upstreamModel = undefined;
+						output.errorMessage = undefined;
+						output.inputTransformations = undefined;
 						output.providerPayload = undefined;
 						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
 						output.stopReason = "stop";
@@ -2415,9 +2899,8 @@ const streamAnthropicOnce = (
 						!forceDemoteUnsignedThinking &&
 						firstTokenTime === undefined &&
 						!streamedReplayUnsafeContent &&
-						isInvalidThinkingSignatureError(
-							streamFailure instanceof Error ? streamFailure.message : String(streamFailure),
-						)
+						!isThinkingPrefixBindingError(streamFailureMessage) &&
+						isInvalidThinkingSignatureError(streamFailureMessage)
 					) {
 						logger.warn(
 							"anthropic: signing proxy detected (thinking signature rejected), demoting unsigned thinking and retrying",
@@ -2425,7 +2908,7 @@ const streamAnthropicOnce = (
 								provider: model.provider,
 								model: model.id,
 								baseUrl,
-								error: streamFailure instanceof Error ? streamFailure.message : String(streamFailure),
+								error: streamFailureMessage,
 							},
 						);
 						if (providerSessionState) {
@@ -2437,7 +2920,43 @@ const streamAnthropicOnce = (
 						output.content.length = 0;
 						output.model = model.id;
 						output.responseId = undefined;
+						output.upstreamModel = undefined;
 						output.errorMessage = undefined;
+						output.providerPayload = undefined;
+						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+						output.stopReason = "stop";
+						firstTokenTime = undefined;
+						continue;
+					}
+					if (
+						!dropAllThinking &&
+						firstTokenTime === undefined &&
+						!streamedReplayUnsafeContent &&
+						!isThinkingPrefixBindingError(streamFailureMessage) &&
+						isInvalidThinkingSignatureError(streamFailureMessage)
+					) {
+						logger.warn(
+							"anthropic: thinking signatures still rejected after unsigned demotion, dropping replayed thinking and retrying",
+							{
+								provider: model.provider,
+								model: model.id,
+								baseUrl,
+								error: streamFailureMessage,
+							},
+						);
+						if (providerSessionState) {
+							providerSessionState.thinkingReplayDisabled = true;
+						}
+						droppedAllThinkingForSignature = true;
+						dropAllThinking = true;
+						params = await prepareParams();
+						providerRetryAttempt = 0;
+						output.content.length = 0;
+						output.model = model.id;
+						output.responseId = undefined;
+						output.upstreamModel = undefined;
+						output.errorMessage = undefined;
+						output.inputTransformations = undefined;
 						output.providerPayload = undefined;
 						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
 						output.stopReason = "stop";
@@ -2464,6 +2983,7 @@ const streamAnthropicOnce = (
 						output.content.length = 0;
 						output.model = model.id;
 						output.responseId = undefined;
+						output.upstreamModel = undefined;
 						output.errorMessage = undefined;
 						output.providerPayload = undefined;
 						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
@@ -2481,7 +3001,7 @@ const streamAnthropicOnce = (
 						!isLocalIdleTimeout &&
 						firstTokenTime === undefined &&
 						!streamedReplayUnsafeContent &&
-						isProviderRetryableError(streamFailure, model.provider);
+						AIError.isProviderRetryableError(streamFailure);
 					if (
 						activeAbortTracker.wasCallerAbort() ||
 						providerRetryAttempt >= PROVIDER_MAX_RETRIES ||
@@ -2490,11 +3010,7 @@ const streamAnthropicOnce = (
 						throw streamFailure;
 					}
 					providerRetryAttempt++;
-
-					const backoffDelayMs = AIError.isCopilotTransientModelError(streamFailure)
-						? COPILOT_MODEL_FLAP_RETRY_DELAY_MS
-						: calculateAnthropicRetryDelayMs(providerRetryAttempt - 1);
-
+					const backoffDelayMs = calculateAnthropicRetryDelayMs(providerRetryAttempt - 1);
 					const headerDelayMs = getRetryAfterMsFromHeaders(getHeadersFromError(streamFailure));
 
 					const maxRetryDelayMs = options?.maxRetryDelayMs ?? 60_000;
@@ -2510,6 +3026,7 @@ const streamAnthropicOnce = (
 					output.content.length = 0;
 					output.model = model.id;
 					output.responseId = undefined;
+					output.upstreamModel = undefined;
 					output.errorMessage = undefined;
 					output.stopDetails = undefined;
 					output.providerPayload = undefined;
@@ -2525,6 +3042,9 @@ const streamAnthropicOnce = (
 			}
 			if (forceDemoteUnsignedThinking && model.compat.replayUnsignedThinking) {
 				output.disabledFeatures = [...(output.disabledFeatures ?? []), "unsigned-thinking-replay"];
+			}
+			if (droppedAllThinkingForSignature) {
+				output.disabledFeatures = [...(output.disabledFeatures ?? []), "thinking-replay"];
 			}
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
@@ -2553,24 +3073,26 @@ const streamAnthropicOnce = (
 };
 
 export const streamAnthropic: StreamFunction<"anthropic-messages"> = (model, context, options) =>
-	withEmptyCompletionRetry(model, context, options, streamAnthropicOnce);
+	withReplaySafeStreamRetry(model, context, options, streamAnthropicOnce, { retryEmptyCompletion: true });
 
 export type AnthropicSystemBlock = {
 	type: "text";
 	text: string;
+	cache_control?: AnthropicCacheControl;
 };
 type SystemBlockOptions = {
 	includeClaudeCodeInstruction?: boolean;
 	extraInstructions?: string[];
 
 	firstUserMessageText?: string;
+	cacheControl?: AnthropicCacheControl;
 };
 
 export function buildAnthropicSystemBlocks(
 	systemPrompt: readonly string[] | undefined,
 	options: SystemBlockOptions = {},
 ): AnthropicSystemBlock[] | undefined {
-	const { includeClaudeCodeInstruction = false, extraInstructions = [], firstUserMessageText } = options;
+	const { includeClaudeCodeInstruction = false, extraInstructions = [], firstUserMessageText, cacheControl } = options;
 	const sanitizedPrompts = normalizeSystemPrompts(systemPrompt);
 	const trimmedInstructions = extraInstructions.map(instruction => instruction.trim()).filter(Boolean);
 	const hasBillingHeader = sanitizedPrompts.some(prompt => prompt.startsWith(CLAUDE_BILLING_HEADER_PREFIX));
@@ -2578,7 +3100,11 @@ export function buildAnthropicSystemBlocks(
 	if (includeClaudeCodeInstruction && !hasBillingHeader) {
 		const blocks: AnthropicSystemBlock[] = [
 			{ type: "text", text: createClaudeBillingHeader(firstUserMessageText ?? "") },
-			{ type: "text", text: claudeCodeSystemInstruction },
+			{
+				type: "text",
+				text: claudeCodeSystemInstruction,
+				cache_control: cacheControl ? cloneAnthropicCacheControl(cacheControl) : { type: "ephemeral" },
+			},
 		];
 
 		for (const instruction of trimmedInstructions) {
@@ -2620,8 +3146,10 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		thinkingEnabled = false,
 		isOAuth,
 		maxRetryDelayMs,
-		claudeCodeSessionId,
+		sessionId,
 		disableStrictTools: disableStrictToolsOverride,
+		copilotCacheKey,
+		copilotCacheSnapshot,
 	} = args;
 	const compat = model.compat;
 	const disableStrictTools = disableStrictToolsOverride ?? compat.disableStrictTools;
@@ -2662,6 +3190,11 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			dynamicHeaders,
 			headers,
 		);
+		applyInferenceHeaders(defaultHeaders, {
+			provider: model.provider,
+			protocol: "anthropic",
+			sessionId,
+		});
 
 		return {
 			isOAuthToken: false,
@@ -2671,7 +3204,13 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			maxRetries: 5,
 			maxRetryDelayMs,
 			defaultHeaders,
-			fetch: cchFetch,
+			fetch: wrapFetchForCopilotFallback(
+				cchFetch,
+				true,
+				resolveCopilotRequestIdentity(headers),
+				copilotCacheKey ?? getCopilotIntegrationCacheKey(apiKey, baseUrl),
+				copilotCacheSnapshot,
+			),
 			fetchOptions,
 		};
 	}
@@ -2684,23 +3223,36 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		betaFeatures.push(interleavedThinkingBeta);
 	}
 
+	const requestModelHeaders = mergeHeaders(
+		model.headers,
+		foundryCustomHeaders,
+		getUmansWebSearchHeader(model, mergeHeaders(model.headers, headers)),
+		headers,
+		dynamicHeaders,
+	);
 	const defaultHeaders = buildAnthropicHeaders({
 		apiKey,
 		baseUrl,
 		isOAuth: oauthToken,
 		extraBetas: betaFeatures,
 		stream,
-		modelHeaders: mergeHeaders(
-			model.headers,
-			foundryCustomHeaders,
-			getUmansWebSearchHeader(model, mergeHeaders(model.headers, headers)),
-			headers,
-			dynamicHeaders,
-		),
+		modelHeaders: requestModelHeaders,
 		isCloudflareAiGateway: model.provider === "cloudflare-ai-gateway",
 		allowAnthropicHeaderOverrides: model.compat.allowAnthropicHeaderOverrides,
-		claudeCodeSessionId,
-		coworkBetas: oauthToken ? buildCoworkBetas(hasTools || thinkingEnabled, thinkingEnabled, disableStrictTools) : [],
+		claudeCodeSessionId: sessionId,
+		coworkBetas: oauthToken
+			? buildCoworkBetas(
+					hasTools || thinkingEnabled,
+					thinkingEnabled,
+					disableStrictTools,
+					model.compat.supportsContextManagement,
+				)
+			: [],
+	});
+	applyInferenceHeaders(defaultHeaders, {
+		provider: model.provider,
+		protocol: "anthropic",
+		sessionId,
 	});
 
 	if (model.provider === "cloudflare-ai-gateway") {
@@ -2767,7 +3319,12 @@ function disableThinkingIfToolChoiceForced(
 	if (toolChoice.type !== "any" && toolChoice.type !== "tool") return;
 
 	delete params.thinking;
-	delete params.context_management;
+	const compactionEdits = params.context_management?.edits.filter(edit => edit.type === "compact_20260112") ?? [];
+	if (compactionEdits.length > 0) {
+		params.context_management = { edits: compactionEdits };
+	} else {
+		delete params.context_management;
+	}
 
 	if (isAdaptiveOnlyThinking(model) && model.provider !== "google-vertex") {
 		const outputConfig = (params.output_config as AnthropicOutputConfig | undefined) ?? {};
@@ -2814,7 +3371,14 @@ function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl:
 	for (let index = blocks.length - 1; index >= 0; index--) {
 		const block = blocks[index];
 
-		if (block.type === "thinking" || block.type === "redacted_thinking" || block.type === "fallback") {
+		// Anthropic rejects cache_control on reasoning, fallback boundaries, and tool-control blocks.
+		if (
+			block.type === "thinking" ||
+			block.type === "redacted_thinking" ||
+			block.type === "fallback" ||
+			block.type === "tool_addition" ||
+			block.type === "tool_removal"
+		) {
 			continue;
 		}
 		if ("cache_control" in block && block.cache_control != null) return false;
@@ -2824,26 +3388,152 @@ function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl:
 	return false;
 }
 
+const ANTHROPIC_MAX_BREAKPOINTS = 4;
+const ANTHROPIC_DECIMATION_INTERVAL = 15;
+
+function countHeadBreakpoints(params: MessageCreateParamsStreaming): number {
+	let count = 0;
+	if (Array.isArray(params.system)) {
+		for (const block of params.system) {
+			if (typeof block !== "string" && block?.cache_control != null) count++;
+		}
+	}
+	if (Array.isArray(params.tools)) {
+		for (const tool of params.tools) {
+			if (tool?.cache_control != null) count++;
+		}
+	}
+	return count;
+}
+
+function applyCacheControlToMessage(message: MessageParam, cacheControl: AnthropicCacheControl): boolean {
+	if (typeof message.content === "string") {
+		message.content = [
+			{ type: "text", text: message.content, cache_control: cloneAnthropicCacheControl(cacheControl) },
+		];
+		return true;
+	} else if (Array.isArray(message.content)) {
+		return applyCacheControlToLastBlock(message.content, cacheControl);
+	}
+	return false;
+}
+
 function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?: AnthropicCacheControl): void {
 	if (!cacheControl) return;
 
+	const headBreakpoints = countHeadBreakpoints(params);
+	const messageBudget = Math.max(0, ANTHROPIC_MAX_BREAKPOINTS - headBreakpoints);
+	if (messageBudget <= 0 || params.messages.length === 0) return;
 	const trailingIndex = params.messages.length - 1;
 	const trailingMessage = params.messages[trailingIndex];
 	const hasTrailingAssistantPad =
 		trailingMessage?.role === "user" &&
 		trailingMessage.content === "Continue." &&
+		!isConversationalUser(trailingMessage) &&
 		params.messages[trailingIndex - 1]?.role === "assistant";
 	const messageEnd = hasTrailingAssistantPad ? trailingIndex - 1 : trailingIndex;
-	const start = Math.max(0, messageEnd - 1);
-	for (let index = messageEnd; index >= start; index--) {
+
+	let stableMessageEnd = messageEnd;
+	for (let index = 0; index <= messageEnd; index++) {
 		const message = params.messages[index];
-		if (!message) continue;
-		if (typeof message.content === "string") {
-			message.content = [
-				{ type: "text", text: message.content, cache_control: cloneAnthropicCacheControl(cacheControl) },
-			];
-		} else if (Array.isArray(message.content)) {
-			applyCacheControlToLastBlock(message.content, cacheControl);
+		if (message && (message.clear_at === "next_user_message" || isPerCallContextMessage(message))) {
+			stableMessageEnd = index - 1;
+			break;
+		}
+	}
+
+	const userIndices: number[] = [];
+	for (let index = 0; index <= stableMessageEnd; index++) {
+		const message = params.messages[index];
+		if (message && isConversationalUser(message)) {
+			userIndices.push(index);
+		}
+	}
+
+	const decimationIndices = userIndices.filter((_, ordinal) => (ordinal + 1) % ANTHROPIC_DECIMATION_INTERVAL === 0);
+
+	const trailingCandidates: number[] = [];
+	for (let index = messageEnd; index >= 0 && trailingCandidates.length < 2; index--) {
+		const message = params.messages[index];
+		if (!message || message.clear_at === "next_user_message" || isPerCallContextMessage(message)) continue;
+		if (
+			message.role === "system" &&
+			typeof message.content !== "string" &&
+			Array.isArray(message.content) &&
+			message.content.length > 0 &&
+			message.content.every(block => block.type === "tool_addition" || block.type === "tool_removal")
+		) {
+			continue;
+		}
+		trailingCandidates.push(index);
+	}
+	const candidateIndices: number[] = [];
+	if (trailingCandidates.length > 0) {
+		candidateIndices.push(trailingCandidates[0]);
+	}
+	for (let i = decimationIndices.length - 1; i >= 0; i--) {
+		if (!candidateIndices.includes(decimationIndices[i])) {
+			candidateIndices.push(decimationIndices[i]);
+		}
+	}
+	if (stableMessageEnd < messageEnd && stableMessageEnd >= 0 && !candidateIndices.includes(stableMessageEnd)) {
+		candidateIndices.push(stableMessageEnd);
+	}
+	for (const index of trailingCandidates) {
+		if (!candidateIndices.includes(index)) {
+			candidateIndices.push(index);
+		}
+	}
+
+	let appliedCount = 0;
+	for (const index of candidateIndices) {
+		if (appliedCount >= messageBudget) break;
+		const message = params.messages[index];
+		if (message && applyCacheControlToMessage(message, cacheControl)) {
+			appliedCount++;
+		}
+	}
+}
+
+const VOLATILE_SYSTEM_SEGMENT_MARKERS = ["<memories>"];
+
+function stableSystemSuffixStart(systemBlocks: readonly AnthropicSystemBlock[]): number {
+	let start = systemBlocks.length;
+	while (start > 0) {
+		const text = systemBlocks[start - 1]?.text ?? "";
+		if (!VOLATILE_SYSTEM_SEGMENT_MARKERS.some(marker => text.startsWith(marker))) break;
+		start--;
+	}
+	return start;
+}
+
+function applyHeadCaching(
+	systemBlocks: AnthropicSystemBlock[] | undefined,
+	tools: AnthropicWireTool[] | undefined,
+	cacheControl?: AnthropicCacheControl,
+): void {
+	if (!cacheControl) return;
+
+	if (tools && tools.length > 0 && !tools.some(tool => tool.cache_control != null)) {
+		for (let index = tools.length - 1; index >= 0; index--) {
+			const tool = tools[index];
+			if (!tool || tool.defer_loading) continue;
+			tool.cache_control = cloneAnthropicCacheControl(cacheControl);
+			break;
+		}
+	}
+
+	if (systemBlocks && systemBlocks.length > 0) {
+		const suffixStart = stableSystemSuffixStart(systemBlocks);
+		if (suffixStart === systemBlocks.length) {
+			if (!systemBlocks.some(block => block.cache_control != null)) {
+				const lastBlock = systemBlocks[systemBlocks.length - 1];
+				if (lastBlock) lastBlock.cache_control = cloneAnthropicCacheControl(cacheControl);
+			}
+		} else {
+			const anchorIndex = suffixStart === 0 ? systemBlocks.length - 1 : suffixStart - 1;
+			const anchor = systemBlocks[anchorIndex];
+			if (anchor && anchor.cache_control == null) anchor.cache_control = cloneAnthropicCacheControl(cacheControl);
 		}
 	}
 }
@@ -2891,13 +3581,252 @@ function extractClaudeCodeFirstUserMessageText(messages: readonly Message[]): st
 	return "";
 }
 
+const MAX_ANTHROPIC_CONTROL_STATES = 16;
+
+function resetAnthropicControlState(state: AnthropicControlState): void {
+	state.declaredTools = undefined;
+	state.activeToolNames.clear();
+	state.stableSystemBlocks = undefined;
+	state.systemFingerprint = undefined;
+	state.controlTransitions = [];
+	state.effortBaselined = false;
+	state.baseEffortWire = undefined;
+	state.currentEffort = undefined;
+}
+
+function anthropicControlMessageProjection(message: MessageParam): MessageParam {
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
+	return {
+		...message,
+		content: message.content.filter(block => block.type !== "thinking" && block.type !== "redacted_thinking"),
+	};
+}
+
+function getAnthropicControlState(
+	state: AnthropicProviderSessionState | undefined,
+	sessionId: string | undefined,
+	system: readonly AnthropicSystemBlock[] | undefined,
+	messages: readonly MessageParam[],
+): AnthropicControlState | undefined {
+	if (!state) return undefined;
+	const root = messages[0];
+	const stablePrefix = system?.slice(0, stableSystemSuffixStart(system)) ?? null;
+	const fingerprint = String(
+		Bun.hash(
+			JSON.stringify([
+				sessionId ?? "",
+				stablePrefix?.map(block => block.text) ?? null,
+				root ? anthropicControlMessageProjection(root) : null,
+			]),
+		),
+	);
+	const existing = state.controlStates.get(fingerprint);
+	if (existing) {
+		state.controlStates.delete(fingerprint);
+		state.controlStates.set(fingerprint, existing);
+		return existing;
+	}
+	const created = createAnthropicControlState();
+	state.controlStates.set(fingerprint, created);
+	if (state.controlStates.size > MAX_ANTHROPIC_CONTROL_STATES) {
+		const oldest = state.controlStates.keys().next().value;
+		if (oldest !== undefined) state.controlStates.delete(oldest);
+	}
+	return created;
+}
+
+function anthropicControlAnchor(messages: readonly MessageParam[], messageCount: number): string {
+	if (messageCount === 0) return "";
+	const message = messages[messageCount - 1];
+	return message ? String(Bun.hash(JSON.stringify(anthropicControlMessageProjection(message)))) : "";
+}
+
+function syncAnthropicControlState(state: AnthropicControlState, messages: readonly MessageParam[]): void {
+	for (const transition of state.controlTransitions) {
+		if (
+			transition.messageCount > messages.length ||
+			transition.anchor !== anthropicControlAnchor(messages, transition.messageCount)
+		) {
+			resetAnthropicControlState(state);
+			return;
+		}
+	}
+}
+
+function planStableAnthropicSystem(
+	current: AnthropicSystemBlock[] | undefined,
+	state: AnthropicControlState | undefined,
+	enabled: boolean,
+): AnthropicSystemBlock[] | undefined {
+	if (!state || !enabled) return current;
+	const suffixStart = stableSystemSuffixStart(current ?? []);
+	const fingerprint = JSON.stringify(current?.slice(0, suffixStart).map(block => block.text) ?? null);
+	if (state.systemFingerprint !== fingerprint) {
+		resetAnthropicControlState(state);
+		state.systemFingerprint = fingerprint;
+		state.stableSystemBlocks = current?.slice(0, suffixStart).map(block => ({ type: block.type, text: block.text }));
+	}
+	const stableReplay =
+		state.stableSystemBlocks?.map((block, index) => {
+			const cacheControl = current?.[index]?.cache_control;
+			return cacheControl ? { ...block, cache_control: cloneAnthropicCacheControl(cacheControl) } : { ...block };
+		}) ?? [];
+	const suffix = current?.slice(suffixStart).map(block => ({ ...block })) ?? [];
+	const replayed = [...stableReplay, ...suffix];
+	return replayed.length > 0 ? replayed : undefined;
+}
+
+function anthropicToolDefinitionKey(tool: AnthropicWireTool): string {
+	const stable = { ...tool };
+	delete stable.defer_loading;
+	delete stable.description;
+	return JSON.stringify(stable);
+}
+
+function cloneAnthropicTools(tools: readonly AnthropicWireTool[]): AnthropicWireTool[] {
+	return tools.map(tool => ({ ...tool }));
+}
+
+function recordAnthropicControlTransition(
+	state: AnthropicControlState,
+	messages: readonly MessageParam[],
+	messageCount: number,
+	content: ContentBlockParam[],
+	effort?: AnthropicOutputEffort,
+): void {
+	const existing = state.controlTransitions.findLast(transition => transition.messageCount === messageCount);
+	if (existing) {
+		existing.content.push(...content);
+		if (effort !== undefined) existing.effort = effort;
+		return;
+	}
+	state.controlTransitions.push({
+		messageCount,
+		anchor: anthropicControlAnchor(messages, messageCount),
+		content,
+		effort,
+	});
+}
+
+function planStableAnthropicTools(
+	current: AnthropicWireTool[] | undefined,
+	messages: readonly MessageParam[],
+	state: AnthropicControlState | undefined,
+	enabled: boolean,
+): AnthropicWireTool[] | undefined {
+	if (!state || !enabled || !current) return current;
+	if (!state.declaredTools) {
+		state.declaredTools = cloneAnthropicTools(current);
+		state.activeToolNames = new Set(current.map(tool => tool.name));
+		return cloneAnthropicTools(state.declaredTools);
+	}
+
+	const declaredByName = new Map(state.declaredTools.map(tool => [tool.name, tool]));
+	for (const tool of current) {
+		const declared = declaredByName.get(tool.name);
+		if (declared && anthropicToolDefinitionKey(declared) !== anthropicToolDefinitionKey(tool)) {
+			resetAnthropicControlState(state);
+			state.declaredTools = cloneAnthropicTools(current);
+			state.activeToolNames = new Set(current.map(candidate => candidate.name));
+			return cloneAnthropicTools(state.declaredTools);
+		}
+	}
+
+	const nextActive = new Set(current.map(tool => tool.name));
+	const changes: ContentBlockParam[] = [];
+	for (const activeName of state.activeToolNames) {
+		if (nextActive.has(activeName)) continue;
+		changes.push({
+			type: "tool_removal",
+			tool: { type: "tool_reference", name: activeName },
+		});
+	}
+	for (const tool of current) {
+		if (state.activeToolNames.has(tool.name)) continue;
+		if (!declaredByName.has(tool.name)) {
+			const deferred = { ...tool, defer_loading: true };
+			state.declaredTools.push(deferred);
+			declaredByName.set(tool.name, deferred);
+		}
+		changes.push({
+			type: "tool_addition",
+			tool: { type: "tool_reference", name: tool.name },
+		});
+	}
+	if (changes.length > 0) recordAnthropicControlTransition(state, messages, messages.length, changes);
+	state.activeToolNames = nextActive;
+	return cloneAnthropicTools(state.declaredTools);
+}
+
+function planStableAnthropicEffort(
+	current: AnthropicOutputEffort | undefined,
+	messages: readonly MessageParam[],
+	state: AnthropicControlState | undefined,
+	enabled: boolean,
+): AnthropicOutputEffort | undefined {
+	if (!state || !enabled) return current;
+	// An omitted effort is the API's per-model default, tracked as its own state; a per-message
+	// control cannot express "back to the default", so dropping the effort keeps the level in force.
+	if (!state.effortBaselined) {
+		state.effortBaselined = true;
+		state.baseEffortWire = current;
+		state.currentEffort = current;
+		return current;
+	}
+	if (current !== undefined && state.currentEffort !== current) {
+		const lastUserIndex = messages.findLastIndex(message => message.role === "user");
+		const messageCount = lastUserIndex >= 0 ? lastUserIndex : messages.length;
+		recordAnthropicControlTransition(state, messages, messageCount, [], current);
+		state.currentEffort = current;
+	}
+	return state.baseEffortWire;
+}
+
+function materializeAnthropicControlTransitions(
+	messages: MessageParam[],
+	state: AnthropicControlState | undefined,
+): MessageParam[] {
+	if (!state || state.controlTransitions.length === 0) return messages;
+	const result = messages.slice();
+	const ordered = state.controlTransitions.toSorted((a, b) => a.messageCount - b.messageCount);
+	let offset = 0;
+	for (const transition of ordered) {
+		const index = Math.min(transition.messageCount + offset, result.length);
+		const previous = result[index - 1];
+		if (previous?.role === "system" && previous.clear_at === undefined) {
+			const content: ContentBlockParam[] =
+				typeof previous.content === "string"
+					? [{ type: "text", text: previous.content }, ...transition.content]
+					: [...previous.content, ...transition.content];
+			result[index - 1] = {
+				...previous,
+				content,
+				...(transition.effort === undefined ? {} : { output_config: { effort: transition.effort } }),
+			};
+			continue;
+		}
+		result.splice(index, 0, {
+			role: "system",
+			content: transition.content.map(block => ({ ...block })),
+			...(transition.effort === undefined ? {} : { output_config: { effort: transition.effort } }),
+		});
+		offset++;
+	}
+	return result;
+}
+
 type AnthropicParamBuildOptions = {
 	disableStrictTools: boolean;
 	useUmansGatewayWebSearch: boolean;
 	forceDemoteUnsignedThinking: boolean;
 	supportsEagerToolInputStreaming: boolean;
-
+	prefixMismatchBehavior?: "drop_block" | "error";
+	dropAllThinking: boolean;
+	droppedThinkingBlocks?: ReadonlySet<string>;
+	providerSessionState?: AnthropicProviderSessionState;
 	fallbacks?: AnthropicOptions["fallbacks"];
+	compactionSupported?: boolean;
+	effectiveBaseUrl?: string;
 };
 
 function buildParams(
@@ -2912,22 +3841,29 @@ function buildParams(
 		useUmansGatewayWebSearch,
 		forceDemoteUnsignedThinking,
 		supportsEagerToolInputStreaming,
+		prefixMismatchBehavior,
+		dropAllThinking,
+		droppedThinkingBlocks,
+		providerSessionState,
 		fallbacks = options?.fallbacks,
+		compactionSupported = supportsAnthropicCompaction(model),
+		effectiveBaseUrl,
 	} = buildOptions;
 
 	const effectiveModel =
 		forceDemoteUnsignedThinking && model.compat.replayUnsignedThinking
 			? { ...model, compat: { ...model.compat, replayUnsignedThinking: false } }
 			: model;
-	const { cacheControl } = getCacheControl(model, options?.cacheRetention);
+	const { cacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken);
 
 	const shouldInjectClaudeCodeInstruction = isOAuthToken && !model.id.startsWith("claude-3-5-haiku");
 	const firstUserMessageText = shouldInjectClaudeCodeInstruction
 		? extractClaudeCodeFirstUserMessageText(context.messages)
 		: "";
-	const systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
+	let systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		firstUserMessageText,
+		cacheControl,
 	});
 
 	let tools: AnthropicWireTool[] | undefined;
@@ -2987,29 +3923,75 @@ function buildParams(
 		}
 	}
 
+	if (prefixMismatchBehavior) {
+		if (!thinking && model.thinking?.mode === "anthropic-adaptive") {
+			thinking = { type: "adaptive" };
+		}
+		if (thinking?.type === "adaptive" || thinking?.type === "enabled") {
+			thinking.block_binding = { prefix_mismatch_behavior: prefixMismatchBehavior };
+		}
+	}
+
 	const shouldKeepThinkingContext =
 		!options?.client &&
-		model.provider !== "github-copilot" &&
-		model.provider !== "google-vertex" &&
-		model.provider !== "opencode-zen" &&
+		model.compat.supportsContextManagement &&
 		(thinking?.type === "adaptive" || thinking?.type === "enabled");
-	const contextManagement = shouldKeepThinkingContext
-		? { edits: [{ type: "clear_thinking_20251015" as const, keep: "all" as const }] }
+	const compactionEdit = compactionSupported
+		? (buildAnthropicCompactionEdit(options) ??
+			(contextReplaysAnthropicCompaction(context.messages, model)
+				? buildAnthropicCompactionReplayEdit(model)
+				: undefined))
 		: undefined;
+	const contextManagementEdits: NonNullable<MessageCreateParams["context_management"]>["edits"] = [];
+	if (shouldKeepThinkingContext) contextManagementEdits.push({ type: "clear_thinking_20251015", keep: "all" });
+	if (compactionEdit) contextManagementEdits.push(compactionEdit);
+	const contextManagement = contextManagementEdits.length > 0 ? { edits: contextManagementEdits } : undefined;
+
+	let wireMessages = convertAnthropicMessages(context.messages, effectiveModel, isOAuthToken, {
+		serverSideFallbackEnabled: !!fallbacks?.length,
+		replayCompaction: compactionSupported,
+		dropAllThinking,
+		droppedThinkingBlocks,
+	});
+	const controlState = getAnthropicControlState(providerSessionState, options?.sessionId, systemBlocks, wireMessages);
+	if (controlState) syncAnthropicControlState(controlState, wireMessages);
+	systemBlocks = planStableAnthropicSystem(systemBlocks, controlState, model.compat.supportsMidConversationSystem);
+	tools = planStableAnthropicTools(tools, wireMessages, controlState, model.compat.supportsMidConversationToolChanges);
+	applyHeadCaching(systemBlocks, tools, cacheControl);
+	const topLevelEffort = planStableAnthropicEffort(
+		outputConfigEffort,
+		wireMessages,
+		controlState,
+		model.compat.supportsPerMessageEffort,
+	);
+	wireMessages = materializeAnthropicControlTransitions(wireMessages, controlState);
 
 	const outputConfigEntries: AnthropicOutputConfig = {};
-	if (outputConfigEffort && model.provider !== "google-vertex") outputConfigEntries.effort = outputConfigEffort;
+	if (topLevelEffort && model.provider !== "google-vertex") outputConfigEntries.effort = topLevelEffort;
 	if (options?.taskBudget) outputConfigEntries.task_budget = options.taskBudget;
 	const outputConfig = Object.keys(outputConfigEntries).length ? outputConfigEntries : undefined;
 
 	const modelMaxTokens = model.maxTokens ?? CLAUDE_CODE_MAX_OUTPUT_TOKENS;
 	const maxOutputTokens = isOAuthToken ? Math.min(CLAUDE_CODE_MAX_OUTPUT_TOKENS, modelMaxTokens) : modelMaxTokens;
 
+	const vertexRequestUrl =
+		(options?.client !== undefined ? injectedClientBaseUrl(options.client) : undefined) ??
+		effectiveBaseUrl ??
+		model.baseUrl;
+	const vertexControlBetas = isVertexRawPredictUrl(vertexRequestUrl)
+		? resolveAnthropicControlBetas(model, prefixMismatchBehavior)
+		: [];
+	if (
+		isVertexRawPredictUrl(vertexRequestUrl) &&
+		compactionEdit !== undefined &&
+		!vertexControlBetas.includes(COMPACTION_BETA)
+	) {
+		vertexControlBetas.push(COMPACTION_BETA);
+	}
+
 	const params: MessageCreateParamsStreaming = {
 		model: options?.requestModelId ?? model.requestModelId ?? model.id,
-		messages: convertAnthropicMessages(context.messages, effectiveModel, isOAuthToken, {
-			serverSideFallbackEnabled: !!fallbacks?.length,
-		}),
+		messages: wireMessages,
 		...(systemBlocks && { system: systemBlocks }),
 		...(tools !== undefined && { tools }),
 		...(metadata && { metadata }),
@@ -3018,6 +4000,7 @@ function buildParams(
 		...(contextManagement && { context_management: contextManagement }),
 		...(outputConfig && { output_config: outputConfig }),
 		...(fallbacks?.length ? { fallbacks } : {}),
+		...(vertexControlBetas.length > 0 ? { anthropic_beta: vertexControlBetas } : {}),
 		stream: true,
 	};
 
@@ -3162,41 +4145,109 @@ export function convertAnthropicMessages(
 	messages: Message[],
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
-	opts?: { serverSideFallbackEnabled?: boolean },
+	opts?: {
+		serverSideFallbackEnabled?: boolean;
+		replayCompaction?: boolean;
+		dropAllThinking?: boolean;
+		droppedThinkingBlocks?: ReadonlySet<string>;
+	},
 ): AnthropicMessageParam[] {
-	const developerParamIndices: number[] = [];
+	const developerParams: Array<{ index: number; payload?: AnthropicMessagePayload }> = [];
 	const params: AnthropicMessageParam[] = [];
+	const pendingCompactionFiles: string[] = [];
+	const flushCompactionFiles = (): void => {
+		while (pendingCompactionFiles.length > 0) {
+			const filesText = pendingCompactionFiles.shift();
+			if (filesText === undefined || filesText.trim().length === 0) continue;
+			params.push({ role: "user", content: redactSensitiveCredentials(filesText) });
+		}
+	};
 
 	const transformedMessages = transformMessages(messages, model, normalizeToolCallId);
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
 
+		if (
+			opts?.replayCompaction &&
+			(msg.role === "user" || msg.role === "developer") &&
+			isReplayableAnthropicCompaction(msg.providerPayload, model)
+		) {
+			const compactionParam: AnthropicMessageParam = {
+				role: "assistant",
+				content: [compactionBlockParam(msg.providerPayload)],
+			};
+			copyPerCallContextMessage(compactionParam, msg);
+			params.push(compactionParam);
+			if (msg.providerPayload.filesText !== undefined) {
+				pendingCompactionFiles.push(msg.providerPayload.filesText);
+			}
+			continue;
+		}
 		if (msg.role === "user" || msg.role === "developer") {
-			if (!msg.content) continue;
+			flushCompactionFiles();
+			const payload =
+				msg.role === "developer" && msg.providerPayload?.type === "anthropicMessage"
+					? msg.providerPayload
+					: undefined;
+			const hasProviderControls =
+				payload?.clearAt !== undefined ||
+				payload?.effort !== undefined ||
+				(payload?.toolChanges !== undefined && payload.toolChanges.length > 0);
 
 			let content: string | ContentBlockParam[];
 			if (typeof msg.content === "string") {
-				if (msg.content.trim().length === 0) continue;
-				content = msg.content.toWellFormed();
+				if (msg.content.trim().length === 0) {
+					if (!hasProviderControls) continue;
+					content = [];
+				} else {
+					content = msg.content.toWellFormed();
+				}
 			} else {
 				const contentBlocks = convertContentBlocks(msg.content, model.input.includes("image"));
 				if (typeof contentBlocks === "string") {
-					if (contentBlocks.trim().length === 0) continue;
-					content = contentBlocks;
+					if (contentBlocks.trim().length === 0) {
+						if (!hasProviderControls) continue;
+						content = [];
+					} else {
+						content = contentBlocks;
+					}
 				} else {
-					if (contentBlocks.length === 0) continue;
+					if (contentBlocks.length === 0 && !hasProviderControls) continue;
 					content = contentBlocks;
 				}
 			}
-			if (msg.role === "developer") developerParamIndices.push(params.length);
-			params.push({ role: "user", content });
+			if (payload?.toolChanges && model.compat.supportsMidConversationToolChanges) {
+				const blocks: ContentBlockParam[] =
+					typeof content === "string" ? [{ type: "text", text: content }] : content;
+				for (const change of payload.toolChanges) {
+					blocks.push({
+						type: change.type,
+						tool: {
+							type: "tool_reference",
+							name: encodeAnthropicToolName(change.name, isOAuthToken, model.compat.escapeBuiltinToolNames),
+						},
+					});
+				}
+				content = blocks;
+			}
+			if (msg.role === "developer") developerParams.push({ index: params.length, payload });
+			const param: AnthropicMessageParam & ConversationalUserCarrier = { role: "user", content };
+			if (msg.role === "user" && msg.synthetic !== true && msg.attribution !== "agent" && !isSyntheticUser(msg)) {
+				param[kConversationalUser] = true;
+			}
+			copyPerCallContextMessage(param, msg);
+			params.push(param);
 		} else if (msg.role === "assistant") {
 			const blocks: ContentBlockParam[] = [];
 			const hasSignedThinking = msg.content.some(
 				block =>
 					block.type === "thinking" && !!block.thinkingSignature && block.thinkingSignature.trim().length > 0,
 			);
+
+			if (opts?.replayCompaction && isReplayableAnthropicCompaction(msg.providerPayload, model)) {
+				blocks.push(compactionBlockParam(msg.providerPayload));
+			}
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
@@ -3206,6 +4257,12 @@ export function convertAnthropicMessages(
 						text: block.text.toWellFormed(),
 					});
 				} else if (block.type === "thinking") {
+					if (
+						opts?.dropAllThinking ||
+						(block.thinkingSignature && opts?.droppedThinkingBlocks?.has(`thinking:${block.thinkingSignature}`))
+					) {
+						continue;
+					}
 					if (hasSignedThinking) {
 						if (!block.thinkingSignature || block.thinkingSignature.trim().length === 0) {
 							if (block.thinking.trim().length === 0) continue;
@@ -3244,6 +4301,7 @@ export function convertAnthropicMessages(
 						});
 					}
 				} else if (block.type === "redactedThinking") {
+					if (opts?.dropAllThinking || opts?.droppedThinkingBlocks?.has(`redacted:${block.data}`)) continue;
 					if (block.data.trim().length === 0) continue;
 					blocks.push({
 						type: "redacted_thinking",
@@ -3274,7 +4332,7 @@ export function convertAnthropicMessages(
 			for (const block of blocks) {
 				if (block.type === "tool_use") {
 					sawToolUse = true;
-				} else if (sawToolUse) {
+				} else if (sawToolUse && block.type !== "thinking" && block.type !== "redacted_thinking") {
 					needsPartition = true;
 					break;
 				}
@@ -3290,21 +4348,32 @@ export function convertAnthropicMessages(
 				blocks.push(...nonToolUse, ...toolUse);
 			}
 			if (blocks.length === 0) continue;
-			params.push({
+			const assistantParam: AnthropicMessageParam = {
 				role: "assistant",
 				content: blocks,
-			});
+			};
+			copyPerCallContextMessage(assistantParam, msg);
+			params.push(assistantParam);
+			if (!blocks.some(block => block.type === "tool_use")) {
+				flushCompactionFiles();
+			}
 		} else if (msg.role === "toolResult") {
 			const toolResults: ContentBlockParam[] = [];
 
 			const hoistedImages: ContentBlockParam[] = [];
+			const toolResultParam: AnthropicMessageParam = {
+				role: "user",
+				content: toolResults,
+			};
 
 			toolResults.push(buildToolResultBlock(model, msg, hoistedImages));
+			copyPerCallContextMessage(toolResultParam, msg);
 
 			let j = i + 1;
 			while (j < transformedMessages.length && transformedMessages[j].role === "toolResult") {
 				const nextMsg = transformedMessages[j] as ToolResultMessage;
 				toolResults.push(buildToolResultBlock(model, nextMsg, hoistedImages));
+				copyPerCallContextMessage(toolResultParam, nextMsg);
 				j++;
 			}
 
@@ -3317,32 +4386,81 @@ export function convertAnthropicMessages(
 				);
 			}
 
-			params.push({
-				role: "user",
-				content: toolResults,
-			});
+			params.push(toolResultParam);
+			flushCompactionFiles();
 		}
 	}
 
-	if (developerParamIndices.length > 0 && model.compat.supportsMidConversationSystem) {
-		for (const idx of developerParamIndices) {
+	if (developerParams.length > 0 && model.compat.supportsMidConversationSystem) {
+		for (const developer of developerParams.toReversed()) {
+			const idx = developer.index;
 			const followsUser = idx > 0 && params[idx - 1]?.role === "user";
 			const next = params[idx + 1];
 			const lastOrBeforeAssistant = idx === params.length - 1 || next?.role === "assistant";
 
 			const content = params[idx].content;
-			const textOnly = typeof content === "string" || content.every(block => block.type === "text");
-			if (followsUser && lastOrBeforeAssistant && textOnly) {
-				params[idx] = { role: "system", content };
+			const systemCompatible =
+				typeof content === "string" ||
+				content.every(
+					block => block.type === "text" || block.type === "tool_addition" || block.type === "tool_removal",
+				);
+			const effortOnly = developer.payload?.effort !== undefined && Array.isArray(content) && content.length === 0;
+			if (!((followsUser && lastOrBeforeAssistant && systemCompatible) || effortOnly)) continue;
+
+			const turnScoped = developer.payload?.clearAt === "next_user_message" && model.compat.supportsTurnScopedSystem;
+			const hasEffort = developer.payload?.effort !== undefined && model.compat.supportsPerMessageEffort;
+			const hasToolChanges = (developer.payload?.toolChanges?.length ?? 0) > 0;
+			if (turnScoped && (hasEffort || hasToolChanges) && Array.isArray(content)) {
+				const scopedContent = content.filter(block => block.type === "text");
+				const controlContent = content.filter(block => block.type !== "text");
+				if (scopedContent.length > 0) {
+					params[idx] = {
+						...params[idx],
+						role: "system",
+						content: scopedContent,
+						clear_at: "next_user_message",
+					};
+					const controlParam: AnthropicMessageParam = {
+						role: "system",
+						content: controlContent,
+						...(hasEffort ? { output_config: { effort: developer.payload?.effort } } : {}),
+					};
+					copyPerCallContextMessage(controlParam, params[idx]);
+					params.splice(idx + 1, 0, controlParam);
+					continue;
+				}
 			}
+
+			params[idx] = {
+				...params[idx],
+				role: "system",
+				content,
+				...(turnScoped && !hasEffort && !hasToolChanges ? { clear_at: "next_user_message" } : {}),
+				...(hasEffort ? { output_config: { effort: developer.payload?.effort } } : {}),
+			};
 		}
 	}
-
+	for (let i = params.length - 2; i >= 0; i--) {
+		const current = params[i];
+		const next = params[i + 1];
+		if (
+			current.role !== "assistant" ||
+			next?.role !== "assistant" ||
+			typeof current.content === "string" ||
+			current.content.length !== 1 ||
+			current.content[0]?.type !== "compaction" ||
+			typeof next.content === "string"
+		) {
+			continue;
+		}
+		params.splice(i, 2, { ...next, content: [current.content[0], ...next.content] });
+	}
 	for (let i = params.length - 1; i > 0; i--) {
 		if (params[i].role === "assistant" && params[i - 1]?.role === "assistant") {
 			params.splice(i, 0, { role: "user", content: "Continue." });
 		}
 	}
+	flushCompactionFiles();
 	if (params.length > 0 && params[params.length - 1]?.role === "assistant") {
 		params.push({ role: "user", content: "Continue." });
 	}
@@ -3812,6 +4930,7 @@ function convertTools(
 			...baseTool,
 			...(supportsEagerToolInputStreaming ? { eager_input_streaming: true } : {}),
 			...(plan.strict ? { strict: true } : {}),
+			...(tool.deferLoading ? { defer_loading: true } : {}),
 		};
 	});
 }
@@ -3830,6 +4949,8 @@ function mapStopReason(reason: string): StopReason {
 		case "refusal":
 			return "error";
 		case "pause_turn":
+			return "stop";
+		case "compaction":
 			return "stop";
 		case "stop_sequence":
 			return "stop";

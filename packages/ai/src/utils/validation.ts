@@ -4,6 +4,7 @@ import * as AIError from "../error";
 import type { Tool, ToolCall } from "../types";
 import { upgradeJsonSchemaTo202012 } from "./schema/draft";
 import {
+	getTagSelectedUnionBranch,
 	isJsonSchemaValueValid,
 	type JsonSchemaValidationIssue,
 	validateJsonSchemaValue,
@@ -534,14 +535,17 @@ function deleteAtSegment(node: unknown, segments: string[], depth: number): unkn
 	return { ...obj, [segment]: child };
 }
 
-function branchMatchesSchema(branch: unknown, value: unknown): boolean {
-	return isJsonSchemaValueValid(branch, value);
+function branchMatchesSchema(branch: unknown, value: unknown, root: unknown = branch): boolean {
+	return isJsonSchemaValueValid(branch, value, root);
 }
 
 function normalizeOptionalNullsForSchema(
 	schema: unknown,
 	value: unknown,
 	isRoot = true,
+	root: unknown = schema,
+	insideContent = false,
+	speculativeUnion = false,
 ): { value: unknown; changed: boolean } {
 	if (value === null || value === undefined) return { value, changed: false };
 	if (schema === null || typeof schema !== "object") return { value, changed: false };
@@ -552,22 +556,60 @@ function normalizeOptionalNullsForSchema(
 		const branches = schemaObject[keyword];
 		if (!Array.isArray(branches)) return { value, changed: false };
 
-		let changedCandidate: { value: unknown; changed: true } | null = null;
-
+		// Prefer an already matching branch, normalized on its own: a closed sibling can delete
+		// nullable keys that a later matching branch still requires.
 		for (const branch of branches) {
-			const normalized = normalizeOptionalNullsForSchema(branch, value, isRoot);
-			if (!normalized.changed) continue;
-
-			if (branchMatchesSchema(branch, normalized.value)) {
+			if (!branchMatchesSchema(branch, value, root)) continue;
+			const normalized = normalizeOptionalNullsForSchema(
+				branch,
+				value,
+				isRoot,
+				root,
+				insideContent,
+				speculativeUnion,
+			);
+			if (
+				branchMatchesSchema(branch, normalized.value, root) &&
+				branchMatchesSchema(schemaObject, normalized.value, root)
+			) {
 				return normalized;
-			}
-
-			if (!changedCandidate) {
-				changedCandidate = { value: normalized.value, changed: true };
 			}
 		}
 
-		return changedCandidate ?? { value, changed: false };
+		const selectedBranch = getTagSelectedUnionBranch(branches, value);
+		for (const branch of branches) {
+			// A failed branch with a unique discriminator stays authoritative; any other guess is speculative.
+			const normalized = normalizeOptionalNullsForSchema(
+				branch,
+				value,
+				isRoot,
+				root,
+				insideContent,
+				speculativeUnion || selectedBranch !== branch,
+			);
+			if (!normalized.changed) continue;
+
+			const branchContext: ValidationContext = {
+				kind: "json",
+				json: branch,
+				root,
+				union: schemaObject,
+				unionBranches: branches,
+				speculativeUnion,
+			};
+			const result = validateContext(branchContext, normalized.value);
+			if (result.success && branchMatchesSchema(branch, normalized.value, root)) return normalized;
+
+			// Diagnose against the enclosing union but repair only this candidate branch;
+			// failed candidates never escape to a sibling.
+			const repaired = runCoercionPasses(branchContext, normalized.value, result, isRoot, insideContent);
+			if (repaired.result.success && branchMatchesSchema(branch, repaired.args, root)) {
+				return { value: repaired.args, changed: true };
+			}
+		}
+
+		// Never adopt a destructive repair from a branch that still rejects it.
+		return { value, changed: false };
 	};
 
 	const anyOfNormalization = normalizeAnyOfLike("anyOf");
@@ -580,7 +622,14 @@ function normalizeOptionalNullsForSchema(
 		let changed = false;
 		let nextValue: unknown = value;
 		for (const branch of schemaObject.allOf) {
-			const normalized = normalizeOptionalNullsForSchema(branch, nextValue, isRoot);
+			const normalized = normalizeOptionalNullsForSchema(
+				branch,
+				nextValue,
+				isRoot,
+				root,
+				insideContent,
+				speculativeUnion,
+			);
 			if (!normalized.changed) continue;
 			nextValue = normalized.value;
 			changed = true;
@@ -597,7 +646,14 @@ function normalizeOptionalNullsForSchema(
 		let changed = false;
 		let nextValue = value;
 		for (let i = 0; i < value.length; i += 1) {
-			const normalized = normalizeOptionalNullsForSchema(itemSchema, value[i], false);
+			const normalized = normalizeOptionalNullsForSchema(
+				itemSchema,
+				value[i],
+				false,
+				root,
+				insideContent,
+				speculativeUnion,
+			);
 			if (!normalized.changed) continue;
 			if (!changed) {
 				nextValue = [...value];
@@ -630,7 +686,7 @@ function normalizeOptionalNullsForSchema(
 		const currentValue = nextValue[key];
 		const isNullish = currentValue === null || currentValue === "null";
 		const isInvalidEmptyString =
-			currentValue === "" && !required.has(key) && !branchMatchesSchema(propertySchema, currentValue);
+			currentValue === "" && !required.has(key) && !branchMatchesSchema(propertySchema, currentValue, root);
 
 		if ((isNullish || isInvalidEmptyString) && !required.has(key)) {
 			if (!changed) {
@@ -652,7 +708,14 @@ function normalizeOptionalNullsForSchema(
 				continue;
 			}
 		}
-		const normalized = normalizeOptionalNullsForSchema(propertySchema, currentValue, false);
+		const normalized = normalizeOptionalNullsForSchema(
+			propertySchema,
+			currentValue,
+			false,
+			root,
+			insideContent || CONTENT_CARRYING_KEYS.has(key),
+			speculativeUnion,
+		);
 		if (!normalized.changed) continue;
 
 		if (!changed) {
@@ -662,7 +725,8 @@ function normalizeOptionalNullsForSchema(
 		nextValue[key] = normalized.value;
 	}
 
-	if (!isRoot && schemaObject.additionalProperties === false) {
+	// A speculative union guess keeps unknown nulls: another candidate may require them.
+	if (!isRoot && !speculativeUnion && schemaObject.additionalProperties === false) {
 		const knownKeys = new Set(Object.keys(properties));
 		for (const key of Object.keys(nextValue)) {
 			if (knownKeys.has(key)) continue;
@@ -713,26 +777,15 @@ function normalizeEnumStringWhitespace(
 		return normalizeEnumStringWhitespace(resolved, value, root, new Set([...refs, ref]));
 	}
 
-	const branchMatches = (branch: unknown, candidate: unknown): boolean => {
-		if (branch !== null && typeof branch === "object") {
-			const branchRef = (branch as Record<string, unknown>).$ref;
-			if (typeof branchRef === "string" && !refs.has(branchRef)) {
-				const resolved = resolveLocalJsonSchemaRef(root, branchRef);
-				if (resolved !== undefined) return branchMatchesSchema(resolved, candidate);
-			}
-		}
-		return branchMatchesSchema(branch, candidate);
-	};
-
 	const normalizeAnyOfLike = (keyword: "anyOf" | "oneOf"): { value: unknown; changed: boolean } => {
 		const branches = schemaObject[keyword];
 		if (!Array.isArray(branches)) return { value, changed: false };
-		if (branches.some(branch => branchMatches(branch, value))) return { value, changed: false };
+		if (branches.some(branch => branchMatchesSchema(branch, value, root))) return { value, changed: false };
 
 		for (const branch of branches) {
 			const normalized = normalizeEnumStringWhitespace(branch, value, root, refs);
 			if (!normalized.changed) continue;
-			if (branchMatches(branch, normalized.value)) return normalized;
+			if (branchMatchesSchema(branch, normalized.value, root)) return normalized;
 		}
 		return { value, changed: false };
 	};
@@ -870,7 +923,11 @@ function trimIdentifierStringLeaf(input: unknown): unknown {
 	return input;
 }
 
-function normalizeIdentifierStringWhitespace(value: unknown): { value: unknown; changed: boolean } {
+function normalizeIdentifierStringWhitespace(
+	value: unknown,
+	insideContent = false,
+): { value: unknown; changed: boolean } {
+	if (insideContent) return { value, changed: false };
 	if (Array.isArray(value)) {
 		let changed = false;
 		let next = value;
@@ -1322,6 +1379,10 @@ type ValidationContext =
 	| {
 			kind: "json";
 			json: Record<string, unknown>;
+			root?: unknown;
+			union?: Record<string, unknown>;
+			unionBranches?: readonly unknown[];
+			speculativeUnion?: boolean;
 	  };
 
 const kValidationContext = Symbol("ai.validationContext");
@@ -1346,9 +1407,12 @@ function preserveUnknownRootFields(input: unknown, parsed: unknown): unknown {
 	return { ...input, ...parsed };
 }
 
-function flattenJsonSchemaIssues(issues: ReadonlyArray<JsonSchemaValidationIssue>): FlatIssue[] {
+function flattenJsonSchemaIssues(
+	issues: ReadonlyArray<JsonSchemaValidationIssue>,
+	speculativeUnion = false,
+): FlatIssue[] {
 	return issues.map(issue => {
-		const unionBranch = issue.fromUnionBranch === true;
+		const unionBranch = speculativeUnion || issue.fromUnionBranch === true;
 		if (issue.keyword === "additionalProperties") {
 			return {
 				keyword: "unrecognized",
@@ -1386,11 +1450,11 @@ function validateContext(ctx: ValidationContext, value: unknown): ContextValidat
 		};
 	}
 
-	const result = validateJsonSchemaValue(ctx.json, value);
+	const result = validateJsonSchemaValue(ctx.union ?? ctx.json, value, ctx.root);
 	if (result.success) return { success: true, value };
 	return {
 		success: false,
-		flatIssues: flattenJsonSchemaIssues(result.issues),
+		flatIssues: flattenJsonSchemaIssues(result.issues, ctx.speculativeUnion),
 		messages: result.issues.map(issue => `  - ${formatIssuePath(issue.path)}: ${issue.message}`),
 	};
 }
@@ -1654,54 +1718,82 @@ function runCoercionPasses(
 	ctx: ValidationContext,
 	args: unknown,
 	initial: ContextValidationResult,
+	isRoot = true,
+	insideContent = false,
 ): { args: unknown; result: ContextValidationResult; changed: boolean } {
 	const { json } = ctx;
+	const root = ctx.kind === "json" ? (ctx.root ?? json) : json;
 	let normalizedArgs = args;
 	let result = initial;
 	let changed = false;
 	for (let pass = 0; pass < MAX_COERCION_PASSES; pass += 1) {
 		if (result.success) break;
+		// Normalizations re-run even when coercion changes nothing: a later pass (e.g. identifier
+		// trimming) can make an earlier branch-local repair viable. Stop once no pass makes progress.
 		const coercion = coerceArgsFromIssues(normalizedArgs, result.flatIssues);
-		if (!coercion.changed) break;
-
+		let passChanged = coercion.changed;
 		normalizedArgs = coercion.value;
-		changed = true;
 
 		const keyNormalizationPass = normalizeDoubleEncodedKeys(normalizedArgs);
 		if (keyNormalizationPass.changed) {
 			normalizedArgs = keyNormalizationPass.value;
+			passChanged = true;
 		}
 
-		const nullNormalization = normalizeOptionalNullsForSchema(json, normalizedArgs);
+		const speculativeUnion =
+			ctx.kind === "json" &&
+			(ctx.speculativeUnion === true ||
+				(ctx.unionBranches !== undefined && getTagSelectedUnionBranch(ctx.unionBranches, normalizedArgs) !== json));
+		const nullNormalization = normalizeOptionalNullsForSchema(
+			json,
+			normalizedArgs,
+			isRoot,
+			root,
+			insideContent,
+			speculativeUnion,
+		);
 		if (nullNormalization.changed) {
 			normalizedArgs = nullNormalization.value;
+			passChanged = true;
 		}
 
-		const enumStringNormalizationPass = normalizeEnumStringWhitespace(json, normalizedArgs);
+		const enumStringNormalizationPass = normalizeEnumStringWhitespace(json, normalizedArgs, root);
 		if (enumStringNormalizationPass.changed) {
 			normalizedArgs = enumStringNormalizationPass.value;
+			passChanged = true;
 		}
 
-		const identifierStringNormalizationPass = normalizeIdentifierStringWhitespace(normalizedArgs);
+		const identifierStringNormalizationPass = normalizeIdentifierStringWhitespace(normalizedArgs, insideContent);
 		if (identifierStringNormalizationPass.changed) {
 			normalizedArgs = identifierStringNormalizationPass.value;
+			passChanged = true;
 		}
 
 		const stringEncodedArrayNormPass = normalizeStringEncodedArrayUnions(json, normalizedArgs);
 		if (stringEncodedArrayNormPass.changed) {
 			normalizedArgs = stringEncodedArrayNormPass.value;
+			passChanged = true;
 		}
 
-		const identifierStringNormalizationAfterArrayPass = normalizeIdentifierStringWhitespace(normalizedArgs);
+		const identifierStringNormalizationAfterArrayPass = normalizeIdentifierStringWhitespace(
+			normalizedArgs,
+			insideContent,
+		);
 		if (identifierStringNormalizationAfterArrayPass.changed) {
 			normalizedArgs = identifierStringNormalizationAfterArrayPass.value;
+			passChanged = true;
 		}
 
-		const singleStringNormPass = normalizeSingleStringField(json, normalizedArgs);
-		if (singleStringNormPass.changed) {
-			normalizedArgs = singleStringNormPass.value;
+		if (isRoot && !(ctx.kind === "json" && ctx.union)) {
+			const singleStringNormPass = normalizeSingleStringField(json, normalizedArgs);
+			if (singleStringNormPass.changed) {
+				normalizedArgs = singleStringNormPass.value;
+				passChanged = true;
+			}
 		}
 
+		if (!passChanged) break;
+		changed = true;
 		result = validateContext(ctx, normalizedArgs);
 	}
 	return { args: normalizedArgs, result, changed };

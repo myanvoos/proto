@@ -177,3 +177,27 @@ test("a corrupt config.yml reports on stderr and exits 0 on the first run and ev
 	expect(second.stderr).toMatch(/could not parse and moved aside/);
 	expect(second.stderr).not.toMatch(/^error:/m);
 }, 30_000);
+
+test("a legacy boolean unexpected-stop setting keeps its behavior as the enum mode", async () => {
+	// `true` meant small-model classified retries; a stored boolean must not fall back to "none".
+	const enabled = await loadSettings(
+		await makeFixture({ "profile/config.yml": "features.unexpectedStopDetection: true\n" }),
+	);
+	expect(enabled.get("features.unexpectedStopDetection")).toBe("smart");
+	expect(enabled.getConfigIssues()).toEqual([]);
+
+	const disabled = await loadSettings(
+		await makeFixture({ "profile/config.yml": "features:\n  unexpectedStopDetection: false\n" }),
+	);
+	expect(disabled.get("features.unexpectedStopDetection")).toBe("none");
+	expect(disabled.getConfigIssues()).toEqual([]);
+
+	// A stale quoted-dotted `true` must not clobber an enum already chosen under `features`.
+	const mixed = await loadSettings(
+		await makeFixture({
+			"profile/config.yml":
+				'"features.unexpectedStopDetection": true\nfeatures:\n  unexpectedStopDetection: mechanical\n',
+		}),
+	);
+	expect(mixed.get("features.unexpectedStopDetection")).toBe("mechanical");
+});

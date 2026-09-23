@@ -7,6 +7,7 @@ import {
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { ResponseInput } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
 import {
+	encodeResponsesToolResultOutput,
 	hoistInterleavedResponsesToolBatchMessages,
 	parseAzureDeploymentNameMap,
 	parseTextSignature,
@@ -29,10 +30,12 @@ import {
 	normalizeResponsesToolCallId,
 	stripOpenAIResponsesOutputOnlyStatusesForReplay,
 } from "@oh-my-pi/pi-ai/utils";
+import { materializeModelHeaders } from "@oh-my-pi/pi-ai/utils/model-headers";
 import { captureOpenAIHttpError } from "@oh-my-pi/pi-ai/utils/openai-http";
 import {
 	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
+	codexRoutingHint,
 	getCodexAccountId,
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
@@ -45,7 +48,8 @@ export * from "./compaction-v2-streaming";
 
 export const OPENAI_REMOTE_COMPACTION_PRESERVE_KEY = "openaiRemoteCompaction";
 
-export const REMOTE_COMPACTION_TIMEOUT_MS = 180_000;
+/** Hard ceiling on remote compaction requests, aligned with the Codex stream idle timeout. */
+export const REMOTE_COMPACTION_TIMEOUT_MS = 300_000;
 
 const DEFAULT_AZURE_API_VERSION = "v1";
 
@@ -284,13 +288,16 @@ export interface RemoteCompactionResponse {
 	shortSummary?: string;
 }
 
-function isOpenAiRemoteCompactionApi(api: Api | undefined): boolean {
+export function isOpenAiRemoteCompactionApi(api: Api | undefined): boolean {
 	return api === "openai-responses" || api === "azure-openai-responses" || api === "openai-codex-responses";
 }
 
 export function shouldUseOpenAiRemoteCompaction(model: Model): boolean {
 	if (model.remoteCompaction?.enabled === false) return false;
-	if (model.provider === "openai" || model.provider === "openai-codex") return true;
+	// ChatGPT's Codex backend serves V2 compaction on /codex/responses but has no V1 /responses/compact
+	// endpoint, so Codex takes the V1 path only when a compatible endpoint is configured explicitly.
+	if (model.provider === "openai-codex") return (model.remoteCompaction?.endpoint?.trim().length ?? 0) > 0;
+	if (model.provider === "openai") return true;
 	if (model.remoteCompaction?.enabled !== true) return false;
 	return isOpenAiRemoteCompactionApi(model.remoteCompaction.api ?? model.api);
 }
@@ -488,6 +495,7 @@ export function buildOpenAiNativeHistory(
 	messages: Message[],
 	model: Model,
 	previousReplacementHistory?: Array<Record<string, unknown>>,
+	supportsImageDetailOriginal = false,
 ): Array<Record<string, unknown>> {
 	const input: Array<Record<string, unknown>> = previousReplacementHistory
 		? adaptComputerHistoryForCompaction([...previousReplacementHistory], model.supportsComputerUse === true)
@@ -672,12 +680,7 @@ export function buildOpenAiNativeHistory(
 
 		if (message.role === "toolResult") {
 			const normalized = normalizeResponsesToolCallId(message.toolCallId);
-			const textOutput = message.content
-				.filter(block => block.type === "text")
-				.map(block => block.text)
-				.join("\n");
-			const hasImages = message.content.some(block => block.type === "image");
-			const outputText = textOutput.length > 0 ? textOutput : hasImages ? "(see attached image)" : "";
+			const { output, outputText } = encodeResponsesToolResultOutput(message, model, supportsImageDetailOriginal);
 			if (demotedComputerCallIds.has(normalized.callId)) {
 				const resultItem =
 					message.providerMetadata?.type === "computer"
@@ -727,19 +730,8 @@ export function buildOpenAiNativeHistory(
 			input.push({
 				type: customCallIds.has(normalized.callId) ? "custom_tool_call_output" : "function_call_output",
 				call_id: normalized.callId,
-				output: outputText.toWellFormed(),
+				output,
 			});
-
-			if (hasImages && model.input.includes("image")) {
-				const contentBlocks: Array<Record<string, unknown>> = [
-					{ type: "input_text", text: TOOL_RESULT_IMAGE_ATTACHMENT_TEXT },
-				];
-				for (const block of message.content) {
-					if (block.type !== "image") continue;
-					contentBlocks.push(convertNativeInputImage(block));
-				}
-				input.push({ type: "message", role: "user", content: contentBlocks });
-			}
 		}
 
 		msgIndex++;
@@ -752,7 +744,7 @@ export function buildOpenAiNativeHistory(
 }
 
 export async function requestOpenAiRemoteCompaction(
-	model: Model,
+	configuredModel: Model,
 	apiKey: string,
 	compactInput: Array<Record<string, unknown>>,
 	instructions: string,
@@ -765,6 +757,7 @@ export async function requestOpenAiRemoteCompaction(
 		codexCompaction?: CodexCompactionContext;
 	},
 ): Promise<OpenAiRemoteCompactionResponse> {
+	const model = await materializeModelHeaders(configuredModel, signal);
 	const endpoint = resolveOpenAiCompactEndpoint(model);
 	const requestModel = resolveOpenAiCompactModel(model);
 	const trimmed = trimRemoteCompactionInputToContextWindow(
@@ -816,6 +809,8 @@ export async function requestOpenAiRemoteCompaction(
 		}
 		headers[OPENAI_HEADERS.BETA] = OPENAI_HEADER_VALUES.BETA_RESPONSES;
 		headers[OPENAI_HEADERS.ORIGINATOR] = OPENAI_HEADER_VALUES.ORIGINATOR_CODEX;
+		// The compaction request sends no `service_tier`, so the hint is model-only.
+		headers[OPENAI_HEADERS.ROUTING_HINT] = codexRoutingHint(request.model, undefined);
 		Object.assign(
 			headers,
 			createOpenAICodexCompatibilityMetadata({
@@ -908,7 +903,8 @@ export async function requestRemoteCompaction(
 	const headers: Record<string, string> = { "content-type": "application/json" };
 	if (isChatCompletions) {
 		if (opts?.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
-		if (opts?.model?.headers) Object.assign(headers, opts.model.headers);
+		const modelHeaders = opts?.model ? (await materializeModelHeaders(opts.model, signal)).headers : undefined;
+		if (modelHeaders) Object.assign(headers, modelHeaders);
 	}
 
 	const body: Record<string, unknown> = isChatCompletions

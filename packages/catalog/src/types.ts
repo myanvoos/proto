@@ -38,6 +38,8 @@ export interface ThinkingConfig {
 
 	supportsDisplay?: boolean;
 
+	prefixBinding?: boolean;
+
 	effortRouting?: Readonly<Partial<Record<Effort | "off", string>>>;
 
 	effortBudgets?: Readonly<Partial<Record<Effort, number>>>;
@@ -85,6 +87,14 @@ export interface Usage {
 		webSearch?: number;
 		webFetch?: number;
 	};
+
+	credits?: {
+		cost?: number;
+
+		committedCost?: number;
+
+		acuCost?: number;
+	};
 	cost: {
 		input: number;
 		output: number;
@@ -94,17 +104,26 @@ export interface Usage {
 	};
 }
 
-export type OpenAIReasoningFormat = "openai" | "openrouter" | "zai" | "kimi" | "qwen" | "qwen-chat-template";
+export type OpenAIReasoningFormat =
+	| "openai"
+	| "openrouter"
+	| "zai"
+	| "kimi"
+	| "qwen"
+	| "qwen-chat-template"
+	| "chat-template";
 
 export type OpenAIReasoningDisableMode =
 	| "omit"
 	| "lowest-effort"
 	| "none-effort"
 	| "openrouter-enabled-false"
+	| "cline-enabled-false"
 	| "venice-disable-thinking"
 	| "zai-thinking-disabled"
 	| "qwen-enable-thinking-false"
-	| "qwen-template-false";
+	| "qwen-template-false"
+	| "chat-template-thinking-false";
 
 export type OpenAIStreamMarkupHealingPattern = "kimi" | "dsml" | "qwen" | "thinking";
 
@@ -171,9 +190,14 @@ export interface OpenAICompat {
 
 	disableReasoningOnToolChoice?: boolean;
 
+	disableReasoningWithTools?: boolean;
+
 	openRouterRouting?: OpenRouterRouting;
 
 	vercelGatewayRouting?: VercelGatewayRouting;
+
+	// Per-model override of the provider-detected wire id transform; ClinePass free-tier ids arrive pre-namespaced.
+	wireModelIdMode?: "raw" | "cline-pass" | "firepass" | "fireworks" | "openrouter";
 
 	extraBody?: Record<string, unknown>;
 
@@ -199,6 +223,8 @@ export interface OpenAICompat {
 
 	supportsReasoningParams?: boolean;
 
+	supportsReasoningSummary?: boolean;
+
 	supportsSamplingParams?: boolean;
 
 	supportsPenaltyAndStopParams?: boolean;
@@ -209,6 +235,9 @@ export interface OpenAICompat {
 
 	supportsImageDetailOriginal?: boolean;
 
+	/** `configuration_update` items change effort mid-conversation (default: `gpt-6-astra` only); `false` for proxies that 400 on the item. */
+	supportsConfigurationUpdate?: boolean;
+
 	reasoningDeltasMayBeCumulative?: boolean;
 
 	stripDeepseekSpecialTokens?: boolean;
@@ -218,6 +247,10 @@ export interface OpenAICompat {
 	emptyLengthFinishIsContextError?: boolean;
 
 	usesOpenAIToolCallIdLimit?: boolean;
+
+	clampOutputToModelMax?: boolean;
+
+	stripImageInput?: boolean;
 
 	whenThinking?: Partial<Omit<OpenAICompat, "whenThinking">>;
 }
@@ -234,6 +267,20 @@ export interface AnthropicCompat {
 	supportsLongCacheRetention?: boolean;
 
 	supportsMidConversationSystem?: boolean;
+
+	supportsTurnScopedSystem?: boolean;
+
+	supportsMidConversationToolChanges?: boolean;
+
+	supportsPerMessageEffort?: boolean;
+
+	supportsThinkingBindingControls?: boolean;
+
+	supportsContextManagement?: boolean;
+
+	supportsServerCompaction?: boolean;
+
+	firstPartyProvider?: boolean;
 
 	supportsForcedToolChoice?: boolean;
 
@@ -271,6 +318,9 @@ export interface ResolvedBedrockCompat {
 	promptCacheMaximumCheckpoints: number;
 
 	streamIdleTimeoutMs?: number;
+
+	/** Send tool-result images as sibling user blocks instead of nesting them in `toolResult` content. */
+	requiresToolResultImageHoisting?: boolean;
 }
 
 export interface OpenRouterRouting {
@@ -310,6 +360,7 @@ export interface ResolvedOpenAISharedCompat {
 	filterReasoningHistory: boolean;
 	disableReasoningOnForcedToolChoice: boolean;
 	disableReasoningOnToolChoice: boolean;
+	disableReasoningWithTools?: boolean;
 	supportsToolChoice: boolean;
 	supportsForcedToolChoice: boolean;
 	supportsNamedToolChoice: boolean;
@@ -341,9 +392,11 @@ export interface ResolvedOpenAISharedCompat {
 	isOpenRouterHost: boolean;
 
 	alwaysSendMaxTokens: boolean;
+
+	clampOutputToModelMax: boolean;
 	openRouterRouting?: OpenAICompat["openRouterRouting"];
 
-	wireModelIdMode: "raw" | "firepass" | "fireworks" | "openrouter";
+	wireModelIdMode: "raw" | "cline-pass" | "firepass" | "fireworks" | "openrouter";
 
 	toolSchemaFlavor?: OpenAICompat["toolSchemaFlavor"];
 }
@@ -356,6 +409,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "supportsReasoningEffort"
 			| "reasoningEffortMap"
 			| "supportsReasoningParams"
+			| "supportsReasoningSummary"
 			| "supportsSamplingParams"
 			| "supportsPenaltyAndStopParams"
 			| "thinkingFormat"
@@ -366,6 +420,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "filterReasoningHistory"
 			| "disableReasoningOnForcedToolChoice"
 			| "disableReasoningOnToolChoice"
+			| "disableReasoningWithTools"
 			| "supportsToolChoice"
 			| "supportsForcedToolChoice"
 			| "supportsNamedToolChoice"
@@ -394,6 +449,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "supportsStrictMode"
 			| "supportsLongPromptCacheRetention"
 			| "alwaysSendMaxTokens"
+			| "clampOutputToModelMax"
 			| "wireModelIdMode"
 			| "vercelGatewayRouting"
 			| "extraBody"
@@ -405,9 +461,12 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "thinkingKeep"
 			| "strictResponsesPairing"
 			| "supportsImageDetailOriginal"
+			| "supportsConfigurationUpdate"
+			| "stripImageInput"
 			| "whenThinking"
 		>
 	> & {
+		stripImageInput?: boolean;
 		vercelGatewayRouting?: OpenAICompat["vercelGatewayRouting"];
 		extraBody?: OpenAICompat["extraBody"];
 		cacheControlFormat?: OpenAICompat["cacheControlFormat"];
@@ -428,6 +487,8 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	supportsObfuscationOptOut: boolean;
 
 	supportsReasoningSummary: boolean;
+	/** `configuration_update` input items may change reasoning effort mid-conversation (GPT-6 Astra only; others 400). */
+	supportsConfigurationUpdate: boolean;
 	streamIdleTimeoutMs?: number;
 	vercelGatewayRouting?: OpenAICompat["vercelGatewayRouting"];
 
@@ -444,6 +505,10 @@ export type ResolvedAnthropicCompat = Required<Omit<AnthropicCompat, "streamIdle
 
 export interface DevinCompat {
 	trustExplicitThinkingOnly?: boolean;
+
+	modelRouter?: boolean;
+
+	supportsParallelToolCalls?: boolean;
 }
 
 export type ResolvedDevinCompat = Required<DevinCompat>;
@@ -502,10 +567,33 @@ export interface TokenCost {
 
 export interface LongContextTokenCost extends TokenCost {
 	inputThreshold: number;
+	/** The tier also applies at exactly `inputThreshold` prompt tokens (xAI's 200K boundary). */
+	inputThresholdInclusive?: boolean;
+}
+
+/** Recurring UTC peak interval; weekdays use Sunday = 0, and the end minute is exclusive. */
+export interface PeakPricingWindow {
+	weekdays: readonly number[];
+	startMinute: number;
+	endMinute: number;
+}
+
+/** Complete replacement rate card effective from a Unix-millisecond timestamp. */
+export interface EffectiveTokenCost extends TokenCost {
+	effectiveFrom: number;
+	longContext?: LongContextTokenCost;
+}
+
+/** Scheduled discounts applied after selecting the effective rate card and context tier. */
+export interface TimeBasedCost {
+	offPeakMultiplier: number;
+	peakWindows: readonly PeakPricingWindow[];
+	effectiveRates?: readonly EffectiveTokenCost[];
 }
 
 export interface ModelCost extends TokenCost {
 	longContext?: LongContextTokenCost;
+	timeBased?: TimeBasedCost;
 }
 
 export type ModelTokenizer =
@@ -543,17 +631,29 @@ export interface Model<TApi extends Api = Api> {
 
 	supportsComputerUseConfig?: boolean;
 
+	/** Host continues a trailing assistant message verbatim (Ollama), so callers may commit an output prefix. */
+	supportsAssistantPrefill?: boolean;
+
 	gitlabDuoWorkflowRootNamespaceId?: string;
 
 	cursorMaxMode?: boolean;
+	/** Per-wire-id Cursor `max_mode` markers of the members a collapsed row routes to. */
+	cursorMaxModeRoutes?: Readonly<Record<string, boolean>>;
 	cost: ModelCost;
 
 	premiumMultiplier?: number;
 	contextWindow: number | null;
+	/** Larger prompt window applied when extended context is enabled. */
+	maxContextWindow?: number;
 	maxTokens: number | null;
 
 	omitMaxOutputTokens?: boolean;
 	headers?: Record<string, string>;
+	/**
+	 * Materializes config-backed headers (e.g. `!command` values) right before a request. Catalog reads never call it;
+	 * transports receive a cloned model with plain resolved `headers` and no hook.
+	 */
+	resolveHeaders?: (signal?: AbortSignal) => Promise<Record<string, string> | undefined>;
 
 	transport?: "pi-native";
 
@@ -571,7 +671,19 @@ export interface Model<TApi extends Api = Api> {
 
 	priority?: number;
 
+	description?: string;
+
+	isNew?: boolean;
+
+	isBeta?: boolean;
+
+	isRecommended?: boolean;
+
 	thinking?: ThinkingConfig;
+	/** Intelligence score delivered by the model catalog. */
+	int?: number | null;
+	/** Catalog-estimated output speed in tokens per second. */
+	tps?: number | null;
 
 	compat: CompatOf<TApi>;
 
@@ -580,9 +692,22 @@ export interface Model<TApi extends Api = Api> {
 	applyPatchToolType?: "freeform" | "function";
 
 	isOAuth?: boolean;
+
+	/** Amazon Bedrock Guardrail id or ARN attached to every Converse request for this model. */
+	guardrailIdentifier?: string;
+
+	guardrailVersion?: string;
+
+	guardrailTrace?: "enabled" | "disabled" | "enabled_full";
+
+	/** Amazon Bedrock invocation-log tags attached to every Converse request for this model. */
+	requestMetadata?: Record<string, string>;
 }
 
 export interface ModelSpec<TApi extends Api = Api>
-	extends Omit<Model<TApi>, "compat" | "compatConfig" | "requiresGlyphTokenization" | "supportsComputerUseConfig"> {
+	extends Omit<
+		Model<TApi>,
+		"compat" | "compatConfig" | "requiresGlyphTokenization" | "supportsComputerUseConfig" | "supportsAssistantPrefill"
+	> {
 	compat?: CompatConfigOf<TApi>;
 }

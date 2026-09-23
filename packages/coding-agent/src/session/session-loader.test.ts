@@ -50,9 +50,11 @@ test("large streamed resumes preserve every message exactly across parse batches
 		const content = `${records.map(record => JSON.stringify(record)).join("\n")}\n`;
 		await Bun.write(file, content);
 
-		const streamed = await loadEntriesFromFileStream(file);
+		const { sourceSize, ...streamed } = await loadEntriesFromFileStream(file);
 		const fullText = parseSessionContent(content);
 		expect(streamed).toEqual(fullText);
+		// The freshness token of the next rewrite is the exact snapshot the stream consumed.
+		expect(sourceSize).toBe(Buffer.byteLength(content, "utf8"));
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}

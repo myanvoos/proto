@@ -1,6 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import { logger, structuredCloneJSON } from "@oh-my-pi/pi-utils";
-import { resolvePromptCacheKey } from "../auth-gateway/http";
+import { coerceNullMessageContentInPlace, resolvePromptCacheKey } from "../auth-gateway/http";
 import type { AuthGatewayStreamControl, AuthGatewayParsedRequest as ParsedRequest } from "../auth-gateway/types";
 import * as AIError from "../error";
 import type {
@@ -10,18 +10,23 @@ import type {
 	ComputerSafetyCheck,
 	ComputerScreenshotRef,
 	Context,
+	ImageContent,
 	Message,
 	TextContent,
 	ThinkingContent,
 	Tool,
 	ToolCall,
 } from "../types";
+import { decodeDataUri } from "./openai-data-uri";
 import {
 	type OpenAIResponsesComputerCallItem,
 	type OpenAIResponsesComputerCallOutputItem,
+	type OpenAIResponsesCustomToolCallOutputItem,
 	type OpenAIResponsesFunctionCallItem,
 	type OpenAIResponsesFunctionCallOutputItem,
 	type OpenAIResponsesInputContent,
+	type OpenAIResponsesInputFileBlock,
+	type OpenAIResponsesInputImageBlock,
 	type OpenAIResponsesOutputContent,
 	type OpenAIResponsesReasoningItem,
 	type OpenAIResponsesTool,
@@ -139,8 +144,8 @@ function extractReasoningTextFromItem(item: OpenAIResponsesReasoningItem): strin
 type InputBlockUnion =
 	| { type: "input_text"; text: string }
 	| { type: "text"; text: string }
-	| { type: "input_image"; detail?: "auto" | "low" | "high" | "original"; image_url?: string; file_id?: string }
-	| { type: "input_file"; file_id?: string; filename?: string; file_data?: string; file_url?: string };
+	| OpenAIResponsesInputImageBlock
+	| OpenAIResponsesInputFileBlock;
 
 function inputContentParts(blocks: OpenAIResponsesInputContent[] | string | undefined): string | TextContent[] {
 	if (typeof blocks === "string") return blocks;
@@ -263,24 +268,74 @@ function ensureAssistantPlaceholder(messages: Message[], modelId: string, now: n
 	return placeholder;
 }
 
-function flattenFunctionOutputArray(blocks: readonly unknown[]): string {
-	const parts: string[] = [];
-	for (const raw of blocks) {
+/**
+ * Canonical tool-result content for a function/custom tool output. Canonical
+ * `input_text`/`input_image` blocks keep their order; legacy `output_text`,
+ * `text` and `refusal` runs are joined into one text block. Inline data images
+ * decode to image content; remote URLs and OpenAI file ids stay references.
+ */
+function functionOutputContent(output: string | readonly unknown[] | undefined): (TextContent | ImageContent)[] {
+	if (typeof output === "string") return [{ type: "text", text: output }];
+	if (!output) return [{ type: "text", text: "" }];
+
+	const content: (TextContent | ImageContent)[] = [];
+	let legacyText = "";
+	const flushLegacyText = (): void => {
+		if (legacyText.length === 0) return;
+		content.push({ type: "text", text: legacyText });
+		legacyText = "";
+	};
+	for (const raw of output) {
 		if (!isObj(raw)) continue;
-		const t = raw.type;
-		if (t === "output_text" || t === "text") {
+		const blockType = raw.type;
+		if (blockType === "input_text") {
+			flushLegacyText();
 			const text = asString(raw.text);
-			if (text) parts.push(text);
-		} else if (t === "refusal") {
-			const refusal = asString(raw.refusal);
-			if (refusal) parts.push(`[refusal: ${refusal}]`);
+			if (text !== undefined) content.push({ type: "text", text });
+			continue;
 		}
+		if (blockType === "output_text" || blockType === "text") {
+			const text = asString(raw.text);
+			if (text) legacyText += text;
+			continue;
+		}
+		if (blockType === "refusal") {
+			const refusal = asString(raw.refusal);
+			if (refusal) legacyText += `[refusal: ${refusal}]`;
+			continue;
+		}
+		if (blockType !== "input_image") continue;
+		flushLegacyText();
+		const imageUrl = asString(raw.image_url) || undefined;
+		const decoded = imageUrl ? decodeDataUri(imageUrl) : undefined;
+		const detail =
+			raw.detail === "auto" || raw.detail === "low" || raw.detail === "high" || raw.detail === "original"
+				? raw.detail
+				: undefined;
+		if (decoded) {
+			content.push({ type: "image", ...decoded, ...(detail ? { detail } : {}) });
+			continue;
+		}
+		const referenceImage: ImageContent = {
+			type: "image",
+			data: "",
+			mimeType: "application/octet-stream",
+			...(detail ? { detail } : {}),
+		};
+		if (imageUrl) {
+			content.push({ ...referenceImage, url: imageUrl });
+			continue;
+		}
+		const fileId = asString(raw.file_id) || undefined;
+		if (fileId) content.push({ ...referenceImage, providerFile: { provider: "openai", id: fileId } });
 	}
-	return parts.join("");
+	flushLegacyText();
+	return content.length > 0 ? content : [{ type: "text", text: "" }];
 }
 
 export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	rejectUnsupportedExplicitPromptCacheFields(body);
+	coerceNullMessageContentInPlace(isObj(body) ? body.input : undefined);
 	const data = openaiResponsesRequestSchema(body);
 	if (data instanceof type.errors) {
 		throw new AIError.ValidationError(`openai-responses: ${data.summary}`);
@@ -438,18 +493,11 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 			}
 			if (effectiveType === "function_call_output") {
 				const output = item as OpenAIResponsesFunctionCallOutputItem;
-				const toolName = findToolNameById(messages, output.call_id);
-				const text =
-					typeof output.output === "string"
-						? output.output
-						: Array.isArray(output.output)
-							? flattenFunctionOutputArray(output.output)
-							: "";
 				messages.push({
 					role: "toolResult",
 					toolCallId: output.call_id,
-					toolName,
-					content: [{ type: "text", text }],
+					toolName: findToolNameById(messages, output.call_id),
+					content: functionOutputContent(output.output),
 					isError: false,
 					timestamp: now,
 				});
@@ -473,13 +521,13 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 				continue;
 			}
 			if (effectiveType === "custom_tool_call_output") {
-				const output = item as { call_id: string; output: string };
+				const output = item as OpenAIResponsesCustomToolCallOutputItem;
 				const toolName = findToolNameById(messages, output.call_id);
 				messages.push({
 					role: "toolResult",
 					toolCallId: output.call_id,
 					toolName,
-					content: [{ type: "text", text: output.output ?? "" }],
+					content: functionOutputContent(output.output),
 					isError: false,
 					timestamp: now,
 				});

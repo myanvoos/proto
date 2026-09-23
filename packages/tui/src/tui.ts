@@ -16,11 +16,12 @@ import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { getDebugLogPath } from "@oh-my-pi/pi-utils/dirs";
 import { $flag } from "@oh-my-pi/pi-utils/env";
+import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { isKeyRelease, matchesKey } from "./keys";
 import { KITTY_PLACEHOLDER } from "./kitty-graphics";
 import { LoopWatchdog } from "./loop-watchdog";
-import { refreshTerminalHostIdentity, setAltScreenActive, type Terminal } from "./terminal";
+import { refreshTerminalHostIdentity, STDOUT_BACKLOG_CLEAR_BYTES, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
 	encodeKittyPlacementLine,
@@ -989,7 +990,10 @@ export class TUI extends Container {
 	 * gating here and ending a StdoutStallWatchdog episode there keeps the stall
 	 * watchdog armed across exactly the range where frames are deferred (#10434).
 	 */
-	static readonly #MAX_PENDING_OUTPUT_BYTES = 256 * 1024;
+	// The terminal's healthy-backlog level: gating frames here and ending a
+	// StdoutStallWatchdog episode there keeps the watchdog armed across exactly
+	// the range where frames are deferred.
+	static readonly #MAX_PENDING_OUTPUT_BYTES = STDOUT_BACKLOG_CLEAR_BYTES;
 	/** Retry cadence while the output backlog gate is holding renders back. */
 	static readonly #OUTPUT_BACKLOG_RETRY_MS = 10;
 	/** Quiet window before restoring the normal buffer after resize. */
@@ -1070,6 +1074,7 @@ export class TUI extends Container {
 	#resizeErasedLiveViewport = false;
 	#hasEverRendered = false;
 	#stopped = false;
+	#cancelPostmortemRestore?: () => void;
 	/** True between a `deferInput` start() and enableInput(). */
 	#inputDeferred = false;
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
@@ -1367,9 +1372,13 @@ export class TUI extends Container {
 		// implementing DECRQM, so retain the statically detected default instead of
 		// exposing destructive full paints. An explicit user opt-out/force still
 		// wins, so skip every probe result in that case.
-		this.terminal.onPrivateModeReport?.((mode, supported, confirmed = true) => {
+		this.terminal.onPrivateModeReport?.((mode, supported, confirmed = true, status) => {
 			if (mode !== 2026 || !confirmed || synchronizedOutputUserOverride() !== null) return;
-			if (!supported && isInsideHerdr()) return;
+			// Herdr's Ghostty VTE honors DEC 2026 even when DECRQM reports it
+			// unrecognized (status 0). Other confirmed unsupported reports still
+			// disable: status 4 is permanently reset, and a report without a status
+			// comes from a custom Terminal that does not distinguish DECRPM codes.
+			if (!supported && isInsideHerdr() && status === 0) return;
 			this.#setSynchronizedOutput(supported);
 		});
 		this.terminal.start(
@@ -1434,6 +1443,9 @@ export class TUI extends Container {
 			{ deferInput: this.#inputDeferred },
 		);
 		if (this.#stopped) return;
+		// Fatal reports run cleanup before writing, so the cursor is parked below the frame before the report lands.
+		this.#cancelPostmortemRestore?.();
+		this.#cancelPostmortemRestore = postmortem.register("tui-restore", () => this.stop());
 		for (const listener of this.#startListeners) {
 			try {
 				listener();
@@ -2130,6 +2142,8 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
+		this.#cancelPostmortemRestore?.();
+		this.#cancelPostmortemRestore = undefined;
 		this.#resizeSettleTimer?.cancel();
 		this.#resizeSettleTimer = undefined;
 		if (this.#resizeInPlaceActive && this.terminal.rows > 0) {

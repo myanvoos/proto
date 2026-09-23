@@ -13,7 +13,11 @@ interface TrackerFixture {
 	continues: number;
 }
 
-function createTracker(options: { hasActiveMonitors: boolean }): TrackerFixture {
+function createTracker(options: {
+	hasActiveMonitors: boolean;
+	prewalkWillHandoff?: boolean;
+	settings?: Settings;
+}): TrackerFixture {
 	const appended: Message[] = [];
 	const fixture = { appended, continues: 0 } as TrackerFixture;
 	const host: ChecklistTrackerHost = {
@@ -27,7 +31,7 @@ function createTracker(options: { hasActiveMonitors: boolean }): TrackerFixture 
 			getBranch: () => [],
 			appendMessage: () => {},
 		} as unknown as ChecklistTrackerHost["sessionManager"],
-		settings,
+		settings: options.settings ?? settings,
 		model: () => undefined,
 		agentKind: () => "main",
 		emitSessionEvent: async () => {},
@@ -40,6 +44,7 @@ function createTracker(options: { hasActiveMonitors: boolean }): TrackerFixture 
 		getActiveToolNames: () => ["checklist"],
 		getEnabledToolNames: () => ["checklist"],
 		toolRegistry: () => new Map<string, AgentTool>(),
+		prewalkWillHandoff: () => options.prewalkWillHandoff ?? false,
 	};
 	const tracker = new ChecklistTracker(host);
 	const phases: ChecklistPhase[] = [
@@ -92,4 +97,25 @@ test("mid-run nudge counts file writes, not read-only bash results", () => {
 		writes.tracker.onToolResult("bash", false, { mutatedPaths: [`/tmp/file-${index}`] });
 	}
 	expect(writes.tracker.takeMidRunNudge()).not.toBeNull();
+});
+
+test("an armed prewalk handoff owns checklist creation, so the eager prelude stays out of its way", () => {
+	const eager = Settings.isolated({ "checklist.enabled": true, "checklist.eager": "always" });
+	const prompt = "Refactor the session loader";
+	const withoutFreshPhases = (fixture: TrackerFixture) => {
+		fixture.tracker.setPhases([]);
+		return fixture.tracker;
+	};
+
+	// Prewalk's plan nudge says "plan first, then checklist"; the prelude says "checklist first".
+	const handoff = withoutFreshPhases(
+		createTracker({ hasActiveMonitors: false, prewalkWillHandoff: true, settings: eager }),
+	);
+	expect(handoff.createEagerChecklistPrelude(prompt)).toBeUndefined();
+
+	// A no-op prewalk (target already active) injects no plan nudge; eager enforcement still applies.
+	const noop = withoutFreshPhases(
+		createTracker({ hasActiveMonitors: false, prewalkWillHandoff: false, settings: eager }),
+	);
+	expect(noop.createEagerChecklistPrelude(prompt)?.message.role).toBe("custom");
 });

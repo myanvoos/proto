@@ -16,7 +16,6 @@ import {
 	type StreamingPartialJsonCarrier,
 	setStreamingPartialJson,
 } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { parseStreamingJson, parseStreamingJsonThrottled, readSseJson } from "@oh-my-pi/pi-utils";
 
 export class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -145,7 +144,7 @@ export function streamProxy(model: Model, context: Context, options: ProxyStream
 				response.body as ReadableStream<Uint8Array>,
 				options.signal,
 			)) {
-				const parsedEvent = processProxyEvent(model, event, partial, partialJsonByIndex);
+				const parsedEvent = processProxyEvent(event, partial, partialJsonByIndex);
 				if (parsedEvent) {
 					if (parsedEvent.type === "done" || parsedEvent.type === "error") {
 						sawTerminalEvent = true;
@@ -205,7 +204,6 @@ function flushProxyToolCallArguments(
 }
 
 function processProxyEvent(
-	model: Model,
 	proxyEvent: ProxyAssistantMessageEvent,
 	partial: AssistantMessage,
 	partialJsonByIndex: Map<number, ProxyToolCallState>,
@@ -355,7 +353,6 @@ function processProxyEvent(
 			partial.usage = proxyEvent.usage;
 			if (proxyEvent.content !== undefined) partial.content = proxyEvent.content;
 			else flushProxyToolCallArguments(partial, partialJsonByIndex);
-			calculateCost(model, partial.usage);
 			scrubPartialJson(partial);
 			return { type: "done", reason: proxyEvent.reason, message: partial };
 
@@ -365,7 +362,6 @@ function processProxyEvent(
 			partial.usage = proxyEvent.usage;
 			if (proxyEvent.content !== undefined) partial.content = proxyEvent.content;
 			else flushProxyToolCallArguments(partial, partialJsonByIndex);
-			calculateCost(model, partial.usage);
 			scrubPartialJson(partial);
 			return { type: "error", reason: proxyEvent.reason, error: partial };
 	}

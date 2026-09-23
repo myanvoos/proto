@@ -1,5 +1,6 @@
 import { isDashscopeCompatibleModeUrl, modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import { isDeepseekModelIdOrName, isQwenModelId } from "@oh-my-pi/pi-catalog/identity";
+import { $env } from "@oh-my-pi/pi-utils";
 
 import type { AudioContent, ImageContent, Model, TextContent, VideoContent } from "../types";
 
@@ -77,7 +78,7 @@ export function joinTextWithImagePlaceholder(text: string, omittedImages: boolea
 	return joinTextWithOmissions(text, omittedImages ? [NON_VISION_IMAGE_PLACEHOLDER] : []);
 }
 
-export function isDashscopeCompatibleModeTextOnlyQwen(model: Model<"openai-completions">): boolean {
+export function isDashscopeCompatibleModeTextOnlyQwen(model: Model<"openai-completions" | "openrouter">): boolean {
 	if (!isDashscopeCompatibleModeUrl(model.baseUrl)) {
 		return false;
 	}
@@ -92,11 +93,17 @@ export function isDashscopeCompatibleModeTextOnlyQwen(model: Model<"openai-compl
 	return major < 3 || (major === 3 && minor < 8);
 }
 
-export function isTextOnlyDeepSeek(model: Model<"openai-completions">): boolean {
+// DeepSeek SKUs that genuinely accept image_url parts. Tokens are bounded by
+// non-alphanumerics so `revision`/`provisioned` never read as `vision`; V4.1
+// Flash is natively multimodal but its ids carry no such token.
+const DEEPSEEK_IMAGE_SKU_TOKEN = /(?<![a-z0-9])(?:vision|ocr)(?![a-z0-9])/;
+
+export function isTextOnlyDeepSeek(model: Model<"openai-completions" | "openrouter">): boolean {
 	const id = model.id.toLowerCase();
 	const name = (model.name ?? "").toLowerCase();
 
-	if (id.includes("deepseek-ocr") || name.includes("deepseek-ocr")) return false;
+	if (DEEPSEEK_IMAGE_SKU_TOKEN.test(id) || DEEPSEEK_IMAGE_SKU_TOKEN.test(name)) return false;
+	if (id.includes("v4.1-flash") || model.id === "deepseek-flash") return false;
 	return (
 		modelMatchesHost(model, "deepseekFamily") ||
 		isDeepseekModelIdOrName(model.id) ||
@@ -105,9 +112,25 @@ export function isTextOnlyDeepSeek(model: Model<"openai-completions">): boolean 
 	);
 }
 
-export function isOpenAICompletionsVisionSupported(model: Model<"openai-completions">): boolean {
+export function isOpenAICompletionsVisionSupported(model: Model<"openai-completions" | "openrouter">): boolean {
 	if (!model.input.includes("image")) return false;
+	const stripImageInput = model.compat.stripImageInput;
+	if (stripImageInput !== undefined) return !stripImageInput;
 	if (isDashscopeCompatibleModeTextOnlyQwen(model)) return false;
 	if (isTextOnlyDeepSeek(model)) return false;
 	return true;
+}
+
+// Wire truth, not declared capability (`model.input`): pi-native forwards the
+// original context to the gateway, so only Chat Completions and the OpenRouter
+// chat fallback run the text-only guard client-side.
+export function sendsImageInputOnWire(model: Model): boolean {
+	if (model.transport === "pi-native") return model.input.includes("image");
+	if (isGuardedCompletionsTransport(model)) return isOpenAICompletionsVisionSupported(model);
+	return model.input.includes("image");
+}
+
+function isGuardedCompletionsTransport(model: Model): model is Model<"openai-completions" | "openrouter"> {
+	if (model.api === "openai-completions") return true;
+	return model.api === "openrouter" && $env.PI_OPENROUTER_RESPONSES === "0";
 }

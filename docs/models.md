@@ -68,6 +68,7 @@ providers:
           cacheRead: 0
           cacheWrite: 0
         contextWindow: 128000
+        maxContextWindow: 256000 # optional extended-context window
         maxTokens: 16384
         headers:
           X-Model: value
@@ -87,6 +88,13 @@ providers:
 
 Custom models default to reasoning-capable with the full standard effort list (`minimal` through `xhigh`, API-dependent); set `reasoning: false` to opt out for non-reasoning backends.
 
+`maxContextWindow` works on both `models` entries and `modelOverrides`: `contextWindow` is the normal prompt window and
+`maxContextWindow` the larger one the provider accepts. `/extended-context on` selects the larger window; `off` restores
+the normal one. An override that sets only `contextWindow` stays fixed in both modes. This changes PROTO's local context
+budget, not the provider's server-side limit; verify the endpoint accepts requests of the configured size.
+Configured maxima never replace provider-advertised capacity: models with a catalog ceiling (Codex Astra) still clamp
+to it. Per-model overrides, including retired variant aliases, resolve before the extended window is chosen.
+
 ### Allowed provider/model `api` values
 
 - `openai-completions`
@@ -103,6 +111,7 @@ Custom models default to reasoning-capable with the full standard effort list (`
 
 - `auth`: `apiKey` (default), `none`, or `oauth`; `none` and `oauth` waive the `apiKey` requirement for custom models
 - `discovery.type`: `ollama`, `llama.cpp`, `lm-studio`, `openai-models-list`, `proxy`, or `litellm`
+- `discovery.injectV1`: optional boolean, default `true`, for `openai-models-list`. Set `false` to fetch the model list from `{baseUrl}/models` without injecting `/v1` — for gateways that root their OpenAI-compatible surface at a versioned path (e.g. `https://api.opper.ai/v3/compat`) where the forced `/v1/models` returns a different, smaller model list. Query strings in `baseUrl` are ignored, matching the default mode.
 - `transport`: `pi-native` only. When set, every model under that provider is sent to an `proto auth-gateway` compatible `baseUrl` via `POST /v1/pi/stream`; `apiKey` is the gateway bearer.
 - `imageInputDecoder`: `stb` only. Set this on a custom model or `modelOverrides` entry when the serving backend uses an STB-compatible image decoder that cannot accept WebP; PROTO converts attached and historical WebP images before provider dispatch.
 - `tokenizer`: opt into a specific embedded local tokenizer when a proxy's model id is ambiguous or noncanonical. Allowed values: `claude-v3`, `claude-v47`, `claude-v5`, `claude-v5-sonnet`, `qwen3`, `deepseek-v3`, `kimi-k2`, and `glm5`. Omit it to use catalog identity policy; unknown models retain the fast local estimate.
@@ -145,11 +154,11 @@ It supports `enabled`, `api`, `endpoint`, `model`, `v2StreamingEnabled`,
 ### Model value checks
 
 - `id` required
-- `contextWindow` and `maxTokens` must be positive if provided
+- `contextWindow` and `maxTokens` must be positive if provided; `maxContextWindow` must be a positive integer no smaller than `contextWindow` when both are set
 
 ### Command-resolved secrets
 
-Provider `apiKey` values and provider/model `headers` values may start with `!` to read a secret from command stdout. The command is run with a 10 s timeout, stdout is trimmed, and empty/failing commands are omitted:
+Provider `apiKey` values and provider/model `headers` values may start with `!` to read a secret from command stdout. The command runs asynchronously with a 10 s timeout when a request (or model discovery) needs the value — listing or reading the catalog never runs it. Stdout is trimmed, and empty/failing commands are omitted:
 
 ```yaml
 providers:
@@ -159,7 +168,7 @@ providers:
       X-Team-Key: "!bw get password proto-team-key"
 ```
 
-Successful command outputs are cached for the process lifetime so the command is not re-run for every model.
+Successful command outputs are cached for the process lifetime so the command is not re-run for every request; a failing command backs off for 30 s. A provider auth failure (401/403 retry), `proto models refresh`, or the model hub's refresh (F5) drops the provider's cached values so the next request re-runs the command. Header values naming an environment variable are re-read on every request.
 
 ## Merge and override order
 
@@ -172,18 +181,40 @@ ModelRegistry pipeline (on refresh):
 5. Merge custom `models`:
    - same `provider + id` replaces existing
    - otherwise append
-6. Load cached/runtime-discovered models (Ollama, llama.cpp, LM Studio, plus built-in provider managers), then re-apply model overrides.
+6. Load cached and runtime-discovered models (local servers, built-in provider managers, and the shared models.dev catalog for known providers), then re-apply model overrides. A successful endpoint refresh replaces that provider's previously discovered and cached rows, so models the endpoint no longer lists disappear.
 
 ### Provider-model cache and static fingerprint
 
 Cached per-provider model lists are persisted in the model-cache SQLite
-database (current schema version 12) with a `static_fingerprint` column that
+database (current schema version 13) with a `static_fingerprint` column that
 hashes the static catalog slice merged into the row. When `resolveProviderModels`
 skips the network fetch and the fingerprint of the in-memory static
 catalog matches the cached one, the cached rows are returned verbatim —
 the static + dynamic merge is bypassed entirely. The fingerprint is
 memoized per process by tagging the static-models array with a symbol
 property, so repeated cold-start calls do not re-hash.
+
+A failed refresh re-persists the last usable snapshot as non-authoritative so the retry backoff
+applies; a first failed refresh with nothing to preserve writes no row, so the next launch retries
+immediately instead of hiding discovery-only models behind an empty cached catalog.
+
+### Shared catalog refresh
+
+The bundled catalog remains the startup and offline baseline. After startup loads bundled and cached
+rows synchronously, the background refresh fetches the current shared models.dev catalog for known
+providers. New model IDs are merged additively into each provider's bundled slice, normalized through
+that provider's catalog descriptor, and persisted in the model-cache database, so newly published
+models appear without waiting for a new proto release.
+
+Remote rows can supply limits, pricing, modalities, and capability flags for newly added IDs, but
+cannot replace bundled rows, introduce code or arbitrary headers, or add an unregistered provider. A
+successful provider endpoint discovery remains authoritative for account availability; the shared
+catalog is not, so it never removes bundled models when a remote row disappears.
+
+Fresh cached snapshots avoid a network request. If refresh fails, proto keeps the last usable cached
+snapshot and marks it stale; without a cache it falls back to the bundled catalog. Provider discovery
+state records `source` (`bundled`, `models.dev`, `provider`, or `cache`) and `fetchedAt` so callers
+can distinguish current remote data from an offline fallback.
 
 ## Provider and model identity
 
@@ -196,11 +227,43 @@ Provider defaults vs per-model overrides:
 - Provider `headers`, `compat`, and `remoteCompaction` are baselines.
 - Model `headers` override provider header keys.
 - `modelOverrides` can override model metadata (`name`, `reasoning`, `thinking`, `input`, `imageInputDecoder`,
-  `tokenizer`, `supportsTools`, `cost`, `premiumMultiplier`, `contextWindow`, `maxTokens`,
+  `tokenizer`, `supportsTools`, `cost`, `premiumMultiplier`, `contextWindow`, `maxContextWindow`, `maxTokens`,
   `omitMaxOutputTokens`, `headers`, `compat`, `contextPromotionTarget`, `compactionModel`, and
   `remoteCompaction`).
 - `compat` is deep-merged for nested routing blocks (`openRouterRouting`, `vercelGatewayRouting`,
   `extraBody`, and `whenThinking`).
+
+## Usage costs and time-based pricing
+
+proto estimates token costs from the selected provider/model's catalog pricing, preferring
+server-reported monetary costs when available. Completed messages retain their recorded costs:
+crossing a pricing boundary, switching models, or reopening a session does not reprice accumulated
+usage.
+
+For the first-party `deepseek` provider, the catalog follows
+[DeepSeek's official pricing](https://api-docs.deepseek.com/quick_start/pricing):
+
+- Peak hours are **Monday–Friday, 01:00–04:00 and 06:00–10:00 UTC** (start inclusive, end
+  exclusive). All other times, including weekends, cost **50% of peak rates**.
+- Flash pricing covers `deepseek-flash`, `deepseek-v4-flash`, and `deepseek-v4-flash-vision-exp`.
+  Peak rates per million tokens are $0.30 uncached input, $0.006 cached input, and $1.20 output.
+- `deepseek-v4-pro` initially uses peak rates of $1.32 uncached input, $0.044 cached input, and
+  $3.96 output per million tokens. From **2026-09-14 04:00 UTC**, its estimates use the Flash rate
+  card, with the same peak/off-peak schedule.
+
+Local estimates use the assistant message's **request-start timestamp** to choose both the rate card
+and tariff for the whole request. This is proto's estimation convention: DeepSeek's pricing page does
+not specify how its server bills a request spanning a boundary.
+
+The status line's `cost` segment appends **↑** for peak or **↓** for off-peak pricing on the
+**currently active provider/model**, using the current wall clock. It refreshes at tariff boundaries
+even while idle; the arrow is not a label for the accumulated session total. Models without scheduled
+pricing, including explicit flat-price overrides, show no arrow.
+
+An explicit model `cost` in `models.yml`, including `modelOverrides`, is a flat-price override and
+disables inherited time-based pricing for that model. Omitting `cost` preserves catalog pricing.
+`models.yml` does **not** accept a `timeBased` schedule; schedules are catalog metadata generated by
+`packages/catalog/scripts/generated-policies.ts`.
 
 ## Runtime discovery integration
 
@@ -253,7 +316,7 @@ When `litellm` is active (for example through `LITELLM_API_KEY` or stored auth),
 
 Runtime discovery probes LiteLLM management metadata in order: `GET /model_group/info`, `GET /v2/model/info`, `GET /model/info`, and `GET /v1/model/info`. The configured key must be authorized to read at least one of these routes; on deployments that restrict management endpoints, grant the route through LiteLLM's `allowed_routes` access controls or use a master/admin key for discovery.
 
-If every metadata route is unavailable, discovery falls back to the OpenAI-compatible `GET /models` list. A forbidden or failed metadata request is logged once with its endpoint and status; `404` is treated as an absent route. Rich metadata maps per-model context, capability, and upstream-provider fields. OpenAI-backed models use LiteLLM's Responses route so reasoning summaries remain available; mixed-provider groups stay on Chat Completions. Bare fallback ids use the known OpenAI model families for routing and bundled reference metadata when available. Models absent from the bundled catalog can therefore have unknown context and pricing after fallback.
+If every metadata route is unavailable, discovery falls back to the OpenAI-compatible `GET /models` list. A forbidden or failed metadata request is logged once with its endpoint and status; `404` is treated as an absent route. Both paths exclude models explicitly marked with known task-specific LiteLLM modes: `audio_speech`, `audio_transcription`, `batch`, `embedding`, `guardrail`, `image_edit`, `image_generation`, `moderation`, `ocr`, `rerank`, `search`, `vector_store`, and `video_generation`. Missing, null, and unrecognized modes remain selectable so router aliases continue to work. Rich metadata maps per-model context, capability, and upstream-provider fields. OpenAI-backed models use LiteLLM's Responses route so reasoning summaries remain available; mixed-provider groups stay on Chat Completions. Bare fallback ids use the known OpenAI model families for routing and bundled reference metadata when available. Models absent from the bundled catalog can therefore have unknown context and pricing after fallback.
 
 Discovered models default to reasoning-capable when neither the endpoint nor the bundled catalog reports a capability; explicit `supports_reasoning`/`thinking` capability data always wins. Set `reasoning: false` in `modelOverrides` to opt out per model.
 
@@ -353,6 +416,23 @@ Keyless providers:
 - Providers marked `auth: none` are treated as available without credentials.
 - `getApiKey*` returns `kNoAuth` for them.
 
+### Multi-account routing policies
+
+With several OAuth accounts for one provider, `auth.accountPolicies` in `config.yml` tunes which account a session starts on:
+
+```yaml
+auth:
+  accountPolicies:
+    - provider: anthropic
+      account: { email: work@example.com }
+      priority: 10 # higher wins once hard blocks, plan, reserve, and hot-window checks tie
+      reservePct: 25 # keep 25% of this account's quota in reserve (default: retry.usageReservePct)
+```
+
+- `account` selects by `email`, `accountId`, or `projectId` (at least one), optionally narrowed by `orgId`. Each policy must match exactly one stored OAuth account; an unknown field, an unmatched or ambiguous selector, or a `reservePct` for a provider without a usage endpoint is a configuration error.
+- An account inside its reserve ranks behind siblings measured outside theirs, even when its priority is higher. Reserve is the only policy that moves a session off a warm automatic account pin; an explicit `/session pin` is never moved by ranking or reserve.
+- `proto usage` prints each policy-routed account's priority, reserve, and whether it currently sits inside its reserve.
+
 ### Broker mode
 
 When `PROTO_AUTH_BROKER_URL` (or `auth.broker.url`) is set, the local SQLite credential store is replaced by `RemoteAuthCredentialStore`. Layers 3, 4, and 6 above (stored OAuth and API-key credentials) are served from a broker-supplied snapshot whose `refresh` tokens are redacted; expiry triggers `POST /v1/credential/:id/refresh` on the broker rather than a local refresh.
@@ -436,6 +516,10 @@ String entries apply everywhere. Scoped entries apply when the current working d
 Both surfaces keep provider-prefixed concrete models visible and selectable. Selecting a provider
 row stores its explicit `provider/modelId`.
 
+The `proto models` table's `images` column reports what the transport will actually send, so a model whose
+images are stripped (`compat.stripImageInput`, or the built-in text-only DashScope Qwen / DeepSeek guard on
+`openai-completions`) shows `no` even when its spec declares `input: [text, image]`; `--json` keeps the declared `input`.
+
 ## Context promotion (model-level fallback chains)
 
 Context promotion is an overflow recovery mechanism for small-context variants (for example `*-spark`) that automatically promotes to a larger-context sibling when the API rejects a request with a context length error.
@@ -507,6 +591,7 @@ Request shaping:
 - `supportsForcedToolChoice` — accept a forced `tool_choice` that requires a specific tool. Default: `true`. When `false`, a forced selector is downgraded to `auto` so the tool stays available for endpoints that reject forced tool calls (e.g. some thinking-required OpenAI-compatible models).
 - `disableReasoningOnForcedToolChoice` — drop `reasoning_effort` / OpenRouter `reasoning` whenever `tool_choice` forces a call. Default: auto (Kimi/Anthropic-fronted endpoints).
 - `disableReasoningOnToolChoice` — drop reasoning fields whenever any `tool_choice` is sent. Default: auto (DeepSeek reasoning models).
+- `disableReasoningWithTools` — disable reasoning whenever the request advertises function tools, for surfaces that reject every tools-plus-reasoning combination. Default: auto (Azure `gpt-6-astra*`).
 - `alwaysSendMaxTokens` — always send a max-token field when the caller did not provide one. Default: auto (Kimi-family models derive TPM limits from `max_tokens`).
 - `strictResponsesPairing` — Responses-API tool-call/result history must be strictly paired. Default: auto (Azure OpenAI, GitHub Copilot).
 - `streamIdleTimeoutMs` — stream-watchdog idle-timeout floor in ms for slow reasoning hosts. Default: auto (GLM coding-plan hosts, direct DeepSeek reasoning).
@@ -514,12 +599,21 @@ Request shaping:
 - `supportsLongPromptCacheRetention` — host honors `prompt_cache_retention: "24h"` on the Responses API. Default: auto (api.openai.com).
 - `supportsImageDetailOriginal` — allow the Responses API's nonstandard `detail: "original"` image
   mode where the endpoint supports it.
+- `supportsConfigurationUpdate` — carry mid-conversation reasoning-effort changes as `configuration_update` input items so the request-level effort (and the cached prefix) stays pinned. Default: auto (`gpt-6-astra` on any Responses/Codex host). Set `false` for custom endpoints that reject the item with HTTP 400; effort changes are then sent as the top-level `reasoning.effort`.
 - `extraBody` — extra top-level fields merged into every request body (gateway hints, controller selectors, etc.).
+
+Image handling:
+
+- `stripImageInput` — drop image parts before an `openai-completions` request is encoded. Without it, the
+  transport strips images for model lines endpoints commonly serve text-only (DashScope compatible-mode Qwen,
+  DeepSeek), independently of the declared `input`. Set `stripImageInput: false` for an id whose endpoint really
+  accepts `image_url` (a vision-augmenting proxy, for example), or `true` to force text-only. Default: auto.
 
 Reasoning / thinking:
 
 - `supportsReasoningEffort` — accept `reasoning_effort`. Default: auto (off for Grok, Z.ai/Zhipu, and Xiaomi MiMo).
 - `supportsReasoningParams` — whether request shaping may send reasoning params at all. Default: auto (off for GitHub Copilot chat-completions).
+- `supportsReasoningSummary` — whether Responses requests may include `reasoning.summary`. Default: auto (off for xAI hosts). Set `false` for Responses-compatible endpoints that reject the summary field.
 - `reasoningEffortMap` — partial map from internal effort levels (`minimal|low|medium|high|xhigh|max`) to provider-specific strings (e.g. Fireworks GLM maps `minimal -> "none"`).
 - `thinkingFormat` — request shape for thinking: `"openai"` (`reasoning_effort`), `"openrouter"` (`reasoning: { effort }`), `"zai"` (`thinking: { type: "enabled" }`), `"qwen"` (top-level `enable_thinking`), or `"qwen-chat-template"` (`chat_template_kwargs.enable_thinking`). Default: `"openai"`.
 - `qwenTemplateReasoningEffort` — route the selected effort onto the Qwen 3.8+ chat template's `reasoning_effort` kwarg (`chat_template_kwargs.reasoning_effort`, plus the top-level field on the `qwen` dialect). Default: auto (on for Qwen 3.8+ ids on local non-Ollama backends). Set `false` for strict servers that reject unknown `chat_template_kwargs`; effort selections are then not sent for the Qwen dialects and the template runs at its own default.
@@ -551,7 +645,9 @@ Provider-level `compat` is the baseline; per-model `compat` is deep-merged on to
 For `anthropic-messages` models the runtime uses a separate `AnthropicCompat` shape
 (`packages/catalog/src/types.ts`). The `models.yml` schema exposes the strict-tools opt-out as a
 top-level provider field plus `requiresToolResultId`, `replayUnsignedThinking`,
-`supportsEagerToolInputStreaming`, and `allowAnthropicHeaderOverrides` in `compat`. Other
+`supportsEagerToolInputStreaming`, `allowAnthropicHeaderOverrides`, and `supportsContextManagement`
+(set `false` for Anthropic-compatible endpoints that reject `context_management` and its beta header on
+thinking requests) in `compat`. Other
 Anthropic-side knobs are supplied by built-in catalog metadata and are not configurable here.
 
 ### Bedrock compatibility (`bedrock-converse-stream`)

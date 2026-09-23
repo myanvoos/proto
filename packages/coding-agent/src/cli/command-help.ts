@@ -476,6 +476,20 @@ export const installHelp = {
 	},
 } satisfies CommandMetadata;
 
+export const loginHelp = {
+	description: "Log in to a model provider (terminal counterpart of /login)",
+	args: {
+		provider: Args.string({
+			description: "OAuth provider id (e.g. anthropic, openai-codex); omit to pick interactively",
+			required: false,
+		}),
+	},
+	examples: [
+		"# Pick a provider interactively\n  proto login",
+		"# Log in to a specific provider\n  proto login anthropic",
+	],
+} satisfies CommandMetadata;
+
 export const modelsHelp = {
 	description: "List, search, and refresh available models",
 	args: {
@@ -843,7 +857,7 @@ export const usageHelp = {
 		action: Args.string({
 			description: "Optional subcommand to execute",
 			required: false,
-			options: ["invalidate"],
+			options: ["invalidate", "clients"],
 		}),
 	},
 	flags: {
@@ -858,7 +872,7 @@ export const usageHelp = {
 			description: "Show recorded usage-limit history (hourly snapshots) instead of a live snapshot",
 			default: false,
 		}),
-		days: Flags.integer({ char: "d", description: "History window in days (with --history)", default: 7 }),
+		days: Flags.integer({ char: "d", description: "History window in days (with --history or clients)", default: 7 }),
 	},
 	examples: [
 		"# Detailed per-account usage breakdown across all providers\n  proto usage",
@@ -866,6 +880,7 @@ export const usageHelp = {
 		"# Redact account identifiers for screenshots\n  proto usage --redact",
 		"# Machine-readable output\n  proto usage --json",
 		"# Usage-limit trend over the last 30 days\n  proto usage --history --days 30",
+		"# Per-client token burn (which machine/app spent what) over the last 30 days\n  proto usage clients --days 30",
 		"# Invalidate cached usage reports for all providers\n  proto usage invalidate",
 		"# Invalidate cached usage reports for a specific provider\n  proto usage invalidate --provider anthropic",
 	],

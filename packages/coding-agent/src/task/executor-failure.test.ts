@@ -59,6 +59,8 @@ function failingSession(failure: Partial<AssistantMessage>): AgentSession {
 		waitForIdle: async () => {},
 		getLastAssistantMessage: () => message,
 		abort: async () => {},
+		prepareForHeadlessAdvisorDrain: () => {},
+		waitForAdvisorCatchup: async () => true,
 		dispose: async () => {},
 		setIrcWakeTurnObserver: () => {},
 		getAsyncJobOwnerId: () => undefined,

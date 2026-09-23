@@ -136,7 +136,7 @@ export function createTtsrJudge(deps: TtsrJudgeDeps): JudgeFn {
 						signal: judgeSignal,
 					},
 				),
-			{ signal: judgeSignal },
+			{ signal: judgeSignal, provider: model.provider },
 		);
 		if (response.stopReason === "error") {
 			logger.debug("TTSR judge completion failed", { error: response.errorMessage });

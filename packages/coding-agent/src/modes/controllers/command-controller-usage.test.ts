@@ -57,3 +57,58 @@ test("usage report model summary is truncated to the available width", () => {
 	expect(Bun.stringWidth(strip(line!))).toBeLessThanOrEqual(48);
 	expect(strip(line!)).toContain("…");
 });
+
+function creditBalanceReport(balance: number, shared: boolean): UsageReport {
+	return {
+		provider: "charm-hyper",
+		fetchedAt: 1_000,
+		limits: [
+			{
+				id: "charm-hyper:credits",
+				label: "Credit balance",
+				scope: { provider: "charm-hyper", windowId: "balance", shared },
+				amount: { remaining: balance, unit: "credits" },
+			},
+		],
+	};
+}
+
+// An account-wide balance is observed once per stored key; the two probes race a moving balance,
+// so both orders must collapse to the same pool instead of summing it.
+test("usage report collapses a shared prepaid balance seen through several keys", () => {
+	for (const reports of [
+		[creditBalanceReport(95, true), creditBalanceReport(94.5, true)],
+		[creditBalanceReport(94.5, true), creditBalanceReport(95, true)],
+	]) {
+		const output = strip(renderUsageReports(reports, theme, 2_000, 100));
+		expect(output).toContain("95 credits left");
+		expect(output).not.toContain("189.5");
+	}
+});
+
+test("usage report sums distinct prepaid balances", () => {
+	const output = strip(
+		renderUsageReports([creditBalanceReport(95, false), creditBalanceReport(94.5, false)], theme, 2_000, 100),
+	);
+	expect(output).toContain("189.5 credits left");
+});
+
+test("usage report shows one row for a quota shared by several model-family counters", () => {
+	const shared = (counterKey: string) => ({
+		id: `google-antigravity:${counterKey}:default:3p-weekly`,
+		label: "Claude & GPT (shared)",
+		scope: { provider: "google-antigravity", windowId: "7d", shared: true, sharedGroup: "3p-weekly:7d" },
+		window: { id: "7d", label: "7d" },
+		amount: { unit: "percent" as const, usedFraction: 0.4 },
+	});
+	const output = renderUsageReports(
+		[{ provider: "google-antigravity", fetchedAt: 1_000, limits: [shared("anthropic"), shared("openai")] }],
+		theme,
+		2_000,
+		80,
+	);
+	// Without collapsing, the second routing copy renders as a phantom "account 2".
+	const text = strip(output);
+	expect(text).toContain("account 1");
+	expect(text).not.toContain("account 2");
+});

@@ -1,6 +1,6 @@
 import type { Model, ProviderPayload, UserContent } from "@oh-my-pi/pi-ai";
 import type { ModelTokenizer } from "@oh-my-pi/pi-catalog/types";
-import { countTokens as countTokensNat, Encoding } from "@oh-my-pi/pi-natives";
+import * as natives from "@oh-my-pi/pi-natives";
 import { stringifyJson } from "@oh-my-pi/pi-utils";
 import { isEstimateCacheable, messageEstimateVersion } from "./compaction/message-cache";
 import type { AgentMessage } from "./types";
@@ -8,18 +8,18 @@ import type { AgentMessage } from "./types";
 const testEnv = Bun.env.NODE_ENV === "test";
 const accurate = process.env.PI_TOKENIZER_ACCURATE === "1" && !testEnv;
 
-const NATIVE_ENCODING: Record<ModelTokenizer, Encoding> = {
-	"claude-v3": Encoding.ClaudeV3,
-	"claude-v47": Encoding.ClaudeV47,
-	"claude-v5": Encoding.ClaudeV5,
-	"claude-v5-sonnet": Encoding.ClaudeV5Sonnet,
-	qwen3: Encoding.Qwen3,
-	"deepseek-v3": Encoding.DeepSeekV3,
-	"kimi-k2": Encoding.KimiK2,
-	glm5: Encoding.Glm5,
+const NATIVE_ENCODING: Record<ModelTokenizer, natives.Encoding> = {
+	"claude-v3": natives.Encoding.ClaudeV3,
+	"claude-v47": natives.Encoding.ClaudeV47,
+	"claude-v5": natives.Encoding.ClaudeV5,
+	"claude-v5-sonnet": natives.Encoding.ClaudeV5Sonnet,
+	qwen3: natives.Encoding.Qwen3,
+	"deepseek-v3": natives.Encoding.DeepSeekV3,
+	"kimi-k2": natives.Encoding.KimiK2,
+	glm5: natives.Encoding.Glm5,
 };
 
-export function tokenizerEncodingForModel(model: Pick<Model, "tokenizer"> | null | undefined): Encoding | null {
+export function tokenizerEncodingForModel(model: Pick<Model, "tokenizer"> | null | undefined): natives.Encoding | null {
 	return model?.tokenizer ? NATIVE_ENCODING[model.tokenizer] : null;
 }
 
@@ -39,6 +39,35 @@ function byteLength(text: string): number {
 
 function sumFragments(text: string | string[], perFragment: (t: string) => number): number {
 	return Array.isArray(text) ? text.reduce((sum, t) => sum + perFragment(t), 0) : perFragment(text);
+}
+
+interface NativeTokenCount {
+	tokens: number;
+	exact: boolean;
+}
+
+/**
+ * A stale native addon rejects encodings its string enum does not know yet (the version sentinel does not cover
+ * that skew); fall back to the byte bound instead of failing spawn and compaction. Only `approximate` takes the
+ * bytes/4 guess — every other mode keeps the conservative byte upper bound.
+ */
+function countTokensNat(
+	text: string | string[],
+	encoding: natives.Encoding | null | undefined,
+	mode: TokenCountMode,
+): NativeTokenCount {
+	try {
+		return { tokens: natives.countTokens(text, encoding), exact: true };
+	} catch (error) {
+		if (
+			!(error instanceof Error) ||
+			(!error.message.includes("does not match any variant of enum") &&
+				!error.message.includes("unknown enum variant"))
+		) {
+			throw error;
+		}
+		return { tokens: sumFragments(text, mode === "approximate" ? byteEstimate : byteLength), exact: false };
+	}
 }
 
 export interface TokenBudgetCheck {
@@ -77,7 +106,7 @@ interface MessageEstimate {
 }
 
 export class Tokenizer {
-	readonly #encoding: Encoding | null;
+	readonly #encoding: natives.Encoding | null;
 
 	#estimates = new WeakMap<AgentMessage, MessageEstimate>();
 
@@ -85,22 +114,22 @@ export class Tokenizer {
 		this.#encoding = tokenizerEncodingForModel(model);
 	}
 
-	get encoding(): Encoding | null {
+	get encoding(): natives.Encoding | null {
 		return this.#encoding;
 	}
 
 	countTokens(text: string | string[], mode: TokenCountMode = "approximate"): number {
-		if (mode === "strict") return countTokensNat(text, this.#encoding);
-		if (!testEnv && this.#encoding !== null) return countTokensNat(text, this.#encoding);
-		if (accurate) return countTokensNat(text);
+		if (mode === "strict") return countTokensNat(text, this.#encoding, mode).tokens;
+		if (!testEnv && this.#encoding !== null) return countTokensNat(text, this.#encoding, mode).tokens;
+		if (accurate) return countTokensNat(text, undefined, mode).tokens;
 		return sumFragments(text, mode === "upperbound" ? byteLength : byteEstimate);
 	}
 
 	checkTokenBudget(text: string | string[], budget: number): TokenBudgetCheck {
 		const bound = sumFragments(text, byteLength);
 		if (bound <= budget) return { fits: true, tokens: bound, exact: false };
-		const tokens = this.countTokens(text, "strict");
-		return { fits: tokens <= budget, tokens, exact: true };
+		const result = countTokensNat(text, this.#encoding, "strict");
+		return { fits: result.tokens <= budget, tokens: result.tokens, exact: result.exact };
 	}
 
 	countMessage(message: AgentMessage, options?: MessageCountOptions): number {
@@ -166,10 +195,24 @@ export class Tokenizer {
 
 	#collectProviderPayload(payload: ProviderPayload, excludeEncryptedReasoning: boolean): CollectedContent {
 		const collected: CollectedContent = { fragments: [], images: 0 };
-		// Native histories are wire objects: JSON.stringify would charge for IDs/status metadata and
-		// can turn one base64 image into hundreds of thousands of fake text tokens. Walk their string
-		// leaves instead, omitting structural metadata and charging images by the normal image estimate.
-		this.#collectUnknownValue(payload.items, collected, excludeEncryptedReasoning, new Set());
+		switch (payload.type) {
+			case "openaiResponsesHistory":
+				// Native histories are wire objects: JSON.stringify would charge for IDs/status metadata and
+				// can turn one base64 image into hundreds of thousands of fake text tokens. Walk their string
+				// leaves instead, omitting structural metadata and charging images by the normal image estimate.
+				this.#collectUnknownValue(payload.items, collected, excludeEncryptedReasoning, new Set());
+				break;
+			case "anthropicCompaction":
+				collected.fragments.push(payload.content);
+				if (payload.filesText) collected.fragments.push(payload.filesText);
+				if (payload.encryptedContent && !excludeEncryptedReasoning) {
+					collected.fragments.push(payload.encryptedContent);
+				}
+				break;
+			case "anthropicMessage":
+				// Request controls only; the message content carries the replayed text.
+				break;
+		}
 		return collected;
 	}
 

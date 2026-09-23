@@ -23,6 +23,7 @@ import { ModelRegistry } from "../config/model-registry";
 import {
 	formatModelSelectorValue,
 	formatModelString,
+	formatModelStringWithRouting,
 	getModelMatchPreferences,
 	resolveCliModel,
 } from "../config/model-resolver";
@@ -647,7 +648,7 @@ function buildModelReport(
 	}
 	return {
 		selector,
-		model: formatModelString(model),
+		model: formatModelStringWithRouting(model),
 		thinking,
 		results,
 		stats: successes.length === 0 ? null : computeBenchStats(successes),
@@ -1015,7 +1016,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 		const reports: BenchModelReport[] = [];
 		for (const { selector, model, thinking } of targets) {
 			if (!json) {
-				const resolvedModel = formatModelSelectorValue(formatModelString(model), thinking);
+				const resolvedModel = formatModelSelectorValue(formatModelStringWithRouting(model), thinking);
 				const resolvedNote = selector === resolvedModel ? "" : chalk.dim(` (${selector})`);
 				print(`${chalk.bold(resolvedModel)}${resolvedNote}`);
 				progress = {

@@ -85,6 +85,7 @@ export type SymbolKey =
 	| "icon.input"
 	| "icon.output"
 	| "icon.throughput"
+	| "icon.intelligence"
 	| "icon.host"
 	| "icon.session"
 	| "icon.package"
@@ -290,6 +291,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.input": "↓",
 	"icon.output": "↑",
 	"icon.throughput": "",
+	"icon.intelligence": "IQ",
 	"icon.host": "",
 	"icon.session": "",
 	"icon.package": "",

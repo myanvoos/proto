@@ -11,6 +11,9 @@ type ChatCompletionsValidation = {
 	provider: string;
 	baseUrl: string;
 	model: string;
+	tolerateModelDenied?: boolean;
+	/** Only a real auth rejection (401/403) fails login; any other probe failure trusts the supplied key. */
+	optional?: boolean;
 };
 
 type AnthropicMessagesValidation = {
@@ -41,6 +44,8 @@ export type ApiKeyLoginConfig = {
 	validation: ChatCompletionsValidation | AnthropicMessagesValidation | ModelsEndpointValidation | null;
 
 	emptyKeyFallback?: string;
+
+	normalize?: "strip-bearer";
 };
 
 export function createApiKeyLogin(config: ApiKeyLoginConfig): (options: OAuthController) => Promise<string> {
@@ -72,7 +77,15 @@ export function createApiKeyLogin(config: ApiKeyLoginConfig): (options: OAuthCon
 			throw new AIError.LoginCancelledError();
 		}
 
-		const trimmed = apiKey.trim();
+		let trimmed = apiKey.trim();
+		if (config.normalize === "strip-bearer" && trimmed) {
+			trimmed = trimmed.replace(/^bearer\b\s*/i, "");
+			if (!trimmed) {
+				throw new AIError.ApiKeyRequiredError(
+					`${config.providerLabel} API key is empty after stripping Bearer prefix`,
+				);
+			}
+		}
 		if (!trimmed) {
 			if (config.emptyKeyFallback !== undefined) {
 				return config.emptyKeyFallback;
@@ -81,17 +94,27 @@ export function createApiKeyLogin(config: ApiKeyLoginConfig): (options: OAuthCon
 		}
 
 		if (config.validation) {
-			options.onProgress?.("Validating API key...");
 			if (config.validation.kind === "chat-completions") {
-				await validateOpenAICompatibleApiKey({
-					provider: config.validation.provider,
-					apiKey: trimmed,
-					baseUrl: config.validation.baseUrl,
-					model: config.validation.model,
-					signal: options.signal,
-					fetch: options.fetch,
-				});
+				const optional = config.validation.optional === true;
+				options.onProgress?.(optional ? "Validating API key (optional)..." : "Validating API key...");
+				try {
+					await validateOpenAICompatibleApiKey({
+						provider: config.validation.provider,
+						apiKey: trimmed,
+						baseUrl: config.validation.baseUrl,
+						model: config.validation.model,
+						signal: options.signal,
+						fetch: options.fetch,
+						tolerateModelDenied: config.validation.tolerateModelDenied,
+					});
+				} catch (error) {
+					if (!optional || AIError.is(AIError.classify(error), AIError.Flag.AuthFailed)) throw error;
+					options.onProgress?.(
+						`Skipping ${config.providerLabel} validation endpoint; continuing with provided API key.`,
+					);
+				}
 			} else if (config.validation.kind === "anthropic-messages") {
+				options.onProgress?.("Validating API key...");
 				await validateAnthropicCompatibleApiKey({
 					provider: config.validation.provider,
 					apiKey: trimmed,
@@ -101,6 +124,7 @@ export function createApiKeyLogin(config: ApiKeyLoginConfig): (options: OAuthCon
 					fetch: options.fetch,
 				});
 			} else {
+				options.onProgress?.("Validating API key...");
 				await validateApiKeyAgainstModelsEndpoint({
 					provider: config.validation.provider,
 					apiKey: trimmed,

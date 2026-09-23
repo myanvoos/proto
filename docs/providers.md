@@ -47,9 +47,13 @@ Use the interactive slash commands inside a session:
 - `/login` — opens the OAuth/key selector. `/login <provider>` jumps straight to one provider (e.g. `/login anthropic`); for an OAuth flow that needs a pasted callback, run `/login <redirect-url>` to complete it.
 - `/logout` — opens the provider selector to remove stored credentials.
 
+Outside a session, `proto login [<provider>]` runs the same login from the terminal: it prints the auth URL (and opens it in your browser), reads any prompts from stdin, and saves to the same store sessions use — local `agent.db`, or the configured auth broker. Without a provider it shows a numbered picker.
+
 For headless or remote setups backed by a shared auth broker, the CLI exposes `proto auth-broker login <provider>` / `proto auth-broker logout` (and `status`, `list`, `import`, `migrate`). See [Secrets and credentials](./secrets.md) for the broker model.
 
 When a model has no credentials, `proto` tells you to run `/login` or set the provider's environment variable.
+
+For ClinePass, set `CLINE_API_KEY` or run `/login cline-pass`. The roster refreshes from Cline's public recommended-models endpoint; known models carry Cline-authored limits, subscription pricing, and reasoning controls, and new ids stay selectable with conservative metadata. `/usage` reports the five-hour, weekly, and monthly quota windows. Free-tier models are marked `(free)` and work with the same key on any Cline account; subscription models show API-equivalent pricing while the streamed gateway cost stays authoritative.
 
 ### Pinning a key in `models.yml`
 
@@ -98,14 +102,22 @@ Each provider has one or more environment variables that supply a key when no st
 
 | Provider ID                      | Environment variable(s)                                                       |
 | -------------------------------- | ----------------------------------------------------------------------------- |
+| `abliteration`                   | `ABLITERATION_API_KEY`, then `ABLIT_KEY`                                      |
 | `aiand`                          | `AIAND_API_KEY`                                                               |
 | `cerebras`                       | `CEREBRAS_API_KEY`                                                            |
+| `charm-hyper`                    | `CHARM_HYPER_API_KEY`, then `HYPER_API_KEY`                                   |
+| `cline-pass`                     | `CLINE_API_KEY`                                                               |
+| `commandcode`                    | `COMMAND_CODE_API_KEY`, then `COMMANDCODE_API_KEY`                            |
 | `alibaba-token-plan`             | `ALIBABA_TOKEN_PLAN_API_KEY`, then `BAILIAN_TOKEN_PLAN_API_KEY`               |
 | `baseten`                        | `BASETEN_API_KEY`                                                             |
 | `bedrock-mantle`                 | `AWS_BEARER_TOKEN_BEDROCK`                                                    |
+| `deepinfra`                      | `DEEPINFRA_API_KEY`                                                           |
 | `deepseek`                       | `DEEPSEEK_API_KEY`                                                            |
 | `siliconflow`                    | `SILICONFLOW_API_KEY`                                                         |
 | `siliconflow-cn`                 | `SILICONFLOW_CN_API_KEY`                                                      |
+| `singularityapi-dev`             | `SINGULARITYAPI_DEV_API_KEY`                                                  |
+| `singularityapi-tech`            | `SINGULARITYAPI_TECH_API_KEY`                                                 |
+| `stepfun`                        | `STEPFUN_API_KEY`                                                             |
 | `fireworks`                      | `FIREWORKS_API_KEY`                                                           |
 | `together`                       | `TOGETHER_API_KEY`                                                            |
 | `coreweave`                      | `COREWEAVE_API_KEY`, then `WANDB_API_KEY`                                     |
@@ -119,7 +131,7 @@ Each provider has one or more environment variables that supply a key when no st
 | `novita`                         | `NOVITA_API_KEY`                                                              |
 | `venice`                         | `VENICE_API_KEY`                                                              |
 | `vercel-ai-gateway`              | `AI_GATEWAY_API_KEY` (also `VERCEL_AI_GATEWAY_API_KEY` for catalog discovery) |
-| `cloudflare-ai-gateway`          | `CLOUDFLARE_AI_GATEWAY_API_KEY`                                               |
+| `cloudflare-ai-gateway`          | `CLOUDFLARE_AI_GATEWAY_API_KEY` + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_GATEWAY_ID` |
 | `litellm`                        | `LITELLM_API_KEY`; optional `LITELLM_BASE_URL` for the proxy endpoint         |
 | `kilo`                           | `KILO_API_KEY`                                                                |
 | `zai`                            | `ZAI_API_KEY`                                                                 |
@@ -139,6 +151,7 @@ Each provider has one or more environment variables that supply a key when no st
 | `opencode-zen`, `opencode-go`    | `OPENCODE_API_KEY`                                                            |
 | `firepass`                       | `FIREPASS_API_KEY`                                                            |
 | `wafer-serverless`               | `WAFER_SERVERLESS_API_KEY`                                                    |
+| `yolo-auto`                      | `YOLO_AUTO_API_KEY`                                                           |
 | `xiaomi`                         | `XIAOMI_API_KEY`                                                              |
 | `xiaomi-token-plan-ams`          | `XIAOMI_TOKEN_PLAN_AMS_API_KEY`                                               |
 | `xiaomi-token-plan-cn`           | `XIAOMI_TOKEN_PLAN_CN_API_KEY`                                                |
@@ -149,7 +162,19 @@ Each provider has one or more environment variables that supply a key when no st
 | `llama.cpp`                      | `LLAMA_CPP_API_KEY` (only when the server requires auth)                      |
 | `vllm`                           | `VLLM_API_KEY` (optional for an unauthenticated local server)                 |
 
-OAuth-backed providers such as `anthropic`, `github-copilot`, `cursor`, `ollama-cloud`, `qwen-portal`, `kimi-code`, `xai-oauth`, `wafer-serverless`, `google-gemini-cli`, and `google-antigravity` are normally reached through `/login` rather than an environment variable. See [Environment variables](./environment-variables.md) for search-tool and configuration variables not listed here.
+`/login cloudflare-ai-gateway` prompts for the gateway token, Cloudflare account ID, and gateway ID, then stores all three together. To use environment variables, set all three values listed above. `proto` selects the Anthropic, OpenAI, or Workers AI gateway route for each model; you do not need a `models.yml` base URL override.
+
+`charm-hyper` is Charm's OpenAI-compatible inference gateway for coding agents. Issue or manage a key at `https://hyper.charm.land/` (or run `/login charm-hyper`); the model list, limits, effort levels, and tariffs are discovered live from the public `https://hyper.charm.land/v1/models` endpoint (no key required, never bundled), and `HYPER_API_KEY` is accepted as a fallback alias for `CHARM_HYPER_API_KEY`. `/usage` reports the account-wide prepaid credit balance from `/v1/credits`.
+
+SingularityAPI sells two unrelated products behind one brand, so proto models them as two providers: they share no key, no billing model, and no effort ladder, and neither key is accepted by the other host.
+
+`singularityapi-dev` is the pay-as-you-go universal inference gateway (300+ models: DeepSeek, Kimi, GLM, frontier flagships). Create a `sk-sapi-...` key at `https://app.singularityapi.dev` (or run `/login singularityapi-dev`) and set `SINGULARITYAPI_DEV_API_KEY`; the roster, limits, and tariffs are discovered live from `https://api.singularityapi.dev/v1/models`.
+
+`singularityapi-tech` is the reserved DeepSeek lanes gateway. Usage bills against a booked reservation slot rather than prepaid credit, so a valid key with no active slot answers 403 until you book one at `https://app.singularityapi.tech`. Create an `sk-...` key there (or run `/login singularityapi-tech`), set `SINGULARITYAPI_TECH_API_KEY`, and the lane roster is discovered live from `https://api.singularityapi.tech/v1/models`.
+
+`muse-code` is Meta's Muse Code subscription. Run `/login muse-code` and approve the device code at `auth.meta.com`; the login mints the subscription's Model API key (inactive or unpaid subscriptions fail sign-in with the purchase link). Requests and model discovery use that key against `https://api.meta.ai/v1` with the same Muse Spark models and API-equivalent pricing as `meta`, the roster is replaced by what the subscription lists, and `/usage` reports the rolling and weekly quota windows.
+
+OAuth-backed providers such as `anthropic`, `github-copilot`, `cursor`, `ollama-cloud`, `qwen-portal`, `kimi-code`, `muse-code`, `xai-oauth`, `wafer-serverless`, `google-gemini-cli`, and `google-antigravity` are normally reached through `/login` rather than an environment variable. See [Environment variables](./environment-variables.md) for search-tool and configuration variables not listed here.
 
 ### `.env` discovery and precedence
 

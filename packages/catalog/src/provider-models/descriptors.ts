@@ -2,6 +2,7 @@ import type { ModelManagerConfig, ProviderCatalogEntry, ProviderDescriptor } fro
 import { googleModelManagerOptions, googleVertexModelManagerOptions } from "./google";
 import { ollamaCloudModelManagerOptions } from "./ollama";
 import {
+	abliterationModelManagerOptions,
 	aiandModelManagerOptions,
 	aimlApiModelManagerOptions,
 	alibabaCodingPlanModelManagerOptions,
@@ -10,8 +11,12 @@ import {
 	basetenModelManagerOptions,
 	bedrockMantleModelManagerOptions,
 	cerebrasModelManagerOptions,
+	charmHyperModelManagerOptions,
+	clinePassModelManagerOptions,
 	cloudflareAiGatewayModelManagerOptions,
+	commandCodeModelManagerOptions,
 	coreWeaveModelManagerOptions,
+	deepinfraModelManagerOptions,
 	deepseekModelManagerOptions,
 	firepassModelManagerOptions,
 	fireworksModelManagerOptions,
@@ -26,6 +31,7 @@ import {
 	metaModelManagerOptions,
 	mistralModelManagerOptions,
 	moonshotModelManagerOptions,
+	museCodeModelManagerOptions,
 	nanoGptModelManagerOptions,
 	novitaModelManagerOptions,
 	nvidiaModelManagerOptions,
@@ -39,6 +45,9 @@ import {
 	sakanaModelManagerOptions,
 	siliconflowCnModelManagerOptions,
 	siliconflowModelManagerOptions,
+	singularityApiDevModelManagerOptions,
+	singularityApiTechModelManagerOptions,
+	stepfunModelManagerOptions,
 	syntheticModelManagerOptions,
 	togetherModelManagerOptions,
 	umansModelManagerOptions,
@@ -49,6 +58,7 @@ import {
 	xaiModelManagerOptions,
 	xaiOAuthModelManagerOptions,
 	xiaomiModelManagerOptions,
+	yoloAutoModelManagerOptions,
 	zenmuxModelManagerOptions,
 	zhipuCodingPlanModelManagerOptions,
 } from "./openai-compat";
@@ -60,6 +70,14 @@ import {
 } from "./special";
 
 export const CATALOG_PROVIDERS = [
+	{
+		id: "abliteration",
+		defaultModel: "abliterated-model",
+		envVars: ["ABLITERATION_API_KEY", "ABLIT_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => abliterationModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Abliteration" },
+	},
 	{
 		id: "aiand",
 		defaultModel: "moonshotai/kimi-k2.7-code",
@@ -130,6 +148,24 @@ export const CATALOG_PROVIDERS = [
 		catalogDiscovery: { label: "Cerebras" },
 	},
 	{
+		id: "charm-hyper",
+		defaultModel: "glm-5.3",
+		envVars: ["CHARM_HYPER_API_KEY", "HYPER_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => charmHyperModelManagerOptions(config),
+		allowUnauthenticated: true,
+		dynamicModelsAuthoritative: true,
+		// No `catalogDiscovery`: the gateway catalog is live deployment truth and keyless, so enrolling it in
+		// generate-models.ts would freeze a hyper.charm.land snapshot into the bundle on every regen.
+	},
+	{
+		id: "cline-pass",
+		defaultModel: "kimi-k3",
+		envVars: ["CLINE_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => clinePassModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "ClinePass", allowUnauthenticated: true },
+	},
+	{
 		id: "cloudflare-ai-gateway",
 		defaultModel: "anthropic/claude-opus-5-5",
 		envVars: ["CLOUDFLARE_AI_GATEWAY_API_KEY"],
@@ -137,11 +173,29 @@ export const CATALOG_PROVIDERS = [
 		catalogDiscovery: { label: "Cloudflare AI Gateway" },
 	},
 	{
+		id: "commandcode",
+		defaultModel: "claude-sonnet-5",
+		envVars: ["COMMAND_CODE_API_KEY", "COMMANDCODE_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => commandCodeModelManagerOptions(config),
+		allowUnauthenticated: true,
+		dynamicModelsAuthoritative: true,
+		skipCrossProviderReferenceFills: true,
+		catalogDiscovery: { label: "Command Code", allowUnauthenticated: true },
+	},
+	{
 		id: "cursor",
 		defaultModel: "claude-opus-5-high",
 		envVars: ["CURSOR_ACCESS_TOKEN"],
 		createModelManagerOptions: (config: ModelManagerConfig) => cursorModelManagerOptions(config),
 		catalogDiscovery: { label: "Cursor", envVars: ["CURSOR_API_KEY"], oauthProvider: "cursor" },
+	},
+	{
+		id: "deepinfra",
+		defaultModel: "deepseek-ai/DeepSeek-V4-Flash-0731",
+		envVars: ["DEEPINFRA_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => deepinfraModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "DeepInfra", allowUnauthenticated: true },
 	},
 	{
 		id: "deepseek",
@@ -160,7 +214,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "firepass",
-		defaultModel: "kimi-k2.6-turbo",
+		defaultModel: "glm-5.2-fast",
 		envVars: ["FIREPASS_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => firepassModelManagerOptions(config),
 	},
@@ -288,6 +342,12 @@ export const CATALOG_PROVIDERS = [
 		catalogDiscovery: { label: "Meta Model API" },
 	},
 	{
+		id: "muse-code",
+		defaultModel: "muse-spark-1.3",
+		createModelManagerOptions: (config: ModelManagerConfig) => museCodeModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+	},
+	{
 		id: "moonshot",
 		defaultModel: "kimi-k2.7-code",
 
@@ -404,8 +464,31 @@ export const CATALOG_PROVIDERS = [
 		dynamicModelsAuthoritative: true,
 	},
 	{
+		id: "singularityapi-dev",
+		defaultModel: "deepseek-v4-flash",
+		envVars: ["SINGULARITYAPI_DEV_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => singularityApiDevModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+	},
+	{
+		id: "singularityapi-tech",
+		defaultModel: "deepseek-ai/DeepSeek-V4.1-Flash",
+		envVars: ["SINGULARITYAPI_TECH_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => singularityApiTechModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+	},
+	{
+		id: "stepfun",
+		defaultModel: "step-5-preview",
+		envVars: ["STEPFUN_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => stepfunModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		skipCrossProviderReferenceFills: true,
+		catalogDiscovery: { label: "StepFun" },
+	},
+	{
 		id: "synthetic",
-		defaultModel: "hf:zai-org/GLM-5.1",
+		defaultModel: "hf:zai-org/GLM-5.2",
 		envVars: ["SYNTHETIC_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => syntheticModelManagerOptions(config),
 		dynamicModelsAuthoritative: true,
@@ -512,6 +595,14 @@ export const CATALOG_PROVIDERS = [
 		envVars: ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) =>
 			xiaomiModelManagerOptions({ ...config, providerId: "xiaomi-token-plan-sgp", tokenPlanRegion: "sgp" }),
+	},
+	{
+		id: "yolo-auto",
+		defaultModel: "qwen3.8-flash",
+		envVars: ["YOLO_AUTO_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => yoloAutoModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Yolo-Auto" },
 	},
 	{
 		id: "zai",

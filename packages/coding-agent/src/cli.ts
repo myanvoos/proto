@@ -17,7 +17,7 @@ import {
 	VERSION,
 	validateAgentDirEnv,
 } from "@oh-my-pi/pi-utils/dirs";
-import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
+import { fatal, interceptUnhandledRejections, registerStdioDisconnectHandling } from "@oh-my-pi/pi-utils/postmortem";
 import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
 import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
 import { BLOB_BROKER_WORKER_ARG } from "./blob-broker/protocol";
@@ -291,12 +291,15 @@ export async function runCli(argv: string[]): Promise<void> {
 }
 
 if (isProcessEntry || !Bun.isMainThread) {
+	// A one-shot run (`proto --help | head`) whose stdout consumer closes early is an ordinary Unix disconnect, not a
+	// fatal error. The registration lives for the process; interactive launches own their terminal lifetime on top.
+	if (isProcessEntry) registerStdioDisconnectHandling();
 	runCli(process.argv.slice(2)).catch(async (err: unknown) => {
 		// Keep the CLI module off the fast path: it is only needed once something has already failed.
 		const { formatCliError } = await import("@oh-my-pi/pi-utils/cli").catch(() => ({
 			formatCliError: (error: unknown) => `error: ${error instanceof Error ? error.message : String(error)}\n`,
 		}));
-		process.stderr.write(formatCliError(err));
-		process.exit(1);
+		// Terminal owners restore the display before the report lands, so it never draws over a live TUI.
+		await fatal(err, formatCliError(err));
 	});
 }

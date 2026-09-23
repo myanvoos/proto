@@ -45,6 +45,9 @@ export interface AuthGatewayParsedRequestOptions {
 
 	disableReasoning?: boolean;
 
+	/** Explicit wire-level reasoning-off request, kept distinct from the generic disable hint. */
+	forceReasoningOff?: boolean;
+
 	explicitThinkingBudgetTokens?: number;
 
 	thinkingBudgets?: Partial<Record<Effort, number>>;
@@ -52,6 +55,8 @@ export interface AuthGatewayParsedRequestOptions {
 	hideThinkingSummary?: boolean;
 
 	taskBudget?: TokenTaskBudget;
+
+	anthropicPrefixMismatchBehavior?: "drop_block" | "error";
 
 	serviceTier?: ServiceTier;
 

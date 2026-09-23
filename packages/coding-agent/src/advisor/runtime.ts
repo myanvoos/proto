@@ -4,7 +4,11 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
 import { type CursorExecResolvedCarrier, kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { logger } from "@oh-my-pi/pi-utils";
-import { obfuscateToolArguments } from "../secrets/message-transform";
+import {
+	collectNativeReplayRegexSecretValues,
+	obfuscateNativeReplay,
+	obfuscateToolArguments,
+} from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import {
 	formatExecutionSourcePreview,
@@ -502,6 +506,9 @@ export class ReviewerRuntime {
 				}
 
 				if (this.#epoch !== epoch) return null;
+				// Maintenance can commit unseen native plaintext or a snapshot predating concurrent collisions; scrub
+				// before another round can send that history or the popped batch to compaction.
+				batchText = this.#feed.scrubCommittedHistory(batchText);
 
 				if (shouldResetContext) {
 					if (round > 0) {
@@ -1084,14 +1091,36 @@ function obfuscateAdvisorMessage(
 	}
 }
 
+type NativeReplayCarrier = Extract<AgentMessage, { role: "user" | "developer" | "assistant" | "compactionSummary" }>;
+
+function carriesNativeReplay(message: AgentMessage): message is NativeReplayCarrier {
+	return (
+		message.role === "user" ||
+		message.role === "developer" ||
+		message.role === "assistant" ||
+		message.role === "compactionSummary"
+	);
+}
+
 function scrubAdvisorHistory(
 	obfuscator: SecretObfuscator,
 	messages: AgentMessage[],
-	sharedRegexSecretValues: ReadonlySet<string>,
-): void {
+	sharedRegexSecretValues: Set<string>,
+): boolean {
+	const previousSize = sharedRegexSecretValues.size;
+	// Collect across the whole history first: redacting a search-only regex value would erase the evidence needed
+	// to scrub an earlier replay.
+	for (const message of messages) {
+		if (carriesNativeReplay(message))
+			collectNativeReplayRegexSecretValues(obfuscator, message, sharedRegexSecretValues);
+	}
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index]!;
-		const next = obfuscateAdvisorMessage(obfuscator, message, sharedRegexSecretValues);
+		const replay = carriesNativeReplay(message)
+			? obfuscateNativeReplay(obfuscator, message, sharedRegexSecretValues)
+			: message;
+		const next = obfuscateAdvisorMessage(obfuscator, replay, sharedRegexSecretValues);
 		if (next !== message) messages[index] = next;
 	}
+	return sharedRegexSecretValues.size !== previousSize;
 }

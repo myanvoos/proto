@@ -16,8 +16,9 @@ const BIZ_BASE = env("ZAI_BIZ_BASE") ?? "https://api.z.ai";
 const BUSINESS_LOGIN_URL = env("ZAI_BUSINESS_LOGIN_URL") ?? "https://api.z.ai/api/auth/z/login";
 
 const KEY_NAME = "oh-my-pi";
-const CALLBACK_PORT = 54548;
-const CALLBACK_PATH = "/callback";
+// Z.AI's allowlist rejects every loopback redirect for the reused ZCode client; only ZCode's desktop
+// scheme validates, so the flow is paste-only. The env override adapts to further allowlist shifts.
+const REDIRECT_URI = env("ZAI_OAUTH_REDIRECT_URI") ?? "zcode://zai-auth/callback";
 
 const NEVER_EXPIRES = 8.64e15;
 
@@ -185,7 +186,7 @@ export class ZaiOAuthFlow extends OAuthCallbackFlow {
 	#fetch: FetchImpl;
 
 	constructor(ctrl: OAuthController) {
-		super(ctrl, CALLBACK_PORT, CALLBACK_PATH);
+		super(ctrl, { preferredPort: 0, redirectUri: REDIRECT_URI, manualInputOnly: true });
 		this.#fetch = ctrl.fetch ?? fetch;
 	}
 
@@ -199,7 +200,7 @@ export class ZaiOAuthFlow extends OAuthCallbackFlow {
 		return {
 			url: `${AUTHORIZE_URL}?${authParams.toString()}`,
 			instructions:
-				"Complete Z.ai login in your browser. If the browser cannot reach this machine, paste the final redirect URL or authorization code when prompted.",
+				"Complete Z.ai login in your browser. When it redirects to a zcode:// link, copy that link (or its authorization code) and paste it when prompted.",
 		};
 	}
 

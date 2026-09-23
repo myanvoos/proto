@@ -17,12 +17,13 @@ import {
 	type UsageWindow,
 } from "../usage";
 import { isRecord } from "../utils";
-import { buildClaudeOAuthHeaders, claudeOAuthBaseUrl } from "./claude-api";
+import { buildClaudeOAuthHeaders, claudeOAuthBaseUrls } from "./claude-api";
 import { listClaudeResetCredits, parseClaudeResetCreditsFromUsagePayload } from "./claude-reset";
 import { HOUR_MS, parseIsoTimestamp, WEEK_MS } from "./shared";
 
 const MAX_ATTEMPTS = 3;
 const BASE_RETRY_DELAY_MS = 500;
+const CLAUDE_SHARED_GATE_WINDOW_IDS = ["5h", "7d"] as const;
 
 const CLAUDE_USAGE_BETAS =
 	"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11";
@@ -232,38 +233,84 @@ async function waitBeforeRetry(
 	}
 }
 
+// Statuses meaning "this host does not implement the endpoint"; 501 never becomes implemented on replay.
+const ENDPOINT_ABSENT_STATUSES = new Set([404, 405, 410, 501]);
+
+interface ClaudeUsagePayloadResult {
+	payload: ClaudeUsageResponse | null;
+	/** The host answered, but serves no subscription usage at this path. */
+	endpointAbsent: boolean;
+}
+
+// A body with none of the usage keys is the host answering something else (error document, index page);
+// an account whose windows are all empty still carries the keys.
+function looksLikeUsagePayload(payload: ClaudeUsageResponse): boolean {
+	return (
+		"five_hour" in payload ||
+		"seven_day" in payload ||
+		"limits" in payload ||
+		"extra_usage" in payload ||
+		"spend" in payload ||
+		"cedar_ember" in payload ||
+		"juniper_tide" in payload
+	);
+}
+
 async function fetchUsagePayload(
 	url: string,
 	headers: Record<string, string>,
 	ctx: UsageFetchContext,
 	signal?: AbortSignal,
-): Promise<ClaudeUsageResponse | null> {
-	if (signal?.aborted) return null;
+): Promise<ClaudeUsagePayloadResult> {
+	if (signal?.aborted) return { payload: null, endpointAbsent: false };
 
 	let lastPayload: ClaudeUsageResponse | null = null;
+	let endpointAbsent = false;
 	for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 		try {
 			const response = await ctx.fetch(url, { headers, signal });
 
 			if (!response.ok) {
-				const retryable = isRetryableStatus(response.status);
+				const absent = ENDPOINT_ABSENT_STATUSES.has(response.status);
+				const retryable = !absent && isRetryableStatus(response.status);
 				ctx.logger?.warn("Claude usage fetch failed", {
 					status: response.status,
 					statusText: response.statusText,
 					attempt,
 					willRetry: retryable && attempt < MAX_ATTEMPTS - 1,
 				});
-				if (!retryable) return null;
+				if (!retryable) return { payload: null, endpointAbsent: absent };
 				const retryAfter = response.headers.get("retry-after");
 				if (!(await waitBeforeRetry(attempt, retryAfter, signal, ctx.retryWait))) break;
 				continue;
 			}
 
-			const parsed = (await response.json()) as unknown;
+			const body = await response.text();
+			if (body.trim().length === 0) return { payload: lastPayload, endpointAbsent: true };
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(body) as unknown;
+			} catch {
+				// Non-JSON 2xx is the host answering something else at this path; a body claiming JSON
+				// that fails to parse is a damaged usage response, so it retries on this host instead.
+				const contentType = response.headers.get("content-type") ?? undefined;
+				const claimsJson = contentType !== undefined && /json/i.test(contentType);
+				ctx.logger?.warn("Claude usage response was not JSON", {
+					contentType,
+					attempt,
+					willRetry: claimsJson && attempt < MAX_ATTEMPTS - 1,
+				});
+				if (!claimsJson) return { payload: lastPayload, endpointAbsent: true };
+				if (!(await waitBeforeRetry(attempt, null, signal, ctx.retryWait))) break;
+				continue;
+			}
 			if (isRecord(parsed)) {
 				const payload = parsed as ClaudeUsageResponse;
 				lastPayload = payload;
-				if (hasUsageData(payload)) return payload;
+				if (hasUsageData(payload)) return { payload, endpointAbsent: false };
+				endpointAbsent = !looksLikeUsagePayload(payload);
+			} else {
+				endpointAbsent = true;
 			}
 
 			ctx.logger?.warn("Claude usage response missing usage data", {
@@ -272,7 +319,7 @@ async function fetchUsagePayload(
 			});
 			if (!(await waitBeforeRetry(attempt, null, signal, ctx.retryWait))) break;
 		} catch (error) {
-			if (isAbortError(error, signal)) return null;
+			if (isAbortError(error, signal)) return { payload: null, endpointAbsent: false };
 			ctx.logger?.warn("Claude usage fetch error", {
 				error: String(error),
 				attempt,
@@ -282,7 +329,7 @@ async function fetchUsagePayload(
 		}
 	}
 
-	return lastPayload;
+	return { payload: lastPayload, endpointAbsent };
 }
 
 interface ClaudeProfile {
@@ -560,12 +607,30 @@ async function fetchClaudeUsage(params: UsageFetchParams, ctx: UsageFetchContext
 	const credential = params.credential;
 	if (credential.type !== "oauth" || !credential.accessToken) return null;
 
-	const baseUrl = claudeOAuthBaseUrl(params.baseUrl);
-	const url = `${baseUrl}/usage`;
 	const headers = buildClaudeOAuthHeaders(credential.accessToken, { beta: CLAUDE_USAGE_BETAS });
 
-	const payload = await fetchUsagePayload(url, headers, ctx, params.signal);
-	if (!payload || !isRecord(payload)) return null;
+	// A custom baseUrl serving only the Messages API has no usage route; without the canonical fallback the
+	// report degrades to rate-limit headers, which refresh a model-scoped weekly row only on that family's responses.
+	let baseUrl: string | undefined;
+	let payload: ClaudeUsageResponse | null = null;
+	for (const candidate of claudeOAuthBaseUrls(params.baseUrl)) {
+		const result = await fetchUsagePayload(`${candidate}/usage`, headers, ctx, params.signal);
+		if (result.payload && hasUsageData(result.payload)) {
+			baseUrl = candidate;
+			payload = result.payload;
+			break;
+		}
+		if (result.payload && !payload) {
+			baseUrl = candidate;
+			payload = result.payload;
+		}
+		if (params.signal?.aborted) break;
+		// Only "no usage endpoint here" moves the request off the configured host; a refused credential
+		// (401/403) or a transient failure is that host's answer for this account.
+		if (!result.endpointAbsent) break;
+	}
+	if (!payload || baseUrl === undefined) return null;
+	const url = `${baseUrl}/usage`;
 
 	const apiLimitEntries = parseApiLimitEntries(payload.limits);
 	const fiveHour = parseBucket(payload.five_hour) ?? apiLimitEntries.find(entry => entry.kind === "session")?.bucket;
@@ -767,6 +832,25 @@ export const claudeRankingStrategy: CredentialRankingStrategy = {
 	blockScope(context) {
 		const kind = getClaudeModelKind(context);
 		return kind === "fable" || kind === "mythos" ? `tier:${kind}` : undefined;
+	},
+	// A tier scope is judged by its own weekly row plus the shared windows that also gate it, so a spent
+	// 5h wall keeps a Fable/Mythos block. Without every shared gate in the report the 429's cause is
+	// unknown (a tier 429 can come from a shared wall), so nothing is vouched for.
+	healableBlockScopes(report) {
+		const sharedLimits = report.limits.filter(limit => limit.scope.shared === true);
+		const everySharedGateReported = CLAUDE_SHARED_GATE_WINDOW_IDS.every(windowId =>
+			sharedLimits.some(limit => limit.scope.windowId === windowId || limit.window?.id === windowId),
+		);
+		if (!everySharedGateReported) return [];
+		const tiers = new Set<string>();
+		for (const limit of report.limits) {
+			const tier = limit.scope.tier;
+			if (tier === "fable" || tier === "mythos") tiers.add(tier);
+		}
+		return [...tiers].map(tier => ({
+			blockScope: `tier:${tier}`,
+			limits: [...sharedLimits, ...report.limits.filter(limit => limit.scope.tier === tier)],
+		}));
 	},
 	windowDefaults: { primaryMs: 5 * 60 * 60 * 1000, secondaryMs: 7 * 24 * 60 * 60 * 1000 },
 };

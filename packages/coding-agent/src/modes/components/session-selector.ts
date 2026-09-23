@@ -850,6 +850,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 	#onDelete?: (session: SessionInfo) => Promise<boolean>;
 	#onRequestRender?: () => void;
 	readonly #loadAllSessions?: () => Promise<SessionInfo[]>;
+	#globalSessionsPromise: Promise<SessionInfo[]> | null = null;
 	#folderSessions: SessionInfo[];
 	#globalSessions: SessionInfo[] | null = null;
 	#scope: "folder" | "all" = "folder";
@@ -878,6 +879,9 @@ export class SessionSelectorComponent extends OverlayPanel {
 		this.#loadAllSessions = options.loadAllSessions;
 		this.#folderSessions = sessions;
 		this.#globalSessions = options.allSessions ?? null;
+		if (this.#loadAllSessions && !this.#globalSessions) {
+			this.#globalSessionsPromise = this.#startGlobalLoad();
+		}
 		this.#getTerminalRows = options.getTerminalRows ?? (() => 24);
 		this.#fillHeight = options.fillHeight ?? false;
 		this.#title = sanitizeSingleLine(options.title ?? "Resume Session");
@@ -927,19 +931,32 @@ export class SessionSelectorComponent extends OverlayPanel {
 		return `${this.#title} (${sanitizeSingleLine(scopeLabel)})`;
 	}
 
+	#startGlobalLoad(): Promise<SessionInfo[]> {
+		const promise = this.#loadAllSessions!();
+		// Failures surface when the user actually switches scope; an abandoned preload
+		// (selector closed before toggling) must not become an unhandled rejection.
+		promise.catch(() => {});
+		return promise;
+	}
+
 	async #toggleScope(): Promise<void> {
 		if (this.#toggling || this.#confirmationDialog) return;
 		if (this.#scope === "folder") {
 			let global = this.#globalSessions;
 			if (!global) {
-				if (!this.#loadAllSessions) return;
+				if (!this.#globalSessionsPromise) {
+					if (!this.#loadAllSessions) return;
+					this.#globalSessionsPromise = this.#startGlobalLoad();
+				}
 				this.#toggling = true;
 				this.#messageContainer.clear();
 				this.#messageContainer.addChild(new Text(theme.fg("muted", "Loading all projects…"), 0, 0));
 				this.#onRequestRender?.();
 				try {
-					global = await this.#loadAllSessions();
+					global = await this.#globalSessionsPromise;
 				} catch (err) {
+					// Drop the failed attempt so the next toggle retries with a fresh load.
+					this.#globalSessionsPromise = null;
 					this.#showError(err instanceof Error ? err.message : String(err));
 					this.#toggling = false;
 					this.#onRequestRender?.();

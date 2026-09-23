@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Rio, otty, and Orca are recognized terminals: rio and otty get Kitty graphics with Unicode placeholders and OSC 8 links, otty OSC 99 notifications, and Orca two-cell Hangul Compatibility Jamo
+- Inside tmux the attached client's terminal (from `#{client_termtype}`) is detected instead of falling back to a generic profile
+- Notifications inside a Herdr pane go through `herdr notification show`, ringing the request sound for questions and errors and the done sound for finished turns
+- Right arrow at the end of the line accepts the highlighted autocomplete entry, spelling replacement, or inline word completion, like Tab
+- `Loader` accepts a function message that is re-evaluated on every spinner tick
+- `Editor.deleteCharForward()` performs forward delete for hosts that resolve the key themselves
+- `setTerminalHyperlinks()`, `resolveHyperlinkPolicy()`, and `detectStyledUnderlineSupport()` / `TERMINAL.styledUnderlines`
+
 ### Changed
 
 - A settled width change replays the provider's history at the new width (clearing native scrollback) instead of leaving the terminal's mid-word reflow of committed rows; height-only resizes still keep native history
@@ -10,6 +20,18 @@
 
 - A real resize that lands right after the previous one settles is no longer swallowed as that resize's echo, which left a stale copy of the frame on screen
 - A bottom-anchored frame that shrinks stays directly under the committed history above it instead of dropping to the bottom edge, so no blank band opens between them on screen or later in scrollback.
+- A fatal error report no longer draws over the input box: the TUI parks the cursor below its frame first
+- A large but draining frame (a resumed session repainting many images) no longer disconnects the terminal; only a backlog that makes no drain progress for 2 seconds does, including one that stalls below the 64 MiB arm cap
+- Keys batched into one read by an event-loop stall are no longer coalesced into a paste once the terminal confirms bracketed paste, so a typed Enter still submits
+- Accepting an `@` directory completion keeps the popup open on its children (Tab and Enter), while Enter on a slash command's directory argument no longer descends into it
+- Skills surface for bare-name and hyphen-segment slash prefixes (`/hum`, `/last`) unless a command already matches at least as strongly
+- Typing a space after a slash command re-queries its argument completions
+- Recalled single-line history entries always open with the caret at the end
+- The end-of-line cursor at the full-width limit is visually distinct from the cursor on the last character
+- A missing or throwing native highlight stream no longer crashes rendering of an open code fence
+- Synthetic LaTeX wrappers and fallback script markers keep the surrounding style instead of inheriting a colored or bold edge glyph
+- Inside Herdr, synchronized output stays on only for an unrecognized DECRQM reply; a permanently-reset report disables it
+- A multi-second outlier frame no longer stalls the loader spinner for up to nine times as long
 
 ## [18.5.0] - 2026-09-23
 

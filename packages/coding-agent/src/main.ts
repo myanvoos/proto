@@ -8,7 +8,7 @@ import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import {
 	$env,
 	BINARY_NAME,
-	directoryExists,
+	directoryIsMissing,
 	getAgentDbPath,
 	getLogPath,
 	getProjectDir,
@@ -35,8 +35,12 @@ import { ModelRegistry } from "./config/model-registry";
 import {
 	DEFAULT_PREWALK_TARGET,
 	expandRoleAlias,
+	formatModelSelectorValue,
 	getModelMatchPreferences,
+	parseModelString,
+	type ResolveCliModelResult,
 	resolveCliModel,
+	resolveConfiguredModelPatterns,
 	resolveModelRoleValue,
 	resolveModelScope,
 	type ScopedModel,
@@ -85,7 +89,11 @@ import {
 	loadSessionExtensions,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
-import { describeAuthBrokerStartupError, resolveAuthBrokerConfig } from "./session/auth-broker-config";
+import {
+	describeAuthBrokerStartupError,
+	loadEffectiveAuthAccountPolicyConfig,
+	resolveAuthBrokerConfig,
+} from "./session/auth-broker-config";
 import { AuthStorage } from "./session/auth-storage";
 import { describePendingToolCalls } from "./session/exit-diagnostics";
 import {
@@ -97,7 +105,7 @@ import {
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
 import { findMostRecentSession, resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { claimSessionOwnership, liveSessionOwnerPid } from "./session/session-liveness";
-import { SessionManager } from "./session/session-manager";
+import { ForkSourceNotFoundError, SessionManager } from "./session/session-manager";
 import { describeDirectoryFailure, SessionDirectoryError } from "./session/session-paths";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
@@ -478,6 +486,8 @@ async function runInteractiveMode(
 
 	// Surfaced after the initial render so the notice is not wiped by the scrollback clear.
 	if (setupCancelledNotice) mode.showWarning(setupCancelledNotice);
+	const advisorConfigWarnings = session.getAdvisorConfigWarnings();
+	if (advisorConfigWarnings.length > 0) mode.showWarning(`WATCHDOG.yml: ${advisorConfigWarnings.join("; ")}`);
 
 	checkedVersionPromise.then(newVersion => {
 		if (!settings.get("startup.checkUpdate")) {
@@ -611,31 +621,75 @@ async function moveMissingCwdSessionIfNeeded(
 	return { status: "moved", manager };
 }
 
+/** `unenterable` names the resumed project when startup stayed in the launch directory instead. */
+type ResumedProject = { cwd: string; unenterable?: string };
+
+/**
+ * Move startup into a resumed session's project. A project that exists but cannot be entered (macOS TCC denial), or
+ * whose settings/plugins fail to load, leaves startup in the launch directory with the session tracking it
+ * runtime-only; a deleted project is skipped silently, as before.
+ */
 async function switchToResumedProject(
 	resumedCwd: string | undefined,
 	activeSettings: Settings,
 	pluginPreloadPromise: Promise<unknown>,
 	preloadPluginRootsEnabled: boolean,
-): Promise<string> {
+	sessionManager: SessionManager | undefined,
+): Promise<ResumedProject> {
+	const launchCwd = getProjectDir();
 	if (
 		!resumedCwd ||
-		normalizePathForComparison(resumedCwd) === normalizePathForComparison(getProjectDir()) ||
-		!(await directoryExists(resumedCwd))
+		normalizePathForComparison(resumedCwd) === normalizePathForComparison(launchCwd) ||
+		(await directoryIsMissing(resumedCwd))
 	) {
-		return getProjectDir();
+		return { cwd: launchCwd };
 	}
 
 	await pluginPreloadPromise.catch(() => {});
-	setProjectDir(resumedCwd);
-	clearPluginRootsAndCaches();
-	resetCapabilities();
-	const cwd = getProjectDir();
-
-	if (preloadPluginRootsEnabled) {
-		await preloadPluginRoots(os.homedir(), cwd);
+	try {
+		setProjectDir(resumedCwd);
+	} catch (error) {
+		logger.warn("Could not switch to resumed project directory", { cwd: resumedCwd, error: String(error) });
+		sessionManager?.setCwdWithoutRelocation(launchCwd);
+		return { cwd: launchCwd, unenterable: resumedCwd };
 	}
-	await activeSettings.reloadForCwd(cwd);
-	return cwd;
+	const rescope = async (cwd: string): Promise<void> => {
+		clearPluginRootsAndCaches();
+		resetCapabilities();
+		if (preloadPluginRootsEnabled) await preloadPluginRoots(os.homedir(), cwd);
+		await activeSettings.reloadForCwd(cwd);
+	};
+	const cwd = getProjectDir();
+	try {
+		await rescope(cwd);
+	} catch (error) {
+		// The process already sits in the target: undo the whole transition rather than build the session with
+		// target-scoped cwd and launch-scoped settings.
+		logger.warn("Could not rescope to resumed project directory", { cwd, error: String(error) });
+		try {
+			setProjectDir(launchCwd);
+			sessionManager?.setCwdWithoutRelocation(launchCwd);
+			await rescope(launchCwd);
+		} catch (rollbackError) {
+			throw new SessionResolutionError(
+				`Could not switch to resumed project ${resumedCwd} (${error instanceof Error ? error.message : String(error)}); failed to restore launch directory ${launchCwd}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+			);
+		}
+		return { cwd: launchCwd, unenterable: resumedCwd };
+	}
+	// The session may have fallen back before the chdir proved the project enterable.
+	if (sessionManager && normalizePathForComparison(sessionManager.getCwd()) !== normalizePathForComparison(cwd)) {
+		sessionManager.adoptRecordedCwd();
+	}
+	return { cwd };
+}
+
+function notifyResumedProjectFallback(parsedArgs: Args, resumed: ResumedProject): void {
+	if (!resumed.unenterable) return;
+	writeStartupNotice(
+		parsedArgs,
+		`${chalk.yellow(`Could not switch to resumed project ${resumed.unenterable}; staying in ${resumed.cwd}.`)}\n`,
+	);
 }
 
 export async function resolveScopedModels(
@@ -781,6 +835,9 @@ export function normalizeContinueSessionArgs(parsed: Args, rawArgs?: readonly st
 	parsed.messages.splice(messageIndex, 1);
 }
 
+const FORK_NOT_FOUND_HINT =
+	"Run `proto --resume` without an argument to pick from recent sessions, or `proto` to start a new one.";
+
 export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -792,17 +849,19 @@ export async function createSessionManager(
 			throw new SessionResolutionError("--fork requires session persistence");
 		}
 		const forkSource = parsed.fork;
-		if (forkSource.includes("/") || forkSource.includes("\\") || forkSource.endsWith(".jsonl")) {
-			return await SessionManager.forkFrom(forkSource, cwd, parsed.sessionDir);
+		const isPath = forkSource.includes("/") || forkSource.includes("\\") || forkSource.endsWith(".jsonl");
+		const match = isPath ? undefined : await resolveResumableSession(forkSource, cwd, parsed.sessionDir);
+		if (!isPath && !match)
+			throw new SessionResolutionError(`Session "${forkSource}" not found.`, FORK_NOT_FOUND_HINT);
+		try {
+			return await SessionManager.forkFrom(match?.session.path ?? forkSource, cwd, parsed.sessionDir);
+		} catch (err) {
+			// A listed session can vanish between resolution and fork.
+			if (err instanceof ForkSourceNotFoundError) {
+				throw new SessionResolutionError(`Session "${forkSource}" not found.`, FORK_NOT_FOUND_HINT);
+			}
+			throw err;
 		}
-		const match = await resolveResumableSession(forkSource, cwd, parsed.sessionDir);
-		if (!match) {
-			throw new SessionResolutionError(
-				`Session "${forkSource}" not found.`,
-				"Run `proto --resume` without an argument to pick from recent sessions, or `proto` to start a new one.",
-			);
-		}
-		return await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
 	}
 
 	normalizeContinueSessionArgs(parsed);
@@ -1006,6 +1065,9 @@ export async function buildSessionOptions(
 	}
 
 	const modelMatchPreferences = getModelMatchPreferences(activeSettings);
+	// `--model` rewrites the session `default` role below; explicit prewalk role targets resolve against the
+	// value configured when the CLI was invoked.
+	const preModelOverrideDefaultRole = activeSettings.getModelRole("default");
 
 	let deferredDefaultRole = false;
 	if (parsed.model) {
@@ -1032,8 +1094,14 @@ export async function buildSessionOptions(
 			}
 		} else if (resolved.model) {
 			options.model = resolved.model;
+			options.rebindModelAfterDiscovery = true;
+			// The recorded role must carry the effort the session starts at, or the first cycle back into
+			// `default` drops it.
 			activeSettings.overrideModelRoles({
-				default: resolved.selector ?? `${resolved.model.provider}/${resolved.model.id}`,
+				default: formatModelSelectorValue(
+					resolved.selector ?? `${resolved.model.provider}/${resolved.model.id}`,
+					parsed.thinking ?? resolved.thinkingLevel,
+				),
 			});
 			if (!parsed.thinking && resolved.thinkingLevel) {
 				options.thinkingLevel = resolved.thinkingLevel;
@@ -1060,6 +1128,7 @@ export async function buildSessionOptions(
 				: scopedModels.find(scopedModel => scopedModel.model.id.toLowerCase() === remembered.toLowerCase());
 			if (rememberedModel) {
 				options.model = rememberedModel.model;
+				options.rebindModelAfterDiscovery = true;
 
 				if (!parsed.thinking && rememberedSpec.explicitThinkingLevel && rememberedSpec.thinkingLevel) {
 					options.thinkingLevel = rememberedSpec.thinkingLevel;
@@ -1068,7 +1137,10 @@ export async function buildSessionOptions(
 		}
 
 		deferredDefaultRole = !options.model && Boolean(remembered) && !((parsed.models?.length ?? 0) > 0);
-		if (!options.model && !deferredDefaultRole) options.model = scopedModels[0].model;
+		if (!options.model && !deferredDefaultRole) {
+			options.model = scopedModels[0].model;
+			options.rebindModelAfterDiscovery = true;
+		}
 	} else if ((parsed.models?.length ?? 0) > 0 && !restoringSession) {
 		options.modelPattern = parsed.models;
 	}
@@ -1083,14 +1155,71 @@ export async function buildSessionOptions(
 			? true
 			: !restoringSession && activeSettings.get("prewalk.enabled");
 	if (prewalkEnabled) {
-		const rolePattern = expandRoleAlias(parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET, activeSettings);
-		const resolved = resolveCliModel({ cliModel: rolePattern, modelRegistry, preferences: modelMatchPreferences });
+		const target = parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET;
+		let targetPatterns: string[];
+		if (parsed.prewalkInto === undefined) {
+			targetPatterns = [expandRoleAlias(DEFAULT_PREWALK_TARGET, activeSettings)];
+		} else {
+			// Only the `default` role is mutated by `--model`; every other role lookup stays live.
+			const preModelOverrideRoleLookup = {
+				getModelRole: (role: string) =>
+					role === "default" ? preModelOverrideDefaultRole : activeSettings.getModelRole(role),
+			};
+			const targetSelector =
+				target.trim() === "default" ? expandRoleAlias(target, preModelOverrideRoleLookup) : target;
+			const configuredPatterns = resolveConfiguredModelPatterns(targetSelector, preModelOverrideRoleLookup);
+			targetPatterns = configuredPatterns.length > 0 ? configuredPatterns : [targetSelector];
+		}
+
+		const resolveCandidate = (pattern: string): ResolveCliModelResult =>
+			resolveCliModel({ cliModel: pattern, modelRegistry, preferences: modelMatchPreferences });
+		const discoverableProviders = new Map(
+			modelRegistry.getDiscoverableProviders().map(provider => [provider.toLowerCase(), provider]),
+		);
+		const refreshedProviders = new Set<string>();
+		let authenticatedResolution: ResolveCliModelResult | undefined;
+		let firstUnauthenticatedResolution: ResolveCliModelResult | undefined;
+		let lastResolution: ResolveCliModelResult | undefined;
+		// A target served by a configured discovery provider is absent from the cold startup catalog. Each
+		// candidate, in priority order, gets one discovery pass scoped to the provider it names, so a typo or
+		// extension-only target degrades without awaiting unrelated providers.
+		for (const pattern of targetPatterns) {
+			let candidate = resolveCandidate(pattern);
+			lastResolution = candidate;
+			if (candidate.model && modelRegistry.hasConfiguredAuth(candidate.model)) {
+				authenticatedResolution = candidate;
+				break;
+			}
+			if (candidate.model) {
+				firstUnauthenticatedResolution ??= candidate;
+				continue;
+			}
+
+			const requestedProvider = parseModelString(pattern)?.provider.toLowerCase();
+			if (!requestedProvider || refreshedProviders.has(requestedProvider)) continue;
+			const discoverableProvider = discoverableProviders.get(requestedProvider);
+			if (!discoverableProvider) continue;
+			refreshedProviders.add(requestedProvider);
+			await modelRegistry.refreshDiscoverableProviders([discoverableProvider], "online-if-uncached");
+
+			candidate = resolveCandidate(pattern);
+			lastResolution = candidate;
+			if (candidate.model && modelRegistry.hasConfiguredAuth(candidate.model)) {
+				authenticatedResolution = candidate;
+				break;
+			}
+			if (candidate.model) firstUnauthenticatedResolution ??= candidate;
+		}
+		const resolved =
+			authenticatedResolution ??
+			firstUnauthenticatedResolution ??
+			lastResolution ??
+			resolveCandidate(targetPatterns[0] ?? target);
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
 		}
 
 		if (resolved.error || !resolved.model) {
-			const target = parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET;
 			process.stderr.write(
 				`${chalk.yellow(`Warning: prewalk disabled — ${resolved.error ?? `model "${target}" not found`}`)}\n`,
 			);
@@ -1185,9 +1314,14 @@ async function reuseLocalAuthStorage(settingsInstance: Settings): Promise<AuthSt
 	const storage = settingsInstance.getStorage();
 	if (!storage || (await resolveAuthBrokerConfig())) return undefined;
 
+	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig({
+		settings: settingsInstance,
+	});
 	const authStorage = new AuthStorage(storage.authStore, {
 		configValueResolver: resolveConfigValue,
 		sourceLabel: `local ${getAgentDbPath(settingsInstance.getAgentDir())}`,
+		accountPolicies,
+		defaultReservePct,
 	});
 	await authStorage.reload();
 	return authStorage;
@@ -1328,9 +1462,13 @@ export async function runRootCommand(
 		let authStorage: AuthStorage;
 		try {
 			authStorage = deps.discoverAuthStorage
-				? await logger.time("discoverAuthStorage", deps.discoverAuthStorage)
+				? await logger.time("discoverAuthStorage", deps.discoverAuthStorage, undefined, {
+						settings: settingsInstance,
+					})
 				: ((await logger.time("reuseSettingsAuthStorage", () => reuseLocalAuthStorage(settingsInstance))) ??
-					(await logger.time("discoverAuthStorage", discoverAuthStorage)));
+					(await logger.time("discoverAuthStorage", discoverAuthStorage, undefined, {
+						settings: settingsInstance,
+					})));
 		} catch (error) {
 			const message = await describeAuthBrokerStartupError(error);
 			if (message === null) throw error;
@@ -1510,12 +1648,15 @@ export async function runRootCommand(
 
 		if ((typeof parsedArgs.resume === "string" || foreignSource) && sessionManager) {
 			const previousCwd = cwd;
-			cwd = await switchToResumedProject(
-				sessionManager.getCwd(),
+			const resumed = await switchToResumedProject(
+				sessionManager.getRecordedCwd() ?? sessionManager.getCwd(),
 				settingsInstance,
 				pluginPreloadPromise,
 				preloadPluginRootsEnabled,
+				sessionManager,
 			);
+			cwd = resumed.cwd;
+			notifyResumedProjectFallback(parsedArgs, resumed);
 			if (cwd !== previousCwd) {
 				parsedArgs.cwd = cwd;
 
@@ -1531,14 +1672,17 @@ export async function runRootCommand(
 
 		if (parsedArgs.resume === true && !parsedArgs.fork) {
 			const folderSessions = await logger.time(
-				"SessionManager.list",
-				SessionManager.list,
+				"SessionManager.listForPicker",
+				SessionManager.listForPicker,
 				cwd,
 				parsedArgs.sessionDir,
 			);
 			let preloadedAllSessions: SessionInfo[] | undefined;
 			if (folderSessions.length === 0) {
-				preloadedAllSessions = await logger.time("SessionManager.listAll", SessionManager.listAll);
+				preloadedAllSessions = await logger.time(
+					"SessionManager.listAllForPicker",
+					SessionManager.listAllForPicker,
+				);
 				if (preloadedAllSessions.length === 0) {
 					writeStartupNotice(parsedArgs, `${chalk.dim("No sessions found")}\n`);
 					stopStartupWatchdog();
@@ -1557,17 +1701,7 @@ export async function runRootCommand(
 				process.exit(0);
 			}
 
-			const previousCwd = cwd;
-			cwd = await switchToResumedProject(
-				selected.cwd,
-				settingsInstance,
-				pluginPreloadPromise,
-				preloadPluginRootsEnabled,
-			);
-			if (cwd !== previousCwd) {
-				parsedArgs.cwd = cwd;
-				scopedModels = await resolveScopedModels(parsedArgs, modelRegistry, settingsInstance);
-			}
+			// Open first so a project that cannot be entered leaves the session tracking the launch directory.
 			if (parsedArgs.noSession) {
 				sessionManager ??= SessionManager.inMemory(cwd);
 				await sessionManager.setSessionFile(selected.path);
@@ -1584,6 +1718,20 @@ export async function runRootCommand(
 					process.exit(1);
 				}
 				sessionManager = await SessionManager.open(selected.path);
+			}
+			const previousCwd = cwd;
+			const resumed = await switchToResumedProject(
+				selected.cwd || sessionManager.getRecordedCwd() || sessionManager.getCwd(),
+				settingsInstance,
+				pluginPreloadPromise,
+				preloadPluginRootsEnabled,
+				sessionManager,
+			);
+			cwd = resumed.cwd;
+			notifyResumedProjectFallback(parsedArgs, resumed);
+			if (cwd !== previousCwd) {
+				parsedArgs.cwd = cwd;
+				scopedModels = await resolveScopedModels(parsedArgs, modelRegistry, settingsInstance);
 			}
 		}
 

@@ -1,22 +1,17 @@
-import { createApiKeyLogin } from "./api-key-login";
 import type { OAuthLoginCallbacks } from "./oauth/types";
 import type { ProviderDefinition } from "./types";
-
-export const loginOpenRouter = createApiKeyLogin({
-	providerLabel: "OpenRouter",
-	authUrl: "https://openrouter.ai/keys",
-	instructions: "Create or copy your OpenRouter API key",
-	promptMessage: "Paste your OpenRouter API key",
-	placeholder: "sk-or-...",
-	validation: {
-		kind: "models-endpoint",
-		provider: "OpenRouter",
-		modelsUrl: "https://openrouter.ai/api/v1/auth/key",
-	},
-});
 
 export const openrouterProvider = {
 	id: "openrouter",
 	name: "OpenRouter",
-	login: (cb: OAuthLoginCallbacks) => loginOpenRouter(cb),
+	// Browser sign-in mints a durable key and a pasted `sk-or-…` key is validated
+	// in the same manual-input race; both store the key as an api_key credential.
+	// Lazy import keeps the callback server out of the eager registry graph.
+	login: async (cb: OAuthLoginCallbacks) => {
+		const { loginOpenRouterOAuth } = await import("./oauth/openrouter");
+		const credentials = await loginOpenRouterOAuth(cb);
+		return credentials.access;
+	},
+	callbackPort: 54549,
+	pasteCodeFlow: true,
 } as const satisfies ProviderDefinition;

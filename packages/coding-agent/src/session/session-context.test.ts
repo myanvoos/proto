@@ -101,6 +101,28 @@ describe("compaction boundaries", () => {
 		expect(textsOf("rewritten-away", false)).toEqual(["<summary>"]);
 		expect(textsOf("u2", false)).toEqual(["<summary>", "second request", "second answer"]);
 	});
+
+	test("the collapsed display starts a mid-turn kept region at its next turn boundary", () => {
+		expect(textsOf("a1", true, true)).toEqual(["second request", "second answer", "<summary>"]);
+		// The model context keeps the exact region.
+		expect(textsOf("a1", false)).toEqual(["<summary>", "first answer", "second request", "second answer"]);
+	});
+
+	test("the collapsed display keeps a mid-turn kept region with no later boundary", () => {
+		expect(textsOf("a2", true, true)).toEqual(["second answer", "<summary>"]);
+	});
+
+	test("rows hidden from the collapsed display still advance cache-miss tracking", () => {
+		const entries = branch("a1");
+		const hidden = entries[1] as Extract<SessionEntry, { type: "message" }>;
+		entries[1] = { ...hidden, message: { ...hidden.message, model: "other-model" } } as SessionEntry;
+		const context = buildSessionContext(entries, "c1", undefined, {
+			transcript: true,
+			collapseCompactedHistory: true,
+		});
+		// The first visible answer follows a hidden answer from another model, so its cache miss is explained.
+		expect(context.cacheMissExplainedAt).toEqual([false, true, false]);
+	});
 });
 
 function toolAssistant(id: string, parentId: string | null, toolCallIds: string[]): SessionEntry {

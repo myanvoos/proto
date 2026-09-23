@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Tool, ToolCall } from "../../types";
 import { validateToolArguments } from "../validation";
-import { validateJsonSchemaValue } from "./json-schema-validator";
+import { schemaDefinesProperty, validateJsonSchemaValue } from "./json-schema-validator";
 
 test("JSON Schema $ref validates adjacent sibling keywords (2020-12)", () => {
 	const schema = {
@@ -116,4 +116,58 @@ test("validateToolArguments error names every viable union alternative", () => {
 	} as unknown as Tool;
 	const toolCall = { name: "pick", arguments: {} } as unknown as ToolCall;
 	expect(() => validateToolArguments(tool, toolCall)).toThrow(/a: is required[\s\S]*b: is required/);
+});
+
+test.each([
+	["composed branch declares it", { anyOf: [{ properties: { i: { type: "string" } } }, { properties: {} }] }, true],
+	["conditional predicate reads it", { if: { properties: { i: { const: "x" } } }, then: {} }, true],
+	["legacy dependency requires it", { dependencies: { mode: ["i"] } }, true],
+	["object const carries it", { const: { i: "x" } }, true],
+	["propertyNames admits it", { propertyNames: { const: "i" } }, true],
+	[
+		"propertyNames admits it but the object is closed",
+		{ propertyNames: { const: "i" }, additionalProperties: false },
+		false,
+	],
+	["a false property schema forbids it", { properties: { i: false } }, false],
+	["not-required prohibits its presence", { not: { required: ["i"] } }, false],
+	["not constrains its value", { not: { properties: { i: { const: "x" } } } }, true],
+	["only an unused definition mentions it", { $defs: { unused: { properties: { i: {} } } }, properties: {} }, false],
+	["a local $ref declares it", { $defs: { base: { properties: { i: {} } } }, $ref: "#/$defs/base" }, true],
+	["a nested object declares it", { properties: { nested: { properties: { i: {} } } } }, false],
+])("schemaDefinesProperty: %s", (_label, schema, owned) => {
+	expect(schemaDefinesProperty(schema, "i")).toBe(owned);
+});
+
+test("union repair keeps required nullable data another candidate needs while coercing", () => {
+	const tool: Tool = {
+		name: "union-required-null",
+		description: "",
+		parameters: {
+			type: "object",
+			properties: {
+				payload: {
+					oneOf: [
+						{
+							type: "object",
+							additionalProperties: false,
+							properties: { count: { type: "number" } },
+							required: ["count"],
+						},
+						{
+							type: "object",
+							additionalProperties: false,
+							properties: { count: { type: "number" }, keep: { type: "null" } },
+							required: ["count", "keep"],
+						},
+					],
+				},
+			},
+			required: ["payload"],
+		} as never,
+	};
+	const args = { payload: { count: "1", keep: null } };
+	const toolCall: ToolCall = { type: "toolCall", id: "required-null", name: tool.name, arguments: args };
+	expect(validateToolArguments(tool, toolCall)).toEqual({ payload: { count: 1, keep: null } });
+	expect(args).toEqual({ payload: { count: "1", keep: null } });
 });

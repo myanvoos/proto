@@ -28,6 +28,7 @@ const changelogTool = {
 interface ChangelogPromptInput {
 	model: Model<Api>;
 	apiKey: ApiKey;
+	sessionId: string;
 	thinkingLevel?: ThinkingLevel;
 	changelogPath: string;
 	isPackageChangelog: boolean;
@@ -39,6 +40,7 @@ interface ChangelogPromptInput {
 export async function generateChangelogEntries({
 	model,
 	apiKey,
+	sessionId,
 	thinkingLevel,
 	changelogPath,
 	isPackageChangelog,
@@ -53,16 +55,18 @@ export async function generateChangelogEntries({
 		stat,
 		diff,
 	});
-	const response = await retryTransientCompletion(() =>
-		completeSimple(
-			model,
-			{
-				systemPrompt: [prompt.render(changelogSystemPrompt)],
-				messages: [{ role: "user", content: userContent, timestamp: Date.now() }],
-				tools: [changelogTool],
-			},
-			{ apiKey, maxTokens: 1200, reasoning: toReasoningEffort(thinkingLevel) },
-		),
+	const response = await retryTransientCompletion(
+		() =>
+			completeSimple(
+				model,
+				{
+					systemPrompt: [prompt.render(changelogSystemPrompt)],
+					messages: [{ role: "user", content: userContent, timestamp: Date.now() }],
+					tools: [changelogTool],
+				},
+				{ apiKey, sessionId, maxTokens: 1200, reasoning: toReasoningEffort(thinkingLevel) },
+			),
+		{ provider: model.provider },
 	);
 
 	if (response.stopReason === "error") {

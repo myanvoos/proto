@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir, getConfigRootDir, refreshDirsFromEnv } from "./dirs";
+import { parseEnv } from "node:util";
+import { getAgentDir, getConfigRootDir, getProjectDir, refreshDirsFromEnv } from "./dirs";
 
 export * from "./worker-host";
 
@@ -76,6 +77,32 @@ function readLaunchEnv(): ReadonlyMap<string, string> | undefined {
 	return values;
 }
 
+// Git variables that pin a repository to the checkout the agent was launched from (git hooks, `git --git-dir`
+// wrappers). Forwarded to a child shell they make `git` ignore the command's cwd and mutate the wrong worktree or index.
+const GIT_REPO_LOCATION_ENV_NAMES = [
+	"GIT_DIR",
+	"GIT_COMMON_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+] as const;
+
+/** Removes inherited repo-location git variables from a copied child env in place; case-insensitive on win32. */
+export function stripGitRepoLocationEnv(
+	env: Record<string, string>,
+	platform: NodeJS.Platform = process.platform,
+): void {
+	if (platform !== "win32") {
+		for (const name of GIT_REPO_LOCATION_ENV_NAMES) delete env[name];
+		return;
+	}
+	const folded = new Set<string>(GIT_REPO_LOCATION_ENV_NAMES.map(name => name.toLowerCase()));
+	for (const key of Object.keys(env)) {
+		if (folded.has(key.toLowerCase())) delete env[key];
+	}
+}
+
 const launchEnvValues = readLaunchEnv();
 const projectEnvNamesLoadedByOmp = new Set<string>();
 
@@ -97,7 +124,7 @@ function expandDotenvValues(values: Record<string, string>, env: Record<string, 
 
 export function filterChildShellEnv(
 	env: Record<string, string | undefined>,
-	cwd: string = process.cwd(),
+	cwd: string = getProjectDir(),
 ): Record<string, string> {
 	const runtimeLaunchEnvValues = env === Bun.env || env === process.env ? launchEnvValues : undefined;
 	const result = filterProcessEnv(env);
@@ -158,36 +185,20 @@ export function filterChildShellEnv(
 			delete result[key];
 		}
 	}
+	// Last, after dotenv merging: no source may pin the child shell to the agent's own repository.
+	stripGitRepoLocationEnv(result);
 	return result;
 }
 
-function parseEnvLine(line: string): { key: string; value: string } | undefined {
-	const trimmed = line.trim();
-	if (!trimmed || trimmed.startsWith("#")) return undefined;
-	const eqIndex = trimmed.indexOf("=");
-	if (eqIndex === -1) return undefined;
-	let key = trimmed.slice(0, eqIndex).trim();
-	const exported = key.match(/^export[ \t]+(.*)$/);
-	if (exported) key = exported[1].trim();
-	if (!isValidEnvName(key)) return undefined;
-	const raw = trimmed.slice(eqIndex + 1).replace(/^[ \t]+/, "");
-	const quote = raw[0];
-	if (quote === '"' || quote === "'" || quote === "`") {
-		let close = raw.indexOf(quote, 1);
-		while (close !== -1 && raw[close - 1] === "\\") close = raw.indexOf(quote, close + 1);
-		return { key, value: close === -1 ? raw.slice(1) : raw.slice(1, close) };
-	}
-	const commentIndex = raw.search(/[ \t]#/);
-	return { key, value: (commentIndex === -1 ? raw : raw.slice(0, commentIndex)).trimEnd() };
-}
-
+// The runtime's own dotenv grammar (multiline quotes, escapes, inline comments), so values compare equal to what Bun
+// autoloaded into the process env and child-shell isolation can recognize them.
 export function parseEnvFile(filePath: string): Record<string, string> {
 	const result: Record<string, string> = {};
 	try {
-		const content = fs.readFileSync(filePath, "utf-8");
-		for (const line of content.split("\n")) {
-			const parsed = parseEnvLine(line);
-			if (parsed && isSafeEnvValue(parsed.value)) result[parsed.key] = parsed.value;
+		const parsed = parseEnv(fs.readFileSync(filePath, "utf-8"));
+		for (const key in parsed) {
+			const value = parsed[key];
+			if (value !== undefined && isValidEnvName(key) && isSafeEnvValue(value)) result[key] = value;
 		}
 	} catch {}
 
@@ -203,7 +214,7 @@ export function parseEnvFile(filePath: string): Record<string, string> {
 const homeEnv = parseEnvFile(path.join(os.homedir(), ".env"));
 const piEnv = parseEnvFile(path.join(getConfigRootDir(), ".env"));
 const agentEnv = parseEnvFile(path.join(getAgentDir(), ".env"));
-const projectEnv = parseEnvFile(path.join(process.cwd(), ".env"));
+const projectEnv = parseEnvFile(path.join(getProjectDir(), ".env"));
 
 for (const key of Object.keys(Bun.env)) {
 	const value = Bun.env[key];

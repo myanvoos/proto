@@ -18,13 +18,14 @@ import type { JudgeFn, MatchEvidence, ToolCallRecord } from "../export/ttsr-matc
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
 import type { AgentSessionEvent } from "./agent-session-events";
+import type { AgentContinueSkipReason } from "./agent-session-types";
 import type { SessionManager } from "./session-manager";
 
 interface TtsrContinueOptions {
 	delayMs?: number;
 	generation?: number;
 	shouldContinue?: () => boolean;
-	onSkip?: () => void;
+	onSkip?: (reason: AgentContinueSkipReason) => void;
 	onError?: () => void;
 }
 
@@ -47,6 +48,9 @@ export class TtsrCoordinator {
 	readonly #manager: TtsrManager | undefined;
 	#pendingInjections: TtsrMatch[] = [];
 	#perToolInjections = new Map<string, TtsrMatch[]>();
+	/** Rules queued as a deferred follow-up, keyed to their delivery, until it lands or is discarded. */
+	#deferredReservations = new Map<string, number>();
+	#nextDeferredDeliveryId = 0;
 	#abortPending = false;
 	#retryToken = 0;
 	#records = new WeakMap<ToolCall, ToolCallRecord>();
@@ -76,6 +80,15 @@ export class TtsrCoordinator {
 	onTurnStart(): void {
 		this.#manager?.resetBuffer();
 		this.#endTurnScope();
+	}
+
+	/**
+	 * The agent loop turns the first provider `start` of every response into `message_start`, the boundary between two
+	 * responses inside one turn (an aborted response and its retry, or a continuation); without the reset, text from
+	 * the earlier response would combine with the later one.
+	 */
+	onAssistantMessageStart(): void {
+		this.#manager?.resetBuffer();
 	}
 
 	/** Built on first use: a session without `llm:` rules never resolves a model role. */
@@ -109,22 +122,41 @@ export class TtsrCoordinator {
 	async checkMessageUpdate(event: AgentEvent): Promise<boolean> {
 		if (event.type !== "message_update" || !this.#manager?.hasRules()) return false;
 		const assistantEvent = event.assistantMessageEvent;
+		// A later `start` inside one response restarts its partial; the buffers describe the discarded attempt.
+		if (assistantEvent.type === "start") {
+			this.#manager.resetBuffer();
+			return false;
+		}
 		let matchContext: TtsrMatchContext | undefined;
 		let streamingToolCall: ToolCall | undefined;
+		let delta: string | undefined;
 		if (assistantEvent.type === "text_delta") {
 			matchContext = this.#streamContext("text", event.message);
+			delta = assistantEvent.delta;
 		} else if (assistantEvent.type === "thinking_delta") {
 			matchContext = this.#streamContext("thinking", event.message);
+			delta = assistantEvent.delta;
 		} else if (assistantEvent.type === "toolcall_delta") {
 			streamingToolCall = this.#getStreamingToolCallBlock(event.message, assistantEvent.contentIndex);
 			matchContext = this.#getToolMatchContext(streamingToolCall, assistantEvent.contentIndex, event.message);
+			delta = assistantEvent.delta;
+		} else if (assistantEvent.type === "toolcall_end") {
+			// Streamed partial arguments can trail the authoritative ones (throttled deltas, or none at all), so the
+			// finalized call is checked too.
+			streamingToolCall = assistantEvent.toolCall;
+			matchContext = this.#getToolMatchContext(streamingToolCall, assistantEvent.contentIndex, event.message);
+			delta = "";
 		}
-		if (!matchContext || !("delta" in assistantEvent)) return false;
+		if (!matchContext || delta === undefined) return false;
+		const isFinal = assistantEvent.type === "toolcall_end";
 		const targetMessageTimestamp = event.message.role === "assistant" ? event.message.timestamp : undefined;
-		const matches = this.#checkStream(assistantEvent.delta, matchContext, streamingToolCall);
+		const matches = this.#checkStream(delta, matchContext, streamingToolCall, isFinal);
 		if (matches.length > 0 && this.#handleMatches(matches, matchContext, targetMessageTimestamp)) return true;
 
-		if (matchContext.source === "tool" && this.#manager.hasAsyncRules()) {
+		// Async conditions (`ast:` over a reconstructed source snapshot) run once on the finalized call: per-delta
+		// snapshots are partial source, and each pass costs a native `astMatch` per entry and rule, which serialized
+		// hundreds of milliseconds onto the streaming event path for large edits.
+		if (isFinal && matchContext.source === "tool" && this.#manager.hasAsyncRules()) {
 			const asyncMatches = await this.#checkAsyncStream(matchContext, streamingToolCall);
 			if (asyncMatches.length > 0 && this.#handleMatches(asyncMatches, matchContext, targetMessageTimestamp))
 				return true;
@@ -185,6 +217,22 @@ export class TtsrCoordinator {
 		const rules = "rules" in details ? details.rules : undefined;
 		if (!Array.isArray(rules)) return;
 		this.#markInjected(rules.filter((ruleName): ruleName is string => typeof ruleName === "string"));
+		this.releaseDeferredReservationFromDetails(details);
+	}
+
+	/** Releases a queued deferred delivery that was discarded before it reached the transcript. */
+	releaseDeferredReservationFromDetails(details: unknown): void {
+		if (!details || typeof details !== "object" || Array.isArray(details)) return;
+		const rules = "rules" in details ? details.rules : undefined;
+		const deliveryId = "deliveryId" in details ? details.deliveryId : undefined;
+		if (!Array.isArray(rules) || typeof deliveryId !== "number") return;
+		for (const ruleName of rules) {
+			if (typeof ruleName === "string") this.#releaseDeferredReservation(deliveryId, ruleName);
+		}
+	}
+
+	#releaseDeferredReservation(deliveryId: number, ruleName: string): void {
+		if (this.#deferredReservations.get(ruleName) === deliveryId) this.#deferredReservations.delete(ruleName);
 	}
 
 	afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
@@ -336,28 +384,51 @@ export class TtsrCoordinator {
 		}
 		const injection = this.#getInjectionContent();
 		if (!injection) return;
-		this.#host.agent.followUp({
-			role: "custom",
-			customType: "ttsr-injection",
-			content: injection.content,
-			display: false,
-			details: { rules: injection.rules.map(rule => rule.name) },
-			attribution: "agent",
-			timestamp: Date.now(),
-		});
+		const ruleNames = injection.rules.map(rule => rule.name);
+		// Until the follow-up lands (message_end → markInjectedFromDetails), the rules stay claimed so a
+		// later match cannot queue the same guidance again.
+		const deliveryId = ++this.#nextDeferredDeliveryId;
+		for (const ruleName of ruleNames) this.#deferredReservations.set(ruleName, deliveryId);
+		const details = { rules: ruleNames, deliveryId };
+		const release = () => {
+			this.releaseDeferredReservationFromDetails(details);
+			this.resolveResume();
+		};
+		try {
+			this.#host.agent.followUp({
+				role: "custom",
+				customType: "ttsr-injection",
+				content: injection.content,
+				display: false,
+				details,
+				attribution: "agent",
+				timestamp: Date.now(),
+			});
+		} catch (error) {
+			this.releaseDeferredReservationFromDetails(details);
+			throw error;
+		}
 		this.#ensureResumePromise();
 		this.#host.scheduleAgentContinue({
 			delayMs: 1,
 			generation: this.#host.promptGeneration(),
-			onSkip: () => this.resolveResume(),
+			// `shouldContinue` settles its own outcome; every other skip means the queued delivery never runs here.
+			onSkip: reason => {
+				if (reason !== "should-continue-false") release();
+			},
 			shouldContinue: () => {
-				if (this.#host.agent.state.isStreaming || !this.#host.agent.hasQueuedMessages()) {
+				// A running agent may already have taken the follow-up; its message_end commits the delivery.
+				if (this.#host.agent.state.isStreaming) {
 					this.resolveResume();
+					return false;
+				}
+				if (!this.#host.agent.hasQueuedMessages()) {
+					release();
 					return false;
 				}
 				return true;
 			},
-			onError: () => this.resolveResume(),
+			onError: release,
 		});
 	}
 
@@ -475,7 +546,12 @@ export class TtsrCoordinator {
 		return this.#extractFilePathsFromArgs(args);
 	}
 
-	#checkStream(delta: string, matchContext: TtsrMatchContext, toolCall: ToolCall | undefined): TtsrMatch[] {
+	#checkStream(
+		delta: string,
+		matchContext: TtsrMatchContext,
+		toolCall: ToolCall | undefined,
+		isFinal = false,
+	): TtsrMatch[] {
 		if (!this.#manager) return [];
 		const entries = this.#resolveMatcherEntries(toolCall);
 		if (entries) {
@@ -486,9 +562,17 @@ export class TtsrCoordinator {
 			return matches;
 		}
 		const digest = this.#resolveMatcherDigest(toolCall);
-		return digest !== undefined
-			? this.#manager.checkSnapshot(digest, matchContext)
-			: this.#manager.checkDelta(delta, matchContext);
+		if (digest !== undefined) return this.#manager.checkSnapshot(digest, matchContext);
+		// Tools without matcher hooks accumulate raw argument deltas; a provider that emits toolcall_start ->
+		// toolcall_end with no deltas leaves that buffer empty, so the finalized arguments seed the snapshot.
+		const finalArgs = isFinal ? toolCall?.arguments : undefined;
+		if (finalArgs !== undefined && finalArgs !== null) {
+			return this.#manager.checkSnapshot(
+				typeof finalArgs === "string" ? finalArgs : JSON.stringify(finalArgs),
+				matchContext,
+			);
+		}
+		return this.#manager.checkDelta(delta, matchContext);
 	}
 
 	#resolveMatcherDigest(toolCall: ToolCall | undefined): string | undefined {
@@ -540,6 +624,7 @@ export class TtsrCoordinator {
 
 	/** A rule already queued for injection must not interrupt or notify a second time. */
 	#claimed(ruleName: string): boolean {
+		if (this.#deferredReservations.has(ruleName)) return true;
 		if (this.#pendingInjections.some(match => match.rule.name === ruleName)) return true;
 		for (const bucket of this.#perToolInjections.values()) {
 			if (bucket.some(match => match.rule.name === ruleName)) return true;

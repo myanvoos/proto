@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import type { AssistantMessage, Context, FetchImpl, ModelSpec } from "../types";
+import type { AssistantMessage, Context, FetchImpl, Model, ModelSpec } from "../types";
 import { isInvalidThinkingSignatureError, streamAnthropic } from "./anthropic";
 
 describe("isInvalidThinkingSignatureError", () => {
@@ -211,5 +211,61 @@ describe("Anthropic recognized SSE frames", () => {
 		expect(result.stopReason).toBe("stop");
 		expect(textContent(result)).toEqual([{ type: "text", text: "Hello" }]);
 		expect(transport.calls()).toBe(1);
+	});
+});
+
+describe("Anthropic context management compatibility", () => {
+	function makeModel(supportsContextManagement?: boolean) {
+		return buildModel({
+			id: "claude-haiku-4-5",
+			name: "Claude Haiku 4.5",
+			api: "anthropic-messages",
+			provider: "custom-anthropic-proxy",
+			baseUrl: "https://models.example.test",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 8_192,
+			...(supportsContextManagement === undefined ? {} : { compat: { supportsContextManagement } }),
+		} satisfies ModelSpec<"anthropic-messages">);
+	}
+
+	type CapturedPayload = { context_management?: unknown; thinking?: { type?: string } };
+
+	async function captureRequest(model: Model<"anthropic-messages">, apiKey: string) {
+		let beta = "";
+		const fetchMock: FetchImpl = async (_input, init) => {
+			beta = new Headers(init?.headers).get("anthropic-beta") ?? "";
+			return new Response(
+				JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
+				{ status: 400, headers: { "Content-Type": "application/json" } },
+			);
+		};
+		const { promise, resolve } = Promise.withResolvers<CapturedPayload>();
+		await streamAnthropic(
+			model,
+			{ messages: [{ role: "user", content: "continue", timestamp: 0 }] },
+			{ apiKey, thinkingEnabled: true, fetch: fetchMock, onPayload: payload => resolve(payload as CapturedPayload) },
+		).result();
+		return { beta, payload: await promise };
+	}
+
+	it("sends context management when compatibility is omitted", async () => {
+		const request = await captureRequest(makeModel(), "test-key");
+
+		expect(request.payload.context_management).toBeDefined();
+		expect(request.beta).toContain("context-management-2025-06-27");
+	});
+
+	it.each([
+		["API-key", "test-key"],
+		["OAuth", "sk-ant-oat-test"],
+	])("omits context management from %s proxy requests without disabling thinking", async (_auth, apiKey) => {
+		const request = await captureRequest(makeModel(false), apiKey);
+
+		expect(request.payload.thinking?.type).toBe("enabled");
+		expect(request.payload.context_management).toBeUndefined();
+		expect(request.beta).not.toContain("context-management-2025-06-27");
 	});
 });

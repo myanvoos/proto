@@ -42,16 +42,16 @@ function resolveXAIBaseURL(
 	return ($env.XAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, "");
 }
 
-export function resolveXAIHttpTransport(
+// Headers are materialized per call: command-backed values re-mint after an auth-retry invalidation.
+export async function resolveXAIHttpTransport(
 	modelRegistry: ModelRegistry,
 	provider: XAIHttpProvider,
 	modelId?: string,
-): XAIHttpTransport {
+	signal?: AbortSignal,
+): Promise<XAIHttpTransport> {
 	return {
 		baseURL: resolveXAIBaseURL(modelRegistry, provider, modelId),
-		headers:
-			(modelId ? modelRegistry.find(provider, modelId)?.headers : undefined) ??
-			modelRegistry.getProviderHeaders(provider),
+		headers: await modelRegistry.getRequestHeaders(provider, modelId, signal),
 	};
 }
 

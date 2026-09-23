@@ -83,13 +83,14 @@ async function classifyOnline(text: string, deps: ClassifyUnexpectedStopDeps): P
 				},
 				{
 					apiKey: deps.registry.resolver(model, deps.sessionId),
+					sessionId: deps.sessionId,
 					maxTokens,
 					disableReasoning: true,
 					metadata,
 					signal: deps.signal,
 				},
 			),
-		{ signal: deps.signal },
+		{ signal: deps.signal, provider: model.provider },
 	);
 
 	if (response.stopReason === "error") {

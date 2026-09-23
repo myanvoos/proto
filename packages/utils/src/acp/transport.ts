@@ -92,6 +92,12 @@ export class RequestError extends Error {
 		);
 	}
 
+	// The session is mid-turn: retryable once idle (steer/follow-up/wait), not a fault. `data` keeps the stable
+	// `reason: "session_busy"` discriminator.
+	static sessionBusy(message: string, data?: unknown): RequestError {
+		return new RequestError(-32003, message, data);
+	}
+
 	toResult(): { error: ErrorResponse } {
 		return { error: this.toErrorResponse() };
 	}
@@ -113,9 +119,14 @@ function createStandardError(
 type Dispatcher = (method: string, params: unknown, notification: boolean) => MaybePromise<unknown>;
 type Pending = { resolve(value: unknown): void; reject(reason: unknown): void };
 
+// Bounds the clean-EOF inbound drain so `closed` cannot hang on a handler that never settles.
+const INBOUND_DRAIN_TIMEOUT_MS = 30_000;
+
 export class RpcConnection {
 	#nextId = 0;
 	#pending = new Map<JsonRpcId, Pending>();
+	#inbound = new Set<Promise<void>>();
+	#openInboundIds = new Set<JsonRpcId>();
 	#writable: WritableStream<AnyMessage>;
 	#writeTail: Promise<void> = Promise.resolve();
 	#abort = new AbortController();
@@ -179,14 +190,39 @@ export class RpcConnection {
 			while (true) {
 				const next = await reader.read();
 				if (next.done) break;
-				void this.#handle(next.value).catch(error => this.close(error));
+				this.#dispatch(next.value);
 			}
+			// A clean EOF (a scripted client piping requests) still owes answers to the requests it sent.
+			await this.#drainInbound();
 			this.close();
 		} catch (error) {
 			this.close(error);
 		} finally {
 			reader.releaseLock();
 		}
+	}
+
+	#dispatch(message: AnyMessage): void {
+		if ("method" in message && "id" in message) this.#openInboundIds.add(message.id);
+		const task = this.#handle(message).catch(error => this.close(error));
+		this.#inbound.add(task);
+		void task.finally(() => this.#inbound.delete(task));
+	}
+
+	async #drainInbound(): Promise<void> {
+		if (this.#inbound.size === 0) return;
+		const deadline = Promise.withResolvers<boolean>();
+		const timer = setTimeout(() => deadline.resolve(true), INBOUND_DRAIN_TIMEOUT_MS);
+		const timedOut = await Promise.race([Promise.allSettled(this.#inbound).then(() => false), deadline.promise]);
+		clearTimeout(timer);
+		if (!timedOut) return;
+		const error = RequestError.internalError(undefined, "Inbound request drain timed out").toErrorResponse();
+		await Promise.allSettled([...this.#openInboundIds].map(id => this.#respond(id, { error })));
+	}
+
+	#respond(id: JsonRpcId, body: { result: unknown } | { error: ErrorResponse }): Promise<void> {
+		if (!this.#openInboundIds.delete(id)) return Promise.resolve();
+		return this.#write({ jsonrpc: "2.0", id, ...body });
 	}
 
 	async #handle(message: AnyMessage): Promise<void> {
@@ -219,13 +255,13 @@ export class RpcConnection {
 		}
 		try {
 			const result = await this.#dispatcher(message.method, message.params, false);
-			await this.#write({ jsonrpc: "2.0", id: message.id, result: result ?? {} });
+			await this.#respond(message.id, { result: result ?? {} });
 		} catch (error) {
 			const protocolError =
 				error instanceof RequestError
 					? error
 					: RequestError.internalError({ details: error instanceof Error ? error.message : String(error) });
-			await this.#write({ jsonrpc: "2.0", id: message.id, error: protocolError.toErrorResponse() });
+			await this.#respond(message.id, { error: protocolError.toErrorResponse() });
 		}
 	}
 }

@@ -15,6 +15,7 @@ import {
 	truncateHeadBytes,
 	truncateTailBytes,
 } from "@oh-my-pi/pi-utils";
+import { TerminalQueryResponder } from "@oh-my-pi/pi-utils/vterm";
 import { truncateHead, truncateTail } from "../session/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBrokerEndpoint, writeDaemonScopeMeta } from "./paths";
@@ -818,10 +819,22 @@ class DaemonBroker {
 			cols: DAEMON_PTY_COLUMNS,
 			rows: DAEMON_PTY_ROWS,
 		};
+		// Nothing plays terminal for a supervised PTY, so a program probing cursor position or device attributes would
+		// block on the reply: answer the queries from the output stream.
+		const responder = new TerminalQueryResponder();
 		const onChunk = (error: Error | null, chunk: string): void => {
 			if (generation !== record.generation) return;
 			if (error) record.log?.append(`PTY output error: ${error.message}\n`);
-			if (chunk) this.#onOutput(record, generation, chunk);
+			if (!chunk) return;
+			const reply = responder.feed(chunk);
+			if (reply) {
+				try {
+					session.write(reply);
+				} catch {
+					// The PTY may exit between its final output and the reply.
+				}
+			}
+			this.#onOutput(record, generation, chunk);
 		};
 		const started = Promise.withResolvers<number | undefined>();
 		const onStart = (error: Error | null, pid: number): void => {

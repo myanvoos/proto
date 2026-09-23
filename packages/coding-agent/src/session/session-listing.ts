@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@oh-my-pi/pi-ai";
-import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
+import { forEachJsonlRecord, getSessionsDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { lookupSessionScan, lookupSessionTitle, recordSessionScan, recordSessionTitle } from "./session-index";
 import { readSessionLiveState } from "./session-liveness";
@@ -21,6 +21,8 @@ export interface SessionInfo {
 	created: Date;
 	modified: Date;
 	messageCount: number;
+	/** Persisted assistant turns; zero means the agent never replied (0-turn session). */
+	assistantTurns?: number;
 
 	size: number;
 	firstMessage: string;
@@ -52,10 +54,16 @@ const SESSION_LIST_MAX_WORKERS = 16;
 
 const SESSION_SCAN_CACHE_MAX = 4096;
 
+// Search text is a bounded prefix of the transcript. Unbounded accumulation retained a full copy
+// of every transcript in memory (and in every persisted scan row); the history database's content
+// search already covers matches that live deeper than this prefix.
+const SESSION_SEARCH_TEXT_MAX_CHARS = 16_384;
+
 const SESSION_SCAN_BOUNDARY_BYTES = 512;
 
 interface SessionScanAccumulator {
 	messageCount: number;
+	assistantTurns: number;
 	firstMessage: string;
 	searchText: string;
 	hasMessageText: boolean;
@@ -383,12 +391,20 @@ function foldSessionEntry(acc: SessionScanAccumulator, raw: Record<string, unkno
 	}
 	if (entry.type !== "message" || !entry.message) return;
 	acc.messageCount++;
+	if (entry.message.role === "assistant") acc.assistantTurns++;
 	if (entry.message.role !== "user" && entry.message.role !== "assistant") return;
 	const textContent = extractTextFromContent(entry.message.content);
 	if (!textContent) return;
-	acc.searchText = acc.hasMessageText ? `${acc.searchText} ${textContent}` : textContent;
-	acc.hasMessageText = true;
-	if (!acc.firstMessage && entry.message.role === "user") acc.firstMessage = textContent;
+	if (acc.searchText.length < SESSION_SEARCH_TEXT_MAX_CHARS) {
+		acc.searchText = (acc.hasMessageText ? `${acc.searchText} ${textContent}` : textContent).slice(
+			0,
+			SESSION_SEARCH_TEXT_MAX_CHARS,
+		);
+		acc.hasMessageText = true;
+	}
+	if (!acc.firstMessage && entry.message.role === "user") {
+		acc.firstMessage = textContent.slice(0, SESSION_SEARCH_TEXT_MAX_CHARS);
+	}
 }
 
 function foldSessionJsonl(acc: SessionScanAccumulator, chunk: string): number {
@@ -423,6 +439,8 @@ async function resumableScanState(
 	prefixHash: string,
 ): Promise<SessionScanResumeState | undefined> {
 	if (!cached || cached.prefixHash !== prefixHash || size < cached.scannedBytes) return undefined;
+	// Resume states persisted before assistant turns were counted cannot answer 0-turn elision.
+	if (typeof cached.acc.assistantTurns !== "number") return undefined;
 	const boundaryHash = await boundaryFingerprint(file, storage, cached.scannedBytes);
 	return boundaryHash === cached.boundaryHash ? cached : undefined;
 }
@@ -467,21 +485,28 @@ async function scanSessionFile(file: string, storage: SessionStorage): Promise<S
 			}
 		} else {
 			const content = size <= SESSION_LIST_PREFIX_BYTES ? prefix : await storage.readText(file);
-			const entries = parseJsonlLenient<Record<string, unknown>>(content);
-			const parsedHeader = parseSessionListHeader(content, entries);
-			if (!parsedHeader) {
-				cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: undefined });
-				return undefined;
-			}
-			header = parsedHeader;
 			acc = {
 				messageCount: 0,
+				assistantTurns: 0,
 				firstMessage: "",
 				searchText: "",
 				hasMessageText: false,
 				shortSummary: undefined,
 			};
-			for (let i = 1; i < entries.length; i++) foldSessionEntry(acc, entries[i]);
+			// Fold records as they parse instead of materializing the whole transcript; only the
+			// first two records are retained for header detection. `foldSessionEntry` ignores
+			// session/title records, so folding the header candidates too is a no-op.
+			const headerProbe: Record<string, unknown>[] = [];
+			forEachJsonlRecord<Record<string, unknown>>(content, raw => {
+				if (headerProbe.length < 2) headerProbe.push(raw);
+				foldSessionEntry(acc, raw);
+			});
+			const parsedHeader = parseSessionListHeader(content, headerProbe);
+			if (!parsedHeader) {
+				cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: undefined });
+				return undefined;
+			}
+			header = parsedHeader;
 			const lastBreak = content.lastIndexOf("\n");
 			scannedBytes = lastBreak === -1 ? 0 : Buffer.byteLength(content.slice(0, lastBreak + 1), "utf8");
 			acc.firstMessage ||= extractFirstDisplayMessage(content) ?? "";
@@ -496,6 +521,7 @@ async function scanSessionFile(file: string, storage: SessionStorage): Promise<S
 			created: new Date(header.timestamp ?? ""),
 			modified: mtime,
 			messageCount: acc.messageCount,
+			assistantTurns: acc.assistantTurns,
 			size,
 			firstMessage: acc.firstMessage || "(no messages)",
 			allMessagesText: acc.hasMessageText ? acc.searchText : acc.firstMessage,
@@ -548,7 +574,13 @@ async function collectSessionsFromFiles(files: string[], storage: SessionStorage
 					)
 				).flat();
 
-	sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+	// Parallel strides finish in any order; tie-break equal mtimes so the listing is deterministic.
+	sessions.sort(
+		(a, b) =>
+			b.modified.getTime() - a.modified.getTime() ||
+			b.created.getTime() - a.created.getTime() ||
+			b.path.localeCompare(a.path),
+	);
 	return sessions;
 }
 
@@ -628,8 +660,10 @@ export function listSessionsReadOnly(sessionDir: string, storage: SessionStorage
 	return scanSessionDirReadOnly(sessionDir, storage);
 }
 
-export async function listAllSessions(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
-	const sessionsRoot = path.join(getDefaultAgentDir(), "sessions");
+export async function listAllSessions(
+	storage: SessionStorage = new FileSessionStorage(),
+	sessionsRoot: string = getSessionsDir(),
+): Promise<SessionInfo[]> {
 	try {
 		const files = await Array.fromAsync(new Bun.Glob("*/*.jsonl").scan(sessionsRoot), name =>
 			path.join(sessionsRoot, name),
@@ -646,6 +680,36 @@ export async function findMostRecentSession(
 ): Promise<string | null> {
 	const sessions = await scanSessionDir(sessionDir, storage);
 	return sessions[0]?.path ?? null;
+}
+
+/**
+ * True when a scanned session is a 0-turn stub with no display name: the tail shows no
+ * assistant activity, no assistant record was persisted, and neither a title nor a first
+ * prompt is worth showing. Covers header-only records (`newSession()` boundaries,
+ * `ensureOnDisk()` stubs, drafts). A title or first prompt is user intent worth resuming,
+ * so named 0-turn sessions stay discoverable. The pickers and `--continue` skip these;
+ * every other consumer (GC, ACP, `resolveResumableSession`) keeps the unfiltered scan.
+ */
+export function isEmptySession(session: SessionInfo): boolean {
+	if (session.status !== undefined && session.status !== "pending" && session.status !== "unknown") return false;
+	if ((session.assistantTurns ?? 1) > 0) return false;
+	if (sanitizeSessionName(session.title)) return false;
+	if (sanitizeSessionName(session.firstMessage === "(no messages)" ? undefined : session.firstMessage)) return false;
+	return true;
+}
+
+/** Picker-facing view of a session list: 0-turn empties dropped. */
+export function filterSessionsForPicker(sessions: SessionInfo[]): SessionInfo[] {
+	return sessions.filter(session => !isEmptySession(session));
+}
+
+/** Most recent session with resumable content, skipping 0-turn empties. */
+export async function findMostRecentNonEmptySession(
+	sessionDir: string,
+	storage: SessionStorage = new FileSessionStorage(),
+): Promise<string | null> {
+	const sessions = await scanSessionDir(sessionDir, storage);
+	return sessions.find(session => !isEmptySession(session))?.path ?? null;
 }
 
 function sessionIdFromSessionPath(file: string): string | undefined {
@@ -686,7 +750,7 @@ export async function getRecentSessions(
 			continue;
 		}
 		const info = await scanSessionFile(file, storage);
-		if (!info) continue;
+		if (!info || isEmptySession(info)) continue;
 		const title = sanitizeSessionName(info.title);
 		if (useIndex && title && info.id) recordSessionTitle(info.id, title);
 		recent.push({ path: file, name: sessionDisplayName(info), timeAgo: formatTimeAgo(info.modified) });

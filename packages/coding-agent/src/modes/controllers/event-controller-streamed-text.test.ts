@@ -5,6 +5,7 @@ import { Settings } from "../../config/settings";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { CHECKLIST_STRIKE_TOTAL_FRAMES } from "../../tools/checklist";
+import { ServedModelTracker } from "../components/served-model-marker";
 import { ToolExecutionComponent } from "../components/tool-execution";
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme, theme } from "../theme/theme";
@@ -99,6 +100,7 @@ function createContext() {
 		setChecklist: NOOP,
 		addMessageToChat: () => [] as Component[],
 		lastAssistantUsage: undefined,
+		servedModelTracker: new ServedModelTracker(),
 		streamingComponent: undefined,
 		streamingMessage: undefined,
 	};

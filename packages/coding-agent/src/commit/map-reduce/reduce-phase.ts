@@ -35,16 +35,18 @@ export async function runReducePhase({
 		stat,
 		scope_candidates: scopeCandidates,
 	});
-	const response = await retryTransientCompletion(() =>
-		completeSimple(
-			model,
-			{
-				systemPrompt: [prompt.render(reduceSystemPrompt)],
-				messages: [{ role: "user", content: userContent, timestamp: Date.now() }],
-				tools: [ReduceTool],
-			},
-			{ apiKey, maxTokens: 2400, reasoning: toReasoningEffort(thinkingLevel) },
-		),
+	const response = await retryTransientCompletion(
+		() =>
+			completeSimple(
+				model,
+				{
+					systemPrompt: [prompt.render(reduceSystemPrompt)],
+					messages: [{ role: "user", content: userContent, timestamp: Date.now() }],
+					tools: [ReduceTool],
+				},
+				{ apiKey, maxTokens: 2400, reasoning: toReasoningEffort(thinkingLevel) },
+			),
+		{ provider: model.provider },
 	);
 
 	if (response.stopReason === "error") {

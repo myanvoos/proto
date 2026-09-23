@@ -1,4 +1,5 @@
 import { scheduler } from "node:timers/promises";
+import { isOpenAIGptOssModelId } from "@oh-my-pi/pi-catalog/identity";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { readSseJson } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
@@ -112,7 +113,18 @@ function resolveThoughtSignature(isSameProviderAndModel: boolean, signature: str
 
 function supportsFunctionPartId<T extends GoogleApiType>(model: Model<T>): boolean {
 	if (model.api === "google-vertex") return false;
-	return model.id.startsWith("claude-") || (model.api === "google-generative-ai" && isGemini3Model(model.id));
+	if (model.id.startsWith("claude-")) return true;
+	if (model.api === "google-generative-ai") return isGemini3Model(model.id);
+	// Cloud Code Assist replays gpt-oss turns as OpenAI tool_calls and rejects them without ids.
+	return isOpenAIGptOssModelId(model.id);
+}
+
+// Unsigned Gemini 3 function calls: the public API requires the bypass sentinel on every call,
+// Cloud Code Assist only when the turn's first call is unsigned, and Vertex rejects it outright.
+function unsignedThoughtSignatureFallback<T extends GoogleApiType>(model: Model<T>, isFirstToolCall: boolean): boolean {
+	if (!isGemini3Model(model.id)) return false;
+	if (model.api === "google-generative-ai") return true;
+	return model.api === "google-gemini-cli" && isFirstToolCall;
 }
 
 function getGeminiMajorVersion(modelId: string): number | undefined {
@@ -194,6 +206,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			const isSameProviderAndModel = msg.provider === model.provider && msg.model === model.id;
 			const dropsUnsignedThinking =
 				model.provider === "google-antigravity" && model.id.toLowerCase().includes("claude");
+			let isFirstToolCall = true;
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
@@ -222,7 +235,9 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					emittedToolCallNames.set(block.id, block.name);
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thoughtSignature);
 					const effectiveSignature =
-						thoughtSignature || (isGemini3Model(model.id) ? SKIP_THOUGHT_SIGNATURE : undefined);
+						thoughtSignature ||
+						(unsignedThoughtSignatureFallback(model, isFirstToolCall) ? SKIP_THOUGHT_SIGNATURE : undefined);
+					isFirstToolCall = false;
 
 					const part: Part = {
 						functionCall: {
@@ -648,7 +663,7 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 					total: 0,
 				},
 			};
-			calculateCost(model, output.usage);
+			calculateCost(model, output.usage, output.timestamp);
 		}
 	}
 
@@ -673,14 +688,6 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	}
 }
 
-interface GoogleGenerationConfig extends GenerateContentConfig {
-	topP?: number;
-	topK?: number;
-	minP?: number;
-	presencePenalty?: number;
-	repetitionPenalty?: number;
-}
-
 export function buildGoogleGenerateContentParams<T extends "google-generative-ai" | "google-vertex">(
 	model: Model<T>,
 	context: Context,
@@ -689,14 +696,12 @@ export function buildGoogleGenerateContentParams<T extends "google-generative-ai
 	const systemPrompts = normalizeSystemPrompts(context.systemPrompt);
 	const contents = convertMessages(model, context);
 
-	const generationConfig: GoogleGenerationConfig = {};
+	const generationConfig: GenerateContentConfig = {};
 	if (options.temperature !== undefined) generationConfig.temperature = options.temperature;
 	if (options.maxTokens !== undefined) generationConfig.maxOutputTokens = options.maxTokens;
 	if (options.topP !== undefined) generationConfig.topP = options.topP;
 	if (options.topK !== undefined) generationConfig.topK = options.topK;
-	if (options.minP !== undefined) generationConfig.minP = options.minP;
 	if (options.presencePenalty !== undefined) generationConfig.presencePenalty = options.presencePenalty;
-	if (options.repetitionPenalty !== undefined) generationConfig.repetitionPenalty = options.repetitionPenalty;
 
 	const config: GenerateContentConfig = {
 		...(Object.keys(generationConfig).length > 0 && generationConfig),
@@ -1000,9 +1005,6 @@ function paramsToWireBody(params: GenerateContentParameters): Record<string, unk
 	if (config.responseJsonSchema !== undefined) gen.responseJsonSchema = config.responseJsonSchema;
 	if (config.responseModalities !== undefined) gen.responseModalities = config.responseModalities;
 	if (config.thinkingConfig !== undefined) gen.thinkingConfig = config.thinkingConfig;
-	const generationConfig = config as unknown as { minP?: number; repetitionPenalty?: number };
-	if (generationConfig.minP !== undefined) gen.minP = generationConfig.minP;
-	if (generationConfig.repetitionPenalty !== undefined) gen.repetitionPenalty = generationConfig.repetitionPenalty;
 	if (Object.keys(gen).length > 0) body.generationConfig = gen;
 	return body;
 }

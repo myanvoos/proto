@@ -5,6 +5,7 @@ import {
 	type AutocompleteProvider,
 	findLeadingSlashCommandStart,
 	findTrailingSlashCommandStart,
+	isDirectoryCompletionValue,
 	midPromptSkillTokenMatches,
 	SKILL_NAMESPACE,
 } from "../autocomplete";
@@ -778,6 +779,9 @@ export class Editor implements Component, Focusable {
 		if (this.#historyIndex === -1) {
 			this.#setTextInternal("", "end");
 		} else {
+			// Browsing asks for the edge the key came from, so one press still steps one
+			// entry: Up opens a multi-row entry at its top, Down at its bottom.
+			// #setTextInternal drops that request for single-row entries — see there.
 			const cursorAnchor: HistoryCursorAnchor = direction === -1 ? "start" : "end";
 			this.#setTextInternal(this.#history[this.#historyIndex] || "", cursorAnchor);
 		}
@@ -789,7 +793,12 @@ export class Editor implements Component, Focusable {
 		this.#volatileTextLen = 0;
 		const lines = sanitizeLoadedText(text).split("\n");
 		this.#setLines(lines.length === 0 ? [""] : lines);
-		if (cursorAnchor === "start") {
+		// A single-row entry's top and bottom are the same row, so the directional
+		// anchor degenerates to a bare column choice: Up would park the caret at the
+		// start and Down at the end of the same entry, aiming delete/yank chords at
+		// different edges. Single-row entries always open at the end, matching
+		// wholesale text replacement.
+		if (cursorAnchor === "start" && this.#spansMultipleVisualRows()) {
 			this.#state.cursorLine = 0;
 			this.#setCursorCol(0);
 		} else {
@@ -799,6 +808,17 @@ export class Editor implements Component, Focusable {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+	}
+
+	/** Whether the buffer needs more than one visual row at the last painted layout
+	 *  width. The directional history anchors are load-bearing only for such entries —
+	 *  they keep one keypress stepping one entry instead of walking inside it — so a
+	 *  newline-free line that wraps past the editor width counts as multi-row too. */
+	#spansMultipleVisualRows(): boolean {
+		if (this.#state.lines.length > 1) return true;
+		const width = this.#lastLayoutWidth;
+		if (width <= 0) return false;
+		return this.#layoutText(width).length > 1;
 	}
 
 	invalidate(): void {}
@@ -947,8 +967,12 @@ export class Editor implements Component, Focusable {
 		const lastGrapheme = beforeGraphemes[beforeGraphemes.length - 1]?.segment;
 		const lastGraphemeWidth = lastGrapheme ? visibleWidth(lastGrapheme) : 0;
 		const builtInCursor = this.#getStyledInputCursor();
+		// The end-of-line cursor borrows the last grapheme's cell, which the
+		// on-character cursor also highlights with reverse video. Underline the
+		// borrowed cell instead so insertion after the last character stays
+		// visually distinct from insertion before it.
 		const fallbackReplacement = lastGrapheme
-			? { text: `\x1b[7m${lastGrapheme}\x1b[0m`, width: lastGraphemeWidth }
+			? { text: `\x1b[4m${lastGrapheme}\x1b[0m`, width: lastGraphemeWidth }
 			: builtInCursor;
 		const clampReplacement = (candidate: { text: string; width: number }): { text: string; width: number } => {
 			let text = sliceByColumn(candidate.text, 0, maxWidth, true);
@@ -983,17 +1007,14 @@ export class Editor implements Component, Focusable {
 		if (visibleWidth(text) < maxWidth) {
 			return text + marker;
 		}
-
-		let insertAt = text.length;
-		let offset = 0;
-		for (const seg of segmenter.segment(text)) {
-			if (visibleWidth(seg.segment) > 0) {
-				insertAt = offset;
-			}
-			offset += seg.segment.length;
-		}
-
-		return `${text.slice(0, insertAt)}${marker}${text.slice(insertAt)}`;
+		// The row is exactly full, so the hardware cursor cannot sit after the last
+		// grapheme; placed before it, the row would render identically to the
+		// on-character position. Underline the final grapheme at end-of-line so the
+		// two insertion points stay visually distinct.
+		const graphemes = [...segmenter.segment(text)];
+		const lastGrapheme = graphemes[graphemes.length - 1]?.segment;
+		if (lastGrapheme === undefined) return text + marker;
+		return `${text.slice(0, text.length - lastGrapheme.length)}\x1b[4m${lastGrapheme}\x1b[0m${marker}`;
 	}
 
 	#getPageScrollStep(totalVisualLines: number): number {
@@ -1347,11 +1368,17 @@ export class Editor implements Component, Focusable {
 				this.#cancelAutocomplete(true);
 				return;
 			}
+			// Right arrow at end of line accepts the selection like Tab (fish-style).
+			// Mid-line, right arrow keeps its cursor-movement role and falls through.
+			const rightArrowAccepts =
+				kb.matchesCanonical(canonical, "tui.editor.cursorRight") &&
+				this.#state.cursorCol >= (this.#state.lines[this.#state.cursorLine] ?? "").length;
 			if (
 				this.#autocompleteState === "assist" &&
 				(kb.matchesCanonical(canonical, "tui.input.submit") ||
 					data === "\n" ||
-					kb.matchesCanonical(canonical, "tui.input.tab"))
+					kb.matchesCanonical(canonical, "tui.input.tab") ||
+					rightArrowAccepts)
 			) {
 				this.#applySpellingSuggestion();
 				return;
@@ -1362,7 +1389,8 @@ export class Editor implements Component, Focusable {
 				kb.matchesCanonical(canonical, "tui.select.pageDown") ||
 				kb.matchesCanonical(canonical, "tui.input.submit") ||
 				data === "\n" ||
-				kb.matchesCanonical(canonical, "tui.input.tab")
+				kb.matchesCanonical(canonical, "tui.input.tab") ||
+				rightArrowAccepts
 			) {
 				if (
 					kb.matchesCanonical(canonical, "tui.select.up") ||
@@ -1376,7 +1404,7 @@ export class Editor implements Component, Focusable {
 					return;
 				}
 
-				if (kb.matchesCanonical(canonical, "tui.input.tab")) {
+				if (kb.matchesCanonical(canonical, "tui.input.tab") || rightArrowAccepts) {
 					const selected = this.#autocompleteList.getSelectedItem();
 
 					const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
@@ -1387,6 +1415,9 @@ export class Editor implements Component, Focusable {
 					}
 					if (selected && this.#autocompleteProvider) {
 						const shouldChainSlashCommandAutocomplete = this.#isSlashCommandNameAutocompleteSelection();
+						// Accepting a directory keeps the token open; reopen the popup on its
+						// children so the path can be browsed deeper without retyping.
+						const shouldChainDirectoryCompletion = isDirectoryCompletionValue(selected.value);
 						const result = this.#autocompleteProvider.applyCompletion(
 							this.#state.lines.slice(),
 							this.#state.cursorLine,
@@ -1413,7 +1444,9 @@ export class Editor implements Component, Focusable {
 
 						result.onApplied?.();
 
-						if (shouldChainSlashCommandAutocomplete && this.#isCompletedSlashCommandAtCursor()) {
+						if (shouldChainDirectoryCompletion) {
+							queueMicrotask(() => void this.#tryTriggerAutocomplete());
+						} else if (shouldChainSlashCommandAutocomplete && this.#isCompletedSlashCommandAtCursor()) {
 							void this.#tryTriggerAutocomplete();
 						}
 					}
@@ -1474,6 +1507,12 @@ export class Editor implements Component, Focusable {
 					} else {
 						if (selected && this.#autocompleteProvider) {
 							const shouldChainSlashCommandAutocomplete = this.#isSlashCommandNameAutocompleteSelection();
+							// Directory chaining lets an @ mention be browsed deeper. It must not
+							// apply to a slash command's directory argument: Enter there accepts
+							// the whole argument, so reopening the popup on the directory's
+							// children would keep the command from ever submitting.
+							const shouldChainDirectoryCompletion =
+								this.#autocompletePrefix.startsWith("@") && isDirectoryCompletionValue(selected.value);
 							const result = this.#autocompleteProvider.applyCompletion(
 								this.#state.lines.slice(),
 								this.#state.cursorLine,
@@ -1499,7 +1538,9 @@ export class Editor implements Component, Focusable {
 							}
 
 							result.onApplied?.();
-							if (shouldChainSlashCommandAutocomplete && this.#isCompletedSlashCommandAtCursor()) {
+							if (shouldChainDirectoryCompletion) {
+								queueMicrotask(() => void this.#tryTriggerAutocomplete());
+							} else if (shouldChainSlashCommandAutocomplete && this.#isCompletedSlashCommandAtCursor()) {
 								void this.#tryTriggerAutocomplete();
 							}
 						}
@@ -1672,6 +1713,13 @@ export class Editor implements Component, Focusable {
 				this.#moveCursor(1, 0);
 			}
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorRight")) {
+			// At end of line, accept the inline ghost word completion like Tab.
+			if (
+				this.#state.cursorCol >= (this.#state.lines[this.#state.cursorLine] ?? "").length &&
+				this.#acceptWordCompletion()
+			) {
+				return;
+			}
 			this.#moveCursor(0, 1);
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorLeft")) {
 			this.#moveCursor(0, -1);
@@ -2259,6 +2307,9 @@ export class Editor implements Component, Focusable {
 					this.#tryTriggerAutocomplete();
 				}
 			} else if (char === "#") {
+				this.#tryTriggerAutocomplete();
+			} else if (char === " " && this.#isInSubmittedSlashCommandContext()) {
+				// Argument providers may expose candidates only after a separator.
 				this.#tryTriggerAutocomplete();
 			} else if (/[a-zA-Z0-9.\-_/]/.test(char)) {
 				const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -3015,6 +3066,20 @@ export class Editor implements Component, Focusable {
 		this.#retriggerAutocompleteAtCursor();
 	}
 
+	/** The `tui.editor.deleteCharForward` operation, callable by hosts that resolve the chord
+	 *  themselves rather than redispatching the raw key (see CustomEditor's exit-chord overlap).
+	 *  Mirrors the transient state the key dispatch tears down first: a pending character jump
+	 *  is cancelled by any other key, and an open spelling-assist popup is dismissed by anything
+	 *  that is not one of its accept keys. */
+	deleteCharForward(): void {
+		this.#jumpMode = null;
+		if (this.#autocompleteState === "assist") {
+			this.#cancelAutocomplete();
+			this.onAutocompleteUpdate?.();
+		}
+		this.#handleForwardDelete();
+	}
+
 	#handleForwardDelete(): void {
 		this.#historyIndex = -1;
 		this.#resetKillSequence();
@@ -3396,13 +3461,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	async #handleTabCompletion(): Promise<void> {
-		const wordCompletion = this.#getWordCompletion();
-		if (wordCompletion) {
-			const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
-			const after = currentLine.slice(this.#state.cursorCol);
-			this.#insertTextAtCursor(wordCompletion + (/^[\s.,;:!?"\])}]/.test(after) ? "" : " "));
-			return;
-		}
+		if (this.#acceptWordCompletion()) return;
 		if (!this.#autocompleteProvider) return;
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -3419,6 +3478,16 @@ export class Editor implements Component, Focusable {
 			await this.#forceFileAutocomplete();
 		}
 	}
+	/** Insert the inline ghost word completion at the cursor, if any. Shared by Tab and right-arrow accept. */
+	#acceptWordCompletion(): boolean {
+		const wordCompletion = this.#getWordCompletion();
+		if (!wordCompletion) return false;
+		const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
+		const after = currentLine.slice(this.#state.cursorCol);
+		this.#insertTextAtCursor(wordCompletion + (/^[\s.,;:!?"\])}]/.test(after) ? "" : " "));
+		return true;
+	}
+
 	async #showSpellingSuggestions(): Promise<void> {
 		const cursorLine = this.#state.cursorLine;
 		const cursorCol = this.#state.cursorCol;

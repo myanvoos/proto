@@ -3,7 +3,7 @@ import { type AssistantMessage, type ImageContent, thinkingLoopDetail } from "@o
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, isTerminalFocused, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
-import { INTENT_FIELD, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, INTENT_FIELD, logger, normalizeIntent, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
@@ -25,7 +25,7 @@ import type { AgentSessionEvent } from "../../session/agent-session";
 import { isUserInvokedSkillPrompt, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { RETRY_BUDGET_EXHAUSTED_PREFIX } from "../../session/turn-recovery";
 import { nextActionableTask } from "../../tools/checklist";
-import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
+import { PREVIEW_LIMITS, previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { setTerminalTitleState } from "../../utils/title-generator";
 import { interruptHint } from "../shared";
@@ -186,6 +186,8 @@ export class EventController {
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();
 			},
+			// InteractiveMode's session subscription rebuilds the header.
+			config_warnings_changed: async () => {},
 			thinking_level_changed: async () => {
 				this.ctx.statusLine.invalidate();
 				this.ctx.updateEditorBorderColor();
@@ -474,7 +476,7 @@ export class EventController {
 		if (this.ctx.session.isAborting) return;
 
 		if (typeof intent !== "string") return;
-		const trimmed = intent.trim();
+		const trimmed = normalizeIntent(intent);
 		if (!trimmed || trimmed === this.#lastIntent) return;
 		this.#lastIntent = trimmed;
 		this.ctx.setWorkingMessage(`${trimmed}${interruptHint()}`);
@@ -1233,6 +1235,7 @@ export class EventController {
 				}
 				this.ctx.lastAssistantUsage = usage;
 			}
+			this.ctx.streamingComponent.setServedModelMismatch(this.ctx.servedModelTracker.check(event.message));
 			this.ctx.streamingComponent.markTranscriptBlockFinalized();
 			let lastPostToolAssistantComponent: AssistantMessageComponent | undefined;
 			for (const [toolCallId, segment] of displayTimeline.afterToolCalls) {
@@ -1673,16 +1676,20 @@ export class EventController {
 			this.#restorePinnedErrorInline = true;
 			this.ctx.clearPinnedError();
 		}
-		const delaySeconds = Math.round(event.delayMs / 1000);
-		// The cancel hint sits before the cause so a narrow terminal truncates evidence, not the key.
-		const retryText = `Retrying (${event.attempt}/${event.maxAttempts}) in ${delaySeconds}s…${this.#maintenanceEscHint()}${
-			loopCause ? ` · ${loopCause}` : ""
-		}`;
+		const retryStartMs = Date.now();
+		const retryLabel = `Retrying (${event.attempt}/${event.maxAttempts})`;
+		const retrySuffix = `${this.#maintenanceEscHint()}${loopCause ? ` · ${loopCause}` : ""}`;
 		this.ctx.retryLoader = new Loader(
 			this.ctx.ui,
 			spinner => theme.fg("warning", spinner),
 			text => theme.fg("muted", text),
-			retryText,
+			// Re-evaluated every spinner tick so a long provider-stated wait counts
+			// down instead of freezing. The cancel hint sits before the cause so a
+			// narrow terminal truncates evidence, not the key.
+			() => {
+				const remaining = Math.max(0, event.delayMs - (Date.now() - retryStartMs));
+				return `${retryLabel} in ${formatDuration(remaining)}…${retrySuffix}`;
+			},
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(this.ctx.retryLoader);
@@ -1749,7 +1756,11 @@ export class EventController {
 	async #handleRetryFallbackApplied(
 		event: Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>,
 	): Promise<void> {
-		this.ctx.showWarning(`Fallback: ${event.from} -> ${event.to}`);
+		// Extensions and RPC receive the full reason; the TUI shows a bounded preview.
+		const reason = event.reason
+			? `\n${previewLine(sanitizeText(event.reason), TRUNCATE_LENGTHS.LINE * PREVIEW_LIMITS.COLLAPSED_LINES)}`
+			: "";
+		this.ctx.showWarning(`Fallback: ${event.from} -> ${event.to}${reason}`);
 	}
 
 	async #handleRetryFallbackSucceeded(

@@ -17,7 +17,8 @@ function stableClone(value: unknown): unknown {
 		return value.map(item => stableClone(item));
 	}
 	if (isRecord(value)) {
-		const sorted: Record<string, unknown> = {};
+		// Null prototype: an own `__proto__` key stays data instead of invoking Object's prototype setter.
+		const sorted = Object.create(null) as Record<string, unknown>;
 		for (const key of Object.keys(value).sort()) {
 			sorted[key] = stableClone(value[key]);
 		}

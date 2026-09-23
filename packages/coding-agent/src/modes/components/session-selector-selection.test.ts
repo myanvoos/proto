@@ -57,6 +57,58 @@ async function waitFor(predicate: () => boolean, what: string): Promise<void> {
 	throw new Error(`Timed out waiting for ${what}`);
 }
 
+describe("session selector global scope preload", () => {
+	test("loader starts at construction and the scope toggle reuses the same load", async () => {
+		const { promise, resolve } = Promise.withResolvers<SessionInfo[]>();
+		let calls = 0;
+		const loader = () => {
+			calls++;
+			return promise;
+		};
+		const selector = new SessionSelectorComponent(
+			[makeSession(1)],
+			() => {},
+			() => {},
+			() => {},
+			{
+				loadAllSessions: loader,
+			},
+		);
+		expect(calls).toBe(1);
+
+		selector.handleInput("\t");
+		expect(calls).toBe(1);
+		await waitFor(() => renderPlain(selector).includes("all projects"), "scope toggle");
+		expect(calls).toBe(1);
+		expect(renderPlain(selector)).toContain("Session 1");
+		resolve([makeSession(2)]);
+		await waitFor(() => renderPlain(selector).includes("Session 2"), "preloaded sessions");
+	});
+
+	test("a failed preload surfaces on toggle and the next toggle retries", async () => {
+		let calls = 0;
+		const selector = new SessionSelectorComponent(
+			[makeSession(1)],
+			() => {},
+			() => {},
+			() => {},
+			{
+				loadAllSessions: () => {
+					calls++;
+					return calls === 1 ? Promise.reject(new Error("index unavailable")) : Promise.resolve([makeSession(2)]);
+				},
+			},
+		);
+
+		selector.handleInput("\t");
+		await waitFor(() => renderPlain(selector).includes("index unavailable"), "preload error");
+
+		selector.handleInput("\t");
+		await waitFor(() => renderPlain(selector).includes("Session 2"), "retried sessions");
+		expect(calls).toBe(2);
+	});
+});
+
 describe("session selector shift-range selection", () => {
 	test("shift+down marks a range, delete opens a batch confirmation, Yes deletes every marked session", async () => {
 		const sessions = [makeSession(1), makeSession(2), makeSession(3)];

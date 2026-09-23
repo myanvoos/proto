@@ -113,8 +113,8 @@ Without an argument:
 
 1. Opens the session selector populated via `SessionManager.list(currentCwd, currentSessionDir)`.
 2. The picker starts in current-folder scope; Tab toggles to all-projects scope, lazily loading and caching `SessionManager.listAll()`.
-3. On selection, `SelectorController.handleResumeSession(sessionPath)` calls `session.switchSession(sessionPath)`.
-4. UI clears/rebuilds chat and checklist items, then reports `Resumed session` (or `Resumed session in <dir>` when the resumed session belongs to another project, in which case the process cwd and cwd-derived caches are re-pointed via `applyCwdChange`).
+3. On selection, `SelectorController.handleResumeSession(sessionPath)` calls `session.switchSession(sessionPath, { onCwdChange })`, where `onCwdChange` re-points the process cwd and cwd-derived caches via `applyCwdChange`. A `false` result (hook cancel or a project change that could not be applied) leaves the current session and UI untouched.
+4. UI clears/rebuilds chat and checklist items, then reports `Resumed session` (or `Resumed session in <dir>` when the resumed session belongs to another project). A session whose recorded project cannot be entered resumes in the current cwd, and the status says so.
 
 With an argument:
 
@@ -144,6 +144,7 @@ Cross-project id match behavior:
   - On yes (default), `SessionManager.open(match.path)` followed by `manager.moveTo(cwd)` re-roots the existing session into the current directory without duplicating it.
   - On no, startup is cancelled. In non-TTY mode, startup fails with an error directing the user to run interactively.
 - If the recorded directory still exists, the matched session is opened directly. Startup later changes the process/project scope to the resumed session's cwd and reloads cwd-scoped settings and plugin caches. It is not implicitly forked.
+- If that directory exists but cannot be entered (for example a macOS TCC-protected folder), or its settings/plugins fail to load, startup stays in the launch directory, prints `Could not switch to resumed project <dir>; staying in <cwd>.`, and the session tracks the launch directory runtime-only until it is moved.
 
 ## CLI `--continue`
 
@@ -167,7 +168,7 @@ This is startup-only behavior; there is no interactive `/continue` slash command
 2. Disconnect the agent event subscription, abort in-flight work, and run the optional pre-switch reconciler.
 3. Flush pending bash/session writes and capture rollback state: session manager state; agent messages and all queues; model/thinking/service tiers; tools and prompts; provider/cache ids; memory promotion; and checkpoint rewind state.
 4. Clear agent and next-turn queues. For a different file, drain/detach advisor recorders.
-5. `sessionManager.setSessionFile(sessionPath)`, update provider-cache/session ids and memory keys, build the display context, and rehydrate checkpoint state.
+5. `sessionManager.setSessionFile(sessionPath)`. When it adopts another project's cwd, the caller's `onCwdChange` must move the process there; without that callback, or when it returns `false`, the switch is refused and returns `false`. Then update provider-cache/session ids and memory keys, build the display context, and rehydrate checkpoint state.
 6. Emit `session_switch` with `reason: "resume"`.
 7. Replace agent messages, reset advisor state, and synchronize checklist items. Close cached provider sessions for a different file, or for a same-file reload whose replay messages changed.
 8. Restore an available persisted model. If the loaded branch ended with an interrupted turn, append its synthetic abort message and rebuild context.
@@ -176,7 +177,7 @@ This is startup-only behavior; there is no interactive `/continue` slash command
 11. Reconnect agent events, run the optional session-switch reconciler (interactive mode uses it to re-enter persisted modes such as plan), and best-effort refresh the workspace-root system-prompt block. Reconciler/prompt-refresh errors are logged rather than rolling back the committed switch.
 12. Restore target advisor cost state, finish the bash transition, and notify session-change callbacks when the session id changed.
 
-If a throwing step in the guarded transition fails, `switchSession()` restores the captured session, agent queues/messages, tools/prompts, model/thinking/service-tier, provider/cache, memory, and checkpoint state; it reconnects the prior agent subscription and re-runs mode reconciliation before rethrowing.
+If a throwing step in the guarded transition fails, `switchSession()` restores the captured session, agent queues/messages, tools/prompts, model/thinking/service-tier, provider/cache, memory, and checkpoint state; it reconnects the prior agent subscription and re-runs mode reconciliation before rethrowing. A project change already applied is undone through `onCwdChange(previousCwd, targetCwd)`; if that fails, the session is disposed and the error names where the process may remain.
 
 No new session file is created by `switchSession()` itself.
 
@@ -224,7 +225,6 @@ When session manager is created with `SessionManager.inMemory()` (`--no-session`
 
 ## Known implementation caveats (as of current code)
 
-- `SelectorController.handleResumeSession()` does not check the boolean result from `session.switchSession(...)`; a hook-cancelled switch can still proceed through UI "Resumed session" repaint/status path.
 - `/session delete` asks for confirmation, then deletes the current session
   JSONL and artifact directory and returns to the session selector. Deletion is
   permanent for the persisted session and its artifacts.

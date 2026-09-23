@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { getBlobsDir, isEnoent, parseJsonlLenient } from "@oh-my-pi/pi-utils";
+import { getBlobsDir, isEnoent, isEnotdir, parseJsonlLenient } from "@oh-my-pi/pi-utils";
 import { type BlobReader, BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
 import { buildSessionContext } from "./session-context";
 import type { FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./session-entries";
@@ -33,6 +33,19 @@ interface VisitEntriesFromFileStreamOptions {
 	yieldEveryEntries?: number;
 
 	onMalformedRecord?: (kind: "complete" | "unterminated-final") => void;
+
+	/** Rethrow a missing source instead of visiting nothing. */
+	throwIfMissing?: boolean;
+
+	/** Called with each stream chunk's byte length, so callers learn the exact snapshot size without re-stating. */
+	onBytesConsumed?: (bytes: number) => void;
+}
+
+/** Controls how {@link loadSessionFile} treats its source. */
+export interface LoadSessionOptions {
+	preserveInvalidHeader?: boolean;
+	/** Propagate ENOENT/ENOTDIR instead of treating the path as a new empty session. */
+	throwIfMissing?: boolean;
 }
 
 export interface SessionLoadResult {
@@ -43,6 +56,11 @@ export interface SessionLoadResult {
 	malformedCompleteRecords: number;
 	/** Whether non-empty session data was found without a valid leading session header. */
 	invalidHeader: boolean;
+	/**
+	 * Byte length of the snapshot actually parsed, or `null` when the path did not exist. Writers replay it as the
+	 * freshness precondition of their next full rewrite.
+	 */
+	sourceSize?: number | null;
 }
 
 function splitTitleSlot(content: string): { body: string; slot: SessionTitleUpdate | undefined } {
@@ -213,6 +231,7 @@ export async function visitEntriesFromFileStream(
 	try {
 		for await (const chunk of Bun.file(filePath).stream()) {
 			if (stopped) break;
+			options.onBytesConsumed?.(chunk.byteLength);
 			bytesSinceYield += chunk.byteLength;
 			bytesSinceCollection += chunk.byteLength;
 			bufferedBytes += chunk.byteLength;
@@ -233,17 +252,21 @@ export async function visitEntriesFromFileStream(
 		}
 	} catch (error) {
 		if (visitorThrew) throw error;
-		if (isEnoent(error)) return undefined;
+		if (isEnoent(error) && !options.throwIfMissing) return undefined;
 		throw error;
 	}
 
 	return titleSlot;
 }
 
-export async function loadEntriesFromFileStream(filePath: string): Promise<SessionLoadResult> {
+export async function loadEntriesFromFileStream(
+	filePath: string,
+	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing">,
+): Promise<SessionLoadResult> {
 	const entries: FileEntry[] = [];
 	let malformedRecords = 0;
 	let malformedCompleteRecords = 0;
+	let bytesConsumed = 0;
 	const titleSlot = await visitEntriesFromFileStream(
 		filePath,
 		entry => {
@@ -254,6 +277,10 @@ export async function loadEntriesFromFileStream(filePath: string): Promise<Sessi
 				malformedRecords++;
 				if (kind === "complete") malformedCompleteRecords++;
 			},
+			throwIfMissing: options?.throwIfMissing,
+			onBytesConsumed: bytes => {
+				bytesConsumed += bytes;
+			},
 		},
 	);
 	return {
@@ -261,6 +288,7 @@ export async function loadEntriesFromFileStream(filePath: string): Promise<Sessi
 		titleSlot,
 		malformedRecords,
 		malformedCompleteRecords,
+		sourceSize: bytesConsumed,
 		invalidHeader: entries.length > 0 ? !isValidSessionHeader(entries[0]) : malformedRecords > 0,
 	};
 }
@@ -277,27 +305,27 @@ async function loadWithKnownSize(
 	filePath: string,
 	storage: SessionStorage,
 	size: number,
-	preserveInvalidHeader: boolean,
+	options: LoadSessionOptions,
 ): Promise<SessionLoadResult> {
-	const loaded = shouldStreamEntries(storage, size)
-		? await loadEntriesFromFileStream(filePath)
-		: parseSessionContent(await storage.readText(filePath));
-	return loaded.invalidHeader && !preserveInvalidHeader ? { ...loaded, entries: [] } : loaded;
+	let loaded: SessionLoadResult;
+	if (shouldStreamEntries(storage, size)) {
+		loaded = await loadEntriesFromFileStream(filePath, { throwIfMissing: options.throwIfMissing });
+	} else {
+		const content = await storage.readText(filePath);
+		loaded = { ...parseSessionContent(content), sourceSize: Buffer.byteLength(content, "utf8") };
+	}
+	return loaded.invalidHeader && !options.preserveInvalidHeader ? { ...loaded, entries: [] } : loaded;
 }
 
 export async function loadSessionFile(
 	filePath: string,
 	storage: SessionStorage = new FileSessionStorage(),
-	options?: { preserveInvalidHeader?: boolean },
+	options: LoadSessionOptions = {},
 ): Promise<SessionLoadResult> {
 	try {
-		return await loadWithKnownSize(
-			filePath,
-			storage,
-			storage.statSync(filePath).size,
-			options?.preserveInvalidHeader === true,
-		);
+		return await loadWithKnownSize(filePath, storage, storage.statSync(filePath).size, options);
 	} catch (err) {
+		if (options.throwIfMissing && (isEnoent(err) || isEnotdir(err))) throw err;
 		if (isEnoent(err)) {
 			return {
 				entries: [],
@@ -305,6 +333,7 @@ export async function loadSessionFile(
 				malformedRecords: 0,
 				malformedCompleteRecords: 0,
 				invalidHeader: false,
+				sourceSize: null,
 			};
 		}
 		throw err;
@@ -336,7 +365,7 @@ export async function visitEntriesFromFile(
 		return;
 	}
 
-	for (const entry of (await loadWithKnownSize(filePath, storage, size, false)).entries) {
+	for (const entry of (await loadWithKnownSize(filePath, storage, size, {})).entries) {
 		if (visit(entry) === false) return;
 	}
 }
@@ -469,26 +498,40 @@ function containsBlobRef(value: unknown, key?: string): boolean {
 	return false;
 }
 
-export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
+async function resolveBlobRefs(values: readonly unknown[], blobStore: BlobStore): Promise<void> {
 	const readBlob = createBoundedBlobReader(blobStore);
 	const pending: Promise<void>[] = [];
-
-	for (const entry of entries) {
-		if (entry.type === "session") continue;
-		if (!containsBlobRef(entry)) continue;
-		pending.push(resolvePersistedBlobRefs(entry, blobStore, readBlob));
+	for (const value of values) {
+		if (!containsBlobRef(value)) continue;
+		pending.push(resolvePersistedBlobRefs(value, blobStore, readBlob));
 	}
 	await Promise.all(pending);
+}
+
+export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
+	await resolveBlobRefs(
+		entries.filter(entry => entry.type !== "session"),
+		blobStore,
+	);
 }
 
 export async function loadSessionMessagesReadOnly(filePath: string): Promise<AgentMessage[]> {
 	const entries = await loadEntriesFromFile(filePath);
 	if (entries.length === 0) return [];
 	migrateToCurrentVersion(entries);
-	await resolveBlobRefsInEntries(entries, new BlobStore(getBlobsDir()));
 	const sessionEntries = entries.filter((e): e is SessionEntry => e.type !== "session");
-	return buildSessionContext(sessionEntries, undefined, undefined, {
+	const { messages } = buildSessionContext(sessionEntries, undefined, undefined, {
 		transcript: true,
 		collapseCompactedHistory: true,
-	}).messages;
+	});
+	// Hydrate only what the transcript retains. A collapsed summary's remote-compaction replacement history exists
+	// for provider replay alone — this transcript is never replayed and the renderer reads just the summary — so
+	// dropping it keeps hydration off every image blob buried in that hidden history.
+	const displayMessages = messages.map(message =>
+		message.role === "compactionSummary" && message.providerPayload !== undefined
+			? { ...message, providerPayload: undefined }
+			: message,
+	);
+	await resolveBlobRefs(displayMessages, new BlobStore(getBlobsDir()));
+	return displayMessages;
 }
