@@ -2,15 +2,17 @@
 
 ## [Unreleased]
 
+## [18.5.0] - 2026-09-23
+
+### Breaking Changes
+
+- Native-scrollback applications now provide explicit history batches through `TerminalFrameProvider`; removed implicit full-document retirement and the `NativeScrollback*` / `RenderStablePrefix` component hooks.
+
 ### Added
 
 - `Markdown#setStreamPrefix()` renders text as the prefix of a longer stream (an unclosed trailing code fence gets no closing border), and `getLastRenderStableText()` now extends into the finished items of a streaming list and the complete lines of an open code fence.
 - `Markdown#findParagraphCuts()` lists where a hard line break could split the paragraph still streaming at the end of the text, and `Terminal.refreshSize()` re-reads the window size without waiting for SIGWINCH.
 - DEC 1004 focus reporting: the terminal enables focus events on attach, tracks focus in/out, and exposes `isTerminalFocused()` (`undefined` until the host actually reports focus, so callers never mistake silence for "focused"). Focus reports are consumed instead of leaking into the input handler as stray keys.
-
-### Breaking Changes
-
-- Native-scrollback applications now provide explicit history batches through `TerminalFrameProvider`; removed implicit full-document retirement and the `NativeScrollback*` / `RenderStablePrefix` component hooks.
 
 ### Changed
 

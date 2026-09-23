@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.5.0] - 2026-09-23
+
 ### Added
 
 - Claude Code wire version is now adopted from Anthropic's `claude_code_version_too_old` rejections and retried automatically, so a stale pin costs one request instead of a hard failure (`PI_AI_CLAUDE_CODE_VERSION` still pins it explicitly)
@@ -164,11 +166,30 @@
 
 - Fixed OpenCode Go window-limit 429s (`5-hour`/`Weekly`/`Monthly usage limit reached. Resets in …`) not pinning the exhausted credential to the server-stated reset; the window phrasing is now covered by a regression test over the rotation classifier. ([#12091](https://github.com/can1357/oh-my-pi/pull/12091) by [@H4vC](https://github.com/H4vC))
 
+## [18.1.23] - 2026-09-20
+
+### Fixed
+
+- OpenAI-compatible providers (`openai-completions`, e.g. local vLLM endpoints) now reveal tool-call arguments as they stream instead of showing the finished call once generation ends.
+- Time-to-first-token is now recorded for OpenAI-compatible streams that emit only tool calls.
+
 ## [18.1.22] - 2026-09-14
 
 ### Fixed
 
 - 400-request debug dumps now redact provider-specific auth headers (`x-goog-api-key`, `x-amz-security-token`, and any header whose name carries a key/token/secret), not just a fixed allow-list, so a shared dump can no longer leak a live API key ([#12007](https://github.com/can1357/oh-my-pi/issues/12007)).
+
+## [18.1.22] - 2026-09-18
+
+### Fixed
+
+- Aborted empty-response retries now surface cancellation, result-only completions no longer retain streamed events, and GitHub Copilot retry backoff is jittered.
+- Devin, Ollama, and Anthropic streams now reject incomplete or malformed responses instead of completing with partial content.
+- Bedrock, Cursor, and Google streams now reject corrupt, truncated, or stalled responses; Cursor cleans up abort listeners, GitLab Duo token exchange honors cancellation, and Bedrock cache tokens remain in usage totals.
+
+### Removed
+
+- Removed unused test-only hooks from provider and streaming internals.
 
 ## [18.1.20] - 2026-09-13
 
@@ -310,25 +331,6 @@
 - Repetition detection is stride-independent: the exact-cycle scan runs at fixed stream offsets instead of every 128 characters of whichever delta arrived, so the same response is judged the same way however the provider chunked it. Detection previously depended on network chunking, both missing real loops and flagging innocent text.
 - Leaked-thinking stream filtering now honors authoritative text replacements and terminal metadata instead of retaining stale drafts, while preserving thinking-tag filtering and remapping in-flight tool indices.
 - An OpenAI-compatible endpoint that answers 200 with a body that is not a stream (for example an HTML error page from a wrong `baseUrl`) now fails with the status and content-type instead of being recorded as a successful empty turn.
-
-## [18.1.23] - 2026-09-20
-
-### Fixed
-
-- OpenAI-compatible providers (`openai-completions`, e.g. local vLLM endpoints) now reveal tool-call arguments as they stream instead of showing the finished call once generation ends.
-- Time-to-first-token is now recorded for OpenAI-compatible streams that emit only tool calls.
-
-## [18.1.22] - 2026-09-18
-
-### Fixed
-
-- Aborted empty-response retries now surface cancellation, result-only completions no longer retain streamed events, and GitHub Copilot retry backoff is jittered.
-- Devin, Ollama, and Anthropic streams now reject incomplete or malformed responses instead of completing with partial content.
-- Bedrock, Cursor, and Google streams now reject corrupt, truncated, or stalled responses; Cursor cleans up abort listeners, GitLab Duo token exchange honors cancellation, and Bedrock cache tokens remain in usage totals.
-
-### Removed
-
-- Removed unused test-only hooks from provider and streaming internals.
 
 ## [18.1.6] - 2026-09-12
 

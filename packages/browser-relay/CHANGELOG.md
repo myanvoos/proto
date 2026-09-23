@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.5.0] - 2026-09-23
+
 ### Changed
 
 - Extension settings and installation messages use consistent Proto branding and valid CLI commands.

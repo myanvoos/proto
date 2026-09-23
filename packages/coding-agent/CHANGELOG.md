@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.5.0] - 2026-09-23
+
 ### Added
 
 - Claude saved resets can be spent automatically via the new `claudeResets.*` settings (consent is asked once per provider, independently of `codexResets.*`), and `/usage reset` now covers Claude and Codex accounts with live eligibility and expiry
@@ -27,7 +29,6 @@
 - Code blocks without a recognized language keep their code color when the reply finishes instead of switching to plain text
 - The transcript no longer collapses into one-line fragments mid-turn after a tool call is cut off while streaming (kernel preflight, loop guards, stream retries); the rest of the turn now retires to scrollback in full.
 - Launching proto no longer erases what was in your terminal: with `startup.clearScrollback` off (the default) the pre-launch screen stays reachable by scrolling up, as the setting describes.
-
 - Settings rows no longer show a wrong value: the value column keeps its ellipsis and a minimum width, so a boolean reads `false` instead of `fals`, `fa` or nothing as the dialog narrows, and a long label yields the space rather than swallowing the column.
 - The settings tab strip says how many tabs it scrolled out of view (`+8 more`) instead of silently showing two of ten, and the marker never clips the active tab or leaves a half-drawn label clickable.
 - A theme slot lists the themes that fit it first and labels the ones that do not (`light theme` in the Dark Theme picker), classified by the theme's own luminance so unprefixed names like `limestone` and `onyx` sort correctly too.
