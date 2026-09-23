@@ -182,7 +182,9 @@ export function getMarkdownTheme(): MarkdownTheme {
 			: undefined,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
-			const highlighted = highlightCached(code, validLang, theme);
+			// Unhighlightable code keeps the plain code color it streamed in with;
+			// the streaming path has no highlighter for it either.
+			const highlighted = validLang ? highlightCached(code, validLang, theme) : null;
 			if (highlighted !== null) return highlighted.slice();
 			return code.split("\n").map(line => theme.fg("mdCodeBlock", line));
 		},

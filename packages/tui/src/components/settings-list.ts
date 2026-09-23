@@ -6,6 +6,10 @@ import type { Component } from "../tui";
 import { Ellipsis, padding, replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils";
 import { ScrollView } from "./scroll-view";
 
+/** Below these a settings row cannot carry two columns and falls back to one ellipsised line. */
+const MIN_VALUE_COLUMN = 6;
+const MIN_LABEL_COLUMN = 12;
+
 function sanitizeSingleLine(text: string): string {
 	return replaceTabs(text)
 		.replace(/[\r\n]+/g, " ")
@@ -463,11 +467,20 @@ export class SettingsList implements Component {
 		const prefix = isSelected ? this.#theme.cursor : "  ";
 		const prefixWidth = visibleWidth(prefix);
 		const mark = this.#warningMark(item);
-		const labelPlain = item.label + mark;
-		const labelPad = padding(Math.max(0, maxLabelWidth - visibleWidth(labelPlain)));
 		const separator = "  ";
-		const valueMaxWidth = rowWidth - prefixWidth - maxLabelWidth - visibleWidth(separator) - 2;
-		const valuePlain = truncateToWidth(String(item.currentValue ?? ""), valueMaxWidth, Ellipsis.Omit);
+		// The value is the setting's actual state, so it outranks a long label: when both
+		// columns cannot have their minimum, the label yields first. A clipped value keeps
+		// its ellipsis too — a bare "fals" reads as a value, "fal…" reads as truncation.
+		const columnBudget = rowWidth - prefixWidth - visibleWidth(separator) - 2;
+		const labelWidth =
+			columnBudget >= MIN_LABEL_COLUMN + MIN_VALUE_COLUMN
+				? Math.min(maxLabelWidth, columnBudget - MIN_VALUE_COLUMN)
+				: maxLabelWidth;
+		const labelShort = truncateToWidth(item.label, Math.max(0, labelWidth - visibleWidth(mark)));
+		const labelPlain = labelShort + mark;
+		const labelPad = padding(Math.max(0, labelWidth - visibleWidth(labelPlain)));
+		const valueMaxWidth = Math.max(0, columnBudget - labelWidth);
+		const valuePlain = truncateToWidth(String(item.currentValue ?? ""), valueMaxWidth);
 		const hovered = !isSelected && this.#theme.hovered !== undefined && item.id === this.#hoveredItemId;
 
 		if (dimmed && !isSelected) {
@@ -478,7 +491,7 @@ export class SettingsList implements Component {
 		}
 		const warningStyle = this.#theme.warning ?? this.#theme.description;
 		const labelText =
-			this.#theme.label(item.label, isSelected, item.changed === true) + (mark ? warningStyle(mark) : "") + labelPad;
+			this.#theme.label(labelShort, isSelected, item.changed === true) + (mark ? warningStyle(mark) : "") + labelPad;
 		const valueText = this.#theme.value(valuePlain, isSelected, item.changed === true);
 		const text = truncateToWidth(prefix + labelText + separator + valueText, Math.max(0, rowWidth));
 

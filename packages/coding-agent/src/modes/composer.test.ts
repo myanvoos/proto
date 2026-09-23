@@ -4,6 +4,7 @@ import {
 	CURSOR_MARKER,
 	Editor,
 	type RenderScheduler,
+	Spacer,
 	type Terminal,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
@@ -962,6 +963,26 @@ test("an extreme shrink never loses a finalized block from the tape", () => {
 			else Bun.env[key] = value;
 		}
 	}
+});
+
+// A block that retires whole leaves the blank separating it from the next
+// block at the end of history; the chrome's own gap row used to double it.
+test("one blank row separates retired history from the composer and from the next block", () => {
+	const { composer, terminal, scheduler, transcript } = createHarness(40, 10);
+	composer.setRuntimeChildren([transcript, new Spacer(1)]);
+	const hairline = theme.boxSharp.horizontal.repeat(40);
+	const aboveHairline = (count: number) => {
+		const tape = terminal.tape();
+		const index = tape.lastIndexOf(hairline);
+		return tape.slice(index - count, index);
+	};
+	transcript.addChild(new StaticBlock(Array.from({ length: 12 }, (_value, row) => `reply-row-${row}`)));
+	render(composer, scheduler);
+	expect(aboveHairline(2)).toEqual(["reply-row-11", ""]);
+
+	transcript.addChild(new StaticBlock(["next-block"]));
+	render(composer, scheduler);
+	expect(aboveHairline(4)).toEqual(["reply-row-11", "", "next-block", ""]);
 });
 
 test("a shrink retires the transcript overflow once and only a replay can bring it back", () => {

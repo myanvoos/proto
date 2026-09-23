@@ -76,10 +76,6 @@ export type ChecklistPhase = {
 	tasks: ChecklistItem[];
 };
 
-export interface InteractiveModeInitOptions {
-	clearInitialTerminalHistory?: boolean;
-}
-
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
 
 export interface RenderInitialMessagesOptions {
@@ -202,7 +198,7 @@ export interface InteractiveModeContext {
 	oauthManualInput: OAuthManualInputManager;
 	checklistPhases: ChecklistPhase[];
 
-	init(options?: InteractiveModeInitOptions): Promise<void>;
+	init(): Promise<void>;
 	shutdown(): Promise<void>;
 	checkShutdownRequested(): Promise<void>;
 

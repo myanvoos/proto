@@ -154,7 +154,6 @@ import type {
 	ChecklistPhase,
 	CompactionQueuedMessage,
 	InteractiveModeContext,
-	InteractiveModeInitOptions,
 	InteractiveSelectorDialogOptions,
 	RenderInitialMessagesOptions,
 	RenderSessionContextOptions,
@@ -762,7 +761,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			return failure === undefined ? [] : [{ serverName, ...failure }];
 		});
 	}
-	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
+	async init(): Promise<void> {
 		if (this.isInitialized) return;
 
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
@@ -870,10 +869,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#eventBusUnsubscribers.push(startMacOSAppearanceReprobeFallback(this.ui.terminal));
 		}
 
+		// A cold launch always begins on a clean viewport. Whether the rows it
+		// displaces are erased or pushed into scrollback is the user's call, and
+		// `startup.clearScrollback` is where they make it — the prepaint composer
+		// had to guess before settings existed, so correct it here either way.
+		this.ui.setScrollbackExpendable(this.settings.get("startup.clearScrollback"));
 		if (!this.#ownsStartedUi) {
-			this.composer.start({
-				clearScrollback: options.clearInitialTerminalHistory === true,
-			});
+			this.composer.start({ clearScrollback: true });
 			this.#ownsStartedUi = true;
 		}
 		pushTerminalTitle();
@@ -950,7 +952,13 @@ export class InteractiveMode implements InteractiveModeContext {
 				clearMermaidCache();
 				this.ui.invalidate();
 				this.updateEditorBorderColor();
-				if (event.ephemeral || isInsideTerminalMultiplexer()) {
+				// Repainting the committed transcript is what keeps a live theme change
+				// from leaving it two-toned. Before the first transcript render there
+				// is nothing committed to repaint — and the startup theme apply lands
+				// exactly there, on top of the prepaint composer's frame — so the
+				// ordinary render is both sufficient and the only one that does not
+				// displace that frame into scrollback.
+				if (event.ephemeral || isInsideTerminalMultiplexer() || !this.initialChatRendered) {
 					this.ui.requestRender();
 					return;
 				}

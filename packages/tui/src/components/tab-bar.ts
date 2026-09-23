@@ -184,70 +184,105 @@ export class TabBar implements Component {
 			}
 		}
 
-		this.#hitZones = [];
-		const lines: string[] = [];
-		let currentLine = "";
-		let currentWidth = 0;
+		interface Layout {
+			lines: string[];
+			hitZones: { line: number; start: number; end: number; index: number }[];
+		}
 
-		for (const chunk of chunks) {
-			const chunkWidth = visibleWidth(chunk.text);
-			if (chunkWidth <= 0) {
-				continue;
-			}
+		const wrap = (): Layout => {
+			const hitZones: Layout["hitZones"] = [];
+			const lines: string[] = [];
+			let currentLine = "";
+			let currentWidth = 0;
 
-			if (chunkWidth > maxWidth) {
-				if (currentLine) {
+			for (const chunk of chunks) {
+				const chunkWidth = visibleWidth(chunk.text);
+				if (chunkWidth <= 0) {
+					continue;
+				}
+
+				if (chunkWidth > maxWidth) {
+					if (currentLine) {
+						lines.push(currentLine);
+						currentLine = "";
+						currentWidth = 0;
+					}
+					if (chunk.tabIndex !== undefined) {
+						hitZones.push({ line: lines.length, start: 0, end: maxWidth, index: chunk.tabIndex });
+					}
+					lines.push(truncateToWidth(chunk.text, maxWidth));
+					continue;
+				}
+
+				if (currentWidth > 0 && currentWidth + chunkWidth > maxWidth) {
 					lines.push(currentLine);
 					currentLine = "";
 					currentWidth = 0;
 				}
-				if (chunk.tabIndex !== undefined) {
-					this.#hitZones.push({ line: lines.length, start: 0, end: maxWidth, index: chunk.tabIndex });
+
+				// Gaps separate tabs; at the start of a line they read as stray
+				// indentation and push the first tab out of alignment with the rows
+				// above it.
+				if (currentWidth === 0 && chunk.tabIndex === undefined && chunk.text.trim() === "") {
+					continue;
 				}
-				lines.push(truncateToWidth(chunk.text, maxWidth));
-				continue;
+
+				if (chunk.tabIndex !== undefined) {
+					hitZones.push({
+						line: lines.length,
+						start: currentWidth,
+						end: currentWidth + chunkWidth,
+						index: chunk.tabIndex,
+					});
+				}
+				currentLine += chunk.text;
+				currentWidth += chunkWidth;
 			}
 
-			if (currentWidth > 0 && currentWidth + chunkWidth > maxWidth) {
+			if (currentLine) {
 				lines.push(currentLine);
-				currentLine = "";
-				currentWidth = 0;
 			}
+			return { lines, hitZones };
+		};
 
-			// Gaps separate tabs; at the start of a line they read as stray
-			// indentation and push the first tab out of alignment with the rows
-			// above it.
-			if (currentWidth === 0 && chunk.tabIndex === undefined && chunk.text.trim() === "") {
-				continue;
-			}
-
-			if (chunk.tabIndex !== undefined) {
-				this.#hitZones.push({
-					line: lines.length,
-					start: currentWidth,
-					end: currentWidth + chunkWidth,
-					index: chunk.tabIndex,
-				});
-			}
-			currentLine += chunk.text;
-			currentWidth += chunkWidth;
+		const { lines, hitZones } = wrap();
+		if (lines.length <= this.#maxRows) {
+			this.#hitZones = hitZones;
+			return lines.length > 0 ? lines : [""];
 		}
 
-		if (currentLine) {
-			lines.push(currentLine);
-		}
+		const activeLine = hitZones.find(zone => zone.index === this.#activeIndex)?.line ?? 0;
+		const start = Math.max(0, Math.min(activeLine - Math.floor(this.#maxRows / 2), lines.length - this.#maxRows));
+		const end = start + this.#maxRows;
+		const hiddenTabs = hitZones.filter(zone => zone.line < start || zone.line >= end).length;
+		this.#hitZones = hitZones
+			.filter(zone => zone.line >= start && zone.line < end)
+			.map(zone => ({ ...zone, line: zone.line - start }));
+		const visible = lines.slice(start, end);
 
-		if (lines.length > this.#maxRows) {
-			const activeLine = this.#hitZones.find(zone => zone.index === this.#activeIndex)?.line ?? 0;
-			const start = Math.max(0, Math.min(activeLine - Math.floor(this.#maxRows / 2), lines.length - this.#maxRows));
-			const end = start + this.#maxRows;
-			this.#hitZones = this.#hitZones
-				.filter(zone => zone.line >= start && zone.line < end)
-				.map(zone => ({ ...zone, line: zone.line - start }));
-			return lines.slice(start, end);
+		// A scrolled strip that says nothing is indistinguishable from a strip that only
+		// has two tabs: name how many more ←/→ can still reach.
+		if (hiddenTabs > 0 && visible.length > 0) {
+			const marker = this.#theme.hint(` +${hiddenTabs} more`);
+			const room = Math.max(0, maxWidth - visibleWidth(marker));
+			const activeRow = this.#hitZones.find(zone => zone.index === this.#activeIndex)?.line;
+			let markRow = visible.length - 1;
+			// The marker costs its row a tab when the row is full, so keep it off the
+			// active one whenever another visible row can carry it.
+			if (markRow === activeRow && visibleWidth(visible[markRow] ?? "") > room) {
+				const alternative = visible.findIndex((_, row) => row !== activeRow);
+				if (alternative >= 0) markRow = alternative;
+			}
+			const target = visible[markRow] ?? "";
+			if (visibleWidth(target) > room) {
+				visible[markRow] = truncateToWidth(target, room) + marker;
+				// A half-drawn label must not stay clickable.
+				this.#hitZones = this.#hitZones.filter(zone => zone.line !== markRow || zone.end <= room);
+			} else {
+				visible[markRow] = target + marker;
+			}
 		}
-
-		return lines.length > 0 ? lines : [""];
+		return visible.length > 0 ? visible : [""];
 	}
 
 	tabAt(line: number, col: number): Tab | undefined {

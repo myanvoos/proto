@@ -26,6 +26,8 @@ function isCommentNoise(line: string, isLastLine: boolean): boolean {
 }
 
 const ELISION_MARKER_PATTERN = /\.\.\.(?: \((\d+) lines? of code\))?$/;
+// One or two fence characters on the last line: a code fence still arriving.
+const PARTIAL_FENCE = /^ {0,3}(?:`{1,2}|~{1,2})$/;
 
 function elisionMarker(hidden: number): string {
 	if (hidden <= 0) return "...";
@@ -99,6 +101,10 @@ export function formatThinkingForDisplay(text: string, proseOnly: boolean): stri
 		}
 
 		if (hasComment && isCommentNoise(line, i === lines.length - 1)) continue;
+		// Hidden code folds into the line before it once the fence is complete.
+		// Showing the partial fence as prose first would settle that line as
+		// finished, and the fold would then rewrite it.
+		if (proseOnly && i === lines.length - 1 && PARTIAL_FENCE.test(line)) continue;
 
 		const open = FENCE.exec(line);
 		if (open) {

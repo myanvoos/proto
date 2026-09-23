@@ -182,16 +182,55 @@ test("publishes completed table, code, and list blocks without layout drift", ()
 	}
 });
 
-test("keeps open Markdown suffixes out of history and can reset publication", () => {
+// Without row-level publication a list or code fence taller than the live
+// viewport clips its top off the screen, and a resize then duplicates it.
+test("publishes the settled rows of a streaming list or code fence at every width", () => {
+	for (const text of [
+		"- first item wraps at narrow widths\n- second item\n- third ite",
+		"```ts\nconst first = compute(1);\nconst second = compute(2);\nconst thi",
+	]) {
+		const reply = new AssistantMessageComponent(undefined, false);
+		reply.updateContent({ ...message, content: [{ type: "text", text }] }, { transient: true });
+		reply.render(46);
+		expect(reply.getTranscriptStableRows().length).toBeGreaterThan(0);
+		expectStablePrefix(reply, 23);
+		expectStablePrefix(reply, 67);
+	}
+});
+
+// Prose-only thinking folds a hidden code block into the line before it. A
+// fence arriving a character at a time must not settle that line first: rows
+// already in scrollback would stop matching, and the whole block would be
+// written a second time when the reply finishes.
+test("thinking rows published before a code fence survive the fold and finalization", () => {
+	const thinking = "Plan:\n\n- check the list\n- then the code\n\n```ts\nconst a = 1;\n```\n\nDone thinking.";
 	const reply = new AssistantMessageComponent(undefined, false);
-	const text = "Settled prose.\n\n```ts\nconst unfinished = true;\n\nmore open code";
+	for (let end = 1; end <= thinking.length; end++) {
+		reply.updateContent(
+			{ ...message, content: [{ type: "thinking", thinking: thinking.slice(0, end) }] },
+			{ transient: true },
+		);
+		reply.render(48);
+		expectStablePrefix(reply, 48);
+	}
+	const published = reply.getTranscriptStableRows().length;
+	expect(published).toBeGreaterThan(0);
+	const stable = [...reply.renderTranscriptStableRows(published, 48)];
+	reply.updateContent({ ...message, content: [{ type: "thinking", thinking }] });
+	reply.markTranscriptBlockFinalized();
+	expect(expectStablePrefix(reply, 48)).toEqual(stable);
+});
+
+test("keeps the streaming line of an open code fence out of history and can reset publication", () => {
+	const reply = new AssistantMessageComponent(undefined, false);
+	const text = "Settled prose.\n\n```ts\nconst finished = true;\n\nmore open code";
 	reply.updateContent({ ...message, content: [{ type: "text", text }] }, { transient: true });
 	reply.render(50);
 
 	const stable = expectStablePrefix(reply, 50);
 	const plain = Bun.stripANSI(stable.join("\n"));
 	expect(plain).toContain("Settled prose.");
-	expect(plain).not.toContain("unfinished");
+	expect(plain).toContain("finished");
 	expect(plain).not.toContain("open code");
 
 	reply.resetTranscriptStableRows();

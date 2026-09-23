@@ -14,7 +14,7 @@ afterEach(async () => {
 });
 
 async function project(): Promise<{ cwd: string; sessionDir: string }> {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-wave5-concurrent-"));
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "proto-concurrent-"));
 	roots.push(root);
 	const cwd = path.join(root, "work");
 	const sessionDir = path.join(root, "sessions");

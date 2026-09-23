@@ -34,7 +34,13 @@ import {
 } from "../../config/settings";
 import type { SettingTab, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
-import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
+import {
+	getCurrentThemeName,
+	getSelectListTheme,
+	getSettingsListTheme,
+	isLightTheme,
+	theme,
+} from "../../modes/theme/theme";
 import { getTabBarTheme } from "../shared";
 import { withIcon } from "../theme/icon-label";
 import {
@@ -120,7 +126,6 @@ class SelectSubmenu extends Container {
 	readonly #description: string;
 	#titleText: Text;
 	#descriptionText: Text | null = null;
-	#hintText: Text;
 
 	constructor(
 		title: string,
@@ -188,10 +193,6 @@ class SelectSubmenu extends Container {
 
 		this.addChild(this.#selectList);
 
-		this.addChild(new Spacer(1));
-		this.#hintText = new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0);
-		this.addChild(this.#hintText);
-
 		if (footer) {
 			this.addChild(new Spacer(1));
 			this.addChild(footer);
@@ -208,7 +209,6 @@ class SelectSubmenu extends Container {
 	setTheme(): void {
 		this.#titleText.setText(theme.bold(theme.fg("accent", this.#title)));
 		this.#descriptionText?.setText(theme.fg("muted", this.#description));
-		this.#hintText.setText(theme.fg("dim", "  Enter to select · Esc to go back"));
 		this.#selectList.setTheme(getSelectListTheme());
 	}
 
@@ -519,6 +519,24 @@ class ProviderLimitsSubmenu extends Container {
 }
 
 let cachedSidebarWidth: number | undefined;
+
+/**
+ * A theme slot only makes sense filled with a theme of that appearance, but the choice
+ * stays open: matching themes come first and a mismatched one says so, so picking a light
+ * theme for the dark slot becomes a decision rather than an accident. Appearance comes
+ * from the theme's own luminance, so unprefixed names (limestone, onyx) classify too.
+ */
+function themeOptionsForSlot(availableThemes: readonly string[], slot: "dark" | "light"): SelectItem[] {
+	const mismatchNote = slot === "dark" ? "light theme" : "dark theme";
+	const options = availableThemes.map(name => {
+		const matches = isLightTheme(name) === (slot === "light");
+		return { value: name, label: name, ...(matches ? {} : { description: mismatchNote }) };
+	});
+	return [
+		...options.filter(option => option.description === undefined),
+		...options.filter(option => option.description !== undefined),
+	];
+}
 
 function settingsSidebarWidth(): number {
 	if (cachedSidebarWidth === undefined) {
@@ -1048,7 +1066,7 @@ export class SettingsSelectorComponent implements Component {
 				return baseOpt || { value: level, label: level };
 			});
 		} else if (def.path === "theme.dark" || def.path === "theme.light") {
-			options = this.context.availableThemes.map(t => ({ value: t, label: t }));
+			options = themeOptionsForSlot(this.context.availableThemes, def.path === "theme.light" ? "light" : "dark");
 		}
 
 		let onPreview: ((value: string) => void | Promise<void>) | undefined;

@@ -213,6 +213,25 @@ test("writes ordered history once and acknowledges only after the physical write
 	tui.stop();
 });
 
+test("a frame that scrolls committed history keeps it when the host grew before the write landed", () => {
+	const { terminal, scheduler, provider, tui } = makeTui();
+	provider.plan = { history: { id: 1, rows: ["h1", "h2", "h3"] }, viewport: ["v1"], viewportAnchor: "bottom" };
+	tui.start({ deferInput: true });
+	scheduler.flush();
+
+	// The pane grows, but the next frame is already computed for the old height.
+	terminal.resize(40, 9);
+	terminal.rows = 6;
+	provider.plan = { viewport: ["v1", "v2", "v3"], viewportAnchor: "bottom" };
+	tui.requestRender();
+	scheduler.flush();
+
+	const rows = terminal.allNormalRows();
+	for (const row of ["h1", "h2", "h3", "v1", "v2", "v3"]) expect(countRow(rows, row), row).toBe(1);
+	expect(rows.indexOf("h3")).toBeLessThan(rows.indexOf("v1"));
+	tui.stop();
+});
+
 test("bottom anchored viewport grows and shrinks without archiving stale mutable rows", () => {
 	const { terminal, scheduler, provider, tui } = makeTui();
 	provider.plan = { history: { id: 1, rows: ["history"] }, viewport: ["old-a", "old-b"], viewportAnchor: "bottom" };

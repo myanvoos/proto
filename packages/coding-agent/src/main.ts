@@ -457,9 +457,7 @@ async function runInteractiveMode(
 				})
 			: [];
 
-		await mode.init({
-			clearInitialTerminalHistory: true,
-		});
+		await mode.init();
 	} catch (error) {
 		mode.stop();
 		throw error;

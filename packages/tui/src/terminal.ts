@@ -198,6 +198,13 @@ export interface Terminal {
 	get columns(): number;
 	get rows(): number;
 
+	/**
+	 * Re-read the window size from the OS now, without waiting for SIGWINCH to
+	 * reach the event loop. When it changed, dispatch the resize callback before
+	 * returning true.
+	 */
+	refreshSize?(): boolean;
+
 	readonly pendingOutputBytes?: number;
 
 	get kittyProtocolActive(): boolean;
@@ -1454,6 +1461,17 @@ export class ProcessTerminal implements Terminal {
 	get rows(): number {
 		if (this.#inBandResizeActive && this.#reportedRows) return this.#reportedRows;
 		return process.stdout.rows || Number(Bun.env.LINES) || 24;
+	}
+
+	refreshSize(): boolean {
+		if (this.#headless || this.#dead || !this.#stdoutResizeListener) return false;
+		// Node and Bun TTY streams re-read TIOCGWINSZ here and emit "resize"
+		// synchronously on a change; the public size getters only update once the
+		// SIGWINCH reaches the event loop.
+		const stdout: NodeJS.WriteStream & { _refreshSize?: () => void } = process.stdout;
+		const { columns, rows } = stdout;
+		stdout._refreshSize?.();
+		return stdout.columns !== columns || stdout.rows !== rows;
 	}
 
 	moveBy(lines: number): void {

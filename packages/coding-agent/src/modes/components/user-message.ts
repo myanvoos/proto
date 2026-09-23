@@ -41,7 +41,10 @@ export class UserMessageComponent extends Container {
 					return kind === "image" ? imageReferenceHyperlink(label, index, imageLinks, () => styled) : styled;
 				},
 			});
-		const md = new Markdown(text, 0, 1, getMarkdownTheme(), {
+		// No vertical padding: the transcript separates blocks with one blank row,
+		// and padding rows carrying the OSC 133 zone marks cannot be trimmed as
+		// blank, which doubled the gap around every prompt.
+		const md = new Markdown(text, 0, 0, getMarkdownTheme(), {
 			color,
 		});
 		md.setIgnoreTight(true);

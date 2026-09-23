@@ -60,3 +60,43 @@ test("an unbounded strip still wraps every tab onto the screen", () => {
 	const lines = instance.render(24).join("\n");
 	for (const name of NAMES) expect(lines).toContain(name);
 });
+
+test("a clipped strip says how many tabs it is hiding", () => {
+	const instance = bar(tabs());
+	instance.setMaxHeight(1);
+	const lines = instance.render(28);
+	expect(lines.length).toBe(1);
+	const shown = NAMES.filter(name => lines[0].includes(name)).length;
+	expect(shown).toBeLessThan(NAMES.length);
+	expect(lines[0]).toMatch(/\+\d+ more/);
+	const hidden = Number(/\+(\d+) more/.exec(lines[0])?.[1]);
+	expect(hidden).toBeGreaterThan(0);
+	expect(hidden).toBeLessThan(NAMES.length);
+	// Every tab is either drawn on the visible row or counted as hidden.
+	expect(shown + hidden).toBeLessThanOrEqual(NAMES.length);
+
+	// A wider strip fits more tabs, so it can never claim to hide more of them.
+	const wider = instance.render(60);
+	const widerHidden = Number(/\+(\d+) more/.exec(wider[0] ?? "")?.[1] ?? 0);
+	expect(widerHidden).toBeLessThanOrEqual(hidden);
+});
+
+test("a strip that fits every tab carries no overflow marker", () => {
+	const instance = bar(tabs());
+	instance.setMaxHeight(10);
+	const lines = instance.render(200);
+	expect(lines.join("\n")).not.toMatch(/\+\d+ more/);
+	for (const name of NAMES) expect(lines.join("\n")).toContain(name);
+});
+
+test("the overflow marker never leaves a half-drawn tab clickable", () => {
+	const instance = bar(tabs());
+	instance.setMaxHeight(1);
+	for (const width of [20, 24, 28, 34, 40]) {
+		const lines = instance.render(width);
+		for (let col = 0; col < lines[0].length; col++) {
+			const hit = instance.tabAt(0, col);
+			if (hit) expect(lines[0], `width ${width}`).toContain(hit.label);
+		}
+	}
+});

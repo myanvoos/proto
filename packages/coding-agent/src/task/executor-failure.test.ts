@@ -93,9 +93,9 @@ test.each([
 	vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(
 		sessionResult(failingSession({ content, errorMessage: PROVIDER_FAILURE })),
 	);
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-wave5-failure-"));
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-failure-"));
 	const unregister = registerArtifactsDir(dir);
-	const id = "wave5-provider-failure";
+	const id = "provider-failure";
 	try {
 		const result = await runSubprocess({
 			cwd: "/tmp",
@@ -132,14 +132,14 @@ test.each([
 test("an aborted turn keeps its cancellation reason instead of a failure notice", async () => {
 	const aborted = { stopReason: "aborted" as const, errorMessage: "cancelled by operator" };
 	vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(sessionResult(failingSession(aborted)));
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-wave5-abort-"));
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-abort-"));
 	try {
 		const result = await runSubprocess({
 			cwd: "/tmp",
 			agent,
 			task: "do work",
 			index: 0,
-			id: "wave5-aborted",
+			id: "aborted-turn",
 			settings: Settings.isolated(),
 			modelRegistry: { refresh: async () => {} } as never,
 			eventBus: new EventBus(),

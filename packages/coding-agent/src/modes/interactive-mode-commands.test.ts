@@ -34,7 +34,7 @@ describe("InteractiveMode composer commands and affordances", () => {
 
 	beforeEach(async () => {
 		await initTheme();
-		tempDir = TempDir.createSync("@omp-wave6-commands-");
+		tempDir = TempDir.createSync("@omp-mcp-commands-");
 		await Settings.init({ inMemory: true });
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
@@ -83,22 +83,22 @@ describe("InteractiveMode composer commands and affordances", () => {
 
 	it("adds MCP prompt commands to slash completion when the server connects", async () => {
 		await mode.refreshSlashCommandState(tempDir.path());
-		expect(await completionsFor("/wave6")).toEqual([]);
+		expect(await completionsFor("/alpha7")).toEqual([]);
 
-		session.setMCPPromptCommands([mcpPromptCommand("wave6:wave6_prompt", "Prompt exposed over MCP")]);
+		session.setMCPPromptCommands([mcpPromptCommand("alpha7:alpha7_prompt", "Prompt exposed over MCP")]);
 
-		expect(await completionsFor("/wave6")).toContain("wave6:wave6_prompt");
-		expect(await completionDescriptions("/wave6")).toEqual(["Prompt exposed over MCP (mcp)"]);
+		expect(await completionsFor("/alpha7")).toContain("alpha7:alpha7_prompt");
+		expect(await completionDescriptions("/alpha7")).toEqual(["Prompt exposed over MCP (mcp)"]);
 	});
 
 	it("drops MCP prompt commands from slash completion when the server goes away", async () => {
 		await mode.refreshSlashCommandState(tempDir.path());
-		session.setMCPPromptCommands([mcpPromptCommand("wave6:wave6_prompt", "Prompt exposed over MCP")]);
-		expect(await completionsFor("/wave6")).toContain("wave6:wave6_prompt");
+		session.setMCPPromptCommands([mcpPromptCommand("alpha7:alpha7_prompt", "Prompt exposed over MCP")]);
+		expect(await completionsFor("/alpha7")).toContain("alpha7:alpha7_prompt");
 
 		session.setMCPPromptCommands([]);
 
-		expect(await completionsFor("/wave6")).toEqual([]);
+		expect(await completionsFor("/alpha7")).toEqual([]);
 	});
 
 	it("reports an MCP config error and forgets it once the next connect round starts", () => {
@@ -109,16 +109,16 @@ describe("InteractiveMode composer commands and affordances", () => {
 
 		eventBus.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, {
 			type: "config-error",
-			error: "[mcp.json] Failed to parse JSON in /tmp/wave6/.mcp.json",
+			error: "[mcp.json] Failed to parse JSON in /tmp/alpha7/.mcp.json",
 		});
-		expect(statuses.at(-1)).toContain("/tmp/wave6/.mcp.json");
+		expect(statuses.at(-1)).toContain("/tmp/alpha7/.mcp.json");
 
 		// A reload re-announces whatever is still broken; the previous round must not linger.
-		eventBus.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, { type: "connecting", serverNames: ["wave6"] });
-		eventBus.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, { type: "connected", serverName: "wave6" });
+		eventBus.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, { type: "connecting", serverNames: ["alpha7"] });
+		eventBus.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, { type: "connected", serverName: "alpha7" });
 
 		expect(statuses.at(-1)).not.toContain(".mcp.json");
-		expect(statuses.at(-1)).toContain("wave6");
+		expect(statuses.at(-1)).toContain("alpha7");
 	});
 
 	it("announces hand-edited config problems in the TUI, where stderr is invisible", async () => {

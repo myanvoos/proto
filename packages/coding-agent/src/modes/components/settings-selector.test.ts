@@ -87,7 +87,9 @@ test("settings submenu preserves its selected option and returns to its setting 
 	expect(lines.some(line => line.includes(theme.nav.cursor) && line.includes("proto"))).toBe(true);
 	selector.handleInput("\x1b[B");
 	lines = selector.render(32).map(line => Bun.stripANSI(line));
-	expect(lines.some(line => line.includes(theme.nav.cursor) && line.includes("light"))).toBe(true);
+	// The dark slot lists its own themes first, so "dark" follows "proto" and the
+	// mismatched "light" sorts behind both.
+	expect(lines.some(line => line.includes(theme.nav.cursor) && line.includes("dark"))).toBe(true);
 	selector.handleInput("\x1b");
 	expect(selector.render(32).some(line => Bun.stripANSI(line).includes("Dark Theme"))).toBe(true);
 });
@@ -168,4 +170,60 @@ test("the settings tab strip never starves the list of rows", () => {
 		expect(lines.length).toBeLessThanOrEqual(height);
 		expect(lines.some(line => line.includes("Dark Theme") && line.includes(theme.nav.cursor))).toBe(true);
 	}
+});
+
+test("a theme slot groups the themes that fit it first and marks the ones that do not", () => {
+	Object.defineProperty(process.stdout, "rows", { configurable: true, value: 40 });
+	const names = Object.keys(getBuiltinThemes());
+	const selector = new SettingsSelectorComponent(
+		{
+			availableThinkingLevels: [],
+			thinkingLevel: undefined,
+			availableThemes: names,
+			providers: [],
+			cwd: "/srv/demo-project",
+		},
+		{ onChange: () => {}, onCancel: () => {} },
+	);
+	// Open the Dark Theme picker, then filter to the light themes it still offers.
+	selector.handleInput("\r");
+	for (const key of "light-") selector.handleInput(key);
+	const lines = selector.render(100).map(line => Bun.stripANSI(line));
+	const rows = lines.filter(line => /\blight-/.test(line) && !line.includes("⌕"));
+	expect(rows.length).toBeGreaterThan(0);
+	// Every light theme offered for the dark slot says what it is.
+	for (const row of rows) expect(row).toContain("light theme");
+});
+
+test("a theme slot leaves the themes that match it unmarked", () => {
+	Object.defineProperty(process.stdout, "rows", { configurable: true, value: 40 });
+	const names = Object.keys(getBuiltinThemes());
+	const selector = new SettingsSelectorComponent(
+		{
+			availableThinkingLevels: [],
+			thinkingLevel: undefined,
+			availableThemes: names,
+			providers: [],
+			cwd: "/srv/demo-project",
+		},
+		{ onChange: () => {}, onCancel: () => {} },
+	);
+	selector.handleInput("\r");
+	for (const key of "dark-n") selector.handleInput(key);
+	const lines = selector.render(100).map(line => Bun.stripANSI(line));
+	const rows = lines.filter(line => /\bdark-n/.test(line) && !line.includes("⌕"));
+	expect(rows.length).toBeGreaterThan(0);
+	for (const row of rows) expect(row).not.toContain("light theme");
+});
+
+test("the nested picker leaves the hint to the dialog footer", () => {
+	Object.defineProperty(process.stdout, "rows", { configurable: true, value: 40 });
+	const selector = shortSettings();
+	selector.handleInput("\r");
+	const body = selector
+		.render(100)
+		.map(line => Bun.stripANSI(line))
+		.join("\n");
+	expect(body).not.toContain("Enter to select");
+	expect(body).toContain("Esc back · Enter change");
 });

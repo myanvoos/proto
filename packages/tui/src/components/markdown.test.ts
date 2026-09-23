@@ -339,6 +339,22 @@ describe("Markdown incremental wrapping", () => {
 		}
 	});
 
+	// A later code block whose lines line up with an earlier one's must not be
+	// shown with the earlier block's highlighted rows while it streams.
+	test("streams a second code block with its own rows when its lines line up with the first", () => {
+		const body =
+			"```ts\nconst a = first(1);\nreturn a;\n```\n\nBetween.\n\n```ts\nconst b = other(2);\nreturn b;\n```\n";
+		for (const step of [3, 7, 13]) {
+			const markdown = new Markdown("", 1, 0, highlightingTheme);
+			markdown.transientRenderCache = true;
+			for (let end = step; end <= body.length; end += step) {
+				const text = body.slice(0, end);
+				markdown.setText(text);
+				expect(markdown.render(40), `${step}:${end}`).toEqual(freshRender(text, 40, true, highlightingTheme));
+			}
+		}
+	});
+
 	test("does not retain stale body rows when the closing fence arrives last", () => {
 		let text = "```ts\nline one\nline two";
 		const markdown = new Markdown(text, 1, 0, highlightingTheme);
@@ -424,7 +440,7 @@ describe("Markdown stable streaming source", () => {
 	test("reports the last rendered parser-frozen source boundary independent of width", () => {
 		const first = "First complete paragraph.\n\n";
 		const second = "Second paragraph is now complete.\n\n";
-		const markdown = new Markdown(`${first}Second paragraph is open`, 0, 0, theme);
+		const markdown = new Markdown(`${first}Second-paragraph-is-open`, 0, 0, theme);
 		markdown.transientRenderCache = true;
 
 		markdown.render(24);
@@ -432,7 +448,7 @@ describe("Markdown stable streaming source", () => {
 		markdown.render(72);
 		expect(markdown.getLastRenderStableText()).toBe(first);
 
-		markdown.setText(`${first}${second}Third paragraph is open`);
+		markdown.setText(`${first}${second}Third-paragraph-is-open`);
 		markdown.render(37);
 		expect(markdown.getLastRenderStableText()).toBe(first + second);
 
@@ -447,7 +463,7 @@ describe("Markdown stable streaming source", () => {
 			"```ts\nconst value = 1;\n```\n\n",
 			"- first item\n- second item\n\n",
 		]) {
-			const markdown = new Markdown(`${stableBlock}unfinished tail`, 0, 0, theme);
+			const markdown = new Markdown(`${stableBlock}unfinished-tail`, 0, 0, theme);
 			markdown.transientRenderCache = true;
 			markdown.render(48);
 			expect(markdown.getLastRenderStableText()).toBe(stableBlock);
@@ -457,14 +473,40 @@ describe("Markdown stable streaming source", () => {
 	test("never includes an open or malformed Markdown suffix", () => {
 		const stable = "Settled prose.\n\n";
 		for (const suffix of [
-			"```ts\nconst unfinished = true;\n\nstill open",
 			"[link text without a destination",
 			"| header | partial\n| ---",
+			"- first item\n-",
+			"```ts\nconst streaming = true;\n",
+			"**emphasis still open across words",
+			"| cells | may | still | become | a table",
 		]) {
 			const markdown = new Markdown(stable + suffix, 0, 0, theme);
 			markdown.transientRenderCache = true;
 			markdown.render(40);
 			expect(markdown.getLastRenderStableText()).toBe(stable);
+		}
+	});
+
+	// A block taller than the live viewport clips its unfinished top off the
+	// screen unless its settled rows can retire while it is still streaming.
+	test("extends into a streaming list or code fence only through rows that cannot change", () => {
+		const settled = "Settled prose.\n\n";
+		for (const [finished, streaming] of [
+			["- first item\n- second item\n", "- third ite"],
+			["```ts\nconst first = 1;\nconst second = 2;\n", "const thi"],
+			["```ts\nconst first = 1;\n", "const second = 2;\n"],
+		] as const) {
+			const markdown = new Markdown(settled + finished + streaming, 0, 0, theme);
+			markdown.transientRenderCache = true;
+			const live = markdown.render(40);
+			const stable = markdown.getLastRenderStableText();
+			expect(stable).toBe(settled + finished);
+
+			const prefix = new Markdown(stable.trim(), 0, 0, theme);
+			prefix.setStreamPrefix(true);
+			const rows = prefix.render(40);
+			expect(live.slice(0, rows.length)).toEqual([...rows]);
+			expect(rows.length).toBeLessThan(live.length);
 		}
 	});
 });

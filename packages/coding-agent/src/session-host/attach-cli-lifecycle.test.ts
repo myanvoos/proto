@@ -139,7 +139,7 @@ test("a piped attach that receives input keeps the host running until --stop", a
 }, 150_000);
 
 test("a scripted attach outlives its own input: commands answer before the process leaves", async () => {
-	const marker = "WAVE6_SCRIPTED_MARKER";
+	const marker = "SCRIPTED_MARKER";
 	const scripted = await runCli(
 		["attach", sessionFile, "--dir", projectDir],
 		`/bash echo ${marker}\n/detach\n`,

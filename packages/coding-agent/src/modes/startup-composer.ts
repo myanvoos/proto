@@ -87,6 +87,10 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 		welcome,
 	});
 	try {
+		// Settings are not loaded yet, so the prepaint cannot know whether the user
+		// opted into erasing scrollback. It takes the safe reading — start clean,
+		// keep history — and `runInteractiveMode` applies the real setting once it
+		// has it.
 		composer.start({ clearScrollback: true, deferInput: true });
 	} catch (error) {
 		try {

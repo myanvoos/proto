@@ -80,6 +80,8 @@ const SYNC_OUTPUT_BEGIN = "\x1b[?2026h";
 const SYNC_OUTPUT_END = "\x1b[?2026l";
 const DISABLE_AUTOWRAP = "\x1b[?7l";
 const ENABLE_AUTOWRAP = "\x1b[?7h";
+/** A cursor row past any real screen: terminals clamp it onto the last row. */
+const BOTTOM_ROW_CLAMP = 9999;
 const PAINT_BEGIN = `${HIDE_CURSOR}${SYNC_OUTPUT_BEGIN}${DISABLE_AUTOWRAP}`;
 const PAINT_END = `${ENABLE_AUTOWRAP}${SYNC_OUTPUT_END}`;
 const PAINT_BEGIN_NO_SYNC = `${HIDE_CURSOR}${DISABLE_AUTOWRAP}`;
@@ -197,10 +199,23 @@ export interface TerminalFrameProvider {
 	beginHistoryReplay?(): void;
 	/** Force every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush?(): void;
+	/**
+	 * A resize pushed the top `rows` rows of the last painted viewport
+	 * (`viewportLength` rows long) into native scrollback. Retire the finished
+	 * content inside that span without writing it again, and return how many of
+	 * those leading rows are now history. Anything not provably whole and final
+	 * must stay live: a duplicate is recoverable, a hole in the transcript is not.
+	 */
+	retireArchivedRows?(rows: number, viewportLength: number): number;
 }
 
 export interface TUIStartOptions {
-	/** Clear saved native scrollback before the first paint. */
+	/**
+	 * Begin on a blank viewport instead of painting below whatever the terminal
+	 * already showed. The previous screen is scrolled into native scrollback so
+	 * it stays reachable, unless the host declared that scrollback expendable
+	 * (see {@link TUI.setScrollbackExpendable}), in which case it is erased.
+	 */
 	clearScrollback?: boolean;
 	/**
 	 * Paint without owning stdin: the terminal stays in cooked mode (kernel
@@ -681,6 +696,116 @@ function endsWithIncompleteExtendedColor(params: string): boolean {
 	return false;
 }
 
+const CC_SPACE = 0x20;
+const SPACE_BG = 1;
+const SPACE_INVERSE = 2;
+const SPACE_UNDERLINE = 4;
+const SPACE_STRIKE = 8;
+const SPACE_OVERLINE = 16;
+
+/** Fold one SGR parameter list into the set of attributes that make a space visible. */
+function applySgrSpaceAttributes(params: string, state: number): number {
+	const tokens = params.split(";");
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index]!;
+		const colon = token.indexOf(":");
+		const code = colon < 0 ? token : token.slice(0, colon);
+		switch (code) {
+			case "":
+			case "0":
+				state = 0;
+				break;
+			case "4":
+				state = colon >= 0 && token.slice(colon + 1) === "0" ? state & ~SPACE_UNDERLINE : state | SPACE_UNDERLINE;
+				break;
+			case "21":
+				state |= SPACE_UNDERLINE;
+				break;
+			case "24":
+				state &= ~SPACE_UNDERLINE;
+				break;
+			case "7":
+				state |= SPACE_INVERSE;
+				break;
+			case "27":
+				state &= ~SPACE_INVERSE;
+				break;
+			case "9":
+				state |= SPACE_STRIKE;
+				break;
+			case "29":
+				state &= ~SPACE_STRIKE;
+				break;
+			case "53":
+				state |= SPACE_OVERLINE;
+				break;
+			case "55":
+				state &= ~SPACE_OVERLINE;
+				break;
+			case "49":
+				state &= ~SPACE_BG;
+				break;
+			case "38":
+			case "48":
+			case "58":
+				if (code === "48") state |= SPACE_BG;
+				// Semicolon-form extended colors consume their channel parameters.
+				if (colon < 0) index += tokens[index + 1] === "5" ? 2 : tokens[index + 1] === "2" ? 4 : 0;
+				break;
+			default: {
+				const value = Number(code);
+				if ((value >= 40 && value <= 47) || (value >= 100 && value <= 107)) state |= SPACE_BG;
+			}
+		}
+	}
+	return state;
+}
+
+/**
+ * Drop trailing spaces the terminal shows identically when the row instead
+ * ends in an erase: spaces on the default background with no inverse,
+ * underline, strike or overline. Written spaces are line content, so a host
+ * that narrows rewraps a padded row onto blank continuation rows — herdr, tmux
+ * and xterm all do, in scrollback too — while an erased tail leaves nothing to
+ * rewrap. Escape sequences in the dropped tail are kept so SGR and hyperlink
+ * state still close exactly as before.
+ */
+export function trimInvisibleTrailingSpaces(line: string): string {
+	const length = line.length;
+	if (length === 0) return line;
+	const hasEscape = line.indexOf("\x1b") !== -1;
+	if (!hasEscape && line.charCodeAt(length - 1) !== CC_SPACE) return line;
+	let state = 0;
+	let keep = 0;
+	for (let index = 0; index < length; ) {
+		const code = line.charCodeAt(index);
+		if (code === CC_ESC) {
+			const end = frameOutputEscapeEnd(line, index);
+			if (line.charCodeAt(index + 1) === CC_BRACKET && line.charCodeAt(end - 1) === CC_M) {
+				state = applySgrSpaceAttributes(line.slice(index + 2, end - 1), state);
+			}
+			index = end;
+			continue;
+		}
+		index++;
+		if (code !== CC_SPACE || state !== 0) keep = index;
+	}
+	if (keep === length) return line;
+	let tail = "";
+	let dropped = false;
+	for (let index = keep; index < length; ) {
+		if (line.charCodeAt(index) === CC_ESC) {
+			const end = frameOutputEscapeEnd(line, index);
+			tail += line.slice(index, end);
+			index = end;
+			continue;
+		}
+		dropped = true;
+		index++;
+	}
+	return dropped ? line.slice(0, keep) + tail : line;
+}
+
 /**
  * Merge runs of byte-adjacent SGR sequences (`CSI [0-9;:]* m`) into one. Only
  * CSI-SGR sequences are touched; text, cursor moves, OSC, hyperlinks and image
@@ -901,6 +1026,14 @@ export class TUI extends Container {
 	#ghosttyInitialImageDelayTimer: RenderTimer | undefined;
 	#ghosttyImageReadyAtMs = 0;
 	#clearScrollbackOnNextRender = false;
+	// The startup clean-screen reset differs from a transcript replacement: what
+	// it displaces is whatever the user had on screen before launch, not ours.
+	// It scrolls that into native scrollback unless the host declared scrollback
+	// expendable; `#startupResetPreserved` records that it did, so a late opt-in
+	// can still erase what was kept.
+	#scrollbackExpendable = false;
+	#startupResetPending = false;
+	#startupResetPreserved = false;
 	// Consumed by the next frame: a user-driven redraw gesture (resetDisplay,
 	// requestRender(true)) that must rewrite the viewport even when the diff
 	// believes nothing changed.
@@ -918,6 +1051,12 @@ export class TUI extends Container {
 	// rows back first, and those rows belong to the mutable region, not to
 	// committed history.
 	#archivedLiveRows = 0;
+	// Row the bottom-anchored viewport stays pinned at after a resize left blank
+	// rows below it (a grow that pulled no history back). Anchoring to the new
+	// bottom instead would blank the old viewport rows into a band above the
+	// frame, and the next shrink pushes that band into scrollback as a gap. The
+	// frame grows downward from here and rejoins the bottom once it reaches it.
+	#viewportFloatTop: number | undefined;
 	// Whether the resize transaction blanked the live viewport before the host
 	// moved anything. When it did, only committed history and blanks can have
 	// crossed the top edge, so the anchor shift alone classifies the rows above
@@ -990,6 +1129,7 @@ export class TUI extends Container {
 		this.#providerWindow = [];
 		this.#providerPreparedRows = [];
 		this.#providerHistoryBottom = 0;
+		this.#viewportFloatTop = undefined;
 		this.requestRender(true);
 	}
 
@@ -1296,6 +1436,7 @@ export class TUI extends Container {
 			this.#querySixelSupport();
 			this.#queryCellSize();
 		}
+		this.#startupResetPending = options?.clearScrollback === true;
 		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
 	}
 	/** Whether resize settlement repaints the normal buffer without borrowing the alternate screen. */
@@ -1639,7 +1780,6 @@ export class TUI extends Container {
 		this.#settledResizeStaleRows = staleRows;
 		const settledTop = Math.min(top, Math.max(0, height - 1));
 		const anchorShift = settledTop - this.#providerViewportTop;
-		if (process.env.W9F3_DEBUG) console.error(`[W9F3] resolve size=${width}x${height} prevH=${this.#previousHeight} cpr=${reportedRow} park=${probe.offset} stale=${staleRows} oldTop=${this.#providerViewportTop} top=${settledTop} shift=${anchorShift} histBottom=${this.#providerHistoryBottom} erased=${this.#resizeErasedLiveViewport} archived=${this.#archivedLiveRows}`);
 		// Host-driven movement re-sorts what sits above the viewport, and the two
 		// kinds of row up there are not interchangeable: committed history must be
 		// kept (scrolled into scrollback when the viewport needs its rows), while
@@ -1656,13 +1796,32 @@ export class TUI extends Container {
 		// discard instead.
 		const visiblePush = Math.max(0, -anchorShift);
 		const hiddenPush = settledTop === 0 ? Math.max(0, Math.max(0, this.#previousHeight - height) - visiblePush) : 0;
+		// Under a multiplexer the parked cursor's reply is exact, so the unclamped
+		// `reportedTop` measures the push directly: the window rows above row zero
+		// are exactly the live rows the host archived. The shrink amount is not a
+		// substitute — hosts drop blank rows below the cursor before pushing any,
+		// so it overstates the push, and an overstated ledger retires content that
+		// never reached scrollback.
+		const exactLedger = reportedRow !== undefined && !this.#resizeErasedLiveViewport && isInsideTerminalMultiplexer();
+		const archivedNow = exactLedger ? Math.max(0, -reportedTop) : 0;
+		// Blank rows below the settled stale window mean the host grew without
+		// pulling history back. Holding the frame there, rather than anchoring it
+		// to the new bottom, keeps that blank space under the frame where every
+		// host discards it first on the next shrink, instead of above it.
+		this.#viewportFloatTop = exactLedger && reportedTop + staleRows < height ? settledTop : undefined;
 		if (this.#resizeErasedLiveViewport) {
 			// The transaction blanked the live region before the host touched the
 			// screen, so nothing the host moved across the top edge was a live row:
 			// the shift alone re-seats committed history, and no live rows are owed.
 			this.#archivedLiveRows = 0;
 			this.#providerHistoryBottom = Math.max(0, Math.min(settledTop, this.#providerHistoryBottom + anchorShift));
-		} else if (visiblePush + hiddenPush > 0) {
+		} else if (exactLedger && (archivedNow > 0 || anchorShift < 0)) {
+			// History crossed the edge first, then the blank band between history
+			// and the window, then the window's own leading rows.
+			const band = Math.max(0, this.#providerViewportTop - this.#providerHistoryBottom);
+			this.#archivedLiveRows += archivedNow;
+			this.#providerHistoryBottom = Math.max(0, Math.min(settledTop, reportedTop - band));
+		} else if (!exactLedger && visiblePush + hiddenPush > 0) {
 			const pushed = visiblePush + hiddenPush;
 			const pushedHistory = Math.min(pushed, this.#providerHistoryBottom);
 			this.#archivedLiveRows += pushed - pushedHistory;
@@ -1677,13 +1836,38 @@ export class TUI extends Container {
 		} else {
 			this.#providerHistoryBottom = Math.max(0, Math.min(settledTop, this.#providerHistoryBottom));
 		}
-		if (process.env.W9F3_DEBUG) console.error(`[W9F3]   -> histBottom=${this.#providerHistoryBottom} archived=${this.#archivedLiveRows}`);
 		this.#providerViewportTop = settledTop;
+		if (archivedNow > 0) this.#retireArchivedWindowRows(probe.window, archivedNow, width);
 		// Resolved geometry invalidates the old mutable anchor; the forced
 		// viewport-only repaint establishes the settled position.
 		this.#forceViewportRepaintOnNextRender = true;
 		this.#settledResizeRepaintPending = true;
 		this.requestRender(true);
+	}
+
+	/**
+	 * Let the provider retire the whole window rows a resize pushed above the
+	 * top edge: finished content already sits in native scrollback, and writing
+	 * it again at retirement is the duplicate. `physicalRows` is measured at the
+	 * settled width, so a rewrapped window row that straddles the edge stays
+	 * live. Rows the provider retires stop counting as archived live rows: a
+	 * later grow that pulls them back is pulling committed history.
+	 */
+	#retireArchivedWindowRows(window: readonly string[], physicalRows: number, width: number): void {
+		const provider = this.#frameProvider;
+		if (!provider?.retireArchivedRows) return;
+		let whole = 0;
+		let covered = 0;
+		for (const line of window) {
+			const span = Math.max(1, Math.ceil(visibleWidth(line) / Math.max(1, width)));
+			if (covered + span > physicalRows) break;
+			covered += span;
+			whole++;
+		}
+		if (whole === 0) return;
+		const retired = Math.min(whole, Math.max(0, provider.retireArchivedRows(whole, window.length)));
+		if (retired === 0) return;
+		this.#archivedLiveRows = Math.max(0, this.#archivedLiveRows - this.#reflowedRowCount(window, 0, retired, width));
 	}
 
 	/**
@@ -2029,6 +2213,22 @@ export class TUI extends Container {
 		this.#executeRender();
 	}
 
+	/**
+	 * Declare whether the user consented to erasing what was on screen before
+	 * launch. False — the default — makes the startup clean-screen reset scroll
+	 * that content into native scrollback, where it stays reachable. Hosts that
+	 * start painting before they can read the user's preference take that safe
+	 * reading first; declaring consent afterwards erases the saved lines it kept.
+	 * Transcript replacements are unaffected: they always clear scrollback.
+	 */
+	setScrollbackExpendable(expendable: boolean): void {
+		this.#scrollbackExpendable = expendable;
+		if (expendable && this.#startupResetPreserved) {
+			this.#startupResetPreserved = false;
+			this.terminal.write("\x1b[3J");
+		}
+	}
+
 	requestRender(force = false, options?: RenderRequestOptions): void {
 		if (force) {
 			this.#prepareForcedRender(options?.clearScrollback === true);
@@ -2137,6 +2337,9 @@ export class TUI extends Container {
 	 * reads it re-entrantly) and compute the cost once the paint returns.
 	 */
 	#executeRender(): void {
+		// A frame due before the SIGWINCH handler would paint the resized grid at
+		// the old geometry; take the resize now and let it drive the next paint.
+		if (this.terminal.refreshSize?.()) return;
 		if (this.#deferRenderForOutputBacklog()) return;
 		const start = this.#renderScheduler.now();
 		this.#lastRenderAt = start;
@@ -2701,9 +2904,15 @@ export class TUI extends Container {
 		// erase acknowledged history that still occupies that row.
 		const oldTop = destructiveReset ? 0 : Math.min(this.#providerViewportTop, height);
 		const oldHistoryBottom = destructiveReset ? 0 : Math.min(this.#providerHistoryBottom, oldTop);
+		// A floating bottom-anchored viewport moves down only by the history it
+		// appends and keeps the blank rows below it until it reaches the bottom.
+		const floatTop = viewportAnchor === "bottom" && !destructiveReset ? this.#viewportFloatTop : undefined;
 		const newTop =
 			viewportAnchor === "bottom"
-				? Math.max(0, height - rows)
+				? Math.max(
+						0,
+						floatTop === undefined ? height - rows : Math.min(height - rows, floatTop + historyRows.length),
+					)
 				: Math.max(0, Math.min(oldTop + historyRows.length, height - rows));
 		// Rows above `oldHistoryBottom` are committed history. A bottom-anchored
 		// viewport that needs more rows than the band below them can only keep
@@ -2720,16 +2929,32 @@ export class TUI extends Container {
 		const startTop = viewportAnchor === "bottom" ? Math.max(0, newTop - historyRows.length) : oldTop;
 		const pendingAltExit = this.#pendingAltExit;
 		let buffer = this.#paintBeginSequence + pendingAltExit;
+		// Row the cursor rests on after a sequential full write, or undefined when
+		// rows were addressed absolutely.
+		let writtenBottom: number | undefined;
 		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
 			for (const id of this.#resetImagePurgeIds) buffer += encodeKittyDeleteImage(id);
 			for (const id of this.#imageBudget.takePurgeIds()) buffer += encodeKittyDeleteImage(id);
 		} else {
 			this.#imageBudget.takePurgeIds();
 		}
+		// Clear the way for a row-zero repaint. A transcript replacement erases:
 		// ED2 then ED3 prevents tmux from archiving the old viewport after history
-		// was cleared. Payloads follow the erases so hosts cannot reclaim them
-		// before their placement rows are painted.
-		if (destructiveReset) buffer += "\x1b[H\x1b[2J\x1b[3J";
+		// was cleared. The startup reset instead displaces what the user had on
+		// screen before launch, which is not ours to destroy without consent.
+		// Payloads follow so hosts cannot reclaim them before placement rows paint.
+		if (destructiveReset) {
+			if (this.#startupResetPending && !this.#scrollbackExpendable) {
+				// A full height of line feeds from wherever the cursor sits pushes
+				// exactly the occupied rows past the top edge, leaving a blank
+				// viewport with the pre-launch screen intact one scroll up.
+				buffer += `${"\n".repeat(height)}\x1b[H`;
+				this.#startupResetPreserved = true;
+			} else {
+				buffer += "\x1b[H\x1b[2J\x1b[3J";
+			}
+			this.#startupResetPending = false;
+		}
 		const paintedIds = imageIdsInRows([...historyRows, ...viewport]);
 		const transmitBatch = this.#imageBudget.takeTransmitBatch(id => paintedIds.has(id));
 		for (const sequence of transmitBatch.sequences) buffer += sequence;
@@ -2740,6 +2965,9 @@ export class TUI extends Container {
 			!this.#forceViewportRepaintOnNextRender &&
 			!destructiveReset &&
 			this.#providerWindow.length > 0;
+		// A diff that rewrites nothing leaves the frame, and the cursor parked on
+		// it, exactly where the last paint put them.
+		let untouched = diffable;
 		if (diffable) {
 			for (let index = 0; index < rows; index++) {
 				const previous = this.#providerPreparedRows[index];
@@ -2752,6 +2980,7 @@ export class TUI extends Container {
 				) {
 					continue;
 				}
+				untouched = false;
 				buffer += `\x1b[${newTop + index + 1};1H${this.#lineRewriteSequence(
 					current,
 					width,
@@ -2762,6 +2991,7 @@ export class TUI extends Container {
 				)}`;
 			}
 			if (this.#providerWindow.length > rows && newTop + rows < height) {
+				untouched = false;
 				buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 			}
 		} else {
@@ -2801,7 +3031,11 @@ export class TUI extends Container {
 				}
 				// CSI S deletes rows on xterm-compatible terminals; only line feeds
 				// at the bottom margin move these committed rows into scrollback.
-				if (scrollUp > 0) buffer += `\x1b[${height};1H${"\n".repeat(scrollUp)}`;
+				// Address the bottom by clamping, not by `height`: a host that grew
+				// before this write lands would leave row `height` mid-screen, the
+				// line feeds would not scroll, and the frame painted where the
+				// scroll should have moved it would overwrite committed rows.
+				if (scrollUp > 0) buffer += `\x1b[${BOTTOM_ROW_CLAMP};1H${"\n".repeat(scrollUp)}`;
 			}
 			// This write scrolls when history + viewport overflow the screen; the
 			// terminal pushes the physical top rows into scrollback. Rows above the
@@ -2812,6 +3046,9 @@ export class TUI extends Container {
 			if (viewportAnchor !== "bottom" && pushed > oldTop && this.#providerWindow.length > 0) {
 				if (oldTop < height) buffer += this.#eraseBelowRow(oldTop, height);
 			}
+			// Clear below the new frame before writing it, so the write itself ends
+			// on the frame's last row and the park below can address rows from there.
+			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 			buffer += `\x1b[${startTop + 1};1H`;
 			let screenRow = startTop;
 			for (let index = 0; index < preparedHistory.lines.length; index++) {
@@ -2838,7 +3075,7 @@ export class TUI extends Container {
 				);
 				screenRow++;
 			}
-			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
+			writtenBottom = Math.min(height - 1, screenRow - 1);
 		}
 		const mutableTop = newTop + replayViewportRows;
 		const mutablePreparedLines = replayViewportRows > 0 ? prepared.lines.slice(replayViewportRows) : prepared.lines;
@@ -2848,25 +3085,43 @@ export class TUI extends Container {
 			this.#showHardwareCursor && marker !== undefined && rows > 0
 				? this.#targetHardwareCursorState({ row: newTop + Math.min(marker.row, rows - 1), col: marker.col }, height)
 				: null;
-		if (target) {
+		const bottom = Math.max(mutableTop, Math.min(height - 1, mutableTop + mutablePreparedLines.length - 1));
+		// After a sequential write the cursor already rests on the frame's last row
+		// wherever it really landed. A host that resized before the write arrived
+		// (a grow leaves line feeds meant to scroll mid-screen) moves the frame off
+		// the rows computed here; parking by relative moves keeps the cursor on the
+		// frame, so the post-resize probe measures where the frame is rather than
+		// echoing the rows this paint assumed.
+		const relativeToBottom = writtenBottom === bottom;
+		// Re-parking an untouched frame by absolute rows would undo a relative park
+		// that found the frame off the rows this paint assumes.
+		const recorded = this.#hardwareCursorState;
+		const parked =
+			untouched && (target ? recorded?.row === target.row && recorded.col === target.col : !recorded?.visible);
+		if (parked) {
+			if (target?.visible) buffer += "\x1b[?25h";
+		} else if (target) {
 			// Save after image placements (which borrow DECSC/DECRC), before the
 			// visible editor cursor moves off the viewport bottom. A terminal that
 			// ignores DECSC/DECRC simply leaves the resize erase on the live cursor,
 			// exactly as before this anchor existed.
-			const bottom = Math.max(mutableTop, Math.min(height - 1, mutableTop + mutablePreparedLines.length - 1));
-			buffer += `\x1b[${bottom + 1};1H\x1b7`;
-			buffer += `\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
+			const up = bottom - target.row;
+			buffer += relativeToBottom ? "\r\x1b7" : `\x1b[${bottom + 1};1H\x1b7`;
+			buffer +=
+				relativeToBottom && up >= 0
+					? `${up > 0 ? `\x1b[${up}A` : ""}\x1b[${target.col + 1}G`
+					: `\x1b[${target.row + 1};${target.col + 1}H`;
+			buffer += target.visible ? "\x1b[?25h" : "\x1b[?25l";
 			this.#parkedViewportOffset = Math.max(0, target.row - mutableTop);
 		} else {
 			// Park the hidden cursor on the real mutable-content bottom. Terminals
 			// that pull history only when the cursor is on the last row then grow
 			// without inserting a blank band, while the post-resize probe can still
 			// recover the viewport top from this recorded offset.
-			const parkRow = Math.max(mutableTop, Math.min(height - 1, mutableTop + mutablePreparedLines.length - 1));
 			// Save the same row: DECRC re-anchors it to its logical line after a
 			// width reflow, which can otherwise leave the cursor on a stale row.
-			buffer += `\x1b[?25l\x1b[${parkRow + 1};1H\x1b7`;
-			this.#parkedViewportOffset = Math.max(0, parkRow - mutableTop);
+			buffer += `\x1b[?25l${relativeToBottom ? "\r" : `\x1b[${bottom + 1};1H`}\x1b7`;
+			this.#parkedViewportOffset = Math.max(0, bottom - mutableTop);
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
@@ -2892,6 +3147,7 @@ export class TUI extends Container {
 		// committed history instead.
 		if (historyRows.length > 0 || destructiveReset) this.#archivedLiveRows = 0;
 		this.#providerViewportTop = mutableTop;
+		this.#viewportFloatTop = floatTop !== undefined && newTop < height - rows ? newTop : undefined;
 		this.#previousWidth = width;
 		this.#previousHeight = height;
 		this.#resizeBurstGrew = false;
@@ -3152,6 +3408,11 @@ export class TUI extends Container {
 		let line = normalized;
 		if ((classification.asciiWidth ?? visibleWidth(normalized)) > width) {
 			line = truncateToWidth(normalized, width, Ellipsis.Omit);
+			classification = this.#classifyLine(line, safeWidth);
+		}
+		const trimmed = trimInvisibleTrailingSpaces(line);
+		if (trimmed !== line) {
+			line = trimmed;
 			classification = this.#classifyLine(line, safeWidth);
 		}
 		return {

@@ -91,6 +91,10 @@ class ComposerHairline implements Component {
 	invalidate(): void {}
 }
 
+function isBlankRow(row: string): boolean {
+	return !/\S/.test(Bun.stripANSI(row));
+}
+
 /**
  * Fit `rows` into `budget`, shedding leading blank padding before content. A
  * compressed block keeps its heading (`Steering · 2`) instead of spending its
@@ -138,6 +142,8 @@ export class Composer implements TerminalFrameProvider {
 	#headerRetired = false;
 	#historyReplay = false;
 	#historyFlush = false;
+	// Whether the last row written to native history is blank.
+	#historyEndsBlank = false;
 	#offeredHistory:
 		| {
 				batch: HistoryBatch;
@@ -148,6 +154,10 @@ export class Composer implements TerminalFrameProvider {
 		  }
 		| undefined;
 	#lastInterruptAt = 0;
+	// Where the live transcript sat in the last painted viewport.
+	#lastLiveFrame:
+		| { transcript: TranscriptContainer; viewportLength: number; liveStart: number; liveRows: number }
+		| undefined;
 	#started = false;
 	#stopped = false;
 	#transferred = false;
@@ -206,6 +216,12 @@ export class Composer implements TerminalFrameProvider {
 		const roots = this.ui.children;
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
+			// Nothing to replay, and this frame already carries the reset that asked
+			// for one. Holding the request would replay it once a transcript attaches
+			// and reset the display a second time — at startup, erasing what the user
+			// had on screen before launch after the first reset deliberately kept it.
+			this.#historyReplay = false;
+			this.#lastLiveFrame = undefined;
 			return {
 				viewport: height > 0 ? this.#renderComposerRoots(roots, width, height).slice(-height) : [],
 				viewportAnchor: "bottom",
@@ -234,14 +250,45 @@ export class Composer implements TerminalFrameProvider {
 		// therefore retire the transcript they cover instead of hiding it.
 		const capacity = Math.max(0, height - before.length - after.length);
 		const history = this.#offerHistory(transcript, width, capacity);
-		const header = this.#headerRetired || this.#offeredHistory?.header ? [] : this.#header.render(width);
+		const header = this.#headerRetired || this.#offeredHistory?.header ? [] : this.#historyHeader(width);
 		const now = performance.now();
 		const live = transcript.renderViewport(width, Math.max(0, capacity - header.length), {
 			now,
 			tick: Math.floor(now / 80),
 		});
-		const rows = [...header, ...before, ...live, ...after];
-		return { history, viewport: height > 0 ? rows.slice(-height) : [], viewportAnchor: "bottom" };
+		// A retired block leaves the blank that separates it from the next one at
+		// the end of history. With nothing live below it, the chrome's own gap
+		// row would double that blank.
+		const historyEndsBlank = history?.rows.length ? isBlankRow(history.rows.at(-1)!) : this.#historyEndsBlank;
+		const chrome =
+			historyEndsBlank &&
+			header.length + before.length + live.length === 0 &&
+			after.length > 0 &&
+			isBlankRow(after[0]!)
+				? after.slice(1)
+				: after;
+		const rows = [...header, ...before, ...live, ...chrome];
+		const painted = height > 0 ? rows.slice(-height) : [];
+		this.#lastLiveFrame = {
+			transcript,
+			viewportLength: painted.length,
+			liveStart: header.length + before.length - (rows.length - painted.length),
+			liveRows: live.length,
+		};
+		return { history, viewport: painted, viewportAnchor: "bottom" };
+	}
+
+	/**
+	 * Retire the live transcript rows a resize pushed off the top of the last
+	 * painted viewport. Only a viewport that opens on the live transcript can
+	 * do so in order: the welcome header above it would have to reach history
+	 * first, and an in-flight history offer owns the rows it covers.
+	 */
+	retireArchivedRows(rows: number, viewportLength: number): number {
+		const frame = this.#lastLiveFrame;
+		this.#lastLiveFrame = undefined;
+		if (!frame || frame.viewportLength !== viewportLength || frame.liveStart !== 0 || this.#offeredHistory) return 0;
+		return frame.transcript.retireArchivedRows(Math.min(rows, frame.liveRows));
 	}
 
 	acknowledgeHistory(id: number): void {
@@ -249,6 +296,9 @@ export class Composer implements TerminalFrameProvider {
 		if (!offered || offered.batch.id !== id) return;
 		if (offered.transcriptId !== undefined) offered.transcript.acknowledgeFinalizedBatch(offered.transcriptId);
 		if (offered.header) this.#headerRetired = true;
+		const last = offered.batch.rows.at(-1);
+		if (last !== undefined || offered.batch.kind === "replay")
+			this.#historyEndsBlank = last !== undefined && isBlankRow(last);
 		this.#offeredHistory = undefined;
 	}
 
@@ -341,9 +391,15 @@ export class Composer implements TerminalFrameProvider {
 		return batch;
 	}
 
+	/**
+	 * Header rows ending in exactly one blank separator row, identical live and
+	 * retired: the welcome already closes with a spacer, and adding another at
+	 * retirement doubled the gap above the first prompt in scrollback.
+	 */
 	#historyHeader(width: number): readonly string[] {
 		const rows = this.#header.render(width);
-		return rows.length > 0 ? [...rows, ""] : [];
+		if (rows.length === 0) return rows;
+		return /\S/.test(rows.at(-1)!) ? [...rows, ""] : rows;
 	}
 
 	/** Allocate before rendering: clipping an already-rendered editor can hide its cursor. */

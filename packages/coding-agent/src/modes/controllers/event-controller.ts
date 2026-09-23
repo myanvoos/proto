@@ -567,6 +567,31 @@ export class EventController {
 		await this.handleEvent(event, transcriptAnchor);
 	}
 
+	/**
+	 * A message that ended in an abort or a stream error will never execute the
+	 * tool calls it streamed but had not started. Left pending, such a card never
+	 * receives a result, stays unfinished, and pins transcript retirement: every
+	 * later block is held live behind it and squeezed into the viewport. Guard and
+	 * recovery interrupts (kernel preflight, loop guards, stream retries) continue
+	 * the same turn, so that lasts until the terminal agent_end finally seals it.
+	 * Read groups are shared across calls, so one is sealed only when none of its
+	 * calls has started.
+	 */
+	#sealNeverStartedToolCards(): void {
+		const running = new Set<unknown>();
+		for (const [toolCallId, component] of this.ctx.pendingTools) {
+			if (this.#executionStartedCallIds.has(toolCallId)) running.add(component);
+		}
+		for (const [toolCallId, component] of Array.from(this.ctx.pendingTools.entries())) {
+			if (this.#executionStartedCallIds.has(toolCallId)) continue;
+			this.ctx.pendingTools.delete(toolCallId);
+			if (running.has(component)) continue;
+			if (component instanceof ToolExecutionComponent || component instanceof ReadToolGroupComponent) {
+				component.seal();
+			}
+		}
+	}
+
 	hasToolExecutionStarted(toolCallId: string): boolean {
 		return this.#executionStartedCallIds.has(toolCallId);
 	}
@@ -1193,6 +1218,8 @@ export class EventController {
 							component.seal();
 						}
 					}
+				} else {
+					this.#sealNeverStartedToolCards();
 				}
 
 				this.#resolveDisplaceablePoll();

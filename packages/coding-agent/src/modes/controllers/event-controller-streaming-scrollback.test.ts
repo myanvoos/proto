@@ -22,10 +22,19 @@ class BufferTerminal implements Terminal {
 	rows: number;
 	readonly vt: VTermTerminal;
 
+	#onResize?: () => void;
+
 	constructor(columns: number, rows: number) {
 		this.columns = columns;
 		this.rows = rows;
 		this.vt = new VTermTerminal({ cols: columns, rows, scrollback: 5_000 });
+	}
+
+	resize(columns: number, rows: number): void {
+		this.columns = columns;
+		this.rows = rows;
+		this.vt.resize(columns, rows);
+		this.#onResize?.();
 	}
 
 	get pendingOutputBytes(): number {
@@ -40,7 +49,9 @@ class BufferTerminal implements Terminal {
 	get appearance(): undefined {
 		return undefined;
 	}
-	start(_onInput: (data: string) => void, _onResize: () => void): void {}
+	start(_onInput: (data: string) => void, onResize: () => void): void {
+		this.#onResize = onResize;
+	}
 	stop(): void {}
 	drainInput(): Promise<void> {
 		return Promise.resolve();
@@ -103,13 +114,19 @@ function flushScheduledRenders(): void {
 	while (scheduledRenders.length > 0) scheduledRenders.shift()!();
 }
 
-function assistantMessage(text: string, withToolCall = false): AssistantMessage {
+function assistantMessage(
+	text: string,
+	withToolCall = false,
+	options: { stopReason?: AssistantMessage["stopReason"]; callId?: string; timestamp?: number } = {},
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [
 			{ type: "thinking", thinking: THINKING },
 			{ type: "text", text },
-			...(withToolCall ? [{ type: "toolCall" as const, id: "call-1", name: "test_tool", arguments: {} }] : []),
+			...(withToolCall
+				? [{ type: "toolCall" as const, id: options.callId ?? "call-1", name: "test_tool", arguments: {} }]
+				: []),
 		],
 		api: "openai-completions",
 		provider: "test",
@@ -122,14 +139,15 @@ function assistantMessage(text: string, withToolCall = false): AssistantMessage 
 			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: withToolCall ? "toolUse" : "stop",
-		timestamp: 0,
+		stopReason: options.stopReason ?? (withToolCall ? "toolUse" : "stop"),
+		timestamp: options.timestamp ?? 0,
 	} as AssistantMessage;
 }
 
-test("a wrapped pre-tool continuation is not permanently re-appended on every reveal tick", async () => {
-	vi.useFakeTimers();
-	const terminal = new BufferTerminal(56, 8);
+function startHarness(
+	terminal: BufferTerminal,
+	options: { smoothStreaming?: boolean; history?: readonly Component[] } = {},
+) {
 	const composer = new Composer({
 		terminal,
 		tuiOptions: { renderScheduler: SCHEDULER },
@@ -137,9 +155,7 @@ test("a wrapped pre-tool continuation is not permanently re-appended on every re
 	});
 	const tui = composer.ui;
 	const chatContainer = new TranscriptContainer();
-	chatContainer.addChild(
-		new StaticBlock(Array.from({ length: 8 }, (_value, index) => `earlier-history-row-${index}`)),
-	);
+	for (const child of options.history ?? []) chatContainer.addChild(child);
 	composer.setRuntimeChildren([chatContainer]);
 	const ui = {
 		requestRender: () => tui.requestRender(true),
@@ -153,7 +169,7 @@ test("a wrapped pre-tool continuation is not permanently re-appended on every re
 		ui,
 		chatContainer,
 		pendingTools: new Map(),
-		settings: { get: (key: string) => key === "display.smoothStreaming" },
+		settings: { get: (key: string) => options.smoothStreaming === true && key === "display.smoothStreaming" },
 		viewSession: {
 			isStreaming: true,
 			isRetrying: false,
@@ -195,43 +211,46 @@ test("a wrapped pre-tool continuation is not permanently re-appended on every re
 		streamingComponent: undefined,
 		streamingMessage: undefined,
 	};
-	const interactiveContext = context as unknown as InteractiveModeContext;
-	const controller = new EventController(interactiveContext);
+	const ctx = context as unknown as InteractiveModeContext;
+	const controller = new EventController(ctx);
 	composer.start({ deferInput: true });
 	flushScheduledRenders();
-	try {
-		await controller.handleEvent({
-			type: "message_start",
-			message: assistantMessage(""),
-		} as unknown as AgentSessionEvent);
+	const send = async (event: unknown) => {
+		await controller.handleEvent(event as AgentSessionEvent);
 		flushScheduledRenders();
+	};
+	const stop = () => {
+		controller.dispose();
+		chatContainer.dispose();
+		composer.stop();
+	};
+	return { composer, tui, chatContainer, ctx, send, stop };
+}
+
+test("a wrapped pre-tool continuation is not permanently re-appended on every reveal tick", async () => {
+	vi.useFakeTimers();
+	const terminal = new BufferTerminal(56, 8);
+	const { composer, tui, ctx, send, stop } = startHarness(terminal, {
+		smoothStreaming: true,
+		history: [new StaticBlock(Array.from({ length: 8 }, (_value, index) => `earlier-history-row-${index}`))],
+	});
+	try {
+		await send({ type: "message_start", message: assistantMessage("") });
 		for (let end = 3; end < TEXT.length; end += 3) {
-			await controller.handleEvent({
-				type: "message_update",
-				message: assistantMessage(TEXT.slice(0, end)),
-			} as unknown as AgentSessionEvent);
-			flushScheduledRenders();
+			await send({ type: "message_update", message: assistantMessage(TEXT.slice(0, end)) });
 			if (end % 12 === 0) {
 				vi.advanceTimersByTime(34);
 				flushScheduledRenders();
 			}
 		}
 
-		await controller.handleEvent({
-			type: "message_update",
-			message: assistantMessage(TEXT, true),
-		} as unknown as AgentSessionEvent);
-		flushScheduledRenders();
-		expect(interactiveContext.streamingComponent?.isTranscriptBlockFinalized()).toBe(true);
+		await send({ type: "message_update", message: assistantMessage(TEXT, true) });
+		expect(ctx.streamingComponent?.isTranscriptBlockFinalized()).toBe(true);
 		composer.editor.setText("draft one\ndraft two\ndraft three\ndraft four");
 		tui.requestRender();
 		flushScheduledRenders();
 		for (let update = 0; update < 10; update++) {
-			await controller.handleEvent({
-				type: "message_update",
-				message: assistantMessage(TEXT, true),
-			} as unknown as AgentSessionEvent);
-			flushScheduledRenders();
+			await send({ type: "message_update", message: assistantMessage(TEXT, true) });
 		}
 		for (let frame = 0; frame < 100; frame++) {
 			vi.advanceTimersByTime(34);
@@ -247,9 +266,93 @@ test("a wrapped pre-tool continuation is not permanently re-appended on every re
 			Array.from({ length: 8 }, (_, index) => `earlier-history-row-${index}`),
 		);
 	} finally {
-		controller.dispose();
-		chatContainer.dispose();
-		composer.stop();
+		stop();
 		vi.useRealTimers();
+	}
+});
+
+test("a tool call cut off mid-stream by a guard interrupt does not hold the rest of the turn live", async () => {
+	const terminal = new BufferTerminal(80, 12);
+	const { chatContainer, ctx, send, stop } = startHarness(terminal);
+	try {
+		// 1. The model streams a tool call; kernel preflight aborts the message before it runs.
+		await send({ type: "message_start", message: assistantMessage("", false, { callId: "cut", timestamp: 1 }) });
+		await send({
+			type: "message_update",
+			message: assistantMessage("editing now", true, { callId: "cut", timestamp: 1 }),
+		});
+		await send({
+			type: "message_end",
+			message: assistantMessage("editing now", true, { stopReason: "aborted", callId: "cut", timestamp: 1 }),
+		});
+		await send({ type: "agent_end", messages: [], isTerminal: false });
+		expect(ctx.pendingTools.has("cut"), "a call that never ran can never receive a result").toBe(false);
+
+		// 2. The turn continues: many more completed tool calls follow the orphaned card.
+		for (let step = 0; step < 30; step++) {
+			const id = `ok-${step}`;
+			await send({
+				type: "message_start",
+				message: assistantMessage("", false, { callId: id, timestamp: 10 + step }),
+			});
+			await send({
+				type: "message_update",
+				message: assistantMessage(`step ${step}`, true, { callId: id, timestamp: 10 + step }),
+			});
+			await send({
+				type: "message_end",
+				message: assistantMessage(`step ${step}`, true, {
+					stopReason: "toolUse",
+					callId: id,
+					timestamp: 10 + step,
+				}),
+			});
+			await send({ type: "tool_execution_start", toolCallId: id, toolName: "test_tool", args: {} });
+			await send({
+				type: "tool_execution_end",
+				toolCallId: id,
+				toolName: "test_tool",
+				result: { content: [{ type: "text", text: `result ${step}` }] },
+				isError: false,
+			});
+		}
+		// Sixty finished blocks cannot fit a 12-row terminal. They must retire into
+		// scrollback in full rather than stay live behind the cut-off card, where the
+		// viewport squeezes every one of them down to a single row.
+		const states = chatContainer.blockStates();
+		expect(states.filter(state => state === "active")).toEqual([]);
+		expect(states.filter(state => state === "settled").length).toBeLessThan(12);
+		const tape = terminal.tape().map(line => Bun.stripANSI(line).trim());
+		expect(tape.filter(line => line.includes("step 0")).length, "early blocks reach scrollback").toBeGreaterThan(0);
+	} finally {
+		stop();
+	}
+});
+
+// A paragraph taller than the viewport used to stay live until it ended with
+// its top clipped off the screen; shrinking the pane then pushed the clipped
+// rows into scrollback, and the finished paragraph was written after them again.
+test("a paragraph taller than the viewport reaches scrollback once when the pane shrinks mid-stream", async () => {
+	const terminal = new BufferTerminal(60, 14);
+	const { send, stop } = startHarness(terminal);
+	const words = Array.from({ length: 160 }, (_value, index) => `w${String(index + 1).padStart(3, "0")}`);
+	const paragraph = words.join(" ");
+	try {
+		await send({ type: "message_start", message: assistantMessage("") });
+		for (let end = 7; end < paragraph.length; end += 7) {
+			if (end === 504) terminal.resize(60, 9);
+			await send({ type: "message_update", message: assistantMessage(paragraph.slice(0, end)) });
+		}
+		await send({ type: "message_update", message: assistantMessage(paragraph) });
+		await send({ type: "message_end", message: assistantMessage(paragraph) });
+		await send({ type: "agent_end", messages: [], isTerminal: true });
+
+		const shown = terminal
+			.tape()
+			.flatMap(line => Bun.stripANSI(line).split(/\s+/))
+			.filter(word => /^w\d{3}$/.test(word));
+		expect(shown).toEqual(words);
+	} finally {
+		stop();
 	}
 });

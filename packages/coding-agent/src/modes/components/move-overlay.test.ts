@@ -106,7 +106,7 @@ test("move no-match path stays editable and confirms the exact sanitized path", 
 
 test("move creation confirmation keeps destination identity visible and only creates on acceptance", async () => {
 	const root = fixture();
-	const destination = path.join(root, "wave3-new");
+	const destination = path.join(root, "moved-new");
 	let accept = false;
 	let moved: string | undefined;
 	const controller = new CommandController({
@@ -118,7 +118,7 @@ test("move creation confirmation keeps destination identity visible and only cre
 		},
 		sessionManager: { getCwd: () => root },
 		showHookConfirm: async (title: string, description: string) => {
-			expect(title).toContain("wave3-new");
+			expect(title).toContain("moved-new");
 			const selector = new HookSelectorComponent(
 				`${title}\n${description}`,
 				["Yes", "No"],
@@ -130,7 +130,7 @@ test("move creation confirmation keeps destination identity visible and only cre
 				.render(20)
 				.map(line => Bun.stripANSI(line))
 				.join("\n");
-			expect(lines).toContain("wave3-new");
+			expect(lines).toContain("moved-new");
 			expect(lines).toContain("Yes");
 			expect(fs.existsSync(destination)).toBe(false);
 			return accept;
@@ -145,11 +145,11 @@ test("move creation confirmation keeps destination identity visible and only cre
 			throw new Error(message);
 		},
 	} as unknown as InteractiveModeContext);
-	await controller.handleMoveCommand("wave3-new");
+	await controller.handleMoveCommand("moved-new");
 	expect(fs.existsSync(destination)).toBe(false);
 	expect(moved).toBeUndefined();
 	accept = true;
-	await controller.handleMoveCommand("wave3-new");
+	await controller.handleMoveCommand("moved-new");
 	expect(fs.statSync(destination).isDirectory()).toBe(true);
 	expect(moved).toBe(destination);
 });

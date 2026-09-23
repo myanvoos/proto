@@ -20,6 +20,8 @@ class FakeTerminal {
 	readonly vt: VTermTerminal;
 	answersCursorPosition = true;
 	keepCursorRowOnNarrow = false;
+	// A size the OS already reports but whose SIGWINCH has not been handled yet.
+	osSize: { columns: number; rows: number } | undefined;
 	#resizeCallback: (() => void) | undefined;
 	constructor(columns: number, rows: number, growPullsHistory: GrowMode) {
 		this.columns = columns;
@@ -77,6 +79,15 @@ class FakeTerminal {
 	}
 	triggerResize(): void {
 		this.#resizeCallback?.();
+	}
+	refreshSize(): boolean {
+		const size = this.osSize;
+		if (size === undefined) return false;
+		this.osSize = undefined;
+		this.columns = size.columns;
+		this.rows = size.rows;
+		this.#resizeCallback?.();
+		return true;
 	}
 	tape(): string[] {
 		const buffer = this.vt.buffer.normal;
@@ -303,19 +314,67 @@ for (const liveRows of [8, 38]) {
 	});
 }
 
+// A grow the host pads (the visible cursor is off the last row) leaves blank
+// rows under the frame. The frame holds its place over them, so the next shrink
+// discards them below the cursor instead of pushing a blank band into history.
 test("visible editor cursor preserves acknowledged history across padded growth", async () => {
 	const h = startHarness("cursorOnLastRow", { showHardwareCursor: true, liveRows: 8 });
 	try {
 		expect(h.terminal.vt.buffer.normal.cursorY).toBe(34);
-		for (const height of [50, 20, 38]) {
+		for (const [height, frameTop] of [
+			[50, 30],
+			[20, 12],
+			[38, 12],
+		] as const) {
 			await h.resize(height);
-			expect(
-				h.terminal.tape().filter(row => row !== ""),
-				`semantic tape at ${height} rows`,
-			).toEqual(h.body);
-			expect(h.terminal.screen().slice(-8), `viewport at ${height} rows`).toEqual(h.body.slice(-8));
-			expect(h.terminal.vt.buffer.normal.cursorY).toBe(height - 4);
+			expect(h.terminal.tape(), `tape at ${height} rows`).toEqual(h.body);
+			expect(h.terminal.screen().slice(frameTop, frameTop + 8), `frame at ${height} rows`).toEqual(h.body.slice(-8));
+			expect(h.terminal.vt.buffer.normal.cursorY).toBe(frameTop + 4);
 		}
+	} finally {
+		h.stop();
+	}
+});
+
+// A host can apply a grow after a frame is computed but before its write lands.
+// The line feeds meant to scroll the retiring row off then fall mid-screen, so
+// the frame sits a row lower than computed; the settled resize must find it
+// there instead of repainting over the retired row.
+test("a grow that lands before a retiring frame keeps the retired row", async () => {
+	const h = startHarness("cursorOnLastRow", { showHardwareCursor: true, liveRows: 38 });
+	try {
+		h.provider.rows.push("row-late");
+		h.terminal.vt.resize(54, 44);
+		h.tui.requestRender(true);
+		await h.scheduler.flush();
+		h.terminal.rows = 44;
+		h.terminal.triggerResize();
+		await h.scheduler.flush();
+		await Promise.resolve();
+		await Promise.resolve();
+		await h.scheduler.flush();
+		expect(h.terminal.tape().filter(row => row !== "")).toEqual([...h.body, "row-late"]);
+	} finally {
+		h.stop();
+	}
+});
+
+// The OS reports the new size as soon as the host resizes, but the SIGWINCH
+// reaches the event loop later. A frame due in between would paint the grown
+// grid at the old geometry, over the history rows the grow pulled into view.
+test("a frame due before the resize signal is handled paints at the new size", async () => {
+	const h = startHarness("always", { liveRows: 38 });
+	try {
+		h.terminal.vt.resize(54, 44);
+		h.terminal.osSize = { columns: 54, rows: 44 };
+		h.provider.rows.push("row-late");
+		h.tui.requestRender(true);
+		await h.scheduler.flush();
+		await Promise.resolve();
+		await Promise.resolve();
+		await h.scheduler.flush();
+		expect(h.terminal.tape().filter(row => row !== "")).toEqual([...h.body, "row-late"]);
+		expect(h.terminal.screen().at(-1)).toBe("row-late");
 	} finally {
 		h.stop();
 	}

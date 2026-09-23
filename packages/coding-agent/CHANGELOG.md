@@ -7,8 +7,8 @@
 - Claude saved resets can be spent automatically via the new `claudeResets.*` settings (consent is asked once per provider, independently of `codexResets.*`), and `/usage reset` now covers Claude and Codex accounts with live eligibility and expiry
 
 ### Changed
-- Anthropic server-side safety fallback now retries on Claude Opus 5.5 instead of Opus 4.8
 
+- Anthropic server-side safety fallback now retries on Claude Opus 5.5 instead of Opus 4.8
 - The completion bell now means "your long turn finished while you were away": it stays silent for turns shorter than `completion.notifyMinSeconds` (default 10s) and for turns that end while the terminal has keyboard focus. Terminals that do not report focus still notify. `completion.notifyMinSeconds: 0` and `completion.notifyWhenFocused: true` restore the previous always-ring behaviour.
 - `/setup` now re-runs the whole onboarding walkthrough like `proto setup`; `/setup providers` and `/providers` still open just the sign-in and web-search step, and a single-step run no longer claims to be "step 1 of 1".
 - Large Python kernel outputs use substantially less memory.
@@ -16,6 +16,23 @@
 
 ### Fixed
 
+- Resizing the terminal while a reply streams no longer duplicates lists and code blocks in scrollback: their finished items and lines retire as they stream instead of being held on screen for the terminal to push twice
+- A pane that grows while a frame is being drawn (herdr, tmux) no longer loses the row that frame was retiring
+- Growing a multiplexer pane no longer leaves a band of blank rows in scrollback after the next shrink; the composer holds its place over the new space instead of dropping to the bottom
+- Prompts are separated from the transcript by one blank row, like every other block, instead of two; the gap under the welcome header is one row too
+- A paragraph followed by a streaming list no longer flashes as a heading while the list marker arrives
+- Thinking that contains a code block is no longer written to scrollback twice: the line the hidden code folds into is held back until the fence is complete instead of being retired first and rewritten
+- A paragraph taller than the screen no longer duplicates in scrollback when the pane shrinks mid-stream: once it overflows, it breaks at a word where it already wraps and the rows above retire as it streams
+- After a long reply retires to scrollback, the input box sits one blank row below it instead of two
+- Code blocks without a recognized language keep their code color when the reply finishes instead of switching to plain text
+- The transcript no longer collapses into one-line fragments mid-turn after a tool call is cut off while streaming (kernel preflight, loop guards, stream retries); the rest of the turn now retires to scrollback in full.
+- Launching proto no longer erases what was in your terminal: with `startup.clearScrollback` off (the default) the pre-launch screen stays reachable by scrolling up, as the setting describes.
+
+- Settings rows no longer show a wrong value: the value column keeps its ellipsis and a minimum width, so a boolean reads `false` instead of `fals`, `fa` or nothing as the dialog narrows, and a long label yields the space rather than swallowing the column.
+- The settings tab strip says how many tabs it scrolled out of view (`+8 more`) instead of silently showing two of ten, and the marker never clips the active tab or leaves a half-drawn label clickable.
+- A theme slot lists the themes that fit it first and labels the ones that do not (`light theme` in the Dark Theme picker), classified by the theme's own luminance so unprefixed names like `limestone` and `onyx` sort correctly too.
+- The nested settings picker no longer shows two differently worded hint rows; the dialog footer is the single source.
+- Changing the theme repaints the transcript already on screen instead of leaving it two-toned: the settings dialog commits `theme.dark`/`theme.light`, which the change handler never matched, so nothing asked for the repaint.
 - A worker woken by a `fleet` message now runs a turn the orchestrator can see: its result is delivered by `orchestrate_wait` exactly once, `orchestrate_list` counts the turn, and the next `orchestrate_send` continues from the real turn number. Previously the woken turn ran, yielded, and its result was discarded, so the next send silently skipped a turn's worth of work.
 - `orchestrate_wait` without ids also delivers a turn that settled before the parent got back to waiting, instead of reporting "No turns in flight to wait for" and dropping the result.
 - Steering a busy worker is bounded: a parent may hold at most 32 unread steering messages on a worker (the same ceiling as its follow-up queue), and further sends are refused with a receipt instead of piling unbounded context onto the worker.
