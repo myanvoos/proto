@@ -335,7 +335,7 @@ test("fullscreen overlays defer provider history and restore the normal buffer",
 	tui.stop();
 });
 
-test("resize reanchors and repaints only the mutable viewport without replaying history", () => {
+test("a height-only resize reanchors and repaints only the mutable viewport without replaying history", () => {
 	Bun.env.PI_TUI_RESIZE_IN_PLACE = "1";
 	const { terminal, scheduler, provider, tui } = makeTui(6);
 	provider.plan = {
@@ -347,7 +347,7 @@ test("resize reanchors and repaints only the mutable viewport without replaying 
 	scheduler.flush();
 	terminal.writes.length = 0;
 
-	terminal.resize(32, 8);
+	terminal.resize(40, 8);
 	terminal.triggerResize();
 	scheduler.flush();
 	expect(provider.replays).toBe(0);
@@ -355,6 +355,32 @@ test("resize reanchors and repaints only the mutable viewport without replaying 
 	expect(terminal.screenRows().slice(-2)).toEqual(["live-a", "live-b"]);
 	expect(countRow(terminal.allNormalRows(), "keep-1")).toBe(1);
 	expect(countRow(terminal.allNormalRows(), "keep-2")).toBe(1);
+	tui.stop();
+});
+
+test("a width change replays history once instead of leaving it to the host's reflow", () => {
+	Bun.env.PI_TUI_RESIZE_IN_PLACE = "1";
+	const { terminal, scheduler, provider, tui } = makeTui(6);
+	const wide = "wide-history-row-that-only-fits-the-first-width";
+	provider.plan = { history: { id: 1, rows: [wide] }, viewport: ["live-a"], viewportAnchor: "bottom" };
+	tui.start({ deferInput: true });
+	scheduler.flush();
+	provider.onReplay = () => {
+		provider.plan = {
+			history: { id: 2, rows: ["narrow-history-a", "narrow-history-b"], kind: "replay" },
+			viewport: ["live-a"],
+			viewportAnchor: "bottom",
+		};
+	};
+	terminal.writes.length = 0;
+
+	terminal.resize(24, 6);
+	terminal.triggerResize();
+	scheduler.flush();
+	expect(provider.replays).toBe(1);
+	expect(terminal.writes.join("")).toContain("\x1b[3J");
+	const rows = terminal.allNormalRows().filter(row => row !== "");
+	expect(rows).toEqual(["narrow-history-a", "narrow-history-b", "live-a"]);
 	tui.stop();
 });
 

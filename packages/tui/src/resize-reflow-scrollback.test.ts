@@ -140,17 +140,32 @@ function wrap(text: string, width: number): string[] {
 class ProseFrameProvider implements TerminalFrameProvider {
 	text = PARAGRAPH;
 	readonly acknowledgements: number[] = [];
+	replays = 0;
 	#pending: HistoryBatch[] = [];
-	#initialized = false;
+	#committedWords: number | undefined;
+	#replayPending = false;
 	#nextId = 1;
 	renderFrame(size: ViewportSize): TerminalFramePlan {
 		const rows = wrap(this.text, size.columns);
-		if (!this.#initialized) {
-			this.#initialized = true;
-			const history = rows.slice(0, Math.max(0, rows.length - size.rows));
-			if (history.length > 0) this.#pending.push({ id: this.#nextId++, rows: history });
+		if (this.#committedWords === undefined || this.#replayPending) {
+			const committed = rows.slice(0, Math.max(0, rows.length - size.rows));
+			this.#committedWords = committed.join(" ").split(" ").filter(Boolean).length;
+			if (this.#replayPending) {
+				this.#replayPending = false;
+				this.#pending = [{ id: this.#nextId++, rows: committed, kind: "replay" }];
+			} else if (committed.length > 0) {
+				this.#pending.push({ id: this.#nextId++, rows: committed });
+			}
 		}
-		return { history: this.#pending[0], viewport: rows.slice(-size.rows), viewportAnchor: "bottom" };
+		let liveStart = 0;
+		for (let words = 0; liveStart < rows.length && words < this.#committedWords; liveStart++) {
+			words += rows[liveStart]!.split(" ").length;
+		}
+		return { history: this.#pending[0], viewport: rows.slice(liveStart).slice(-size.rows), viewportAnchor: "bottom" };
+	}
+	beginHistoryReplay(): void {
+		this.replays++;
+		this.#replayPending = true;
 	}
 	renderResizeFrame(size: ViewportSize): readonly string[] {
 		return wrap(this.text, size.columns);
@@ -167,9 +182,15 @@ class ProseFrameProvider implements TerminalFrameProvider {
 class FooterFrameProvider implements TerminalFrameProvider {
 	prompt = "› ask anything";
 	readonly acknowledgements: number[] = [];
+	readonly #rows: readonly string[];
 	#history: HistoryBatch | undefined;
+	#nextId = 2;
 	constructor(history: readonly string[]) {
+		this.#rows = [...history];
 		if (history.length > 0) this.#history = { id: 1, rows: [...history] };
+	}
+	beginHistoryReplay(): void {
+		this.#history = { id: this.#nextId++, rows: [...this.#rows], kind: "replay" };
 	}
 	#footer(size: ViewportSize): string[] {
 		const promptRows = wrap(this.prompt, size.columns);
@@ -211,6 +232,7 @@ async function verifyResizeSequence(options: {
 	initial: ResizeStep;
 	steps: readonly ResizeStep[];
 	rapid?: boolean;
+	replays: number;
 }): Promise<void> {
 	const restore = setResizeEnvironment(options.inMux);
 	const terminal = new FakeTerminal(options.initial[0], options.initial[1], options.cursorProbe);
@@ -233,23 +255,32 @@ async function verifyResizeSequence(options: {
 		tui.requestRender(true);
 		await scheduler.flush();
 
-		const tape = terminal.normalLines().join(" ");
-		expect(tape.match(/Confirmed live/g)).toHaveLength(1);
-		expect(terminal.normalLines().at(-1)).toBe(wrap(PARAGRAPH, terminal.columns).at(-1));
-		expect(provider.acknowledgements).toEqual([1]);
-		expect(terminal.writes.join(""), "resize preserves native history").not.toContain("\x1b[3J");
-		expect(paints.slice(1).every(paint => paint.history.length === 0 && !paint.reset)).toBe(true);
+		const tape = terminal.normalLines().filter(line => line.length > 0);
+		expect(tape.join(" ").match(/Confirmed live/g)).toHaveLength(1);
+		expect(tape.at(-1)).toBe(wrap(PARAGRAPH, terminal.columns).at(-1));
+		expect(new Set(provider.acknowledgements).size).toBe(provider.acknowledgements.length);
 		expect(scheduler.delayedCallbacksRun).toBeGreaterThan(0);
+		const resets = paints.slice(1).filter(paint => paint.reset);
+		if (options.replays === 0) {
+			expect(terminal.writes.join(""), "resize preserves native history").not.toContain("\x1b[3J");
+			expect(provider.replays).toBe(0);
+			expect(resets).toEqual([]);
+		} else {
+			expect(provider.replays).toBe(options.replays);
+			expect(resets).toHaveLength(options.replays);
+			expect(tape).toEqual(wrap(PARAGRAPH, terminal.columns));
+		}
 	} finally {
 		tui.stop();
 		restore();
 	}
 }
 
-const cases: Array<{ name: string; initial: ResizeStep; steps: ResizeStep[]; rapid?: boolean }> = [
-	{ name: "shrink", initial: [100, 6], steps: [[54, 6]] },
-	{ name: "grow", initial: [54, 6], steps: [[100, 6]] },
-	{ name: "width and height", initial: [100, 6], steps: [[54, 10]] },
+const cases: Array<{ name: string; initial: ResizeStep; steps: ResizeStep[]; rapid?: boolean; replays: number }> = [
+	{ name: "shrink", initial: [100, 6], steps: [[54, 6]], replays: 1 },
+	{ name: "grow", initial: [54, 6], steps: [[100, 6]], replays: 1 },
+	{ name: "width and height", initial: [100, 6], steps: [[54, 10]], replays: 1 },
+	{ name: "height only", initial: [100, 6], steps: [[100, 10]], replays: 0 },
 	{
 		name: "height change after width reflow",
 		initial: [100, 6],
@@ -257,6 +288,7 @@ const cases: Array<{ name: string; initial: ResizeStep; steps: ResizeStep[]; rap
 			[54, 6],
 			[54, 10],
 		],
+		replays: 1,
 	},
 	{
 		name: "repeated rapid resizes",
@@ -267,23 +299,25 @@ const cases: Array<{ name: string; initial: ResizeStep; steps: ResizeStep[]; rap
 			[100, 6],
 		],
 		rapid: true,
+		replays: 0,
 	},
 ];
 
 for (const inMux of [false, true]) {
 	for (const resizeCase of cases) {
-		test(`${inMux ? "mux" : "plain"} ${resizeCase.name} preserves accepted history`, async () => {
+		test(`${inMux ? "mux" : "plain"} ${resizeCase.name} keeps accepted history once`, async () => {
 			await verifyResizeSequence({
 				inMux,
 				cursorProbe: true,
 				initial: resizeCase.initial,
 				steps: resizeCase.steps,
 				rapid: resizeCase.rapid,
+				replays: resizeCase.replays,
 			});
 		});
 	}
-	test(`${inMux ? "mux" : "plain"} width resize without a cursor probe preserves history`, async () => {
-		await verifyResizeSequence({ inMux, cursorProbe: false, initial: [100, 6], steps: [[54, 10]] });
+	test(`${inMux ? "mux" : "plain"} width resize without a cursor probe replays history once`, async () => {
+		await verifyResizeSequence({ inMux, cursorProbe: false, initial: [100, 6], steps: [[54, 10]], replays: 1 });
 	});
 }
 
@@ -307,7 +341,7 @@ for (const inMux of [false, true]) {
 			const tape = terminal.normalLines();
 			expect(tape.filter(line => line.includes("Confirmed live"))).toHaveLength(1);
 			expect(tape.filter(line => line === "unique-after-resize")).toHaveLength(1);
-			expect(provider.acknowledgements).toEqual([1, 2]);
+			expect(provider.acknowledgements).toEqual([1, 2, 3]);
 		} finally {
 			tui.stop();
 			restore();
@@ -344,8 +378,9 @@ test("mux shrink repaints the provider viewport at the new width and keeps it on
 			await scheduler.flush();
 			expect(terminal.screenRows().filter(line => line.startsWith("›"))).toEqual([provider.prompt]);
 		}
-		expect(provider.acknowledgements).toEqual([1]);
-		expect(terminal.normalLines().filter(line => line === "history-0")).toHaveLength(1);
+		for (const row of ["history-0", "history-49"]) {
+			expect(terminal.normalLines().filter(line => line === row)).toHaveLength(1);
+		}
 	} finally {
 		tui.stop();
 		restore();

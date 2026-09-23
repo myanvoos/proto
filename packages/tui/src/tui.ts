@@ -1091,7 +1091,7 @@ export class TUI extends Container {
 	#altEnterHeight = 0;
 	#resizeAltActive = false;
 	#resizeSettleTimer: RenderTimer | undefined;
-	#suppressResizeUntil = 0;
+	#resizeEcho: { until: number; columns: number; rows: number } | undefined;
 	// Baseline geometry at the last alt-buffer toggle, plus whether its echo is
 	// still pending. A Warp-only echo is a height-only ±1 SIGWINCH against this
 	// baseline while the CPR probe is in flight. The expectation is single-shot:
@@ -1414,7 +1414,13 @@ export class TUI extends Container {
 					this.#beginResizeAnchorProbe();
 					return;
 				}
-				if (this.#renderScheduler.now() < this.#suppressResizeUntil) {
+				const echo = this.#resizeEcho;
+				if (
+					echo !== undefined &&
+					this.#renderScheduler.now() < echo.until &&
+					this.terminal.columns === echo.columns &&
+					this.terminal.rows === echo.rows
+				) {
 					this.requestRender(true);
 					return;
 				}
@@ -1635,7 +1641,11 @@ export class TUI extends Container {
 			this.#resizeSettleTimer = undefined;
 			if (this.#stopped || !this.#resizeAltActive) return;
 			this.#resizeAltActive = false;
-			this.#suppressResizeUntil = this.#renderScheduler.now() + 100;
+			this.#resizeEcho = {
+				until: this.#renderScheduler.now() + 100,
+				columns: this.terminal.columns,
+				rows: this.terminal.rows,
+			};
 			this.#noteAltBufferToggle();
 			this.terminal.write(`${this.#keyboardEnhancementExit()}\x1b[?1049l`);
 			setAltScreenActive(false);
@@ -1654,6 +1664,7 @@ export class TUI extends Container {
 	 */
 	#beginResizeAnchorProbe(retry = false): void {
 		this.#cancelResizeProbe();
+		if (this.#replayForWidthChange()) return;
 		const timer = this.#renderScheduler.scheduleRender(() => {
 			const probe = this.#resizeProbe;
 			if (probe !== undefined && !probe.retried && (isInsideTerminalMultiplexer() || this.#resizeBurstGrew)) {
@@ -1689,6 +1700,16 @@ export class TUI extends Container {
 					// The timeout below applies the conservative fallback.
 				});
 		}
+	}
+
+	#replayForWidthChange(): boolean {
+		if (!this.#hasEverRendered || this.#frameProvider?.beginHistoryReplay === undefined) return false;
+		if (this.terminal.columns === this.#previousWidth) return false;
+		this.#resizeInPlaceActive = false;
+		this.#resizeErasedLiveViewport = false;
+		this.invalidate();
+		this.requestRender(true, { clearScrollback: true });
+		return true;
 	}
 
 	#cancelResizeProbe(): void {

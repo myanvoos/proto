@@ -392,7 +392,7 @@ test.skipIf(Bun.stringWidth("\u2630", { ambiguousIsNarrow: true }) !== 1)(
 	},
 );
 
-test("preserves accepted history across a width and height resize", () => {
+test("replays accepted history once across a width and height resize", () => {
 	const restore = setEnvironment({ TMUX: "1", TERM: "xterm-256color", PI_NO_SYNC_OUTPUT: "1" });
 	const terminal = new FakeTerminal(8, 2);
 	const scheduler = new TestScheduler();
@@ -407,8 +407,8 @@ test("preserves accepted history across a width and height resize", () => {
 		terminal.resize(14, 3);
 		terminal.triggerResize();
 		scheduler.flush();
-		expect(provider.replayRequests).toBe(0);
-		expect(provider.acknowledgements).toEqual([1]);
+		expect(provider.replayRequests).toBe(1);
+		expect(provider.acknowledgements).toEqual([1, 2]);
 		expect(terminal.normalLines()).toEqual(["A", "B", "C"]);
 	} finally {
 		tui.stop();

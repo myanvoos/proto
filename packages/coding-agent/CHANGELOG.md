@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- After making the terminal narrower, scrollback no longer shows words split at the old edge or tool-card gutters broken onto bare rows: a width change now redraws the transcript at the new width (like Ctrl+O, this clears terminal scrollback)
 - A status message that follows one already scrolled into terminal history now shows up instead of silently rewriting the old row (e.g. "No subagents in this session" or "Commands run in the main session" while viewing an agent)
 - No more blank bands between blocks while the agent works: when a tool card or reply gets shorter (a command settling into its outline, a card taller than the screen finishing), the input box moves up instead of leaving empty rows between the transcript and the live output, and those rows no longer end up in scrollback
 

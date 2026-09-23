@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A settled width change replays the provider's history at the new width (clearing native scrollback) instead of leaving the terminal's mid-word reflow of committed rows; height-only resizes still keep native history
+
 ### Fixed
 
+- A real resize that lands right after the previous one settles is no longer swallowed as that resize's echo, which left a stale copy of the frame on screen
 - A bottom-anchored frame that shrinks stays directly under the committed history above it instead of dropping to the bottom edge, so no blank band opens between them on screen or later in scrollback.
 
 ## [18.5.0] - 2026-09-23
