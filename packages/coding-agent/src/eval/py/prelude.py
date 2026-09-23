@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-# Public kernel API. The runner executes this file in a private module
-# namespace and exports exactly these names into the user namespace, so the
-# helpers' own globals (json, os, re, _bridge_call, ...) can't be clobbered
-# by user code.
 __all__ = [
     "display",
     "env",
@@ -20,7 +16,6 @@ __all__ = [
     "log",
     "phase",
     "budget",
-    # stdlib conveniences cells have always seen without importing
     "Path",
     "os",
     "json",
@@ -68,44 +63,12 @@ if "__proto_prelude_loaded__" not in globals():
         _proto_display({"application/x-proto-status": {"op": op, **data}}, raw=True)
 
     _MAX_DIFF_CHARS = 32000
-    # Characters alone do not bound the transcript: thousands of short rows stay
-    # under the char ceiling while flooding the scrollback of a single tool card.
     _MAX_DIFF_ROWS = 400
 
-    # --- filesystem mutation tracking ----------------------------------------
-    # The host forwards its filesystem-observation ledger before each cell to
-    # keep stale-write state current for reads and writes outside the kernel. A
-    # CPython audit hook sees every in-process mutation (open() with write flags,
-    # os.remove/rename/truncate), and the prelude snapshots each touched path's
-    # pre-mutation content. The hunk diff for a write is reported as soon as the
-    # file handle closes
-    # (open() is wrapped so write-mode handles report on close — see
-    # _fs_install_open), so a cell that edits a file and then runs for a
-    # while shows the edit immediately; mutations with no handle to observe
-    # (os.replace, os.remove, os.truncate, fd-level writes) are reported by
-    # the per-cell flush after the user code settles. Both paths share
-    # _fs_report_path, and every report is the NET diff from the pre-cell
-    # content, carrying an id of run id + path so the host replaces the
-    # earlier report of the same path (eval/status-events.ts): a cell that
-    # writes a file twice still exposes one structured mutation. The
-    # stale-write guard aborts write-mode opens of paths that changed since
-    # the kernel last read them (see _fs_check_stale_raw). State lives on the
-    # sys module so a prelude re-exec reuses the already-installed hooks'
-    # records.
     _FS_DIFF_MAX_BYTES = 8 * 1024 * 1024
-    # Aggregate budget for pre-mutation snapshots kept per cell (kept aligned
-    # with CAPTURE_TEXT_BUDGET in eval/js/shared/fs-tracker.ts); past it
-    # _fs_record stores only the content sha — dedupe still works and the
-    # flush emits the write without a diff.
     _FS_CAPTURE_TEXT_BUDGET = 16 * 1024 * 1024
-    # Distinct paths a cell may report; further changed paths collapse into
-    # one "files … truncated" event.
     _FS_MAX_EVENTS = 50
-    # Close-time reports per path per cell; past it a hot loop rewriting one
-    # file leaves the net diff to the flush instead of re-diffing every write.
     _FS_EAGER_REPORTS_PER_PATH = 8
-    # Cache/build noise by directory-name component; cross-language mirror
-    # of PRUNED_DIRS in eval/fs-policy.ts (update in the same change).
     _FS_PRUNED_DIRS = frozenset({
         ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
         ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".cache",
@@ -126,16 +89,9 @@ if "__proto_prelude_loaded__" not in globals():
     _FS_STATE = getattr(sys, "_proto_fs_state", None)
     if _FS_STATE is None:
         _FS_STATE = {
-            # abspath -> pre-mutation record for every path the cell touched
             "touched": {},
-            # abspath -> content sha last reported this cell (None: reported
-            # deleted); bounds the cell at _FS_MAX_EVENTS distinct paths
             "reported": {},
-            # abspath -> compact metadata for the last status event. The
-            # runner uses this at the cell flush to emit one model-visible
-            # mutation note even when an eager close-time event already ran.
             "reported_meta": {},
-            # abspath -> close-time reports made this cell
             "eager": {},
             "captured_text_bytes": 0,
             "lock": threading.Lock(),
@@ -145,16 +101,6 @@ if "__proto_prelude_loaded__" not in globals():
     _FS_STATE.setdefault("captured_text_bytes", 0)
     _FS_STATE.setdefault("reported_meta", {})
     _FS_STATE.setdefault("eager", {})
-    # Stale-write guard: abspath -> (st_mtime_ns, st_size) at the agent's
-    # last observation of the file. Armed by any read-mode open the audit hook
-    # sees (`open(p).read()`, `Path(p).read_text()`, imports, ...) and, for
-    # paths the kernel has never read, by the host-side observations the
-    # runner forwards before each cell (shell builtins and redirects, the read
-    # tool); cleared only by this process's own mutations, which know what
-    # they wrote. Host observations never refresh an existing record, so a
-    # shell read or write between two kernel cells cannot disarm the guard —
-    # the kernel is still holding the content it read. NEVER cleared between
-    # cells: staleness is about what the kernel last saw, which spans cells.
     _FS_STATE.setdefault("read_seen", {})
     _FS_READ_SEEN_MAX = 8192
 
@@ -192,8 +138,6 @@ if "__proto_prelude_loaded__" not in globals():
         try:
             st = os.stat(ap)
         except OSError:
-            # not there yet (O_CREAT pre-create): the flush decides from
-            # post-cell state whether anything was actually created
             with _FS_STATE["lock"]:
                 touched.setdefault(ap, {"existed": False, "key": None, "before": None, "before_sha": None})
             return
@@ -212,9 +156,6 @@ if "__proto_prelude_loaded__" not in globals():
             finally:
                 tls.recording = False
             if data is not None and b"\x00" not in data[:8192]:
-                # The sha is kept even past the capture budget so the flush
-                # can still dedupe content-identical rewrites; only the text
-                # is dropped, and the flush then emits the write with no diff.
                 record["before_sha"] = hashlib.sha256(data).hexdigest()[:16]
                 if under_budget:
                     record["before"] = data.decode("utf-8", errors="replace")
@@ -287,7 +228,7 @@ if "__proto_prelude_loaded__" not in globals():
             mtime_ns = entry.get("mtimeNs")
             size = entry.get("size")
             if mtime_ns is None or size is None:
-                continue  # the file is gone; the write itself surfaces that
+                continue
             sha = entry.get("sha")
             try:
                 _fs_remember_seen(ap, (int(mtime_ns), int(size), str(sha) if sha is not None else None))
@@ -315,7 +256,7 @@ if "__proto_prelude_loaded__" not in globals():
         try:
             st = os.stat(ap)
         except OSError:
-            return  # deleted/moved externally; the open itself will surface it
+            return
         metadata_matches = (st.st_mtime_ns, st.st_size) == rec[:2]
         content_matches = metadata_matches
         if metadata_matches and len(rec) > 2 and rec[2] is not None:
@@ -342,10 +283,8 @@ if "__proto_prelude_loaded__" not in globals():
                 try:
                     _fs_note_read(args[0])
                 except Exception:
-                    pass  # tracking must never break the read it observes
+                    pass
                 return
-            # The stale-write guard aborts the operation on purpose; everything
-            # else in tracking must never break the mutation it observes.
             _fs_check_stale_raw(args[0])
             try:
                 _fs_record(args[0])
@@ -353,21 +292,14 @@ if "__proto_prelude_loaded__" not in globals():
             except Exception:
                 pass
             return
-        # Every destructive path is guarded, not just write-mode opens: the
-        # atomic-write idiom (write tmp, os.replace over the target) and
-        # os.remove/os.truncate destroy content without ever opening the
-        # victim for writing. Mirrors TRACKED_NAMES in
-        # eval/js/shared/fs-tracker.ts, which guards the same set.
         if event == "os.remove":
             targets = args[:1]
-        elif event == "os.rename":  # os.replace audits under the same name
-            targets = args[:2]  # the source leaves its path; the destination is clobbered
+        elif event == "os.rename":
+            targets = args[:2]
         elif event == "os.truncate":
             targets = args[:1]
         else:
             return
-        # The stale-write guard aborts the operation on purpose; everything
-        # else in tracking must never break the mutation it observes.
         for target in targets:
             _fs_check_stale_raw(target)
         try:
@@ -375,7 +307,7 @@ if "__proto_prelude_loaded__" not in globals():
                 _fs_record(target)
                 _fs_forget_read(target)
         except Exception:
-            pass  # an audit hook must never break the operation it observes
+            pass
 
     if not getattr(sys, "_proto_fs_audit_installed", False):
         try:
@@ -415,8 +347,6 @@ if "__proto_prelude_loaded__" not in globals():
             regular = False
         if not regular:
             if not rec["existed"]:
-                # Created in this cell, then deleted: net no file. Retract the
-                # earlier write report with an upserting tombstone.
                 if ap in reported and reported[ap] is not None:
                     reported[ap] = None
                     _fs_set_report_meta(ap, "revert")
@@ -439,13 +369,11 @@ if "__proto_prelude_loaded__" not in globals():
             _emit_status(data.pop("op"), **data)
             return "emitted"
         if rec["key"] is not None and (st.st_mtime_ns, st.st_size) == rec["key"]:
-            return "skipped"  # opened but never written
+            return "skipped"
         tls = state["tls"]
-        tls.recording = True  # machinery read: must not arm the stale-write guard
+        tls.recording = True
         try:
             if st.st_size > _FS_DIFF_MAX_BYTES:
-                # Past the diff cap only the sha is needed (walker dedupe);
-                # stream it so a multi-GB write never lands in memory.
                 data = None
                 sha = _fs_sha_file(ap)
             else:
@@ -457,8 +385,6 @@ if "__proto_prelude_loaded__" not in globals():
         finally:
             tls.recording = False
         if rec["before_sha"] == sha:
-            # Restored to its pre-cell content after an earlier report:
-            # retract the stale write/delete with an upserting tombstone.
             if ap in reported:
                 reported[ap] = sha
                 _fs_set_report_meta(ap, "revert")
@@ -470,9 +396,6 @@ if "__proto_prelude_loaded__" not in globals():
         if ap not in reported and len(reported) >= _FS_MAX_EVENTS:
             return "capped"
         if data is not None and len(data) <= _FS_DIFF_MAX_BYTES and b"\x00" not in data[:8192]:
-            # An existed file whose pre-mutation content was not captured
-            # (over budget, or the snapshot read failed) gets no diff rather
-            # than a fake one diffed against "".
             before = rec["before"] if rec["before"] is not None else ("" if not rec["existed"] else None)
             _emit_file_status("write", ap, before=before, after=data.decode("utf-8", errors="replace"))
         else:
@@ -501,7 +424,7 @@ if "__proto_prelude_loaded__" not in globals():
         try:
             _fs_report_path(ap, rec)
         except Exception:
-            pass  # reporting must never break the close it observes
+            pass
 
     def _fs_track_close(handle, ap: str) -> None:
         """Make `handle.close()` — also reached by `with` exit and by the io
@@ -1369,11 +1292,6 @@ if "__proto_prelude_loaded__" not in globals():
                 except BaseException as exc:
                     errors[i] = exc
         except BaseException:
-            # Interrupted (cell timeout / abort) while waiting. A `with` block
-            # would join every worker first — threads blocked in a bridge call
-            # can't be interrupted, so the cell would hang past the host's
-            # escalation deadline and the whole kernel would be killed. Let
-            # the workers drain in the background instead.
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         pool.shutdown(wait=True)

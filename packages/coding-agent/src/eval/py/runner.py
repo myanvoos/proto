@@ -57,16 +57,7 @@ import weakref
 from pathlib import Path
 from typing import Any, Callable
 
-# ---------------------------------------------------------------------------
-# Frame writer
-# ---------------------------------------------------------------------------
 
-# Frames travel on a private dup of the original stdout. Each request gets
-# dedicated fd 1/fd 2 capture pipes: child processes inherit the originating
-# request's writers, so delayed output cannot be reassigned to a later cell.
-# Drain threads forward those bytes as typed frames instead of allowing raw
-# child output to corrupt the NDJSON channel. The host wire protocol remains
-# unchanged.
 try:
     _FRAME_FD = os.dup(sys.__stdout__.fileno())
     _RAW_STDOUT = os.fdopen(_FRAME_FD, "w", encoding="utf-8", errors="backslashreplace")
@@ -81,10 +72,6 @@ except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
     _DEVNULL_FD = None
     _CAPTURE_SUPPORTED = False
 _OUT_LOCK = threading.Lock()
-# The request whose pipes are currently installed on fd 1/2. Cell writes are
-# emitted as frames from this thread while child output arrives on a drain
-# thread, so a frame must first let anything already sitting in those pipes
-# out — otherwise a line a child printed earlier lands after it.
 _CAPTURE_RID: str | None = None
 _CAPTURE_STATE: "_FdCapture | None" = None
 _CAPTURE_LOCK = threading.Lock()
@@ -137,11 +124,6 @@ def _emit_kernel_note(note: str) -> None:
     _emit({"type": "stderr", "id": rid, "data": f"<kernel> note: {note}\n"})
 
 
-# ---------------------------------------------------------------------------
-# User stdout/stderr proxies
-# ---------------------------------------------------------------------------
-
-
 class _StreamProxy(io.TextIOBase):
     """Emit cell ``write`` data as typed frames tied to the current request.
 
@@ -163,22 +145,22 @@ class _StreamProxy(io.TextIOBase):
         self._buffers: dict[str, str] = {}
         self._buffer_proxy: "_BinaryStreamProxy | None" = None
 
-    def writable(self) -> bool:  # noqa: D401 - protocol method
+    def writable(self) -> bool:
         return True
 
-    def isatty(self) -> bool:  # noqa: D401 - protocol method
+    def isatty(self) -> bool:
         return False
 
     @property
-    def encoding(self) -> str:  # noqa: D401 - matches a real text stream
+    def encoding(self) -> str:
         return "utf-8"
 
     @property
-    def errors(self) -> str:  # noqa: D401 - matches a real text stream
+    def errors(self) -> str:
         return "backslashreplace"
 
     @property
-    def line_buffering(self) -> bool:  # noqa: D401 - writes leave on each newline
+    def line_buffering(self) -> bool:
         return True
 
     @property
@@ -233,7 +215,7 @@ class _StreamProxy(io.TextIOBase):
         self.flush_rid(rid)
         self._deliver(rid, data.decode("utf-8", "backslashreplace"))
 
-    def write(self, data: Any) -> int:  # type: ignore[override]
+    def write(self, data: Any) -> int:
         if not isinstance(data, str):
             data = str(data)
         if not data:
@@ -269,7 +251,7 @@ class _StreamProxy(io.TextIOBase):
             self._deliver(rid, emit_text)
         return len(data)
 
-    def flush(self) -> None:  # noqa: D401 - protocol method
+    def flush(self) -> None:
         rid = _CURRENT_RID.get()
         if rid is not None:
             self.flush_rid(rid)
@@ -295,16 +277,16 @@ class _BinaryStreamProxy(io.RawIOBase):
         super().__init__()
         self._text = text
 
-    def writable(self) -> bool:  # noqa: D401 - protocol method
+    def writable(self) -> bool:
         return True
 
-    def readable(self) -> bool:  # noqa: D401 - protocol method
+    def readable(self) -> bool:
         return False
 
-    def seekable(self) -> bool:  # noqa: D401 - protocol method
+    def seekable(self) -> bool:
         return False
 
-    def isatty(self) -> bool:  # noqa: D401 - protocol method
+    def isatty(self) -> bool:
         return False
 
     def fileno(self) -> int:
@@ -318,7 +300,7 @@ class _BinaryStreamProxy(io.RawIOBase):
     def name(self) -> str:
         return f"<{self._text._kind}>"
 
-    def write(self, data: Any) -> int:  # type: ignore[override]
+    def write(self, data: Any) -> int:
         if isinstance(data, memoryview):
             payload = data.tobytes()
         elif isinstance(data, (bytes, bytearray)):
@@ -335,11 +317,11 @@ class _BinaryStreamProxy(io.RawIOBase):
         self._text._deliver_bytes(rid, payload)
         return len(payload)
 
-    def writelines(self, lines: Any) -> None:  # type: ignore[override]
+    def writelines(self, lines: Any) -> None:
         for line in lines:
             self.write(line)
 
-    def flush(self) -> None:  # noqa: D401 - protocol method
+    def flush(self) -> None:
         self._text.flush()
 
 
@@ -350,16 +332,10 @@ def _flush_stream_proxies(rid: str) -> None:
             stream.flush_rid(rid)
 
 
-# ---------------------------------------------------------------------------
-# Runner state
-# ---------------------------------------------------------------------------
-
-
 class _RunnerState:
     def __init__(self) -> None:
         self.execution_count: int = 0
         self.cancel_requested: bool = False
-        # User globals — kept across requests when running in session mode.
         self.user_ns: dict[str, Any] = {
             "__name__": "__main__",
             "__doc__": None,
@@ -371,14 +347,9 @@ class _RunnerState:
         self.active_executions: int = 0
         self.defs: dict[str, int] = {}
         self.prelude_names: set[str] | None = None
-        # Prelude helpers live in their own module namespace so user
-        # rebindings (``json = ...``, ``output = ...``) cannot break them;
-        # only the public API is exported into ``user_ns``.
         self.prelude_ns: dict[str, Any] | None = None
         self.prelude_exports: dict[str, Any] = {}
         self.shadow_warned: set[str] = set()
-        # The single in-flight execution task. SIGINT while the cell is parked
-        # at an await cancels this task instead of unwinding the event loop.
         self.request_tasks: set[asyncio.Task] = set()
         self.pending_request_ids: set[str] = set()
         self.cancelled_request_ids: set[str] = set()
@@ -395,8 +366,6 @@ _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS: contextvars.ContextVar[set[int] | None
     )
 )
 
-# Figures saved via Figure.savefig() this cell (weakrefs). Closed figures are
-# unreachable from pyplot at flush time, so the savefig hook records them here.
 _SAVED_MATPLOTLIB_FIGURES: contextvars.ContextVar[list["weakref.Reference"] | None] = (
     contextvars.ContextVar(
         "proto_saved_matplotlib_figures",
@@ -415,17 +384,9 @@ class _FdCapture:
         self.marker = b"\x00proto-sync:" + os.urandom(24) + b"\x00"
         self.stdout_synced = threading.Event()
         self.stderr_synced = threading.Event()
-        # Set when a drain thread exits: syncing a dead stream would just burn
-        # the timeout, and mid-cell syncs repeat.
         self.stdout_closed = threading.Event()
         self.stderr_closed = threading.Event()
-        # Read ends stay reachable so a frame can check, without consuming
-        # anything, whether a child left output waiting in the pipe.
         self.read_fds: dict[str, int] = {}
-        # Set by the audit hook when this request spawns a child. Once the
-        # drain thread has read (but not yet emitted) an exited child's bytes
-        # there is nothing left for ``select`` to see, so the spawn itself is
-        # what arms the next sync.
         self.child_started = False
 
     def pending_streams(self) -> list[int]:
@@ -447,9 +408,6 @@ class _FdCapture:
 def _emit_captured_bytes(
     rid: str, kind: str, decoder: codecs.IncrementalDecoder, data: bytes, *, final: bool = False
 ) -> None:
-    # backslashreplace preserves an explicit, model-visible representation of
-    # every invalid byte (e.g. ff -> "\\xff") instead of silently inserting
-    # U+FFFD, while the incremental decoder still preserves split UTF-8 text.
     text = decoder.decode(data, final=final)
     if text:
         _emit({"type": kind, "id": rid, "data": text})
@@ -481,8 +439,6 @@ def _drain_capture_fd(
                     pending = pending[marker_at + len(marker) :]
                     synced.set()
                     continue
-                # Retain only enough suffix bytes to recognize a marker split
-                # across reads; everything before it is definitely user output.
                 safe_length = len(pending) - len(marker) + 1
                 if safe_length > 0:
                     _emit_captured_bytes(rid, kind, decoder, pending[:safe_length])
@@ -546,9 +502,6 @@ def _sync_fd_capture(capture: _FdCapture | None) -> None:
         synced.wait(timeout=1.0)
 
 
-# Spawning a child is the one event that can put output into the capture pipes
-# behind the cell's back; the hook only flips a flag, so unaudited work keeps
-# its speed.
 _CHILD_SPAWN_AUDIT_EVENTS = frozenset(
     {
         "subprocess.Popen",
@@ -609,28 +562,17 @@ def _sync_before_frame(rid: str | None) -> None:
 
 def _end_fd_capture() -> None:
     global _CAPTURE_RID, _CAPTURE_STATE
-    # Stop routing before the fds move: a racing write then takes the frame
-    # path instead of landing in /dev/null.
     with _CAPTURE_LOCK:
         _CAPTURE_RID = None
         _CAPTURE_STATE = None
         if _DEVNULL_FD is None:
             return
-        # Closing the runner's copies lets a request pipe reach EOF promptly,
-        # while background children retain their inherited copies and keep
-        # their fixed request attribution until they exit. Holding the routing
-        # lock across the swap keeps a concurrent write on one side or the
-        # other, never split across it.
         try:
             os.dup2(_DEVNULL_FD, 1)
             os.dup2(_DEVNULL_FD, 2)
         except OSError:
             pass
 
-
-# ---------------------------------------------------------------------------
-# Cell pre-processing: assignment heredocs + tolerant repair ladder
-# ---------------------------------------------------------------------------
 
 _HEREDOC_OPEN_RE = re.compile(
     r"(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z_0-9]*)[ \t]*"
@@ -764,7 +706,6 @@ def _masked_verbatim_source(source: str, ranges: list[tuple[int, int]]) -> str:
     lines = source.split("\n")
     for start, end in ranges:
         for index in range(start, min(end, len(lines))):
-            # Keep a possible CR so CRLF remains a line ending for tokenize.
             lines[index] = "".join("\r" if char == "\r" else " " for char in lines[index])
     return "\n".join(lines)
 
@@ -824,8 +765,6 @@ def _collect_heredoc_blocks(source: str) -> tuple[list[_HeredocBlock], set[int]]
             delimiter = match.group("delimiter")
             end = _find_heredoc_end(lines, index, indent, delimiter)
             if end is None:
-                # An open heredoc owns the remainder of the cell. Extraction
-                # emits its targeted diagnostic; later text is not source yet.
                 return blocks, protected
             block = _HeredocBlock(
                 index,
@@ -1049,11 +988,6 @@ def _emit_cell_prep(rid: str, prepared: PreparedCell) -> None:
         _emit({"type": "stderr", "id": rid, "data": f"<kernel> hint: {hint}\n"})
 
 
-# ---------------------------------------------------------------------------
-# Magic source transformer
-# ---------------------------------------------------------------------------
-
-
 _MAGIC_LINE_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z_0-9]*)(?:[ \t]+(?P<args>.*))?$"
 )
@@ -1126,7 +1060,6 @@ def transform_cell(source: str) -> str:
         stripped = line.lstrip()
         indent = line[: len(line) - len(stripped)]
 
-        # Cell magic — consumes from here to EOF.
         if stripped.startswith("%%"):
             head, _ = _split_magic_head(stripped[2:])
             name, args = head
@@ -1137,7 +1070,6 @@ def transform_cell(source: str) -> str:
             )
             return "\n".join(out)
 
-        # Line magic / shell at start of line.
         if stripped.startswith("%") and not stripped.startswith("%%"):
             folded, consumed = _fold_continuations(lines, i)
             stripped_folded = folded.lstrip()
@@ -1157,7 +1089,6 @@ def transform_cell(source: str) -> str:
             i += consumed
             continue
 
-        # Assignment forms: var = %magic / var = !cmd
         m = _ASSIGN_LINE_RE.match(line)
         if m:
             rhs = m.group("rhs").strip()
@@ -1198,11 +1129,6 @@ def _split_magic_head(text: str) -> tuple[tuple[str, str], str]:
     if not m:
         return ("", text), ""
     return (m.group(1), (m.group(2) or "").rstrip()), ""
-
-
-# ---------------------------------------------------------------------------
-# Magic registry
-# ---------------------------------------------------------------------------
 
 
 _LINE_MAGICS: dict[str, Callable[[str], Any]] = {}
@@ -1252,9 +1178,6 @@ def _process_output_encoding() -> str:
 
 
 def _process_output_decoder(encoding: str) -> codecs.IncrementalDecoder:
-    # errors="replace": child output is not guaranteed to be valid text in the
-    # locale encoding (e.g. `cat` of a latin-1 file); a decode error here would
-    # crash the streaming thread and lose the rest of the output.
     return codecs.getincrementaldecoder(encoding)(errors="replace")
 
 
@@ -1404,7 +1327,6 @@ class _BoundedLineScanner:
 def _magic_pip(args: str) -> None:
     argv = shlex.split(args) if args else ["--help"]
     cmd = [sys.executable, "-m", "pip", *argv]
-    # stdin=DEVNULL: see _run_shell_body.
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
@@ -1417,7 +1339,6 @@ def _magic_pip(args: str) -> None:
         m = re.search(r"Successfully installed\s+(.+)$", raw_line)
         if m:
             for token in m.group(1).split():
-                # Token is name-version; drop the version suffix.
                 pkg = token.rsplit("-", 1)[0]
                 installed_packages.append(pkg.replace("_", "-"))
 
@@ -1611,9 +1532,6 @@ def _magic_cell_writefile(args: str, body: str) -> str:
 
 
 def _run_shell_body(body: str, *, shell_arg: str) -> int:
-    # stdin=DEVNULL: children must not inherit the runner's stdin, which is
-    # the host's NDJSON control channel (a reading child would steal frames,
-    # and inheriting the pipe deadlocks nested interpreters on Windows).
     proc = subprocess.Popen(
         [shell_arg, "-c", body],
         stdin=subprocess.DEVNULL,
@@ -1647,16 +1565,15 @@ class _ShellResult(list):
         self.returncode = returncode
 
     @property
-    def n(self) -> str:  # IPython compat
+    def n(self) -> str:
         return "\n".join(self)
 
     @property
-    def s(self) -> str:  # IPython compat
+    def s(self) -> str:
         return " ".join(self)
 
 
 def __proto_shell(cmd: str) -> _ShellResult:
-    # stdin=DEVNULL: see _run_shell_body.
     proc = subprocess.Popen(
         cmd,
         shell=True,
@@ -1671,11 +1588,6 @@ def __proto_shell(cmd: str) -> _ShellResult:
     proc.wait()
     lines = [line for line in capture.text().splitlines()]
     return _ShellResult(lines, proc.returncode)
-
-
-# ---------------------------------------------------------------------------
-# Display dispatch
-# ---------------------------------------------------------------------------
 
 
 _REPR_MIMES = [
@@ -1802,11 +1714,6 @@ def __proto_display(value: Any, *, raw: bool = False, kind: str = "display") -> 
     _emit_display(_mime_bundle(value), kind=kind)
 
 
-# ---------------------------------------------------------------------------
-# Matplotlib post-cell flush
-# ---------------------------------------------------------------------------
-
-
 def _prelude_fn(name: str):
     """Fetch a private prelude helper by name (prelude ns first, then the
     legacy user-ns layout)."""
@@ -1923,7 +1830,6 @@ def _flush_matplotlib_figures() -> None:
                 plt.close(fig)
             except Exception:
                 continue
-    # Figures the cell saved to disk but closed before flush could see them.
     saved = _SAVED_MATPLOTLIB_FIGURES.get()
     if saved:
         remaining: list[Any] = []
@@ -1939,18 +1845,10 @@ def _flush_matplotlib_figures() -> None:
                 emitted.add(id(fig))
             except Exception:
                 remaining.append(ref)
-        # Drop consumed entries so a repeat flush does not re-emit.
         saved[:] = remaining
 
 
-# Force a non-interactive backend before user code imports matplotlib. Set as
-# environ default so the user can still override it explicitly.
 os.environ.setdefault("MPLBACKEND", "Agg")
-
-
-# ---------------------------------------------------------------------------
-# Builtin injection
-# ---------------------------------------------------------------------------
 
 
 def __proto_defs_view() -> dict[str, int]:
@@ -2013,8 +1911,6 @@ def _load_prelude(source: str) -> None:
     _STATE.prelude_ns = ns
     _STATE.prelude_exports = {n: ns[n] for n in names}
     _install_builtins(_STATE.user_ns)
-    # Shadow warnings cover the helper API only: re-importing a convenience
-    # module (``import json``) or class (``Path``) is normal, not a mistake.
     _STATE.prelude_names = set(_runner_exports()) | {
         n for n, v in _STATE.prelude_exports.items() if not isinstance(v, (types.ModuleType, type))
     }
@@ -2023,11 +1919,6 @@ def _load_prelude(source: str) -> None:
 
 
 _install_builtins(_STATE.user_ns)
-
-
-# ---------------------------------------------------------------------------
-# Source execution (split last expression for rich display)
-# ---------------------------------------------------------------------------
 
 
 _TLA_FLAG = getattr(ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT", 0x2000)
@@ -2072,9 +1963,6 @@ async def _run_compiled_async(code, ns: dict, *, want_value: bool) -> Any:
     return None
 
 
-# Code objects that mark "user cell code is executing on the main thread";
-# consulted by the SIGINT handler to choose between raising KeyboardInterrupt
-# and cancelling the request task.
 _USER_EXEC_CODES: set[Any] = {_run_compiled_sync.__code__, _run_compiled_async.__code__}
 
 
@@ -2122,16 +2010,10 @@ async def _exec_source_async(source: str, ns: dict) -> None:
             __proto_display(value, kind="result")
 
 
-# ---------------------------------------------------------------------------
-# Signal handling
-# ---------------------------------------------------------------------------
-
-
 def _install_idle_sigint() -> None:
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
     except (OSError, ValueError):
-        # Some platforms (Windows in non-console mode) reject this; fine.
         pass
 
 
@@ -2163,10 +2045,6 @@ def _exec_sigint_handler(_signum: int, frame: Any) -> None:
             cancelled = True
     loop = _STATE.loop
     if cancelled and loop is not None:
-        # This handler runs *inside* the interrupted selector poll, which is
-        # retried with its remaining timeout once we return. ``cancel()`` only
-        # queued the wake-up via ``call_soon``; write to the loop's self-pipe
-        # so the poll returns now instead of when the original timer fires.
         try:
             loop.call_soon_threadsafe(_noop)
         except RuntimeError:
@@ -2262,11 +2140,6 @@ def _start_parent_watchdog() -> None:
     thread.start()
 
 
-# ---------------------------------------------------------------------------
-# Request dispatch
-# ---------------------------------------------------------------------------
-
-
 def _cell_bound_names(source: str) -> tuple[list[str], list[str]]:
     """Top-level names a cell defines: ``(def/class names, every bound name)``.
 
@@ -2317,13 +2190,10 @@ def _cell_bound_names(source: str) -> tuple[list[str], list[str]]:
 
 def _track_cell_defs(source: str, rid: str, execution_count: int) -> None:
     if _STATE.prelude_names is None and _STATE.user_ns.get("__proto_prelude_loaded__"):
-        # Legacy host that ran the prelude as a plain cell in user_ns.
         _STATE.prelude_names = set(_STATE.user_ns)
         _STATE.defs.clear()
         return
     defs, bound = _cell_bound_names(source)
-    # Variables, imports and loop targets are cell-defined names too: report
-    # every top-level binding, not only functions and classes.
     for name in (*defs, *bound):
         _STATE.defs[name] = execution_count
     if _STATE.prelude_names is None:
@@ -2392,7 +2262,7 @@ async def _handle_request_async(req: dict) -> None:
             return
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:  # noqa: BLE001 - runtime setup errors must settle the request
+        except BaseException as exc:
             _emit_error(rid, exc)
             _sync_fd_capture(capture)
             _emit(
@@ -2433,8 +2303,6 @@ async def _handle_request_async(req: dict) -> None:
         except asyncio.CancelledError:
             if _STATE.shutting_down:
                 raise
-            # SIGINT arrived while the cell was parked at an await; the
-            # handler cancelled this task instead of unwinding the loop.
             cancelled = True
             status = "error"
             _emit_error(rid, KeyboardInterrupt("Execution interrupted"))
@@ -2445,7 +2313,7 @@ async def _handle_request_async(req: dict) -> None:
         except SystemExit as exc:
             status = "error"
             _emit_error(rid, exc)
-        except BaseException as exc:  # noqa: BLE001 - we want to surface every user error
+        except BaseException as exc:
             status = "error"
             _emit_error(rid, exc)
         finally:
@@ -2463,7 +2331,7 @@ async def _handle_request_async(req: dict) -> None:
             if not is_prelude:
                 _track_cell_defs(transformed, rid, execution_count)
             _flush_stream_proxies(rid)
-        except BaseException as exc:  # noqa: BLE001 - the host needs a done frame to settle the request
+        except BaseException as exc:
             status = "error"
             _emit_error(rid, exc)
         if rid in _STATE.cancelled_request_ids:
@@ -2480,8 +2348,6 @@ async def _handle_request_async(req: dict) -> None:
             }
         )
     finally:
-        # Buffered text goes to the capture fd, so it must be flushed and
-        # drained before those fds are swapped back to /dev/null.
         _flush_stream_proxies(rid)
         _sync_fd_capture(capture)
         _end_fd_capture()
@@ -2494,14 +2360,8 @@ async def _handle_request_async(req: dict) -> None:
 def _emit_error(rid: str, exc: BaseException) -> None:
     _sync_before_frame(rid)
     if isinstance(exc, SyntaxError) and exc.filename == "<cell>":
-        # Syntax error in the cell source itself: every stack frame is runner
-        # machinery, so emit only the caret display, like a REPL.
         tb_lines = traceback.format_exception_only(type(exc), exc)
     else:
-        # Drop the leading runner-internal frames (_handle_request_async ->
-        # _exec_source_async -> _run_compiled_*) so tracebacks start at user
-        # code. If the exception never reached user code it is a runner bug;
-        # keep the full traceback because those frames are the diagnosis.
         tb = exc.__traceback__
         while tb is not None and tb.tb_frame.f_code.co_filename == __file__:
             tb = tb.tb_next
@@ -2517,11 +2377,6 @@ def _emit_error(rid: str, exc: BaseException) -> None:
             "traceback": [line.rstrip("\n") for line in tb_lines],
         }
     )
-
-
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
 
 
 def _read_stdin(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, stdin) -> None:
@@ -2578,7 +2433,7 @@ async def _execution_worker(queue: asyncio.Queue) -> None:
                 await _handle_request_async(req)
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:  # noqa: BLE001 - keep the protocol loop alive
+        except BaseException as exc:
             _emit_error("", exc)
         finally:
             _STATE.active_request_id = None
@@ -2628,8 +2483,6 @@ async def _main_async() -> None:
                             task.cancel()
                 continue
             if req.get("type") == "status":
-                # Control probes bypass the execution FIFO so a cell parked at
-                # an await cannot make liveness checks time out.
                 _emit(
                     {
                         "type": "done",
