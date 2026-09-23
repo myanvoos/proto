@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.6.0] - 2026-09-23
+
 ### Added
 
 - `/rename` without a title now generates a session name from recent conversation using the configured tiny model
@@ -27,10 +29,9 @@
 - `proto usage` shows each policy-routed account's priority, reserve, and whether it sits inside its reserve
 
 ### Changed
+
 - Session selector starts loading the all-projects list as soon as it opens, so switching scope no longer waits on a full cross-project scan
 - Session scans cap the remembered search text per session (16k chars) and fold transcripts incrementally, cutting the global session list's memory use and scan time on large histories
-
-
 - Read-only session transcripts (`history://`, subagent views) load only the images they display, skipping blobs behind a compaction or reset
 - While viewing an agent (side agent or subagent), `Esc` returns straight to the main session and `←←` hops to its parent agent instead of both reopening the agents view; `→→` opens that agent's own subagents
 - Date/cwd reminders stay append-only across day changes so earlier messages keep their cached bytes

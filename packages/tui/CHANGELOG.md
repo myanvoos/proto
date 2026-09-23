@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.6.0] - 2026-09-23
+
 ### Added
 
 - Rio, otty, and Orca are recognized terminals: rio and otty get Kitty graphics with Unicode placeholders and OSC 8 links, otty OSC 99 notifications, and Orca two-cell Hangul Compatibility Jamo

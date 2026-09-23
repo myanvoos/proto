@@ -219,7 +219,7 @@ checksum = "057ae90e7256ebf85f840b1638268df0142c9d19467d500b790631fd301acc27"
 dependencies = [
  "bit-set",
  "regex",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tree-sitter",
 ]
 
@@ -674,7 +674,7 @@ dependencies = [
  "strum_macros",
  "tempfile",
  "terminfo",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",
@@ -692,7 +692,7 @@ dependencies = [
  "cached 0.56.0",
  "indenter",
  "peg",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tracing",
  "utf8-chars",
 ]
@@ -710,7 +710,7 @@ dependencies = [
  "insta",
  "peg",
  "serde",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tracing",
  "utf8-chars",
  "uuid",
@@ -795,7 +795,7 @@ dependencies = [
  "cached_proc_macro_types",
  "hashbrown 0.15.5",
  "once_cell",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "web-time",
 ]
 
@@ -811,7 +811,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "once_cell",
  "parking_lot",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "web-time",
 ]
 
@@ -1055,7 +1055,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b60b5124979fccd9addd89d8b97a1d6eebb4950694520c75ddd722535ea443f"
 dependencies = [
  "nix 0.31.3",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1449,7 +1449,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
 dependencies = [
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1884,7 +1884,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54f0d287c53ffd184d04d8677f590f4ac5379785529e5e08b1c8083acdd5c198"
 dependencies = [
  "memchr",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2405,7 +2405,7 @@ dependencies = [
  "once_cell",
  "phf 0.14.0",
  "regex",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tracing",
 ]
 
@@ -2745,7 +2745,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4bfb5a63225620b59df34a235d1fb56ff7b766909c3212a8ff927511a22b181d"
 dependencies = [
  "quantette",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3239,7 +3239,7 @@ dependencies = [
  "khronos-egl",
  "memmap2",
  "rustix 1.1.5",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tracing",
  "wayland-backend",
  "wayland-client",
@@ -3317,7 +3317,7 @@ dependencies = [
  "rayon",
  "sha2 0.11.0",
  "stringprep",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "weezl 0.2.1",
 ]
 
@@ -4164,9 +4164,9 @@ dependencies = [
 
 [[package]]
 name = "pdf-inspector"
-version = "1.23.0"
+version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c58b1dc8ba60ddb42a3a0f5f0dc83996b3dcb650141ba7df3ef0061f501a458"
+checksum = "e22dc125a533d212c847c8c85e4fcb7358f4384869ef76b2b8721f039b1b633a"
 dependencies = [
  "env_logger",
  "include_dir",
@@ -4175,7 +4175,7 @@ dependencies = [
  "once_cell",
  "rayon",
  "regex",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "ttf-parser",
  "unicode-bidi",
  "unicode-normalization",
@@ -4403,7 +4403,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ast"
-version = "18.5.0"
+version = "18.6.0"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -4470,7 +4470,7 @@ dependencies = [
 
 [[package]]
 name = "pi-builtins"
-version = "18.5.0"
+version = "18.6.0"
 dependencies = [
  "ansi-width",
  "argmax",
@@ -4538,7 +4538,7 @@ dependencies = [
  "smallvec",
  "strum",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",
@@ -4550,7 +4550,7 @@ dependencies = [
 
 [[package]]
 name = "pi-iso"
-version = "18.5.0"
+version = "18.6.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -4561,7 +4561,7 @@ dependencies = [
 
 [[package]]
 name = "pi-natives"
-version = "18.5.0"
+version = "18.6.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4619,7 +4619,7 @@ dependencies = [
 
 [[package]]
 name = "pi-shell"
-version = "18.5.0"
+version = "18.6.0"
 dependencies = [
  "anyhow",
  "brush-core",
@@ -4641,7 +4641,7 @@ dependencies = [
 
 [[package]]
 name = "pi-walker"
-version = "18.5.0"
+version = "18.6.0"
 dependencies = [
  "dashmap",
  "globset",
@@ -4681,7 +4681,7 @@ dependencies = [
  "nix 0.30.1",
  "once_cell",
  "pipewire-sys",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5576,7 +5576,7 @@ dependencies = [
  "regex-syntax",
  "serde",
  "serde_derive",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "walkdir",
  "yaml-rust",
 ]
@@ -5670,11 +5670,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
- "thiserror-impl 2.0.20",
+ "thiserror-impl 2.0.21",
 ]
 
 [[package]]
@@ -5690,9 +5690,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6660,7 +6660,7 @@ dependencies = [
  "sha2 0.10.9",
  "sha3",
  "sm3",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "unic-langid",
  "unit-prefix",
  "uucore_procs",
@@ -7287,7 +7287,7 @@ dependencies = [
  "log",
  "os_pipe",
  "rustix 1.1.5",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tree_magic_mini",
  "wayland-backend",
  "wayland-client",
@@ -7369,7 +7369,7 @@ dependencies = [
  "rand 0.9.5",
  "scopeguard",
  "serde",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "url",
  "widestring",
  "windows",

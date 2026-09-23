@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.6.0] - 2026-09-23
+
 ### Added
 
 - Added `directoryIsEnterable`/`directoryIsEnterableSync`, `directoryIsMissing`, and `getSafeProjectCwd` for adopting and spawning in working directories safely

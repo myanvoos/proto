@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.6.0] - 2026-09-23
+
 ### Added
 
 - Anthropic models on the official endpoint compact through Anthropic's server-side compaction

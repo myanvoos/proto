@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.6.0] - 2026-09-23
+
 ### Added
 
 - Anthropic thinking-binding controls: Fable 5.1 opts into dropping prefix-mismatched thinking, and a prefix-binding rejection retries once without the bound blocks

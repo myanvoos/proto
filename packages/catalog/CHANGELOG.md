@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.6.0] - 2026-09-23
+
 ### Added
 
 - DeepSeek Flash (`deepseek-flash`) on DeepSeek, with image input on OpenCode Go
